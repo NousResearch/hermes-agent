@@ -103,8 +103,9 @@ export const $kanbanUnseen = computed([$unseenByBoard, host.state.connectionId],
   return total
 })
 
-/** The board page currently mounted (its `cursorKey`), or null. */
-let viewing: null | string = null
+/** Live board-page mounts per `cursorKey`. A count, not a slot: the same
+ *  board can be mounted twice (main route + split tile). */
+const viewing = new Map<string, number>()
 /** Bumped by `resetCompletionNotify` so a frame awaiting its baseline across a
  *  plugin unload cannot write counts, cursors or toasts afterwards. */
 let generation = 0
@@ -113,7 +114,7 @@ let detachVisibility: (() => void) | null = null
 const documentVisible = () => typeof document !== 'undefined' && document.visibilityState === 'visible'
 
 /** The user is looking at this board: its page is mounted AND the window is visible. */
-const looking = (key: string) => viewing === key && documentVisible()
+const looking = (key: string) => viewing.has(key) && documentVisible()
 
 function clearUnseen(key: string): void {
   const current = $unseenByBoard.get()
@@ -126,18 +127,28 @@ function clearUnseen(key: string): void {
 
 /** Called by the board page while mounted: clears that board's count (if the
  *  window is visible) and suppresses counting while the user looks at it.
- *  Returns the unmark; a stale unmark never clears a newer mark. */
+ *  Returns the unmark, which releases only this mark and only once. */
 export function markBoardViewing(scope: string, slug: string): () => void {
   const key = cursorKey(scope, slug)
-  viewing = key
+  let released = false
+  viewing.set(key, (viewing.get(key) ?? 0) + 1)
 
   if (documentVisible()) {
     clearUnseen(key)
   }
 
   return () => {
-    if (viewing === key) {
-      viewing = null
+    if (released) {
+      return
+    }
+
+    released = true
+    const left = (viewing.get(key) ?? 1) - 1
+
+    if (left > 0) {
+      viewing.set(key, left)
+    } else {
+      viewing.delete(key)
     }
   }
 }
@@ -148,7 +159,7 @@ export function resetCompletionNotify(): void {
   seenEventIdByBoard.clear()
   baselinePending.clear()
   $unseenByBoard.set({})
-  viewing = null
+  viewing.clear()
   detachVisibility?.()
   detachVisibility = null
 }
@@ -188,8 +199,8 @@ export function bindCompletionNotify(r: Rest, pluginTranslate?: PluginTranslate,
 
   if (typeof document !== 'undefined') {
     const onVisibility = () => {
-      if (viewing && documentVisible()) {
-        clearUnseen(viewing)
+      if (documentVisible()) {
+        viewing.forEach((_mounts, key) => clearUnseen(key))
       }
     }
 

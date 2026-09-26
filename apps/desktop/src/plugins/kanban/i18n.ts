@@ -217,7 +217,6 @@ type KanbanMessages = {
   // Kanban alerts mode (#123596): how terminal worker events reach you
   alerts: {
     title: string
-    description: string
     /** Caption beside the board-local picker: a device preference, not board config. */
     thisDevice: string
     toast: string
@@ -445,7 +444,6 @@ export const en: KanbanMessages = {
   },
   alerts: {
     title: 'Kanban alerts',
-    description: 'How finished, blocked, and failed tasks get your attention.',
     thisDevice: 'On this device',
     toast: 'Toast',
     toastDesc: 'A toast at the top; blockers and failures stay until you dismiss them.',
@@ -671,7 +669,6 @@ const ja: KanbanMessages = {
   },
   alerts: {
     title: 'カンバンの通知',
-    description: 'タスクの完了・ブロック・失敗をどう知らせるか。',
     thisDevice: 'このデバイスのみ',
     toast: 'トースト',
     toastDesc: '上部にトーストを表示。ブロックや失敗は閉じるまで残ります。',
@@ -894,7 +891,6 @@ const zh: KanbanMessages = {
   },
   alerts: {
     title: '看板提醒',
-    description: '任务完成、阻塞或失败时如何提醒你。',
     thisDevice: '仅此设备',
     toast: '弹出提示',
     toastDesc: '在顶部弹出提示；阻塞和失败会一直保留，直到你关闭。',
@@ -1116,7 +1112,6 @@ const zhHant: KanbanMessages = {
   },
   alerts: {
     title: '看板提醒',
-    description: '任務完成、受阻或失敗時如何提醒你。',
     thisDevice: '僅此裝置',
     toast: '彈出提示',
     toastDesc: '在頂部彈出提示；受阻和失敗會一直保留，直到你關閉。',

@@ -19,7 +19,7 @@ export function AlertsModeRow({ showDeviceScope = false }: { showDeviceScope?: b
     <ListRow
       action={
         <Select onValueChange={value => $alertsMode.set(parseAlertsMode(value))} value={mode}>
-          <SelectTrigger aria-label={k.alerts.title} className="min-w-44">
+          <SelectTrigger aria-label={k.alerts.title} className="min-w-44 text-xs">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>

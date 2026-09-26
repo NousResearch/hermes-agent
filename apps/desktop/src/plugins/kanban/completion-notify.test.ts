@@ -746,6 +746,40 @@ describe('unseen badge', () => {
     expect(m.$kanbanUnseen.get()).toBe(0)
   })
 
+  it('the same board mounted twice (split tile): closing one mount keeps the board looked-at', async () => {
+    stubDocument('visible')
+    const m = await loadModule()
+    const mode = await loadMode()
+    mode.$alertsMode.set('quiet')
+    m.bindCompletionNotify(makeRest(() => 100) as never)
+
+    const unmarkMain = m.markBoardViewing('local', 'smoke')
+    const unmarkTile = m.markBoardViewing('local', 'smoke')
+    unmarkTile()
+    unmarkTile() // a repeated unmark (effect cleanup) must not release the other mount
+
+    await m.onKanbanEventsFrame('smoke', [ev(101, 'completed')])
+    expect(m.$kanbanUnseen.get()).toBe(0)
+    expect(soundMock).not.toHaveBeenCalled()
+
+    unmarkMain()
+    await m.onKanbanEventsFrame('smoke', [ev(102, 'completed')])
+    expect(m.$kanbanUnseen.get()).toBe(1)
+  })
+
+  it('opening a board while the window is hidden does not clear its count', async () => {
+    const doc = stubDocument('hidden')
+    const m = await loadModule()
+    m.bindCompletionNotify(makeRest(() => 100) as never)
+
+    await m.onKanbanEventsFrame('smoke', [ev(101, 'completed')])
+    m.markBoardViewing('local', 'smoke')
+    expect(m.$kanbanUnseen.get()).toBe(1)
+
+    doc.set('visible')
+    expect(m.$kanbanUnseen.get()).toBe(0)
+  })
+
   it('scope isolation: cursor and counts are per (connection, board)', async () => {
     let latest = 100
     const m = await loadModule()

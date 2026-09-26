@@ -46,6 +46,9 @@ def launchd(tmp_path, monkeypatch):
     monkeypatch.setattr(gateway_cli, "_launchctl_bootstrap", lambda *a, **k: state.bootstraps.append(a))
     monkeypatch.setattr(gateway_cli, "refresh_launchd_plist_if_needed", lambda: state.refreshes.append(1) or True)
     monkeypatch.setattr(gateway_cli, "_setup_service_action", lambda *a, **k: state.starts.append(a))
+    # This suite's CLI root has a committed dependency environment (the guard's predicate lives in
+    # tests/hermes_cli/test_launchd_refresh_bootable_guard.py), so no install here is ever refused.
+    monkeypatch.setattr(gateway_cli, "launchd_plist_is_bootable", lambda text: True)
 
     def fake_run(cmd, *a, **k):
         state.launchctl.append(cmd)

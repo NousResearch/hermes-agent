@@ -150,14 +150,17 @@ class MicroCompactionMixin:
         content = (content if isinstance(content, str) else str(content) if content else "").strip()
 
         from agent.agent_runtime_helpers import strip_think_blocks
-        content = strip_think_blocks(None, content).strip()
-        if not content:
-            logger.info("micro-summarization returned empty content")
+        cleaned = strip_think_blocks(None, content).strip()
+        if not cleaned:
             return None
-        if _cc()._is_refusal_response(response, content):
-            logger.warning("micro-summarization returned refusal content — discarding unusable summary")
+        # Self-authored directives (#120439): same guard as the batch summarizer — a poisoned
+        # rolling summary would be re-injected into every later micro-compact pass. Failure
+        # convention here is None (exchange stays unabsorbed; a later pass retries it).
+        threats = _cc()._compaction_summary_threats(cleaned)
+        if threats:
+            logger.warning("micro-summarization rejected: directive-shaped content (%s)", ", ".join(threats))
             return None
-        return content
+        return cleaned
 
     def _needs_defrag(self) -> bool:
         """Return True when the rolling summary is large enough to defrag."""

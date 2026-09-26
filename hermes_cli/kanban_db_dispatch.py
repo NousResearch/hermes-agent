@@ -79,6 +79,13 @@ _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 # ``HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS``.
 DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
 
+# ``blocker_auth`` hold after a quota/auth-flavored crash. Docs say "wait for
+# the rate window to reset"; without a bound the regex match parks a ``ready``
+# card forever (#118345) because last_failure_error is never cleared and the
+# breaker never trips on a rate-limited requeue. Overridable via
+# ``HERMES_KANBAN_BLOCKER_AUTH_TTL_SECONDS``. 0 disables the hold.
+DEFAULT_BLOCKER_AUTH_TTL_SECONDS = 3600  # 1 hour
+
 # Within this window a GitHub PR URL in a comment blocks re-spawn.
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
 
@@ -1488,6 +1495,25 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
         )
 
 
+def _resolve_blocker_auth_ttl_seconds() -> int:
+    """Seconds ``blocker_auth`` holds a card after the latest ended run.
+
+    ``HERMES_KANBAN_BLOCKER_AUTH_TTL_SECONDS`` overrides the default. Invalid
+    or negative values fall back to :data:`DEFAULT_BLOCKER_AUTH_TTL_SECONDS`.
+    ``0`` disables the hold so dispatch can probe the provider again.
+    """
+    raw = os.environ.get("HERMES_KANBAN_BLOCKER_AUTH_TTL_SECONDS")
+    if raw is None or not str(raw).strip():
+        return DEFAULT_BLOCKER_AUTH_TTL_SECONDS
+    try:
+        value = int(str(raw).strip())
+    except ValueError:
+        return DEFAULT_BLOCKER_AUTH_TTL_SECONDS
+    if value < 0:
+        return DEFAULT_BLOCKER_AUTH_TTL_SECONDS
+    return value
+
+
 def check_respawn_guard(
     conn: sqlite3.Connection, task_id: str, *, lane: str = "ready",
 ) -> Optional[str]:
@@ -1500,7 +1526,8 @@ def check_respawn_guard(
     checked BEFORE ``blocker_auth`` because the requeue stamps a quota-flavored
     ``last_failure_error`` that would otherwise park the task forever — that
     path never increments ``consecutive_failures``), ``"blocker_auth"``
-    (quota/auth pattern; the breaker still trips eventually), then for the
+    (quota/auth pattern, time-bounded by ``DEFAULT_BLOCKER_AUTH_TTL_SECONDS``
+    so a recovered provider is probed again — #118345), then for the
     ready lane only ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
     (PR URL in a recent comment; re-spawning risks a duplicate PR — unless a
@@ -1555,6 +1582,15 @@ def check_respawn_guard(
     err = _kb._lossy_text(row["last_failure_error"])
     latest_outcome = latest_run["outcome"] if latest_run is not None else None
     if err and latest_outcome != "crashed" and _RESPAWN_BLOCKER_RE.search(err):
+        ttl = _resolve_blocker_auth_ttl_seconds()
+        if ttl <= 0:
+            return None
+        ended_at = latest_run["ended_at"] if latest_run is not None else None
+        # No ended_at: fail-closed hold (legacy rows / tests that only stamp
+        # last_failure_error). With an ended run, expire after TTL so a
+        # recovered provider is probed again (#118345).
+        if ended_at is not None and (now - int(ended_at)) >= ttl:
+            return None
         return "blocker_auth"
 
     # Review-lane spawns stop here: a recent completed run and a fresh PR URL

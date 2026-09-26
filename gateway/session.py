@@ -401,6 +401,16 @@ def build_session_context_prompt(context: SessionContext, *, redact_pii: bool = 
             desc = SessionSource._describe(src.chat_type, user, chat)
         lines.append(f"**Source:** {platform_name} ({_format_untrusted_prompt_value(desc)})")
 
+    if src.platform == Platform.TELEGRAM:
+        # Stable route identity belongs in session context, not display labels.
+        # Match Matrix Room ID: hash when redact_pii, do not JSON-wrap (that
+        # wrapper is for untrusted display names). Per-turn message IDs stay
+        # out of the cached prompt.
+        lines.append(f"**Telegram Chat ID:** {_chat_label(src.chat_id)}")
+        lines.append(f"**Telegram Chat Type:** {_format_untrusted_prompt_value(src.chat_type)}")
+        if src.thread_id:
+            lines.append(f"**Telegram Thread ID:** {_chat_label(src.thread_id)}")
+
     if src.chat_topic:
         lines.append(f"**Channel Topic:** {_format_untrusted_prompt_value(src.chat_topic)}")
 

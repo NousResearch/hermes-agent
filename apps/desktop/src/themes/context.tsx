@@ -287,6 +287,9 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark', chatFontFamily 
     // than leaving eight emerald spots fighting the theme.
     '--ui-success': harmonize('#10b981', midground, 0.25),
     '--dt-font-sans': resolveChatFontFamily(chatFontFamily, typo.fontSans),
+    // Optional family list INCLUDING its trailing comma; locale-specific
+    // composer fallbacks stay ahead of the theme, but behind the user's pick.
+    '--dt-font-chat-prefix': resolveChatFontFamily(chatFontFamily, ''),
     '--dt-font-mono': typo.fontMono,
     '--noise-opacity-mul': isDark ? 'calc(0.04 / 0.21)' : 'calc(0.34 / 0.21)'
   }

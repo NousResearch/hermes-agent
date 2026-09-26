@@ -172,6 +172,44 @@ def test_relaunch_keeps_invocation_and_checkout_imports(tmp_path, mode):
     assert json.loads(result.stdout) == ["from checkout", argv[1:]]
 
 
+def test_relaunch_resolves_dependencies_before_the_caller_imports_the_agent(
+    tmp_path,
+    monkeypatch,
+):
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    root = tmp_path / "source"
+    root.mkdir()
+    (root / "pyproject.toml").write_text("[project]\n")
+    from pm.environments import committed_venv, install_state_dir
+
+    state = install_state_dir(root)
+    environment = state / "environments" / "gen-1"
+    (environment / "lib" / "python3.99").mkdir(parents=True)
+    (environment / "pyvenv.cfg").write_text("version = 3.99\n")
+    third_party = environment / "lib" / "python3.99" / "site-packages"
+    third_party.mkdir()
+    (third_party / "vendored_dependency.py").write_text(
+        "marker = 'from selected generation'\n"
+    )
+    facts = runtime_facts_path(root)
+    facts.write_text(
+        json.dumps({"packages": {"venv": {"environment": str(environment)}}})
+    )
+    assert committed_venv(root) == environment
+
+    body = (
+        "import vendored_dependency, sys; print(vendored_dependency.marker); "
+        "sys.exit(0 if 'site-packages' in str(sys.path[-1]) else 3)"
+    )
+    command = venv_sync.relaunch_command(
+        Path(sys.executable), root, ["-c", body], [sys.executable, "-c", body], None,
+    )
+    result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "from selected generation"
+
+
 @pytest.mark.parametrize("owner,argv", [(None, []), ("external", []), ("electron-updater", []), ("self", ["-p", "coder", "pm", "repair"])])
 def test_non_self_or_pm_launch_cannot_trigger_update(tmp_path, monkeypatch, owner, argv):
     import pm

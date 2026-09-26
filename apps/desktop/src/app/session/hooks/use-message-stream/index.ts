@@ -632,7 +632,7 @@ export function useMessageStream({
           // still-in-flight owner — a settled prior turn's sealed part is
           // history, so a new turn reusing the id seeds its own row instead
           // of clobbering the prior turn's command.
-          eventTarget: state => toolCallOwnerMessageId(state.messages, payload, phase, state)
+          eventTarget: state => toolCallOwnerMessageId(state.messages, payload, phase)
         },
         occurredAt
       )

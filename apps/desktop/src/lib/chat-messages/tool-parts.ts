@@ -441,12 +441,14 @@ export const hasUnresolvedToolCall = (message: ChatMessage) =>
  *   (#113035), so a sealed-no-result part is always its reconciled owner no
  *   matter whether the owning turn has settled;
  * • a `running`-phase event on a sealed-no-result part is a NEW call reusing
- *   the id. Only re-arm it when the owner is still in flight (the owning
- *   message is `pending`/`interim`, or the session has an
- *   `interimBoundaryPending` boundary open) — i.e. the interim-boundary /
- *   mid-turn-user-message re-attach the unseal branch exists for. A
- *   sealed-no-result part on a settled prior turn is history, so the new
- *   call seeds its own bubble instead of clobbering the prior turn's row.
+ *   the id. Only re-arm it when the owning message is itself still in flight
+ *   (`pending` or `interim`) — the interim-boundary / mid-turn-user-message
+ *   paths that re-arm a sealed part seal the bubble IN PLACE and mark that
+ *   same message `interim`, so the evidence lives on the candidate row, not on
+ *   a session-wide `interimBoundaryPending` bit that can belong to a different
+ *   bubble. A sealed-no-result part on a settled prior turn (`pending` and
+ *   `interim` both false) is history, so the new call seeds its own bubble
+ *   instead of clobbering the prior turn's row.
  *
  * Newest-first among unresolved parts: interim boundaries append bubbles, so
  * the owner of an in-flight call is the most recent message that carries the
@@ -455,8 +457,7 @@ export const hasUnresolvedToolCall = (message: ChatMessage) =>
 export function toolCallOwnerMessageId(
   messages: ChatMessage[],
   payload: GatewayEventPayload | undefined,
-  phase: 'running' | 'complete',
-  session?: { interimBoundaryPending?: boolean }
+  phase: 'running' | 'complete'
 ): string | null {
   const stableId = toolId(payload)
 
@@ -476,13 +477,13 @@ export function toolCallOwnerMessageId(
       // COMPLETION (#113035: the call's own result arriving after settle) no
       // matter whether the turn has settled. A RUNNING event on a sealed
       // part is a NEW call reusing the id; only re-arm it when the owner is
-      // still in flight (interim boundary, mid-turn user message) — a sealed
-      // part on a settled prior turn is history, not the new call's owner.
-      if (
-        phase === 'running' &&
-        part.completedAt !== undefined &&
-        !(message.pending || message.interim || session?.interimBoundaryPending)
-      ) {
+      // still in flight — the interim-boundary / mid-turn-user-message paths
+      // that re-arm a sealed part mark the owning message itself `interim`,
+      // so this is per-row evidence. A sealed part on a settled prior turn
+      // (`pending`/`interim` both false) is history, not the new call's owner;
+      // a session-wide boundary bit is deliberately not consulted, since it
+      // can be raised by a different bubble than the candidate row.
+      if (phase === 'running' && part.completedAt !== undefined && !(message.pending || message.interim)) {
         continue
       }
 

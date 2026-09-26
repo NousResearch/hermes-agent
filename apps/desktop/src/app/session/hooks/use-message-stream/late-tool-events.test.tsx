@@ -150,6 +150,41 @@ describe('tool events for a part that already exists on a sealed message', () =>
     expect(rows[1].messageIndex).toBeGreaterThan(rows[0].messageIndex)
   })
 
+  it('seeds a new row when a later turn reuses an id after an interim boundary in that later turn', () => {
+    // Turn A: tool.complete is lost; message.complete settles the turn and
+    // sealOpenToolParts seals the still-open tool part (completedAt, no
+    // result).
+    event('message.start', 900)
+    event('tool.start', 901, { args: { command: 'echo stepA' }, name: 'terminal', tool_id: 'call_interim_reuse' })
+    event('message.complete', 902, { text: 'first turn done' })
+
+    // Turn B: a new message.start resets `interimBoundaryPending` to false,
+    // then `message.interim` raises the session-wide flag and seals B's own
+    // commentary bubble as `interim`. That session-global bit belongs to B's
+    // bubble, not to A's sealed-no-result row, so it must NOT read as
+    // ownership evidence for a different bubble: the reused id seeds B's own
+    // row instead of re-arming (and clobbering) A's history.
+    event('message.start', 950)
+    event('message.interim', 951, { text: 'thinking about step B', already_streamed: true })
+    event('tool.start', 952, { args: { command: 'echo stepB' }, name: 'terminal', tool_id: 'call_interim_reuse' })
+    event('tool.complete', 953, { name: 'terminal', result: 'step B output', tool_id: 'call_interim_reuse' })
+    event('message.complete', 954, { text: 'second turn done' })
+
+    const rows = toolRows('call_interim_reuse')
+    expect(rows).toHaveLength(2)
+    // The prior turn keeps its own command and stays sealed without a result
+    // (its lost completion is not backfilled by the new turn's result).
+    expect(rows[0].part).toMatchObject({ args: { command: 'echo stepA' }, toolName: 'terminal' })
+    expect((rows[0].part as { result?: unknown }).result).toBeUndefined()
+    // The new turn grows its own row, with its own command and result.
+    expect(rows[1].part).toMatchObject({
+      args: { command: 'echo stepB' },
+      result: 'step B output',
+      toolName: 'terminal'
+    })
+    expect(rows[1].messageIndex).toBeGreaterThan(rows[0].messageIndex)
+  })
+
   it('attaches a late completion to a part sealed by turn settle (no interim boundary)', () => {
     // No message.interim: message.complete settles the turn and seals the
     // still-open tool part with completedAt and no result — the #113035

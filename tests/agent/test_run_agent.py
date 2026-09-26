@@ -6295,6 +6295,28 @@ class TestStreamingApiCall:
         assert tc[0].function.arguments == '{"path":"x.txt","content":"hel'
         assert resp.choices[0].finish_reason == "length"
 
+    @pytest.mark.parametrize("finish_reason", [None, "tool_calls"])
+    def test_cut_tool_args_are_repaired_only_once_the_provider_finished(self, agent, finish_reason):
+        # Cut after the first digit of "timeout": 600. Every string is closed, so the
+        # prefix repairs to valid JSON that carries timeout=6. Without a finish_reason
+        # nothing says the model was done: retry, never run what happened to arrive.
+        from hermes_constants import PARTIAL_STREAM_STUB_ID
+        raw = '{"command": "make deploy", "timeout": 6'
+        chunks = [_make_chunk(tool_calls=[_make_tc_delta(0, "call_1", "terminal", raw)])]
+        if finish_reason:
+            chunks.append(_make_chunk(finish_reason=finish_reason))
+        agent.client.chat.completions.create.return_value = iter(chunks)
+
+        resp = agent._interruptible_streaming_api_call({"messages": []})
+
+        if finish_reason is None:
+            assert resp.id == PARTIAL_STREAM_STUB_ID
+            assert resp.choices[0].message.tool_calls is None
+            assert resp._dropped_tool_names == ["terminal"]
+        else:
+            args = resp.choices[0].message.tool_calls[0].function.arguments
+            assert json.loads(args) == {"command": "make deploy", "timeout": 6}
+
     def test_ollama_reused_index_separate_tool_calls(self, agent):
         """Ollama sends every tool call at index 0 with different ids.
 

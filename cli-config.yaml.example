@@ -1135,10 +1135,23 @@ skills:
   #   - ~/.agents/skills
   #   - /home/shared/team-skills
 
+  # Skill-graph config (bundled plugin).
+  # config:
+  #   skill-graph:
+  #     # Relative paths resolve under the active profile's HERMES_HOME.
+  #     db_path: skill-graph.db
+  #     source_dirs:
+  #       - ~/shared-skills
+  #     # extensions_file: skill-graph/routing-extensions.md
+
 # =============================================================================
 # Agent Behavior
 # =============================================================================
 agent:
+  # Opt in to graph-backed skill discovery. The flat skill index remains the
+  # default when this is false or either graph tool is unavailable.
+  # skill_graph_mode: false
+
   # Maximum tool-calling iterations per conversation (default: 500)
   # Higher = more room for complex tasks, but costs more tokens
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration

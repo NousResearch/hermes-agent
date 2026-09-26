@@ -83,14 +83,22 @@ def _tui_embedded_pane_clarifier(hint: str) -> str:
     return hint + _TUI_EMBEDDED_PANE_CLARIFIER
 
 
-def _plugin_session_info(agent: Any) -> Dict[str, str]:
+def _plugin_session_info(agent: Any) -> Dict[str, Any]:
     """Return immutable-at-render-time metadata exposed to prompt sections."""
     try:
         cwd = str(resolve_context_cwd() or "")
     except Exception:
         cwd = ""
-    info = {k: str(getattr(agent, k, None) or "") for k in ("session_id", "model", "provider", "platform")}
-    info.update(profile_name=_active_profile_name(agent, _ambient_plugin_profile_name), cwd=cwd)
+    info: Dict[str, Any] = {
+        k: str(getattr(agent, k, None) or "")
+        for k in ("session_id", "model", "provider", "platform")
+    }
+    info.update(
+        profile_name=_active_profile_name(agent, _ambient_plugin_profile_name),
+        cwd=cwd,
+        valid_tool_names=tuple(sorted(getattr(agent, "valid_tool_names", ()) or ())),
+        skill_graph_mode=bool(getattr(agent, "_skill_graph_mode", False)),
+    )
     return info
 
 
@@ -300,6 +308,11 @@ def _tool_guidance_block(agent: Any) -> Optional[str]:
 def _skills_prompt(agent: Any) -> str:
     """Skills index (empty without skills tools).  Focus mode demotes non-coding
     categories to names-only — never hidden, every name stays visible."""
+    if (
+        getattr(agent, "_skill_graph_mode", False)
+        and {"skill_graph_search", "skill_load"}.issubset(agent.valid_tool_names)
+    ):
+        return ""
     if not any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage']):
         return ""
     import model_tools

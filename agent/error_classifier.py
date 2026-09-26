@@ -861,9 +861,15 @@ def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     # Strict OpenAI-compatible schema validators reject regex lookaround in ``pattern``
     # with a different sentence ("Invalid JSON schema: regex lookaround is not supported",
     # #42631); same recovery — strip ``pattern``/``format`` and retry once.
-    grammar_hit = "error parsing grammar" in msg or "json-schema-to-grammar" in msg or (
-        "unable to generate parser" in msg and "template" in msg
-    ) or ("invalid json schema" in msg and "regex lookaround" in msg and "not supported" in msg)
+    grammar_hit = (
+        "error parsing grammar" in msg
+        or "json-schema-to-grammar" in msg
+        # LM Studio's engine wraps the same failure as "Failed to initialize
+        # samplers: failed to parse grammar".
+        or "failed to parse grammar" in msg
+        or ("unable to generate parser" in msg and "template" in msg)
+        or ("invalid json schema" in msg and "regex lookaround" in msg and "not supported" in msg)
+    )
     if status == 400 and grammar_hit and _NO_USER_QUERY_SIGNAL not in msg:
         return _v(_R.llama_cpp_grammar_pattern)
     # xAI Grok entitlement as an SSE ``type=error`` frame: no status, matches no

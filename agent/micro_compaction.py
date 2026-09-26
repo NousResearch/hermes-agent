@@ -157,6 +157,18 @@ class MicroCompactionMixin:
         if _cc()._is_refusal_response(response, content):
             logger.warning("micro-summarization returned refusal content — discarding unusable summary")
             return None
+        # Self-authored directives (#120439): the rolling summary is re-injected into every later
+        # micro-compact pass and into the request, so a directive the summarizer wrote for its
+        # successor compounds. No regeneration here — the failure convention on this path is None
+        # (the exchange stays unabsorbed and a later pass retries it), which is cheaper than a
+        # second aux call and loses nothing.
+        findings = _cc().summary_guard_findings(content)
+        if findings:
+            logger.warning(
+                "micro-summarization rejected: the summary issues instructions to its successor (%s)",
+                "; ".join(findings),
+            )
+            return None
         return content
 
     def _needs_defrag(self) -> bool:

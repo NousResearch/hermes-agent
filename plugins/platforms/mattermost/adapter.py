@@ -327,12 +327,12 @@ class MattermostAdapter(BasePlatformAdapter):
     async def _send_url_as_file(self, chat_id: str, url: str, caption: Optional[str], reply_to: Optional[str],
                                 kind: str = "file", metadata: _Metadata = None) -> SendResult:
         """Download a URL and upload it as a file attachment (text fallback with the URL on failure)."""
-        from tools.url_safety import is_safe_url
+        from tools.url_safety import async_is_safe_url
 
         async def fallback() -> SendResult:
             return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to, metadata=metadata)
 
-        if not is_safe_url(url):
+        if not await async_is_safe_url(url):
             logger.warning("Mattermost: blocked unsafe URL (SSRF protection)")
             return await fallback()
         import aiohttp
@@ -380,8 +380,8 @@ class MattermostAdapter(BasePlatformAdapter):
                 logger.warning("Mattermost: skipping missing image %s", local_path)
                 return None
             return p.read_bytes(), p.name, mimetypes.guess_type(p.name)[0] or "image/png"
-        from tools.url_safety import is_safe_url
-        if not is_safe_url(image_url):
+        from tools.url_safety import async_is_safe_url
+        if not await async_is_safe_url(image_url):
             logger.warning("Mattermost: blocked unsafe image URL in batch")
             return None
         try:

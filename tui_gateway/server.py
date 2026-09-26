@@ -26,6 +26,7 @@ from hermes_constants import (
     get_hermes_home, get_hermes_home_override, get_process_hermes_home, profile_name_for_home,
     reset_hermes_home_override, set_hermes_home_override)
 from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_cli.session_resume import stage_session_resume_note
 from utils import file_signature, is_truthy_value
 from hermes_state_ids import new_session_id
 from tools.environments.local import hermes_subprocess_env
@@ -1052,6 +1053,10 @@ def _attach_built_agent(current: dict, agent) -> None:
     # Bot Mode gate hint: the DB title lands post-first-turn but the system prompt builds at turn START.
     if _title_hint := str(current.get("pending_title") or "").strip():
         agent._session_title_hint = _title_hint
+    if current.get("resume_session_id"):
+        # Deferred/cold resumes own the restored history here.  Stage the
+        # note on the agent, not in its system prompt or transcript.
+        stage_session_resume_note(agent, current.get("history"))
     current["agent"] = agent
     # A workspace move can land while construction is still in flight.
     _register_session_cwd(current)

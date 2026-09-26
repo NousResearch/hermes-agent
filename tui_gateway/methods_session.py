@@ -6,6 +6,8 @@ server.py the same way (tests monkeypatching ``server.X`` still intercept)."""
 
 import contextlib
 
+from hermes_cli.session_resume import stage_session_resume_note
+
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
@@ -888,6 +890,9 @@ def _resume_eager(ctx: _Resume) -> dict:
                 cwd_override=ctx.profile_resume_cwd or None,
                 context_cwd_is_launch_artifact=(source in _LAUNCH_CWD_NOT_A_WORKSPACE and not ctx.profile_resume_cwd),
                 auth_user_id=_transport_auth_user_id(current_transport()), **stored_runtime_overrides)
+            # Eager resume bypasses _attach_built_agent(), so stage the same
+            # one-shot note while this lifecycle owner still has the restored history.
+            stage_session_resume_note(agent, history)
         except Exception as e:
             return _err(ctx.rid, 5000, resume_failed_message(e))
     with _session_resume_lock:

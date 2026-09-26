@@ -211,7 +211,7 @@ class TestTelegramApprovalCallback:
         rest of a long-running turn after a button click.
         """
         adapter = _make_adapter()
-        adapter._approval_state[5] = "agent:main:telegram:group:12345:99"
+        adapter._approval_state[5] = ("agent:main:telegram:group:12345:99", "req-5")
         adapter.pause_typing_for_chat("12345")
         assert "12345" in adapter._typing_paused
 
@@ -239,7 +239,7 @@ class TestTelegramApprovalCallback:
     @pytest.mark.asyncio
     async def test_approval_callback_escapes_dynamic_user_name(self):
         adapter = _make_adapter()
-        adapter._approval_state[3] = "agent:main:telegram:group:12345:99"
+        adapter._approval_state[3] = ("agent:main:telegram:group:12345:99", "req-3")
 
         query = AsyncMock()
         query.data = "ea:once:3"
@@ -263,6 +263,95 @@ class TestTelegramApprovalCallback:
         assert "MARKDOWN_V2" in repr(edit_kwargs["parse_mode"])
         assert "Alice\\_Bob" in edit_kwargs["text"]
 
+
+    @pytest.mark.asyncio
+    async def test_second_card_resolves_only_second_request(self):
+        """Card 2's tap resolves card 2's request, never card 1's queued one."""
+        from tools import approval
+        from tools.approval_gateway_wait import _ApprovalEntry
+
+        adapter = _make_adapter()
+        session = "agent:main:telegram:group:12345:99"
+        first = _ApprovalEntry({"command": "rm -rf /tmp/important", "pattern_key": "recursive delete"})
+        second = _ApprovalEntry({"command": "git push --force", "pattern_key": "force push"})
+
+        # Deal the cards through the real send path so the mapping under test
+        # is the one production builds, not a hand-written stub. The approval
+        # id is the adapter's own counter, not the Telegram message_id.
+        adapter._bot.send_message = AsyncMock(
+            side_effect=[SimpleNamespace(message_id=900), SimpleNamespace(message_id=901)])
+        await adapter.send_exec_approval(
+            chat_id="12345", command=first.data["command"], session_key=session,
+            request_id=first.data["request_id"])
+        await adapter.send_exec_approval(
+            chat_id="12345", command=second.data["command"], session_key=session,
+            request_id=second.data["request_id"])
+        second_card = max(adapter._approval_state)
+
+        query = AsyncMock()
+        query.data = f"ea:once:{second_card}"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock()
+        query.from_user.first_name = "Owner"
+        query.from_user.id = "12345"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        update = MagicMock(callback_query=query)
+        with approval._lock:
+            approval._gateway_queues[session] = [first, second]
+        try:
+            with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+                await adapter._handle_callback_query(update, MagicMock())
+            assert first.result is None
+            assert second.result == "once"
+        finally:
+            with approval._lock:
+                approval._gateway_queues.pop(session, None)
+
+    @pytest.mark.asyncio
+    async def test_expired_card_does_not_resolve_new_request(self):
+        """A tap on a card whose request is gone must NOT authorize the next one up.
+
+        This is the P1 shape: the old card's approval timed out and was dropped,
+        a different command is queued, and the user taps the stale card. The
+        resolver's no-request_id fallback takes the oldest queued entry, so the
+        tap authorizes a command the card never described.
+        """
+        from tools import approval
+        from tools.approval_gateway_wait import _ApprovalEntry
+
+        adapter = _make_adapter()
+        session = "agent:main:telegram:group:12345:99"
+        expired = _ApprovalEntry({"command": "rm -rf /tmp/old", "pattern_key": "recursive delete"})
+        next_request = _ApprovalEntry({"command": "git push --force", "pattern_key": "force push"})
+
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=900))
+        await adapter.send_exec_approval(
+            chat_id="12345", command=expired.data["command"], session_key=session,
+            request_id=expired.data["request_id"])
+        stale_card = max(adapter._approval_state)
+
+        query = AsyncMock()
+        query.data = f"ea:once:{stale_card}"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock()
+        query.from_user.first_name = "Owner"
+        query.from_user.id = "12345"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        # Only the NEWER request is queued; the card's own request is long gone.
+        with approval._lock:
+            approval._gateway_queues[session] = [next_request]
+        try:
+            with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+                await adapter._handle_callback_query(MagicMock(callback_query=query), MagicMock())
+            assert next_request.result is None
+            assert "expired" in query.edit_message_text.call_args.kwargs["text"].lower()
+        finally:
+            with approval._lock:
+                approval._gateway_queues.pop(session, None)
 
     @pytest.mark.asyncio
     async def test_update_prompt_callback_not_affected(self, tmp_path):

@@ -1629,6 +1629,7 @@ class ExecApprovalPrompt:
     description: str
     smart_denied: bool
     metadata: Optional[Dict[str, Any]] = None
+    request_id: Optional[str] = None
 
     @property
     def choices(self) -> List[str]:
@@ -2811,13 +2812,13 @@ class BasePlatformAdapter(ABC):
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False,
+        smart_denied: bool = False, request_id: Optional[str] = None,
     ) -> SendResult:
         """Interactive exec-approval prompt; a press resolves via
         ``tools.approval.resolve_gateway_approval``. Text and choice set are shared; adapters
         render them natively in ``_send_exec_approval_prompt``."""
         prompt = ExecApprovalPrompt(
-            chat_id=chat_id, session_key=session_key, metadata=metadata, command=str(command or ""),
+            chat_id=chat_id, session_key=session_key, metadata=metadata, request_id=request_id, command=str(command or ""),
             description=description, smart_denied=smart_denied,
             text=self._format_exec_approval(command, description, smart_denied),
             actions=self._exec_approval_actions(

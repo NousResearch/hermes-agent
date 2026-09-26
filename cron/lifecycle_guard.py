@@ -957,7 +957,8 @@ def _has_binary_magic(data: bytes) -> bool:
 
 
 def _read_referenced_script(
-    path: Path, *, max_bytes: Optional[int] = None
+    path: Path, *, max_bytes: Optional[int] = None,
+    allow_nul_free_magic_text: bool = False,
 ) -> tuple[Optional[str], bool]:
     """Read a referenced script without racing SQLite connection lifecycle.
 
@@ -970,7 +971,11 @@ def _read_referenced_script(
 
     try:
         with offline_file_access(path, what="read referenced script"):
-            return _read_referenced_script_unlocked(path, max_bytes=max_bytes)
+            return _read_referenced_script_unlocked(
+                path,
+                max_bytes=max_bytes,
+                allow_nul_free_magic_text=allow_nul_free_magic_text,
+            )
     except LiveConnectionError:
         return None, True
     except (OSError, ValueError):
@@ -979,7 +984,8 @@ def _read_referenced_script(
 
 
 def _read_referenced_script_unlocked(
-    path: Path, *, max_bytes: Optional[int] = None
+    path: Path, *, max_bytes: Optional[int] = None,
+    allow_nul_free_magic_text: bool = False,
 ) -> tuple[Optional[str], bool]:
     """Return ``(text, unsafe)`` using bounded, regular-file-only reads.
 
@@ -1011,13 +1017,15 @@ def _read_referenced_script_unlocked(
             # Directories are not scripts (`fpath=(~/.docker/completions …)` in ~/.zshrc must not
             # block `source ~/.zshrc`). Devices/sockets stay fail-closed.
             return None, not stat.S_ISDIR(metadata.st_mode)
-        # Sniff a small prefix first: compiled binaries are never shell scripts, so skip them
-        # WITHOUT reading the rest or feeding decoded garbage into the recursion.
-        # Deliberately NOT keyed on the mere presence of a NUL byte (#77927): bash executes a text script
-        # straight past an embedded NUL, so NUL-bearing text must fall through to the magic-number check +
-        # NUL-strip below.
+        # Sniff a small prefix first. The default cron scanner treats compiled
+        # binary magic as nothing-to-scan. The local terminal guard opts into
+        # the narrower exception for NUL-free text such as ``MZ=1`` because
+        # bash executes that file and it must not bypass the lifecycle check.
+        # Magic accompanied by a NUL remains a binary in either mode.
         data = os.read(descriptor, _BINARY_SNIFF_BYTES)
-        if _has_binary_magic(data):
+        if _has_binary_magic(data) and (
+            not allow_nul_free_magic_text or b"\x00" in data
+        ):
             return None, False
         # A regular file whose size already exceeds the cap fails closed without reading it (the
         # walk budget can be far below 1 MiB).
@@ -1033,7 +1041,9 @@ def _read_referenced_script_unlocked(
         return None, False
     finally:
         os.close(descriptor)
-    if _has_binary_magic(data):
+    if _has_binary_magic(data) and (
+        not allow_nul_free_magic_text or b"\x00" in data
+    ):
         return None, False
     # Size check BEFORE NUL stripping: stripping shrinks the buffer and would let an oversized file
     # slip under the threshold past this fail-closed branch.
@@ -1084,7 +1094,9 @@ def _read_script_for_scanning(script_path: str) -> tuple[str, Optional[str]]:
 
 def _contains_unsafe_gateway_action(
     command: str, *, cwd: Optional[str], depth: int, visited: set[Path], budget: _LifecycleScanBudget,
-    read_remote_script: Optional[_ReadRemoteScriptFn] = None, executed: bool = True,
+    read_remote_script: Optional[_ReadRemoteScriptFn] = None,
+    executed: bool = True,
+    allow_nul_free_magic_text: bool = False,
 ) -> bool:
     """``executed=False`` means *command* is the content of a file that is only MENTIONED in inert
     (masked) text: it is still scanned for a literal lifecycle command, but "could not scan" (budget,
@@ -1100,7 +1112,9 @@ def _contains_unsafe_gateway_action(
     def recurse(text: str, cwd: Optional[str], executed: bool) -> bool:
         return _contains_unsafe_gateway_action(
             text, cwd=cwd, depth=depth + 1, visited=visited, budget=budget,
-            read_remote_script=read_remote_script, executed=executed,
+            read_remote_script=read_remote_script,
+            executed=executed,
+            allow_nul_free_magic_text=allow_nul_free_magic_text,
         )
 
     # The walks below must see the same masked view `_direct_lifecycle_scan` sees (#110422): a
@@ -1142,7 +1156,11 @@ def _contains_unsafe_gateway_action(
         visited.add(resolved)
         # Never read more than the walk can still afford to tokenize; a file larger than the
         # remainder fails closed exactly like an oversized one.
-        script_text, unsafe = _read_referenced_script(script_path, max_bytes=budget.bytes_remaining)
+        script_text, unsafe = _read_referenced_script(
+            script_path,
+            max_bytes=budget.bytes_remaining,
+            allow_nul_free_magic_text=allow_nul_free_magic_text,
+        )
         if unsafe:
             if candidate_executed:
                 return _refuse_unreadable(budget, script_path, _unreadable_reason(script_path))
@@ -1176,6 +1194,7 @@ def _contains_unsafe_gateway_action(
 def scan_gateway_lifecycle(
     command: str, *, cwd: Optional[str] = None,
     read_remote_script: Optional[_ReadRemoteScriptFn] = None,
+    allow_nul_free_magic_text: bool = False,
 ) -> tuple[bool, Optional[str]]:
     """``(unsafe, refusal)``: *refusal* names a non-lifecycle reason the walk failed closed (budget,
     size, device, live SQLite, cloud) so callers can tell the model; ``None`` when the verdict is a
@@ -1195,6 +1214,7 @@ def scan_gateway_lifecycle(
         unsafe = _contains_unsafe_gateway_action(
             command, cwd=cwd, depth=0, visited=set(), budget=budget,
             read_remote_script=read_remote_script,
+            allow_nul_free_magic_text=allow_nul_free_magic_text,
         )
         return unsafe, budget.refusal if unsafe else None
     except Exception:
@@ -1214,10 +1234,16 @@ def scan_gateway_lifecycle(
 def contains_gateway_lifecycle_command_or_referenced_script(
     command: str, *, cwd: Optional[str] = None,
     read_remote_script: Optional[_ReadRemoteScriptFn] = None,
+    allow_nul_free_magic_text: bool = False,
 ) -> bool:
     """Detect lifecycle/submit commands, including bounded nested scripts (see
     ``scan_gateway_lifecycle`` for the contract)."""
-    return scan_gateway_lifecycle(command, cwd=cwd, read_remote_script=read_remote_script)[0]
+    return scan_gateway_lifecycle(
+        command,
+        cwd=cwd,
+        read_remote_script=read_remote_script,
+        allow_nul_free_magic_text=allow_nul_free_magic_text,
+    )[0]
 
 
 def check_gateway_lifecycle(prompt: Optional[str], script: Optional[str] = None) -> None:

@@ -220,6 +220,7 @@ def gateway_lifecycle_block(
     unsafe, refusal = scan_gateway_lifecycle(
         command,
         cwd=guard_cwd,
+        allow_nul_free_magic_text=env_type == "local",
         read_remote_script=(
             None
             if env_type == "local"
@@ -249,7 +250,7 @@ def gateway_lifecycle_block(
             "uninstall the gateway from inside the gateway process. The gateway would "
             "kill this command before it could complete (SIGTERM propagates "
             "to child processes). Run `hermes gateway restart` from a "
-            "separate shell outside the gateway process.",
+            "separate shell outside the running gateway.",
             "error",
         )
     return None

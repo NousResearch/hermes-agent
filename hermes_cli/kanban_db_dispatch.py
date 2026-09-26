@@ -129,6 +129,17 @@ class DispatchResult:
     """``(task_id, assignee, current_running_count)`` deferred because the
     assignee is at ``kanban.max_in_progress_per_profile``. Picked up on a later
     tick; separate bucket so dashboards show "profile busy" vs "stuck"."""
+    skipped_host_capped: list[str] = field(default_factory=list)
+    """Ready task ids held back this tick by the HOST-level
+    ``kanban.max_in_progress`` cap (running workers on every board count
+    against it). Deferred, not dropped — picked up on a later tick. Bucketed
+    so the "dispatcher stuck" warning can name the host cap instead of
+    pointing at profile health (#124392)."""
+    skipped_host_capped_deferred: bool = False
+    """True when the host-level ``kanban.max_in_progress`` cap blocked this
+    tick's spawns. Unlike the other deferrals this one binds BEFORE the ready
+    rows are enumerated, so the bucket itself is only filled by the caller;
+    the flag carries the cause up to the tick summary."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -158,11 +169,11 @@ def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
     """One line naming why the tick(s) held ready work back, or ``""``.
 
     ``active_pr=1, recent_success=2, rate_limited=1, skipped_locked=1,
-    memory_pressure=critical`` — the respawn-guard reasons counted per task
-    plus the tick-level holds. Feeds the "dispatcher stuck" warnings of the
-    CLI daemon and the embedded gateway dispatcher, which otherwise report a
-    bare zero-spawn count while ``hermes kanban tail`` is the only place the
-    guard reason is written (#111910).
+    host_capped=3, memory_pressure=critical`` — the respawn-guard reasons
+    counted per task plus the tick-level holds. Feeds the "dispatcher stuck"
+    warnings of the CLI daemon and the embedded gateway dispatcher, which
+    otherwise report a bare zero-spawn count while ``hermes kanban tail`` is
+    the only place the guard reason is written (#111910).
     """
     counts: dict[str, int] = {}
     pressure: Optional[str] = None
@@ -177,6 +188,8 @@ def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
             counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
         if res.memory_pressure:
             pressure = res.memory_pressure
+        if res.skipped_host_capped:
+            counts["host_capped"] = counts.get("host_capped", 0) + len(res.skipped_host_capped)
     parts = [f"{k}={v}" for k, v in sorted(counts.items())]
     if pressure:
         parts.append(f"memory_pressure={pressure}")
@@ -2216,6 +2229,20 @@ def _tick_spawn_budget(
     if max_in_progress is not None:
         total_running = running_count + count_running_tasks_other_boards(board)
         if total_running >= max_in_progress:
+            # The one deferral that stayed silent (no bucket, no log line).
+            # The neighbouring memory-pressure guard below DOES log when it
+            # defers, so an operator seeing a zero-spawn tick had nothing to
+            # point at — and the "dispatcher stuck" warning pointed them at
+            # profile health instead of the host cap. Bucket the deferred
+            # tasks (the caller enumerates them) and say why (#124392).
+            result.skipped_host_capped_deferred = True
+            _kb._log.warning(
+                "kanban dispatch: host-level max_in_progress=%d reached "
+                "(%d running on this board + %d on other boards); spawning "
+                "no new workers this tick (deferred, not dropped)",
+                max_in_progress, running_count,
+                total_running - running_count,
+            )
             return False, None
         remaining = max_in_progress - total_running
         if spawn_budget is None or spawn_budget > remaining:
@@ -2332,6 +2359,16 @@ def _dispatch_once_locked(
         conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,
     )
     if not may_spawn:
+        # The caps that bind here reject the tick before any row is
+        # enumerated, so nothing has been able to name the held-back tasks
+        # yet. Fill skipped_host_capped with the ready/review ids so the tick
+        # summary and the "dispatcher stuck" warnings can show "host cap
+        # busy" rather than "needs routing" (#124392).
+        if getattr(result, "skipped_host_capped_deferred", False):
+            held_rows = _lane_rows(conn, "ready")
+            if review_dispatch_enabled():
+                held_rows += _lane_rows(conn, "review")
+            result.skipped_host_capped.extend(row["id"] for row in held_rows)
         return result
 
     ready_rows = _lane_rows(conn, "ready")

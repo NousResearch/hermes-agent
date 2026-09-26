@@ -640,12 +640,14 @@ def _prefer_refreshable_claude_code_token(env_token: str, creds: Optional[Dict[s
 
 
 def _resolve_anthropic_pool_token(*, skip_borrowed: bool = False) -> Optional[str]:
-    """First available Anthropic OAuth token from credential_pool, read-only: enumerates with ``clear_expired=False,
-    refresh=False`` (never ``select()``) so diagnostic call sites (account_usage, ``hermes models``) never mutate
+    """First available Anthropic OAuth token from credential_pool, read-only (#123747): the pool
+    is read through ``peek_pool`` (seeds in memory, never persists, never takes ``auth.lock``
+    for a write), and enumeration uses ``clear_expired=False, refresh=False`` (never
+    ``select()``) so diagnostic call sites (account_usage, ``hermes models``) never mutate
     auth.json or hit the network; refresh-on-expiry belongs to the API call path's pool recovery."""
     try:
-        from agent.credential_pool import AUTH_TYPE_OAUTH, load_pool
-        entries, _pending = load_pool("anthropic")._available_entries(clear_expired=False, refresh=False)
+        from agent.credential_pool import AUTH_TYPE_OAUTH, peek_pool
+        entries, _pending = peek_pool("anthropic")._available_entries(clear_expired=False, refresh=False)
     except Exception:
         logger.debug("Failed to read Anthropic credential_pool", exc_info=True)
         return None

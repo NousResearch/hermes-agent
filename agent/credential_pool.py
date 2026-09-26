@@ -3016,8 +3016,25 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
 
 
 def load_pool(provider: str) -> CredentialPool:
+    return _load_pool_impl(provider, persist=True)
+
+
+def peek_pool(provider: str) -> CredentialPool:
+    """Read-only pool view for diagnostic resolvers (#123747).
+
+    Same seeding/normalization/pruning as ``load_pool`` but IN MEMORY only: never
+    takes ``auth.lock`` for a write, never persists, never runs the fork-grant heal
+    or the auth-normalization store read (both may write ``auth.json`` /
+    ``auth.json.corrupt``). Diagnostic call sites (account_usage, ``hermes models``,
+    ``_resolve_anthropic_pool_token``) must not mutate the credential store or home
+    directory — the owning store's own ``load_pool`` performs every heal.
+    """
+    return _load_pool_impl(provider, persist=False)
+
+
+def _load_pool_impl(provider: str, *, persist: bool) -> CredentialPool:
     provider = (provider or "").strip().lower()
-    if provider in SINGLE_USE_REFRESH_POOL_PROVIDERS:
+    if persist and provider in SINGLE_USE_REFRESH_POOL_PROVIDERS:
         # One-time heal for installs that forked this grant across profiles
         # before the clone-strip / root write-through existed (#100339).
         auth_mod.heal_forked_single_use_oauth_grants(provider)
@@ -3035,10 +3052,12 @@ def load_pool(provider: str) -> CredentialPool:
         ) != payload.get("auth_type", AUTH_TYPE_API_KEY)
         for payload in raw_entries
     )
-    if raw_needs_auth_normalization:
+    if raw_needs_auth_normalization and persist:
         # A profile may be reading this provider from the global-root fallback.
         # Keep that fallback read-only: only the owning store may rewrite these
-        # rows; loading the default/root profile heals global rows.
+        # rows; loading the default/root profile heals global rows. A peek
+        # (#123747) skips the store read entirely — it may write
+        # auth.json.corrupt, and the heal belongs to the owning store.
         active_pool = _load_auth_store().get("credential_pool")
         active_entries = active_pool.get(provider) if isinstance(active_pool, dict) else None
         changed |= bool(active_entries)
@@ -3077,7 +3096,8 @@ def load_pool(provider: str) -> CredentialPool:
 
     pool = CredentialPool(provider, entries)
     pool._persisted_token_pairs = auth_mod._token_pairs_by_id(raw_entries)
-    if changed:
+    if changed and persist:
+        # A peek (#123747) seeds in memory only: never writes the credential store.
         pool._persist(removed_ids=sorted(disk_ids - {entry.id for entry in entries}))
     # Remember the root's borrowed rows so a later ``add_entry`` in this
     # profile leaves them out of the profile's own store (#100339).

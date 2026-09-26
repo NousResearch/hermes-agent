@@ -3575,7 +3575,10 @@ class GatewayRunner(
         self._sessions: Dict[str, SessionState] = {}
         # Per-SESSION_ID turn lease: serializes [load history → run → flush] when two ROUTING KEYS resolve
         # to one session_id (switch_session's many-to-one mapping), which routing-key guards cannot see.
-        self._turn_leases = SessionTurnLeaseRegistry()
+        self._turn_leases = SessionTurnLeaseRegistry(
+            # Lets acquire() tell a live alias-key holder from a /stop'd turn still draining a
+            # tool call, so the contention warning names the real cause.
+            is_generation_current=self._is_session_run_current)
         # Stall-notified keys clear when pending clears / activity resumes / conversation boundary.
         # Held turn-lease tokens live on SessionState.turn.lease_tokens keyed by run generation, so a
         # stale unwind can never free a newer turn's lease (#28686). Runner-level queued interrupt text lives on

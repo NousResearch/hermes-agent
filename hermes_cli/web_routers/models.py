@@ -186,7 +186,11 @@ def get_recommended_default_model(provider: str = "", profile: Optional[str] = N
 
     if slug == "nous":
         try:
-            return _nous_recommended_default()
+            # The tier, Portal URL and recommendation caches are all per profile home.
+            with _config_profile_scope(profile):
+                return _nous_recommended_default()
+        except HTTPException:
+            raise  # an unknown ?profile= is the scope's 404, not an empty recommendation
         except Exception:
             _log.exception("GET /api/model/recommended-default (nous) failed")
             return {"provider": "nous", "model": "", "free_tier": None}

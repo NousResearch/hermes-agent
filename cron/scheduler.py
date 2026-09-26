@@ -2726,14 +2726,15 @@ def run_one_job(
             if _launch_external_cron_worker(job):
                 return True
         except Exception as handoff_error:
-            error = f"Restart-safe cron worker dispatch failed: {handoff_error}"
-            logger.error("Job '%s': %s", job["id"], error)
-            claim = job.get("fire_claim")
-            owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
             # Past the handoff the worker may have adopted the row, run side effects
             # and sent its own notice: record bookkeeping only, never a false
             # "dispatch failed" incident/ping.
             post_handoff = isinstance(handoff_error, _ExternalWorkerPostHandoffError)
+            stage = "failed after handoff" if post_handoff else "dispatch failed"
+            error = f"Restart-safe cron worker {stage}: {handoff_error}"
+            logger.error("Job '%s': %s", job["id"], error)
+            claim = job.get("fire_claim")
+            owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
             delivery_error = delivery_outcome = None
             try:
                 # A pre-handoff dispatch failure is a job failure like any other: it

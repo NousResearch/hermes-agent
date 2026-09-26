@@ -74,6 +74,10 @@ CONFIG_SCHEMA = ProviderConfigSchema(
                default="false", group="Session"),
         _field("sessions", "Session overrides", KIND_JSON, "Explicit session ID overrides keyed by resolver.",
                placeholder='{"key": "session-id"}', group="Session", scope="root"),
+        _field("skipSessionSources", "Skip session sources", KIND_JSON,
+               "Session sources (HERMES_SESSION_SOURCE) to never write to Honcho, e.g. autonomous board workers. "
+               "Blank writes every source.",
+               placeholder='["kanban"]', group="Session"),
         # — Message writing —
         _field("saveMessages", "Save messages", KIND_BOOL, "Persist conversation messages to Honcho.",
                default="true", group="Message writing"),

@@ -131,6 +131,7 @@ When pointing Hermes at a self-hosted Honcho server, `hermes honcho setup` (and 
 | `messageMaxChars` | `25000` | Max chars per message sent via `add_messages()`. Chunked if exceeded |
 | `dialecticMaxInputChars` | `10000` | Max chars for dialectic query input to `peer.chat()` |
 | `sessionStrategy` | `'per-directory'` | `per-directory`, `per-repo`, `per-session`, or `global` |
+| `skipSessionSources` | `[]` | Session sources (`HERMES_SESSION_SOURCE`, e.g. `"kanban"`) to skip entirely — the plugin never initializes a Honcho session, so no messages or observations are written for those sessions. Use this to keep autonomous board-worker transcripts (which reuse the pinned user peer) out of the human's memory. Empty list (default) writes every source, matching prior behavior |
 | `pinUserPeer` | `false` | Gateway only. When `true`, every platform user collapses to `peerName` |
 | `userPeerAliases` | `{}` | Gateway only. Map of runtime IDs to peers (`{"7654321": "alice"}`). Many-to-one |
 | `runtimePeerPrefix` | `""` | Gateway only. Namespaces unknown runtime IDs (`telegram_7654321`) when no alias matches |

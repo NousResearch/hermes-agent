@@ -333,6 +333,9 @@ def _behavior_fields(look: _HostLookup, explicitly_configured: bool) -> dict[str
         "session_peer_prefix": look.pick_set("sessionPeerPrefix", False),
         "a2a_sessions": look.flag("a2aSessions", default=True),
         "session_ai_peer_prefix": look.pick_set("sessionAiPeerPrefix", False),
+        "skip_session_sources": frozenset(
+            str(v).strip() for v in (look.pick("skipSessionSources") or []) if str(v).strip()
+        ),
     }
 
 
@@ -401,6 +404,10 @@ class HonchoClientConfig:
     # AI-peer-agnostic, so several AI peers sharing one workspace + peerName + chat key would collide.
     session_ai_peer_prefix: bool = False
     sessions: dict[str, str] = field(default_factory=dict)
+    # Session sources (``HERMES_SESSION_SOURCE``, e.g. "kanban") to skip entirely — the plugin
+    # never initializes, so no messages/observations are written for those sessions. Default empty
+    # keeps upstream behaviour unchanged; local deployments opt autonomous board workers out here.
+    skip_session_sources: frozenset[str] = field(default_factory=frozenset)
     raw: dict[str, Any] = field(default_factory=dict)
     # A hosts.<host> block or explicit enabled flag, vs auto-enabled from a stray env key.
     explicitly_configured: bool = False

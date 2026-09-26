@@ -571,10 +571,31 @@ export async function checkBackendUpdates({
   }
 }
 
-export async function checkUpdates({ force = false }: UpdateCheckOptions = {}): Promise<DesktopUpdateStatus | null> {
+let clientUpdateCheck: { force: boolean; promise: Promise<DesktopUpdateStatus | null> } | null = null
+
+export function checkUpdates({ force = false }: UpdateCheckOptions = {}): Promise<DesktopUpdateStatus | null> {
+  if (clientUpdateCheck) {
+    const current = clientUpdateCheck
+
+    // A launch-time apply must not mistake an unfinished passive check's empty
+    // cache for "already current". A forced caller also needs a cache-busting
+    // check after a passive one; concurrent forced callers share that work.
+    return force && !current.force ? current.promise.then(() => checkUpdates({ force: true })) : current.promise
+  }
+
+  const promise = runClientUpdateCheck({ force }).finally(() => {
+    clientUpdateCheck = null
+  })
+
+  clientUpdateCheck = { force, promise }
+
+  return promise
+}
+
+async function runClientUpdateCheck({ force = false }: UpdateCheckOptions): Promise<DesktopUpdateStatus | null> {
   const bridge = window.hermesDesktop?.updates
 
-  if (!bridge || $updateChecking.get()) {
+  if (!bridge) {
     return $updateStatus.get()
   }
 

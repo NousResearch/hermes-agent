@@ -13,6 +13,10 @@ def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:
             "workspace Node dependencies, builds the current OS's unpacked "
             "Electron app, then launches that packaged artifact.")
     gui_parser.add_argument(
+        "--update-all", action="store_true",
+        help="Ask an existing Desktop build to update its registered instances; "
+            "opens/signals Desktop, does not build or wait for update completion")
+    gui_parser.add_argument(
         "--source", action="store_true",
         help="Launch via `electron .` against apps/desktop/dist instead of the packaged app")
     gui_parser.add_argument(

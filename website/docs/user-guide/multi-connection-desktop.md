@@ -288,6 +288,36 @@ backend boundary changes filesystem, credentials, tools, and trust context, so
 cross-gateway execution should be an explicit bridge rather than an accidental
 side effect of sharing one Desktop window.
 
+## One-command update from a shortcut
+
+```sh
+hermes desktop --update-all
+```
+
+This opens or signals the existing Desktop app and invokes its update-everything
+flow. It uses the registered connections; no SSH host list is maintained in the
+CLI. A Windows shortcut can run this command from a `.cmd` file:
+
+```bat
+@echo off
+call hermes desktop --update-all
+```
+
+A packaged Desktop build must already exist (`hermes desktop` builds it on the
+first ordinary launch). The action itself never installs dependencies or rebuilds
+Desktop before handing off. It cannot be combined with source/build or runtime-
+override flags. An older running Desktop that does not understand the request
+produces a bounded acknowledgement timeout; quit it and launch a current build.
+
+This is **not a headless or synchronous fleet updater**. Exit code `0` means
+Desktop accepted/coalesced the request, not that all machines updated. Progress,
+authentication, refusals and safety confirmations remain in Desktop. Repeated
+requests while pending/running coalesce, and the launcher exits before updating
+so it does not hold Windows venv files open. The update's own relaunch does not
+repeat the one-shot command. If the window reloads during an update, inspect
+the previous outcome and restart Desktop before submitting another launch request;
+an uncertain operation is never silently replayed.
+
 ## Updating every instance at once
 
 **Settings → Gateways → Update all instances** (shown once more than one

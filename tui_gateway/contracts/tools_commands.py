@@ -48,6 +48,106 @@ method("system.battery", params=SystemBatteryParams, result=SystemBatteryResult,
        doc="Host battery for the status bar; always resolves, ``available: false`` when unreadable.")
 
 
+# ── system.metrics ────────────────────────────────────────────────────────────────────────────
+
+
+class SystemMetricsParams(Params):
+    profile: str | None = None
+
+
+class MetricsHost(Result):
+    os: str
+    arch: str
+    cpu_model: str
+    boot_time: float
+    uptime_s: float
+
+
+class MetricsDomain(Result):
+    """A DVFS domain (CPU cluster/core or GPU) over the sample window."""
+
+    name: str
+    kind: str
+    active: float = Field(description="0..1 share of the window outside idle states.")
+    freq_mhz: float | None = None
+
+
+class MetricsCpu(Result):
+    percent: float
+    per_core: list[float]
+    count_logical: int | None = None
+    count_physical: int | None = None
+    load_avg: list[float] | None = None
+    clusters: list[MetricsDomain] = Field(default_factory=list)
+    cores: list[MetricsDomain] = Field(default_factory=list)
+
+
+class MetricsGpu(MetricsDomain):
+    cores: int | None = None
+    power_w: float | None = None
+
+
+class MetricsMemory(Result):
+    total: int
+    used: int
+    available: int
+    percent: float
+    swap_total: int
+    swap_used: int
+
+
+class MetricsTemp(Result):
+    name: str
+    celsius: float
+
+
+class MetricsVolume(Result):
+    mount: str
+    fstype: str
+    total: int
+    used: int
+    percent: float
+
+
+class MetricsDisk(Result):
+    read_bps: float | None = None
+    write_bps: float | None = None
+    volumes: list[MetricsVolume] = Field(default_factory=list)
+
+
+class MetricsNet(Result):
+    rx_bps: float | None = None
+    tx_bps: float | None = None
+    rx_total: int | None = None
+    tx_total: int | None = None
+
+
+class MetricsProcess(Result):
+    pid: int
+    rss: int
+    cpu_percent: float
+    threads: int
+
+
+class SystemMetricsResult(Result):
+    available: bool
+    ts: float | None = None
+    interval_s: float | None = Field(default=None, description="Window the rates cover; null on the first read.")
+    host: MetricsHost | None = None
+    cpu: MetricsCpu | None = None
+    gpus: list[MetricsGpu] = Field(default_factory=list)
+    memory: MetricsMemory | None = None
+    power_w: dict[str, float] = Field(default_factory=dict, description="cpu / gpu / ane / dram watts (Apple Silicon).")
+    temps: list[MetricsTemp] = Field(default_factory=list)
+    disk: MetricsDisk | None = None
+    net: MetricsNet | None = None
+    process: MetricsProcess | None = None
+
+
+method("system.metrics", params=SystemMetricsParams, result=SystemMetricsResult,
+       doc="Live host telemetry frame (``agent/system_metrics.py``); always resolves, ``available: false`` when unreadable.")
+
+
 # ── process.* / agents.list ───────────────────────────────────────────────────────────────────
 
 

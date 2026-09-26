@@ -527,6 +527,39 @@ export const en: Translations = {
     installHint: "Use owner/repo shorthand or a full https:// or git@ clone URL. For a plugin in a subdirectory, append the path: owner/repo/path/to/plugin (or <url>#path/to/plugin).",
     memoryProviderLabel: "Memory provider",
     missingEnvWarn: "Set these in Keys before the plugin can run:",
+    installedToast: "{name} installed",
+    removedToast: "{name} removed",
+    providerSetupFailed:
+      "Provider setup failed: {names}. See setup results below.",
+    providerSetupError: "Provider setup failed",
+    providerSetupDone: "Provider setup finished",
+    setupFailedFallback: "Install failed",
+    providerUnavailableHint:
+      "This provider is installed but unavailable. It may need local dependencies or a manual setup step before Hermes can activate it.",
+    requiredEnvHint:
+      "Required environment values. Fill the matching fields below, or set them in the Hermes environment.",
+    providersSubheading:
+      "Configure memory providers and runtime context engine selection.",
+    builtinMemoryNote:
+      "Hermes will use the built-in MEMORY.md and USER.md files.",
+    providerNeedsConfigNote:
+      "Provider dependencies are installed. Add the required credentials or self-hosted URL below, then save the provider.",
+    loadingProviderSettings: "Loading provider settings…",
+    providerNoSettingsNote:
+      "This provider does not expose dashboard settings.",
+    saveMemoryProvider: "Save memory provider",
+    saveContextEngine: "Save context engine",
+    installUrlPlaceholder: "owner/repo, owner/repo/subdir, or https://...",
+    setupResultsHeading: "Setup results",
+    statusAlreadyInstalled: "already installed",
+    statusNoDeclaredSteps: "no declared setup",
+    statusFailed: "failed",
+    statusInstalled: "installed",
+    statusVerified: "verified",
+    memoryStatusReady: "ready",
+    memoryStatusNeedsConfig: "needs setup",
+    memoryStatusUnavailable: "unavailable",
+    memoryStatusMissing: "missing",
     noDashboardTab: "No dashboard tab",
     openTab: "Open",
     orphanHeading: "Dashboard-only extensions (no agent plugin.yaml match)",

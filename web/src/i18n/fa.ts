@@ -509,6 +509,39 @@ export const fa = defineLocale({
       "از فرم کوتاه owner/repo یا لینک کلون کامل با https:// یا git@ استفاده کنید. برای افزونه‌ای در زیرپوشه، مسیر را اضافه کنید: owner/repo/path/to/plugin (یا <url>#path/to/plugin).",
     memoryProviderLabel: "ارائه‌دهنده حافظه",
     missingEnvWarn: "این متغیرها را در «کلیدها» تنظیم کنید تا افزونه کار کند:",
+    installedToast: "«{name}» نصب شد",
+    removedToast: "«{name}» حذف شد",
+    providerSetupFailed:
+      "راه‌اندازی ارائه‌دهنده ناموفق بود: {names}. نتایج در پایین نمایش داده می‌شود.",
+    providerSetupError: "راه‌اندازی ارائه‌دهنده ناموفق بود",
+    providerSetupDone: "راه‌اندازی ارائه‌دهنده کامل شد",
+    setupFailedFallback: "نصب ناموفق بود",
+    providerUnavailableHint:
+      "این ارائه‌دهنده نصب شده اما در دسترس نیست. ممکن است به وابستگی‌های محلی یا یک گام پیکربندی دستی نیاز داشته باشد تا هرمس بتواند فعالش کند.",
+    requiredEnvHint:
+      "مقادیر محیطی الزامی. فیلدهای متناظر را در پایین پر کنید یا در محیط هرمس تنظیمشان کنید.",
+    providersSubheading:
+      "پیکربندی ارائه‌دهندگان حافظه و انتخاب موتور زمینهٔ زمان اجرا.",
+    builtinMemoryNote:
+      "هرمس از فایل‌های MEMORY.md و USER.md داخلی استفاده خواهد کرد.",
+    providerNeedsConfigNote:
+      "وابستگی‌های ارائه‌دهنده نصب شده‌اند. اعتبارنامه‌های لازم یا نشانی خودمیزبان را در پایین اضافه کنید، سپس ارائه‌دهنده را ذخیره کنید.",
+    loadingProviderSettings: "در حال بارگذاری تنظیمات ارائه‌دهنده…",
+    providerNoSettingsNote:
+      "این ارائه‌دهنده تنظیماتی در داشبورد ندارد.",
+    saveMemoryProvider: "ذخیرهٔ ارائه‌دهندهٔ حافظه",
+    saveContextEngine: "ذخیرهٔ موتور زمینه",
+    installUrlPlaceholder: "owner/repo، owner/repo/subdir یا https://...",
+    setupResultsHeading: "نتایج راه‌اندازی",
+    statusAlreadyInstalled: "از قبل نصب شده",
+    statusNoDeclaredSteps: "بدون گام راه‌اندازی",
+    statusFailed: "ناموفق",
+    statusInstalled: "نصب شد",
+    statusVerified: "تأیید شد",
+    memoryStatusReady: "آماده",
+    memoryStatusNeedsConfig: "نیازمند پیکربندی",
+    memoryStatusUnavailable: "در دسترس نیست",
+    memoryStatusMissing: "نصب نشده",
     noDashboardTab: "بدون تب داشبورد",
     openTab: "باز کردن",
     orphanHeading: "افزونه‌های فقط-داشبورد (بدون plugin.yaml متناظر برای عامل)",

@@ -840,6 +840,73 @@ describe('secondary stalled-dial budget', () => {
     expect(getConnectionFor.mock.calls.length).toBeLessThanOrEqual(6)
   })
 
+  it('background polls against a dying scope do not out-dial the reconnect ladder (#121865)', async () => {
+    vi.useFakeTimers()
+
+    const stalled = () =>
+      new Error('Local backend start for "bot-a" timed out while waiting for a free slot. (background)')
+
+    const getConnectionFor = vi
+      .fn()
+      .mockResolvedValueOnce(descriptorFor('homelab', 'bot-a'))
+      .mockRejectedValue(stalled())
+
+    installDesktop({ getConnectionFor })
+
+    await ensureGatewayForAgent('homelab', 'bot-a')
+    const socket = gatewayMocks.instances[0] as unknown as { connectionState: string }
+    socket.connectionState = 'closed'
+
+    const dialsAfterOpen = getConnectionFor.mock.calls.length
+
+    // The automatic loop runs while a poller (session.control.read against a
+    // cross-profile session) keeps issuing routed RPCs, which default to
+    // spawnPriority 'background'. Each one used to dial straight past the
+    // ladder whenever the socket was down: one dial per poll tick.
+    reconnectSecondaryGateways()
+    await vi.advanceTimersByTimeAsync(0)
+
+    // 20 polls inside ONE second of virtual time. The ladder's floor is 300ms,
+    // so a healthy scope dials at most a couple of times in that window; a
+    // storm dials once per poll.
+    for (let index = 0; index < 20; index += 1) {
+      await requestGatewayForAgent('homelab', 'bot-a', 'session.control.read', {}).catch(() => undefined)
+      await vi.advanceTimersByTimeAsync(50)
+    }
+
+    expect(getConnectionFor.mock.calls.length - dialsAfterOpen).toBeLessThanOrEqual(5)
+  })
+
+  it('a foreground request still dials at once while background polls are cooling down (#121865)', async () => {
+    vi.useFakeTimers()
+
+    const getConnectionFor = vi
+      .fn()
+      .mockResolvedValueOnce(descriptorFor('homelab', 'bot-a'))
+      .mockRejectedValueOnce(new Error('Failed to connect to Hermes gateway'))
+
+    installDesktop({ getConnectionFor })
+
+    await ensureGatewayForAgent('homelab', 'bot-a')
+    const socket = gatewayMocks.instances[0] as unknown as { connectionState: string }
+    socket.connectionState = 'closed'
+
+    // A background poll dials, fails, and opens the cooldown window.
+    await requestGatewayForAgent('homelab', 'bot-a', 'session.control.read', {}).catch(() => undefined)
+    const dialsAfterFailure = getConnectionFor.mock.calls.length
+
+    // A second poll inside the window must not dial.
+    await requestGatewayForAgent('homelab', 'bot-a', 'session.control.read', {}).catch(() => undefined)
+    expect(getConnectionFor.mock.calls.length).toBe(dialsAfterFailure)
+
+    // A user action inside the same window dials immediately.
+    getConnectionFor.mockResolvedValue(descriptorFor('homelab', 'bot-a'))
+    await requestGatewayForAgent('homelab', 'bot-a', 'session.activate', {}, undefined, undefined, {
+      spawnPriority: 'foreground'
+    }).catch(() => undefined)
+    expect(getConnectionFor.mock.calls.length).toBe(dialsAfterFailure + 1)
+  })
+
   it('re-arms a parked scope on the wake/online/focus nudge', async () => {
     vi.useFakeTimers()
 

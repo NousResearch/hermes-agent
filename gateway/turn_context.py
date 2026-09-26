@@ -67,6 +67,10 @@ class TurnContext:
     disabled_toolsets: Any = None
     log_mode_enabled: bool = False
     interim_assistant_messages_enabled: bool = False
+    # Raw interim commentary payloads that still carry MEDIA: directives (#99409): display
+    # cleaning strips the directive before send, so the raw text is the only carrier the
+    # post-turn delivery rails can parse.
+    interim_media_payloads: List[str] = field(default_factory=list)
     needs_progress_queue: bool = False
     AIAgent: Any = None
     resolve_display_setting: Any = None

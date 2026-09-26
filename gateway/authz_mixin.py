@@ -34,7 +34,11 @@ logger = logging.getLogger(__name__)
 _ALLOWED_USERS_ENV = {Platform(k): v for k, v in _PLATFORM_ALLOWLIST_ENV.items()}
 _ALLOW_ALL_ENV = {p: v.replace("_ALLOWED_USERS", "_ALLOW_ALL_USERS") for p, v in _ALLOWED_USERS_ENV.items()}
 _GROUP_USER_ENV = {Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS"}
-_GROUP_CHAT_ENV = {Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS", Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS"}
+_GROUP_CHAT_ENV = {
+    Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",
+    Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
+    Platform.SIGNAL: "SIGNAL_GROUP_ALLOWED_USERS",
+}
 _ALLOW_BOTS_ENV = {
     # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466). Checked before the
     # no-user-id guard below: some platforms deliver bot/automation traffic with no user_id at all -- e.g.
@@ -543,8 +547,14 @@ class GatewayAuthorizationMixin:
         # sender_chat posts, channel broadcasts).
         if is_group and source.chat_id:
             chat_allowlist_env = _GROUP_CHAT_ENV.get(source.platform, "")
-            if chat_allowlist_env and _allows(_coerce_allow_set(_auth_env(chat_allowlist_env)), source.chat_id):
-                return True
+            if chat_allowlist_env:
+                allowed_chats = _coerce_allow_set(_auth_env(chat_allowlist_env))
+                # Signal intake uses raw IDs, while SessionSource carries group:<id>.
+                chat_ids = {source.chat_id}
+                if source.platform == Platform.SIGNAL:
+                    chat_ids.add(source.chat_id.removeprefix("group:"))
+                if any(_allows(allowed_chats, chat_id) for chat_id in chat_ids):
+                    return True
             # config.yaml fallback (``extra.group_allowed_chats``): Telegram observe-unmentioned mode
             # strips user_id, so the env-only check above misses it.
             with contextlib.suppress(Exception):
@@ -653,6 +663,8 @@ class GatewayAuthorizationMixin:
         # Adapter-verified role auth (Discord DISCORD_ALLOWED_ROLES). ``is True``: no MagicMock pass.
         if allow_adapter_delegation and getattr(source, "role_authorized", False) is True:
             return True
+        if source.platform == Platform.SIGNAL and not is_group and self._signal_group_only():
+            return False
         # Pairing store: a first-class grant created only by an operator approving a code. Honored as
         # a UNION with the allowlist (approval also mirrors into it).
         pairing_store = self._pairing_store_for(source)
@@ -694,6 +706,21 @@ class GatewayAuthorizationMixin:
             allowed_ids |= self._adapter_resolved_allowlist_ids(source)
         return "*" in allowed_ids or _principal_matches_allowlist(source, user_id, allowed_ids)
 
+    @staticmethod
+    def _signal_group_only() -> bool:
+        """Explicitly empty DM list plus allowed groups disables Signal DMs.
+
+        An absent DM setting is not an explicit opt-out. Use the scoped reader so
+        a secondary profile never borrows the launching profile's configuration.
+        """
+        from gateway.platforms._shared import get_scoped_secret
+
+        dm_users = get_scoped_secret("SIGNAL_ALLOWED_USERS")
+        return (
+            dm_users is not None and not str(dm_users).strip()
+            and bool(str(get_scoped_secret("SIGNAL_GROUP_ALLOWED_USERS", "")).strip())
+        )
+
     def _get_unauthorized_dm_behavior(self, platform: Optional[Platform], *, profile: Optional[str] = None) -> str:
         """How unauthorized DMs are handled ("pair" / "ignore" / "decline") for a platform.
 
@@ -709,6 +736,8 @@ class GatewayAuthorizationMixin:
         ``"ignore"`` — the allowlist signals that the owner has deliberately restricted access; spamming
         unknown contacts with pairing codes is both noisy and a potential info-leak. (#9337) 6.
         """
+        if platform == Platform.SIGNAL and self._signal_group_only():
+            return "ignore"
         config = getattr(self, "config", None)
         if (
             config and hasattr(config, "get_unauthorized_dm_behavior") and platform

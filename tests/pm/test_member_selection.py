@@ -106,3 +106,26 @@ def test_virtual_member_without_project_metadata_gets_a_version(tmp_path):
     member = _workspace_member(plugin, root, identity=plugin)
     project = tomllib.loads((member / "pyproject.toml").read_text(encoding="utf-8"))["project"]
     assert project["version"] == "0.0.0"
+
+
+def test_virtual_member_declaring_dynamic_version_is_left_alone(tmp_path):
+    """PEP 621 forbids supplying ``project.version`` while it is listed under
+    ``project.dynamic`` ("You cannot provide a value for project.version and
+    list it under project.dynamic at the same time"). A metadata-only member
+    may legitimately declare ``dynamic = ["version"]``; the generated member
+    must not gain a static version in that case, or ``uv lock`` rejects the
+    conflicted manifest."""
+    import tomllib
+    from pm.workspace import _workspace_member
+
+    plugin = tmp_path / "home" / "plugins" / "dynver"
+    plugin.mkdir(parents=True)
+    (plugin / "pyproject.toml").write_text(
+        '[project]\nname = "dynver"\ndynamic = ["version"]\n', encoding="utf-8"
+    )
+    root = tmp_path / "gen"
+    root.mkdir()
+    member = _workspace_member(plugin, root, identity=plugin)
+    project = tomllib.loads((member / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    assert "version" not in project
+    assert project["dynamic"] == ["version"]

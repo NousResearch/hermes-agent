@@ -114,11 +114,30 @@ def _read_windows_pyvenv_cfg(venv_dir: Path) -> dict[str, str]:
     }
 
 
-def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str]]:
-    """Hidden, output-capable Python invocation for Windows cron scripts. ``pythonw.exe`` loses
-    captured output; uv venv launchers can re-exec the base console python and flash a window
-    even with CREATE_NO_WINDOW, so run the base python directly with venv paths overlaid in env."""
+def _cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str]]:
+    """Python invocation for cron scripts.
+
+    On POSIX (macOS, Linux): for PM-managed installs, run scripts on the selected managed
+    venv's interpreter (whose site-packages come from pyvenv.cfg) rather than overlaying
+    PYTHONPATH, avoiding child-process pollution (#123440). Set HERMES_DISABLE_LAZY_INSTALLS=1
+    so child imports cannot republish launchers.
+
+    On Windows: pythonw.exe loses captured output; uv venv launchers can re-exec the base
+    console python and flash a window even with CREATE_NO_WINDOW, so run the base python
+    directly with venv paths overlaid in env.
+    """
+    repo = Path(__file__).resolve().parents[1]
+    from hermes_cli._launchers import resolve_store_python
+    from pm.environments import selected_venv, venv_python
+
+    managed_python = resolve_store_python(repo)
+
     if sys.platform != "win32":
+        if managed_python is not None:
+            managed_venv = selected_venv(repo)
+            vpy = venv_python(managed_venv)
+            if vpy.is_file():
+                return str(vpy), {"HERMES_DISABLE_LAZY_INSTALLS": "1"}
         return python_exe, {}
 
     interpreter = _sched.Path(python_exe)
@@ -130,16 +149,9 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
         if sibling.exists():
             interpreter = sibling
 
-    from hermes_cli._launchers import resolve_store_python
-    from pm.environments import selected_venv, site_packages as dependency_site
-
-    repo = Path(__file__).resolve().parents[1]
-    managed_python = resolve_store_python(repo)
     if managed_python is not None:
-        # A packaged caller may hand us the old venv launcher; select bytes
-        # from the install record rather than interpreting relocated pyvenv.cfg.
+        from pm.environments import site_packages as dependency_site
         dependencies = dependency_site(selected_venv(repo))
-
         return str(managed_python), {"PYTHONPATH": os.pathsep.join([str(repo), str(dependencies)])}
 
     cfg = _read_windows_pyvenv_cfg(venv_dir)
@@ -158,6 +170,9 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
             env_overlay["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
 
     return str(interpreter), env_overlay
+
+
+_windows_cron_python_invocation = _cron_python_invocation
 
 
 def _terminate_cron_script_process(proc: subprocess.Popen) -> None:
@@ -328,8 +343,8 @@ def _script_argv(path: Path) -> tuple[Optional[list[str]], dict[str, str], Optio
                 "or rewrite the script as Python (.py)."
             )
         return [_bash, str(path)], {}, None
-    python_exe, env_overlay = _windows_cron_python_invocation(sys.executable)
-    if env_overlay:
+    python_exe, env_overlay = _cron_python_invocation(sys.executable)
+    if env_overlay and "PYTHONPATH" in env_overlay:
         return _windows_cron_bootstrap_argv(python_exe, env_overlay, str(path)), env_overlay, None
     return [python_exe, str(path)], env_overlay, None
 

@@ -120,9 +120,21 @@ def adopt_legacy_models() -> "list[Path]":
     return moved
 
 
+def extra_model_dirs(section: dict | None = None) -> "list[Path]":
+    """``local_runtime.model_dirs``: existing read-only GGUF roots served beside ``models_dir()``
+    (downloads and deletes stay in ``models_dir()``). ``section`` defaults to the live config."""
+    if section is None:
+        from hermes_cli.config import load_config_readonly
+
+        section = load_config_readonly().get("local_runtime") or {}
+    raw = section.get("model_dirs") if isinstance(section, dict) else None
+    dirs = (Path(os.path.expanduser(str(d).strip())) for d in (raw if isinstance(raw, list) else []) if str(d).strip())
+    return [d for d in dirs if d.is_dir()]
+
+
 def staged_models() -> "list[Path]":
     """Servable staged models (continuation parts, incomplete splits and assets/ never count)."""
-    return staged_in(models_dir())
+    return [gguf for root in (models_dir(), *extra_model_dirs()) for gguf in staged_in(root)]
 
 
 def staged_model_ids() -> "list[str]":
@@ -186,7 +198,7 @@ def refresh_local_runtime() -> bool:
         return False
 
 
-def _admitted_models_max(mdir: Path, configured: int) -> int:
+def _admitted_models_max(mdir: Path, configured: int, extra_dirs: "tuple[Path, ...] | list[Path]" = ()) -> int:
     """Residency cap to hand the router: derived from the hardware budget, ``models_max`` as a ceiling.
 
     A cap of "four" on a card that holds one model is how a second child ends up paged (WDDM) and
@@ -198,7 +210,7 @@ def _admitted_models_max(mdir: Path, configured: int) -> int:
         from hermes_cli.local_runtime.hardware import probe_budget
         from hermes_cli.local_runtime.presets import admitted_residency_count
 
-        cap = admitted_residency_count(mdir, probe_budget(planning=True), configured)
+        cap = admitted_residency_count(mdir, probe_budget(planning=True), configured, extra_dirs=extra_dirs)
     except Exception as exc:  # noqa: BLE001
         logger.warning("residency cap probe failed (%s); using models_max=%s", exc, configured)
         return configured
@@ -208,7 +220,7 @@ def _admitted_models_max(mdir: Path, configured: int) -> int:
     return cap
 
 
-def _generate_presets(mdir: Path, preset_path: Path) -> Path | None:
+def _generate_presets(mdir: Path, preset_path: Path, section: dict | None = None) -> Path | None:
     """Write the launch-policy INI for every staged model; returns the path to hand the router.
 
     Priced against CAPACITY, not live free VRAM: this runs while the outgoing server instance may
@@ -223,7 +235,10 @@ def _generate_presets(mdir: Path, preset_path: Path) -> Path | None:
     from hermes_cli.local_runtime.presets import generate_presets
 
     try:
-        for entry in generate_presets(mdir, probe_budget(planning=True), preset_path):
+        section = section or {}
+        for entry in generate_presets(mdir, probe_budget(planning=True), preset_path,
+                                      extra_dirs=extra_model_dirs(section),
+                                      overrides=section.get("model_overrides")):
             if entry.refusal:
                 logger.warning("model refused by physics check: %s", entry.refusal)
         return preset_path
@@ -354,18 +369,22 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
             from hermes_cli.local_runtime.binaries import installed_engine
             from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
 
-            engine = installed_engine(section.get("backend", "auto"))
-            if engine is None:
+            # executable_path: serve a user-supplied llama-server instead of the PM engine.
+            executable = str(section.get("executable_path") or "").strip()
+            engine = None if executable else installed_engine(section.get("backend", "auto"))
+            if engine is None and not executable:
                 logger.info("local runtime enabled but no PM engine installed; use the Local Models pane")
                 return None
 
             mdir = models_dir()
             mdir.mkdir(parents=True, exist_ok=True)
-            preset_path = _generate_presets(mdir, runtimes_root() / "presets.ini")
+            preset_path = _generate_presets(mdir, runtimes_root() / "presets.ini", section)
 
-            sup = LlamaServerSupervisor(engine.binary, mdir, preset_path=preset_path,
+            binary = Path(os.path.expanduser(executable)) if executable else engine.binary
+            sup = LlamaServerSupervisor(binary, mdir, preset_path=preset_path,
                                         models_max=_admitted_models_max(
-                                            mdir, int(section.get("models_max", 4))),
+                                            mdir, int(section.get("models_max", 4)),
+                                            extra_model_dirs(section)),
                                         port=int(section.get("port", 0)) or None)
             try:
                 sup.start()
@@ -376,7 +395,8 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
                     sup.stop()
                 raise
             _SUPERVISOR = sup
-            logger.info("managed llama-server up at %s (backend=%s tag=%s)", sup.base_url, engine.backend, engine.tag)
+            logger.info("managed llama-server up at %s (backend=%s tag=%s)", sup.base_url,
+                        engine.backend if engine else "executable_path", engine.tag if engine else binary)
             _start_idle_sweeper(sup)
             return sup
         except Exception as exc:  # noqa: BLE001 — never break session start

@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from hermes_cli.local_runtime.context_policy import (
     RUNTIME_OVERHEAD_BYTES, launch_args, plan_launch, ub_logits_bytes)
@@ -160,7 +162,8 @@ def _launch_footprint(gguf: Path, budget: HardwareBudget) -> int | None:
     return footprint_bytes(profile, plan.decision.window, overhead_bytes=plan.overhead_bytes)
 
 
-def admitted_residency_count(models_dir: Path, budget: HardwareBudget, configured: int) -> int:
+def admitted_residency_count(models_dir: Path, budget: HardwareBudget, configured: int,
+                             *, extra_dirs: Sequence[Path] = ()) -> int:
     """How many models the card may hold resident at once: priced against the budget, not a count.
 
     Residency used to be bounded by a count alone, so a second model was admitted against an
@@ -180,7 +183,7 @@ def admitted_residency_count(models_dir: Path, budget: HardwareBudget, configure
     if configured <= 1 or budget.usable_vram_bytes <= 0:
         return configured
     largest = 0
-    for gguf in staged_in(models_dir):
+    for gguf in (g for root in (models_dir, *extra_dirs) for g in staged_in(root)):
         need = _launch_footprint(gguf, budget)
         if need:
             largest = max(largest, need)
@@ -190,17 +193,23 @@ def admitted_residency_count(models_dir: Path, budget: HardwareBudget, configure
 
 
 def generate_presets(models_dir: Path, budget: HardwareBudget, preset_path: Path,
-                     mtp_capable: set[str] | None = None) -> list[PresetEntry]:
-    """Walk the staged models, run the launch decision per model, and write one INI. Refused
-    models get no section (the picker surfaces the refusal from the returned entries)."""
+                     mtp_capable: set[str] | None = None, *, extra_dirs: Sequence[Path] = (),
+                     overrides: Mapping[str, Mapping[str, Any]] | None = None) -> list[PresetEntry]:
+    """Walk the staged models (``models_dir`` then ``extra_dirs``), run the launch decision per
+    model, and write one INI. Refused models get no section (the picker surfaces the refusal from
+    the returned entries). ``overrides`` (``local_runtime.model_overrides``) maps a model id to
+    llama-server preset keys laid over the policy's — the user's explicit choice wins."""
     from hermes_cli.local_runtime.bootstrap import staged_in
 
     entries: list[PresetEntry] = []
     sections: list[str] = []
-    for gguf in staged_in(models_dir):
+    for gguf in (g for root in (models_dir, *extra_dirs) for g in staged_in(root)):
         entry = preset_for_model(gguf, budget, mtp_capable or set())
         if entry is None:
             continue
+        override = (overrides or {}).get(entry.model_id)
+        if entry.keys is not None and isinstance(override, Mapping):
+            entry.keys.update({str(k): str(v) for k, v in override.items()})
         entries.append(entry)
         # INI comments preserve non-flag facts atomically with the launch policy.
         sections.append("# hermes-decision: " + json.dumps({

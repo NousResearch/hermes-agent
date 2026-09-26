@@ -4,8 +4,9 @@ import { useEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { assistantTextPart, type ChatMessage } from '@/lib/chat-messages'
+import { setAlwaysExternalLinks } from '@/store/external-links'
 import { $previewTabs, $previewTarget, closeRightRail, type PreviewTarget } from '@/store/preview'
-import { $activeSessionId, $currentCwd, $messages, $selectedStoredSessionId } from '@/store/session'
+import { $activeSessionId, $connection, $currentCwd, $messages, $selectedStoredSessionId } from '@/store/session'
 
 import { usePreviewRouting } from './use-preview-routing'
 
@@ -63,6 +64,8 @@ describe('preview routing', () => {
     $messages.set([])
     closeRightRail()
     window.localStorage.clear()
+    setAlwaysExternalLinks(false)
+    $connection.set(null)
 
     Object.defineProperty(window, 'hermesDesktop', {
       configurable: true,
@@ -75,12 +78,56 @@ describe('preview routing', () => {
     $messages.set([])
     closeRightRail()
     $activeSessionId.set(null)
+    $connection.set(null)
     $selectedStoredSessionId.set(null)
     window.localStorage.clear()
     vi.restoreAllMocks()
   })
 
   describe('open_preview', () => {
+    it('never opens a failed SSH localhost forward in the local OS browser', async () => {
+      const openPreviewInBrowser = vi.fn().mockResolvedValue(undefined)
+      $connection.set({ mode: 'remote' } as never)
+      Object.defineProperty(window, 'hermesDesktop', {
+        configurable: true,
+        value: {
+          normalizePreviewTarget: vi.fn(async (url: string) => ({ kind: 'url', label: url, source: url, url })),
+          reachPreviewUrl: vi.fn(async (url: string) => url),
+          openPreviewInBrowser
+        }
+      })
+      setAlwaysExternalLinks(true)
+      render(<Harness />)
+
+      await emitPreviewOpen('http://localhost:5173')
+
+      await waitFor(() => expect($previewTabs.get()).toHaveLength(1))
+      expect(openPreviewInBrowser).not.toHaveBeenCalled()
+    })
+
+    it('opens an agent preview in the system browser instead of creating a pane when the preference is enabled', async () => {
+      const openPreviewInBrowser = vi.fn().mockResolvedValue(undefined)
+      Object.defineProperty(window, 'hermesDesktop', {
+        configurable: true,
+        value: {
+          normalizePreviewTarget: vi.fn(async () => ({
+            kind: 'url',
+            label: 'Example',
+            source: 'https://example.com',
+            url: 'https://example.com'
+          })),
+          openPreviewInBrowser
+        }
+      })
+      setAlwaysExternalLinks(true)
+      render(<Harness />)
+
+      await emitPreviewOpen('https://example.com')
+
+      await waitFor(() => expect(openPreviewInBrowser).toHaveBeenCalledWith('https://example.com'))
+      expect($previewTabs.get()).toHaveLength(0)
+    })
+
     // The rail used to hold a session-keyed singleton alongside its tabs, written
     // under one session-id rule and reconciled under another. A live session with
     // no stored id yet resolved to '' on the write side, so the target was set and

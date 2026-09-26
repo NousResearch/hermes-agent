@@ -1073,8 +1073,9 @@ class TestSummaryFallbackToMainModel:
         assert mock_call.call_count == 2
         # First call used the misconfigured aux model
         assert mock_call.call_args_list[0].kwargs.get("model") == "broken-aux-model"
-        # Second call used the main model (no model kwarg → call_llm uses main)
-        assert "model" not in mock_call.call_args_list[1].kwargs
+        # Second call pins the main model explicitly so the broken aux route cannot
+        # be re-selected from config (#123362).
+        assert mock_call.call_args_list[1].kwargs.get("model") == "main-model"
         assert result is not None
         assert "summary via main model" in result
         # Aux-model failure is recorded even though retry succeeded — this is
@@ -1108,7 +1109,9 @@ class TestSummaryFallbackToMainModel:
 
         assert mock_call.call_count == 2
         assert mock_call.call_args_list[0].kwargs.get("model") == "flaky-aux-model"
-        assert "model" not in mock_call.call_args_list[1].kwargs
+        # The main retry pins the main route explicitly so a configured aux route
+        # cannot be re-selected and re-fail (#123362).
+        assert mock_call.call_args_list[1].kwargs.get("model") == "main-model"
         assert result is not None
         assert "summary via main model after empty aux" in result
         assert c._last_aux_model_failure_model == "flaky-aux-model"
@@ -1171,10 +1174,11 @@ class TestSummaryFallbackToMainModel:
 
         assert mock_call.call_count == 2
         assert mock_call.call_args_list[0].kwargs.get("model") == "aux-via-broken-proxy"
-        assert "model" not in mock_call.call_args_list[1].kwargs
+        # The main retry pins the main route explicitly (#123362).
+        assert mock_call.call_args_list[1].kwargs.get("model") == "main-model"
         assert result is not None
         assert "summary via main model" in result
-        # Aux-model failure recorded so /usage / gateway warnings can surface it
+        # Aux-model failure recorded so /usage /gateway warnings can surface it
         assert c._last_aux_model_failure_model == "aux-via-broken-proxy"
         assert c._last_aux_model_failure_error is not None
         # The 220-char cap is shared with other fallback branches

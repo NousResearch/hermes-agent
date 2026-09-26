@@ -124,9 +124,9 @@ _NOT_DELEGATE = (
 _SHELL_NAMES_RE = r'(?:bash|sh|zsh|ksh|dash)'
 
 # Known credential-file paths as one shared alternation for the JavaScript and Python
-# read-secrets patterns (a private key, .env, credentials, .netrc, .pgpass, .npmrc, .pypirc;
-# a public key is not a secret).
-_CRED_FILE = r'(?:\.ssh[/\\]id_(?:rsa|ed25519|ecdsa|dsa)(?!\.pub)|\.env\b|credentials\b|\.netrc\b|\.pgpass\b|\.npmrc\b|\.pypirc\b)'
+# read-secrets patterns (a private key, .env, credentials, .netrc, .pgpass, .npmrc, .pypirc,
+# auth.json — Hermes's and Codex's OAuth access/refresh token store; a public key is not a secret).
+_CRED_FILE = r'(?:\.ssh[/\\]id_(?:rsa|ed25519|ecdsa|dsa)(?!\.pub)|\.env\b|credentials\b|\.netrc\b|\.pgpass\b|\.npmrc\b|\.pypirc\b|auth\.json\b)'
 # A literal string argument naming one of those files, optionally wrapped in
 # `os.path.expanduser(...)` (Python only).
 _CRED_FILE_LITERAL = r'["\'][^"\'\n]*' + _CRED_FILE + r'[^"\'\n]*["\']'
@@ -156,10 +156,10 @@ THREAT_PATTERNS = [
     (r'\$HOME/\.kube|\~/\.kube', "kube_dir_access", "high", "exfiltration", "references Kubernetes config directory"),
     (r'\$HOME/\.docker|\~/\.docker',
      "docker_dir_access", "high", "exfiltration", "references Docker config (may contain registry creds)"),
-    (r'\$HOME/\.hermes/\.env|\~/\.hermes/\.env',
+    (r'\$HOME/\.hermes/(?:\.env|auth\.json)|\~/\.hermes/(?:\.env|auth\.json)',
      "hermes_env_access", "critical", "exfiltration", "directly references Hermes secrets file"),
     # `cat <secrets-file>` reads credentials; `cat >`/`cat >>` WRITES one (setup heredocs) — not exfil.
-    (r'cat\s+(?!>)[^\n]*(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)',
+    (r'cat\s+(?!>)[^\n]*(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc|auth\.json)',
      "read_secrets_file", "critical", "exfiltration", "reads known secrets file"),
     (r'\b(?:readFile(?:Sync)?|readTextFile)\s*\(\s*' + _CRED_FILE_LITERAL,
      "js_read_secrets_file", "critical", "exfiltration", "JavaScript reads a known credential file"),

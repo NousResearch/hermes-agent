@@ -477,6 +477,23 @@ class TestThreadContext(unittest.TestCase):
         self.assertEqual(sent["Subject"], "Re: Project question")
         self.assertEqual(sent["In-Reply-To"], "<original@test.com>")
 
+    def test_live_cron_delivery_starts_fresh_thread_despite_prior_reply_context(self):
+        adapter = self._make_adapter()
+        adapter._thread_context["user@test.com"] = {
+            "subject": "Old conversation", "message_id": "<original@test.com>",
+        }
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+            adapter._send_email(
+                "user@test.com", "daily report", None,
+                {"hermes_cron_delivery": {"subject": "Daily health", "date": "2026-09-26"}},
+            )
+        sent = mock_server.send_message.call_args.args[0]
+        self.assertEqual(sent["Subject"], "Daily health — 2026-09-26")
+        self.assertNotIn("In-Reply-To", sent)
+        self.assertNotIn("References", sent)
+
 
 class TestSendMethods(unittest.TestCase):
     """Test email send methods."""

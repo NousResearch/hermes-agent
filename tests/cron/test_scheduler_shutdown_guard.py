@@ -67,3 +67,25 @@ class TestStandaloneDeliverySkipsDuringShutdown:
 
         send_mock.assert_not_called()
         assert result is not None
+
+    def test_cron_subject_metadata_reaches_standalone_sender(self):
+        """Unwrapped cron output must still carry its job name to the email sender."""
+        from cron.scheduler import _deliver_result
+
+        job = {
+            "id": "daily-health", "name": "Daily Hermes log health check",
+            "deliver": "origin", "origin": {"platform": "email", "chat_id": "grant@example.com"},
+        }
+        from gateway.config import Platform
+        pconfig = MagicMock(enabled=True)
+        cfg = MagicMock(platforms={Platform.EMAIL: pconfig})
+        send_mock = AsyncMock(return_value={"success": True})
+        with patch("gateway.config.load_gateway_config", return_value=cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=send_mock), \
+             patch("sys.is_finalizing", return_value=False):
+            _deliver_result(job, "daily report body")
+
+        send_mock.assert_called_once()
+        assert send_mock.call_args.kwargs["metadata"] == {
+            "hermes_cron_delivery": {"subject": "Daily Hermes log health check"}
+        }

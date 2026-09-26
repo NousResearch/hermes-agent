@@ -387,9 +387,6 @@ _IMAGE_REJECTION_PHRASES = (
     # DashScope-style gateways reject non-text blocks with this generic body.
     # Some OpenAI-compatible endpoints (e.g. (issue #57948)
     "unexpected item type in content",
-    # ChatGPT-account Codex backend rejects data:image URLs in input_image; keyed on the
-    # field-path apostrophe so other URL errors don't false-trip.
-    "image_url'. expected",
     # DeepSeek's text-only request-body variant error.
     "unknown variant `image_url`, expected `text`", "unknown variant image_url, expected text",
     # OpenRouter HTTP 404 when no upstream endpoint accepts image input (passes the 4xx
@@ -401,10 +398,15 @@ _IMAGE_REJECTION_PHRASES = (
 )
 
 # Provider error bodies meaning "this particular image payload is bad" — the model CAN see, it
-# just could not decode what it was sent. Disjoint from ``_IMAGE_REJECTION_PHRASES``: the turn
-# recovers the same way (strip and retry) but must NOT remember the model as image-rejecting,
-# or the next request with a good image would be needlessly stripped for the rest of the session.
+# just could not decode what it was sent, or rejected this specific URL format representation.
+# Disjoint from ``_IMAGE_REJECTION_PHRASES``: the turn recovers the same way (strip and retry)
+# but must NOT remember the model as image-rejecting, or the next request with a good image
+# would be needlessly stripped for the rest of the session.
 _IMAGE_CORRUPT_PHRASES = (
+    # ChatGPT-account Codex backend rejects data:image URLs in input_image; keyed on the
+    # field-path apostrophe so other URL errors don't false-trip. This is a representation/format
+    # rejection, not evidence that the model is incapable of vision.
+    "image_url'. expected",
     # ChatGPT-account Codex backend's wording for corrupt/unsupported native image payloads.
     "image data you provided does not represent a valid image",
     # Kimi/Moonshot et al. reject truncated/corrupt image bytes baked into history.

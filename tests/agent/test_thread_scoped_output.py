@@ -1,10 +1,10 @@
-"""Tests for agent.thread_scoped_output.thread_scoped_silence.
+"""Tests for agent.thread_scoped_output thread-scoped silence and capture.
 
-Behaviour contract: a thread inside ``thread_scoped_silence()`` has its
-stdout/stderr routed to devnull, while every OTHER thread keeps writing to the
-real stream — even concurrently, while the first thread is still inside the
-context.  This is the property the old process-global
-``contextlib.redirect_stdout(devnull)`` violated (issue #55769 / #55925).
+Behaviour contract: a thread inside ``thread_scoped_silence()`` or
+``thread_scoped_capture()`` has its stdout/stderr routed to a sink/buffer,
+while every OTHER thread keeps writing to the real stream — even concurrently,
+while the first thread is still inside the context.  This is the property the
+old process-global ``contextlib.redirect_stdout`` violated (issue #55769 / #55925).
 """
 
 import contextlib
@@ -14,7 +14,7 @@ import threading
 import time
 
 import agent.thread_scoped_output as thread_output
-from agent.thread_scoped_output import thread_scoped_silence
+from agent.thread_scoped_output import thread_scoped_capture, thread_scoped_silence
 
 
 def _run_with_real_stream(fn):
@@ -166,3 +166,46 @@ def test_silence_survives_redirect_restoring_an_older_proxy(monkeypatch):
     finally:
         release.set()
         sys.stdout, sys.stderr = original_stdout, original_stderr
+
+
+def test_capture_keeps_other_threads_on_the_real_stream():
+    """#55769 sibling: capturing this thread must not steal another thread's print."""
+    start = threading.Event()
+    captured_ready = threading.Event()
+    loud_done = threading.Event()
+
+    def loud():
+        start.wait(timeout=2.0)
+        print("loud-keep")
+        loud_done.set()
+
+    def body():
+        thread = threading.Thread(target=loud)
+        thread.start()
+        with thread_scoped_capture() as (out, _err):
+            captured_ready.set()
+            start.set()
+            print("captured-only")
+            assert loud_done.wait(timeout=2.0)
+            thread.join(timeout=5.0)
+            assert "captured-only" in out.getvalue()
+            assert "loud-keep" not in out.getvalue()
+        assert not thread.is_alive()
+
+    reached = _run_with_real_stream(body)
+    assert "loud-keep" in reached
+    assert "captured-only" not in reached
+
+
+def test_nested_capture_restores_the_outer_buffer():
+    outer = io.StringIO()
+    inner = io.StringIO()
+    with thread_scoped_capture(outer, outer):
+        print("outer-1")
+        with thread_scoped_capture(inner, inner):
+            print("inner-only")
+        print("outer-2")
+    assert "outer-1" in outer.getvalue()
+    assert "outer-2" in outer.getvalue()
+    assert "inner-only" not in outer.getvalue()
+    assert "inner-only" in inner.getvalue()

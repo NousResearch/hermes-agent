@@ -1,21 +1,23 @@
 """Thread-scoped stdout/stderr silencing for background worker threads.
 
 ``contextlib.redirect_stdout`` reassigns the *process-global* stream, so a daemon worker
-silencing itself also silences every other thread (gateway event loop included). This
-module installs a per-thread routing proxy as ``sys.stdout``/``sys.stderr``: silenced
-threads write to a sink, everyone else passes through to the original stream. Installed
-once, idempotently, and never uninstalled (that would race other threads mid-write).
+silencing or capturing itself also remaps every other thread (gateway event loop included).
+This module installs a per-thread routing proxy as ``sys.stdout``/``sys.stderr``: silenced
+threads write to a sink, capturing threads write to a caller buffer, everyone else passes
+through to the original stream. Installed once, idempotently, and never uninstalled (that
+would race other threads mid-write).
 """
 
 from __future__ import annotations
 
 import contextlib
+import io
 import os
 import sys
 import threading
 from typing import Iterator, TextIO
 
-__all__ = ["thread_scoped_silence"]
+__all__ = ["thread_scoped_silence", "thread_scoped_capture"]
 
 _install_lock = threading.Lock()
 # Proxy installed per attribute ("stdout"/"stderr"): never double-wrap.
@@ -27,11 +29,12 @@ _routing_states: dict[str, "_RoutingState"] = {}
 
 
 class _RoutingState:
-    """Silencing registry shared by every proxy generation for one stream."""
+    """Silencing/capture registry shared by every proxy generation for one stream."""
 
     def __init__(self, sink: TextIO) -> None:
         self.sink = sink
         self.silenced: dict[int, int] = {}
+        self.captures: dict[int, TextIO] = {}
         self.lock = threading.Lock()
 
 
@@ -44,7 +47,11 @@ class _ThreadRoutingStream:
         self._state = state
 
     def _target(self) -> TextIO:
-        return self._state.sink if self._state.silenced.get(threading.get_ident(), 0) > 0 else self._passthrough
+        ident = threading.get_ident()
+        captured = self._state.captures.get(ident)
+        if captured is not None:
+            return captured
+        return self._state.sink if self._state.silenced.get(ident, 0) > 0 else self._passthrough
 
     def silence(self, ident: int) -> None:
         with self._state.lock:
@@ -57,6 +64,19 @@ class _ThreadRoutingStream:
                 self._state.silenced[ident] = depth
             else:
                 self._state.silenced.pop(ident, None)
+
+    def capture(self, ident: int, sink: TextIO) -> TextIO | None:
+        with self._state.lock:
+            previous = self._state.captures.get(ident)
+            self._state.captures[ident] = sink
+            return previous
+
+    def uncapture(self, ident: int, previous: TextIO | None) -> None:
+        with self._state.lock:
+            if previous is None:
+                self._state.captures.pop(ident, None)
+            else:
+                self._state.captures[ident] = previous
 
     def _forward(self, name: str, fallback, *args):  # type: ignore[no-untyped-def]
         """Call ``name`` on the current target; a dead target yields ``fallback(*args)`` instead of raising."""
@@ -126,3 +146,30 @@ def thread_scoped_silence() -> Iterator[None]:
     finally:
         for proxy in proxies:
             proxy.unsilence(ident)
+
+
+@contextlib.contextmanager
+def thread_scoped_capture(
+    stdout_buf: TextIO | None = None,
+    stderr_buf: TextIO | None = None,
+) -> Iterator[tuple[TextIO, TextIO]]:
+    """Capture ``stdout``/``stderr`` for the *current thread only*.
+
+    Other threads keep writing to the real streams.  Use this around in-process
+    gateway helpers (``/kanban``, ``/approvals``, OAuth setup) instead of
+    ``contextlib.redirect_stdout`` so concurrent gateway threads cannot leak
+    into the captured buffer or lose their own console output (#55769 class).
+    Nested captures restore the previous buffer for this thread on exit.
+    """
+    out_buf = stdout_buf if stdout_buf is not None else io.StringIO()
+    err_buf = stderr_buf if stderr_buf is not None else io.StringIO()
+    ident = threading.get_ident()
+    out_proxy = _ensure_installed("stdout", sys.__stdout__ or sys.stdout)
+    err_proxy = _ensure_installed("stderr", sys.__stderr__ or sys.stderr)
+    prev_out = out_proxy.capture(ident, out_buf)
+    prev_err = err_proxy.capture(ident, err_buf)
+    try:
+        yield out_buf, err_buf
+    finally:
+        out_proxy.uncapture(ident, prev_out)
+        err_proxy.uncapture(ident, prev_err)

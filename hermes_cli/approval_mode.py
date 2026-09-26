@@ -8,10 +8,11 @@ prefix.
 
 from __future__ import annotations
 
-from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from io import StringIO
 from typing import Optional
+
+from agent.thread_scoped_output import thread_scoped_capture
 
 VALID_APPROVAL_MODES = ("manual", "smart", "off")
 
@@ -43,11 +44,12 @@ def run_approval_mode_command(requested_mode: Optional[str]) -> ApprovalModeResu
     # set_config_value is the canonical managed-scope/write-safety chokepoint. It reports managed
     # policy through stderr + SystemExit, and the fail-closed write guard raises RuntimeError on an
     # unparseable config.yaml; capture both for slash-command output instead of terminating the
-    # interactive worker.
+    # interactive worker. Use thread-scoped capture so a gateway /approvals
+    # change does not remap every other thread's stdout (#55769 class).
     from hermes_cli.config import set_config_value
     output = StringIO()
     try:
-        with redirect_stdout(output), redirect_stderr(output):
+        with thread_scoped_capture(output, output):
             set_config_value("approvals.mode", requested)
     except SystemExit:
         detail = output.getvalue().strip() or "Approval mode is managed and cannot be changed."

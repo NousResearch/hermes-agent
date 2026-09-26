@@ -1,3 +1,4 @@
+import re
 from io import StringIO
 
 from rich.console import Console
@@ -102,3 +103,53 @@ def test_strip_mode_still_strips_boundary_underscore_emphasis():
 
     output = _render_to_text(renderable)
     assert "say hi and bold now" in output
+
+
+# Regression for #84377 / #73212: strip mode (the default) must not rewrite code the model wrote.
+_CODE_LINES = [
+    "# Entry point",
+    "class Box:",
+    "    def __init__(self, *args, **kwargs):",
+    "        self._items_ = list(args)",
+    'if __name__ == "__main__":',
+    "    print(2**8, 3*4*5)",
+]
+_REPLY_WITH_CODE = (
+    "Here is **the** class:\n```python\n" + "\n".join(_CODE_LINES) + "\n```\n"
+    "Call `Box.__init__` directly **only** in tests.\n"
+)
+
+
+def test_strip_mode_keeps_code_verbatim_and_still_strips_prose():
+    output = _render_to_text(_render_final_assistant_content(_REPLY_WITH_CODE, mode="strip"))
+
+    lines = output.splitlines()
+    for code_line in _CODE_LINES:
+        assert code_line in lines
+    assert "Here is the class:" in output
+    assert "Call Box.__init__ directly only in tests." in output
+
+
+def test_streamed_strip_output_matches_final_strip_render(monkeypatch):
+    import cli as climod
+    from cli import HermesCLI, _strip_markdown_syntax
+
+    emitted = []
+    monkeypatch.setattr(climod, "_cprint", emitted.append)
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.show_reasoning = False
+    cli.final_response_markdown = "strip"
+    cli.show_timestamps = False
+    cli._reset_stream_state()
+    cli._spinner_text = ""
+    cli._invalidate = lambda *a, **kw: None
+    cli._scrollback_box_width = lambda: 80
+
+    for i in range(0, len(_REPLY_WITH_CODE), 5):
+        cli._stream_delta(_REPLY_WITH_CODE[i:i + 5])
+    cli._flush_stream()
+
+    streamed = [re.sub(r"\x1b\[[0-9;]*m", "", s) for s in emitted][1:-1]  # drop box header/footer
+    assert streamed == _strip_markdown_syntax(_REPLY_WITH_CODE).split("\n")
+    for code_line in _CODE_LINES:
+        assert code_line in streamed

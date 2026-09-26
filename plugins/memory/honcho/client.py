@@ -34,7 +34,7 @@ from hermes_state_common import TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM
 
 from plugins.memory.honcho.client_cache import (
     _DEFAULT_HTTP_TIMEOUT, _client_cache_key, _client_slots, _client_slots_lock,
-    _honcho_json_timeout_memo, _refresh_oauth, _slot_for,
+    _honcho_json_timeout_memo, _refresh_oauth, _slot_for, resolve_effective_base_url,
 )
 
 if TYPE_CHECKING:
@@ -392,6 +392,8 @@ class HonchoClientConfig:
     user_observe_others: bool = True
     ai_observe_me: bool = True
     ai_observe_others: bool = True
+    # True only when observationMode or observation was present in local config.
+    observation_explicit: bool = False
     # Session resolution
     session_strategy: str = "per-directory"
     session_peer_prefix: bool = False
@@ -448,11 +450,15 @@ class HonchoClientConfig:
             return cls.from_env(host=resolved_host)
 
         host_block = _host_block(raw, resolved_host)
+        observation_explicit = any(
+            key in host_block or key in raw for key in ("observationMode", "observation")
+        )
         explicitly_configured = bool(host_block) or raw.get("enabled") is True
         look = _HostLookup(host_block, raw)
         return cls(
             host=resolved_host, **_connection_fields(look, resolved_host, path), **_behavior_fields(look, explicitly_configured),
             sessions=raw.get("sessions", {}), raw=raw, explicitly_configured=explicitly_configured,
+            observation_explicit=observation_explicit,
             config_path=path, hermes_home=get_hermes_home(),
         )
 
@@ -619,7 +625,7 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
     # Start with a live access token rather than 401ing an hour in.
     _refresh_oauth(config)
 
-    if not config.api_key and not config.base_url:
+    if not config.api_key and not resolve_effective_base_url(config):
         raise ValueError("Honcho API key not found. Get your API key at https://app.honcho.dev, "
                          "then run 'hermes honcho setup' or set HONCHO_API_KEY. "
                          "For local instances, set HONCHO_BASE_URL instead.")
@@ -639,15 +645,13 @@ def _build_client(config: HonchoClientConfig) -> "Honcho":
                           "(or run `hermes honcho setup` to configure).")
 
     # config.yaml honcho.base_url / timeout fill whatever honcho.json left unset.
-    base_url, timeout = config.base_url, config.timeout
-    if not base_url or timeout is None:
+    base_url, timeout = resolve_effective_base_url(config), config.timeout
+    if timeout is None:
         with contextlib.suppress(Exception):
             from hermes_cli.config import load_config
             honcho_cfg = load_config().get("honcho", {})
             if isinstance(honcho_cfg, dict):
-                base_url = base_url or _sanitize_url(honcho_cfg.get("base_url", "").strip() or None)
-                if timeout is None:
-                    timeout = _resolve_optional_float(honcho_cfg.get("timeout"), honcho_cfg.get("request_timeout"))
+                timeout = _resolve_optional_float(honcho_cfg.get("timeout"), honcho_cfg.get("request_timeout"))
     if timeout is None:
         timeout = _DEFAULT_HTTP_TIMEOUT  # an unconfigured install must not hang on a stalled request
 
@@ -667,10 +671,7 @@ def _build_client(config: HonchoClientConfig) -> "Honcho":
     api_key = "local" if _is_local_base_url(base_url) and not explicit_key else config.api_key
     kwargs: dict = {"workspace_id": config.workspace_id, "api_key": api_key, "environment": config.environment, "timeout": timeout}
     if base_url:
-        # The SDK's route builders already carry the version prefix ("/v3/..."), so
-        # strip a trailing version segment from any base_url to avoid "/v3/v3/...".
-        import re
-        kwargs["base_url"] = re.sub(r"/v\d+/*$", "", base_url).rstrip("/")
+        kwargs["base_url"] = base_url
     _register_exit_close()
     return Honcho(**kwargs)
 

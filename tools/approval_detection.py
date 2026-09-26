@@ -202,6 +202,12 @@ def detect_hardline_command(command: str) -> tuple:
                 )
             if pattern_re.search(masked_lower if quote_masked else variant_lower):
                 return (True, description)
+    for command_variant in _hardline_projected_variants(command):
+        variant_lower = command_variant.lower()
+        for pattern_re, description, quote_masked in HARDLINE_PATTERNS_COMPILED:
+            # Positionless rules already inspect the whole command above.
+            if not quote_masked and pattern_re.search(variant_lower):
+                return (True, description)
     return (False, None)
 
 
@@ -589,6 +595,67 @@ _COMMAND_WRAPPER_OPTIONS_WITH_ARG = {
     "stdbuf": {"-e", "--error", "-i", "--input", "-o", "--output"},
     "ionice": {"-c", "--class", "-n", "--classdata"},
 }
+
+# Complete long-option universes used for getopt_long-compatible exact and
+# unambiguous-prefix resolution. Keep these synchronized with sudo v1.9.17
+# src/parse_args.c and GNU coreutils v9.11 src/env.c. Missing or ambiguous
+# entries deliberately consume no following word, which biases detection
+# toward over-blocking rather than hiding an executable as option data.
+_SUDO_LONG_OPTION_ARITY = {
+    "--other-user": "required",
+    "--auth-type": "required",
+    "--close-from": "required",
+    "--login-class": "required",
+    "--chdir": "required",
+    "--group": "required",
+    "--host": "required",
+    "--prompt": "required",
+    "--chroot": "required",
+    "--role": "required",
+    "--command-timeout": "required",
+    "--type": "required",
+    "--user": "required",
+    "--preserve-env": "optional",
+    "--background": "none",
+    "--edit": "none",
+    "--set-home": "none",
+    "--login": "none",
+    "--remove-timestamp": "none",
+    "--list": "none",
+    "--preserve-groups": "none",
+    "--shell": "none",
+    "--validate": "none",
+    "--askpass": "none",
+    "--bell": "none",
+    "--help": "none",
+    "--reset-timestamp": "none",
+    "--no-update": "none",
+    "--non-interactive": "none",
+    "--stdin": "none",
+    "--version": "none",
+}
+_ENV_LONG_OPTION_ARITY = {
+    "--argv0": "required",
+    "--unset": "required",
+    "--chdir": "required",
+    "--split-string": "required",
+    "--default-signal": "optional",
+    "--ignore-signal": "optional",
+    "--block-signal": "optional",
+    "--ignore-environment": "none",
+    "--null": "none",
+    "--debug": "none",
+    "--list-signal-handling": "none",
+    "--help": "none",
+    "--version": "none",
+}
+_SUDO_SHORT_OPTIONS_REQUIRED_ARG = frozenset("aCcDgpRrTtUu")
+_SUDO_SHORT_OPTIONS_OPTIONAL_ARG = frozenset("h")
+_SUDO_SHORT_OPTIONS_NO_ARG = frozenset("ABbEeHiKklNnPSsVv")
+_ENV_SHORT_OPTIONS_REQUIRED_ARG = frozenset("aCSu")
+_ENV_SHORT_OPTIONS_OPTIONAL_ARG = frozenset()
+_ENV_SHORT_OPTIONS_NO_ARG = frozenset("i0v")
+
 _COMMAND_WRAPPER_NON_EXECUTING_OPTIONS = {
     "command": {"-v", "-V"}, "chrt": {"-p", "--pid"},
     "ionice": {"-p", "--pid", "--pgid", "--uid"}, "taskset": {"-p", "--pid"},
@@ -596,6 +663,9 @@ _COMMAND_WRAPPER_NON_EXECUTING_OPTIONS = {
 _COMMAND_WRAPPER_POSITIONAL_ARGS = {"chroot": 1, "chrt": 1, "taskset": 1, "timeout": 1}
 _SHELL_COMMAND_TRANSITIONS = {"if", "then", "else", "elif", "do", "while", "until", "!"}
 _SHELL_REDIRECTION_RE = re.compile(r"(?:[0-9]+)?(?:>>|<<|<>|>&|<&|>\||[<>])")
+_MAX_REDIRECTION_OPERAND_CHARS = 8_192
+_MAX_REDIRECTION_OPERAND_DEPTH = 32
+_REDIRECTION_OPERAND_COMMENT_PREDECESSORS = frozenset("(;&|")
 
 _INTERPRETER_NAME_RES = tuple((family, re.compile(pattern)) for family, pattern in (
     ("python", r"py(?:\.exe)?|python[23]?(?:\.\d+)*(?:\.exe)?"), ("node", r"node(?:js)?(?:\.exe)?"),
@@ -958,13 +1028,19 @@ def _read_tool_exec_flag(tool: str, args: list[str]) -> tuple[str, str] | None:
     return None
 
 
-def _execution_flag_findings(command: str):
+def _execution_flag_findings(command: str, *, hardline: bool = False):
     """Yield scoped execution mechanisms and any executable payloads."""
     for segment in _iter_top_level_shell_segments(command):
-        for start, _, word in _iter_shell_command_word_spans(segment):
+        for start, _, word in _iter_shell_command_word_spans(
+            segment, hardline=hardline
+        ):
             executable = _deobfuscate_shell_word_for_detection(word)
             tokens = _shell_segment_tokens(segment, start)
-            executable_name = os.path.basename(executable).lower()
+            executable_name = (
+                _SHELL_PATH_SEPARATOR_RE.split(executable)[-1]
+                if hardline
+                else os.path.basename(executable)
+            ).lower()
             family = _interpreter_family(executable)
             if tokens is None:
                 if family is not None or executable_name in _READ_TOOL_EXEC_FLAGS:
@@ -1060,11 +1136,268 @@ def _scan_backtick_end(command: str, start: int) -> int | None:
     return match.end() if match else None
 
 
+def _scan_redirection_operand_end(
+    command: str,
+    operand_start: int,
+) -> tuple[int | None, str]:
+    """Return the exclusive boundary and verdict for one redirection operand word."""
+    length = len(command)
+    limit = min(length, operand_start + _MAX_REDIRECTION_OPERAND_CHARS)
+
+    def unfinished_verdict() -> str:
+        return "undecidable" if limit < length else "unterminated"
+
+    def scan_single_quote(index: int) -> tuple[int | None, str]:
+        end = command.find("'", index, limit)
+        return (
+            (end + 1, "ok")
+            if end >= 0
+            else (None, unfinished_verdict())
+        )
+
+    def scan_backtick(index: int) -> tuple[int | None, str]:
+        while index < limit:
+            if command[index] == "\\":
+                if index + 1 >= limit:
+                    return (None, unfinished_verdict())
+                index += 2
+            elif command[index] == "`":
+                return (index + 1, "ok")
+            else:
+                index += 1
+        return (None, unfinished_verdict())
+
+    def scan_parameter(
+        index: int,
+        nesting: int,
+    ) -> tuple[int | None, str]:
+        if nesting > _MAX_REDIRECTION_OPERAND_DEPTH:
+            return (None, "undecidable")
+        while index < limit:
+            if command.startswith(("$(", "<(", ">("), index):
+                end, verdict = scan_parentheses(
+                    index + 2,
+                    nesting + 1,
+                )
+                if end is None:
+                    return (None, verdict)
+                index = end
+                continue
+            if command.startswith("${", index):
+                end, verdict = scan_parameter(
+                    index + 2,
+                    nesting + 1,
+                )
+                if end is None:
+                    return (None, verdict)
+                index = end
+                continue
+
+            char = command[index]
+            if char == "'":
+                end, verdict = scan_single_quote(index + 1)
+                if end is None:
+                    return (None, verdict)
+                index = end
+            elif char == '"':
+                end, verdict = scan_double_quote(
+                    index + 1,
+                    nesting,
+                )
+                if end is None:
+                    return (None, verdict)
+                index = end
+            elif char == "\\":
+                if index + 1 >= limit:
+                    return (None, unfinished_verdict())
+                index += 2
+            elif char == "`":
+                end, verdict = scan_backtick(index + 1)
+                if end is None:
+                    return (None, verdict)
+                index = end
+            elif char == "}":
+                return (index + 1, "ok")
+            else:
+                index += 1
+        return (None, unfinished_verdict())
+
+    def scan_double_quote(
+        index: int,
+        nesting: int,
+    ) -> tuple[int | None, str]:
+        while index < limit:
+            if command.startswith("$(", index):
+                end, verdict = scan_parentheses(index + 2, nesting + 1)
+                if end is None:
+                    return (None, verdict)
+                index = end
+                continue
+            if command.startswith("${", index):
+                end, verdict = scan_parameter(index + 2, nesting + 1)
+                if end is None:
+                    return (None, verdict)
+                index = end
+                continue
+
+            char = command[index]
+            if char == "\\":
+                if index + 1 >= limit:
+                    return (None, unfinished_verdict())
+                index += 2
+            elif char == '"':
+                return (index + 1, "ok")
+            elif char == "`":
+                end, verdict = scan_backtick(index + 1)
+                if end is None:
+                    return (None, verdict)
+                index = end
+            else:
+                index += 1
+        return (None, unfinished_verdict())
+
+    def scan_parentheses(
+        index: int,
+        nesting: int,
+    ) -> tuple[int | None, str]:
+        if nesting > _MAX_REDIRECTION_OPERAND_DEPTH:
+            return (None, "undecidable")
+        paren_depth = 0
+        while index < limit:
+            if command.startswith(("$(", "<(", ">("), index):
+                end, verdict = scan_parentheses(
+                    index + 2,
+                    nesting + paren_depth + 1,
+                )
+                if end is None:
+                    return (None, verdict)
+                index = end
+                continue
+            if command.startswith("${", index):
+                end, verdict = scan_parameter(
+                    index + 2,
+                    nesting + paren_depth + 1,
+                )
+                if end is None:
+                    return (None, verdict)
+                index = end
+                continue
+
+            char = command[index]
+            previous = command[index - 1] if index > operand_start else ""
+            if char == "'":
+                end, verdict = scan_single_quote(index + 1)
+                if end is None:
+                    return (None, verdict)
+                index = end
+            elif char == '"':
+                end, verdict = scan_double_quote(
+                    index + 1,
+                    nesting + paren_depth,
+                )
+                if end is None:
+                    return (None, verdict)
+                index = end
+            elif char == "\\":
+                if index + 1 >= limit:
+                    return (None, unfinished_verdict())
+                index += 2
+            elif char == "`":
+                end, verdict = scan_backtick(index + 1)
+                if end is None:
+                    return (None, verdict)
+                index = end
+            elif char == "#" and (
+                previous.isspace()
+                or previous in _REDIRECTION_OPERAND_COMMENT_PREDECESSORS
+            ):
+                end = command.find("\n", index + 1, limit)
+                index = limit if end < 0 else end + 1
+            elif command.startswith("<<", index):
+                return (None, "undecidable")
+            elif char == "(":
+                paren_depth += 1
+                if (
+                    nesting + paren_depth
+                    > _MAX_REDIRECTION_OPERAND_DEPTH
+                ):
+                    return (None, "undecidable")
+                index += 1
+            elif char == ")":
+                if paren_depth:
+                    paren_depth -= 1
+                    index += 1
+                else:
+                    return (index + 1, "ok")
+            else:
+                index += 1
+        return (None, unfinished_verdict())
+
+    index = operand_start
+    while index < limit:
+        if command.startswith(("$(", "<(", ">("), index):
+            end, verdict = scan_parentheses(index + 2, 0)
+            if end is None:
+                return (None, verdict)
+            index = end
+            continue
+        if command.startswith("${", index):
+            end, verdict = scan_parameter(index + 2, 0)
+            if end is None:
+                return (None, verdict)
+            index = end
+            continue
+
+        char = command[index]
+        if char.isspace() or char in ";&|<>()":
+            return (index, "ok")
+        if char == "'":
+            end, verdict = scan_single_quote(index + 1)
+            if end is None:
+                return (None, verdict)
+            index = end
+        elif char == '"':
+            end, verdict = scan_double_quote(index + 1, 0)
+            if end is None:
+                return (None, verdict)
+            index = end
+        elif char == "\\":
+            if index + 1 < limit:
+                index += 2
+            elif index + 1 < length:
+                return (None, "undecidable")
+            else:
+                index += 1
+        elif char == "`":
+            end, verdict = scan_backtick(index + 1)
+            if end is None:
+                return (None, verdict)
+            index = end
+        else:
+            index += 1
+
+    if index == length:
+        return (index, "ok")
+    if command[index].isspace() or command[index] in ";&|<>()":
+        return (index, "ok")
+    return (None, "undecidable")
+
+
 def _read_shell_word(command: str, pos: int) -> tuple[int, int, str]:
     """Read one shell word without executing expansions."""
-    start = end = _skip_shell_whitespace(command, pos)
-    for kind, i, j, quote in _scan_shell(command, start, subst="u", brace=True):
-        if kind == "char" and quote is None and (command[i].isspace() or command[i] in ";&|<>()"):
+    start = _skip_shell_whitespace(command, pos)
+    end = start
+    for kind, i, j, quote in _scan_shell(
+        command, start, subst="u", brace=True
+    ):
+        if (
+            kind == "char"
+            and quote is None
+            and (
+                command[i].isspace()
+                or command[i] in ";&|<>()"
+            )
+        ):
             break
         end = j
     return (start, end, command[start:end])
@@ -1216,22 +1549,112 @@ def _mask_quoted_newlines_span(command: str, start: int, end: int) -> str:
     return "".join(out)
 
 
-def _iter_shell_command_word_spans(command: str):
+def _resolve_wrapper_option(
+    wrapper: str,
+    token: str,
+) -> tuple[str | None, str, str | None]:
+    """Resolve one sudo/env option word and its operand ownership.
+
+    The result is ``(canonical identity, operand source, attached bytes)``.
+    Operand source is ``none``, ``attached``, or ``separate``; attached bytes
+    remain a string so an explicitly empty ``--option=`` stays distinguishable.
+    Unknown or ambiguous options resolve to no identity and own no operand.
+    """
+    if wrapper == "sudo":
+        long_options = _SUDO_LONG_OPTION_ARITY
+        required_short = _SUDO_SHORT_OPTIONS_REQUIRED_ARG
+        optional_short = _SUDO_SHORT_OPTIONS_OPTIONAL_ARG
+        no_arg_short = _SUDO_SHORT_OPTIONS_NO_ARG
+    elif wrapper == "env":
+        long_options = _ENV_LONG_OPTION_ARITY
+        required_short = _ENV_SHORT_OPTIONS_REQUIRED_ARG
+        optional_short = _ENV_SHORT_OPTIONS_OPTIONAL_ARG
+        no_arg_short = _ENV_SHORT_OPTIONS_NO_ARG
+    else:
+        return (None, "none", None)
+
+    if token.startswith("--"):
+        option, equals, value = token.partition("=")
+        canonical = option if option in long_options else None
+        if canonical is None:
+            matches = [
+                candidate
+                for candidate in long_options
+                if candidate.startswith(option)
+            ]
+            if len(matches) != 1:
+                return (None, "none", None)
+            canonical = matches[0]
+        arity = long_options[canonical]
+        if arity == "required":
+            return (
+                (canonical, "attached", value)
+                if equals
+                else (canonical, "separate", None)
+            )
+        if arity == "optional" and equals:
+            return (canonical, "attached", value)
+        return (canonical, "none", None)
+
+    if (
+        not token.startswith("-")
+        or token == "-"
+        or len(token) < 2
+    ):
+        return (None, "none", None)
+
+    chars = token[1:]
+    for index, char in enumerate(chars):
+        if char in required_short or char in optional_short:
+            attached = chars[index + 1:]
+            return (
+                (f"-{char}", "attached", attached)
+                if attached
+                else (f"-{char}", "separate", None)
+            )
+        if char not in no_arg_short:
+            return (None, "none", None)
+    return (token, "none", None)
+
+
+def _iter_shell_command_word_spans(
+    command: str,
+    *,
+    hardline: bool = False,
+):
     """Yield command-position words that may be executable names."""
     for pos in _iter_shell_command_starts(command):
         wrapper, positionals = None, 0
         options, skip_arg = True, False
         while pos < len(command):
-            redirect = _SHELL_REDIRECTION_RE.match(command, _skip_shell_whitespace(command, pos))
+            redirection_start = _skip_shell_whitespace(command, pos)
+            redirect = _SHELL_REDIRECTION_RE.match(command, redirection_start)
             if redirect:
-                _, pos, _ = _read_shell_word(command, redirect.end())
+                operand_start = _skip_shell_whitespace(
+                    command, redirect.end()
+                )
+                operand_end, verdict = _scan_redirection_operand_end(
+                    command, operand_start
+                )
+                if verdict == "ok" and operand_end is not None:
+                    pos = operand_end
+                elif verdict == "unterminated" or hardline:
+                    break
+                else:
+                    _, pos, _ = _read_shell_word(command, redirect.end())
+                if pos <= redirection_start:
+                    break
                 continue
             word_start, word_end, word = _read_shell_word(command, pos)
             if word_start == word_end:
                 break
             pos = word_end
             deobfuscated = _deobfuscate_shell_word_for_detection(word)
-            name = os.path.basename(deobfuscated).lower()
+            name = (
+                _SHELL_PATH_SEPARATOR_RE.split(deobfuscated)[-1]
+                if hardline
+                else os.path.basename(deobfuscated)
+            ).lower()
             if skip_arg:
                 skip_arg = False
                 continue
@@ -1240,7 +1663,12 @@ def _iter_shell_command_word_spans(command: str):
                 continue
             if wrapper and options and deobfuscated.startswith("-"):
                 option = deobfuscated.split("=", 1)[0]
-                if wrapper == "env" and (option == "--split-string" or deobfuscated.startswith("-S")):
+                resolved_option, operand_source, _ = (
+                    _resolve_wrapper_option(wrapper, deobfuscated)
+                    if wrapper in {"sudo", "env"}
+                    else (None, "none", None)
+                )
+                if wrapper == "env" and resolved_option in {"--split-string", "-S"}:
                     # The split string and remaining argv form ONE command, handled
                     # by _env_split_payload; the suffix is not a new executable.
                     break
@@ -1248,7 +1676,15 @@ def _iter_shell_command_word_spans(command: str):
                 if option in queries or (wrapper == "command" and not option.startswith("--")
                                          and set(option[1:]) & {"v", "V"}):
                     break
-                skip_arg = "=" not in deobfuscated and option in _COMMAND_WRAPPER_OPTIONS_WITH_ARG.get(wrapper, set())
+                if wrapper in {"sudo", "env"}:
+                    skip_arg = operand_source == "separate"
+                else:
+                    skip_arg = (
+                        "=" not in deobfuscated
+                        and option in _COMMAND_WRAPPER_OPTIONS_WITH_ARG.get(
+                            wrapper, set()
+                        )
+                    )
                 continue
             if positionals:
                 positionals -= 1
@@ -1336,19 +1772,122 @@ def _env_split_payload(tokens: list[str]) -> str | None:
         token = tokens[index]
         if token == "--" or not token.startswith("-"):
             return None
-        option, equals, value = token.partition("=")
-        if option == "--split-string" or token.startswith("-S"):
-            attached = equals if option == "--split-string" else len(token) > 2
-            if not attached:
-                index += 1
-            payload = (value if option == "--split-string" else token[2:]) if attached else (
-                tokens[index] if index < len(tokens) else "")
+        identity, operand_source, attached = _resolve_wrapper_option("env", token)
+        if identity in {"--split-string", "-S"}:
+            if operand_source == "attached":
+                if attached is None:
+                    return None
+                payload = attached
+                remaining = tokens[index + 1:]
+            elif operand_source == "separate":
+                payload_index = index + 1
+                payload = tokens[payload_index] if payload_index < len(tokens) else ""
+                remaining = tokens[payload_index + 1:]
+            else:
+                return None
             args = _split_env_string(payload)
             # Protect literal separators when reusing command-position detection;
             # only a real shell -c carrier may turn these argv bytes into code.
-            return shlex.join(args + tokens[index + 1:]) if args is not None else None
-        index += 2 if not equals and option in _COMMAND_WRAPPER_OPTIONS_WITH_ARG["env"] else 1
+            return shlex.join(args + remaining) if args is not None else None
+        index += 2 if operand_source == "separate" else 1
     return None
+
+
+_WINDOWS_EXECUTABLE_WORD_RE = re.compile(
+    r"""^['"]?(?:[A-Za-z]:|\\\\|%[A-Za-z_][A-Za-z0-9_()]*%)[\\/]"""
+)
+_SHELL_PATH_SEPARATOR_RE = re.compile(r"[\\/]")
+_HARDLINE_EXECUTABLE_TOKEN_RE = re.compile(r"[A-Za-z0-9_./\\:+@%~,=-]+")
+_HARDLINE_EXECUTABLE_SUFFIX_RE = re.compile(
+    r"\.(?:exe|bat|cmd|com)$", re.IGNORECASE
+)
+_HARDLINE_EXECUTABLE_NAMES = frozenset({
+    "rm", "mkfs", "dd", "kill", "shutdown", "reboot", "halt",
+    "poweroff", "init", "systemctl", "telinit",
+})
+
+
+def _projected_executable_variants(
+    source: str,
+    pending: list[str],
+    *,
+    hardline: bool,
+):
+    """Yield executable-position projections and enqueue executable payloads."""
+    for start, end, word in _iter_shell_command_word_spans(
+        source, hardline=hardline
+    ):
+        if hardline and _WINDOWS_EXECUTABLE_WORD_RE.match(word):
+            word = word.replace("\\", "/")
+        executable = _deobfuscate_shell_word_for_detection(word)
+        if hardline:
+            base_source = (
+                executable[:-1] if executable.endswith("`") else executable
+            )
+            base = _SHELL_PATH_SEPARATOR_RE.split(base_source)[-1]
+            stripped = _HARDLINE_EXECUTABLE_SUFFIX_RE.sub("", base)
+            lowered = stripped.lower()
+            names = (executable, base, stripped) if (
+                _HARDLINE_EXECUTABLE_TOKEN_RE.fullmatch(base)
+                and (
+                    lowered in _HARDLINE_EXECUTABLE_NAMES
+                    or lowered.startswith("mkfs.")
+                )
+            ) else ()
+        else:
+            base = os.path.basename(executable)
+            names = (executable, base)
+
+        segment = None
+        if names:
+            segment = _shell_command_segment(source, start)
+            tail = segment[end - start:]
+            # Collapse only unquoted inter-word whitespace; quoted prose is data.
+            parts = []
+            for kind, i, j, quote in _scan_shell(tail):
+                if kind == "char" and quote is None and tail[i].isspace():
+                    if not parts or parts[-1] != " ":
+                        parts.append(" ")
+                else:
+                    parts.append(tail[i:j])
+            tail = "".join(parts)
+            for name in dict.fromkeys(names):
+                candidate = name + tail
+                yield candidate
+                # Match normalized text only after locating executable positions.
+                yield _normalize_command_for_detection(candidate)
+
+        env_name = base.lower() if hardline else base
+        if env_name == "env":
+            segment = (
+                segment
+                if segment is not None
+                else _shell_command_segment(source, start)
+            )
+            tokens = _shell_segment_tokens(segment, 0)
+            if tokens:
+                payload = _env_split_payload(tokens)
+                if payload:
+                    pending.append(payload)
+
+    for _, payload in _execution_flag_findings(
+        source, hardline=hardline
+    ):
+        if payload:
+            pending.append(payload)
+
+
+def _hardline_projected_variants(command: str):
+    """Project hardline command names from executable positions."""
+    pending, seen = [_mask_quoted_newlines(command)], set()
+    while pending:
+        source = pending.pop()
+        if source in seen:
+            continue
+        seen.add(source)
+        yield from _projected_executable_variants(
+            source, pending, hardline=True
+        )
 
 
 def _deny_command_variants(command: str):
@@ -1365,34 +1904,9 @@ def _deny_command_variants(command: str):
         if source in seen:
             continue
         seen.add(source)
-        for start, end, word in _iter_shell_command_word_spans(source):
-            segment = _shell_command_segment(source, start)
-            executable = _deobfuscate_shell_word_for_detection(word)
-            tail = segment[end - start:]
-            # Collapse only unquoted inter-word whitespace; quoted prose is data.
-            parts = []
-            for kind, i, j, quote in _scan_shell(tail):
-                if kind == "char" and quote is None and tail[i].isspace():
-                    if not parts or parts[-1] != " ":
-                        parts.append(" ")
-                else:
-                    parts.append(tail[i:j])
-            tail = "".join(parts)
-            for name in dict.fromkeys((executable, os.path.basename(executable))):
-                candidate = name + tail
-                yield candidate
-                # Apply the existing text matching semantics only AFTER locating
-                # executable positions; never parse its rewritten quotes again.
-                yield _normalize_command_for_detection(candidate)
-            if os.path.basename(executable) == "env":
-                tokens = _shell_segment_tokens(segment, 0)
-                if tokens:
-                    payload = _env_split_payload(tokens)
-                    if payload:
-                        pending.append(payload)
-        for _, payload in _execution_flag_findings(source):
-            if payload:
-                pending.append(payload)
+        yield from _projected_executable_variants(
+            source, pending, hardline=False
+        )
 
 
 def _command_detection_variants(command: str):

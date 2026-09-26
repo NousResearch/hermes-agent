@@ -468,6 +468,8 @@ hermes sessions delete 20250305_091523_a1b2c3d4
 hermes sessions delete 20250305_091523_a1b2c3d4 --yes
 ```
 
+Deleting a session that is still open in a running chat does not stop that chat: its next save recreates the session under the same id with the full in-memory transcript. Close the chat first if you want the session gone.
+
 ### Rename a Session
 
 ```bash

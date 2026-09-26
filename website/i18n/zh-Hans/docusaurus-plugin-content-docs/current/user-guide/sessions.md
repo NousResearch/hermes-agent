@@ -382,6 +382,8 @@ hermes sessions delete 20250305_091523_a1b2c3d4
 hermes sessions delete 20250305_091523_a1b2c3d4 --yes
 ```
 
+删除一个仍在运行中的对话所使用的 session 并不会结束该对话：它下一次保存时会以同一个 id 重建 session，并写入完整的内存中对话记录。如果希望该 session 彻底消失，请先关闭对话。
+
 ### 重命名 Session
 
 ```bash

@@ -296,8 +296,14 @@ def build_fill_js(fills: List[Dict[str, Any]], expected_origin: str, nonce: str 
     payload = json.dumps(
         [{"index": f["index"], "token": f.get("token", "current-password"), "value": f["value"]} for f in fills]
     )
-    return (_FILL_JS_TEMPLATE.replace("__EXPECTED_ORIGIN__", json.dumps(expected_origin))
-            .replace("__FILLS__", payload).replace("__NONCE__", json.dumps(nonce)))
+    values = {
+        "__EXPECTED_ORIGIN__": json.dumps(expected_origin),
+        "__FILLS__": payload,
+        "__NONCE__": json.dumps(nonce),
+    }
+    # Substitute only template tokens, never tokens inside inserted password data.
+    return re.sub(r"__(?:EXPECTED_ORIGIN|FILLS|NONCE)__",
+                  lambda match: values[match.group(0)], _FILL_JS_TEMPLATE)
 
 
 _FILL_JS_TEMPLATE = """(() => {

@@ -237,6 +237,16 @@ class TestClassifier:
         assert 'f.token === "current-password" && el.type !== "password"' in js  # a password fill never lands in a text box
         assert js.index('removeAttribute("data-hermes-vault-slot")') > js.index("setter.set.call")
 
+    def test_build_fill_js_preserves_template_tokens_inside_password(self):
+        value = "before__NONCE__between__FILLS__after__EXPECTED_ORIGIN__"
+        js = build_fill_js(
+            [{"index": 0, "token": "current-password", "value": value}],
+            expected_origin="https://example.com",
+            nonce="nonce-fixture",
+        )
+        payload = js.split("const fills = ", 1)[1].split(";", 1)[0]
+        assert json.loads(payload)[0]["value"] == value
+
     def test_build_fill_js_asserts_origin_before_any_write(self):
         # P1-2: the origin assert must run inside the SAME script, before
         # any element write.

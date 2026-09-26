@@ -31,6 +31,9 @@ from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
+# Private pairing contract: handoff middleware pins the profile/server/task-scoped cache.
+CAMOFOX_HANDOFF_PROTOCOL = 1
+
 # ---- Configuration ----
 
 _DEFAULT_TIMEOUT = 30  # fallback when config is unreadable

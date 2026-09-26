@@ -3853,10 +3853,13 @@ def _summary_user_content(agent: Any, messages: list) -> list:
     message = messages[idx]
     if not isinstance(message, dict) or message.get("role") != "user":
         return messages
-    from agent.session_persistence import durable_user_row_content
+    from agent.session_persistence import _override_replaces_content, durable_user_row_content
     content = message.get("content")
+    override = getattr(agent, "_persist_user_message_override", None)
+    if not _override_replaces_content(message, content, override):
+        return messages
     clean, _ = durable_user_row_content(agent, message, content, None)
-    if clean == content:
+    if clean == content and message.get("api_content", clean) == clean:
         return messages
     projected = copy.deepcopy(messages)
     _replace_message_content(projected[idx], copy.deepcopy(clean))

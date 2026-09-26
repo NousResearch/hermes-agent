@@ -54,6 +54,16 @@ def test_compaction_does_not_renew_model_switch_note(case):
     assert TASK in replay
     assert NOTE not in replay
     assert NOTE not in str(llm.call_args), "runtime metadata must not enter summary input"
+    # Continue the same task through a second real boundary, as in the report.
+    result.extend(copy.deepcopy(messages[2:]))
+    with patch("agent.context_compressor.call_llm", return_value=response) as second:
+        again, _ = compress_context(agent, result, agent._cached_system_prompt,
+                                    approx_tokens=200000, force=True)
+    assert second.called
+    assert NOTE not in str(again)
+    assert NOTE not in str(second.call_args)
+    rows = db.get_messages(agent.session_id)
+    assert NOTE not in str(rows), "active durable handoff must not restore the API-only note"
 
 
 @pytest.mark.parametrize("outcome", ["same", "copy", "raise", "empty", "aborted", "markers"])
@@ -78,6 +88,48 @@ def test_noncompaction_preserves_original_wire_bytes(case, outcome):
             result, _ = compress_context(agent, messages, agent._cached_system_prompt, force=True)
             assert result == original
     assert messages == original
+
+
+def test_summary_exception_fallback_keeps_clean_request(case):
+    agent, messages, db = case
+    with patch("agent.context_compressor.call_llm", side_effect=RuntimeError("fixture summary failure")) as llm:
+        result, _ = compress_context(agent, messages, agent._cached_system_prompt,
+                                     approx_tokens=200000, force=True)
+    assert llm.called
+    assert NOTE not in str(llm.call_args)
+    if result == messages:
+        assert NOTE in result[1]["content"]  # aborted summary preserves the live prefix
+    else:
+        assert NOTE not in str(result)
+        assert TASK in str(result)
+
+
+def test_commit_failure_restores_original_note_and_sidecar(case):
+    agent, messages, db = case
+    original = copy.deepcopy(messages)
+    response = MagicMock()
+    response.choices[0].message.content = "## Summary\nWork remains."
+    with patch("agent.context_compressor.call_llm", return_value=response), patch.object(
+        db, "archive_and_compact", side_effect=RuntimeError("fixture commit failure")
+    ) as commit:
+        result, _ = compress_context(agent, messages, agent._cached_system_prompt,
+                                     approx_tokens=200000, force=True)
+    assert commit.called
+    assert result == original
+    assert messages == original
+
+
+def test_clean_finalized_content_drops_runtime_sidecar_at_boundary():
+    from types import SimpleNamespace
+    from agent.conversation_compression import _summary_user_content
+    from agent.turn_context import substitute_api_content
+    agent = SimpleNamespace(_persist_user_message_idx=0, _persist_user_message_override=TASK)
+    rows = [{"role": "user", "content": TASK, "api_content": NOTE + TASK}]
+    projected = _summary_user_content(agent, rows)
+    wire = dict(projected[0])
+    substitute_api_content(wire)
+    assert wire["content"] == TASK
+    assert rows[0]["api_content"] == NOTE + TASK
 
 
 @pytest.mark.parametrize("override", [None, "", NOTE + " quoted deliberately", [{"type": "text", "text": TASK}]])

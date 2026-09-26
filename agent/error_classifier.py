@@ -1025,6 +1025,13 @@ def _status_403(c: _Ctx) -> Verdict:
     # 403 and on established block/challenge markers; any other 403 stays auth.
     if any(p in c.msg for p in _UPSTREAM_BLOCKED_PATTERNS):
         return _V_UPSTREAM_BLOCKED
+    if "model access is disabled" in c.msg:
+        from hermes_cli.models import normalize_provider
+
+        # Zen's model-level 403 is not a bad key (#124021). Reuse the
+        # model-scoped pool bench so the same key remains usable elsewhere.
+        if normalize_provider(c.provider_slug) == "opencode-zen":
+            return _V_MODEL_ENTITLEMENT
     return _V_AUTH_FALLBACK
 
 

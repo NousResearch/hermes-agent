@@ -222,6 +222,7 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
                 turn_report_path, exit_code=_single_query_exit_code(res),
                 error=str(res.get("error") or "") if isinstance(res, dict) else "agent turn did not run",
                 reply=res.get("final_response", "") if isinstance(res, dict) else str(res),
+                turn_exit_reason=res.get("turn_exit_reason") or "" if isinstance(res, dict) else "",
             )
 
         _report_turn(result)

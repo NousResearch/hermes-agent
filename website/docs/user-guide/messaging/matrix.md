@@ -362,21 +362,29 @@ Hermes supports Matrix end-to-end encryption, so you can chat with your bot in e
 ### Requirements
 
 E2EE needs `python-olm`, which wraps the archived `libolm` C library and only
-installs on **Linux**. There the `matrix` extra already includes it;
-`matrix-e2ee` requests just that part:
+installs on **Linux**. There the `matrix` extra already includes it, so installing
+Matrix installs E2EE too; there is nothing extra to request.
 
-```bash
-hermes pm install --extra matrix-e2ee
-```
-
-`python-olm` also needs `libolm` on the system:
+`python-olm` has no wheel for the Python that Hermes runs on, so it builds from
+source, compiling the copy of `libolm` it bundles (a system `libolm` is not used).
+The build needs GCC and CMake (or GNU make):
 
 ```bash
 # Debian/Ubuntu
-sudo apt install libolm-dev
+sudo apt install build-essential cmake
 
 # Fedora
-sudo dnf install libolm-devel
+sudo dnf install gcc gcc-c++ make cmake
+```
+
+Hermes' Python records Clang as its compiler, which many Linux systems don't have,
+and current Clang cannot compile `libolm` anyway, so point the build at GCC. With
+CMake 4 or newer, also accept the bundled project's old CMake minimum:
+
+```bash
+export CC=gcc CXX=g++
+export CMAKE_POLICY_VERSION_MINIMUM=3.5   # CMake 4 or newer only
+hermes pm install --extra matrix
 ```
 
 :::note macOS
@@ -496,7 +504,7 @@ Other Matrix clients (Element, matrix-commander) may cache the old device keys. 
 :::
 
 :::info
-If `mautrix[encryption]` is not installed or `libolm` is missing, the bot falls back to a plain (unencrypted) client automatically. You'll see a warning in the logs.
+If the E2EE dependencies are missing (always the case on macOS), `MATRIX_E2EE_MODE=optional` falls back to a plain (unencrypted) client and logs a warning. `required` mode, which `MATRIX_ENCRYPTION=true` also selects, refuses to connect instead; set `MATRIX_E2EE_MODE=off` or `optional` to run Matrix unencrypted.
 :::
 
 ## Home Room
@@ -624,10 +632,10 @@ On macOS this installs plaintext Matrix; encrypted rooms need Linux (see
 
 ### Encryption errors / "could not decrypt event"
 
-**Cause**: Missing encryption keys, `libolm` not installed, or the bot's device isn't trusted.
+**Cause**: Missing encryption keys, `python-olm` not installed, or the bot's device isn't trusted.
 
 **Fix**:
-1. Verify `libolm` is installed on your system (see the E2EE section above).
+1. Verify the E2EE dependencies are installed (Linux only; see [Requirements](#requirements)).
 2. Make sure `MATRIX_ENCRYPTION=true` is set in your `.env`.
 3. In your Matrix client (Element), go to the bot's profile -> Sessions -> verify/trust the bot's device.
 4. If the bot just joined an encrypted room, it can only decrypt messages sent *after* it joined. Older messages are inaccessible.
@@ -719,10 +727,11 @@ history, so other clients trust it immediately.
 ## Proxy Mode (E2EE on macOS)
 
 Matrix E2EE needs `python-olm`, which only installs on Linux (the `matrix-e2ee`
-extra). Plaintext Matrix runs natively on macOS; for encrypted rooms on macOS
-or Windows, run the Matrix adapter and encryption dependencies in a Linux
-container and forward requests to the native agent. The example below uses a macOS host; the same separation
-applies to Windows with the corresponding host address and authentication.
+extra). Plaintext Matrix runs natively on macOS, but not on native Windows. For
+encrypted rooms on macOS, or for any Matrix use on Windows, run the Matrix adapter
+and its encryption dependencies in a Linux container and forward requests to the
+native agent. The example below uses a macOS host; the same separation applies to
+Windows with the corresponding host address and authentication.
 
 ### How It Works
 
@@ -754,6 +763,14 @@ API_SERVER_ENABLED=true
 API_SERVER_KEY=your-secret-key-here
 API_SERVER_HOST=0.0.0.0
 ```
+
+:::warning[Keep Matrix off the host]
+Remove `MATRIX_ACCESS_TOKEN` and `MATRIX_PASSWORD` from the Mac's `~/.hermes/.env`.
+The host can run plaintext Matrix itself, so leftover credentials would connect a
+second, unencrypted client next to the container: duplicate replies, and on a shared
+token the host can consume the room keys the container needs. Give the container its
+own access token.
+:::
 
 - `API_SERVER_HOST=0.0.0.0` binds to all interfaces so the Docker container can reach it.
 - `API_SERVER_KEY` is required for non-loopback binding. Pick a strong random string.

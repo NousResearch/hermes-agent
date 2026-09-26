@@ -121,18 +121,28 @@ _PLATFORMS = [
 ]
 
 
+def _matrix_unsupported() -> bool:
+    """Hide Matrix exactly where pm refuses its extra: [tool.hermes.extras-platforms] is the one
+    authority for which extra installs where (today: not on native Windows; use WSL)."""
+    try:
+        from pm.extras import extra_supported
+        return not extra_supported("matrix", importable=lambda _anchor: False)
+    except Exception:
+        return sys.platform == "win32"
+
+
 def _all_platforms() -> list[dict]:
     """Built-in ``_PLATFORMS`` plus registry plugin platforms (same dict shape, source in
     ``_registry_entry``). Plugins are discovered here (idempotent) so the setup menu works without a
     running gateway; user-installed ones still need ``plugins.enabled`` (untrusted code). Matrix is
-    hidden on Windows: python-olm has no wheel or native build (use WSL)."""
+    hidden where its extra cannot install (``_matrix_unsupported``)."""
     try:
         from hermes_cli.plugins import discover_plugins
         discover_plugins()
     except Exception as e:
         _gw().logger.debug("plugin discovery failed during platform enumeration: %s", e)
 
-    hide_matrix = sys.platform == "win32"
+    hide_matrix = _matrix_unsupported()
     platforms = [dict(p) for p in _gw()._PLATFORMS if not (hide_matrix and p.get("key") == "matrix")]
     by_key = {p["key"]: p for p in platforms}
 

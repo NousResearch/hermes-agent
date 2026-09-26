@@ -244,20 +244,26 @@ Hermes 支持 Matrix 端对端加密，你可以在加密房间中与机器人�
 ### 前提条件
 
 E2EE 需要 `python-olm`，它封装了已归档的 `libolm` C 库，并且只能在 **Linux** 上安装。
-在 Linux 上，`matrix` extra 已包含它；`matrix-e2ee` 只请求这一部分：
+在 Linux 上，`matrix` extra 已包含它，因此安装 Matrix 时也会一并安装 E2EE，无需额外请求。
 
-```bash
-hermes pm install --extra matrix-e2ee
-```
-
-`python-olm` 还需要系统中安装 `libolm`：
+`python-olm` 没有适用于 Hermes 所用 Python 的 wheel，因此会从源码构建，编译它自带的
+`libolm`（不会使用系统中的 `libolm`）。构建需要 GCC 和 CMake（或 GNU make）：
 
 ```bash
 # Debian/Ubuntu
-sudo apt install libolm-dev
+sudo apt install build-essential cmake
 
 # Fedora
-sudo dnf install libolm-devel
+sudo dnf install gcc gcc-c++ make cmake
+```
+
+Hermes 的 Python 记录的编译器是 Clang，而许多 Linux 系统并未安装它；何况当前的 Clang 也无法编译
+`libolm`，因此请让构建使用 GCC。如果使用 CMake 4 或更新版本，还需要接受该项目较旧的 CMake 最低版本：
+
+```bash
+export CC=gcc CXX=g++
+export CMAKE_POLICY_VERSION_MINIMUM=3.5   # 仅 CMake 4 及更新版本需要
+hermes pm install --extra matrix
 ```
 
 :::note macOS
@@ -331,7 +337,7 @@ Hermes 在启动时会检测到此情况并拒绝启用 E2EE，日志显示：`d
 :::
 
 :::info
-如果未安装 `mautrix[encryption]` 或缺少 `libolm`，机器人会自动回退到普通（未加密）客户端。你会在日志中看到警告。
+如果缺少 E2EE 依赖（在 macOS 上总是如此），`MATRIX_E2EE_MODE=optional` 会回退到普通（未加密）客户端，并在日志中记录警告。`required` 模式（`MATRIX_ENCRYPTION=true` 也会选择该模式）则会拒绝连接；如需以未加密方式运行 Matrix，请设置 `MATRIX_E2EE_MODE=off` 或 `optional`。
 :::
 
 ## 主房间
@@ -433,10 +439,10 @@ hermes pm install --extra matrix
 
 ### 加密错误/"无法解密事件"
 
-**原因**：缺少加密密钥、未安装 `libolm`，或机器人设备未被信任。
+**原因**：缺少加密密钥、未安装 `python-olm`，或机器人设备未被信任。
 
 **解决方法**：
-1. 确认系统上已安装 `libolm`（参见上方 E2EE 章节）。
+1. 确认已安装 E2EE 依赖（仅限 Linux；参见上文的“前提条件”）。
 2. 确保 `.env` 中设置了 `MATRIX_ENCRYPTION=true`。
 3. 在你的 Matrix 客户端（Element）中，进入机器人的个人资料 → 会话 → 验证/信任机器人的设备。
 4. 如果机器人刚加入加密房间，它只能解密*加入后*发送的消息。更早的消息无法访问。
@@ -509,7 +515,7 @@ hermes pm install --extra matrix
 
 ## 代理模式（macOS 上的 E2EE）
 
-Matrix E2EE 需要 `python-olm`，它只能在 Linux 上安装（`matrix-e2ee` extra）。明文 Matrix 可以在 macOS 上原生运行；如需在 macOS 上使用加密房间，代理模式允许你在 Linux 虚拟机的 Docker 容器中运行 E2EE，而实际的 agent 在 macOS 上原生运行，可完整访问你的本地文件、记忆和技能。
+Matrix E2EE 需要 `python-olm`，它只能在 Linux 上安装（`matrix-e2ee` extra）。明文 Matrix 可以在 macOS 上原生运行，但不能在原生 Windows 上运行。如需在 macOS 上使用加密房间，或在 Windows 上使用 Matrix，代理模式允许你在 Linux 虚拟机的 Docker 容器中运行 Matrix 适配器和 E2EE，而实际的 agent 在主机上原生运行，可完整访问你的本地文件、记忆和技能。
 
 ### 工作原理
 
@@ -541,6 +547,12 @@ API_SERVER_ENABLED=true
 API_SERVER_KEY=your-secret-key-here
 API_SERVER_HOST=0.0.0.0
 ```
+
+:::warning[不要在主机上运行 Matrix]
+从 Mac 的 `~/.hermes/.env` 中删除 `MATRIX_ACCESS_TOKEN` 和 `MATRIX_PASSWORD`。主机本身可以运行
+明文 Matrix，残留的凭据会让它在容器之外再连接一个未加密的客户端：导致重复回复；如果共用同一个
+令牌，主机还可能取走容器所需的房间密钥。请为容器使用单独的访问令牌。
+:::
 
 - `API_SERVER_HOST=0.0.0.0` 绑定到所有接口，使 Docker 容器可以访问。
 - `API_SERVER_KEY` 是非回环绑定的必填项。请选择一个强随机字符串。

@@ -293,8 +293,10 @@ def legacy_selection(project_root: Path) -> list[str]:
              if tree.is_dir()]
     carried = sorted(
         # An umbrella extra shares its anchor with one member; carrying it
-        # would install every sibling the user never chose.
-        extra for extra in ANCHORS if extra not in {"messaging", "voice", "wake"}
+        # would install every sibling the user never chose. `matrix-e2ee` is
+        # the olm part that Linux's `matrix` already carries: alone it would put
+        # a python-olm source build into the migration without the rest of Matrix.
+        extra for extra in ANCHORS if extra not in {"messaging", "voice", "wake", "matrix-e2ee"}
         # PM refuses a gated extra outside its platform even if a hand-synced venv carried it.
         # Installed first: judging a gate may cost a PM-runtime subprocess.
         if any(all(_installed_in(tree, anchor) for anchor in _anchors(extra)) for tree in trees)

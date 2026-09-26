@@ -59,6 +59,14 @@ def test_sync_refuses_python_gated_extra_before_touching_environment(monkeypatch
         engine.sync_venv(["unavailable-engine"], explicit=True)
 
 
+# (sys_platform, platform_system, platform_machine) of every target the gates are judged on.
+_TARGETS = [
+    ("linux", "Linux", "x86_64"), ("linux", "Linux", "aarch64"),
+    ("darwin", "Darwin", "x86_64"), ("darwin", "Darwin", "arm64"),
+    ("win32", "Windows", "AMD64"), ("win32", "Windows", "ARM64"),
+]
+
+
 def test_declared_extra_gates_match_dependency_selection():
     import tomllib
     from pathlib import Path
@@ -68,12 +76,7 @@ def test_declared_extra_gates_match_dependency_selection():
     root = Path(__file__).resolve().parents[2]
     metadata = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     optional = metadata["project"]["optional-dependencies"]
-    targets = [
-        ("linux", "Linux", "x86_64"), ("linux", "Linux", "aarch64"),
-        ("darwin", "Darwin", "x86_64"), ("darwin", "Darwin", "arm64"),
-        ("win32", "Windows", "AMD64"), ("win32", "Windows", "ARM64"),
-    ]
-    for system, platform_system, machine in targets:
+    for system, platform_system, machine in _TARGETS:
         for python in ("3.12", "3.13", "3.14"):
             environment = {**default_environment(), "sys_platform": system,
                            "platform_system": platform_system, "platform_machine": machine,
@@ -113,44 +116,15 @@ def test_faster_whisper_targets_are_gated(monkeypatch):
     assert supported == {"win32-arm64": False, "darwin-x64": False, "linux-x64": True}
 
 
-def test_matrix_plaintext_and_e2ee_targets_are_gated_apart(monkeypatch):
-    """Only Matrix E2EE needs python-olm, whose vendored libolm builds on Linux only.
+def test_plaintext_matrix_never_needs_python_olm(monkeypatch):
+    """#62401: only Matrix E2EE needs python-olm, whose vendored libolm builds on Linux only, yet the
+    whole ``matrix`` extra was gated to Linux, so macOS could not install plaintext Matrix at all.
 
-    Gating the whole ``matrix`` extra to Linux took plaintext Matrix away from macOS, though bare
-    mautrix is pure Python and the adapter imports ``mautrix.crypto`` only for E2EE (#62401).
-    ``matrix`` now installs plaintext on darwin while Linux keeps ``mautrix[encryption]``, and
-    ``matrix-e2ee`` — the olm-bound part, as ``stt-whisper`` is for ``voice`` — stays Linux-only.
-    win32 stays gated for both: asyncpg has no win_arm64 wheel.
+    ``matrix`` must be supported on darwin. Wherever it is supported but ``matrix-e2ee`` is not, it
+    must select nothing olm-bound, and a working plaintext install there (everything but olm
+    imports) must not read as E2EE-capable. Its availability must never depend on olm either, or
+    each adapter start would re-sync and still report Matrix missing.
     """
-    monkeypatch.setattr(extras, "_PLATFORM_GATES", None)
-    targets = {
-        "win32-x64": {"sys_platform": "win32", "platform_system": "Windows",
-                      "platform_machine": "AMD64", "os_name": "nt"},
-        "win32-arm64": {"sys_platform": "win32", "platform_system": "Windows",
-                        "platform_machine": "ARM64", "os_name": "nt"},
-        "darwin-x64": {"sys_platform": "darwin", "platform_system": "Darwin",
-                       "platform_machine": "x86_64", "os_name": "posix"},
-        "darwin-arm64": {"sys_platform": "darwin", "platform_system": "Darwin",
-                         "platform_machine": "arm64", "os_name": "posix"},
-        "linux-x64": {"sys_platform": "linux", "platform_system": "Linux",
-                      "platform_machine": "x86_64", "os_name": "posix"},
-    }
-
-    def supported(extra):
-        return {target: extras.extra_supported(extra, environment=environment,
-                                               importable=lambda _: False)
-                for target, environment in targets.items()}
-
-    assert supported("matrix") == {"win32-x64": False, "win32-arm64": False, "darwin-x64": True,
-                                   "darwin-arm64": True, "linux-x64": True}
-    assert supported("matrix-e2ee") == {"win32-x64": False, "win32-arm64": False, "darwin-x64": False,
-                                        "darwin-arm64": False, "linux-x64": True}
-
-
-def test_matrix_never_pulls_python_olm_where_e2ee_is_gated_off(monkeypatch):
-    """#62401: ``matrix`` required ``mautrix[encryption]`` on hosts where python-olm cannot build,
-    so plaintext Matrix could not be installed there at all. Wherever ``matrix-e2ee`` is gated
-    off, the ``matrix`` extra must select nothing that pulls python-olm."""
     import tomllib
     from pathlib import Path
     from packaging.markers import default_environment
@@ -160,25 +134,26 @@ def test_matrix_never_pulls_python_olm_where_e2ee_is_gated_off(monkeypatch):
     root = Path(__file__).resolve().parents[2]
     matrix = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))[
         "project"]["optional-dependencies"]["matrix"]
-    for system, platform_system, machine in [
-        ("linux", "Linux", "x86_64"), ("darwin", "Darwin", "x86_64"), ("darwin", "Darwin", "arm64"),
-        ("win32", "Windows", "AMD64"), ("win32", "Windows", "ARM64"),
-    ]:
+
+    def supported(extra, environment, importable=lambda _anchor: False):
+        return extras.extra_supported(extra, environment=environment, importable=importable)
+
+    assert "olm" not in extras._anchors("matrix")
+    plaintext_only = []
+    for system, platform_system, machine in _TARGETS:
         environment = {**default_environment(), "sys_platform": system,
                        "platform_system": platform_system, "platform_machine": machine}
-        if extras.extra_supported("matrix-e2ee", environment=environment, importable=lambda _: False):
+        assert system != "darwin" or supported("matrix", environment), machine
+        if not supported("matrix", environment) or supported("matrix-e2ee", environment):
             continue
+        plaintext_only.append((system, machine))
         olm_bound = [str(req) for req in map(Requirement, matrix)
                      if (req.marker is None or req.marker.evaluate(environment))
                      and ("encryption" in req.extras or req.name == "python-olm")]
         assert not olm_bound, (system, machine, olm_bound)
-
-
-def test_matrix_availability_does_not_require_python_olm():
-    """If ``matrix``'s anchors required olm, macOS could never satisfy them: each adapter start
-    would re-sync the environment and still report Matrix missing. Only ``matrix-e2ee`` proves olm."""
-    assert "olm" not in extras._anchors("matrix")
-    assert "olm" in extras._anchors("matrix-e2ee")
+        assert not supported("matrix-e2ee", environment, importable=lambda anchor: anchor != "olm"), (
+            system, machine)
+    assert plaintext_only, "no target runs Matrix without E2EE, so the olm checks never ran"
 
 
 @pytest.fixture
@@ -298,6 +273,9 @@ def test_legacy_selection_carries_extras_the_main_era_venv_lazily_installed(monk
     (site / "google" / "auth").mkdir()
     (site / "exa_py.cpython-311-x86_64-linux-gnu.so").write_bytes(b"")
     (site / "hindsight_client").mkdir()
+    # A hand-installed `mautrix[encryption]` without the rest of [matrix].
+    (site / "mautrix").mkdir()
+    (site / "olm").mkdir()
 
     selection = extras.legacy_selection(tmp_path)
 
@@ -306,6 +284,8 @@ def test_legacy_selection_carries_extras_the_main_era_venv_lazily_installed(monk
     assert "messaging" not in selection
     assert "piper" not in selection
     assert "hindsight" not in selection  # Catalog plugin owns this dependency, not a core extra.
+    # Carried alone, matrix-e2ee would make the migration build python-olm from source.
+    assert "matrix-e2ee" not in selection
     assert extras.legacy_selection(tmp_path / "no-venv") == ["all"]
 
 

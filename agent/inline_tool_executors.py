@@ -134,6 +134,7 @@ def _session_search(agent, args: dict, ctx: InlineToolContext) -> Any:
             ("exclude_session_ids", "exclude_session_ids"),
         ),
         db=session_db, current_session_id=agent.session_id,
+        platform=getattr(agent, "platform", None),
     )
 
 

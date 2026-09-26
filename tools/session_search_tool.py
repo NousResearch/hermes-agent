@@ -616,10 +616,31 @@ def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
         exclude_session_ids=_normalize_exclude_session_ids(exclude_session_ids))
 
 
+def _shape_session_links(raw_result: str, platform: str = None) -> str:
+    """Only Desktop can render the internal references in session-search results."""
+    surface = str(getattr(platform, "value", platform) or "").strip().lower()
+    if not surface or surface == "desktop":
+        return raw_result
+    payload = json.loads(raw_result)
+    if not payload.get("success"):
+        return raw_result
+    payload.pop("link", None)
+    for entry in payload.get("results") or []:
+        entry.pop("link", None)
+    if payload.get("mode") in {"discover", "browse", "read"}:
+        payload["link_hint"] = (
+            "Desktop-only session references cannot render here. Refer to the result "
+            "title (or session_meta.title) in plain text; do not write a session "
+            "reference, ID, or Markdown link."
+        )
+    return json.dumps(payload, ensure_ascii=False)
+
+
 def session_search(query: str = "", role_filter: str = None, limit: int = 3, db=None,
                    current_session_id: str = None, session_id: str = None, around_message_id: int = None,
                    window: int = 5, sort: str = None, profile: str = None, detail: str = "adaptive",
-                   after: str = None, before: str = None, exclude_session_ids: Optional[List[str]] = None) -> str:
+                   after: str = None, before: str = None, exclude_session_ids: Optional[List[str]] = None,
+                   platform: str = None) -> str:
     """Run session search, closing DBs opened here. Positional order is frozen for old callers;
     new parameters are appended after ``detail``."""
     from hermes_state import format_session_db_unavailable
@@ -631,9 +652,10 @@ def session_search(query: str = "", role_filter: str = None, limit: int = 3, db=
             return tool_error(format_session_db_unavailable(), success=False)
         owned_dbs.append(db)
     try:
-        return _dispatch(query, role_filter, limit, db, current_session_id, session_id,
-                         around_message_id, window, sort, profile, detail, owned_dbs,
-                         after=after, before=before, exclude_session_ids=exclude_session_ids)
+        result = _dispatch(query, role_filter, limit, db, current_session_id, session_id,
+                           around_message_id, window, sort, profile, detail, owned_dbs,
+                           after=after, before=before, exclude_session_ids=exclude_session_ids)
+        return _shape_session_links(result, platform)
     finally:
         for owned_db in reversed(owned_dbs):
             _quiet(lambda: release_or_close(owned_db), None, "Failed to close session_search SessionDB")
@@ -790,6 +812,7 @@ registry.register(
     handler=lambda args, **kw: session_search(
         query=args.get("query") or "", limit=args.get("limit", 3), window=args.get("window", 5),
         detail=args.get("detail", "adaptive"), db=kw.get("db"), current_session_id=kw.get("current_session_id"),
+        platform=kw.get("platform"),
         **{k: args.get(k) for k in ("role_filter", "session_id", "around_message_id", "sort", "profile",
                                     "after", "before", "exclude_session_ids")}),
     check_fn=check_session_search_requirements,

@@ -1206,12 +1206,17 @@ def check_all_command_guards(command: str, env_type: str,
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
     warnings = []
     session_key = get_current_session_key()
+    tirith_severe = False
     if tirith_result["action"] in {"block", "warn"}:
         findings = tirith_result.get("findings") or []
         rule_id = findings[0].get("rule_id", "unknown") if findings else "unknown"
         tirith_key = f"tirith:{rule_id}"
         if not is_approved(session_key, tirith_key):
             warnings.append((tirith_key, _format_tirith_description(tirith_result), True))
+            tirith_severe = any(
+                (f.get("severity") or "").upper() in {"HIGH", "CRITICAL"}
+                for f in findings
+            )
     if is_dangerous and not is_approved(session_key, pattern_key):
         warnings.append((pattern_key, description, False))
     if not warnings:
@@ -1221,6 +1226,15 @@ def check_all_command_guards(command: str, env_type: str,
     primary_key = warnings[0][0]
     all_keys = [key for key, _, _ in warnings]
 
+    # A HIGH/CRITICAL Tirith finding must never be auto-approved by the guardian LLM: the severity
+    # only reaches the guardian's prompt as prose inside the description, so nothing structural
+    # enforces it and commands the scanner rated most dangerous could be waved through (#124172).
+    # Those findings skip the smart gate and escalate to a human; lower severities keep it.
+    if tirith_severe and approval_mode == "smart":
+        logger.info(
+            "Smart approval skipped: Tirith rated this command HIGH/CRITICAL, escalating to the user"
+        )
+
     # "Always" is offered when at least one warning is a dangerous-pattern key the persistence layer would actually
     # allowlist permanently. Pure-tirith findings are session-max by design, so a tirith-only prompt hides Always;
     # mixed prompts offer it (the pattern key persists, tirith downgrades to session — see _persist_choice).
@@ -1228,7 +1242,8 @@ def check_all_command_guards(command: str, env_type: str,
         _COMMAND_GATE, command=command, description=combined_desc,
         pattern_key=primary_key, pattern_keys=all_keys, warnings=warnings,
         session_key=session_key, approval_callback=approval_callback,
-        is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask, smart=approval_mode == "smart",
+        is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask,
+        smart=approval_mode == "smart" and not tirith_severe,
         permanent_capable=any(not is_t for _, _, is_t in warnings),
     )
 

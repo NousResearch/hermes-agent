@@ -82,7 +82,10 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
         files.update(str(p.relative_to(source)) for p in source.glob(pattern))
     files.update(p.name for p in source.glob("*.py"))
 
-    excluded = {".git", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", "release", "uv.lock"}
+    # The workspace root's uv.lock is supplied separately by lock_and_sync from the
+    # seed lock; a member's own lock (e.g. pm/uv.lock, which pm/runtime.py::_inputs
+    # hashes for the runtime generation) is a build input and must survive the copy.
+    excluded = {".git", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", "release"}
     def ignore(directory, names):
         return [name for name in names if name in excluded or name.startswith(".")
                 or name.endswith(".egg-info") or (Path(directory) / name).is_symlink()]

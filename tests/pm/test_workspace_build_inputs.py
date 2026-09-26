@@ -240,3 +240,59 @@ def test_plugin_can_move_compatible_transitive_but_not_exact_requirement(tmp_pat
                                 capture_output=True, text=True, check=True, timeout=30)
         assert result.stdout.strip() == "1.0 1.3"
     assert (baseline / "uv.lock").read_bytes() == first_lock
+
+
+def _member_snapshot_fixture(tmp_path):
+    """Core source with a pm member that carries its own build lock."""
+    core = tmp_path / "core"
+    (core / "pm").mkdir(parents=True)
+    (core / "core").mkdir()
+    (core / "pyproject.toml").write_text(
+        '[project]\nname="core"\nversion="1"\nrequires-python=">=3.11"\n'
+        '[tool.setuptools.packages.find]\ninclude=["core", "pm"]\n',
+        encoding="utf-8",
+    )
+    (core / "core/__init__.py").write_text("", encoding="utf-8")
+    # The workspace-root lock is re-supplied from the seed by lock_and_sync,
+    # so the snapshot must not copy it.
+    (core / "uv.lock").write_text("version = 1\n# root lock\n", encoding="utf-8")
+    (core / "pm/pyproject.toml").write_text('[project]\nname="pm"\nversion="1"\n', encoding="utf-8")
+    (core / "pm/uv.lock").write_text("version = 1\n# member lock\n", encoding="utf-8")
+    return core
+
+
+def test_materialized_member_keeps_its_own_uv_lock(tmp_path):
+    """The snapshot must carry pm/uv.lock; without it every pm command dies.
+
+    ``pm/runtime.py::_inputs()`` hashes ``<workspace>/pm/{pyproject.toml,uv.lock}``
+    to key the runtime generation, so a workspace materialized without the
+    member lock fails at preflight with FileNotFoundError before doing any work.
+    """
+    core = _member_snapshot_fixture(tmp_path)
+    destination = tmp_path / "workspace"
+
+    workspace._copy_core_inputs(core, destination)
+
+    assert (destination / "pm/pyproject.toml").is_file()
+    # Regression: the member's own lock is a build input and must survive.
+    assert (destination / "pm/uv.lock").read_text(encoding="utf-8") == "version = 1\n# member lock\n"
+    # The workspace-root lock stays excluded; lock_and_sync re-supplies it.
+    assert not (destination / "uv.lock").exists()
+
+
+def test_materialized_pm_runtime_identity_reads_snapshot_lock(tmp_path):
+    """A materialized install must expose the lock `hermes pm <cmd>` preflight reads.
+
+    This is the exact preflight path from the bug report: runtime_command ->
+    runtime_python -> prepare_runtime -> _inputs(project=<pm package dir>).
+    """
+    from pm import runtime
+
+    core = _member_snapshot_fixture(tmp_path)
+    destination = tmp_path / "workspace"
+    workspace._copy_core_inputs(core, destination)
+
+    # FileNotFoundError here is the reported `hermes pm ...` failure.
+    identity = runtime._inputs(destination / "pm", Path(sys.executable))
+
+    assert len(identity) == 64

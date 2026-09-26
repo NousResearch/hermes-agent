@@ -132,7 +132,7 @@ def _make_loop_agent():
     return agent
 
 
-def _run_with_responses(agent, responses):
+def _run_with_responses(agent, responses, *, user_message="do some tool work"):
     agent.client.chat.completions.create.side_effect = responses
     with (
         patch.object(agent, "_flush_messages_to_session_db", return_value=True),
@@ -140,7 +140,7 @@ def _run_with_responses(agent, responses):
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
     ):
-        result = agent.run_conversation("do some tool work")
+        result = agent.run_conversation(user_message)
     return result
 
 
@@ -222,6 +222,47 @@ def test_exhaustion_after_a_completed_request_is_not_a_refused_review(caplog):
 
     assert agent.client.chat.completions.create.call_count >= 1
     assert "Background review skipped" not in caplog.text
+
+
+def test_retry_of_a_failed_attempt_reserves_the_request_once():
+    """The aggregate budget is reserved once per REQUEST, not per provider attempt. A request
+    projected above half the remaining budget (the normal long-session case once the replay
+    fills it) whose first attempt dies of a retryable provider error must still be retried:
+    the failed attempt's reservation is released, the retry is admitted and completes, and the
+    counter carries one projection, never two."""
+    agent = _make_loop_agent()
+    agent._review_input_token_budget = 100_000
+
+    class RateLimited(Exception):
+        status_code = 429
+
+    reserved_per_attempt = []
+
+    def _create(**_kwargs):
+        reserved_per_attempt.append(agent._review_input_tokens_reserved)
+        if len(reserved_per_attempt) == 1:
+            raise RateLimited("rate limit exceeded")
+        return _final_response()
+
+    with patch("agent.turn_api_error.interruptible_backoff_sleep", return_value=None):
+        result = _run_with_responses(agent, _create, user_message="x" * 300_000)
+
+    create = agent.client.chat.completions.create
+    assert create.call_count == 2, (
+        f"expected the retry of the failed attempt to be admitted, but {create.call_count} "
+        f"provider call(s) were made (reserved={agent._review_input_tokens_reserved}, "
+        f"budget={agent._review_input_token_budget})"
+    )
+    assert result["completed"] is True
+    projection = reserved_per_attempt[0]
+    # The case under test: one request alone projects above half the budget but fits in it.
+    assert (
+        agent._review_input_token_budget // 2
+        < projection
+        <= agent._review_input_token_budget
+    )
+    assert reserved_per_attempt == [projection, projection]
+    assert agent._review_input_tokens_reserved == projection
 
 
 def test_no_budget_attribute_leaves_tool_loop_unbounded():

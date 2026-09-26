@@ -146,7 +146,7 @@ def _review_input_tokens_consumed(agent: Any) -> int:
 
 
 def _reserve_review_input_request(agent: Any, projected_tokens: Any) -> bool:
-    """Reserve one provider attempt against a detached automatic review's hard budget."""
+    """Reserve one provider request against a detached automatic review's hard budget."""
     if getattr(agent, "_review_revoked", False):
         return False
     budget = getattr(agent, "_review_input_token_budget", None)
@@ -163,6 +163,14 @@ def _reserve_review_input_request(agent: Any, projected_tokens: Any) -> bool:
         return False
     agent._review_input_tokens_reserved = consumed + projected_tokens
     return True
+
+
+def _release_review_input_request(agent: Any, reserved_before: int) -> None:
+    """Roll an attempt's reservation back when it ended without a completed response, so the
+    retry of the same request reserves its projection once, not on top of the stale one. Real
+    usage from a completed attempt lives in ``session_prompt_tokens`` and stays counted."""
+    if hasattr(agent, "_review_input_tokens_reserved"):
+        agent._review_input_tokens_reserved = reserved_before
 
 
 def _log_refused_review_first_request(agent: Any) -> None:
@@ -1531,6 +1539,10 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[Dict[str, Any]]:
 
     Returns a turn result dict when a phase ends the turn, else None once the loop is left
     (success, a restart armed on ``s._retry``, interrupt, or retries exhausted)."""
+    # The review input budget is reserved once per REQUEST: an attempt that raises produced
+    # no completed response, so its projection is released before the handler decides on a
+    # retry — else a request above half the remaining budget is refused on its own retry.
+    reserved_before_request = getattr(agent, "_review_input_tokens_reserved", 0)
     while s.retry_count < s.max_retries:
         if not _reserve_review_input_request(agent, s.request_pressure_tokens):
             s._turn_exit_reason = "review_input_budget_exhausted"
@@ -1551,9 +1563,11 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[Dict[str, Any]]:
             if _rc.action == "break":
                 return None
         except InterruptedError:
+            _release_review_input_request(agent, reserved_before_request)
             if _run_phase(handle_api_interrupt, agent, s).action == "break":
                 return None
         except Exception as api_error:
+            _release_review_input_request(agent, reserved_before_request)
             _ae = _run_phase(handle_api_error, agent, s, api_error=api_error)
             if _ae.action == "return":
                 return _ae.result

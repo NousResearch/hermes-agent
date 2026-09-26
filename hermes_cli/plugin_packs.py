@@ -432,19 +432,35 @@ def _source_to_repo_subdir(source: str) -> tuple[Optional[str], Optional[str]]:
     return base.strip() or None, subdir
 
 
-def _sanitized_entry_config(plugin_id: str) -> dict[str, Any]:
-    """Exportable plugins.entries.<id> keys: YAML scalars/containers only, reserved and
-    secret-shaped keys stripped at every depth."""
-    try:
-        from hermes_cli.config import load_config
+def _redact_string_leaves(value: Any) -> Any:
+    """Force-redact string leaves at every depth with the same pass profile export uses
+    (agent.redact.redact_sensitive_text(force=True)) — belt-and-braces for a secret hardcoded
+    directly in config.yaml rather than referenced via ``${VAR}``."""
+    from agent.redact import redact_sensitive_text
 
-        config = load_config() or {}
+    if isinstance(value, dict):
+        return {key: _redact_string_leaves(child) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_redact_string_leaves(child) for child in value]
+    if isinstance(value, str):
+        return redact_sensitive_text(value, force=True)
+    return value
+
+
+def _sanitized_entry_config(plugin_id: str) -> dict[str, Any]:
+    """Exportable plugins.entries.<id> keys: read from the RAW, unexpanded config so a ``${VAR}``
+    reference exports as the literal reference (never the .env value it resolves to), then strip
+    reserved/secret-shaped keys and force-redact remaining string values at every depth."""
+    try:
+        from hermes_cli.config import read_raw_config_readonly
+
+        config = read_raw_config_readonly() or {}
     except Exception:
         return {}
     entry = ((config.get("plugins") or {}).get("entries") or {}).get(plugin_id)
     if not isinstance(entry, dict):
         return {}
-    return _strip_forbidden_keys(entry)
+    return _redact_string_leaves(_strip_forbidden_keys(entry))
 
 
 def export_pack(*, enabled_only: bool = False, pack_name: str = "my-hermes-pack") -> tuple[str, List[str]]:

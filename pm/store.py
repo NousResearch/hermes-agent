@@ -302,8 +302,22 @@ def tree_digest(root: Path) -> str:
     return digest.hexdigest()
 
 
-def _restore_inheritable_dacl(path: Path) -> None:
-    """Let a fresh scratch dir inherit the store root's Windows ACL.
+def _icacls_argv(path: Path) -> list[str]:
+    """Resolve icacls through %SystemRoot%\\System32: the reset runs in a
+    post-install context where PATH may not carry it."""
+    windir = os.environ.get("SystemRoot", r"C:\Windows")
+    icacls = Path(windir) / "System32" / "icacls.exe"
+    return [
+        str(icacls) if icacls.is_file() else "icacls",
+        str(path),
+        "/reset",
+        "/C",
+        "/Q",
+    ]
+
+
+def _reset_scratch_dacl(path: Path) -> None:
+    """Reset a fresh scratch dir to the store root's inheritable Windows ACL.
 
     Python >= 3.12.4 hardens ``tempfile.mkdtemp()`` directories with a
     protected DACL — SYSTEM, Administrators and OWNER RIGHTS only, with
@@ -318,12 +332,15 @@ def _restore_inheritable_dacl(path: Path) -> None:
     if os.name != "nt":
         return
     try:
-        subprocess.run(
-            ["icacls", str(path), "/reset", "/C", "/Q"], check=True, capture_output=True
-        )
-    except (OSError, subprocess.CalledProcessError) as exc:
+        subprocess.run(_icacls_argv(path), check=True, capture_output=True, timeout=60)
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        # CalledProcessError.__str__ drops the icacls text ("Access is
+        # denied"); the decoded stderr names the actual refusal cause.
+        stderr = getattr(exc, "stderr", None)
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", "replace").strip() or None
         print(
-            f"warning: could not restore inheritable ACL on {path}: {exc}",
+            f"warning: could not restore inheritable ACL on {path}: {stderr or exc}",
             file=sys.stderr,
             flush=True,
         )
@@ -392,7 +409,7 @@ class Store:
     def scratch(self):
         self.root.mkdir(parents=True, exist_ok=True)
         path = Path(tempfile.mkdtemp(prefix=".staging-", dir=self.root))
-        _restore_inheritable_dacl(path)
+        _reset_scratch_dacl(path)
         try:
             yield path
         finally:

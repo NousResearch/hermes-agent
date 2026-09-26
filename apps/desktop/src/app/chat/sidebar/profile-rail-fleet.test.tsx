@@ -447,7 +447,7 @@ describe('ProfileRail fleet mode', () => {
         '[data-slot="profile-rail-divider"][data-connection-id="local"] [data-slot="profile-rail-unreachable"]'
       )
     ).toBeNull()
-    expect(within(local as HTMLElement).getByRole('button', { name: 'omer · This device' })).toBeTruthy()
+    expect(within(local as HTMLElement).getByRole('button', { name: 'builder · This device' })).toBeTruthy()
   })
 
   it('re-homes onto the exact (gateway, profile) when an at-rest square is clicked', async () => {

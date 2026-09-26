@@ -395,6 +395,13 @@ class TestHermesHomeLeakGuard:
         env = entry.get("env", {})
         assert env.get("HERMES_HOME") == real_path
 
+    def test_read_only_skill_callbacks_are_preapproved(self):
+        tools = _build_hermes_tools_mcp_entry()["tools"]
+        assert tools == {
+            "skills_list": {"approval_mode": "approve"},
+            "skill_view": {"approval_mode": "approve"},
+        }
+
     def test_unset_hermes_home_omits_env_key(self, monkeypatch):
         """When HERMES_HOME is unset in the environment, the MCP entry MUST
         NOT bake in a resolved-default path. The codex subprocess should

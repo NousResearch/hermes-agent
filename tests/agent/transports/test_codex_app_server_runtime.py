@@ -7,6 +7,7 @@ covered by a separate live test gated on `codex --version`.
 
 from __future__ import annotations
 
+import os
 import sys
 import threading
 
@@ -257,6 +258,52 @@ class TestSpawnEnvIsolation:
         # And HOME still passes through unchanged
         assert captured["env"].get("HOME") == "/users/alice"
 
+    def test_spawn_env_ignores_hermes_profile_home_remap(self, monkeypatch):
+        """Named Hermes profiles must not hide the account-level Codex config."""
+        import subprocess
+        from agent.transports import codex_app_server as cas
+
+        captured = {}
+
+        class FakePopen:
+            def __init__(self, cmd, *args, **kwargs):
+                captured["env"] = kwargs.get("env", {}).copy()
+                self.stdin = None
+                self.stdout = None
+                self.stderr = None
+                self.pid = 1
+                self.returncode = None
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                pass
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        monkeypatch.setenv("HOME", "/users/alice")
+        monkeypatch.setattr(
+            cas,
+            "hermes_subprocess_env",
+            lambda **_kwargs: {
+                "HOME": "/profiles/codexworker/home",
+                "HERMES_HOME": "/profiles/codexworker",
+            },
+        )
+
+        client = cas.CodexAppServerClient(codex_bin="codex")
+        client._closed = True
+
+        assert captured["env"]["HOME"] == "/users/alice"
+        assert captured["env"]["HERMES_HOME"] == "/profiles/codexworker"
+        assert captured["env"]["CODEX_HOME"] == os.path.join(os.path.expanduser("~"), ".codex")
+
     def test_kanban_worker_adds_only_kanban_writable_root(self, monkeypatch):
         """Codex-runtime Kanban workers need to write board state outside
         their scratch/worktree workspace, but should not fall back to
@@ -311,6 +358,48 @@ class TestSpawnEnvIsolation:
         )
         assert "sandbox_workspace_write.network_access=false" in cmd
         assert all("danger" not in part for part in cmd)
+
+    @pytest.mark.windows_only
+    def test_kanban_worker_escapes_windows_writable_root(self, monkeypatch):
+        import json
+        import subprocess
+        from agent.transports import codex_app_server as cas
+
+        captured = {}
+
+        class FakePopen:
+            def __init__(self, cmd, *args, **kwargs):
+                captured["cmd"] = list(cmd)
+                self.stdin = self.stdout = self.stderr = None
+                self.pid = 1
+                self.returncode = None
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                pass
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_windows")
+        monkeypatch.setenv("HERMES_KANBAN_DB", r"C:\Users\alice\.hermes\kanban\boards\smoke\kanban.db")
+
+        client = cas.CodexAppServerClient(codex_bin="codex")
+        client._closed = True
+
+        writable = next(
+            value for value in captured["cmd"]
+            if value.startswith("sandbox_workspace_write.writable_roots=")
+        )
+        assert json.loads(writable.split("=", 1)[1]) == [
+            r"C:\Users\alice\.hermes\kanban\boards\smoke"
+        ]
 
 
 class TestSpawnEnvSecretStripping:
@@ -387,4 +476,3 @@ class TestSpawnEnvSecretStripping:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-codex-needs-this")
         env = self._capture_spawn_env(monkeypatch)
         assert env.get("OPENAI_API_KEY") == "sk-codex-needs-this"
-

@@ -383,6 +383,20 @@ class Venv(StatePackage):
         from pm.workspace import enabled_member_dirs, members_stamp
 
         h.update(members_stamp(enabled_member_dirs() if plugin_dirs is None else plugin_dirs).encode())
+        # The editable install maps root single-file modules by name at build
+        # time (setup.py derives ``py_modules`` from the tree), so a module a
+        # source update adds (``hermes_yaml``) stays invisible to an existing
+        # venv until the editable is rebuilt. Track the name set only: edited
+        # module bodies load from source and need no rebuild.
+        try:
+            modules = sorted(
+                entry.name
+                for entry in self.project_root().iterdir()
+                if entry.suffix == ".py" and entry.name != "setup.py"
+            )
+        except OSError:
+            modules = []
+        h.update("\0".join(modules).encode())
         return h.hexdigest()
 
     def apply(self, extras: list[str], *, plugin_dirs=None, repair: bool = False, explicit: bool = False,

@@ -301,7 +301,7 @@ class TestSetupWizardDeploymentShape:
         monkeypatch.setattr(honcho_cli, "_ensure_sdk_installed", lambda: True)
         monkeypatch.setattr(honcho_cli, "_write_config", lambda *a, **k: None)
         # No network probe / environment sniffing in tests.
-        monkeypatch.setattr(honcho_cli, "_device_login_available", lambda: False)
+        monkeypatch.setattr(honcho_cli, "_device_login_available", lambda *a: False)
         monkeypatch.setattr(honcho_cli, "_headless", lambda: (False, True))
         # Gate detection is mocked so tests control whether the tree runs.
         # None → undetectable; list (possibly empty) → connected platforms.
@@ -641,7 +641,7 @@ class TestCmdSetupDeviceFlow:
         monkeypatch.setattr(honcho_cli, "_ensure_sdk_installed", lambda: True)
         monkeypatch.setattr(honcho_cli, "_write_config", lambda *a, **k: None)
         monkeypatch.setattr(honcho_cli, "_gateway_platforms", lambda: [])
-        monkeypatch.setattr(honcho_cli, "_device_login_available", lambda: device_available)
+        monkeypatch.setattr(honcho_cli, "_device_login_available", lambda *a: device_available)
         monkeypatch.setattr(honcho_cli, "_headless", lambda: headless)
         monkeypatch.setattr(
             "hermes_cli.config.load_config", lambda: {"memory": {}}, raising=False,
@@ -768,7 +768,7 @@ class TestSetupApiKeyReplacesStaleGrant:
             host = {"apiKey": "hch-at-dead", "oauth": {"refreshToken": "hch-rt-dead", "expiresAt": 1,
                                                        "clientId": "hermes-agent", "tokenEndpoint": "https://api.honcho.dev/oauth/token"}}
         cfg = {"hosts": {"hermes": host}, **({"apiKey": root_key} if root_key else {})}
-        honcho_cli = _point_cli_at(monkeypatch, tmp_path / "honcho.json", _device_login_available=lambda: False,
+        honcho_cli = _point_cli_at(monkeypatch, tmp_path / "honcho.json", _device_login_available=lambda *a: False,
                                    _headless=lambda: (False, True),
                                    _prompt=lambda label, default=None, secret=False: "apikey" if "OAuth" in label else answer)
         assert honcho_cli._setup_cloud_auth(cfg, host, tmp_path / "honcho.json") is ok

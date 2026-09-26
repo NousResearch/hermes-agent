@@ -593,11 +593,17 @@ def _ensure_sdk_installed() -> bool:
         return False
 
 
-def _device_login_available() -> bool:
+def _cloud_endpoints():
+    """Cloud OAuth endpoints pinned explicitly, so a stale on-disk baseUrl can't drag them to localhost (#119553)."""
+    from plugins.memory.honcho.oauth_flow import resolve_endpoints
+    return resolve_endpoints(environment="production", base_url="")
+
+
+def _device_login_available(endpoints=None) -> bool:
     """Whether the resolved host offers the RFC 8628 device grant. Fails closed."""
     try:
         from plugins.memory.honcho.oauth_flow import resolve_endpoints, supports_device_login
-        return supports_device_login(resolve_endpoints())
+        return supports_device_login(endpoints if endpoints is not None else resolve_endpoints())
     except Exception:
         return False
 
@@ -645,7 +651,8 @@ def _setup_local_auth(cfg: dict, hermes_host: dict) -> None:
         print("\n  No local JWT set. Local no-auth ready.")
 
 
-def _setup_device_login(cfg: dict, hermes_host: dict, write_path: Path, *, open_browser: bool) -> bool:
+def _setup_device_login(cfg: dict, hermes_host: dict, write_path: Path, *, open_browser: bool,
+                        endpoints=None) -> bool:
     """RFC 8628 device-code sign-in. Returns False if setup must abort."""
     from plugins.memory.honcho.oauth_flow import (
         AccessDenied, AuthorizationTimeout, DeviceCode, DeviceCodeExpired, DeviceFlowError, authorize_via_device_code,
@@ -663,6 +670,7 @@ def _setup_device_login(cfg: dict, hermes_host: dict, write_path: Path, *, open_
         cred = authorize_via_device_code(
             config_path=write_path, source="hermes-cli", apply_config=False, display=_show,
             open_url=webbrowser.open if open_browser else None, on_poll=lambda: print(".", end="", flush=True),
+            endpoints=endpoints,
         )
     except KeyboardInterrupt:
         print("\n  Cancelled. Re-run 'hermes honcho setup' to try again.\n")
@@ -680,7 +688,7 @@ def _setup_device_login(cfg: dict, hermes_host: dict, write_path: Path, *, open_
     return False
 
 
-def _setup_browser_login(cfg: dict, hermes_host: dict, write_path: Path) -> bool:
+def _setup_browser_login(cfg: dict, hermes_host: dict, write_path: Path, *, endpoints=None) -> bool:
     """Loopback OAuth sign-in. Tokens merge into the in-memory cfg so the wizard's final save
     keeps them; settings stay wizard-owned (apply_config=False). Returns False on abort."""
     from plugins.memory.honcho.oauth_flow import authorize_via_loopback
@@ -692,7 +700,8 @@ def _setup_browser_login(cfg: dict, hermes_host: dict, write_path: Path) -> bool
 
     print("\n  Starting browser sign-in…")
     try:
-        cred = authorize_via_loopback(config_path=write_path, source="hermes-cli", apply_config=False, open_url=_open)
+        cred = authorize_via_loopback(config_path=write_path, source="hermes-cli", apply_config=False,
+                                       open_url=_open, endpoints=endpoints)
     except Exception as e:
         print(f"  OAuth sign-in failed: {e}\n" + _RETRY_HINT)
         return False
@@ -703,9 +712,15 @@ def _setup_browser_login(cfg: dict, hermes_host: dict, write_path: Path) -> bool
 def _setup_cloud_auth(cfg: dict, hermes_host: dict, write_path: Path) -> bool:
     """Cloud auth: OAuth (browser), device code, or API key. Returns False on abort."""
     cfg.pop("baseUrl", None)  # cloud uses SDK default
+    cfg.pop("base_url", None)  # legacy snake_case key
+    # The client prefers the per-host baseUrl over top-level; a stale local one
+    # would survive the cloud switch even after the config is written (#119553).
+    hermes_host.pop("baseUrl", None)
+    hermes_host.pop("base_url", None)
     from plugins.memory.honcho.oauth import OAuthCredential, is_oauth_access_token
     existing_oauth = OAuthCredential.from_host_block(hermes_host)
-    device_available = _device_login_available()
+    cloud_endpoints = _cloud_endpoints()
+    device_available = _device_login_available(cloud_endpoints)
     is_remote, can_browse = _headless()
 
     print("\n  Auth method:")
@@ -725,9 +740,10 @@ def _setup_cloud_auth(cfg: dict, hermes_host: dict, write_path: Path) -> bool:
                      default=default_method).strip().lower()
 
     if device_available and method in {"device", "d"}:
-        return _setup_device_login(cfg, hermes_host, write_path, open_browser=can_browse and not is_remote)
+        return _setup_device_login(cfg, hermes_host, write_path, open_browser=can_browse and not is_remote,
+                                   endpoints=cloud_endpoints)
     if method in {"oauth", "o"}:
-        return _setup_browser_login(cfg, hermes_host, write_path)
+        return _setup_browser_login(cfg, hermes_host, write_path, endpoints=cloud_endpoints)
     # A leftover grant on the host block would shadow the pasted key.
     stale_grant = existing_oauth is not None or is_oauth_access_token(hermes_host.get("apiKey"))
     current = ("" if stale_grant else hermes_host.get("apiKey", "")) or cfg.get("apiKey", "")

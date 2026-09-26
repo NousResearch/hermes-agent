@@ -207,13 +207,16 @@ def capture_loopback_code(server: HTTPServer, captured: dict[str, str], *, timeo
 def authorize_via_loopback(
     *, config_path: Path | None = None, host: str | None = None, source: str | None = None,
     apply_config: bool = True, open_url: Callable[[str], None] | None = None, timeout: float = 300.0,
+    endpoints: OAuthEndpoints | None = None,
 ) -> oauth.OAuthCredential:
     """Full loopback flow: open browser → capture code → exchange → persist. ``open_url`` (default: system
-    browser) always receives the authorize URL, so a CLI caller can print it for browserless setups."""
+    browser) always receives the authorize URL, so a CLI caller can print it for browserless setups.
+    ``endpoints`` pins the deployment (the setup wizard passes cloud explicitly so a stale on-disk
+    baseUrl can't drag it to localhost); None re-resolves from disk as before."""
     # Bind first so the advertised redirect_uri carries the actual bound port.
     server, captured = _bind_loopback_server()
     redirect_uri = f"http://{LOOPBACK_HOST}:{server.server_address[1]}/callback"
-    endpoints = resolve_endpoints()
+    endpoints = endpoints if endpoints is not None else resolve_endpoints()
     path = config_path or resolve_config_path()
     authorize_url, state = begin_authorization(endpoints, redirect_uri, source=source,
                                                config_path=_display_config_path(path))
@@ -335,11 +338,12 @@ def authorize_via_device_code(
     *, config_path: Path | None = None, host: str | None = None, source: str | None = None,
     apply_config: bool = True, display: Callable[[DeviceCode], None] | None = None,
     open_url: Callable[[str], None] | None = None, on_poll: Callable[[], None] | None = None,
-    sleep: Callable[[float], None] = time.sleep,
+    sleep: Callable[[float], None] = time.sleep, endpoints: OAuthEndpoints | None = None,
 ) -> oauth.OAuthCredential:
     """Full device flow: request codes → show user code → poll → persist. ``open_url`` (if given) receives
-    ``verification_uri_complete``; no default browser open, since the approving browser may be on another machine."""
-    endpoints = resolve_endpoints()
+    ``verification_uri_complete``; no default browser open, since the approving browser may be on another machine.
+    ``endpoints`` pins the deployment (see authorize_via_loopback); None re-resolves from disk as before."""
+    endpoints = endpoints if endpoints is not None else resolve_endpoints()
     path = config_path or resolve_config_path()  # resolve NOW so a later ambient lookup can't drift
     target_host = host or resolve_active_host()
 

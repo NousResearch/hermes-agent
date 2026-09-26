@@ -15,7 +15,7 @@
  */
 
 import { expandRemotePath, shq } from './remote-lifecycle'
-import { encodedPowerShell, powerShellCommand, psLiteral } from './windows-remote-lifecycle'
+import { encodedPowerShell, powerShellExecPlan, psLiteral } from './windows-remote-lifecycle'
 
 const UPDATE_EXIT_INDEPENDENT_HANDOFF = 75
 const DEFAULT_REMOTE_UPDATE_TIMEOUT_MS = 60 * 60 * 1000
@@ -253,7 +253,16 @@ function buildPosixManagedUpdateLaunch(target: RemoteUpdateTarget, correlationId
 }
 
 /** Windows equivalent of buildPosixManagedUpdateLaunch. */
-function buildWindowsManagedUpdateLaunch(target: RemoteUpdateTarget, correlationId: string): string {
+function buildWindowsManagedUpdateLaunchCommand(target: RemoteUpdateTarget, correlationId: string): string {
+  return buildWindowsManagedUpdateLaunchPlan(target, correlationId).command
+}
+
+// Returns the command plus the stdin payload when the outer launcher script is
+// too long for the SSH exec channel (see SSH_EXEC_PAYLOAD_CEILING).
+function buildWindowsManagedUpdateLaunchPlan(
+  target: RemoteUpdateTarget,
+  correlationId: string
+): { command: string; stdinData?: string } {
   const correlation = validateCorrelationId(correlationId)
   const home = validateRemoteValue(target.hermesHome, 'Hermes home')
   const hermesPath = validateRemoteValue(target.hermesPath, 'launcher path')
@@ -307,7 +316,9 @@ function buildWindowsManagedUpdateLaunch(target: RemoteUpdateTarget, correlation
     '[ordered]@{started=$true;pid=$child.Id}|ConvertTo-Json -Compress'
   ].join(';')
 
-  return powerShellCommand(outer)
+  const plan = powerShellExecPlan(outer)
+
+  return { command: plan.command, ...(plan.stdinData ? { stdinData: plan.stdinData } : {}) }
 }
 
 const OBSERVATION_SCRIPT = String.raw`
@@ -454,6 +465,15 @@ print(json.dumps({'marker':state['state'],'markerPid':state.get('pid'),'launchIn
 `.trim()
 
 function buildRemoteUpdateObservationCommand(target: RemoteUpdateTarget, correlationId: string): string {
+  return buildRemoteUpdateObservationPlan(target, correlationId).command
+}
+
+// Returns the command plus the stdin payload when the script is too long for
+// the SSH exec channel (see SSH_EXEC_PAYLOAD_CEILING).
+function buildRemoteUpdateObservationPlan(
+  target: RemoteUpdateTarget,
+  correlationId: string
+): { command: string; stdinData?: string } {
   const correlation = validateCorrelationId(correlationId)
   const home = validateRemoteValue(target.hermesHome, 'Hermes home')
 
@@ -466,10 +486,12 @@ function buildRemoteUpdateObservationCommand(target: RemoteUpdateTarget, correla
       'if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}'
     ].join(';')
 
-    return powerShellCommand(script)
+    const plan = powerShellExecPlan(script)
+
+    return { command: plan.command, ...(plan.stdinData ? { stdinData: plan.stdinData } : {}) }
   }
 
-  return `python3 -c ${shq(OBSERVATION_SCRIPT)} ${shq(home)} ${shq(correlation)}`
+  return { command: `python3 -c ${shq(OBSERVATION_SCRIPT)} ${shq(home)} ${shq(correlation)}` }
 }
 
 function parseRemoteUpdateObservation(raw: string, correlationId: string): RemoteUpdateObservation {
@@ -557,8 +579,12 @@ async function observeManagedRemoteUpdate(
   target: RemoteUpdateTarget,
   correlationId: string
 ): Promise<RemoteUpdateObservation> {
-  const command = buildRemoteUpdateObservationCommand(target, correlationId)
-  const raw = await target.ssh.exec(command, { timeoutMs: 30_000 })
+  const plan = buildRemoteUpdateObservationPlan(target, correlationId)
+
+  const raw = await target.ssh.exec(plan.command, {
+    timeoutMs: 30_000,
+    ...(plan.stdinData ? { stdinData: plan.stdinData } : {})
+  })
 
   return parseRemoteUpdateObservation(raw, correlationId)
 }
@@ -577,12 +603,15 @@ async function assertManagedUpdatePreflightClear(target: RemoteUpdateTarget, cor
 }
 
 async function launchManagedRemoteUpdate(target: RemoteUpdateTarget, correlationId: string): Promise<void> {
-  const command =
+  const plan =
     target.platform === 'Windows'
-      ? buildWindowsManagedUpdateLaunch(target, correlationId)
-      : buildPosixManagedUpdateLaunch(target, correlationId)
+      ? buildWindowsManagedUpdateLaunchPlan(target, correlationId)
+      : { command: buildPosixManagedUpdateLaunch(target, correlationId) }
 
-  const output = await target.ssh.exec(command, { timeoutMs: 30_000 })
+  const output = await target.ssh.exec(plan.command, {
+    timeoutMs: 30_000,
+    ...(plan.stdinData ? { stdinData: plan.stdinData } : {})
+  })
 
   if (target.platform === 'Windows') {
     let parsed: any
@@ -1047,7 +1076,9 @@ export {
   assertManagedUpdatePreflightClear,
   buildPosixManagedUpdateLaunch,
   buildRemoteUpdateObservationCommand,
-  buildWindowsManagedUpdateLaunch,
+  buildRemoteUpdateObservationPlan,
+  buildWindowsManagedUpdateLaunchCommand,
+  buildWindowsManagedUpdateLaunchPlan,
   DEFAULT_REMOTE_CLEARANCE_TIMEOUT_MS,
   DEFAULT_REMOTE_UPDATE_POLL_MS,
   DEFAULT_REMOTE_UPDATE_TIMEOUT_MS,

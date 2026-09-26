@@ -19,6 +19,40 @@ function powerShellCommand(script) {
   return `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encodedPowerShell(script)}`
 }
 
+// Windows OpenSSH's exec channel silently truncates long command payloads
+// (empirically ~2,544 chars of base64): the tail is dropped and PowerShell
+// parses half a script into "Missing closing '}'" (#118987). A script that
+// does not fit rides stdin instead, so the command line stays a fixed-size
+// consumer and the payload never crosses the capped channel.
+const SSH_EXEC_PAYLOAD_CEILING = 2544
+
+// Decodes the first stdin line as the script and runs it. Only that line is
+// consumed, so any remaining stdin stays available to the script's own child
+// processes (the remote Python helper reads its JSON payload from stdin).
+const STDIN_SCRIPT_CONSUMER =
+  '$b=[Console]::In.ReadLine();if($b){[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($b))|iex}'
+
+// One decision point for every Windows PowerShell exec: command line while the
+// encoded payload fits the transport, stdin once it does not.
+function powerShellExecPlan(script, extraStdin = '') {
+  const encoded = encodedPowerShell(script)
+
+  if (encoded.length <= SSH_EXEC_PAYLOAD_CEILING) {
+    return { command: powerShellCommand(script), stdinData: extraStdin }
+  }
+
+  return { command: powerShellCommand(STDIN_SCRIPT_CONSUMER), stdinData: encoded + '\n' + extraStdin }
+}
+
+async function execPowerShell(ssh, script, options: any = {}, extraStdin = '') {
+  const plan = powerShellExecPlan(script, extraStdin)
+
+  return ssh.exec(plan.command, {
+    ...options,
+    ...(plan.stdinData ? { stdinData: plan.stdinData } : {})
+  })
+}
+
 async function probeWindowsRemote(ssh, explicitHermesPath = '') {
   const explicit = psLiteral(explicitHermesPath)
 
@@ -64,10 +98,10 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
     '[ordered]@{os="Windows";arch=$env:PROCESSOR_ARCHITECTURE;hermesHome=$hermesHome;hermesPath=$hermes;python=$python}|ConvertTo-Json -Compress'
   ].join(';')
 
-  return JSON.parse((await ssh.exec(powerShellCommand(script))).trim())
+  return JSON.parse((await execPowerShell(ssh, script)).trim())
 }
 
-function windowsUpdateMarkerProbeCommand(hermesHome) {
+function windowsUpdateMarkerProbeScript(hermesHome) {
   const script = [
     '$ErrorActionPreference="Stop"',
     `Add-Type -TypeDefinition @'
@@ -127,7 +161,7 @@ public static class HermesMarkerNoFollow {
     'Write-Output $result'
   ].join(';')
 
-  return powerShellCommand(script)
+  return script
 }
 
 /**
@@ -140,7 +174,7 @@ async function assertWindowsRemoteInstallUpdateClear(ssh, hermesHome) {
 
   try {
     observation =
-      String(await ssh.exec(windowsUpdateMarkerProbeCommand(hermesHome)))
+      String(await execPowerShell(ssh, windowsUpdateMarkerProbeScript(hermesHome)))
         .replace(/^\uFEFF/, '')
         .trim()
         .split(/\r?\n/)
@@ -214,7 +248,7 @@ async function detectRemotePlatform(ssh, explicitHermesPath = '') {
   }
 }
 
-function helperCommand(runtime, operation, args = []) {
+function helperCommandScript(runtime, operation, args = []) {
   const argv = [runtime.python, '-m', 'hermes_cli.windows_ssh_runtime', operation, ...args]
 
   const script = [
@@ -223,11 +257,20 @@ function helperCommand(runtime, operation, args = []) {
     'if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}'
   ].join(';')
 
-  return powerShellCommand(script)
+  return script
+}
+
+function helperCommand(runtime, operation, args = []) {
+  return powerShellCommand(helperCommandScript(runtime, operation, args))
 }
 
 async function helper(ssh, runtime, operation, args = [], stdinData?) {
-  const output = await ssh.exec(helperCommand(runtime, operation, args), stdinData == null ? {} : { stdinData })
+  const output = await execPowerShell(
+    ssh,
+    helperCommandScript(runtime, operation, args),
+    {},
+    stdinData == null ? '' : String(stdinData)
+  )
 
   const lines = String(output || '')
     .replace(/^\uFEFF/, '')
@@ -244,7 +287,7 @@ async function helper(ssh, runtime, operation, args = [], stdinData?) {
   return parsed
 }
 
-function atomicWindowsSpawnCommand(runtime, reservation: any = {}) {
+function atomicWindowsSpawnScript(runtime, reservation: any = {}) {
   const argv = [runtime.python, '-m', 'hermes_cli.windows_ssh_runtime', 'spawn']
   const helper = operation => [runtime.python, '-m', 'hermes_cli.windows_ssh_runtime', operation]
 
@@ -283,11 +326,20 @@ function atomicWindowsSpawnCommand(runtime, reservation: any = {}) {
     .filter(line => line !== '')
     .join(';')
 
-  return powerShellCommand(script)
+  return script
+}
+
+function atomicWindowsSpawnCommand(runtime, reservation: any = {}) {
+  return powerShellCommand(atomicWindowsSpawnScript(runtime, reservation))
 }
 
 async function atomicWindowsSpawn(ssh, runtime, stdinData, reservation: any = {}) {
-  const output = await ssh.exec(atomicWindowsSpawnCommand(runtime, reservation), { stdinData })
+  const output = await execPowerShell(
+    ssh,
+    atomicWindowsSpawnScript(runtime, reservation),
+    {},
+    stdinData == null ? '' : String(stdinData)
+  )
 
   const lines = String(output || '')
     .replace(/^\uFEFF/, '')
@@ -766,16 +818,21 @@ function buildWindowsInteractiveCommand(remoteCwd = '') {
 export {
   assertWindowsRemoteInstallUpdateClear,
   atomicWindowsSpawnCommand,
+  atomicWindowsSpawnScript,
   buildWindowsInteractiveCommand,
   connectWindowsRemote,
   detectRemotePlatform,
   encodedPowerShell,
+  execPowerShell,
   helper,
   helperCommand,
+  helperCommandScript,
   powerShellCommand,
+  powerShellExecPlan,
   probeWindowsRemote,
   psLiteral,
   reusableWindowsLock,
+  SSH_EXEC_PAYLOAD_CEILING,
   terminateOwnedWindowsDashboardForUpdate,
   validLock
 }

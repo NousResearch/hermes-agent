@@ -10,7 +10,7 @@ import { test } from 'vitest'
 import {
   buildPosixManagedUpdateLaunch,
   buildRemoteUpdateObservationCommand,
-  buildWindowsManagedUpdateLaunch,
+  buildWindowsManagedUpdateLaunchPlan,
   fenceManagedSshBootstrapPublication,
   ManagedConnectionUpdateGate,
   managedSshRecoveryScopes,
@@ -319,7 +319,7 @@ test.runIf(process.platform !== 'win32').each([0, 23])(
 )
 
 test('Windows managed launcher starts a hidden child and leaves exit 75 to the external coordinator', () => {
-  const command = buildWindowsManagedUpdateLaunch(
+  const plan = buildWindowsManagedUpdateLaunchPlan(
     {
       ssh: { exec: async () => '' },
       platform: 'Windows',
@@ -330,7 +330,10 @@ test('Windows managed launcher starts a hidden child and leaves exit 75 to the e
     CORRELATION
   )
 
-  const outer = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+  // The launcher script is far past the SSH exec transport ceiling, so it rides
+  // stdin (#118987); the command line is only the fixed-size consumer.
+  assert.ok(plan.stdinData, 'over-long launcher script must ride stdin')
+  const outer = Buffer.from(String(plan.stdinData).split('\n', 1)[0], 'base64').toString('utf16le')
   const wrapperBase64 = outer.match(/"-EncodedCommand",'([^']+)'/)?.[1]
 
   assert.match(outer, /Start-Process/)

@@ -64,6 +64,23 @@ function sshWith(exec) {
   return { exec }
 }
 
+// A Windows PowerShell exec may carry its script on the command line (short
+// enough) or on stdin (over the transport ceiling, #118987). Both places hold
+// base64 UTF-16LE; the real script is whichever decodes to more, because the
+// command line then only carries the tiny stdin consumer.
+function decodeExec(command: string, stdinData?: unknown): string {
+  const fromCommand = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+  const firstStdinLine = String(stdinData ?? '').split('\n', 1)[0]
+
+  if (!firstStdinLine) {
+    return fromCommand
+  }
+
+  const fromStdin = Buffer.from(firstStdinLine, 'base64').toString('utf16le')
+
+  return fromStdin.length > fromCommand.length ? fromStdin : fromCommand
+}
+
 test('PowerShell transport uses UTF-16LE encoded commands and literal escaping', () => {
   assert.equal(Buffer.from(encodedPowerShell("'ok'"), 'base64').toString('utf16le'), "'ok'")
   assert.equal(psLiteral("a'b"), "'a''b'")
@@ -75,28 +92,27 @@ test('every emitted PowerShell script keeps try blocks attached to their catch/f
   // (MissingCatchOrFinally), so no probe may join a handler onto a separate
   // statement. The line-oriented builders join with `;`; the pair must live
   // in one array element.
-  const decode = (command: string) => Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
-
   const scripts: string[] = []
 
   await probeWindowsRemote(
-    sshWith(async command => {
-      scripts.push(decode(command))
+    sshWith(async (command: string, options: any = {}) => {
+      scripts.push(decodeExec(command, options.stdinData))
 
       return JSON.stringify({ os: 'Windows' })
     })
   )
   await assertWindowsRemoteInstallUpdateClear(
-    sshWith(async command => {
-      scripts.push(decode(command))
+    sshWith(async (command: string, options: any = {}) => {
+      scripts.push(decodeExec(command, options.stdinData))
 
       return 'CLEAR'
     }),
     'C:\\Users\\alice\\.hermes'
   )
+  const decodeCommand = (command: string) => Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
   scripts.push(
-    decode(atomicWindowsSpawnCommand({ hermesHome: 'C:\\Users\\alice\\.hermes', python: 'C:\\py\\python.exe' })),
-    decode(buildWindowsInteractiveCommand('C:\\work'))
+    decodeCommand(atomicWindowsSpawnCommand({ hermesHome: 'C:\\Users\\alice\\.hermes', python: 'C:\\py\\python.exe' })),
+    decodeCommand(buildWindowsInteractiveCommand('C:\\work'))
   )
 
   assert.equal(scripts.length, 4)
@@ -118,8 +134,8 @@ test('Windows relaunch gate refuses live and uncertain markers before executing 
   for (const observation of ['LIVE:4242', 'UNCERTAIN']) {
     const scripts: string[] = []
 
-    const ssh = sshWith(async command => {
-      const script = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+    const ssh = sshWith(async (command: string, options: any = {}) => {
+      const script = decodeExec(command, options.stdinData)
       scripts.push(script)
 
       if (script.includes('Get-Command hermes.exe')) {
@@ -162,8 +178,8 @@ test('Windows relaunch gate refuses live and uncertain markers before executing 
 test('Windows relaunch gate uses strict install-wide marker parsing and fail-closed PID probing', async () => {
   let script = ''
 
-  const ssh = sshWith(async command => {
-    script = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+  const ssh = sshWith(async (command: string, options: any = {}) => {
+    script = decodeExec(command, options.stdinData)
 
     return 'CLEAR'
   })
@@ -180,8 +196,8 @@ test('Windows relaunch gate uses strict install-wide marker parsing and fail-clo
 test('Windows probe validates Hermes and Python topology before selection', async () => {
   let script = ''
   await probeWindowsRemote(
-    sshWith(async command => {
-      script = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+    sshWith(async (command: string, options: any = {}) => {
+      script = decodeExec(command, options.stdinData)
 
       return JSON.stringify({
         os: 'Windows',

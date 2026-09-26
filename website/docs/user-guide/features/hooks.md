@@ -53,7 +53,7 @@ events:
   - agent:step
 ```
 
-The `events` list determines which events trigger your handler. You can subscribe to any combination of events, including wildcards like `command:*`.
+The `events` list determines which events trigger your handler. You can subscribe to any combination of events, including wildcards like `command:*`. A single event can also be written as a plain string (`events: agent:start`). A hook whose `events` is anything else is skipped with a `[hooks] Skipping` line in the gateway output, and the other hooks still load.
 
 #### handler.py
 

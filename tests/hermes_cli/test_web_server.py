@@ -3302,6 +3302,114 @@ class TestDesktopHostRendezvousIsolation:
         assert published[0][1]["port"] == 9119
 
 
+class TestOrphanedOwnerReclaim:
+    """HELD_BY_OTHER against a dead session's orphan must re-claim, not loop observe-only (#121964).
+
+    The conflicting owner is alive (re-parented to init), so ``record_is_stale()`` never fires
+    and the old code returned observe-only forever: every attach retried against the same orphan.
+    """
+
+    def _owner_record(self, pid=555, create_time=55.0):
+        from gateway import host_rendezvous as hr
+
+        return hr.HostRecord(
+            role=hr.ROLE_SERVE, pid=pid, create_time=create_time, host="0.0.0.0", port=9119,
+            protocol_version=hr.HOST_PROTOCOL_VERSION, token_fingerprint="", profiles=("default",),
+            updated_at="2026-09-24T00:00:00+00:00")
+
+    def _owner_entry(self, pid=555, create_time=55.0, spawner_pid=700, spawner_create=7.0):
+        from hermes_cli import process_identity as pi
+        from pathlib import Path as _Path
+
+        return {
+            "pid": pid, "create_time": create_time, "purpose": "serve",
+            "install": pi.install_id(_Path("/x/install")),
+            "spawner_pid": spawner_pid, "spawner_create": spawner_create,
+            "registered_at": 0.0, "argv": "",
+        }
+
+    def _run_publish(self, monkeypatch, tmp_path, *, entry, procs):
+        """Drive ``_publish_host_rendezvous`` through HELD_BY_OTHER with a faked owner world.
+
+        First claim fails (the orphan holds the flock), the retry succeeds (it died); returns
+        ``(claimed, published, fake_procs)``.
+        """
+        import types
+        from unittest.mock import MagicMock
+        from gateway import host_rendezvous as hr
+        import hermes_cli.web_server as web_server
+        from hermes_cli import process_identity as pi
+
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        monkeypatch.setattr(web_server, "is_desktop_owned_backend", lambda: False)
+        claims = iter([hr.HostLockOutcome.HELD_BY_OTHER, hr.HostLockOutcome.ACQUIRED])
+        claimed, published = [], []
+        monkeypatch.setattr(
+            hr, "claim_host_lock",
+            lambda role: (claimed.append(role) or (next(claims), None)),
+        )
+        monkeypatch.setattr(hr, "read_record", lambda role, **kw: self._owner_record())
+        monkeypatch.setattr(hr, "publish_record", lambda *a, **k: published.append((a, k)))
+        monkeypatch.setattr(hr, "cleanup_on_exit", lambda role: None)
+        monkeypatch.setattr(pi, "ledger_entries", lambda **kw: [entry])
+
+        made = {}
+
+        def _process(pid):
+            if pid not in procs:
+                raise fake_psutil.NoSuchProcess(pid)
+            if pid not in made:
+                proc = MagicMock()
+                proc.pid = pid
+                proc.create_time.return_value = procs[pid]
+                made[pid] = proc
+            return made[pid]
+
+        fake_psutil = types.SimpleNamespace(
+            Process=_process,
+            NoSuchProcess=type("NoSuchProcess", (Exception,), {}),
+            TimeoutExpired=type("TimeoutExpired", (Exception,), {}),
+            STATUS_ZOMBIE="zombie",
+        )
+        monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+
+        web_server._publish_host_rendezvous("0.0.0.0", 9119)
+        return claimed, published, made
+
+    def test_dead_spawner_owner_is_reaped_and_lock_reclaimed(self, monkeypatch, tmp_path):
+        """Spawner provably gone: the orphan is terminated and this backend publishes."""
+        entry = self._owner_entry(spawner_pid=700, spawner_create=7.0)  # 700 not alive
+        claimed, published, made = self._run_publish(
+            monkeypatch, tmp_path, entry=entry, procs={555: 55.0})
+
+        assert made[555].terminate.called
+        assert claimed == ["serve", "serve"]  # conflict, then re-claim after the reap
+        assert published and published[0][0][0] == "serve"
+
+    def test_live_spawner_owner_stays_observe_only(self, monkeypatch, tmp_path):
+        """Spawner alive: never touch, never re-claim — the old observe-only stands."""
+        entry = self._owner_entry(spawner_pid=500, spawner_create=5.0)
+        claimed, published, made = self._run_publish(
+            monkeypatch, tmp_path, entry=entry, procs={555: 55.0, 500: 5.0})
+
+        assert 555 not in made  # no signal attempted
+        assert claimed == ["serve"]  # no retry: nothing was reaped
+        assert published == []
+
+    def test_unprovable_owner_is_untouched(self, monkeypatch, tmp_path):
+        """Null spawner whose parent is alive: unprovable means never touch."""
+        from hermes_cli import dashboard_procs
+
+        entry = self._owner_entry(spawner_pid=None, spawner_create=None)
+        monkeypatch.setattr(dashboard_procs, "_process_ppid", lambda pid: 1234)
+        claimed, published, made = self._run_publish(
+            monkeypatch, tmp_path, entry=entry, procs={555: 55.0})
+
+        assert 555 not in made
+        assert claimed == ["serve"]
+        assert published == []
+
+
 # ---------------------------------------------------------------------------
 # Model context length: normalize/denormalize + /api/model/info
 # ---------------------------------------------------------------------------

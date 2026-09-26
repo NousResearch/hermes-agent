@@ -1224,6 +1224,40 @@ def _best_effort(what: str, fn) -> None:
         _log.debug("%s skipped: %s", what, exc)
 
 
+def _reclaim_host_from_orphaned_owner(role: str) -> bool:
+    """True when the conflicting host owner was reaped/cleared and the claim is worth retrying.
+
+    HELD_BY_OTHER helper for #121964. A stale record with no live owner is retracted via
+    ``discard_dead_record`` (which only removes provably-gone owners); a live owner is reaped
+    only when the spawn ledger proves it is a dead session's orphan. Anything else returns
+    False and the caller stays observe-only. Never raises.
+    """
+    from gateway import host_rendezvous as hr
+    from hermes_cli.process_identity import reap_orphaned_backend_owner
+
+    try:
+        owner = hr.read_record(role)
+    except Exception:
+        return False
+    if owner is None:
+        try:
+            return bool(hr.discard_dead_record(role))
+        except Exception:
+            return False
+    if owner.pid == os.getpid():
+        return False  # never reap our own incarnation on a re-entrant claim
+    try:
+        if reap_orphaned_backend_owner(owner.pid, owner.create_time) is None:
+            return False
+    except Exception:
+        return False
+    try:
+        hr.discard_dead_record(role)
+    except Exception:
+        pass
+    return True
+
+
 def _publish_host_rendezvous(host: str, port: int) -> None:
     """Publish this backend's host record: ``ROLE_SERVE`` for the machine-level owner,
     ``ROLE_DESKTOP_SERVE`` for a Desktop-owned child."""
@@ -1244,6 +1278,13 @@ def _publish_host_rendezvous(host: str, port: int) -> None:
             "Host backend lock could not be opened (%s); this backend is not discoverable. "
             "This is NOT another backend holding it.", error)
         return
+    if outcome is hr.HostLockOutcome.HELD_BY_OTHER and not desktop_child:
+        # A prior backend whose session died (dead spawner, PID re-parented to init) is still
+        # alive, so it still holds the flock and its record passes every staleness check: the
+        # pre-#121964 code returned observe-only here forever, and every attach retried against
+        # the same orphan. Reap exactly that corpse and re-claim instead.
+        if _reclaim_host_from_orphaned_owner(role):
+            outcome, error = hr.claim_host_lock(role)
     if outcome is hr.HostLockOutcome.HELD_BY_OTHER:
         owner = hr.read_record(role)
         if desktop_child:

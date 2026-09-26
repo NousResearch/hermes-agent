@@ -33,6 +33,10 @@ LEDGER_FILENAME = "spawn-ledger.json"
 #: Interactive processes (chat, REPLs) are deliberately NOT in this set.
 REAPABLE_PURPOSES = frozenset({"serve", "dashboard", "gateway", "mcp-helper"})
 
+#: Host-role owners a fresh backend may reap on a HELD_BY_OTHER conflict (#121964): the
+#: serve/dashboard/gateway subset. The mcp-helper rung stays owned by reap_orphaned_mcp_helpers.
+_BACKEND_OWNER_PURPOSES = REAPABLE_PURPOSES - {"mcp-helper"}
+
 _IS_WINDOWS = platform.system() == "Windows"
 
 # Module-global job handle: must live exactly as long as this process so the
@@ -371,6 +375,96 @@ def spawner_is_dead(entry: dict) -> Optional[bool]:
     return None if alive is None else not alive
 
 
+def _terminate_then_kill(pid: int, create_time: Optional[float]) -> bool:
+    """SIGTERM, 2 s grace, then SIGKILL. False when the incarnation moved on or is already gone."""
+    try:
+        import psutil
+
+        proc = psutil.Process(pid)
+        if not _same_incarnation(proc, create_time):
+            return False  # PID reused since registration — never signal a stranger
+        proc.terminate()
+        try:
+            proc.wait(timeout=2.0)
+        except psutil.TimeoutExpired:
+            proc.kill()
+        return True
+    except Exception:
+        logger.debug("orphan terminate failed for pid %s", pid, exc_info=True)
+        return False
+
+
+def _reparented_orphan(pid: int) -> bool:
+    """Null-spawner owner with no live supervisor: reparented to init, old, lock-unclaimed.
+
+    Mirrors ``_reap_orphaned_desktop_local_serves``: operator-managed remote backends legitimately
+    sit at ppid 1 (systemd, an exited sshd), so ppid alone is never proof — the SSH-lock claim
+    and the 180 s lock-write grace exclude live-supervised backends. Windows: the ppid probe is
+    unavailable there, so this rung never fires (desktop tree-kill reaps instead).
+    """
+    try:
+        from hermes_cli.dashboard_procs import (
+            _REAP_MIN_AGE_SECONDS, _lock_owned_serve_pids, _process_ppid)
+        if _process_ppid(pid) not in (0, 1):
+            return False
+        if pid in (_lock_owned_serve_pids() or ()):
+            return False
+        import time as _time
+
+        import psutil
+        return max(0.0, _time.time() - psutil.Process(pid).create_time()) >= _REAP_MIN_AGE_SECONDS
+    except Exception:
+        return False  # unprovable → never touch
+
+
+def reap_orphaned_backend_owner(
+    pid: int, create_time: Optional[float], *, kill_fn=None) -> Optional[int]:
+    """Kill the conflicting host owner when the ledger PROVES it is a dead session's orphan.
+
+    HELD_BY_OTHER rung for #121964: the owner PID is alive (re-parented to init), so
+    ``record_is_stale()`` never fires and a fresh backend would loop observe-only against the
+    same orphan forever. Reaped only with a live ``serve``/``dashboard``/``gateway`` entry for
+    THIS install whose spawner is provably dead — or whose spawner was never recorded and which
+    is reparented to init, old, and claimed by no Desktop SSH lock. Live-spawned, lock-claimed,
+    young, interactive, self, or unprovable owners are never touched. Returns the reaped pid,
+    else ``None``; never raises.
+
+    # ponytail: a dead session's surviving backend.lock.json still shields its orphan (the lock
+    # has no session liveness); clearing stale locks is a Desktop-side lifecycle job, not this rung.
+    """
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return None
+    if pid <= 0 or pid == os.getpid():
+        return None
+    try:
+        entry = next(
+            (e for e in ledger_entries()
+             if e.get("pid") == pid
+             and e.get("purpose") in _BACKEND_OWNER_PURPOSES
+             and (e.get("create_time") is None or create_time is None
+                  or abs(float(e["create_time"]) - float(create_time)) < 2.0)),
+            None)
+    except Exception:
+        return None
+    if entry is None:
+        return None
+    if spawner_is_dead(entry) is not True and not (
+            entry.get("spawner_pid") is None and _reparented_orphan(pid)):
+        return None  # live or unprovable spawner → never touch
+    try:
+        if kill_fn is not None:
+            kill_fn(pid)
+        elif not _terminate_then_kill(pid, entry.get("create_time")):
+            return None
+    except Exception:
+        logger.debug("backend owner reap failed for %s", entry, exc_info=True)
+        return None
+    logger.info("reaped orphaned %s backend owner pid %s", entry.get("purpose"), pid)
+    return pid
+
+
 def reap_orphaned_mcp_helpers(*, project_root: Optional[Path] = None, kill_fn=None) -> list[int]:
     """Kill ledger-registered stdio MCP helpers whose spawner is provably dead.
 
@@ -393,17 +487,8 @@ def reap_orphaned_mcp_helpers(*, project_root: Optional[Path] = None, kill_fn=No
                 continue  # live or unprovable spawner → never touch
             if kill_fn is not None:
                 kill_fn(pid)
-            else:
-                import psutil
-
-                proc = psutil.Process(pid)
-                if not _same_incarnation(proc, entry.get("create_time")):
-                    continue  # PID reused since registration
-                proc.terminate()
-                try:
-                    proc.wait(timeout=2.0)
-                except psutil.TimeoutExpired:
-                    proc.kill()
+            elif not _terminate_then_kill(pid, entry.get("create_time")):
+                continue  # PID reused since registration
             reaped.append(pid)
         except Exception:
             logger.debug("mcp-helper orphan reap failed for %s", entry, exc_info=True)

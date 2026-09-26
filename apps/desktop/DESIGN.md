@@ -243,6 +243,11 @@ separate chip component.
 
 ## Reel
 
+The profile rail keeps its create/import actions outside the scrolling squares.
+Clipped horizontal edges reuse `edgeMask(edges, 'x')` from `fade-scroll.tsx`;
+the default axis remains vertical for `FadeScroll`. Fitting content is unmasked,
+and profile drag gestures temporarily remove the mask so the dragged square stays legible.
+
 `src/components/ui/reel.tsx`: one horizontal, snap-scrolling row (catalog
 category shelves, screenshot strips). Children keep their width and snap to
 the start; set it once from the parent (`className="*:w-68"`). Use it instead of

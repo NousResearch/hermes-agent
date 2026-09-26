@@ -15,7 +15,7 @@ export interface FadeEdges {
  * The mask for a pair of clipped edges, or `undefined` when nothing is clipped
  * — a list that fits must not be dimmed at all.
  */
-export function edgeMask({ above, below }: FadeEdges): string | undefined {
+export function edgeMask({ above, below }: FadeEdges, axis: 'x' | 'y' = 'y'): string | undefined {
   if (!above && !below) {
     return undefined
   }
@@ -23,7 +23,7 @@ export function edgeMask({ above, below }: FadeEdges): string | undefined {
   const top = above ? `transparent, black ${FADE}` : 'black'
   const bottom = below ? `black calc(100% - ${FADE}), transparent` : 'black'
 
-  return `linear-gradient(to bottom, ${top}, ${bottom})`
+  return `linear-gradient(to ${axis === 'x' ? 'right' : 'bottom'}, ${top}, ${bottom})`
 }
 
 /** Which edges of a scroller currently have content clipped behind them. */

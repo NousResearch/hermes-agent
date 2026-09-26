@@ -84,10 +84,7 @@ async function queuedAttachmentPreview(filePath: string): Promise<{ previewUrl: 
  * Object URLs skip that read; path-only attaches (paperclip) still fall back
  * to the IPC data-URL path.
  */
-export async function resolveImageAttachmentPreview(
-  filePath: string,
-  previewSource?: Blob | null
-): Promise<string> {
+export async function resolveImageAttachmentPreview(filePath: string, previewSource?: Blob | null): Promise<string> {
   if (previewSource && previewSource.size > 0) {
     return URL.createObjectURL(previewSource)
   }

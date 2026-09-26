@@ -229,6 +229,11 @@ def _migrate_to_16(results: Dict[str, Any], quiet: bool) -> None:
     config = read_raw_config()
     display = _dict_at(config, "display")
     old_overrides = display.get("tool_progress_overrides")
+    if "tool_progress_overrides" in display and old_overrides is None:
+        # Nothing to fold, and save_config keeps an explicit null: retire the key here.
+        del display["tool_progress_overrides"]
+        _commit(config, results, quiet, None, "  ✓ Removed empty display.tool_progress_overrides")
+        return
     if not (isinstance(old_overrides, dict) and old_overrides):
         return
     platforms = _dict_at(display, "platforms")
@@ -254,7 +259,10 @@ def _migrate_to_17(results: Dict[str, Any], quiet: bool) -> None:
     comp = config.get("compression", {})
     if not isinstance(comp, dict):
         return
-    legacy = {k: comp.pop(f"summary_{k}", None) for k in ("model", "provider", "base_url")}
+    names = ("model", "provider", "base_url")
+    # Presence decides the removal: save_config keeps an explicit null, so a null key is retired too.
+    had_legacy = any(f"summary_{k}" in comp for k in names)
+    legacy = {k: comp.pop(f"summary_{k}", None) for k in names}
     migrated_keys = []
     for k, raw in legacy.items():
         val = str(raw).strip() if raw else ""
@@ -270,7 +278,7 @@ def _migrate_to_17(results: Dict[str, Any], quiet: bool) -> None:
         if not cur or (k == "provider" and cur == "auto"):
             aux_comp[k] = val
             migrated_keys.append(f"{k}={raw}")
-    if migrated_keys or any(v is not None for v in legacy.values()):
+    if had_legacy:
         config["compression"] = comp
         message = (
             "  ✓ Migrated compression.summary_* → auxiliary.compression: "

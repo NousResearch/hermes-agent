@@ -419,6 +419,30 @@ _ENDPOINT_UNREACHABLE_MARKERS = (
 _GATEWAY_ENDPOINT_UNREACHABLE_RE = re.compile(
     "(" + "|".join(_ENDPOINT_UNREACHABLE_MARKERS) + ")", re.IGNORECASE)
 
+def _windows_venv_matches_running_python(venv_dir: Path) -> bool:
+    """Was *venv_dir* built for the interpreter that is running?
+
+    A tree built for another minor version must never reach sys.path: its pure-Python
+    packages import fine, then their compiled submodules resolve against an ABI tag this
+    interpreter cannot load — ``import pydantic_core`` fails as a bare
+    ``ModuleNotFoundError`` from inside a healthy-looking import chain. A missing
+    ``pyvenv.cfg`` cannot be judged, so it is allowed (never a new refusal).
+    """
+    try:
+        text = (venv_dir / "pyvenv.cfg").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return True
+    for line in text.splitlines():
+        key, _, value = line.partition("=")
+        if key.strip().lower() != "version_info":
+            continue
+        parts = [p for p in value.strip().split(".") if p.isdigit()]
+        if parts[:2] != [str(sys.version_info.major), str(sys.version_info.minor)]:
+            return False
+        break
+    return True
+
+
 def _ensure_windows_gateway_venv_imports() -> None:
     """Make detached Windows gateway runs see the Hermes venv packages.
 
@@ -428,9 +452,34 @@ def _ensure_windows_gateway_venv_imports() -> None:
 
     project_root = Path(__file__).resolve().parent.parent
     candidates: list[Path] = []
-    if os.environ.get("VIRTUAL_ENV"):
-        candidates.append(Path(os.environ["VIRTUAL_ENV"]))
-    candidates.append(project_root / "venv")
+    # PM's committed environment IS this install's dependency environment, and it is
+    # invisible to interpreter state: the launchers run the store python with the
+    # generation's site-packages on PYTHONPATH, and activation pops VIRTUAL_ENV, so
+    # neither sys.prefix nor the env names it. Ask the committed-environment contract
+    # FIRST. The in-tree `<root>/venv` predates PM and belongs to whatever interpreter
+    # created it; adopting it here put a foreign-ABI tree at sys.path[0] and every
+    # gateway turn died with "Failed to initialize OpenAI client: No module named
+    # 'pydantic_core'" (pydantic_core's cp311 extension under a 3.14 interpreter).
+    committed: Path | None = None
+    try:
+        from pm.environments import committed_venv
+
+        committed = committed_venv(project_root)
+    except Exception:
+        committed = None
+    if committed is not None and committed.is_dir():
+        candidates.append(committed)
+    else:
+        # No committed selection: fall back to what the launcher/environment named, but
+        # never adopt a tree this interpreter cannot load — the launcher-set VIRTUAL_ENV
+        # is exactly how a foreign-ABI tree reached sys.path[0].
+        if os.environ.get("VIRTUAL_ENV"):
+            env_venv = Path(os.environ["VIRTUAL_ENV"])
+            if _windows_venv_matches_running_python(env_venv):
+                candidates.append(env_venv)
+        legacy_venv = project_root / "venv"
+        if _windows_venv_matches_running_python(legacy_venv):
+            candidates.append(legacy_venv)
 
     seen: set[str] = set()
     for venv_dir in candidates:

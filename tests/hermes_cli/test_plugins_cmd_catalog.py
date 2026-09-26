@@ -264,7 +264,7 @@ def test_update_of_a_subdir_install_keeps_files_the_user_created_or_edited(world
 def test_repin_keeps_a_wholly_ignored_data_dir_in_a_git_checkout(world):
     """A single ``!! data/`` status entry must preserve every file below that ignored directory."""
     repo = world["repo"]
-    (repo / ".gitignore").write_text("data/\n.venv/\n")
+    (repo / ".gitignore").write_text("data/\n.venv/\nnode_modules/\n")
     world["state"]["pin"] = _commit(repo, "ignore data")
     target = cat.install_catalog_entry(pc_cat.get_live_catalog_entry("cat-plugin"), force=False)[0]
     assert (target / ".git").exists()
@@ -274,6 +274,9 @@ def test_repin_keeps_a_wholly_ignored_data_dir_in_a_git_checkout(world):
     # An ignored venv always holds symlinks (bin/python); it is a reproducible artefact, not user state.
     (target / ".venv" / "bin").mkdir(parents=True)
     (target / ".venv" / "bin" / "python").symlink_to("/usr/bin/python3")
+    (target / ".venv" / "pyvenv.cfg").write_text("home = /usr/bin")
+    (target / "node_modules" / "x").mkdir(parents=True)
+    (target / "node_modules" / "x" / "index.js").write_text("module.exports = 1")
 
     (repo / "__init__.py").write_text("def register(ctx):\n    pass  # v3\n")
     world["state"]["pin"] = _commit(repo, "v3")
@@ -281,6 +284,8 @@ def test_repin_keeps_a_wholly_ignored_data_dir_in_a_git_checkout(world):
 
     assert _head(target) == world["state"]["pin"]
     assert (target / "data" / "db" / "index.db").read_text() == "user data"
+    # Excluded dependency dirs are not carried at all: a partial copy would be a broken install.
+    assert not (target / ".venv").exists() and not (target / "node_modules").exists()
 
     # A symlink in the ignored set is never followed into the update: it fails closed, naming the path,
     # and the live plugin stays at its current revision with its user data.

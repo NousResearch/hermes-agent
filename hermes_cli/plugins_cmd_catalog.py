@@ -359,6 +359,8 @@ def _carry_user_files(old: Path, new: Path, local: Optional[list[str]]) -> list[
     tree are carried while executable/declarative plugin surfaces remain revision-owned. If a
     user-owned path cannot be represented safely in the new tree (a layout clash, or a symlink in a
     git checkout's untracked/ignored set), fail before publication rather than silently dropping it.
+    Dirs in ``tools.plugin_guard.EXCLUDED_DIRS`` (``.venv/``, ``node_modules/``, tool caches) are
+    install artefacts: they are neither carried nor inspected, so links inside them never stop an update.
     Returns the carried paths (POSIX, relative to the tree) so a later scan block can name them.
     """
     from hermes_cli.plugins_cmd import PluginOperationError
@@ -371,9 +373,7 @@ def _carry_user_files(old: Path, new: Path, local: Optional[list[str]]) -> list[
     def _user_link(rel: Path) -> None:
         # Git-owned user state that is a symlink is refused, never followed: a link injected after the
         # installer's scan could point outside the plugin root past the guard (which skips links).
-        # Links under the guard's excluded dirs (node_modules/.bin shims, .venv/bin/python) are
-        # reproducible install artefacts, not user state.
-        if local is not None and not keep.isdisjoint((rel, *rel.parents)) and EXCLUDED_DIRS.isdisjoint(rel.parts):
+        if local is not None and not keep.isdisjoint((rel, *rel.parents)):
             linked.append(rel.as_posix())
 
     def _walk_error(exc: OSError) -> None:
@@ -388,8 +388,12 @@ def _carry_user_files(old: Path, new: Path, local: Optional[list[str]]) -> list[
         here = Path(dirpath)
         walk = []
         for name in dirnames:
-            # Without git, top-level revision-owned dirs are never carried: do not even walk them.
-            if _skip_preserve(name) or (local is None and here == old and name in _NO_GIT_REVISION_DIRS):
+            # The guard's excluded dirs (.venv, node_modules, tool caches) are reproducible install
+            # artefacts, not user state: never walk or carry them, so the fresh tree rebuilds them whole
+            # (a partial copy has no bin/python or .bin shims and suppresses `npm ci`). Without git,
+            # top-level revision-owned dirs are never carried either.
+            if (_skip_preserve(name) or name in EXCLUDED_DIRS
+                    or (local is None and here == old and name in _NO_GIT_REVISION_DIRS)):
                 continue
             if (here / name).is_symlink() or is_junction(here / name):
                 _user_link((here / name).relative_to(old))

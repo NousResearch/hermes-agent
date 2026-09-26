@@ -440,7 +440,9 @@ def _oneshot_spawn_budget(parent_agent: Any, requested: int) -> Optional[str]:
 def delegate_task(
     goal: Optional[str] = None, context: Optional[str] = None, tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
-    output_schema: Optional[Dict[str, Any]] = None, images: Optional[List[str]] = None, action: Optional[str] = None,
+    output_schema: Optional[Dict[str, Any]] = None, images: Optional[List[str]] = None,
+    model: Optional[str] = None, provider: Optional[str] = None,
+    firepower_reason: Optional[str] = None, action: Optional[str] = None,
     subagent_id: Optional[str] = None, message: Optional[str] = None, parent_agent=None,
     credentials_cfg: Optional[Dict[str, Any]] = None,
 ) -> str:
@@ -456,6 +458,24 @@ def delegate_task(
         return _handle_control_action(normalized_action, subagent_id, message, parent_agent)
     if normalized_action and normalized_action != "spawn":
         return tool_error(f"Unknown action '{action}'. Use spawn (default), list, steer, or stop.")
+
+    model = str(model or "").strip() or None
+    provider = str(provider or "").strip() or None
+    if provider and not model:
+        return tool_error("delegate_task provider requires a model override.")
+    from hermes_cli.model_policy import (
+        firepower_guard_error, format_firepower_audit, is_firepower_model,
+    )
+    guard_error = firepower_guard_error(
+        model, firepower_reason, reason_field="firepower_reason",
+    )
+    if guard_error:
+        return tool_error(guard_error)
+    if model and is_firepower_model(model):
+        logger.info(
+            "delegate_task %s",
+            format_firepower_audit(model, provider, firepower_reason or ""),
+        )
 
     # Operator kill switch (TUI / delegation.pause RPC): blocks NEW spawns only.
     if is_spawn_paused():
@@ -490,7 +510,16 @@ def delegate_task(
     # credentials_cfg (internal callers only, e.g. /review → auxiliary.review) is
     # a per-call routing owner shaped like the delegation config section. Keep
     # the route and its fallback policy together through child construction.
-    routing_cfg = credentials_cfg if credentials_cfg is not None else cfg
+    routing_cfg = dict(credentials_cfg if credentials_cfg is not None else cfg)
+    if model:
+        routing_cfg["model"] = model
+        if provider:
+            routing_cfg.update({
+                "provider": provider,
+                "base_url": "",
+                "api_key": "",
+                "api_mode": "",
+            })
     try:
         creds = _resolve_delegation_credentials(routing_cfg, parent_agent)
     except ValueError as exc:
@@ -692,6 +721,18 @@ DELEGATE_TASK_SCHEMA = {
             },
             # `background` (bool) is also accepted — DEPRECATED, ignored: top-level
             # delegations always run in the background. Unadvertised; do not re-add.
+            "model": _p(
+                "string",
+                "Optional per-call model override. Flagship models require firepower_reason.",
+            ),
+            "provider": _p(
+                "string",
+                "Provider for the per-call model override. Requires model.",
+            ),
+            "firepower_reason": _p(
+                "string",
+                "Required non-empty justification when model selects a flagship/firepower-only family; logged for audit.",
+            ),
             "action": _p(
                 "string",
                 "Default 'spawn'. Live control of running children: "
@@ -742,7 +783,9 @@ registry.register(
         goal=args.get("goal"), context=args.get("context"), tasks=_strip_model_hidden_task_fields(args.get("tasks")),
         max_iterations=args.get("max_iterations"), role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),
-        images=args.get("images"), action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
+        images=args.get("images"), model=args.get("model"), provider=args.get("provider"),
+        firepower_reason=args.get("firepower_reason"), action=args.get("action"),
+        subagent_id=args.get("subagent_id"), message=args.get("message"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

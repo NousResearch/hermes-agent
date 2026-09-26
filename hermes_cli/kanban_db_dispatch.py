@@ -113,6 +113,8 @@ class DispatchResult:
     :func:`reap_terminal_workers`."""
     spawned: list[tuple[str, str, str]] = field(default_factory=list)
     """``(task_id, assignee, workspace_path)`` triples."""
+    spawn_routes: dict[str, str] = field(default_factory=dict)
+    """Effective ``provider/model`` route for each spawned task."""
     skipped_unassigned: list[str] = field(default_factory=list)
     """Ready task ids with no assignee at all — operator-actionable (usually a
     misfiled task waiting for routing)."""
@@ -1975,6 +1977,33 @@ def dispatch_once(
     return result
 
 
+def effective_worker_route(task: Task) -> str:
+    """Return the provider/model route a dispatcher spawn will use."""
+    model = task.model_override
+    provider = task.provider_override
+    if model:
+        try:
+            from hermes_cli.kanban_provider_health import model_override
+            model, provider = model_override(task)
+        except Exception:
+            pass
+    elif task.assignee:
+        try:
+            from pathlib import Path as _Path
+            from hermes_cli.profiles import _read_config_model, resolve_profile_env
+            model, provider = _read_config_model(
+                _Path(resolve_profile_env(task.assignee))
+            )
+        except Exception:
+            model = provider = None
+    model_label = str(model or "unknown").strip() or "unknown"
+    provider_label = str(provider or "unknown").strip() or "unknown"
+    prefix = f"{provider_label}/"
+    if provider_label != "unknown" and model_label.startswith(prefix):
+        model_label = model_label[len(prefix):]
+    return f"{provider_label}/{model_label}"
+
+
 def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -> Optional[int]:
     """Back-compat: older spawn_fn signatures (and test stubs) accept only
     ``(task, workspace)``; pass ``board`` only when the callable supports it."""
@@ -2046,6 +2075,9 @@ def _dispatch_lane_task(
 
     if dry_run:
         result.spawned.append((task_id, assignee, ""))
+        task = _kb.get_task(conn, task_id)
+        if task is not None:
+            result.spawn_routes[task_id] = effective_worker_route(task)
         _count_spawn(assignee)
         return True
     claim = _kb.claim_review_task if lane == "review" else _kb.claim_task
@@ -2083,6 +2115,7 @@ def _dispatch_lane_task(
         # spawn would let a task that keeps timing out loop forever. Cleared
         # only on successful completion (complete_task).
         result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
+        result.spawn_routes[claimed.id] = effective_worker_route(claimed)
         _count_spawn(claimed.assignee)
         return True
     except Exception as exc:

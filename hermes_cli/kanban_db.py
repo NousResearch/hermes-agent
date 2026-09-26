@@ -1584,6 +1584,7 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
 
 def set_model_override(
     conn: sqlite3.Connection, task_id: str, model: Optional[str], provider: Optional[str] = None,
+    *, audit_comment_author: Optional[str] = None, audit_comment_body: Optional[str] = None,
 ) -> bool:
     """Set (empty ``model`` clears BOTH) the per-task model/provider override.
     Allowed while ``running``: it applies on the NEXT dispatch, which is the
@@ -1594,15 +1595,20 @@ def set_model_override(
         "UPDATE tasks SET model_override = ?, provider_override = ? WHERE id = ?", (model, provider),
         "model_override_set", {"model": model, "provider": provider},
         ("model_override", "provider_override"), archived_msg="cannot set model override",
+        audit_comment=(audit_comment_author, audit_comment_body),
     )
 
 
 def _set_task_override(
     conn: sqlite3.Connection, task_id: str, sql: str, params: tuple, event_kind: str, payload: dict,
     changed_fields: tuple[str, ...], *, archived_msg: str,
+    audit_comment: tuple[Optional[str], Optional[str]] = (None, None),
 ) -> bool:
     """Per-task override write: refuse archived tasks, record ``event_kind``,
     then fire the task-updated observer AFTER commit (RFC #58548)."""
+    comment_author, comment_body = audit_comment
+    if bool(comment_author) != bool(comment_body):
+        raise ValueError("audit comment author and body must be supplied together")
     with write_txn(conn):
         status = _task_status(conn, task_id)
         if status is None:
@@ -1611,6 +1617,8 @@ def _set_task_override(
             raise RuntimeError(f"{archived_msg} on archived task {task_id}")
         conn.execute(sql, (*params, task_id))
         _append_event(conn, task_id, event_kind, payload)
+        if comment_body:
+            add_comment(conn, task_id, comment_author or "", comment_body)
     notify_task_updated(conn, task_id, changed_fields)
     return True
 

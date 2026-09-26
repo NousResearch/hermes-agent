@@ -317,6 +317,16 @@ def _default_profile_secret_scope():
         reset_secret_scope(token)
 
 
+def _format_spawn_routes(routes: dict[str, str]) -> str:
+    """Format auditable per-task routes for the dispatcher tick line."""
+    from hermes_cli.model_policy import route_kind
+
+    return " ".join(
+        f"{task_id} route={route} kind={route_kind(route)}"
+        for task_id, route in sorted(routes.items())
+    )
+
+
 def _log_spawn_results(results: Optional[list]) -> bool:
     """Log per-board spawn summaries; returns whether any board spawned."""
     any_spawned = False
@@ -326,11 +336,12 @@ def _log_spawn_results(results: Optional[list]) -> bool:
             # Quiet by default: an idle gateway stays silent.
             logger.info(
                 "kanban dispatcher [%s]: spawned=%d reclaimed=%d "
-                "crashed=%d timed_out=%d promoted=%d auto_blocked=%d",
+                "crashed=%d timed_out=%d promoted=%d auto_blocked=%d routes=[%s]",
                 slug, len(res.spawned), res.reclaimed,
                 len(res.crashed) if hasattr(res.crashed, "__len__") else 0,
                 len(res.timed_out) if hasattr(res.timed_out, "__len__") else 0,
                 res.promoted,
                 len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
+                _format_spawn_routes(getattr(res, "spawn_routes", {})),
             )
     return any_spawned

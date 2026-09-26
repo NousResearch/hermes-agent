@@ -7,17 +7,21 @@ import {
   $approvalRequest,
   $secretRequest,
   $sudoRequest,
+  answerApproval,
+  APPROVAL_RESPOND_REQUEST_TIMEOUT_MS,
   clearAllPrompts,
   clearApprovalRequest,
   clearSecretRequest,
   clearSudoRequest,
   receiveApprovalRequest,
   replayPendingApproval,
+  sessionApprovalRequests,
   setApprovalRequest,
   setSecretRequest,
   setSudoRequest
 } from './prompts'
 import { isSessionGone, resetBackgroundPollingGuard } from './runtime-gone'
+import { resetServerRequestsForTests } from './server-requests'
 import { $activeSessionId, setActiveSessionId } from './session'
 
 // Prompts are parked per-session; the exported $*Request views are scoped to the
@@ -34,16 +38,6 @@ afterEach(() => {
 })
 
 describe('approval prompt store', () => {
-  it('holds the active session-keyed approval request', () => {
-    setApprovalRequest({ command: 'rm -rf /tmp/x', description: 'recursive delete', sessionId: 's1' })
-
-    expect($approvalRequest.get()).toEqual({
-      command: 'rm -rf /tmp/x',
-      description: 'recursive delete',
-      sessionId: 's1'
-    })
-  })
-
   it('parks a background session prompt out of the active view', () => {
     setApprovalRequest({ command: 'x', description: 'd', sessionId: 's2' })
 
@@ -60,17 +54,6 @@ describe('approval prompt store', () => {
     clearApprovalRequest('s1')
 
     expect($approvalRequest.get()).toBeNull()
-  })
-
-  it('carries allowPermanent so the bar can hide "Always allow"', () => {
-    setApprovalRequest({
-      allowPermanent: false,
-      command: 'curl x | bash',
-      description: 'content-security',
-      sessionId: 's1'
-    })
-
-    expect($approvalRequest.get()?.allowPermanent).toBe(false)
   })
 
   it('correlates clearing to the exact approval request id', () => {
@@ -104,7 +87,7 @@ describe('approval prompt store', () => {
     expect(calls).toEqual([['approval.received', { request_id: 'r1', session_id: 's1' }]])
   })
 
-  it('replays and acknowledges the oldest unresolved approval after reconnect', async () => {
+  it('replays and acknowledges every unresolved approval after reconnect', async () => {
     const calls: Array<[string, Record<string, unknown>]> = []
 
     const gateway = {
@@ -129,8 +112,81 @@ describe('approval prompt store', () => {
     expect($approvalRequest.get()?.requestId).toBe('r1')
     expect(calls).toEqual([
       ['approval.pending', { session_id: 's1' }],
-      ['approval.received', { request_id: 'r1', session_id: 's1' }]
+      ['approval.received', { request_id: 'r1', session_id: 's1' }],
+      ['approval.received', { request_id: 'r2', session_id: 's1' }]
     ])
+    expect(
+      sessionApprovalRequests('s1')
+        .get()
+        .map(request => request.requestId)
+    ).toEqual(['r1', 'r2'])
+    clearApprovalRequest('s1', 'r1')
+    expect($approvalRequest.get()?.requestId).toBe('r2')
+  })
+
+  it('preserves live server request routing for every queued replay entry', async () => {
+    for (const id of ['r1', 'r2']) {
+      await receiveApprovalRequest(null, {
+        command: id,
+        description: id,
+        requestId: id,
+        serverRequestId: `srv-${id}`,
+        sessionId: 's1'
+      })
+    }
+
+    await replayPendingApproval(
+      {
+        request: async () => ({
+          approvals: [
+            { command: 'r1', request_id: 'r1' },
+            { command: 'r2', request_id: 'r2' }
+          ]
+        })
+      },
+      's1'
+    )
+    expect(
+      sessionApprovalRequests('s1')
+        .get()
+        .map(request => request.serverRequestId)
+    ).toEqual(['srv-r1', 'srv-r2'])
+  })
+
+  it('deduplicates queued ids and rejects a replay that races an exact response', async () => {
+    const first = { command: 'first', description: 'd', requestId: 'r1', sessionId: 's1' }
+    const second = { ...first, command: 'second', requestId: 'r2' }
+    setApprovalRequest(first)
+    setApprovalRequest(second)
+    setApprovalRequest(first)
+    expect(
+      sessionApprovalRequests('s1')
+        .get()
+        .map(request => request.requestId)
+    ).toEqual(['r1', 'r2'])
+    let finish!: (result: unknown) => void
+
+    const replay = replayPendingApproval(
+      {
+        request: () =>
+          new Promise(resolve => {
+            finish = resolve
+          })
+      },
+      's1'
+    )
+
+    clearApprovalRequest('s1', 'r1')
+    finish({
+      approvals: [
+        { command: 'first', request_id: 'r1' },
+        { command: 'second', request_id: 'r2' }
+      ]
+    })
+    await replay
+    expect(sessionApprovalRequests('s1').get()).toEqual([second])
+    clearAllPrompts('s1')
+    expect(sessionApprovalRequests('s1').get()).toEqual([])
   })
 
   it('clears an absent approval without overwriting a newer live request', async () => {
@@ -155,6 +211,12 @@ describe('approval prompt store', () => {
     setApprovalRequest({ ...old, requestId: 'new' })
     resolve({ approvals: [] })
     await pending
+    expect(
+      sessionApprovalRequests('s1')
+        .get()
+        .map(request => request.requestId)
+    ).toEqual(['old', 'new'])
+    clearApprovalRequest('s1', 'old')
     expect($approvalRequest.get()?.requestId).toBe('new')
   })
 
@@ -214,6 +276,81 @@ describe('approval prompt store', () => {
 
     expect(isSessionGone('transient-runtime')).toBe(false)
     expect($approvalRequest.get()?.requestId).toBe('r2')
+  })
+})
+
+describe('answerApproval', () => {
+  const target = { requestId: 'r1', serverRequestId: undefined, sessionId: 's1' }
+
+  beforeEach(() => {
+    resetServerRequestsForTests()
+  })
+
+  it('sends approval.respond with a deadline that covers the backend approvals window', async () => {
+    const calls: Array<[string, Record<string, unknown>, number | undefined]> = []
+
+    const gateway = {
+      request: async (method: string, params: Record<string, unknown>, timeoutMs?: number) => {
+        calls.push([method, params, timeoutMs])
+
+        return { resolved: 1 }
+      }
+    }
+
+    await answerApproval(gateway as never, target, 'once')
+
+    // #55433: the generic 30s default fires long before the backend's 300s
+    // approvals.timeout; the RPC must carry an explicit longer deadline.
+    expect(calls).toHaveLength(1)
+    expect(calls[0][0]).toBe('approval.respond')
+    expect(calls[0][2]).toBe(APPROVAL_RESPOND_REQUEST_TIMEOUT_MS)
+    expect(APPROVAL_RESPOND_REQUEST_TIMEOUT_MS).toBeGreaterThanOrEqual(300_000)
+  })
+
+  it('retries once when the respond deadline fires behind a stalled WS', async () => {
+    let calls = 0
+
+    const gateway = {
+      request: async (_method: string, _params: Record<string, unknown>, _timeoutMs?: number) => {
+        calls += 1
+
+        if (calls === 1) {
+          throw new Error(`request timed out after 330s: approval.respond`)
+        }
+
+        return { resolved: 1 }
+      }
+    }
+
+    // Resolves on the retry; a duplicate resolve is idempotent server-side.
+    await expect(answerApproval(gateway as never, target, 'deny')).resolves.toBeUndefined()
+    expect(calls).toBe(2)
+  })
+
+  it('propagates non-timeout failures without a retry', async () => {
+    let calls = 0
+
+    const gateway = {
+      request: async () => {
+        calls += 1
+        throw new JsonRpcGatewayError('session not found', { code: 4001 })
+      }
+    }
+
+    await expect(answerApproval(gateway as never, target, 'once')).rejects.toThrow('session not found')
+    expect(calls).toBe(1)
+  })
+
+  it('answers the live server request without any RPC when one is open', async () => {
+    const { rememberServerRequest } = await import('./server-requests')
+    const respond = vi.fn()
+    rememberServerRequest({ fail: vi.fn(), id: 'srv-1', method: 'approval', params: {}, respond })
+    const request = vi.fn()
+
+    await answerApproval({ request } as never, { requestId: 'r1', serverRequestId: 'srv-1', sessionId: 's1' }, 'once')
+
+    expect(respond).toHaveBeenCalledWith({ choice: 'once' })
+    expect(request).not.toHaveBeenCalled()
   })
 })
 

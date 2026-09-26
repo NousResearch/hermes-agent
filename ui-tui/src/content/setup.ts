@@ -10,10 +10,13 @@ export const buildSetupRequiredSections = (locale: Locale = 'en'): PanelSection[
   },
   {
     rows: [
-      ['/model', translate(locale, 'setup.action.configureModel')],
       ['/setup', translate(locale, 'setup.action.runWizard')],
+      ['/model', translate(locale, 'setup.action.configureModel')],
       ['Ctrl+C', translate(locale, 'setup.action.exitSetup')]
     ],
     title: translate(locale, 'setup.actions')
+  },
+  {
+    text: translate(locale, 'setup.dashboardModels')
   }
 ]

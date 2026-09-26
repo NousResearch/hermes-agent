@@ -22,6 +22,20 @@ export interface Translations {
 
   // ── Common ──
   common: {
+    apiErrorUnexpected: string;
+    apiError504: string;
+    apiError503: string;
+    apiError502: string;
+    apiError500: string;
+    apiError429: string;
+    apiError422: string;
+    apiError413: string;
+    apiError409: string;
+    apiError404: string;
+    apiError403: string;
+    apiError401: string;
+    apiError400: string;
+    apiError0: string;
     save: string;
     saving: string;
     cancel: string;
@@ -30,6 +44,9 @@ export interface Translations {
     delete: string;
     refresh: string;
     retry: string;
+    /** Optional — English fallback until translated. "{what}" = the noun that failed to load. */
+    loadFailed: string;
+    loadFailedDetails: string;
     search: string;
     loading: string;
     create: string;
@@ -83,7 +100,9 @@ export interface Translations {
     activeSessionsLabel: string;
     gatewayStatusLabel: string;
     gatewayStrip: {
+      degraded: string;
       failed: string;
+      heartbeatStale: string;
       off: string;
       running: string;
       starting: string;
@@ -135,11 +154,22 @@ export interface Translations {
     memoryElevatedBanner: string;
     diskCriticalBanner: string;
     diskElevatedBanner: string;
+    multiplexStandaloneBanner: string;
     dismiss: string;
   };
 
   // ── Chat sidebar ──
   chatSidebar: {
+    missingKey: string;
+    sidecarDisconnected: string;
+    switchModelAction: string;
+    addKey: string;
+    reconnectSidePanel: string;
+    startFailed: string;
+    openLogs: string;
+    checkServer: string;
+    reconnectGaveUp: string;
+    reloadPage: string;
     model: string;
     switchModel: string;
     reconnect: string;
@@ -190,6 +220,10 @@ export interface Translations {
 
   // ── Model picker dialog ──
   modelPicker: {
+    signInProvider: string;
+    openKeys: string;
+    noProvidersConfigured: string;
+    noProvidersMatch: string;
     title: string;
     close: string;
     filterPlaceholder: string;
@@ -314,6 +348,10 @@ export interface Translations {
     failedToDeleteSelected: string;
     resumeInChat: string;
     newChat: string;
+    workspace: string;
+    workspaceDefault: string;
+    workspaceRescan: string;
+    workspaceCustom: string;
     previousPage: string;
     nextPage: string;
     rename: string;
@@ -600,6 +638,9 @@ export interface Translations {
 
   // ── Cron page ──
   cron: {
+    /** Optional — English fallback until translated. */
+    loadWhat: string;
+    scriptRequired: string;
     confirmDeleteMessage: string;
     confirmDeleteTitle: string;
     newJob: string;
@@ -648,6 +689,8 @@ export interface Translations {
     noJobs: string;
     last: string;
     next: string;
+    overdueSince: string;
+    schedulerLastTicked: string;
     pause: string;
     resume: string;
     triggerNow: string;
@@ -709,11 +752,13 @@ export interface Translations {
 
   // ── Plugins page ──
   pluginsPage: {
+    updateConsentBody: string;
     contextEngineLabel: string;
     dashboardSlots: string;
     disableRuntime: string;
     enableAfterInstall: string;
     enableRuntime: string;
+    toggleTakesEffectAfterRestart: string;
     forceReinstall: string;
     headline: string;
     identifierLabel: string;
@@ -744,6 +789,8 @@ export interface Translations {
     authRequired: string;
     authRequiredHint: string;
     updateGit: string;
+    /** Optional: locales without it fall back to the English body at the call site. */
+
     versionBadge: string;
     showInSidebar: string;
     hideFromSidebar: string;
@@ -877,6 +924,9 @@ export interface Translations {
   skills: {
     title: string;
     searchPlaceholder: string;
+    /** Optional — English fallback until translated. */
+    loadWhat: string;
+    createSkill: string;
     enabledOf: string;
     all: string;
     categories: string;
@@ -1234,6 +1284,7 @@ export interface Translations {
   };
 
   mcp: {
+    browseCatalog: string;
     error: string;
     nameRequired: string;
     urlRequired: string;
@@ -1463,6 +1514,16 @@ export interface Translations {
 
   // ── System administration page ──
   systemPage: {
+    gatewayLogsHint: string;
+    gatewayRestartFailed: string;
+    gatewayStopFailed: string;
+    gatewayStartFailed: string;
+    gatewayExitedDegraded: string;
+    gatewayStartupFailed: string;
+    gatewayStopped: string;
+    gatewayDegraded: string;
+    gatewayStarting: string;
+    gatewayRunning: string;
     actionLog: {
       running: string;
       done: string;

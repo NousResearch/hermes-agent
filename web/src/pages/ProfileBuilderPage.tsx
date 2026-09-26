@@ -25,6 +25,7 @@ import {
 } from "@/lib/mcp-server-create";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n";
+import { errorMessage } from "@/lib/api-error";
 
 // Profile name rule mirrors the backend (`^[a-z0-9][a-z0-9_-]{0,63}$`).
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
@@ -279,7 +280,7 @@ export default function ProfileBuilderPage() {
       navigate("/profiles");
     } catch (e) {
       showToast(
-        format(t.profileBuilder.createFailed, { error: String(e) }),
+        format(t.profileBuilder.createFailed, { error: errorMessage(e, t.common) }),
         "error",
       );
     } finally {

@@ -27,7 +27,7 @@ export const HOTKEYS: [string, TranslationKey][] = [
   ['↑/↓', 'hotkey.navigateOrEdit'],
   ['Ctrl+X', 'hotkey.openSessionsOrDeleteQueued'],
   ['Ctrl+T', 'hotkey.expandLiveAgents'],
-  ['F7', 'hotkey.toggleLiveAgentPreview'],
+  ['Ctrl+R / F7', 'hotkey.toggleLiveAgentPreview'],
   ['Ctrl+O', 'hotkey.openModelPicker'],
   [action + '+A/E', 'hotkey.lineStartEnd'],
   [action + '+Z / ' + action + '+Y', 'hotkey.undoRedo'],

@@ -33,7 +33,7 @@ export function detectMacTerminalContext(env: NodeJS.ProcessEnv = process.env): 
 
 export async function terminalParityHints(
   env: NodeJS.ProcessEnv = process.env,
-  options?: { fileOps?: Partial<FileOps>; homeDir?: string; locale?: Locale }
+  options?: { fileOps?: Partial<FileOps>; homeDir?: string; locale?: Locale; platform?: NodeJS.Platform }
 ): Promise<MacTerminalHint[]> {
   const ctx = detectMacTerminalContext(env)
   const hints: MacTerminalHint[] = []
@@ -41,7 +41,12 @@ export async function terminalParityHints(
 
   if (
     ctx.vscodeLike &&
-    (await shouldPromptForTerminalSetup({ env, fileOps: options?.fileOps, homeDir: options?.homeDir }))
+    (await shouldPromptForTerminalSetup({
+      env,
+      fileOps: options?.fileOps,
+      homeDir: options?.homeDir,
+      platform: options?.platform
+    }))
   ) {
     hints.push({
       key: 'ide-setup',

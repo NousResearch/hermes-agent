@@ -44,6 +44,7 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import type { Translations } from "@/i18n/types";
 import { cn, themedBody } from "@/lib/utils";
+import { errorMessage } from "@/lib/api-error";
 
 // State → badge mapping. The backend emits a small, fixed vocabulary plus
 // whatever the live gateway runtime reports (connected/disconnected/fatal).
@@ -215,7 +216,7 @@ export default function ChannelsPage() {
       })
       .catch((e) =>
         showToast(
-          formatTemplate(t.channels.errorToast, { error: String(e) }),
+          formatTemplate(t.channels.errorToast, { error: errorMessage(e, t.common) }),
           "error",
         ),
       );
@@ -287,7 +288,7 @@ export default function ChannelsPage() {
       if (result.hot_served) setTimeout(() => void load(), 4000);
     } catch (e) {
       showToast(
-        formatTemplate(t.channels.failedToSave, { error: String(e) }),
+        formatTemplate(t.channels.failedToSave, { error: errorMessage(e, t.common) }),
         "error",
       );
     } finally {
@@ -315,7 +316,7 @@ export default function ChannelsPage() {
       else setRestartNeeded(true);
     } catch (e) {
       showToast(
-        formatTemplate(t.channels.errorToast, { error: String(e) }),
+        formatTemplate(t.channels.errorToast, { error: errorMessage(e, t.common) }),
         "error",
       );
     } finally {
@@ -336,7 +337,7 @@ export default function ChannelsPage() {
       );
     } catch (e) {
       showToast(
-        formatTemplate(t.channels.errorToast, { error: String(e) }),
+        formatTemplate(t.channels.errorToast, { error: errorMessage(e, t.common) }),
         "error",
       );
     } finally {
@@ -354,7 +355,7 @@ export default function ChannelsPage() {
       setTimeout(() => void load(), 4000);
     } catch (e) {
       showToast(
-        formatTemplate(t.channels.failedToRestart, { error: String(e) }),
+        formatTemplate(t.channels.failedToRestart, { error: errorMessage(e, t.common) }),
         "error",
       );
     } finally {

@@ -251,8 +251,9 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   }
 
   // ── Collapsible skills section ──
-  const skillEntries = Object.entries(info.skills).sort()
-  const skillsTotal = flat(info.skills).length
+  const skills = info.skills ?? {}
+  const skillEntries = Object.entries(skills).sort()
+  const skillsTotal = flat(skills).length
   const skillsCatCount = skillEntries.length
 
   const skillsBody = () => {
@@ -279,8 +280,9 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   }
 
   // ── Collapsible tools section ──
-  const toolEntries = Object.entries(info.tools).sort()
-  const toolsTotal = flat(info.tools).length
+  const tools = info.tools ?? {}
+  const toolEntries = Object.entries(tools).sort()
+  const toolsTotal = flat(tools).length
 
   // MCP headline counts *connected* servers, not configured-but-disabled ones,
   // so it matches the classic CLI banner (`sum(s.connected)` in
@@ -323,6 +325,11 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
             <Text color={t.color.muted}>{ti('branding.mcpDisabled')}</Text>
           ) : s.status === 'connecting' ? (
             <Text color={t.color.warn}>{ti('branding.mcpConnecting')}</Text>
+          ) : s.status === 'lazy' ? (
+            // Registered from the schema cache, process not spawned yet: its tools are callable.
+            <Text color={t.color.text}>
+              {ti('branding.mcpTools', { count: Number(s.tools ?? 0) })} <Text color={t.color.muted}>{ti('branding.mcpLazy')}</Text>
+            </Text>
           ) : s.status === 'configured' ? (
             <Text color={t.color.muted}>{ti('branding.mcpConfigured')}</Text>
           ) : (
@@ -355,7 +362,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
       <Text />
 
       <Text color={t.color.accent}>
-        {info.model.split('/').pop()}
+        {(info.model ?? '').split('/').pop()}
         <Text color={t.color.muted}>{ti('branding.nousResearch')}</Text>
       </Text>
 
@@ -387,7 +394,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
         // here so they aren't lost.
         <Box flexDirection="column" marginBottom={1}>
           <Text color={t.color.accent} wrap="truncate-end">
-            {info.model.split('/').pop()}
+            {(info.model ?? '').split('/').pop()}
             <Text color={t.color.muted}>{ti('branding.nousResearch')}</Text>
           </Text>
           <Text color={t.color.muted} wrap="truncate-end">

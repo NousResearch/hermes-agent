@@ -102,10 +102,12 @@ class CLILoopsMixin:
             ctx_len = None
             if agent and hasattr(agent, "context_compressor"):
                 ctx_len = agent.context_compressor.context_length
+            from agent.context_pin import is_context_pinned
             build_welcome_banner(
                 console=cc, model=self.model, cwd=os.getenv("TERMINAL_CWD", os.getcwd()),
                 tools=tools, enabled_toolsets=self.enabled_toolsets, session_id=self.session_id,
-                context_length=ctx_len, provider=self.provider)
+                context_length=ctx_len, provider=self.provider,
+                context_pinned=is_context_pinned(ctx_len, getattr(agent, "_config_context_length", None)))
         _cprint(_FRESH_START)
         self._print_random_tip()
 
@@ -116,7 +118,7 @@ class CLILoopsMixin:
         if len(parts) == 1:
             # No argument: show current title and session ID.
             if not self._session_db:
-                _cprint(f"  {format_session_db_unavailable()}")
+                _cprint(f"  {format_session_db_unavailable(details=True)}")
                 return
             _cprint(f"  Session ID: {self.session_id}")
             session = self._session_db.get_session(self.session_id)
@@ -132,7 +134,7 @@ class CLILoopsMixin:
             _cprint("  Usage: /title <your session title>")
             return
         if not self._session_db:
-            _cprint(f"  {format_session_db_unavailable()}")
+            _cprint(f"  {format_session_db_unavailable(details=True)}")
             return
         # Sanitize early so feedback matches what gets stored. A rejection (e.g. too
         # long) prints that one reason and stops — never a second, contradictory

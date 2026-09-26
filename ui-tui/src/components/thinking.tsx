@@ -21,6 +21,7 @@ import {
   compactPreview,
   estimateTokensRough,
   formatToolCall,
+  formatToolLabels,
   parseToolTrailResultLine,
   pick,
   splitToolDuration,
@@ -915,7 +916,8 @@ export const ToolTrail = memo(function ToolTrail({
   }
 
   for (const tool of tools) {
-    const label = formatToolCall(tool.name, tool.context || '')
+    // A bridged call names its inner calls; anything else is still name + preview.
+    const label = tool.labels?.length ? formatToolLabels(tool.labels) : formatToolCall(tool.name, tool.context || '')
 
     groups.push({
       color: t.color.text,

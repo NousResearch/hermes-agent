@@ -38,6 +38,7 @@ import type { ManagedFileEntry, ManagedFilesResponse } from "@/lib/api";
 import { PluginSlot } from "@/plugins";
 import { useI18n } from "@/i18n";
 import { formatDateTime } from "@/lib/utils";
+import { errorMessage } from "@/lib/api-error";
 
 function joinPath(base: string, name: string): string {
   const cleanName = name.trim().replace(/^[\\/]+/, "");
@@ -109,7 +110,7 @@ export default function FilesPage() {
         setCurrentPath(result.path);
         setPathInput(result.path);
       } catch (e) {
-        setError(String(e));
+        setError(errorMessage(e, t.common));
       } finally {
         setLoading(false);
       }
@@ -183,7 +184,7 @@ export default function FilesPage() {
       showToast(t.files.folderCreated, "success");
       await load();
     } catch (e) {
-      showToast(format(t.files.createFailed, { error: String(e) }), "error");
+      showToast(format(t.files.createFailed, { error: errorMessage(e, t.common) }), "error");
     } finally {
       setCreating(false);
     }
@@ -199,7 +200,7 @@ export default function FilesPage() {
       showToast(format(t.files.filesUploaded, { count: files.length }), "success");
       await load();
     } catch (e) {
-      showToast(format(t.files.uploadFailed, { error: String(e) }), "error");
+      showToast(format(t.files.uploadFailed, { error: errorMessage(e, t.common) }), "error");
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -242,7 +243,7 @@ export default function FilesPage() {
       const file = await api.readFile(entry.path);
       downloadDataUrl(file.data_url, file.name);
     } catch (e) {
-      showToast(format(t.files.downloadFailed, { error: String(e) }), "error");
+      showToast(format(t.files.downloadFailed, { error: errorMessage(e, t.common) }), "error");
     }
   };
 
@@ -255,7 +256,7 @@ export default function FilesPage() {
       setPendingDelete(null);
       await load();
     } catch (e) {
-      showToast(format(t.files.deleteFailed, { error: String(e) }), "error");
+      showToast(format(t.files.deleteFailed, { error: errorMessage(e, t.common) }), "error");
     } finally {
       setDeleting(false);
     }

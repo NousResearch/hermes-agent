@@ -12,6 +12,7 @@ import {
   DialogTitle,
 } from "@nous-research/ui/ui/components/dialog";
 import { useI18n } from "@/i18n";
+import { errorMessage } from "@/lib/api-error";
 
 /* ------------------------------------------------------------------ */
 /*  SkillEditorDialog — create or edit a SKILL.md from the dashboard   */
@@ -94,7 +95,7 @@ function EditorBody({
     api
       .getSkillContent(editName, profile || undefined)
       .then((res) => !cancelled && setContent(res.content))
-      .catch((e) => !cancelled && setError(String(e)))
+      .catch((e) => !cancelled && setError(errorMessage(e, t.common)))
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
@@ -130,7 +131,7 @@ function EditorBody({
       }
       onClose();
     } catch (e) {
-      setError(String(e));
+      setError(errorMessage(e, t.common));
     } finally {
       setSaving(false);
     }

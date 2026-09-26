@@ -16,6 +16,22 @@ export const zh: TranslationOverlay = {
     terms: SCHEMA_ZH_TERM,
   },
   common: {
+    apiErrorUnexpected: "Hermes 服务返回了意外错误（{status}）。",
+    apiError504: "Hermes 服务响应超时。",
+    apiError503: "Hermes 服务尚未就绪，请稍后重试。",
+    apiError502: "Dashboard 代理无法连接 Hermes 服务。",
+    apiError500: "Hermes 服务内部出错。",
+    apiError429: "请求过于频繁，请稍后重试。",
+    apiError422: "部分输入值无效。",
+    apiError413: "上传内容过大，服务端无法接收。",
+    apiError409: "此修改与服务端当前状态冲突。",
+    apiError404: "服务端找不到 Dashboard 请求的内容。",
+    apiError403: "你没有执行此 Dashboard 操作的权限。",
+    apiError401: "Dashboard 登录已过期，请刷新页面重新登录。",
+    apiError400: "服务端无法识别 Dashboard 发出的请求。",
+    apiError0: "Dashboard 无法连接 Hermes 服务，请检查 `hermes dashboard` 是否仍在运行。",
+    loadFailedDetails: "详情：{detail}",
+    loadFailed: "无法加载{what}。请检查 Dashboard 服务是否运行，然后点击“重试”。",
     save: "保存",
     saving: "保存中…",
     cancel: "取消",
@@ -69,6 +85,7 @@ export const zh: TranslationOverlay = {
   },
 
   app: {
+    multiplexStandaloneBanner: "网关当前只服务一个配置。未接入的配置：{profiles}。原因：{reason}。请运行 hermes gateway migrate --multiplex。",
     brand: "Hermes Agent",
     brandShort: "HA",
     closeNavigation: "关闭导航",
@@ -79,6 +96,8 @@ export const zh: TranslationOverlay = {
     activeSessionsLabel: "活跃会话：",
     gatewayStatusLabel: "网关状态：",
     gatewayStrip: {
+      degraded: "部分通道离线",
+      heartbeatStale: "心跳已过期",
       failed: "启动失败",
       off: "关闭",
       running: "运行中",
@@ -140,13 +159,23 @@ export const zh: TranslationOverlay = {
   },
 
   chatSidebar: {
+    missingKey: "尚未为 {provider} 设置 API 密钥，消息将无法发送。请在“密钥”页面添加密钥，或选择其他服务商。",
+    sidecarDisconnected: "会话侧栏（模型与工具活动）无法连接，会话仍可使用。请点击“重新连接侧栏”重试。",
+    switchModelAction: "切换模型",
+    addKey: "添加密钥",
+    reconnectSidePanel: "重新连接侧栏",
+    startFailed: "聊天无法启动，原因已显示在上方。",
+    openLogs: "打开日志",
+    checkServer: "检查服务状态",
+    reconnectGaveUp: "已与 Hermes Dashboard 服务断开连接。如果你停止了 `hermes dashboard`，请重新启动；否则点击“立即重连”。",
+    reloadPage: "刷新页面",
     model: "模型",
     switchModel: "切换模型",
     reconnect: "重新连接事件推送",
-    eventsDisconnected: "事件推送已断开，对话标题可能无法更新",
-    eventsReconnecting: "事件推送已断开，将在 {seconds} 秒后重新连接…",
-    eventsGaveUp: "事件推送已断开，尝试 {attempts} 次后已停止重连，请刷新页面",
-    eventsRejected: "事件推送被拒绝（{code}），请刷新页面",
+    eventsDisconnected: "实时工具活动已暂停，会话标题可能无法更新",
+    eventsReconnecting: "实时工具活动已暂停，{seconds} 秒后重连…",
+    eventsGaveUp: "尝试重连 {attempts} 次后，实时工具活动已停止。请点击“重新连接侧栏”或刷新页面。",
+    eventsRejected: "实时工具活动已停止（登录已过期）。请刷新页面以恢复。",
     reasoning: "推理强度",
     reasoningEfforts: {
       none: "关闭（不推理）",
@@ -162,27 +191,26 @@ export const zh: TranslationOverlay = {
       "推理强度已设为 {effort}。运行 `/new` 或刷新页面后，本次对话才会使用新设置。",
     modelSetRequiresReload:
       "模型已设为 {model}。运行 `/new` 或刷新页面后，本次对话才会使用新模型。",
-    reconnecting: "正在重新连接对话。",
+    reconnecting: "聊天连接中断，正在重连…",
     reconnectingCode: "对话连接已中断（代码 {code}），正在重新连接…",
     reconnectingInput: "正在重新连接对话，连接恢复后可继续输入。",
     disconnected: "对话连接已断开。",
     reconnectNow: "立即重新连接",
     resumeLoading: "正在加载对话，请稍候…",
-    sessionEnded: "会话已结束。",
+    sessionEnded: "聊天会话已结束。如果并非主动结束，可能是助手发生异常。请打开日志查看原因，或新建会话。",
     sessionEndedTerminal: "会话已结束",
     sessionEndedTerminalCode: "会话已结束（代码 {code}）",
     startNewSession: "开始新会话",
-    sessionTokenUnavailable:
-      "会话令牌不可用。请通过 `hermes dashboard` 打开此页面，不要直接访问。",
+    sessionTokenUnavailable: "此页面缺少登录令牌，聊天无法连接。请刷新页面，或在终端重新运行 `hermes dashboard`。",
     imageUploadFailed: "图片上传失败：{error}",
     imageUploadedDisconnected: "图片已上传，但对话尚未连接，请重试。",
-    authFailed: "认证失败。请刷新页面以更新会话令牌。",
+    authFailed: "Dashboard 服务已重启，此聊天页的登录已过期。请刷新页面以重新连接。",
     authFailedReason: "认证失败（{reason}）。请刷新页面以更新会话。",
-    originRefused: "请求被拒绝：主机或来源与管理面板不匹配。",
+    originRefused: "页面地址与服务地址不一致，聊天连接被拒绝。请使用 `hermes dashboard` 输出的地址打开页面。",
     originRefusedReason: "请求被拒绝：{reason}。",
-    websocketUnavailable: "此服务器未提供对话 WebSocket。",
+    websocketUnavailable: "此 Hermes 服务不支持终端聊天。请运行 `hermes update` 更新后刷新页面。",
     websocketUnavailableReason: "对话 WebSocket 不可用：{reason}。",
-    localClientRefused: "请求被拒绝：服务器仅允许本机客户端访问。",
+    localClientRefused: "此 Hermes 服务仅允许本机聊天。请在运行服务的机器上打开 Dashboard，或将服务配置为对外监听。",
     localClientRefusedReason: "请求被拒绝：{reason}。",
     panel: "面板",
     showSidePanelTitle: "显示侧栏（模型和会话）",
@@ -192,6 +220,10 @@ export const zh: TranslationOverlay = {
   },
 
   modelPicker: {
+    signInProvider: "登录服务商",
+    openKeys: "打开密钥页面",
+    noProvidersConfigured: "尚未配置模型服务商。请在“密钥”页面添加 API 密钥，或在“模型”页面登录服务商，以查看可用模型。",
+    noProvidersMatch: "没有匹配的服务商。",
     title: "切换模型",
     close: "关闭",
     filterPlaceholder: "筛选服务商和模型…",
@@ -322,6 +354,10 @@ export const zh: TranslationOverlay = {
     failedToDeleteSelected: "删除所选会话失败",
     resumeInChat: "在对话中继续",
     newChat: "新对话",
+    workspace: "工作区",
+    workspaceDefault: "默认",
+    workspaceRescan: "重新扫描仓库",
+    workspaceCustom: "其他路径…",
     previousPage: "上一页",
     nextPage: "下一页",
     rename: "重命名会话",
@@ -649,6 +685,10 @@ export const zh: TranslationOverlay = {
   },
 
   cron: {
+    schedulerLastTicked: "调度器上次运行于 {when}，此后到期的任务尚未执行",
+    overdueSince: "已逾期，原定时间",
+    scriptRequired: "纯脚本任务需要脚本路径。请填写“脚本”字段，或切换回提示词模式。",
+    loadWhat: "定时任务",
     confirmDeleteMessage: "将从此计划移除该任务，此操作无法撤销。",
     confirmDeleteTitle: "删除定时任务？",
     newJob: "新建定时任务",
@@ -831,11 +871,14 @@ export const zh: TranslationOverlay = {
   },
 
   pluginsPage: {
+    updateConsentBody: "{name} 的新目录版本（{sha}）增加了当前版本没有的能力。请仅在信任这些能力时更新：",
     contextEngineLabel: "上下文引擎",
     dashboardSlots: "面板插槽",
     disableRuntime: "禁用",
     enableAfterInstall: "安装后启用",
     enableRuntime: "启用",
+    toggleTakesEffectAfterRestart:
+      "已保存 — 重启网关以应用更改。",
     forceReinstall: "强制重装（先删除已有目录）",
     headline:
       "发现、安装、启用和更新 Hermes 插件（对齐 `hermes plugins` CLI）。",
@@ -942,6 +985,8 @@ export const zh: TranslationOverlay = {
   },
 
   skills: {
+    createSkill: "创建技能",
+    loadWhat: "技能",
     title: "技能",
     searchPlaceholder: "搜索技能和工具集…",
     enabledOf: "已启用 {enabled}/{total}",
@@ -1196,7 +1241,7 @@ export const zh: TranslationOverlay = {
   },
 
   auth: {
-    statusUnavailable: "无法获取登录状态",
+    statusUnavailable: "无法检查登录状态。请刷新页面；若仍有问题，请重新登录。",
     loggedInAs: "当前登录用户：{user}",
     viaProvider: "通过 {provider} 登录",
     logout: "退出登录",
@@ -1310,6 +1355,7 @@ export const zh: TranslationOverlay = {
   },
 
   mcp: {
+    browseCatalog: "浏览目录",
     error: "错误：{error}",
     nameRequired: "请输入名称",
     urlRequired: "请输入 URL",
@@ -1550,6 +1596,16 @@ export const zh: TranslationOverlay = {
   },
 
   systemPage: {
+    gatewayLogsHint: "请打开“日志”查看详情。",
+    gatewayRestartFailed: "无法重启网关",
+    gatewayStopFailed: "无法停止网关",
+    gatewayStartFailed: "无法启动网关",
+    gatewayExitedDegraded: "网关因无响应已被看门狗停止，请查看“日志”",
+    gatewayStartupFailed: "启动失败，请查看“日志”",
+    gatewayStopped: "已停止，消息通道已离线",
+    gatewayDegraded: "运行中，但部分通道离线，请查看“日志”",
+    gatewayStarting: "正在启动",
+    gatewayRunning: "运行中，消息通道已上线",
     actionLog: {
       running: "运行中",
       done: "已完成",

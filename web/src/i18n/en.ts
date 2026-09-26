@@ -10,6 +10,20 @@ export const en: Translations = {
     terms: {},
   },
   common: {
+    apiErrorUnexpected: "The Hermes service answered with an unexpected error ({status}).",
+    apiError504: "The Hermes service took too long to respond.",
+    apiError503: "The Hermes service is not ready yet. Try again in a moment.",
+    apiError502: "The dashboard proxy could not reach the Hermes service.",
+    apiError500: "The Hermes service hit an internal error.",
+    apiError429: "Too many requests. Wait a moment and try again.",
+    apiError422: "Some of the entered values are not valid.",
+    apiError413: "That upload is too large for the server to accept.",
+    apiError409: "That change conflicts with the current state on the server.",
+    apiError404: "The server could not find what the dashboard asked for.",
+    apiError403: "You are not allowed to do that on this dashboard.",
+    apiError401: "Your dashboard session has expired. Reload the page to sign in again.",
+    apiError400: "The dashboard sent a request the server could not understand.",
+    apiError0: "Hermes dashboard cannot reach the Hermes service. Is `hermes dashboard` still running?",
     save: "Save",
     saving: "Saving...",
     cancel: "Cancel",
@@ -18,6 +32,8 @@ export const en: Translations = {
     delete: "Delete",
     refresh: "Refresh",
     retry: "Retry",
+    loadFailed: "Could not load {what}. Check that the dashboard server is running and click Retry.",
+    loadFailedDetails: "Details: {detail}",
     search: "Search...",
     loading: "Loading...",
     create: "Create",
@@ -73,7 +89,9 @@ export const en: Translations = {
     activeSessionsLabel: "Active Sessions:",
     gatewayStatusLabel: "Gateway Status:",
     gatewayStrip: {
+      degraded: "Degraded",
       failed: "Start failed",
+      heartbeatStale: "Heartbeat stale",
       off: "Off",
       running: "Running",
       starting: "Starting",
@@ -130,20 +148,28 @@ export const en: Translations = {
       "Your agent's disk is almost full. New messages, memories, and settings may fail to save.",
     diskElevatedBanner:
       "Your agent's disk is filling up. Consider clearing old sessions or expanding its storage.",
+    multiplexStandaloneBanner: "Your gateway serves only one profile. Not served: {profiles}. Why: {reason}. Fix: hermes gateway migrate --multiplex",
     dismiss: "Dismiss",
   },
 
   chatSidebar: {
+    missingKey: "No API key set for {provider}, so messages will fail. Add a key under Keys, or pick a different provider.",
+    sidecarDisconnected: "The chat side panel (model and tool activity) could not connect. Chat still works. Click Reconnect side panel to try again.",
+    switchModelAction: "Switch model",
+    addKey: "Add key",
+    reconnectSidePanel: "Reconnect side panel",
+    startFailed: "Chat could not start. The reason is printed above.",
+    openLogs: "Open logs",
+    checkServer: "Check server status",
+    reconnectGaveUp: "Lost connection to the Hermes dashboard server. If you stopped `hermes dashboard`, start it again; otherwise click Reconnect now.",
+    reloadPage: "Reload page",
     model: "model",
     switchModel: "switch model",
     reconnect: "reconnect events feed",
-    eventsDisconnected:
-      "events feed disconnected — the chat title may not update",
-    eventsReconnecting:
-      "events feed disconnected — reconnecting in {seconds}s…",
-    eventsGaveUp:
-      "events feed disconnected — gave up after {attempts} attempts, reload the page",
-    eventsRejected: "events feed rejected ({code}) — reload the page",
+    eventsDisconnected: "Live tool activity paused — the chat title may not update",
+    eventsReconnecting: "Live tool activity paused — reconnecting in {seconds}s…",
+    eventsGaveUp: "Live tool activity stopped after {attempts} reconnect attempts. Click Reconnect side panel, or reload the page.",
+    eventsRejected: "Live tool activity stopped (your login expired). Reload the page to resume.",
     reasoning: "reasoning",
     reasoningEfforts: {
       none: "Off (no thinking)",
@@ -159,7 +185,7 @@ export const en: Translations = {
       "Reasoning effort set to {effort}. Run /new or refresh the page to apply it to this chat.",
     modelSetRequiresReload:
       "Model set to {model}. Run /new or refresh the page to apply it to this chat.",
-    reconnecting: "Chat is reconnecting.",
+    reconnecting: "Chat connection interrupted. Reconnecting...",
     reconnectingCode:
       "Chat connection interrupted (code {code}). Reconnecting…",
     reconnectingInput:
@@ -167,23 +193,21 @@ export const en: Translations = {
     disconnected: "Chat disconnected.",
     reconnectNow: "Reconnect now",
     resumeLoading: "Please wait while the conversation loads…",
-    sessionEnded: "Session ended.",
+    sessionEnded: "Chat session ended. If you did not end it yourself, the agent may have crashed — open Logs to see why, or start a new session.",
     sessionEndedTerminal: "session ended",
     sessionEndedTerminalCode: "session ended (code {code})",
     startNewSession: "Start new session",
-    sessionTokenUnavailable:
-      "Session token unavailable. Open this page through `hermes dashboard`, not directly.",
+    sessionTokenUnavailable: "Chat can't connect because this page was opened without a login token. Reload the page, or start it again with `hermes dashboard` in a terminal.",
     imageUploadFailed: "Image upload failed: {error}",
     imageUploadedDisconnected:
       "Image uploaded, but chat is not connected — try again.",
-    authFailed: "Auth failed. Reload the page to refresh the session token.",
+    authFailed: "This chat tab's login expired (the dashboard server was restarted). Reload the page to reconnect.",
     authFailedReason: "Auth failed ({reason}). Reload to refresh the session.",
-    originRefused: "Refused: request host/origin doesn't match the dashboard.",
+    originRefused: "The dashboard refused this chat connection because the page address does not match the server it was opened from. Open the dashboard from the address `hermes dashboard` printed.",
     originRefusedReason: "Refused: {reason}.",
-    websocketUnavailable: "Chat websocket unavailable on this server.",
+    websocketUnavailable: "This Hermes server does not offer the terminal chat. Update Hermes (`hermes update`) and reload the page.",
     websocketUnavailableReason: "Chat websocket unavailable: {reason}.",
-    localClientRefused:
-      "Refused: your client isn't permitted (server bound to localhost only).",
+    localClientRefused: "This Hermes server only accepts chat from the machine it runs on. Open the dashboard on that machine, or start it with a public bind.",
     localClientRefusedReason: "Refused: {reason}.",
     panel: "panel",
     showSidePanelTitle: "Show side panel (model + sessions)",
@@ -193,6 +217,10 @@ export const en: Translations = {
   },
 
   modelPicker: {
+    signInProvider: "Sign in to a provider",
+    openKeys: "Open Keys",
+    noProvidersConfigured: "No model providers are set up yet. Add an API key under Keys or sign in to a provider under Models to see models here.",
+    noProvidersMatch: "No providers match your search.",
     title: "Switch Model",
     close: "Close",
     filterPlaceholder: "Filter providers and models…",
@@ -324,6 +352,10 @@ export const en: Translations = {
     failedToDeleteSelected: "Failed to delete selected sessions",
     resumeInChat: "Resume in Chat",
     newChat: "New chat",
+    workspace: "workspace",
+    workspaceDefault: "Default",
+    workspaceRescan: "Rescan repositories",
+    workspaceCustom: "Other path…",
     previousPage: "Previous page",
     nextPage: "Next page",
     rename: "Rename session",
@@ -666,6 +698,10 @@ export const en: Translations = {
   },
 
   cron: {
+    loadWhat: "cron jobs",
+    // Script-only mode on, Script field empty. `no_agent` is the config key, not a term the
+    // user has seen; name the field they must fill instead.
+    scriptRequired: "Script-only jobs need a script path. Fill in the Script field or switch the job back to prompt mode.",
     confirmDeleteMessage:
       "This removes the job from the schedule. This cannot be undone.",
     confirmDeleteTitle: "Delete scheduled job?",
@@ -716,6 +752,10 @@ export const en: Translations = {
     noJobs: "No cron jobs configured. Create one above.",
     last: "Last",
     next: "Next",
+    /** Replaces `next` when the stored next_run_at is already past the scheduler grace. */
+    overdueSince: "Overdue since",
+    /** Banner when the ticker heartbeat is stale; {when} is a relative time such as "7h ago". */
+    schedulerLastTicked: "Scheduler last ticked {when} — jobs that came due since then have not fired",
     pause: "Pause",
     resume: "Resume",
     triggerNow: "Trigger now",
@@ -836,7 +876,7 @@ export const en: Translations = {
     modelOptional: "Model (optional)",
     modelInherit: "Inherit from clone / default",
     modelLoading: "Loading models…",
-    modelNone: "No authenticated providers — set a key first",
+    modelNone: "No model providers are set up yet. Add an API key under Keys or sign in to a provider under Models.",
     editModel: "Change model",
     modelSaved: "Model updated",
     modelSelect: "Select a model",
@@ -852,11 +892,14 @@ export const en: Translations = {
   },
 
   pluginsPage: {
+    updateConsentBody: "The new catalog pin of {name} ({sha}) adds surfaces the installed version does not have. Apply it only if you trust them:",
     contextEngineLabel: "Context engine",
     dashboardSlots: "Dashboard slots",
     disableRuntime: "Disable",
     enableAfterInstall: "Enable after install",
     enableRuntime: "Enable",
+    toggleTakesEffectAfterRestart:
+      "Saved — restart the gateway to apply the change.",
     forceReinstall: "Force reinstall (delete existing folder first)",
     headline:
       "Discover, install, enable, and update Hermes plugins (`hermes plugins` parity).",
@@ -897,6 +940,7 @@ export const en: Translations = {
     authRequired: "Auth required",
     authRequiredHint: "Run this command to authenticate:",
     updateGit: "Git pull",
+
     versionBadge: "Version",
     showInSidebar: "Show in sidebar",
     hideFromSidebar: "Hide from sidebar",
@@ -972,11 +1016,13 @@ export const en: Translations = {
   skills: {
     title: "Skills",
     searchPlaceholder: "Search skills and toolsets...",
+    loadWhat: "skills",
+    createSkill: "Create skill",
     enabledOf: "{enabled}/{total} enabled",
     all: "All",
     categories: "Categories",
     filters: "Filters",
-    noSkills: "No skills found. Skills are loaded from ~/.hermes/skills/",
+    noSkills: "No skills installed yet. Browse the skills hub or create one here; from a terminal you can also run `hermes skills search <topic>`.",
     noSkillsMatch: "No skills match your search or filter.",
     skillCount: "{count} skill{s}",
     resultCount: "{count} result{s}",
@@ -1234,7 +1280,7 @@ export const en: Translations = {
   },
 
   auth: {
-    statusUnavailable: "Authentication status unavailable",
+    statusUnavailable: "Could not check who is signed in. Reload the page; if it persists, sign in again.",
     loggedInAs: "Logged in as {user}",
     viaProvider: "via {provider}",
     logout: "Log out",
@@ -1350,6 +1396,7 @@ export const en: Translations = {
   },
 
   mcp: {
+    browseCatalog: "Browse catalog",
     error: "Error: {error}",
     nameRequired: "Name required",
     urlRequired: "URL required",
@@ -1601,6 +1648,16 @@ export const en: Translations = {
   },
 
   systemPage: {
+    gatewayLogsHint: "Open Logs for details.",
+    gatewayRestartFailed: "Could not restart the gateway",
+    gatewayStopFailed: "Could not stop the gateway",
+    gatewayStartFailed: "Could not start the gateway",
+    gatewayExitedDegraded: "Exited: a watchdog stopped a wedged gateway — see Logs",
+    gatewayStartupFailed: "Failed to start — see Logs",
+    gatewayStopped: "Stopped — messaging channels are offline",
+    gatewayDegraded: "Running with some channels offline — see Logs",
+    gatewayStarting: "Starting up",
+    gatewayRunning: "Running — messaging channels are online",
     actionLog: {
       running: "Running",
       done: "Done",

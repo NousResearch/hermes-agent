@@ -50,40 +50,52 @@ import {
   DialogDescription,
   DialogFooter,
   DialogHeader,
-  DialogTitle
-} from '@nous-research/ui/ui/components/dialog'
-import { useSystemActions } from '@/contexts/useSystemActions'
-import { useToast } from '@nous-research/ui/hooks/use-toast'
-import { useI18n } from '@/i18n'
+  DialogTitle,
+} from "@nous-research/ui/ui/components/dialog";
+import { useSystemActions } from "@/contexts/useSystemActions";
+import { useToast } from "@nous-research/ui/hooks/use-toast";
+import { useI18n } from "@/i18n";
+import { usePageHeader } from "@/contexts/usePageHeader";
+import { PluginSlot } from "@/plugins";
+import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
+import { apiErrorFromResponse, errorMessage } from "@/lib/api-error";
+
+const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
+  {
+    cli: { icon: Terminal, color: "text-primary" },
+    tui: { icon: Terminal, color: "text-primary" },
+    telegram: { icon: MessageCircle, color: "text-[oklch(0.65_0.15_250)]" },
+    discord: { icon: Hash, color: "text-[oklch(0.65_0.15_280)]" },
+    slack: { icon: MessageSquare, color: "text-[oklch(0.7_0.15_155)]" },
+    whatsapp: { icon: Globe, color: "text-success" },
+    whatsapp_cloud: { icon: Globe, color: "text-success" },
+    signal: { icon: MessageCircle, color: "text-success" },
+    matrix: { icon: MessageCircle, color: "text-[oklch(0.65_0.15_250)]" },
+    email: { icon: MessageSquare, color: "text-[oklch(0.7_0.15_155)]" },
+    sms: { icon: MessageCircle, color: "text-success" },
+    cron: { icon: Clock, color: "text-warning" },
+    tool: { icon: Play, color: "text-warning" },
+    oneshot: { icon: Terminal, color: "text-warning" },
+    api_server: { icon: Globe, color: "text-muted-foreground" },
+    acp: { icon: Database, color: "text-muted-foreground" },
+    hermes_flow: { icon: Play, color: "text-warning" },
+    vulcan_delegate: { icon: Play, color: "text-warning" },
+    webhook: { icon: Globe, color: "text-warning" },
+  };
+
+const AUTOMATION_SESSION_SOURCES = [
+  "cron",
+  "tool",
+  "oneshot",
+  "api_server",
+  "acp",
+  "hermes_flow",
+  "vulcan_delegate",
+  "webhook",
+];
+const AUTOMATION_SESSION_SOURCE_SET = new Set(AUTOMATION_SESSION_SOURCES);
+const NO_MATCHING_SESSION_SOURCE = "__hermes_dashboard_no_matching_source__";
 import type { Translations } from '@/i18n'
-import { usePageHeader } from '@/contexts/usePageHeader'
-import { PluginSlot } from '@/plugins'
-import { isDashboardEmbeddedChatEnabled } from '@/lib/dashboard-flags'
-
-const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> = {
-  cli: { icon: Terminal, color: 'text-primary' },
-  tui: { icon: Terminal, color: 'text-primary' },
-  telegram: { icon: MessageCircle, color: 'text-[oklch(0.65_0.15_250)]' },
-  discord: { icon: Hash, color: 'text-[oklch(0.65_0.15_280)]' },
-  slack: { icon: MessageSquare, color: 'text-[oklch(0.7_0.15_155)]' },
-  whatsapp: { icon: Globe, color: 'text-success' },
-  whatsapp_cloud: { icon: Globe, color: 'text-success' },
-  signal: { icon: MessageCircle, color: 'text-success' },
-  matrix: { icon: MessageCircle, color: 'text-[oklch(0.65_0.15_250)]' },
-  email: { icon: MessageSquare, color: 'text-[oklch(0.7_0.15_155)]' },
-  sms: { icon: MessageCircle, color: 'text-success' },
-  cron: { icon: Clock, color: 'text-warning' },
-  tool: { icon: Play, color: 'text-warning' },
-  api_server: { icon: Globe, color: 'text-muted-foreground' },
-  acp: { icon: Database, color: 'text-muted-foreground' },
-  hermes_flow: { icon: Play, color: 'text-warning' },
-  vulcan_delegate: { icon: Play, color: 'text-warning' },
-  webhook: { icon: Globe, color: 'text-warning' }
-}
-
-const AUTOMATION_SESSION_SOURCES = ['cron', 'tool', 'api_server', 'acp', 'hermes_flow', 'vulcan_delegate', 'webhook']
-const AUTOMATION_SESSION_SOURCE_SET = new Set(AUTOMATION_SESSION_SOURCES)
-const NO_MATCHING_SESSION_SOURCE = '__hermes_dashboard_no_matching_source__'
 
 type SessionFilterCategory = 'chats' | 'automation' | 'all'
 type SourceSelectionsByCategory = Record<SessionFilterCategory, string[] | null>
@@ -418,6 +430,9 @@ function SessionRow({
       .catch(err => {
         if (!cancelled) setError(String(err))
       })
+      .catch((err) => {
+        if (!cancelled) setError(errorMessage(err, t.common));
+      });
     return () => {
       cancelled = true
     }
@@ -1145,8 +1160,12 @@ export default function SessionsPage() {
   // the global management profile, which lags the row (it stays "" while the
   // sticky active profile equals the dashboard process's own, so the request
   // hits the process store — a delete then "succeeds" as already_absent).
-  // Search rows carry no stamp: undefined falls back to the management profile.
-  const rowProfile = useCallback((id: string) => sessions.find(s => s.id === id)?.profile, [sessions])
+  // Current search rows carry the same stamp; an unstamped row from an older
+  // backend still falls back to the management profile.
+  const rowProfile = useCallback(
+    (id: string) => (searchResults ?? sessions).find((s) => s.id === id)?.profile,
+    [searchResults, sessions],
+  );
 
   const sessionDelete = useConfirmDelete({
     onDelete: useCallback(
@@ -1330,18 +1349,21 @@ export default function SessionsPage() {
         const res = await fetch(api.exportSessionUrl(id, rowProfile(id)), {
           credentials: 'include',
           headers: {
-            'X-Hermes-Session-Token':
-              (window as unknown as { __HERMES_SESSION_TOKEN__?: string }).__HERMES_SESSION_TOKEN__ ?? ''
-          }
-        })
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        const blob = await res.blob()
-        const url = URL.createObjectURL(blob)
-        const a = document.createElement('a')
-        a.href = url
-        a.download = `session-${id}.json`
-        a.click()
-        URL.revokeObjectURL(url)
+            "X-Hermes-Session-Token":
+              (window as unknown as { __HERMES_SESSION_TOKEN__?: string })
+                .__HERMES_SESSION_TOKEN__ ?? "",
+          },
+        });
+        if (!res.ok) {
+          throw apiErrorFromResponse(res.status, await res.text().catch(() => ""), res.url);
+        }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `session-${id}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
       } catch {
         showToast(t.sessions.exportFailed, 'error')
       }

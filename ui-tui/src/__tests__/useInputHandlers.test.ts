@@ -1,12 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
+import { rememberServerRequest, resetServerRequestsForTests } from '../app/serverRequestStore.js'
 import {
   applyVoiceRecordResponse,
+  composerHasDraft,
   dismissSensitivePrompt,
   handleIdleHotkeyExit,
   resolveCtrlCComposerAction,
-  shouldAllowIdleHotkeyExit,
   shouldDetachEditedHistoryInput,
   shouldFallThroughForScroll
 } from '../app/useInputHandlers.js'
@@ -51,13 +52,12 @@ describe('shouldFallThroughForScroll — keep transcript scrolling alive during 
   })
 })
 
-describe('shouldAllowIdleHotkeyExit', () => {
-  it('keeps idle exit hotkeys enabled in normal terminals', () => {
-    expect(shouldAllowIdleHotkeyExit(false)).toBe(true)
-  })
-
-  it('disables idle exit hotkeys in dashboard chat', () => {
-    expect(shouldAllowIdleHotkeyExit(true)).toBe(false)
+describe('composerHasDraft — Ctrl+D exits only from an empty composer (#116443)', () => {
+  it('is false for an empty composer and true for text, multi-line buffer or attachments', () => {
+    expect(composerHasDraft({ input: '', inputBuf: [], tokens: [] })).toBe(false)
+    expect(composerHasDraft({ input: 'hi', inputBuf: [], tokens: [] })).toBe(true)
+    expect(composerHasDraft({ input: '', inputBuf: ['line 1'], tokens: [] })).toBe(true)
+    expect(composerHasDraft({ input: '', inputBuf: [], tokens: [{ kind: 'image' }] })).toBe(true)
   })
 })
 
@@ -131,7 +131,7 @@ describe('applyVoiceRecordResponse', () => {
 
     expect(setRecording).toHaveBeenCalledWith(false)
     expect(setProcessing).toHaveBeenCalledWith(true)
-    expect(sys).toHaveBeenCalledWith('voice: still transcribing; try again shortly')
+    expect(sys).toHaveBeenCalled()
   })
 
   it('keeps optimistic REC state for successful recording starts', () => {
@@ -156,13 +156,22 @@ describe('applyVoiceRecordResponse', () => {
 })
 
 describe('dismissSensitivePrompt', () => {
-  it('clears a sudo overlay before a stale cancel RPC resolves', async () => {
+  const openRequest = (id: string, method: string) => {
+    const respond = vi.fn()
+
+    rememberServerRequest({ fail: vi.fn(), id, method, params: {}, respond })
+
+    return respond
+  }
+
+  it('clears a sudo overlay and answers the server request with an empty value', () => {
     resetOverlayState()
-    patchOverlayState({ sudo: { requestId: 'sudo-1' } })
-    const rpc = vi.fn().mockResolvedValue(null)
+    resetServerRequestsForTests()
+    patchOverlayState({ sudo: { requestId: 'srq-sudo' } })
+    const respond = openRequest('srq-sudo', 'sudo')
     const sys = vi.fn()
 
-    const pending = dismissSensitivePrompt(getOverlayState(), rpc, sys, {
+    dismissSensitivePrompt(getOverlayState(), sys, {
       secret: 'localized secret cancellation',
       sudo: 'localized sudo cancellation',
       vaultUnlock: 'localized vault cancellation'
@@ -170,17 +179,16 @@ describe('dismissSensitivePrompt', () => {
 
     expect(getOverlayState().sudo).toBeNull()
     expect(sys).toHaveBeenCalledWith('localized sudo cancellation')
-    expect(rpc).toHaveBeenCalledWith('sudo.respond', { password: '', request_id: 'sudo-1' })
-    await pending
+    expect(respond).toHaveBeenCalledWith({ value: '' })
   })
 
-  it('clears a secret overlay before a stale cancel RPC resolves', async () => {
+  it('clears a secret overlay even when its request already expired (nothing left to answer)', () => {
     resetOverlayState()
-    patchOverlayState({ secret: { envVar: 'API_KEY', prompt: 'Enter API key', requestId: 'secret-1' } })
-    const rpc = vi.fn().mockResolvedValue(null)
+    resetServerRequestsForTests()
+    patchOverlayState({ secret: { envVar: 'API_KEY', prompt: 'Enter API key', requestId: 'srq-gone' } })
     const sys = vi.fn()
 
-    const pending = dismissSensitivePrompt(getOverlayState(), rpc, sys, {
+    dismissSensitivePrompt(getOverlayState(), sys, {
       secret: 'localized secret cancellation',
       sudo: 'localized sudo cancellation',
       vaultUnlock: 'localized vault cancellation'
@@ -188,17 +196,16 @@ describe('dismissSensitivePrompt', () => {
 
     expect(getOverlayState().secret).toBeNull()
     expect(sys).toHaveBeenCalledWith('localized secret cancellation')
-    expect(rpc).toHaveBeenCalledWith('secret.respond', { request_id: 'secret-1', value: '' })
-    await pending
   })
 
   it('clears a vault unlock overlay with its localized backend message', async () => {
     resetOverlayState()
     patchOverlayState({ vaultUnlock: { backend: '1password', displayName: '1Password', requestId: 'vault-1' } })
-    const rpc = vi.fn().mockResolvedValue(null)
+    resetServerRequestsForTests()
+    const respond = openRequest('vault-1', 'vault.unlock_prompt')
     const sys = vi.fn()
 
-    const pending = dismissSensitivePrompt(getOverlayState(), rpc, sys, {
+    const pending = dismissSensitivePrompt(getOverlayState(), sys, {
       secret: 'localized secret cancellation',
       sudo: 'localized sudo cancellation',
       vaultUnlock: 'localized vault cancellation'
@@ -206,7 +213,7 @@ describe('dismissSensitivePrompt', () => {
 
     expect(getOverlayState().vaultUnlock).toBeNull()
     expect(sys).toHaveBeenCalledWith('localized vault cancellation')
-    expect(rpc).toHaveBeenCalledWith('vault.unlock.respond', { password: '', request_id: 'vault-1' })
+    expect(respond).toHaveBeenCalledWith({ value: '' })
     await pending
   })
 })

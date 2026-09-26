@@ -120,7 +120,7 @@ def _busy(adapter: _ConfirmAdapter):
     from gateway.run_busy import GatewayBusySessionMixin
 
     busy = object.__new__(GatewayBusySessionMixin)
-    busy._adapter_for_source = lambda _s: adapter
+    busy._delivery_adapter_for = lambda _s: adapter
     busy._thread_metadata_for_source = lambda _s, _a: {}
     busy._reply_anchor_for_event = lambda _e: None
     busy._session_key_for_source = lambda _s: "sk1"
@@ -207,6 +207,7 @@ def _card_state(adapter: _CardAdapter):
     return SimpleNamespace(
         tasks=[{"text": "step"}],
         native_failed=False,
+        publication_suppressed=False,
         visible_tasks=lambda: [{"text": "step"}],
         fallback_text=lambda: "step",
         adapter=adapter,
@@ -355,11 +356,11 @@ def test_task_card_fallback_edit_decline_does_not_send_progress_text():
         fallback_msg_id="m0",
         fallback_text=lambda: "task text",
         adapter=adapter,
-        egress_declined=False,
+        publication_suppressed=False,
     )
 
     asyncio.run(runner._task_card_send_or_edit_fallback(st))
 
     assert adapter.ops == ["edit"]
     assert sent == []
-    assert st.egress_declined is True
+    assert st.publication_suppressed is True

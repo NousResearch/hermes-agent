@@ -30,6 +30,7 @@ import { useI18n } from "@/i18n";
 import { PluginSlot } from "@/plugins";
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
 import { ModelReloadConfirm } from "@/components/ModelReloadConfirm";
+import { errorMessage } from "@/lib/api-error";
 
 const PERIODS = [
   { label: '7d', days: 7 },
@@ -252,7 +253,7 @@ function UseAsMenu({
       onAssigned()
       setOpen(false)
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(errorMessage(e, t.common));
     } finally {
       setBusy(false)
     }
@@ -707,7 +708,7 @@ function MoaModelsModal({
       onSaved(saved)
       onClose()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(errorMessage(e, t.common));
     } finally {
       setBusy(false)
     }
@@ -1152,9 +1153,9 @@ export default function ModelsPage() {
         setData(models)
         setAux(auxData)
       })
-      .catch(err => setError(String(err)))
-      .finally(() => setLoading(false))
-  }, [days])
+      .catch((err) => setError(errorMessage(err, t.common)))
+      .finally(() => setLoading(false));
+  }, [days]);
 
   const refreshAux = useCallback(() => {
     api

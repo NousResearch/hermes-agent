@@ -49,6 +49,9 @@ import { cn, formatDateTime, themedBody } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import {
+  gatewayStateNeedsLogs,
+  gatewayStateDescription,
+  gatewayActionFailedMessage,
   servedProfileRefusal,
   sharedGatewayProfiles,
 } from "@/lib/shared-gateway";
@@ -67,6 +70,7 @@ import type {
   DebugShareResponse,
   GatewayMigratePlan,
 } from "@/lib/api";
+import { apiErrorFromResponse, errorMessage } from "@/lib/api-error";
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -343,7 +347,7 @@ export default function SystemPage() {
         setServedNotice(refusal);
         return false;
       }
-      showToast(format(t.systemPage.toast.gatewayFailed, { verb: t.systemPage.gateway[`${verb}Verb`], error: String(e) }), "error");
+      showToast(gatewayActionFailedMessage(verb, errorMessage(e, t.common), e, t.systemPage), "error");
       return false;
     }
   };
@@ -379,7 +383,7 @@ export default function SystemPage() {
       showToast(t.sharedGateway.migrating, "success");
       setTimeout(loadAll, 5000);
     } catch (e) {
-      showToast(format(t.sharedGateway.migrationFailed, { error: String(e) }), "error");
+      showToast(format(t.sharedGateway.migrationFailed, { error: errorMessage(e, t.common) }), "error");
     }
   };
 
@@ -397,7 +401,7 @@ export default function SystemPage() {
       void loadAll();
     } catch (e) {
       showToast(
-        format(t.systemPage.toast.curatorToggleFailed, { error: String(e) }),
+        format(t.systemPage.toast.curatorToggleFailed, { error: errorMessage(e, t.common) }),
         "error",
       );
     }
@@ -424,7 +428,7 @@ export default function SystemPage() {
         } catch (e) {
           showToast(
             format(t.systemPage.toast.memoryResetFailed, {
-              error: String(e),
+              error: errorMessage(e, t.common),
             }),
             "error",
           );
@@ -454,7 +458,7 @@ export default function SystemPage() {
       void loadAll();
     } catch (e) {
       showToast(
-        format(t.systemPage.toast.credentialAddFailed, { error: String(e) }),
+        format(t.systemPage.toast.credentialAddFailed, { error: errorMessage(e, t.common) }),
         "error",
       );
     } finally {
@@ -473,7 +477,7 @@ export default function SystemPage() {
         } catch (e) {
           showToast(
             format(t.systemPage.toast.credentialRemoveFailed, {
-              error: String(e),
+              error: errorMessage(e, t.common),
             }),
             "error",
           );
@@ -497,7 +501,7 @@ export default function SystemPage() {
       showToast(
         format(t.systemPage.toast.operationFailed, {
           operation: label,
-          error: String(e),
+          error: errorMessage(e, t.common),
         }),
         "error",
       );
@@ -513,7 +517,7 @@ export default function SystemPage() {
       showToast(t.systemPage.toast.backupStarted, "success");
     } catch (e) {
       showToast(
-        format(t.systemPage.toast.backupFailed, { error: String(e) }),
+        format(t.systemPage.toast.backupFailed, { error: errorMessage(e, t.common) }),
         "error",
       );
     }
@@ -539,7 +543,9 @@ export default function SystemPage() {
     setDownloadingBackup(true);
     try {
       const res = await api.downloadBackup(archive);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        throw apiErrorFromResponse(res.status, await res.text().catch(() => ""), res.url);
+      }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
@@ -551,7 +557,7 @@ export default function SystemPage() {
       URL.revokeObjectURL(url);
     } catch (e) {
       showToast(
-        format(t.systemPage.toast.downloadFailed, { error: String(e) }),
+        format(t.systemPage.toast.downloadFailed, { error: errorMessage(e, t.common) }),
         "error",
       );
     } finally {
@@ -576,7 +582,7 @@ export default function SystemPage() {
       if (target.kind === "upload") clearImportFile();
     } catch (e) {
       showToast(
-        format(t.systemPage.toast.importFailed, { error: String(e) }),
+        format(t.systemPage.toast.importFailed, { error: errorMessage(e, t.common) }),
         "error",
       );
     } finally {
@@ -628,7 +634,7 @@ export default function SystemPage() {
       );
     } catch (e) {
       showToast(
-        format(t.systemPage.toast.debugShareFailed, { error: String(e) }),
+        format(t.systemPage.toast.debugShareFailed, { error: errorMessage(e, t.common) }),
         "error",
       );
     } finally {
@@ -668,7 +674,7 @@ export default function SystemPage() {
         }
       } catch (e) {
         showToast(
-          format(t.systemPage.toast.updateCheckFailed, { error: String(e) }),
+          format(t.systemPage.toast.updateCheckFailed, { error: errorMessage(e, t.common) }),
           "error",
         );
       } finally {
@@ -703,7 +709,7 @@ export default function SystemPage() {
       showToast(t.systemPage.toast.updateStarted, "success");
     } catch (e) {
       showToast(
-        format(t.systemPage.toast.updateFailed, { error: String(e) }),
+        format(t.systemPage.toast.updateFailed, { error: errorMessage(e, t.common) }),
         "error",
       );
     }
@@ -717,7 +723,7 @@ export default function SystemPage() {
         showToast(t.systemPage.toast.pruneStarted, "success");
       } catch (e) {
         showToast(
-          format(t.systemPage.toast.pruneFailed, { error: String(e) }),
+          format(t.systemPage.toast.pruneFailed, { error: errorMessage(e, t.common) }),
           "error",
         );
         throw e;
@@ -748,7 +754,7 @@ export default function SystemPage() {
       void loadAll();
     } catch (e) {
       showToast(
-        format(t.systemPage.toast.hookCreateFailed, { error: String(e) }),
+        format(t.systemPage.toast.hookCreateFailed, { error: errorMessage(e, t.common) }),
         "error",
       );
     } finally {
@@ -769,7 +775,7 @@ export default function SystemPage() {
         } catch (e) {
           showToast(
             format(t.systemPage.toast.hookRemoveFailed, {
-              error: String(e),
+              error: errorMessage(e, t.common),
             }),
             "error",
           );
@@ -1252,13 +1258,13 @@ export default function SystemPage() {
                   : t.systemPage.gateway.stopped}
               </Badge>
               <span className="text-sm text-muted-foreground">
-                {status?.gateway_state ?? "—"}
-                {status?.gateway_pid
-                  ? ` · ${format(t.systemPage.gateway.pid, {
-                      pid: status.gateway_pid,
-                    })}`
-                  : ""}
+                {gatewayStateDescription(status?.gateway_state, gatewayRunning, t.systemPage)}
               </span>
+              {gatewayStateNeedsLogs(status?.gateway_state) && (
+                <Link to="/logs?file=gateway" className="text-sm underline">
+                  Open logs
+                </Link>
+              )}
             </div>
             <div className="flex items-center gap-2">
               <Button

@@ -39,6 +39,7 @@ import { Label } from "@nous-research/ui/ui/components/label";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
+import { errorMessage } from "@/lib/api-error";
 
 /* ------------------------------------------------------------------ */
 /*  Provider grouping                                                  */
@@ -715,7 +716,7 @@ export default function EnvPage() {
       showToast(format(t.env.savedNamed, { name: key }), "success");
     } catch (e) {
       showToast(
-        format(t.env.saveFailedNamed, { name: key, error: String(e) }),
+        format(t.env.saveFailedNamed, { name: key, error: errorMessage(e, t.common) }),
         "error",
       );
     } finally {
@@ -745,7 +746,7 @@ export default function EnvPage() {
           showToast(
             format(t.env.removeFailedNamed, {
               name: key,
-              error: String(e),
+              error: errorMessage(e, t.common),
             }),
             "error",
           );

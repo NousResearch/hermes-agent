@@ -8,6 +8,7 @@ import { copyTextToClipboard } from "@/lib/clipboard";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { useI18n } from "@/i18n";
 import { cn, themedBody } from "@/lib/utils";
+import { errorMessage } from "@/lib/api-error";
 
 interface Props {
   provider: OAuthProvider;
@@ -58,7 +59,7 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
       .catch((e) => {
         if (!isMounted.current) return;
         setPhase("error");
-        setErrorMsg(t.oauth.startFailed.replace("{error}", String(e)));
+        setErrorMsg(t.oauth.startFailed.replace("{error}", errorMessage(e, t.common)));
       });
     return () => {
       isMounted.current = false;
@@ -146,7 +147,7 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
       } catch (e) {
         if (!isMounted.current) return;
         setPhase("error");
-        setErrorMsg(t.oauth.pollingFailed.replace("{error}", String(e)));
+        setErrorMsg(t.oauth.pollingFailed.replace("{error}", errorMessage(e, t.common)));
         if (pollTimer.current !== null) window.clearInterval(pollTimer.current);
       }
     }, 2000);
@@ -190,7 +191,7 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
     } catch (e) {
       if (!isMounted.current) return;
       setPhase("error");
-      setErrorMsg(t.oauth.submitFailed.replace("{error}", String(e)));
+      setErrorMsg(t.oauth.submitFailed.replace("{error}", errorMessage(e, t.common)));
     }
   };
 
@@ -431,7 +432,7 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
                       .catch((e) => {
                         if (!isMounted.current) return;
                         setPhase("error");
-                        setErrorMsg(`${t.common.retry} failed: ${e}`);
+                        setErrorMsg(`${t.common.retry} failed: ${errorMessage(e, t.common)}`);
                       });
                   }}
                 >

@@ -15,7 +15,7 @@ const COMMON_COMMAND_KEYS: [string, TranslationKey][] = [
 
 const HOTKEY_PREVIEW = HOTKEYS.slice(0, 8)
 
-export function HelpHint({ t }: { t: Theme }) {
+export function HelpHint({ nativeMode = false, t }: { nativeMode?: boolean; t: Theme }) {
   const { t: ti } = useI18n()
   const COMMON_COMMANDS: [string, string][] = COMMON_COMMAND_KEYS.map(([k, key]) => [k, ti(key)])
 
@@ -24,7 +24,11 @@ export function HelpHint({ t }: { t: Theme }) {
   const pad = (s: string) => s + ' '.repeat(Math.max(0, labelW - s.length + 2))
 
   return (
-    <Box alignItems="flex-start" bottom="100%" flexDirection="column" left={0} position="absolute" right={0}>
+    <Box
+      alignItems="flex-start"
+      {...(nativeMode ? {} : { bottom: '100%', left: 0, position: 'absolute' as const, right: 0 })}
+      flexDirection="column"
+    >
       <Box
         alignSelf="flex-start"
         borderColor={t.color.primary}

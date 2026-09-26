@@ -1,5 +1,5 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
-import type { SessionListItem, SessionListResponse } from '@hermes/shared/gateway-events'
+import type { SessionListResult, SessionListRow } from '@hermes/shared/gateway-events'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { sessionScopedModelArg } from '../domain/slash.js'
@@ -82,7 +82,7 @@ export const relativeSessionAge = (ts?: number, tr: Translator = enT) => {
 }
 
 /** Drop already-live sessions from the resumable history list (dedupe by id). */
-export const resumableHistory = (history: readonly SessionListItem[], live: readonly SessionActiveItem[]) => {
+export const resumableHistory = (history: readonly SessionListRow[], live: readonly SessionActiveItem[]) => {
   const liveIds = new Set(live.map(s => s.id))
 
   return history.filter(h => !liveIds.has(h.id))
@@ -314,7 +314,7 @@ export function ActiveSessionSwitcher({
   const i18n = useI18n()
   const tr = i18n.t
   const [items, setItems] = useState<SessionActiveItem[]>([])
-  const [history, setHistory] = useState<SessionListItem[]>([])
+  const [history, setHistory] = useState<SessionListRow[]>([])
   const [err, setErr] = useState('')
   const [sel, setSel] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -333,12 +333,12 @@ export function ActiveSessionSwitcher({
   // re-derives the resumable list from this against the latest live set, so a
   // session that was hidden while live reappears in history once it closes —
   // without re-querying the DB. Only refreshed on a full (includeHistory) load.
-  const rawHistoryRef = useRef<SessionListItem[]>([])
+  const rawHistoryRef = useRef<SessionListRow[]>([])
   // Mirror the displayed lists so the async poll can re-anchor the selection to
   // the *same* row (by session id) after live sessions appear/disappear, rather
   // than keeping a now-stale flat index.
   const itemsRef = useRef<SessionActiveItem[]>([])
-  const historyDisplayRef = useRef<SessionListItem[]>([])
+  const historyDisplayRef = useRef<SessionListRow[]>([])
   const { stdout } = useStdout()
   // Optional maxWidth lets grid layouts hand the switcher its cell budget.
   const preferredWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
@@ -371,7 +371,7 @@ export function ActiveSessionSwitcher({
           gw.request<SessionActiveListResponse>('session.active_list', {
             current_session_id: currentSessionId
           }),
-          includeHistory ? gw.request<SessionListResponse>('session.list', { limit: 200 }) : Promise.resolve(null)
+          includeHistory ? gw.request<SessionListResult>('session.list', { limit: 200 }) : Promise.resolve(null)
         ])
 
         const r = liveRes.status === 'fulfilled' ? asRpcResult<SessionActiveListResponse>(liveRes.value) : null
@@ -392,7 +392,7 @@ export function ActiveSessionSwitcher({
 
         if (includeHistory) {
           if (histRes.status === 'fulfilled') {
-            const parsedHist = asRpcResult<SessionListResponse>(histRes.value)
+            const parsedHist = asRpcResult<SessionListResult>(histRes.value)
 
             if (parsedHist) {
               rawHistoryRef.current = parsedHist.sessions ?? []
@@ -801,7 +801,7 @@ export function ActiveSessionSwitcher({
               <Box {...fixedSessionColumnStyle()} width={18}>
                 <Text color={rowTextColor ?? t.color.muted} wrap="truncate-end">
                   {tr(h.message_count === 1 ? 'sessions.messageCountOne' : 'sessions.messageCountMany', {
-                    count: h.message_count
+                    count: h.message_count ?? 0
                   })}
                 </Text>
               </Box>

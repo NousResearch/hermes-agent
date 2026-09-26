@@ -64,5 +64,5 @@ describe('shouldRetryEventsClose', () => {
     for (const code of [1000, 1005, 1006, 4401, 4403, 4500]) {
       expect(shouldRetryEventsClose(code) && isEventsAuthRejection(code)).toBe(false)
     }
-  })
-})
+  });
+});

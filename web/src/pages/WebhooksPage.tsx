@@ -28,6 +28,7 @@ import { Label } from "@nous-research/ui/ui/components/label";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
 import { useI18n } from "@/i18n";
+import { errorMessage } from "@/lib/api-error";
 
 interface CreatedWebhook {
   url: string;
@@ -151,9 +152,9 @@ export default function WebhooksPage() {
       void watchRestartOutcome();
     } catch (e) {
       setRestartNeeded(true);
-      setRestartError({ kind: "raw", message: String(e) });
+      setRestartError({ kind: "raw", message: errorMessage(e, t.common) });
       showToast(
-        format(t.webhooks.restartFailed, { error: String(e) }),
+        format(t.webhooks.restartFailed, { error: errorMessage(e, t.common) }),
         "error",
       );
     } finally {
@@ -185,7 +186,7 @@ export default function WebhooksPage() {
       }
     } catch (e) {
       showToast(
-        format(t.webhooks.enableFailed, { error: String(e) }),
+        format(t.webhooks.enableFailed, { error: errorMessage(e, t.common) }),
         "error",
       );
     } finally {
@@ -227,7 +228,7 @@ export default function WebhooksPage() {
       loadWebhooks();
     } catch (e) {
       showToast(
-        format(t.webhooks.createFailed, { error: String(e) }),
+        format(t.webhooks.createFailed, { error: errorMessage(e, t.common) }),
         "error",
       );
     } finally {
@@ -253,7 +254,7 @@ export default function WebhooksPage() {
         );
         loadWebhooks();
       } catch (e) {
-        showToast(format(t.webhooks.error, { error: String(e) }), "error");
+        showToast(format(t.webhooks.error, { error: errorMessage(e, t.common) }), "error");
       } finally {
         setTogglingName(null);
       }
@@ -269,7 +270,7 @@ export default function WebhooksPage() {
           showToast(format(t.webhooks.deletedNamed, { name }), "success");
           loadWebhooks();
         } catch (e) {
-          showToast(format(t.webhooks.error, { error: String(e) }), "error");
+          showToast(format(t.webhooks.error, { error: errorMessage(e, t.common) }), "error");
           throw e;
         }
       },

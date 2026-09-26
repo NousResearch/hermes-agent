@@ -159,10 +159,10 @@ def _make_runner(adapter):
 
 
 async def _run_streaming_turn(monkeypatch, tmp_path, agent_cls, session_id):
-    import yaml
+    import hermes_yaml as yaml
 
     (tmp_path / "config.yaml").write_text(
-        yaml.dump(
+        yaml.safe_dump(
             {
                 "display": {"tool_progress": "off", "interim_assistant_messages": False},
                 "streaming": {
@@ -289,10 +289,10 @@ async def test_payload_less_split_does_not_suppress_complete_response(
     monkeypatch, tmp_path
 ):
     """#78541 — payload-less split-delivery flags must not swallow the reply."""
-    import yaml
+    import hermes_yaml as yaml
 
     (tmp_path / "config.yaml").write_text(
-        yaml.dump(
+        yaml.safe_dump(
             {
                 "display": {"tool_progress": "off", "interim_assistant_messages": False},
                 "streaming": {
@@ -631,3 +631,34 @@ async def test_empty_fallback_final_after_split_records_only_what_survives():
     # The head is gone from the chat, so the complete answer was NOT delivered:
     # the gateway must be told this is a mismatch and send it.
     assert consumer.delivered_final_matches(complete) is False
+
+
+@pytest.mark.asyncio
+async def test_flood_retry_never_resends_full_payload_after_partial_split_delivery(monkeypatch):
+    """A short-wait flood result that carries ``partial_overflow`` means the head of a split
+    payload is already on screen: the fallback flood retry must NOT sleep and re-send the whole
+    content (that duplicates the head); it returns the partial failure to the caller."""
+    consumer = _consumer()
+    calls: list[str] = []
+
+    async def partial_flood_send(chat_id, content, reply_to=None, metadata=None):
+        calls.append(content)
+        return SendResult(
+            success=False, error="Flood control exceeded. Retry after 2 seconds",
+            raw_response={"partial_overflow": True, "delivered_chunks": 1, "total_chunks": 3},
+        )
+
+    monkeypatch.setattr(consumer.adapter, "send", partial_flood_send)
+    monkeypatch.setattr(consumer, "_fallback_flood_retry_delay", lambda result: 0.0)
+    slept: list[float] = []
+
+    async def fake_sleep(delay):
+        slept.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    result = await consumer._send_with_flood_retry(content="HEAD TAIL", retry_log="retry %.1fs")
+
+    assert result.success is False and result.raw_response["partial_overflow"] is True
+    assert calls == ["HEAD TAIL"], f"full payload re-sent after partial delivery: {calls}"
+    assert slept == []

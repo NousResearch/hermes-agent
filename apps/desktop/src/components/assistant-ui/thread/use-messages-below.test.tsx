@@ -1,7 +1,7 @@
 import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { $threadMessagesBelow, resetThreadScroll } from '@/store/thread-scroll'
+import { $threadMessagesBelowBySession, resetThreadScroll } from '@/store/thread-scroll'
 
 import { countMessagesBelow, useMessagesBelow } from './use-messages-below'
 
@@ -35,7 +35,7 @@ function transcript() {
 
 afterEach(() => {
   cleanup()
-  resetThreadScroll()
+  resetThreadScroll('runtime-a')
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
@@ -56,17 +56,17 @@ describe('messages below the viewport', () => {
       return vi.spyOn(message, 'getBoundingClientRect')
     })
 
-    expect(countMessagesBelow(viewport, content)).toBe(3)
+    expect(countMessagesBelow(viewport, content).count).toBe(3)
 
     for (const measure of skippedRects) {
       expect(measure).not.toHaveBeenCalled()
     }
 
     assistantRect.mockReturnValue(rect(200, 600))
-    expect(countMessagesBelow(viewport, content)).toBe(2)
+    expect(countMessagesBelow(viewport, content).count).toBe(2)
 
     vi.mocked(viewport.getBoundingClientRect).mockReturnValue(rect(0, 1500))
-    expect(countMessagesBelow(viewport, content)).toBe(0)
+    expect(countMessagesBelow(viewport, content).count).toBe(0)
   })
 
   it('remeasures scroll and resize, ignores hidden panes, and clears at the bottom', () => {
@@ -106,30 +106,106 @@ describe('messages below the viewport', () => {
       isAtBottom: false,
       paneVisible: true,
       rows: null,
-      sessionKey: 'a'
+      sessionKey: 'stored-a',
+      sessionId: 'runtime-a'
     }
 
     const { rerender } = renderHook(props => useMessagesBelow(props), { initialProps: options })
     flush()
-    expect($threadMessagesBelow.get()).toBe(1)
+    expect($threadMessagesBelowBySession.get()['runtime-a'] ?? 0).toBe(1)
+
+    // Another visible pane reaching bottom must not erase this reader's count.
+    const sibling = renderHook(() => useMessagesBelow({ ...options, sessionId: 'runtime-b', isAtBottom: true }))
+    expect($threadMessagesBelowBySession.get()['runtime-a']).toBe(1)
+    sibling.unmount()
 
     assistantRect.mockReturnValue(rect(200, 500))
     viewport.dispatchEvent(new Event('scroll'))
     flush()
-    expect($threadMessagesBelow.get()).toBe(0)
+    expect($threadMessagesBelowBySession.get()['runtime-a'] ?? 0).toBe(0)
 
     assistantRect.mockReturnValue(rect(200, 900))
     resize?.([], {} as ResizeObserver)
     flush()
-    expect($threadMessagesBelow.get()).toBe(1)
+    expect($threadMessagesBelowBySession.get()['runtime-a'] ?? 0).toBe(1)
 
     rerender({ ...options, paneVisible: false })
     assistantRect.mockReturnValue(rect(200, 500))
     viewport.dispatchEvent(new Event('scroll'))
     flush()
-    expect($threadMessagesBelow.get()).toBe(1)
+    expect($threadMessagesBelowBySession.get()['runtime-a'] ?? 0).toBe(1)
 
     rerender({ ...options, isAtBottom: true })
-    expect($threadMessagesBelow.get()).toBe(0)
+    expect($threadMessagesBelowBySession.get()['runtime-a'] ?? 0).toBe(0)
+  })
+
+  it('re-measures a frame later when the turn at the fold has no layout boxes yet', () => {
+    const { viewport, content, assistantRect } = transcript()
+    const straddling = window.document.createElement('div')
+    straddling.dataset.slot = 'aui_message-group'
+    content.append(straddling)
+    vi.spyOn(straddling, 'getBoundingClientRect').mockReturnValue(rect(500, 1500))
+
+    // A content-visibility skipped turn: the group keeps its placeholder box,
+    // its messages have none until relevancy updates on the next frame.
+    const empty = { top: 0, bottom: 0, height: 0, width: 0 } as DOMRect
+
+    const roots = ['aui_user-message-root', 'aui_assistant-message-root', 'aui_assistant-message-root'].map(slot => {
+      const message = window.document.createElement('div')
+      message.dataset.slot = slot
+      straddling.append(message)
+
+      return vi.spyOn(message, 'getBoundingClientRect').mockReturnValue(empty)
+    })
+
+    let frame: FrameRequestCallback | undefined
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      frame = callback
+
+      return 1
+    })
+    vi.stubGlobal('cancelAnimationFrame', () => {
+      frame = undefined
+    })
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe() {}
+        disconnect() {}
+      }
+    )
+
+    const flush = () =>
+      act(() => {
+        const callback = frame
+        frame = undefined
+        callback?.(0)
+      })
+
+    renderHook(() =>
+      useMessagesBelow({
+        scrollRef: { current: viewport },
+        contentRef: { current: content },
+        isAtBottom: false,
+        paneVisible: true,
+        rows: null,
+        sessionKey: 'stored-a',
+        sessionId: 'runtime-a'
+      })
+    )
+
+    // First frame: the straddling turn measures empty; nothing is published yet.
+    flush()
+    expect($threadMessagesBelowBySession.get()['runtime-a']).toBeUndefined()
+    expect(frame).toBeDefined()
+
+    // Relevancy updated: two of its three messages sit below the fold.
+    roots[0]!.mockReturnValue(rect(500, 580))
+    roots[1]!.mockReturnValue(rect(580, 900))
+    roots[2]!.mockReturnValue(rect(900, 1500))
+    assistantRect.mockReturnValue(rect(200, 500))
+    flush()
+    expect($threadMessagesBelowBySession.get()['runtime-a']).toBe(2)
+    expect(frame).toBeUndefined()
   })
 })

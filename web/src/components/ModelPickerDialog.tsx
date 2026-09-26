@@ -1,3 +1,4 @@
+import { en } from '@/i18n/en'
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
@@ -6,14 +7,16 @@ import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import type { GatewayClient } from "@/lib/gatewayClient";
-import type { ModelOptionProvider, ModelOptionsResponse } from "@hermes/shared";
+import type { ModelOptionProvider, ModelOptionsResult } from "@hermes/shared";
 import { Check, RefreshCw, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useI18n } from "@/i18n";
+import { Link } from "react-router";
 import { cn, themedBody } from "@/lib/utils";
 import { queryMatchesProviderOnly } from "@/lib/model-picker-filter";
 import { fuzzyRank, modelSearchText } from "@hermes/shared";
+import { errorMessage } from "@/lib/api-error";
 
 /**
  * Two-stage model picker modal.
@@ -59,7 +62,7 @@ interface Props {
   onSubmit?(slashCommand: string): void;
 
   /** Standalone-mode: when present (and onSubmit absent), picker calls onApply. */
-  loader?(options?: { refresh?: boolean }): Promise<ModelOptionsResponse>;
+  loader?(options?: { refresh?: boolean }): Promise<ModelOptionsResult>;
   onApply?(args: {
     confirmExpensiveModel?: boolean;
     provider: string;
@@ -105,7 +108,7 @@ export function ModelPickerDialog(props: Props) {
     useState<PendingExpensiveConfirm | null>(null);
   const closedRef = useRef(false);
 
-  const applyOptions = (r: ModelOptionsResponse) => {
+  const applyOptions = (r: ModelOptionsResult) => {
     const next = r?.providers ?? [];
     setProviders(next);
     setCurrentModel(String(r?.model ?? ""));
@@ -119,21 +122,20 @@ export function ModelPickerDialog(props: Props) {
 
   const requestOptions = (refresh = false) =>
     standalone
-      ? (
-          loader as (options?: {
-            refresh?: boolean;
-          }) => Promise<ModelOptionsResponse>
-        )({
+      ? (loader as (options?: { refresh?: boolean }) => Promise<ModelOptionsResult>)({
           refresh,
         })
-      : (gw as GatewayClient).request<ModelOptionsResponse>("model.options", {
-          ...(sessionId ? { session_id: sessionId } : {}),
-          ...(refresh ? { refresh: true } : {}),
-          // Dashboard picker mirrors the TUI: full provider universe with
-          // setup warnings. The backend now defaults to the configured
-          // subset (#56974), so opt into unconfigured rows explicitly.
-          include_unconfigured: true,
-        });
+      : (gw as GatewayClient).request<ModelOptionsResult>(
+          "model.options",
+          {
+            ...(sessionId ? { session_id: sessionId } : {}),
+            ...(refresh ? { refresh: true } : {}),
+            // Dashboard picker mirrors the TUI: full provider universe with
+            // setup warnings. The backend now defaults to the configured
+            // subset (#56974), so opt into unconfigured rows explicitly.
+            include_unconfigured: true,
+          },
+        );
 
   const refreshOptions = () => {
     setError(null);
@@ -146,7 +148,7 @@ export function ModelPickerDialog(props: Props) {
       })
       .catch((e) => {
         if (closedRef.current) return;
-        setError(e instanceof Error ? e.message : String(e));
+        setError(errorMessage(e, t.common));
       })
       .finally(() => {
         if (closedRef.current) return;
@@ -165,7 +167,7 @@ export function ModelPickerDialog(props: Props) {
       })
       .catch((e) => {
         if (closedRef.current) return;
-        setError(e instanceof Error ? e.message : String(e));
+        setError(errorMessage(e, t.common));
       })
       .finally(() => {
         if (closedRef.current) return;
@@ -286,7 +288,7 @@ export function ModelPickerDialog(props: Props) {
         }
         onClose();
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        setError(errorMessage(e, t.common));
       } finally {
         setApplying(false);
       }
@@ -314,7 +316,7 @@ export function ModelPickerDialog(props: Props) {
         }
         onClose();
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        setError(errorMessage(e, t.common));
       } finally {
         setApplying(false);
       }
@@ -394,6 +396,7 @@ export function ModelPickerDialog(props: Props) {
           <ProviderColumn
             loading={loading}
             error={error}
+            onClose={onClose}
             providers={filteredProviders}
             total={providers.length}
             selectedSlug={selectedSlug}
@@ -491,6 +494,9 @@ export function ModelPickerDialog(props: Props) {
 /*  Provider column                                                    */
 /* ------------------------------------------------------------------ */
 
+/** Empty picker: no key and no OAuth login anywhere. Points at the two in-app fixes. */
+export const NO_PROVIDERS_MESSAGE = en.modelPicker.noProvidersConfigured;
+
 function ProviderColumn({
   loading,
   error,
@@ -499,6 +505,7 @@ function ProviderColumn({
   selectedSlug,
   query,
   onSelect,
+  onClose,
 }: {
   loading: boolean;
   error: string | null;
@@ -507,6 +514,8 @@ function ProviderColumn({
   selectedSlug: string;
   query: string;
   onSelect(slug: string): void;
+  /** The links below navigate away; the full-screen dialog must close or it keeps covering the target page. */
+  onClose(): void;
 }) {
   const { t } = useI18n();
   return (
@@ -520,10 +529,22 @@ function ProviderColumn({
       {error && <div className="p-4 text-xs text-destructive">{error}</div>}
 
       {!loading && !error && providers.length === 0 && (
-        <div className="p-4 text-xs text-muted-foreground italic">
-          {query || total > 0
-            ? t.modelPicker.noMatches
-            : t.modelPicker.noAuthProviders}
+        <div className="p-4 text-xs text-muted-foreground">
+          {query || total > 0 ? (
+            <span className="italic">{t.modelPicker.noProvidersMatch}</span>
+          ) : (
+            <div className="flex flex-col gap-2">
+              <span>{t.modelPicker.noProvidersConfigured}</span>
+              <div className="flex flex-wrap gap-2">
+                <Link to="/env" onClick={onClose} className="underline underline-offset-2 hover:text-foreground">
+                  {t.modelPicker.openKeys}
+                </Link>
+                <Link to="/models" onClick={onClose} className="underline underline-offset-2 hover:text-foreground">
+                  {t.modelPicker.signInProvider}
+                </Link>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

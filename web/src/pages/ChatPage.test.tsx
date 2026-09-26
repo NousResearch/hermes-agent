@@ -1,10 +1,14 @@
 // @vitest-environment jsdom
-import { act, type ReactNode } from 'react'
-import { createRoot, type Root } from 'react-dom/client'
-import { MemoryRouter } from 'react-router'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, type ReactNode } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { MemoryRouter } from "react-router";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { PTY_TICKET_TIMEOUT_MS } from '@/lib/pty-reconnect'
+import {
+  PTY_RECONNECT_MAX_ATTEMPTS,
+  PTY_RECONNECT_MAX_MS,
+  PTY_TICKET_TIMEOUT_MS,
+} from "@/lib/pty-reconnect";
 
 class FakeFitAddon {
   fit() {}
@@ -12,49 +16,51 @@ class FakeFitAddon {
 
 class FakeWebglAddon {
   onContextLoss() {
-    return { dispose() {} }
+    return { dispose() {} };
   }
 }
 
 class FakeTerminal {
-  options: Record<string, unknown>
-  rows = 24
-  cols = 80
+  options: Record<string, unknown>;
+  rows = 24;
+  cols = 80;
   parser = {
-    registerOscHandler: vi.fn()
-  }
-  unicode = { activeVersion: '' }
+    registerOscHandler: vi.fn(),
+  };
+  unicode = { activeVersion: "" };
 
   constructor(options: Record<string, unknown>) {
-    this.options = options
+    this.options = options;
   }
 
   attachCustomKeyEventHandler() {
-    return true
+    return true;
   }
 
   attachCustomWheelEventHandler() {
-    return true
+    return true;
   }
 
   clearSelection() {}
+
+  clearTextureAtlas() {}
 
   dispose() {}
 
   focus() {}
 
   getSelection() {
-    return ''
+    return "";
   }
 
   loadAddon() {}
 
   onData() {
-    return { dispose() {} }
+    return { dispose() {} };
   }
 
   onResize() {
-    return { dispose() {} }
+    return { dispose() {} };
   }
 
   onScroll() {
@@ -78,97 +84,87 @@ class FakeTerminal {
   write() {}
 }
 
-const maybeReloadForLoopbackWsAuthFailure = vi.fn(() => false)
+const maybeReloadForLoopbackWsAuthFailure = vi.fn(() => false);
 const apiMocks = vi.hoisted(() => ({
-  buildWsUrl: vi.fn(async () => 'ws://localhost/api/pty?channel=chat-1')
-}))
+  buildWsUrl: vi.fn(async () => "ws://localhost/api/pty?channel=chat-1"),
+}));
+const uploadChatImage = vi.hoisted(() =>
+  vi.fn(async () => ({ path: "/tmp/pasted.png" })),
+);
 
-vi.mock('@xterm/addon-fit', () => ({ FitAddon: FakeFitAddon }))
-vi.mock('@xterm/addon-unicode11', () => ({ Unicode11Addon: class {} }))
-vi.mock('@xterm/addon-web-links', () => ({ WebLinksAddon: class {} }))
-vi.mock('@xterm/addon-webgl', () => ({ WebglAddon: FakeWebglAddon }))
-vi.mock('@xterm/xterm', () => ({ Terminal: FakeTerminal }))
-vi.mock('@/components/ChatSidebar', () => ({
-  ChatSidebar: () => null
-}))
-vi.mock('@/components/ChatSessionList', () => ({
-  ChatSessionList: () => null
-}))
-vi.mock('@/components/Backdrop', () => ({ Backdrop: () => null }))
-vi.mock('@/plugins', () => ({
-  PluginSlot: () => null
-}))
-vi.mock('@/contexts/usePageHeader', () => ({
-  usePageHeader: () => ({ setEnd: vi.fn(), setTitle: vi.fn() })
-}))
-vi.mock('@/contexts/useProfileScope', () => ({
-  useProfileScope: () => ({ profile: '' })
-}))
-vi.mock('@/themes', () => ({
-  useTheme: () => ({ theme: { terminalBackground: '#000000' } })
-}))
-vi.mock('@/i18n', () => ({
-  useI18n: () => ({
-    format: (template: string, values: Record<string, string | number>) =>
-      template.replace(/\{(\w+)\}/g, (placeholder, key: string) =>
-        Object.prototype.hasOwnProperty.call(values, key) ? String(values[key]) : placeholder
-      ),
-    t: {
-      app: {
-        closeModelTools: 'Close model tools',
-        modelToolsSheetSubtitle: 'Tools',
-        modelToolsSheetTitle: 'Model'
-      },
-      chatSidebar: {
-        collapseSidePanelAria: 'Collapse chat side panel',
-        collapseSidePanelTitle: 'Collapse side panel',
-        reconnecting: 'Chat is reconnecting.',
-        reconnectingCode: 'Chat connection interrupted (code {code}). Reconnecting…',
-        showSidePanelAria: 'Show chat side panel',
-        showSidePanelTitle: 'Show side panel (model + sessions)'
-      }
-    }
-  })
-}))
-vi.mock('@/lib/dashboard-auth-reload', () => ({
-  maybeReloadForLoopbackWsAuthFailure
-}))
-vi.mock('@/lib/api', () => ({
+vi.mock("@/lib/chatImagePaste", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/chatImagePaste")>()),
+  uploadChatImage,
+}));
+
+vi.mock("@xterm/addon-fit", () => ({ FitAddon: FakeFitAddon }));
+vi.mock("@xterm/addon-unicode11", () => ({ Unicode11Addon: class {} }));
+vi.mock("@xterm/addon-web-links", () => ({ WebLinksAddon: class {} }));
+vi.mock("@xterm/addon-webgl", () => ({ WebglAddon: FakeWebglAddon }));
+vi.mock("@xterm/xterm", () => ({ Terminal: FakeTerminal }));
+vi.mock("@/components/ChatSidebar", () => ({
+  ChatSidebar: () => null,
+}));
+vi.mock("@/components/ChatSessionList", () => ({
+  ChatSessionList: () => null,
+}));
+vi.mock("@/components/Backdrop", () => ({ Backdrop: () => null }));
+vi.mock("@/plugins", () => ({
+  PluginSlot: () => null,
+}));
+vi.mock("@/contexts/usePageHeader", () => ({
+  usePageHeader: () => ({ setEnd: vi.fn(), setTitle: vi.fn() }),
+}));
+vi.mock("@/contexts/useProfileScope", () => ({
+  useProfileScope: () => ({ profile: "" }),
+}));
+vi.mock("@/themes", () => ({
+  useTheme: () => ({ theme: { terminalBackground: "#000000" } }),
+}));
+vi.mock("@/i18n", async () => {
+  const actual = await vi.importActual<typeof import("@/i18n")>("@/i18n")
+  const { en } = await import("@/i18n/en")
+  return { ...actual, useI18n: () => ({t: en, locale: 'en', format: (template: string, values: Record<string, string | number>) => template.replace(/\{(\w+)\}/g, (match, key: string) => key in values ? String(values[key]) : match)}) }
+})
+vi.mock("@/lib/dashboard-auth-reload", () => ({
+  maybeReloadForLoopbackWsAuthFailure,
+}));
+vi.mock("@/lib/api", () => ({
   api: apiMocks,
-  buildWsUrl: apiMocks.buildWsUrl
-}))
+  buildWsUrl: apiMocks.buildWsUrl,
+}));
 
 class FakeWebSocket {
-  static instances: FakeWebSocket[] = []
-  static OPEN = 1
+  static instances: FakeWebSocket[] = [];
+  static OPEN = 1;
 
-  binaryType = 'blob'
-  onclose: ((event: CloseEventLike) => void) | null = null
-  onmessage: ((event: { data: ArrayBuffer | string }) => void) | null = null
-  onopen: (() => void) | null = null
-  readyState = FakeWebSocket.OPEN
-  url: string
+  binaryType = "blob";
+  onclose: ((event: CloseEventLike) => void) | null = null;
+  onmessage: ((event: { data: ArrayBuffer | string }) => void) | null = null;
+  onopen: (() => void) | null = null;
+  readyState = FakeWebSocket.OPEN;
+  url: string;
 
   constructor(url: string) {
-    this.url = url
-    FakeWebSocket.instances.push(this)
+    this.url = url;
+    FakeWebSocket.instances.push(this);
   }
 
   close() {
-    this.readyState = 3
+    this.readyState = 3;
   }
 
-  send() {}
+  send = vi.fn();
 }
 
 type CloseEventLike = {
-  code: number
-  reason: string
-  wasClean: boolean
-}
+  code: number;
+  reason: string;
+  wasClean: boolean;
+};
 
-let container: HTMLDivElement
-let root: Root
+let container: HTMLDivElement;
+let root: Root;
 
 // jsdom runs without an origin here (per-file @vitest-environment jsdom on a
 // node-default config), so localStorage is undefined. Stub it so components
@@ -195,60 +191,60 @@ const localStorageMock = (() => {
   true;
 
 async function render(ui: ReactNode) {
-  container = document.createElement('div')
-  document.body.append(container)
-  root = createRoot(container)
-  await act(async () => root.render(ui))
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  await act(async () => root.render(ui));
 }
 
 beforeEach(() => {
-  FakeWebSocket.instances = []
-  maybeReloadForLoopbackWsAuthFailure.mockClear()
-  apiMocks.buildWsUrl.mockReset()
-  apiMocks.buildWsUrl.mockResolvedValue('ws://localhost/api/pty?channel=chat-1')
-  vi.stubGlobal('WebSocket', FakeWebSocket)
+  FakeWebSocket.instances = [];
+  maybeReloadForLoopbackWsAuthFailure.mockClear();
+  apiMocks.buildWsUrl.mockReset();
+  apiMocks.buildWsUrl.mockResolvedValue("ws://localhost/api/pty?channel=chat-1");
+  vi.stubGlobal("WebSocket", FakeWebSocket);
   vi.stubGlobal(
-    'ResizeObserver',
+    "ResizeObserver",
     class {
       disconnect() {}
       observe() {}
       unobserve() {}
-    }
-  )
-  vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
-    cb(0)
-    return 1
-  })
-  vi.stubGlobal('cancelAnimationFrame', () => {})
-  vi.stubGlobal('matchMedia', () => ({
+    },
+  );
+  vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+    cb(0);
+    return 1;
+  });
+  vi.stubGlobal("cancelAnimationFrame", () => {});
+  vi.stubGlobal("matchMedia", () => ({
     addEventListener() {},
     matches: false,
-    media: '',
-    removeEventListener() {}
-  }))
-  vi.stubGlobal('crypto', {
+    media: "",
+    removeEventListener() {},
+  }));
+  vi.stubGlobal("crypto", {
     getRandomValues: (values: Uint8Array) => {
-      values.fill(7)
-      return values
+      values.fill(7);
+      return values;
     },
-    randomUUID: () => 'chat-test-id'
-  })
+    randomUUID: () => "chat-test-id",
+  });
 
-  Object.defineProperty(window, 'visualViewport', {
+  Object.defineProperty(window, "visualViewport", {
     configurable: true,
-    value: { addEventListener() {}, removeEventListener() {}, width: 1280 }
-  })
-  Object.defineProperty(window, '__HERMES_SESSION_TOKEN__', {
+    value: { addEventListener() {}, removeEventListener() {}, width: 1280 },
+  });
+  Object.defineProperty(window, "__HERMES_SESSION_TOKEN__", {
     configurable: true,
-    value: 'stale-token',
-    writable: true
-  })
-  Object.defineProperty(window, '__HERMES_AUTH_REQUIRED__', {
+    value: "stale-token",
+    writable: true,
+  });
+  Object.defineProperty(window, "__HERMES_AUTH_REQUIRED__", {
     configurable: true,
     value: false,
-    writable: true
-  })
-  Object.defineProperty(window.navigator, 'clipboard', {
+    writable: true,
+  });
+  Object.defineProperty(window.navigator, "clipboard", {
     configurable: true,
     value: {
       readText: vi.fn(async () => ""),
@@ -261,30 +257,221 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  await act(async () => root?.unmount())
-  container?.remove()
-  vi.unstubAllGlobals()
-})
+  await act(async () => root?.unmount());
+  container?.remove();
+  vi.unstubAllGlobals();
+});
 
-describe('ChatPage', () => {
-  it('treats loopback 4401 closes as stale-token reload candidates', async () => {
-    const { default: ChatPage } = await import('./ChatPage')
+describe("ChatPage", () => {
+  it("sends a PTY keepalive frame every 20 seconds while the socket is open", async () => {
+    vi.useFakeTimers();
+    try {
+      const { default: ChatPage } = await import("./ChatPage");
+      await render(
+        <MemoryRouter initialEntries={["/chat"]}>
+          <ChatPage isActive />
+        </MemoryRouter>,
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(FakeWebSocket.instances).toHaveLength(1);
+
+      const socket = FakeWebSocket.instances[0];
+      await act(async () => socket.onopen?.());
+      socket.send.mockClear();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20_000);
+      });
+
+      expect(socket.send).toHaveBeenCalledWith("\x1b[RESIZE:80;24]");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("defers a reconnect while the chat tab is inactive", async () => {
+    vi.useFakeTimers();
+    try {
+      const { default: ChatPage } = await import("./ChatPage");
+      await render(
+        <MemoryRouter initialEntries={["/chat"]}>
+          <ChatPage isActive />
+        </MemoryRouter>,
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      const socket = FakeWebSocket.instances[0];
+      await act(async () => {
+        socket.onclose?.({ code: 1001, reason: "", wasClean: true });
+        root.render(
+          <MemoryRouter initialEntries={["/chat"]}>
+            <ChatPage isActive={false} />
+          </MemoryRouter>,
+        );
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+
+      expect(FakeWebSocket.instances).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reconnects on tab return after a hidden-tab close even when a stale upload banner is showing", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    await act(async () => socket.onopen?.());
+
+    // A failed image paste leaves a non-rejection banner behind.
+    uploadChatImage.mockRejectedValueOnce(new Error("disk full"));
+    const host = container.querySelector(".hermes-chat-xterm-host");
+    expect(host).not.toBeNull();
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    const file = new File([new Uint8Array([1, 2, 3])], "shot.png", { type: "image/png" });
+    Object.defineProperty(paste, "clipboardData", {
+      value: {
+        files: [file],
+        items: [{ getAsFile: () => file, kind: "file", type: "image/png" }],
+      },
+    });
+    await act(async () => {
+      host!.dispatchEvent(paste);
+    });
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("Image upload failed"),
+    );
+
+    // The socket dies while the tab is hidden: the reconnect is deferred.
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "hidden",
+    });
+    await act(async () => {
+      socket.onclose?.({ code: 1001, reason: "", wasClean: true });
+    });
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    // Coming back must start the deferred reconnect despite the old banner.
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "visible",
+    });
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2));
+  });
+
+  it("treats loopback 4401 closes as stale-token reload candidates", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
 
     await render(
-      <MemoryRouter initialEntries={['/chat']}>
+      <MemoryRouter initialEntries={["/chat"]}>
         <ChatPage isActive />
-      </MemoryRouter>
-    )
+      </MemoryRouter>,
+    );
 
-    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1))
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
 
     FakeWebSocket.instances[0].onclose?.({
       code: 4401,
-      reason: 'auth: token_mismatch',
-      wasClean: true
-    })
+      reason: "auth: token_mismatch",
+      wasClean: true,
+    });
 
     expect(maybeReloadForLoopbackWsAuthFailure).toHaveBeenCalledWith(4401);
+  });
+
+  it("offers a Reload button for an expired login when auto-reload is spent", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+
+    await act(async () => {
+      FakeWebSocket.instances[0].onclose?.({ code: 4401, reason: "auth: bad-token", wasClean: true });
+    });
+
+    const labels = Array.from(container.querySelectorAll("button")).map((b) => b.textContent?.trim());
+    expect(labels).toContain("Reload page");
+  });
+
+  it("renders Start new session after the server could not start the chat (1011)", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+
+    await act(async () => {
+      FakeWebSocket.instances[0].onclose?.({ code: 1011, reason: "", wasClean: true });
+    });
+
+    const labels = Array.from(container.querySelectorAll("button")).map((b) => b.textContent?.trim());
+    expect(labels).toContain("Start new session");
+  });
+
+  it("offers Start new session and Open logs when the agent process ended", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+
+    await act(async () => {
+      FakeWebSocket.instances[0].onclose?.({ code: 4410, reason: "", wasClean: true });
+    });
+
+    const labels = Array.from(container.querySelectorAll("button")).map((b) => b.textContent?.trim());
+    expect(labels).toContain("Start new session");
+    expect(labels).toContain("Open logs");
+  });
+
+  it("stops retrying after the ladder is spent and offers Check server status", async () => {
+    vi.useFakeTimers();
+    try {
+      const { default: ChatPage } = await import("./ChatPage");
+      await render(
+        <MemoryRouter initialEntries={["/chat"]}>
+          <ChatPage isActive />
+        </MemoryRouter>,
+      );
+      await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+
+      // Drop the socket abnormally; walk every scheduled retry to failure.
+      for (let attempt = 0; attempt <= PTY_RECONNECT_MAX_ATTEMPTS; attempt += 1) {
+        const sockets = FakeWebSocket.instances.length;
+        await act(async () => {
+          FakeWebSocket.instances[sockets - 1].onclose?.({ code: 1006, reason: "", wasClean: false });
+        });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(PTY_RECONNECT_MAX_MS + 100);
+        });
+      }
+
+      const labels = Array.from(container.querySelectorAll("button")).map((b) => b.textContent?.trim());
+      expect(labels).toContain("Reconnect now");
+      expect(labels).toContain("Check server status");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("attaches visualViewport keyboard-inset listeners only while the chat tab is active", async () => {
@@ -388,82 +575,124 @@ describe("ChatPage side panel collapse", () => {
 // (that timer is set after `new WebSocket`). Without its own deadline the tab
 // strands on "connecting" with no retry. Mirrors the ChatSidebar events-feed
 // coverage in src/components/ChatSidebar.test.tsx.
-describe('ChatPage PTY ticket connect deadline', () => {
+describe("ChatPage bundled font swap-in", () => {
+  it("redraws the terminal with the bundled font once it finishes loading", async () => {
+    let releaseFont!: () => void;
+    const fontGate = new Promise<void>((resolve) => {
+      releaseFont = resolve;
+    });
+    Object.defineProperty(document, "fonts", {
+      configurable: true,
+      value: {
+        check: () => false,
+        load: async () => {
+          await fontGate;
+          return [{}];
+        },
+      },
+    });
+    const clearAtlas = vi.spyOn(FakeTerminal.prototype, "clearTextureAtlas");
+    try {
+      const { default: ChatPage } = await import("./ChatPage");
+      await render(
+        <MemoryRouter initialEntries={["/chat"]}>
+          <ChatPage isActive />
+        </MemoryRouter>,
+      );
+      expect(clearAtlas).not.toHaveBeenCalled();
+
+      await act(async () => {
+        releaseFont();
+        await fontGate;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(clearAtlas).toHaveBeenCalledTimes(1);
+    } finally {
+      clearAtlas.mockRestore();
+      delete (document as { fonts?: unknown }).fonts;
+    }
+  });
+});
+
+describe("ChatPage PTY ticket connect deadline", () => {
   beforeEach(() => {
-    vi.useFakeTimers()
-  })
+    vi.useFakeTimers();
+  });
 
   afterEach(() => {
-    vi.useRealTimers()
-  })
+    vi.useRealTimers();
+  });
 
   async function renderChat() {
-    const { default: ChatPage } = await import('./ChatPage')
+    const { default: ChatPage } = await import("./ChatPage");
     await render(
-      <MemoryRouter initialEntries={['/chat']}>
+      <MemoryRouter initialEntries={["/chat"]}>
         <ChatPage isActive />
-      </MemoryRouter>
-    )
+      </MemoryRouter>,
+    );
   }
 
   /** Advance timers and flush the async connect that fires on the tick. */
   async function advance(ms: number) {
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(ms)
-    })
+      await vi.advanceTimersByTimeAsync(ms);
+    });
   }
 
-  it('retries when the ticket request rejects', async () => {
-    apiMocks.buildWsUrl.mockRejectedValueOnce(new Error('ticket endpoint unavailable'))
+  it("retries when the ticket request rejects", async () => {
+    apiMocks.buildWsUrl.mockRejectedValueOnce(
+      new Error("ticket endpoint unavailable"),
+    );
 
-    await renderChat()
-    await advance(0)
-    expect(FakeWebSocket.instances).toHaveLength(0)
+    await renderChat();
+    await advance(0);
+    expect(FakeWebSocket.instances).toHaveLength(0);
 
     // First backoff step is 250ms; the retry must mint a fresh ticket.
-    await advance(250)
-    expect(apiMocks.buildWsUrl).toHaveBeenCalledTimes(2)
-    expect(FakeWebSocket.instances).toHaveLength(1)
-  })
+    await advance(250);
+    expect(apiMocks.buildWsUrl).toHaveBeenCalledTimes(2);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+  });
 
-  it('times out a stalled ticket request and retries', async () => {
-    let resolveStalledRequest!: (url: string) => void
+  it("times out a stalled ticket request and retries", async () => {
+    let resolveStalledRequest!: (url: string) => void;
     apiMocks.buildWsUrl.mockImplementationOnce(
       () =>
-        new Promise<string>(resolve => {
-          resolveStalledRequest = resolve
-        })
-    )
+        new Promise<string>((resolve) => {
+          resolveStalledRequest = resolve;
+        }),
+    );
 
-    await renderChat()
-    await advance(0)
-    expect(FakeWebSocket.instances).toHaveLength(0)
+    await renderChat();
+    await advance(0);
+    expect(FakeWebSocket.instances).toHaveLength(0);
 
-    await advance(PTY_TICKET_TIMEOUT_MS)
-    expect(FakeWebSocket.instances).toHaveLength(0)
+    await advance(PTY_TICKET_TIMEOUT_MS);
+    expect(FakeWebSocket.instances).toHaveLength(0);
 
     // A late ticket from the timed-out attempt must not open a socket behind
     // the replacement the deadline scheduled.
     await act(async () => {
-      resolveStalledRequest('ws://localhost/api/pty?channel=stale')
-      await Promise.resolve()
-    })
-    expect(FakeWebSocket.instances).toHaveLength(0)
+      resolveStalledRequest("ws://localhost/api/pty?channel=stale");
+      await Promise.resolve();
+    });
+    expect(FakeWebSocket.instances).toHaveLength(0);
 
-    await advance(250)
-    expect(FakeWebSocket.instances).toHaveLength(1)
-    expect(FakeWebSocket.instances[0].url).not.toContain('channel=stale')
-  })
+    await advance(250);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(FakeWebSocket.instances[0].url).not.toContain("channel=stale");
+  });
 
   it("leaves a settled ticket's socket to the CONNECTING timer", async () => {
-    await renderChat()
-    await advance(0)
-    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1))
+    await renderChat();
+    await advance(0);
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
 
     // NS-591 regression: once the socket exists the ticket deadline is
     // disarmed, so PTY_CONNECTING_TIMEOUT_MS stays the only thing that may
     // force-close a wedged handshake — the two must not both fire.
-    await advance(PTY_TICKET_TIMEOUT_MS)
-    expect(apiMocks.buildWsUrl).toHaveBeenCalledTimes(1)
-  })
-})
+    await advance(PTY_TICKET_TIMEOUT_MS);
+    expect(apiMocks.buildWsUrl).toHaveBeenCalledTimes(1);
+  });
+});

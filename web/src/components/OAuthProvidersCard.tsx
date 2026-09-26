@@ -21,6 +21,7 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { OAuthLoginModal } from "@/components/OAuthLoginModal";
 import { useI18n } from "@/i18n";
+import { errorMessage } from "@/lib/api-error";
 
 interface Props {
   onError?: (msg: string) => void;
@@ -128,7 +129,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
       onError?.(
         t.oauth.disconnectFailed
           .replace("{provider}", provider.name)
-          .replace("{error}", String(error)),
+          .replace("{error}", errorMessage(error, t.common)),
       );
     } finally {
       setBusyId(null);

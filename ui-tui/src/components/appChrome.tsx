@@ -471,12 +471,23 @@ function IdleSince({ endedAt }: { endedAt: number }) {
   return `✓ ${fmtDuration(now - endedAt)}`
 }
 
-const effortLabel = (effort?: string) => {
+// `wire` is the level the route actually sends (session.info.reasoning_effort_wire):
+// a clamped Hermes step such as `ultra` reads `ultra→max`, like the CLI's
+// "ultra (sends max on this route)", never as a distinct wire level (#61634).
+const effortLabel = (effort?: string, wire?: string) => {
   const value = String(effort ?? '')
     .trim()
     .toLowerCase()
 
-  return value && value !== 'medium' && value !== 'normal' && value !== 'default' ? value : ''
+  const sent = String(wire ?? '')
+    .trim()
+    .toLowerCase()
+
+  if (!value || value === 'medium' || value === 'normal' || value === 'default') {
+    return ''
+  }
+
+  return sent && sent !== value ? `${value}→${sent}` : value
 }
 
 const shortModelLabel = (model: string) =>
@@ -489,8 +500,8 @@ const shortModelLabel = (model: string) =>
     .replace(/\b(\d+)\s+(\d+)\b/g, '$1.$2')
     .trim()
 
-const modelLabel = (model: string, effort?: string, fast?: boolean) =>
-  [shortModelLabel(model), effortLabel(effort), fast ? 'fast' : ''].filter(Boolean).join(' ')
+const modelLabel = (model: string, effort?: string, fast?: boolean, effortWire?: string) =>
+  [shortModelLabel(model), effortLabel(effort, effortWire), fast ? 'fast' : ''].filter(Boolean).join(' ')
 
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   const [active, setActive] = useState(false)
@@ -536,6 +547,7 @@ export function StatusRuleView({
   model,
   modelFast,
   modelReasoningEffort,
+  modelReasoningEffortWire,
   indicatorStyle = 'kaomoji',
   notice,
   usage,
@@ -553,7 +565,7 @@ export function StatusRuleView({
   i18n,
   t
 }: StatusRuleProps & { i18n: I18nApi }) {
-  const pct = usage.context_percent
+  const pct = usage.context_percent ?? undefined
   const contextMark = usage.context_estimated ? '~' : ''
   const barColor = ctxBarColor(pct, t)
   const segs = statusBarSegments(cols)
@@ -569,14 +581,14 @@ export function StatusRuleView({
       ? usage.context_max
         ? segs.compactCtx
           ? `${contextMark}${compactNumber(usage.context_used ?? 0)} ${i18n.t('usage.tokensShort')}`
-          : `${contextMark}${compactNumber(usage.context_used ?? 0)}/${compactNumber(usage.context_max)}`
-        : usage.total > 0
+          : `${contextMark}${compactNumber(usage.context_used ?? 0)}/${compactNumber(usage.context_max ?? 0)}`
+        : (usage.total ?? 0) > 0
           ? `${compactNumber(usage.total)} ${i18n.t('usage.tokensShort')}`
           : ''
       : ''
 
   const bar = !segs.compactCtx && usage.context_max && ok('context_pct') ? ctxBar(pct) : ''
-  const modelText = modelLabel(model, modelReasoningEffort, modelFast)
+  const modelText = modelLabel(model, modelReasoningEffort, modelFast, modelReasoningEffortWire)
   const statusText = i18n.tStatus(status)
   const compressions = typeof usage.compressions === 'number' ? usage.compressions : 0
   const compressionText = `${i18n.t('usage.compressionsShort')} ${compressions}`
@@ -1003,6 +1015,7 @@ interface StatusRuleProps {
   model: string
   modelFast?: boolean
   modelReasoningEffort?: string
+  modelReasoningEffortWire?: string
   indicatorStyle?: IndicatorStyle
   notice?: Notice | null
   sessionStartedAt?: null | number

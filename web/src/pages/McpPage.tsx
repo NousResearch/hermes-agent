@@ -33,6 +33,7 @@ import {
   completeMcpDashboardOAuth,
   McpDashboardOAuthError,
 } from "@/lib/mcp-dashboard-oauth";
+import { errorMessage } from "@/lib/api-error";
 
 function isHttpUrl(value: string): boolean {
   return /^https?:\/\//i.test(value.trim());
@@ -105,7 +106,7 @@ export default function McpPage() {
       .getMcpServers()
       .then((res) => setServers(res.servers))
       .catch((e) =>
-        showToast(format(t.mcp.error, { error: String(e) }), "error"),
+        showToast(format(t.mcp.error, { error: errorMessage(e, t.common) }), "error"),
       );
   }, [format, showToast, t.mcp.error]);
 
@@ -117,7 +118,7 @@ export default function McpPage() {
         setDiagnostics(res.diagnostics);
       })
       .catch((e) =>
-        showToast(format(t.mcp.error, { error: String(e) }), "error"),
+        showToast(format(t.mcp.error, { error: errorMessage(e, t.common) }), "error"),
       );
   }, [format, showToast, t.mcp.error]);
 
@@ -176,7 +177,7 @@ export default function McpPage() {
       setCreateModalOpen(false);
       loadServers();
     } catch (e) {
-      showToast(format(t.mcp.addFailed, { error: String(e) }), "error");
+      showToast(format(t.mcp.addFailed, { error: errorMessage(e, t.common) }), "error");
     } finally {
       setCreating(false);
     }
@@ -205,7 +206,7 @@ export default function McpPage() {
         );
       }
     } catch (e) {
-      showToast(format(t.mcp.error, { error: String(e) }), "error");
+      showToast(format(t.mcp.error, { error: errorMessage(e, t.common) }), "error");
     } finally {
       setTesting(null);
     }
@@ -236,7 +237,7 @@ export default function McpPage() {
       const detail =
         e instanceof McpDashboardOAuthError
           ? localizedErrors[e.code]
-          : String(e);
+          : errorMessage(e, t.common);
       showToast(format(t.mcp.oauthError, { error: detail }), "error");
     } finally {
       setAuthenticating(null);
@@ -253,7 +254,7 @@ export default function McpPage() {
       );
       setRestartPending(true);
     } catch (e) {
-      showToast(format(t.mcp.error, { error: String(e) }), "error");
+      showToast(format(t.mcp.error, { error: errorMessage(e, t.common) }), "error");
     } finally {
       setTogglingName(null);
     }
@@ -275,7 +276,7 @@ export default function McpPage() {
           });
           loadServers();
         } catch (e) {
-          showToast(format(t.mcp.error, { error: String(e) }), "error");
+          showToast(format(t.mcp.error, { error: errorMessage(e, t.common) }), "error");
           throw e;
         }
       },
@@ -303,7 +304,7 @@ export default function McpPage() {
         setInstallEnv({});
         await Promise.all([loadServers(), loadCatalog()]);
       } catch (e) {
-        showToast(format(t.mcp.installFailed, { error: String(e) }), "error");
+        showToast(format(t.mcp.installFailed, { error: errorMessage(e, t.common) }), "error");
       } finally {
         setInstallingName(null);
       }
@@ -655,8 +656,19 @@ export default function McpPage() {
 
         {servers.length === 0 && (
           <Card>
-            <CardContent className="py-8 text-center text-sm text-muted-foreground">
-              {t.mcp.noServers}
+            <CardContent className="flex flex-col items-center gap-3 py-8 text-center text-sm text-muted-foreground">
+              <p>{t.mcp.noServers}</p>
+              <Button
+                size="sm"
+                onClick={() =>
+                  document
+                    .getElementById("mcp-catalog")
+                    ?.scrollIntoView({ behavior: "smooth", block: "start" })
+                }
+                prefix={<Package className="h-3.5 w-3.5" />}
+              >
+                {t.mcp.browseCatalog}
+              </Button>
             </CardContent>
           </Card>
         )}
@@ -803,7 +815,7 @@ export default function McpPage() {
             className="flex items-center gap-2 text-muted-foreground"
           >
             <Package className="h-4 w-4" />
-            {format(t.mcp.catalog, { count: catalog.length })}
+            <span id="mcp-catalog">{format(t.mcp.catalog, { count: catalog.length })}</span>
           </H2>
         </div>
 

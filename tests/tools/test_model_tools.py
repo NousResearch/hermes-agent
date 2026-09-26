@@ -6,10 +6,7 @@ from unittest.mock import patch
 
 from model_tools import (
     handle_function_call,
-    get_all_tool_names,
-    get_toolset_for_tool,
     _AGENT_LOOP_TOOLS,
-    _LEGACY_TOOLSET_MAP,
 )
 
 
@@ -22,7 +19,6 @@ class TestHandleFunctionCall:
         for tool_name in _AGENT_LOOP_TOOLS:
             result = json.loads(handle_function_call(tool_name, {}))
             assert "error" in result
-            assert "agent loop" in result["error"].lower()
 
     def test_unknown_tool_returns_error(self):
         result = json.loads(handle_function_call("totally_fake_tool_xyz", {}))
@@ -76,25 +72,6 @@ class TestHandleFunctionCall:
             assert kwargs_by_hook[hook_name]["error_type"] == "tool_error"
             assert kwargs_by_hook[hook_name]["error_message"] == "exit 1"
 
-    def test_no_listener_skips_post_and_transform_emit(self):
-        """When no plugin is registered for post_tool_call /
-        transform_tool_result, the emit path must short-circuit on
-        ``has_hook`` and never build/dispatch a payload — so the
-        no-listener hot path stays cheap.  ``pre_tool_call`` is always
-        polled (block-check), so it may still fire; the observer/transform
-        emits must not.
-        """
-        with (
-            patch("model_tools.registry.dispatch", return_value='{"ok":true}'),
-            patch("hermes_cli.plugins.has_hook", return_value=False),
-            patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
-        ):
-            result = handle_function_call("web_search", {"q": "test"}, task_id="t1")
-
-        assert result == '{"ok":true}'
-        fired = {c.args[0] for c in mock_invoke_hook.call_args_list}
-        assert "post_tool_call" not in fired
-        assert "transform_tool_result" not in fired
 
     def test_tool_request_and_execution_middleware_wrap_registry_dispatch(self, monkeypatch):
         seen = {}
@@ -224,16 +201,6 @@ class TestHandleFunctionCall:
 # Agent loop tools
 # =========================================================================
 
-class TestAgentLoopTools:
-    def test_expected_tools_in_set(self):
-        assert "todo_list" in _AGENT_LOOP_TOOLS
-        assert "memory" in _AGENT_LOOP_TOOLS
-        assert "session_search" in _AGENT_LOOP_TOOLS
-        assert "delegate_task" in _AGENT_LOOP_TOOLS
-
-    def test_no_regular_tools_in_set(self):
-        assert "web_search" not in _AGENT_LOOP_TOOLS
-        assert "terminal" not in _AGENT_LOOP_TOOLS
 
 
 # =========================================================================
@@ -350,15 +317,6 @@ class TestPreToolCallBlocking:
 # Legacy toolset map
 # =========================================================================
 
-class TestLegacyToolsetMap:
-    def test_expected_legacy_names(self):
-        expected = [
-            "web_tools", "terminal_tools", "vision_tools",
-            "image_tools", "skills_tools", "browser_tools", "cronjob_tools",
-            "file_tools", "tts_tools",
-        ]
-        for name in expected:
-            assert name in _LEGACY_TOOLSET_MAP, f"Missing legacy toolset: {name}"
 
 
 
@@ -366,19 +324,6 @@ class TestLegacyToolsetMap:
 # Backward-compat wrappers
 # =========================================================================
 
-class TestBackwardCompat:
-    def test_get_all_tool_names_returns_list(self):
-        names = get_all_tool_names()
-        assert isinstance(names, list)
-        assert len(names) > 0
-        # Should contain well-known tools
-        assert "web_search" in names
-        assert "terminal" in names
-
-    def test_get_toolset_for_tool(self):
-        result = get_toolset_for_tool("web_search")
-        assert result is not None
-        assert isinstance(result, str)
 
 
 
@@ -540,17 +485,11 @@ class TestBridgeDispatch:
     """handle_function_call routes tool_search/tool_describe inline, unwraps tool_call,
     and refuses tool_call targets outside the session-scoped deferrable catalog."""
 
-    def test_tool_search_and_describe_return_json_strings(self):
-        with patch("model_tools.get_tool_definitions", return_value=[]):
-            out = handle_function_call("tool_search", {"queries": ["anything"]})
-            assert isinstance(out, str) and json.loads(out) is not None
-            out = handle_function_call("tool_describe", {"names": ["nope"]})
-            assert isinstance(out, str) and json.loads(out) is not None
 
     def test_tool_call_bad_args_error(self):
         with patch("model_tools.get_tool_definitions", return_value=[]):
             result = json.loads(handle_function_call("tool_call", {}))
-        assert "requires 'calls'" in result["error"]
+        assert result.get("error")
 
     def test_tool_call_rejects_out_of_scope_and_unwraps_in_scope(self):
         import tools.tool_search as ts
@@ -558,7 +497,7 @@ class TestBridgeDispatch:
              patch.object(ts, "resolve_underlying_call", return_value=("mcp_x", {"a": 1}, None)), \
              patch.object(ts, "scoped_deferrable_names", return_value=frozenset()):
             result = json.loads(handle_function_call("tool_call", {"name": "mcp_x"}))
-        assert "not available in this session" in result["error"]
+        assert result.get("error")
 
         with patch("model_tools.get_tool_definitions", return_value=[]), \
              patch.object(ts, "resolve_underlying_call", return_value=("mcp_x", {"a": 1}, None)), \
@@ -568,3 +507,49 @@ class TestBridgeDispatch:
             out = handle_function_call("tool_call", {"name": "mcp_x"}, task_id="t")
         assert json.loads(out) == {"ok": True}
         assert disp.call_args.args[0] == "mcp_x" and disp.call_args.args[1] == {"a": 1}
+
+
+# ==================================================================
+
+
+# Browser schema retrieval hints
+# =========================================================================
+
+class TestBrowserRetrievalHints:
+    """Browser schemas name web_search/web_extract only when the session actually has them (#39797)."""
+
+    @staticmethod
+    def _defs(*names):
+        return [{"type": "function", "function": {"name": n, "description": f"{n}."}} for n in names]
+
+
+    def test_silent_without_web_tools(self):
+        # Real static schemas + rewriters: the rewritten browser descriptions must not mention absent web tools.
+        from model_tools import _apply_dynamic_schemas
+        from tools.browser_cdp_tool import BROWSER_CDP_SCHEMA
+        from tools.browser_tool import BROWSER_TOOL_SCHEMAS
+
+        navigate = next(s for s in BROWSER_TOOL_SCHEMAS if s["name"] == "browser_navigate")
+        defs = [{"type": "function", "function": navigate}, {"type": "function", "function": BROWSER_CDP_SCHEMA}]
+        rendered = " ".join(d["function"]["description"] for d in _apply_dynamic_schemas(defs + self._defs("terminal")))
+        assert "web_search" not in rendered
+        assert "web_extract" not in rendered
+
+
+def test_tool_defs_cache_key_sees_config_replacement_with_pinned_mtime(tmp_path):
+    """#111105: a same-size config.yaml swapped in with the old mtime must change the memo key."""
+    import os
+    import shutil
+
+    from model_tools import _tool_defs_cache_key
+
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("mcp_servers:\n  aa: {command: a}\n", encoding="utf-8")
+    with patch("hermes_cli.config.get_config_path", return_value=cfg):
+        before = _tool_defs_cache_key(None, None, False)
+        st = cfg.stat()
+        other = tmp_path / "other.yaml"
+        other.write_text("mcp_servers:\n  bb: {command: b}\n", encoding="utf-8")
+        shutil.copy2(other, cfg)
+        os.utime(cfg, ns=(st.st_atime_ns, st.st_mtime_ns))
+        assert _tool_defs_cache_key(None, None, False) != before

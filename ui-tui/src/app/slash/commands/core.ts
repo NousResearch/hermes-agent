@@ -805,6 +805,8 @@ export const coreCommands: SlashCommand[] = [
                 })
               )
             } else {
+              // The turn ended before the steer landed (#64578): keep the words as the next turn.
+              ctx.composer.enqueue(payload)
               ctx.transcript.sys(translate(ctx.ui.locale, 'sys.steerRejected'))
             }
           })

@@ -405,8 +405,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # that copy carries the DEFAULT profile's WHATSAPP_* values, so every bridge-consumed key is
         # re-resolved from this profile (dropped on a scoped miss), never inherited from the launch env.
         bridge_env = with_hermes_node_path()
-        reply_prefix = _wenv("WHATSAPP_REPLY_PREFIX")
-        if reply_prefix:
+        # An explicit WHATSAPP_REPLY_PREFIX="" means "no header" and must reach the bridge as
+        # "" (bridge.js tells undefined and "" apart); a str default would make a miss look the
+        # same as an explicit empty value. Same is-not-None read as whatsapp_common.
+        reply_prefix = get_scoped_secret("WHATSAPP_REPLY_PREFIX")
+        if reply_prefix is not None:
             bridge_env["WHATSAPP_REPLY_PREFIX"] = reply_prefix
         elif self._reply_prefix is not None:
             bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix

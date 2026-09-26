@@ -1807,17 +1807,33 @@ def _load_credential_pool(runtime: dict, job_id: str):
     return None
 
 
-def _init_cron_mcp_tools(job_id: str) -> None:
-    """Register MCP servers for the agent's tool registry. Idempotent across ticks; non-fatal so a
-    broken MCP server never kills a working job."""
+def _init_cron_mcp_tools(job: dict, cfg: dict) -> None:
+    """Register MCP servers for the agent's tool registry, spawning only the servers this job's
+    resolved toolsets actually expose: ``no_mcp`` spawns none, an MCP allowlist spawns exactly
+    those servers, the default spawns every enabled server (#121536). Idempotent across ticks;
+    non-fatal so a broken MCP server never kills a working job."""
+    job_id = str(job.get("id") or "?")
     try:
         # Initialize MCP servers so configured mcp_servers are available to the agent's tool registry before
         # AIAgent is constructed. Without this, cron jobs never saw any MCP tools — only the gateway / CLI
         # paths called discover_mcp_tools() at startup. Idempotent: subsequent ticks short-circuit on
         # already-connected servers inside register_mcp_servers(). Non-fatal on failure: a broken MCP server
         # shouldn't kill an otherwise-working cron job. See #4219.
+        from hermes_cli.tools_config import enabled_mcp_server_names
         from tools.mcp_tool_discovery import discover_mcp_tools
-        _mcp_tools = discover_mcp_tools()
+        # The resolved toolsets are exactly what the agent will see: the per-job merge (and the
+        # platform path) layer every enabled MCP server in unless ``no_mcp`` stripped them or an
+        # explicit allowlist kept only some — so the spawn filter is that list intersected with
+        # the configured enabled servers (#121536).
+        toolsets = _resolve_cron_enabled_toolsets(job, cfg)
+        enabled = enabled_mcp_server_names(cfg)
+        allowed = [name for name in toolsets if name in enabled]
+        if set(allowed) == enabled:
+            # Filter covers everything configured: keep the zero-arg call shape (out-of-tree
+            # callers and tests stub discover_mcp_tools as a zero-arg callable).
+            _mcp_tools = discover_mcp_tools()
+        else:
+            _mcp_tools = discover_mcp_tools(allowed_mcp_names=allowed)
         if _mcp_tools:
             logger.info("Job '%s': %d MCP tool(s) available", job_id, len(_mcp_tools))
     except Exception as _mcp_exc:
@@ -2395,7 +2411,7 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
     setup.fallback_model = _job_fallback_chain(job, _cfg)
     setup.credential_pool = _load_credential_pool(setup.runtime, job_id)
     # MCP servers must be registered before AIAgent is constructed.
-    _init_cron_mcp_tools(job_id)
+    _init_cron_mcp_tools(job, _cfg if isinstance(_cfg, dict) else {})
     # Only now can a requested MCP toolset be judged: its alias is process-global but its tools live
     # in this profile's registry overlay, and quiet_mode hides the empty resolution (#109050).
     if _cron_preflight_enabled(_cfg):

@@ -3037,6 +3037,13 @@ def _persist_scratch_completion_artifacts(
         if not artifact:
             continue
         src = Path(artifact).expanduser()
+        # A relative path is relative to THIS task's workspace. Out-of-process
+        # workers/bridges declare task-relative paths (e.g. "out/REPORT.md"),
+        # and resolving those against the calling process's cwd silently
+        # classifies them as outside the workspace -- the copy loop below then
+        # drops the deliverable without a copy, an attachment row, or a warning.
+        if not src.is_absolute():
+            src = workspace_root / src
         try:
             resolved_src = src.resolve()
         except OSError:

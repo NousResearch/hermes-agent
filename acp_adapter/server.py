@@ -456,6 +456,11 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             )
             agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools or []}
             inject_memory_provider_tools(agent)
+            from tools.tool_search import defer_post_build_tools
+            agent.tools, agent._deferred_post_build_tools = defer_post_build_tools(
+                agent.tools or [], enabled_toolsets=agent.enabled_toolsets,
+                disabled_toolsets=getattr(agent, "disabled_toolsets", None))
+            agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools or []}
             if callable(invalidate := getattr(agent, "_invalidate_system_prompt", None)):
                 invalidate()
             logger.info(

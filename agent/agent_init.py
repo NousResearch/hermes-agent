@@ -575,6 +575,7 @@ _TURN_STATE: Dict[str, Any] = {
     # Registry generation of the tool snapshot (set in _load_tools): a late refresh rejects
     # a stale rebuild instead of clobbering a newer one.
     "_tool_snapshot_generation": 0,
+    "_deferred_post_build_tools": list,
     "_rate_limit_state": None,  # from x-ratelimit-* headers; read by /usage
     # Credits tracking (dev-only, HERMES_DEV_CREDITS) from x-nous-credits-* headers; session
     # start is latched on the first header so cumulative spend can be reported.
@@ -2140,6 +2141,17 @@ def _inject_context_engine_tools(agent):
             _ra().logger.debug("Context engine on_session_start: %s", _ce_err)
 
 
+def _defer_post_build_tools(agent):
+    from tools.tool_search import defer_post_build_tools
+    tools, deferred = defer_post_build_tools(
+        agent.tools or [], enabled_toolsets=agent.enabled_toolsets,
+        disabled_toolsets=agent.disabled_toolsets)
+    if deferred:
+        agent.tools = tools
+        agent.valid_tool_names = {tool["function"]["name"] for tool in tools}
+    agent._deferred_post_build_tools = deferred
+
+
 def _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length):
     # Ollama defaults num_ctx to 2048, so detect the max window and send num_ctx per request.
     # model.ollama_num_ctx overrides; model.context_length caps the detected value (VRAM).
@@ -2472,6 +2484,7 @@ def init_agent(
     _enforce_minimum_context(agent)
     _warn_nonagentic_hermes_model(agent)
     _inject_context_engine_tools(agent)
+    _defer_post_build_tools(agent)
     _init_usage_state(agent)
     _clamp_compressor_to_ollama_num_ctx(agent)
     _emit_compression_summary(agent, cs)

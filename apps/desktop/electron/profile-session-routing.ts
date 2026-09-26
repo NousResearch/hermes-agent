@@ -304,7 +304,10 @@ export async function fetchRegistrySessionRows(
             const params = new URLSearchParams(searchParams)
             params.delete('profile')
 
-            const data = await getJson(descriptor, `/api/sessions?${params}`).catch(() => null)
+            const data = await fetchPagedSessionList(
+              params,
+              pageParams => getJson(descriptor, `/api/sessions?${pageParams}`) as Promise<SessionListResponse>
+            ).catch(() => null)
 
             if (data) {
               tag(data, source.connectionId, profileLabel || 'default')
@@ -332,7 +335,10 @@ export async function fetchRegistrySessionRows(
         // Older remote without the aggregator: its own default-profile list.
         const flat = new URLSearchParams(searchParams)
         flat.delete('profile')
-        data = await getJson(shared.descriptor, `/api/sessions?${flat}`).catch(() => null)
+        data = await fetchPagedSessionList(
+          flat,
+          pageParams => getJson(shared.descriptor, `/api/sessions?${pageParams}`) as Promise<SessionListResponse>
+        ).catch(() => null)
       }
 
       if (data) {
@@ -496,6 +502,21 @@ export async function fetchRemoteProfileSessions(
 
     return (await fetchJsonForProfile(profile, `/api/sessions?${pageParams}`)) as SessionListResponse
   }
+
+  return fetchPagedSessionList(
+    params,
+    pageParams => fetchJsonForProfile(profile, `/api/sessions?${pageParams}`) as Promise<SessionListResponse>
+  )
+}
+
+/** Resolve a complete backend window or reject, never an unmarked partial prefix.
+ * A failed page leaves fallback/retry policy to the caller, as a single read does.
+ * Serial pages preserve ordering and first-page metadata until pinned backfill is joined. */
+async function fetchPagedSessionList(
+  searchParams: URLSearchParams,
+  fetchPage: (params: URLSearchParams) => Promise<SessionListResponse>
+): Promise<SessionListResponse> {
+  const params = new URLSearchParams(searchParams)
 
   const requestedLimit = Number(params.get('limit'))
   const requestedOffset = Number(params.get('offset') || '0')

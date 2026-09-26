@@ -686,6 +686,23 @@ _ADVISORY_INSTRUCTION = (
 )
 
 
+def _is_steer_message(msg: dict[str, Any]) -> bool:
+    """Whether a row is a mid-turn /steer delivery (agent/prompt_builder.steer_user_row).
+
+    Steers are transparent to MoA fan-out decisions: the aggregator (the acting
+    model) already sees the steer directly, so advice synthesized at turn start
+    stays valid and the advisory view must still end on _ADVISORY_INSTRUCTION.
+    display_kind survives only on transcript rows — build_api_messages strips it
+    (PERSISTENCE_ONLY_MESSAGE_FIELDS), so the marker text is the wire-robust signal."""
+    if not isinstance(msg, dict) or msg.get("role") != "user":
+        return False
+    if msg.get("display_kind") == "steer":
+        return True
+    # ponytail: lazy import keeps prompt_builder's heavy chain off moa_loop import.
+    from agent.prompt_builder import STEER_MARKER_OPEN
+    return STEER_MARKER_OPEN in flatten_message_text(msg.get("content"))
+
+
 def _tool_activity_since_last_user(messages: list[dict[str, Any]]) -> bool:
     """Whether the acting model has already called tools since the last real user turn.
     Guidance cached from the start of the turn predates those results, so replaying a
@@ -693,6 +710,8 @@ def _tool_activity_since_last_user(messages: list[dict[str, Any]]) -> bool:
     for msg in reversed(messages):
         role = msg.get("role")
         if role == "user":
+            if _is_steer_message(msg):
+                continue  # steer is aggregator-only guidance, not a new turn
             return False
         if role == "tool" or (role == "assistant" and msg.get("tool_calls")):
             return True
@@ -743,7 +762,9 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         # system and any other role are ignored.
 
     # Anthropic rejects trailing assistant prefill: end on a synthetic user request.
-    if rendered and rendered[-1].get("role") == "assistant":
+    # A trailing steer row is aggregator-only channel plumbing, not an instruction —
+    # advisors must still get the "advise now" prompt (#121342).
+    if rendered and (rendered[-1].get("role") == "assistant" or _is_steer_message(rendered[-1])):
         rendered.append({"role": "user", "content": _ADVISORY_INSTRUCTION})
     if not rendered:
         # Nothing rendered: fall back to the latest user turn.
@@ -1235,10 +1256,13 @@ class MoAChatCompletions:
         sig_messages = turn_prefix = ref_messages
         if fanout_mode == "user_turn" or every_n >= 2:
             # Last REAL user message: the synthetic _ADVISORY_INSTRUCTION marker must not
-            # count or the prefix would grow (and re-sign) every iteration.
+            # count or the prefix would grow (and re-sign) every iteration. Steer rows
+            # are likewise transparent — the aggregator already sees the steer directly,
+            # so a steer must not force a full re-fan-out (#121342).
             last_user = next(
                 (i for i in range(len(ref_messages) - 1, -1, -1)
-                 if ref_messages[i].get("role") == "user" and ref_messages[i].get("content") != _ADVISORY_INSTRUCTION),
+                 if ref_messages[i].get("role") == "user" and ref_messages[i].get("content") != _ADVISORY_INSTRUCTION
+                 and not _is_steer_message(ref_messages[i])),
                 None,
             )
             if last_user is not None:

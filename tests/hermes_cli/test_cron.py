@@ -653,6 +653,35 @@ class TestStatusSurfacesDeadScheduler:
         assert list_out.count("Next run:") == 1  # only the paused job's stamp stays plain
         assert list_out.index("Overdue:") < list_out.index("Next run:")
 
+    def test_retained_occurrence_is_not_reported_as_a_wedged_scheduler(
+        self, tmp_cron_dir, capsys, monkeypatch
+    ):
+        """A job resumed across an elapsed slot keeps a past next_run_at on purpose (#113603);
+        list/status/doctor must say so and must not blame a dead scheduler or invite the
+        re-anchor that silently drops the occurrence (src#902)."""
+        job = create_job(prompt="Daily pipeline", schedule="30 1 * * *", deliver="local")
+        when = datetime.now(timezone.utc) - timedelta(hours=7)
+        self._park_next_run(job["id"], when)
+        jobs = load_jobs()
+        next(j for j in jobs if j["id"] == job["id"])["retained_occurrence"] = when.isoformat()
+        save_jobs(jobs)
+        self._dead_gateway(monkeypatch, tmp_cron_dir / "locks")
+
+        cron_command(Namespace(cron_command="status"))
+        status_out = capsys.readouterr().out
+        cron_command(Namespace(cron_command="list", all=False, json=False))
+        list_out = capsys.readouterr().out
+
+        for out in (status_out, list_out):
+            assert "retained" in out and "catch-up" in out
+            assert "is the scheduler running?" not in out
+
+        assert cron_cli.cron_doctor() == 1
+        doctor_out = capsys.readouterr().out
+        assert "retained when the job was resumed" in doctor_out
+        assert "is the scheduler running?" not in doctor_out
+        assert "do not re-anchor" in doctor_out
+
 
 class TestSlashCronRunSkipped:
     """``/cron run`` on a job whose claim is refused (paused here; a live claim held by another

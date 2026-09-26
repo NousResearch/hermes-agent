@@ -669,6 +669,43 @@ class TestPauseResumeJob:
         assert resume_job(job["id"])["next_run_at"] == slot
         assert job["id"] in {j["id"] for j in get_due_jobs()}
 
+    def test_resume_marks_retained_occurrence_and_clears_when_consumed(
+        self, tmp_cron_dir, monkeypatch
+    ):
+        """The past instant resume keeps due is stamped on the record so the CLI can tell a
+        by-design retained occurrence from a wedged scheduler, and the stamp is dropped once a run
+        consumes the occurrence or a future slot supersedes it (src#902)."""
+        from cron.jobs import mark_job_run, update_job
+
+        now = datetime(2026, 9, 16, 17, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        job = create_job(prompt="daily pipeline", schedule="30 1 * * *", deliver="local")
+        stored = load_jobs()
+        row = next(r for r in stored if r["id"] == job["id"])
+        slot = datetime(2026, 9, 16, 1, 30, 0, tzinfo=timezone.utc).isoformat()
+        row["next_run_at"] = slot
+        save_jobs(stored)
+
+        pause_job(job["id"], reason="ops audit")
+        resumed = resume_job(job["id"])
+        assert resumed["next_run_at"] == slot
+        assert resumed["retained_occurrence"] == slot
+
+        # A resume onto a future slot carries no retained-occurrence marker.
+        ahead = create_job(prompt="daily", schedule="30 1 * * *", deliver="local")
+        pause_job(ahead["id"])
+        assert resume_job(ahead["id"]).get("retained_occurrence") is None
+
+        # An explicit lifecycle rewrite supersedes the retained occurrence.
+        update_job(job["id"], {"enabled": False})
+        assert "retained_occurrence" not in get_job(job["id"])
+
+        # A completed run consumes the occurrence and drops the marker.
+        resume_job(job["id"])
+        assert get_job(job["id"])["retained_occurrence"] == slot
+        mark_job_run(job["id"], success=True)
+        assert "retained_occurrence" not in get_job(job["id"])
+
     def test_resume_recomputes_future_or_missing_slot_from_now(self, tmp_cron_dir, monkeypatch):
         """Control: a paused job whose stored slot is still ahead, or created ``--paused`` with no
         slot, resumes onto the next future occurrence as before."""

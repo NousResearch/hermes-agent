@@ -219,14 +219,23 @@ def _tool_filters(cfg: dict) -> Tuple[Optional[list], Optional[list]]:
 
     An explicit ``include: []`` is a real (block-all) whitelist — the runtime registers nothing
     (tools/mcp_tool_registration.py) — so it must not collapse to "no filter" here (#12865).
+    A scalar string is the single-filter shape ``_normalize_name_filter`` (tools/mcp_tool.py)
+    accepts and the sanctioned ``config set`` writer stores — normalize it to a one-item list
+    instead of dropping it (#93313).
     """
     tools_cfg = cfg.get("tools", {})
     if not isinstance(tools_cfg, dict):
         return None, None
     include, exclude = tools_cfg.get("include"), tools_cfg.get("exclude")
-    return (
-        include if isinstance(include, list) else None,
-        exclude if isinstance(exclude, list) else None)
+
+    def _as_filter_list(value: Any) -> Optional[list]:
+        if isinstance(value, list):
+            return value
+        if isinstance(value, str):
+            return [value]
+        return None
+
+    return _as_filter_list(include), _as_filter_list(exclude)
 
 
 def _save_mcp_server(name: str, server_config: dict) -> bool:
@@ -751,7 +760,10 @@ def cmd_mcp_list(args=None):
         if include is not None:
             tools_str = f"{len(include)} selected"
         elif exclude:
-            tools_str = f"-{len(exclude)} excluded"
+            # Offline list has no served tool list, so this counts configured
+            # patterns, not tools actually blocked — say "patterns" so the
+            # number can't be read as an effect count (#98067).
+            tools_str = f"{len(exclude)} pattern{'s' if len(exclude) != 1 else ''}"
         else:
             tools_str = "all"
 

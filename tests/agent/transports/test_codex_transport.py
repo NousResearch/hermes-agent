@@ -97,15 +97,27 @@ class TestCodexBuildKwargs:
         assert kw["reasoning"]["effort"] == "none"
         assert kw["temperature"] == 0.4
 
-    def test_prompt_cache_options_dropped_from_overrides(self, transport):
-        """``prompt_cache_options`` has no Responses.create() kwarg, so a top-level copy
-        from request_overrides raises TypeError before any request is sent — on the
-        official API, the Codex backend, and custom Responses endpoints alike."""
-        for base_url, is_codex in (
+    @pytest.mark.parametrize(
+        "base_url,is_codex",
+        [
             ("https://api.openai.com/v1", False),
             ("https://chatgpt.com/backend-api/codex", True),
             ("https://responses.example.com/v1", False),
-        ):
+        ],
+    )
+    def test_prompt_cache_options_dropped_from_overrides(
+        self, transport, monkeypatch, caplog, base_url, is_codex
+    ):
+        """``prompt_cache_options`` has no Responses.create() kwarg, so a top-level copy
+        from request_overrides raises TypeError before any request is sent — on the
+        official API, the Codex backend, and custom Responses endpoints alike. The
+        ``extra_body`` escape hatch the warning points to still reaches the wire, and
+        the warning fires once per process rather than every turn."""
+        import agent.transports.codex as codex_mod
+
+        monkeypatch.setattr(codex_mod, "_PROMPT_CACHE_OPTIONS_DROP_WARNED", False)
+        caplog.set_level("WARNING", logger=codex_mod.logger.name)
+        for _ in range(2):
             kw = transport.build_kwargs(
                 model="gpt-6-astra",
                 messages=[{"role": "user", "content": "Hi"}],
@@ -115,10 +127,14 @@ class TestCodexBuildKwargs:
                 request_overrides={
                     "prompt_cache_options": {"ttl": "30m"},
                     "store": True,
+                    "extra_body": {"prompt_cache_options": {"ttl": "30m"}},
                 },
             )
-            assert "prompt_cache_options" not in kw, base_url
+            assert "prompt_cache_options" not in kw
             assert kw["store"] is True
+            assert kw["extra_body"]["prompt_cache_options"] == {"ttl": "30m"}
+        assert caplog.text.count("Dropped prompt_cache_options") == 1
+        assert "extra_body" in caplog.text
 
     def test_900k_context_variant_suffix_stripped_on_wire(self, transport):
         """``-900k`` large-context picker variants are Hermes-side aliases —

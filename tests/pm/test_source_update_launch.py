@@ -23,7 +23,7 @@ from pm.environments import install_state_dir, runtime_facts_path, selected_venv
 from pm import paths
 from pm.lock import Facts
 from pm.package import InstallError
-from tests.pm._fixtures import isolated_python  # noqa: F401
+from tests.pm._fixtures import isolated_python, stage_host_python  # noqa: F401
 
 # Spawns children with a home it builds itself; the parent's must stay real.
 pytestmark = pytest.mark.real_machine_home
@@ -84,9 +84,9 @@ def source_launch(tmp_path, monkeypatch, isolated_python):
     store = paths.store_root()
     entry = store / "python-test"
     store_python = entry / "bin" / "python3"
-    store_python.parent.mkdir(parents=True)
-    # A Nix wrapper resets sys.executable; use the underlying binary instead.
-    store_python.symlink_to(sys._base_executable)
+    # Stage a self-contained interpreter: a symlink outside the PM store
+    # cannot establish ownership of a managed source launcher.
+    stage_host_python(store_python)
     Facts(paths.facts_path()).record(
         "python", "test", entry.name, {"PATH": [str(store_python.parent)]}, store,
         target=current_target(), digest=tree_digest(entry),
@@ -132,8 +132,7 @@ def test_source_python_pin_update_survives_real_gc(source_launch, tmp_path, monk
     # a changed tool pin and a real Facts publication, not a launcher rewrite.
     store = paths.store_root()
     new_python = store / "python-B" / "bin" / "python3"
-    new_python.parent.mkdir(parents=True)
-    new_python.symlink_to(sys._base_executable)
+    stage_host_python(new_python)
     Facts(paths.facts_path()).record(
         "python", "B", "python-B", {"PATH": [str(new_python.parent)]}, store,
         target=current_target(), digest=tree_digest(new_python.parent.parent),

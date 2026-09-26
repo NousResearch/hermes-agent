@@ -1,6 +1,7 @@
 """Command diagnostics use the same selection and launch contract as setup."""
 
 import json
+import os
 from argparse import Namespace
 from pathlib import Path
 import shutil
@@ -59,7 +60,12 @@ def _pm_source(project, home):
     )
     interpreter = home / "tools" / "python-fixture" / "bin" / "python3"
     interpreter.parent.mkdir(parents=True)
-    interpreter.symlink_to(Path(sys._base_executable).resolve())
+    os.link(Path(getattr(sys, "_base_executable", sys.executable)).resolve(), interpreter)
+    stdlib_name = f"python{sys.version_info.major}.{sys.version_info.minor}"
+    (interpreter.parents[1] / "lib").mkdir()
+    (interpreter.parents[1] / "lib" / stdlib_name).symlink_to(
+        Path(sys.base_prefix) / "lib" / stdlib_name, target_is_directory=True,
+    )
     (home / "tools" / "facts.json").write_text(
         json.dumps({"packages": {"python": {"entry": "python-fixture"}}}), encoding="utf-8"
     )
@@ -95,6 +101,11 @@ def test_pm_fix_publishes_a_generation_aware_launcher(tmp_path, monkeypatch, cap
     stale.chmod(0o755)
     if prior == "legacy":
         command.symlink_to(stale)
+        # An unknown interpreter in an old venv is not safe to repin based on
+        # ambient HOME. The owner's explicit runtime binding authorizes repair.
+        (project / "install-stamp.json").write_text(json.dumps({
+            "updateMechanism": "self", "runtimeDir": str(home / "tools"),
+        }), encoding="utf-8")
 
     doctor.run_doctor(Namespace(fix=True))
 

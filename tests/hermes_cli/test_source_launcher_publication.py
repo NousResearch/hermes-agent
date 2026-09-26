@@ -13,6 +13,21 @@ from hermes_cli import _launchers
 from pm.environments import install_state_dir, site_packages
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _link_fixture_python(interpreter: Path, selected: Path) -> None:
+    """Model a store package with a real executable and discoverable stdlib."""
+    selected.parent.mkdir(parents=True, exist_ok=True)
+    os.link(interpreter, selected)
+    if os.name != "nt":
+        package = selected.parents[1]
+        stdlib_name = f"python{sys.version_info.major}.{sys.version_info.minor}"
+        lib = package / "lib"
+        lib.mkdir(exist_ok=True)
+        (lib / stdlib_name).symlink_to(Path(sys.base_prefix) / "lib" / stdlib_name,
+                                       target_is_directory=True)
+
+
 BOOT_FILES = (
     "hermes_bootstrap.py", "hermes_constants.py", "hermes_cli/__init__.py", "hermes_cli/_launchers.py",
     "pm/environments.py", "pm/filesystem.py", "pm/paths.py", "hermes_cli/runtime_state.py",
@@ -52,8 +67,12 @@ def fixture_tree(tmp_path, monkeypatch):
     store = home / "tools"
     store.mkdir(parents=True)
     interpreter = Path(sys._base_executable).resolve()
+    package = store / "python-fixture"
+    selected = package / ("python.exe" if os.name == "nt" else "bin/python3")
+    selected.parent.mkdir(parents=True)
+    _link_fixture_python(interpreter, selected)
     (store / "facts.json").write_text(json.dumps({"schema": 1, "packages": {"python": {
-        "version": "fixture", "entry": str(interpreter.parent if os.name == "nt" else interpreter.parents[1])
+        "version": "fixture", "entry": "python-fixture"
     }}}), encoding="utf-8")
     return repo, home, interpreter
 
@@ -126,6 +145,494 @@ def test_launcher_resolves_default_home_at_use_not_publication(tmp_path, monkeyp
     assert json.loads(result.stdout)["home"] == str(new_user_home / ".hermes")
     assert json.loads(result.stdout)["value"] == "from-second-user"
     assert published_home != new_user_home / ".hermes"
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("foreign_selection", ["runtime-override", "ambient-home"])
+def test_installed_launcher_refuses_foreign_store_python(tmp_path, monkeypatch, foreign_selection):
+    """An isolated test process may load live source, but not replace its boot pointer."""
+    repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    (repo / ".git").mkdir()  # an installed source checkout, not a sealed payload
+    (repo / "install-stamp.json").write_text(json.dumps({
+        "updateMechanism": "self",
+    }), encoding="utf-8")
+
+    def select_store(store: Path, version: str) -> Path:
+        selected = store / f"python-{version}" / "bin" / "python3"
+        selected.parent.mkdir(parents=True)
+        _link_fixture_python(interpreter, selected)
+        (store / "facts.json").write_text(json.dumps({
+            "packages": {"python": {"entry": f"python-{version}"}},
+        }), encoding="utf-8")
+        return selected
+
+    permanent = select_store(home / "tools", "permanent")
+    local = repo / ".hermes" / "bin"
+    assert _launchers.ensure_install_launchers(repo, local)
+    launcher = local / "hermes"
+    original = launcher.read_bytes()
+    assert str(permanent).encode() in original
+
+    scratch_home = tmp_path / "disposable" / ".hermes"
+    scratch = select_store(scratch_home / "tools", "temporary")
+    if foreign_selection == "runtime-override":
+        monkeypatch.setenv("HERMES_RUNTIME_DIR", str(scratch.parents[2]))
+    else:
+        monkeypatch.setenv("HOME", str(scratch_home.parent))
+        monkeypatch.setenv("HERMES_HOME", str(scratch_home))
+    assert _launchers.resolve_store_python(repo) == scratch
+
+    with pytest.raises(RuntimeError, match="runtime"):
+        _launchers.ensure_install_launchers(repo, local)
+    assert launcher.read_bytes() == original
+
+    from hermes_cli.venv_sync import publish_launchers
+
+    with pytest.raises(RuntimeError, match="runtime"):
+        publish_launchers(repo)
+    assert launcher.read_bytes() == original
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("target", ["user-bin", "missing-sibling"])
+def test_direct_stage_checks_checkout_owner_even_when_destination_is_missing(tmp_path, monkeypatch, target):
+    repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    (repo / "install-stamp.json").write_text(json.dumps({
+        "updateMechanism": "self",
+    }), encoding="utf-8")
+    stable = home / "tools" / "python-stable" / "bin" / "python3"
+    stable.parent.mkdir(parents=True)
+    _link_fixture_python(interpreter, stable)
+    (home / "tools" / "facts.json").write_text(json.dumps({
+        "packages": {"python": {"entry": "python-stable"}},
+    }), encoding="utf-8")
+    local = repo / ".hermes" / "bin"
+    local.mkdir(parents=True)
+    assert _launchers.stage_launcher("hermes", repo, local)
+    original = (local / "hermes").read_bytes()
+    foreign = tmp_path / "scratch" / "tools"
+    python = foreign / "python-transient" / "bin" / "python3"
+    python.parent.mkdir(parents=True)
+    _link_fixture_python(interpreter, python)
+    (foreign / "facts.json").write_text(json.dumps({
+        "packages": {"python": {"entry": "python-transient"}},
+    }), encoding="utf-8")
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(foreign))
+    out = tmp_path / "user-bin" if target == "user-bin" else local
+    out.mkdir(exist_ok=True)
+    name = "hermes" if target == "user-bin" else "hermes-acp"
+    with pytest.raises(RuntimeError, match="runtime"):
+        _launchers.stage_launcher(name, repo, out)
+    assert not (out / name).exists()
+    assert (local / "hermes").read_bytes() == original
+
+
+@pytest.mark.platforms("posix")
+def test_direct_stage_does_not_replace_unrelated_user_command(tmp_path, monkeypatch):
+    repo, home, _ = fixture_tree(tmp_path, monkeypatch)
+    (repo / "install-stamp.json").write_text(json.dumps({"updateMechanism": "self"}))
+    out = tmp_path / "user-bin"
+    out.mkdir()
+    foreign = out / "hermes"
+    foreign.write_text("#!/bin/sh\nexit 12\n", encoding="utf-8")
+    original = foreign.read_bytes()
+    with pytest.raises(RuntimeError, match="runtime"):
+        _launchers.stage_launcher("hermes", repo, out)
+    assert foreign.read_bytes() == original
+
+
+@pytest.mark.platforms("posix")
+def test_direct_stage_consults_surviving_acp_owner(tmp_path, monkeypatch):
+    repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    (repo / "install-stamp.json").write_text(json.dumps({"updateMechanism": "self"}))
+    local = repo / ".hermes" / "bin"
+    local.mkdir(parents=True)
+    assert _launchers.stage_launcher("hermes-acp", repo, local)
+    original = (local / "hermes-acp").read_bytes()
+    scratch = tmp_path / "scratch" / "tools"
+    python = scratch / "python-temporary" / "bin" / "python3"
+    _link_fixture_python(interpreter, python)
+    (scratch / "facts.json").write_text(json.dumps({
+        "packages": {"python": {"entry": "python-temporary"}},
+    }))
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(scratch))
+    with pytest.raises(RuntimeError, match="runtime"):
+        _launchers.stage_launcher("hermes", repo, local)
+    assert not (local / "hermes").exists()
+    assert (local / "hermes-acp").read_bytes() == original
+
+
+@pytest.mark.platforms("posix")
+def test_existing_user_bin_owner_blocks_canonical_publication(tmp_path, monkeypatch):
+    repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    (repo / "install-stamp.json").write_text(json.dumps({"updateMechanism": "self"}))
+    out = tmp_path / "user-bin"
+    out.mkdir()
+    assert _launchers.stage_launcher("hermes", repo, out)
+    original = (out / "hermes").read_bytes()
+    scratch = tmp_path / "scratch" / "tools"
+    python = scratch / "python-temporary" / "bin" / "python3"
+    _link_fixture_python(interpreter, python)
+    (scratch / "facts.json").write_text(json.dumps({
+        "packages": {"python": {"entry": "python-temporary"}},
+    }))
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(scratch))
+    with pytest.raises(RuntimeError, match="runtime"):
+        _launchers.ensure_install_launchers(repo, out)
+    assert not (repo / ".hermes" / "bin" / "hermes").exists()
+    assert (out / "hermes").read_bytes() == original
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("stamp_contents", [None, {"updateMechanism": "manual"}])
+def test_legacy_unstamped_managed_launcher_refuses_foreign_runtime(tmp_path, monkeypatch, stamp_contents):
+    repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    if stamp_contents is not None:
+        (repo / "install-stamp.json").write_text(json.dumps(stamp_contents), encoding="utf-8")
+    permanent = home / "tools" / "python-permanent" / "bin" / "python3"
+    permanent.parent.mkdir(parents=True)
+    _link_fixture_python(interpreter, permanent)
+    (home / "tools" / "facts.json").write_text(json.dumps({
+        "packages": {"python": {"entry": "python-permanent"}},
+    }), encoding="utf-8")
+    local = repo / ".hermes" / "bin"
+    assert _launchers.ensure_install_launchers(repo, local)
+    launcher = local / "hermes"
+    original = launcher.read_bytes()
+
+    scratch = tmp_path / "scratch" / "tools"
+    transient = scratch / "python-temporary" / "bin" / "python3"
+    transient.parent.mkdir(parents=True)
+    _link_fixture_python(interpreter, transient)
+    (scratch / "facts.json").write_text(json.dumps({
+        "packages": {"python": {"entry": "python-temporary"}},
+    }), encoding="utf-8")
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(scratch))
+    with pytest.raises(RuntimeError, match="runtime"):
+        _launchers.ensure_install_launchers(repo, local)
+    assert launcher.read_bytes() == original
+
+
+def test_windows_cmd_install_launcher_refuses_foreign_runtime(tmp_path, monkeypatch):
+    """The cmd fallback has the same ownership boundary as the shell wrapper."""
+    repo, home, _interpreter = fixture_tree(tmp_path, monkeypatch)
+    (repo / "install-stamp.json").write_text(json.dumps({
+        "updateMechanism": "self",
+    }), encoding="utf-8")
+    monkeypatch.setattr(_launchers, "_is_windows", lambda: True)
+    monkeypatch.setattr(_launchers, "_load_script_maker", lambda: None)
+
+    def select_store(store: Path, version: str) -> Path:
+        selected = store / f"python-{version}" / "python.exe"
+        selected.parent.mkdir(parents=True)
+        selected.write_bytes(b"MZ")
+        (store / "facts.json").write_text(json.dumps({
+            "packages": {"python": {"entry": f"python-{version}"}},
+        }), encoding="utf-8")
+        return selected
+
+    permanent = select_store(home / "tools", "permanent")
+    local = repo / ".hermes" / "bin"
+    assert _launchers.ensure_install_launchers(repo, local)
+    launcher = local / "hermes.cmd"
+    original = launcher.read_bytes()
+    assert str(permanent).encode() in original
+    scratch = select_store(tmp_path / "scratch" / "tools", "temporary")
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(scratch.parents[1]))
+    assert _launchers.resolve_store_python(repo) == scratch
+
+    with pytest.raises(RuntimeError, match="runtime"):
+        _launchers.ensure_install_launchers(repo, local)
+    assert launcher.read_bytes() == original
+
+
+def test_native_windows_install_launcher_refuses_foreign_runtime(tmp_path, monkeypatch):
+    """The native distlib launcher embeds the installed Python in its shebang."""
+    from zipfile import ZipFile
+
+    repo, home, _ = fixture_tree(tmp_path, monkeypatch)
+    (repo / "install-stamp.json").write_text(json.dumps({
+        "updateMechanism": "self",
+    }), encoding="utf-8")
+    previous = home / "tools" / "python-#! permanent" / "python.exe"
+    previous.parent.mkdir(parents=True)
+    previous.write_bytes(b"MZ")
+    native = repo / ".hermes" / "bin" / "hermes.exe"
+    native.parent.mkdir(parents=True)
+    native.write_bytes(b'MZ\x00#!"' + str(previous).encode() + b'" -I\n')
+    with ZipFile(native, "a") as archive:
+        archive.writestr("__main__.py", _launchers._launcher_script("hermes", repo, None))
+    original = native.read_bytes()
+    assert _launchers._published_store_root(native, repo) == home / "tools"
+    _launchers._guard_launcher_runtime(repo, native, home / "tools")
+
+    with pytest.raises(RuntimeError, match="runtime"):
+        _launchers._guard_launcher_runtime(repo, native, tmp_path / "scratch" / "tools")
+    assert native.read_bytes() == original
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("invalid_entry", ["absolute", "parent_escape", "symlink_package",
+                                           "symlink_interpreter", "non_executable"])
+def test_pinned_launcher_refuses_untrusted_recorded_interpreter(tmp_path, monkeypatch, invalid_entry):
+    repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    store = home / "tools"
+    (repo / "install-stamp.json").write_text(json.dumps({
+        "updateMechanism": "self", "runtimeDir": str(store),
+    }), encoding="utf-8")
+    good = store / "python-good" / "bin" / "python3"
+    good.parent.mkdir(parents=True)
+    _link_fixture_python(interpreter, good)
+    (store / "facts.json").write_text(json.dumps({
+        "packages": {"python": {"entry": "python-good"}},
+    }), encoding="utf-8")
+    local = repo / ".hermes" / "bin"
+    assert _launchers.ensure_install_launchers(repo, local)
+    launcher = local / "hermes"
+    original = launcher.read_bytes()
+
+    foreign = tmp_path / "throwaway" / "python-bad"
+    (foreign / "bin").mkdir(parents=True)
+    (foreign / "bin" / "python3").symlink_to(interpreter)
+    if invalid_entry == "absolute":
+        entry = str(foreign)
+    elif invalid_entry == "parent_escape":
+        entry = os.path.relpath(foreign, store)
+    elif invalid_entry == "symlink_package":
+        entry = "python-escaped"
+        (store / entry).symlink_to(foreign, target_is_directory=True)
+    elif invalid_entry == "symlink_interpreter":
+        entry = "python-escaped"
+        bad = store / entry / "bin" / "python3"
+        bad.parent.mkdir(parents=True)
+        bad.symlink_to(foreign / "bin" / "python3")
+    else:
+        entry = "python-unexecutable"
+        bad = store / entry / "bin" / "python3"
+        bad.parent.mkdir(parents=True)
+        bad.write_bytes(b"not an executable")
+        bad.chmod(0o644)
+    (store / "facts.json").write_text(json.dumps({
+        "packages": {"python": {"entry": entry}},
+    }), encoding="utf-8")
+    assert _launchers.resolve_store_python(repo) is None
+    assert _launchers.ensure_install_launchers(repo, local) == []
+    assert launcher.read_bytes() == original
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("wrapper", ["unknown", "symlink"])
+def test_self_install_refuses_unrecognized_existing_launcher(tmp_path, monkeypatch, wrapper):
+    repo, home, _ = fixture_tree(tmp_path, monkeypatch)
+    (repo / "install-stamp.json").write_text(json.dumps({
+        "updateMechanism": "self",
+    }), encoding="utf-8")
+    local = repo / ".hermes" / "bin"
+    local.mkdir(parents=True)
+    launcher = local / "hermes"
+    if wrapper == "symlink":
+        launcher.symlink_to(repo / "venv" / "bin" / "hermes")
+    else:
+        launcher.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    original = launcher.readlink() if wrapper == "symlink" else launcher.read_bytes()
+
+    with pytest.raises(RuntimeError, match="runtime"):
+        _launchers.ensure_install_launchers(repo, local)
+    assert (launcher.readlink() if wrapper == "symlink" else launcher.read_bytes()) == original
+    assert not (local / "hermes-acp").exists()
+
+
+@pytest.mark.platforms("posix")
+def test_pinned_install_accepts_equivalent_runtime_directory_alias(tmp_path, monkeypatch):
+    repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    store = home / "tools"
+    alias = tmp_path / "runtime-link"
+    alias.symlink_to(store, target_is_directory=True)
+    (repo / "install-stamp.json").write_text(json.dumps({
+        "updateMechanism": "self", "runtimeDir": str(alias),
+    }), encoding="utf-8")
+    selected = store / "python-first" / "bin" / "python3"
+    selected.parent.mkdir(parents=True)
+    _link_fixture_python(interpreter, selected)
+    (store / "facts.json").write_text(json.dumps({
+        "packages": {"python": {"entry": "python-first"}},
+    }), encoding="utf-8")
+
+    assert _launchers.ensure_install_launchers(repo, repo / ".hermes" / "bin")
+
+
+@pytest.mark.platforms("posix")
+def test_install_launcher_can_repin_python_within_owned_runtime(tmp_path, monkeypatch):
+    repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    (repo / "install-stamp.json").write_text(json.dumps({
+        "updateMechanism": "self", "runtimeDir": str(home / "tools"),
+    }), encoding="utf-8")
+    store = home / "tools"
+    local = repo / ".hermes" / "bin"
+    for version in ("first", "second"):
+        python = store / f"python-{version}" / "bin" / "python3"
+        python.parent.mkdir(parents=True)
+        _link_fixture_python(interpreter, python)
+        (store / "facts.json").write_text(json.dumps({
+            "packages": {"python": {"entry": f"python-{version}"}},
+        }), encoding="utf-8")
+        assert _launchers.ensure_install_launchers(repo, local)
+        assert str(python).encode() in (local / "hermes").read_bytes()
+
+
+@pytest.mark.platforms("posix")
+def test_explicit_binding_adopts_unstamped_legacy_source_launcher(tmp_path, monkeypatch):
+    repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    (repo / ".git").mkdir()
+    local = repo / ".hermes" / "bin"
+    local.mkdir(parents=True)
+    launcher = local / "hermes"
+    old = f'#!/bin/sh\nexec "{repo}/venv/bin/python" "{repo}/hermes" "$@"\n'
+    launcher.write_text(old, encoding="utf-8")
+    store = home / "tools"
+    python = store / "python-fixture" / "bin" / "python3"
+    with pytest.raises(RuntimeError, match="runtime"):
+        _launchers.ensure_install_launchers(repo, local)
+    assert launcher.read_text(encoding="utf-8") == old
+
+    script = repo / "hermes_cli" / "_launchers.py"
+    result = subprocess.run([sys.executable, "-I", str(script), "--bind-runtime", str(store)],
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert launcher.read_text(encoding="utf-8") == old
+    assert json.loads((repo / "install-stamp.json").read_text())["runtimeDir"] == str(store)
+    assert _launchers.ensure_install_launchers(repo, local)
+    assert str(python).encode() in launcher.read_bytes()
+
+
+@pytest.mark.platforms("posix")
+def test_explicit_runtime_binding_migrates_legacy_source_launcher(tmp_path, monkeypatch):
+    """An old venv-based source install needs a deliberate, validated store bind."""
+    repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    (repo / ".git").mkdir()
+    stamp = repo / "install-stamp.json"
+    stamp.write_text(json.dumps({"updateMechanism": "self"}), encoding="utf-8")
+    local = repo / ".hermes" / "bin"
+    local.mkdir(parents=True)
+    launcher = local / "hermes"
+    old = f'#!/bin/sh\nexec "{repo}/venv/bin/python" "{repo}/hermes" "$@"\n'
+    launcher.write_text(old, encoding="utf-8")
+    store = home / "tools"
+    managed_python = store / "python-migrated" / "bin" / "python3"
+    managed_python.parent.mkdir(parents=True)
+    _link_fixture_python(interpreter, managed_python)
+    (store / "facts.json").write_text(json.dumps({
+        "packages": {"python": {"entry": "python-migrated"}},
+    }), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="runtime"):
+        _launchers.ensure_install_launchers(repo, local)
+    assert launcher.read_text() == old
+    command = [sys.executable, "-I", str(repo / "hermes_cli" / "_launchers.py"),
+               "--bind-runtime", str(store)]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(stamp.read_text())["runtimeDir"] == str(store)
+    assert launcher.read_text() == old  # binding is a separate, atomic step
+    result = subprocess.run(
+        [sys.executable, "-I", str(repo / "hermes_cli" / "_launchers.py"), str(local)],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert str(managed_python).encode() in launcher.read_bytes()
+
+
+@pytest.mark.platforms("posix")
+def test_explicit_runtime_binding_rejects_invalid_store_without_replacing_launcher(tmp_path, monkeypatch):
+    repo, home, _ = fixture_tree(tmp_path, monkeypatch)
+    (repo / ".git").mkdir()
+    stamp = repo / "install-stamp.json"
+    stamp.write_text(json.dumps({"updateMechanism": "self"}), encoding="utf-8")
+    original_stamp = stamp.read_bytes()
+    local = repo / ".hermes" / "bin"
+    local.mkdir(parents=True)
+    launcher = local / "hermes"
+    launcher.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    original_launcher = launcher.read_bytes()
+    invalid_store = tmp_path / "foreign-store"
+    invalid_store.mkdir()
+    (invalid_store / "facts.json").write_text('[]', encoding="utf-8")
+
+    result = subprocess.run(
+        [sys.executable, "-I", str(repo / "hermes_cli" / "_launchers.py"),
+         "--bind-runtime", str(invalid_store)],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode != 0
+    assert "runtime binding refused" in result.stderr
+    assert stamp.read_bytes() == original_stamp
+    assert launcher.read_bytes() == original_launcher
+
+
+@pytest.mark.platforms("posix")
+def test_explicit_binding_rejects_nonexecutable_python_without_changing_stamp(tmp_path, monkeypatch):
+    repo, home, _ = fixture_tree(tmp_path, monkeypatch)
+    (repo / ".git").mkdir()
+    stamp = repo / "install-stamp.json"
+    stamp.write_text(json.dumps({"updateMechanism": "self"}), encoding="utf-8")
+    original = stamp.read_bytes()
+    store = home / "tools"
+    python = store / "python-inert" / "bin" / "python3"
+    python.parent.mkdir(parents=True)
+    python.write_text("not executable", encoding="utf-8")
+    python.chmod(0o644)
+    (store / "facts.json").write_text(json.dumps({
+        "packages": {"python": {"entry": "python-inert"}},
+    }), encoding="utf-8")
+
+    result = subprocess.run(
+        [sys.executable, "-I", str(repo / "hermes_cli" / "_launchers.py"),
+         "--bind-runtime", str(store)],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode != 0
+    assert "runtime binding refused" in result.stderr
+    assert stamp.read_bytes() == original
+
+
+@pytest.mark.platforms("posix")
+def test_explicit_rebind_is_retriable_after_partial_launcher_publication(tmp_path, monkeypatch):
+    repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    (repo / ".git").mkdir()
+    old_store = home / "tools"
+    stamp = repo / "install-stamp.json"
+    stamp.write_text(json.dumps({
+        "updateMechanism": "self", "runtimeDir": str(old_store),
+    }), encoding="utf-8")
+
+    def record_python(store: Path, version: str) -> Path:
+        python = store / f"python-{version}" / "bin" / "python3"
+        python.parent.mkdir(parents=True)
+        _link_fixture_python(interpreter, python)
+        (store / "facts.json").write_text(json.dumps({
+            "packages": {"python": {"entry": f"python-{version}"}},
+        }), encoding="utf-8")
+        return python
+
+    old_python = record_python(old_store, "old")
+    local = repo / ".hermes" / "bin"
+    assert _launchers.ensure_install_launchers(repo, local)
+    original = (local / "hermes").read_bytes()
+    assert str(old_python).encode() in original
+    next_store = tmp_path / "next-store"
+    next_python = record_python(next_store, "next")
+    assert _launchers.bind_source_runtime(repo, next_store) == next_store
+    assert (local / "hermes").read_bytes() == original
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(next_store))
+    acp = local / "hermes-acp"
+    acp.unlink()
+    acp.mkdir()  # One launcher cannot be published, after hermes was refreshed.
+    assert len(_launchers.ensure_install_launchers(repo, local)) == 1
+    assert json.loads(stamp.read_text())["runtimeDir"] == str(next_store)
+    acp.rmdir()
+    assert len(_launchers.ensure_install_launchers(repo, local)) == 2
+    assert str(next_python).encode() in (local / "hermes").read_bytes()
+    assert str(next_python).encode() in acp.read_bytes()
 
 
 @pytest.mark.parametrize("publisher", [
@@ -238,8 +745,11 @@ def test_materializer_cli_refuses_missing_store_without_publishing(tmp_path, mon
 
 
 @pytest.mark.platforms("posix")
-def test_boot_migrates_legacy_conveniences_to_selected_runtime(tmp_path, monkeypatch):
+def test_boot_migrates_legacy_conveniences_with_explicit_binding(tmp_path, monkeypatch):
     repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    (repo / "install-stamp.json").write_text(json.dumps({
+        "updateMechanism": "self", "runtimeDir": str(home / "tools"),
+    }), encoding="utf-8")
     monkeypatch.setattr(Path, "home", lambda: home)
     monkeypatch.setenv("HERMES_INSTALL_ROOT", str(repo))
     select_generation(repo, 'current', 'migrated')
@@ -468,7 +978,7 @@ def test_service_survives_python_tool_replacement(tmp_path, monkeypatch):
     for version in ("python-A", "python-B"):
         python = store / version / "bin" / "python3"
         python.parent.mkdir(parents=True)
-        python.symlink_to(interpreter)
+        _link_fixture_python(interpreter, python)
         (store / "facts.json").write_text(json.dumps({"packages": {"python": {"entry": version}}}), encoding="utf-8")
         gateway._prepare_service_launcher()
         if version == "python-A":
@@ -505,7 +1015,7 @@ def test_sync_migrates_old_store_wrapper_before_python_collection(tmp_path, monk
     for version in ("python-A", "python-B"):
         python = store / version / "bin/python3"
         python.parent.mkdir(parents=True)
-        python.symlink_to(interpreter)
+        _link_fixture_python(interpreter, python)
         (store / "facts.json").write_text(json.dumps({"schema": 1, "packages": {"python": {"entry": version}}}), encoding="utf-8")
         if version == "python-A":
             _launchers.mint_launcher("hermes", repo, out, python, None)

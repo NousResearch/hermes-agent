@@ -603,17 +603,56 @@ class QQAdapter(BasePlatformAdapter):
 
         The interval is set from the Hello (op 10) event's heartbeat_interval.
         QQ's default is ~41s; we send at 80% of the interval to stay safe.
+
+        Also acts as a connection liveness watchdog: if the heartbeat send
+        fails or the socket is detected closed, we tear down the WebSocket so
+        the read loop exits and the reconnect supervisor can take over.
+        Previously a silent disconnect (FIN received but close frame not
+        propagated to aiohttp) could leave this loop spinning forever with
+        no reconnect — the bot appeared "online" in logs but stopped
+        receiving events (manifests as "灵魂不在线" in QQ clients).
         """
         try:
+            consecutive_failures = 0
             while self._running:
                 await asyncio.sleep(self._heartbeat_interval)
                 if not self._ws or self._ws.closed:
+                    # Socket already known closed; let read loop / supervisor
+                    # handle reconnect. We back off to avoid tight loops.
+                    consecutive_failures += 1
+                    if consecutive_failures >= 3:
+                        logger.warning(
+                            "[%s] Heartbeat: socket reported closed for %d cycles, "
+                            "forcing teardown to trigger reconnect",
+                            self._log_tag,
+                            consecutive_failures,
+                        )
+                        if self._ws and not self._ws.closed:
+                            try:
+                                await self._ws.close()
+                            except Exception:
+                                pass
+                        consecutive_failures = 0
                     continue
                 try:
                     # d should be the latest sequence number received, or null
                     await self._ws.send_json({"op": 1, "d": self._last_seq})
+                    consecutive_failures = 0
                 except Exception as exc:
-                    logger.debug("[%s] Heartbeat failed: %s", self._log_tag, exc)
+                    consecutive_failures += 1
+                    logger.warning(
+                        "[%s] Heartbeat failed (%d): %s",
+                        self._log_tag,
+                        consecutive_failures,
+                        exc,
+                    )
+                    # After 2 consecutive failures, treat as dead socket and
+                    # close it so the read loop exits and reconnect kicks in.
+                    if consecutive_failures >= 2 and self._ws and not self._ws.closed:
+                        try:
+                            await self._ws.close()
+                        except Exception:
+                            pass
         except asyncio.CancelledError:
             pass
 

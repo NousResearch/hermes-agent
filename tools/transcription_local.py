@@ -37,8 +37,50 @@ def _get_local_command_template() -> Optional[str]:
             "--output_dir {output_dir} --language {language}") if whisper_binary else None
 
 
+# Usability probes for the auto-discovered `whisper` CLI, keyed by binary path. A CLI that
+# cannot even print help (openai-whisper without torch on an interpreter with no wheel —
+# e.g. Intel macOS, where torch/onnxruntime ship no wheels at all) must not count as a
+# backend: resolution would otherwise commit every voice message to it and fail opaquely
+# instead of falling through to a working backend.
+# ponytail: per-path cache with no mtime invalidation; re-probe (or key on mtime) if mid-process binary swaps matter.
+_LOCAL_COMMAND_PROBE_CACHE: Dict[str, bool] = {}
+_LOCAL_COMMAND_PROBE_TIMEOUT_SECONDS = 15
+
+
+def _reset_local_command_probe_cache() -> None:
+    """Test hook: drop cached whisper-CLI usability probes."""
+    _LOCAL_COMMAND_PROBE_CACHE.clear()
+
+
+def _whisper_binary_usable(binary: str) -> bool:
+    """True when the discovered `whisper` CLI starts (``--help`` exits 0)."""
+    cached = _LOCAL_COMMAND_PROBE_CACHE.get(binary)
+    if cached is not None:
+        return cached
+    try:
+        proc = subprocess.run(
+            [binary, "--help"], capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=_LOCAL_COMMAND_PROBE_TIMEOUT_SECONDS,
+            stdin=subprocess.DEVNULL)
+        usable = proc.returncode == 0
+    except Exception:
+        usable = False
+    _LOCAL_COMMAND_PROBE_CACHE[binary] = usable
+    if not usable:
+        logger.warning(
+            "Ignoring unusable local whisper CLI at %s (it failed to run; e.g. openai-whisper "
+            "without torch). Set %s to a working command or configure a cloud STT provider.",
+            binary, LOCAL_STT_COMMAND_ENV)
+    return usable
+
+
 def _has_local_command() -> bool:
-    return _get_local_command_template() is not None
+    # An explicitly configured template is the user's choice and is used as-is; only the
+    # auto-discovered `whisper` binary is probed.
+    if os.getenv(LOCAL_STT_COMMAND_ENV, "").strip():
+        return True
+    whisper_binary = _find_whisper_binary()
+    return whisper_binary is not None and _whisper_binary_usable(whisper_binary)
 
 
 def _normalize_local_model(model_name: Optional[str]) -> str:

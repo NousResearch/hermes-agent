@@ -358,11 +358,34 @@ class WeComAdapter(BasePlatformAdapter):
                 raise RuntimeError("WeCom websocket closed")
 
     async def _heartbeat_loop(self) -> None:
-        """Send lightweight application-level pings."""
+        """Send lightweight application-level pings.
+
+        Also acts as a connection liveness watchdog: if the heartbeat send
+        fails or the socket is detected closed, we tear down the WebSocket so
+        the read loop exits and the reconnect supervisor can take over.
+        Mirrors the QQ Bot fix in #123215 — without this, a silent
+        disconnect (FIN received but close frame not propagated to aiohttp)
+        leaves the bot appearing online but stops receiving events.
+        """
         try:
+            consecutive_failures = 0
             while self._running:
                 await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
                 if not self._ws or self._ws.closed:
+                    consecutive_failures += 1
+                    if consecutive_failures >= 3:
+                        logger.warning(
+                            "[%s] Heartbeat: socket reported closed for %d cycles, "
+                            "forcing teardown to trigger reconnect",
+                            self.name,
+                            consecutive_failures,
+                        )
+                        if self._ws and not self._ws.closed:
+                            try:
+                                await self._ws.close()
+                            except Exception:
+                                pass
+                        consecutive_failures = 0
                     continue
                 try:
                     await self._send_json(
@@ -372,8 +395,20 @@ class WeComAdapter(BasePlatformAdapter):
                             "body": {},
                         }
                     )
+                    consecutive_failures = 0
                 except Exception as exc:
-                    logger.debug("[%s] Heartbeat send failed: %s", self.name, exc)
+                    consecutive_failures += 1
+                    logger.warning(
+                        "[%s] Heartbeat send failed (%d): %s",
+                        self.name,
+                        consecutive_failures,
+                        exc,
+                    )
+                    if consecutive_failures >= 2 and self._ws and not self._ws.closed:
+                        try:
+                            await self._ws.close()
+                        except Exception:
+                            pass
         except asyncio.CancelledError:
             pass
 

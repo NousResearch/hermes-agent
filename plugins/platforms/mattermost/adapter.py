@@ -48,6 +48,27 @@ _POST_WITH_FILE_ERROR = "Failed to post with file"
 _MEDIA_MSG_TYPES = (("image/", MessageType.PHOTO), ("audio/", MessageType.VOICE))  # first match wins
 _INBOUND_CACHE_EXT = {"image/": ".png", "audio/": ".ogg"}  # mime prefix → default extension for cached media
 
+# ── Approval UX (sloth 2026-09-26) ──────────────────────────────────────────
+# Reaction-driven approval: the bot seeds its own approval card with three
+# reactions (✅ / ♾️ / 🚫). Any non-bot user tapping one resolves the pending
+# approval. Slash-free text matching for ``approve``/``deny``/``yes``/``no``
+# was tried first and removed 2026-09-26: bare text in chat is too ambiguous
+# and the slash form (``/approve`` or ``<space>/approve`` to bypass the
+# Mattermost slash-router) is reliable, so we stick with that.
+# Reaction → choice map for B-side approval (matrix-style; user picks on the
+# bot's own message). ♾️ maps to ``session`` per teohz's preference (matrix
+# uses 🌀 for session and ♾️ for always — diverged on purpose).
+_REACTION_TO_CHOICE = {
+    "white_check_mark": "once",
+    "infinity": "session",
+    "no_entry_sign": "deny",
+}
+_REACTION_LABEL = {"once": "✅ Approved once", "session": "🌀 Approved for session",
+                   "deny": "❌ Denied"}
+# Bounded so a stuck adapter doesn't grow the registry forever; one entry per
+# outstanding approval card. 64 is generous — the runner also bounds it.
+_APPROVAL_PROMPTS_MAX = 64
+
 
 def _with_mentions_disabled(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Return a post payload that prevents Mattermost from firing mentions."""
@@ -122,6 +143,12 @@ class MattermostAdapter(BasePlatformAdapter):
         self._last_post_status: Optional[int] = None  # POST-only, read by the broken-thread-root fallback
         self._last_post_error: str = ""
         self._dedup = MessageDeduplicator()
+        # Approval UX: post_id → {session_key, requester_user_id, choices, post_message_id}.
+        # Bounded dict — the runner's wait also caps outstanding approvals, so this is the
+        # adapter-side mirror; one entry per outstanding card.
+        self._approval_prompts_by_event: Dict[str, Dict[str, Any]] = {}
+        # Double-click guard: same post_id is resolved once; second tap is a no-op.
+        self._approval_resolved: Dict[str, bool] = {}
 
     # --- HTTP helpers ---
 
@@ -548,7 +575,13 @@ class MattermostAdapter(BasePlatformAdapter):
         return media_urls, media_types
 
     async def _handle_ws_event(self, event: Dict[str, Any]) -> None:
-        if event.get("event") != "posted":
+        event_type = event.get("event")
+        # Reactions arrive as a separate WS event; handle them BEFORE the
+        # ``posted`` filter so we don't need to fake a post payload.
+        if event_type == "reaction_added":
+            await self._handle_approval_reaction(event.get("data", {}))
+            return
+        if event_type != "posted":
             return
         data = event.get("data", {})
         try:
@@ -572,22 +605,201 @@ class MattermostAdapter(BasePlatformAdapter):
         if message_text[:1].isspace() and message_text.lstrip().startswith("/"):
             message_text = message_text.lstrip()
         media_urls, media_types = await self._download_attachments(post.get("file_ids") or [])
-        if message_text.startswith("/"):
-            msg_type = MessageType.COMMAND
-        elif media_types:
-            msg_type = next((mt for prefix, mt in _MEDIA_MSG_TYPES if any(m.startswith(prefix) for m in media_types)),
-                            MessageType.DOCUMENT)
-        else:
-            msg_type = MessageType.TEXT
         source = self.build_source(
             chat_id=channel_id, chat_type=_CHANNEL_TYPE_MAP.get(data.get("channel_type", "O"), "channel"),
             user_id=sender_id, user_name=data.get("sender_name", "").lstrip("@") or sender_id,
             thread_id=thread_id, message_id=post_id)
         from gateway.platforms.base import resolve_channel_prompt
         await self.handle_message(MessageEvent(
-            text=message_text, message_type=msg_type, source=source, raw_message=post, message_id=post_id,
+            text=message_text, message_type=MessageType.TEXT, source=source, raw_message=post, message_id=post_id,
             media_urls=media_urls or None, media_types=media_types or None,
             channel_prompt=resolve_channel_prompt(self.config.extra, channel_id, None)))
+
+    # ── Reaction-driven approval (sloth 2026-09-26) ──
+
+    async def _handle_approval_reaction(self, data: Dict[str, Any]) -> None:
+        """``reaction_added`` → resolve the matching pending approval, if any.
+
+        Multiplex-safe: the lookup key is the bot's own approval ``post_id``
+        (carried in the WS event), and the value is the ``session_key`` the
+        gateway runner is waiting on. No public HTTP callback URL needed —
+        the reaction rides the bot's existing WebSocket.
+
+        WS event payload shape (verified against Mattermost master
+        ``app/reaction.go::sendReactionEvent``):
+            data.reaction = JSON-encoded ``model.Reaction`` string
+            = {"user_id","post_id","emoji_name","create_at"}
+        """
+        # The reaction object is nested under ``data.reaction`` as a JSON string.
+        raw = data.get("reaction")
+        if not raw:
+            return
+        try:
+            reaction = json.loads(raw) if isinstance(raw, str) else raw
+        except (json.JSONDecodeError, TypeError):
+            return
+        post_id = str(reaction.get("post_id") or "")
+        user_id = str(reaction.get("user_id") or "")
+        emoji_name = str(reaction.get("emoji_name") or "")
+        if not post_id or not user_id or not emoji_name:
+            return
+        # Only one security gate: a bot self-reaction must NEVER resolve its own
+        # approval card. The bot seeds the three emoji (✅ / ♾️ / 🚫) on its own
+        # post; those reactions fire the same WS event with the bot's user_id.
+        # We deliberately do NOT gate on a "requester" user_id: the gateway runner
+        # passes only thread metadata, never the originating user, so the
+        # approval entry has no requester recorded. Trying to require one
+        # silently rejected every user tap (verified live 2026-09-26 18:39:50 —
+        # ``rejecting reaction white_check_mark on z5rbxp64ft... by wf7fy4z4r...
+        # — no requester recorded for this approval entry``). The post itself
+        # is the scope: only the bot posts approval cards, so any non-bot
+        # reaction on the post is by construction a tap on the card.
+        entry = self._approval_prompts_by_event.get(post_id)
+        if not entry:
+            return  # not an approval card, or already resolved
+        bot_user_id = str(getattr(self, "_bot_user_id", "") or "")
+        if bot_user_id and user_id == bot_user_id:
+            logger.debug(
+                "Mattermost: ignoring self-reaction %s on %s by bot %s",
+                emoji_name, post_id, bot_user_id)
+            return
+        choice = _REACTION_TO_CHOICE.get(emoji_name)
+        if not choice:
+            return  # white_check_mark / infinity / no_entry_sign only
+        # Double-click guard: resolve only once per post.
+        if self._approval_resolved.get(post_id):
+            return
+        self._approval_resolved[post_id] = True
+        session_key = entry["session_key"]
+        # Resolve FIRST (unblocks the agent thread) so a tap landing after a
+        # timeout (count == 0) doesn't lie about the resolution. Same pattern as
+        # Telegram ``_handle_exec_approval_callback``.
+        count = 0
+        try:
+            from tools.approval import resolve_gateway_approval
+            count = resolve_gateway_approval(session_key, choice)
+            logger.info("Mattermost reaction resolved %d approval(s) for session %s "
+                        "(choice=%s, user=%s, post=%s)",
+                        count, session_key, choice, user_id, post_id)
+        except Exception as exc:
+            logger.error("Failed to resolve gateway approval from Mattermost reaction: %s", exc)
+        # Tidy the registry regardless of outcome.
+        self._approval_prompts_by_event.pop(post_id, None)
+        # Remove our own seeded reaction so the user sees the card is done.
+        asyncio.create_task(self._delete_reaction(post_id, emoji_name))
+        if count:
+            label = _REACTION_LABEL.get(choice, "Resolved")
+            try:
+                await self.edit_message(
+                    entry["chat_id"], post_id,
+                    f"{label}",
+                    finalize=True)
+            except Exception as exc:
+                logger.debug("Mattermost: failed to edit approval card after resolve: %s", exc)
+
+    async def _send_reaction(self, post_id: str, emoji_name: str) -> bool:
+        """Add a reaction to a post (``POST /api/v4/reactions`` with JSON body).
+
+        The reaction create endpoint takes ``{"user_id", "post_id", "emoji_name"}``
+        in the request body, NOT URL path params — verified against
+        ``api/v4/source/reactions.yaml`` in upstream Mattermost master.
+
+        Earlier confusion: the URL ``/api/v4/posts/{id}/reactions/{emoji_name}``
+        is the DELETE endpoint (path-encoded emoji), not POST. POST lives at the
+        top-level ``/api/v4/reactions`` collection and uses a JSON body. The bot's
+        user id is required because ``saveReaction`` enforces
+        ``reaction.UserId == session.UserId`` (forbid impersonation).
+        """
+        if not self._session or not self._bot_user_id:
+            return False
+        import aiohttp
+        url = f"{self._base_url}/api/v4/reactions"
+        body = {"user_id": self._bot_user_id, "post_id": post_id, "emoji_name": emoji_name}
+        try:
+            async with self._session.post(
+                url,
+                json=body,
+                headers=self._auth_header(),
+                timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                if resp.status in {200, 201}:
+                    return True
+                # 409 Conflict = we already seeded it; that's fine.
+                if resp.status == 409:
+                    return True
+                err_body = await resp.text()
+                logger.warning("Mattermost reaction seed FAIL url=%s body=%s status=%s resp=%s",
+                               url, body, resp.status, err_body[:400])
+                return False
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Mattermost: failed to seed reaction %s on %s: %s",
+                           emoji_name, post_id, exc)
+            return False
+
+    async def _delete_reaction(self, post_id: str, emoji_name: str) -> bool:
+        """Remove the bot's own reaction from a post (used after a tap resolves the card)."""
+        if not self._session or not self._bot_user_id:
+            return False
+        import aiohttp
+        try:
+            async with self._session.delete(
+                f"{self._base_url}/api/v4/users/{self._bot_user_id}/posts/{post_id}/reactions/{emoji_name}",
+                headers=self._auth_header(),
+                timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                # 204 No Content = gone; 404 = wasn't there, also fine.
+                return resp.status in {200, 204, 404}
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Mattermost: failed to delete reaction %s on %s: %s",
+                         emoji_name, post_id, exc)
+            return False
+
+    async def _send_exec_approval_prompt(self, prompt) -> Any:  # noqa: ANN401 — ExecApprovalPrompt type
+        """Render the shared approval card as plain text, register the prompt,
+        then seed ``✅ / ♾️ / 🚫`` reactions on the bot's own post (one per
+        offered choice). The user can tap an emoji or type ``approve`` /
+        ``deny`` — both routes resolve via ``tools.approval.resolve_gateway_approval``.
+
+        Mirrors the Matrix reaction-driven flow at ``plugins/platforms/matrix/adapter.py``
+        :func:`_send_exec_approval_prompt` (the same ``prompt.text`` and
+        ``prompt.choices`` contract from the gateway base template).
+        """
+        # Bound the registry — drop oldest entries if the cap is exceeded.
+        if len(self._approval_prompts_by_event) >= _APPROVAL_PROMPTS_MAX:
+            oldest = next(iter(self._approval_prompts_by_event))
+            self._approval_prompts_by_event.pop(oldest, None)
+            self._approval_resolved.pop(oldest, None)
+        result = await self.send(prompt.chat_id, prompt.text, reply_to=None,
+                                 metadata=prompt.metadata)
+        if not result.success or not result.message_id:
+            return result
+        post_id = str(result.message_id)
+        requester = ""
+        if isinstance(prompt.metadata, dict):
+            requester = str(prompt.metadata.get("requester_user_id") or "")
+        choices = list(getattr(prompt, "choices", []) or [])
+        # Only seed emojis that the user could mean (matrix legend is the
+        # canonical mapping; we honor it modulo the user-chosen ♾️ → session).
+        # Mattermost's v4 reaction API takes the EMOJI SHORT NAME (e.g.
+        # ``white_check_mark``), not the unicode character, in the URL path.
+        emoji_for_choice = {
+            "once": "white_check_mark",
+            "session": "infinity",
+            "deny": "no_entry_sign",
+        }
+        emojis = [emoji_for_choice[c] for c in choices if c in emoji_for_choice]
+        self._approval_prompts_by_event[post_id] = {
+            "session_key": prompt.session_key,
+            "requester_user_id": requester,
+            "chat_id": prompt.chat_id,
+            "choices": list(choices),
+        }
+        # Seed reactions AFTER the post is on the server — Mattermost returns the
+        # post id synchronously from POST /posts so this is safe to fire next.
+        # Inline await (no ``create_task``): keeps the post+reactions bundle
+        # visible to the test/observer in the right order; the HTTP round-trips
+        # are sub-millisecond on a healthy local LAN.
+        for emoji in emojis:
+            await self._send_reaction(post_id, emoji)
+        return result
 
 
 # --- Plugin standalone-send (out-of-process cron delivery via Mattermost REST) ---

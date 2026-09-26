@@ -13,10 +13,12 @@ match, because wrongly stripping a venv the install depends on is worse than
 tolerating one that may mismatch.
 """
 
+import os
 import sys
 
 import pytest
 
+import gateway.run as gateway_run
 from gateway.run import _venv_matches_running_python
 
 
@@ -91,3 +93,25 @@ def test_fails_open_when_config_is_unreadable(tmp_path, monkeypatch):
 
     monkeypatch.setattr("pathlib.Path.read_text", boom)
     assert _venv_matches_running_python(d) is True
+
+
+def test_windows_setup_does_not_inject_cross_minor_venv(tmp_path, monkeypatch):
+    """The setup call site must skip incompatible site-packages entirely."""
+    other = "3.11" if sys.version_info[:2] != (3, 11) else "3.12"
+    venv_dir = _venv(tmp_path, f"version_info = {other}.9.final.0\n")
+    site_packages = venv_dir / "Lib" / "site-packages"
+    site_packages.mkdir(parents=True)
+
+    project_root = tmp_path / "project"
+    gateway_file = project_root / "gateway" / "run.py"
+    gateway_file.parent.mkdir(parents=True)
+    monkeypatch.setattr(gateway_run, "__file__", str(gateway_file))
+    monkeypatch.setattr(gateway_run.sys, "platform", "win32")
+    monkeypatch.setattr(gateway_run.sys, "path", ["existing-entry"])
+    monkeypatch.setenv("VIRTUAL_ENV", str(venv_dir))
+    monkeypatch.setenv("PYTHONPATH", "existing-pythonpath")
+
+    gateway_run._ensure_windows_gateway_venv_imports()
+
+    assert str(site_packages) not in gateway_run.sys.path
+    assert os.environ["PYTHONPATH"] == "existing-pythonpath"

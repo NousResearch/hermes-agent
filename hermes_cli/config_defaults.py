@@ -8,10 +8,30 @@ docs of config.yaml.
 def _aux(timeout, *, reasoning_effort=True, **extra):
     """Standard auxiliary-task model block (see DEFAULT_CONFIG["auxiliary"]).
 
+    Every key the aux runtime reads off the block is declared here, because the
+    set-path notice walks DEFAULT_CONFIG: an undeclared key makes
+    ``hermes config set auxiliary.<task>.key_env CUSTOM_API_KEY`` print "not a
+    recognized config key", which reads as "this setting does nothing" even
+    though it resolves the credential. Readers: ``_resolve_task_provider_model``
+    reads api_mode/key_env/api_key_env, ``_try_configured_fallback_chain`` reads
+    fallback_chain, ``_get_task_max_concurrency`` reads max_concurrency.
+
     reasoning_effort=False omits that key (MoA blocks configure depth per slot);
     ``extra`` keys are appended after the standard ones.
     """
-    d = {"provider": "auto", "model": "", "base_url": "", "api_key": "", "timeout": timeout, "extra_body": {}}
+    d = {
+        "provider": "auto", "model": "", "base_url": "", "api_key": "", "timeout": timeout, "extra_body": {},
+        # Name of the env var holding this task's credential (legacy alias: api_key_env). "" =
+        # inherit, i.e. OPENAI_API_KEY, or the main model's key when only the host differs.
+        "key_env": "", "api_key_env": "",
+        # Transport override: chat_completions | anthropic_messages | codex_responses ("" = auto).
+        "api_mode": "",
+        # Per-task provider chain tried before the global fallback; entries need `provider`,
+        # e.g. [{provider: openrouter, model: google/gemini-3.6-flash}]. [] = none.
+        "fallback_chain": [],
+        # Cap on concurrent calls for this task; None or <= 0 = unbounded.
+        "max_concurrency": None,
+    }
     if reasoning_effort:
         d["reasoning_effort"] = ""
     d.update(extra)
@@ -730,16 +750,20 @@ DEFAULT_CONFIG = {
         # stream-only.
         "stream_only_base_urls": [],
         # Per-task blocks share one shape (_aux): provider "auto" = inherit the main model; base_url
-        # overrides provider; api_key falls back to OPENAI_API_KEY; reasoning_effort:
+        # overrides provider; api_key falls back to OPENAI_API_KEY, or set key_env to the NAME of an
+        # env var to read this task's credential from instead; reasoning_effort:
         # none|minimal|low|medium|high|xhigh|max|ultra ("" = provider default); extra_body =
-        # OpenAI-compatible request fields. Vision: download_timeout = image HTTP download (s).
-        "vision": _aux(120, download_timeout=30),
+        # OpenAI-compatible request fields. Vision: download_timeout = image HTTP download (s);
+        # temperature = sampling temp for vision/video calls (default 0.1; local models often 0).
+        # Compression: context_length hints the aux model's window for endpoints that cannot report
+        # it (agent_init._resolve_context_length); None = detect.
+        "vision": _aux(120, download_timeout=30, temperature=0.1),
         # web_extract and session_search no longer use an aux LLM; leftover blocks in user config
         # are ignored. Compression: raise timeout for local models. no_progress_timeout
         # (Codex/Responses streams only): seconds without a substantive event before the stream
         # fails fast; None = built-in 60s default. Independent of "timeout" (the overall request
         # budget) — raising "timeout" alone does not widen this window. See #108104.
-        "compression": _aux(120, no_progress_timeout=None),
+        "compression": _aux(120, no_progress_timeout=None, context_length=None),
         "skills_hub": _aux(30),
         "approval": _aux(30),   # classifier — a fast/cheap model is recommended
         # /review reviewer: a full subagent on the async delegation rail, credentials resolved like
@@ -759,6 +783,12 @@ DEFAULT_CONFIG = {
             "prefer_fast_model": False,
             "base_url": "",
             "api_key": "",
+            # Same runtime-read keys as _aux(): declared so `hermes config set` recognizes them.
+            "key_env": "",
+            "api_key_env": "",
+            "api_mode": "",
+            "fallback_chain": [],
+            "max_concurrency": None,
             "timeout": 30,
             "extra_body": {},
             "reasoning_effort": "",

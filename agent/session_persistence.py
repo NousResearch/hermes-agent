@@ -373,7 +373,10 @@ class SessionPersistenceMixin:
         def tail(*keys: str) -> bool:
             return bool(messages) and isinstance(messages[-1], dict) and any(messages[-1].get(k) for k in keys)
 
-        while tail("_empty_recovery_synthetic", "_empty_terminal_sentinel"):
+        while tail(
+            "_empty_recovery_synthetic",
+            "_empty_terminal_sentinel",
+        ):
             messages.pop()
 
     _repair_message_sequence = _forward("agent.agent_runtime_helpers", "repair_message_sequence")

@@ -246,7 +246,27 @@ class _Collector:
         # HERMES_KANBAN_DB pins the board path.
         kb = self.kb
         seen_db_paths: set[str] = set()
-        for board_meta in _list_boards(kb):
+        boards = _list_boards(kb)
+        # Fold the active DB in. The subscription WRITER resolves with no board
+        # argument: `connect()` honours HERMES_KANBAN_DB (the dispatcher→worker
+        # handoff pins it so the notifier and worker agree on ONE DB), then the
+        # current board, then `default`. `_list_boards()` only surfaces boards
+        # that exist ON DISK, and an explicit board= must beat the env pin for
+        # callers who NAME a board (see kanban_db_path) — so the notifier could
+        # enumerate nothing that points at the env-pinned/active DB and silently
+        # miss subscriptions written there. `kanban_db_path()` with NO board is
+        # the env-honouring single source of truth the writer uses; fold it in
+        # and let the seen_db_paths dedup collapse it when it's already listed.
+        try:
+            active_db_path = kb.kanban_db_path()
+            active_meta = {"slug": kb.DEFAULT_BOARD, "db_path": str(active_db_path)}
+        except Exception:
+            active_meta = None
+        if active_meta is not None and not any(
+            (b.get("db_path") or "") == active_meta["db_path"] for b in boards
+        ):
+            boards = boards + [active_meta]
+        for board_meta in boards:
             slug = board_meta.get("slug") or kb.DEFAULT_BOARD
             db_path = board_meta.get("db_path")
             try:
@@ -257,15 +277,19 @@ class _Collector:
                 logger.debug("kanban notifier: skipping duplicate board slug %s for DB %s", slug, resolved_db_path)
                 continue
             seen_db_paths.add(resolved_db_path)
-            self.collect_board(slug)
+            self.collect_board(slug, resolved_db_path)
         return self.deliveries
 
-    def _board_has_subs(self, slug: str) -> bool:
+    def _board_has_subs(self, slug: str, db_path: Optional[str] = None) -> bool:
         """Cheap read-only probe before the writable connect() (schema init, WAL
         sidecars, checkpoints); a probe failure falls back to the writable open."""
         try:
-            count = _kbn().count_notify_subs(
-                board=slug, notifier_profiles=self.notifier_profiles, include_unowned=self.include_unowned)
+            if db_path:
+                count = _kbn().count_notify_subs(
+                    db_path=Path(db_path), notifier_profiles=self.notifier_profiles, include_unowned=self.include_unowned)
+            else:
+                count = _kbn().count_notify_subs(
+                    board=slug, notifier_profiles=self.notifier_profiles, include_unowned=self.include_unowned)
         except Exception as exc:
             logger.debug("kanban notifier: read-only subscription probe failed "
                          "for board %s (%s); falling back to writable open", slug, exc)
@@ -285,7 +309,7 @@ class _Collector:
         except Exception as _gc_exc:
             logger.debug("kanban notifier: stale-sub GC failed for board %s: %s", slug, _gc_exc)
 
-    def _claim_for_sub(self, conn: Any, slug: str, sub: dict) -> Optional[dict]:
+    def _claim_for_sub(self, conn: Any, slug: str, db_path: Optional[str], sub: dict) -> Optional[dict]:
         """Claim one subscription's unseen events; None when skipped or nothing new."""
         owner_profile = sub.get("notifier_profile") or None
         platform = (sub.get("platform") or "").lower()
@@ -306,15 +330,19 @@ class _Collector:
         task = self.kb.get_task(conn, sub["task_id"])
         logger.debug("kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
                      len(events), sub["task_id"], slug, old_cursor, cursor)
-        return {"sub": sub, "old_cursor": old_cursor, "cursor": cursor, "events": events, "task": task, "board": slug}
+        return {"sub": sub, "old_cursor": old_cursor, "cursor": cursor, "events": events, "task": task, "board": slug, "db_path": db_path}
 
-    def collect_board(self, slug: str) -> None:
-        """Claim events on one board, appending delivery dicts to ``deliveries``."""
-        if not self._board_has_subs(slug):
+    def collect_board(self, slug: str, db_path: Optional[str] = None) -> None:
+        """Claim events on one board (addressing its DB by resolved ``db_path``
+        when available, else by slug), appending delivery dicts to ``deliveries``."""
+        if not self._board_has_subs(slug, db_path):
             return
         kb = self.kb
         try:
-            conn = _kbc().connect(board=slug)
+            if db_path:
+                conn = _kbc().connect(db_path=Path(db_path))
+            else:
+                conn = _kbc().connect(board=slug)
         except Exception as exc:
             logger.debug("kanban notifier: cannot open board %s: %s", slug, exc)
             return
@@ -329,7 +357,7 @@ class _Collector:
                 logger.debug("kanban notifier: board %s has no subscriptions", slug)
             for sub in subs:
                 try:
-                    claimed = self._claim_for_sub(conn, slug, sub)
+                    claimed = self._claim_for_sub(conn, slug, db_path, sub)
                     if claimed is not None:
                         self.deliveries.append(claimed)
                 except Exception as sub_exc:
@@ -490,6 +518,11 @@ class _KanbanNotification:
         self.sub = sub = d["sub"]
         self.task = task = d["task"]
         self.board_slug = d.get("board")
+        # The exact DB file this batch was claimed from. Multiple slugs can map
+        # to one DB when HERMES_KANBAN_DB pins the path (the active board), so
+        # the cursor/sub bookkeeping below must address the SAME file the writer
+        # and the collect pass used — never re-derive from the slug alone.
+        self.db_path = d.get("db_path") or None
         self.platform_str = (sub["platform"] or "").lower()
         self.task_id = sub["task_id"]
         self.sub_profile = sub.get("notifier_profile") or ""
@@ -515,14 +548,21 @@ class _KanbanNotification:
 
     async def rewind(self) -> None:
         await _to_thread_process_service(
-            self.runner._kanban_rewind, self.sub, self.d["cursor"], self.d.get("old_cursor", 0), self.board_slug,
+            partial(self.runner._kanban_rewind, db_path=self.db_path),
+            self.sub, self.d["cursor"], self.d.get("old_cursor", 0), self.board_slug,
         )
 
     async def advance(self) -> None:
-        await _to_thread_process_service(self.runner._kanban_advance, self.sub, self.d["cursor"], self.board_slug)
+        await _to_thread_process_service(
+            partial(self.runner._kanban_advance, db_path=self.db_path),
+            self.sub, self.d["cursor"], self.board_slug,
+        )
 
     async def unsub(self) -> None:
-        await _to_thread_process_service(self.runner._kanban_unsub, self.sub, self.board_slug)
+        await _to_thread_process_service(
+            partial(self.runner._kanban_unsub, db_path=self.db_path),
+            self.sub, self.board_slug,
+        )
 
     def clear_failures(self) -> None:
         self.sub_fail_counts.pop(self.sub_key, None)
@@ -720,7 +760,7 @@ class _KanbanNotification:
                     continue
                 await _to_thread_process_service(partial(
                     self.runner._kanban_sub_op, self.board_slug, "record_notify_ping", self.sub,
-                    event_id=ev.id,
+                    db_path=self.db_path, event_id=ev.id,
                 ))
                 self.clear_failures()
             except Exception as exc:

@@ -263,6 +263,36 @@ def _report_unclean_exit(evidence: Dict[str, Any], home: Optional[Path]) -> None
     )
 
 
+def _carry_prior_exit_forward(claim: Dict[str, Any], home: Optional[Path]) -> None:
+    """Copy the PREVIOUS life's recorded exit onto the new sentinel.
+
+    :func:`detect_unclean_exit` only fires on a stale ``phase=running`` sentinel — i.e. nothing ran
+    on the way out at all.  The two watchdog ``os._exit`` sites in :mod:`gateway.shutdown_watchdog`
+    DO call :func:`mark_exited` first, so they leave ``phase=exited exit_code=75
+    exit_reason=loop_liveness_watchdog`` and are correctly not flagged as unattributed deaths.  But
+    from a user's point of view an ``os._exit`` from a watchdog thread is exactly as abrupt as a
+    SIGKILL: no drain ran, so no session was ever told the gateway was going down.
+
+    Claiming the sentinel for the new life is the moment that record would be lost, so mirror it
+    forward under ``prior_*`` keys.  Consumer:
+    :func:`gateway.restart_notice.classify_prior_life`.  Best-effort — never raises.
+    """
+    try:
+        previous = _read_json(get_lifecycle_sentinel_path(home))
+        if not previous or previous.get("phase") != "exited":
+            return
+        claim["prior_phase"] = "exited"
+        for src, dst in (
+            ("exit_code", "prior_exit_code"),
+            ("exit_reason", "prior_exit_reason"),
+            ("exited_at", "prior_exited_at"),
+        ):
+            if previous.get(src) is not None:
+                claim[dst] = previous[src]
+    except Exception:
+        logger.debug("Failed to carry prior exit record forward", exc_info=True)
+
+
 def record_startup(home: Optional[Path] = None) -> Optional[Dict[str, Any]]:
     """Boot entry point: report any unclean previous exit (evidence dict, also persisted
     to ``gateway-exit-diag.log`` and logged at WARNING) then claim the sentinel.  Never raises."""
@@ -275,6 +305,7 @@ def record_startup(home: Optional[Path] = None) -> Optional[Dict[str, Any]]:
         logger.debug("Unclean-exit detection failed", exc_info=True)
     try:
         claim: Dict[str, Any] = {"phase": "running", "pid": os.getpid(), "start_time": time.time(), "started_at": _now_iso()}
+        _carry_prior_exit_forward(claim, home)
         # Process birth (psutil), distinct from ``start_time`` (the ledger claim, seconds later once
         # imports finish): the Windows start attestation binds PIDs to birth time (#110020 review).
         from hermes_cli.process_identity import _process_create_time

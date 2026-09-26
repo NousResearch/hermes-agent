@@ -5,6 +5,11 @@ plugin's schema with the current values, and ``settings`` writes through the sam
 ``plugins.entries.<id>.settings`` namespace ``ctx.get_config`` reads — never a secret into config.yaml.
 """
 
+import sys
+import threading
+import time
+import types
+
 import pytest
 
 from tui_gateway import server
@@ -72,8 +77,45 @@ def test_settings_writes_the_plugin_namespace_and_refuses_secrets_and_bad_types(
 
 
 # ── choices_from: dynamic choices resolved from the plugin's own package ─────────────────────────
+# Timing discipline (these run under CI's parallel runner on a loaded box): a call the test expects to
+# answer gets a generous budget, so a starved worker is merely slow, never a fallback. "Still running" is
+# never simulated with a short budget racing the scheduler: the call blocks on a ``threading.Event`` the
+# test owns (``choices_gate``), so it cannot finish until the test says so. Cache entries likewise never
+# expire on their own mid-test (a starved test can take longer than the 5s failure TTL between two lists);
+# the tests that need an expiry force it explicitly.
+GENEROUS_SECS = 60.0
+CACHE_SECS = 3600.0
+
+
+@pytest.fixture(autouse=True)
+def _fresh_choices_state(monkeypatch):
+    from hermes_cli import plugins_settings as ps
+    with ps._CHOICES_LOCK:
+        ps._CHOICES_CACHE.clear()
+        ps._CHOICES_GENERATION.clear()
+    monkeypatch.setattr(ps, "_CHOICES_TIMEOUT_SECS", GENEROUS_SECS)
+    monkeypatch.setattr(ps, "_CHOICES_LIST_BUDGET_SECS", GENEROUS_SECS)
+    monkeypatch.setattr(ps, "_CHOICES_CACHE_TTL_SECS", CACHE_SECS)
+    monkeypatch.setattr(ps, "_CHOICES_FAILURE_TTL_SECS", CACHE_SECS)
+    yield
+    _wait_idle()  # no test leaks a running worker (or its in-flight slot) into the next
+
+
+@pytest.fixture
+def choices_gate(monkeypatch):
+    """Test-controlled synchronisation the counting plugin's slow functions obey (see ``_slow``):
+    ``barrier`` (both fields must be running at once) and ``release`` (block until the test sets it)."""
+    gate = types.ModuleType("_dyn_choices_gate")
+    gate.barrier = None
+    gate.release = None
+    monkeypatch.setitem(sys.modules, "_dyn_choices_gate", gate)
+    yield gate
+    if gate.release is not None:
+        gate.release.set()  # never leave a worker blocked past the test
+
+
 CHOICES_PY = """\
-import time
+import sys
 from pathlib import Path
 
 Path(__file__).with_name("imported.marker").touch()
@@ -92,7 +134,7 @@ def bad_shape(context):
 
 
 def hang(context):
-    time.sleep(3)
+    sys.modules["_dyn_choices_gate"].release.wait()  # until the test's choices_gate releases it
     return ["late"]
 """
 
@@ -133,7 +175,10 @@ def test_choices_from_renders_and_validates_the_plugins_own_choices(tmp_path, mo
 
 
 @pytest.mark.parametrize("func", ["boom", "bad_shape", "hang"])
-def test_failing_choices_from_falls_back_to_static_choices_then_free_text(tmp_path, monkeypatch, func):
+def test_failing_choices_from_falls_back_to_static_choices_then_free_text(tmp_path, monkeypatch, func,
+                                                                          choices_gate):
+    choices_gate.release = threading.Event()  # "hang" never returns during the test
+    # Short deadlines are safe: every function here falls back whether it is slow or quick.
     monkeypatch.setattr("hermes_cli.plugins_settings._CHOICES_TIMEOUT_SECS", 0.2)
     monkeypatch.setattr("hermes_cli.plugins_settings._CHOICES_LIST_BUDGET_SECS", 0.2)
     _dynamic_plugin(tmp_path / "static", monkeypatch, func=func, static="[fallback]")
@@ -162,8 +207,7 @@ def test_choices_from_never_runs_for_a_disabled_plugin(tmp_path, monkeypatch):
 
 # ── choices_from cost on the list path: cache, aggregate budget, invalidation (review F1/F4/F6) ─────
 COUNTING_PY = """\
-import os
-import time
+import sys
 from pathlib import Path
 
 CALLS = Path(__file__).with_name("calls.log")
@@ -175,11 +219,13 @@ def _record(name):
 
 
 def _slow():
-    time.sleep(float(os.environ.get("DYN_CHOICES_DELAY", "0")))
-    gate = os.environ.get("DYN_CHOICES_GATE")  # block until the test creates this file
-    deadline = time.monotonic() + 10
-    while gate and not os.path.exists(gate) and time.monotonic() < deadline:
-        time.sleep(0.01)
+    gate = sys.modules.get("_dyn_choices_gate")  # installed by the test's choices_gate fixture
+    if gate is None:
+        return
+    if gate.barrier is not None:
+        gate.barrier.wait()  # returns only once the other field's call is running too
+    if gate.release is not None:
+        gate.release.wait()  # no self-release: only the test ends this call
 
 
 def slow_a(context):
@@ -212,15 +258,6 @@ def per_home(context):
 """
 
 
-@pytest.fixture(autouse=True)
-def _fresh_choices_state():
-    from hermes_cli import plugins_settings as ps
-    with ps._CHOICES_LOCK:
-        ps._CHOICES_CACHE.clear()
-        ps._CHOICES_GENERATION.clear()
-    yield
-
-
 def _counting_plugin(home, fields, *, settings="{}"):
     plugin = home / "plugins" / "dyn-plugin"
     plugin.mkdir(parents=True)
@@ -246,80 +283,100 @@ def _dyn_fields(**params):
 
 def _timed_resolution(plugin):
     """Time only the settings-field build the list RPC runs (the rest of a list is plugin-independent)."""
-    import time
     from hermes_cli import plugins_settings as ps
     start = time.monotonic()
     fields = ps.plugin_settings_fields_many([("dyn-plugin", plugin)])[0]
     return {f["key"]: f for f in fields}, time.monotonic() - start
 
 
-def _wait_idle():
-    import time
-    from hermes_cli import plugins_settings as ps
-    deadline = time.monotonic() + 10
-    while ps._CHOICES_INFLIGHT and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert not ps._CHOICES_INFLIGHT
-
-
-def test_listing_resolves_slow_fields_concurrently_then_from_cache_until_a_save(tmp_path, monkeypatch):
-    """The reviewer's probe shape: two slow ``choices_from`` fields. Serial + uncached cost the sum on every
-    list; now a cold build costs about one delay and a warm one does not call the plugin at all."""
-    monkeypatch.setattr("hermes_cli.plugins_settings._CHOICES_LIST_BUDGET_SECS", 3.0)
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-    plugin = _counting_plugin(tmp_path / "home", {"engine": "slow_a", "voice": "slow_b"})
-    assert _dyn_fields()["engine"]["choices"] == ["a1", "a2"]  # loads the plugin; warms the cache
-    assert sorted(_calls(plugin)) == ["a", "b"]  # the two fields run concurrently: any order
-
+def _inflight():
     from hermes_cli import plugins_settings as ps
     with ps._CHOICES_LOCK:
-        ps._CHOICES_CACHE.clear()
-    monkeypatch.setenv("DYN_CHOICES_DELAY", "0.5")
-    cold, cold_secs = _timed_resolution(plugin)
+        return set(ps._CHOICES_INFLIGHT)
+
+
+def _wait_idle(timeout=GENEROUS_SECS):
+    """Block until every ``choices_from`` worker has returned (and stored its result)."""
+    deadline = time.monotonic() + timeout
+    while (running := _inflight()) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    if running:
+        pytest.fail(f"choices_from workers still running after {timeout:.0f}s: {sorted(running)}")
+
+
+def test_listing_resolves_slow_fields_concurrently_then_from_cache_until_a_save(tmp_path, monkeypatch,
+                                                                              choices_gate):
+    """The reviewer's probe shape: two slow ``choices_from`` fields. Serial + uncached cost the sum on every
+    list; now they run at once and a warm list does not call the plugin at all."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    plugin = _counting_plugin(tmp_path / "home", {"engine": "slow_a", "voice": "slow_b"})
+    # Each call waits at a two-party barrier, so both answer only if they were running at the same time
+    # (serial resolution would break the barrier and fall back). No wall-clock assertion needed.
+    choices_gate.barrier = threading.Barrier(2, timeout=GENEROUS_SECS / 2)
+    cold = _dyn_fields()
     assert cold["engine"]["choices"] == ["a1", "a2"] and cold["voice"]["choices"] == ["b1", "b2"]
-    assert cold_secs < 0.9, cold_secs  # ~0.5 (concurrent), not 1.0 (serial)
+    assert sorted(_calls(plugin)) == ["a", "b"]
 
-    warm, warm_secs = _timed_resolution(plugin)
-    assert warm == cold and warm_secs < 0.2, warm_secs
-    assert _dyn_fields()["voice"]["choices"] == ["b1", "b2"]  # the list RPC hits the same cache
-    assert sorted(_calls(plugin)) == ["a", "a", "b", "b"]
+    choices_gate.barrier = None
+    assert _dyn_fields() == cold  # warm: served from the cache ...
+    assert len(_calls(plugin)) == 2  # ... without calling the plugin
 
-    monkeypatch.setenv("DYN_CHOICES_DELAY", "0")
     # A save validates against a fresh call (not the cache), then drops the plugin's cached results, so
     # the refreshed row in the reply resolves again.
     assert _manage(action="settings", key="dyn-plugin", values={"engine": "a2"})["result"]["ok"] is True
-    assert sorted(_calls(plugin)[4:]) == ["a", "a", "b"]
+    assert sorted(_calls(plugin)[2:]) == ["a", "a", "b"]
     _dyn_fields()
-    assert len(_calls(plugin)) == 7  # the refreshed row's results are cached again
+    assert len(_calls(plugin)) == 5  # the refreshed row's results are cached again
 
 
-def test_listing_budget_is_aggregate_and_late_results_are_cached(tmp_path, monkeypatch):
-    monkeypatch.setattr("hermes_cli.plugins_settings._CHOICES_LIST_BUDGET_SECS", 0.3)
+def test_listing_budget_is_aggregate_and_late_results_are_cached(tmp_path, monkeypatch, choices_gate):
+    from hermes_cli import plugins_settings as ps
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     plugin = _counting_plugin(tmp_path / "home", {"engine": "slow_a", "voice": "slow_b"})
-    _dyn_fields()
-    from hermes_cli import plugins_settings as ps
+    _dyn_fields()  # load the plugin (discovery is not what this test measures)
     with ps._CHOICES_LOCK:
         ps._CHOICES_CACHE.clear()
-    gate = tmp_path / "release"
-    monkeypatch.setenv("DYN_CHOICES_GATE", str(gate))
 
-    cold, cold_secs = _timed_resolution(plugin)
+    budget = 1.5
+    monkeypatch.setattr(ps, "_CHOICES_LIST_BUDGET_SECS", budget)
+    choices_gate.release = threading.Event()  # both calls now hang until the test releases them
+    deadlines, returned = [], []
+    begin = ps._begin_choices_from
+
+    def _spy(*args, **kwargs):
+        wait = begin(*args, **kwargs)
+
+        def _timed_wait(deadline):
+            deadlines.append(deadline)
+            try:
+                return wait(deadline)
+            finally:
+                returned.append(time.monotonic())
+        return _timed_wait
+
+    monkeypatch.setattr(ps, "_begin_choices_from", _spy)
+    cold, _secs = _timed_resolution(plugin)
     assert cold["engine"]["choices"] == ["fallback"] and cold["voice"]["choices"] == ["fallback"]
-    assert cold_secs < 0.55, cold_secs  # one 0.3s budget for both fields, not one deadline each
+    assert len(deadlines) == 2 and len(set(deadlines)) == 1  # one shared deadline, not one per field
+    # Measured from the deadline, not the call, so a starved discovery/config read cannot fail it: both
+    # waits end about when the one budget does (a second per-field deadline would add a whole budget).
+    overshoot = max(returned) - deadlines[0]
+    assert overshoot < budget, overshoot
 
-    gate.touch()  # the abandoned workers now finish and store their results
+    choices_gate.release.set()  # the abandoned workers now finish and store their results
     _wait_idle()
-    warm, warm_secs = _timed_resolution(plugin)
+    warm, _secs = _timed_resolution(plugin)
     assert warm["engine"]["choices"] == ["a1", "a2"] and warm["voice"]["choices"] == ["b1", "b2"]
-    assert warm_secs < 0.2, warm_secs
+    assert sorted(_calls(plugin)) == ["a", "a", "b", "b"]  # the warm build called nothing: late results cached
 
 
 def test_failing_choices_from_is_negative_cached(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     plugin = _counting_plugin(tmp_path / "home", {"engine": "boom"})
 
+    # The generous budget means each list waits for the failure to land in the cache, however starved.
     assert _dyn_fields()["engine"]["choices"] == ["fallback"]
+    _wait_idle()
     assert _dyn_fields()["engine"]["choices"] == ["fallback"]
     assert _calls(plugin).count("boom") == 1  # the failure is remembered, not retried per list
 
@@ -328,6 +385,24 @@ def test_failing_choices_from_is_negative_cached(tmp_path, monkeypatch):
         ps._CHOICES_CACHE.update({slot: (0.0, None) for slot in ps._CHOICES_CACHE})
     _dyn_fields()
     assert _calls(plugin).count("boom") == 2
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+def test_a_worker_that_dies_without_reporting_falls_back(tmp_path, monkeypatch):
+    """Review F8: a worker that ends without recording an outcome means "use the fallback", never an
+    IndexError out of the listing RPC."""
+    from hermes_cli import plugins_settings as ps
+
+    class _Unwritable(dict):
+        def __setitem__(self, key, value):
+            raise RuntimeError("simulated worker death before its outcome is recorded")
+
+    monkeypatch.setattr(ps, "_CHOICES_CACHE", _Unwritable())
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    _counting_plugin(tmp_path / "home", {"engine": "slow_a"})
+
+    assert _dyn_fields()["engine"]["choices"] == ["fallback"]
+    assert not _inflight()
 
 
 def test_duplicate_choice_values_keep_the_first_entry(tmp_path, monkeypatch):
@@ -354,12 +429,11 @@ def test_stored_value_no_longer_offered_still_renders_and_saves_unchanged(tmp_pa
     assert _manage(action="settings", key="dyn-plugin", values={"engine": "retired"})["error"]["code"] == 4021
 
 
-def test_choices_from_is_scoped_per_profile_a_b_a(tmp_path, monkeypatch):
+def test_choices_from_is_scoped_per_profile_a_b_a(tmp_path, monkeypatch, choices_gate):
     """Two profiles in one process: a hung call in ``work`` must not block or answer for ``other``, and
     each profile's cache holds its own results (A -> B -> A)."""
-    monkeypatch.setattr("hermes_cli.plugins_settings._CHOICES_LIST_BUDGET_SECS", 0.3)
-    gate = tmp_path / "release"
-    monkeypatch.setenv("DYN_CHOICES_GATE", str(gate))
+    from hermes_cli import plugins_settings as ps
+    choices_gate.release = threading.Event()  # ``work``'s call hangs until released; ``other``'s never waits
     root = tmp_path / "hermes_home"
     root.mkdir()
     (root / "config.yaml").write_text("{}\n", encoding="utf-8")
@@ -367,10 +441,19 @@ def test_choices_from_is_scoped_per_profile_a_b_a(tmp_path, monkeypatch):
     work = _counting_plugin(root / "profiles" / "work", {"engine": "per_home"})
     other = _counting_plugin(root / "profiles" / "other", {"engine": "per_home"})
 
-    assert _dyn_fields(profile="work")["engine"]["choices"] == ["fallback"]  # A: still running
+    def _work_list():  # a short budget is safe here: the gated call cannot return before the release
+        monkeypatch.setattr(ps, "_CHOICES_LIST_BUDGET_SECS", 0.1)
+        try:
+            return _dyn_fields(profile="work")["engine"]["choices"]
+        finally:
+            monkeypatch.setattr(ps, "_CHOICES_LIST_BUDGET_SECS", GENEROUS_SECS)
+
+    assert _work_list() == ["fallback"]  # A: still running
+    assert len(_inflight()) == 1  # A's slot is held by its hung call
     assert _dyn_fields(profile="other")["engine"]["choices"] == ["other"]  # B: not blocked by A's slot
-    assert _dyn_fields(profile="work")["engine"]["choices"] == ["fallback"]  # A: in flight, never B's answer
-    gate.touch()
+    assert _work_list() == ["fallback"]  # A: in flight, never B's answer
+    assert len(_inflight()) == 1
+    choices_gate.release.set()
     _wait_idle()
     assert _dyn_fields(profile="work")["engine"]["choices"] == ["work"]  # A: its own late result, cached
     assert _dyn_fields(profile="other")["engine"]["choices"] == ["other"]

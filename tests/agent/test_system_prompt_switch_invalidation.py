@@ -94,3 +94,81 @@ def test_compression_tip_adoption_applies_the_identity_check(db):
     assert rejected.session_id == "child"
     assert rejected._cached_system_prompt is None
     assert _adopt("model-a", "prov-a")._cached_system_prompt == stale
+
+
+def _turn_agent(db, model: str, provider: str) -> MagicMock:
+    """A fresh per-turn agent (the gateway shape) whose rebuild renders the real trailer."""
+    from agent.system_prompt import _timestamp_line
+
+    agent = MagicMock()
+    agent._cached_system_prompt = None
+    agent.session_id = SESSION_ID
+    agent.model, agent.provider = model, provider
+    agent.platform = "discord"
+    agent.pass_session_id = False
+    agent.session_start = None
+    agent._bot_chat_timeless_prompt = False
+    agent._persist_disabled = False
+    agent._use_prompt_caching = False
+    agent._session_db = db
+    agent._platform_hint_overrides = None
+    agent._surface_switch_note = ""
+    agent._gateway_turn_context_notes = ""
+    agent.enabled_toolsets = agent.disabled_toolsets = None
+    agent._build_system_prompt = MagicMock(side_effect=lambda _sm: f"You are Hermes Agent.\n\n{_timestamp_line(agent)}")
+    return agent
+
+
+def _run_turn(db, model: str, provider: str) -> MagicMock:
+    from agent.conversation_loop import _restore_or_build_system_prompt
+
+    agent = _turn_agent(db, model, provider)
+    _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+    return agent
+
+
+@pytest.mark.parametrize(
+    ("live_model", "live_provider"),
+    [("x-ai/grok-4.5", ""), ("", "nous")],
+    ids=["provider_emptied", "model_emptied"],
+)
+def test_emptied_live_identity_rebuilds_once_then_reuses(db, live_model, live_provider):
+    """A stored ``Provider:``/``Model:`` line with an empty live value is a stale route.
+
+    Route commits keep the stored prompt, so this check is the only rebuild trigger: a
+    model-only request that clears the provider must not replay the previous route's prompt.
+    The rebuilt prompt omits the empty line, so the next turn reuses it (no rebuild loop).
+    """
+    stale = _stored_prompt("x-ai/grok-4.5", "nous")
+    db.create_session(SESSION_ID, source="discord", model="x-ai/grok-4.5")
+    db.update_system_prompt(SESSION_ID, stale)
+
+    first = _run_turn(db, live_model, live_provider)
+    first._build_system_prompt.assert_called_once()
+    rebuilt = db.get_session(SESSION_ID)["system_prompt"]
+    assert rebuilt == first._cached_system_prompt != stale
+
+    second = _run_turn(db, live_model, live_provider)
+    second._build_system_prompt.assert_not_called()
+    assert second._cached_system_prompt == rebuilt
+
+
+def test_matching_live_identity_reuses_the_stored_prompt(db):
+    prompt = _stored_prompt("x-ai/grok-4.5", "nous")
+    db.create_session(SESSION_ID, source="discord", model="x-ai/grok-4.5")
+    db.update_system_prompt(SESSION_ID, prompt)
+
+    agent = _run_turn(db, "x-ai/grok-4.5", "nous")
+    agent._build_system_prompt.assert_not_called()
+    assert agent._cached_system_prompt == prompt
+
+
+def test_prompt_without_identity_lines_keeps_reusing(db):
+    """Pre-trailer prompts carry no identity lines; they must not rebuild on upgrade."""
+    legacy = "You are Hermes Agent.\n\nConversation started: Thursday, September 24, 2026"
+    db.create_session(SESSION_ID, source="discord", model="x-ai/grok-4.5")
+    db.update_system_prompt(SESSION_ID, legacy)
+
+    agent = _run_turn(db, "x-ai/grok-4.5", "")
+    agent._build_system_prompt.assert_not_called()
+    assert agent._cached_system_prompt == legacy

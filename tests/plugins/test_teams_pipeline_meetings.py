@@ -5,10 +5,16 @@ from pathlib import Path
 import pytest
 
 from plugins.teams_pipeline.meetings import (
+    TeamsMeetingArtifactNotFoundError,
+    TeamsMeetingError,
+    TeamsMeetingNotFoundError,
+    download_recording_artifact,
     download_transcript_text,
+    fetch_preferred_transcript_text,
     resolve_meeting_reference,
 )
 from plugins.teams_pipeline.models import MeetingArtifact, TeamsMeetingRef
+from tools.microsoft_graph_client import MicrosoftGraphAPIError
 
 
 class FakeGraphClient:
@@ -75,3 +81,65 @@ async def test_transcript_download_requests_graph_vtt_content():
             {"Accept": "text/vtt"},
         )
     ]
+
+
+
+class Artifact404Client:
+    def __init__(self, *, transcripts=None):
+        self.transcripts = transcripts or []
+
+    async def collect_paginated(self, path, *, params=None, headers=None):
+        return self.transcripts if path.endswith("/transcripts") else []
+
+    async def download_to_file(self, path, destination, *, headers=None):
+        raise MicrosoftGraphAPIError(404, "GET", path, "Not found")
+
+
+@pytest.mark.anyio
+async def test_transcript_content_404_is_artifact_missing_and_allows_fallback():
+    payload = {
+        "id": "tx-404",
+        "displayName": "meeting.vtt",
+        "status": "running",
+        "lastModifiedDateTime": "2026-05-01T00:00:00Z",
+    }
+    client = Artifact404Client(transcripts=[payload])
+    meeting = TeamsMeetingRef(meeting_id="meeting-1", organizer_user_id="organizer-1")
+
+    artifact, text = await fetch_preferred_transcript_text(client, meeting)
+
+    assert artifact is None
+    assert text is None
+
+
+@pytest.mark.anyio
+async def test_recording_content_404_uses_artifact_error_not_meeting_error(tmp_path):
+    client = Artifact404Client()
+    meeting = TeamsMeetingRef(meeting_id="meeting-1", organizer_user_id="organizer-1")
+    recording = MeetingArtifact(
+        artifact_type="recording",
+        artifact_id="rec-404",
+        display_name="recording.mp4",
+    )
+
+    with pytest.raises(TeamsMeetingArtifactNotFoundError):
+        await download_recording_artifact(client, meeting, recording, tmp_path / "recording.mp4")
+
+
+@pytest.mark.anyio
+async def test_artifact_non_404_still_uses_normal_graph_error_wrapping(tmp_path):
+    class ErrorClient:
+        async def download_to_file(self, path, destination, *, headers=None):
+            raise MicrosoftGraphAPIError(500, "GET", path, "Internal Server Error")
+
+    meeting = TeamsMeetingRef(meeting_id="meeting-1", organizer_user_id="organizer-1")
+    transcript = MeetingArtifact(
+        artifact_type="transcript",
+        artifact_id="tx-500",
+        display_name="transcript.vtt",
+    )
+
+    with pytest.raises(TeamsMeetingError) as exc_info:
+        await download_transcript_text(ErrorClient(), meeting, transcript)
+
+    assert not isinstance(exc_info.value, (TeamsMeetingArtifactNotFoundError, TeamsMeetingNotFoundError))

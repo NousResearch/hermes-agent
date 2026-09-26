@@ -178,6 +178,10 @@ class SignalAdapter(BasePlatformAdapter):
     platform = Platform.SIGNAL
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
     splits_long_messages = True  # send() chunks after markdown → Signal formatting conversion
+    # markdown_to_signal() already turns ``` fences into MONOSPACE textStyle ranges (signal-cli
+    # bodyRanges), so verbose tool-progress terminal blocks render as real monospace, not the
+    # flattened one-line preview plain-text platforms get.
+    supports_code_blocks = True
     # No real edit API; declaring it lets streaming suppress the cursor instead of a stale tofu square.
     SUPPORTS_MESSAGE_EDITING = False
 

@@ -132,7 +132,7 @@ function ordinaryUpdateStatus({ apply, checking, status, target, u }: UpdateStat
   return { applying, line: checking ? u.checking : u.tapCheck, supported, tone: 'idle', updateAvailable }
 }
 
-function relativeTime(ms: number | undefined, u: Translations['updates']): string {
+export function relativeTime(ms: number | undefined, u: Translations['updates']): string {
   if (!ms) {
     return u.never
   }
@@ -264,9 +264,12 @@ function UpdateActions({ target, u, view }: UpdateActionsProps): ReactElement | 
  * "Update now" opens it and starts the install there.
  */
 export function UpdateStatusCard({
+  children,
   showReleaseNotes = true,
   target
 }: {
+  /** Extra settings rendered between the status line and the actions (About's auto-update toggle). */
+  children?: ReactNode
   showReleaseNotes?: boolean
   target: UpdateTarget
 }): ReactElement {
@@ -312,6 +315,8 @@ export function UpdateStatusCard({
           )}
         </div>
       </div>
+
+      {children}
 
       {view.tone !== 'unsupported' && (
         <div className="mt-3 flex flex-wrap items-center gap-4">

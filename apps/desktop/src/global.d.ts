@@ -604,6 +604,13 @@ declare global {
         /** `sent` deletes the claimed record; false keeps it for the next attach. */
         ackPendingRun?: (sent: boolean) => Promise<void>
         onPendingRun?: (callback: () => void) => () => void
+        /** Opt-in automatic update on the first launch after login (#123674). */
+        auto?: {
+          get: () => Promise<DesktopAutoUpdateView>
+          set: (enabled: boolean) => Promise<DesktopAutoUpdateView>
+          claim: () => Promise<DesktopAutoUpdateClaim>
+          report: (report: DesktopAutoUpdateReport) => Promise<DesktopAutoUpdateView>
+        }
       }
       desktopMetrics?: {
         /** Mirror this window's focused profile and its opt-in; false deletes that profile's pending crashes. */
@@ -843,6 +850,45 @@ export type DesktopUpdateDirtyStrategy = 'abort' | 'stash' | 'force'
 
 export interface DesktopUpdateApplyOptions {
   dirtyStrategy?: DesktopUpdateDirtyStrategy
+}
+
+export type DesktopAutoUpdateOutcome =
+  | 'handed-off'
+  | 'updated'
+  | 'up-to-date'
+  | 'failed'
+  | 'skipped-dirty'
+  | 'skipped-unsupported'
+  | 'check-failed'
+  | 'deferred-timeout'
+
+export interface DesktopAutoUpdateAttempt {
+  sessionKey: string
+  at: number
+  outcome: DesktopAutoUpdateOutcome
+  target?: string
+  message?: string
+}
+
+export interface DesktopAutoUpdateView {
+  enabled: boolean
+  supported: boolean
+  lastAttempt: DesktopAutoUpdateAttempt | null
+}
+
+export interface DesktopAutoUpdateClaim {
+  action: 'run' | 'skip' | 'defer'
+  reason: string
+  sessionKey: string
+  retryInMs?: number
+  activeAgents?: number
+}
+
+export interface DesktopAutoUpdateReport {
+  sessionKey: string
+  outcome: DesktopAutoUpdateOutcome
+  target?: string
+  message?: string
 }
 
 export interface DesktopUpdateApplyResult {

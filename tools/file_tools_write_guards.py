@@ -426,24 +426,12 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
 
 
 def _target_regular_file_state(filepath: str, task_id: str = "default") -> str:
-    """``"exists"`` / ``"absent"`` / ``"unavailable"``: is a REGULAR file at
-    *filepath* present WHERE THE WRITE WILL EXECUTE — the task's terminal
-    backend, not the controller's own disk. A target that exists only inside
-    the Docker/SSH/... execution target must count as existing: a host-only
-    stat let text writes destroy remote-only binaries (#122662).
+    """Is a REGULAR file at *filepath* present where the write will execute
+    (the task's backend, not the controller's disk — #122662)?
 
-    The file-ops layer owns the filesystem view. Host-backed envs answer with
-    today's ``Path.is_file`` semantics (an unstat-able path counts as absent —
-    the pre-#122662 OSError -> proceed behaviour); every other backend is
-    probed through its own shell (``ShellFileOperations._probe_regular_file``),
-    where only ``missing``/``not_regular`` prove absence. Anything else is
-    ``"unavailable"``: absence not established, so callers must fail closed.
-
-    Each branch probes the EXACT string its write path would land on,
-    resolution-failure fallback included: the write targets
-    ``write_file(_resolved or path)`` and ``write_file`` then applies its own
-    ``_expand_path`` (the BACKEND's ``$HOME``), so probing the host's tilde
-    expansion here would re-open the #122662 wrong-filesystem bug class.
+    Returns ``"exists"``, ``"absent"`` or ``"unavailable"``. Host-backed envs
+    keep ``Path.is_file`` semantics; anything not proven absent is
+    ``"unavailable"`` and callers must fail closed.
     """
     from tools.file_tools import _file_ops_uses_host_paths, _get_file_ops
     try:

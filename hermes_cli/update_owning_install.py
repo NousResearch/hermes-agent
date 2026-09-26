@@ -18,21 +18,53 @@ import subprocess
 import sys
 
 
-def owning_install_root(project_root: Path) -> Path | None:
-    """The checkout whose in-tree venv this interpreter is, when that is not *project_root*.
+def _lease_managed_owner(venv: Path, root: Path) -> Path | None:
+    """Return a source checkout recorded for a generated PM environment.
 
-    ``None`` when this process runs on its own checkout's interpreter, a venv outside any
-    checkout, or when *project_root* was put on ``PYTHONPATH`` on purpose (a wrapper that
-    runs a dev tree on another interpreter chose that tree; it is not a redirected install).
+    A PM generation is a dependency snapshot, not an update target.  Its
+    ``inputs/.project-root`` record names the source install that created it.
+    """
+    generation = venv.parent
+    if not (generation / ".lease-managed").is_file() or root != generation / "workspace":
+        return None
+    environments = generation.parent
+    if environments.name != "environments":
+        return None
+    try:
+        owner = Path((environments.parent / "inputs" / ".project-root").read_text(
+            encoding="utf-8-sig"
+        ).strip()).resolve()
+    except (OSError, ValueError):
+        return None
+    if owner == root or not (owner / "hermes_cli" / "main.py").is_file():
+        return None
+    git = owner / ".git"
+    try:
+        if not (git.is_dir() or git.read_text(encoding="utf-8-sig").startswith("gitdir:")):
+            return None
+    except OSError:
+        return None
+    return owner
+
+
+def owning_install_root(project_root: Path) -> Path | None:
+    """The source checkout that owns this interpreter when it differs from *project_root*.
+
+    Covers both conventional in-tree virtualenvs and PM's lease-managed
+    workspace snapshots.  A snapshot has no Git metadata and must never be
+    treated as an in-place update target.
     """
     if sys.prefix == sys.base_prefix:
         return None
     venv = Path(sys.prefix).resolve()
-    owner = venv.parent
     root = Path(project_root).resolve()
-    if venv.name not in ("venv", ".venv") or owner == root:
+    if venv.name not in ("venv", ".venv"):
         return None
-    if not (owner / "hermes_cli" / "main.py").is_file():
+    lease_owner = _lease_managed_owner(venv, root)
+    if lease_owner is not None:
+        return lease_owner
+    owner = venv.parent
+    if owner == root or not (owner / "hermes_cli" / "main.py").is_file():
         return None
     chosen = (Path(p).resolve() for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p)
     if root in chosen:

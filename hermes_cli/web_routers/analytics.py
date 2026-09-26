@@ -60,7 +60,7 @@ async def update_config_raw(body: RawConfigUpdate, profile: Optional[str] = None
             # merge omitted sections back from disk.
             # See #62723.
             approvals_mode_changed = _approval_mode_of(parsed) != _approval_mode_of(read_raw_config())
-            save_config(parsed, merge_existing=False)
+            save_config(parsed, merge_existing=False, document_text=body.yaml_text)
         # Same indicator refresh as the schema-driven save.
         if approvals_mode_changed and not _is_other_profile(body.profile or profile):
             _broadcast_gateway_session_info()

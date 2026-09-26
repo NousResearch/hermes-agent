@@ -86,8 +86,13 @@ def _emit_compaction_done(agent: Any) -> None:
     status_callback = getattr(agent, "status_callback", None)
     if not status_callback:
         return
+    try:
+        from agent.status_i18n import translate_status
+        line = translate_status(COMPACTION_DONE_STATUS)
+    except Exception:
+        line = COMPACTION_DONE_STATUS
     with _swallow('status_callback error in compaction completion', exc_info=True):
-        status_callback("compacted", COMPACTION_DONE_STATUS)
+        status_callback("compacted", line)
 
 
 # Every ROUTINE compression status line lives here: suppressed on chat platforms
@@ -141,10 +146,18 @@ def is_compaction_progress_status(text: str | None) -> bool:
     """True for in-progress auto-compaction lifecycle lines (not the done edge).
     The gateway re-tags matches as ``kind="compacting"`` for the whole pause; matching only the marker left
     idle/preflight/retry lines looking hung. ``COMPACTION_DONE_STATUS`` is emitted as ``kind="compacted"`` and
-    must not match here."""
+    must not match here.
+
+    Text is normalised back to English first (``agent.status_i18n``) so localised catalogs classify the same.
+    """
     body = text.strip() if isinstance(text, str) else ""
     if not body:
         return False
+    try:
+        from agent.status_i18n import normalize_status
+        body = normalize_status(body)
+    except Exception:
+        pass
     if COMPACTION_STATUS_MARKER in body:
         return True
     if body == COMPACTION_DONE_STATUS:
@@ -2205,8 +2218,13 @@ def replay_compression_warning(agent: Any) -> None:
     ``__init__``) is finally wired."""
     msg = getattr(agent, "_compression_warning", None)
     if msg and agent.status_callback:
-        # Replayed as a classified diagnostic so every sink applies its own policy snapshot.
         from gateway.warning_notifications import DiagnosticText
+        # Localise the replayed line too (status_i18n short-circuits for en and unknown lines).
+        try:
+            from agent.status_i18n import translate_status
+            msg = translate_status(msg)
+        except Exception:
+            pass
         with contextlib.suppress(Exception):
             agent.status_callback("lifecycle", DiagnosticText(msg))
 

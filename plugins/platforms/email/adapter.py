@@ -630,10 +630,11 @@ class EmailAdapter(BasePlatformAdapter):
         elif sender_addr.lower() not in {a.strip().lower() for a in allowed_raw.split(",") if a.strip()}:
             logger.debug("[Email] Dropping non-allowlisted sender at dispatch: %s", sender_addr)
             return False
-        # Reject spoofed senders (GHSA-rxqh-5572-8m77): the allowlist keys on the attacker-controlled
-        # From:. Only matters when an allowlist GRANTS access and allow-all is off; fail-closed.
-        if (self._require_authenticated_sender and self._allowlist_in_effect()
-                and not self._allow_all_senders() and not msg_data.get("sender_authenticated", False)):
+        # Reject spoofed senders (GHSA-rxqh-5572-8m77). Authentication remains
+        # meaningful under allow-all: a public business inbox may intentionally
+        # accept any sender while still requiring the From identity used by
+        # downstream business authorization to pass SPF/DKIM/DMARC.
+        if self._require_authenticated_sender and not msg_data.get("sender_authenticated", False):
             logger.warning("[Email] Dropping sender with unauthenticated From: %s (%s). If your mail server does not "
                            "stamp Authentication-Results, set platforms.email.require_authenticated_sender: false "
                            "(or EMAIL_TRUST_FROM_HEADER=true) to accept the risk.",

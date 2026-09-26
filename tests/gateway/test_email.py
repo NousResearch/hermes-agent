@@ -199,6 +199,7 @@ class TestDispatchMessage(unittest.TestCase):
             "body": "How do I use lists?",
             "attachments": [],
             "date": "",
+            "sender_authenticated": True,
         }
 
         asyncio.run(adapter._dispatch_message(msg_data))
@@ -226,6 +227,7 @@ class TestDispatchMessage(unittest.TestCase):
             "body": "Please clean my home",
             "attachments": [],
             "date": "Thu, 24 Sep 2026 18:41:23 -0700",
+            "sender_authenticated": True,
         }
 
         asyncio.run(adapter._dispatch_message(msg_data))
@@ -260,6 +262,7 @@ class TestDispatchMessage(unittest.TestCase):
             "body": "Thanks for the help!",
             "attachments": [],
             "date": "",
+            "sender_authenticated": True,
         }
 
         asyncio.run(adapter._dispatch_message(msg_data))
@@ -290,6 +293,7 @@ class TestDispatchMessage(unittest.TestCase):
             "body": "Check this photo",
             "attachments": [{"path": "/tmp/img.jpg", "filename": "img.jpg", "type": "image", "media_type": "image/jpeg"}],
             "date": "",
+            "sender_authenticated": True,
         }
 
         asyncio.run(adapter._dispatch_message(msg_data))
@@ -327,12 +331,8 @@ class TestDispatchMessage(unittest.TestCase):
             adapter._message_handler.assert_not_called()
 
 
-    def test_unauthenticated_allowed_with_allow_all(self):
-        """EMAIL_ALLOW_ALL_USERS=true makes sender identity moot — gate skipped.
-
-        With allow-all and no restrictive allowlist, an unauthenticated sender
-        is forwarded: the operator has explicitly chosen to accept anyone.
-        """
+    def test_unauthenticated_denied_with_allow_all_when_auth_required(self):
+        """Allow-all opens access but does not disable authenticated From checks."""
         import asyncio
         with patch.dict(os.environ, {
             "EMAIL_ALLOW_ALL_USERS": "true",
@@ -359,6 +359,38 @@ class TestDispatchMessage(unittest.TestCase):
                 "date": "",
                 "sender_authenticated": False,
                 "auth_reason": "no Authentication-Results header",
+            }
+
+            asyncio.run(adapter._dispatch_message(msg_data))
+            self.assertEqual(len(captured), 0)
+
+    def test_authenticated_allowed_with_allow_all(self):
+        """A public inbox accepts any sender whose From identity authenticates."""
+        import asyncio
+        with patch.dict(os.environ, {
+            "EMAIL_ALLOW_ALL_USERS": "true",
+        }):
+            os.environ.pop("EMAIL_ALLOWED_USERS", None)
+            os.environ.pop("GATEWAY_ALLOWED_USERS", None)
+            adapter = self._make_adapter()
+            captured = []
+
+            async def capture_handle(event):
+                captured.append(event)
+
+            adapter.handle_message = capture_handle
+            msg_data = {
+                "uid": b"204",
+                "sender_addr": "contractor@elsewhere.com",
+                "sender_name": "Contractor",
+                "subject": "Re: offer",
+                "message_id": "<accepted@elsewhere.com>",
+                "in_reply_to": "",
+                "body": "ACCEPT",
+                "attachments": [],
+                "date": "",
+                "sender_authenticated": True,
+                "auth_reason": "dkim pass",
             }
 
             asyncio.run(adapter._dispatch_message(msg_data))

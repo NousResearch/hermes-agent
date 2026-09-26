@@ -4220,6 +4220,16 @@ class SlackAdapter(BasePlatformAdapter):
         updated_message = event.get("message")
         if not isinstance(updated_message, dict):
             return None
+        previous_message = event.get("previous_message")
+        if (
+            isinstance(previous_message, dict)
+            and not updated_message.get("edited")
+            and previous_message.get("text") == updated_message.get("text")
+        ):
+            # Slack emits ``message_changed`` for thread parents when reply metadata changes.
+            # This is not a user edit and must not replay the parent after a gateway restart,
+            # when the in-memory processed-ts guard is empty.
+            return None
         original_message_ts = str(updated_message.get("ts") or "")
         if original_message_ts and original_message_ts in self._processed_message_ts:
             return None

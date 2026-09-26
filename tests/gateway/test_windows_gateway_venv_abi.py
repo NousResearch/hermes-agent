@@ -104,6 +104,7 @@ def test_pm_already_on_selected_env_touches_nothing(tmp_path, monkeypatch):
     """A gateway booted on the committed generation keeps its environment."""
     monkeypatch.setattr(run.sys, "platform", "win32")
     monkeypatch.setattr(launchers, "resolve_store_python", lambda root: tmp_path / "python.exe")
+    monkeypatch.setattr(env, "committed_venv", lambda root: tmp_path / "committed")
     monkeypatch.setattr(env, "running_from_selected_environment", lambda root: True)
     old_path = list(sys.path)
     old_venv = run.os.environ.get("VIRTUAL_ENV")
@@ -126,7 +127,10 @@ def test_pm_uses_selected_venv_only(tmp_path, monkeypatch):
     monkeypatch.setattr(run.sys, "platform", "win32")
     monkeypatch.setattr(launchers, "resolve_store_python", lambda root: tmp_path / "python.exe")
     monkeypatch.setattr(env, "running_from_selected_environment", lambda root: False)
-    monkeypatch.setattr(env, "selected_venv", lambda root: selected)
+    monkeypatch.setattr(env, "committed_venv", lambda root: selected)
+    # selected_venv would fall back to the stale tree when unrecorded; the
+    # helper must never consult it on the PM branch.
+    monkeypatch.setattr(env, "selected_venv", lambda root: stale)
     monkeypatch.setenv("VIRTUAL_ENV", str(stale))
     old_path = list(sys.path)
     old_pythonpath = run.os.environ.get("PYTHONPATH")
@@ -142,3 +146,28 @@ def test_pm_uses_selected_venv_only(tmp_path, monkeypatch):
             run.os.environ.pop("PYTHONPATH", None)
         else:
             run.os.environ["PYTHONPATH"] = old_pythonpath
+
+
+def test_pm_no_committed_generation_injects_nothing(tmp_path, monkeypatch):
+    """PM-managed but nothing committed: the stale tree never reaches sys.path.
+
+    Pins the #122183 review invariant: facts.json carries
+    packages.python.entry (pm_managed) but no packages.venv.environment, so
+    committed_venv is None while selected_venv would silently fall back to
+    <root>/venv. The helper must skip injection rather than load the stale
+    tree under the store Python.
+    """
+    stale = tmp_path / "stale"
+    _write_cfg(stale, _other_version())
+    monkeypatch.setattr(run.sys, "platform", "win32")
+    monkeypatch.setattr(launchers, "resolve_store_python", lambda root: tmp_path / "python.exe")
+    monkeypatch.setattr(env, "committed_venv", lambda root: None)
+    monkeypatch.setattr(env, "selected_venv", lambda root: stale)
+    monkeypatch.setenv("VIRTUAL_ENV", str(stale))
+    old_path = list(sys.path)
+    try:
+        run._ensure_windows_gateway_venv_imports()
+        entries = [entry.lower() for entry in sys.path]
+        assert not any(str(stale).lower() in entry for entry in entries)
+    finally:
+        sys.path[:] = old_path

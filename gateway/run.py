@@ -463,19 +463,27 @@ def _ensure_windows_gateway_venv_imports() -> None:
     candidates: list[Path] = []
     # PM-managed installs run on the committed generation: the pre-PM venv
     # left on disk belongs to another Python, so it must never shadow the
-    # committed tree (mirrors cron/scheduler_script.py selection, #122183).
+    # committed tree. Use committed_venv (never the in-tree venv), not
+    # selected_venv whose base_venv fallback silently returns <root>/venv
+    # when no generation is recorded (#122183 review).
     try:
         from hermes_cli._launchers import resolve_store_python
-        from pm.environments import running_from_selected_environment, selected_venv
+        from pm.environments import committed_venv, running_from_selected_environment
 
         pm_managed = resolve_store_python(project_root) is not None
     except Exception:
         pm_managed = False
     if pm_managed:
         try:
+            committed = committed_venv(project_root)
+        except Exception:
+            committed = None
+        if committed is None:
+            return
+        try:
             if running_from_selected_environment(project_root):
                 return
-            candidates.append(selected_venv(project_root))
+            candidates.append(committed)
         except Exception:
             pass
     if not candidates:

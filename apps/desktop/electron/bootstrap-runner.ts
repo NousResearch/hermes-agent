@@ -42,6 +42,7 @@ import path from 'node:path'
 // with no tsconfig path resolution (see scripts/bundle-electron-main.mjs).
 import { stripAnsi } from '../../shared/src/ansi'
 
+import { backfillWindowsChildEnv } from './backend-env'
 import { hiddenWindowsChildOptions } from './windows-child-options'
 
 const IS_WINDOWS = process.platform === 'win32'
@@ -489,12 +490,14 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
       fullArgs,
       hiddenWindowsChildOptions({
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: {
+        // A depleted parent env leaves PowerShell without its profile/system
+        // vars — backfill each missing one from os.homedir() (#122384).
+        env: backfillWindowsChildEnv({
           ...process.env,
           // Pass HERMES_HOME through so install.ps1 respects the caller's
           // choice rather than re-computing the default.
           HERMES_HOME: hermesHome || process.env.HERMES_HOME || ''
-        }
+        })
       })
     )
 

@@ -224,3 +224,48 @@ test('Windows matches profile homes and dotenv names case-insensitively', () => 
   assert.deepEqual(scoped('default'), currentEnv)
   assert.deepEqual(scoped('urbot'), { HERMES_HOME: currentEnv.HERMES_HOME, Path: 'C:\\Windows' })
 })
+// A depleted parent env (GUI-launch gap, scrubbed service context) must not
+// leave Windows children without profile/system vars: PowerShell, the
+// --version probe and the backend itself all need them (#122384).
+test('Windows backend env backfills profile and system vars missing from a depleted parent env', () => {
+  const env = buildDesktopBackendEnv({
+    currentEnv: { Path: 'C:\\Windows\\System32' },
+    platform: 'win32',
+    homedir: 'C:\\Users\\test'
+  })
+
+  assert.equal(env.USERPROFILE, 'C:\\Users\\test')
+  assert.equal(env.LOCALAPPDATA, 'C:\\Users\\test\\AppData\\Local')
+  assert.equal(env.APPDATA, 'C:\\Users\\test\\AppData\\Roaming')
+  assert.equal(env.HOMEDRIVE, 'C:')
+  assert.equal(env.HOMEPATH, '\\Users\\test')
+  assert.equal(env.SystemRoot, 'C:\\Windows')
+})
+
+test('Windows backend env backfill preserves explicit values case-insensitively', () => {
+  const env = buildDesktopBackendEnv({
+    currentEnv: {
+      Path: 'C:\\Windows\\System32',
+      userprofile: 'D:\\custom',
+      SystemRoot: 'D:\\Win'
+    },
+    platform: 'win32',
+    homedir: 'C:\\Users\\test'
+  })
+
+  assert.equal(env.userprofile, 'D:\\custom')
+  assert.equal(env.USERPROFILE, undefined)
+  assert.equal(env.SystemRoot, 'D:\\Win')
+  assert.equal(env.HOMEDRIVE, 'C:')
+})
+
+test('POSIX backend env is untouched by the Windows backfill', () => {
+  const env = buildDesktopBackendEnv({
+    currentEnv: { PATH: '/usr/bin:/bin' },
+    platform: 'darwin',
+    homedir: '/Users/test'
+  })
+
+  assert.equal(env.USERPROFILE, undefined)
+  assert.equal(env.SystemRoot, undefined)
+})

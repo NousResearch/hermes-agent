@@ -25,6 +25,10 @@ You can attach multiple images before sending — each gets its own badge. Press
 
 Images are saved to `~/.hermes/images/` as PNG files with timestamped filenames.
 
+## Video Attachments
+
+Video files sent to messaging platforms are saved to the media cache and the agent is told the path. If `auxiliary.video` is configured in `config.yaml`, attached videos are also **auto-analyzed** by the video auxiliary model and a concise description (chronology, on-screen text, motion) is prepended to the message — see [Video Analysis](/user-guide/configuration#video-analysis). Either way, the agent can inspect any video with the `video_analyze` tool.
+
 ## Paste Methods
 
 How you attach an image depends on your terminal environment. Not all methods work everywhere — here's the full breakdown:

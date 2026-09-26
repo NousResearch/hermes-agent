@@ -39,6 +39,14 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
+# Auto-analysis prompt for inbound video attachments (video_input_mode text/auto).
+VIDEO_ANALYSIS_PROMPT = (
+    "Concisely describe this video in 3-6 sentences (~250 English words). "
+    "Cover the main subject and actions in chronological order, any visible text/UI "
+    "(including brief or flashing elements), motion and transitions, and the overall "
+    "context. Note roughly when key events happen. Skip decorative details."
+)
+
 
 def discord_triggering_note(message_id: Any) -> str:
     """Model-facing routing note for a Discord turn (rides the API-bound user message only)."""
@@ -1716,6 +1724,8 @@ class GatewayInboundMixin:
             message_text = await self._enrich_inbound_images(source, session_key, message_text, image_paths)
         if audio_paths:
             message_text = await self._enrich_inbound_voice(event, source, message_text, audio_paths)
+        if video_paths:
+            message_text = await self._enrich_inbound_videos(source, session_key, message_text, video_paths)
         message_text = self._prepend_inbound_media_file_notes(message_text, audio_file_paths, video_paths)
         message_text = self._prepend_inbound_document_notes(event, message_text)
         if "@" in message_text:
@@ -1991,6 +2001,102 @@ class GatewayInboundMixin:
                     f"[The user sent an image but something went wrong when I "
                     f"tried to look at it~ You can try examining it yourself "
                     f"with vision_analyze using image_url: {path}]"
+                )
+            enriched_parts.append(note)
+        if not enriched_parts:
+            return user_text
+        prefix = "\n\n".join(enriched_parts)
+        return f"{prefix}\n\n{user_text}" if user_text else prefix
+
+    def _decide_video_enrichment_mode(self, user_config: Optional[dict] = None) -> str:
+        """``agent.video_input_mode`` resolution for inbound video attachments.
+
+        "off" → path note only; "text" → always auto-analyze via video_analyze; "auto" →
+        auto-analyze only when auxiliary.video is explicitly configured (provider/model/
+        base_url set), so a default install never silently ships every video attachment to
+        an auto-picked aux backend. The video_analyze tool remains available either way.
+        """
+        # Presence matters: merged defaults include provider='auto', which is not an
+        # explicit video opt-in. Use the gateway's unmerged effective user layer.
+        from hermes_cli.config_effective import load_user_config_effective
+        from hermes_cli.config import cfg_get
+
+        cfg = user_config if user_config is not None else load_user_config_effective()
+        agent_cfg = cfg_get(cfg, "agent", default={}) or {}
+        aux_cfg = cfg_get(cfg, "auxiliary", "video", default={}) or {}
+        if not isinstance(agent_cfg, dict):
+            agent_cfg = {}
+        if not isinstance(aux_cfg, dict):
+            aux_cfg = {}
+        mode = str(agent_cfg.get("video_input_mode") or "auto").strip().lower()
+        if mode in ("off", "text"):
+            return mode
+        provider = str(aux_cfg.get("provider") or "").strip().lower()
+        if (provider and provider != "auto") or any(
+            str(aux_cfg.get(k) or "").strip() for k in ("model", "base_url")
+        ):
+            return "text"
+        return "off"
+
+    async def _enrich_inbound_videos(
+        self, source: SessionSource, session_key: str, message_text: str, video_paths: list[str]
+    ) -> str:
+        """Auto-analyze attached videos per video_input_mode; "off" leaves the path note only."""
+        mode = self._decide_video_enrichment_mode()
+        if mode == "off":
+            logger.info("Video routing: off (no auxiliary.video config). Path note only.")
+            return message_text
+        logger.info(
+            "Video routing: %s (mode=%s). Auto-analyzing %d video(s) via video_analyze.",
+            "text", mode, len(video_paths),
+        )
+        # Mirror image enrichment: bind the session's resolved runtime before the aux call.
+        video_runtime = None
+        try:
+            turn_model, runtime_kwargs = self._resolve_session_agent_runtime(
+                source=source, session_key=session_key,
+            )
+            video_runtime = {**(runtime_kwargs or {}), "model": turn_model}
+        except Exception:
+            logger.debug("video enrichment: session runtime resolution failed", exc_info=True)
+
+        from agent.auxiliary_client import scoped_runtime_main
+
+        with scoped_runtime_main(video_runtime):
+            return await self._enrich_message_with_video(message_text, video_paths)
+
+    async def _enrich_message_with_video(self, user_text: str, video_paths: List[str]) -> str:
+        """Auto-analyze user-attached videos with video_analyze and prepend the descriptions.
+        Mirrors _enrich_message_with_vision: description *and* local path are injected so the
+        model understands the video without a tool call and can re-examine it with video_analyze."""
+        from tools.vision_tools import video_analyze_tool
+        from agent.memory_manager import sanitize_context
+
+        analysis_prompt = VIDEO_ANALYSIS_PROMPT
+        enriched_parts = []
+        for path in video_paths:
+            try:
+                logger.debug("Auto-analyzing user video: %s", path)
+                result = json.loads(await video_analyze_tool(video_url=path, user_prompt=analysis_prompt))
+                if result.get("success"):
+                    description = sanitize_context(result.get("analysis", ""))
+                    note = (
+                        f"[The user sent a video. Here's what happens in it:\n{description}]\n"
+                        f"[If you need a closer look, use video_analyze with "
+                        f"video_url: {path}]"
+                    )
+                else:
+                    note = (
+                        "[The user sent a video but I couldn't analyze it "
+                        "this time. You can try examining it yourself "
+                        f"with video_analyze using video_url: {path}]"
+                    )
+            except Exception as e:
+                logger.error("Video auto-analysis error: %s", e)
+                note = (
+                    "[The user sent a video but something went wrong when I "
+                    "tried to analyze it. You can try examining it yourself "
+                    f"with video_analyze using video_url: {path}]"
                 )
             enriched_parts.append(note)
         if not enriched_parts:

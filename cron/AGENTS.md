@@ -70,7 +70,10 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   fail-closed instead of that profile's live adapters. The gate compares the liveness PID against
   `os.getpid()` — this process holds the launch `gateway.pid` AND publishes every served profile
   in `served_profiles`, so a bare liveness answer would stand cron down host-wide.
-- Cron sessions pass `skip_memory=True`; memory providers intentionally do not run during cron.
+- Cron sessions pass `skip_memory=False`; memory runs the same as any other agent (kanban,
+  delegate, gateway) — MEMORY.md/USER.md load and the memory tool is available unless a per-job
+  or user-level toolset denylist strips it (see `ef04d846e9`, `cron/scheduler.py::
+  _resolve_cron_disabled_toolsets`).
 - Cron execution has its own session. Eligible continuable deliveries may mirror or seed the
   reply-facing conversation: origin, origin-less home fallback, user-written bare-platform home,
   or opted-in explicit targets. `all` expansions do not gain home mirror eligibility. Mirrored

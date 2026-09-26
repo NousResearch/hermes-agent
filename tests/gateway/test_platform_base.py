@@ -453,6 +453,16 @@ class TestUniversalMediaEgress:
         assert media == [("/nonexistent/report.pdf", False)]
         assert "MEDIA:" not in cleaned
 
+    def test_spaced_known_extension_is_one_attachment(self, tmp_path):
+        """A known-extension path with a space is one file, even when resolving
+        it yields a different string (symlink prefix, or Windows separators)."""
+        report = tmp_path / "my report 2026.pdf"
+        report.write_bytes(b"%PDF")
+        media, cleaned = BasePlatformAdapter.extract_media(f"MEDIA:{report}")
+        assert len(media) == 1
+        assert os.path.realpath(media[0][0]) == os.path.realpath(report)
+        assert "MEDIA:" not in cleaned
+
 
 class TestMediaDeliveryPathValidation:
     def _patch_roots(self, monkeypatch, *roots):

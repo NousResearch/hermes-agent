@@ -594,13 +594,50 @@ def _redact_approval_command(cmd: "str | None") -> str:
 
 def _format_exec_approval_fallback(
     command: str, description: str, command_prefix: str, *, allow_permanent: bool = True,
-    allow_session: bool = True, smart_denied: bool = False) -> str:
+    allow_session: bool = True, smart_denied: bool = False, max_len: Optional[int] = None,
+    len_fn: Callable[[str], int] = len) -> str:
     """Render the text fallback from approval capabilities, not platform names. Same words as
     the button card (``BasePlatformAdapter._format_exec_approval``), plus the typed ``/approve``
-    steps a surface without buttons needs."""
+    steps a surface without buttons needs.
+
+    ``max_len`` (in ``len_fn`` units) is the adapter's message cap: the command preview shrinks
+    below ``EA_FALLBACK_CMD_BUDGET`` so the whole prompt goes out as one message, since not every
+    adapter splits (SMS sends one body, and Twilio rejects one over 1600). It never shrinks below
+    ``EA_FALLBACK_CMD_FLOOR``, the old fixed cut; an unbounded ``description`` can still overflow."""
     from gateway.platforms.base_exec_approval import (
-        EA_HEADER_TEXT, EA_REASON_LABEL_TEXT, approval_timeout_seconds, format_approval_deadline_line)
-    cmd_preview = command[:200] + "..." if len(command) > 200 else command
+        EA_FALLBACK_CMD_BUDGET, EA_FALLBACK_CMD_FLOOR, approval_timeout_seconds, fit_command_preview,
+        format_approval_deadline_line)
+    deadline_line = format_approval_deadline_line(approval_timeout_seconds())  # reads config: once
+
+    def render(budget: int) -> str:
+        return _render_exec_approval_fallback(
+            fit_command_preview(command, budget), description, command_prefix, deadline_line,
+            allow_permanent=allow_permanent, allow_session=allow_session, smart_denied=smart_denied)
+
+    text = render(EA_FALLBACK_CMD_BUDGET)
+    if not max_len or len_fn(text) <= max_len:
+        return text
+    if len(command) <= EA_FALLBACK_CMD_BUDGET:
+        # The whole command did not fit, so every fitting preview is a cut one; bisect below its length.
+        hi = len(command) - 1
+    else:
+        hi = EA_FALLBACK_CMD_BUDGET - 1
+    lo = EA_FALLBACK_CMD_FLOOR
+    if hi < lo or len_fn(render(lo)) > max_len:
+        return render(min(lo, len(command)))
+    while lo < hi:  # a cut preview's rendered length never falls as its budget grows, so bisect it
+        mid = (lo + hi + 1) // 2
+        if len_fn(render(mid)) <= max_len:
+            lo = mid
+        else:
+            hi = mid - 1
+    return render(lo)
+
+
+def _render_exec_approval_fallback(
+    cmd_preview: str, description: str, command_prefix: str, deadline_line: str, *,
+    allow_permanent: bool, allow_session: bool, smart_denied: bool) -> str:
+    from gateway.platforms.base_exec_approval import EA_HEADER_TEXT, EA_REASON_LABEL_TEXT
     heading = ("⚠️ **Smart DENY — owner override for one operation:**" if smart_denied
                else f"⚠️ **{EA_HEADER_TEXT}**")
 
@@ -613,7 +650,7 @@ def _format_exec_approval_fallback(
     return (
         f"{heading}\n```\n{cmd_preview}\n```\n{EA_REASON_LABEL_TEXT}: {description}\n\n"
         + ", ".join(choices[:-1]) + f", or {choices[-1]}.\n"
-        + format_approval_deadline_line(approval_timeout_seconds()))
+        + deadline_line)
 
 # Ordered: rate-limit beats auth beats policy beats connection; first match wins. Rate-limit goes
 # first because a quota/429 envelope often also carries an auth-shaped preamble ("Provider

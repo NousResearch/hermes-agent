@@ -68,16 +68,19 @@ def _is_recurring(job: Dict[str, Any]) -> bool:
     return job.get("schedule", {}).get("kind") in {"cron", "interval"}
 
 
+def _ladder_applies(job: Dict[str, Any]) -> bool:
+    """The ladder's applicability gate: recurring, not paused, and enabled in config."""
+    return _is_recurring(job) and job.get("state") != "paused" and retry_enabled()
+
+
 def _ladder_instant(job: Dict[str, Any], natural_next: Optional[datetime],
                     now: datetime) -> Optional[datetime]:
     """The ladder instant ``plan_retry`` parks for this flagged failure, or None when it
     parks nothing: not recurring, paused, disabled, ladder exhausted, or the schedule's
     own *natural_next* fires at or before the rung. The single source of that decision
     for ``plan_retry`` and ``will_retry``."""
-    if not _is_recurring(job) or job.get("state") == "paused":
-        return None
     attempt = int((job.get(STATE_KEY) or {}).get("attempt") or 0)
-    if attempt >= len(RETRY_DELAYS_SECONDS) or not retry_enabled():
+    if attempt >= len(RETRY_DELAYS_SECONDS) or not _ladder_applies(job):
         return None
     # late: jobs imports this module's helpers
     from cron.jobs import _instant_at_or_before, _seconds_after
@@ -132,8 +135,7 @@ def plan_retry(job: Dict[str, Any]) -> bool:
     retry_dt = _ladder_instant(job, _parse_aware(job.get("next_run_at")), _hermes_now())
     attempt = int((job.get(STATE_KEY) or {}).get("attempt") or 0)
     if retry_dt is None:
-        if (attempt >= len(RETRY_DELAYS_SECONDS) and _is_recurring(job)
-                and job.get("state") != "paused" and retry_enabled()):
+        if attempt >= len(RETRY_DELAYS_SECONDS) and _ladder_applies(job):
             # Ladder exhausted: fall back to the natural schedule and reset so the NEXT
             # occurrence gets a fresh ladder if the network is still down.
             logger.warning(

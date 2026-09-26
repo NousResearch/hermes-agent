@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import {
+  collectThemeBridge,
   directiveFrameHeight,
   frameSizeFromMessage,
   intentFromMessage,
@@ -79,6 +80,31 @@ describe('themePrelude', () => {
 
   it('omits the font rule when no font resolved', () => {
     expect(themePrelude({}, '', 'light')).not.toContain('font-family')
+  })
+})
+
+describe('collectThemeBridge', () => {
+  afterEach(() => {
+    document.documentElement.className = ''
+    delete document.documentElement.dataset.hermesMode
+  })
+
+  // #123048: the frame's color-scheme must come from the same resolved
+  // appearance as the injected tokens, not from the separate `.dark` class
+  // React's useIsDark() reads — that class can still hold last render's
+  // value for a paint after applyTheme() has already updated data-hermes-mode.
+  it('reads color-scheme from data-hermes-mode, not the .dark class', () => {
+    document.documentElement.dataset.hermesMode = 'dark'
+    document.documentElement.classList.remove('dark')
+
+    expect(collectThemeBridge().colorScheme).toBe('dark')
+  })
+
+  it('falls back to light when the mode attribute disagrees the other way', () => {
+    document.documentElement.dataset.hermesMode = 'light'
+    document.documentElement.classList.add('dark')
+
+    expect(collectThemeBridge().colorScheme).toBe('light')
   })
 })
 

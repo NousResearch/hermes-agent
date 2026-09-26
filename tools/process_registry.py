@@ -563,6 +563,7 @@ class ProcessSession:
     watch_patterns: List[str] = field(default_factory=list)
     heartbeat_seconds: int = 0                  # 0 = off; else a "heartbeat" event every N s while running
     total_output_chars: int = 0                 # Chars ever ingested (the buffer is a rolling tail)
+    last_output_at: float = 0.0                 # time.time() of the last ingested chunk (0 = none yet)
     _heartbeat_last: float = field(default=0.0, repr=False)          # time of the last heartbeat (or spawn)
     _heartbeat_total_at_last: int = field(default=0, repr=False)     # total_output_chars at that moment
     _heartbeat_seq: int = field(default=0, repr=False)
@@ -591,6 +592,7 @@ class ProcessSession:
         with self._lock:
             self.output_buffer += text
             self.total_output_chars += len(text)
+            self.last_output_at = time.time()
             if len(self.output_buffer) > self.max_output_chars:
                 self.output_buffer = self.output_buffer[-self.max_output_chars:]
 
@@ -1326,8 +1328,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
         temp_dir = self._env_temp_dir(env)
         log_path, pid_path, exit_path = (f"{temp_dir}/hermes_bg_{session.id}.{ext}" for ext in ("log", "pid", "exit"))
         q = shlex.quote
+        # Mirror _spawn_env: sandbox children don't inherit the local spawn's
+        # PYTHONUNBUFFERED, so python jobs ran block-buffered and a kill at the
+        # cap lost everything printed so far (issue #121354). Export first so it
+        # propagates through the wrapper into `bash -lc` and its children.
         bg_command = (
-            f"mkdir -p {q(temp_dir)} && "
+            f"export PYTHONUNBUFFERED=1 && mkdir -p {q(temp_dir)} && "
             f"( nohup bash -lc {q(command)} > {q(log_path)} 2>&1; "
             f"rc=$?; printf '%s\\n' \"$rc\" > {q(exit_path)} ) & "
             f"echo $! > {q(pid_path)} && cat {q(pid_path)}")
@@ -1530,6 +1536,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 if delta:
                     with session._lock:
                         session.output_buffer += delta
+                        session.last_output_at = time.time()
                         if len(session.output_buffer) > session.max_output_chars:
                             session.output_buffer = session.output_buffer[-session.max_output_chars:]
                     self._check_watch_patterns(session, delta)
@@ -1993,6 +2000,14 @@ class ProcessRegistry(ProcessCheckpointMixin):
     def _status_head(session: ProcessSession) -> dict:
         return {"session_id": session.id, "command": session.command, "status": "exited" if session.exited else "running"}
 
+    @staticmethod
+    def _output_age_s(session: "ProcessSession") -> float:
+        """Seconds since the last ingested output chunk (the "last line
+        received" heartbeat for polling clients); a session that never printed
+        reports its full uptime so silent-but-running reads as stale (#121354)."""
+        ref = session.last_output_at or session.started_at
+        return round(max(0.0, time.time() - ref), 1)
+
     def poll(self, session_id: str) -> dict:
         """Check status and get new output for a background process."""
         session = self.get(session_id)
@@ -2001,9 +2016,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
         self._reconcile_local_exit(session)  # orphaned-pipe reader guard
         with session._lock:
             output_preview = _output_tail(session, 1000)
+            output_age = self._output_age_s(session)
         result = {
             **self._status_head(session), "pid": session.pid,
-            "uptime_seconds": int(time.time() - session.started_at), "output_preview": output_preview}
+            "uptime_seconds": int(time.time() - session.started_at), "output_preview": output_preview,
+            "last_output_age_s": output_age}
         if session.exited:
             result.update(self._exit_fields(session))
             # Read-only: record in _poll_observed (CLI inline dedup) but NOT in
@@ -2102,6 +2119,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             session._completion_event.wait(timeout=min(1.0, remaining))
         result = {
             "status": "timeout", "command": session.command, "output": _output_tail(session, 1000),
+            "last_output_age_s": self._output_age_s(session),
             # Not a failure — models re-issued identical waits after misreading this as an error.
             "process_running": True}
         base_note = (

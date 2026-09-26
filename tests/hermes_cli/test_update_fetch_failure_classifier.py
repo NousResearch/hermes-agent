@@ -155,3 +155,18 @@ def test_update_and_upstream_network_calls_disable_terminal_prompts(monkeypatch,
         assert env["GIT_ASKPASS"] == "fixture-askpass", args
         assert env["GIT_CONFIG_COUNT"] == "1", args
         assert env["GIT_CONFIG_VALUE_0"] == "fixture-helper", args
+
+
+class TestTimeoutIsNotANetworkOutage:
+    def test_wall_clock_kill_reports_slow_transfer_not_dead_remote(self):
+        # The updater kills fetches on a 300s wall-clock cap; on a stale
+        # shallow install the transport is healthy and mid-transfer when the
+        # kill lands (#123254), so the diagnosis must not send the user
+        # debugging their network.
+        msg = update_cmd._classify_fetch_failure(
+            "git fetch was still running after the 300s network limit"
+            " (slow transfer, not a dead remote — a larger fetch may need"
+            " `hermes update` again or a manual `git fetch`)")
+        assert "update time limit" in msg
+        assert "not a broken connection" in msg
+        assert "Network error" not in msg

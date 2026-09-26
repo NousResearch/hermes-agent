@@ -132,6 +132,52 @@ class TestBuildScaleNote:
         assert "(300, 200)" in note
         assert "crop" in note.lower()
 
+    def test_mild_downscale_stays_silent_about_legibility(self):
+        # 1.5x keeps printed text usable — the coordinate note stays alone.
+        note = _build_scale_note(
+            {"orig_width": 1050, "orig_height": 840,
+             "new_width": 700, "new_height": 560},
+            None,
+        )
+        assert note is not None
+        assert "1.50" in note
+        assert "Small printed text" not in note
+
+    def test_large_downscale_warns_about_small_text(self):
+        # #124509: a 4x downscale of an invoice photo misread "30" as "9".
+        note = _build_scale_note(
+            {"orig_width": 3539, "orig_height": 2499,
+             "new_width": 884, "new_height": 624},
+            None,
+        )
+        assert note is not None
+        assert "4.00" in note                      # coordinate mapping still disclosed
+        assert "Small printed text" in note        # and now the legibility warning
+        assert "do not" in note and "region" in note
+        assert "1400" in note                      # the safe crop edge
+        assert "quote exact figures" in note
+
+    def test_legibility_warning_only_keyed_on_the_larger_axis(self):
+        # An extreme aspect ratio must not trip the warning on its thin axis alone.
+        note = _build_scale_note(
+            {"orig_width": 2000, "orig_height": 20,
+             "new_width": 500, "new_height": 20},
+            None,
+        )
+        assert note is not None
+        assert "4.00" in note
+        assert "Small printed text" in note
+
+    def test_legibility_warning_combined_with_crop_offset(self):
+        note = _build_scale_note(
+            {"orig_width": 3539, "orig_height": 2499,
+             "new_width": 884, "new_height": 624},
+            {"x": 10, "y": 20, "width": 100, "height": 100},
+        )
+        assert note is not None
+        assert "Small printed text" in note
+        assert "(10, 20)" in note                   # crop disclosure not crowded out
+
 
 def _mock_llm_response(text: str = "described"):
     mock_response = MagicMock()

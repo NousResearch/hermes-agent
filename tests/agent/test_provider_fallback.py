@@ -463,6 +463,45 @@ class TestFallbackExtraBodyReResolution:
         self._activate(agent)
         assert agent.request_overrides.get("temperature") == 0.2
 
+    def test_bare_named_entry_brings_its_extra_body_and_takes_it_away(self, tmp_path, monkeypatch):
+        """A chain entry naming a ``providers:`` key bare (``provider: relay-b``) is supported like
+        ``custom:relay-b``: activating it applies that entry's extra_body, and moving on to a built-in
+        drops it again instead of sending relay-b's body keys to OpenRouter."""
+        import hermes_yaml as yaml
+        from hermes_cli.config import load_config
+        from hermes_cli.fallback_config import get_fallback_chain
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        (home / "config.yaml").write_text(yaml.safe_dump({
+            "providers": {
+                "relay-a": {"base_url": "http://127.0.0.1:18001/v1", "default_model": "model-a",
+                            "extra_body": {"primary_only": 1}},
+                "relay-b": {"base_url": "http://127.0.0.1:18002/v1", "default_model": "model-b",
+                            "extra_body": {"chat_template_kwargs": {"enable_thinking": False}}},
+            },
+            "fallback_providers": [{"provider": "relay-b", "model": "model-b"},
+                                   {"provider": "openrouter", "model": "openai/gpt-5"}],
+        }))
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test-0000000000")
+        rt = resolve_runtime_provider(requested="custom:relay-a", target_model="model-a")
+        with (patch("model_tools.get_tool_definitions", return_value=[]),
+              patch("model_tools.check_toolset_requirements", return_value={})):
+            agent = AIAgent(api_key=rt["api_key"], base_url=rt["base_url"], provider=rt["provider"], model="model-a",
+                            quiet_mode=True, skip_context_files=True, skip_memory=True,
+                            fallback_model=get_fallback_chain(load_config()),
+                            request_overrides=rt.get("request_overrides"))
+
+        with patch("agent.model_metadata.get_model_context_length", return_value=128_000):
+            assert agent._try_activate_fallback() is True
+            assert agent.provider == "relay-b"
+            assert agent.request_overrides.get("extra_body") == {"chat_template_kwargs": {"enable_thinking": False}}
+            assert agent._try_activate_fallback() is True
+        assert agent.provider == "openrouter"
+        assert "extra_body" not in agent.request_overrides
+
 
 # ── MoA preset as a fallback entry (#112525, #112623) ─────────────────────
 

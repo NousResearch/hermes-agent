@@ -12,6 +12,8 @@ condition agent_init._merge_custom_provider_extra_body uses at build time), so a
 extra_body configured for another model.
 """
 
+import pytest
+
 import agent.agent_runtime_helpers as arh
 
 
@@ -115,3 +117,63 @@ def test_switch_endpoint_mismatch_does_not_inherit():
     )
     arh._apply_switched_provider_request_overrides(a, "custom:main-think")
     assert "extra_body" not in a.request_overrides  # base_url mismatch -> cleared
+
+
+
+_NAMED_HOME_CONFIG = """
+providers:
+  relay:
+    base_url: http://127.0.0.1:18002/v1
+    default_model: relay-model
+    extra_body: {chat_template_kwargs: {enable_thinking: false}}
+  vllm-no-think:
+    name: vLLM No-Think
+    base_url: http://127.0.0.1:18005/v1
+    model: qwen
+    extra_body: {chat_template_kwargs: {enable_thinking: false}}
+  vllm:
+    name: vLLM
+    base_url: http://127.0.0.1:18005/v1
+    model: qwen
+custom_providers:
+  - name: My Relay
+    base_url: http://127.0.0.1:18003/v1
+    model: legacy-model
+    extra_body: {top_k: 20}
+"""
+
+
+@pytest.mark.parametrize("typed, model", [("relay", "relay-model"), ("My Relay", "legacy-model"), ("vllm", "qwen")])
+def test_agent_carries_the_extra_body_its_runtime_resolver_builds(tmp_path, monkeypatch, typed, model):
+    """Built for a named provider, and switched to it with ``/model --provider <typed>``, the agent
+    sends exactly the extra_body ``resolve_runtime_provider`` builds for that provider. The switch
+    hands over the bare ``providers:`` key (``relay``) or a spaced legacy name's slug
+    (``custom:my-relay``); the build sees the billing class ``custom`` with the entry only in
+    ``requested_provider`` (``vllm`` shares its endpoint and model with ``vllm-no-think``)."""
+    from unittest.mock import patch
+
+    from hermes_cli.config import get_compatible_custom_providers, load_config
+    from hermes_cli.providers import resolve_provider_full
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from run_agent import AIAgent
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(_NAMED_HOME_CONFIG)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    cfg = load_config()
+    custom_providers = get_compatible_custom_providers(cfg)
+    identity = resolve_provider_full(typed, cfg.get("providers"), custom_providers).id
+    runtime = resolve_runtime_provider(requested=identity, target_model=model)
+    expected = (runtime.get("request_overrides") or {}).get("extra_body")
+
+    with (patch("model_tools.get_tool_definitions", return_value=[]),
+          patch("model_tools.check_toolset_requirements", return_value={})):
+        agent = AIAgent(api_key=runtime["api_key"], base_url=runtime["base_url"], provider=runtime["provider"],
+                        requested_provider=runtime.get("requested_provider"), model=model, quiet_mode=True,
+                        skip_context_files=True, skip_memory=True, request_overrides=runtime.get("request_overrides"))
+    assert agent.request_overrides.get("extra_body") == expected
+
+    agent.request_overrides = {"extra_body": {"stale": 1}}
+    arh._apply_switched_provider_request_overrides(agent, identity)
+    assert agent.request_overrides.get("extra_body") == expected

@@ -25,6 +25,7 @@ export function trackCatalogPointer(root: HTMLElement) {
       if (bottom < 0 || top > innerHeight) {
         return
       }
+
       const px = Math.min(Math.max(x, left), right)
       const py = Math.min(Math.max(y, top), bottom)
       card.style.setProperty('--catalog-x', `${((px - left) / width) * 100}%`)

@@ -449,6 +449,9 @@ class ModelSwitchResult:
     api_key: str = ""
     base_url: str = ""
     api_mode: str = ""
+    # True when base_url was discovered from the managed local runtime's state rather than
+    # taken from configuration; such an endpoint is live state and must not be persisted.
+    managed_endpoint: bool = False
     request_overrides: Optional[dict] = None
     error_message: str = ""
     warning_message: str = ""
@@ -1193,6 +1196,7 @@ class _Switch:
     api_key: str = ""
     base_url: str = ""
     api_mode: str = ""
+    managed_endpoint: bool = False
     validation_headers: dict = field(default_factory=dict)
     suppress_ollama_headers: bool = False
     validation: dict = field(default_factory=dict)
@@ -1215,6 +1219,7 @@ class _Switch:
         rt = resolve_runtime_provider(target_model=self.new_model, **kwargs)
         self.api_key, self.base_url = rt.get("api_key", ""), rt.get("base_url", "")
         self.api_mode = rt.get("api_mode", "")
+        self.managed_endpoint = rt.get("source") == "local-runtime"
         self.validation_headers = rt.get("extra_headers") or self.validation_headers
 
 
@@ -1734,6 +1739,7 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
     return ModelSwitchResult(
         success=True, new_model=st.new_model, target_provider=st.target_provider,
         provider_changed=st.provider_changed, api_key=st.api_key, base_url=st.base_url, api_mode=st.api_mode,
+        managed_endpoint=st.managed_endpoint,
         request_overrides=dict(request_overrides or {}), warning_message=" | ".join(warnings) if warnings else "",
         provider_label=st.provider_label, resolved_via_alias=st.resolved_alias, capabilities=capabilities,
         runtime_capabilities={
@@ -1770,7 +1776,10 @@ def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg:
 
     base_url/api_mode are freshly resolved for the target route, so they are always synced —
     ``None`` when the target has none — otherwise the OLD provider's endpoint/wire-protocol lingers
-    (#25106). A context pin is dropped only when its route identity changed (fail-closed).
+    (#25106). An endpoint discovered from the managed local runtime counts as "none": it is live
+    state re-read from the runtime on every resolution (the port is not guaranteed stable), and a
+    configured ``model.base_url`` is read as an external server, which loses the managed key.
+    A context pin is dropped only when its route identity changed (fail-closed).
     Non-custom targets resolve credentials from env/auth.json/the pool, so an inline
     ``model.api_key`` is a leftover that would contaminate later custom resolution. For custom
     targets the inline key belongs to ONE endpoint: it survives only a same-route re-pick (same
@@ -1783,18 +1792,19 @@ def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg:
     dashboard re-adds an explicitly submitted key / the target provider's own pointer after this
     (``_apply_main_model_assignment`` / ``_resolve_assignment_credentials``)."""
     model_cfg = current_model_cfg if isinstance(current_model_cfg, dict) else {}
+    base_url = "" if getattr(result, "managed_endpoint", False) else result.base_url
     updates: dict[str, Any] = {
         "default": result.new_model, "provider": result.target_provider,
-        "base_url": result.base_url or None, "api_mode": result.api_mode or None,
+        "base_url": base_url or None, "api_mode": result.api_mode or None,
     }
     if "context_length" in model_cfg:
         from hermes_cli.route_identity import should_clear_context_pin
         if should_clear_context_pin(
                 model_cfg.get("default") or model_cfg.get("model"), result.new_model,
-                model_cfg.get("base_url"), result.base_url, model_cfg.get("provider"), result.target_provider):
+                model_cfg.get("base_url"), base_url, model_cfg.get("provider"), result.target_provider):
             updates["context_length"] = None
     target = str(result.target_provider or "").strip().lower()
-    route_changed = _route_changed(model_cfg, result)
+    route_changed = _route_changed(model_cfg, result.target_provider, base_url)
     stale = ["api_key", "api"] if (not target.startswith("custom") or route_changed) else []
     if route_changed:
         stale += ["key_env", "api_key_env"]
@@ -1804,12 +1814,12 @@ def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg:
     return updates
 
 
-def _route_changed(model_cfg: dict, result: ModelSwitchResult) -> bool:
-    """Provider or endpoint differs between the on-disk ``model:`` block and the switch target."""
+def _route_changed(model_cfg: dict, target_provider: str, base_url: str) -> bool:
+    """Provider or endpoint differs between the on-disk ``model:`` block and what the switch persists."""
     from hermes_cli.route_identity import normalize_route_base_url
-    if str(model_cfg.get("provider") or "").strip().lower() != str(result.target_provider or "").strip().lower():
+    if str(model_cfg.get("provider") or "").strip().lower() != str(target_provider or "").strip().lower():
         return True
-    return normalize_route_base_url(model_cfg.get("base_url")) != normalize_route_base_url(result.base_url)
+    return normalize_route_base_url(model_cfg.get("base_url")) != normalize_route_base_url(base_url)
 
 
 def apply_model_selection(model_cfg: Any, result: ModelSwitchResult) -> dict:

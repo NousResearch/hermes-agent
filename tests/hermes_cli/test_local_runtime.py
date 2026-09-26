@@ -679,6 +679,38 @@ def test_switch_model_explicit_llamacpp_provider(tmp_path, monkeypatch, stub_ser
     assert result.api_key == "sk-managed"
 
 
+def test_persisted_llamacpp_switch_resolves_back_to_managed_server(tmp_path, monkeypatch, stub_server):
+    """A global switch to the managed server must not pin its discovered endpoint into
+    ``model.base_url``: the resolver treats a configured base_url as an external server and
+    drops the managed key, so the persisted shape has to resolve back to the managed endpoint
+    WITH its key. E2E: switch -> persisted config shape -> real resolver."""
+    port, handler = stub_server
+    handler.models = {"data": [{"id": "stub-model-a", "owned_by": "llamacpp"}]}
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.local_runtime.supervisor import state_path
+
+    state_path().parent.mkdir(parents=True, exist_ok=True)
+    state_path().write_text(json.dumps({
+        "base_url": f"http://127.0.0.1:{port}/v1", "api_key": "sk-managed", "pid": os.getpid(),
+    }), encoding="utf-8")
+
+    from hermes_cli.model_switch import model_selection_config_updates, switch_model
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    result = switch_model(
+        "stub-model-a", current_provider="nous", current_model="Hermes-4.5",
+        current_base_url="", explicit_provider="llamacpp", is_global=True)
+    assert result.success, result.error_message
+
+    persisted = model_selection_config_updates(result, {"provider": "nous", "default": "Hermes-4.5"})
+    assert persisted["base_url"] is None
+
+    runtime = resolve_runtime_provider(
+        requested=persisted["provider"], explicit_base_url=persisted["base_url"])
+    assert runtime["base_url"] == f"http://127.0.0.1:{port}/v1"
+    assert runtime["api_key"] == "sk-managed"
+
+
 def test_runtime_provider_seam_llamacpp_alias(tmp_path, monkeypatch, stub_server):
     """End to end through the REAL resolver: provider='llamacpp' with no
     base_url lands on the managed endpoint with source='local-runtime'."""

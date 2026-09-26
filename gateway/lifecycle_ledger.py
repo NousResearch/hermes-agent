@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from hermes_platform.host.pid_namespace import local_pid_namespace, pid_checkable_from
+
 logger = logging.getLogger(__name__)
 
 
@@ -108,7 +110,7 @@ def _append_exit_diag(record: Dict[str, Any], home: Optional[Path]) -> None:
         logger.debug("Failed to append unclean-exit record", exc_info=True)
 
 
-def _pid_is_sentinel_owner(pid: Any, start_time: Any, create_time: Any) -> bool:
+def _pid_is_sentinel_owner(pid: Any, start_time: Any, create_time: Any, pidns: Any = None) -> bool:
     """True when ``pid`` is a live process that is the sentinel's incarnation — guards the
     ``--replace`` race: a live matching owner mid-teardown is a handover, not a death.
 
@@ -118,7 +120,15 @@ def _pid_is_sentinel_owner(pid: Any, start_time: Any, create_time: Any) -> bool:
     elsewhere) — the old comparison never matched, so every ``--replace`` handover read as an
     unclean death. A pre-stamp sentinel (no ``create_time``) still has ``start_time`` in epoch
     seconds: the owner was born BEFORE it claimed, a PID reuser AFTER the owner died, so a birth
-    later than the claim is a reuser."""
+    later than the claim is a reuser.
+
+    A sentinel stamped in another PID namespace proves nothing from here and is reported as a
+    live owner (#123081): inside ``PrivatePIDs=`` the recorded ``pid`` is 1, which resolves to the
+    host's init outside the namespace and reads as a dead gateway — a wrong "exited UNCLEANLY"
+    verdict, and the reason a second gateway started at all. "Cannot verify" is the safe answer.
+    """
+    if not pid_checkable_from(pidns):
+        return True
     try:
         pid_int = int(pid)
         # NOT os.kill(pid, 0): on Windows that sends CTRL_C_EVENT to the target's console group.
@@ -158,12 +168,15 @@ def detect_unclean_exit(home: Optional[Path] = None) -> Optional[Dict[str, Any]]
     sentinel = _read_json(get_lifecycle_sentinel_path(home))
     if not sentinel or sentinel.get("phase") != "running":
         return None
-    if _pid_is_sentinel_owner(sentinel.get("pid"), sentinel.get("start_time"), sentinel.get("create_time")):
+    if _pid_is_sentinel_owner(sentinel.get("pid"), sentinel.get("start_time"),
+                              sentinel.get("create_time"), sentinel.get("pidns")):
         return None  # live owner — planned takeover in flight, not a death
     evidence: Dict[str, Any] = {
         "prior_pid": sentinel.get("pid"), "prior_started_at": sentinel.get("started_at"),
         "prior_start_time": sentinel.get("start_time"),
     }
+    if sentinel.get("pidns") is not None:
+        evidence["prior_pidns"] = sentinel.get("pidns")
     # Enrich with the last heartbeat: last proven liveness and memory at that moment.
     try:
         from gateway.shutdown_watchdog import get_loop_heartbeat_path
@@ -275,6 +288,12 @@ def record_startup(home: Optional[Path] = None) -> Optional[Dict[str, Any]]:
         logger.debug("Unclean-exit detection failed", exc_info=True)
     try:
         claim: Dict[str, Any] = {"phase": "running", "pid": os.getpid(), "start_time": time.time(), "started_at": _now_iso()}
+        # The namespace that issued this PID (#123081): inside ``PrivatePIDs=`` the recorded
+        # number is 1, and a reader in another namespace would resolve it to the host's init
+        # and read a healthy gateway as an unclean death.
+        _pidns = local_pid_namespace()
+        if _pidns.known:
+            claim["pidns"] = _pidns.id
         # Process birth (psutil), distinct from ``start_time`` (the ledger claim, seconds later once
         # imports finish): the Windows start attestation binds PIDs to birth time (#110020 review).
         from hermes_cli.process_identity import _process_create_time
@@ -310,7 +329,7 @@ def mark_exited(exit_code: Optional[int] = None, reason: str = "graceful_shutdow
                                   "exited_at": _now_iso()}
         # Carry the incarnation identity: the Windows start attestation matches a clean exit by
         # PID *and* start time so a reused PID's exit cannot vouch for a different life (#110020).
-        for key in ("start_time", "create_time"):
+        for key in ("start_time", "create_time", "pidns"):
             if sentinel is not None and sentinel.get(key) is not None:
                 exited[key] = sentinel[key]
         _write_sentinel(exited, home)

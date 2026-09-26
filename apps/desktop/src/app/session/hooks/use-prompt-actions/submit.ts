@@ -38,7 +38,10 @@ import {
 import { $sessionStates } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 
-import { profileScopeForTranscriptSession, resolveActiveTranscriptSession } from '../../../contrib/hooks/use-background-sync'
+import {
+  profileScopeForTranscriptSession,
+  resolveActiveTranscriptSession
+} from '../../../contrib/hooks/use-background-sync'
 import type { ClientSessionState } from '../../../types'
 import { sessionContextDrift } from '../session-context-drift'
 import { resolveSessionProfile } from '../use-session-actions/utils'
@@ -434,7 +437,6 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         }
       }
 
-
       // Idempotent optimistic insert — re-running with the resolved sessionId
       // after createBackendSessionForSend just overwrites with the same id.
       const seedOptimistic = (sid: string) => {
@@ -508,6 +510,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // unless a rejected-submit restore already re-loaded the attachments
         // into the composer, which re-owns those URLs (#63682 handoff).
         revokeDiscardedAttachmentPreviews(attachments, usingComposerAttachments ? $composerAttachments.get() : [])
+
         if (!sid) {
           if (targetIsCurrentView()) {
             scope.setMessages(current => current.filter(m => m.id !== optimisticId))
@@ -834,9 +837,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
           const refreshed = await refreshIfTranscriptStale(guardStoredId, localSnapshot.messages, {
             excludeMessageId: optimisticId,
-            profile: profileScopeForTranscriptSession(
-              resolveActiveTranscriptSession(guardStoredId, liveSessionId)
-            )
+            profile: profileScopeForTranscriptSession(resolveActiveTranscriptSession(guardStoredId, liveSessionId))
           })
 
           if (sessionDriftReason()) {

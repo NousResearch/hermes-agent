@@ -422,7 +422,8 @@ export const zhHant = defineLocale({
     plugins: {
       openFolder: '開啟桌面外掛資料夾',
       installModal: {
-        installUncertain: 'Hermes 已停止等待安裝結果，但外掛可能仍在安裝中。請關閉此視窗，重新掃描外掛清單後再嘗試安裝。',
+        installUncertain:
+          'Hermes 已停止等待安裝結果，但外掛可能仍在安裝中。請關閉此視窗，重新掃描外掛清單後再嘗試安裝。',
         installFromGit: '從 Git 安裝',
         reviewRepository: '檢查儲存庫',
         repoPlaceholder: 'https://github.com/owner/repo',

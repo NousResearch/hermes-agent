@@ -1,11 +1,7 @@
 import { SLASH_COMMAND_RE } from '@hermes/shared'
 import { atom } from 'nanostores'
 
-import {
-  type ComposerAttachment,
-  revokeAttachmentPreviewUrls,
-  revokeDiscardedAttachmentPreviews
-} from './composer'
+import { type ComposerAttachment, revokeAttachmentPreviewUrls, revokeDiscardedAttachmentPreviews } from './composer'
 
 export interface RemoveQueuedPromptOptions {
   /**

@@ -234,9 +234,14 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
         "--oneshot or -Q, or on a non-TTY, it answers and exits."))
     _query_group.add_argument("--query-file", metavar="PATH", help=(
         "Read the single query from a file instead of the command line "
-        "('-' reads stdin). Safe for arbitrary text: nothing is shell-"
+        "'-' reads stdin). Safe for arbitrary text: nothing is shell-"
         "interpreted, so quotes, $(...), and backticks are preserved "
         "verbatim. Mutually exclusive with -q."))
+    _query_group.add_argument("--editor", action="store_true", help=(
+        "Compose the query in $VISUAL/$EDITOR (notepad on Windows) instead "
+        "of the command line. The saved buffer is sent as a single message, "
+        "so multi-line pastes (logs, snippets, traces) arrive as one turn. "
+        "Mutually exclusive with -q."))
     # Distinct dest: the top-level `-z/--oneshot PROMPT` is value-taking and its dispatch sites do
     # `if args.oneshot: _run_and_exit_oneshot(args.oneshot)` — a shared boolean dest would be
     # passed as the prompt.

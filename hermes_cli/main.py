@@ -1783,6 +1783,50 @@ def _read_query_file(args) -> None:
         sys.exit(2)
 
 
+def _read_editor_query(args) -> None:
+    """--editor: compose the single query in $VISUAL/$EDITOR (issue #121123).
+
+    Opens the editor on a temp file; the saved buffer becomes ``args.query``
+    verbatim, so a multi-line paste (logs, snippets, traces) arrives as ONE
+    turn instead of one message per line. ``#!`` comment lines are stripped,
+    same convention as the interactive ``/prompt`` compose path.
+    """
+    if not getattr(args, "editor", False):
+        return
+    if getattr(args, "query", None) or getattr(args, "query_file", None):
+        # argparse's mutually-exclusive group catches the normal CLI path;
+        # this guards programmatic callers that fill the namespace directly.
+        print("Error: --editor is mutually exclusive with -q/--query and --query-file",
+              file=sys.stderr)
+        sys.exit(2)
+    if not sys.stdin.isatty():
+        print("Error: --editor needs an interactive terminal; "
+              "use --query-file - to pipe stdin instead", file=sys.stderr)
+        sys.exit(2)
+    editor = (os.environ.get("VISUAL") or os.environ.get("EDITOR")
+              or ("notepad" if os.name == "nt" else "nano"))
+    fd, path = tempfile.mkstemp(suffix=".md", prefix="hermes_prompt_")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write("#! Compose your prompt below. Lines starting with '#!' are ignored.\n"
+                     "#! Save and quit to send; leave empty to cancel.\n\n")
+        try:
+            subprocess.call([*shlex.split(editor), path])
+        except Exception:
+            # Fall back to a bare invocation (editor value may not be argv-splittable).
+            subprocess.call(f"{editor} {shlex.quote(path)}", shell=True)
+        with open(path, "r", encoding="utf-8") as fh:
+            raw = fh.read()
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+    composed = "\n".join(ln for ln in raw.splitlines() if not ln.startswith("#!")).strip()
+    if not composed:
+        print("Empty prompt — nothing sent.", file=sys.stderr)
+        sys.exit(1)
+    args.query = composed
+
+
 # args attr -> (kwarg, default) passed through to _launch_tui / cli.main.
 _CHAT_PASSTHROUGH = (
     ("provider", None), ("toolsets", None), ("skills", None), ("verbose", None),
@@ -1835,6 +1879,8 @@ def cmd_chat(args):
 
     _pin_kanban_board_env()
     _confirm_startup_expensive_model_override(args)
+
+    _read_editor_query(args)  # --editor seeds args.query before either UI path
 
     passthrough = {k: getattr(args, k, d) for k, d in _CHAT_PASSTHROUGH}
     if use_tui:

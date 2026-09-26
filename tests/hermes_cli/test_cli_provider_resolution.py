@@ -323,6 +323,39 @@ def test_ensure_runtime_credentials_passes_cli_model_as_target_model(monkeypatch
 
 
 
+@pytest.mark.parametrize("pin", [{"model": "gemini-3.6-flash", "provider": "google"}, {"provider": "google"}],
+                         ids=["model_and_provider", "provider_only"])
+def test_explicit_cli_route_does_not_fall_back_on_auth_failure(monkeypatch, capsys, pin):
+    """A route pinned with -m/--provider resolves as requested or fails; it never swaps to a
+    fallback_providers entry. The unpinned (config default) path keeps its startup fallback, see
+    test_startup_fallback_re_resolves_reasoning_for_the_fallback_model."""
+    cli = _import_cli()
+    monkeypatch.setitem(cli.CLI_CONFIG, "model", {"default": "primary-model", "provider": "openai-codex"})
+    monkeypatch.setitem(cli.CLI_CONFIG, "fallback_providers", [{"provider": "zai", "model": "glm-5.3-flash"}])
+    attempts = []
+
+    def _runtime_resolve(requested=None, **kwargs):
+        attempts.append(requested)
+        if requested == "google":
+            raise AuthError("Google credentials are not configured.", provider="google", code="missing_api_key")
+        return {"provider": "zai", "api_mode": "chat_completions",
+                "base_url": "https://api.z.ai/api/coding/paas/v4", "api_key": "fallback-key", "source": "env"}
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+    shell = cli.HermesCLI(compact=True, max_turns=1, **pin)
+    shell.tool_progress_mode = "off"
+    monkeypatch.setattr(shell, "_maybe_print_free_tier_available_notice", lambda: None)
+    model_before = shell.model
+
+    assert shell._ensure_runtime_credentials() is False
+    assert attempts == ["google"]
+    assert (shell.requested_provider, shell.model) == ("google", model_before)
+    error = capsys.readouterr().err
+    assert "Requested route google /" in error
+    assert "Google credentials are not configured." in error
+
+
 def test_fallback_runtime_resolves_the_fallback_entry_model(monkeypatch, tmp_path):
     """The auth-fallback rung must resolve credentials for the ENTRY's model, exactly like the
     primary path does for `-m`: a `*-free` config default must not decide the api_mode/base_url

@@ -527,8 +527,9 @@ class CLISessionMixin:
         self.conversation_history = []
         self._pending_title = None
         self._resumed = False
-        # An explicit -m/--model was for the previous session only.
+        # An explicit -m/--model or --provider was for the previous session only.
         self._explicit_model_override = False
+        self._explicit_provider_override = False
         # Session-scoped overrides (/model --session, /fast, one-turn restores) don't carry over.
         # Re-derive model/provider and service tier from config.yaml so a session-only switch never leaks
         # into the next session (#48055, #23131).

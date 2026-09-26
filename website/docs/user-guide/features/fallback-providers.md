@@ -197,7 +197,7 @@ fallback_providers:
 
 | Context | Fallback Supported |
 |---------|-------------------|
-| CLI sessions (interactive and `hermes -z` one-shot) | ✔ (at startup when the primary's credentials/quota fail, mid-session, and a chain added or edited while a chat is open applies from its next turn) |
+| CLI sessions (interactive and `hermes -z` one-shot) | ✔ (at startup when the primary's credentials/quota fail, mid-session, and a chain added or edited while a chat is open applies from its next turn). A route pinned with `--model`/`--provider` is not swapped at startup: if it cannot resolve, the run fails with the requested route named |
 | Messaging gateway (Telegram, Discord, etc.) | ✔ |
 | Desktop app / TUI chats | ✔ (a chain added or edited while a chat is open applies from its next turn) |
 | Subagent delegation | ✔ (`delegation.fallback_providers` when set; otherwise only unpinned children inherit the parent chain; `[]` disables) |

@@ -225,6 +225,13 @@ def _retire_agent(cli) -> None:
 class CLIAgentSetupMixin:
     """Agent construction + session-resume display methods for ``HermesCLI``."""
 
+    def _has_explicit_cli_route(self) -> bool:
+        """Whether -m/--provider pinned this invocation's model or provider. A pinned route either
+        resolves as requested or fails; it never silently swaps to a ``fallback_providers`` entry
+        (same contract as pinned cron jobs and delegation children)."""
+        return bool(getattr(self, "_explicit_model_override", False)
+                    or getattr(self, "_explicit_provider_override", False))
+
     def _ensure_runtime_credentials(self) -> bool:
         """Re-resolve provider credentials before agent use so key rotation / token
         refresh are picked up without restarting the CLI. False on auth failure."""
@@ -244,7 +251,7 @@ class CLIAgentSetupMixin:
                 explicit_base_url=self._explicit_base_url, target_model=self.model or None)
         except Exception as exc:
             _primary_exc = exc
-        if _primary_exc is not None:
+        if _primary_exc is not None and not self._has_explicit_cli_route():
             runtime = self._resolve_fallback_runtime(_primary_exc)
             if runtime is not None:
                 _primary_exc = None
@@ -252,6 +259,9 @@ class CLIAgentSetupMixin:
             from hermes_cli.auth import is_rate_limited_auth_error
             self._credentials_rate_limited = bool(_primary_exc) and is_rate_limited_auth_error(_primary_exc)
             message = format_runtime_provider_error(_primary_exc) if _primary_exc else "Provider resolution failed."
+            if _primary_exc is not None and self._has_explicit_cli_route():
+                message = (f"Requested route {self.requested_provider or 'auto'} / {self.model or '(default)'} "
+                           f"could not be resolved: {message}")
             if getattr(self, "tool_progress_mode", "full") == "off":
                 print(message, file=sys.stderr)  # quiet/stream-json: stdout is machine-readable
             else:

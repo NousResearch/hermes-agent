@@ -185,7 +185,10 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
+from gateway.platforms.whatsapp_common import (
+    WhatsAppBehaviorMixin,
+    whatsapp_bridge_dependencies_fresh,
+)
 from gateway.whatsapp_identity import normalize_whatsapp_mention_jid, to_whatsapp_jid
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult, SUPPORTED_DOCUMENT_TYPES, cache_image_from_url, cache_audio_from_url,
@@ -231,10 +234,7 @@ def check_whatsapp_requirements() -> bool:
     """
     _node = find_node_executable("node")
     if not _node:
-        from pm import lazy_installs_allowed
-
-        # Let connect prepare a missing runtime, but never install during discovery.
-        return lazy_installs_allowed()
+        return False
     try:
         return subprocess.run([_node, "--version"], timeout=5, env=with_hermes_node_path(), **_RUN_TEXT).returncode == 0
     except Exception:
@@ -331,44 +331,6 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             except Exception:
                 return True, None
 
-    def _ensure_bridge_deps(self, bridge_dir: Path) -> bool:
-        """npm install when node_modules is missing OR package.json hash != stamp file. False = fatal error set."""
-        _dep_stamp = bridge_dir / "node_modules" / ".hermes-pkg-hash"  # holds the package.json hash of the last install
-        _pkg_hash = _file_content_hash(bridge_dir / "package.json")
-        try:
-            if (bridge_dir / "node_modules").exists() and _dep_stamp.read_text(encoding="utf-8-sig").strip() == _pkg_hash and bool(_pkg_hash):
-                return True
-        except OSError:
-            pass
-        print(f"[{self.name}] Installing WhatsApp bridge dependencies...")
-        detail = ""
-        try:  # Default 300s accommodates slow systems like an Unraid NAS.
-            import pm
-
-            _npm_bin = find_node_executable("npm")
-            env = with_hermes_node_path()
-            if _npm_bin is None:
-                env = pm.ensure("npm").env
-                installed = pm.installed_package("npm")
-                if installed is None or installed.binary is None:
-                    raise pm.InstallError("npm", "ensured but no selected binary was recorded")
-                _npm_bin = str(installed.binary)
-            install_result = subprocess.run([_npm_bin, "install", "--silent"], cwd=str(bridge_dir), timeout=env_int("WHATSAPP_NPM_INSTALL_TIMEOUT", 300),
-                                            env=env, **_RUN_TEXT)
-            if install_result.returncode == 0:
-                print(f"[{self.name}] Dependencies installed")
-                with suppress(OSError):  # Stamp is an optimization; install still succeeded
-                    if _pkg_hash:
-                        _dep_stamp.write_text(_pkg_hash, encoding="utf-8")
-                return True
-            print(f"[{self.name}] npm install failed: {install_result.stderr}")
-            detail = f" ({install_result.stderr.strip()[-500:]})" if install_result.stderr else ""
-        except Exception as e:
-            print(f"[{self.name}] Failed to install dependencies: {e}")
-            detail = f" ({e})"
-        self._set_fatal_error("whatsapp_npm_install_failed", f"WhatsApp bridge npm install failed{detail}. "
-                              "Run `hermes whatsapp`, then restart `hermes gateway`.", retryable=False)
-        return False
 
     def _attach_to_bridge(self, managed_process) -> None:
         import aiohttp
@@ -487,6 +449,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
              "whatsapp_node_missing", "Node.js is not installed — install Node.js and re-run `hermes gateway`."),
             (bridge_path.exists, ("[%s] Bridge script not found: %s", self.name, bridge_path),
              "whatsapp_bridge_missing", f"WhatsApp bridge script missing at {bridge_path}."),
+            (lambda: whatsapp_bridge_dependencies_fresh(bridge_path.parent),
+             ("[%s] WhatsApp bridge dependencies are missing or stale. Run `hermes whatsapp` before starting the gateway.", self.name),
+             "whatsapp_bridge_dependencies_stale",
+             "WhatsApp bridge dependencies are missing or stale — run `hermes whatsapp`, then re-run `hermes gateway`."),
             (creds_path.exists, ("[%s] WhatsApp is enabled but not paired (no creds.json at %s). Pair from the dashboard or run "
                                  "`hermes whatsapp`; remove WHATSAPP_ENABLED from your .env to disable.", self.name, creds_path),
              "whatsapp_not_paired", "WhatsApp enabled but not paired — pair from the dashboard or run `hermes whatsapp`."),
@@ -501,14 +467,6 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Start (or adopt) the Node.js bridge and wait for it to be ready."""
-        if find_node_executable("node") is None:
-            import pm
-
-            try:
-                await asyncio.to_thread(pm.ensure, "node")
-            except pm.InstallError as exc:
-                self._set_fatal_error("whatsapp_node_missing", str(exc), retryable=False)
-                return False
         if not self._preflight():
             return False
         bridge_path = Path(self._bridge_script)
@@ -520,8 +478,6 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         except Exception as e:
             logger.warning("[%s] Could not acquire session lock (non-fatal): %s", self.name, e)
         try:
-            if not self._ensure_bridge_deps(bridge_path.parent):
-                return False
             self._session_path.mkdir(parents=True, exist_ok=True)
             if await self._reuse_running_bridge(bridge_path):
                 return True

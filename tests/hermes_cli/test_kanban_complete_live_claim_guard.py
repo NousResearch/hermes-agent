@@ -1,11 +1,14 @@
-"""Invariant: ``complete_task`` never closes a live worker's run for a caller that
-neither owns the run nor asked for an operator override (issue #111764).
+"""Invariant: terminal transitions cannot take over active Kanban claims.
 
 A claim-less completion (a human at the CLI, an orchestrator session — anything
 without ``HERMES_KANBAN_*`` env) used to be authorised by task status alone, so it
 marked a ``running`` card done and ``_end_run`` closed the dispatcher worker's run
 row while that worker kept executing. The guard mirrors ``request_review``'s: a
 ``running`` task under a live claim needs ``expected_run_id`` or ``force=True``.
+
+Issue #120159 extends that fence to unexpired CLI/library claims without a spawned
+worker: their recorded claimer may complete or request review, while unrelated
+callers must use the active run id or an explicit override.
 """
 
 from __future__ import annotations
@@ -61,13 +64,49 @@ def test_claimless_complete_refuses_live_run_until_forced(conn):
     assert run["ended_at"] is not None and run["outcome"] == "completed"
 
 
-def test_claimless_complete_of_claim_without_live_worker_unchanged(conn):
-    """A claim whose worker never spawned (or is gone) protects no live run: the
-    library / CLI flow that claims and then completes keeps working."""
-    tid, run_id = _claimed_running_task(conn, live_worker=False)
-    assert kb.complete_task(conn, tid, result="done") is True
+def test_ttl_claim_requires_matching_claimer_or_current_run(conn):
+    """An unexpired non-worker claim cannot be taken over without its lock or run."""
+    tid = kb.create_task(conn, title="cli claim", assignee="operator")
+    claimed = kb.claim_task(conn, tid, ttl_seconds=300, claimer="cli-operator")
+    assert claimed is not None
+    run_id = claimed.current_run_id
+    task = kb.get_task(conn, tid)
+    assert task.status == "running"
+    assert task.worker_pid is None
+    assert task.claim_lock == "cli-operator"
+
+    with pytest.raises(kb.LiveClaimError):
+        kb.complete_task(conn, tid, result="takeover")
+    with pytest.raises(kb.LiveClaimError):
+        kb.complete_task(conn, tid, result="takeover", claimer="other-operator")
+
+    run = conn.execute("SELECT ended_at FROM task_runs WHERE id = ?", (run_id,)).fetchone()
+    assert run["ended_at"] is None
+    assert kb.heartbeat_claim(conn, tid, ttl_seconds=300, claimer="cli-operator")
+    assert kb.complete_task(conn, tid, result="done", claimer="cli-operator") is True
     run = conn.execute("SELECT ended_at FROM task_runs WHERE id = ?", (run_id,)).fetchone()
     assert run["ended_at"] is not None
+
+
+def test_ttl_claim_preserves_expected_run_id_cas(conn):
+    """The existing run-id ownership CAS remains an alternative to the claimer."""
+    tid = kb.create_task(conn, title="run CAS", assignee="operator")
+    claimed = kb.claim_task(conn, tid, ttl_seconds=300, claimer="cli-operator")
+    assert claimed is not None and claimed.current_run_id is not None
+
+    assert not kb.complete_task(
+        conn, tid, result="stale", expected_run_id=claimed.current_run_id + 1,
+    )
+    assert kb.get_task(conn, tid).status == "running"
+    assert kb.complete_task(conn, tid, result="done", expected_run_id=claimed.current_run_id)
+
+
+def test_expired_ttl_claim_is_manually_completable(conn):
+    """TTL-only protection ends at expiry; no worker process needs recovery."""
+    tid = kb.create_task(conn, title="expired", assignee="operator")
+    assert kb.claim_task(conn, tid, ttl_seconds=300, claimer="cli-operator") is not None
+    conn.execute("UPDATE tasks SET claim_expires = 0 WHERE id = ?", (tid,))
+    assert kb.complete_task(conn, tid, result="manual completion") is True
 
 
 def test_claimless_complete_of_unclaimed_card_unchanged(conn):
@@ -78,11 +117,12 @@ def test_claimless_complete_of_unclaimed_card_unchanged(conn):
 
 
 def test_request_review_shares_the_live_worker_fence(conn):
-    """``request_review`` keys on the same liveness as ``complete_task``: a claim
-    without a live worker process is not a live claim (the human/library flow
-    ``claim`` -> ``request_review`` works), a live worker's claim still is."""
-    tid, _ = _claimed_running_task(conn, live_worker=False)
-    assert kb.request_review(conn, tid, summary="handoff") is True
+    """``request_review`` uses the same worker and TTL claim fence as completion."""
+    tid = kb.create_task(conn, title="cli review", assignee="operator")
+    assert kb.claim_task(conn, tid, ttl_seconds=300, claimer="cli-operator") is not None
+    ok, reason = kb.request_review(conn, tid, summary="takeover", with_reason=True)
+    assert ok is False and "live claim" in reason
+    assert kb.request_review(conn, tid, summary="handoff", claimer="cli-operator") is True
     assert kb.get_task(conn, tid).status == "review"
 
     tid2, run2 = _claimed_running_task(conn)

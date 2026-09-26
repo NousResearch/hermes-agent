@@ -733,7 +733,9 @@ def _cmd_unlink(args: argparse.Namespace) -> int:
 
 def _cmd_claim(args: argparse.Namespace) -> int:
     with kbc.connect_closing() as conn:
-        task = kb.claim_task(conn, args.task_id, ttl_seconds=args.ttl)
+        task = kb.claim_task(
+            conn, args.task_id, ttl_seconds=args.ttl, claimer=kb._claimer_id(),
+        )
         if task is None:
             existing = kb.get_task(conn, args.task_id)
             if existing is None:
@@ -920,11 +922,12 @@ def _cmd_complete(args: argparse.Namespace) -> int:
             try:
                 done = kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
                                         expected_run_id=_worker_run_id_for(tid),
+                                        claimer=kb._claimer_id(),
                                         force=bool(getattr(args, "force", False)))
             except kb.LiveClaimError:
-                fail_msg[tid] = (f"cannot complete {tid}: a live worker is running it. Wait for the "
-                                 f"worker, `hermes kanban reclaim {tid}` to release it, or re-run with "
-                                 f"--force to close its run and complete anyway.")
+                fail_msg[tid] = (f"cannot complete {tid}: an active claim holds it. Wait for its "
+                                 f"owner, `hermes kanban reclaim {tid}` to release it, or re-run with "
+                                 f"--force to close the claim and complete anyway.")
                 return False
             except kb.EmptyCompletionError as empty_err:
                 fail_msg[tid] = (f"cannot complete {tid}: {empty_err}. Pass --result/--summary "
@@ -1046,7 +1049,8 @@ def _cmd_request_review(args: argparse.Namespace) -> int:
             return _err(gate_err)
         ok, reason = kb.request_review(
             conn, tid, summary=summary, metadata=metadata, reviewer=getattr(args, "reviewer", None),
-            expected_run_id=_worker_run_id_for(tid), force=bool(getattr(args, "force", False)), with_reason=True)
+            expected_run_id=_worker_run_id_for(tid), claimer=kb._claimer_id(),
+            force=bool(getattr(args, "force", False)), with_reason=True)
         if not ok:
             return _err(f"cannot request review for {tid}: {reason or 'not running/ready?'}")
         persisted_run = kb.latest_run(conn, tid)

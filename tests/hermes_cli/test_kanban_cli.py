@@ -100,6 +100,32 @@ def test_kanban_edit_updates_documented_task_fields(kanban_home):
     assert any(event.kind == "reprioritized" for event in events)
 
 
+def test_cli_claim_uses_ttl_ownership_fence(kanban_home):
+    """Issue #120159: the CLI owner can finish or hand off its TTL claim."""
+    with kbc.connect_closing() as conn:
+        complete_id = kb.create_task(conn, title="protected CLI completion")
+        review_id = kb.create_task(conn, title="protected CLI review")
+        unowned_id = kb.create_task(conn, title="unowned CLI completion")
+
+    assert f"Claimed {complete_id}" in kc.run_slash(f"claim {complete_id} --ttl 300")
+    assert f"Completed {complete_id}" in kc.run_slash(
+        f"complete {complete_id} --result done"
+    )
+
+    assert f"Claimed {review_id}" in kc.run_slash(f"claim {review_id} --ttl 300")
+    assert f"Requested review for {review_id}" in kc.run_slash(
+        f"request-review {review_id} --summary handoff"
+    )
+
+    assert f"Claimed {unowned_id}" in kc.run_slash(f"claim {unowned_id} --ttl 300")
+    with kbc.connect_closing() as conn:
+        with pytest.raises(kb.LiveClaimError):
+            kb.complete_task(conn, unowned_id, result="takeover")
+        assert kb.get_task(conn, complete_id).status == "done"
+        assert kb.get_task(conn, review_id).status == "review"
+        assert kb.get_task(conn, unowned_id).status == "running"
+
+
 def test_worker_link_preserves_foreign_child_rules(kanban_home, monkeypatch):
     with kbc.connect_closing() as conn:
         worker = kb.create_task(conn, title="worker")
@@ -239,5 +265,4 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 # /kanban help / no-args / unknown-action UX (issue #21794)
 # ---------------------------------------------------------------------------
-
 

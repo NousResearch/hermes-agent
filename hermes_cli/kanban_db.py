@@ -2293,7 +2293,10 @@ def claim_task(
         _reclaim_dangling_run(
             conn, task_id, statuses=("ready",), now=now, note="invariant recovery on re-claim",
         )
-        run_id = _claim_and_open_run(conn, task_id, "ready", lock, expires, now)
+        run_id = _claim_and_open_run(
+            conn, task_id, "ready", lock, expires, now,
+            event_extra={"ttl_claimer": True} if claimer is not None else None,
+        )
         if run_id is None:
             return None
         claimed = get_task(conn, task_id)
@@ -2324,7 +2327,11 @@ def claim_review_task(
                 )
             return None
         run_id = _claim_and_open_run(
-            conn, task_id, "review", lock, expires, now, event_extra={"source_status": "review"},
+            conn, task_id, "review", lock, expires, now,
+            event_extra={
+                "source_status": "review",
+                **({"ttl_claimer": True} if claimer is not None else {}),
+            },
         )
         if run_id is None:
             return None
@@ -2698,17 +2705,18 @@ class ArtifactPreservationError(RuntimeError):
 
 
 class LiveClaimError(ValueError):
-    """``complete_task`` refused: the task is ``running`` under a live claim and
-    the caller neither owns its run (``expected_run_id``) nor passed ``force``.
-    Completing anyway would close the worker's run row underneath a process
-    that is still executing. A ``ValueError`` so tool error handlers treat it
-    as recoverable."""
+    """A terminal transition refused because its running claim is still active.
+
+    A dispatcher worker proves ownership with ``expected_run_id``. A CLI/library
+    claim without a worker PID proves it with its matching ``claimer`` while its
+    TTL is current. ``force`` remains the explicit operator override.
+    """
 
     def __init__(self, task_id: str):
         super().__init__(
-            f"{task_id} is running under a live worker claim; pass expected_run_id "
-            "(worker ownership) or force=True (explicit operator override) instead "
-            "of closing the live run"
+            f"{task_id} is running under an active claim; pass expected_run_id "
+            "(worker ownership), the matching claimer (CLI/library ownership), "
+            "or force=True (explicit operator override) instead of closing the run"
         )
 
 
@@ -2726,19 +2734,40 @@ def _claim_is_live(trow) -> bool:
     )
 
 
+def _ttl_claim_is_live(conn: sqlite3.Connection, trow, now: int) -> bool:
+    """True for an unexpired explicit CLI/library claim without a worker.
+
+    Worker claims remain governed only by their PID/start-time liveness. A dead
+    worker with an unexpired TTL must stay manually recoverable as before. The
+    claimed-event marker keeps default library claims compatible: their caller
+    has no portable claimer credential to prove ownership on a later call.
+    """
+    if not (
+        trow["status"] == "running"
+        and trow["claim_lock"] is not None
+        and trow["claim_expires"] is not None
+        and int(trow["claim_expires"]) >= now
+        and not trow["worker_pid"]
+    ):
+        return False
+    event = _latest_event(conn, trow["id"], "claimed", trow["current_run_id"])
+    return bool(_json_dict(_row_get(event, "payload")).get("ttl_claimer"))
+
+
 def complete_task(
     conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
-    fire_lifecycle_hook: bool = True, force: bool = False,
+    claimer: Optional[str] = None, fire_lifecycle_hook: bool = True, force: bool = False,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
 
     ``ready`` is accepted for manual CLI completion, ``review`` for human
-    approval. A ``running`` task under a live claim is only completed with
-    proof of ownership (``expected_run_id``) or ``force=True`` (explicit
-    operator override) — otherwise :class:`LiveClaimError`, the same fence
-    :func:`request_review` applies. With no active run the handoff fields survive via
+    approval. A ``running`` task under a live worker claim is only completed
+    with ``expected_run_id`` or ``force=True``. An unexpired CLI/library claim
+    additionally accepts its matching ``claimer``. Otherwise it raises
+    :class:`LiveClaimError`, the same fence :func:`request_review` applies.
+    With no active run the handoff fields survive via
     :func:`_synthesize_ended_run`. ``summary`` (defaults to ``result``) and
     ``metadata`` land on the closing run for :func:`build_worker_context`.
     ``created_cards`` are verified first — a phantom id raises
@@ -2771,14 +2800,18 @@ def complete_task(
         if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
             return False
         trow = conn.execute(
-            "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
+            "SELECT id, status, claim_lock, claim_expires, current_run_id, worker_pid, worker_started_at "
+            "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         prior_status = trow["status"] if trow else None
-        # Refuse to close a LIVE worker's run without proof of ownership
-        # (expected_run_id) or an explicit human override (force=True); see
-        # _claim_is_live for what "live" means.
-        if expected_run_id is None and not force and trow and _claim_is_live(trow):
+        ttl_claim_is_live = bool(trow and _ttl_claim_is_live(conn, trow, now))
+        # A worker needs its run id; a TTL-only claim may use its matching
+        # claimer. ``force`` is the explicit operator override for either.
+        if expected_run_id is None and not force and trow and (
+            _claim_is_live(trow)
+            or (ttl_claim_is_live and claimer != trow["claim_lock"])
+        ):
             raise LiveClaimError(task_id)
         sql = """
                 UPDATE tasks
@@ -2797,6 +2830,9 @@ def complete_task(
         if expected_run_id is not None:
             sql += " AND current_run_id = ?"
             params = (*params, int(expected_run_id))
+        elif ttl_claim_is_live and not force:
+            sql += " AND claim_lock = ? AND claim_expires >= ?"
+            params = (*params, claimer, now)
         if conn.execute(sql, params).rowcount != 1:
             return False
         if isinstance(metadata, dict):
@@ -3352,15 +3388,17 @@ def redact_review_value(value: Any) -> Any:
 def request_review(
     conn: sqlite3.Connection, task_id: str, *, summary: Optional[str] = None,
     metadata: Optional[dict] = None, reviewer: Optional[str] = None,
-    expected_run_id: Optional[int] = None, force: bool = False, with_reason: bool = False,
+    expected_run_id: Optional[int] = None, claimer: Optional[str] = None,
+    force: bool = False, with_reason: bool = False,
 ):
     """``running``/``ready`` -> ``review``; never touches block recurrence accounting.
 
     Implementer and reviewer are recorded on the event so requested changes
     route back to the right profile; ``reviewer`` reassigns the task, and on
     re-review defaults to the latest ``changes_requested`` provenance. A live
-    claim is only cleared with proof of ownership (``expected_run_id``) or
-    ``force=True``. Returns ``bool``, or ``(ok, reason)`` with ``with_reason``.
+    worker claim is only cleared with ``expected_run_id`` or ``force=True``;
+    an unexpired CLI/library claim also accepts its matching ``claimer``.
+    Returns ``bool``, or ``(ok, reason)`` with ``with_reason``.
 
     ``metadata["artifacts"]`` names the handoff's deliverable
     files; a review handoff is the last implementer transition, and the
@@ -3390,19 +3428,20 @@ def request_review(
             if not _parents_satisfied(conn, task_id):
                 return _ret(False, "parent dependencies are not satisfied")
             trow = conn.execute(
-                "SELECT assignee, status, claim_lock, current_run_id, worker_pid, "
+                "SELECT id, assignee, status, claim_lock, claim_expires, current_run_id, worker_pid, "
                 "worker_started_at FROM tasks WHERE id = ?", (task_id,),
             ).fetchone()
             if trow is None:
                 return _ret(False, "task not found")
-            # Refuse to clear a live worker's claim without proof of ownership
-            # (expected_run_id) or an explicit human override (force=True);
-            # the same fence as complete_task (_claim_is_live).
-            if expected_run_id is None and not force and _claim_is_live(trow):
+            ttl_claim_is_live = _ttl_claim_is_live(conn, trow, now)
+            if expected_run_id is None and not force and (
+                _claim_is_live(trow)
+                or (ttl_claim_is_live and claimer != trow["claim_lock"])
+            ):
                 return _ret(
                     False, "task is running under a live claim; pass expected_run_id "
-                    "(worker ownership) or force=True (explicit operator "
-                    "override) instead of clearing the live run's claim",
+                    "(worker ownership), the matching claimer (CLI/library ownership), "
+                    "or force=True (explicit operator override) instead of clearing the claim",
                 )
             if reviewer is None:
                 reviewer = _prior_reviewer(conn, task_id)
@@ -3432,9 +3471,13 @@ def request_review(
                 implementer = trow["assignee"]
             assignee_sql = ", assignee = ?" if reviewer is not None else ""
             run_guard = "" if expected_run_id is None else " AND current_run_id = ?"
+            ttl_guard = ""
+            if expected_run_id is None and ttl_claim_is_live and not force:
+                ttl_guard = " AND claim_lock = ? AND claim_expires >= ?"
             params: tuple[Any, ...] = (
                 *(() if reviewer is None else (reviewer,)), task_id,
                 *(() if expected_run_id is None else (int(expected_run_id),)),
+                *(() if not ttl_guard else (claimer, now)),
             )
             cur = conn.execute(
                 """
@@ -3446,7 +3489,7 @@ def request_review(
                 """ + assignee_sql + """
                  WHERE id = ?
                    AND status IN ('running', 'ready')
-                """ + run_guard,
+                """ + run_guard + ttl_guard,
                 params,
             )
             if cur.rowcount != 1:

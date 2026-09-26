@@ -54,7 +54,7 @@ export const TodoPanel = memo(function TodoPanel({
   const pending = countPendingTodos(todos)
 
   return (
-    <Box flexDirection="column" marginBottom={1}>
+    <Box flexDirection="column" marginBottom={0}>
       <Box onClick={handleToggle}>
         <Text color={t.color.muted}>
           <Text color={t.color.accent}>{effectiveCollapsed ? '▸ ' : '▾ '}</Text>

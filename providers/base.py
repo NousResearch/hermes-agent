@@ -178,12 +178,37 @@ class ProviderProfile:
 
         Uses self.hostname if set explicitly, otherwise derives it from base_url.
         e.g. 'https://api.gmi-serving.com/v1' → 'api.gmi-serving.com'
+
+        Fails closed: a malformed base_url yields ``""`` rather than raising,
+        so URL-based provider detection cannot abort setup on bad custom-endpoint
+        configuration. Two shapes are tolerated: a truthy non-string (a mis-typed
+        config value passes the ``if self.base_url`` guard, and ``urlparse`` would
+        raise ``TypeError``/``AttributeError`` on it), and a malformed string for
+        which ``urlparse`` raises ``ValueError`` (e.g. an unmatched IPv6 bracket,
+        ``Invalid IPv6 URL``). Either way the reason is logged at debug so the
+        empty hostname is diagnosable.
         """
         if self.hostname:
             return self.hostname
         if self.base_url:
+            if not isinstance(self.base_url, str):
+                logger.debug(
+                    "get_hostname(%s): non-string base_url %r",
+                    self.name,
+                    self.base_url,
+                )
+                return ""
             from urllib.parse import urlparse
-            return urlparse(self.base_url).hostname or ""
+            try:
+                return urlparse(self.base_url).hostname or ""
+            except ValueError as exc:
+                logger.debug(
+                    "get_hostname(%s): unparseable base_url %r: %s",
+                    self.name,
+                    self.base_url,
+                    exc,
+                )
+                return ""
         return ""
 
     def prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

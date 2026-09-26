@@ -206,3 +206,93 @@ class TestXiaomiURLMapping:
 # =============================================================================
 # Agent init (no SyntaxError, correct api_mode)
 # =============================================================================
+
+# =============================================================================
+# Doctor health check
+# =============================================================================
+
+class TestXiaomiHealthCheck:
+    """`hermes doctor` must probe MiMo instead of short-circuiting it.
+
+    ``supports_health_check=False`` made the doctor emit a synthetic
+    "ok (key configured)" row without touching the network. Re-verified
+    2026-09-25: ``GET https://api.xiaomimimo.com/v1/models`` answers 200 for a
+    valid key and 401 for an invalid one, so the opt-out only masked real
+    failures (revoked key, wrong regional base URL) as healthy.
+    """
+
+    MODELS_URL = "https://api.xiaomimimo.com/v1/models"
+
+    def _doctor_probe_row(self):
+        from hermes_cli import doctor_connectivity
+
+        # Force a rebuild — the module caches the list on first call.
+        doctor_connectivity._APIKEY_PROVIDERS_CACHE = None
+        entries = doctor_connectivity._build_apikey_providers_list()
+        entry = next((e for e in entries if str(e[0]).strip().lower() == "xiaomi"), None)
+        assert entry is not None, (
+            "xiaomi profile is missing from the generic API-key probe list; got: "
+            f"{sorted(str(e[0]) for e in entries)}"
+        )
+        return entry
+
+    def test_doctor_probes_xiaomi_instead_of_opting_out(self):
+        """The profile flag and the doctor's probe list agree on probing MiMo."""
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("xiaomi")
+        assert profile is not None
+        assert profile.supports_health_check is True
+
+        # Tuple shape: (label, key vars, models URL, base-env var, supports_health_check)
+        entry = self._doctor_probe_row()
+        assert entry[2] == self.MODELS_URL
+        assert entry[4] is True, (
+            "the xiaomi probe row still opts out of the /models check — doctor "
+            "would report a synthetic ok without a network call"
+        )
+
+    @pytest.mark.parametrize("status_code,expects_issue", [(200, False), (401, True)])
+    def test_probe_requests_models_endpoint(self, monkeypatch, status_code, expects_issue):
+        import httpx
+
+        from hermes_cli import doctor_connectivity
+
+        seen = {}
+
+        class _Resp:
+            def __init__(self, code):
+                self.status_code = code
+
+        def _fake_get(url, headers=None, **kwargs):
+            seen["url"], seen["headers"] = url, headers or {}
+            return _Resp(status_code)
+
+        monkeypatch.setenv("XIAOMI_API_KEY", "sk-test")
+        monkeypatch.setattr(httpx, "get", _fake_get)
+
+        row = doctor_connectivity._probe_apikey_provider(
+            "xiaomi", ("XIAOMI_API_KEY",), self.MODELS_URL, None, True
+        )
+
+        assert seen["url"] == self.MODELS_URL
+        assert seen["headers"].get("Authorization") == "Bearer sk-test"
+        assert row.lines, "the probe must emit a row instead of skipping"
+        if expects_issue:
+            assert row.issues, "a 401 must reach the doctor summary"
+            assert "XIAOMI_API_KEY" in row.issues[0]
+        else:
+            assert row.issues == [], f"a 200 must report healthy, got {row.issues}"
+
+    def test_opt_out_providers_are_still_skipped(self, monkeypatch):
+        """The mechanism stays intact for providers with no /models endpoint."""
+        from hermes_cli import doctor_connectivity
+
+        monkeypatch.setenv("XIAOMI_API_KEY", "sk-test")
+
+        row = doctor_connectivity._probe_apikey_provider(
+            "xiaomi", ("XIAOMI_API_KEY",), self.MODELS_URL, None, False
+        )
+
+        assert row.lines and row.issues == []
+        assert row.lines[0][0] and "configured" in str(row.lines[0][2])

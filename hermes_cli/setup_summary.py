@@ -184,7 +184,9 @@ def _spotify_row(config, feats):
 
 
 def _skills_hub_row(config, feats):
-    ok = bool(_setup.get_env_value("GITHUB_TOKEN"))
+    from tools.skills_hub_github import GitHubAuth
+
+    ok = GitHubAuth().is_authenticated()
     return ("Skills Hub (GitHub)", ok, None if ok else "GITHUB_TOKEN")
 
 

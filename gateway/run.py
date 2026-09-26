@@ -4301,11 +4301,10 @@ class GatewayRunner(
         Callers of this helper bound their await with ``asyncio.wait_for`` and, on timeout, log
         "the worker thread is left to finish on its own" and proceed. That bounds the AWAIT but
         NOT the OCCUPANCY: a ``concurrent.futures`` work item that has already begun executing is
-        not cancellable, so an abandoned worker keeps its pool slot until its blocking call
-        returns. On a shared pool, N abandonments retire N turn slots for ANY N — the failure is
-        scale-invariant, so raising ``max_workers`` does not fix it. Housekeeping therefore gets
-        its own bounded pool; exhausting that one delays only more housekeeping, which is
-        best-effort by construction.
+        not cancellable, so an abandoned worker keeps its thread until its blocking call returns.
+        The turn pool is unbounded (one thread per turn), so sharing it would let wedged
+        housekeeping grow threads without limit. Housekeeping therefore gets its own bounded pool;
+        exhausting that one delays only more housekeeping, which is best-effort by construction.
         """
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(

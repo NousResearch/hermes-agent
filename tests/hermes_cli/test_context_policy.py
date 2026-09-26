@@ -8,6 +8,8 @@ constants with tolerance bands, not change-detecting catalog snapshots).
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from hermes_cli.local_runtime.context_policy import (
@@ -286,6 +288,40 @@ def test_spill_overrides_prefer_expert_and_recurrent_ffn():
     assert "exps" in " ".join(spill_overrides(moe()))
     assert "ffn" in " ".join(spill_overrides(hybrid()))
     assert spill_overrides(dense()) == []
+
+
+def test_hybrid_spill_override_matches_only_recurrent_layer_indices():
+    """A hybrid spill must not evict full-attention FFNs (#113329)."""
+    profile = hybrid(full_layers=16, recurrent_layers=48)
+    args = spill_overrides(profile)
+    pattern = args[args.index("-ot") + 1]
+
+    assert not re.search(pattern, "blk.0.ffn_down.weight=CPU")
+    assert not re.search(pattern, "blk.15.ffn_up.weight=CPU")
+    assert re.search(pattern, "blk.16.ffn_down.weight=CPU")
+    assert re.search(pattern, "blk.63.ffn_up.weight=CPU")
+
+
+def test_hybrid_spill_override_handles_interleaved_layer_kinds():
+    profile = ModelProfile(
+        name="interleaved-hybrid",
+        weights_bytes=8 * GIB,
+        embd_table_bytes=0,
+        n_ctx_train=FLOOR,
+        layers=[
+            (LayerKind.RECURRENT, 0),
+            (LayerKind.FULL, 4096),
+            (LayerKind.RECURRENT, 0),
+            (LayerKind.FULL, 4096),
+        ],
+    )
+    args = spill_overrides(profile)
+    pattern = args[args.index("-ot") + 1]
+
+    assert re.search(pattern, "blk.0.ffn_down.weight=CPU")
+    assert not re.search(pattern, "blk.1.ffn_down.weight=CPU")
+    assert re.search(pattern, "blk.2.ffn_down.weight=CPU")
+    assert not re.search(pattern, "blk.3.ffn_down.weight=CPU")
 
 
 def test_launch_args_contract():

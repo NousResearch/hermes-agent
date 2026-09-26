@@ -21,11 +21,13 @@ describe('liveWindowState', () => {
 
   it('falls back to the primary window when the reply carries no sender', () => {
     const primary = makeWin()
+
     const d = {
       fromWebContents: vi.fn(),
       getWindowState: vi.fn().mockReturnValue({ isFullscreen: false }),
       fallback: primary as never
     }
+
     expect(liveWindowState(undefined, d)).toEqual({ isFullscreen: false })
     expect(d.getWindowState).toHaveBeenCalledWith(primary)
   })

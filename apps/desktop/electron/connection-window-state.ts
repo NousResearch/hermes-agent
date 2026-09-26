@@ -32,9 +32,11 @@ export function liveWindowState<TWindowState>(
   deps: LiveWindowStateDeps<TWindowState>
 ): TWindowState | undefined {
   const win = (sender && deps.fromWebContents(sender)) || deps.fallback
+
   if (!win || win.isDestroyed()) {
     return undefined
   }
+
   return deps.getWindowState(win)
 }
 

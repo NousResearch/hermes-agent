@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
+import os
 import random
 import re
 import secrets
@@ -311,6 +313,294 @@ def _backup_label(backup_path: Optional[Path]) -> str:
     return str(backup_path) if backup_path is not None else "<backup failed>"
 
 
+# ---------------------------------------------------------------------------
+# Replaced-board guard: a board that existed is never silently re-initialized
+# ---------------------------------------------------------------------------
+#
+# The stale-cache self-heal re-runs ``SCHEMA_SQL`` when the file behind an
+# initialized path lost its schema. For a path that never held a board that is
+# the right recovery. For one that DID it recreates an EMPTY board — the schema
+# is what makes it a board — every card on it is gone for good, and nothing
+# raises: the loss reaches the user as "my tasks disappeared" (see #83445).
+#
+# So the schema is only ever created on a path with no evidence of a prior
+# board, and the evidence has two layers because one is not enough:
+# ``_INITIALIZED_PATHS`` is process-local, and the process that deletes a
+# board's file is usually not the one that notices it. A restarted gateway or
+# a fresh ``hermes kanban list`` sees only a missing file — indistinguishable
+# from a first-time create — and would mint an empty board. ``<db>.init.json``
+# (next to the existing ``<db>.init.lock``) is written when the schema is
+# created and outlives a deletion, so every later process can tell them apart.
+#
+# Recovery stays explicit: restore the file (or its newest backup), or start a
+# fresh board on purpose — ``hermes kanban init``, ``hermes kanban boards
+# create``, import — the callers that pass ``allow_recreate=True``.
+
+_INIT_MARKER_SUFFIX = ".init.json"
+_REPLACED_EVENT_LIMIT = 32
+
+
+@dataclass(frozen=True)
+class BoardReplacedEvent:
+    """What the guard saw when it refused to re-initialize a board.
+
+    Carried on :class:`KanbanDbReplacedError`, retained in
+    :func:`replaced_board_events` for this process's life, and logged: a board
+    loss is an operator event, so nobody should have to infer afterwards what
+    the file looked like when the first process noticed.
+    """
+
+    path: Path
+    detected_at: float
+    detected_iso: str
+    reason: str
+    cached: bool
+    marker_present: bool
+    marker_initialized_at: Optional[float]
+    file_exists: bool
+    file_size: Optional[int]
+    page_count: Optional[int]
+    schema_present: bool
+
+    def describe(self) -> str:
+        """One line naming the file state, for logs and the raised message."""
+        if not self.file_exists:
+            state = "the file is gone"
+        elif self.file_size == 0:
+            state = "the file is 0 bytes"
+        elif self.file_size is None:
+            state = "the file could not be inspected"
+        else:
+            state = f"the file is {self.file_size} bytes with no kanban schema"
+        seen_by = "this process has it cached as initialized" if self.cached else (
+            "a durable init record exists on disk" if self.marker_present else "no init record"
+        )
+        return f"{state}, and {seen_by}"
+
+
+class KanbanDbReplacedError(RuntimeError):
+    """Raised when a path known to have held a kanban board no longer holds one.
+
+    Sibling of :class:`KanbanDbCorruptError`: both refuse to touch a board that
+    is not the one recorded, and neither recreates it. Recreating would hand
+    back an empty board and quietly destroy the cards that were on it, so
+    callers must stop and let a human restore the file — or ask for a fresh
+    board explicitly (``hermes kanban init`` / ``hermes kanban boards create``).
+    """
+
+    def __init__(self, event: BoardReplacedEvent):
+        self.event = event
+        self.db_path = event.path
+        self.reason = event.reason
+        super().__init__(
+            f"Refusing to re-initialize kanban DB at {event.path}: {event.describe()}. "
+            "Restore the board's file (or its newest backup), or start a fresh board "
+            "explicitly with `hermes kanban init`."
+        )
+
+
+def _iso_utc(stamp: float) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(stamp))
+
+
+def _init_marker_path(path: Path) -> Path:
+    """Durable ``<db>.init.json`` record: a board was initialized on this path."""
+    return path.with_name(path.name + _INIT_MARKER_SUFFIX)
+
+
+def _init_marker(path: Path) -> tuple[bool, Optional[float]]:
+    """``(exists, initialized_at)`` for the durable init record.
+
+    An unreadable, truncated or hand-edited marker still counts as existing: the
+    guard must never fail open just because the record itself was damaged.
+    """
+    marker = _init_marker_path(path)
+    try:
+        if not marker.exists():
+            return False, None
+    except OSError:
+        return False, None
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return True, None
+    if not isinstance(payload, dict):
+        return True, None
+    stamp = payload.get("initialized_at")
+    return True, float(stamp) if isinstance(stamp, (int, float)) else None
+
+
+def _write_init_marker(path: Path) -> None:
+    """Record that this path now holds an initialized board (best effort).
+
+    Never fails an otherwise-good connect: a board that works but lacks its
+    marker only loses the cross-process half of the guard.
+    """
+    marker = _init_marker_path(path)
+    stamp = time.time()
+    payload = {
+        "db": path.name,
+        "initialized_at": stamp,
+        "initialized_iso": _iso_utc(stamp),
+        "pid": os.getpid(),
+    }
+    tmp = marker.with_name(f"{marker.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        os.replace(tmp, marker)
+    except OSError:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+
+
+def _read_page_count(path: Path) -> Optional[int]:
+    """``PRAGMA page_count`` via ``mode=ro``; ``None`` when it cannot be read.
+
+    Read-only on purpose: the record of a replaced board must not create, or
+    write to, the file it describes. Best-effort detail, never evidence — a WAL
+    database whose ``-shm`` is gone refuses a read-only open.
+    """
+    if not path.exists():
+        return None
+    try:
+        conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    except (sqlite3.Error, OSError):
+        return None
+    try:
+        row = conn.execute("PRAGMA page_count").fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        with contextlib.suppress(Exception):
+            conn.close()
+    if row is None or row[0] is None:
+        return None
+    try:
+        return int(row[0])
+    except (TypeError, ValueError):
+        return None
+
+
+_REPLACED_BOARDS: "dict[str, BoardReplacedEvent]" = {}
+
+
+def replaced_board_events() -> tuple[BoardReplacedEvent, ...]:
+    """Boards this process has found replaced, in first-seen order.
+
+    Bounded (one entry per path, ``_REPLACED_EVENT_LIMIT`` paths) so a
+    dispatcher ticking forever against a missing board cannot grow it.
+    """
+    return tuple(_REPLACED_BOARDS.values())
+
+
+def _record_replaced_board(path: Path, *, cached: bool, schema_present: bool) -> BoardReplacedEvent:
+    """Build (once per path) the record of a refused re-initialization."""
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path
+    key = str(resolved)
+    existing = _REPLACED_BOARDS.get(key)
+    if existing is not None:
+        return existing
+    try:
+        size: Optional[int] = resolved.stat().st_size
+    except OSError:
+        size = None
+    file_exists = resolved.exists()
+    if not file_exists:
+        reason = "the file is gone (deleted, moved, or not yet restored)"
+    elif size == 0:
+        reason = "the file is 0 bytes (truncated or replaced)"
+    elif size is None:
+        reason = "the file could not be inspected"
+    elif not schema_present:
+        reason = "the file no longer holds the kanban schema"
+    else:
+        reason = "the board's schema is gone"
+    marker_present, marker_initialized_at = _init_marker(resolved)
+    event = BoardReplacedEvent(
+        path=resolved,
+        detected_at=time.time(),
+        detected_iso=_iso_utc(time.time()),
+        reason=reason,
+        cached=cached,
+        marker_present=marker_present,
+        marker_initialized_at=marker_initialized_at,
+        file_exists=file_exists,
+        file_size=size,
+        page_count=_read_page_count(resolved) if file_exists else None,
+        schema_present=schema_present,
+    )
+    if len(_REPLACED_BOARDS) >= _REPLACED_EVENT_LIMIT:
+        _REPLACED_BOARDS.pop(next(iter(_REPLACED_BOARDS)))
+    _REPLACED_BOARDS[key] = event
+    return event
+
+
+def _board_replaced_error(path: Path, *, cached: bool, schema_present: bool = False) -> KanbanDbReplacedError:
+    """Record the refusal, log it at ERROR, and build the error to raise."""
+    event = _record_replaced_board(path, cached=cached, schema_present=schema_present)
+    _kb._log.error(
+        "kanban DB %s was deleted or replaced while it was in use (%s); refusing "
+        "to re-initialize it as an empty board. Restore the file, or run "
+        "`hermes kanban init` for a fresh board.",
+        event.path,
+        event.describe(),
+    )
+    return KanbanDbReplacedError(event)
+
+
+def _guard_board_not_replaced(path: Path, *, allow_recreate: bool) -> None:
+    """Refuse to create a schema where a durable marker says a board lived.
+
+    This is the arm a FRESH process needs: nothing is cached, so a missing file
+    looks exactly like a first-time create. Runs before the schema script, so
+    nothing is written to the path when it refuses. ``allow_recreate`` is the
+    explicit admin opt-in; a dispatcher tick, a list, or a dashboard read stops
+    here instead of minting an empty board.
+    """
+    if allow_recreate:
+        return
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return
+    if not _init_marker(resolved)[0] or not _missing_or_empty(resolved):
+        # No evidence of a prior board (a genuine first-time create), or the
+        # bytes are present and _init_if_needed passes judgement on them.
+        return
+    raise _board_replaced_error(resolved, cached=False)
+
+
+def _replaced_repair_message(path: Path) -> str:
+    return (
+        f"{path} no longer holds the board that was initialized here "
+        "(see the .init.json marker). Restore the file or its newest backup, "
+        "or run `hermes kanban init` to start a fresh board on purpose."
+    )
+
+
+def _schema_present_on_disk(path: Path) -> Optional[bool]:
+    """``_schema_is_present`` on a plain connection; ``None`` when unknowable.
+
+    Only for an existing non-empty path (a plain open creates a missing file).
+    ``None`` keeps the caller's existing classification — a file sqlite cannot
+    open at all is corruption, not replacement.
+    """
+    try:
+        conn = sqlite3.connect(str(path))
+    except sqlite3.Error:
+        return None
+    try:
+        return _schema_is_present(conn)
+    except sqlite3.Error:
+        return None
+    finally:
+        with contextlib.suppress(Exception):
+            conn.close()
+
+
 def _prune_corrupt_backups(parent: Path, base_name: str, keep: Optional[Path] = None) -> None:
     """Keep only the ``_CORRUPT_BACKUP_RETENTION`` newest (by mtime)
     ``<db>.corrupt.<hash>.bak`` files plus their ``-wal``/``-shm`` copies.
@@ -580,7 +870,22 @@ def repair_db(db_path: Optional[Path] = None, *, board: Optional[str] = None) ->
     except OSError:
         resolved = path
     if _missing_or_empty(resolved):
+        if _init_marker(resolved)[0]:
+            # Not an empty slot: a board was initialized on this path and its
+            # file is gone (or emptied) — the marker outlives the deletion.
+            # Reporting "missing" would invite the silent re-init the connect
+            # guard now refuses.
+            return RepairResult(
+                status="replaced", db_path=resolved,
+                messages=[_replaced_repair_message(resolved)],
+            )
         return RepairResult(status="missing", db_path=resolved)
+    marker_present = _init_marker(resolved)[0]
+    if marker_present and _schema_present_on_disk(resolved) is False:
+        return RepairResult(
+            status="replaced", db_path=resolved,
+            messages=[_replaced_repair_message(resolved)],
+        )
 
     with _cross_process_init_lock(resolved):
         messages, reason = _probe_for_corruption(resolved)
@@ -665,13 +970,24 @@ def _open_configured(path: Path, under_lock) -> tuple[sqlite3.Connection, Any]:
     return conn, out
 
 
-def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> sqlite3.Connection:
+def connect(
+    db_path: Optional[Path] = None,
+    *,
+    board: Optional[str] = None,
+    allow_recreate: bool = False,
+) -> sqlite3.Connection:
     """Open (and initialize if needed) the kanban DB. WAL is (re)enabled on
     every connection so a re-created file stays robust; the first connection
     per path auto-runs :func:`init_db`, later ones skip via
     ``_INITIALIZED_PATHS``. Path: explicit ``db_path``, else ``board``, else
     :func:`kanban_db_path` (``HERMES_KANBAN_DB`` -> ``HERMES_KANBAN_BOARD`` ->
-    ``<root>/kanban/current`` -> ``default``)."""
+    ``<root>/kanban/current`` -> ``default``).
+
+    ``allow_recreate=True`` is the explicit admin opt-in that lets a path whose
+    board was deleted or replaced be initialized from scratch — the create/init
+    verbs (``hermes kanban init``, ``hermes kanban boards create``, import).
+    Everything else fails closed with :class:`KanbanDbReplacedError` rather than
+    handing back an empty board."""
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
     from agent.delegation_context import kanban_path_is_fenced
     if kanban_path_is_fenced(path):
@@ -692,24 +1008,27 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
     # the gateway dispatcher's next-tick connect() forever, and steady-state has
     # nothing for it to protect (no schema/migration writes).
     resolved = str(path.resolve())
-    if resolved in _INITIALIZED_PATHS:
+    if not allow_recreate and resolved in _INITIALIZED_PATHS:
+        if _missing_or_empty(path):
+            # Deleted or zero-byte under a live process that still has it
+            # cached. Do NOT open it: the open itself recreates an empty file
+            # (and WAL-configures it), so every later reader — this process, the
+            # dashboard, the next CLI — would see a live looking board with no
+            # cards on it.
+            with _INIT_LOCK:
+                _INITIALIZED_PATHS.discard(resolved)
+            raise _board_replaced_error(path, cached=True)
         conn, schema_present = _open_configured(path, _schema_is_present)
         if schema_present:
             return conn
-        # Cache says "initialized", file says otherwise: it was deleted or
-        # replaced under a live process and the open silently recreated an empty
-        # DB. Left alone, every query fails with "no such table: tasks" for the
-        # rest of the process's life. Drop the stale entry and re-init.
+        # Cache says "initialized", file says otherwise: it was truncated or
+        # replaced under a live process. Refuse — see the replaced-board section
+        # at the top of this module. Re-running the schema here is exactly what
+        # used to hand the caller an EMPTY board.
         conn.close()
         with _INIT_LOCK:
-            # Drop the stale cache entry and fall through to the full init path, which re-runs the header
-            # and integrity probes and the schema script under the cross-process lock. See #83445.
             _INITIALIZED_PATHS.discard(resolved)
-        _kb._log.warning(
-            "kanban DB %s lost its schema after this process initialized it "
-            "(deleted or replaced externally); re-initializing.",
-            path,
-        )
+        raise _board_replaced_error(path, cached=True)
 
     with _cross_process_init_lock(path):
         # Read-only file/sidecar preflight first, so a stray read-only kanban.db
@@ -721,15 +1040,28 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
         # full integrity probe (cached per path via _INITIALIZED_PATHS).
         _validate_sqlite_header(path)
         _guard_existing_db_is_healthy(path)
+        # Durable replacement guard: nothing is cached in a fresh process, so a
+        # marker (written when a board was initialized here) is the only thing
+        # that distinguishes "file was deleted" from "board never existed".
+        _guard_board_not_replaced(path, allow_recreate=allow_recreate)
         resolved = str(path.resolve())
 
         def _init_if_needed(conn: sqlite3.Connection) -> None:
             # Idempotent; runs under _INIT_LOCK so same-process dispatcher
             # threads can't race the ALTER TABLE pass with stale PRAGMA snapshots.
             if resolved not in _INITIALIZED_PATHS:
+                if not allow_recreate and not _schema_is_present(conn) and _init_marker(Path(resolved))[0]:
+                    # The bytes are there (so the guard above let them through)
+                    # but they are not a kanban board: a truncated file, or an
+                    # unrelated SQLite DB dropped in its place. SCHEMA_SQL would
+                    # graft an empty kanban schema onto it and call it a board.
+                    raise _board_replaced_error(Path(resolved), cached=False)
                 conn.executescript(_kb.SCHEMA_SQL)
                 _migrate_add_optional_columns(conn)
                 _INITIALIZED_PATHS.add(resolved)
+                # Durable record: outlives this process, and is what makes a
+                # later deletion fail closed everywhere instead of just here.
+                _write_init_marker(Path(resolved))
 
         conn, _ = _open_configured(path, _init_if_needed)
     return conn
@@ -752,17 +1084,28 @@ def connect_closing(db_path: Optional[Path] = None, *, board: Optional[str] = No
             conn.close()
 
 
-def init_db(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> Path:
+def init_db(
+    db_path: Optional[Path] = None,
+    *,
+    board: Optional[str] = None,
+    allow_recreate: bool = False,
+) -> Path:
     """Create the schema if it doesn't exist; return the path used. Unlike
     :func:`connect`'s cached first-time auto-init, this always re-runs the
     migration pass — callers that know the on-disk schema may have drifted
-    (tests writing legacy event kinds, external upgrades) use it to force it."""
+    (tests writing legacy event kinds, external upgrades) use it to force it.
+
+    ``allow_recreate=True`` is for the verbs that MEAN "make me a board here"
+    (``hermes kanban init``, board create, import): it creates the schema even
+    when the path's board was deleted or replaced. Without it this fails closed
+    like :func:`connect`, because the blanket auto-init every kanban CLI command
+    runs before dispatch is not a request to recreate a board."""
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
     path.parent.mkdir(parents=True, exist_ok=True)
     # Clear the cache entry so connect() re-runs schema + migrations.
     with _INIT_LOCK:
         _INITIALIZED_PATHS.discard(str(path.resolve()))
-    with contextlib.closing(connect(path)):
+    with contextlib.closing(connect(path, allow_recreate=allow_recreate)):
         pass
     return path
 

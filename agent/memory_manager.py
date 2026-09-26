@@ -29,7 +29,15 @@ _LEGACY_PRE_COMPRESS_API_VERSION = 1
 # shutdown_all() drain bound; workers are daemon threads so a wedged provider never
 # blocks interpreter exit.
 _SYNC_DRAIN_TIMEOUT_S = 5.0
-_EXTERNAL_PREFETCH_TIMEOUT_S = 8.0
+# 2026-09-25 audit: raised from 8.0s after measuring the live Hindsight backend's
+# recall endpoint directly (bypassing Hermes) — 8/8 samples took 7.5-14.5s because
+# Hindsight's recall does server-side LLM reranking/synthesis (its own settings.py
+# documents "cloud API can take 30-40s per request"). The old 8.0s value had no
+# config.yaml knob and was silently dropping prefetch on almost every turn
+# (~200 timeout log entries). 20.0s gives margin over the observed max while still
+# failing fast relative to Hindsight's own 120s client timeout. Rollback: restore
+# agent/memory_manager.py.bak-20260925T-hindsight-timeout-fix.
+_EXTERNAL_PREFETCH_TIMEOUT_S = 20.0
 
 
 # -- Signature introspection (providers are duck-typed; call shapes vary) -----

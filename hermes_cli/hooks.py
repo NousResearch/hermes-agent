@@ -146,6 +146,7 @@ _DEFAULT_PAYLOADS = {
         "started_at": 1756000000.0, "ended_at": 1756000001.234, "first_chunk_at": 1756000000.512,
         "finish_reason": "stop", "message_count": 4, "response_model": "claude-sonnet-4-6",
         "usage": {"input_tokens": 2048, "output_tokens": 512},
+        "cost": {"estimated_cost_usd": 0.0138, "cost_status": "estimated", "cost_source": "official_docs_snapshot"},
         "assistant_content_chars": 1200, "assistant_tool_call_count": 0,
         # Per-advisor metrics on a MoA turn, None otherwise: MoA returns only the aggregator's
         # response, so without this an observer cannot see or price the fan-out.

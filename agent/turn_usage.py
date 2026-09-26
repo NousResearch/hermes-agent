@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from agent.image_token_cost import calibrate_from_usage
 from agent.usage_anchor import capture_usage_anchor, set_usage_anchor
@@ -70,6 +70,22 @@ def _fold_moa_usage(agent, canonical_usage):
     return _moa_client, canonical_usage, _moa_ref_cost
 
 
+def record_api_call_usage(
+    agent: Any, usage: Dict[str, int], *, estimated_cost_usd: Optional[float], cost_status: str,
+    cost_source: str,
+) -> Dict[str, Any]:
+    """One provider call's usage + cost: set as ``post_api_request``'s ``cost`` and appended to the
+    turn's ``api_call_records`` (reset per turn in ``run_conversation``). Returns the record."""
+    cost = {"estimated_cost_usd": estimated_cost_usd, "cost_status": cost_status, "cost_source": cost_source}
+    agent._last_api_call_cost = cost
+    record = {"model": agent.model, "provider": agent.provider, **usage, **cost}
+    records = getattr(agent, "_turn_api_call_records", None)
+    if not isinstance(records, list):
+        records = agent._turn_api_call_records = []
+    records.append(record)
+    return record
+
+
 def record_response_usage(
     agent: Any, response: Any, *, messages: List[Dict[str, Any]], api_call_count: int,
     api_duration: float, compression_attempts: int, max_compression_attempts: int,
@@ -79,6 +95,7 @@ def record_response_usage(
     consume a pending compaction verdict. Returns the loop-visible outcome."""
     rearmed = False
     compressor = agent.context_compressor
+    agent._last_api_call_cost = None  # post_api_request's ``cost``; stays None for a usage-less call
     # Count every completed provider attempt, including providers that omit usage.
     # Token/cost accounting below stays gated on real usage, but the request itself
     # must remain observable.
@@ -242,6 +259,13 @@ def record_response_usage(
             _cost_delta = (_cost_delta or 0.0) + _moa_cost
     agent.session_cost_status = cost_result.status
     agent.session_cost_source = cost_result.source
+    record_api_call_usage(agent, {
+        "input_tokens": canonical_usage.input_tokens, "output_tokens": canonical_usage.output_tokens,
+        "cache_read_tokens": canonical_usage.cache_read_tokens,
+        "cache_write_tokens": canonical_usage.cache_write_tokens,
+        "reasoning_tokens": canonical_usage.reasoning_tokens,
+        "prompt_tokens": prompt_tokens, "total_tokens": total_tokens,
+    }, estimated_cost_usd=_cost_delta, cost_status=cost_result.status, cost_source=cost_result.source)
 
     # Persist per-call token deltas for any session_id so non-CLI runs can't lose
     # accounting; gateway/session-store writes use absolute totals and safely overwrite

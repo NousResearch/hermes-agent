@@ -672,6 +672,8 @@ def finalize_turn(
             else getattr(agent.context_compressor, "last_prompt_tokens", 0)
         ) or 0,
         **{key: getattr(agent, f"session_{key}") for key in _SESSION_COST_KEYS},
+        # This turn's provider calls, one usage + cost record each (post_api_request's ``cost``).
+        "api_call_records": list(getattr(agent, "_turn_api_call_records", None) or []),
         # Requested service tier, for billing audits (`hermes -z --usage-file`).
         "service_tier": (
             (getattr(agent, "request_overrides", {}) or {}).get("extra_body") or {}

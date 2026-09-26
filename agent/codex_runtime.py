@@ -146,7 +146,33 @@ def _queue_token_counts(agent, fail_msg: str, *fail_extra: Any, counts: Callable
         logger.debug(fail_msg, agent.session_id, *fail_extra, exc)
 
 
-def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]:
+def _fire_codex_post_api_request(agent, turn, *, task_id: str, message_count: int,
+                                 usage: dict[str, Any] | None, cost: dict[str, Any] | None) -> None:
+    """``post_api_request`` for the one provider call a Codex app-server turn makes: the generic loop
+    fires it from ``normalize_model_response``, which this runtime never reaches. Timing, request id
+    and the raw response are not visible across the app-server boundary and are None."""
+    try:
+        from hermes_cli.lifecycle import has_hook, invoke_hook
+        if not has_hook("post_api_request"):
+            return
+        final_text = getattr(turn, "final_text", None) or ""
+        invoke_hook(
+            "post_api_request", task_id=task_id, turn_id=getattr(agent, "_current_turn_id", None),
+            api_request_id=None, session_id=getattr(agent, "session_id", None) or "",
+            platform=getattr(agent, "platform", None) or "", model=agent.model, provider=agent.provider,
+            base_url=agent.base_url, api_mode=getattr(agent, "api_mode", None), api_call_count=1,
+            api_duration=None, started_at=None, ended_at=None, first_chunk_at=None,
+            finish_reason="interrupted" if getattr(turn, "interrupted", False) else (
+                "error" if getattr(turn, "error", None) else "stop"),
+            message_count=message_count, response_model=None, response=None, usage=usage, cost=cost,
+            assistant_message=None, assistant_content_chars=len(final_text) if isinstance(final_text, str) else 0,
+            assistant_tool_call_count=None, moa_references=None,
+        )
+    except Exception:
+        logger.debug("codex app-server post_api_request hook failed", exc_info=True)
+
+
+def _record_codex_app_server_usage(agent, turn, messages=None, task_id: str = "") -> dict[str, Any]:
     """Translate Codex app-server token usage into Hermes accounting. Prompt bucket = uncached + cached
     input (the protocol exposes no cache-write tokens); a turn with no usage still counts as one API call.
     ``messages`` (the transcript mirror) lets real usage anchor the next preflight: this runtime bypasses
@@ -155,6 +181,7 @@ def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]
     agent.session_api_calls += 1
     usage = getattr(turn, "token_usage_last", None)
     compressor = getattr(agent, "context_compressor", None)
+    message_count = len(messages) if isinstance(messages, list) else 0
 
     def billing(**extra):
         return dict(model=agent.model, billing_provider=agent.provider, billing_base_url=agent.base_url, api_call_count=1, **extra)
@@ -166,6 +193,7 @@ def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]
             compressor.note_usage_less_response()
         _queue_token_counts(agent, "Codex app-server api-call persistence failed (session=%s): %s",
                             counts=lambda: billing(billing_mode="subscription_included"))
+        _fire_codex_post_api_request(agent, turn, task_id=task_id, message_count=message_count, usage=None, cost=None)
         return {}
     from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
     # ``inputTokens`` is INCLUSIVE of ``cachedInputTokens`` (same contract as the Responses API, see
@@ -208,6 +236,12 @@ def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]
         agent.session_estimated_cost_usd += cost_usd
     agent.session_cost_status, agent.session_cost_source = cost_result.status, cost_result.source
     cost_fields = {"estimated_cost_usd": cost_usd, "cost_status": cost_result.status, "cost_source": cost_result.source}
+    from agent.turn_usage import record_api_call_usage
+    record_api_call_usage(agent, {**token_counts, "prompt_tokens": prompt_tokens, "total_tokens": total_tokens},
+                          **cost_fields)
+    _fire_codex_post_api_request(agent, turn, task_id=task_id, message_count=message_count,
+                                 usage={**token_counts, "prompt_tokens": prompt_tokens, "total_tokens": total_tokens},
+                                 cost=cost_fields)
     _queue_token_counts(
         agent, "Codex app-server token persistence failed (session=%s, tokens=%d): %s", total_tokens,
         counts=lambda: billing(**token_counts, **cost_fields,
@@ -633,12 +667,12 @@ def _persist_projected_messages(agent, turn, messages: List[Dict[str, Any]]) -> 
 
 
 def _finish_codex_turn(agent, turn, messages: List[Dict[str, Any]], *, original_user_message: Any,
-                       should_review_memory: bool) -> dict[str, Any]:
+                       should_review_memory: bool, task_id: str = "") -> dict[str, Any]:
     """Post-turn bookkeeping mirroring the chat_completions loop; returns usage fields."""
     # run_conversation() already bumped _turns_since_memory / _user_turn_count; only _iters_since_skill is ours.
     agent._iters_since_skill = getattr(agent, "_iters_since_skill", 0) + turn.tool_iterations
     _record_codex_app_server_compaction(agent, turn)
-    usage_result = _record_codex_app_server_usage(agent, turn, messages=messages)
+    usage_result = _record_codex_app_server_usage(agent, turn, messages=messages, task_id=task_id)
     # Skill nudge check AFTER iters were incremented (same as chat_completions).
     should_review_skills = (0 < agent._skill_nudge_interval <= agent._iters_since_skill
                             and "skill_manage" in agent.valid_tool_names)
@@ -690,12 +724,13 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
         _store_codex_thread_id(agent, turn.thread_id)
     usage_result = _finish_codex_turn(
         agent, turn, messages, original_user_message=original_user_message, should_review_memory=should_review_memory,
+        task_id=effective_task_id,
     )
     return _turn_result(
         interrupt, messages, api_calls=1, completed=not turn.interrupted and turn.error is None, error=turn.error,
         # We flushed the projected rows ourselves (agent_persisted); the gateway must skip its own DB write.
         final_response=turn.final_text, agent_persisted=True, codex_thread_id=turn.thread_id, codex_turn_id=turn.turn_id,
-        **usage_result,
+        api_call_records=list(getattr(agent, "_turn_api_call_records", None) or []), **usage_result,
     )
 
 

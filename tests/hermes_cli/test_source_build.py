@@ -243,6 +243,49 @@ def test_preparation_reuses_only_the_exact_completed_workspace_union(source_chec
     assert len(_events(root)) == 2
 
 
+@pytest.mark.platforms("posix")
+def test_version_probe_cannot_abort_completed_dependency_preparation(source_checkout, tmp_path):
+    """A read-only npm version probe must not abort node-deps (#123933): spawning
+    node-under-node hits Windows Job-Object EBUSY even when the dependencies are
+    already complete, so the version is read from npm's own manifest and the reuse
+    short-circuit survives in a spawn lane that fails every version probe."""
+    root, _ = source_checkout
+    fake = tmp_path / "job-object-npm"
+    (fake / "node_modules/npm/bin").mkdir(parents=True)
+    (fake / "node_modules/semver").mkdir(parents=True)
+    (fake / "npm").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (fake / "npm").chmod(0o755)
+    # Stand-in for the Job-Object failure lane: version probes die, ci succeeds.
+    (fake / "node_modules/npm/bin/npm-cli.js").write_text(
+        "import { appendFileSync } from 'node:fs'\n"
+        "appendFileSync('spawned.jsonl', process.argv[2] + '\\n')\n"
+        "process.exit(process.argv[2] === '--version' ? 3 : 0)\n", encoding="utf-8")
+    (fake / "node_modules/npm/package.json").write_text(
+        json.dumps({"name": "npm", "version": "9.9.9"}), encoding="utf-8")
+    (fake / "node_modules/semver/package.json").write_text(
+        json.dumps({"name": "semver", "version": "1.0.0", "main": "index.js"}), encoding="utf-8")
+    (fake / "node_modules/semver/index.js").write_text(
+        "module.exports = { satisfies: () => true }\n", encoding="utf-8")
+    # This checkout's install already completed; the fake ci lane leaves it in place.
+    (root / "node_modules").mkdir(exist_ok=True)
+    (root / "node_modules/.package-lock.json").write_text('{"packages": {}}', encoding="utf-8")
+    env = {**os.environ, "PATH": os.pathsep.join([str(fake), os.environ["PATH"]]),
+           "npm_execpath": ""}
+    script = root / "scripts/build/node-deps.mjs"
+    install = subprocess.run([shutil.which("node"), str(script), "--source", str(root),
+                              "--reuse", "--workspace", "web"], cwd=root, env=env,
+                             capture_output=True, text=True)
+    assert install.returncode == 0, install.stderr
+    assert "installing workspace dependencies" in install.stdout
+    reuse = subprocess.run([shutil.which("node"), str(script), "--source", str(root),
+                            "--reuse", "--workspace", "web"], cwd=root, env=env,
+                           capture_output=True, text=True)
+    assert reuse.returncode == 0, reuse.stderr
+    assert "reusing completed install" in reuse.stdout
+    # The reused run spawned nothing at all — not even a version probe.
+    assert (root / "spawned.jsonl").read_text(encoding="utf-8") == "ci\n"
+
+
 @pytest.mark.platforms("linux")
 @pytest.mark.parametrize("desktop", [False, True])
 def test_update_builds_selected_products_after_one_union_preparation(source_products, desktop):

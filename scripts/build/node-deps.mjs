@@ -64,7 +64,11 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
     return path
   }))].sort()
   const [node, npm] = npmCommand({ env })
-  const npmVersion = execFileSync(node, [npm, '--version'], { cwd: source, env, encoding: 'utf8' }).trim()
+  // npm's own manifest states its version — no child spawn. A node-under-node spawn
+  // hits Windows Job-Object EBUSY (#123933), and this probe runs before the reuse
+  // short-circuit: a read-only version read must not abort an otherwise complete run.
+  const npmVersion = JSON.parse(
+    readFileSync(join(dirname(npm), '..', 'package.json'), 'utf8')).version
   const { satisfies } = createRequire(npm)('semver')
   for (const [name, version] of [['node', process.versions.node], ['npm', npmVersion]]) {
     const range = manifest.engines?.[name]

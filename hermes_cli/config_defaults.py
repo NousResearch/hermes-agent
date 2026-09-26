@@ -1152,7 +1152,7 @@ DEFAULT_CONFIG = {
             # Gemini Live: key GEMINI_API_KEY / GOOGLE_API_KEY (Google AI Studio).
             "gemini": {
                 "model": "gemini-3.8-live",  # or gemini-3.8-live-extended-thinking
-                "voice": "Charon",
+                "voice": "Puck",
             },
         },
     },

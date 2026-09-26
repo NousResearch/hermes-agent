@@ -17,6 +17,7 @@ def test_new_install_defaults_to_gemini_live():
     assert voice["engine"] == "realtime"
     assert voice["realtime"]["provider"] == "gemini"
     assert voice["realtime"]["gemini"]["model"] == "gemini-3.8-live"
+    assert voice["realtime"]["gemini"]["voice"] == voice_realtime.DEFAULT_GEMINI_VOICE == "Puck"
 
 
 def test_realtime_voice_is_czesiek_and_keeps_main_session_bridge():

@@ -48,7 +48,7 @@ _MINT_TIMEOUT_S = 15.0
 
 PROVIDERS = ("openai", "gemini")
 DEFAULT_GEMINI_MODEL = "gemini-3.8-live"
-DEFAULT_GEMINI_VOICE = "Charon"
+DEFAULT_GEMINI_VOICE = "Puck"
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com"
 # The constrained method is the only one an ephemeral token may open (v1alpha).
 GEMINI_LIVE_WS_URL = (

@@ -206,7 +206,8 @@ def _max_iterations_fallback(final_response="fallback summary"):
         ),
         (_max_iterations_fallback(), "error", "fallback summary", False),
         (_max_iterations_fallback(), "interrupted", "fallback summary", False),
-        (_max_iterations_fallback(), "complete", "   ", False),
+        # Completed with empty text is accounted for (empty-response streak), not dropped.
+        (_max_iterations_fallback(), "complete", "   ", True),
     ],
 )
 def test_successful_goal_turn_accepts_only_valid_completion_outcomes(
@@ -529,7 +530,7 @@ def test_new_goal_does_not_inherit_previous_goal_recovery_attempt(server):
 
 def _write_moa_config(home, text):
     cfg_path = home / "config.yaml"
-    cfg_path.write_text(text)
+    cfg_path.write_text(text, encoding="utf-8")
 
 
 

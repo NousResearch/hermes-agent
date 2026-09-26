@@ -44,6 +44,12 @@ DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES = 3
 # Consecutive transport failures (401, timeout, DNS) before auto-pause: a broken API key returns
 # 401 every call and must not spend every turn on an unreachable judge.
 DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES = 5
+# Consecutive EMPTY agent responses before the loop auto-pauses. An empty final answer under a
+# goal is a stuck loop, not progress (empty stream, provider hiccup, or a model that keeps saying
+# nothing to the continuation prompt); re-prompting a bounded number of times recovers the
+# transient case and the pause makes the persistent case visible instead of a silent stall.
+# Inspired by Codex CLI 0.155 (openai/codex#44320: goals block after three empty continuations).
+DEFAULT_MAX_CONSECUTIVE_EMPTY_TURNS = 3
 
 # Quality gates: deterministic shell commands that must pass before the judge may declare DONE. A
 # failed gate short-circuits the judge — its output IS the continuation prompt, so the agent works
@@ -409,6 +415,7 @@ class GoalState:
     # Tracked separately from parse failures: a broken API key returns 401 every call and must
     # auto-pause instead of burning the budget on an unreachable judge.
     consecutive_transport_failures: int = 0   # judge API/transport errors in a row
+    consecutive_empty_turns: int = 0          # empty agent responses in a row (see the constant)
     # User-added criteria (/subgoal). Both the judge and continuation prompts include them.
     subgoals: List[str] = field(default_factory=list)
     # Wait barrier (judge ``wait`` verdict or ``/goal wait``): parks the loop instead of re-poking the
@@ -436,7 +443,9 @@ class GoalState:
     def from_json(cls, raw: str) -> "GoalState":
         data = json.loads(raw)
         raw_subgoals = data.get("subgoals") or []
-        ints = {k: int(data.get(k) or 0) for k in ("turns_used", "consecutive_parse_failures", "consecutive_transport_failures", "waiting_on_delegations")}
+        ints = {k: int(data.get(k) or 0) for k in (
+            "turns_used", "consecutive_parse_failures", "consecutive_transport_failures",
+            "consecutive_empty_turns", "waiting_on_delegations")}
         floats = {k: float(data.get(k) or 0.0) for k in ("created_at", "last_turn_at", "waiting_until", "waiting_since")}
         return cls(
             goal=data.get("goal", ""),
@@ -1173,6 +1182,7 @@ class GoalManager:
             return None
         self._state.status = "active"
         self._state.paused_reason = None
+        self._state.consecutive_empty_turns = 0   # the user re-armed the loop; give it a fresh streak
         self._state.clear_wait()   # resuming starts fresh
         if reset_budget:
             self._state.turns_used = 0
@@ -1447,6 +1457,29 @@ class GoalManager:
             "Use /goal resume to keep going, or /goal clear to stop.",
         )
 
+    def _empty_turn_decision(self, state: GoalState) -> Dict[str, Any]:
+        """Bookkeeping for a turn whose final answer was empty: count the streak, re-prompt while
+        under ``DEFAULT_MAX_CONSECUTIVE_EMPTY_TURNS``, pause with a named reason once it is hit."""
+        state.consecutive_empty_turns += 1
+        n, cap = state.consecutive_empty_turns, DEFAULT_MAX_CONSECUTIVE_EMPTY_TURNS
+        reason = f"empty response ({n} in a row)"
+        state.last_verdict = "continue"
+        state.last_reason = reason
+        if n >= cap:
+            return self._pause_decision(
+                f"agent returned empty responses {n} turns in a row", "continue", reason,
+                f"⏸ Goal paused — the agent returned an empty response {n} turns in a row "
+                "(usually a provider/stream problem or a model with nothing to add). Check the model "
+                "and provider, then /goal resume to keep going, or /goal clear to stop.",
+            )
+        if state.turns_used >= state.max_turns:
+            return self._budget_pause(state, "continue", reason)
+        self._save()
+        return _decision(
+            "active", True, self.next_continuation_prompt(), "continue", reason,
+            f"↻ Empty response — re-prompting toward goal ({state.turns_used}/{state.max_turns}; {n}/{cap} empty)",
+        )
+
     def evaluate_after_turn(
         self, last_response: str, *, user_initiated: bool = True,
         background_processes: Optional[List[Dict[str, Any]]] = None,
@@ -1465,6 +1498,14 @@ class GoalManager:
 
         state.turns_used += 1
         state.last_turn_at = time.time()
+
+        # An empty final answer is a stuck loop, not evidence: re-prompt a bounded number of times
+        # (transient empty stream), then pause visibly instead of stalling in "active" forever or
+        # spending the whole budget on nothing. Runs before gates and the judge — neither has
+        # anything to evaluate.
+        if not (last_response or "").strip():
+            return self._empty_turn_decision(state)
+        state.consecutive_empty_turns = 0
 
         # Gates run BEFORE the judge: a failing gate is deterministic evidence the goal is not done,
         # so the judge is skipped and the gate's output drives the next turn (same turn budget).

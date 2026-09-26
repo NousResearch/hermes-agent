@@ -206,7 +206,9 @@ async def test_empty_agent_result_releases_inflight_loop_tick(loop_env):
         is_internal=True,
     )
 
-    runner._post_turn_goal_continuation.assert_not_awaited()
+    # A COMPLETED empty turn now reaches the goal hook (its manager counts the empty streak);
+    # the invariant here is that the in-flight /loop tick is released regardless.
+    runner._post_turn_goal_continuation.assert_awaited_once()
     reloaded = loops.load_loop("sid-gateway-loop")
     assert reloaded.awaiting_response is False
     assert reloaded.status == "active"

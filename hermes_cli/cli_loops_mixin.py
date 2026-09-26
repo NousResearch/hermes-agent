@@ -687,11 +687,10 @@ class CLILoopsMixin:
                 f"Use /goal resume to continue, or /goal clear to stop.{_RST}")
             return
 
-        # Empty/whitespace responses are almost always transient failures (API error,
-        # empty stream): judging would say "continue" and trip the parse-failure backstop.
+        # Empty/whitespace responses reach the manager too: it counts the streak, re-prompts a bounded
+        # number of times (transient empty stream) and then pauses with a visible reason, instead of
+        # this hook returning early and the goal stalling in "active" with nothing queued.
         last_response = self._last_assistant_response_text()
-        if not last_response.strip():
-            return
         _active_deleg = 0
         try:
             from hermes_cli.goals import count_active_delegations, gather_background_processes as _gather_bg

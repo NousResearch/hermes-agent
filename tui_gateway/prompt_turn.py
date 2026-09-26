@@ -47,13 +47,15 @@ def _hook_failure(what: str, exc: BaseException) -> None:
 
 
 def _is_successful_goal_turn(result: Any, status: str, raw: Any) -> bool:
-    """Whether a turn produced a real response the goal judge can use.
+    """Whether a turn completed well enough for the goal manager to account for it.
 
-    A non-failed ``max_iterations_reached(...)`` handoff is a resumable turn boundary, not a
-    failure: its summary must reach the judge so an active goal continues (#102213). Failed,
-    interrupted and other ``completed is False`` turns still stay out (cf. #63180)."""
+    Empty text is NOT a failure here: the manager counts the empty streak and re-prompts a bounded
+    number of times, then pauses visibly instead of the goal stalling in "active". A non-failed
+    ``max_iterations_reached(...)`` handoff is a resumable turn boundary, not a failure: its summary
+    must reach the judge so an active goal continues (#102213). Failed, interrupted and other
+    ``completed is False`` turns still stay out (cf. #63180)."""
     from agent.turn_failure_copy import is_max_iteration_handoff
-    if status != "complete" or not isinstance(raw, str) or not raw.strip():
+    if status != "complete" or not (raw is None or isinstance(raw, str)):
         return False
     if not isinstance(result, dict):
         return True
@@ -363,7 +365,7 @@ def _goal_followup_after_turn(
             except Exception:
                 _bg_procs = None
             decision = goal_mgr.evaluate_after_turn(
-                raw, user_initiated=True, background_processes=_bg_procs, active_delegations=_active_deleg)
+                raw or "", user_initiated=True, background_processes=_bg_procs, active_delegations=_active_deleg)
             if verdict_msg := decision.get("message") or "":
                 _emit("status.update", sid, {"kind": "goal", "text": verdict_msg})
             if decision.get("should_continue") and (

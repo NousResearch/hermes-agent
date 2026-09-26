@@ -327,16 +327,25 @@ class GatewayGoalsMixin:
         except Exception as exc:
             logger.debug("post-turn session resolution failed: %s", exc)
             return
-        # Empty interrupted/errored responses must not drive /goal, but an in-flight /loop tick
-        # still needs to be released and rescheduled.
+        # Interrupted/errored responses must not drive /goal, but an in-flight /loop tick still
+        # needs to be released and rescheduled. A turn that COMPLETED with empty text does drive
+        # it: the goal manager counts the empty streak and re-prompts / pauses visibly instead of
+        # the goal stalling in "active" with nothing queued.
         hooks = [("loop completion", self._post_turn_loop_completion)]
-        if final_text.strip():
+        if final_text.strip() or self._turn_completed_for_goal(agent_result):
             hooks.insert(0, ("goal continuation", self._post_turn_goal_continuation))
         for label, hook in hooks:
             try:
                 await hook(session_entry=session_entry, source=source, final_response=final_text)
             except Exception as exc:
                 logger.debug("%s hook failed: %s", label, exc)
+
+    @staticmethod
+    def _turn_completed_for_goal(agent_result: Any) -> bool:
+        """A completed-but-empty turn (not interrupted/failed/partial) still counts toward the goal's
+        empty-response streak; lazy import because ``gateway.run`` imports this module."""
+        from gateway.run import _should_clear_resume_pending_after_turn
+        return _should_clear_resume_pending_after_turn(agent_result)
 
     @staticmethod
     def _final_text_for_post_turn_hooks(agent_result, event=None) -> str:

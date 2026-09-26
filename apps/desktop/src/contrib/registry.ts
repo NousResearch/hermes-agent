@@ -31,9 +31,16 @@ const EMPTY: readonly Contribution[] = Object.freeze([])
  * the current surfaces (no dynamic `when` is in use); revisit if we need
  * reactive `when`.
  */
+/** Shallow reference equality over two resolved area lists. */
+const sameEntries = (a: readonly Contribution[], b: readonly Contribution[]): boolean =>
+  a.length === b.length && a.every((entry, i) => entry === b[i])
+
 class ContributionRegistry {
   private byArea = new Map<string, Contribution[]>()
   private snapshot = new Map<string, readonly Contribution[]>()
+  /** Last resolved list per area, kept across invalidation so an area that
+   *  re-resolves to the SAME entries hands back the SAME reference. */
+  private previous = new Map<string, readonly Contribution[]>()
   private areaListeners = new Map<string, Set<Listener>>()
   private globalListeners = new Set<Listener>()
 
@@ -59,13 +66,26 @@ class ContributionRegistry {
 
     const raw = this.byArea.get(area)
 
-    const resolved: readonly Contribution[] =
+    let resolved: readonly Contribution[] =
       !raw || raw.length === 0
         ? EMPTY
         : raw
             .filter(c => c.enabled !== false && (c.when ? c.when() : true))
             .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
 
+    // Invalidation drops the snapshot, so a mutation that leaves an area's
+    // resolved entries unchanged would otherwise mint a fresh array here.
+    // `useSyncExternalStore` compares with `Object.is`, so that new reference
+    // reads as a change and re-renders — and any consumer whose render touches
+    // the registry closes the loop into "Maximum update depth exceeded".
+    // Reuse the previous array whenever the entries are identical.
+    const prev = this.previous.get(area)
+
+    if (prev && sameEntries(prev, resolved)) {
+      resolved = prev
+    }
+
+    this.previous.set(area, resolved)
     this.snapshot.set(area, resolved)
 
     return resolved

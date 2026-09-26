@@ -20,8 +20,10 @@ import pytest
 
 from agent.context_compressor import (
     ContextCompressor,
+    _INFLIGHT_TASK_REPLAY_HEADER,
     _MAX_TAIL_MESSAGE_FLOOR,
     _PRESSURE_KEEP_RECENT_MESSAGES,
+    _tool_content_has_images,
 )
 from agent.model_metadata import estimate_messages_tokens_rough
 from agent.prompt_builder import steer_user_row
@@ -225,6 +227,25 @@ def _terminal_result(call_id: str, tag: str, lines: int) -> dict:
     return {"role": "tool", "tool_call_id": call_id, "content": json.dumps({"output": output, "exit_code": 0})}
 
 
+def _image_call(call_id: str) -> dict:
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {"name": "vision_analyze", "arguments": json.dumps({"image_url": f"shot-{call_id}.png"})},
+    }
+
+
+def _image_result(call_id: str) -> dict:
+    return {
+        "role": "tool",
+        "tool_call_id": call_id,
+        "content": [
+            {"type": "text", "text": f"Image {call_id}"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJDRA=="}},
+        ],
+    }
+
+
 @pytest.mark.parametrize("steers", [0, 1, 2], ids=["round_last", "steer_after_round", "two_steers_after_round"])
 def test_mid_turn_compaction_keeps_the_pending_tool_round_verbatim(steers):
     """Regression: compaction after a tool round stubbed the output the model had just asked for.
@@ -275,3 +296,66 @@ def test_mid_turn_compaction_keeps_the_pending_tool_round_verbatim(steers):
         assert by_id.get(call_id) == content, f"pending result {call_id} was not kept verbatim: {by_id.get(call_id)!r:.120}"
     # The budget still binds older rounds: the previous turn's result does not survive verbatim.
     assert by_id.get("old_12") != previous["content"]
+
+
+def test_compaction_keeps_four_images_in_a_spared_pending_round(compressor_128k):
+    pending_ids = [f"new_{i}" for i in range(4)]
+    msgs = [
+        {"role": "system", "content": "You are Hermes."},
+        {"role": "user", "content": "Inspect the first image."},
+        {"role": "assistant", "content": None, "tool_calls": [_image_call("old")]},
+        _image_result("old"),
+        {"role": "assistant", "content": "The first image is clear."},
+        {"role": "user", "content": "Inspect these four images."},
+        {"role": "assistant", "content": None, "tool_calls": [_image_call(call_id) for call_id in pending_ids]},
+        *[_image_result(call_id) for call_id in pending_ids],
+        steer_user_row("Compare their labels."),
+        steer_user_row("Check the colors too."),
+    ]
+
+    out = compressor_128k.compress(msgs, current_tokens=estimate_messages_tokens_rough(msgs))
+
+    results = {m["tool_call_id"]: m for m in out if m.get("role") == "tool"}
+    assert [_tool_content_has_images(results[call_id]["content"]) for call_id in pending_ids] == [True] * 4
+    assert not _tool_content_has_images(results["old"]["content"])
+
+
+def _single_prompt_pending_image_round(*, oversized: bool = False) -> tuple[list[dict], list[str]]:
+    pending_ids = [f"new_{i}" for i in range(4)]
+    msgs = [
+        {"role": "system", "content": "You are Hermes."},
+        {"role": "user", "content": "Inspect the images and report."},
+    ]
+    for i in range(30):
+        msgs.extend(_unique_tool_pair(i, 12_000))
+    results = [_image_result(call_id) for call_id in pending_ids]
+    if oversized:
+        results[-1]["content"][0]["text"] = "X" * 120_000
+    msgs.extend([
+        {"role": "assistant", "content": None, "tool_calls": [_image_call(call_id) for call_id in pending_ids]},
+        *results,
+    ])
+    return msgs, pending_ids
+
+
+def test_compaction_keeps_pending_images_before_replaying_the_head_task(compressor_128k):
+    compressor_128k.protect_first_n = 1
+    msgs, pending_ids = _single_prompt_pending_image_round()
+
+    out = compressor_128k.compress(msgs, current_tokens=estimate_messages_tokens_rough(msgs))
+
+    assert out[-1]["role"] == "user"
+    assert _INFLIGHT_TASK_REPLAY_HEADER in out[-1]["content"]
+    results = {m["tool_call_id"]: m for m in out if m.get("role") == "tool"}
+    assert [_tool_content_has_images(results[call_id]["content"]) for call_id in pending_ids] == [True] * 4
+
+
+def test_compaction_retires_old_images_in_oversized_pending_round(compressor_128k):
+    compressor_128k.protect_first_n = 1
+    msgs, pending_ids = _single_prompt_pending_image_round(oversized=True)
+
+    out = compressor_128k.compress(msgs, current_tokens=estimate_messages_tokens_rough(msgs))
+
+    results = {m["tool_call_id"]: m for m in out if m.get("role") == "tool"}
+    assert all(call_id in results for call_id in pending_ids)
+    assert not any(_tool_content_has_images(results[call_id]["content"]) for call_id in pending_ids[:3])

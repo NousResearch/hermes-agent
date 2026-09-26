@@ -1453,9 +1453,12 @@ def _rewritten(msg: Dict[str, Any], content: Any) -> Dict[str, Any]:
     return new_msg
 
 
-def _retire_stale_tool_result_images(result: List[Dict[str, Any]], keep_newest: int = _MAX_KEEP_TOOL_IMAGES) -> int:
+def _retire_stale_tool_result_images(
+    result: List[Dict[str, Any]], keep_newest: int = _MAX_KEEP_TOOL_IMAGES, spared: range = range(0),
+) -> int:
     """Replace image payloads on older tool results with text placeholders.
-    Keeps the newest ``keep_newest`` image-bearing tool messages; user uploads untouched. Mutates
+    Keeps the newest ``keep_newest`` image-bearing tool messages and any spared pending round;
+    spared images still count toward the newest window. User uploads are untouched. Mutates
     ``result`` in place; returns the number of messages rewritten. Compaction only: it commits the
     rewrite into the canonical transcript once. The send path uses
     :func:`evict_stale_outbound_tool_images` (a per-request keep-newest window rewrites the cached
@@ -1466,7 +1469,7 @@ def _retire_stale_tool_result_images(result: List[Dict[str, Any]], keep_newest: 
         if not isinstance(msg, dict) or msg.get("role") != "tool" or not _tool_content_has_images(msg.get("content")):
             continue
         seen += 1
-        if seen <= max(keep_newest, 0):
+        if seen <= max(keep_newest, 0) or i in spared:
             continue
         new_msg = _strip_images_from_tool_msg(msg)
         if new_msg is not None:
@@ -1609,10 +1612,11 @@ def _strip_images_from_content(content: Any) -> Any:
     return content if stripped is None else stripped
 
 
-def _strip_historical_media(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _strip_historical_media(messages: List[Dict[str, Any]], spared: range = range(0)) -> List[Dict[str, Any]]:
     """Replace image parts in older messages with placeholder text.
     Rule 1: strip everything before the newest image-bearing user message. Rule 1b: the opening
-    attachment ages out once a newer tool image exists. Rule 2: keep only the newest tool-result image.
+    attachment ages out once a newer tool image exists. Rule 2: keep only the newest tool-result image,
+    except tool results in a spared pending round.
     Unchanged list when nothing applies; input never mutated."""
     if not messages:
         return messages
@@ -1632,6 +1636,8 @@ def _strip_historical_media(messages: List[Dict[str, Any]]) -> List[Dict[str, An
         return messages
 
     def _is_stale(index: int, message: Dict[str, Any]) -> bool:
+        if index in spared:
+            return False
         # Rule 1: everything before the newest image-bearing user message. Rule 1b: the opening
         # attachment ages out once a newer tool image exists (the text placeholder keeps the user row
         # non-empty for the zero-user-turn guard). Rule 2: superseded tool-result image, even in the tail.
@@ -3216,6 +3222,14 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             )
         return demoted
 
+    def _spared_pending_tool_round(self, messages: List[Dict[str, Any]]) -> range:
+        """Return the pending round only when it fits the input window's hard share."""
+        pending = _pending_tool_round(messages)
+        input_window = self._effective_input_window(
+            getattr(self, "context_length", 0) or 0, getattr(self, "max_tokens", None))
+        hard_share = int(input_window * TAIL_MAX_CONTEXT_FRACTION)
+        return pending if sum(_estimate_msg_budget_tokens(messages[i]) for i in pending) <= hard_share else range(0)
+
     def _prune_old_tool_results(
         self, messages: List[Dict[str, Any]], protect_tail_count: int,
         protect_tail_tokens: int | None = None, min_prune_chars: int = _PRUNE_MIN_CHARS,
@@ -3231,12 +3245,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         # call (side effects included) or answer blind. Passes 2 and 4 spare it unless it alone exceeds the tail's
         # hard share of the input budget the threshold is computed from (the output reservation is not room the
         # round can keep) — the #61932 single-200KB-read case, which must still give way.
-        pending = _pending_tool_round(result)
-        input_window = self._effective_input_window(
-            getattr(self, "context_length", 0) or 0, getattr(self, "max_tokens", None))
-        hard_share = int(input_window * TAIL_MAX_CONTEXT_FRACTION)
-        fits = sum(_estimate_msg_budget_tokens(result[i]) for i in pending) <= hard_share
-        spared = pending if fits else range(0)
+        spared = self._spared_pending_tool_round(result)
         prune_boundary = min(prune_boundary, spared.start) if spared else prune_boundary
         pruned = self._dedupe_tool_results(result)
         # Just-loaded / tail-referenced skills keep full skill_view bodies through the ordinary passes.
@@ -3253,8 +3262,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             self._truncate_tool_call_args_at(result, i)
         # Pass 3.5: retire image payloads inside the protected tail; re-sent embeds otherwise make
         # compression look ineffective and trip anti-thrash. Newest frames stay live.
-        # Newest frames stay live for follow-up QA; older ones become placeholders. See #92699.
-        pruned += _retire_stale_tool_result_images(result)
+        # Newest frames stay live for follow-up QA; unread spared results stay live too. See #92699.
+        pruned += _retire_stale_tool_result_images(result, spared=spared)
         if protect_tail_tokens is not None and protect_tail_tokens > 0 and result:
             pruned += self._pressure_demote_tail(
                 result, prune_boundary, protect_tail_tokens, call_id_to_tool, min_prune_chars, spared,
@@ -3347,7 +3356,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         (including the protected tail), so no unique content is ever lost; (2) summarize non-tail tool
         results larger than ``min_prune_chars``; (3) truncate oversized tool_call arguments on non-tail
         assistant messages; (3.5) retire image payloads on all but the newest ``_MAX_KEEP_TOOL_IMAGES``
-        image-bearing tool results — tail-agnostic and lossy by design (#92699). Only pass (2)'s floor is
+        image-bearing tool results, except a pending round that fits the hard share (#92699). Only pass (2)'s floor is
         raised by ``proactive_prune_min_result_chars``; passes (1) and (3) keep their own fixed floors. The
         recent-tail protection applies to passes (2) and (3); pass (1) is tail-agnostic by design because
         dedup is lossless.
@@ -5333,6 +5342,7 @@ Write only the summary body. Do not include any preamble or prefix."""
 
     def _finalize_compressed(
         self, compressed: List[Dict[str, Any]], messages: List[Dict[str, Any]], n_messages: int,
+        spare_pending_images: bool,
     ) -> List[Dict[str, Any]]:
         """Post-assembly cleanup: orphan pairs, media, savings, markers, replay prune, mem trim."""
         # Single-prompt cron shape: the only live instruction sits in the protected head, BEFORE the
@@ -5340,6 +5350,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         # (#100818). Sanitize FIRST: the trailing-in-flight exemption (#79278) walks back from the list
         # end, and a replay user row there would strip a genuinely pending assistant(tool_calls).
         compressed = self._sanitize_tool_pairs(compressed)
+        spared = _pending_tool_round(compressed) if spare_pending_images else range(0)
         compressed = self._reappend_inflight_user_task(compressed, self._find_inflight_user_task(messages))
         self.compression_count += 1
         # Replace historical image payloads with placeholders; multi-MB base64 blobs otherwise
@@ -5348,7 +5359,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         # short text placeholder. Without this, tail messages keep their original multi-MB base-64 image
         # payloads forever, which can push every subsequent API request past the provider's body-size limit
         # and wedge the session. Port of Kilo-Org/kilocode#9434.
-        compressed = _strip_historical_media(compressed)
+        compressed = _strip_historical_media(compressed, spared=spared)
 
         # Like-for-like savings: current_tokens includes system prompt/tool schemas, new_estimate is
         # messages-only; comparing them fakes ~96% savings and kills the anti-thrashing guard.
@@ -5422,6 +5433,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
             return messages
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
+        spare_pending_images = bool(self._spared_pending_tool_round(messages))
         # Phase 1: Prune old tool results (cheap, no LLM call)
         messages, pruned_count = self._prune_old_tool_results(
             messages, protect_tail_count=self.protect_last_n, protect_tail_tokens=self.tail_token_budget,
@@ -5487,7 +5499,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
         # Phase 4: Assemble compressed message list
         compressed = self._assemble_compressed(messages, compress_start, compress_end, scan, summary)
-        return self._finalize_compressed(compressed, messages, n_messages)
+        return self._finalize_compressed(compressed, messages, n_messages, spare_pending_images)
 
     def _assemble_compressed(
         self, messages: List[Dict[str, Any]], compress_start: int, compress_end: int, scan: "_HandoffScan", summary: str,

@@ -170,9 +170,7 @@ describe('ModelMenuPanel search', () => {
   const rowWithText = (content: ReturnType<typeof renderPanel>['content'], pattern: RegExp) =>
     content.queryByText(
       (_, element) =>
-        element?.tagName === 'SPAN' &&
-        !element.querySelector('span') &&
-        pattern.test(element.textContent ?? '')
+        element?.tagName === 'SPAN' && !element.querySelector('span') && pattern.test(element.textContent ?? '')
     )
 
   it('hides the non-matching current model while a query is active', async () => {

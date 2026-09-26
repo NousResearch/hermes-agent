@@ -228,6 +228,9 @@ def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[P
         live_root = release_dir / staged_root.name
         previous = release_dir / (staged_root.name + _DESKTOP_PREVIOUS_SUFFIX)
         release_dir.mkdir(parents=True, exist_ok=True)
+        if not live_root.exists() and previous.is_dir():
+            # A swap interrupted between its two renames left the app only at ``.previous``.
+            _rename_riding_out_file_lock(previous, live_root)
         shutil.rmtree(previous, ignore_errors=True)
         moved_aside = live_root.exists()
         if moved_aside:

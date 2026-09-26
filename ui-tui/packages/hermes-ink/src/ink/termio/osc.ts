@@ -634,13 +634,18 @@ export function link(url: string, params?: Record<string, string>): string {
     return LINK_END
   }
 
-  const p = { id: osc8Id(url), ...params }
+  // OSC 8 URIs are embedded verbatim in terminal control sequences. A URL
+  // from model markdown may contain BEL/ST and inject a second OSC command.
+  // Drop terminal control bytes before constructing the sequence.
+  // eslint-disable-next-line no-control-regex
+  const safeUrl = url.replace(/[\x00-\x1f\x7f-\x9f]/g, '')
+  const p = { id: osc8Id(safeUrl), ...params }
 
   const paramStr = Object.entries(p)
     .map(([k, v]) => `${k}=${v}`)
     .join(':')
 
-  return osc(OSC.HYPERLINK, paramStr, url)
+  return osc(OSC.HYPERLINK, paramStr, safeUrl)
 }
 
 function osc8Id(url: string): string {

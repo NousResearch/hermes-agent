@@ -9,6 +9,7 @@ process and ``status``/``start`` report false positives.
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -162,12 +163,12 @@ def test_spawn_intent_ignores_inline_source_without_a_gateway_argv():
 REPO = Path("/opt/hermes-agent")
 
 
-def _bootstrap_one_liner(*args: str) -> str:
-    return " ".join(runtime_command(REPO, args, python="python3"))
+def _bootstrap_one_liner(*args: str, repo: Path = REPO) -> str:
+    return " ".join(runtime_command(repo, args, python="python3"))
 
 
-def _shell_launcher(*args: str) -> str:
-    return " ".join(["python3", "-I", "-c", _launcher_script("hermes", REPO, None), *args])
+def _shell_launcher(*args: str, repo: Path = REPO) -> str:
+    return " ".join(["python3", "-I", "-c", _launcher_script("hermes", repo, None), *args])
 
 
 @pytest.mark.parametrize(
@@ -206,6 +207,83 @@ def test_watcher_wrapping_a_bootstrap_launched_gateway_is_not_a_gateway():
     assert matches(WATCHER_WRAPPING_BOOTSTRAP) is False
     assert matches_runtime(WATCHER_WRAPPING_BOOTSTRAP) is False
     assert spawn_intent(WATCHER_WRAPPING_BOOTSTRAP) == "restart"
+
+
+# The launcher embeds the install root in its source as string literals, and the source's words are
+# scanned along with the tail. A folder can be named anything — a checkout at ``~/hermes``, or a
+# root with spaces that /proc splits into separate words — and none of it names a program or a
+# gateway entrypoint.
+@pytest.mark.parametrize(
+    "root",
+    [
+        "/opt/hermes",
+        "/opt/hermes-gateway",
+        "/opt/python3",
+        "/opt/Python Projects/hermes-agent",
+        "/opt/my hermes install/hermes-agent",
+    ],
+)
+@pytest.mark.parametrize("launcher", [_bootstrap_one_liner, _shell_launcher])
+def test_launcher_recognised_whatever_its_install_root_is_named(launcher, root):
+    assert matches(launcher("gateway", "run", repo=Path(root))) is True
+    assert spawn_intent(launcher("gateway", "status", repo=Path(root))) == "status"
+
+
+# The mirror image: words inside the source's string literals never speak for the process, so a
+# script that shells out to a gateway command line is not that gateway — though its spawn intent
+# still is.
+def test_inline_source_shelling_out_to_a_gateway_is_not_a_gateway():
+    source = "import os; os.system('/usr/local/bin/hermes gateway run --replace')"
+    cmd = " ".join(["python3", "-c", source])
+    assert matches(cmd) is False
+    assert matches_runtime(cmd) is False
+    assert spawn_intent(cmd) == "run"
+
+
+# A named profile puts its name in the tail and — through the systemd unit's
+# ``installation_command(home=…)`` on installs without a store Python — its HERMES_HOME in the
+# source. Either can read like a program.
+@pytest.mark.parametrize("profile", ["hermes", "python-bot"])
+def test_profile_named_like_a_program_is_still_this_process(profile):
+    home = f"/opt/state/.hermes/profiles/{profile}"
+    unit = " ".join(runtime_command(
+        REPO, ["--profile", profile, "gateway", "run"], python="python3", home=home,
+    ))
+    assert matches(unit) is True
+    assert matches(_shell_launcher("-p", profile, "gateway", "run")) is True
+
+
+# Windows process listings (Get-CimInstance) keep the ``-c`` operand as ONE quoted argument and
+# quote every other argument that contains a space. The operand is source, never a program; a
+# quoted interpreter in the tail still names one, with or without a ``-m`` after it.
+WINDOWS_PYTHON = r"C:\Users\Jo Doe\AppData\Local\hermes\python\python.exe"
+APOSTROPHE_PYTHON = r"C:\Users\O'Brien\python.exe"
+
+
+def test_windows_listing_of_a_launcher_is_this_process():
+    argv = runtime_command(Path("/opt/python3"), ["gateway", "run"], python=WINDOWS_PYTHON)
+    assert matches(subprocess.list2cmdline(argv)) is True
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        subprocess.list2cmdline([
+            WINDOWS_PYTHON, "-c", "import time; time.sleep(30)", "14980",
+            *runtime_command(REPO, ["gateway", "run", "--replace"], python=WINDOWS_PYTHON),
+        ]),
+        # /proc join: a quote inside a word (``O'Brien``) does not open a string literal.
+        " ".join([
+            APOSTROPHE_PYTHON, "-c", "import time; time.sleep(30)", "14980",
+            *runtime_command(REPO, ["gateway", "run", "--replace"], python=APOSTROPHE_PYTHON),
+        ]),
+    ],
+    ids=["windows-listing", "proc-join-apostrophe"],
+)
+def test_watcher_replaying_a_bootstrap_launched_gateway_is_not_a_gateway(cmd):
+    assert matches(cmd) is False
+    assert matches_runtime(cmd) is False
+    assert spawn_intent(cmd) == "run"
 
 
 # Atomic Hermes' bundled desktop runner (regression for #22418): it shares

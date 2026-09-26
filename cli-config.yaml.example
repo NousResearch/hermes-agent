@@ -2065,6 +2065,10 @@ display:
 #     - command: "~/.hermes/agent-hooks/log-orchestration.sh"
 #
 # hooks_auto_accept: false
+#
+# Maximum seconds any shell hook may request; per-entry `timeout` values
+# above this are clamped. Raise it for trusted long-running gates.
+# hooks_max_timeout: 300
 
 
 # =============================================================================

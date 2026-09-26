@@ -134,12 +134,44 @@ def _bounded_count(key: str, default: int) -> int:
     return value
 
 
+def _lifecycle_days() -> tuple[int, int]:
+    """``(stale_after_days, archive_after_days)`` as a *coherent* pair.
+
+    ``_bounded_count`` bounds each key on its own, but apply_automatic_transitions() only implements
+    the documented ``active -> stale -> archived`` lifecycle when ``archive_after_days`` is strictly
+    greater than ``stale_after_days``: it tests the archive branch first, so ``stale_after_days: 60``
+    with ``archive_after_days: 30`` archives a used skill idle 40 days — before the staleness
+    threshold the user configured, skipping ``stale`` entirely — and equal values make ``stale``
+    unreachable at any age. Both values are individually valid, so nothing rejects them today.
+
+    Archiving moves the skill out of ``skills/`` on the same unconfirmed pass a non-positive value
+    already falls back for, so an incoherent pair is repaired here — by deferring the archive, never
+    by pulling ``stale_after_days`` in. Unlike a non-positive count, the configured
+    ``stale_after_days`` carries usable intent and is the *non-destructive* half of the pair, so it
+    is honoured verbatim; substituting the archive default instead would still archive a skill idle
+    40 days under a configured ``stale_after_days: 60``, which is the case this exists to stop. The
+    gap is one day — the smallest that keeps ``stale`` reachable at this resolution — because any
+    wider one would be an invented threshold rather than a repair."""
+    stale = _bounded_count("stale_after_days", DEFAULT_STALE_AFTER_DAYS)
+    archive = _bounded_count("archive_after_days", DEFAULT_ARCHIVE_AFTER_DAYS)
+    if archive <= stale:
+        deferred = stale + 1
+        # Warned once per distinct pair, for the same reason _bounded_count is: the dashboard polls these.
+        marker = ("archive_after_days<=stale_after_days", (stale, archive))
+        if marker not in _warned_bad_values:
+            _warned_bad_values.add(marker)
+            logger.warning("curator.archive_after_days (%d) must be > curator.stale_after_days (%d); "
+                           "archiving after %dd instead", archive, stale, deferred)
+        return stale, deferred
+    return stale, archive
+
+
 def get_stale_after_days() -> int:
-    return _bounded_count("stale_after_days", DEFAULT_STALE_AFTER_DAYS)
+    return _lifecycle_days()[0]
 
 
 def get_archive_after_days() -> int:
-    return _bounded_count("archive_after_days", DEFAULT_ARCHIVE_AFTER_DAYS)
+    return _lifecycle_days()[1]
 
 
 def get_consolidate() -> bool:

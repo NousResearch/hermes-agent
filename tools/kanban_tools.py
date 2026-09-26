@@ -730,6 +730,15 @@ def _handle_complete(args: dict, **kw) -> str:
                 f"kanban_complete blocked: {empty_err}. Your task is still in-flight (no state "
                 f"change). Retry kanban_complete with a non-empty summary or result describing "
                 f"what was done.")
+        except kb.SelfReviewApprovalError as self_review_err:
+            # Nothing was mutated (the guard runs inside the same txn that would
+            # have closed the card). Tell the worker to route to a distinct
+            # reviewer rather than approving its own implementation work.
+            return tool_error(
+                f"kanban_complete blocked: {self_review_err}. Review approval must "
+                f"come from a profile that did not already work on this card. "
+                f"Route the card to a distinct reviewer instead of approving it "
+                f"yourself.")
         task = kb.get_task(conn, tid)
         if not ok:
             # complete_task reports every refusal as bare False; a reopened or

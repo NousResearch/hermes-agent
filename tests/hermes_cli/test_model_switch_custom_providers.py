@@ -2409,7 +2409,7 @@ def test_same_provider_switch_on_session_only_custom_endpoint_keeps_endpoint(mon
 
 
 def test_refresh_warms_user_provider_endpoints_in_parallel(monkeypatch):
-    """``refresh=True`` must not serially live-probe every ``providers:`` endpoint (#123793).
+    """``refresh=True`` must not serially live-probe every ``providers:`` endpoint (Fixes #123793).
 
     31 configured endpoints made the model-picker refresh block ~2 minutes: the refresh wiped
     ``provider_models_cache.json`` and the section-3 lap then made one blocking HTTPS round-trip

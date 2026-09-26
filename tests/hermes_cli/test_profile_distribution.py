@@ -472,6 +472,7 @@ class TestUpdate:
         (staged / "skills" / "research" / "web-search").mkdir(parents=True)
         (staged / "skills" / "research" / "web-search" / "SKILL.md").write_text("author skill\n", encoding="utf-8")
         (staged / "skills" / "research" / "DESCRIPTION.md").write_text("research skills\n", encoding="utf-8")
+        (staged / "skills" / "research" / ".DS_Store").write_bytes(b"\0")  # stray dotfile a macOS author ships
         return staged, install_distribution(str(staged), name=name)
 
     def test_an_owned_category_keeps_skills_the_installer_added_to_it(self, profile_env):

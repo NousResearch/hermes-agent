@@ -442,9 +442,12 @@ def _refuse_symlink(path: Path) -> None:
 
 
 def _is_container(path: Path) -> bool:
-    """A shipped directory holding no files other than its DESCRIPTION.md (a skills
-    category) is a container of roots, not a root itself; a skill dir always holds SKILL.md."""
-    return path.is_dir() and not any(p.is_file() and p.name != "DESCRIPTION.md" for p in path.iterdir())
+    """A shipped directory holding no files other than its DESCRIPTION.md and dotfiles
+    (``.DS_Store``, ``.gitkeep``) is a container of roots (a skills category), not a root
+    itself; a skill dir always holds SKILL.md."""
+    return path.is_dir() and not any(
+        p.is_file() and p.name != "DESCRIPTION.md" and not p.name.startswith(".") for p in path.iterdir()
+    )
 
 
 def _merge_dir(src: Path, dest: Path, rel: Tuple[str, ...]) -> None:

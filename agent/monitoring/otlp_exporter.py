@@ -16,6 +16,7 @@ import os
 import re
 from contextlib import suppress
 from typing import Any, Callable, Dict, Iterable, List, Optional
+from urllib.parse import urlsplit
 
 from agent.monitoring.gateway_health import _safe_instance_id
 from agent.monitoring.redaction import redact_bounded
@@ -96,15 +97,24 @@ def _resolve_headers(headers_env: Optional[Dict[str, str]]) -> Dict[str, str]:
     return resolved
 
 
-_SIGNAL_SUFFIXES = ("/v1/traces", "/v1/metrics")
+_SIGNAL_SUFFIXES = ("/v1/traces", "/v1/metrics", "/v1/logs")
 
 
 def _signal_endpoint(endpoint: str, signal: str) -> str:
-    """Rewrite a traces/metrics OTLP path to ``/v1/<signal>``; other paths pass through."""
+    """Normalize an OTLP/HTTP endpoint to the ``/v1/<signal>`` path.
+
+    A bare collector URL (``http://host:4318``, no path) gets ``/v1/<signal>`` appended, as
+    the OTLP exporter spec does for a base endpoint. A path ending in one of the known signal
+    suffixes has it swapped for the target. Any other path is a deliberate vendor route and
+    passes through unchanged.
+    """
     target = f"/v1/{signal}"
+    stripped = endpoint.rstrip("/")
     for suffix in _SIGNAL_SUFFIXES:
-        if suffix != target and endpoint.endswith(suffix):
-            return endpoint[: -len(suffix)] + target
+        if stripped.endswith(suffix):
+            return stripped[: -len(suffix)] + target
+    if not urlsplit(stripped).path:
+        return stripped + target
     return endpoint
 
 
@@ -154,6 +164,7 @@ def build_exporter(config: Dict[str, Any]):
     endpoint = otlp.get("endpoint")
     if not endpoint:
         raise ValueError("monitoring.export.otlp.endpoint is not set")
+    endpoint = _signal_endpoint(str(endpoint), "traces")
     return sdk["OTLPSpanExporter"](endpoint=endpoint, headers=_resolve_headers(otlp.get("headers_env")) or None)
 
 

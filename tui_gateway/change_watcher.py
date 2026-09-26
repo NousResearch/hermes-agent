@@ -16,7 +16,7 @@ def resolve_skin() -> dict:
         skin = get_active_skin()
         # light/dark are paired palettes: the TUI prefers the block matching terminal polarity.
         return {
-            "name": skin.name, "colors": skin.colors,
+            "name": skin.name, "description": skin.description, "colors": skin.colors,
             "light_colors": skin.light_colors, "dark_colors": skin.dark_colors,
             "branding": skin.branding, "banner_logo": skin.banner_logo,
             "banner_hero": skin.banner_hero, "tool_prefix": skin.tool_prefix,

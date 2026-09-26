@@ -3160,6 +3160,65 @@ def trailing_continue_intent(text: str) -> bool:
     return bool(_TRAILING_CONTINUE_INTENT_RE.search(t[-160:]))
 
 
+# Colon-stop / announcement-final detector (qwen3.8-flash-next turn-discipline bug): the
+# reply ENDS with an announcement of an action that was never taken — any tail ending on
+# ':' after an announce verb (first-person plan OR present-progressive gerund:
+# "Fixing that right now:", "Verifying the stack actually runs (...):"), or a final
+# sentence that is purely a first-person plan. A genuine answer does not end on an
+# unexecuted announcement: a colon tail is a list/preamble intro that was cut, and a
+# pure-plan final sentence is a stall. Unlike trailing_continue_intent() there is NO
+# short-reply cap — the announcement routinely follows a long report (that is the
+# failure shape: report, then plan, then stop). Tail window is 300 chars so mid-report
+# mentions never trip it but a distant announce verb before a long noun phrase does.
+_COLON_STOP_ANNOUNCE_RE = re.compile(
+    r"(?:\blet me\b|\bi(?:['\u2019])?(?:ll| will|'m going to| need to| am going to)\b"
+    r"|\bnow (?:let me|i(?:['\u2019])?ll)\b|\bnext[,:]? (?:i\b|let me\b)"
+    r"|\b(?:fixing|creating|reading|verifying|building|checking|writing|running|testing"
+    r"|rebuilding|installing|deploying|starting|loading|restarting|measuring|comparing"
+    r"|debugging|tracing|probing|calibrating|assembling|generating|rendering)\b)"
+    r"[^.!?\n]{0,300}:\s*$",
+    re.IGNORECASE,
+)
+# Pure-plan final sentence: the LAST sentence announces and nothing else follows it.
+# Capped at 160 chars — long final sentences carry substance (conditionals, outcomes),
+# real stall announcements are short. "let me know" is a request to the USER, not a plan.
+_COLON_STOP_PURE_PLAN_RE = re.compile(
+    r"(?:^|[.!?\u3002\uff01\uff1f\n]\s*)"
+    r"(?!\s*(?:let|getting) me know\b)"
+    r"(?:\blet me\b|\bi(?:['\u2019])?(?:ll| will|'m going to| need to| am going to)\b)"
+    r"[^.!?\u3002\uff01\uff1f\n]{10,160}[.:\u2026]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def colon_stop_intent(text: str) -> bool:
+    """Whether ``text`` ends on an announced-but-not-executed action (colon-stop stall guard).
+
+    Two shapes: (1) any tail ending on ':' within 160 chars after an announce verb;
+    (2) the final sentence is a PURE first-person plan (announce verb, no other
+    content). Deliberately NOT length-capped: the announcement routinely follows a
+    long substantive report. Only the tail window is inspected, so a genuine report
+    that merely MENTIONS a plan mid-text never trips.
+    """
+    t = (text or "").strip()
+    if not t or len(t) < 12:
+        return False
+    tail = t[-200:]
+    if _COLON_STOP_ANNOUNCE_RE.search(tail):
+        return True
+    # Pure-plan final sentence: the last sentence must contain an announce verb AND
+    # the text must have real content before it (a 1-sentence reply that is only a
+    # plan with no prior report is the dangling-ack case, already covered upstream).
+    if len(t) > 60 and _COLON_STOP_PURE_PLAN_RE.search(t[-260:]):
+        # Require earlier real content: the plan must not be the whole message
+        # (a 1-sentence plan-only reply is the dangling-ack case, handled upstream).
+        m = _COLON_STOP_PURE_PLAN_RE.search(t)
+        prefix = t[: m.start()] if m else t
+        if len(prefix.strip()) >= 30:
+            return True
+    return False
+
+
 # Broader tail detector for PROMOTED REASONING only (reasoning-only clean stop with tools offered
 # and no tool call). Visible content keeps the narrow ``let me now`` shape above because a real
 # reply legitimately says "I'll" mid-text; chain-of-thought that ENDS on a first-person plan

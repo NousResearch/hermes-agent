@@ -952,3 +952,33 @@ def test_a_stale_generation_aborts_leaving_the_winner_the_only_live_version(tmp_
     assert cc._micro_compact_rolling_summary == summary  # the stale summary is not carried into the next pass
     live = [m["content"] for m in db.get_messages_as_conversation("s")]
     assert live == [m["content"] for m in winner]  # exactly one live generation
+
+
+def test_micro_supersede_keeps_a_batch_carriers_tool_call_paired():
+    """Batch compaction can merge its summary into the tail's opening tool-call row. Micro
+    rehydrates its rolling summary from that carrier and later supersedes it, but only the summary
+    part is in the rolling summary: the call must stay, paired with the result that follows it."""
+    cc = ContextCompressor(model="test-model", config_context_length=64000, quiet_mode=True)
+    cc._generate_summary = lambda _turns, **_kwargs: "batch summary"
+    messages = []
+    for turn in range(6):
+        call = {"id": f"call_{turn}", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}
+        messages += [
+            {"role": "user", "content": f"turn {turn}"},
+            {"role": "assistant", "content": "", "tool_calls": [call]},
+            {"role": "tool", "tool_call_id": call["id"], "content": "lorem ipsum " * 1800},
+            {"role": "assistant", "content": f"answer {turn}"},
+        ]
+    # Compacted mid-turn (the last round's reply not yet written), as the tool loop does.
+    messages = cc.compress(messages[:-1], current_tokens=60000, force=True) + [messages[-1]]
+    assert any(m.get("tool_calls") and cc._is_context_summary_message(m) for m in messages)
+    cc._micro_compact_enabled = True
+    cc._micro_summarize_one = lambda _text: "rolling summary"
+    for turn in range(6, 9):
+        messages += [{"role": "user", "content": f"turn {turn}"},
+                     {"role": "assistant", "content": f"answer {turn} " + "z" * 12000}]
+        messages = cc._micro_compact(messages)
+
+    calls = {tc["id"] for m in messages for tc in m.get("tool_calls") or ()}
+    results = [m["tool_call_id"] for m in messages if m.get("role") == "tool"]
+    assert results and set(results) <= calls

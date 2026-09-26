@@ -333,6 +333,58 @@ def review_rev_parse(cwd: str, ref: str | None) -> str | None:
     return _git_line(cwd, ["rev-parse", ref or "HEAD"]) or None
 
 
+_COMMIT_STACK_CAP = 200
+_SHA_RE = re.compile(r"^[0-9a-f]{7,64}$", re.IGNORECASE)
+
+
+def review_commit_stack(cwd: str) -> dict:
+    """The branch's commits since its merge base with trunk, oldest first, with per-commit
+    churn + touched paths — what a restack rewrites and the review pane's commit picker
+    walks. ``{"base": None, "commits": []}`` off-repo, on trunk, or with no trunk to
+    compare against."""
+    empty = {"base": None, "commits": []}
+    if not _is_dir(cwd):
+        return empty
+    base = _branch_base(cwd)
+    if not base:
+        return empty
+    # \x1e separates commits, \x1f separates header fields; numstat rows follow as
+    # ``added\tremoved\tpath`` lines.
+    raw = _git_out(
+        cwd,
+        ["log", "--reverse", "--numstat", f"--max-count={_COMMIT_STACK_CAP}", "--format=%x1e%H%x1f%h%x1f%s", f"{base}..HEAD"],
+    )
+    commits = []
+    for chunk in raw.split("\x1e"):
+        if not chunk.strip():
+            continue
+        header, _, rows = chunk.partition("\n")
+        fields = header.split("\x1f")
+        if len(fields) < 3:
+            continue
+        sha, short, subject = fields[0], fields[1], fields[2]
+        files = []
+        added = removed = 0
+        for row in rows.splitlines():
+            parts = row.split("\t")
+            if len(parts) < 3:
+                continue
+            fa, fr = (0 if p == "-" else int(p or 0) for p in parts[:2])
+            added += fa
+            removed += fr
+            files.append({"path": resolve_rename_path(parts[2]), "added": fa, "removed": fr})
+        commits.append({"sha": sha, "short": short, "subject": subject, "added": added, "removed": removed, "files": files})
+    return {"base": base, "commits": commits}
+
+
+def review_commit_diff(cwd: str, sha: str, file_path: str | None) -> str:
+    """One commit's patch (whole commit, or one path in it). ``git show`` handles the
+    root commit where ``sha^!`` would not."""
+    if not _is_dir(cwd) or not _SHA_RE.match(sha or ""):
+        return ""
+    return _git_out(cwd, ["show", "--format=", "--patch", sha, *(["--", file_path] if file_path else [])])
+
+
 def _has_staged(raw: str) -> bool:
     return any(_entry_staged(tag, xy) for tag, xy, _ in _walk_entries(raw))
 

@@ -267,3 +267,38 @@ def test_worktree_add_from_origin_base_does_not_track(client, repo_with_remote):
         cwd=repo_with_remote, capture_output=True, text=True,
     )
     assert probe.returncode != 0
+
+
+# ── commit stack (restack + per-commit review) ──────────────────────────────
+
+
+def test_commit_stack_lists_branch_commits_oldest_first_with_churn(client, repo_with_remote):
+    root = repo_with_remote
+    _git(root, "checkout", "-q", "-b", "topic")
+    (root / "a.txt").write_text("one\ntwo\n", encoding="utf-8")
+    _git(root, "commit", "-qam", "first: extend a")
+    (root / "b.txt").write_text("x\n", encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "second: add b")
+
+    stack = client.get("/api/git/review/commit-stack", params={"path": str(root)}).json()
+
+    assert stack["base"]
+    assert [c["subject"] for c in stack["commits"]] == ["first: extend a", "second: add b"]
+    second = stack["commits"][1]
+    assert (second["added"], second["removed"]) == (1, 0)
+    assert [f["path"] for f in second["files"]] == ["b.txt"]
+
+    diff = client.get(
+        "/api/git/review/commit-diff", params={"path": str(root), "sha": second["sha"]}
+    ).json()["diff"]
+    assert "+x" in diff and "a.txt" not in diff
+
+
+def test_commit_stack_is_empty_on_trunk_and_rejects_non_sha(client, repo_with_remote):
+    root = repo_with_remote
+
+    assert client.get("/api/git/review/commit-stack", params={"path": str(root)}).json()["commits"] == []
+    # A ref expression is not a sha: the diff route must not pass it through to git.
+    resp = client.get("/api/git/review/commit-diff", params={"path": str(root), "sha": "HEAD~1"})
+    assert resp.json()["diff"] == ""

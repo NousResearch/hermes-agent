@@ -334,6 +334,11 @@ class CLISessionMixin:
         sessions = self._list_recent_sessions(limit=limit)
         if not sessions:
             return False
+        # A bare `/resume` displays numbered rows and arms the next bare number.
+        # Keep this exact snapshot: fetching again at selection time can reorder or
+        # shorten the list, making a visible number resume the wrong session.
+        if reason == "resume":
+            self._pending_resume_sessions = list(sessions)
 
         from hermes_cli.timefmt import relative_time as _relative_time
 
@@ -590,31 +595,23 @@ class CLISessionMixin:
                 print("(^_^)v New session started!")
 
     def _consume_pending_resume_selection(self, text: str) -> bool:
-        """Resolve a bare numeric reply following a bare ``/resume`` prompt.
-
-        ``/resume`` (no args) arms ``self._pending_resume_sessions``; the next input gets one
-        chance to be a bare session number. The pending state is one-shot — cleared on the
-        first input regardless of outcome, so a stray later number is never hijacked.
-        Returns True if the input was consumed (caller must not treat it as chat).
-
-        See #34584.
-        """
-        from cli import _cprint
-        pending = self._pending_resume_sessions
-        if not pending:
-            return False
+        """Consume one bare numeric choice from the exact list shown by `/resume`."""
+        sessions = getattr(self, "_pending_resume_sessions", None) or []
+        # The prompt is deliberately one-shot: any submitted value (including
+        # ordinary chat) disarms it, so stale list positions cannot be reused.
         self._pending_resume_sessions = None
-        if not isinstance(text, str):
+        choice = text.strip()
+        if not (choice.isascii() and choice.isdecimal()):
             return False
-        # Only a pure number selects; "/resume 3", titles etc. fall through.
-        if not text.strip().isdigit():
-            return False
-        index = int(text.strip())
-        if not 1 <= index <= len(pending):
+        index = int(choice)
+        if not 1 <= index <= len(sessions):
+            from cli import _cprint
             _cprint(f"  Resume index {index} is out of range.")
-            _cprint("  Use /resume with no arguments to see available sessions.")
             return True
-        self._handle_resume_command(f"/resume {index}")
+        session_id = sessions[index - 1].get("id")
+        if not session_id:
+            return False
+        self._handle_resume_command(f"/resume {session_id}")
         return True
 
     def save_conversation(self, cmd: str = "/save"):

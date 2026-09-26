@@ -149,7 +149,7 @@ class TestPendingResumeNumberedSelection:
     resuming session #3.
     """
 
-    def test_bare_resume_arms_pending_selection(self):
+    def test_bare_resume_displays_recent_sessions(self):
         cli_obj = _make_cli()
         sessions = [
             {"id": "sess_002", "title": "Coding"},
@@ -161,50 +161,30 @@ class TestPendingResumeNumberedSelection:
         with patch("cli._cprint"):
             cli_obj._handle_resume_command("/resume")
 
-        assert cli_obj._pending_resume_sessions == sessions
+        cli_obj._show_recent_sessions.assert_called_once_with(reason="resume")
 
 
-    def test_pending_number_resumes_selected_session(self):
+    def test_bare_number_resumes_the_id_captured_when_list_was_displayed(self):
         cli_obj = _make_cli()
-        sessions = [
-            {"id": "sess_002", "title": "Coding"},
-            {"id": "sess_001", "title": "Research"},
+        # The refreshed recent list is shorter and has a different #2. Selection
+        # must use the immutable snapshot shown to the user, not re-query it.
+        cli_obj._pending_resume_sessions = [
+            {"id": "shown-first"},
+            {"id": "shown-second"},
         ]
-        cli_obj._pending_resume_sessions = sessions
-        # _handle_resume_command("/resume 2") re-resolves the index via
-        # _list_recent_sessions, so it must return the same list.
-        cli_obj._list_recent_sessions = MagicMock(return_value=sessions)
-        cli_obj._session_db.get_session.return_value = {"id": "sess_001", "title": "Research"}
-        cli_obj._session_db.get_resume_conversations.return_value = [
-            {"role": "user", "content": "hello"},
-        ], [
-            {"role": "user", "content": "hello"},
-        ]
-        cli_obj._session_db.resolve_resume_session_id.return_value = "sess_001"
+        cli_obj._list_recent_sessions = MagicMock(return_value=[{"id": "refreshed-only"}])
 
-        with (
-            patch("hermes_cli.main._resolve_session_by_name_or_id", return_value=None),
-            patch("cli._cprint"),
-        ):
-            consumed = cli_obj._consume_pending_resume_selection("2")
+        with patch.object(cli_obj, "_handle_resume_command") as resume:
+            assert cli_obj._consume_pending_resume_selection("2") is True
 
-        assert consumed is True
-        assert cli_obj.session_id == "sess_001"
-        # One-shot: prompt is disarmed after consuming.
+        resume.assert_called_once_with("/resume shown-second")
         assert cli_obj._pending_resume_sessions is None
 
-
-
-
-    def test_pending_disarmed_by_other_command(self):
+    def test_pending_resume_selection_disarms_on_non_numeric_input(self):
         cli_obj = _make_cli()
-        cli_obj._pending_resume_sessions = [{"id": "sess_002", "title": "Coding"}]
-        # Stub out the help handler so process_command("/help") is cheap.
-        cli_obj.show_help = MagicMock()
+        cli_obj._pending_resume_sessions = [{"id": "shown"}]
 
-        cli_obj.process_command("/help")
-
-        # A non-resume command disarms the one-shot prompt (#34584).
+        assert cli_obj._consume_pending_resume_selection("continue normally") is False
         assert cli_obj._pending_resume_sessions is None
 
 

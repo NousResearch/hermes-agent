@@ -281,6 +281,14 @@ def _is_image_size_error(error: Exception) -> bool:
     return any(hint in err_str for hint in _SIZE_ERROR_HINTS + ("image_url", "invalid_request"))
 
 
+# A downscale factor at or above this makes small printed text unreliable enough to
+# warn about in the scale note (see _build_scale_note, #124509).
+_SCALE_LEGIBILITY_FACTOR = 2.0
+# Reporter-verified workaround edge: a crop kept at or under ~1400px per side never
+# touched the resize path and read every invoice digit correctly.
+_LEGIBILITY_SAFE_EDGE = 1400
+
+
 def _build_scale_note(scale_info: Optional[dict], crop_offset: Optional[dict]) -> Optional[str]:
     """Coordinate-mapping disclosure for downscale and/or region crop; ``None`` when neither applied."""
     parts = []
@@ -292,6 +300,21 @@ def _build_scale_note(scale_info: Optional[dict], crop_offset: Optional[dict]) -
                 else f"any x coordinates you report by {fx:.2f} and any y coordinates by {fy:.2f}")
         parts.append(f"Image downscaled from {ow}x{oh} to {nw}x{nh} for vision; "
                      f"multiply {axes} to map back to the original image.")
+        # A >=2x halving is where small printed text stops being reliable: a
+        # phone photo of an invoice downscaled 4x turned "30" into a "9" and
+        # the wrong digit survived into the final answer (#124509). Coordinates
+        # being mappable does not make tiny glyphs readable, so say so — and
+        # name the workaround that demonstrably avoided the downscale (a
+        # region crop keeps the full resolution budget, the crop runs before
+        # the resize).
+        if max(fx, fy) >= _SCALE_LEGIBILITY_FACTOR:
+            parts.append(
+                f"Small printed text (table cells, quantities, prices, fine print) "
+                f"is likely no longer reliably readable at this resolution — do not "
+                f"quote exact figures from tiny text; re-analyze the region of "
+                f"interest with vision_analyze's region argument (keep it under "
+                f"~{_LEGIBILITY_SAFE_EDGE}px per side) instead of trusting digits here."
+            )
     if crop_offset:
         parts.append(
             f"Analysis was performed on a cropped region of the original "

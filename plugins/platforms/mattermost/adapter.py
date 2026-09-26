@@ -30,6 +30,13 @@ from gateway.platforms._shared import (
     send_error
 )
 
+# Exec-approval cards: Mattermost Blocks buttons + action callbacks + ntfy escalation.
+from plugins.platforms.mattermost.exec_approval import (
+    action_response as _action_response, approval_actions_config as _approval_actions_config,
+    build_approval_props as _build_approval_props, build_ntfy_escalation as _build_ntfy_escalation,
+    callback_path as _approval_callback_path, parse_action_payload as _parse_action_payload,
+)
+
 logger = logging.getLogger(__name__)
 
 _Metadata = Optional[Dict[str, Any]]
@@ -122,6 +129,190 @@ class MattermostAdapter(BasePlatformAdapter):
         self._last_post_status: Optional[int] = None  # POST-only, read by the broken-thread-root fallback
         self._last_post_error: str = ""
         self._dedup = MessageDeduplicator()
+        # Exec-approval cards: config, tracked cards, HTTP endpoint lifecycle.
+        self._approval_cfg = _approval_actions_config(getattr(config, "extra", {}) or {})
+        self._approval_cards: Dict[str, Dict[str, Any]] = {}  # post_id → card state
+        self._approval_runner: Any = None  # aiohttp web.AppRunner for action callbacks
+        self._approval_site: Any = None
+        self._approval_team_names: Dict[str, str] = {}  # channel_id → team name (permalink cache)
+
+    # --- Exec-approval cards (Mattermost Blocks buttons) ---
+
+    async def _send_exec_approval_prompt(self, prompt) -> SendResult:
+        """Native approval card: mm_blocks buttons + an action registry pointing at this
+        adapter's HTTP callback endpoint. Without the endpoint configured, report unsupported
+        so the runner falls back to the plain-text /approve prompt."""
+        cfg = self._approval_cfg
+        if not cfg:
+            return SendResult(success=False, error="approval buttons not configured")
+        if not await self._ensure_approval_actions_server():
+            return SendResult(success=False, error="approval actions endpoint failed to start")
+
+        from gateway.platforms.base_exec_approval import approval_timeout_seconds
+        timeout_s = approval_timeout_seconds()
+        escalate_after = cfg.get("escalate_after")
+        escalate_after = timeout_s / 2 if escalate_after is None else float(escalate_after)
+
+        props = _build_approval_props(
+            prompt, cfg["url"] + _approval_callback_path(cfg["secret"]))
+        payload: Dict[str, Any] = {
+            "channel_id": prompt.chat_id,
+            "message": prompt.text,
+            "props": {**props, **_MATTERMOST_DISABLE_MENTIONS_PROPS},
+        }
+        if self._reply_mode == "thread":
+            candidate = (isinstance(prompt.metadata, dict) and
+                         (prompt.metadata.get("thread_id") or prompt.metadata.get("root_id")))
+            if candidate:
+                payload["root_id"] = await self._resolve_root_id(str(candidate))
+        data = await self._api_post("posts", payload)
+        post_id = data.get("id") if data else None
+        if not post_id:
+            return SendResult(success=False, error="failed to post approval card")
+
+        card: Dict[str, Any] = {
+            "post_id": post_id, "chat_id": prompt.chat_id, "session_key": prompt.session_key,
+            "message": prompt.text, "resolved": False,
+            "escalate_task": None, "expire_task": None,
+        }
+        self._approval_cards[post_id] = card
+        if escalate_after > 0:
+            card["escalate_task"] = asyncio.create_task(self._escalate_approval(card, escalate_after))
+        if timeout_s > 0:
+            card["expire_task"] = asyncio.create_task(self._expire_approval_card(card, timeout_s))
+        return SendResult(success=True, message_id=post_id)
+
+    async def _ensure_approval_actions_server(self) -> bool:
+        """Lazily bind the action-callback HTTP endpoint (idempotent)."""
+        if self._approval_site is not None:
+            return True
+        cfg = self._approval_cfg
+        if not cfg:
+            return False
+        import aiohttp.web
+        app = aiohttp.web.Application()
+        app.router.add_post(_approval_callback_path(cfg["secret"]),
+                            self._handle_approval_action)
+        runner = aiohttp.web.AppRunner(app, access_log=None)
+        await runner.setup()
+        site = aiohttp.web.TCPSite(runner, host="0.0.0.0", port=cfg["port"])
+        try:
+            await site.start()
+        except Exception as exc:
+            logger.error("Mattermost: approval actions endpoint failed to bind port %s: %s",
+                         cfg["port"], exc)
+            await runner.cleanup()
+            return False
+        self._approval_runner, self._approval_site = runner, site
+        logger.info("Mattermost: approval actions endpoint listening on port %s",
+                    cfg["port"])
+        return True
+
+    def _approval_allowed_user_ids(self) -> set:
+        """MATTERMOST_ALLOWED_USERS as a set; empty set means open access (matches the gateway)."""
+        raw = _get_scoped_secret("MATTERMOST_ALLOWED_USERS", "") or ""
+        return {u.strip() for u in raw.split(",") if u.strip()}
+
+    async def _handle_approval_action(self, request):
+        """Post-action callback from the Mattermost server: authorize the presser, resolve the
+        pending approval, and answer with a card update that clears the buttons."""
+        import aiohttp.web
+        try:
+            payload = await request.json()
+        except Exception:
+            return aiohttp.web.json_response({}, status=400)
+        verdict, fields = _parse_action_payload(payload, self._approval_allowed_user_ids())
+        if verdict == "ok":
+            from tools.approval import resolve_gateway_approval  # lazy: keep adapter light
+            try:
+                count = resolve_gateway_approval(fields["session_key"], fields["choice"])
+            except Exception as exc:
+                logger.error("Mattermost: resolve_gateway_approval failed for session %s: %s",
+                             fields["session_key"], exc)
+                count = 0
+            if count <= 0:
+                verdict = "already"
+            else:
+                self._mark_approval_card_resolved(fields.get("post_id") or "")
+        body = _action_response(verdict, fields, fields.get("choice", "") if fields else "")
+        return aiohttp.web.json_response(body)
+
+    def _mark_approval_card_resolved(self, post_id: str) -> None:
+        card = self._approval_cards.get(post_id)
+        if not card:
+            return
+        card["resolved"] = True
+        for key in ("escalate_task", "expire_task"):
+            task = card.get(key)
+            if task and not task.done():
+                task.cancel()
+
+    async def _team_name_for_channel(self, chat_id: str) -> str:
+        """Team name for a permalink (``/<team>/pl/<post_id>``); '' when lookup fails."""
+        if chat_id in self._approval_team_names:
+            return self._approval_team_names[chat_id]
+        team_name = ""
+        channel = await self._api_get(f"channels/{chat_id}")
+        if channel and channel.get("team_id"):
+            team = await self._api_get(f"teams/{channel['team_id']}")
+            team_name = (team or {}).get("name", "")
+        self._approval_team_names[chat_id] = team_name
+        return team_name
+
+    async def _escalate_approval(self, card: Dict[str, Any], delay_s: float) -> None:
+        """After ``delay_s`` with no answer, publish an ntfy doorbell deep-linking to the card."""
+        try:
+            await asyncio.sleep(delay_s)
+        except asyncio.CancelledError:
+            return
+        if card.get("resolved"):
+            return
+        from tools.approval import has_blocking_approval
+        try:
+            if not has_blocking_approval(card["session_key"]):
+                return  # resolved by text reply (/approve) rather than a button
+        except Exception:
+            pass  # fail loud: still send the nudge rather than silently skip
+        import aiohttp
+        server = (_get_scoped_secret("NTFY_SERVER_URL", "") or "https://ntfy.sh").rstrip("/")
+        topic = _get_scoped_secret("NTFY_PUBLISH_TOPIC", "") or _get_scoped_secret("NTFY_TOPIC", "")
+        if not topic:
+            logger.warning("Mattermost: approval escalation skipped — no ntfy topic configured")
+            return
+        team = await self._team_name_for_channel(card["chat_id"])
+        permalink = f"{self._base_url}/{team}/pl/{card['post_id']}" if team else self._base_url
+        headers = {"Content-Type": "application/json"}
+        token = _get_scoped_secret("NTFY_TOKEN", "")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        body = _build_ntfy_escalation(card.get("message", ""), permalink)
+        body["topic"] = topic
+        try:
+            async with self._session.post(server, json=body, headers=headers,
+                                          timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                if resp.status >= 400:
+                    logger.error("Mattermost: approval escalation ntfy publish → %s", resp.status)
+                else:
+                    logger.info("Mattermost: approval escalation sent to ntfy topic %s", topic)
+        except Exception as exc:
+            logger.error("Mattermost: approval escalation ntfy publish failed: %s", exc)
+
+    async def _expire_approval_card(self, card: Dict[str, Any], timeout_s: float) -> None:
+        """When the window lapses unanswered, patch the card so no zombie buttons remain."""
+        try:
+            await asyncio.sleep(timeout_s)
+        except asyncio.CancelledError:
+            return
+        if card.get("resolved"):
+            return
+        card["resolved"] = True
+        from gateway.platforms.base_exec_approval import format_approval_timed_out_notice
+        notice = format_approval_timed_out_notice(int(timeout_s))
+        payload = _with_mentions_disabled({
+            "message": f"{card.get('message', '')}\n\n{notice}", "props": {}})
+        await self._api("PUT", f"posts/{card['post_id']}/patch", payload)
+        self._approval_cards.pop(card["post_id"], None)
+
 
     # --- HTTP helpers ---
 
@@ -253,6 +444,11 @@ class MattermostAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         self._closing = True
         await cancel_task(self._ws_task)
+        for card in self._approval_cards.values():  # cancel escalation/expiry timers
+            self._mark_approval_card_resolved(card.get("post_id") or "")
+        if self._approval_runner is not None:
+            await self._approval_runner.cleanup()
+            self._approval_runner, self._approval_site = None, None
         if self._reconnect_task and not self._reconnect_task.done():
             self._reconnect_task.cancel()
         if self._ws:

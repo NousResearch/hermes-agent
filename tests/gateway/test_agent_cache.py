@@ -160,6 +160,21 @@ class TestExtractCacheBustingConfig:
         assert sig({}) == sig({"compression": {"threshold_tokens": default_cap}}) == default_cap
         assert sig({"compression": {"threshold_tokens": None}}) is None
 
+    def test_prefill_cost_caps_are_cache_busting(self):
+        from gateway.run import GatewayRunner
+
+        caps = {
+            "custom:qwen38": {
+                "warn_tokens": 48_000,
+                "compress_tokens": 64_000,
+                "fail_closed_tokens": 64_000,
+            }
+        }
+        out = GatewayRunner._extract_cache_busting_config(
+            {"compression": {"prefill_cost_caps": caps}}
+        )
+        assert out["compression.prefill_cost_caps"] == caps
+
     def test_legacy_checkpoints_bool_carries_defaults_for_the_other_keys(self):
         """`checkpoints: true` builds the agent with DEFAULT_CONFIG's limits (`_checkpoint_agent_kwargs`), so
         migrating to `checkpoints: {enabled: true}` must not change the signature."""

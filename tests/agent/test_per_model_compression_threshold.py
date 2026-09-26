@@ -9,7 +9,12 @@ floor (75% for <512K models) still applies on top of per-model overrides.
 
 from unittest.mock import patch
 
-from agent.context_compressor import ContextCompressor, resolve_model_threshold
+from agent.context_compressor import (
+    ContextCompressor,
+    PrefillCostCap,
+    resolve_model_threshold,
+    resolve_prefill_cost_cap,
+)
 from agent.context_engine import ContextEngine
 
 
@@ -148,3 +153,82 @@ class TestProviderScopedKeys:
         assert cc.threshold_percent == 0.85
         cc.update_model(model="openai/gpt-6-astra", context_length=1_100_000, provider="openrouter")
         assert cc.threshold_percent == 0.50
+
+
+class TestPrefillCostCaps:
+    CAPS = {
+        "custom:qwen38-27b-mtp-fullctx": {
+            "warn_tokens": 48_000,
+            "compress_tokens": 64_000,
+            "fail_closed_tokens": 64_000,
+        },
+        "custom:qwen38-27b-q2": {
+            "warn_tokens": 16_000,
+            "compress_tokens": 24_000,
+            "fail_closed_tokens": 28_000,
+        },
+    }
+
+    def test_provider_scoped_longest_substring_resolution(self):
+        assert resolve_prefill_cost_cap(
+            "qwen38-27b-q2-64k", self.CAPS, "custom"
+        ) == PrefillCostCap(16_000, 24_000, 28_000)
+        assert resolve_prefill_cost_cap(
+            "qwen38-27b-q2-64k", self.CAPS, "openrouter"
+        ) is None
+
+    def test_invalid_or_unordered_entry_is_ignored(self, caplog):
+        caps = {
+            "custom:qwen": {
+                "warn_tokens": 25_000,
+                "compress_tokens": 24_000,
+                "fail_closed_tokens": 28_000,
+            }
+        }
+        assert resolve_prefill_cost_cap("qwen", caps, "custom") is None
+        assert "prefill_cost_caps" in caplog.text
+
+    @patch("agent.context_compressor.get_model_context_length", return_value=262_144)
+    def test_effective_trigger_is_lower_of_safety_and_prefill_cap(self, _mock):
+        cc = ContextCompressor(
+            model="qwen38-27b-mtp-fullctx",
+            provider="custom",
+            prefill_cost_caps=self.CAPS,
+            quiet_mode=True,
+        )
+        assert cc.threshold_tokens == 64_000
+        assert cc.prefill_cost_cap == PrefillCostCap(48_000, 64_000, 64_000)
+
+    @patch("agent.context_compressor.get_model_context_length", return_value=262_144)
+    def test_model_switch_removes_nonmatching_prefill_cap(self, _mock):
+        cc = ContextCompressor(
+            model="qwen38-27b-mtp-fullctx", provider="custom",
+            prefill_cost_caps=self.CAPS, quiet_mode=True,
+        )
+        assert cc.preview_threshold_tokens("qwen38-27b-q2-64k", 65_536, "custom") == 24_000
+        assert cc.prefill_cost_cap == PrefillCostCap(48_000, 64_000, 64_000)
+
+        cc.update_model(
+            model="qwen38-27b-mtp-fullctx", provider="openrouter",
+            context_length=262_144,
+        )
+        assert cc.prefill_cost_cap is None
+        assert cc.threshold_tokens == 196_608
+
+    @patch("agent.context_compressor.get_model_context_length", return_value=64_000)
+    def test_existing_safety_threshold_wins_when_lower(self, _mock):
+        cc = ContextCompressor(
+            model="qwen38-27b-mtp-fullctx", provider="custom",
+            threshold_tokens_cap=20_000,
+            prefill_cost_caps=self.CAPS, quiet_mode=True,
+        )
+        assert cc.threshold_tokens == 20_000
+
+    @patch("agent.context_compressor.get_model_context_length", return_value=1_000_000)
+    def test_prefill_cap_wins_over_large_window_and_default_absolute_cap(self, _mock):
+        cc = ContextCompressor(
+            model="qwen38-27b-mtp-fullctx", provider="custom",
+            threshold_tokens_cap=256_000,
+            prefill_cost_caps=self.CAPS, quiet_mode=True,
+        )
+        assert cc.threshold_tokens == 64_000

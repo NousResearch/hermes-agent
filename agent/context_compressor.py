@@ -1905,6 +1905,43 @@ def resolve_model_threshold(
     return float(model_thresholds[best[1]]) if best else default
 
 
+@dataclass(frozen=True)
+class PrefillCostCap:
+    """Opt-in prompt-cost policy for one model/provider route."""
+
+    warn_tokens: int
+    compress_tokens: int
+    fail_closed_tokens: int
+
+
+def resolve_prefill_cost_cap(
+    model: str, caps: dict[str, Any] | None, provider: str = "",
+) -> PrefillCostCap | None:
+    """Resolve a validated prefill-cost cap using model-threshold match rules."""
+    if not caps or not model:
+        return None
+    provider = (provider or "").strip().lower()
+    ranked = ((_model_threshold_key_rank(str(key), model, provider), key) for key in caps)
+    best = max(((rank, key) for rank, key in ranked if rank is not None), default=None)
+    if best is None:
+        return None
+    raw = caps.get(best[1])
+    if not isinstance(raw, dict):
+        logger.warning("Ignoring invalid compression.prefill_cost_caps entry %r", best[1])
+        return None
+    try:
+        warn = int(raw["warn_tokens"])
+        compress = int(raw["compress_tokens"])
+        fail_closed = int(raw["fail_closed_tokens"])
+    except (KeyError, TypeError, ValueError):
+        logger.warning("Ignoring invalid compression.prefill_cost_caps entry %r", best[1])
+        return None
+    if warn <= 0 or not warn <= compress <= fail_closed:
+        logger.warning("Ignoring unordered compression.prefill_cost_caps entry %r", best[1])
+        return None
+    return PrefillCostCap(warn, compress, fail_closed)
+
+
 def _memory_provider_section(memory_context: str) -> str:
     """Prompt block carrying the sanitized memory-provider JSON, or "" when empty."""
     sanitized = sanitize_memory_context(memory_context)
@@ -2140,6 +2177,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             _ctx = self.context_length
             self._threshold_tokens = self._compute_threshold_tokens(_ctx, self.threshold_percent, self.max_tokens)
             self._apply_threshold_tokens_cap()
+            if self.prefill_cost_cap is not None:
+                self._threshold_tokens = min(self._threshold_tokens, self.prefill_cost_cap.compress_tokens)
         return self._threshold_tokens
 
     @threshold_tokens.setter
@@ -2532,6 +2571,9 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         cap = self._effective_threshold_cap(context_length)
         if cap is not None:
             threshold = min(threshold, cap)
+        self.prefill_cost_cap = resolve_prefill_cost_cap(model, self.prefill_cost_caps, provider)
+        if self.prefill_cost_cap is not None:
+            threshold = min(threshold, self.prefill_cost_cap.compress_tokens)
         return base_percent, effective_percent, threshold
 
     def _effective_threshold_cap(self, context_length: int) -> int | None:
@@ -2541,7 +2583,16 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
 
     def preview_threshold_tokens(self, model: str, context_length: int, provider: str = "") -> int:
         """The trigger ``update_model`` would install, without mutating state."""
-        return self._derive_trigger(model, context_length, provider)[2]
+        base_percent = resolve_model_threshold(
+            model, self.model_thresholds, self._config_threshold_percent, provider
+        )
+        effective_percent = self._effective_threshold_percent(context_length, base_percent)
+        threshold = self._compute_threshold_tokens(context_length, effective_percent, self.max_tokens)
+        cap = self._effective_threshold_cap(context_length)
+        if cap is not None:
+            threshold = min(threshold, cap)
+        prefill = resolve_prefill_cost_cap(model, self.prefill_cost_caps, provider)
+        return min(threshold, prefill.compress_tokens) if prefill is not None else threshold
 
     def update_model(
         self, model: str, context_length: int, base_url: str = "", api_key: Any = "", provider: str = "",
@@ -2671,6 +2722,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         base_url: str = "", api_key: str = "", config_context_length: int | None = None, provider: str = "",
         api_mode: str = "", abort_on_summary_failure: bool = False, max_tokens: int | None = None,
         model_thresholds: dict[str, float] | None = None, threshold_tokens_cap: Any = None,
+        prefill_cost_caps: dict[str, Any] | None = None,
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
         custom_providers: list | None = None,
@@ -2683,6 +2735,10 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self.custom_providers = custom_providers or None
         # Per-model overrides (longest substring match wins); floor applied on top.
         self.model_thresholds = model_thresholds or {}
+        self.prefill_cost_caps = prefill_cost_caps or {}
+        self.prefill_cost_cap: PrefillCostCap | None = resolve_prefill_cost_cap(
+            model, self.prefill_cost_caps, provider
+        )
         # Raw config value, before override/floor; fallback when switching to a model with no override.
         self._config_threshold_percent = threshold_percent
         self._base_threshold_percent = resolve_model_threshold(model, self.model_thresholds, threshold_percent, provider)

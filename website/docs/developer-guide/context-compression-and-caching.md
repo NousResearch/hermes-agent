@@ -222,6 +222,27 @@ attempt anyway:
 
 ## Configuration
 
+### Prefill-cost limits for uncached local routes
+
+`compression.prefill_cost_caps` is an opt-in mapping for routes where repeated large prompt prefill is expensive. It does not change unconfigured cloud or cache-capable routes. Keys use the same longest-substring matching as `model_thresholds`; prefix a key with the exact provider name to scope it.
+
+```yaml
+compression:
+  prefill_cost_caps:
+    "custom:qwen38-27b-mtp-fullctx":
+      warn_tokens: 48000
+      compress_tokens: 64000
+      fail_closed_tokens: 64000
+    "custom:qwen38-27b-q2":
+      warn_tokens: 16000
+      compress_tokens: 24000
+      fail_closed_tokens: 28000
+```
+
+The active compression trigger is the lower of the normal context-safety threshold and `compress_tokens`. At `warn_tokens`, Hermes emits one warning per threshold crossing on the active route. If compression is already running, transiently unavailable, or cannot reclaim the request and the assembled request reaches `fail_closed_tokens`, shared agent preflight ends that turn without calling the provider. Retry shortly, use `/compress` (or `/compact`) to preserve continuity, or use `/new` when the old context is no longer needed. `/ctx` continues to report context status.
+
+Values must be positive and ordered as `warn_tokens <= compress_tokens <= fail_closed_tokens`; invalid entries are ignored with a warning. Provider-scoped keys are recommended so a similarly named cloud model is not affected.
+
 All compression settings are read from `config.yaml` under the `compression` key:
 
 ```yaml

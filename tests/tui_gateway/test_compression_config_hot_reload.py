@@ -170,7 +170,27 @@ def test_absent_threshold_tokens_keeps_default_cap_on_1m_window(monkeypatch):
     assert compressor.threshold_tokens == 256_000
 
 
+def test_prefill_cost_caps_hot_reload_and_removal(monkeypatch):
+    session, compressor = _neutral_session()
+    cfg = {
+        "compression": {
+            "prefill_cost_caps": {
+                "unset-test-model": {
+                    "warn_tokens": 48_000,
+                    "compress_tokens": 64_000,
+                    "fail_closed_tokens": 64_000,
+                }
+            }
+        }
+    }
+    _sync_with_cfg(monkeypatch, session, cfg)
+    assert compressor.prefill_cost_cap is not None
+    assert compressor.prefill_cost_cap.warn_tokens == 48_000
+    assert compressor.threshold_tokens == 64_000
 
+    _sync_with_cfg(monkeypatch, session, {"compression": {}})
+    assert compressor.prefill_cost_cap is None
+    assert compressor.threshold_tokens > 64_000
 
 
 # ── Unset semantics (#94724 review finding on #95980) ────────────────────

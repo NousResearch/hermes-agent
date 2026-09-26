@@ -9,12 +9,13 @@ import mimetypes
 import os
 import re
 import subprocess
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Awaitable, Callable
 
-from agent.model_metadata import estimate_tokens_rough
+from agent.model_metadata import CHARS_PER_TOKEN, estimate_tokens_rough
 from hermes_cli._subprocess_compat import IS_WINDOWS, harden_git_argv, noninteractive_git_env, windows_hide_flags
 from hermes_cli.sizefmt import format_bytes
 
@@ -95,6 +96,15 @@ _SENSITIVE_HOME_FILES = tuple(Path(p) for p in (
     ".profile", ".bash_profile", ".zprofile", ".netrc", ".pgpass", ".npmrc", ".pypirc",
 ))
 _TEXT_EXTENSIONS = (".py", ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".js", ".ts")
+# Bound the work one message can force: each expanded ref reads at most a bounded prefix /
+# window, and at most this many refs are expanded per message.
+_MAX_EXPANDED_REFERENCES = 16
+# Folder-listing line counts stop paying I/O past this size; bigger files report bytes only.
+_LINE_COUNT_MAX_BYTES = 4 * 1024 * 1024
+# Per-command stdout/stderr ceiling for the ``git``/``rg`` helpers; past it the child is
+# killed and the nonzero returncode routes the caller to its fallback path.
+_MAX_QUIET_OUTPUT_BYTES = 4 * 1024 * 1024
+_OUTPUT_CAP_EXCEEDED_RETURNCODE = 137  # 128 + SIGKILL, the code a shell reports for a killed child
 _FENCE_LANGUAGES = {
     ".py": "python", ".js": "javascript", ".ts": "typescript", ".tsx": "tsx", ".jsx": "jsx",
     ".json": "json", ".md": "markdown", ".sh": "bash", ".yml": "yaml", ".yaml": "yaml", ".toml": "toml",
@@ -178,8 +188,11 @@ def preprocess_context_references(
     except RuntimeError:
         return asyncio.run(coro)
     import concurrent.futures
+    import contextvars
+    # The side thread starts with an empty Context: without the caller's copy the served profile's
+    # HERMES_HOME override is lost and the credential-path guard checks the launch profile's .env.
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(asyncio.run, coro).result()
+        return pool.submit(contextvars.copy_context().run, asyncio.run, coro).result()
 
 
 async def preprocess_context_references_async(
@@ -195,17 +208,25 @@ async def preprocess_context_references_async(
     # Expand concurrently (each ref is independent; several @url: refs would otherwise
     # serialize web_extract round-trips). gather preserves order, so warnings/blocks
     # are assembled in ref order; the token-budget check runs once afterwards.
-    tasks = (_expand_reference(ref, cwd_path, url_fetcher=url_fetcher, allowed_root=allowed_root_path) for ref in refs)
+    hard_limit = max(1, int(context_length * 0.50))
+    soft_limit = max(1, int(context_length * 0.25))
+    tasks = (
+        _expand_reference(ref, cwd_path, url_fetcher=url_fetcher, allowed_root=allowed_root_path,
+                          max_inline_tokens=hard_limit)
+        for ref in refs[:_MAX_EXPANDED_REFERENCES]
+    )
     expanded = await asyncio.gather(*tasks)
     warnings = [warning for warning, _ in expanded if warning]
+    warnings.extend(
+        f"{ref.raw}: not expanded (maximum {_MAX_EXPANDED_REFERENCES} @-references per message)"
+        for ref in refs[_MAX_EXPANDED_REFERENCES:]
+    )
     blocks = [block for _, block in expanded if block]
     injected_tokens = sum(estimate_tokens_rough(block) for block in blocks)
     result = ContextReferenceResult(
         message=message, original_message=message, references=refs, warnings=warnings, injected_tokens=injected_tokens
     )
 
-    hard_limit = max(1, int(context_length * 0.50))
-    soft_limit = max(1, int(context_length * 0.25))
     if injected_tokens > hard_limit:
         warnings.append(f"@ context injection refused: {injected_tokens} tokens exceeds the 50% hard limit ({hard_limit}).")
         result.blocked = True
@@ -235,11 +256,12 @@ _GIT_REFERENCE_ARGS: dict[str, Callable[[ContextReference], list[str]]] = {
 
 
 async def _expand_reference(
-    ref: ContextReference, cwd: Path, *, url_fetcher: UrlFetcher = None, allowed_root: Path | None = None
+    ref: ContextReference, cwd: Path, *, url_fetcher: UrlFetcher = None, allowed_root: Path | None = None,
+    max_inline_tokens: int | None = None,
 ) -> Expansion:
     try:
         if ref.kind in ("file", "folder"):
-            return _expand_path_reference(ref, cwd, allowed_root=allowed_root)
+            return _expand_path_reference(ref, cwd, allowed_root=allowed_root, max_inline_tokens=max_inline_tokens)
         if ref.kind in _GIT_REFERENCE_ARGS:
             git_args = _GIT_REFERENCE_ARGS[ref.kind](ref)
             return _expand_git_reference(ref, cwd, git_args, "git " + " ".join(git_args))
@@ -261,7 +283,8 @@ async def _expand_reference(
     return f"{ref.raw}: unsupported reference type", None
 
 
-def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Path | None = None) -> Expansion:
+def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Path | None = None,
+                           max_inline_tokens: int | None = None) -> Expansion:
     """``@file:`` / ``@folder:``: resolve, allow-check, then inline text / binary stub / listing."""
     is_folder = ref.kind == "folder"
     path = _resolve_path(cwd, ref.target, allowed_root=allowed_root)
@@ -271,24 +294,124 @@ def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Pa
     if not (path.is_dir() if is_folder else path.is_file()):
         return f"{ref.raw}: path is not a {ref.kind}", None
     if is_folder:
-        listing = _build_folder_listing(path, cwd)
+        listing = _build_folder_listing(path, cwd, display_base=allowed_root)
         return None, f"📁 {ref.raw} ({estimate_tokens_rough(listing)} tokens)\n{listing}"
     if _is_binary_file(path):
         # A bare "not supported" warning was a dead end (the model gave up); the file IS
         # on disk where the agent's tools run, so hand it an actionable block instead.
         return None, _binary_reference_block(ref, path)
-    text = path.read_text(encoding="utf-8")
     if ref.line_start is not None:
-        text = "\n".join(text.splitlines()[max(ref.line_start - 1, 0):ref.line_end or ref.line_start])
+        # A ranged ref wants a slice, not the file: stream to the window so a GB-scale
+        # file serves :1-5 without being materialized. Lines are read in bounded pieces
+        # (budget + 1) so even a single-line giant (minified JSON, one-line logs) cannot
+        # force an unbounded string into memory; skipped lines are discarded, not kept.
+        char_budget = None if max_inline_tokens is None else max_inline_tokens * CHARS_PER_TOKEN
+        line_cap = None if char_budget is None else char_budget + 1
+
+        def _next_line(fh, collect: bool, remaining: int | None = None) -> str | None:
+            """One line ("" when skipping), None at EOF. While collecting, stop as soon as the
+            pieces exceed ``remaining``: the caller returns the oversized block and never needs
+            the rest of a giant line, so it is never materialized."""
+            pieces, seen, collected = [], False, 0
+            while True:
+                piece = fh.readline() if line_cap is None else fh.readline(line_cap)
+                if not piece:
+                    break
+                seen = True
+                if collect:
+                    pieces.append(piece)
+                    collected += len(piece)
+                    if remaining is not None and collected > remaining:
+                        break
+                if piece.endswith("\n"):
+                    break
+            return ("".join(pieces) if collect else "") if seen else None
+
+        parts, total_chars = [], 0
+        with path.open(encoding="utf-8") as fh:
+            for _ in range(max(ref.line_start - 1, 0)):
+                if _next_line(fh, collect=False) is None:
+                    break
+            for _ in range((ref.line_end or ref.line_start) - ref.line_start + 1):
+                line = _next_line(fh, collect=True, remaining=None if char_budget is None else char_budget - total_chars)
+                if line is None:
+                    break
+                total_chars += len(line)
+                if char_budget is not None and total_chars > char_budget:
+                    return None, _oversized_text_reference_block(ref, path, total_chars // CHARS_PER_TOKEN)
+                parts.append(line)
+        text = "".join(parts)
+    else:
+        # estimate_tokens_rough >= bytes/CHARS_PER_TOKEN for every encoding mix, so a
+        # file past that byte ceiling is certainly oversized; refuse without reading it.
+        size = path.stat().st_size
+        if max_inline_tokens is not None and size > max_inline_tokens * CHARS_PER_TOKEN:
+            return None, _oversized_text_reference_block(ref, path, size // CHARS_PER_TOKEN)
+        text = path.read_text(encoding="utf-8-sig")
     lang = _FENCE_LANGUAGES.get(path.suffix.lower(), "")
-    return None, f"📄 {ref.raw} ({estimate_tokens_rough(text)} tokens)\n```{lang}\n{text}\n```"
+    text_tokens = estimate_tokens_rough(text)
+    # Check BEFORE building the fenced block: an oversized file is not going to be
+    # inlined, so don't build a second MB-scale string just to discard it.
+    if max_inline_tokens is not None and text_tokens > max_inline_tokens:
+        # One oversized file used to poison the aggregate check and refuse the whole
+        # turn (#61987); the file stays readable via the agent's tools instead. The
+        # block alone carries the message (same shape as the binary path) — a warning
+        # would duplicate it in "--- Context Warnings ---".
+        return None, _oversized_text_reference_block(ref, path, text_tokens)
+    return None, f"📄 {ref.raw} ({text_tokens} tokens)\n```{lang}\n{text}\n```"
 
 
 def _run_quiet(cmd: list[str], cwd: Path, timeout: int, env: dict | None = None) -> subprocess.CompletedProcess:
-    """subprocess.run with captured text output, no stdin, and no console flash on Windows."""
+    """Captured text output with bounded pipes, no stdin, and no console flash on Windows.
+
+    ``capture_output=True`` buffers the child's entire stdout — an unbounded ``git diff``
+    or ``rg --files`` would materialize a hostile-size stream in memory. Each pipe is
+    drained up to ``_MAX_QUIET_OUTPUT_BYTES``; past it the child is killed and the result
+    carries a nonzero returncode that routes callers to their existing fallback paths. Set
+    explicitly: a child that flushed everything and exited 0 before the drain thread crossed
+    the cap is not killable and would otherwise report success with truncated output.
+    """
     popen_kwargs: dict = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
-    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding='utf-8', errors='replace',
-                          timeout=timeout, stdin=subprocess.DEVNULL, **popen_kwargs, **({} if env is None else {"env": env}))
+    proc = subprocess.Popen(
+        cmd, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        **popen_kwargs, **({} if env is None else {"env": env}))
+
+    truncated = threading.Event()
+
+    def _drain(stream, sink: list[bytes]) -> None:
+        total = 0
+        while True:
+            chunk = stream.read1(1 << 16)
+            if not chunk:
+                return
+            total += len(chunk)
+            if total <= _MAX_QUIET_OUTPUT_BYTES:
+                sink.append(chunk)
+            else:
+                truncated.set()
+                proc.kill()
+                return
+
+    sinks: list[list[bytes]] = [[], []]
+    threads = [
+        threading.Thread(target=_drain, args=(stream, sink), daemon=True)
+        for stream, sink in zip((proc.stdout, proc.stderr), sinks)
+    ]
+    for thread in threads:
+        thread.start()
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        raise subprocess.TimeoutExpired(cmd, timeout)
+    for thread in threads:
+        thread.join()
+    stdout, stderr = (b"".join(sink).decode("utf-8", "replace") for sink in sinks)
+    returncode = proc.returncode
+    if truncated.is_set() and returncode == 0:
+        returncode = _OUTPUT_CAP_EXCEEDED_RETURNCODE
+    return subprocess.CompletedProcess(cmd, returncode, stdout, stderr)
 
 
 def _expand_git_reference(ref: ContextReference, cwd: Path, args: list[str], label: str) -> Expansion:
@@ -324,9 +447,28 @@ def _is_under(path: Path, root: Path) -> bool:
     return True
 
 
+# Desktop persists a large plain-text paste as a `.txt` under this Hermes-managed
+# directory (apps/desktop/electron/composer-paste.ts) and attaches it as `@file:`.
+# The chat's cwd is rarely an ancestor of it, so it is the one anchored root the
+# workspace guard admits besides `allowed_root` itself.
+COMPOSER_PASTES_DIRNAME = "composer-pastes"
+
+
+def _composer_paste_roots() -> list[Path]:
+    from agent.file_safety import _hermes_dirs
+    return [hermes_dir / COMPOSER_PASTES_DIRNAME for hermes_dir in _hermes_dirs()]
+
+
 def _resolve_path(cwd: Path, target: str, *, allowed_root: Path | None = None) -> Path:
+    from agent.file_safety import is_nt_namespace_path
+    if is_nt_namespace_path(target):  # raw-string check: resolving such a path is the NTLM-leak trigger
+        raise ValueError("path uses a Windows NT/device namespace prefix and cannot be attached")
     resolved = (cwd / Path(os.path.expanduser(target))).resolve()  # `/` keeps an absolute target as-is
-    if allowed_root is not None and not _is_under(resolved, allowed_root):
+    if (
+        allowed_root is not None
+        and not _is_under(resolved, allowed_root)
+        and not any(_is_under(resolved, root) for root in _composer_paste_roots())
+    ):
         raise ValueError("path is outside the allowed workspace")
     return resolved
 
@@ -379,17 +521,30 @@ def _parse_file_reference_value(value: str) -> tuple[str, int | None, int | None
 
 def _is_binary_file(path: Path) -> bool:
     mime = mimetypes.guess_type(path.name)[0]
-    return bool(mime and not mime.startswith("text/") and not path.name.endswith(_TEXT_EXTENSIONS)) or (
-        b"\x00" in path.read_bytes()[:4096]
-    )
+    if mime and not mime.startswith("text/") and not path.name.endswith(_TEXT_EXTENSIONS):
+        return True
+    with path.open("rb") as fh:  # sniff only; read_bytes() materialized the whole file
+        return b"\x00" in fh.read(4096)
 
 
-def _build_folder_listing(path: Path, cwd: Path, limit: int = 200) -> str:
-    lines = [f"{path.relative_to(cwd)}/"]
+def _build_folder_listing(path: Path, cwd: Path, limit: int = 200, display_base: Path | None = None) -> str:
+    # The target may sit outside cwd when the caller widened allowed_root: show it relative to
+    # cwd when possible, else relative to the allowed root, else the absolute path.
+    shown: str | None = None
+    for base in (cwd, display_base):
+        if base is None:
+            continue
+        try:
+            shown = f"{path.relative_to(base)}/"
+            break
+        except ValueError:
+            continue
+    if shown is None:
+        shown = f"{path}/"
+    lines = [shown]
     entries = _iter_visible_entries(path, cwd, limit=limit)
-    base_depth = len(path.relative_to(cwd).parts)
     for entry in entries:
-        indent = "  " * max(len(entry.relative_to(cwd).parts) - base_depth - 1, 0)
+        indent = "  " * max(len(entry.relative_to(path).parts) - 1, 0)
         lines.append(f"{indent}- {entry.name}/" if entry.is_dir() else f"{indent}- {entry.name} ({_file_metadata(entry)})")
     if len(entries) >= limit:
         lines.append("- ...")
@@ -399,16 +554,18 @@ def _build_folder_listing(path: Path, cwd: Path, limit: int = 200) -> str:
 def _iter_visible_entries(path: Path, cwd: Path, limit: int) -> list[Path]:
     """Files under ``path`` via ``rg --files`` (honours ignore files), else an os.walk fallback."""
     try:
-        rg = _run_quiet(["rg", "--files", str(path.relative_to(cwd))], cwd, 10)
+        # Absolute path arg: rg echoes it as the output prefix, so results stay correct even
+        # when the folder is outside cwd (a widened allowed_root target).
+        rg = _run_quiet(["rg", "--files", str(path)], cwd, 10)
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         rg = None
     if rg is not None and rg.returncode == 0:
         output: list[Path] = []
         seen_dirs: set[Path] = set()
         for line in [ln.strip() for ln in rg.stdout.splitlines() if ln.strip()][:limit]:
-            full = cwd / Path(line)
+            full = cwd / Path(line)  # absolute lines pass through unchanged; defensive for relative
             for parent in full.parents:
-                if parent == cwd or parent in seen_dirs or path not in {parent, *parent.parents}:
+                if parent in seen_dirs or path not in {parent, *parent.parents}:
                     continue
                 seen_dirs.add(parent)
                 output.append(parent)
@@ -425,12 +582,7 @@ def _iter_visible_entries(path: Path, cwd: Path, limit: int) -> list[Path]:
     return output
 
 
-def _binary_reference_block(ref: ContextReference, path: Path) -> str:
-    mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-    try:
-        size = format_bytes(path.stat().st_size)
-    except OSError:
-        size = "unknown size"
+def _agent_visible_path(path: Path) -> str:
     # Under a container backend the host path dangles inside the sandbox: translate staged
     # files to their auto-mounted cache path; fall back to the host path (local backend /
     # translation failure). Run the idempotent TERMINAL_ENV bridge first so in-process
@@ -439,21 +591,59 @@ def _binary_reference_block(ref: ContextReference, path: Path) -> str:
         from tools.terminal_tool import _ensure_terminal_env_bridged
         _ensure_terminal_env_bridged()
         from tools.credential_files import to_agent_visible_cache_path
-        visible = to_agent_visible_cache_path(str(path))
+        return to_agent_visible_cache_path(str(path))
     except Exception:
-        visible = str(path)
+        return str(path)
+
+
+def _on_disk_reference_block(ref: ContextReference, path: Path, descriptor: str, reason: str, guidance: str) -> str:
+    """Shared 📎 shape: the file was not inlined, but it IS on disk where the agent's
+    tools run — hand the model the path and a nudge instead of a dead-end warning."""
+    try:
+        size = format_bytes(path.stat().st_size)
+    except OSError:
+        size = "unknown size"
     return (
-        f"📎 {ref.raw} ({mime}, {size}) — binary file, not inlined as text. "
-        f"It is available on disk at `{visible}`. Use your tools to work with it "
-        f"(read or convert it, extract its text, or view/render it as needed); "
-        f"do not tell the user the file type is unsupported."
+        f"📎 {ref.raw} ({descriptor}, {size}) — {reason} "
+        f"It is available on disk at `{_agent_visible_path(path)}`. {guidance}"
+    )
+
+
+def _binary_reference_block(ref: ContextReference, path: Path) -> str:
+    mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    return _on_disk_reference_block(
+        ref, path,
+        descriptor=mime,
+        reason="binary file, not inlined as text.",
+        guidance="Use your tools to work with it (read or convert it, extract its text, "
+                 "or view/render it as needed); do not tell the user the file type is unsupported.",
+    )
+
+
+def _oversized_text_reference_block(ref: ContextReference, path: Path, text_tokens: int) -> str:
+    return _on_disk_reference_block(
+        ref, path,
+        descriptor=f"text file, approximately {text_tokens} tokens",
+        reason="too large to inline safely.",
+        guidance="Use read_file with a narrow line range, search_files, or terminal/code tools "
+                 "to inspect only the relevant parts; do not load the entire file into context.",
     )
 
 
 def _file_metadata(path: Path) -> str:
-    if not _is_binary_file(path):
-        try:
-            return f"{path.read_text(encoding='utf-8').count(chr(10)) + 1} lines"
-        except Exception:
-            pass
-    return f"{path.stat().st_size} bytes"
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return "unknown size"
+    # A listing line is a summary, not content: past the cap, byte size conveys the
+    # same "how big is this" without a full scan per entry.
+    if _is_binary_file(path) or size > _LINE_COUNT_MAX_BYTES:
+        return f"{size} bytes"
+    try:
+        with path.open("rb") as fh:
+            # UTF-8 never embeds 0x0A inside a multibyte sequence, so counting bytes
+            # matches a decoded newline count while streaming instead of read_text.
+            lines = sum(chunk.count(b"\n") for chunk in iter(lambda: fh.read(1 << 20), b""))
+        return f"{lines + 1} lines"
+    except Exception:
+        return f"{size} bytes"

@@ -20,9 +20,16 @@ _REASONING_STALE_TIMEOUT_FLOORS: dict[int, tuple[str, ...]] = {
         # NVIDIA Nemotron behind hosted NIM: documented 60-180s upstream idle kill.
         "nemotron-3-ultra", "nemotron-3-super",
         # DeepSeek R1 / V4 (reasoning_content streamed before final content).
-        "deepseek-r1", "deepseek-reasoner", "deepseek-v4-flash", "deepseek-v4-pro",
+        # ``deepseek-flash`` is the version-less canonical Flash id (2026-09 Flash refresh);
+        # ``deepseek-v4-flash`` still aliases onto it server-side.
+        "deepseek-r1", "deepseek-reasoner", "deepseek-flash", "deepseek-v4-flash", "deepseek-v4.1-flash", "deepseek-v4-pro",
         # OpenAI o-series: each variant enumerated so bare ``o1`` cannot over-match ``olmo-1``.
         "o1", "o1-mini", "o1-pro", "o1-preview", "o3", "o3-pro",
+        # OpenAI named reasoning lines (gpt-5.6-sol/-terra/-luna, gpt-6-astra, their -pro/-900k
+        # variants): minutes-long thinking at xhigh/max/ultra; sub-10k-token requests sit below the
+        # Codex context-size floor, so this is their only protection. Anchored so gpt-5.5 and the
+        # gpt-4.x / gpt-5.1-chat lines keep the effort-tier defaults (#112909).
+        "gpt-5.6", "gpt-6",
         # Mythos-class named models (claude-fable-5): 1M ctx + 128K output, a heavier thinking
         # phase than the numbered line — otherwise the stale detector trips the circuit breaker.
         "claude-fable",
@@ -35,6 +42,9 @@ _REASONING_STALE_TIMEOUT_FLOORS: dict[int, tuple[str, ...]] = {
         # "Ox Alpha" stealth reasoning model (OpenRouter / OpenCode Zen slugs); Thinking
         # Machines Inkling (covers inkling-small and :free SKUs).
         "ox-alpha", "x-preview-f-free", "inkling",
+        # MiniMax M2.x (m2.5/m2.7): reasoning_content before first content token; 240s
+        # mid-think stalls observed (#62353).
+        "minimax-m2",
     ),
     # Anthropic Claude 4.x+ thinking variants (anchored so 3.x never matches).
     240: ("claude-opus-4", "claude-opus-5"),

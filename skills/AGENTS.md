@@ -35,8 +35,9 @@ Every new or modernised skill — bundled, optional, or contributed — meets al
    `search_files`, `cat`/`head`/`tail` → `read_file`, `sed`/`awk` → `patch`, `find`/`ls` →
    `search_files target='files'`. MCP dependencies are named with setup in `## Prerequisites`.
    Third-party CLIs and pipelines are fine inside script files, not as the headline surface.
-3. **`platforms:` gating is audited against actual script imports.** POSIX-only primitives
-   (`fcntl`, `termios`, `os.setsid`, `os.kill(pid, 0)`, `/proc`, hardcoded `/tmp`, `signal.SIGKILL`,
+<!-- no-tmp: ok — names the POSIX-only anti-pattern reviewers look for -->
+3. **`platforms:` gating is audited against actual script imports.** POSIX-only primitives (hardcoded `/tmp`,
+   `fcntl`, `termios`, `os.setsid`, `os.kill(pid, 0)`, `/proc`, `signal.SIGKILL`,
    bash heredocs, `osascript`, `apt`, `systemctl`) require a platform declaration. Fix cross-platform
    first (`tempfile.gettempdir`, `pathlib.Path`, `psutil.pid_exists`, Python filtering instead of
    `grep`); gate narrower only when the dependency is genuinely platform-bound.
@@ -69,7 +70,10 @@ prune|backup|rollback`; telemetry `tools/skill_usage.py` owns `~/.hermes/skills/
 `pinned`). Config `curator:` — `enabled, interval_hours, min_idle_hours, stale_after_days,
 archive_after_days, backup.*`; its LLM calls route through `auxiliary` (`agent/AGENTS.md`).
 
-Invariants: touches only `created_by: "agent"` skills (bundled + hub-installed are off-limits);
+Invariants: touches only `created_by: "agent"` skills (bundled + hub-installed are off-limits;
+`prune_builtins` lets the deterministic inactivity walk archive bundled skills but never adds them
+to the LLM pass's candidate list, and neither are `skills.disabled` names, which `skill_view`
+refuses — the fork must only be offered skills it can read and write);
 never deletes — archive is the maximum; pinned skills are exempt from every auto-transition and
 the LLM review; `skill_manage(action="delete")` refuses pinned skills while patch/edit/write_file/
 remove_file still work so the agent can keep improving them.

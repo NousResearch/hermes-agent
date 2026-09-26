@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import IO, Callable, Protocol
 
 from hermes_constants import get_hermes_home
+from tools.tool_output_truncate import head_tail_split, truncation_notice
 from hermes_cli._subprocess_compat import windows_hide_flags
 
 # Sentinel capacity for full-fidelity capture: large enough that the collector
@@ -154,16 +155,13 @@ class _BoundedOutputCollector:
             notice = ""
             for _ in range(4):
                 omitted = max(0, self._total_chars - max(0, available - len(notice)))
-                updated = (
-                    f"\n\n... [OUTPUT TRUNCATED - {omitted:,} chars omitted "
-                    f"out of {self._total_chars:,} total] ...\n\n")
+                updated = truncation_notice(omitted, self._total_chars)
                 if updated == notice:
                     break
                 notice = updated
 
             content_budget = max(0, available - len(notice))
-            head_chars = int(content_budget * 0.4)
-            tail_chars = content_budget - head_chars
+            head_chars, tail_chars = head_tail_split(content_budget)
             rendered_tail = tail[-tail_chars:] if tail_chars else ""
             return head[:head_chars] + notice[:available] + rendered_tail + suffix
 
@@ -295,7 +293,7 @@ class _ThreadedProcessHandle:
 
         # Pipe for stdout — the drain thread in _wait_for_process reads the read end.
         read_fd, write_fd = os.pipe()
-        self._stdout = os.fdopen(read_fd, "r", encoding="utf-8", errors="replace")
+        self._stdout = os.fdopen(read_fd, "r", encoding="utf-8-sig", errors="replace")
         self._write_fd = write_fd
 
         def _worker():
@@ -341,7 +339,7 @@ class _ThreadedProcessHandle:
 
 
 # --- Stdout drain thread ---
-def _drain_stdout(proc: ProcessHandle, output: _BoundedOutputCollector) -> None:
+def _drain_stdout(proc: ProcessHandle, output: _BoundedOutputCollector, stop: "threading.Event | None" = None) -> None:
     """Drain ``proc.stdout`` into *output* until EOF or shortly after exit.
     ``for line in proc.stdout`` would block on ``readline()`` until EOF, and a backgrounded
     grandchild (``cmd &``, ``setsid cmd & disown``) inherits the pipe's write end — so the
@@ -351,7 +349,7 @@ def _drain_stdout(proc: ProcessHandle, output: _BoundedOutputCollector) -> None:
     ``errors="replace"`` buffers partial sequences across chunks. Streams without a real
     integer ``fileno()`` (mocks, in-memory adapters) are iterated to EOF instead — otherwise
     the thread would die silently and lose all output. ``select()`` does not work on pipe fds
-    on Windows, so a blocking ``os.read`` loop is used there.
+    on Windows, so :func:`_drain_fd_windows` polls ``PeekNamedPipe`` there instead.
     """
     stream = proc.stdout
     if stream is None:
@@ -381,10 +379,9 @@ def _drain_stdout(proc: ProcessHandle, output: _BoundedOutputCollector) -> None:
                 if piece is not None:
                     output.append(decoder.decode(piece) if isinstance(piece, bytes) else str(piece))
         elif os.name == "nt":
-            while chunk := os.read(fd, 4096):
-                output.append(decoder.decode(chunk))
+            _drain_fd_windows(proc, fd, output, decoder, stop)
         else:
-            _drain_fd_select(proc, fd, output, decoder)
+            _drain_fd_select(proc, fd, output, decoder, stop)
     except Exception:
         pass  # closed fd / broken stream: keep what was captured
     finally:
@@ -397,10 +394,13 @@ def _drain_stdout(proc: ProcessHandle, output: _BoundedOutputCollector) -> None:
             pass
 
 
-def _drain_fd_select(proc, fd: int, output: _BoundedOutputCollector, decoder) -> None:
-    """POSIX drain: select() poll, stopping ~300ms after bash exits with the pipe idle."""
+def _drain_fd_select(proc, fd: int, output: _BoundedOutputCollector, decoder, stop=None) -> None:
+    """POSIX drain: select() poll, stopping ~300ms after bash exits with the pipe idle, or
+    when *stop* is set (the pipe is being handed to another reader — yield-to-background)."""
     idle_after_exit = 0
     while True:
+        if stop is not None and stop.is_set():
+            return
         try:
             ready, _, _ = select.select([fd], [], [], 0.1)
         except (ValueError, OSError):
@@ -422,8 +422,58 @@ def _drain_fd_select(proc, fd: int, output: _BoundedOutputCollector, decoder) ->
                 return
 
 
-def _start_drain_thread(proc: ProcessHandle, output: _BoundedOutputCollector) -> threading.Thread:
-    """Start the daemon thread running :func:`_drain_stdout`."""
-    thread = threading.Thread(target=_drain_stdout, args=(proc, output), daemon=True)
+def _drain_fd_windows(proc, fd: int, output: _BoundedOutputCollector, decoder, stop=None) -> None:
+    """Windows drain: poll ``PeekNamedPipe`` because ``select`` cannot poll pipes.
+
+    ``os.read`` on a Windows pipe blocks until data is available or every writer
+    closes the pipe.  A backgrounded grandchild can retain a writer indefinitely,
+    so use the Win32 pipe API to check availability before reading and apply the
+    same post-exit idle bound as the POSIX drain.
+    """
+    import ctypes
+    import msvcrt
+
+    try:
+        raw_handle = msvcrt.get_osfhandle(fd)
+    except OSError:
+        return
+    if raw_handle in (-1, 0):
+        return
+
+    handle = ctypes.c_void_p(raw_handle)
+    kernel32 = ctypes.windll.kernel32
+    available = ctypes.c_ulong(0)
+    idle_after_exit = 0
+    while True:
+        if stop is not None and stop.is_set():
+            return
+        try:
+            ok = kernel32.PeekNamedPipe(handle, None, 0, None, ctypes.byref(available), None)
+        except OSError:
+            return
+        if not ok:
+            return
+        if available.value:
+            try:
+                chunk = os.read(fd, min(int(available.value), 4096))
+            except (ValueError, OSError):
+                return
+            if not chunk:
+                return
+            output.append(decoder.decode(chunk))
+            idle_after_exit = 0
+            continue
+        if proc.poll() is not None:
+            idle_after_exit += 1
+            if idle_after_exit >= 3:
+                return
+        time.sleep(0.1)
+
+
+def _start_drain_thread(
+        proc: ProcessHandle, output: _BoundedOutputCollector, stop: "threading.Event | None" = None,
+) -> threading.Thread:
+    """Start the daemon thread running :func:`_drain_stdout`; *stop* ends it early."""
+    thread = threading.Thread(target=_drain_stdout, args=(proc, output, stop), daemon=True)
     thread.start()
     return thread

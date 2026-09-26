@@ -86,6 +86,8 @@ def test_patch_priority_fires_task_updated(client, captured_updates):
     assert kw["changed_fields"] == ["priority"]
     assert kw["board"]
 
+
+
 def test_bulk_priority_fires_task_updated_per_task(client, captured_updates):
     tid1 = _make_task("a")
     tid2 = _make_task("b")

@@ -657,7 +657,15 @@ def curses_radiolist(
 
     def _draw_header(stdscr, max_y, max_x, search=None, back_enabled=False):
         row = 1
-        for dline in desc_lines[: max(0, max_y - 2)]:  # ★ painted yellow to match rows
+        # Reserve title, hint, spacer, bottom margin, and up to five choices.
+        # A long description must not push the selected row off-screen.
+        choice_rows = min(max(1, len(items)), 5)
+        description_rows = max(0, max_y - 4 - choice_rows)
+        visible_description = desc_lines[:description_rows]
+        if len(desc_lines) > description_rows and visible_description:
+            hidden = len(desc_lines) - description_rows + 1
+            visible_description[-1] = f"  ... {hidden} more description lines (enlarge terminal)"
+        for dline in visible_description:  # ★ painted yellow to match rows
             _draw_description_line(stdscr, row, dline, max_x)
             row += 1
         hint = _search_hint(search, searchable, "ENTER/SPACE select", "ESC cancel", back_enabled)

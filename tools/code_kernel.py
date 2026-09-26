@@ -55,18 +55,27 @@ def _clip(text):
 def run_cell(request, execution_count):
     """Exec one cell; returns (response payload, FULL stdout text)."""
     out, err = io.StringIO(), io.StringIO()
-    status, trace = "ok", ""
+    status, trace, exit_code = "ok", "", 0
     try:
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             exec(compile(request["code"], "<cell>", "exec"), GLOBALS)
     except SystemExit as exc:
         status, trace = "exit", "SystemExit: " + repr(exc.code)
+        # Same convention as the interpreter: None -> 0, an int is the code,
+        # anything else is printed and counts as 1.
+        if exc.code is None:
+            exit_code = 0
+        elif isinstance(exc.code, int):
+            exit_code = exc.code
+        else:
+            err.write(str(exc.code))
+            exit_code = 1
     except BaseException:
-        status, trace = "error", traceback.format_exc()
+        status, trace, exit_code = "error", traceback.format_exc(), 1
     stdout_text, stdout_clipped = _clip(out.getvalue())
     stderr_text, stderr_clipped = _clip(err.getvalue())
     return {
-        "id": request.get("id", ""), "status": status,
+        "id": request.get("id", ""), "status": status, "exit_code": exit_code,
         "stdout": stdout_text, "stderr": stderr_text,
         "stdout_clipped": stdout_clipped, "stderr_clipped": stderr_clipped,
         "traceback": trace, "execution_count": execution_count,
@@ -828,11 +837,16 @@ def _cell_result(kernel: SessionKernel, key: Tuple, status: str, payload: Dict[s
         if hint:
             result["hint"] = hint
     elif cell_status == "exit":
-        # The cell called sys.exit(): honor it as end-of-kernel.
+        # The cell called sys.exit(): honor it as end-of-kernel, but a nonzero
+        # code is still a failure — only sys.exit(None)/sys.exit(0) is success.
         _REGISTRY.discard(key, kernel)
         result["kernel"]["ended"] = True
         if cell_stderr:
             result["output"] = _with_stderr(stdout_text, cell_stderr)
+        cell_exit_code = payload.get("exit_code", 0) or 0
+        if cell_exit_code:
+            result.update(status="error", exit_code=cell_exit_code,
+                          error=f"Script exited with code {cell_exit_code}")
     elif status == "error":
         _REGISTRY.discard(key, kernel)
         result.update(exit_code=-1, error="The session kernel died while running the cell"

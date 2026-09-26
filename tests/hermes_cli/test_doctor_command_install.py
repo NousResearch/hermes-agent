@@ -83,6 +83,53 @@ def test_pm_generation_does_not_require_a_legacy_console_script(tmp_path, monkey
 
 
 @pytest.mark.platforms("posix")
+def test_pm_workspace_without_a_staged_launcher_resolves_the_shim_target(tmp_path, monkeypatch, capsys):
+    """Regression for #124050: PM staging never copies the extensionless launcher
+    into the generation workspace, so doctor must resolve the launcher the
+    install actually runs (the PATH shim target) instead of warning."""
+    project, home, command = _tree(tmp_path, monkeypatch)
+    _generation(project)
+    real = tmp_path / "real-root" / ".hermes" / "bin" / "hermes"
+    real.parent.mkdir(parents=True)
+    real.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    real.chmod(0o755)
+    command.symlink_to(real)
+
+    doctor.run_doctor(Namespace(fix=False))
+
+    out = capsys.readouterr().out
+    assert "All checks passed" in out
+    assert "entry point not found" not in out
+
+
+@pytest.mark.platforms("posix")
+def test_pm_regular_file_launcher_on_path_is_accepted(tmp_path, monkeypatch, capsys):
+    """A stage_launcher trampoline (regular file, not a symlink) is the entry point."""
+    project, home, command = _tree(tmp_path, monkeypatch)
+    _generation(project)
+    command.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    command.chmod(0o755)
+
+    doctor.run_doctor(Namespace(fix=False))
+
+    out = capsys.readouterr().out
+    assert "All checks passed" in out
+    assert "entry point not found" not in out
+
+
+@pytest.mark.platforms("posix")
+def test_pm_entry_point_still_reported_when_no_launcher_exists(tmp_path, monkeypatch, capsys):
+    """No staged launcher AND no PATH shim: the warning must still fire."""
+    project, home, command = _tree(tmp_path, monkeypatch)
+    _generation(project)
+
+    doctor.run_doctor(Namespace(fix=False))
+
+    out = capsys.readouterr().out
+    assert "entry point not found" in out
+
+
+@pytest.mark.platforms("posix")
 @pytest.mark.parametrize("prior", ["missing", "legacy"])
 def test_pm_fix_publishes_a_generation_aware_launcher(tmp_path, monkeypatch, capsys, prior):
     project, home, command = _tree(tmp_path, monkeypatch)

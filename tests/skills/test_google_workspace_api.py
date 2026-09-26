@@ -7,7 +7,7 @@ import sys
 import types
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -134,6 +134,154 @@ def test_api_calendar_list_uses_events_list(api_module):
     assert "timeMin" in params
     assert "timeMax" in params
     assert params["calendarId"] == "primary"
+
+
+def _calendar_update_args(api_module, **overrides):
+    values = {
+        "event_id": "event-123",
+        "summary": None,
+        "start": None,
+        "end": None,
+        "location": None,
+        "description": None,
+        "attendees": None,
+        "calendar": "primary",
+        "backend": "auto",
+        "func": api_module.calendar_update,
+    }
+    values.update(overrides)
+    return api_module.argparse.Namespace(**values)
+
+
+def test_api_calendar_update_gws_patches_only_changed_fields(api_module, monkeypatch, capsys):
+    updated_event = {
+        "id": "event-123",
+        "summary": "Existing title",
+        "location": "Room 2",
+        "htmlLink": "https://calendar.google.com/event?eid=event-123",
+    }
+    run_gws = MagicMock(side_effect=[updated_event, updated_event])
+    monkeypatch.setattr(api_module, "_run_gws", run_gws)
+
+    api_module.calendar_update(_calendar_update_args(api_module, location="Room 2"))
+
+    assert run_gws.call_args_list == [
+        call(
+            ["calendar", "events", "patch"],
+            params={"calendarId": "primary", "eventId": "event-123"},
+            body={"location": "Room 2"},
+        ),
+        call(
+            ["calendar", "events", "get"],
+            params={"calendarId": "primary", "eventId": "event-123"},
+        ),
+    ]
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "updated"
+    assert output["id"] == "event-123"
+    assert output["verified"] is True
+
+
+def test_api_calendar_update_preserves_explicit_empty_string(api_module, monkeypatch):
+    run_gws = MagicMock(side_effect=[
+        {"id": "event-123", "location": ""},
+        {"id": "event-123", "location": ""},
+    ])
+    monkeypatch.setattr(api_module, "_run_gws", run_gws)
+
+    api_module.calendar_update(_calendar_update_args(api_module, location=""))
+
+    assert run_gws.call_args_list[0].kwargs["body"] == {"location": ""}
+
+
+def test_api_calendar_update_native_uses_events_patch(api_module, monkeypatch, capsys):
+    run_gws = MagicMock()
+    monkeypatch.setattr(api_module, "_run_gws", run_gws)
+    updated_event = {
+        "id": "event-123",
+        "summary": "Renamed",
+        "htmlLink": "https://calendar.google.com/event?eid=event-123",
+    }
+    request = MagicMock()
+    request.execute.return_value = updated_event
+    get_request = MagicMock()
+    get_request.execute.return_value = updated_event
+    events = MagicMock()
+    events.patch.return_value = request
+    events.get.return_value = get_request
+    service = MagicMock()
+    service.events.return_value = events
+    monkeypatch.setattr(api_module, "build_service", lambda *_args: service)
+
+    api_module.calendar_update(
+        _calendar_update_args(api_module, summary="Renamed", backend="native")
+    )
+
+    events.patch.assert_called_once_with(
+        calendarId="primary",
+        eventId="event-123",
+        body={"summary": "Renamed"},
+    )
+    events.get.assert_called_once_with(calendarId="primary", eventId="event-123")
+    run_gws.assert_not_called()
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "updated"
+    assert output["verified"] is True
+
+
+def test_api_calendar_update_fails_when_readback_does_not_match(api_module, monkeypatch):
+    run_gws = MagicMock(side_effect=[
+        {"id": "event-123", "location": "Room 2"},
+        {"id": "event-123", "location": "Room 1"},
+    ])
+    monkeypatch.setattr(api_module, "_run_gws", run_gws)
+
+    with pytest.raises(RuntimeError, match="read-back mismatch"):
+        api_module.calendar_update(_calendar_update_args(api_module, location="Room 2"))
+
+    assert run_gws.call_count == 2
+
+
+def test_api_calendar_update_rejects_noop_before_provider(api_module, monkeypatch):
+    run_gws = MagicMock()
+    monkeypatch.setattr(api_module, "_run_gws", run_gws)
+
+    with pytest.raises(SystemExit, match="at least one field"):
+        api_module.calendar_update(_calendar_update_args(api_module))
+
+    run_gws.assert_not_called()
+
+
+def test_api_calendar_update_rejects_datetime_without_timezone(api_module, monkeypatch):
+    run_gws = MagicMock()
+    monkeypatch.setattr(api_module, "_run_gws", run_gws)
+
+    with pytest.raises(SystemExit, match="timezone"):
+        api_module.calendar_update(
+            _calendar_update_args(api_module, start="2026-09-02T10:00:00")
+        )
+
+    run_gws.assert_not_called()
+
+
+def test_api_calendar_update_parser_preserves_omitted_and_empty(api_module, monkeypatch):
+    captured = {}
+
+    def capture(args):
+        captured.update(vars(args))
+
+    monkeypatch.setattr(api_module, "calendar_update", capture)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["google_api.py", "calendar", "update", "event-123", "--location", ""],
+    )
+
+    api_module.main()
+
+    assert captured["summary"] is None
+    assert captured["location"] == ""
+    assert captured["description"] is None
 
 
 

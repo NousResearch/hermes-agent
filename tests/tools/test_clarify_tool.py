@@ -8,6 +8,7 @@ from tools.clarify_tool import (
     clarify_tool,
     MAX_CHOICES,
     MAX_QUESTIONS,
+    MAX_CHOICE_CHARS,
     CLARIFY_SCHEMA,
     _flatten_choice,
 )
@@ -257,6 +258,90 @@ class TestClarifyRecommendedLabel:
         result = json.loads(clarify_tool("Thoughts?", callback=cb))
         assert result["choices_offered"] is None
         assert result["user_response"] == "whatever"
+
+
+class TestChoiceCharLimit:
+    """A choice the renderer cannot show must not be offered at all.
+
+    Surfaces used to silently drop choices over their display limit while
+    `choices_offered` still echoed them, so the user answered a question with
+    options missing and the agent never knew. The limit is enforced at the
+    tool, before any surface renders, and declared in the schema.
+    """
+
+    def test_over_limit_choice_rejected_with_position(self):
+        long_choice = "x" * (MAX_CHOICE_CHARS + 1)
+        result = json.loads(clarify_tool(
+            "Pick", choices=[long_choice, "Short"], callback=lambda q, c: "Short",
+        ))
+        assert "error" in result
+        assert "choice 0" in result["error"]
+        assert str(MAX_CHOICE_CHARS) in result["error"]
+
+    def test_at_limit_choice_with_newline_passes(self):
+        """Newlines are the renderer's contract (#109939 keeps them); the tool
+        only polices length."""
+        at_limit = "line1\n" + "y" * (MAX_CHOICE_CHARS - 6)
+        assert len(at_limit) == MAX_CHOICE_CHARS
+        seen = []
+
+        def cb(question, choices):
+            seen.extend(choices or [])
+            return choices[0]
+
+        result = json.loads(clarify_tool(
+            "Pick", choices=[at_limit, "Short"], callback=cb,
+        ))
+        assert "error" not in result
+        assert seen[0].startswith("line1\ny")
+        assert result["user_response"].startswith("line1")
+
+    def test_limit_measured_after_flattening(self):
+        """A dict choice whose label fits is fine; the length that counts is
+        the flattened display text."""
+        bulky = {"label": "ok", "description": "d" * (MAX_CHOICE_CHARS + 10)}
+        result = json.loads(clarify_tool(
+            "Pick", choices=[bulky, "Short"], callback=lambda q, c: "Short",
+        ))
+        assert "error" not in result
+
+    def test_limit_measured_before_recommended_suffix(self):
+        """The (Recommended) badge is presentation added downstream; the limit
+        applies to the bare choice text."""
+        bare = "c" * MAX_CHOICE_CHARS  # becomes len+15 after the badge
+        result = json.loads(clarify_tool(
+            "Pick", choices=[bare, "Short"], callback=lambda q, c: "Short",
+        ))
+        assert "error" not in result
+
+    def test_batch_rejects_over_limit_choice(self):
+        long_choice = "z" * (MAX_CHOICE_CHARS + 1)
+        result = json.loads(clarify_tool(
+            "", questions=[{"question": "Q?", "choices": [long_choice, "ok"]}],
+            callback=lambda *a, **k: {"answers": {"q0": "ok"}},
+        ))
+        assert "error" in result
+        assert "questions[0]" in result["error"]
+
+    def test_batch_boundary_choice_passes(self):
+        boundary = "b" * MAX_CHOICE_CHARS
+        seen = {}
+
+        def cb(question, choices, multi_select=False, questions=None):
+            seen["questions"] = questions
+            return {"answers": {"q0": boundary}}
+
+        result = json.loads(clarify_tool(
+            "", questions=[{"question": "Q?", "choices": [boundary, "ok"]}],
+            callback=cb,
+        ))
+        assert "error" not in result
+        assert seen["questions"][0]["choices"][0].startswith(f"{boundary[:8]}")
+
+    def test_schema_declares_choice_max_length(self):
+        items = (CLARIFY_SCHEMA["parameters"]["properties"]["questions"]
+                 ["items"]["properties"]["choices"]["items"])
+        assert items.get("maxLength") == MAX_CHOICE_CHARS
 
 
 class TestInvokeCallbackDispatch:

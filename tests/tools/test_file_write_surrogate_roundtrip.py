@@ -4,8 +4,15 @@ These tests exercise the REAL `_pipe_stdin` writer thread against a real
 subprocess — no mocks. They pin the round-trip byte contract (utf-8 +
 surrogateescape is the inverse of the decode that produced the content) and
 the always-close / error-capture guarantees of the writer thread.
+
+The child is spawned through `_find_bash()` and its output path through
+`_quote_bash_path()`, the same pair production uses. A bare `"bash"` off PATH
+resolves to WSL's bash.exe on a Windows box that has it installed, which mounts
+the drive at `/mnt/c` rather than `/c` — so a native `C:\\...` argument is not a
+path to it but a *filename*, and it writes that name (with `:` and `\\` mapped
+into the U+F000 private-use range by drvfs) into the cwd, exiting 0 while doing
+it. That is how these tests went red on Windows and littered the repo root.
 """
-import shlex
 import subprocess
 import time
 from unittest.mock import MagicMock
@@ -13,14 +20,14 @@ from unittest.mock import MagicMock
 import pytest
 
 from tools.environments.base_output import _pipe_stdin
-from tools.environments.local import LocalEnvironment
+from tools.environments.local import LocalEnvironment, _find_bash, _quote_bash_path
 from tools.file_operations import ShellFileOperations
 
 
 def _cat_to_file_proc(out_path):
     """A real child that copies its stdin to a file, byte for byte."""
     return subprocess.Popen(
-        ["bash", "-c", f"cat > {shlex.quote(str(out_path))}"],
+        [_find_bash(), "-c", f"cat > {_quote_bash_path(str(out_path))}"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -191,7 +198,7 @@ class TestPipeStdinRemainingBranches:
     def test_bytes_input_passes_through_untouched(self, tmp_path):
         out = tmp_path / "out.bin"
         proc = subprocess.Popen(
-            ["bash", "-c", f"cat > {shlex.quote(str(out))}"],
+            [_find_bash(), "-c", f"cat > {_quote_bash_path(str(out))}"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, text=True,
             encoding="utf-8", errors="replace",
@@ -208,7 +215,7 @@ class TestPipeStdinRemainingBranches:
 
     def test_stdin_none_records_runtime_error(self, tmp_path):
         proc = subprocess.Popen(
-            ["bash", "-c", "exit 0"],
+            [_find_bash(), "-c", "exit 0"],
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, text=True,
             encoding="utf-8", errors="replace",

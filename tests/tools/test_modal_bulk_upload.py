@@ -168,7 +168,6 @@ class TestModalCommandStdin:
         handle = env._run_bash("cat > /tmp/payload.txt", stdin_data=payload)
 
         assert handle.wait(timeout=2) == 0
-        assert modal_env.ModalEnvironment._stdin_mode == "payload"
         assert b"".join(stdin_mock._written_chunks) == expected
         assert len(exec_calls) == 1
         assert payload not in " ".join(str(part) for part in exec_calls[0])

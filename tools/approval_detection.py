@@ -924,6 +924,23 @@ def _bash_exec_payload(args: list[str]) -> tuple[bool, str | None]:
     return False, None
 
 
+def _eval_payload(args: list[str]) -> tuple[bool, str | None]:
+    """Return whether shell ``eval`` was given arguments, and the string it will run.
+
+    ``eval`` concatenates its arguments with a space and hands them to the shell,
+    so all of them together are the payload. It does strip ONE leading ``--``
+    before doing so (verified on bash 5.x: ``eval -- echo hi`` runs ``echo hi``,
+    while ``eval -- -- echo hi`` fails on the second ``--``), so that separator
+    must not be left in the payload. Bare ``eval`` reads stdin (an interactive
+    REPL) and executes nothing.
+    """
+    if args and args[0] == "--":
+        args = args[1:]
+    if not args:
+        return False, None
+    return True, " ".join(args)
+
+
 def _read_tool_exec_flag(tool: str, args: list[str]) -> tuple[str, str] | None:
     """Return (option, program) for a read-only tool's program-running flag."""
     flags = _READ_TOOL_EXEC_FLAGS[tool]
@@ -978,14 +995,39 @@ def _execution_flag_findings(command: str):
             elif family and any(token.startswith("<<") for token in args):
                 yield ("script execution via heredoc", None)
             else:
-                if executable_name in _SHELL_NAMES:
-                    found, payload = _bash_exec_payload(args)
+                # One extractor per carrier, keyed by the SAME names the
+                # quote-masking rules use, so a new carrier cannot be added to
+                # one set and forgotten in the other (that drift previously let
+                # `curl url | zsh` and `dash -c` through).
+                carrier = _CARRIER_PAYLOAD_EXTRACTORS.get(executable_name)
+                if carrier is not None:
+                    description, found, payload = carrier(args)
                     if found:
-                        yield ("shell command via -c/-lc flag", payload)
+                        yield (description, payload)
                 if executable_name in _READ_TOOL_EXEC_FLAGS:
                     finding = _read_tool_exec_flag(executable_name, args)
                     if finding:
                         yield (f"arbitrary program execution via {executable_name} {finding[0]}", finding[1])
+
+
+def _bash_carrier(args: list[str]):
+    found, payload = _bash_exec_payload(args)
+    return "shell command via -c/-lc flag", found, payload
+
+
+def _eval_carrier(args: list[str]):
+    found, payload = _eval_payload(args)
+    return "shell command via eval", found, payload
+
+
+# Derived from _SHELL_CARRIER_NAMES on purpose: a carrier that hands a quoted
+# argument to a shell is exactly a command whose payload the hardline floor must
+# see. `source`/`.` take a file path rather than code and are covered by the
+# read-tool family, so they are deliberately absent here.
+_CARRIER_PAYLOAD_EXTRACTORS = {
+    **{name: _bash_carrier for name in _SHELL_NAMES},
+    "eval": _eval_carrier,
+}
 
 
 def _skip_shell_whitespace(command: str, pos: int) -> int:

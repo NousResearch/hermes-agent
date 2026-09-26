@@ -357,6 +357,13 @@ def relaunch_command(
 
     An old venv may use a different Python ABI. Do not add the new generation
     to that interpreter, and do not depend on its obsolete editable finder.
+
+    ``-I`` also drops the caller's ``PYTHONPATH`` while this command re-executes
+    the caller's own snippet from the top: a third-party import placed ahead of
+    the agent import runs before ``hermes_bootstrap`` activates the runtime, so
+    the relaunched process must carry the committed generation's dependency
+    path itself (``activation_environment`` pairs the project root with exactly
+    that path for the children it spawns).
     """
     # Preserve interpreter options, not application flags with the same names.
     options: list[str] = []
@@ -370,7 +377,14 @@ def relaunch_command(
         if option in ("-W", "-X") and index < len(original):
             options.append(original[index])
             index += 1
+    from pm.environments import committed_venv, site_packages
+
     prefix = f"import sys, runpy; sys.path.insert(0, {str(root)!r}); sys.argv = {argv!r}; "
+    environment = committed_venv(root)
+    if environment is not None:
+        # Append, not insert: the checkout stays ahead of its installed
+        # dependencies, as activation_environment's PYTHONPATH pairing keeps it.
+        prefix += f"sys.path.append({str(site_packages(environment))!r}); "
     if argv[0] == "-c":
         body = f"exec({original[index + 1]!r})"
     elif module and module != "__main__":

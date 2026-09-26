@@ -291,3 +291,43 @@ def test_launch_under_the_owning_update_does_not_run_the_tail_again(tmp_path, mo
     assert completion_tail == []
     assert pending.is_file(), "the owning update's obligation was discharged by its own tail"
 
+
+def test_relaunch_carries_generation_dependencies(tmp_path, monkeypatch):
+    """A caller snippet importing a third-party module before the agent must survive the
+    relaunch: ``-I`` drops its PYTHONPATH, so the committed generation rides the prefix."""
+    from pm.environments import install_state_dir
+
+    root = tmp_path / "source"
+    root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    environment = install_state_dir(root) / "environments" / "gen-1"
+    packages = environment / "lib/python3.11/site-packages"
+    packages.mkdir(parents=True)
+    (packages / "needs_generation.py").write_text("value = 'from generation'\n")
+    (environment / "pyvenv.cfg").write_text("version = 3.11\n")
+    fact = runtime_facts_path(root)
+    fact.parent.mkdir(parents=True, exist_ok=True)
+    fact.write_text(json.dumps({"packages": {"venv": {"environment": str(environment)}}}))
+    snippet = "import needs_generation, json; print(json.dumps(needs_generation.value))"
+    command = venv_sync.relaunch_command(
+        Path(sys.executable), root, ["-c", snippet], [sys.executable, "-c", snippet], None,
+    )
+    result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == '"from generation"'
+
+
+def test_relaunch_without_committed_generation_keeps_the_prefix_root_only(tmp_path):
+    """Nothing committed means the child's own hermes_bootstrap decides, so the prefix
+    must not mention a dependency path it cannot vouch for."""
+    root = tmp_path / "source"
+    root.mkdir()
+    command = venv_sync.relaunch_command(
+        Path(sys.executable), root, ["-c", "pass"], [sys.executable, "-c", "pass"], None,
+    )
+    assert command == [
+        str(sys.executable), "-I", "-c",
+        f"import sys, runpy; sys.path.insert(0, {str(root)!r}); "
+        f"sys.argv = ['-c', 'pass']; exec('pass')",
+    ]
+

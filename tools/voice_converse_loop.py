@@ -274,6 +274,9 @@ class ConverseSession:
                              exc_info=True)
                 self._turn_detector = None
         self._worker: Optional[threading.Thread] = None
+        # Phase recorder for the just-captured utterance (capture + STT phases); the driver pops it
+        # with take_recorder() to append the agent/TTS phases and emit the turn trace.
+        self._pending_recorder: Any = None
         # Called with the trip phase name ("generation"/"playback") on every trip.
         self.on_trip: Optional[Callable[[str], None]] = None
 
@@ -402,32 +405,60 @@ class ConverseSession:
         self._interrupted.set()
 
     def _capture_and_transcribe(self) -> str:
-        """Endpoint the utterance from the pre-roll and return its transcript."""
+        """Endpoint the utterance from the pre-roll and return its transcript.
+
+        Records the ``voice.capture`` and ``voice.stt`` phase timings into a fresh
+        :class:`~tools.voice_tracing.PhaseRecorder` (stashed on the session for the driver to
+        finish and emit as a trace); the recorder is inert when OTLP tracing is off."""
         vm, np = self._vm, self._np
+        from tools.voice_tracing import PhaseRecorder
+
+        recorder = PhaseRecorder(
+            input_rate=self._input_rate,
+            session_mode=self._quiet_interval > 0,
+            **{"smart_turn.enabled": self._turn_detector is not None})
+        self._pending_recorder = recorder
         # End the utterance when the level falls back toward the ambient floor, not below an
         # absolute 200 — so with a TV on (floor ~1500) the utterance closes when the USER stops
         # instead of running to the max cap. Quiet rooms (floor ~50) keep the 200 threshold via
         # max(). The short endpoint window (_ENDPOINT_SILENCE_MS) keeps the "listening" tail snappy.
         silence_rms = max(float(vm.SILENCE_RMS_THRESHOLD),
                           self._detector.quiet_floor * _CONVERSE_ENDPOINT_FLOOR_MULT)
-        if self._turn_detector is not None:
-            wav_path = self._capture_adaptive(silence_rms)
-        else:
-            wav_path = vm._capture_until_quiet(
-                self.stream, np, self._block, self._pre_roll,
-                endpoint_blocks=self._endpoint_blocks, max_blocks=self._max_blocks,
-                sample_rate=self._input_rate, silence_rms=silence_rms,
-            )
+        with recorder.phase("voice.capture") as cap:
+            meta: Dict[str, Any] = {}
+            if self._turn_detector is not None:
+                wav_path = self._capture_adaptive(silence_rms, meta=meta)
+            else:
+                meta["endpoint.mode"] = "fixed"
+                wav_path = vm._capture_until_quiet(
+                    self.stream, np, self._block, self._pre_roll,
+                    endpoint_blocks=self._endpoint_blocks, max_blocks=self._max_blocks,
+                    sample_rate=self._input_rate, silence_rms=silence_rms,
+                )
+            for _ev in meta.pop("_inferences", []):
+                cap.event("smart_turn.infer", **_ev)
+            cap.set(**{k: v for k, v in meta.items() if not k.startswith("_")})
         # capture drained the pre-roll into the WAV; start fresh.
         self._pre_roll.clear()
-        result = vm.transcribe_recording(wav_path, model=self._stt_model)
-        vm._unlink_quietly(wav_path)
-        if not result.get("success"):
+        with recorder.phase("voice.stt") as stt:
+            result = vm.transcribe_recording(wav_path, model=self._stt_model)
+            vm._unlink_quietly(wav_path)
+            success = bool(result.get("success"))
+            transcript = str(result.get("transcript") or "").strip() if success else ""
+            stt.set(**{"stt.success": success, "stt.model": self._stt_model or "",
+                       "stt.transcript_chars": len(transcript)})
+        if not success:
             _log.debug("converse transcription failed: %s", result.get("error"))
             return ""
-        return str(result.get("transcript") or "").strip()
+        return transcript
 
-    def _capture_adaptive(self, silence_rms: float) -> str:
+    def take_recorder(self):
+        """Pop the phase recorder from the just-produced utterance (driver reads it once, right
+        after dequeuing the transcript, to append the agent/TTS phases and emit the trace)."""
+        rec, self._pending_recorder = self._pending_recorder, None
+        return rec
+
+    def _capture_adaptive(self, silence_rms: float, meta: Optional[Dict[str, Any]] = None) -> str:
         """Semantic endpoint: mirror the fixed-silence capture, but on reaching a candidate pause
         ask Smart Turn whether the utterance *sounds* finished. If it doesn't (the user trailed off
         mid-thought), keep listening for another window instead of committing — bounded by
@@ -437,9 +468,13 @@ class ConverseSession:
         frames = list(self._pre_roll)
         quiet = 0
         holds = 0
+        prob = None
+        reason = "max_utterance"  # ran to the hard cap without a commit decision
+        inferences: List[Dict[str, Any]] = []
         for _ in range(self._max_blocks):
             data, _ = self.stream.read(self._block)
             if self._stop.is_set():
+                reason = "stopped"
                 break
             frames.append(data.copy())
             if vm._rms(np, data) < silence_rms:
@@ -455,20 +490,33 @@ class ConverseSession:
                     self._frames_to_f32_16k(frames))
             except Exception:  # noqa: BLE001 - a model hiccup must not wedge the turn
                 _log.debug("smart-turn inference failed; committing on silence", exc_info=True)
+                reason = "infer_error"
                 break
+            inferences.append({"p": round(float(prob), 4), "holds": holds})
             # Route the per-decision trace through the VAD diagnostic hook so it surfaces on
             # stderr/journal under HERMES_VOICE_DEBUG=1 (the same channel used to tune the VAD),
             # and stays at debug level otherwise. This is THE signal for tuning the threshold.
             if prob >= self._endpoint_threshold:
                 vm._vad_log(f"smart-turn: p={prob:.3f} >= {self._endpoint_threshold:.2f} -> commit")
+                reason = "complete"
                 break
             holds += 1
             if holds >= _MAX_ENDPOINT_HOLDS:
                 vm._vad_log(f"smart-turn: p={prob:.3f} held {holds}x -> commit (budget spent)")
+                reason = "budget_spent"
                 break
             vm._vad_log(f"smart-turn: p={prob:.3f} < {self._endpoint_threshold:.2f} -> hold "
                         f"(keep listening, {holds}/{_MAX_ENDPOINT_HOLDS})")
             quiet = 0  # keep the mic open for another window
+        if meta is not None:
+            meta["endpoint.mode"] = "smart_turn"
+            meta["smart_turn.holds"] = holds
+            meta["smart_turn.commit_reason"] = reason
+            meta["smart_turn.threshold"] = float(self._endpoint_threshold)
+            meta["smart_turn.inferences"] = len(inferences)
+            if prob is not None:
+                meta["smart_turn.final_probability"] = round(float(prob), 4)
+            meta["_inferences"] = inferences
         return vm.AudioRecorder._write_wav(
             np.concatenate(frames, axis=0), sample_rate=self._input_rate)
 
@@ -708,6 +756,7 @@ async def drive_converse_turns(
     from tools.tts_text_normalize import _strip_markdown_for_tts
     from tools.voice_mode_transcript import (
         is_voice_end_phrase, is_voice_stop_phrase, strip_voice_end_phrase)
+    from tools.voice_tracing import emit_turn_trace
 
     while not session.stopped:
         # Block for the next event on the session queue: a transcript (str), an QuietTick
@@ -725,11 +774,17 @@ async def drive_converse_turns(
         transcript = item
         if not transcript:
             continue
+        # The capture + STT phase timings for this utterance (inert if OTLP tracing is off). The
+        # driver appends the agent/TTS phases below and emits the whole turn as one trace.
+        recorder = session.take_recorder()
         await send_json({"type": "transcript", "text": transcript})
         # Session mode: a spoken stop phrase ("goodbye"/"stop"/…) ends the exchange —
         # tell the client and skip the agent turn (the client decides to re-arm/sleep).
         if quiet_interval > 0 and is_voice_stop_phrase(transcript):
             await send_json({"type": "stop_word", "text": transcript})
+            if recorder is not None:
+                recorder.set(outcome="stop_word")
+                emit_turn_trace(recorder)
             continue
 
         # The agent turn (STT is already done → the model, which can be 5-50s to first token)
@@ -753,12 +808,16 @@ async def drive_converse_turns(
         # turn end. `_t0` is set the instant STT finished (the transcript frame just went out).
         _t0 = time.monotonic()
         _timing: dict = {}
+        # Wall-clock (epoch-ns) marks for the same boundaries, used to build the agent/TTS trace
+        # spans with real start/end times (monotonic can't be an OTLP span timestamp).
+        _ns: Dict[str, int] = {"turn_start": time.time_ns()}
 
         def _on_delta(delta: str) -> None:
             # Called from run_turn's execution context (main-loop coroutine or a
             # worker thread); text_q is thread-safe either way.
             if delta:
                 _timing.setdefault("first_delta", time.monotonic())
+                _ns.setdefault("first_delta", time.time_ns())
                 reply_parts.append(delta)
                 text_q.put(delta)
 
@@ -773,6 +832,7 @@ async def drive_converse_turns(
             except Exception as exc:  # noqa: BLE001 - surface, don't wedge the loop
                 turn_result["err"] = f"voice turn failed: {exc}"
             finally:
+                _ns.setdefault("agent_end", time.time_ns())
                 text_q.put(None)
 
         def _produce() -> None:
@@ -815,11 +875,13 @@ async def drive_converse_turns(
                     if not cleaned:
                         continue
                     _timing.setdefault("first_sentence", time.monotonic())
+                    _ns.setdefault("first_sentence", time.time_ns())
                     for piece in split_text_for_tts_stream(cleaned, cap):
                         for chunk in synth.synth(piece):
                             if tts_stop.is_set() or session.stopped:
                                 return
                             _timing.setdefault("first_pcm", time.monotonic())
+                            _ns.setdefault("first_pcm", time.time_ns())
                             loop.call_soon_threadsafe(pcm_q.put_nowait, chunk)
                     spoken_chars += len(cleaned)
                     if spoken_chars >= _MAX_TTS_CHARS_PER_TURN:
@@ -839,6 +901,7 @@ async def drive_converse_turns(
         # Consumer: stream PCM out; flip `playing` on only when real audio starts
         # (kept off during generation so a mid-thought interjection stays VAD-sensitive).
         speaking = False
+        pcm_chunks = 0
         while True:
             chunk = await pcm_q.get()
             if chunk is None:
@@ -847,9 +910,11 @@ async def drive_converse_turns(
                 session.set_playing(True, tts_stop=tts_stop)
                 await send_json({"type": "speaking"})
                 speaking = True
+            pcm_chunks += 1
             await send_bytes(chunk)
         if speaking:
             session.set_playing(False)
+        _ns["pcm_done"] = time.time_ns()
 
         # Latency breakdown, relative to STT completion (transcript out). first_delta =
         # LLM time-to-first-token; first_sentence-first_delta = generation until a full
@@ -883,9 +948,11 @@ async def drive_converse_turns(
         # Barge-in stops PLAYBACK only (see the v1 limitation above): report it and
         # skip the error frame (a barged turn's error is noise), else surface any
         # turn error. Always end the turn with `turn_done`.
-        if session.take_interrupted() or tts_stop.is_set():
+        barged = bool(session.take_interrupted() or tts_stop.is_set())
+        turn_err = bool(turn_result.get("err"))
+        if barged:
             await send_json({"type": "interrupted"})
-        elif turn_result.get("err"):
+        elif turn_err:
             await send_json({"type": "error", "error": turn_result["err"]})
         # turn_done carries the agent's follow-up expectation in session mode, so a wake-word
         # client knows what to do without waiting on the VAD (which a noisy room never
@@ -903,6 +970,28 @@ async def drive_converse_turns(
         await send_json(turn_done)
         # Reply done: resume the quiet clock from zero (a full quiet_interval window follows).
         session.end_turn()
+
+        # Finish the trace for this turn: append the agent (LLM) and TTS phases with their real
+        # start/end times to the capture/STT phases recorded during capture, then emit the whole
+        # turn as one voice.turn span tree. Content-free — counts/timings/flags only. No-op when
+        # OTLP tracing is off (recorder is inert and emit short-circuits).
+        if recorder is not None:
+            ttft_ms = (round((_ns["first_delta"] - _ns["turn_start"]) / 1e6)
+                       if "first_delta" in _ns else None)
+            recorder.add_phase(
+                "voice.agent", _ns.get("turn_start"), _ns.get("agent_end"),
+                **{"llm.ttft_ms": ttft_ms, "reply.chars": len(reply),
+                   "llm.deltas": len(reply_parts), "error": turn_err})
+            recorder.add_phase(
+                "voice.tts", _ns.get("first_sentence"), _ns.get("pcm_done"),
+                **{"tts.pcm_chunks": pcm_chunks,
+                   "tts.first_pcm_ms": (round((_ns["first_pcm"] - _ns["first_sentence"]) / 1e6)
+                                        if "first_pcm" in _ns and "first_sentence" in _ns
+                                        else None)})
+            recorder.set(outcome=("interrupted" if barged else "error" if turn_err else "ok"),
+                         interrupted=barged,
+                         expects_more=turn_done.get("expects_more"))
+            emit_turn_trace(recorder)
 
 
 # ── converse synthesizer: one uniform "text -> int16 PCM" seam for both paths ──

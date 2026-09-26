@@ -220,6 +220,116 @@ def test_frames_to_f32_resamples_non_16k_capture():
     assert float(np.max(np.abs(out))) <= 1.0
 
 
+# ── voice phase tracing ──
+
+from tools import voice_tracing as vt  # noqa: E402
+
+
+class _FakeSpan:
+    def __init__(self, name, kind, start_time):
+        self.name, self.kind, self.start_time = name, kind, start_time
+        self.attributes, self.events, self.end_time = {}, [], None
+
+    def set_attribute(self, k, v):
+        self.attributes[k] = v
+
+    def add_event(self, name, attrs, timestamp=None):
+        self.events.append((name, attrs, timestamp))
+
+    def end(self, end_time=None):
+        self.end_time = end_time
+
+
+class _FakeTracer:
+    def __init__(self):
+        self.spans = []
+
+    def start_span(self, name, kind=None, start_time=None, context=None):
+        s = _FakeSpan(name, kind, start_time)
+        s.parent = context
+        self.spans.append(s)
+        return s
+
+
+class _Kind:
+    SERVER = "server"
+    INTERNAL = "internal"
+
+
+def _patch_tracer(monkeypatch):
+    tracer = _FakeTracer()
+    monkeypatch.setattr(vt, "_get_tracer", lambda: (tracer, _Kind, lambda span: span))
+    return tracer
+
+
+def test_phase_recorder_times_phases_and_attrs():
+    rec = vt.PhaseRecorder(input_rate=16000, session_mode=True)
+    with rec.phase("voice.capture", **{"endpoint.mode": "smart_turn"}) as cap:
+        cap.event("smart_turn.infer", p=0.2, holds=0)
+        cap.set(**{"smart_turn.holds": 1})
+    assert rec.phases[0].name == "voice.capture"
+    assert rec.phases[0].end_ns >= rec.phases[0].start_ns
+    assert rec.phases[0].attrs["endpoint.mode"] == "smart_turn"
+    assert rec.phases[0].events[0][0] == "smart_turn.infer"
+    assert rec.start_ns is not None and rec.end_ns is not None
+
+
+def test_emit_turn_trace_builds_parent_and_child_spans(monkeypatch):
+    tracer = _patch_tracer(monkeypatch)
+    rec = vt.PhaseRecorder(session_mode=False)
+    with rec.phase("voice.capture", **{"endpoint.mode": "fixed"}):
+        pass
+    rec.add_phase("voice.agent", 1_000, 2_000, **{"llm.ttft_ms": 1, "reply.chars": 5})
+    rec.set(outcome="ok")
+    vt.emit_turn_trace(rec)
+    names = [s.name for s in tracer.spans]
+    assert names[0] == "voice.turn" and tracer.spans[0].kind == "server"
+    assert "voice.capture" in names and "voice.agent" in names
+    parent = tracer.spans[0]
+    assert parent.attributes["outcome"] == "ok"
+    agent = next(s for s in tracer.spans if s.name == "voice.agent")
+    assert agent.start_time == 1_000 and agent.end_time == 2_000
+    assert agent.attributes["reply.chars"] == 5
+    assert all(s.end_time is not None for s in tracer.spans)  # every span closed
+
+
+def test_emit_turn_trace_noop_without_tracer(monkeypatch):
+    monkeypatch.setattr(vt, "_get_tracer", lambda: (None, None, None))
+    rec = vt.PhaseRecorder()
+    with rec.phase("voice.capture"):
+        pass
+    vt.emit_turn_trace(rec)  # must not raise
+    vt.emit_turn_trace(None)
+
+
+def test_emit_turn_trace_drops_non_primitive_attributes(monkeypatch):
+    tracer = _patch_tracer(monkeypatch)
+    rec = vt.PhaseRecorder()
+    with rec.phase("voice.capture", ok=True, bad={"nested": 1}, n=3):
+        pass
+    vt.emit_turn_trace(rec)
+    cap = next(s for s in tracer.spans if s.name == "voice.capture")
+    assert cap.attributes == {"ok": True, "n": 3}  # dict attr dropped
+
+
+def test_capture_and_transcribe_records_capture_and_stt_phases(monkeypatch):
+    det = _ScriptedDetector([0.9])
+    session = _adaptive_session(det)
+    _feed_silence(session, session._endpoint_blocks + 4)
+    monkeypatch.setattr(
+        vm, "transcribe_recording",
+        lambda path, model=None: {"success": True, "transcript": "hello there"})
+    text = session._capture_and_transcribe()
+    assert text == "hello there"
+    rec = session.take_recorder()
+    phases = {p.name: p for p in rec.phases}
+    assert set(phases) == {"voice.capture", "voice.stt"}
+    assert phases["voice.capture"].attrs["endpoint.mode"] == "smart_turn"
+    assert phases["voice.capture"].attrs["smart_turn.commit_reason"] == "complete"
+    assert phases["voice.stt"].attrs["stt.transcript_chars"] == len("hello there")
+    assert phases["voice.stt"].attrs["stt.success"] is True
+
+
 # ── ConverseSession barge-in / playing flag ──
 
 def test_converse_session_barge_in_sets_interrupt_and_stops_tts():
@@ -394,6 +504,9 @@ class _FakeConverseSession:
 
     def take_interrupted(self):
         return False
+
+    def take_recorder(self):
+        return None  # no capture-phase recorder in the driver-only fake
 
     def set_playing(self, value, *, tts_stop=None):
         return None

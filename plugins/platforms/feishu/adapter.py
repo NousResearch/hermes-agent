@@ -123,12 +123,9 @@ _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
-# ``::followup{p1="..." p2="..."}`` is a desktop-UI directive that renders as
-# clickable suggestion chips there. Feishu/Lark has no such renderer, so the raw
-# directive reaches the chat as literal noise at the end of every reply -- and on
-# a cron-delivered report nobody can act on the suggestions anyway. Strip it on
-# the way out; inbound content is untouched.
-_FOLLOWUP_DIRECTIVE_RE = re.compile(r"(?ms)^[ \t]*::followup\{.*?\}[ \t]*$\n?")
+_FOLLOWUP_DIRECTIVE_RE = re.compile(
+    r"^[ \t]*::followup\{(?P<body>[^}]*)\}[ \t]*$", re.MULTILINE
+)
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
 # --- Media type sets and upload constants ---
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
@@ -1179,19 +1176,84 @@ def _build_lark_client(app_id: str, app_secret: str, sdk_domain: Any) -> Any:
     return lark.Client.builder().app_id(app_id).app_secret(app_secret).domain(sdk_domain).log_level(lark.LogLevel.WARNING).build()
 
 
-def _card_button(label: str, btn_type: str, value: Dict[str, Any]) -> Dict[str, Any]:
-    return {"tag": "button", "text": {"tag": "plain_text", "content": label}, "type": btn_type, "value": value}
+_FOLLOWUP_DIRECTIVE_RE = re.compile(
+    r"^[ \t]*::followup\{(?P<body>[^}]*)\}[ \t]*$", re.MULTILINE
+)
+_FOLLOWUP_PROMPT_RE = re.compile(r'p\d+\s*=\s*"([^"]*)"')
 
 
-def _card(title: str, template: str, markdown: str, *, actions: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
-    """Wide interactive card: colored header + one markdown block (+ an optional button row)."""
-    elements: List[Dict[str, Any]] = [{"tag": "markdown", "content": markdown}]
+def _split_followup_directive(text: str) -> tuple[str, List[str]]:
+    """Tach ``::followup{p1="..." ...}`` khoi than tin nhan.
+
+    Directive nay la quy uoc cua plugin Hermes Desktop; khong module Python nao
+    xu ly no, nen tren Feishu no bi in nguyen van thanh rac. Tra ve (than tin da
+    sach, danh sach prompt) de ``send()`` dung prompt lam nut bam tren the.
+    """
+    prompts: List[str] = []
+
+    def _collect(match: "re.Match[str]") -> str:
+        for prompt in _FOLLOWUP_PROMPT_RE.findall(match.group("body")):
+            cleaned = prompt.strip()
+            # Feishu chi cho toi da 5 nut mot hang; bo trung lap, giu thu tu.
+            if cleaned and cleaned not in prompts and len(prompts) < 5:
+                prompts.append(cleaned)
+        return ""
+
+    stripped = _FOLLOWUP_DIRECTIVE_RE.sub(_collect, text)
+    if prompts:
+        stripped = stripped.rstrip()
+    return stripped, prompts
+
+
+def _card_button(
+    label: str,
+    btn_type: str,
+    value: Dict[str, Any],
+    *,
+    width: Optional[str] = None,
+    hover_tips: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Nut the Feishu. ``width="fill"`` cho nut trai het be ngang the.
+
+    Nhan dai bi Feishu rut gon bang "..." theo be ngang NUT, nen mot hang nhieu
+    nut la cach chac chan nhat de mat chu. ``hover_tips`` chi hien tren ban PC.
+    """
+    button: Dict[str, Any] = {
+        "tag": "button",
+        "text": {"tag": "plain_text", "content": label},
+        "type": btn_type,
+        "value": value,
+    }
+    if width is not None:
+        button["width"] = width
+    if hover_tips:
+        button["hover_tips"] = {"tag": "plain_text", "content": hover_tips}
+    return button
+
+
+def _card(
+    title: str,
+    template: str,
+    markdown: str,
+    *,
+    actions: Optional[List[Dict[str, Any]]] = None,
+    elements: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """The rong: header mau + mot block markdown (+ nut).
+
+    ``actions`` xep moi nut tren CUNG mot hang (Feishu chia deu be ngang, nhan
+    dai se bi cat). ``elements`` cho phep truyen thang nhieu block -- dung khi
+    muon moi nut mot hang rieng.
+    """
+    card_elements: List[Dict[str, Any]] = [{"tag": "markdown", "content": markdown}]
     if actions is not None:
-        elements.append({"tag": "action", "actions": actions})
+        card_elements.append({"tag": "action", "actions": actions})
+    if elements:
+        card_elements.extend(elements)
     return {
         "config": {"wide_screen_mode": True},
         "header": {"title": {"content": title, "tag": "plain_text"}, "template": template},
-        "elements": elements,
+        "elements": card_elements,
     }
 
 
@@ -1574,7 +1636,8 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
-        formatted = self.format_message(content)
+        formatted, followup_prompts = _split_followup_directive(content)
+        formatted = self.format_message(formatted)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         # Decide markdown-vs-text once for the whole message: a chunk of a long
         # markdown reply may be plain prose that fails the per-chunk regex and would
@@ -1613,6 +1676,9 @@ class FeishuAdapter(BasePlatformAdapter):
                     logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
                     response = await _send_plain(chunk)
                 last_response = response
+
+            if followup_prompts and self._response_succeeded(last_response):
+                await self._send_followup_card(chat_id, followup_prompts, metadata=metadata)
 
             return self._finalize_send_result(last_response, "send failed")
         except Exception as exc:
@@ -1676,6 +1742,51 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.warning("[Feishu] send_exec_approval failed: %s", exc)
             return SendResult(success=False, error=str(exc))
+
+    async def _send_followup_card(
+        self, chat_id: str, prompts: List[str], *, metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Dinh the nut "buoc tiep" sau than tin nhan.
+
+        Moi nut mang nguyen van prompt; khi bam, ``_on_card_action_trigger`` gui
+        no lai nhu mot tin nhan nguoi dung binh thuong. Loi o day khong duoc lam
+        that bai ca luot tra loi -- than tin da gui xong roi.
+
+        MOI NUT MOT HANG RIENG, KHONG PHAI MOT HANG NHIEU NUT.
+
+        Feishu xep moi nut trong cung mot block ``action`` thanh cac cot chia
+        deu: 4 nut trong the rong 426px con ~160px moi nut, khong du cho mot
+        cau viec nao. Truoc day ta con tu cat nhan o 29 ky tu roi them "…", nen
+        nhan bi cat hai lan va nguoi doc khong con biet nut se lam gi.
+
+        Cach dung: mot block ``action`` cho moi nut, cong ``width="fill"`` de nut
+        trai het be ngang the -- da do that tren Feishu, card 1.0 nhan ca hai.
+        Nhan giu NGUYEN VAN, khong cat. ``hover_tips`` cho ban PC de tro chuot
+        la thay du cau, phong khi may khach hep van phai rut gon.
+        """
+        try:
+            elements = [
+                {
+                    "tag": "action",
+                    "actions": [
+                        _card_button(
+                            prompt,
+                            "primary" if index == 0 else "default",
+                            {"hermes_followup_prompt": prompt},
+                            width="fill",
+                            hover_tips=prompt,
+                        )
+                    ],
+                }
+                for index, prompt in enumerate(prompts)
+            ]
+            card = _card("Bước tiếp", "grey", "Chọn một việc để tôi làm tiếp:", elements=elements)
+            await self._feishu_send_with_retry(
+                chat_id=chat_id, msg_type="interactive", payload=json.dumps(card, ensure_ascii=False),
+                reply_to=None, metadata=metadata,
+            )
+        except Exception as exc:
+            logger.warning("[Feishu] Could not attach follow-up card: %s", exc)
 
     async def _send_interactive_card(
         self, chat_id: str, card: Dict[str, Any], metadata: Optional[Dict[str, Any]], failure_message: str, *,
@@ -2085,6 +2196,13 @@ class FeishuAdapter(BasePlatformAdapter):
                 return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
             if action_value.get("hermes_update_prompt_action"):
                 return self._handle_update_prompt_card_action(event=event, action_value=action_value, loop=loop)
+            followup_prompt = action_value.get("hermes_followup_prompt")
+            if followup_prompt:
+                # Nut "buoc tiep": gui lai nguyen van prompt nhu mot tin nhan
+                # nguoi dung, khong phai lenh ``/card``, de luot sau chay y nhu
+                # khi ho tu go cau do.
+                self._submit_on_loop(loop, self._handle_followup_card_click(event, str(followup_prompt)))
+                return self._card_response()
         self._submit_on_loop(loop, self._handle_card_action_event(data))
         return self._card_response()
 
@@ -2352,6 +2470,26 @@ class FeishuAdapter(BasePlatformAdapter):
             text=synthetic_text, message_type=MessageType.COMMAND, chat_id=chat_id,
             sender_id=SimpleNamespace(open_id=open_id, user_id=None, union_id=None), event_chat_type="group",
             raw_message=data, message_id=token or str(uuid.uuid4()),
+        )
+
+    async def _handle_followup_card_click(self, event: Any, prompt: str) -> None:
+        """Bam nut "buoc tiep" -> chay prompt nhu tin nhan nguoi dung binh thuong."""
+        token = str(getattr(event, "token", "") or "")
+        if token and self._is_card_action_duplicate(token):
+            logger.debug("[Feishu] Dropping duplicate follow-up click: %s", token)
+            return
+        context = getattr(event, "context", None)
+        chat_id = str(getattr(context, "open_chat_id", "") or "")
+        operator = getattr(event, "operator", None)
+        open_id = str(getattr(operator, "open_id", "") or "")
+        if not chat_id or not open_id:
+            logger.debug("[Feishu] Follow-up click missing chat_id or operator open_id, dropping")
+            return
+        logger.info("[Feishu] Follow-up prompt clicked by %s in %s: %r", open_id, chat_id, prompt)
+        await self._dispatch_synthetic_event(
+            text=prompt, message_type=MessageType.TEXT, chat_id=chat_id,
+            sender_id=SimpleNamespace(open_id=open_id, user_id=None, union_id=None), event_chat_type="group",
+            raw_message=event, message_id=token or str(uuid.uuid4()),
         )
 
     async def _dispatch_synthetic_event(

@@ -332,6 +332,98 @@ class TestRunJobScript:
 
 
 
+class TestPosixScriptDependencyOverlay:
+    """POSIX cron scripts must see the managed generation environment.
+
+    The launcher starts the managed ("store") Python with ``PYTHONPATH`` popped, and that
+    interpreter's own site-packages carries only Hermes' runtime, so a cron script importing a
+    third-party library died with ``ModuleNotFoundError`` unless the script itself re-added the
+    paths. The Windows branch always installed a repo + site-packages overlay; the POSIX branch
+    returned ``{}`` and left the child without it.
+    """
+
+    @pytest.fixture
+    def generation_env(self, tmp_path, monkeypatch):
+        """Fake generation environment, wired into the pm resolver the overlay consults."""
+        venv = tmp_path / "generation"
+        site_packages = (
+            venv / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+        )
+        site_packages.mkdir(parents=True)
+        monkeypatch.setattr("pm.environments.selected_venv", lambda repo: venv)
+        monkeypatch.setattr("pm.environments.site_packages", lambda venv_dir: site_packages)
+        return venv, site_packages
+
+    def test_overlay_lists_repo_then_generation_site_packages(self, generation_env, monkeypatch):
+        from cron import scheduler_script as sched_script
+
+        _, site_packages = generation_env
+        repo = Path(sched_script.__file__).resolve().parents[1]
+        monkeypatch.delenv("PYTHONPATH", raising=False)
+
+        overlay = sched_script._posix_dependency_env_overlay()
+
+        assert overlay == {"PYTHONPATH": os.pathsep.join([str(repo), str(site_packages)])}
+
+    def test_existing_pythonpath_is_appended_not_dropped(self, generation_env, monkeypatch):
+        """A caller-provided PYTHONPATH keeps working (Windows overlay does the same)."""
+        from cron import scheduler_script as sched_script
+
+        repo = Path(sched_script.__file__).resolve().parents[1]
+        monkeypatch.setenv("PYTHONPATH", "/opt/extra")
+
+        overlay = sched_script._posix_dependency_env_overlay()
+
+        assert overlay["PYTHONPATH"].split(os.pathsep)[-1] == "/opt/extra"
+        assert overlay["PYTHONPATH"].startswith(str(repo))
+
+    def test_missing_generation_env_keeps_the_plain_child(self, tmp_path, monkeypatch):
+        """No managed environment (source checkout / portable run): no dangling PYTHONPATH."""
+        from cron import scheduler_script as sched_script
+
+        monkeypatch.setattr("pm.environments.selected_venv", lambda repo: tmp_path / "absent")
+        monkeypatch.setattr(
+            "pm.environments.site_packages", lambda venv_dir: venv_dir / "lib" / "site-packages"
+        )
+
+        assert sched_script._posix_dependency_env_overlay() == {}
+
+    @pytest.mark.platforms("posix")
+    def test_posix_keeps_plain_interpreter_with_overlay(self, cron_env, generation_env):
+        """POSIX overlays env only — no ``-c`` bootstrap, the interpreter stays sys.executable."""
+        from cron import scheduler_script as sched_script
+
+        script = cron_env / "scripts" / "probe.py"
+        script.write_text("print('ok')\n", encoding="utf-8")
+
+        argv, overlay, err = sched_script._script_argv(script)
+
+        assert err is None
+        assert argv == [sys.executable, str(script)]
+        assert overlay["PYTHONPATH"]
+
+    @pytest.mark.platforms("posix")
+    def test_cron_script_imports_third_party_from_generation_env(
+        self, cron_env, generation_env
+    ):
+        """The regression itself: a job script imports a package that only exists in the
+        generation environment. Before the fix the child raised ModuleNotFoundError."""
+        from cron.scheduler_script import _run_job_script
+
+        _, site_packages = generation_env
+        (site_packages / "cron_probe_dep.py").write_text(
+            "VALUE = 'from-generation-env'\n", encoding="utf-8"
+        )
+        (cron_env / "scripts" / "probe.py").write_text(
+            "import cron_probe_dep\nprint(cron_probe_dep.VALUE)\n", encoding="utf-8"
+        )
+
+        success, output = _run_job_script("probe.py")
+
+        assert success is True, output
+        assert output == "from-generation-env"
+
+
 class TestBuildJobPromptWithScript:
     """Test that script output is injected into the prompt."""
 

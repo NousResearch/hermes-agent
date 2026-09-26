@@ -2023,19 +2023,30 @@ def _tool_progress_enabled(sid: str) -> bool:
     return _session_tool_progress_mode(sid) != "off"
 
 
+# Names whose lifecycle a UI renders as a card even in answer-only mode. `isCardTool` /
+# `isFileEditTool` in apps/desktop/src/lib/tool-render-class.ts must stay in sync with this
+# set (test_gateway_lifecycle_set_covers_desktop_card_tools pins the direction that matters).
+_TOOL_LIFECYCLE_UI_TOOLS = frozenset({
+    "clarify", "manage_connections", "setup_mcp",
+    "image_generate", "manage_catalog", "delegate_task",
+    # File edits are the turn's deliverable — the diff card the user reviews.
+    "edit_file", "patch", "write_file",
+})
+
+
 def _tool_lifecycle_required_for_ui(name: str) -> bool:
     """Interactive UI / card surfaces, not optional chrome.
 
     Desktop renders these from the tool-call part itself, so suppressing the
-    lifecycle hides the turn's deliverable entirely (`isCardTool` in
-    apps/desktop/src/lib/tool-render-class.ts must stay in sync with this set):
-    clarify / connection cards are consent surfaces, and image_generate /
-    manage_catalog / delegate_task draw the thing the user asked for.
+    lifecycle hides the turn's deliverable entirely (`isCardTool` /
+    `isFileEditTool` in apps/desktop/src/lib/tool-render-class.ts must stay in
+    sync with `_TOOL_LIFECYCLE_UI_TOOLS`): clarify / connection cards are
+    consent surfaces, image_generate / manage_catalog / delegate_task draw the
+    thing the user asked for, and file edits are the diff the user reviews.
+    The start and complete guards both consult this set, so a card's
+    `tool.complete` can never arrive without its `tool.start`.
     """
-    return name in (
-        "clarify", "manage_connections", "setup_mcp",
-        "image_generate", "manage_catalog", "delegate_task",
-    )
+    return name in _TOOL_LIFECYCLE_UI_TOOLS
 
 
 def _restart_slash_worker(sid: str, session: dict):

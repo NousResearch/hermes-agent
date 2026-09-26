@@ -21,6 +21,9 @@ import/patch target): ``terminal_tool_config`` (TERMINAL_* reads, ``_quiet``),
 import json
 import logging
 import os
+import posixpath
+import re
+import shlex
 import sys
 import time
 import threading
@@ -906,31 +909,345 @@ class _ApprovalVerdict:
     approved_run: bool = False
 
 
-def _run_approval_guards(command: str, env_type: str, config: Dict[str, Any], *, force: bool) -> _ApprovalVerdict:
-    """Run tirith + dangerous-command guards; ``force`` skips them entirely.
-    Raises :class:`_Rejected` when the command may not run (denied, or pending
-    gateway approval)."""
+
+class _GuardTargetIndeterminate(RuntimeError):
+    """The raw-device floor could not prove a mutation target safe."""
+
+
+_DISK_MUTATION_HINT_RE = re.compile(
+    r'(?:\b(?:wipefs|blkdiscard|sgdisk|shred|dd|mkfs(?:\.[a-z0-9]+)?|mke2fs|mkswap|'
+    r'newfs(?:_[a-z0-9]+)?|diskutil|cp|mv|install|tee)\b|>{1,2})',
+    re.IGNORECASE,
+)
+_DEVICE_TARGET_OPTION_VALUES = {
+    "wipefs": {"-o", "--offset", "-t", "--types", "-O", "--output"},
+    "blkdiscard": {"-o", "--offset", "-l", "--length", "-p", "--step"},
+    "shred": {"-n", "--iterations", "-s", "--size", "--random-source"},
+}
+_RESOLUTION_CONTEXT_MUTATORS = {
+    "bash", "cd", "cp", "dash", "fish", "install", "ln", "mkdir", "mount", "mv",
+    "node", "perl", "python", "python2", "python3", "rm", "rmdir", "ruby", "sh",
+    "unlink", "umount", "zsh",
+}
+
+
+def _literal_operands(tokens, options_with_values=frozenset()):
+    """Return literal non-option tokens while respecting known option operands."""
+    operands = []
+    options = True
+    skip_value = False
+    for token in tokens:
+        value = token[0]
+        if skip_value:
+            skip_value = False
+            continue
+        if options and value == "--":
+            options = False
+            continue
+        if options and value.startswith("-") and value != "-":
+            option = value.split("=", 1)[0]
+            skip_value = "=" not in value and option in options_with_values
+            continue
+        operands.append(token)
+    return operands
+
+
+def _mutation_target_spans(segment: str):
+    """Return exact mutation target words as ``(start, end, path, prefix)``.
+
+    Parsing reuses the approval scanner so quoted and escaped shell words retain their source
+    spans. ``prefix`` is empty for an argv operand, ``of=`` for dd, or a redirection operator.
+    """
+    from tools.approval_detection import (
+        _deobfuscate_shell_word_for_detection,
+        _iter_shell_command_word_spans,
+        _shell_tokens_with_spans,
+    )
+
+    all_tokens = _shell_tokens_with_spans(segment, 0)
+    if all_tokens is None:
+        raise _GuardTargetIndeterminate("malformed shell words in device-target projection")
+
+    targets = []
+
+    def add(token, prefix=""):
+        value, start, end, _quoted = token
+        path = value[len(prefix):] if prefix else value
+        if path and not path.startswith("&"):
+            targets.append((start, end, path, prefix))
+
+    # Redirection destinations are mutation targets regardless of the executable.
+    index = 0
+    while index < len(all_tokens):
+        token = all_tokens[index]
+        value = token[0]
+        if value in {">", ">>"}:
+            if index + 1 >= len(all_tokens):
+                raise _GuardTargetIndeterminate("redirection target is missing")
+            add(all_tokens[index + 1])
+            index += 2
+            continue
+        redirection = re.fullmatch(r"(?P<prefix>(?:[0-9]+)?>>?)(?P<path>.+)", value)
+        if redirection:
+            add(token, redirection.group("prefix"))
+        index += 1
+
+    mutation_executables = {
+        "wipefs", "blkdiscard", "sgdisk", "shred", "dd", "diskutil",
+        "cp", "mv", "install", "tee",
+    }
+    for start, _end, raw_word in _iter_shell_command_word_spans(segment):
+        executable = os.path.basename(
+            _deobfuscate_shell_word_for_detection(raw_word)
+        ).lower()
+        command_tokens = _shell_tokens_with_spans(segment, start)
+        if command_tokens is None:
+            raise _GuardTargetIndeterminate("malformed mutation command")
+
+        # The command-position scanner deliberately yields a multicall carrier such as
+        # busybox/toybox rather than guessing which applet follows it. For device-target
+        # projection, peel the direct applet so its mutation operand is resolved through
+        # the same backend identity floor as the standalone executable.
+        if executable in {"busybox", "toybox"}:
+            if len(command_tokens) < 2 or command_tokens[1][0].startswith("-"):
+                continue
+            command_tokens = command_tokens[1:]
+            executable = os.path.basename(
+                _deobfuscate_shell_word_for_detection(command_tokens[0][0])
+            ).lower()
+
+        is_mkfs = executable in {"mke2fs", "mkswap", "mkfs"} or (
+            executable.startswith("mkfs.") or executable.startswith("newfs_")
+        )
+        if executable not in mutation_executables and not is_mkfs:
+            continue
+
+        args = command_tokens[1:]
+        values = [token[0] for token in args]
+
+        if executable == "dd":
+            for token in args:
+                if token[0].startswith("of=") and len(token[0]) > 3:
+                    add(token, "of=")
+            continue
+
+        if executable == "wipefs":
+            destructive = any(
+                value == "--all" or (
+                    value.startswith("-") and not value.startswith("--") and "a" in value[1:]
+                )
+                for value in values
+            )
+            no_act = any(
+                value == "--no-act" or (
+                    value.startswith("-") and not value.startswith("--") and "n" in value[1:]
+                )
+                for value in values
+            )
+            if not destructive or no_act:
+                continue
+        elif executable == "sgdisk":
+            if not any(value in {"-z", "-Z", "-o", "--zap-all", "--clear"} for value in values):
+                continue
+        elif executable == "diskutil":
+            if not any(value.lower() in {
+                "erasedisk", "zerodisk", "randomdisk", "erasevolume", "partitiondisk"
+            } for value in values):
+                continue
+
+        operands = _literal_operands(
+            args, _DEVICE_TARGET_OPTION_VALUES.get(executable, frozenset())
+        )
+        if not operands:
+            continue
+        if executable in {"shred", "tee"}:
+            for token in operands:
+                add(token)
+        else:
+            add(operands[-1])
+
+    # A target can be discovered both as an argv operand and as a redirection.
+    dedup = {}
+    for item in targets:
+        dedup[(item[0], item[1])] = item
+    return [dedup[key] for key in sorted(dedup)]
+
+
+def _segment_can_change_resolution(segment: str) -> bool:
+    """Whether an earlier shell stage can change cwd or filesystem path identity."""
+    from tools.approval_detection import (
+        _deobfuscate_shell_word_for_detection,
+        _iter_shell_command_word_spans,
+    )
+
+    return any(
+        os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower()
+        in _RESOLUTION_CONTEXT_MUTATORS
+        for _start, _end, word in _iter_shell_command_word_spans(segment)
+    )
+
+
+def _resolved_guard_variants(command: str, env: Any, cwd: str) -> List[str]:
+    """Project exact mutation targets through the backend before approval matching.
+
+    Resolution is typed: device, proven non-device/missing, or indeterminate. The latter fails
+    closed. Commands with an earlier shell stage and a non-``/dev`` spelling are refused because
+    that stage can change cwd or retarget/create the alias after a preflight probe.
+    """
+    if not _DISK_MUTATION_HINT_RE.search(command):
+        return []
+
+    from tools.approval_detection import (
+        _command_parser_limit_exceeded,
+        _iter_top_level_shell_segments,
+    )
+    if _command_parser_limit_exceeded(command):
+        raise _GuardTargetIndeterminate("device-target parser limit exceeded")
+
+    edits = []
+    seen_inputs = set()
+    search_from = 0
+    resolver = getattr(env, "fetch_device_identity", None)
+    if not callable(resolver):
+        raise _GuardTargetIndeterminate("execution backend has no device-identity resolver")
+
+    prior_can_change_resolution = False
+    for segment in _iter_top_level_shell_segments(command):
+        segment_at = command.find(segment, search_from)
+        if segment_at < 0:
+            raise _GuardTargetIndeterminate("could not bind parsed shell segment to source")
+        search_from = segment_at + len(segment)
+
+        for start, end, raw_path, prefix in _mutation_target_spans(segment):
+            if raw_path in {"", "-"} or raw_path.startswith("&"):
+                continue
+            if any(char in raw_path for char in "$`*?[]{}"):
+                raise _GuardTargetIndeterminate(
+                    f"dynamic mutation target cannot be proven safe: {raw_path!r}"
+                )
+            candidate = (
+                posixpath.normpath(raw_path)
+                if raw_path.startswith("/")
+                else posixpath.normpath(posixpath.join(cwd or "/", raw_path))
+            )
+            if candidate in seen_inputs:
+                continue
+            seen_inputs.add(candidate)
+
+            # Direct /dev spellings are already covered by the lexical floor. For aliases and
+            # relative paths, an earlier shell stage can invalidate any pre-exec identity probe.
+            if prior_can_change_resolution and not raw_path.startswith("/dev/"):
+                raise _GuardTargetIndeterminate(
+                    "compound command can change device-target resolution before mutation"
+                )
+
+            try:
+                outcome = resolver(candidate)
+            except Exception as exc:
+                raise _GuardTargetIndeterminate(
+                    f"device-target resolution failed for {candidate!r}"
+                ) from exc
+            if (
+                not isinstance(outcome, tuple)
+                or len(outcome) != 2
+                or outcome[0] not in {"device", "not_device", "missing", "indeterminate"}
+            ):
+                raise _GuardTargetIndeterminate(
+                    f"invalid device-target resolution outcome for {candidate!r}"
+                )
+            status, resolved = outcome
+            if status == "indeterminate":
+                raise _GuardTargetIndeterminate(
+                    f"device-target identity is indeterminate for {candidate!r}"
+                )
+            if status != "device":
+                continue
+            if not isinstance(resolved, str) or not resolved.startswith("/"):
+                raise _GuardTargetIndeterminate(
+                    f"device-target resolver returned an invalid path for {candidate!r}"
+                )
+            resolved = resolved.strip()
+            if resolved == raw_path:
+                continue
+            replacement = prefix + shlex.quote(resolved)
+            edits.append((segment_at + start, segment_at + end, replacement))
+
+        prior_can_change_resolution = (
+            prior_can_change_resolution or _segment_can_change_resolution(segment)
+        )
+
+    if not edits:
+        return []
+    parts, cursor = [], 0
+    for start, end, replacement in sorted(edits):
+        parts.extend((command[cursor:start], replacement))
+        cursor = end
+    parts.append(command[cursor:])
+    variant = "".join(parts)
+    return [variant] if variant != command else []
+
+
+def _raise_rejected_approval(approval: dict, command: str) -> None:
+    """Raise the terminal-tool rejection envelope for a guard decision."""
+    if approval.get("status") == "pending_approval":
+        raise _Rejected(_error_json(
+            "", status="pending_approval",
+            approval_pending=True,
+            command=approval.get("command", command),
+            description=approval.get("description", "command flagged"),
+            pattern_key=approval.get("pattern_key", ""),
+            smart_denied=approval.get("smart_denied", False),
+            allow_permanent=approval.get("allow_permanent", True),
+        ))
+    desc = approval.get("description", "command flagged")
+    fallback_msg = (
+        f"Command denied: {desc}. "
+        "Use the approval prompt to allow it, or rephrase the command."
+    )
+    raise _Rejected(_error_json(
+        approval.get("message", fallback_msg),
+        status="blocked",
+        **({"user_summary": approval["user_summary"]} if approval.get("user_summary") else {}),
+    ))
+
+
+def _run_approval_guards(
+    command: str, env_type: str, config: Dict[str, Any], *,
+    force: bool, env: Any = None, cwd: str = "",
+) -> _ApprovalVerdict:
+    """Run canonical-target floors plus tirith/dangerous-command guards.
+
+    ``force`` skips the recoverable approval layer after a human confirmation, but it never
+    bypasses a guard match discovered only after the backend proves a mutation target is a
+    block device.
+    """
+    try:
+        resolved_variants = _resolved_guard_variants(command, env, cwd) if env is not None else []
+    except _GuardTargetIndeterminate as exc:
+        raise _Rejected(_error_json(
+            f"Command denied: {exc}.",
+            status="blocked",
+            description="raw-device target identity could not be proven safe",
+        )) from exc
+    for resolved_command in resolved_variants:
+        resolved_approval = _check_all_guards(
+            resolved_command, env_type, has_host_access=_docker_has_host_access(config)
+        )
+        if resolved_approval["approved"]:
+            resolved_approval = {
+                "approved": False,
+                "hardline": True,
+                "status": "blocked",
+                "message": "Command denied: mutation target resolves to a block device.",
+                "description": "mutation target resolves to a block device",
+            }
+        _raise_rejected_approval(resolved_approval, command)
+
     if force:
         return _ApprovalVerdict(approved_run=True)
     approval = _check_all_guards(command, env_type, has_host_access=_docker_has_host_access(config))
     if not approval["approved"]:
-        if approval.get("status") == "pending_approval":  # gateway ask mode
-            raise _Rejected(_error_json(
-                "", status="pending_approval",
-                approval_pending=True,
-                command=approval.get("command", command),
-                description=approval.get("description", "command flagged"),
-                pattern_key=approval.get("pattern_key", ""),
-                smart_denied=approval.get("smart_denied", False),
-                allow_permanent=approval.get("allow_permanent", True),
-            ))
-        desc = approval.get("description", "command flagged")
-        fallback_msg = (
-            f"Command denied: {desc}. "
-            "Use the approval prompt to allow it, or rephrase the command."
-        )
-        raise _Rejected(_error_json(approval.get("message", fallback_msg), status="blocked",
-                                    **({"user_summary": approval["user_summary"]} if approval.get("user_summary") else {})))
+        _raise_rejected_approval(approval, command)
     desc = approval.get("description", "flagged as dangerous")
     if approval.get("user_approved"):
         return _ApprovalVerdict(
@@ -1325,7 +1642,12 @@ def terminal_tool(
             ))
         # Pre-exec security checks (tirith + dangerous command detection);
         # force=True means the user already confirmed.
-        verdict = _run_approval_guards(command, env_type, plan.config, force=force)
+        guard_cwd = _resolve_command_cwd(
+            workdir=workdir, default_cwd=cwd, session_key=session_key, env_type=env_type,
+        )
+        verdict = _run_approval_guards(
+            command, env_type, plan.config, force=force, env=env, cwd=guard_cwd,
+        )
 
         pty_disabled = pty and _command_requires_pipe_stdin(command)
         if plan.promoted_from_foreground_timeout is not None:

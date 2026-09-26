@@ -238,6 +238,7 @@ afterEach(() => {
   cleanup()
   $profileOrder.set([])
   vi.clearAllMocks()
+  vi.restoreAllMocks()
   _resetFleetRosterForTests()
   hasMultipleConnections.set(false)
   connectionsRegistry.set(null)
@@ -245,6 +246,73 @@ afterEach(() => {
   profileScope.set('default')
   profiles.set([{ is_default: true, name: 'default' }])
   delete (window as { hermesDesktop?: unknown }).hermesDesktop
+})
+
+describe('ProfileRail overflow', () => {
+  // jsdom drops valid gradient values containing calc(); observe the real DOM
+  // style assignment instead. Actual layout, resize and painting run in Chromium.
+  const observeMask = () => vi.spyOn(Object.getPrototypeOf(document.createElement('div').style), 'maskImage', 'set')
+  let mask: ReturnType<typeof observeMask>
+
+  beforeEach(() => {
+    mask = observeMask()
+  })
+
+  it('marks only clipped edges and leaves create/import outside the scrolling profiles', () => {
+    profiles.set(
+      Array.from({ length: 8 }, (_, index) => ({ is_default: index === 0, name: index ? `agent${index}` : 'default' }))
+    )
+    const { container } = render(<ProfileRail />)
+    const square = screen.getByRole('button', { name: 'agent1' })
+    const scroller = square.closest('.overflow-x-auto') as HTMLDivElement
+    expect(scroller).not.toBeNull()
+    Object.defineProperties(scroller, {
+      clientWidth: { configurable: true, value: 100 },
+      scrollWidth: { configurable: true, value: 200 }
+    })
+    fireEvent.scroll(scroller)
+    expect(mask.mock.calls.at(-1)?.[0]).toContain('to right, black,')
+    expect(mask.mock.calls.at(-1)?.[0]).toContain('transparent)')
+    expect(scroller.contains(screen.getByRole('button', { name: 'New profile' }))).toBe(false)
+    expect(scroller.contains(screen.getByRole('button', { name: 'Import profile…' }))).toBe(false)
+
+    scroller.scrollLeft = 50
+    fireEvent.scroll(scroller)
+    expect(mask.mock.calls.at(-1)?.[0]).toContain('to right, transparent,')
+    expect(mask.mock.calls.at(-1)?.[0]).toContain('transparent)')
+    scroller.scrollLeft = 100
+    fireEvent.scroll(scroller)
+    expect(mask.mock.calls.at(-1)?.[0]).toContain('to right, transparent,')
+    expect(mask.mock.calls.at(-1)?.[0]).toMatch(/, black\)$/)
+
+    Object.defineProperty(scroller, 'clientWidth', { configurable: true, value: 300 })
+    scroller.scrollLeft = 0
+    fireEvent.scroll(scroller)
+    expect(mask.mock.calls.at(-1)?.[0]).toBe('')
+    expect(container.querySelector('[data-slot="profile-dropdown"]')).toBeNull()
+  })
+
+  it('restores wheel navigation and edge feedback after leaving the condensed menu', () => {
+    profiles.set(
+      Array.from({ length: 14 }, (_, index) => ({ is_default: index === 0, name: index ? `agent${index}` : 'default' }))
+    )
+    const { container } = render(<ProfileRail />)
+    expect(container.querySelector('[data-slot="profile-dropdown"]')).not.toBeNull()
+    act(() => profiles.set(profiles.get().slice(0, 8)))
+    const scroller = screen.getByRole('button', { name: 'agent1' }).closest('.overflow-x-auto') as HTMLDivElement
+    Object.defineProperties(scroller, {
+      clientWidth: { configurable: true, value: 100 },
+      scrollWidth: { configurable: true, value: 200 }
+    })
+    const wheel = new WheelEvent('wheel', { cancelable: true, deltaY: 30 })
+    scroller.dispatchEvent(wheel)
+    expect(wheel.defaultPrevented).toBe(true)
+    expect(scroller.scrollLeft).toBe(30)
+    fireEvent.scroll(scroller)
+    expect(mask.mock.calls.at(-1)?.[0]).toContain('transparent')
+    fireEvent.click(screen.getByRole('button', { name: 'agent1' }))
+    expect(selectProfile).toHaveBeenCalledWith('agent1')
+  })
 })
 
 describe('ProfileRail fleet mode', () => {

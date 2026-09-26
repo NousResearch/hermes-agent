@@ -295,11 +295,13 @@ _SLACK_TOOLS_NOTE = (
     "loaded tools actually expose."
 )
 _SLACK_NO_TOOLS_NOTE = (
-    "**Platform notes:** You are running inside Slack. You do NOT have access to "
-    "Slack-specific APIs — you cannot search channel history, pin/unpin messages, manage "
-    "channels, or list users. Do not promise to perform these actions. The gateway may "
-    "inline the current message's Slack block/attachment payload when available, but you "
-    "still cannot call Slack APIs yourself."
+    "**Platform notes:** You are running inside Slack. No dedicated native or MCP Slack tool "
+    "is loaded. Inspect the loaded capabilities and relevant skills before acting: a deployment "
+    "may provide scoped Slack operations (for example reading back a post) through an approved "
+    "CLI, helper, or plugin. Do not assume broad Slack API access or promise an action until an "
+    "available route explicitly supports it, and do not report a Slack action as impossible "
+    "without checking those routes first. Do not use raw Slack credentials or make undocumented "
+    "API calls."
 )
 
 

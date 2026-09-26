@@ -3464,6 +3464,13 @@ class GatewayRunner(
 
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
+        # #119003 forensic mode: default-on process-wide sqlite3 tracing must install
+        # before config/plugin loading so in-process user hooks/plugins are covered too.
+        try:
+            from hermes_cli.kanban_sql_trace import install_if_enabled as _install_kanban_sql_trace
+            _install_kanban_sql_trace()
+        except Exception:
+            logger.debug("could not install default-on Kanban SQL trace", exc_info=True)
         # With multiplex_profiles on, load under the default profile secret scope so bot tokens in its
         # .env resolve as secondary profiles' do; explicit config= injection (tests) is left untouched.
         # See #64674.

@@ -1905,6 +1905,63 @@ def resolve_model_threshold(
     return float(model_thresholds[best[1]]) if best else default
 
 
+def compression_trigger_report(
+    *,
+    context_length: int,
+    ratio_percent: float,
+    cap: int | None,
+    max_tokens: int | None = None,
+    aux_ceiling: int | None = None,
+) -> Dict[str, Any]:
+    """Derive the compression trigger AND name which setting binds it (#117915).
+
+    The configured ratio (``compression.threshold`` / ``model_thresholds``), the absolute
+    ``compression.threshold_tokens`` cap and the auxiliary summariser ceiling all collapse into one
+    installed trigger, and only this function says which of them set it — so the startup banner and
+    ``hermes doctor`` quote the same numbers instead of guessing. Pure: same math as
+    ``ContextCompressor._derive_trigger`` + ``_apply_threshold_tokens_cap``, without an engine.
+
+    Returns ``ratio_percent`` (small-window floor applied), ``ratio_tokens`` (the trigger the
+    configured ratio alone asks for — what the user's config requested), ``cap`` (the absolute cap
+    after clamping to the window, else ``None``), ``effective_tokens`` (the trigger actually
+    installed), ``binding`` (``"ratio"`` | ``"threshold_tokens"`` | ``"auxiliary"``) and ``note``
+    (a sentence naming the clamp and how to undo it; ``""`` when the ratio alone binds).
+    """
+    ctx = int(context_length or 0)
+    pct = ContextCompressor._effective_threshold_percent(ctx, float(ratio_percent))
+    ratio_tokens = ContextCompressor._compute_threshold_tokens(ctx, pct, max_tokens)
+    try:
+        cap_value = int(cap) if cap is not None else None
+    except (TypeError, ValueError):
+        cap_value = None
+    # Mirror ContextCompressor._effective_threshold_cap: only a positive cap binds, clamped to the window.
+    cap_eff = min(cap_value, ctx) if cap_value is not None and cap_value > 0 and ctx > 0 else None
+    aux_eff = (
+        int(aux_ceiling)
+        if isinstance(aux_ceiling, int) and not isinstance(aux_ceiling, bool) and aux_ceiling > 0
+        else None
+    )
+    effective, binding = ratio_tokens, "ratio"
+    if cap_eff is not None and cap_eff < effective:
+        effective, binding = cap_eff, "threshold_tokens"
+    if aux_eff is not None and aux_eff < effective:
+        effective, binding = aux_eff, "auxiliary"
+    if binding == "threshold_tokens":
+        note = f" — capped at {effective:,} by compression.threshold_tokens; set it to null for ratio-only"
+    elif binding == "auxiliary":
+        note = f" — capped at {effective:,} by the auxiliary summariser's window"
+    else:
+        note = ""
+    return {
+        "ratio_percent": pct,
+        "ratio_tokens": ratio_tokens,
+        "cap": cap_eff,
+        "effective_tokens": effective,
+        "binding": binding,
+        "note": note,
+    }
+
+
 def _memory_provider_section(memory_context: str) -> str:
     """Prompt block carrying the sanitized memory-provider JSON, or "" when empty."""
     sanitized = sanitize_memory_context(memory_context)

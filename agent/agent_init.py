@@ -22,7 +22,7 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse, urlunparse
 
-from agent.context_compressor import ContextCompressor
+from agent.context_compressor import ContextCompressor, compression_trigger_report
 from agent.agent_runtime_helpers import _ra
 from agent.iteration_budget import IterationBudget, normalize_budget_warning_ratio
 from agent.memory_manager import StreamingContextScrubber
@@ -2224,12 +2224,23 @@ def _emit_compression_summary(agent, cs):
         if cs.enabled:
             # The active engine's own threshold — a plugin's differs from cs.threshold.
             _pct = getattr(_cc, "threshold_percent", cs.threshold)
-            _cap = getattr(_cc, "threshold_tokens_cap", None)
-            # Name the cap only when it is what set the trigger; on small windows the ratio already sits below it.
-            _eff_cap = getattr(_cc, "_effective_threshold_cap", lambda _ctx: None)(_cc.context_length)
-            _cap_binds = _eff_cap is not None and _cc.threshold_tokens == _eff_cap
-            _cap_note = f" (capped at {_cap:,} tokens)" if _cap_binds else ""
-            print(f"📊 Context limit: {_cc.context_length:,} tokens (compress at {int(_pct*100)}% = {_cc.threshold_tokens:,}{_cap_note})")
+            # One derivation for banner + hermes doctor (#117915): show the trigger the configured
+            # ratio asks for, then name the clamp that replaced it — "30% = 256,000" alone read as
+            # broken math (30% of 1M is 300,000) and hid what the ratio was asking for.
+            _rep = compression_trigger_report(
+                context_length=getattr(_cc, "context_length", 0),
+                ratio_percent=_pct,
+                cap=getattr(_cc, "threshold_tokens_cap", None),
+                max_tokens=getattr(_cc, "max_tokens", None),
+                aux_ceiling=getattr(_cc, "_aux_context_ceiling", None),
+            )
+            # A clamp the report does not model (plugin override, coerced config) must not make the
+            # line claim a ratio number the engine will not install: fall back to the installed value.
+            if _rep["effective_tokens"] == getattr(_cc, "threshold_tokens", _rep["effective_tokens"]):
+                _shown, _note, _shown_pct = _rep["ratio_tokens"], _rep["note"], _rep["ratio_percent"]
+            else:
+                _shown, _note, _shown_pct = _cc.threshold_tokens, "", _pct
+            print(f"📊 Context limit: {_cc.context_length:,} tokens (compress at {int(_shown_pct*100)}% = {_shown:,}{_note})")
         else:
             print(f"📊 Context limit: {_cc.context_length:,} tokens (auto-compression disabled)")
         # Gateway users get the same text via _compression_warning on turn 1.

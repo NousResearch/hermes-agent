@@ -73,6 +73,43 @@ class TestAutoVoiceReplyFormat:
             voice_event, "hello", [], already_sent=True
         ) is True
 
+    def test_should_send_voice_reply_global_all_mode_preserves_text_input_tts(self):
+        """The default global mode keeps the existing text-reply behavior."""
+        runner = _make_runner()
+        adapter = _make_adapter(Platform.DISCORD)
+        adapter._should_auto_tts_for_chat = MagicMock(return_value=True)
+        adapter._auto_tts_mode = "all"
+        runner.adapters[Platform.DISCORD] = adapter
+        text_event = _make_event(
+            Platform.DISCORD, chat_id="123", message_type=MessageType.TEXT
+        )
+
+        assert runner._should_send_voice_reply(
+            text_event, "hello", [], already_sent=True
+        ) is True
+
+    def test_should_send_voice_reply_global_voice_only_mode_requires_voice_input(self):
+        """The opt-in global voice_only mode must not add audio to text input."""
+        runner = _make_runner()
+        adapter = _make_adapter(Platform.DISCORD)
+        adapter._should_auto_tts_for_chat = MagicMock(return_value=True)
+        adapter._auto_tts_mode = "voice_only"
+        runner.adapters[Platform.DISCORD] = adapter
+        text_event = _make_event(
+            Platform.DISCORD, chat_id="123", message_type=MessageType.TEXT
+        )
+
+        assert runner._should_send_voice_reply(
+            text_event, "hello", [], already_sent=True
+        ) is False
+
+        voice_event = _make_event(
+            Platform.DISCORD, chat_id="123", message_type=MessageType.VOICE
+        )
+        assert runner._should_send_voice_reply(
+            voice_event, "hello", [], already_sent=True
+        ) is True
+
     def test_should_send_voice_reply_voice_only_still_requires_voice_input(self):
         """Explicit voice_only must not widen to text input (#73508 regression).
 

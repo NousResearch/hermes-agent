@@ -167,6 +167,39 @@ class TestHandleVoiceCommand:
 
         assert adapter._auto_tts_default is True
 
+    def test_sync_pushes_configured_auto_tts_mode_onto_adapter(self, runner, monkeypatch, tmp_path):
+        """The real config loader must propagate the global reply scope at startup."""
+        from gateway.config import Platform
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "voice:\n  auto_tts: true\n  auto_tts_mode: voice_only\n", encoding="utf-8")
+        adapter = SimpleNamespace(
+            _auto_tts_default=False,
+            _auto_tts_mode="all",
+            _auto_tts_disabled_chats=set(),
+            _auto_tts_enabled_chats=set(),
+            _should_auto_tts_for_chat=lambda _chat_id: True,
+            platform=Platform.TELEGRAM,
+        )
+
+        runner._sync_voice_mode_state_to_adapter(adapter)
+
+        assert adapter._auto_tts_mode == "voice_only"
+        assert adapter._auto_tts_default is True
+
+        runner.adapters[Platform.TELEGRAM] = adapter
+        text_event = _make_event("text", message_type=MessageType.TEXT)
+        voice_event = _make_event("voice", message_type=MessageType.VOICE)
+        text_event.source.platform = Platform.TELEGRAM
+        voice_event.source.platform = Platform.TELEGRAM
+        assert runner._should_send_voice_reply(
+            text_event, "reply", [], already_sent=True
+        ) is False
+        assert runner._should_send_voice_reply(
+            voice_event, "reply", [], already_sent=True
+        ) is True
+
 
     @pytest.mark.asyncio
     async def test_platform_isolation(self, runner):

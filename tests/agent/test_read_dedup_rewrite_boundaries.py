@@ -120,7 +120,7 @@ def test_native_checkpoint_rearms_read_dedup(served, monkeypatch):
     """The response carrying a server checkpoint re-views the skill: the next request starts at the
     checkpoint, so that re-view must deliver the body, not a stub for a result the wire dropped."""
     from run_agent import AIAgent
-    monkeypatch.setattr("agent.model_metadata._fetch_codex_oauth_context_lengths_with_source", lambda _t: ({}, False))
+    monkeypatch.setattr("agent.model_metadata._fetch_codex_oauth_context_lengths_with_source", lambda _t, **_kw: ({}, False))
     agent = AIAgent(model="gpt-5.6", base_url="https://chatgpt.com/backend-api/codex", api_key="codex-token",
                     quiet_mode=True, skip_context_files=True, skip_memory=True, max_iterations=4)
     agent.codex_responses_native_compaction = True

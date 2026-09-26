@@ -93,7 +93,7 @@ def record_response_usage(
         if callable(_note_usage_less):
             _note_usage_less()
         logger.info(
-            "API call #%d: model=%s provider=%s in=? out=? total=? latency=%.1fs usage=unavailable",
+            "API call #%d: model=%s provider=%s in=? out=? total=? latency=%.1fs usage=unavailable cache_state=no_field",
             agent.session_api_calls, agent.model, agent.provider or "unknown", api_duration,
         )
         return ResponseUsageOutcome(compression_attempts=compression_attempts, rearmed=rearmed)
@@ -201,11 +201,24 @@ def record_response_usage(
     _upstream = getattr(response, "provider", None)
     if isinstance(_upstream, str) and _upstream:
         _ident += f" upstream={_upstream}"
+    # Classify the response, not a MoA mixture of reported and unavailable advisor
+    # counters. Legacy folded totals and positive-cache fields remain unchanged.
+    _cache_state = (
+        "hit" if aggregator_usage.cache_read_tokens else
+        "cold_write" if aggregator_usage.cache_write_tokens else
+        "miss" if aggregator_usage.cache_telemetry_present else "no_field"
+    )
+    _cache_detail = f" cache_state={_cache_state} cache_scope=response"
+    if aggregator_usage.cache_telemetry_present:
+        _cache_detail += (
+            f" cache_read={aggregator_usage.cache_read_tokens}"
+            f" cache_write={aggregator_usage.cache_write_tokens}"
+        )
     logger.info(
-        "API call #%d: model=%s provider=%s in=%d out=%d total=%d latency=%.1fs%s%s",
+        "API call #%d: model=%s provider=%s in=%d out=%d total=%d latency=%.1fs%s%s%s",
         agent.session_api_calls, agent.model, agent.provider or "unknown",
         prompt_tokens, completion_tokens, total_tokens,
-        api_duration, _cache_pct, _ident,
+        api_duration, _cache_pct, _ident, _cache_detail,
     )
     # nous.anthropic_wire=auto: the session's wire is decided once, from this first response.
     if agent.session_api_calls == 1 and (agent.provider or "") == "nous":

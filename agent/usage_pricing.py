@@ -71,6 +71,8 @@ class CanonicalUsage:
     reasoning_tokens: int = 0
     request_count: int = 1
     raw_usage: Optional[dict[str, Any]] = None
+    # A usable provider cache counter was reported, including an explicit zero.
+    cache_telemetry_present: bool = False
 
     @property
     def prompt_tokens(self) -> int:
@@ -88,8 +90,9 @@ class CanonicalUsage:
             return NotImplemented
         return CanonicalUsage(**{
             f.name: getattr(self, f.name) + getattr(other, f.name)
-            for f in fields(CanonicalUsage) if f.name != "raw_usage"
-        })
+            for f in fields(CanonicalUsage)
+            if f.name not in {"raw_usage", "cache_telemetry_present"}
+        }, cache_telemetry_present=self.cache_telemetry_present and other.cache_telemetry_present)
 
 
 @dataclass(frozen=True)
@@ -337,19 +340,21 @@ def _to_decimal(value: Any) -> Optional[Decimal]:
         return None
 
 
-def _usage_field(obj: Any, *path: str) -> int:
-    """Non-negative int at ``obj.path[0].path[1]...``; 0 if any hop is falsy or
+def _usage_field(obj: Any, *path: str, default: Optional[int] = 0) -> Optional[int]:
+    """Non-negative int at ``obj.path[0].path[1]...``; default if any hop is absent or
     non-numeric. Hops read dicts and attribute objects alike (the Responses API
     returns either); negative counters from providers are clamped so they cannot
     corrupt session accounting."""
     for hop in path:
         if not obj:
-            return 0
-        obj = obj.get(hop, 0) if isinstance(obj, dict) else getattr(obj, hop, 0)
+            return default
+        obj = obj.get(hop) if isinstance(obj, dict) else getattr(obj, hop, None)
+    if obj is None:
+        return default
     try:
-        return max(0, int(obj or 0))
+        return max(0, int(obj))
     except Exception:
-        return 0
+        return default
 
 
 def _first_nonzero(obj: Any, *paths: tuple[str, ...]) -> int:
@@ -624,6 +629,10 @@ def normalize_usage(
     return CanonicalUsage(
         input_tokens=input_tokens, output_tokens=output_tokens, cache_read_tokens=cache_read_tokens,
         cache_write_tokens=cache_write_tokens, reasoning_tokens=reasoning_tokens,
+        cache_telemetry_present=any(
+            _usage_field(u, *path, default=None) is not None
+            for paths in shape[2:] for path in paths
+        ),
         raw_usage=dict(u) if isinstance(u, dict) else (u.model_dump() if callable(getattr(u, 'model_dump', None)) else None),
     )
 

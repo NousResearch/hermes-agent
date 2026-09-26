@@ -350,7 +350,7 @@ def _stash_local_files(target: Path, rels: list[str], stash: Path) -> None:
             shutil.copy2(src, dst)
 
 
-def _carry_user_files(old: Path, new: Path, local: Optional[list[str]]) -> None:
+def _carry_user_files(old: Path, new: Path, local: Optional[list[str]]) -> list[str]:
     """Carry user-owned files into a staged replacement without reviving old plugin code.
 
     For a git checkout, *local* is the ``??``/``!!`` set and may contain a directory entry
@@ -359,11 +359,13 @@ def _carry_user_files(old: Path, new: Path, local: Optional[list[str]]) -> None:
     tree are carried while executable/declarative plugin surfaces remain revision-owned. If a
     user-owned path cannot be represented safely in the new tree (a layout clash, or a symlink in a
     git checkout's untracked/ignored set), fail before publication rather than silently dropping it.
+    Returns the carried paths (POSIX, relative to the tree) so a later scan block can name them.
     """
     from hermes_cli.plugins_cmd import PluginOperationError
 
     keep = {Path(rel) for rel in local or ()}
     linked: list[str] = []
+    carried: list[str] = []
 
     def _user_link(rel: Path) -> None:
         # Git-owned user state that is a symlink is refused, never followed: a link injected after the
@@ -452,12 +454,14 @@ def _carry_user_files(old: Path, new: Path, local: Optional[list[str]]) -> None:
             if dst.is_symlink() or dst.is_file():
                 dst.unlink()
             shutil.copy2(src, dst, follow_symlinks=False)
+            carried.append(rel.as_posix())
     if linked:
         raise PluginOperationError(
             f"Cannot preserve symlinked user file(s) {', '.join(sorted(linked))}: links are not followed "
             "into an update. Replace each with a regular file (or remove it) and retry. "
             "The installed plugin was left unchanged."
         )
+    return carried
 
 
 class RepinResult(NamedTuple):

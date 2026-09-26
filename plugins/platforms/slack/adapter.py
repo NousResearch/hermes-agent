@@ -977,6 +977,21 @@ def _is_transient_transport_error(e: BaseException) -> bool:
         and not is_permanent_tls_error)
 
 
+def _is_more_complete_revision(previous: str, revision: str) -> bool:
+    """True when ``revision`` completes the body ``previous`` for ONE logical message.
+
+    A streamed opener / draft preview is followed by the same-ts ``message_changed`` completion:
+    the revision is a strict extension of what was already delivered (an empty ``previous`` is
+    completed by any non-empty revision). Equal text adds nothing — replays and plain edits must
+    not produce a second delivery — and shorter or unrelated text is not a completion.
+    """
+    if revision == previous:
+        return False
+    if not previous:
+        return bool(revision)
+    return revision.startswith(previous)
+
+
 def _extra_or_env_flag_getter(key: str, env_var: str, *, strip: bool = False) -> Callable[..., bool]:
     """Method factory: ``self._extra_or_env_flag(key, env_var, strip=strip)``."""
 
@@ -1066,6 +1081,13 @@ class SlackAdapter(BasePlatformAdapter):
         self._dedup = MessageDeduplicator(ttl_seconds=_slack_dedup_ttl_seconds())
         # ts of messages already routed to the agent, so later edits don't re-trigger a reply.
         self._processed_message_ts: Dict[str, float] = {}
+        # ts → (body, MessageEvent) delivered to the agent, so a MORE COMPLETE revision of the same
+        # logical message (stream opener/draft preview → same-ts message_changed completion)
+        # REPLACES the delivered body instead of being dropped as an already-routed duplicate.
+        self._delivered_message_bodies: Dict[str, Tuple[str, Any]] = {}
+        # Revisions that landed while their message was still enriching (ts claimed, body not yet
+        # delivered): the in-flight handler picks the newer body up instead of its stale one.
+        self._pending_message_revisions: Dict[str, str] = {}
         # approval / clarify message_ts (or (team_id, ts)) → resolved; blocks double-clicks.
         # Bounded: never-clicked prompts would otherwise leak forever.
         self._approval_resolved: Dict[Any, bool] = {}
@@ -3482,6 +3504,41 @@ class SlackAdapter(BasePlatformAdapter):
             newest = sorted(self._processed_message_ts.items(), key=lambda item: item[1])
             self._processed_message_ts = dict(newest[-self._PROCESSED_MESSAGE_TS_MAX :])
 
+    def _remember_delivered_message_body(self, ts: str, msg_event: Any) -> None:
+        """Record the body handed to the agent for ``ts`` so a later revision can REPLACE it.
+
+        Bounded like ``_processed_message_ts``; evicting oldest-ts-first keeps the map at the size
+        of the claim set it mirrors.
+        """
+        if not ts:
+            return
+        self._delivered_message_bodies[ts] = (msg_event.text or "", msg_event)
+        self._evict_oldest_by_ts(self._delivered_message_bodies, self._PROCESSED_MESSAGE_TS_MAX)
+
+    def _delivered_message_body(self, ts: str) -> str:
+        """Body already delivered for ``ts``; ``""`` while the message is still in flight."""
+        entry = self._delivered_message_bodies.get(ts)
+        return entry[0] if entry else ""
+
+    def _replace_delivered_message_body(self, ts: str, text: str) -> None:
+        """A more complete revision of ``ts`` REPLACES the body already delivered for it.
+
+        One logical message keeps one delivered body: the earlier (opener/preview) body is updated
+        in place rather than the revision becoming a second delivery. If the original is still
+        in flight (ts claimed, nothing delivered yet) the revision is stashed for that handler.
+        """
+        entry = self._delivered_message_bodies.get(ts)
+        if entry is None:
+            self._pending_message_revisions[ts] = text
+            self._evict_oldest_by_ts(self._pending_message_revisions, self._PROCESSED_MESSAGE_TS_MAX)
+            return
+        _stale_body, msg_event = entry
+        msg_event.text = text
+        self._delivered_message_bodies[ts] = (text, msg_event)
+        logger.debug(
+            "[Slack] Replaced delivered body for ts=%s (%d → %d chars)",
+            ts, len(_stale_body), len(text))
+
     @staticmethod
     def _event_team_id(event: dict, body: Optional[dict] = None) -> str:
         """Resolve a workspace ID from the event plus Bolt's outer payload.
@@ -4102,14 +4159,26 @@ class SlackAdapter(BasePlatformAdapter):
 
     def _normalize_changed_message(self, event: dict) -> Optional[dict]:
         """Turn a ``message_changed`` envelope into a plain message event.
-        None if malformed or the original was already routed to the agent. The edit's own ts rides
+
+        None if malformed, or when it adds nothing over the body already delivered for its inner
+        ``message.ts`` (a replayed unfurl or a plain edit of a message already routed). A MORE
+        COMPLETE revision of that same logical message — the completion of a streamed opener or a
+        draft preview, which arrives as ``message_changed`` after the transient creation event
+        claimed the ts — passes through marked ``_slack_message_revision`` so the delivered body is
+        replaced instead of the only copy of the text being discarded. The edit's own ts rides
         along as ``_slack_changed_event_ts`` for dedup."""
         updated_message = event.get("message")
         if not isinstance(updated_message, dict):
             return None
         original_message_ts = str(updated_message.get("ts") or "")
+        revision_of = ""
         if original_message_ts and original_message_ts in self._processed_message_ts:
-            return None
+            if not _is_more_complete_revision(
+                self._delivered_message_body(original_message_ts),
+                str(updated_message.get("text") or ""),
+            ):
+                return None
+            revision_of = original_message_ts
         edited = updated_message.get("edited")
         edited_ts = str(edited.get("ts") or "") if isinstance(edited, dict) else ""
         outer_event_ts = str(event.get("ts") or "")
@@ -4123,6 +4192,8 @@ class SlackAdapter(BasePlatformAdapter):
                 normalized_event[key] = event.get(key)
         if changed_event_ts:
             normalized_event["_slack_changed_event_ts"] = changed_event_ts
+        if revision_of:
+            normalized_event["_slack_message_revision"] = revision_of
         return normalized_event
 
     @staticmethod
@@ -4373,9 +4444,16 @@ class SlackAdapter(BasePlatformAdapter):
         # Dedup: Slack Socket Mode can redeliver events after reconnects (#4777) Scope the dedup id by
         # workspace: Slack event ts values are only unique within one workspace, so two teams' events with
         # the same ts must not suppress each other.
+        # A revision of a message we already delivered is NOT a replay: its event ts deliberately
+        # collides with the envelope it supersedes (the opener claimed that id). ``_normalize_changed_message``
+        # already compared the bodies, so a genuine replay of the completion still adds nothing.
         event_ts = event.get("_slack_changed_event_ts") or event.get("ts", "")
         dedup_team_id = self._event_team_id(event, payload)
-        if event_ts and self._dedup.is_duplicate(self._workspace_event_id(dedup_team_id, event_ts)):
+        if (
+            not event.get("_slack_message_revision")
+            and event_ts
+            and self._dedup.is_duplicate(self._workspace_event_id(dedup_team_id, event_ts))
+        ):
             return None
         channel_id = event.get("channel", "")
         if self._is_ignored_channel(channel_id):
@@ -4456,6 +4534,21 @@ class SlackAdapter(BasePlatformAdapter):
         if accepted is None:
             return
         event, dedup_team_id, channel_id = accepted
+        # A later revision of a message whose ts we already claimed (stream opener finalised, draft
+        # preview completed) REPLACES the body delivered for that logical message. No second turn:
+        # the session ends up with the most complete revision, never the stale prefix.
+        if event.get("_slack_message_revision"):
+            revision_text = event.get("text", "")
+            revision_blocks = event.get("blocks")
+            if revision_blocks:
+                revision_text = self._append_block_text(
+                    revision_text, revision_blocks,
+                    self._team_bot_user_ids.get(dedup_team_id, self._bot_user_id) or "")
+            revision_text = self._append_link_unfurls(
+                revision_text, event.get("attachments") or [])
+            self._replace_delivered_message_body(
+                event["_slack_message_revision"], revision_text)
+            return
         original_text = event.get("text", "")
         # Slack rejects slash commands inside threads, so a leading ``!`` is rewritten to ``/``
         # — only for known gateway commands, so "!nice work" passes through.
@@ -4541,6 +4634,11 @@ class SlackAdapter(BasePlatformAdapter):
             channel_id=channel_id, event_thread_ts=event_thread_ts, ts=ts, user_id=user_id,
             team_id=team_id, is_thread_reply=is_thread_reply, is_mentioned=is_mentioned,
             is_dm=is_dm)
+        # The completion may have landed while THIS message was still enriching (the ts is claimed
+        # before the slow awaits): deliver the fuller body instead of the stale opener/preview one.
+        _pending_revision = self._pending_message_revisions.pop(ts, None)
+        if _pending_revision is not None:
+            text = original_text = _pending_revision
         # Thread-root media is delivered ahead of the trigger message's own files.
         media_urls, media_types, media_text_inlined, text = await self._collect_inbound_media(
             event, channel_id, team_id, text, thread_root_media_urls, thread_root_media_types)
@@ -4562,6 +4660,7 @@ class SlackAdapter(BasePlatformAdapter):
                 f"{msg_event.text}")
         if ts:
             self._remember_processed_message_ts(ts)
+            self._remember_delivered_message_body(ts, msg_event)
         await self.handle_message(msg_event)
 
     async def _build_message_event(

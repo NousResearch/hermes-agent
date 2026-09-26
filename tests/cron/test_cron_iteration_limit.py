@@ -139,6 +139,29 @@ def test_run_one_job_iteration_limit_marks_failed_in_ledger_and_delivers_partial
         assert exec_record["error"] == "Job reached iteration limit (10)"
         assert exec_record["delivery_outcome"] == "delivered"
 
+        from cron.incidents import get_incident, list_incidents
+
+        incident = list_incidents()[0]
+        assert incident["job_id"] == created_job["id"]
+        assert incident["state"] == "alerted"
+        assert scheduler._repeat_alert_withheld(incident) is True
+
+        # A second capped run has fresh progress despite the same incident signature.
+        partial_text = "Progress: step 3 finished, step 4 hit iteration cap."
+        handoff_output = "# Heavy task\n\n## Response\n\n" + partial_text
+        second_execution = executions.create_execution(created_job["id"], source="builtin")
+        updated_job["execution_id"] = second_execution["id"]
+        assert scheduler.run_one_job(updated_job) is True
+        assert len(sent) == 2
+        assert partial_text in sent[1]
+        assert sent[0] != sent[1]
+        second_record = executions.get_execution(second_execution["id"])
+        assert second_record["status"] == "failed"
+        assert second_record["error"] == "Job reached iteration limit (10)"
+        assert second_record["delivery_outcome"] == "delivered"
+        assert len(list_incidents()) == 1
+        assert get_incident(incident["id"])["state"] == "alerted"
+
 
 def test_cron_job_max_turns_config_and_overrides(tmp_path):
     """Per-job max_turns is persisted, updated, validated, and overrides agent.max_turns."""

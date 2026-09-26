@@ -52,12 +52,25 @@ def test_flush_recreates_row_deleted_under_live_agent():
             assert agent._flush_messages_to_session_db(messages, history) is True
             history = messages
             assert [r["content"] for r in db.get_messages("sess-live")] == [m["content"] for m in history]
+
+        # A heal during a muted notification turn hides only that turn's new rows; the replayed
+        # history rows (and their in-memory dicts) keep their visibility.
+        assert db.delete_session("sess-live") is True
+        agent._mute_notification_reply = True
+        tail = [{"role": "user", "content": "notif"}, {"role": "assistant", "content": "muted"}]
+        assert agent._flush_messages_to_session_db(list(history) + tail, history) is True
+        rows = db.get_messages("sess-live")
+        assert [(r["content"], r.get("display_kind")) for r in rows] == (
+            [(m["content"], None) for m in history] + [("notif", "hidden"), ("muted", "hidden")]
+        )
+        assert [m.get("display_kind") for m in history] == [None] * len(history)
         db.close()
 
 
-def test_flush_fails_open_when_row_cannot_be_recreated(monkeypatch):
+def test_flush_fails_closed_when_row_cannot_be_recreated(monkeypatch):
     """Scenario B: if row creation fails too, the flush fails closed — returns False
-    instead of appending into a guaranteed rollback, and the batch stays unmarked."""
+    instead of appending into a guaranteed rollback, and the batch stays unmarked. A FK
+    failure is only healed when the row is confirmed gone, and a failed lookup is no proof."""
     import sqlite3 as _sqlite3
 
     from hermes_state import SessionDB
@@ -81,3 +94,41 @@ def test_flush_fails_open_when_row_cannot_be_recreated(monkeypatch):
         )
         assert healed is False
         assert agent._session_db_created is False
+        monkeypatch.undo()
+
+        # FK failure while the session row still exists (e.g. a sessions-table FK): no heal, and
+        # no replay of the history prefix onto the live transcript.
+        live = _make_agent(db, "sess-fk-live")
+        history = [{"role": "user", "content": "one"}, {"role": "assistant", "content": "a1"}]
+        assert live._flush_messages_to_session_db(history, []) is True
+        real_append, calls = db.append_messages_batch, []
+
+        def _fk_once(*a, **kw):
+            calls.append(1)
+            if len(calls) == 1:
+                raise _sqlite3.IntegrityError("FOREIGN KEY constraint failed")
+            return real_append(*a, **kw)
+
+        monkeypatch.setattr(db, "append_messages_batch", _fk_once)
+        assert live._flush_messages_to_session_db(list(history) + [{"role": "user", "content": "two"}], history) is False
+        assert [r["content"] for r in db.get_messages("sess-fk-live")] == ["one", "a1"]
+        monkeypatch.undo()
+
+        # Delegate child whose row is gone: a raising parent-row lookup fails the flush closed
+        # instead of letting the OperationalError escape.
+        db.create_session("sess-parent", source="cli")
+        child = _make_agent(db, "sess-child")
+        child._parent_session_id = "sess-parent"
+        assert child._flush_messages_to_session_db([{"role": "user", "content": "x"}], []) is True
+        db.delete_session("sess-parent")
+        db.delete_session("sess-child")
+        real_get = db.get_session
+
+        def _parent_lookup_raises(sid):
+            if sid == "sess-parent":
+                raise _sqlite3.OperationalError("disk I/O error")
+            return real_get(sid)
+
+        monkeypatch.setattr(db, "get_session", _parent_lookup_raises)
+        assert child._flush_messages_to_session_db([{"role": "user", "content": "y"}], []) is False
+        db.close()

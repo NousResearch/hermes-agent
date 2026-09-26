@@ -11,6 +11,26 @@ from hermes_cli import _launchers
 from pm.environments import install_state_dir, site_packages
 
 
+def test_activation_identity_keeps_install_state_when_task_home_changes(tmp_path, monkeypatch):
+    from pm.environments import dependency_home_root, install_key
+
+    root = tmp_path / "source"
+    root.mkdir()
+    owner = tmp_path / "owner" / "installs" / install_key(root)
+    owner.mkdir(parents=True)
+    facts = owner / "facts.json"
+    facts.write_text("{}")
+    monkeypatch.setenv("__HERMES_ACTIVATED", str(facts))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "task-state"))
+    assert install_state_dir(root) == owner
+    assert dependency_home_root() == tmp_path / "owner"
+    other = tmp_path / "other-source"
+    other.mkdir()
+    assert install_state_dir(other) != owner
+    facts.unlink()
+    assert install_state_dir(root) != owner
+
+
 @pytest.mark.platforms("windows")
 def test_minted_launcher_reads_current_selection_and_editable_members(tmp_path, monkeypatch):
     from pm import environments as runtime_paths

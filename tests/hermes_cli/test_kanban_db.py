@@ -1571,6 +1571,7 @@ def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
 
 
 
+@pytest.mark.real_machine_home
 def test_resolve_hermes_argv_module_actually_runs(tmp_path):
     """A source-bootstrapped owner can launch a real CLI operation outside its tree."""
     import subprocess
@@ -1580,12 +1581,10 @@ def test_resolve_hermes_argv_module_actually_runs(tmp_path):
 
     with mock.patch.dict(os.environ, {}, clear=False):
         os.environ.pop("HERMES_BIN", None)
-        # Use the runner-owned interpreter. A source checkout can itself live
-        # under the real Hermes home; resolving its managed store would cross
-        # the test suite's home I/O guard before the isolated child is started.
-        with mock.patch.object(shutil, "which", return_value=None), \
-             mock.patch("hermes_cli._launchers.resolve_store_python", return_value=None):
+        with mock.patch.object(shutil, "which", return_value=None):
             argv = kbd._resolve_hermes_argv()
+    launcher = Path(kbd.__file__).resolve().parents[1] / ".hermes" / "bin" / "hermes"
+    before = launcher.read_bytes() if launcher.is_file() else None
     workspace = tmp_path / "unrelated-workspace"
     workspace.mkdir()
     child_home = tmp_path / "child-home"
@@ -1605,6 +1604,7 @@ def test_resolve_hermes_argv_module_actually_runs(tmp_path):
         f"stderr={r.stderr[:200]!r}"
     )
     assert json.loads(r.stdout) == []
+    assert (launcher.read_bytes() if launcher.is_file() else None) == before
 
 
 # ---------------------------------------------------------------------------

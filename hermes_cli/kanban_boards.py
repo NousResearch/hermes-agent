@@ -129,6 +129,9 @@ def _cmd_boards_show(args: argparse.Namespace) -> int:
     print(f"Current board: {current}\n  Display name: {meta.get('name', '')}")
     if meta.get("description"):
         print(f"  Description:  {meta['description']}")
+    for key, label in (("orchestrator_profile", "Orchestrator:"), ("default_assignee", "Default to:")):
+        if meta.get(key):
+            print(f"  {label:<14}{meta[key]}")
     print(f"  DB path:      {meta['db_path']}\n"
           f"  Tasks:        {sum(counts.values())} total" + (f" ({_fmt_counts(counts)})" if counts else ""))
     return 0
@@ -153,6 +156,32 @@ def _cmd_boards_set_default_workdir(args: argparse.Namespace) -> int:
     else:
         print(f"Board {normed!r} default workdir cleared.")
     return 0
+
+
+def _set_board_profile(args: argparse.Namespace, cmd: str, key: str) -> int:
+    """Shared body of ``set-orchestrator`` / ``set-default-assignee``."""
+    from hermes_cli import profiles as profiles_mod
+
+    normed, rc = _board_slug_arg(args, cmd, must_exist=True)
+    if rc:
+        return rc
+    profile = (args.profile or "").strip()
+    if profile and not profiles_mod.profile_exists(profile):
+        return _err(f"kanban boards {cmd}: profile {profile!r} does not exist")
+    kb.write_board_metadata(normed, **{key: profile})
+    if profile:
+        print(f"Board {normed!r} {key} set to {profile!r}.")
+    else:
+        print(f"Board {normed!r} {key} cleared (inherits kanban.{key}).")
+    return 0
+
+
+def _cmd_boards_set_orchestrator(args: argparse.Namespace) -> int:
+    return _set_board_profile(args, "set-orchestrator", "orchestrator_profile")
+
+
+def _cmd_boards_set_default_assignee(args: argparse.Namespace) -> int:
+    return _set_board_profile(args, "set-default-assignee", "default_assignee")
 
 
 def _cmd_boards_export(args: argparse.Namespace) -> int:
@@ -209,6 +238,8 @@ _BOARD_HANDLERS = {
     "show": _cmd_boards_show, "current": _cmd_boards_show,
     "rename": _cmd_boards_rename,
     "set-default-workdir": _cmd_boards_set_default_workdir,
+    "set-orchestrator": _cmd_boards_set_orchestrator,
+    "set-default-assignee": _cmd_boards_set_default_assignee,
     "export": _cmd_boards_export,
     "import": _cmd_boards_import,
 }

@@ -201,13 +201,29 @@ class _Routing:
     valid_names: set[str]
 
 
-def _load_routing(*, root_assignee: Optional[str] = None) -> _Routing:
+def _board_routing_overrides(board: Optional[str]) -> dict:
+    """Non-empty ``orchestrator_profile`` / ``default_assignee`` from the board's
+    ``board.json``; they shadow the global ``kanban.*`` keys (#34977)."""
+    meta = kb.read_board_metadata(board)
+    return {
+        key: meta[key].strip()
+        for key in ("orchestrator_profile", "default_assignee")
+        if isinstance(meta.get(key), str) and meta[key].strip()
+    }
+
+
+def _load_routing(*, root_assignee: Optional[str] = None, board: Optional[str] = None) -> _Routing:
+    """``board`` None = the board the decomposer is connected to (current board)."""
     from hermes_cli.config import load_config_readonly
     try:
         cfg = load_config_readonly()
     except Exception:  # decompose_task promises ok=False, never a raise, on config trouble
         cfg = {}
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+    overrides = _board_routing_overrides(board if board is not None else kb.get_current_board())
+    if overrides:
+        kanban_cfg = {**kanban_cfg, **overrides}
+        cfg = {**(cfg if isinstance(cfg, dict) else {}), "kanban": kanban_cfg}
     roster, valid_names = _build_roster()
     return _Routing(
         orchestrator=_resolve_profile_from_cfg(cfg, "orchestrator_profile", fallback=root_assignee),

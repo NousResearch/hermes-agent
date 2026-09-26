@@ -2260,6 +2260,14 @@ def _any_spawnable_review(
     return False
 
 
+def _board_default_assignee(board: Optional[str]) -> Optional[str]:
+    """The board's own ``default_assignee`` (``board.json``), shadowing the global
+    ``kanban.default_assignee`` so one board's fallback never claims another
+    board's unassigned cards (#34977). ``None`` = inherit."""
+    value = _kb.read_board_metadata(board).get("default_assignee")
+    return value.strip() or None if isinstance(value, str) else None
+
+
 def _resolve_default_assignee(default_assignee: Optional[str]) -> Optional[str]:
     """``kanban.default_assignee`` when it names a real profile this home may
     claim (``kanban.dispatch_profiles`` gated, same predicate as the spawn
@@ -2348,7 +2356,7 @@ def _dispatch_once_locked(
         failure_limit=failure_limit, spawn_fn=spawn_fn,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
     )
-    default_assignee = _resolve_default_assignee(default_assignee)
+    default_assignee = _resolve_default_assignee(_board_default_assignee(board) or default_assignee)
     spawned = 0
     for row in ready_rows:
         if ready_budget is not None and spawned >= ready_budget:

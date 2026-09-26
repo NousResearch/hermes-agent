@@ -345,6 +345,12 @@ def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional
 
 # --- SQLite safe copy ---
 
+def _one_line_reason(exc: BaseException) -> str:
+    """Return a bounded single-line exception reason for durable records and user output."""
+    reason = f"{type(exc).__name__}: {exc}".replace("\r", " ").replace("\n", " ")
+    return " ".join(reason.split())[:300]
+
+
 def _query_ro_sqlite(path: Path, fn):
     """Run ``fn(conn)`` on a read-only connection to *path*; return ``(value, None)`` or ``(None, exc)``."""
     conn = None
@@ -1227,6 +1233,7 @@ def _create_quick_snapshot_locked(
             size,
             max_file_size,
         )
+        size_skipped[rel_name] = f"{size} bytes exceeds {max_file_size} byte limit"
         return True
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -1252,6 +1259,47 @@ def _create_quick_snapshot_locked(
     # to preserve the older complete snapshot that may contain the only
     # recoverable database.
     oversized_skipped: list[str] = []
+    failed: dict[str, str] = {}
+    size_skipped: dict[str, str] = {}
+
+    def _capture(src: Path, rel: str, *, in_dir: bool = False) -> None:
+        dst = staging_dir / rel
+        is_db = src.suffix == ".db"
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if is_db:
+                if not _safe_copy_db(src, dst):
+                    failed[rel] = "SQLite safe copy failed (file may be locked or corrupted)"
+                else:
+                    manifest[rel] = dst.stat().st_size
+                    return
+            else:
+                shutil.copy2(src, dst)
+                manifest[rel] = dst.stat().st_size
+                return
+        except Exception as exc:
+            reason = _one_line_reason(exc)
+            failed[rel] = reason
+            with suppress(OSError):
+                dst.unlink(missing_ok=True)
+            logger.warning("Could not snapshot %s: %s", rel, exc)
+            if not is_db:
+                print(f"  ⚠ Snapshot: could not copy {rel}: {reason}")
+                return
+
+        failed_dbs.append(rel)
+        print(
+            f"  ⚠ Snapshot: SQLite safe copy FAILED for {rel} "
+            f"— file may be locked or corrupted"
+        )
+        # Diagnostic only: the source may vanish or become unreadable after the failed copy.
+        with suppress(OSError):
+            if is_zeroed_sqlite_file(src):
+                suffix = " of NULs?" if in_dir else ""
+                print(
+                    f"  ⚠ Snapshot: {rel} looks ZEROED "
+                    f"(no SQLite header; {src.stat().st_size} bytes{suffix})"
+                )
 
     for rel in _QUICK_STATE_FILES:
         src = home / rel
@@ -1275,30 +1323,8 @@ def _create_quick_snapshot_locked(
                     if sub.suffix == ".db":
                         oversized_skipped.append(sub_rel)
                     continue
-                dst = staging_dir / sub_rel
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                try:
-                    # Route SQLite DBs through the WAL-safe backup() path so a
-                    # board DB with an open WAL (the gateway may hold it at
-                    # snapshot time) is captured consistently.
-                    if sub.suffix == ".db":
-                        if not _safe_copy_db(sub, dst):
-                            failed_dbs.append(sub_rel)
-                            print(
-                                f"  ⚠ Snapshot: SQLite safe copy FAILED for {sub_rel} "
-                                f"— file may be locked or corrupted"
-                            )
-                            if is_zeroed_sqlite_file(sub):
-                                print(
-                                    f"  ⚠ Snapshot: {sub_rel} looks ZEROED "
-                                    f"(no SQLite header; {sub.stat().st_size} bytes of NULs?)"
-                                )
-                            continue
-                    else:
-                        shutil.copy2(sub, dst)
-                    manifest[sub_rel] = dst.stat().st_size
-                except (OSError, PermissionError) as exc:
-                    logger.warning("Could not snapshot %s: %s", sub_rel, exc)
+                # Route SQLite DBs through the WAL-safe backup() path.
+                _capture(sub, sub_rel, in_dir=True)
             continue
 
         if not src.is_file():
@@ -1309,28 +1335,7 @@ def _create_quick_snapshot_locked(
                 oversized_skipped.append(rel)
             continue
 
-        dst = staging_dir / rel
-        dst.parent.mkdir(parents=True, exist_ok=True)
-
-        try:
-            if src.suffix == ".db":
-                if not _safe_copy_db(src, dst):
-                    failed_dbs.append(rel)
-                    print(
-                        f"  ⚠ Snapshot: SQLite safe copy FAILED for {rel} "
-                        f"— file may be locked or corrupted"
-                    )
-                    if is_zeroed_sqlite_file(src):
-                        print(
-                            f"  ⚠ Snapshot: {rel} looks ZEROED "
-                            f"(no SQLite header; {src.stat().st_size} bytes)"
-                        )
-                    continue
-            else:
-                shutil.copy2(src, dst)
-            manifest[rel] = dst.stat().st_size
-        except (OSError, PermissionError) as exc:
-            logger.warning("Could not snapshot %s: %s", rel, exc)
+        _capture(src, rel)
 
     if failed_dbs:
         # Critical: update path used to log-and-continue with exit 0, so a
@@ -1348,6 +1353,19 @@ def _create_quick_snapshot_locked(
             ", ".join(failed_dbs),
         )
 
+    non_db_failed = sorted(rel for rel in failed if rel not in failed_dbs)
+    if non_db_failed:
+        shown = ", ".join(non_db_failed[:10])
+        more = f", +{len(non_db_failed) - 10} more" if len(non_db_failed) > 10 else ""
+        print(
+            f"  ⚠ Snapshot INCOMPLETE: {len(non_db_failed)} file(s) "
+            f"could not be captured: {shown}{more}"
+        )
+        logger.error(
+            "Quick snapshot failed to capture non-DB file(s): %s",
+            ", ".join(non_db_failed),
+        )
+
     if not manifest:
         shutil.rmtree(staging_dir, ignore_errors=True)
         if failed_dbs:
@@ -1356,6 +1374,8 @@ def _create_quick_snapshot_locked(
                 "  ⚠ Snapshot aborted: no files captured "
                 f"(failed DBs: {', '.join(failed_dbs)})"
             )
+        elif failed:
+            print(f"  ⚠ Snapshot aborted: no files captured ({len(failed)} failed)")
         return None
 
     # Write manifest
@@ -1368,9 +1388,18 @@ def _create_quick_snapshot_locked(
         "files": manifest,
         "failed_dbs": failed_dbs,
         "oversized_skipped": oversized_skipped,
+        "failed": failed,
+        "size_skipped": size_skipped,
     }
-    with open(staging_dir / "manifest.json", "w", encoding="utf-8") as f:
-        json.dump(meta, f, indent=2)
+    try:
+        with open(staging_dir / "manifest.json", "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+    except OSError as exc:
+        reason = _one_line_reason(exc)
+        print(f"  ⚠ Snapshot FAILED: could not write manifest: {reason}")
+        logger.error("Quick snapshot manifest write failed: %s", reason)
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        raise
 
     # Make the staged quick snapshot owner-only before it is published. The
     # staging directory is private from creation, so copied source modes can
@@ -1391,10 +1420,9 @@ def _create_quick_snapshot_locked(
     # Auto-prune. Defaults preserve historical manual /snapshot behavior; callers
     # with known high-churn safety snapshots (for example pre-update) can pass a
     # smaller keep value so large state.db copies do not accumulate indefinitely.
-    # #68805 review: skip pruning when a present DB failed to capture OR was
-    # skipped for size — either way the snapshot is incomplete and the older
-    # snapshot may contain the only recoverable database.
-    incomplete = failed_dbs or oversized_skipped
+    # Preserve older recovery snapshots after a failed copy or an oversized DB.
+    # A non-DB size skip is recorded, but does not suppress retention.
+    incomplete = failed_dbs or oversized_skipped or failed
     if not incomplete:
         _prune_quick_snapshots(root, keep=_QUICK_DEFAULT_KEEP if keep is None else keep)
     else:
@@ -1407,11 +1435,15 @@ def _create_quick_snapshot_locked(
                 "Quick snapshot skipped oversized DB file(s): %s",
                 ", ".join(oversized_skipped),
             )
+        extra_failed = (
+            f", {len(non_db_failed)} non-DB file(s) failed to capture"
+            if non_db_failed else ""
+        )
         logger.warning(
             "Skipping snapshot prune because %d DB(s) failed to capture "
-            "and/or %d were oversized — preserving older snapshots as "
+            "and/or %d were oversized%s — preserving older snapshots as "
             "recovery source",
-            len(failed_dbs), len(oversized_skipped),
+            len(failed_dbs), len(oversized_skipped), extra_failed,
         )
 
     logger.info(

@@ -289,6 +289,122 @@ class ScopedProvMemoryProvider(MemoryProvider):
         row = next(p for p in providers if p["name"] == "scopedprov")
         assert row["available"] is True and row["status"] == "ready", row
 
+    _BADBOOL_INIT = """
+from agent.memory_provider import MemoryProvider
+
+
+class BadBoolMemoryProvider(MemoryProvider):
+    @property
+    def name(self):
+        return "badbool"
+
+    def is_available(self):
+        return True
+
+    def initialize(self, session_id, **kwargs):
+        pass
+
+    def get_tool_schemas(self):
+        return []
+
+    def get_config_schema(self):
+        return [{"key": "flag", "label": "Flag", "kind": "boolean", "required": True,
+                 "default": False, "env_var": "BADBOOL_FLAG"}]
+"""
+
+    _BADDEFAULT_INIT = """
+from agent.memory_provider import MemoryProvider
+
+
+class BadDefaultMemoryProvider(MemoryProvider):
+    @property
+    def name(self):
+        return "baddefault"
+
+    def is_available(self):
+        return True
+
+    def initialize(self, session_id, **kwargs):
+        pass
+
+    def get_tool_schemas(self):
+        return []
+
+    def get_config_schema(self):
+        # A provider-authoring bug: the schema's own default is not a boolean.
+        return [{"key": "flag", "label": "Flag", "kind": "boolean", "required": True, "default": "enabled"}]
+"""
+
+    def _install_badbool_provider(self, stored_flag=None):
+        from hermes_constants import get_hermes_home
+
+        home = get_hermes_home()
+        plugin_dir = home / "plugins" / "badbool"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text(self._BADBOOL_INIT, encoding="utf-8")
+        if stored_flag is not None:
+            (home / "config.yaml").write_text(
+                f'memory:\n  badbool:\n    flag: "{stored_flag}"\n', encoding="utf-8"
+            )
+
+    def _install_baddefault_provider(self):
+        from hermes_constants import get_hermes_home
+
+        plugin_dir = get_hermes_home() / "plugins" / "baddefault"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text(self._BADDEFAULT_INIT, encoding="utf-8")
+
+    def test_malformed_boolean_config_value_does_not_500_the_listing(self):
+        """A hand-edited memory.<provider>.<flag> that is not a recognized boolean must
+        degrade to the field default, not raise out of _coerce_bool and kill every
+        provider row in the listing."""
+        self._install_badbool_provider("notabool")
+
+        resp = self.client.get("/api/memory")
+        assert resp.status_code == 200, resp.text
+        row = next(p for p in resp.json()["providers"] if p["name"] == "badbool")
+        # Degraded to the field default (False) -- a boolean field counts as set
+        # regardless of value, matching the select branch's degrade-to-default.
+        assert row["configured"] is True and row["status"] == "ready", row
+
+    def test_malformed_boolean_config_value_does_not_500_the_config_view(self):
+        """The per-provider config surface reads the same field helpers."""
+        self._install_badbool_provider("notabool")
+
+        resp = self.client.get("/api/memory/providers/badbool/config")
+        assert resp.status_code == 200, resp.text
+        field = next(f for f in resp.json()["fields"] if f["key"] == "flag")
+        assert field["value"] is False and field["is_set"] is True, field
+
+    def test_provider_with_broken_schema_is_isolated_in_the_listing(self):
+        """A provider whose own field evaluation raises (e.g. a malformed schema default)
+        degrades to needs_config instead of failing every provider row."""
+        self._install_baddefault_provider()
+
+        resp = self.client.get("/api/memory")
+        assert resp.status_code == 200, resp.text
+        row = next(p for p in resp.json()["providers"] if p["name"] == "baddefault")
+        assert row["configured"] is False and row["status"] == "needs_config", row
+
+    def test_broken_schema_provider_refuses_activation_with_400_not_500(self):
+        """_require_memory_provider_ready must reach its intended 400, not die inside
+        _discover_memory_provider_statuses on the broken provider."""
+        self._install_baddefault_provider()
+
+        resp = self.client.put("/api/memory/provider", json={"provider": "baddefault"})
+        assert resp.status_code == 400, resp.text
+
+    def test_malformed_boolean_env_value_does_not_500_the_listing(self, monkeypatch):
+        """The env_var fallback reads through the same coercion: a bad env value degrades
+        to the field default rather than killing the listing."""
+        self._install_badbool_provider()
+        monkeypatch.setenv("BADBOOL_FLAG", "notabool")
+
+        resp = self.client.get("/api/memory")
+        assert resp.status_code == 200, resp.text
+        row = next(p for p in resp.json()["providers"] if p["name"] == "badbool")
+        assert row["configured"] is True and row["status"] == "ready", row
+
 
 class TestPairingEndpoints:
     @pytest.fixture(autouse=True)

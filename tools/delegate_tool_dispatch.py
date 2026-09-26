@@ -107,10 +107,14 @@ def _report_child_done(parent_agent, spinner_ref, entry, tag, task_labels, n_tas
             spinner_ref.update_text(f"🔀 {'[' + tag + '] ' if tag else ''}{remaining} task{'s' if remaining != 1 else ''} remaining")
 
 def _record_finished_child(batch: _Batch, entry: Any, honor_parent_interrupt: bool) -> None:
-    """Detached (background) unit: durably record a child on the unit's own row the moment it finishes, so an owner
-    death before the unit's join — or anywhere before its durable completion write, the whole remaining window for a
-    one-child unit — loses only children still running, never finished work (#116000). Best-effort by construction:
-    ``record_unit_child`` never raises into the join."""
+    """Publish terminal state immediately and durably record detached children."""
+    if isinstance(entry, dict):
+        from tools.delegation_live_log import update_manifest_task
+        update_manifest_task(
+            batch.live_deleg_id, entry.get("task_index", -1),
+            status=entry.get("status", "unknown"),
+            exit_reason=entry.get("exit_reason"),
+        )
     if not honor_parent_interrupt and batch.unit_id and isinstance(entry, dict):
         record_unit_child(batch.unit_id, entry)
 

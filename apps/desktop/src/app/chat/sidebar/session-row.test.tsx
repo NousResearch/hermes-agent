@@ -12,8 +12,9 @@ import type * as ChatRuntime from '@/lib/chat-runtime'
 import { SESSION_ROW_AREAS, type SessionRowSlotProps } from '@/lib/session-row-slots'
 import type * as Time from '@/lib/time'
 import type * as ComposerStatusStore from '@/store/composer-status'
+import { $activeSessionId } from '@/store/session'
 import type * as SessionStore from '@/store/session'
-import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
+import { $sessionTiles, clearAllSessionStates, publishSessionState } from '@/store/session-states'
 import type * as SessionStatesStore from '@/store/session-states'
 import type * as WindowsStore from '@/store/windows'
 
@@ -129,6 +130,7 @@ vi.mock('@/store/windows', async importOriginal => {
 // own state plumbing (e.g. the archived flag, #98813) is still asserted.
 const menuProps = vi.hoisted(() => vi.fn())
 
+const tipTrigger = (el: HTMLElement) => el.closest('[data-slot="tooltip-trigger"]')
 vi.mock('./session-actions-menu', () => ({
   SessionActionsMenu: (props: { children?: React.ReactNode }) => {
     menuProps(props)
@@ -175,6 +177,117 @@ const renderRow = (session: SessionInfo, extra?: { card?: boolean }) =>
       unread={false}
     />
   )
+
+describe('SidebarSessionRow model logo', () => {
+  afterEach(() => {
+    cleanup()
+    clearAllSessionStates()
+    $activeSessionId.set(null)
+    $sessionTiles.set([])
+  })
+
+  it('follows live model switches across compression without repainting unrelated rows', () => {
+    const state = { ...createClientSessionState('middle'), model: 'gpt-6-astra', busy: true }
+    publishSessionState('rt1', state)
+
+    const first = renderRow(
+      makeSession({
+        id: 'tip',
+        _lineage_root_id: 'root',
+        _lineage_ids: ['root', 'middle', 'tip'],
+        model: 'gpt-6-astra',
+        title: 'One'
+      })
+    )
+
+    const second = renderRow(makeSession({ id: 's2', model: 'claude-sonnet-4.5', title: 'Two' }))
+    sessionTitle.mockClear()
+
+    act(() => publishSessionState('rt1', { ...state, model: 'glm-5.2' }))
+
+    expect(first.container.querySelector('[data-model-brand="zai"]')).toBeTruthy()
+    expect(second.container.querySelector('[data-model-brand="anthropic"]')).toBeTruthy()
+    expect(sessionTitle).not.toHaveBeenCalled()
+  })
+
+  it('ignores read-only transcript snapshots', () => {
+    publishSessionState('read-only:s1', { ...createClientSessionState('s1'), model: 'glm-5.2' })
+    const { container } = renderRow(makeSession({ model: 'gpt-6-astra', title: 'Topic' }))
+    expect(container.querySelector('[data-model-brand="openai"]')).toBeTruthy()
+  })
+
+  it('follows the bound runtime rather than an old cached runtime of the same conversation', () => {
+    publishSessionState('old', { ...createClientSessionState('s1'), model: 'glm-5.2' })
+    publishSessionState('new', { ...createClientSessionState('s1'), model: 'claude-sonnet-4.5' })
+    $activeSessionId.set('new')
+    const { container } = renderRow(makeSession({ model: 'gpt-6-astra', title: 'Topic' }))
+    expect(container.querySelector('[data-model-brand="anthropic"]')).toBeTruthy()
+
+    act(() => $activeSessionId.set('old'))
+    expect(container.querySelector('[data-model-brand="zai"]')).toBeTruthy()
+
+    act(() => $activeSessionId.set(null))
+    // Two unbound cached states cannot tell us which is current: use the saved model.
+    expect(container.querySelector('[data-model-brand="openai"]')).toBeTruthy()
+
+    act(() => $sessionTiles.set([{ storedSessionId: 's1', runtimeId: 'new' }]))
+    expect(container.querySelector('[data-model-brand="anthropic"]')).toBeTruthy()
+  })
+
+  it.each([false, true])('shows a decorative logo before the title (card=%s)', card => {
+    const { container } = renderRow(makeSession({ model: 'gpt-6-astra', title: 'Topic' }), { card })
+    const logo = container.querySelector('[data-model-brand="openai"]')
+    const title = screen.getByText('Topic')
+
+    expect(logo).toBeTruthy()
+    expect(logo?.getAttribute('aria-hidden')).toBe('true')
+    expect(logo?.classList.contains('pointer-events-none')).toBe(true)
+    expect(logo!.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(logo?.closest('[data-slot="tooltip-trigger"]')).toBeNull()
+    expect(logo?.querySelector('title, [title], button, a, [tabindex]')).toBeNull()
+    expect(logo?.hasAttribute('title')).toBe(false)
+    // Keep the existing title tooltip and resume target, not an icon-specific hover/click handler.
+    expect(tipTrigger(title)).toBeTruthy()
+    noop.mockClear()
+    fireEvent.click(logo!)
+    expect(noop).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([false, true])('uses the logo itself as the running indicator (card=%s)', card => {
+    publishSessionState('rt1', { ...createClientSessionState('s1'), busy: true })
+    const { container } = renderRow(makeSession({ model: 'glm-5.2', title: 'Running' }), { card })
+    const status = screen.getByRole('status')
+
+    expect(status.querySelector('[data-model-brand="zai"]')).toBeTruthy()
+    expect(status.classList.contains('text-(--ui-accent)')).toBe(true)
+    expect(status.classList.contains('rounded-full')).toBe(false)
+    expect(container.querySelectorAll('[data-model-brand]')).toHaveLength(1)
+    expect(container.querySelector('.arc-row')).toBeTruthy()
+  })
+
+  it("keeps each session's own brand and updates a changed model", () => {
+    const first = renderRow(makeSession({ id: 's1', model: 'gpt-6-astra', title: 'One' }))
+    const second = renderRow(makeSession({ id: 's2', model: 'anthropic/claude-sonnet-4.5', title: 'Two' }))
+
+    expect(first.container.querySelector('[data-model-brand="openai"]')).toBeTruthy()
+    expect(second.container.querySelector('[data-model-brand="anthropic"]')).toBeTruthy()
+    first.rerender(
+      <SidebarSessionRow
+        isPinned={false}
+        isSelected={false}
+        onArchive={noop}
+        onDelete={noop}
+        onPin={noop}
+        onResume={noop}
+        onToggleUnread={noop}
+        session={makeSession({ id: 's1', model: 'glm-5.2', title: 'One' })}
+        unread={false}
+      />
+    )
+    expect(first.container.querySelector('[data-model-brand="zai"]')).toBeTruthy()
+    expect(second.container.querySelector('[data-model-brand="anthropic"]')).toBeTruthy()
+  })
+})
 
 // The row no longer takes its running state as a prop, so this drives the real
 // store the way the app does. $workingSessionIds is the actual computed here

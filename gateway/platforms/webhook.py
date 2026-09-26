@@ -33,12 +33,18 @@ except ImportError:
     web = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.base import (
+    BasePlatformAdapter,
+    SendResult,
+    cache_audio_from_bytes,
+    cache_image_from_bytes,
+)
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.tcp_site import start_tcp_site
 from gateway.platforms.webhook_coalesce import WebhookCoalescer, validate_coalesce_config
 from gateway.platforms.webhook_filters import DEFAULT_SCRIPT_TIMEOUT_SECONDS, WebhookRouteProcessor
 from gateway.response_filters import is_autonomous_silence_response
+from gateway.session import SessionSource
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +73,16 @@ _TEMPLATE_KEY_RE = re.compile(r"\{([a-zA-Z0-9_.]+)\}")
 _REPO_RE = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
 # Credentials `gh` reads; a routed profile's github_comment must use its own, never the process env's.
 _GH_TOKEN_VARS = ("GH_TOKEN", "GITHUB_TOKEN")
+
+_AUDIO_EXTENSIONS = {
+    "audio/ogg": ".ogg", "audio/mp4": ".m4a", "audio/mpeg": ".mp3",
+    "audio/wav": ".wav", "audio/x-wav": ".wav", "audio/webm": ".webm",
+    "audio/flac": ".flac", "audio/aac": ".aac",
+}
+_IMAGE_EXTENSIONS = {
+    "image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif",
+    "image/webp": ".webp", "image/bmp": ".bmp",
+}
 
 
 def _is_loopback_host(host: Optional[str]) -> bool:
@@ -215,7 +231,25 @@ class WebhookAdapter(BasePlatformAdapter):
                 raise ValueError(f"[webhook] Route '{name}' sets both deliver_only and cron_job. They are mutually "
                                  f"exclusive: deliver_only pushes the rendered template as a message, cron_job fires "
                                  f"an existing cron job (which handles its own delivery).")
+        self._validate_synthetic_source(route)
         validate_coalesce_config(name, route)
+
+    @staticmethod
+    def _validate_synthetic_source(route: dict) -> Optional[Platform]:
+        if route.get("source_platform") is None:
+            return None
+        try:
+            platform = Platform(str(route["source_platform"]))
+        except ValueError:
+            raise ValueError("Invalid configured source platform") from None
+        if platform in {Platform.WEBHOOK, Platform.API_SERVER}:
+            raise ValueError("Invalid configured source platform")
+        if not all(str(route.get(k) or "") for k in ("source_chat_id", "source_user_id")):
+            raise ValueError("Synthetic source requires source_chat_id and source_user_id")
+        for mode in ("coalesce", "cron_job", "deliver_only"):
+            if route.get(mode):
+                raise ValueError(f"source_platform cannot be combined with {mode}")
+        return platform
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         self._reload_dynamic_routes()
@@ -580,6 +614,12 @@ class WebhookAdapter(BasePlatformAdapter):
             raw_body, error_response = await self._read_authenticated_body(request, route_name, route_config)
         if error_response is not None:
             return error_response
+        assert route_config is not None
+        # Dynamic routes can change after startup; use the same validation before any side effects.
+        try:
+            source_platform = self._validate_synthetic_source(route_config)
+        except ValueError as exc:
+            return _json_error(str(exc), 500)
         # Rate limiting (after auth)
         if not self._record_rate_limit_hit(route_name, time.time()):
             return _json_error("Rate limit exceeded", 429)
@@ -615,12 +655,71 @@ class WebhookAdapter(BasePlatformAdapter):
             # cron_job routes: the job's own skills apply; the rendered prompt is only per-run context.
             if (skills := route_config.get("skills", [])) and not route_config.get("cron_job"):
                 prompt = self._apply_skills(prompt, skills)
+        target_adapter = None
+        if source_platform is not None:
+            target_adapter = self._find_adapter(source_platform, profile)
+            if (target_adapter is None or not getattr(target_adapter, "_running", False)
+                    or not callable(getattr(target_adapter, "handle_message", None))):
+                return _json_error("Configured source platform is unavailable", 503)
+
+        audio_bytes = None
+        image_bytes = None
+        mime = ""
+        ext = ""
+        # Base64 media is synthetic-source ingress only. Ordinary webhook routes create their own
+        # text events, so caching attachments here would acknowledge and then discard them.
+        if source_platform is not None:
+            def decode_media(names: tuple[str, ...]) -> bytes | None:
+                value = next((payload[name] for name in names if name in payload), None)
+                if value is None:
+                    return None
+                if not isinstance(value, str) or not value:
+                    raise ValueError
+                decoded = base64.b64decode(value, validate=True)
+                if not decoded:
+                    raise ValueError
+                return decoded
+
+            try:
+                audio_bytes = decode_media(("audio_base64", "voice_base64"))
+                image_bytes = decode_media(("screenshot_base64", "image_base64"))
+            except (ValueError, binascii.Error):
+                return _json_error("Invalid media payload", 400)
+            if audio_bytes is not None and image_bytes is not None:
+                return _json_error("Only one media payload is supported per webhook", 400)
+            if audio_bytes is not None:
+                mime = str(payload.get("audio_mime_type") or payload.get("voice_mime_type") or "audio/ogg")
+                ext = _AUDIO_EXTENSIONS.get(mime, "")
+            elif image_bytes is not None:
+                mime = str(payload.get("image_mime_type") or payload.get("screenshot_mime_type") or "image/jpeg")
+                ext = _IMAGE_EXTENSIONS.get(mime, "")
+            if (audio_bytes is not None or image_bytes is not None) and not ext:
+                return _json_error("Unsupported media MIME type", 400)
         delivery_id = headers.get("X-GitHub-Delivery", headers.get("svix-id", headers.get(
             "webhook-id", headers.get("X-Request-ID", str(int(time.time() * 1000))))))
         now = time.time()  # idempotency: skip duplicate deliveries (webhook retries)
         if not self._record_delivery_id(delivery_id, now):
             logger.info("[webhook] Skipping duplicate delivery %s", delivery_id)
             return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)
+        media_urls: List[str] = []
+        media_types: List[str] = []
+        message_type = MessageType.TEXT
+        try:
+            if audio_bytes is not None:
+                media_urls.append(cache_audio_from_bytes(audio_bytes, ext=ext))
+                media_types.append(mime)
+                message_type = MessageType.VOICE
+            if image_bytes is not None:
+                media_urls.append(cache_image_from_bytes(image_bytes, ext=ext))
+                media_types.append(mime)
+                message_type = MessageType.PHOTO
+        except (OSError, ValueError):
+            for path in media_urls:
+                with suppress(OSError):
+                    os.unlink(path)
+            if self._seen_deliveries.get(delivery_id) == now:
+                self._seen_deliveries.pop(delivery_id, None)
+            return _json_error("Media cache unavailable", 503)
         if route_config.get("cron_job"):
             return self._handle_cron_trigger(prompt, route_config, route_name, event_type, delivery_id, profile)
         if route_config.get("deliver_only"):
@@ -632,14 +731,75 @@ class WebhookAdapter(BasePlatformAdapter):
                 delivery_id=delivery_id, now=now, route_config=route_config, profile=profile):
             return web.json_response({"status": "coalesced", "route": route_name, "event": event_type,
                                       "delivery_id": delivery_id}, status=202)
-        return self._dispatch_agent_run(request, route_config, route_name, profile, payload, prompt, event_type,
-                                        delivery_id, now)
+        return await self._dispatch_agent_run(
+            request, route_config, route_name, profile, payload, prompt, event_type, delivery_id, now,
+            source_platform=source_platform, target_adapter=target_adapter, media_urls=media_urls,
+            media_types=media_types, message_type=message_type)
 
-    def _dispatch_agent_run(self, request, route_config: dict, route_name: str, profile, payload: Any, prompt: str,
-                            event_type: str, delivery_id: str, now: float) -> "web.Response":
+    async def _dispatch_agent_run(
+        self, request, route_config: dict, route_name: str, profile, payload: Any, prompt: str,
+        event_type: str, delivery_id: str, now: float, *, source_platform=None, target_adapter=None,
+        media_urls=None, media_types=None, message_type=MessageType.TEXT,
+    ) -> "web.Response":
         """Spawn the agent run for one POST and return 202 immediately."""
         logger.info("[webhook] %s event=%s route=%s prompt_len=%d delivery=%s", request.method, event_type, route_name,
                     len(prompt), delivery_id)
+        if source_platform is not None:
+            def rollback_dispatch() -> None:
+                for path in media_urls or []:
+                    with suppress(OSError):
+                        os.unlink(path)
+                if self._seen_deliveries.get(delivery_id) == now:
+                    self._seen_deliveries.pop(delivery_id, None)
+
+            source_thread_id = str(route_config.get("source_thread_id") or "") or None
+            source = SessionSource(
+                platform=source_platform, chat_id=str(route_config["source_chat_id"]),
+                chat_name=str(route_config.get("source_chat_name") or f"webhook/{route_name}"),
+                chat_type=str(route_config.get("source_chat_type") or "dm"),
+                user_id=str(route_config["source_user_id"]),
+                user_name=str(route_config.get("source_user_name") or route_name),
+                thread_id=source_thread_id,
+                profile=profile if isinstance(profile, str) else None)
+            created_thread_id = None
+            if route_config.get("source_new_thread"):
+                create_thread = getattr(target_adapter, "create_handoff_thread", None)
+                if not callable(create_thread):
+                    rollback_dispatch()
+                    return _json_error("Unable to create isolated source thread", 503)
+                # The name may template payload fields (``{title}``) so each delivery gets a
+                # descriptive thread; unresolved keys fall back to the route default.
+                title = self._render_prompt(str(route_config.get("source_thread_name") or ""), payload,
+                                            event_type, route_name).strip()
+                if not title or _TEMPLATE_KEY_RE.search(title):
+                    title = f"Hermes — {route_name}"
+                title = title[:100]
+                try:
+                    created_thread_id = await create_thread(source.chat_id, title)
+                except Exception:
+                    created_thread_id = None
+                if not created_thread_id:
+                    rollback_dispatch()
+                    return _json_error("Unable to create isolated source thread", 503)
+                from gateway.slash_commands_branch_thread import branch_dest_source
+                # Key the event exactly like a message later typed in that thread (Discord keys
+                # in-thread messages on the thread's own id), so follow-ups continue this session.
+                source = branch_dest_source(source, parent_id=source.chat_id,
+                                            thread_id=str(created_thread_id), title=title)
+                # Discord only answers un-mentioned follow-ups in threads it has participated in.
+                threads = getattr(target_adapter, "_threads", None)
+                if threads is not None and callable(getattr(threads, "mark_async", None)):
+                    await threads.mark_async(str(created_thread_id))
+            event = MessageEvent(
+                text=prompt, message_type=message_type, source=source, raw_message=payload,
+                message_id=None, media_urls=media_urls or [], media_types=media_types or [])
+            task = asyncio.create_task(target_adapter.handle_message(event))
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+            body = {"status": "accepted", "route": route_name, "event": event_type, "delivery_id": delivery_id}
+            if created_thread_id:
+                body["thread_id"] = str(created_thread_id)  # lets the caller link or follow the new thread
+            return web.json_response(body, status=202)
         self._spawn_agent_run(payload, prompt, delivery_id, now, route_config=route_config, route_name=route_name,
                               profile=profile, event_type=event_type)
         return web.json_response({"status": "accepted", "route": route_name, "event": event_type,

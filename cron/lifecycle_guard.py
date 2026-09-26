@@ -9,6 +9,7 @@ anchored on concrete command identifiers — so they cannot fire on prose. Defen
 
 from __future__ import annotations
 
+import ast
 import logging
 import os
 import re
@@ -1082,6 +1083,281 @@ def _read_script_for_scanning(script_path: str) -> tuple[str, Optional[str]]:
 
 # --- recursive walk ---------------------------------------------------------------------------
 
+# Whole-body allowlist for ``_mask_read_only_python_paths``. A deny-list of
+# rebinding shapes cannot close "a spelling is not an identity": a trusted
+# object can be mutated IN PLACE through a Load-context call that binds
+# nothing. So the mask is granted only when every node of the body is
+# recognised; anything else keeps the conservative shell-reference scan.
+#
+# Soundness argument: with no class/def/lambda, no dunder access, no
+# reflective builtins and no import beyond json/subprocess/pathlib.Path, every
+# value in the body is a built-in data value (str/list/dict/set/file/
+# CompletedProcess), so the allowlisted methods below are data operations and
+# cannot reach or replace a callable the loop recognizer trusts.
+_MASK_SAFE_NODE_TYPES = (
+    ast.Module, ast.Import, ast.ImportFrom, ast.alias,
+    ast.Assign, ast.AugAssign, ast.Expr, ast.For, ast.If, ast.Try,
+    ast.ExceptHandler, ast.Continue, ast.Break, ast.Pass,
+    ast.Name, ast.Load, ast.Store, ast.Constant, ast.Attribute,
+    ast.Subscript, ast.Slice, ast.Call, ast.keyword,
+    ast.List, ast.Tuple, ast.Dict, ast.Set,
+    ast.JoinedStr, ast.FormattedValue,
+    ast.BoolOp, ast.BinOp, ast.UnaryOp, ast.Compare, ast.IfExp,
+    ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp, ast.comprehension,
+    ast.boolop, ast.operator, ast.unaryop, ast.cmpop,
+)
+_MASK_SAFE_MODULES = frozenset({"json", "subprocess"})
+_MASK_SAFE_MODULE_CALLS = frozenset({("json", "loads"), ("json", "dumps"), ("subprocess", "run")})
+_MASK_SAFE_BUILTINS = frozenset({
+    "open", "reversed", "len", "print", "set", "list", "dict", "tuple",
+    "sorted", "str", "int", "float", "bool", "min", "max", "sum", "abs",
+    "round", "enumerate", "range", "zip", "any", "all", "isinstance",
+})
+_MASK_SAFE_EXCEPTIONS = frozenset({
+    "Exception", "ValueError", "KeyError", "TypeError", "IndexError",
+    "AttributeError", "OSError", "FileNotFoundError", "UnicodeDecodeError",
+})
+_MASK_SAFE_METHODS = frozenset({
+    "read", "read_text", "read_bytes", "splitlines", "split", "rsplit",
+    "strip", "lstrip", "rstrip", "lower", "upper", "startswith", "endswith",
+    "replace", "join", "get", "items", "keys", "values", "add", "append",
+    "extend", "count", "find", "encode", "decode", "isdigit",
+})
+_MASK_SUBPROCESS_KEYWORDS = frozenset({"capture_output", "text", "check", "timeout", "encoding", "errors"})
+_MASK_FORBIDDEN_NAMES = frozenset({
+    "sys", "builtins", "importlib", "types", "object", "type", "os",
+    "getattr", "setattr", "delattr", "exec", "eval", "compile",
+    "globals", "locals", "vars", "__import__", "__builtins__",
+})
+
+
+def _is_dunder(name: str) -> bool:
+    return name.startswith("__") and name.endswith("__")
+
+
+def _python_body_is_mask_safe(tree: ast.AST) -> bool:
+    """Return True only when EVERY node of *tree* is in the enumerated safe set."""
+    statements = list(getattr(tree, "body", ()))
+    # The extracted heredoc range ends with its delimiter line (``PY``/``EOF``),
+    # which parses as a trailing bare-name expression. Python never sees it
+    # (the shell consumes the delimiter), and a bare name load calls nothing.
+    if (statements and isinstance(statements[-1], ast.Expr)
+            and isinstance(statements[-1].value, ast.Name)
+            and not _is_dunder(statements[-1].value.id)
+            and statements[-1].value.id not in _MASK_FORBIDDEN_NAMES):
+        tree = ast.Module(body=statements[:-1], type_ignores=[])
+    imported: set[str] = set()
+    bound: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, _MASK_SAFE_NODE_TYPES):
+            return False
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name not in _MASK_SAFE_MODULES or alias.asname is not None:
+                    return False
+                imported.add(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            if node.module != "pathlib" or node.level or any(
+                alias.name != "Path" or alias.asname is not None for alias in node.names
+            ):
+                return False  # also refuses ``from x import *``
+            imported.add("Path")
+        elif isinstance(node, ast.ExceptHandler) and node.name is not None:
+            bound.add(node.name)
+        elif isinstance(node, ast.Name):
+            if _is_dunder(node.id) or node.id in _MASK_FORBIDDEN_NAMES:
+                return False
+            if isinstance(node.ctx, ast.Store):
+                bound.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            if _is_dunder(node.attr) or not isinstance(node.ctx, ast.Load):
+                return False
+        elif isinstance(node, ast.Subscript):
+            if not isinstance(node.ctx, ast.Load):
+                return False
+    protected = _MASK_SAFE_BUILTINS | _MASK_SAFE_EXCEPTIONS | _MASK_SAFE_MODULES | {"Path"}
+    if bound & protected:
+        return False
+    known = bound | imported | _MASK_SAFE_BUILTINS | _MASK_SAFE_EXCEPTIONS
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id not in known:
+            return False
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Name):
+            if func.id == "Path":
+                if "Path" not in imported:
+                    return False
+            elif func.id not in _MASK_SAFE_BUILTINS:
+                return False
+            if func.id == "open" and not (
+                1 <= len(node.args) <= 2
+                and all(
+                    isinstance(arg, ast.Constant) and arg.value in {"r", "rb", "rt"}
+                    for arg in node.args[1:]
+                )
+                and all(kw.arg in {"encoding", "errors"} for kw in node.keywords)
+            ):
+                return False
+            continue
+        if not isinstance(func, ast.Attribute):
+            return False
+        receiver = func.value
+        if isinstance(receiver, ast.Name) and receiver.id in imported:
+            if (receiver.id, func.attr) not in _MASK_SAFE_MODULE_CALLS:
+                return False
+            if (receiver.id, func.attr) == ("subprocess", "run") and not (
+                len(node.args) == 1
+                and isinstance(node.args[0], (ast.List, ast.Tuple))
+                and all(
+                    isinstance(item, ast.Constant) and isinstance(item.value, str)
+                    for item in node.args[0].elts
+                )
+                and all(
+                    kw.arg in _MASK_SUBPROCESS_KEYWORDS and isinstance(kw.value, ast.Constant)
+                    for kw in node.keywords
+                )
+            ):
+                return False
+            continue
+        if func.attr not in _MASK_SAFE_METHODS:
+            return False
+        root = receiver
+        while isinstance(root, (ast.Attribute, ast.Subscript)):
+            root = root.value
+        if isinstance(root, ast.Name) and root.id in imported:
+            return False
+    return True
+
+
+def _mask_read_only_python_paths(body: str) -> str:
+    """Mask literal paths read only as diagnostic data, not executable input."""
+    if not body.isascii():  # AST columns are UTF-8 byte offsets; fail closed on non-ASCII.
+        return body
+    try:
+        tree = ast.parse(body)
+    except SyntaxError:
+        return body
+    # Whole-body allowlist, not a deny-list of rebinding shapes: see
+    # _python_body_is_mask_safe for why in-place mutation defeats deny-lists.
+    if not _python_body_is_mask_safe(tree):
+        return body
+    has_path = any(
+        isinstance(node, ast.ImportFrom) and node.module == "pathlib"
+        and any(alias.name == "Path" and alias.asname is None for alias in node.names)
+        for node in ast.walk(tree)
+    )
+    offsets = [0]
+    for line in body.splitlines(keepends=True):
+        offsets.append(offsets[-1] + len(line))
+    parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+    def only_binding(name: str, predicate) -> bool:
+        writes = [n for n in ast.walk(tree) if isinstance(n, ast.Name)
+                  and n.id == name and isinstance(n.ctx, (ast.Store, ast.Del))]
+        return len(writes) == 1 and isinstance(writes[0].ctx, ast.Store) and predicate(parents.get(writes[0]))
+
+    open_shadowed = any(
+        (isinstance(other, ast.Name) and other.id == "open" and isinstance(other.ctx, ast.Store))
+        or (isinstance(other, (ast.FunctionDef, ast.ClassDef)) and other.name == "open")
+        or (isinstance(other, ast.arg) and other.arg == "open")
+        or (isinstance(other, (ast.Import, ast.ImportFrom)) and any(
+            alias.asname == "open" or alias.name == "open" for alias in other.names
+        )) for other in ast.walk(tree)
+    )
+    spans = []
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "open" and len(node.args) == 1
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+                and not open_shadowed):
+            read_attr = parents.get(node)
+            read_call = parents.get(read_attr) if read_attr is not None else None
+            split_attr = parents.get(read_call) if read_call is not None else None
+            split_call = parents.get(split_attr) if split_attr is not None else None
+            reverse_call = parents.get(split_call) if split_call is not None else None
+            loop = parents.get(reverse_call) if reverse_call is not None else None
+            parsers = {
+                target.id
+                for statement in loop.body for assignment in ast.walk(statement)
+                if isinstance(loop, ast.For) and isinstance(assignment, ast.Assign)
+                and isinstance(assignment.value, ast.Call)
+                and isinstance(assignment.value.func, ast.Attribute)
+                and isinstance(assignment.value.func.value, ast.Name)
+                and (assignment.value.func.value.id, assignment.value.func.attr) == ("json", "loads")
+                for target in assignment.targets if isinstance(target, ast.Name)
+            } if isinstance(loop, ast.For) else set()
+            parser = next(iter(parsers)) if len(parsers) == 1 else None
+            loop_var = loop.target.id if isinstance(loop, ast.For) and isinstance(loop.target, ast.Name) else None
+            parser_safe = parser is not None and loop_var is not None and only_binding(
+                parser,
+                lambda a: isinstance(a, ast.Assign) and isinstance(a.value, ast.Call)
+                and isinstance(a.value.func, ast.Attribute)
+                and isinstance(a.value.func.value, ast.Name)
+                and (a.value.func.value.id, a.value.func.attr) == ("json", "loads")
+                and len(a.targets) == 1 and len(a.value.args) == 1 and isinstance(a.value.args[0], ast.Name)
+                and a.value.args[0].id == loop_var and not a.value.keywords
+            )
+            methods = {(c.func.value.id, c.func.attr) for stmt in loop.body
+                       for c in ast.walk(stmt) if isinstance(c, ast.Call)
+                       and isinstance(c.func, ast.Attribute)
+                       and isinstance(c.func.value, ast.Name)} if isinstance(loop, ast.For) else set()
+            containers_safe = all(
+                only_binding(name, lambda a: isinstance(a, ast.Assign) and (
+                    isinstance(a.value, ast.List) and not a.value.elts if name == "out" else
+                    isinstance(a.value, ast.Call) and isinstance(a.value.func, ast.Name)
+                    and a.value.func.id == "set" and not a.value.args and not a.value.keywords
+                )) for name, method in (("seen", "add"), ("out", "append"))
+                if (name, method) in methods
+            )
+            if (isinstance(read_attr, ast.Attribute) and read_attr.attr == "read"
+                    and isinstance(read_call, ast.Call) and not read_call.args and not read_call.keywords
+                    and isinstance(split_attr, ast.Attribute) and split_attr.attr == "splitlines"
+                    and isinstance(split_call, ast.Call) and not split_call.args and not split_call.keywords
+                    and isinstance(reverse_call, ast.Call) and isinstance(reverse_call.func, ast.Name)
+                    and reverse_call.func.id == "reversed" and reverse_call.args == [split_call]
+                    and isinstance(loop, ast.For) and loop.iter is reverse_call
+                    and node.end_lineno is not None and node.end_col_offset is not None
+                    and parser_safe and containers_safe
+                    and all(
+                        isinstance(call.func, ast.Name) and call.func.id in {"len", "print"}
+                        or isinstance(call.func, ast.Attribute) and isinstance(call.func.value, ast.Name)
+                        and (call.func.value.id, call.func.attr) in {
+                            ("json", "loads"), (parser, "get"), ("seen", "add"), ("out", "append")
+                        }
+                        or isinstance(call.func, ast.Attribute) and call.func.attr == "lower"
+                        and isinstance(call.func.value, ast.Subscript)
+                        and isinstance(call.func.value.value, ast.Name)
+                        and call.func.value.value.id in parsers
+                        for statement in loop.body for call in ast.walk(statement)
+                        if isinstance(call, ast.Call)
+                    )):
+                spans.append((offsets[node.lineno - 1] + node.col_offset,
+                              offsets[node.end_lineno - 1] + node.end_col_offset))
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr not in {"read_text", "read_bytes"}:
+            continue
+        parent = parents.get(node)
+        if not has_path or not (isinstance(parent, ast.Call) and isinstance(parent.func, ast.Name)
+                and parent.func.id == "print"):
+            continue
+        path_call = node.func.value
+        if not (isinstance(path_call, ast.Call) and isinstance(path_call.func, ast.Name)
+                and path_call.func.id == "Path" and len(path_call.args) == 1
+                and isinstance(path_call.args[0], ast.Constant)
+                and isinstance(path_call.args[0].value, str)
+                and path_call.end_lineno is not None and path_call.end_col_offset is not None):
+            continue
+        start = offsets[path_call.lineno - 1] + path_call.col_offset
+        end = offsets[path_call.end_lineno - 1] + path_call.end_col_offset
+        spans.append((start, end))
+    for start, end in sorted(spans, reverse=True):
+        body = body[:start] + "read_only_path" + body[end:]
+    return body
+
+
 def _contains_unsafe_gateway_action(
     command: str, *, cwd: Optional[str], depth: int, visited: set[Path], budget: _LifecycleScanBudget,
     read_remote_script: Optional[_ReadRemoteScriptFn] = None, executed: bool = True,
@@ -1106,9 +1382,21 @@ def _contains_unsafe_gateway_action(
     # The walks below must see the same masked view `_direct_lifecycle_scan` sees (#110422): a
     # path or `sh -c` payload inside a provably-inert heredoc body is never shell-executed, and an
     # oversized data file mentioned there otherwise fails closed as a "script".
-    from tools.shell_heredoc import strip_inert_heredoc_bodies
+    from tools.shell_heredoc import (
+        _inert_heredoc_ranges,
+        inert_python_heredoc_bodies,
+        strip_inert_heredoc_bodies,
+    )
 
     walk_command = strip_inert_heredoc_bodies(command)
+    # Python stdin is executable Python source, not a shell script. Give it
+    # the same lifecycle scan as a .py file without walking its path strings.
+    python_bodies = inert_python_heredoc_bodies(command)
+    for body in python_bodies:
+        if not budget.charge_text(body):
+            return _budget_exhausted(budget, "text", depth)
+        if _direct_lifecycle_scan(body):
+            return True
 
     for payload in _iter_shell_command_payloads(walk_command):
         if recurse(payload, cwd, executed):
@@ -1120,7 +1408,13 @@ def _contains_unsafe_gateway_action(
     # trip them. Executed candidates come first so a mention never starves a real script's budget.
     candidates = [(path, executed) for path in _iter_referenced_shell_scripts(walk_command, cwd=cwd)]
     if walk_command != command:
-        candidates += [(path, False) for path in _iter_referenced_shell_scripts(command, cwd=cwd)]
+        # Preserve the mentioned-path walk for unknown Python calls and other
+        # inert consumers, excluding only statically identified read-only data.
+        _ranges, python_ranges = _inert_heredoc_ranges(command)
+        mentioned_command = command
+        for (start, end), body in reversed(list(zip(python_ranges, python_bodies))):
+            mentioned_command = mentioned_command[:start] + _mask_read_only_python_paths(body) + mentioned_command[end:]
+        candidates += [(path, False) for path in _iter_referenced_shell_scripts(mentioned_command, cwd=cwd)]
 
     for script_path, candidate_executed in candidates:
         # Do not touch a FileProvider path even to discover whether the file is hydrated.

@@ -33,7 +33,7 @@ from pathlib import Path as _Path
 
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
-from agent.compression_marker import elide
+from agent.compression_marker import ELISION_MARKER_MAX_LEN, elide
 from agent.retry_utils import parse_retry_after_seconds
 from agent.secret_scope import get_secret
 from gateway.config import Platform, PlatformConfig
@@ -4267,6 +4267,8 @@ class SlackAdapter(BasePlatformAdapter):
             nested_text = ""
             if blocks_budget > 0:
                 nested_text = _extract_text_from_slack_blocks(att.get("blocks") or [])
+                if len(nested_text) > blocks_budget and blocks_budget <= ELISION_MARKER_MAX_LEN:
+                    nested_text = ""  # leftover budget cannot hold marker + content: skip, don't overshoot
                 nested_text = elide(nested_text, blocks_budget)
             if nested_text and nested_text not in body:
                 blocks_budget -= len(nested_text)

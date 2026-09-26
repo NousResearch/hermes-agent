@@ -16,8 +16,10 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from agent.image_eviction_policy import outbound_image_retire_count
 from agent.compression_marker import (
+    ELISION_MARKER_MAX_LEN,
     _COMPRESSION_MARKER_PREFIX,
     _COMPRESSION_MARKER_TEMPLATE,
+    _elision_marker,
     elide,
     elide_middle,
 )
@@ -610,8 +612,7 @@ def salvage_grown_transcript(
             and len(content) > _SALVAGE_SUMMARY_MAX_CHARS
             and _looks_like_compaction_summary(msg, content)
         ):
-            msg["content"] = (content[:_SALVAGE_SUMMARY_MAX_CHARS].rstrip()
-                              + "\n…[summary truncated so compaction can shrink]\n\n" + _SUMMARY_END_MARKER)
+            msg["content"] = elide(content, _SALVAGE_SUMMARY_MAX_CHARS) + "\n\n" + _SUMMARY_END_MARKER
     _prune_stale_reasoning_replay(out)
     if estimate_messages_tokens_rough(out) >= budget:
         _salvage_reduce_todo_snapshot(out)
@@ -1008,10 +1009,9 @@ def _build_verbatim_user_section(turns: List[Dict[str, Any]]) -> str:
         if remaining <= 0:
             break
         text = content.strip()
-        if len(text) > _LEAN_USER_MESSAGE_MAX_CHARS:
-            text = elide(text, _LEAN_USER_MESSAGE_MAX_CHARS)
-        if len(text) > remaining:
-            text = elide(text, remaining)
+        if len(text) > remaining and remaining <= ELISION_MARKER_MAX_LEN:
+            break  # no room for marker + content: a marker-only quote would overshoot the budget
+        text = elide(text, min(_LEAN_USER_MESSAGE_MAX_CHARS, remaining))
         collected.append("> " + text.replace("\n", "\n> "))
         used += len(text)
     if not collected:
@@ -1271,8 +1271,7 @@ def _compact_fallback_turn(value: Any) -> str:
     text = _redact_compaction_text(_content_text_for_contains(value))
     text = re.sub(r"\bgh[pousr]_[A-Za-z0-9_]{8,}\b", "[REDACTED]", text)
     text = re.sub(r"\s+", " ", text).strip()
-    if len(text) > _FALLBACK_TURN_MAX_CHARS:
-        text = elide(text, _FALLBACK_TURN_MAX_CHARS)
+    text = elide(text, _FALLBACK_TURN_MAX_CHARS)
     return re.sub(r"\bgh[pousr]_[A-Za-z0-9_.-]+", "[REDACTED]", text)
 
 
@@ -1780,8 +1779,7 @@ def _sum_clarify(name, args, content, content_len, line_count):
         # Escape lone UTF-16 surrogates so the message stays UTF-8/SQLite safe.
         serialized = json.dumps(response, ensure_ascii=False).encode("utf-8", errors="backslashreplace")
         summary = response_prefix + serialized.decode("utf-8")
-        if len(summary) > max_summary_chars:
-            summary = elide(summary, max_summary_chars)
+        summary = elide(summary, max_summary_chars)
         return summary
     return "[clarify] asked user a question"
 
@@ -3508,8 +3506,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         previous_summary_note = ""
         if self._previous_summary:
             previous_summary = redact_sensitive_text(self._previous_summary.strip())
-            if len(previous_summary) > _FALLBACK_PREVIOUS_SUMMARY_MAX_CHARS:
-                previous_summary = elide(previous_summary, _FALLBACK_PREVIOUS_SUMMARY_MAX_CHARS)
+            previous_summary = elide(previous_summary, _FALLBACK_PREVIOUS_SUMMARY_MAX_CHARS)
             previous_summary_note = (
                 "\n\n## Previous Summary Snapshot\n"
                 f"{previous_summary}\n\n"
@@ -3635,17 +3632,11 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         """Bound an oversized record with an explicit intra-record truncation marker."""
         if len(record) <= limit:
             return record
-        marker_template = "\n...[record truncated: {elided:,} chars elided — recover via session_search]...\n"
-        marker_reserve = len(marker_template.format(elided=len(record)))
+        marker_reserve = len(_elision_marker(omitted=len(record), total=len(record)))
         if limit <= marker_reserve:
             return record[:limit]
-        remaining = limit - marker_reserve
-        head_len = remaining // 2
-        tail_len = remaining - head_len
-        head = record[:head_len].rstrip("\n")
-        tail = record[-tail_len:].lstrip("\n")
-        elided = len(record) - len(head) - len(tail)
-        return head + marker_template.format(elided=elided) + tail
+        head_len = (limit - marker_reserve) // 2
+        return elide_middle(record, head_len, limit - marker_reserve - head_len)
 
     def _record_summary_input_coverage(self, coverage: Dict[str, int]) -> None:
         """Expose lean sampling coverage without including transcript content in telemetry."""
@@ -4386,10 +4377,11 @@ Write only the summary body. Do not include any preamble or prefix."""
             if not text:
                 continue
             text = re.sub(r"\s+", " ", text)
-            if len(text) > _ACTIVE_TASK_MAX_CHARS:
-                text = elide(text, _ACTIVE_TASK_MAX_CHARS)
+            # Elide AFTER repr: repr would escape the marker's "Hermes's" and hide a copy from the
+            # guard. Text within the cap stays whole (the split-turn path relies on that).
+            text = repr(text) if len(text) <= _ACTIVE_TASK_MAX_CHARS else elide(repr(text), _ACTIVE_TASK_MAX_CHARS)
             return (
-                f"User asked (deterministic, from compacted turns): {text!r}\n"
+                f"User asked (deterministic, from compacted turns): {text}\n"
                 "Historical only; newer protected-tail messages after this summary win."
             )
         return None

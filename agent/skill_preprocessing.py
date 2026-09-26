@@ -82,9 +82,7 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
         # rc!=0 with no output at all is indistinguishable from a legit empty result; it is the
         # "interpreter never ran the command" signature (WSL stub without a distro) — say so.
         return f"[inline-shell exit {completed.returncode} with no output: {command}]"
-    if len(output) > _INLINE_SHELL_MAX_OUTPUT:
-        output = elide(output, _INLINE_SHELL_MAX_OUTPUT)
-    return output
+    return elide(output, _INLINE_SHELL_MAX_OUTPUT)
 
 
 def expand_inline_shell(content: str, skill_dir: Path | None, timeout: int) -> str:

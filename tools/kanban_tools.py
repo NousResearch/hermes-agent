@@ -903,12 +903,41 @@ def _store_attachment(board, tid, filename, data, content_type) -> str:
         return _ok(task_id=tid, attachment_id=att_id, size=len(data))
 
 
+def _read_attach_source_path(raw: str, max_bytes: int) -> bytes:
+    """Read a ``kanban_attach`` source file: absolute (after ``~``) regular file only,
+    so the result never depends on cwd. Reads at most ``max_bytes + 1`` bytes; the
+    shared cap in ``store_attachment_bytes`` then rejects an oversize file."""
+    expanded = os.path.expanduser(raw.strip())
+    if not os.path.isabs(expanded):
+        raise ValueError(f"path must be absolute: {raw!r}")
+    if not os.path.isfile(expanded):
+        raise ValueError(f"not a regular file: {expanded}")
+    with open(expanded, "rb") as fh:
+        return fh.read(max_bytes + 1)
+
+
 @_kanban_handler("kanban_attach")
 def _handle_attach(args: dict, **kw) -> str:
-    """Attach an inline (base64) file to a task."""
+    """Attach a file to a task, read from ``path`` or decoded from inline base64."""
     tid = _worker_guard("kanban_attach", args)
+    source_path = args.get("path")
+    has_path = isinstance(source_path, str) and bool(source_path.strip())
+    has_b64 = bool(args.get("content_base64") and str(args["content_base64"]).strip())
+    _check(has_path != has_b64,
+           "pass exactly one of path (preferred: read server-side, byte-exact) or content_base64")
+    if has_path:
+        # The bytes never pass through the model: a model re-emitting a file as
+        # base64 transcribes it token by token and alters long payloads.
+        from hermes_cli import kanban_db as kb
+        try:
+            data = _read_attach_source_path(source_path, kb.KANBAN_ATTACHMENT_MAX_BYTES)
+        except (OSError, ValueError) as e:
+            raise _Reject(f"kanban_attach: cannot read path: {e}")
+        filename = args.get("filename") or os.path.basename(
+            os.path.expanduser(source_path.strip()))
+        return _store_attachment(args.get("board"), tid, filename, data, args.get("content_type"))
     filename = _require_text(args, "filename")
-    content_b64 = _require_text(args, "content_base64")
+    content_b64 = args["content_base64"]
     import base64
     import binascii
     try:

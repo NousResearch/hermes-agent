@@ -310,26 +310,38 @@ KANBAN_COMMENT_SCHEMA = _schema(
 KANBAN_ATTACH_SCHEMA = _schema(
     "kanban_attach",
     (
-        "Attach a file to a task by passing its bytes inline (base64). "
-        "Use for genuine file artifacts the next worker or a human should "
-        "be able to download — generated reports, images, exports. The "
-        "file is stored as a real attachment (not a comment link) under "
-        "the task's attachments dir, capped at 25 MB. Prefer "
-        "kanban_attach_url when you only have a URL."
+        "Attach a file to a task. PREFER path: the file is read server-side, "
+        "byte-exact. content_base64 makes you re-type the bytes, and long "
+        "payloads come back altered, so use it only for content that exists "
+        "nowhere on disk (write it to a file first when you can). Use for "
+        "genuine file artifacts the next worker or a human should be able "
+        "to download — generated reports, images, exports. The file is "
+        "stored as a real attachment (not a comment link) under the task's "
+        "attachments dir, capped at 25 MB. Prefer kanban_attach_url when "
+        "you only have a URL."
     ),
     {
         "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
         "filename": _prop("string", (
                 "File name to store it under (e.g. 'report.pdf'). "
-                "Directory components are stripped; only the leaf is kept."
+                "Directory components are stripped; only the leaf is kept. "
+                "Required with content_base64; defaults to the path's leaf with path."
+        )),
+        "path": _prop("string", (
+                "Absolute path of the file to attach, on the machine running "
+                "the agent. Read byte-exact; no encoding needed. Pass this OR "
+                "content_base64, not both."
         )),
         "content_base64": {
             "type": "string",
-            "description": "The file contents, base64-encoded. Max 25 MB decoded.",
+            "description": (
+                "The file contents, base64-encoded (max 25 MB decoded). "
+                "Fallback for content with no file on disk."
+            ),
         },
         "content_type": _prop("string", "Optional MIME type (e.g. 'application/pdf')."),
     },
-    ["filename", "content_base64"],
+    [],
 )
 
 KANBAN_ATTACH_URL_SCHEMA = _schema(

@@ -252,12 +252,35 @@ def _find_skill_path(name: str) -> Optional[Path]:
     return found["path"] if found else None
 
 
-def skill_pending_diff(record: Dict[str, Any]) -> str:
-    """Full content (create) or unified diff vs. the on-disk skill (edit/patch/write_file),
-    rendered by /skills diff <id> on surfaces that can show it."""
+def _staged_base(name: str, target_label: str, staged: Optional[Dict[str, Dict[str, str]]]) -> str:
+    """What an op diffs against: the content earlier ops of the same batch left in this file,
+    else the on-disk copy (empty for a file that does not exist yet)."""
+    files = (staged or {}).get(name)
+    if files and target_label in files:
+        return files[target_label]
+    skill_dir = _find_skill_path(name)
+    if not skill_dir:
+        return ""
+    with suppress(Exception):
+        p = skill_dir / target_label
+        if p.exists():
+            return p.read_text(encoding="utf-8-sig")
+    return ""
+
+
+def skill_pending_diff(
+    record: Dict[str, Any], staged: Optional[Dict[str, Dict[str, str]]] = None
+) -> str:
+    """Full content (create) or unified diff vs. the base file (edit/patch/write_file),
+    rendered by /skills diff <id> on surfaces that can show it. ``staged`` carries the file
+    contents the earlier ops of a batch left behind, so op *i* diffs against ops 1..*i-1* and
+    disk is read only for files no earlier op touched. A staged batch renders each op's diff
+    under its gist header (single-op path below is unchanged)."""
     payload = record.get("payload", {})
     action = payload.get("action", "")
     name = payload.get("name", "")
+    if action == "batch":
+        return _batch_pending_diff(payload)
     if action == "create":
         return payload.get("content") or ""
     if action not in {"edit", "patch", "write_file"}:
@@ -265,14 +288,8 @@ def skill_pending_diff(record: Dict[str, Any]) -> str:
                 "delete": f"delete skill '{name}'"}.get(action, f"({action} on '{name}')")
 
     # patch/write_file target a file inside the skill; edit always targets SKILL.md.
-    target_label, current = "SKILL.md", ""
-    skill_dir = _find_skill_path(name)
-    if skill_dir:
-        if action != "edit":
-            target_label = payload.get("file_path") or "SKILL.md"
-        with suppress(Exception):
-            p = skill_dir / target_label
-            current = p.read_text(encoding="utf-8-sig") if p.exists() else ""
+    target_label = "SKILL.md" if action == "edit" else (payload.get("file_path") or "SKILL.md")
+    current = _staged_base(name, target_label, staged)
 
     if action == "patch":
         old_s, new_s = payload.get("old_string") or "", payload.get("new_string") or ""
@@ -282,3 +299,46 @@ def skill_pending_diff(record: Dict[str, Any]) -> str:
     diff = difflib.unified_diff(current.splitlines(keepends=True), new.splitlines(keepends=True),
                                 fromfile=f"a/{target_label}", tofile=f"b/{target_label}")
     return "".join(diff) or "(no textual change)"
+
+
+def _fold_staged(staged: Dict[str, Dict[str, str]], action: str, name: str,
+                 op: Dict[str, Any]) -> None:
+    """Record what one op leaves in the staged view the next op diffs against."""
+    if not name:
+        return
+    if action == "delete":
+        staged.pop(name, None)
+        return
+    label = "SKILL.md" if action == "edit" else (op.get("file_path") or "SKILL.md")
+    files = staged.setdefault(name, {})
+    if action in {"create", "edit"}:
+        files["SKILL.md"] = op.get("content") or ""
+    elif action == "write_file":
+        files[label] = op.get("file_content") or ""
+    elif action == "patch":
+        files[label] = _staged_base(name, label, staged).replace(
+            op.get("old_string") or "", op.get("new_string") or "")
+    elif action == "remove_file":
+        files.pop(label, None)
+
+
+def _batch_pending_diff(payload: Dict[str, Any]) -> str:
+    """Per-op diffs for a staged ``batch`` payload (skill_manage operations[]). Ops apply in
+    order, so each op reuses the single-op path above with the earlier ops' staged content as
+    its base (disk only for files no earlier op touched) — a patch to a skill an earlier op
+    created shows a real diff, which is the case this renderer exists for."""
+    ops = [op for op in (payload.get("operations") or []) if isinstance(op, dict)]
+    total = len(ops)
+    staged: Dict[str, Dict[str, str]] = {}
+    parts = []
+    for i, op in enumerate(ops):
+        op_action, op_name = op.get("action", ""), op.get("name") or ""
+        gist = skill_gist(op_action, op_name, content=op.get("content") or "",
+                          file_path=op.get("file_path") or "",
+                          old_string=op.get("old_string") or "",
+                          new_string=op.get("new_string") or "")
+        diff = skill_pending_diff({"payload": {**op, "name": op_name}}, staged)
+        parts.append(f"## op {i + 1}/{total}: {gist}\n\n{diff}")
+        _fold_staged(staged, op_action, op_name, op)
+    return "\n\n".join(parts) or "(empty batch)"
+

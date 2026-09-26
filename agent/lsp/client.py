@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -99,11 +100,27 @@ def uri_to_path(uri: str) -> str:
     return os.path.normpath(unquote(raw))
 
 
+# LSP counts only \n, \r\n and \r as line breaks. str.splitlines() also splits on form feed,
+# vertical tab and other unicode separators (\x0b \x0c \x1c-\x1e \x85    ), which would
+# report positions past the document's real last line to the server.
+_LSP_LINE_BREAK = re.compile(r"\r\n|\r|\n")
+
+
+def _lsp_splitlines(text: str) -> List[str]:
+    """Like ``str.splitlines(keepends=False)`` but splitting only on LSP line breaks."""
+    if not text:
+        return []
+    lines = _LSP_LINE_BREAK.split(text)
+    if lines and lines[-1] == "":
+        lines.pop()
+    return lines
+
+
 def _end_position(text: str) -> Dict[str, int]:
     """LSP Position at the end of ``text`` (for a whole-document replace range)."""
     if not text:
         return {"line": 0, "character": 0}
-    lines = text.splitlines(keepends=False)
+    lines = _lsp_splitlines(text)
     # splitlines drops a trailing newline: the end is then the start of the next (empty) line.
     if text.endswith(("\n", "\r")):
         return {"line": len(lines), "character": 0}

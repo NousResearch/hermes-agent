@@ -234,3 +234,87 @@ def test_partial_drain_never_puts_a_later_prompt_before_an_earlier_one(monkeypat
     finally:
         server._sessions.pop(sid, None)
         db.close()
+
+
+# -- a queued prompt that will never run leaves the transcript with the queue ------------------------
+
+def _accept_queued(monkeypatch, tmp_path, text="rm -rf build QUEUED-MARKER", in_flight="prompt A"):
+    """Turn A's row is written and turn A is live; *text* is accepted busy (its row written at accept)."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    server._ensure_session_db_row(session)
+    db.append_message(key, "user", content=in_flight)
+    _busy(session, in_flight)
+    resp = server._handle_busy_submit("r1", sid, session, text, "ws-1", queued=True, display_kind=None)
+    assert resp["result"]["status"] == "queued"
+    return db, sid, key, session
+
+
+def _marker_rows(db, key, **kw):
+    return [r for r in db.get_messages_as_conversation(key, include_row_ids=True, **kw)
+            if "QUEUED-MARKER" in str(r["content"])]
+
+
+def test_stop_takes_the_discarded_queued_prompt_out_of_the_transcript(monkeypatch, tmp_path):
+    """Stop discards the queue, but the prompt's accept-time row stayed ACTIVE ahead of turn A's reply:
+    the resume projection glued it into prompt A, so the model read a prompt the user had cancelled."""
+    db, sid, key, session = _accept_queued(monkeypatch, tmp_path)
+    try:
+        server._interrupt_session_turn(sid, session)
+        assert session.get("queued_prompt") is None
+        assert [(r["role"], r["content"]) for r in _active_rows(db, key)] == [("user", "prompt A")]
+        assert len(_marker_rows(db, key, include_inactive=True)) == 1  # kept inactive, never deleted
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+def test_an_agent_reset_takes_the_discarded_queued_prompt_out_of_the_transcript(monkeypatch, tmp_path):
+    db, sid, key, session = _accept_queued(monkeypatch, tmp_path)
+    for name in ("_rebuild_session_agent", "_session_info", "_emit", "_restart_slash_worker"):
+        monkeypatch.setattr(server, name, lambda *a, **k: types.SimpleNamespace())
+    try:
+        server._reset_session_agent(sid, session)
+        assert session.get("queued_prompt") is None
+        assert not _marker_rows(db, key)
+        assert len(_marker_rows(db, key, include_inactive=True)) == 1
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+def test_a_scrubbed_self_duplicate_takes_its_row_out_of_the_transcript(monkeypatch, tmp_path):
+    """#84417's scrub drops a queued copy of the live turn's own prompt (queued before that turn was
+    registered as in flight); its accept-time row must go with it, or the prompt reads twice."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    try:
+        server._ensure_session_db_row(session)
+        with session["history_lock"]:
+            session["running"] = True  # busy, but the in-flight original is not registered yet
+        server._handle_busy_submit("r1", sid, session, "prompt QUEUED-MARKER", "ws-1", queued=True,
+                                   display_kind=None)
+        assert len(_marker_rows(db, key)) == 1
+        with session["history_lock"]:
+            server._start_inflight_turn(session, "prompt QUEUED-MARKER")
+            server._drop_queued_duplicates_of_inflight_user(session)
+        assert session.get("queued_prompt") is None
+        assert not _marker_rows(db, key)
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+def test_a_drained_queued_prompt_is_not_retired_by_a_later_stop(monkeypatch, tmp_path):
+    """Only discarded envelopes are retired: once the drain dispatched it, the prompt is the live
+    turn's own user row, and Stop keeps it (the documented interrupted shape)."""
+    db, sid, key = _accept_busy_then_run_both_turns(monkeypatch, tmp_path)
+    session = server._sessions[sid]
+    try:
+        server._interrupt_session_turn(sid, session)
+        assert len(_marker_rows(db, key)) == 1
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()

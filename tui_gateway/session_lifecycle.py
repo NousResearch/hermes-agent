@@ -640,6 +640,8 @@ def _interrupt_session_turn(sid: str, session: dict, *, request_id: str | None =
         run_thread_alive = (rt := session.get("_run_thread")) is not None and rt.is_alive()
     with session["history_lock"]:
         session["_turn_cancel_requested"] = True
+        # The queue is discarded, so its prompts must leave the transcript too, not only the queue.
+        _retire_queued_user_rows(session, _queued_envelopes(session))
         session["queued_prompt"] = None
         session.pop("queued_prompts", None)
         session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1

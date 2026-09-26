@@ -195,10 +195,38 @@ def _drop_queued_duplicates_of_inflight_user(session: dict) -> None:
     """
     if not (original := _ac_inflight_original(session)):
         return
-    head = session.get("queued_prompt")
-    cleaned = (_sanitize_queued_entry_vs_inflight_user(e, original)
-               for e in ([head] if head else []) + list(session.get("queued_prompts") or []))
+    entries = _queued_envelopes(session)
+    cleaned = [_sanitize_queued_entry_vs_inflight_user(e, original) for e in entries]
+    _retire_queued_user_rows(session, [e for e, c in zip(entries, cleaned) if c is None])
     _ac_set_queue(session, [c for c in cleaned if c is not None])
+
+
+def _queued_envelopes(session: dict) -> list:
+    """Every queued envelope, head first."""
+    head = session.get("queued_prompt")
+    return ([head] if head else []) + list(session.get("queued_prompts") or [])
+
+
+def _retire_queued_user_rows(session: dict, envelopes: list) -> None:
+    """Deactivate the accept-time rows of queued prompts that will never run: Stop, an agent reset, or
+    the #84417 self-duplicate scrub dropping them. ``_persist_queued_user_row`` makes a queued prompt
+    durable at accept and only the drain retired that row, so a discarded prompt stayed ACTIVE ahead of
+    the live turn's reply; on the next resume ``repair_alternation`` glued it into the user's previous
+    message and the model read a prompt the user had cancelled. Kept inactive, never deleted (the same
+    marking the drain's re-placement uses). Caller holds ``history_lock``."""
+    row_ids = [row["_row_id"] for envelope in envelopes
+               if isinstance(envelope, dict) and isinstance(row := envelope.get("_submit_user_row"), dict)
+               and isinstance(row.get("_row_id"), int)]
+    if not row_ids:
+        return
+    with _session_db(session) as db:
+        if db is None:
+            return
+        for row_id in row_ids:
+            try:
+                db.deactivate_message(session.get("session_key"), row_id)
+            except Exception:
+                logger.debug("discarded queued-prompt row deactivate failed", exc_info=True)
 
 
 def _ac_set_queue(session: dict, entries: list) -> None:

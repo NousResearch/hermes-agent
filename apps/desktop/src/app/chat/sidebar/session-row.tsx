@@ -50,6 +50,7 @@ import {
 } from './chrome'
 import { shellOwnsPress } from './reorderable-list'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
+import { SessionModelLogo } from './session-model-logo'
 import { sessionRowDetails } from './session-row-details'
 import { resolveSessionRowClick } from './session-row-gesture'
 import { SessionRowSlot } from './session-row-slots'
@@ -492,6 +493,7 @@ function SidebarSessionRowImpl({
                   <SessionStatusDot
                     branchStem={branchStem}
                     className="transition-opacity group-hover/handle:opacity-0 group-focus-within/handle:opacity-0"
+                    glyph={<SessionModelLogo session={session} />}
                     session={session}
                     storedSessionId={session.id}
                   />
@@ -499,7 +501,14 @@ function SidebarSessionRowImpl({
               </SidebarRowGrab>
             ) : (
               <SidebarRowLead className="overflow-hidden">
-                {lead ?? <SessionStatusDot branchStem={branchStem} session={session} storedSessionId={session.id} />}
+                {lead ?? (
+                  <SessionStatusDot
+                    branchStem={branchStem}
+                    glyph={<SessionModelLogo session={session} />}
+                    session={session}
+                    storedSessionId={session.id}
+                  />
+                )}
               </SidebarRowLead>
             )
 

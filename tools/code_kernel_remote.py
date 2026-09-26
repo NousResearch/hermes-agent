@@ -383,7 +383,10 @@ def _run_attached_cell(kernel: RemoteKernel, key: Tuple, code: str, *, env, task
         _REGISTRY.discard(key, kernel)
         kernel_info["ended"] = True
     kernel.execution_count = kernel_info["execution_count"] = int(cell_payload.get("execution_count", 0) or 0)
-    if cell_status in ("ok", "exit"):
+    exit_code = int(cell_payload.get("exit_code") or 0) if cell_status == "exit" else 0
+    if exit_code:
+        result["error"] = f"Script exited with code {exit_code}"
+    elif cell_status in ("ok", "exit"):
         result["status"] = "success"
     result["stdout_clipped"] = bool(cell_payload.get("stdout_clipped"))
     result["stderr_clipped"] = bool(cell_payload.get("stderr_clipped"))

@@ -177,6 +177,21 @@ class TestDeathDetection(RemoteKernelBase):
         self.assertTrue(any("kill " in c for c in env.commands))
 
 
+    def test_nonzero_sys_exit_cell_is_an_error(self):
+        # The payload comes from the real shared cell runner, not a canned dict.
+        import contextlib
+        import io
+        import traceback
+        from tools.code_kernel import RUNNER_CELL_SOURCE
+        runner = {"io": io, "contextlib": contextlib, "traceback": traceback, "_CAPTURE_LIMIT": 50_000}
+        exec(RUNNER_CELL_SOURCE, runner)
+        payload, _ = runner["run_cell"]({"id": "000001", "code": "import sys\nsys.exit(2)"}, 1)
+        result = _run(ScriptedEnv(_spawn_ok_handlers([payload])))
+        self.assertEqual(result["status"], "error", result)
+        self.assertIn("2", result.get("error", ""))
+        self.assertTrue(result["kernel"].get("ended"))
+
+
 class TestOwnershipIsolation(RemoteKernelBase):
     def test_changed_tool_set_spawns_kernel_with_fresh_stubs(self):
         env = ScriptedEnv(_spawn_ok_handlers([_cell(), _cell()]))

@@ -33,6 +33,29 @@ def test_docker_daemon_probe_failure_captures_daemon_reason(monkeypatch):
     assert backends.terminal_backend_unavailable_reason()
 
 
+def test_probe_timeout_is_read_from_terminal_probe_timeout_env(monkeypatch):
+    monkeypatch.setitem(backends._BACKEND_SPECS, "docker",
+                        {"binary": (lambda: "/usr/bin/docker", "version", "unused")})
+    seen = {}
+
+    def fake_run(*a, **k):
+        seen["timeout"] = k.get("timeout")
+        return subprocess.CompletedProcess(a[0], 0, b"", b"")
+
+    monkeypatch.setattr(backends.subprocess, "run", fake_run)
+    monkeypatch.setenv("TERMINAL_PROBE_TIMEOUT", "42.5")
+    assert backends._check_requirements("docker", {}) is True
+    assert seen["timeout"] == 42.5
+
+    monkeypatch.setenv("TERMINAL_PROBE_TIMEOUT", "not-a-number")
+    assert backends._check_requirements("docker", {}) is True
+    assert seen["timeout"] == 20.0
+
+    monkeypatch.delenv("TERMINAL_PROBE_TIMEOUT")
+    assert backends._check_requirements("docker", {}) is True
+    assert seen["timeout"] == 20.0
+
+
 def test_ssh_unconfigured_captures_reason():
     assert backends._check_requirements("ssh", {"ssh_host": "", "ssh_user": ""}) is False
     assert backends.terminal_backend_unavailable_reason()

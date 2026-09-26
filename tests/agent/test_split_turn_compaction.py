@@ -220,7 +220,7 @@ def test_a_tail_that_fits_the_budget_still_anchors_the_active_request() -> None:
 
 def test_active_request_survives_repeated_compaction_and_restart(tmp_path) -> None:
     # Fallback compaction (no LLM summary) + SQLite reload between cycles:
-    # the in-memory merged-replay flag is gone, so the guard must read content.
+    # the active request must be recognized from persisted content alone.
     from agent.context_compressor import _INFLIGHT_TASK_REPLAY_HEADER, _SUMMARY_END_MARKER
     from agent.conversation_compression import _ensure_compressed_has_user_turn
     from hermes_state import SessionDB
@@ -257,6 +257,24 @@ def test_active_request_survives_repeated_compaction_and_restart(tmp_path) -> No
             messages = db.get_messages_as_conversation(session_id)
     finally:
         db.close()
+
+    # Only a replay after the LAST end marker is live: a carrier merged into a
+    # newer summary's prior context is history, and a leftover flag is not content.
+    from agent.context_compressor import (
+        SUMMARY_PREFIX,
+        _MERGED_PRIOR_CONTEXT_HEADER,
+        _MERGED_SUMMARY_DELIMITER,
+    )
+
+    old = f"{SUMMARY_PREFIX}\nold\n\n{_SUMMARY_END_MARKER}\n\n{_INFLIGHT_TASK_REPLAY_HEADER}\ndo X"
+    tail_merged = (
+        f"{_MERGED_PRIOR_CONTEXT_HEADER}\n{old}\n\n{_MERGED_SUMMARY_DELIMITER}\n\n"
+        f"{SUMMARY_PREFIX}\nnew\n\n{_SUMMARY_END_MARKER}"
+    )
+    detect = ContextCompressor._has_merged_inflight_replay
+    assert detect({"role": "user", "content": old})
+    assert not detect({"role": "user", "content": tail_merged})
+    assert not detect({"role": "user", "content": "hi", "_inflight_replay_merged": True})
 
 
 @pytest.mark.parametrize(

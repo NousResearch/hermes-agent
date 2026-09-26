@@ -861,6 +861,64 @@ class TestMoveThenUpdateSameFile:
         assert "already exists" in (result.error or "")
 
 
+class TestCodexGrammarMarkers:
+    """Codex apply_patch lines that are not hunk content.
+
+    V4A mode is offered to the OpenAI/codex family, whose apply_patch grammar
+    closes an EOF-anchored hunk with ``*** End of File`` and renames with
+    ``*** Move to:`` under an Update block. Both used to be read as implicit
+    context lines.
+    """
+
+    def test_end_of_file_marker_is_not_hunk_content(self):
+        patch = (
+            "*** Begin Patch\n"
+            "*** Update File: f.py\n"
+            "@@\n"
+            " def f():\n"
+            "-    return 1\n"
+            "+    return 2\n"
+            "*** End of File\n"
+            "*** End Patch\n"
+        )
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        assert [(l.prefix, l.content) for l in ops[0].hunks[0].lines] == [
+            (" ", "def f():"), ("-", "    return 1"), ("+", "    return 2")]
+        fo = _DictFileOps({"f.py": "def f():\n    return 1\n"})
+        result = apply_v4a_operations(ops, fo)
+        assert result.success is True, getattr(result, "error", None)
+        assert fo.files["f.py"] == "def f():\n    return 2\n"
+
+    def test_move_to_is_rejected_instead_of_silently_dropped(self):
+        """The edit used to land while the rename was skipped, reported as success."""
+        patch = (
+            "*** Begin Patch\n"
+            "*** Update File: old.py\n"
+            "*** Move to: new.py\n"
+            "@@\n"
+            "-x = 1\n"
+            "+x = 2\n"
+            "*** End Patch\n"
+        )
+        ops, err = parse_v4a_patch(patch)
+        assert ops == []
+        assert "Move File: old.py -> new.py" in err
+
+    def test_marker_text_inside_content_is_untouched(self):
+        patch = (
+            "*** Begin Patch\n"
+            "*** Add File: notes.md\n"
+            "+*** End of File\n"
+            "+*** Move to: elsewhere\n"
+            "*** End Patch\n"
+        )
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        assert [l.content for l in ops[0].hunks[0].lines] == [
+            "*** End of File", "*** Move to: elsewhere"]
+
+
 class TestCrlfPatchBody:
     """A CRLF-encoded patch body must not inject stray carriage returns."""
 

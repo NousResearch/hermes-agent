@@ -349,11 +349,13 @@ def _replace_queued_user_row_for_turn(session: dict, queued: dict) -> dict | Non
 
 
 def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any, queued: bool = False,
-                        turn_author: dict | None = None, display_kind: str | None = None) -> dict | None:
+                        turn_author: dict | None = None, display_kind: str | None = None,
+                        image_paths: list[str] | None = None) -> dict | None:
     """Apply ``display.busy_input_mode`` to a mid-turn prompt instead of rejecting it (rejection made clients busy-retry
     and drop sends): ``interrupt`` (default) → redirect, falling back to hard interrupt + queue; ``queue`` → queue only;
     ``steer`` → inject after the current atomic action. ``queued=True`` (client queue drain) forces queue mode: a "run
-    after" message must NEVER become a live correction."""
+    after" message must NEVER become a live correction. ``image_paths`` (``prompt.submit.image_paths``) are this
+    submit's own images; ``None`` claims the session's ``image.attach`` staging slot instead."""
     mode = "queue" if queued else _load_busy_input_mode()
     agent = session.get("agent")
     # Compression in flight demotes steer/interrupt to queue: a correction delivered
@@ -361,11 +363,12 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
     # follow-up drains when compression finishes — the Discord-gateway contract.
     if mode in ("steer", "interrupt") and _session_compression_in_flight(session):
         mode = "queue"
+    staged = image_paths is None
     with session["history_lock"]:
         if not session.get("running"):
             return None  # turn ended since prompt.submit's busy check; caller retries on the idle session
-        image_paths = list(session.get("attached_images", []))
-        if image_paths:
+        image_paths = list(session.get("attached_images", []) if staged else image_paths)
+        if image_paths and staged:
             session["attached_images"] = []  # claim now so a later paste isn't consumed when the turn yields
     plain_text = _coerce_message_text(text).strip() if not image_paths and _is_text_only_busy_payload(text) else ""
     # Text-only corrections steer/redirect in place when supported; media payloads and older agents fall through to
@@ -382,7 +385,7 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
     # interrupt can wait behind the op it cancels.
     with session["history_lock"]:
         if not session.get("running"):
-            if image_paths:
+            if image_paths and staged:
                 session["attached_images"] = image_paths + list(session.get("attached_images", []))
             return None
         envelope = _enqueue_prompt(session, text, transport, image_paths=image_paths, turn_author=turn_author)

@@ -323,7 +323,8 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         ready_ok = await transport.write_async({
             "jsonrpc": "2.0", "method": "event",
             "params": {"type": "gateway.ready", "payload": {
-                "skin": skin_payload, "change_events": True, "heartbeat": True, "replay_epoch": replay_epoch(),
+                "skin": skin_payload, "change_events": True, "heartbeat": True, "atomic_image_submit": True,
+                "replay_epoch": replay_epoch(),
             }},
         })
         if ready_ok:

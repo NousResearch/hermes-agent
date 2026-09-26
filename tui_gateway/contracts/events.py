@@ -55,6 +55,7 @@ class GatewayReadyPayload(Payload):
     change_events: bool
     replay_epoch: str
     heartbeat: bool | None = None  # WebSocket transport only
+    atomic_image_submit: bool | None = None  # prompt.submit accepts image_paths (no image.attach staging)
 
 
 event("gateway.ready", GatewayReadyPayload,

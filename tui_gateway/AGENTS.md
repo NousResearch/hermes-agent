@@ -88,6 +88,12 @@ profile's does not, and that `os.environ` is unchanged afterwards.
 | Plugin compat notice | — | `plugins.compat_report` (see `plugins/AGENTS.md`) |
 | Connection operations (desktop card) | desktop `store/connection-request.ts` | `connection.request` → `connection.update`* → `connection.respond {op_id}`; `connectors.operation.status`. The op lives in `tools/connectors/live.py`; the card never parks the tool thread (`methods_connectors.py`). |
 
+`prompt.submit.image_paths` binds image files (host paths, resolved like `image.attach`) to that one
+submit, including a busy-queue envelope, without reading or writing the session's shared
+`attached_images` staging slot; `gateway.ready.atomic_image_submit` advertises it. Clients that omit
+the field keep the `image.attach` → `prompt.submit` flow. Paths are resolved only after the session
+and ownership gates, so a refused caller cannot probe which host files exist.
+
 ## Shared subagent snapshots
 
 `subagent.list({session_id})` returns `{subagents, delegations}` for the calling

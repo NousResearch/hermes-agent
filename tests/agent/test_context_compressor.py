@@ -67,6 +67,25 @@ class TestSummarizeToolResultWebExtract:
         assert summary == "[web_extract] https://example.com/h (500 chars)"
 
 
+@pytest.mark.parametrize("tool_name, args", [
+    ("terminal", {"command": "python3 probe.py indus 3"}),
+    ("execute_code", {"code": "print(snapshot())"}),
+])
+@pytest.mark.parametrize("appended", ["", "\n\n[Subdirectory context discovered: ops/AGENTS.md]\nUse the ops venv."],
+                         ids=["bare", "subdir_hint"])
+def test_output_stub_line_count_is_the_outputs_own(tool_name, args, appended):
+    """The stub's line count describes the command's output, not the JSON envelope around it.
+
+    Both tools return ``{"output": ...}`` whose newlines JSON escapes, so counting raw newlines
+    reported "1 lines" for a 67-line snapshot. The tool executor appends subdirectory hints after
+    the JSON, which must not send the count back to the raw text.
+    """
+    output = "\n".join(f"node-{i:03d} cpu={i}" for i in range(67))
+    content = json.dumps({"output": output, "exit_code": 0}) + appended
+    summary = _summarize_tool_result(tool_name, json.dumps(args), content)
+    assert f"{output.count(chr(10)) + 1} lines output" in summary
+
+
 class TestSummarizeToolResultSkillTools:
     """`skill_manage` names live at ``operations[i].name`` and `skills_list` has no ``name`` arg at
     all, so the shared ``name=`` stub rendered ``name=?`` for both and dropped the outcome — a failed

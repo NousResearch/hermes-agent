@@ -1865,12 +1865,26 @@ def _json_dict(text: Any) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _output_line_count(content: str) -> int:
+    """Lines of a tool's output. terminal and execute_code return JSON ``{"output": ...}`` whose newlines are
+    escaped, so counting the raw text said "1 lines" for any multi-line run. Only the leading JSON value is parsed:
+    subdirectory hints are appended after it (``agent/tool_executor.py``)."""
+    head = content.lstrip()
+    try:
+        parsed = json.JSONDecoder().raw_decode(head)[0] if head.startswith("{") else None
+    except (ValueError, RecursionError):  # RecursionError: pathologically nested JSON; count the raw text instead
+        parsed = None
+    output = parsed.get("output") if isinstance(parsed, dict) else None
+    text = output if isinstance(output, str) else content
+    return text.count("\n") + 1 if text.strip() else 0
+
+
 def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_content: str) -> str:
     """Build the summary line (unguarded; see ``_summarize_tool_result``)."""
     args = _json_dict(tool_args)
     content = tool_content or ""
     content_len = len(content)
-    line_count = content.count("\n") + 1 if content.strip() else 0
+    line_count = _output_line_count(content)
     summarizer = _TOOL_RESULT_SUMMARIZERS.get(tool_name)
     if summarizer is not None:
         return summarizer(tool_name, args, content, content_len, line_count)

@@ -188,7 +188,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                "Configuration", args_hint="[manual|smart|off]",
                subcommands=("manual", "smart", "off")),
     CommandDef("reasoning", "Manage reasoning effort and display", "Configuration",
-               args_hint="[level|show|hide|full|clamp] [--global]",
+               args_hint="[level|show|hide|full|clamp [N]] [--global]",
                subcommands=("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "show", "hide", "on", "off", "full", "clamp", "--global")),
     CommandDef("fast", "Fast mode — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)", "Configuration",
                args_hint="[normal|fast|auto|cold|status] [--global]",

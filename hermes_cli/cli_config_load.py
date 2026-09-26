@@ -66,6 +66,23 @@ def _parse_reasoning_config(effort) -> dict | None:
     return result
 
 
+# Reasoning lines shown before the display clamps. The live streaming box and the post-response
+# recap both read ``display.reasoning_clamp_lines`` (``/reasoning clamp [N]``); this is the
+# fallback when the config value is missing or invalid.
+_REASONING_CLAMP_LINES = 10
+
+
+def _coerce_reasoning_clamp_lines(value, default: int = _REASONING_CLAMP_LINES) -> int:
+    """``value`` as a positive int line limit, or ``default`` when invalid (bools included)."""
+    if isinstance(value, bool):
+        return default
+    try:
+        lines = int(value)
+    except (TypeError, ValueError):
+        return default
+    return lines if lines >= 1 else default
+
+
 def _parse_service_tier_config(raw: str) -> str | None:
     """Parse a persisted fast-mode preference: None, "priority", "auto", or "cold"."""
     value = str(raw or "").strip().lower()
@@ -208,7 +225,8 @@ def _cli_config_defaults():
             # /resume recap tuning and show_reasoning: keep in sync with hermes_cli/config.py DEFAULT_CONFIG
             "resume_display": "full", "resume_exchanges": 10, "resume_max_user_chars": 300,
             "resume_max_assistant_chars": 200, "resume_max_assistant_lines": 3, "resume_skip_tool_only": True,
-            "show_reasoning": True, "reasoning_full": False, "streaming": True, "busy_input_mode": "interrupt",
+            "show_reasoning": True, "reasoning_full": False, "reasoning_clamp_lines": 10, "streaming": True,
+            "busy_input_mode": "interrupt",
             "persistent_output": True, "persistent_output_max_lines": 200,
             # Also clear scrollback on redraw/resize recovery; off because users prefer history.
             "cli_rebuild_scrollback_on_redraw": False,

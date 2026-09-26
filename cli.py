@@ -142,8 +142,10 @@ from hermes_cli.cli_render import (  # noqa: F401,E402
 from hermes_cli.cli_config_load import (  # noqa: F401,E402
     _AUXILIARY_TASK_ENV,
     _CWD_PLACEHOLDERS,
+    _REASONING_CLAMP_LINES,
     _TERMINAL_ENV_MAPPINGS,
     _cli_config_defaults,
+    _coerce_reasoning_clamp_lines,
     _init_logging_and_display_from_config,
     _load_prefill_messages,
     _merge_file_config,

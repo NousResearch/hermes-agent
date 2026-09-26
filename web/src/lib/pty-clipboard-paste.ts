@@ -66,13 +66,24 @@ function chars(text: string): number {
   return Array.from(text).length;
 }
 
-/** CRLF → LF, then truncate. This is the text the user confirms (FR-8). */
+/**
+ * CRLF → LF, then truncate. This is the text the user confirms (FR-8).
+ *
+ * The cut is on CODE POINTS, not UTF-16 code units. `slice` would cut on code
+ * units, so a boundary landing between the high and low surrogate of an astral
+ * character (any emoji, CJK extension ideograph) leaves a lone surrogate that
+ * renders as U+FFFD — the user confirms a glyph they never pasted while the
+ * full payload still reaches the agent terminal. Same "preview ≠ payload" class
+ * as the literal-interpolation defect. `chars()` above already counts code
+ * points; this is the same primitive applied to the cut.
+ */
 export function pastePreview(
   text: string,
   max = PASTE_PREVIEW_MAX_CHARS,
 ): string {
   const normalized = text.replace(/\r\n?/g, "\n");
-  return normalized.length > max ? `${normalized.slice(0, max)}…` : normalized;
+  const points = Array.from(normalized);
+  return points.length > max ? `${points.slice(0, max).join("")}…` : normalized;
 }
 
 /**

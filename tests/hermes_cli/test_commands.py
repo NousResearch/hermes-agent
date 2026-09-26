@@ -3,7 +3,8 @@
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
-from hermes_cli.commands import COMMAND_REGISTRY, COMMANDS_BY_CATEGORY, CommandDef, GATEWAY_KNOWN_COMMANDS, gateway_help_lines, infer_argument_mode, resolve_command
+from agent import i18n
+from hermes_cli.commands import COMMAND_REGISTRY, COMMANDS_BY_CATEGORY, CommandDef, GATEWAY_KNOWN_COMMANDS, gateway_help_lines, infer_argument_mode, localized_command_description, resolve_command
 from hermes_cli.commands_completion import SlashCommandAutoSuggest, SlashCommandCompleter
 from hermes_cli.commands_platforms import _CMD_NAME_LIMIT, _SLACK_RESERVED_COMMANDS, _SLACK_VIA_HERMES_ONLY, _clamp_command_names, _sanitize_telegram_name, slack_app_manifest, slack_native_slashes, slack_subcommand_map, telegram_bot_commands, telegram_menu_commands
 
@@ -1059,3 +1060,42 @@ class TestPluginCommandEnumeration:
         slack_names = set(slack_subcommand_map())
         assert "status" in tg_names
         assert "status" in slack_names
+
+
+def test_gateway_command_copy_respects_locale_and_live_registry(monkeypatch):
+    help_command = resolve_command("help")
+    assert help_command is not None
+    try:
+        monkeypatch.setenv("HERMES_LANGUAGE", "ru")
+        i18n.reset_language_cache()
+        lines = gateway_help_lines()
+        assert any("`/help" in line and "Помощь по командам" in line for line in lines)
+        debug = next(line for line in lines if line.startswith("`/debug "))
+        assert all(word in debug for word in ("Отправить", "журналы", "ссылку"))
+        assert any("псевдоним:" in line for line in lines)
+        menu = dict(telegram_bot_commands(include_plugins=False))
+        assert menu["help"] == "Помощь по командам"
+        assert "журналы" in menu["debug"]
+        assert menu["reload_mcp"] == "Перезагрузить MCP-серверы"
+
+        for lang in ("en", "ja"):
+            monkeypatch.setenv("HERMES_LANGUAGE", lang)
+            i18n.reset_language_cache()
+            assert dict(telegram_bot_commands(include_plugins=False))["help"] == help_command.description
+            assert any("`/help" in line and help_command.description in line for line in gateway_help_lines())
+    finally:
+        i18n.reset_language_cache()
+
+
+def test_command_copy_blank_override_and_long_plugin_description(monkeypatch):
+    from hermes_cli import commands_platforms
+
+    monkeypatch.setattr(i18n, "t", lambda key: "  ")
+    assert localized_command_description("help", "Live registry text") == "Live registry text"
+    monkeypatch.setattr(
+        commands_platforms, "_iter_plugin_command_entries",
+        lambda: [("community-plugin", "a" * 500, "")],
+    )
+    menu = dict(telegram_bot_commands())
+    assert len(menu["community_plugin"]) == 256
+    assert menu["community_plugin"].endswith("...")

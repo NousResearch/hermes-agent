@@ -2,7 +2,7 @@ import { expect, it } from 'vitest'
 
 import { TRANSLATIONS } from '@/i18n'
 
-import { parseErrorSurface } from './error-surface'
+import { ERROR_CODE_KEYS, parseErrorSurface } from './error-surface'
 import { errorCardText } from './error-surface-copy'
 
 const codes = [
@@ -52,3 +52,42 @@ it.each(['zh', 'zh-hant', 'ja'] as const)(
     }
   }
 )
+
+it('renders every classified Russian error card in Russian, preserving provider names', () => {
+  const russian = TRANSLATIONS.ru.assistant.thread
+  const english = TRANSLATIONS.en.assistant.thread
+
+  for (const code of ERROR_CODE_KEYS) {
+    const surface = parseErrorSurface({ layer: 'provider', code, provider_label: 'Provider Ω' })
+    const copy = errorCardText(russian, surface)
+    const source = errorCardText(english, surface)
+    expect(copy.title, code).not.toBe(source.title)
+    expect(copy.body, code).not.toBe(source.body)
+
+    if (source.title.includes('Provider Ω')) {
+      expect(copy.title, code).toContain('Provider Ω')
+    }
+
+    if (source.body.includes('Provider Ω')) {
+      expect(copy.body, code).toContain('Provider Ω')
+    }
+  }
+
+  for (const layer of ['provider', 'auth', 'billing', 'gateway', 'disk', 'streaming'] as const) {
+    const surface = parseErrorSurface({ layer, code: 'unknown_failure' })
+    const copy = errorCardText(russian, surface)
+    const source = errorCardText(english, surface)
+    expect(copy.title, layer).not.toBe(source.title)
+    expect(copy.body, layer).not.toBe(source.body)
+  }
+
+  for (const auth_kind of ['api_key', 'oauth'] as const) {
+    const surface = parseErrorSurface({ layer: 'auth', code: 'auth', auth_kind, provider_label: 'Provider Ω' })
+    const copy = errorCardText(russian, surface)
+    const source = errorCardText(english, surface)
+    expect(copy.title, auth_kind).not.toBe(source.title)
+    expect(copy.body, auth_kind).not.toBe(source.body)
+    expect(copy.title, auth_kind).toContain('Provider Ω')
+    expect(copy.body, auth_kind).toContain('Provider Ω')
+  }
+})

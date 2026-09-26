@@ -51,12 +51,18 @@ terminal(command="claude -p 'Add error handling to all API calls in src/' --allo
 
 Interactive mode gives you a full conversational REPL where you can send follow-up prompts, use slash commands, and watch Claude work in real time. **Requires tmux orchestration.**
 
+**MANDATORY:** always launch with `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false` prefixed. Every
+interactive launch example in this doc includes it — do not drop it when adapting these patterns.
+See "Ghost-Text Suggestion Hazard" below for why: without it, a tmux pane snapshot cannot tell an
+unsent suggestion apart from real committed text, and this is the only mitigation applied at the
+source rather than after the fact.
+
 ```
 # Start a tmux session
 terminal(command="tmux new-session -d -s claude-work -x 140 -y 40")
 
-# Launch Claude Code inside it
-terminal(command="tmux send-keys -t claude-work 'cd /path/to/project && claude' Enter")
+# Launch Claude Code inside it (prompt suggestions disabled — see Ghost-Text Suggestion Hazard)
+terminal(command="tmux send-keys -t claude-work 'cd /path/to/project && CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude' Enter")
 
 # Wait for startup, then send your task
 # (after ~3-5 seconds for the welcome screen)
@@ -101,8 +107,8 @@ tmux send-keys -t <session> Down && sleep 0.3 && tmux send-keys -t <session> Ent
 
 ### Robust Dialog Handling Pattern
 ```
-# Launch with permissions bypass
-terminal(command="tmux send-keys -t claude-work 'claude --dangerously-skip-permissions \"your task\"' Enter")
+# Launch with permissions bypass (prompt suggestions disabled)
+terminal(command="tmux send-keys -t claude-work 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions \"your task\"' Enter")
 
 # Handle trust dialog (Enter for default "Yes")
 terminal(command="sleep 4 && tmux send-keys -t claude-work Enter")
@@ -476,7 +482,7 @@ terminal(command="cd /path/to/repo && git diff main...feature-branch | claude -p
 ### Deep Review (Interactive + Worktree)
 ```
 terminal(command="tmux new-session -d -s review -x 140 -y 40")
-terminal(command="tmux send-keys -t review 'cd /path/to/repo && claude -w pr-review' Enter")
+terminal(command="tmux send-keys -t review 'cd /path/to/repo && CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude -w pr-review' Enter")
 terminal(command="sleep 5 && tmux send-keys -t review Enter")  # Trust dialog
 terminal(command="sleep 2 && tmux send-keys -t review 'Review all changes vs main. Check for bugs, security issues, race conditions, and missing tests.' Enter")
 terminal(command="sleep 30 && tmux capture-pane -t review -p -S -60")
@@ -489,7 +495,7 @@ terminal(command="claude -p 'Review this PR thoroughly' --from-pr 42 --max-turns
 
 ### Claude Worktree with tmux
 ```
-terminal(command="claude -w feature-x --tmux", workdir="/path/to/repo")
+terminal(command="CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude -w feature-x --tmux", workdir="/path/to/repo")
 ```
 Creates an isolated git worktree at `.claude/worktrees/feature-x` AND a tmux session for it. Uses iTerm2 native panes when available; add `--tmux=classic` for traditional tmux.
 
@@ -685,6 +691,37 @@ Look for these indicators:
 - `◐ medium · /effort` = current effort level in status bar
 - `ctrl+o to expand` = tool output was truncated (can be expanded interactively)
 
+### Ghost-Text Suggestion Hazard (send-keys safety)
+
+Claude Code shows a grayed-out "Prompt suggestion" for the next prompt after it finishes
+responding (`Tab` or `Right arrow` accepts it into the input box, `Enter` submits — see
+code.claude.com/docs/en/interactive-mode). `tmux capture-pane -p` strips ANSI/color, so an
+unaccepted suggestion sitting in the input box renders as plain text **indistinguishable** from
+real committed output or from a prompt you already sent. Treating it as real — or auto-pressing
+`Enter` on it — fabricates a message Claude never actually received. This exact failure mode
+caused a documented incident of 220+ fabricated auto-submits from a naive tmux-bridge watchdog
+(github.com/anthropics/claude-code/issues/90755).
+
+**MANDATORY default**: every interactive launch command in this doc is prefixed with
+`CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false`, which removes the ambiguity at the source — no
+suggestion is ever generated, so there is nothing for a tmux scrape to misread as committed input.
+Never drop this prefix when adapting a launch pattern from this doc, and add it yourself if you
+construct a new one. Print mode (`-p`) needs no such prefix — Claude Code does not generate
+suggestions there by default.
+
+**Defense in depth**: if you ever end up monitoring a session that was NOT launched with the env
+var (e.g. one started outside Hermes, or the prefix was accidentally dropped), do not treat a
+single `capture-pane` snapshot as ground truth for "committed" text. Before acting on any line you
+did not yourself just `send-keys`, confirm it persists across two captures taken a few seconds
+apart:
+```
+terminal(command="tmux capture-pane -t claude-work -p -S -50 > /tmp/cap1.txt")
+terminal(command="sleep 3 && tmux capture-pane -t claude-work -p -S -50 > /tmp/cap2.txt && diff /tmp/cap1.txt /tmp/cap2.txt")
+```
+A line that disappears or changes between the two captures — or that still sits on the open input
+line rather than having scrolled into history — is a suggestion, not committed input. Do not act
+on it and do not report it to the user as something Claude said or did.
+
 ### Context Window Health
 Use `/context` in interactive mode to see a colored grid of context usage. Key thresholds:
 - **< 70%** — Normal operation, full precision
@@ -743,3 +780,7 @@ Use `/context` in interactive mode to see a colored grid of context usage. Key t
 8. **Report results to user** — after completion, summarize what Claude did and what changed
 9. **Don't kill slow sessions** — Claude may be doing multi-step work; check progress instead
 10. **Use `--allowedTools`** — restrict capabilities to what the task actually needs
+11. **Always launch interactive sessions with `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false`** — see
+    "Ghost-Text Suggestion Hazard" above; this is mandatory, not optional, for every `claude`
+    launch this doc's patterns produce. If you ever monitor a session launched without it, diff
+    two time-separated captures before acting on anything you didn't `send-keys` yourself

@@ -46,8 +46,9 @@ export XAUTHORITY="$HERMES_BD_XAUTH"
 rm -f "$HERMES_BD_SOCKET"
 # no-tmp: ok — the X11 protocol fixes its lock and socket under /tmp; this is not our scratch dir
 xlock="/tmp/.X${HERMES_BD_DISPLAY_NUM}-lock"
+xsock="/tmp/.X11-unix/X${HERMES_BD_DISPLAY_NUM}"  # no-tmp: ok — X11 display socket, fixed by the protocol
 if [[ -e "$xlock" ]] && ! kill -0 "$(tr -d ' ' < "$xlock" 2>/dev/null)" 2>/dev/null; then
-  rm -f "$xlock" "/tmp/.X11-unix/X${HERMES_BD_DISPLAY_NUM}"  # no-tmp: ok — X11 display socket, fixed by the protocol
+  rm -f "$xlock" "$xsock"  # no-tmp: ok — X11 display socket, fixed by the protocol
 fi
 : > "$XAUTHORITY"; chmod 600 "$XAUTHORITY"
 # The cookie goes in on stdin, not argv: a command line is readable by every local user via ps.
@@ -264,16 +265,21 @@ Xvnc "$DISPLAY" -geometry "$GEOM" -depth "$DEPTH" -dpi 96 \
   -Log '*:stderr:30' 2> >(grep -v --line-buffered 'Could not resolve keysym' >&2) &
 XVNC_PID=$!
 trap 'kill "$XVNC_PID" 2>/dev/null || true' EXIT
-# Probe the unix socket only ("unix:N"): Xvnc runs -nolisten tcp, so a bare ":N" lets libxcb fall
-# back to TCP 127.0.0.1:60NN — a dead port that is merely refused fast on normal kernels but hangs
-# ~2 minutes where loopback SYNs to closed ports are dropped (WSL2 mirrored networking), outliving
-# start()'s 15 s window. Later X clients keep ":N": by then the socket exists, so they never fall back.
+# Wait for the unix socket Xvnc binds instead of driving xdpyinfo at the display: Xvnc runs
+# -nolisten tcp, so a bare ":N" probe lets libxcb fall back to TCP 127.0.0.1:60NN — a dead port
+# that is merely refused fast on normal kernels but hangs ~2 minutes where loopback SYNs to closed
+# ports are dropped (WSL2 mirrored networking), outliving start()'s 15 s window. And "unix:N" is
+# no escape: libxcb >= 1.16 (commit 09525553) parses a "unix:" prefix as a socket *path*, so
+# "unix:99" is a parse error there, while older libxcb only reached the socket by the accident of
+# "unix" parsing as a hostname. The socket file appearing is the same signal the e2e screen-record
+# action waits on and needs no X client at all. Later X clients keep ":N": by then the socket
+# exists, so libxcb's unix-first connect hits it and never falls back to TCP.
 for _ in $(seq 1 100); do
-  xdpyinfo -display "unix$DISPLAY" >/dev/null 2>&1 && break
+  [ -S "$xsock" ] && break
   kill -0 "$XVNC_PID" 2>/dev/null || { echo "Xvnc exited during startup" >&2; exit 1; }
   sleep 0.1
 done
-xdpyinfo -display "unix$DISPLAY" >/dev/null 2>&1 || { echo "Xvnc did not become ready" >&2; exit 1; }
+[ -S "$xsock" ] || { echo "Xvnc did not become ready" >&2; exit 1; }
 
 setxkbmap -display "$DISPLAY" us 2>/dev/null || true   # RFB keysyms + xdotool assume a known layout
 xsetroot -display "$DISPLAY" -solid '#1c1f29' 2>/dev/null || true

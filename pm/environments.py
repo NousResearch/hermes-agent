@@ -19,10 +19,27 @@ def install_key(project_root: Path) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
+def _activated_install_state() -> Path | None:
+    activated = os.environ.get("__HERMES_ACTIVATED", "")
+    if not activated:
+        return None
+    facts = Path(activated)
+    key = facts.parent.name
+    if (facts.is_absolute() and facts.name == "facts.json"
+            and facts.parent.parent.name == "installs"
+            and len(key) == 16 and all(char in "0123456789abcdef" for char in key)
+            and facts.is_file()):
+        return facts.parent
+    return None
+
+
 def dependency_home_root() -> Path:
     """Scope dependency state like a process launched in the active home."""
     from hermes_constants import get_default_hermes_root, get_hermes_home_override
 
+    activated = _activated_install_state()
+    if activated is not None:
+        return activated.parent.parent
     override = get_hermes_home_override()
     return get_default_hermes_root(home=override) if override else get_default_hermes_root()
 
@@ -32,7 +49,14 @@ def installs_root() -> Path:
 
 
 def install_state_dir(project_root: Path) -> Path:
-    return installs_root() / install_key(project_root)
+    key = install_key(project_root)
+    # Activation identifies the installation, while HERMES_HOME identifies
+    # task/profile state. A child may change the latter without changing the
+    # dependency owner. Reject unrelated or malformed activation pointers.
+    activated = _activated_install_state()
+    if activated is not None and activated.name == key:
+        return activated
+    return installs_root() / key
 
 
 def runtime_facts_path(project_root: Path) -> Path:

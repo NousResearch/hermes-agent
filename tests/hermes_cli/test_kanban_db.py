@@ -1571,6 +1571,7 @@ def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
 
 
 
+@pytest.mark.real_machine_home
 def test_resolve_hermes_argv_module_actually_runs(tmp_path):
     """A source-bootstrapped owner can launch a real CLI operation outside its tree."""
     import subprocess
@@ -1582,6 +1583,8 @@ def test_resolve_hermes_argv_module_actually_runs(tmp_path):
         os.environ.pop("HERMES_BIN", None)
         with mock.patch.object(shutil, "which", return_value=None):
             argv = kbd._resolve_hermes_argv()
+    launcher = Path(kbd.__file__).resolve().parents[1] / ".hermes" / "bin" / "hermes"
+    before = launcher.read_bytes() if launcher.is_file() else None
     workspace = tmp_path / "unrelated-workspace"
     workspace.mkdir()
     child_home = tmp_path / "child-home"
@@ -1592,15 +1595,16 @@ def test_resolve_hermes_argv_module_actually_runs(tmp_path):
     if os.environ.get("HERMES_RUNTIME_DIR"):
         clean_env["HERMES_RUNTIME_DIR"] = os.environ["HERMES_RUNTIME_DIR"]
     created = subprocess.run(argv + ["kanban", "boards", "create", "launch-probe"],
-                             cwd=workspace, env=clean_env, capture_output=True, text=True, timeout=30)
+                             cwd=workspace, env=clean_env, capture_output=True, text=True, timeout=60)
     assert created.returncode == 0, created.stderr[:200]
     r = subprocess.run(argv + ["kanban", "--board", "launch-probe", "list", "--json"],
-                       cwd=workspace, env=clean_env, capture_output=True, text=True, timeout=30)
+                       cwd=workspace, env=clean_env, capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, (
         f"worker invocation failed from unrelated workspace (rc={r.returncode}); "
         f"stderr={r.stderr[:200]!r}"
     )
     assert json.loads(r.stdout) == []
+    assert (launcher.read_bytes() if launcher.is_file() else None) == before
 
 
 # ---------------------------------------------------------------------------

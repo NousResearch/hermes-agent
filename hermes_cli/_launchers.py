@@ -20,7 +20,20 @@ from pathlib import Path
 if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pm.environments import store_root
+from pm.environments import runtime_facts_path, store_root
+
+
+def _runtime_owner_bootstrap(root: Path, *, managed: bool) -> str:
+    """Bind stable installation identity independently of task/profile state."""
+    if managed:
+        return (
+            f"os.environ['HERMES_RUNTIME_DIR'] = {str(store_root(root))!r}; "
+            f"os.environ['__HERMES_ACTIVATED'] = {str(runtime_facts_path(root))!r}; "
+        )
+    return (
+        "os.environ.pop('__HERMES_ACTIVATED', None); "
+        "os.environ['HERMES_DISABLE_LAZY_INSTALLS'] = '1'; "
+    )
 
 
 def runtime_command(repo_root: Path, args=(), *, module: str = "hermes_cli.main",
@@ -33,7 +46,16 @@ def runtime_command(repo_root: Path, args=(), *, module: str = "hermes_cli.main"
     No selected generation or ambient PYTHONPATH is captured in the command.
     """
     root = Path(repo_root).resolve()
-    python = python or resolve_store_python(root) or Path(sys.executable)
+    managed_python = resolve_store_python(root)
+    facts = runtime_facts_path(root)
+    if sys.prefix != sys.base_prefix and not facts.is_file():
+        # A developer/test virtualenv without an installed PM selection owns
+        # its dependencies; it must not provision a source install at startup.
+        managed_python = None
+    python = python or managed_python or Path(sys.executable)
+    # Freeze the stable installation owner, never a dependency generation.
+    # HERMES_HOME remains free to select the child's task/profile state.
+    owner = _runtime_owner_bootstrap(root, managed=managed_python is not None)
     entry = f"exec({code!r})" if code is not None else (
         f"runpy.run_module({module!r}, run_name='__main__', alter_sys=True)")
     default_home = (f"{str(home)!r}" if home is not None else
@@ -44,7 +66,8 @@ def runtime_command(repo_root: Path, args=(), *, module: str = "hermes_cli.main"
         "os.environ.pop('VIRTUAL_ENV', None); "
         f"sys.path.insert(0, {str(root)!r}); "
         f"os.environ['HERMES_HOME'] = os.environ.get('HERMES_HOME') or {default_home}; "
-        "import hermes_bootstrap; "
+        + owner
+        + "import hermes_bootstrap; "
         + entry
     )
     return [str(python), "-I", "-c", bootstrap, *args]
@@ -278,6 +301,8 @@ def _launcher_script(name: str, repo_root: Path, dependencies: Path | None) -> s
         "if sys.argv[1:2] == ['--print-runtime-command']: sys.dont_write_bytecode = True\n"
         "from hermes_constants import get_default_hermes_root\n"
         "os.environ['HERMES_HOME'] = os.environ.get('HERMES_HOME') or str(get_default_hermes_root())\n"
+        + _runtime_owner_bootstrap(repo_root, managed=resolve_store_python(repo_root) is not None) + "\n"
+        +
         "if sys.argv[1:2] == ['--print-runtime-command']:\n"
         "    from pathlib import Path\n"
         "    from hermes_cli._launchers import print_runtime_command\n"

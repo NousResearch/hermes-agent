@@ -88,9 +88,7 @@ class SessionUsageMixin:
         """Unconditionally set the billing route (``update_token_counts`` only COALESCE-fills
         NULLs) so the dashboard reflects the latest /model switch.
 
-        The stored system prompt is left alone — it is the session's cache prefix and the route
-        change is caught by the next turn's ``_stored_prompt_matches_runtime`` identity check, which
-        rebuilds only when the footer it embeds is actually stale.
+        Route writers never touch the stored prompt; ``_stored_prompt_matches_runtime`` decides staleness.
 
         See #48173, #48248.
         """

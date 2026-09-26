@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 import base64
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 
 from agent.image_routing import (
+    ImageInputDecision,
+    REASON_AUTO_AUX_BACKEND,
+    REASON_AUTO_TEXT_ONLY_CONFIRMED,
+    REASON_AUTO_VISION_CONFIRMED,
+    REASON_AUTO_VISION_UNKNOWN,
+    REASON_EXPLICIT_NATIVE,
+    REASON_EXPLICIT_TEXT,
     _coerce_capability_bool,
     _coerce_mode,
     _lookup_supports_vision,
@@ -16,6 +25,7 @@ from agent.image_routing import (
     build_native_content_parts,
     decide_image_input_mode,
     extract_image_refs,
+    resolve_image_input_decision,
 )
 
 
@@ -87,6 +97,133 @@ class TestDecideImageInputMode:
             assert decide_image_input_mode("anthropic", "claude-sonnet-4", None) == "native"
 
 
+
+
+# ─── resolve_image_input_decision (structured form, TASK-IMAGE-ROUTING-002) ──
+
+
+class TestResolveImageInputDecision:
+    """The public structured resolver keeps the three capability states apart
+    while the string wrapper still collapses them; explicit ``image_input_mode``
+    values are reported as policy choices, never as capability claims.
+    """
+
+    def test_auto_true_confirms_native(self):
+        with patch("agent.image_routing._lookup_supports_vision", return_value=True) as lookup:
+            decision = resolve_image_input_decision("anthropic", "claude-sonnet-4", {})
+        assert decision.mode == "native"
+        assert decision.supports_vision is True
+        assert decision.reason == REASON_AUTO_VISION_CONFIRMED
+        lookup.assert_called_once_with("anthropic", "claude-sonnet-4", {})
+
+    def test_auto_false_is_confirmed_text_only(self):
+        with patch("agent.image_routing._lookup_supports_vision", return_value=False):
+            decision = resolve_image_input_decision("anthropic", "claude-sonnet-4", {})
+        assert decision.mode == "text"
+        assert decision.supports_vision is False
+        assert decision.reason == REASON_AUTO_TEXT_ONLY_CONFIRMED
+
+    def test_auto_unknown_is_deterministic_fail_closed(self):
+        """Unknown capability keeps mode "text" (fail closed) and stays None —
+        deterministic because the lookup hook is stubbed, nothing touches the
+        network."""
+        with patch("agent.image_routing._lookup_supports_vision", return_value=None):
+            decision = resolve_image_input_decision("openrouter", "brand-new-slug", {})
+        assert decision.mode == "text"
+        assert decision.supports_vision is None
+        assert decision.reason == REASON_AUTO_VISION_UNKNOWN
+
+    def test_configured_aux_backend_is_a_config_choice_not_a_capability_claim(self):
+        """An explicit ``auxiliary.vision`` backend routes text in ``auto`` (unchanged), but that is a
+        config decision: no capability lookup runs, so ``supports_vision`` stays None rather than
+        implying the main model was found to be text-only."""
+        cfg = {"auxiliary": {"vision": {"provider": "openrouter", "model": "some-vlm"}}}
+        with patch("agent.image_routing._lookup_supports_vision") as lookup:
+            decision = resolve_image_input_decision("anthropic", "claude-sonnet-4", cfg)
+        assert decision.mode == "text"
+        assert decision.supports_vision is None
+        assert decision.reason == REASON_AUTO_AUX_BACKEND
+        lookup.assert_not_called()
+
+    def test_aux_backend_reason_is_distinct_from_confirmed_text_only(self):
+        """The aux-backend route and a confirmed text-only model both land on "text"; a reporting tool
+        must still be able to tell "you configured this" from "the model cannot see"."""
+        cfg = {"auxiliary": {"vision": {"provider": "openrouter", "model": "some-vlm"}}}
+        aux = resolve_image_input_decision("anthropic", "claude-sonnet-4", cfg)
+        with patch("agent.image_routing._lookup_supports_vision", return_value=False):
+            confirmed = resolve_image_input_decision("anthropic", "claude-sonnet-4", {})
+        assert aux.mode == confirmed.mode == "text"
+        assert aux.reason != confirmed.reason
+        assert (aux.supports_vision, confirmed.supports_vision) == (None, False)
+
+    def test_false_and_unknown_are_distinct_decisions_same_wrapper_mode(self):
+        """AT-1: lookup False and lookup None return different machine-readable
+        decisions (False ≠ None survives) — yet the wrapper routes both to the
+        same safe "text"."""
+        with patch("agent.image_routing._lookup_supports_vision", return_value=False):
+            confirmed_text_only = resolve_image_input_decision("anthropic", "claude-sonnet-4", {})
+        with patch("agent.image_routing._lookup_supports_vision", return_value=None):
+            unknown = resolve_image_input_decision("anthropic", "claude-sonnet-4", {})
+        assert confirmed_text_only != unknown
+        assert confirmed_text_only.supports_vision is False
+        assert unknown.supports_vision is None
+        with patch("agent.image_routing._lookup_supports_vision", return_value=False):
+            assert decide_image_input_mode("anthropic", "claude-sonnet-4", {}) == "text"
+        with patch("agent.image_routing._lookup_supports_vision", return_value=None):
+            assert decide_image_input_mode("anthropic", "claude-sonnet-4", {}) == "text"
+
+    def test_same_inputs_yield_equal_immutable_decisions(self):
+        with patch("agent.image_routing._lookup_supports_vision", return_value=None):
+            first = resolve_image_input_decision("p", "m", {})
+            second = resolve_image_input_decision("p", "m", {})
+        assert first == second
+        assert isinstance(first, ImageInputDecision)
+        with pytest.raises(FrozenInstanceError):
+            first.mode = "native"  # type: ignore[misc]
+
+    def test_explicit_native_is_policy_not_capability(self):
+        """AT-2: an explicit ``image_input_mode: native`` is a policy choice —
+        no capability lookup runs and no vision verdict is attached."""
+        cfg = {"agent": {"image_input_mode": "native"}}
+        with patch("agent.image_routing._lookup_supports_vision") as lookup:
+            decision = resolve_image_input_decision("anthropic", "claude-sonnet-4", cfg)
+        assert decision.mode == "native"
+        assert decision.supports_vision is None
+        assert decision.reason == REASON_EXPLICIT_NATIVE
+        lookup.assert_not_called()
+
+    def test_explicit_text_is_policy_not_capability(self):
+        """AT-2: an explicit ``image_input_mode: text`` is a policy choice, not
+        a proven text-only model — supports_vision stays None."""
+        cfg = {"agent": {"image_input_mode": "text"}}
+        with patch("agent.image_routing._lookup_supports_vision") as lookup:
+            decision = resolve_image_input_decision("anthropic", "claude-sonnet-4", cfg)
+        assert decision.mode == "text"
+        assert decision.supports_vision is None
+        assert decision.reason == REASON_EXPLICIT_TEXT
+        lookup.assert_not_called()
+
+    def test_explicit_policy_survives_the_wrapper(self):
+        cfg = {"agent": {"image_input_mode": "text"}}
+        assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "text"
+
+    def test_requested_provider_forwarded_to_lookup(self):
+        with patch("agent.image_routing._lookup_supports_vision", return_value=True) as lookup:
+            decision = resolve_image_input_decision(
+                "custom", "llava-v1.6", {}, requested_provider="my-vllm"
+            )
+        assert decision.mode == "native"
+        lookup.assert_called_once_with("custom", "llava-v1.6", {}, requested_provider="my-vllm")
+
+    def test_config_override_flows_through_real_lookup_chain(self):
+        """Real resolution chain (no lookup stub): the config override answers
+        before any probe, so no network is touched and the False verdict lands
+        in the structured result untouched."""
+        cfg = {"model": {"supports_vision": False}}
+        decision = resolve_image_input_decision("custom", "some-text-only", cfg)
+        assert decision.mode == "text"
+        assert decision.supports_vision is False
+        assert decision.reason == REASON_AUTO_TEXT_ONLY_CONFIRMED
 
 
 # ─── _coerce_capability_bool ─────────────────────────────────────────────────

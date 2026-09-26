@@ -564,6 +564,9 @@ class PhotonAdapter(BasePlatformAdapter):
         # Never advertise fences: a URL-bearing message goes out as raw text (literal ```), and the
         # markdown path renders a fence as inline Unicode monospace, not a block.
         self.supports_code_blocks = False
+        # Opt-in conversational splitting: blank-line-separated paragraphs go out as separate iMessage
+        # bubbles. Shared ``split_outgoing_*`` extra keys (see BasePlatformAdapter).
+        self._init_conversational_split_config()
         self._sidecar_proc: Optional[subprocess.Popen] = None
         self._http_client: Optional["httpx.AsyncClient"] = None
         self._respawn_lock: Optional[asyncio.Lock] = None
@@ -1204,7 +1207,24 @@ class PhotonAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        return await self._sidecar_send(chat_id, self.format_message(content))
+        # Opt-in conversational splitting: with it off (default) parts == [formatted] and this is exactly
+        # one _sidecar_send call. Each part is still truncated by _sidecar_send's MAX_MESSAGE_LENGTH guard.
+        parts = self._outgoing_message_parts(self.format_message(content))
+        if len(parts) == 1:
+            return await self._sidecar_send(chat_id, parts[0])
+        message_ids: List[str] = []
+        for i, part in enumerate(parts):
+            result = await self._sidecar_send(chat_id, part)
+            if not result.success:
+                # Surface the failing part's result unchanged (error class / retryability); earlier bubbles
+                # were already delivered — same mid-sequence contract as Telegram's chunked send.
+                return result
+            if result.message_id:
+                message_ids.append(str(result.message_id))
+            if i < len(parts) - 1:
+                await asyncio.sleep(getattr(self, "_split_outgoing_delay_seconds", 0.6))
+        return SendResult(success=True, message_id=message_ids[0] if message_ids else None,
+                          raw_response={"message_ids": message_ids})
 
     async def send_clarify(self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
                            session_key: str, metadata: Optional[Dict[str, Any]] = None) -> SendResult:

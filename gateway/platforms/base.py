@@ -4707,6 +4707,72 @@ class BasePlatformAdapter(ABC):
         MarkdownV2); default returns content as-is."""
         return content
 
+    # -- Shared ``config.extra`` bool parser + opt-in conversational splitting -------------------
+    # ``split_outgoing_*`` is a channel-agnostic opt-in shared by the Telegram, WhatsApp and Photon
+    # adapters: blank-line-separated paragraphs are delivered as separate platform messages ("bubbles").
+
+    def _coerce_bool_extra(self, key: str, default: bool = False) -> bool:
+        """Bool from ``config.extra``; accepts true/1/yes/on and false/0/no/off, else ``default``."""
+        value = self.config.extra.get(key) if getattr(self.config, "extra", None) else None
+        if value is None:
+            return default
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"true", "1", "yes", "on"}:
+                return True
+            if lowered in {"false", "0", "no", "off"}:
+                return False
+            return default
+        return bool(value)
+
+    def _init_conversational_split_config(self) -> None:
+        """Read the shared opt-in ``split_outgoing_*`` extra keys; adapters call this from ``__init__``
+        and route outbound text through ``_outgoing_message_parts()`` in ``send()``. Same keys and
+        defaults everywhere: ``split_outgoing_on_blank_lines`` (False), ``split_outgoing_delay_seconds``
+        (0.6), ``split_outgoing_max_parts`` (4)."""
+        self._split_outgoing_on_blank_lines: bool = self._coerce_bool_extra("split_outgoing_on_blank_lines", False)
+        self._split_outgoing_delay_seconds: float = self._coerce_float_extra("split_outgoing_delay_seconds", 0.6)
+        extra = getattr(self.config, "extra", None) or {}
+        try:
+            self._split_outgoing_max_parts = int(extra.get("split_outgoing_max_parts", 4))
+        except (TypeError, ValueError):
+            self._split_outgoing_max_parts = 4
+        if self._split_outgoing_max_parts < 1:
+            self._split_outgoing_max_parts = 4
+
+    def _outgoing_message_parts(self, formatted: str) -> List[str]:
+        """Split on blank lines outside triple-backtick fences; ``[formatted]`` unchanged unless the adapter
+        opted into ``split_outgoing_on_blank_lines``. Attributes are read via ``getattr`` because tests
+        build adapters via ``__new__`` without running ``__init__``."""
+        if not getattr(self, "_split_outgoing_on_blank_lines", False):
+            return [formatted]
+        parts: List[str] = []
+        current: List[str] = []
+        in_fence = False
+        for line in formatted.split("\n"):
+            stripped = line.lstrip()
+            if len(line) - len(stripped) <= 3 and re.match(r"```(?!`)", stripped):
+                if not in_fence:
+                    in_fence = True
+                elif re.fullmatch(r"[ \t]{0,3}```[ \t]*", line):
+                    in_fence = False
+            if not line.strip() and not in_fence:
+                part = "\n".join(current).strip()
+                if part:
+                    parts.append(part)
+                current = []
+                continue
+            current.append(line)
+        final_part = "\n".join(current).strip()
+        if final_part:
+            parts.append(final_part)
+        if len(parts) <= 1:
+            return [formatted]
+        max_parts = getattr(self, "_split_outgoing_max_parts", 4)
+        if max_parts > 0 and len(parts) > max_parts:
+            return parts[: max_parts - 1] + ["\n\n".join(parts[max_parts - 1 :])]
+        return parts
+
     @staticmethod
     def truncate_message(content: str, max_length: int = 4096,
                          len_fn: Optional["Callable[[str], int]"] = None) -> List[str]:

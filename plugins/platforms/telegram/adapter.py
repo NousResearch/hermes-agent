@@ -573,6 +573,9 @@ class TelegramAdapter(BasePlatformAdapter):
         # CJK stays on legacy MarkdownV2 by default (Desktop/macOS garble, #47653); opt-in for unaffected clients.
         self._allow_cjk_rich_messages: bool = self._coerce_bool_extra("allow_cjk_rich_messages", False)
         self._rich_drafts_enabled: bool = self._coerce_bool_extra("rich_drafts", False)
+        # Opt-in conversational splitting (#4445): blank-line-separated paragraphs go out as separate
+        # bubbles. Shared ``split_outgoing_*`` extra keys (see BasePlatformAdapter).
+        self._init_conversational_split_config()
         self._rich_send_disabled = self._rich_draft_disabled = False  # latched after a capability failure
         # Transient sendChatAction failures recur on every keep-typing tick; back off per chat.
         self._telegram_typing_cooldown_until: Dict[str, float] = {}
@@ -1329,19 +1332,6 @@ class TelegramAdapter(BasePlatformAdapter):
             if "pooltimeout" in name or "pool timeout" in text or ("connection pool" in text and "occupied" in text):
                 return True
         return False
-
-    def _coerce_bool_extra(self, key: str, default: bool = False) -> bool:
-        value = self.config.extra.get(key) if getattr(self.config, "extra", None) else None
-        if value is None:
-            return default
-        if isinstance(value, str):
-            lowered = value.strip().lower()
-            if lowered in {"true", "1", "yes", "on"}:
-                return True
-            if lowered in {"false", "0", "no", "off"}:
-                return False
-            return default
-        return bool(value)
 
     def _link_preview_kwargs(self) -> Dict[str, Any]:
         if not getattr(self, "_disable_link_previews", False):
@@ -3717,7 +3707,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     if rich_result.success:
                         await self._retrigger_typing(chat_id, metadata)
                     return rich_result
-            chunks = self.truncate_message(self.format_message(content), self.MAX_MESSAGE_LENGTH, len_fn=utf16_len)
+            # Optionally split into conversational bubbles, then length-chunk every part.
+            chunks = [
+                chunk for part in self._outgoing_message_parts(self.format_message(content))
+                for chunk in self.truncate_message(part, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len)]
             if len(chunks) > 1:
                 # truncate_message appends a raw " (1/2)" suffix; escape the MarkdownV2-special parentheses.
                 chunks = [
@@ -3758,7 +3751,10 @@ class TelegramAdapter(BasePlatformAdapter):
         requested_thread_id = self._message_thread_id_for_send(thread_id)
         used_thread_fallback = False
         prior = len(delivered)
-        for chunk in chunks:
+        for i, chunk in enumerate(chunks):
+            if i and getattr(self, "_split_outgoing_on_blank_lines", False):
+                # Pace conversational bubbles (opt-in split); the legacy multi-chunk path stays delay-free.
+                await asyncio.sleep(getattr(self, "_split_outgoing_delay_seconds", 0.6))
             outcome = await self._send_chunk_with_retries(
                 chat_id, chunk, len(delivered), reply_to, metadata, thread_id, used_thread_fallback, error_types)
             if isinstance(outcome, SendResult):

@@ -311,6 +311,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # Text debounce batching: rapid bursts (forwards, paste-splits) would otherwise each trigger a separate agent turn.
         # Telegram cadence and ceilings (#44883); ``0`` dispatches each message immediately.
         self._configure_text_batch_delays()
+        # Opt-in conversational splitting: blank-line-separated paragraphs go out as separate WhatsApp
+        # bubbles. Shared ``split_outgoing_*`` extra keys (see BasePlatformAdapter).
+        self._init_conversational_split_config()
 
     def _bridge_url(self, path: str) -> str:
         return f"http://127.0.0.1:{self._bridge_port}/{path}"
@@ -626,7 +629,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return SendResult(success=True, message_id=None)
         chat_id = to_whatsapp_jid(chat_id)
         try:
-            chunks = self.truncate_message(self.format_message(content), self._outgoing_chunk_limit())
+            # Optionally split into conversational bubbles (shared ``split_outgoing_*`` opt-in), then
+            # length-chunk every part; with splitting off (default) this is the plain chunk list.
+            chunks = [
+                chunk for part in self._outgoing_message_parts(self.format_message(content))
+                for chunk in self.truncate_message(part, self._outgoing_chunk_limit())]
             sent_message_ids: list[str] = []
             last_message_id = None
             for idx, chunk in enumerate(chunks):
@@ -639,7 +646,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 last_message_id = result.message_id
                 if last_message_id:
                     sent_message_ids.append(str(last_message_id))
-                if len(chunks) > 1:
+                if getattr(self, "_split_outgoing_on_blank_lines", False):
+                    if idx < len(chunks) - 1:  # opt-in split: pace bubbles with the configured delay
+                        await asyncio.sleep(getattr(self, "_split_outgoing_delay_seconds", 0.6))
+                elif len(chunks) > 1:
                     await asyncio.sleep(0.3)  # avoid rate limiting between chunks
             return SendResult(success=True, message_id=last_message_id, continuation_message_ids=tuple(sent_message_ids[:-1]),
                               raw_response={"message_ids": sent_message_ids})

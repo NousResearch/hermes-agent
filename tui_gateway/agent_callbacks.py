@@ -124,6 +124,18 @@ def _agent_cbs(sid: str) -> dict:
             method, sid, {k: v for k, v in (("start", start), ("count", count)) if v is not None},
             timeout=timeout)
 
+    def _reasoning_event(phase: str, item_id: str, text: str = "") -> bool:
+        payload = {"reasoning_id": item_id, "text": text}
+        if phase == "start":
+            return _emit("reasoning.start", sid, payload)
+        if phase == "end":
+            return _emit("reasoning.end", sid, payload)
+        if phase == "delta":
+            if _session_verbose(sid):
+                payload["verbose"] = True
+            return _emit("reasoning.delta", sid, payload)
+        return False
+
     callbacks = {
         "tool_start_callback": lambda tc_id, name, args: _on_tool_start(sid, tc_id, name, args),
         "tool_complete_callback": lambda tc_id, name, args, result: _on_tool_complete(sid, tc_id, name, args, result),
@@ -137,6 +149,7 @@ def _agent_cbs(sid: str) -> dict:
         "reaction_callback": lambda kind: _emit("reaction", sid, {"kind": kind}),
         "reasoning_callback": lambda text: _emit(
             "reasoning.delta", sid, {"text": text, **({"verbose": True} if _session_verbose(sid) else {})}),
+        "reasoning_event_callback": _reasoning_event,
         "status_callback": lambda kind, text=None: _agent_status_update(sid, kind, text),
         # Credits/notice spine: AgentNotice → notification.show; recovery → notification.clear.
         "notice_callback": lambda n: _agent_notice_update(sid, n),

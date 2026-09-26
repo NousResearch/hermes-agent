@@ -623,6 +623,8 @@ export interface SessionMessage {
    * the full call from this field. Absent on a backend older than this app.
    */
   args?: unknown
+  /** Backend-authorized summary identities; never recover these from raw replay sidecars. */
+  display_reasoning_items?: unknown
   codex_reasoning_items?: unknown
   labels?: ToolLabel[]
   tool_call_labels?: StoredToolCallLabels

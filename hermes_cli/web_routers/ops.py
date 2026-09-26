@@ -481,6 +481,7 @@ _MEMORY_FILES = (("MEMORY.md", "memory"), ("USER.md", "user"))
 @router.get("/api/memory")
 async def get_memory_status(profile: Optional[str] = None):
     def _run():  # load_config(), stats and discovery are disk reads — off-loop
+        from hermes_cli.dashboard_profile_scope import dashboard_profile_secret_scope
         cfg = load_config()
         mem = cfg.get("memory")
         active = _normalize_memory_provider_name(mem.get("provider")) if isinstance(mem, dict) else ""
@@ -489,7 +490,11 @@ async def get_memory_status(profile: Optional[str] = None):
         for fname, key in _MEMORY_FILES:
             path = mem_dir / fname
             files[key] = path.stat().st_size if path.exists() else 0
-        return {"active": active, "providers": _discover_memory_provider_statuses(), "builtin_files": files}
+        # Discovery probes every provider (not just `active`); mem0's _load_config etc. read
+        # profile secrets and fail closed under multiplex with no scope bound (audit 2026-09-25).
+        with dashboard_profile_secret_scope():
+            providers = _discover_memory_provider_statuses()
+        return {"active": active, "providers": providers, "builtin_files": files}
 
     return await config_scoped_to_thread(profile, _run)
 

@@ -282,7 +282,7 @@ async def get_cron_delivery_targets(profile: Optional[str] = None):
     configured gateway platforms (a platform without a cron home channel is
     still listed with ``home_target_set: false`` so the UI can say so).
 
-    ``cron_delivery_targets()`` reads each platform's home channel through
+``cron_delivery_targets()`` reads each platform's home channel through
     ``get_secret``, which fails closed once this process hosts more than one
     profile home (the dashboard/desktop ``serve`` backend flips multi-profile
     hosting on the first ``?profile=`` request). The read must therefore run

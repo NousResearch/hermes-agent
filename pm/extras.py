@@ -43,7 +43,12 @@ ANCHORS: dict[str, str | tuple[str, ...]] = {
     "honcho": "honcho",
     "supermemory": "supermemory",
     "mem0": "mem0",
-    "messaging": "telegram",
+    # Umbrella: the bundle ships all four SDKs, so the anchor must list all of
+    # them. Anchoring on telegram alone marked the extra satisfied in an env
+    # where only telegram was installed — PM then never installed the rest, and
+    # WhatsApp document delivery died on `aiohttp not installed` (the adapter
+    # imports aiohttp itself, it is not a telegram dependency).
+    "messaging": ("telegram", "discord", "slack_bolt", "aiohttp"),
     "telegram": "telegram",
     "discord": "discord",
     "slack": "slack_bolt",
@@ -291,7 +296,7 @@ def legacy_selection(project_root: Path) -> list[str]:
              for tree in (*venv.glob("lib/python*/site-packages"), venv / "Lib" / "site-packages")
              if tree.is_dir()]
     carried = sorted(
-        # An umbrella extra shares its anchor with one member; carrying it
+        # An umbrella extra covers several members at once; carrying it
         # would install every sibling the user never chose.
         extra for extra in ANCHORS if extra not in {"messaging", "voice", "wake"}
         # PM refuses a gated extra outside its platform even if a hand-synced venv carried it.

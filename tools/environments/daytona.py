@@ -10,7 +10,6 @@ import math
 import os
 import shlex
 import threading
-import tempfile
 import uuid
 from pathlib import Path, PurePosixPath
 
@@ -153,7 +152,7 @@ class DaytonaEnvironment(BaseEnvironment):
                     # Uploaded but never dispatched: nothing else will unlink it.
                     # Once dispatched the user shell rm's it before running cmd.
                     with contextlib.suppress(Exception):
-                        sandbox.fs.delete_file(state["staged"], request_timeout=5)
+                        sandbox.fs.delete_file(state["staged"])
                 with contextlib.suppress(Exception):
                     sandbox.stop()
 
@@ -162,12 +161,7 @@ class DaytonaEnvironment(BaseEnvironment):
             if stdin_data is not None:
                 temp_dir = self.get_temp_dir().rstrip("/") or "/"
                 remote_stdin = f"{temp_dir}/.hermes-stdin-{uuid.uuid4().hex}"
-                with tempfile.NamedTemporaryFile(delete=False) as staged:
-                    staged.write(stdin_data.encode("utf-8", "surrogateescape"))
-                try:
-                    sandbox.fs.upload_file(staged.name, remote_stdin)
-                finally:
-                    os.unlink(staged.name)
+                sandbox.fs.upload_file(stdin_data.encode("utf-8", "surrogateescape"), remote_stdin)
                 with lock:
                     state["staged"] = remote_stdin
                 sandbox.fs.set_file_permissions(remote_stdin, mode="600")

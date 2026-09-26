@@ -145,7 +145,9 @@ def extract_tool_calls_from_text(text: str) -> tuple[list[ChatCompletionMessageT
             call = _parse_tool_call(m.group(group), len(extracted) + 1)
             if call is not None:
                 extracted.append(call)
-            consumed_spans.append((m.start(), m.end()))
+                # Only parsed calls are consumed. Malformed blocks stay visible instead of
+                # disappearing without execution (#55431).
+                consumed_spans.append((m.start(), m.end()))
         if extracted:
             break
     if not consumed_spans:

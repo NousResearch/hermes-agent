@@ -41,9 +41,9 @@ import {
   eventsReconnectDelayMs,
   eventsReconnectingMessage,
   eventsRejectedMessage,
-  isEventsAuthRejection,
   isEventsAuthRejectionMessage,
   isEventsFeedMessage,
+  isEventsRejection,
   shouldRetryEventsClose
 } from '@/lib/events-reconnect'
 import { credentialWarning, sidecarErrorMessage } from '@/lib/chat-sidebar-banner'
@@ -309,7 +309,11 @@ export function ChatSidebar({
         return
       }
       console.warn(`[chat-sidebar] events feed closed code=${code ?? 'none'}`)
-      if (code !== undefined && isEventsAuthRejection(code)) {
+      if (code !== undefined && isEventsRejection(code)) {
+        // 4401/4403 and the other 44xx policy codes: the server accepted
+        // the upgrade only to close with the reason; retrying the same
+        // request cannot succeed and would loop (`onState('open')` resets
+        // `attempt`), so stop here and tell the user.
         surface(eventsRejectedMessage(code))
         return
       }

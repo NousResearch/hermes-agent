@@ -23,6 +23,48 @@ We strive to never break installations and updates for these. Issues & regressio
 
 ---
 
+## Windows Native Notes
+
+Native Windows (not WSL2) has a few platform-specific behaviors worth knowing:
+
+### Encoding
+
+Windows consoles default to a legacy code page (cp1252 on Western locales, cp936/GBK on Chinese locales). Hermes reconfigures its own stdio to UTF-8 at startup, so interactive output is safe. But:
+
+- **Subprocess text-mode reads** default to the locale encoding unless the caller passes `encoding='utf-8'` explicitly. The repo enforces this via `scripts/check-windows-footguns.py`.
+- **Scheduled Tasks / CI** run with no console at all; `hermes update` and other interactive prompts detect this and take safe defaults rather than blocking.
+
+### File Paths
+
+Windows forbids `:` in path segments. Session-scoped sandbox directory names (e.g. `session:<key>`) are sanitized automatically before use as directory names. Symlink loops are avoided during directory walks.
+
+### Process Management
+
+`signal.SIGKILL` does not exist on Windows; use `gateway.status.terminate_pid(pid, force=True)` which routes to `taskkill /T /F`. `os.kill(pid, 0)` is **not** a liveness probe on Windows — it delivers `CTRL_C_EVENT` and can kill the target. Use `psutil.pid_exists()` or `gateway.status._pid_exists()` instead.
+
+### Linting
+
+Before pushing changes that touch file I/O, subprocesses, or signals, run:
+
+```
+python scripts/check-windows-footguns.py --all
+```
+
+This catches common cross-platform mistakes (missing `encoding=`, unguarded `signal.SIGKILL`, POSIX-only imports, and more).
+
+### Single-GPU VRAM Contention
+
+On a single-GPU rig running a local model (Ollama, llama.cpp) alongside GPU-bound tools (ComfyUI, Stable Diffusion), the agent's model and the tool compete for VRAM. The degradation is **silent**: `ollama ps` reports `100% GPU` throughout because every layer is still assigned, but free VRAM drops below ~1.5 GB and the WDDM driver demotes compute/KV buffers to system RAM without logging anything. Measured impact on an RTX 3090:
+
+| State | Effect |
+|-------|--------|
+| Model loaded while ComfyUI renders | SDXL render 562s vs. 3s unloaded (187x slower) |
+| ComfyUI rendering while model answers | Prompt eval 24 tok/s vs. 1105 tok/s (45x slower) |
+
+The practical rule: **don't take agent turns while a GPU-bound tool is mid-render on the same card.** Use a GPU-mode switch script (unload model → render → reload) or schedule render checks to avoid agent turns until the render completes.
+
+---
+
 ## Tier 2
 
 These platforms are maintained in-tree only as a best effort.

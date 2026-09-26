@@ -10,7 +10,8 @@ import pytest
 
 from hermes_cli import main, source_releases, update_cmd
 from hermes_cli.subcommands.update import build_update_parser
-from hermes_cli.update_channel import channel_record, set_install_channel
+from hermes_cli.update_channel import channel_record, install_id, set_install_channel
+from utils import atomic_roundtrip_yaml_update
 from hermes_cli.config import require_readable_config_before_write
 
 # These tests model channel archives and the reader's own transport.
@@ -80,13 +81,21 @@ def install_reader(monkeypatch, result):
     monkeypatch.setattr(source_releases, "_resolve_channel", lambda name, repository: deepcopy(result), raising=False)
 
 
+def seed_subscription(source, name):
+    # Model an existing subscription, including one whose channel disappeared.
+    # Selection itself now requires a live target; these tests exercise later updates.
+    atomic_roundtrip_yaml_update(source.home / "config.yaml",
+        f"update.installs.{install_id(source.root)}",
+        {"path": str(source.root), "channel": name})
+
+
 def saved(source):
     return channel_record(require_readable_config_before_write(source.home / "config.yaml"), source.root)
 
 
 def test_tagless_channel_check_apply_is_pinned_not_branch_tip(source, monkeypatch, capsys):
     name = "preview-unknown-at-build"
-    set_install_channel(name, source.root)
+    seed_subscription(source, name)
     install_reader(monkeypatch, reader_result(source, name))
     update_cmd._cmd_update_check()
     assert name in capsys.readouterr().out
@@ -105,7 +114,7 @@ def test_tagless_channel_check_apply_is_pinned_not_branch_tip(source, monkeypatc
 @pytest.mark.parametrize("outcome", ["success", "failed", "concurrent", "transient", "already-current"])
 def test_retirement_adopts_destination_only_after_success(source, monkeypatch, outcome):
     name = "preview-retiring"
-    set_install_channel(name, source.root)
+    seed_subscription(source, name)
     original = deepcopy(saved(source))
     install_reader(monkeypatch, reader_result(source, name, "stable"))
     if outcome == "already-current":
@@ -117,7 +126,7 @@ def test_retirement_adopts_destination_only_after_success(source, monkeypatch, o
         assert saved(source) == original
         assert git(source.root, "rev-parse", "HEAD") == source.commits[1]
         if outcome == "concurrent":
-            set_install_channel("my-new-choice", source.root)
+            seed_subscription(source, "my-new-choice")
         return {"exit_code": 1 if outcome == "failed" else 0, "receipt": None,
                 "windows_resume": None}
 
@@ -140,7 +149,7 @@ def test_retirement_adopts_destination_only_after_success(source, monkeypatch, o
 def test_missing_channel_cannot_fall_back_to_main(source, monkeypatch, channel):
     from hermes_cli import source_check
 
-    set_install_channel(channel, source.root)
+    seed_subscription(source, channel)
     def missing(name, repository):
         raise ValueError("Channel does not exist")
     monkeypatch.setattr(source_releases, "_resolve_channel", missing)
@@ -176,7 +185,7 @@ def test_passive_check_reports_retirement_without_adopting_it(source, monkeypatc
     from hermes_cli import source_check, banner
 
     name = "preview-retiring"
-    set_install_channel(name, source.root)
+    seed_subscription(source, name)
     before = saved(source)
     install_reader(monkeypatch, reader_result(source, name, "stable"))
     status = source_check.check_for_updates(install_root=source.root, home=source.home, force=True)
@@ -371,7 +380,7 @@ def test_tagless_zip_apply_uses_pinned_source_archive(source, monkeypatch, dirty
     from hermes_cli import update_cmd_zip
 
     name = "zip-preview"
-    set_install_channel(name, source.root)
+    seed_subscription(source, name)
     install_reader(monkeypatch, reader_result(source, name, "stable"))
     archive = source.home / "source.zip"
     git(source.origin, "archive", "--format=zip", "--prefix=hermes-agent-fixture/",
@@ -406,7 +415,7 @@ def test_retirement_waits_for_correlated_completion_process(source, monkeypatch,
     from hermes_cli import update_receipt
 
     name = "process-retiring"
-    set_install_channel(name, source.root)
+    seed_subscription(source, name)
     original = deepcopy(saved(source))
     # This child is the completion transport fixture, not a simulated PM install.
     # The existing completion-process suite exercises fresh PM/selected Python.
@@ -458,7 +467,7 @@ def test_source_branch_record_has_no_bundle_and_explicit_branch_is_separate(sour
     def forbidden(*args):
         pytest.fail("explicit source branch contacted channel authority")
     monkeypatch.setattr(source_releases, "_resolve_channel", forbidden)
-    set_install_channel("unavailable-preview", source.root)
+    seed_subscription(source, "unavailable-preview")
     completed = []
     monkeypatch.setattr(update_cmd, "_complete_source_update", lambda request: completed.append(request))
     update_cmd._cmd_update_impl(source.parser.parse_args(["update", "--branch", "main"]), False)
@@ -468,7 +477,7 @@ def test_source_branch_record_has_no_bundle_and_explicit_branch_is_separate(sour
 
 
 def test_changed_checkout_cannot_repin_selected_channel_during_apply(source, monkeypatch):
-    set_install_channel("preview", source.root)
+    seed_subscription(source, "preview")
     install_reader(monkeypatch, reader_result(source, "preview", "stable"))
     pull = update_cmd._pull_updates
     def moved(*args, **kwargs):

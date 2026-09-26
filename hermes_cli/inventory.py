@@ -319,7 +319,7 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
     silent (the dial is a no-op on models that ignore it; hiding it from a capable model is worse). A
     serving aggregator's detail overrides models.dev (adds ``can_disable_reasoning``). ``supported_efforts``
     is deliberately NOT forwarded — it under-reports levels that work."""
-    from hermes_cli.models import model_supports_fast_mode
+    from hermes_cli.models import model_supports_fast_mode, resolve_fast_mode_overrides
 
     try:
         from agent.models_dev import get_model_capabilities
@@ -328,6 +328,10 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
 
     for row in rows:
         slug = row.get("slug") or ""
+        # Provider the request would actually run on: a user-defined endpoint row is a
+        # custom:<name> slug with api_url; built-ins use their canonical slug (no api_url,
+        # so the static per-provider base URL decides inside _fast_mode_route_supported).
+        row_provider = str(slug or "")
         caps: dict[str, dict[str, Any]] = {}
         read_reasoning_catalog = _reasoning_catalog_reader(slug.lower())
 
@@ -341,7 +345,15 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
                 except Exception:
                     reasoning = True
 
-            entry: dict[str, Any] = {"fast": bool(model_supports_fast_mode(model)), "reasoning": reasoning}
+            # Route-gated: the request builders only send fast params to the first-party
+            # endpoint that bills for them, so a capable model behind an aggregator or a
+            # custom/local endpoint must not offer a Fast toggle that silently does nothing.
+            try:
+                fast = resolve_fast_mode_overrides(
+                    model, provider=row_provider, base_url=row.get("api_url")) is not None
+            except Exception:
+                fast = bool(model_supports_fast_mode(model))
+            entry: dict[str, Any] = {"fast": fast, "reasoning": reasoning}
 
             if reasoning and read_reasoning_catalog is not None:
                 try:

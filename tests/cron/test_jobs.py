@@ -496,6 +496,21 @@ class TestJobCRUD:
         assert updated["schedule"]["kind"] == "once"
         assert updated["repeat"]["times"] == 1
 
+    def test_recurring_job_that_already_ran_turned_oneshot_still_fires(self, tmp_cron_dir, monkeypatch):
+        """Its recurring run count must not spend the new one-shot budget: at completed >= times the
+        due scan retires the job without firing it."""
+        job = create_job(prompt="digest", schedule="every 1h")
+        mark_job_run(job["id"], success=True)
+        mark_job_run(job["id"], success=True)
+
+        updated = update_job(job["id"], {"schedule": "in 5m"})
+        assert updated["repeat"] == {"times": 1, "completed": 0}
+
+        later = _hermes_now() + timedelta(minutes=5, seconds=10)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: later)
+        assert job["id"] in {j["id"] for j in get_due_jobs()}
+        assert get_job(job["id"]) is not None
+
     def test_rejects_stale_past_one_shot_at_creation(self, tmp_cron_dir, monkeypatch):
         now = datetime(2026, 3, 18, 4, 30, 0, tzinfo=timezone.utc)
         monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)

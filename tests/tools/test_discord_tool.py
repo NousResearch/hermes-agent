@@ -297,6 +297,69 @@ class TestCreateThread:
         )
 
 
+class TestArchiveThread:
+    @pytest.mark.parametrize("channel_type, archived, confirmed", [(10, False, True), (11, False, True),
+        (12, True, True), (0, False, False), (11, False, False)])
+    @patch("tools.discord_tool._discord_request")
+    def test_only_verified_thread_archive_reports_success(self, request, monkeypatch, channel_type, archived, confirmed):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        monkeypatch.setattr("tools.discord_tool._detect_capabilities_nonblocking", lambda token: {})
+        before = {"id": "800", "type": channel_type, "thread_metadata": {"archived": archived}}
+        after = {**before, "thread_metadata": {"archived": confirmed}}
+        request.side_effect = [before, after]
+        from tools.registry import registry
+        result = json.loads(registry.dispatch("discord_admin", {"action": "archive_thread", "channel_id": "800"}))
+        assert "archive_thread" not in json.dumps(get_dynamic_schema_core())
+        assert bool(result.get("success")) is (channel_type in {10, 11, 12} and confirmed)
+        assert request.call_args_list[0].args == ("GET", "/channels/800", "test-token")
+        if channel_type == 0 or archived:
+            assert request.call_count == 1
+        else:
+            assert request.call_args_list[1].kwargs == {"body": {"archived": True}}
+        from tools.discord_tool import _CORE_ACTIONS
+        assert "archive_thread" not in _CORE_ACTIONS
+
+    @patch("tools.discord_tool._discord_request")
+    def test_archive_respects_profile_secrets_allowlist_and_actual_permission_failure(self, request, monkeypatch, tmp_path):
+        from agent import secret_scope
+        from tools.discord_tool import get_dynamic_schema_admin
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "wrong-launch-token")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"discord": {"server_actions": ["archive_thread"]}})
+        monkeypatch.setattr("tools.discord_tool._detect_capabilities_nonblocking", lambda token: {"has_members_intent": False})
+        secret_scope.set_multiplex_active(True)
+        try:
+            for token in ("profile-a", "profile-b", "profile-a"):
+                scope = secret_scope.set_secret_scope({"DISCORD_BOT_TOKEN": token})
+                try:
+                    assert "archive_thread" in get_dynamic_schema_admin()["parameters"]["properties"]["action"]["enum"]
+                    request.side_effect = [{"id": "800", "type": 11, "thread_metadata": {"archived": False}},
+                                           DiscordAPIError(403, "Missing Permissions")]
+                    result = json.loads(discord_admin_handler(action="archive_thread", channel_id="800"))
+                    assert "MANAGE_THREADS" in result["error"]
+                    assert request.call_args.args[2] == token
+                finally:
+                    secret_scope.reset_secret_scope(scope)
+            request.reset_mock()
+            request.side_effect = None
+            scope = secret_scope.set_secret_scope({})
+            try:
+                assert "not configured" in json.loads(discord_admin_handler(action="archive_thread", channel_id="800"))["error"]
+                request.assert_not_called()
+            finally:
+                secret_scope.reset_secret_scope(scope)
+            scope = secret_scope.set_secret_scope({"DISCORD_BOT_TOKEN": "profile-a"})
+            try:
+                monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"discord": {"server_actions": []}})
+                assert "disabled by config" in json.loads(discord_admin_handler(action="archive_thread", channel_id="800"))["error"]
+                request.assert_not_called()
+            finally:
+                secret_scope.reset_secret_scope(scope)
+        finally:
+            secret_scope.set_multiplex_active(False)
+
+
 # ---------------------------------------------------------------------------
 # Error handling
 # ---------------------------------------------------------------------------

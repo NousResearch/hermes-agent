@@ -377,6 +377,24 @@ Registered on the `hermes-discord` platform toolset. Moderation actions require 
 |------|-------------|----------------------|
 | `discord_admin` | Manage a Discord server via the REST API: list guilds/channels/roles, create/edit/delete channels, manage role grants, timeouts, kicks, and bans. | `DISCORD_BOT_TOKEN` + bot permissions |
 
+### Archive a Discord thread
+
+`discord_admin(action="archive_thread", channel_id="<thread ID>")` reads the channel,
+rejects non-thread targets, then sets `archived: true` through Discord's
+[Modify Channel API](https://docs.discord.com/developers/resources/channel#modify-channel).
+Success requires the returned thread metadata to confirm the archived state;
+already archived threads return success without another write. This archives the
+thread without deleting it or changing its locked state.
+
+The calling profile must have its own bot token, access to the thread, and the
+`MANAGE_THREADS` permission in its parent channel. Actual Discord permission
+failures are reported at call time. No privileged members or message-content
+intent is required. If `discord.server_actions` is configured, it must include
+`archive_thread`; the same allowlist is enforced on dispatch even for an older
+cached schema. The action lives in the existing `discord_admin` toolset. Enable
+that toolset through `hermes tools` using its ordinary deferred session behavior;
+do not replace a running conversation's tool schema to expose it mid-turn.
+
 ## `spotify` toolset
 
 Registered by the bundled `spotify` plugin. Requires an OAuth token — run `hermes auth spotify` once to authorize.

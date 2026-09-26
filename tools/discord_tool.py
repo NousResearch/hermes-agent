@@ -10,6 +10,7 @@ import functools
 import hashlib
 import json
 import logging
+import re
 import threading
 import time
 import urllib.error
@@ -369,6 +370,27 @@ def _create_thread(
     return json.dumps({"success": True, "thread_id": thread["id"], "name": thread.get("name")})
 
 
+def _archive_thread(token: str, channel_id: str, **_kwargs: Any) -> str:
+    """Archive only a verified thread and report only observed archived state."""
+    if not isinstance(channel_id, str) or not re.fullmatch(r"[0-9]{1,20}", channel_id):
+        return tool_error("archive_thread requires a numeric thread channel_id.")
+    path = f"/channels/{channel_id}"
+    thread = _discord_request("GET", path, token)
+    if not isinstance(thread, dict) or thread.get("id") != channel_id or thread.get("type") not in {10, 11, 12}:
+        return tool_error("archive_thread target is not a verified Discord thread.")
+    if thread.get("thread_metadata", {}).get("archived") is True:
+        return json.dumps({"success": True, "thread_id": channel_id, "archived": True,
+                           "already_archived": True})
+    # Modify Channel takes archived at the top level; its returned Channel
+    # carries the verified state in thread_metadata (Discord API v10).
+    updated = _discord_request("PATCH", path, token, body={"archived": True})
+    if (not isinstance(updated, dict) or updated.get("id") != channel_id
+            or updated.get("type") not in {10, 11, 12}
+            or updated.get("thread_metadata", {}).get("archived") is not True):
+        return tool_error("Discord did not confirm that the requested thread was archived.")
+    return json.dumps({"success": True, "thread_id": channel_id, "archived": True})
+
+
 def _mutation(method: str, path: str, message: str):
     """Body-less write action: ``path``/``message`` are format templates over the action kwargs."""
     def _action(token: str, **kw: Any) -> str:
@@ -405,6 +427,7 @@ _ACTION_MANIFEST = [
     ("unpin_message", _unpin_message, "(channel_id, message_id)", "unpin a message"),
     ("delete_message", _delete_message, "(channel_id, message_id)", "delete a message"),
     ("create_thread", _create_thread, "(channel_id, name)", "create a public thread; optional message_id anchor"),
+    ("archive_thread", _archive_thread, "(channel_id)", "archive a verified thread; requires MANAGE_THREADS"),
     ("add_role", _add_role, "(guild_id, user_id, role_id)", "assign a role"),
     ("remove_role", _remove_role, "(guild_id, user_id, role_id)", "remove a role"),
 ]
@@ -554,6 +577,7 @@ _ACTION_403_HINT = {
     "unpin_message": f"{_NO_MANAGE_MESSAGES}.",
     "delete_message": f"{_NO_MANAGE_MESSAGES}, or cannot view the channel/message.",
     "create_thread": "Bot lacks CREATE_PUBLIC_THREADS in this channel, or cannot view it.",
+    "archive_thread": "Bot cannot view this thread or lacks MANAGE_THREADS in its parent channel.",
     "add_role": (
         f"{_ROLE_HIERARCHY} Roles can only be assigned below the bot's own position in the role hierarchy."),
     "remove_role": _ROLE_HIERARCHY,

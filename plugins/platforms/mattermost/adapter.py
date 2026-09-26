@@ -42,6 +42,10 @@ _CHANNEL_TYPE_MAP = {"D": "dm", "G": "group", "P": "group", "O": "channel"}
 
 _MATTERMOST_DISABLE_MENTIONS_PROPS = {"disable_mentions": True}
 
+# Mattermost special mentions match the @username pattern but are not users.
+_MATTERMOST_SPECIAL_MENTIONS = frozenset({"channel", "here", "all"})
+_MM_MEMBER_PAGE_CAP = 50
+
 _RECONNECT_BASE_DELAY, _RECONNECT_MAX_DELAY, _RECONNECT_JITTER = 2.0, 60.0, 0.2  # exponential backoff
 
 _POST_WITH_FILE_ERROR = "Failed to post with file"
@@ -514,6 +518,88 @@ class MattermostAdapter(BasePlatformAdapter):
                 message_text = re.sub(re.escape(pattern), "", message_text, flags=re.IGNORECASE).strip()
         return message_text
 
+    async def _strip_peer_bot_mentions(self, channel_id: str, text: str) -> str:
+        """Strip confirmed peer bots after a complete membership walk.
+        Failed/capped walks preserve original text; humans and unknowns remain."""
+        token_matches = list(re.finditer(
+            r"(?<![\w.-])@([A-Za-z0-9][A-Za-z0-9._-]{0,63})", text,
+        ))
+        candidates: Dict[str, list[str]] = {}
+        for match in token_matches:
+            token = match.group(1).lower()
+            variants = [token]
+            while variants[-1][-1:] in {".", "-", "_"}:
+                variants.append(variants[-1][:-1])
+            if _MATTERMOST_SPECIAL_MENTIONS.isdisjoint(variants):
+                candidates[token] = variants
+        if not candidates:
+            return text
+
+        original = text
+        users_by_username: Dict[str, Dict[str, Any]] = {}
+        resolved_tokens: Dict[str, str] = {}
+        seen_usernames: set[str] = set()
+        for page in range(_MM_MEMBER_PAGE_CAP):
+            try:
+                page_users = await self._api_get(
+                    f"users?in_channel={channel_id}&page={page}&per_page=200"
+                )
+            except Exception:
+                return original
+            if not isinstance(page_users, list):
+                return original
+
+            page_usernames = {
+                str(user.get("username", "")).lower()
+                for user in page_users
+                if isinstance(user, dict)
+            }
+            users_by_username.update({
+                str(user.get("username", "")).lower(): user
+                for user in page_users
+                if isinstance(user, dict) and user.get("username")
+            })
+            for token, variants in candidates.items():
+                match = next((variant for variant in variants
+                              if variant in users_by_username), None)
+                if match is not None:
+                    resolved_tokens[token] = match
+            if len(resolved_tokens) == len(candidates) or len(page_users) < 200:
+                break
+            if not page_usernames - seen_usernames:
+                # Stop if the server repeats a full page instead of advancing.
+                return original
+            seen_usernames.update(page_usernames)
+        else:
+            return original
+
+        peer_bot_tokens = {
+            token: username
+            for token, username in resolved_tokens.items()
+            if users_by_username[username].get("is_bot") is True
+            and username != self._bot_username.lower()
+        }
+        if not peer_bot_tokens:
+            return original
+
+        spans = [
+            (match.start(), match.start(1) + len(peer_bot_tokens[token]))
+            for match in token_matches
+            if (token := match.group(1).lower()) in peer_bot_tokens
+        ]
+        for start, end in reversed(spans):
+            before = text[:start]
+            after = text[end:]
+            if before and after and before[-1] in " \t" and after[0] in " \t":
+                before = before.rstrip(" \t")
+                after = " " + after.lstrip(" \t")
+            elif not before and after[:1] in {" ", "\t"}:
+                after = after.lstrip(" \t")
+            elif not after and before[-1:] in {" ", "\t"}:
+                before = before.rstrip(" \t")
+            text = before + after
+        return text
+
     async def _download_attachments(self, file_ids: List[str]) -> Tuple[List[str], List[str]]:
         """Download attachments now (URLs need auth headers downstream tools lack) → (paths, mime types)."""
         import aiohttp
@@ -565,6 +651,7 @@ class MattermostAdapter(BasePlatformAdapter):
             message_text = self._apply_channel_gating(channel_id, message_text)
             if message_text is None:
                 return
+            message_text = await self._strip_peer_bot_mentions(channel_id, message_text)
         # Thread support: replies use root_id; in thread mode a top-level channel post is itself a valid root.
         thread_id = post.get("root_id") or None
         if not thread_id and self._reply_mode == "thread" and not is_dm and post_id:

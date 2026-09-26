@@ -82,7 +82,12 @@ describe('useDesktopIntegrations', () => {
       onDeepLink: vi.fn(),
       signalDeepLinkReady: vi.fn(),
       onClosePreviewRequested: vi.fn(),
-      onOpenFolderRequested: vi.fn()
+      onOpenFolderRequested: vi.fn(),
+      // getSession() rides hermesDesktop.api; tests that exercise the
+      // remembered-session resolution stub this per-test.
+      api: vi.fn(async () => {
+        throw new Error('no api stub for this test')
+      })
     } as unknown as Window['hermesDesktop']
   })
 
@@ -262,6 +267,55 @@ describe('useDesktopIntegrations', () => {
       })
 
       expect(navigate).toHaveBeenCalledWith('/remembered-session', { replace: true })
+    })
+  })
+
+  describe('delegate subagent sessions', () => {
+    const stubGetSession = (row: Partial<SessionInfo>) => {
+      vi.mocked(desktopWindow.hermesDesktop!.api as ReturnType<typeof vi.fn>).mockImplementation(
+        async (request: { path?: string }) => {
+          if (request.path?.startsWith('/api/sessions/')) {
+            return session({ profile: 'default', ...row })
+          }
+
+          throw new Error(`unexpected api call: ${request.path}`)
+        }
+      )
+    }
+
+    it('repairs a remembered delegate child to its parent on restore', async () => {
+      // Written by an older build (or a list slice that served the child).
+      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'delegate-child')
+      stubGetSession({ id: 'delegate-child', parent_session_id: 'parent-session', source: 'subagent' })
+
+      const sessions = [session({ id: 'parent-session', profile: 'default' })]
+
+      render({ profileReady: true, sessions })
+
+      await waitFor(() => expect(navigate).toHaveBeenCalledWith('/parent-session', { replace: true }))
+      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('parent-session')
+    })
+
+    it('remembers the parent, never the delegate child, when routed to one', () => {
+      // A messaging slice can serve the child row, so list membership alone
+      // must not make it rememberable.
+      const sessions = [
+        session({ id: 'delegate-child', parent_session_id: 'parent-session', profile: 'default', source: 'subagent' })
+      ]
+
+      render({ locationPathname: '/delegate-child', profileReady: true, routedSessionId: 'delegate-child', sessions })
+
+      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('parent-session')
+      expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.default')).toBe('/parent-session')
+    })
+
+    it('keeps remembering a /branch child: source, not parenthood, is the discriminator', () => {
+      const sessions = [session({ id: 'branch-child', parent_session_id: 'parent-session', profile: 'default', source: 'tui' })]
+
+      render({ locationPathname: '/branch-child', profileReady: true, routedSessionId: 'branch-child', sessions })
+
+      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('branch-child')
+      expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.default')).toBe('/branch-child')
     })
   })
 

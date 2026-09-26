@@ -26,6 +26,7 @@ const watchGatewayRestartOutcome = vi.fn()
 const startTelegramOnboarding = vi.fn()
 const getTelegramOnboardingStatus = vi.fn()
 const applyTelegramOnboarding = vi.fn()
+const notify = vi.fn()
 
 vi.mock('@/hermes', () => ({
   approvePairing: (platformId: string, requestId: string, profile?: null | string) =>
@@ -64,7 +65,7 @@ vi.mock('@/lib/external-link', () => ({
 }))
 
 vi.mock('@/store/notifications', () => ({
-  notify: vi.fn(),
+  notify: (notification: unknown) => notify(notification),
   notifyError: vi.fn()
 }))
 
@@ -324,6 +325,7 @@ describe('MessagingView Telegram quick setup', () => {
       status: 'ready'
     })
     applyTelegramOnboarding.mockResolvedValue({
+      bot_username: 'hermes_bot',
       needs_restart: false,
       ok: true,
       platform: 'telegram',
@@ -348,6 +350,15 @@ describe('MessagingView Telegram quick setup', () => {
 
       await waitFor(() => expect(applyTelegramOnboarding).toHaveBeenCalledWith('pair-1', ['8792111505'], 'worker'))
       await waitFor(() => expect(watchGatewayRestartOutcome).toHaveBeenCalled())
+      expect(notify).toHaveBeenCalledWith({
+        kind: 'success',
+        message: 'Connected: @hermes_bot · Telegram saved; gateway restarting…',
+        title: 'Telegram setup saved'
+      })
+      // The pairing UI is gone, but the card still names the bot that was just connected.
+      expect(screen.queryByRole('button', { name: /Save and restart/ })).toBeNull()
+      expect(screen.getByText('Connected')).toBeTruthy()
+      expect(screen.getByText('@hermes_bot')).toBeTruthy()
     } finally {
       $settingsScopeOverride.set(null)
     }

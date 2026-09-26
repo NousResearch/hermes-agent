@@ -32,7 +32,15 @@ const SYSTEM_SANS =
   '"Segoe WPC", "Segoe UI", -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, sans-serif, ' +
   EMOJI_FALLBACK
 
-const SYSTEM_MONO = 'Menlo, Monaco, "SF Mono", "Courier Prime", monospace, ' + EMOJI_FALLBACK
+// Keep the bundled JetBrains Mono first in every mono fallback chain. Several
+// theme display fonts (Courier Prime, IBM Plex Mono) do not cover Vietnamese /
+// Latin Extended glyphs; falling directly to platform UI fonts makes code
+// blocks visibly non-monospace. JetBrains Mono is bundled with the app and
+// covers those glyphs, while the Linux fallbacks catch distros without it.
+const SYSTEM_MONO =
+  '"JetBrains Mono", "Cascadia Code", "Cascadia Mono", "DejaVu Sans Mono", "Liberation Mono", "Noto Sans Mono", ' +
+  '"Noto Mono", "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace, ' +
+  EMOJI_FALLBACK
 
 export const DEFAULT_TYPOGRAPHY: DesktopThemeTypography = { fontSans: SYSTEM_SANS, fontMono: SYSTEM_MONO }
 
@@ -371,8 +379,8 @@ export const cyberpunkTheme: DesktopTheme = {
   description: 'Neon green on black — matrix terminal',
   ...THEME_PRESET_PALETTES.cyberpunk,
   typography: {
-    fontMono: `"Courier New", Courier, monospace, ${EMOJI_FALLBACK}`,
-    fontSans: `"Courier New", Courier, monospace, ${EMOJI_FALLBACK}`
+    fontMono: `"Courier New", Courier, ${SYSTEM_MONO}`,
+    fontSans: `"Courier New", Courier, ${SYSTEM_MONO}`
   }
 }
 

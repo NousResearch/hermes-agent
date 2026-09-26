@@ -15,6 +15,7 @@ import {
   appendComposerContents,
   caretOffsetInEditor,
   composerPlainText,
+  markEditorEmptiness,
   placeCaretAtOffset,
   refChipElement,
   renderComposerContents,
@@ -56,6 +57,69 @@ export function triggerKeyUpHandler(consumedRef: MutableRefObject<boolean>, refr
   }
 }
 
+/**
+ * An accepted completion means "the token becomes the chip", so a selection
+ * that merely SPANS the token (Ctrl+A select-all fires no input event and the
+ * composer never normalizes it) must not be read as caret context. Collapse
+ * the caret onto the end of the trigger token before any replacement runs:
+ * `replaceBeforeCaret` requires a collapsed caret, and the rebuild fallback
+ * slices the editor around `caretOffsetInEditor`, which reports a non-collapsed
+ * selection's document-order START — re-appending the very token being
+ * replaced. Returns whether a collapse happened.
+ *
+ * The token is located by its serialized text (kind + query) rather than by
+ * offset arithmetic, so a selection ending mid-token or before it still
+ * resolves; the occurrence INTERSECTING the selection wins when the text
+ * appears more than once. Nothing changes when the token can't be located —
+ * the pre-existing fallback behavior stands.
+ */
+export function collapseSelectionOntoTrigger(editor: HTMLElement, kind: '@' | '/' | ':', query: string): boolean {
+  const selection = window.getSelection()
+
+  if (!selection || selection.rangeCount === 0) {
+    return false
+  }
+
+  const range = selection.getRangeAt(0)
+
+  if (range.collapsed || !editor.contains(range.commonAncestorContainer)) {
+    return false
+  }
+
+  const token = `${kind}${query}`
+  const current = composerPlainText(editor)
+
+  // Selection boundaries are DOM (node, offset) pairs — child indices, NOT
+  // character offsets. Convert both ends to absolute composerPlainText
+  // coordinates before any string math (caretOffsetInEditor already performs
+  // this conversion for the start boundary).
+  const start = caretOffsetInEditor(editor)
+  const probe = range.cloneRange()
+  probe.selectNodeContents(editor)
+  probe.setEnd(range.endContainer, range.endOffset)
+  const scratch = document.createElement('div')
+  scratch.dataset.slot = RICH_INPUT_SLOT
+  scratch.append(probe.cloneContents())
+  const end = Math.min(composerPlainText(scratch).length, current.length)
+
+  for (let index = current.indexOf(token); index !== -1; index = current.indexOf(token, index + 1)) {
+    if (index >= end) {
+      break
+    }
+
+    if (index + token.length > start) {
+      placeCaretAtOffset(editor, index + token.length)
+      const after = window.getSelection()
+
+      if (after && after.rangeCount > 0 && after.getRangeAt(0).collapsed) {
+        return true
+      }
+    }
+  }
+
+  return false
+}
+
 export function rebuildAroundCaret(editor: HTMLDivElement, tokenLength: number, insert: DocumentFragment | string) {
   const current = composerPlainText(editor)
   const caret = caretOffsetInEditor(editor)
@@ -82,6 +146,9 @@ export function rebuildAroundCaret(editor: HTMLDivElement, tokenLength: number, 
   renderComposerContents(editor, prefix)
   editor.append(insert)
   appendComposerContents(editor, suffix)
+  // The render wiped the editor and set data-empty; these appends fire no
+  // input event, so re-mark here or the placeholder paints over the content.
+  markEditorEmptiness(editor)
   placeCaretAtOffset(editor, prefix.length + inserted.length)
 }
 
@@ -301,6 +368,12 @@ export function useComposerTrigger({
     // Bank the pre-commit state first — every path below mutates the editor,
     // and a pick must be exactly one undo step.
     recordUndoPoint?.()
+
+    // An accepted pick replaces the token, so a selection that merely spans
+    // it (Ctrl+A never fires an input event) must collapse onto the token
+    // first — the rebuild fallback slices the editor around a non-collapsed
+    // selection's START and would re-append the token being replaced.
+    collapseSelectionOntoTrigger(editor, trigger.kind, trigger.query)
 
     const rebuildAround = (insert: DocumentFragment | string) => rebuildAroundCaret(editor, trigger.tokenLength, insert)
 

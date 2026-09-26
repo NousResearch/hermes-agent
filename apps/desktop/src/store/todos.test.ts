@@ -42,6 +42,14 @@ describe('setSessionTodos finished-list auto-clear', () => {
     expect($todosBySession.get().s1).toBeUndefined()
   })
 
+  it('clears finished lists for session ids that collide with object prototype keys', () => {
+    setSessionTodos('toString', [todo('a', 'completed')])
+
+    vi.advanceTimersByTime(5_000)
+
+    expect(Object.hasOwn($todosBySession.get(), 'toString')).toBe(false)
+  })
+
   it('cancels the pending clear when a new active list arrives', () => {
     setSessionTodos('s1', [todo('a', 'completed')])
     vi.advanceTimersByTime(2_000)
@@ -86,6 +94,11 @@ describe('clearActiveSessionTodos (turn-end cleanup)', () => {
     clearActiveSessionTodos('s1')
 
     expect($todosBySession.get().s1).toBeUndefined()
+  })
+
+  it('ignores an inherited prototype key on an empty map', () => {
+    expect(() => clearActiveSessionTodos('toString')).not.toThrow()
+    expect(Object.hasOwn($todosBySession.get(), 'toString')).toBe(false)
   })
 })
 
@@ -133,5 +146,23 @@ describe('revisioned snapshots', () => {
 
     restoreSessionTodosFromSnapshot('s1', snapshot, true)
     expect($todosBySession.get().s1?.[0]?.id).toBe('active')
+  })
+
+  it('applies an unversioned update after a revisioned snapshot (tool.start merge)', () => {
+    setSessionTodos('s1', [todo('a', 'pending'), todo('b', 'pending')], 5)
+    setSessionTodos('s1', [todo('a', 'completed'), todo('b', 'pending')])
+
+    expect($todosBySession.get().s1?.[0]?.status).toBe('completed')
+    expect($todoRevisionsBySession.get().s1).toBe(5)
+  })
+
+  it('does not stamp a watermark from an unused empty snapshot', () => {
+    restoreSessionTodosFromSnapshot('s1', { revision: 0, todos: [] }, true)
+
+    expect($todosBySession.get().s1).toBeUndefined()
+    expect($todoRevisionsBySession.get().s1).toBeUndefined()
+
+    setSessionTodos('s1', [todo('a', 'in_progress')])
+    expect($todosBySession.get().s1?.[0]?.id).toBe('a')
   })
 })

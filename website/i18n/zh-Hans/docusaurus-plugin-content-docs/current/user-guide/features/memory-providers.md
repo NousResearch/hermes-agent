@@ -47,7 +47,7 @@ AI 原生的跨会话用户建模，具备辩证推理、会话范围上下文�
 | | |
 |---|---|
 | **适合场景** | 具有跨会话上下文的多 Agent 系统、用户-Agent 对齐 |
-| **依赖** | `pip install honcho-ai` + [API key](https://app.honcho.dev) 或自托管实例 |
+| **依赖** | `hermes memory setup` 通过 PM 准备 Honcho SDK；[API key](https://app.honcho.dev) 或自托管实例 |
 | **数据存储** | Honcho Cloud 或自托管 |
 | **费用** | Honcho 定价（云端）/ 免费（自托管） |
 
@@ -197,7 +197,7 @@ hermes honcho sync
 
 通过 [Honcho 控制台](https://app.honcho.dev) 设置的服务端开关优先于本地默认值——在会话初始化时同步回来。
 
-参见 [Honcho 页面](./honcho.md#observation-directional-vs-unified) 获取完整的 observation 参考。
+参见 [Honcho 页面](./honcho.md#观察模式定向-vs-统一) 获取完整的 observation 参考。
 
 <details>
 <summary>完整 honcho.json 示例（多 profile）</summary>
@@ -267,7 +267,7 @@ hermes honcho sync
 | | |
 |---|---|
 | **适合场景** | 具有结构化浏览功能的自托管知识管理 |
-| **依赖** | `pip install openviking` + 运行中的服务器 |
+| **依赖** | 独立部署的 OpenViking 服务器；通过 `hermes memory setup` 准备 Hermes 端依赖 |
 | **数据存储** | 自托管（本地或云端） |
 | **费用** | 免费（开源，AGPL-3.0） |
 
@@ -275,8 +275,9 @@ hermes honcho sync
 
 **安装：**
 ```bash
-# 先启动 OpenViking 服务器
-pip install openviking
+# 使用独立部署的 OpenViking 服务器，不要安装到 Hermes 的依赖环境
+openviking-server init
+openviking-server doctor
 openviking-server
 
 # 然后配置 Hermes
@@ -300,7 +301,7 @@ echo "OPENVIKING_ENDPOINT=http://localhost:1933" >> ~/.hermes/.env
 | | |
 |---|---|
 | **适合场景** | 免维护的记忆管理——Mem0 自动处理提取 |
-| **依赖** | `pip install mem0ai` + API key |
+| **依赖** | `hermes memory setup` 通过 PM 准备 Mem0 SDK；API key 或自托管/OSS 服务配置 |
 | **数据存储** | Mem0 Cloud |
 | **费用** | Mem0 定价 |
 
@@ -352,7 +353,7 @@ echo "HINDSIGHT_API_KEY=your-key" >> ~/.hermes/.env
 
 | 键 | 默认值 | 描述 |
 |-----|---------|-------------|
-| `mode` | `cloud` | `cloud` 或 `local` |
+| `mode` | `cloud` | `cloud`、`local_embedded` 或 `local_external` |
 | `bank_id` | `hermes` | 记忆库标识符 |
 | `recall_budget` | `mid` | 召回彻底程度：`low` / `mid` / `high` |
 | `memory_mode` | `hybrid` | `hybrid`（上下文 + 工具）、`context`（仅自动注入）、`tools`（仅工具） |
@@ -462,12 +463,12 @@ hermes config set memory.provider byterover
 
 ### Supermemory
 
-语义长期记忆，具备 profile 召回、语义搜索、显式记忆工具，以及通过 Supermemory graph API 进行会话结束时的对话导入。
+语义长期记忆，具备 profile 召回、语义搜索、显式记忆工具，以及逐轮对话捕获（每个会话每 4 小时一个文档）。
 
 | | |
 |---|---|
 | **适合场景** | 带用户 profile 和会话级图谱构建的语义召回 |
-| **依赖** | `pip install supermemory` + [云端 API key](http://app.supermemory.ai/integrations?connect=hermes)，或[自托管服务器](https://supermemory.ai/docs/self-hosting/overview) |
+| **依赖** | `hermes memory setup` 通过 PM 准备 Supermemory SDK；[云端 API key](http://app.supermemory.ai/integrations?connect=hermes)，或[自托管服务器](https://supermemory.ai/docs/self-hosting/overview) |
 | **数据存储** | Supermemory 云端或自托管 |
 | **费用** | 云端按 Supermemory 定价 / 自托管免费 |
 
@@ -510,17 +511,17 @@ npx supermemory local
 | `profile_frequency` | `50` | 在第一轮及每 N 轮包含 profile 事实 |
 | `capture_mode` | `all` | 默认跳过过短或无意义的轮次 |
 | `search_mode` | `hybrid` | 搜索模式：`hybrid`、`memories` 或 `documents` |
-| `api_timeout` | `5.0` | SDK 和导入请求的超时时间 |
+| `api_timeout` | `5.0` | SDK 请求的超时时间 |
 
 **环境变量：** `SUPERMEMORY_API_KEY`（必填）、`SUPERMEMORY_BASE_URL`（未配置 `base_url` 时的兼容回退）、`SUPERMEMORY_CONTAINER_TAG`（覆盖配置）。
 
-Base URL 优先级为 `supermemory.json` → `SUPERMEMORY_BASE_URL` → `https://api.supermemory.ai`。SDK 操作、安装/状态探测和会话导入都会使用解析后的同一端点。
+Base URL 优先级为 `supermemory.json` → `SUPERMEMORY_BASE_URL` → `https://api.supermemory.ai`。SDK 操作和安装/状态探测都会使用解析后的同一端点。
 
 **主要特性：**
 - 自动上下文隔离——从捕获的轮次中剥离已召回的记忆，防止递归记忆污染
-- 在会话边界时将整个会话**一次性导入**
-- 会话结束时同时导入到对话端点（`/v4/conversations`），用于 Supermemory 的 profile 和图谱构建
-- 端到端自托管路由——SDK、探测和会话导入请求使用同一配置端点
+- 逐轮捕获——每轮完成后立即写入，每个会话每 4 小时一个文档
+- 失败的轮次写入会重试（至少一次语义）：下一轮、会话结束、`/reset` 或关闭时
+- 端到端自托管路由——SDK 和探测请求使用同一配置端点
 - 在第一轮及可配置间隔注入 profile 事实
 - **Profile 范围容器**——在 `container_tag` 中使用 `{identity}`（例如 `hermes-{identity}` → `hermes-coder`），按 Hermes profile 隔离记忆
 - **多容器模式**——启用 `enable_custom_container_tags` 并配置 `custom_containers` 列表，让 Agent 跨命名容器读写。自动操作（同步、预取）保持在主容器上。
@@ -558,7 +559,7 @@ Base URL 优先级为 `supermemory.json` → `SUPERMEMORY_BASE_URL` → `https:/
 
 ## Profile 隔离
 
-每个提供者的数据按 [profile](/user-guide/profiles) 隔离：
+每个提供者的数据按 [profile](../profiles.md) 隔离：
 
 - **本地存储提供者**（Holographic、ByteRover）使用 `$HERMES_HOME/` 路径，各 profile 路径不同
 - **配置文件提供者**（Honcho、Mem0、Hindsight、Supermemory）将配置存储在 `$HERMES_HOME/` 中，每个 profile 拥有独立凭证
@@ -567,4 +568,4 @@ Base URL 优先级为 `supermemory.json` → `SUPERMEMORY_BASE_URL` → `https:/
 
 ## 构建记忆提供者
 
-参见[开发者指南：Memory Provider 插件](/developer-guide/memory-provider-plugin)了解如何创建自己的提供者。
+参见[开发者指南：Memory Provider 插件](../../developer-guide/memory-provider-plugin.md)了解如何创建自己的提供者。

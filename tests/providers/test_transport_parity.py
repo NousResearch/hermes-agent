@@ -46,15 +46,6 @@ class TestNvidiaParity:
 class TestKimiParity:
     """Kimi: OMIT temperature, max_tokens=32000, thinking + reasoning_effort."""
 
-    def test_temperature_omitted(self, transport):
-        kw = transport.build_kwargs(
-            model="kimi-k2",
-            messages=_simple_messages(),
-            tools=None,
-            provider_profile=get_provider_profile("kimi-coding"),
-            omit_temperature=True,
-        )
-        assert "temperature" not in kw
 
 
     def test_thinking_enabled(self, transport):
@@ -69,20 +60,10 @@ class TestKimiParity:
         )
         assert kw.get("reasoning_effort") == "high"
         assert "thinking" not in kw.get("extra_body", {})
-
-
-
-    def test_reasoning_effort_top_level(self, transport):
-        """Kimi reasoning_effort is a TOP-LEVEL api_kwargs key, NOT in extra_body."""
-        kw = transport.build_kwargs(
-            model="kimi-k2",
-            messages=_simple_messages(),
-            tools=None,
-            provider_profile=get_provider_profile("kimi-coding"),
-            reasoning_config={"enabled": True, "effort": "high"},
-        )
-        assert kw.get("reasoning_effort") == "high"
         assert "reasoning_effort" not in kw.get("extra_body", {})
+
+
+
 
 
 

@@ -78,3 +78,38 @@ def test_live_snapshot_prefers_the_highest_revision():
     payload = server._attach_todo_state({}, session)
 
     assert payload["todo_state"]["revision"] == 5
+
+
+def test_unused_store_is_not_attached():
+    class Store:
+        @staticmethod
+        def snapshot():
+            return {"todos": [], "revision": 0}
+
+    class Agent:
+        _todo_store = Store()
+
+    payload = server._attach_todo_state({}, {"agent": Agent()})
+
+    assert "todo_state" not in payload
+
+
+def test_empty_list_at_nonzero_revision_is_a_real_clear():
+    state = server._normalize_todo_state({"todos": [], "revision": 2})
+
+    assert state == {"todos": [], "revision": 2}
+
+
+def test_subagent_lifecycle_bypasses_tool_progress_off(monkeypatch):
+    """Subagent rows feed the Desktop status stack / TUI spawn tree — application state, not
+    tool-progress chrome — so display.tool_progress=off must not swallow them."""
+    sid = "subagent-progress-off"
+    events = []
+    monkeypatch.setitem(server._sessions, sid, {"agent": None, "tool_progress_mode": "off"})
+    monkeypatch.setattr(server, "_tool_progress_enabled", lambda _sid: False)
+    monkeypatch.setattr(server, "_emit", lambda event, event_sid, payload=None: events.append(event))
+
+    server._on_tool_progress(sid, "subagent.start", "delegate_task", "goal", None, goal="goal", subagent_id="s1")
+    server._on_tool_progress(sid, "reasoning.available", "_thinking", "hmm", None)
+
+    assert events == ["subagent.start"]

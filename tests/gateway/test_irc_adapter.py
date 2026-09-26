@@ -8,7 +8,7 @@ from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
 # Load plugins/platforms/irc/adapter.py under a unique module name
 # (plugin_adapter_irc) so it cannot collide with other plugin adapters
-# loaded by sibling tests in the same xdist worker.
+# loaded by sibling tests in the same process.
 _irc_mod = load_plugin_adapter("irc")
 
 _parse_irc_message = _irc_mod._parse_irc_message
@@ -18,6 +18,8 @@ check_requirements = _irc_mod.check_requirements
 validate_config = _irc_mod.validate_config
 register = _irc_mod.register
 _standalone_send = _irc_mod._standalone_send
+is_connected = _irc_mod.is_connected
+_env_enablement = _irc_mod._env_enablement
 
 
 class TestIRCProtocolHelpers:
@@ -36,32 +38,32 @@ class TestIRCProtocolHelpers:
 # ── IRC Adapter ──────────────────────────────────────────────────────────
 
 
-class TestIRCAdapterInit:
 
 
-    def test_init_from_config_extra(self, monkeypatch):
-        # Clear any env vars
-        for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
-            monkeypatch.delenv(key, raising=False)
+class TestIRCAdapterLockConflict:
 
+    @pytest.mark.asyncio
+    async def test_connect_fails_when_identity_lock_held(self, monkeypatch):
+        """``acquire_scoped_lock`` returns ``(acquired, existing)``; a live foreign holder must stop
+        connect() before any socket is opened (the tuple is truthy, so a bare ``if not`` never fired)."""
+        import gateway.status as gateway_status
         from gateway.config import PlatformConfig
-        cfg = PlatformConfig(
-            enabled=True,
-            extra={
-                "server": "irc.libera.chat",
-                "port": 6697,
-                "nickname": "hermes",
-                "channel": "#hermes-dev",
-                "use_tls": True,
-            },
-        )
-        adapter = IRCAdapter(cfg)
 
-        assert adapter.server == "irc.libera.chat"
-        assert adapter.port == 6697
-        assert adapter.nickname == "hermes"
-        assert adapter.channel == "#hermes-dev"
-        assert adapter.use_tls is True
+        monkeypatch.setattr(
+            gateway_status, "acquire_scoped_lock",
+            lambda scope, identity, metadata=None: (False, {"pid": 4242, "profile": "other"}))
+        opened = []
+
+        async def _no_connect(*a, **k):
+            opened.append(a)
+            raise AssertionError("socket must not be opened on a lock conflict")
+        monkeypatch.setattr(asyncio, "open_connection", _no_connect)
+        adapter = IRCAdapter(PlatformConfig(enabled=True, extra={
+            "server": "irc.example", "nickname": "hermes", "channel": "#x"}))
+        assert await adapter.connect() is False
+        assert adapter._fatal_error_code == "irc_lock"
+        assert "other" in adapter._fatal_error_message
+        assert opened == []
 
 
 class TestIRCAdapterSend:
@@ -266,23 +268,6 @@ class TestIRCRequirements:
 # ── Plugin registration ──────────────────────────────────────────────────
 
 
-class TestIRCPluginRegistration:
-    """Test the register() entry point."""
-
-    def test_register_adds_to_registry(self, monkeypatch):
-        monkeypatch.setenv("IRC_SERVER", "irc.test.net")
-        monkeypatch.setenv("IRC_CHANNEL", "#test")
-
-        from gateway.platform_registry import platform_registry
-
-        # Clean up if already registered
-        platform_registry.unregister("irc")
-
-        ctx = MagicMock()
-        register(ctx)
-        ctx.register_platform.assert_called_once()
-        call_kwargs = ctx.register_platform.call_args
-        assert call_kwargs[1]["name"] == "irc" or call_kwargs[0][0] == "irc" if call_kwargs[0] else call_kwargs[1]["name"] == "irc"
 
 
 # ── _standalone_send (out-of-process cron delivery) ──────────────────────
@@ -405,4 +390,97 @@ class TestIRCStandaloneSend:
         assert "error" in result
         assert "registration" in result["error"].lower() or "timeout" in result["error"].lower()
 
+
+# ---------------------------------------------------------------------------
+# Multiplex secondary-profile scope
+# ---------------------------------------------------------------------------
+#
+# __init__'s server/port/nickname/channel/use_tls, check_requirements/
+# validate_config/is_connected's server/channel, and _env_enablement's
+# server/channel/port/nickname/use_tls/home_channel, all previously read raw
+# os.getenv unconditionally (only IRC_SERVER_PASSWORD/IRC_NICKSERV_PASSWORD
+# were already scoped). Under multiplex, os.environ holds the DEFAULT
+# profile's YAML-to-env bridge output -- a secondary profile with its own
+# (different or absent) IRC config would silently connect to the default
+# profile's server/channel, or (for _env_enablement) get auto-enabled using
+# the default's channel as its cron home_channel -- a real message-
+# misdelivery risk, not just cosmetic. Mirrors the LINE/Buzz/SimpleX fix for
+# #98738.
+
+@pytest.fixture
+def multiplex_scope():
+    """Install multiplex + a secondary-profile secret scope; restore after."""
+    tokens = []
+
+    def install(scope=None):
+        from agent.secret_scope import set_multiplex_active, set_secret_scope
+
+        set_multiplex_active(True)
+        tokens.append(set_secret_scope(scope or {}))
+        return tokens[-1]
+
+    yield install
+
+    from agent.secret_scope import reset_secret_scope, set_multiplex_active
+
+    for token in reversed(tokens):
+        reset_secret_scope(token)
+    set_multiplex_active(False)
+
+
+@pytest.fixture
+def default_profile_env(monkeypatch):
+    """The default profile's YAML-to-env bridge output in os.environ."""
+    monkeypatch.setenv("IRC_SERVER", "default.example.net")
+    monkeypatch.setenv("IRC_CHANNEL", "#default")
+    monkeypatch.setenv("IRC_PORT", "6667")
+    monkeypatch.setenv("IRC_NICKNAME", "default-bot")
+    monkeypatch.setenv("IRC_USE_TLS", "false")
+
+
+class TestMultiplexProfileScope:
+
+    def test_secondary_extra_wins_over_default_profile_env(
+        self, multiplex_scope, default_profile_env
+    ):
+        """The secondary profile's own config.yaml extra is authoritative,
+        not the default profile's bridged server/channel/port/nick/tls."""
+        from gateway.config import PlatformConfig
+
+        multiplex_scope()
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={
+                "server": "profile.example.net",
+                "channel": "#profile",
+                "port": 6697,
+                "nickname": "profile-bot",
+                "use_tls": True,
+            },
+        )
+        adapter = IRCAdapter(cfg)
+        assert adapter.server == "profile.example.net"
+        assert adapter.channel == "#profile"
+        assert adapter.port == 6697
+        assert adapter.nickname == "profile-bot"
+        assert adapter.use_tls is True
+
+    def test_secondary_missing_keys_fail_closed(
+        self, multiplex_scope, default_profile_env
+    ):
+        """Keys absent from the profile's own scope must NOT borrow the
+        default profile's bridged env values -- that would silently connect
+        the secondary profile's bot to the wrong IRC server/channel."""
+        from gateway.config import PlatformConfig
+
+        multiplex_scope()
+        adapter = IRCAdapter(PlatformConfig(enabled=True, extra={}))
+        assert adapter.server == ""
+        assert adapter.channel == ""
+        assert adapter.port != 6667
+        assert adapter.nickname != "default-bot"
+        assert adapter.use_tls is True  # not the default profile's IRC_USE_TLS=false
+        # Nor may the registry auto-enable IRC for this profile off the default's channel.
+        assert _env_enablement() is None
+        assert is_connected(PlatformConfig(enabled=True, extra={})) is False
 

@@ -1514,6 +1514,34 @@ class TestAzureFoundryResolution:
         assert resolved["base_url"] == "https://synopsisse.openai.azure.com/openai/v1"
 
 
+    def test_gpt6_luna_upgrades_chat_completions_to_responses(self, monkeypatch):
+        """GPT-6 Luna/Sol 400 on /v1/chat/completions once function tools
+        ride along with reasoning_effort (#120263) — resolver must pick
+        ``codex_responses`` instead of the persisted chat_completions."""
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "az-key")
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "azure-foundry")
+        monkeypatch.setattr(rp, "_get_model_config",
+                            lambda: self._make_cfg_with_model("gpt-6-luna", "chat_completions"))
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+        resolved = rp.resolve_runtime_provider(requested="azure-foundry")
+
+        assert resolved["api_mode"] == "codex_responses"
+
+    def test_gpt4_stays_on_chat_completions(self, monkeypatch):
+        """Mixed deployments: a chat-capable Azure model must NOT be pushed
+        onto Responses by the GPT-6 rule (#120263 expected behavior 3)."""
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "az-key")
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "azure-foundry")
+        monkeypatch.setattr(rp, "_get_model_config",
+                            lambda: self._make_cfg_with_model("gpt-4o", "chat_completions"))
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+        resolved = rp.resolve_runtime_provider(requested="azure-foundry")
+
+        assert resolved["api_mode"] == "chat_completions"
+
+
     def test_o3_mini_upgrades(self, monkeypatch):
         monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "az-key")
         monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "azure-foundry")

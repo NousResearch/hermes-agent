@@ -353,6 +353,12 @@ class TestAzureFoundryModelApiMode:
         assert azure_foundry_model_api_mode("codex-mini") == "codex_responses"
 
 
+    def test_gpt6_family_uses_responses(self):
+        """GPT-6 Luna/Sol 400 on chat/completions with tools+reasoning (#120263)."""
+        assert azure_foundry_model_api_mode("gpt-6-luna") == "codex_responses"
+        assert azure_foundry_model_api_mode("gpt-6-sol") == "codex_responses"
+
+
     def test_gpt4_family_returns_none(self):
         """GPT-4, GPT-4o, etc. speak chat completions on Azure."""
         assert azure_foundry_model_api_mode("gpt-4") is None

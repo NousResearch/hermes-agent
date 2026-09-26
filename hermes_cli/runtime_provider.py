@@ -235,7 +235,7 @@ def _copilot_runtime_api_mode(model_cfg: Dict[str, Any], api_key: str, *, target
 
 
 def _azure_inferred_api_mode(effective_model: str, api_mode: str) -> str:
-    """Upgrade api_mode for GPT-5.x / codex / o1-o4 deployments on Azure Foundry (Azure 400s
+    """Upgrade api_mode for GPT-5.x / GPT-6 / codex / o1-o4 deployments on Azure Foundry (Azure 400s
     /chat/completions on these). Skipped when the user explicitly picked anthropic_messages."""
     if not effective_model or api_mode == "anthropic_messages":
         return api_mode

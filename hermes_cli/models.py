@@ -2363,7 +2363,7 @@ def copilot_model_api_mode(
 
 def azure_foundry_model_api_mode(model_name: Optional[str]) -> Optional[str]:
     """``"codex_responses"`` for families that only accept the Responses API on Azure Foundry (GPT-5.x
-    incl. gpt-5-mini, codex, o1/o3/o4), else None. Any ``vendor/`` prefix is stripped first."""
+    incl. gpt-5-mini, GPT-6 Luna/Sol, codex, o1/o3/o4), else None. Any ``vendor/`` prefix is stripped first."""
     raw = str(model_name or "").strip().lower().rsplit("/", 1)[-1]
     return "codex_responses" if raw and raw.startswith(tuple(_AZURE_FOUNDRY_RESPONSES_PREFIXES)) else None
 

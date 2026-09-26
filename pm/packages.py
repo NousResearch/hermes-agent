@@ -602,11 +602,22 @@ class Npm(BinaryPackage):
         return [latest] if latest else []
 
 
+# The pinned git artifact is a self-extracting 7z: only hosts where PE images
+# execute can stage it (tests patch this flag).
+_HOST_IS_WINDOWS = os.name == "nt"
+
+
 @register
 class Git(BinaryPackage):
     """Windows only: Git for Windows carries the bash.exe contract. POSIX
-    uses the system git — a deliberate gap, not an oversight. The tar.bz2
-    release asset extracts with stdlib tarfile: no self-extractor, no GUI."""
+    uses the system git - a deliberate gap, not an oversight. The pinned
+    PortableGit asset is a self-extracting 7z: it carries its own extractor,
+    so no tar bzip2 filter and no bzip2.exe are needed on the machine
+    (#122512). The stub still shows an Extracting progress window (-y only
+    suppresses prompts and error boxes), and its RunProgram then runs the
+    vendor post-install (git-bash hardlinking, etc/ hosts files, mtab
+    snapshot), so the staged tree is post-install output - the old tar.bz2
+    pin never ran post-install."""
 
     name = "git"
     optional = True
@@ -624,7 +635,7 @@ class Git(BinaryPackage):
         arch = "arm64" if target.endswith("arm64") else "64-bit"
         return (
             f"https://github.com/git-for-windows/git/releases/download/"
-            f"v{tag}.windows.{build}/Git-{tag}.{build}-{arch}.tar.bz2"
+            f"v{tag}.windows.{build}/PortableGit-{tag}.{build}-{arch}.7z.exe"
         )
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
@@ -637,9 +648,46 @@ class Git(BinaryPackage):
         return out
 
     def unpack(self, archive: Path, staged: Path, target: str) -> None:
-        from pm.store import extract_tar
+        import shutil
+        import subprocess
 
-        extract_tar(archive, staged, git_msys=True)
+        if not _HOST_IS_WINDOWS:
+            raise RuntimeError(
+                "the pinned git artifact is a PortableGit self-extracting 7z: "
+                "staging the win32 git target runs the vendor extractor and "
+                "requires a Windows host (POSIX hosts get git from the system "
+                "tool, see this package's gaps)"
+            )
+        staged.mkdir(parents=True, exist_ok=True)
+        # Never execute the cached fetch-<sha> bytes: an executed PE can stay
+        # handle-held (Defender on-execute scan, the stub's RunProgram child
+        # chain) past pm's ~2 s download-cleanup retry and fail the install
+        # with WinError 32 (CI run 36189416163). Execute a copy beside the
+        # staging tree instead: pm's .staging-* scratch teardown owns that
+        # path and ignores errors, so any hold lands on a disposable path.
+        work = Path(tempfile.mkdtemp(prefix=".sfx-", dir=staged.parent))
+        exe = work / archive.name
+        try:
+            shutil.copy2(archive, exe)
+            proc = subprocess.run(
+                [str(exe), f"-o{staged}", "-y"],
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+            if proc.returncode:
+                # Under -y the GUI stub is silent on every channel; say so and
+                # name the usual causes instead of promising captured output.
+                tail = (proc.stderr or proc.stdout or "").strip()[-200:]
+                raise RuntimeError(
+                    f"PortableGit self-extractor failed with exit code {proc.returncode}; "
+                    "under -y the GUI stub is silent (no stdout, stderr, or error box), "
+                    "so the usual causes are disk full, a path-length limit, or an "
+                    "antivirus lock"
+                    + (f" -- extractor output: {tail}" if tail else "")
+                )
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
 
     def env(self, entry: Path, target: str) -> dict:
         return {"PATH": [str(entry / "cmd"), str(entry / "usr" / "bin")]}

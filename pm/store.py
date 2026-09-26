@@ -158,13 +158,10 @@ def _tar_filter(member, dest: str):
         return member.replace(deep=False, uid=None, gid=None, uname=None, gname=None, mode=None)
     return tarfile.data_filter(member, dest)
 
-def extract_tar(archive: Path | IO[bytes], dest: Path, *, git_msys: bool = False) -> None:
+def extract_tar(archive: Path | IO[bytes], dest: Path) -> None:
     """Extract a tarball (a path, or an open stream such as a .deb's data.tar)
     with the one containment policy every PM tar consumer shares. Unsafe
     members raise tarfile.FilterError.
-
-    MSYS Git ships dev/fd links and etc/mtab into /proc; those aren't usable
-    on Windows. Skip only those known links, never a filter error or failed file write.
     """
     import tarfile
 
@@ -172,15 +169,7 @@ def extract_tar(archive: Path | IO[bytes], dest: Path, *, git_msys: bool = False
     real_dest = os.path.realpath(dest)
     opened = tarfile.open(archive) if isinstance(archive, (str, os.PathLike)) else tarfile.open(fileobj=archive)
     with opened as tf:
-        if git_msys:
-            members = (m for m in tf if not (m.issym() and (
-                (m.name.lstrip("./").startswith("dev/") and m.linkname.startswith("/proc/"))
-                or (m.name == "etc/mtab" and m.linkname == "/proc/mounts")
-            )))
-            for member in members:
-                tf.extract(member, dest, filter=lambda item, path: _tar_filter(item, real_dest))
-        else:
-            tf.extractall(dest, filter=lambda member, path: _tar_filter(member, real_dest))
+        tf.extractall(dest, filter=lambda member, path: _tar_filter(member, real_dest))
 
 
 def extract(archive: Path, dest: Path) -> None:

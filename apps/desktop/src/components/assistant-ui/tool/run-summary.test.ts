@@ -8,6 +8,11 @@ function tool(toolName: string, args: Record<string, unknown> = {}, result?: unk
 
 const read = (path: string) => tool('read_file', { path }, { content: '' })
 const searched = (query: string) => tool('search_files', { query }, { hits: [] })
+// Fixtures carry the REAL tool schemas (tools/web_tools.py): web_search takes
+// `query`, web_extract takes `urls` (a list). `search_term`/`url` fixtures
+// asserted shapes production never sends.
+const webSearched = (query: string) => tool('web_search', { query }, { success: true })
+const webExtracted = (urls: string[]) => tool('web_extract', { urls }, { success: true })
 const ran = (command: string) => tool('terminal', { command }, { exit_code: 0 })
 
 const settled = (tools: ToolCallLike[]) => summarizeToolRun(tools, false)
@@ -56,5 +61,39 @@ describe('summarizeToolRun', () => {
   // or it narrates work that stopped happening and never offers its toggle.
   it('reads a run the turn left unresolved as finished', () => {
     expect(settled([read('a.ts'), tool('search_files', { query: 'toolRuns' })])).toBe('Explored 2 files')
+  })
+
+  // The web tools act on queries and pages, not files. Counted in the explore
+  // bucket they read as "Explored 2 files" while their own rows say Searched.
+  it('counts web searches as queries, not explored files', () => {
+    expect(settled([webSearched('hermes agent'), webSearched('kv cache')])).toBe('Searched 2 queries')
+  })
+
+  it('names a lone web search the way its row does', () => {
+    expect(settled([webSearched('hermes agent')])).toBe('Searched “hermes agent”')
+  })
+
+  it('names a lone web extract by hostname', () => {
+    expect(settled([webExtracted(['https://example.com/docs'])])).toBe('Searched example.com/docs')
+  })
+
+  it('names a lone web extract by its first URL when several were fetched', () => {
+    expect(settled([webExtracted(['https://example.com/docs', 'https://other.example/page'])])).toBe(
+      'Searched example.com/docs'
+    )
+  })
+
+  it('still names a legacy string-url web extract shape', () => {
+    expect(settled([tool('web_extract', { url: 'https://example.com/docs' }, { success: true })])).toBe(
+      'Searched example.com/docs'
+    )
+  })
+
+  it('gives web searches their own clause after explored files', () => {
+    expect(settled([read('a.ts'), webSearched('x'), webSearched('y')])).toBe('Explored a.ts, searched 2 queries')
+  })
+
+  it('narrates a running web search in the present tense', () => {
+    expect(running([tool('web_search', { search_term: 'x' })])).toBe('Searching “x”')
   })
 })

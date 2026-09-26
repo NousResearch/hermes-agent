@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -18,6 +19,8 @@ from typing import Awaitable, Callable
 from agent.model_metadata import CHARS_PER_TOKEN, estimate_tokens_rough
 from hermes_cli._subprocess_compat import IS_WINDOWS, harden_git_argv, noninteractive_git_env, windows_hide_flags
 from hermes_cli.sizefmt import format_bytes
+
+logger = logging.getLogger(__name__)
 
 # ── Plugin context-reference provider API ────────────────────────────────────
 
@@ -227,6 +230,29 @@ async def preprocess_context_references_async(
         message=message, original_message=message, references=refs, warnings=warnings, injected_tokens=injected_tokens
     )
 
+    # Preflight: a Desktop paste is the user's prompt text, not a project file. If it cannot be
+    # inlined, refuse the turn here — handing the model a path it may not (or will not) open left
+    # workspace-minded models asking the user to move the file instead of starting the task.
+    transport = [(ref, outcome) for ref, outcome in zip(refs, expanded) if is_transport_reference(ref)]
+    unresolved = [ref for ref, (warning, _) in transport if warning]
+    unresolved += [ref for ref in refs[_MAX_EXPANDED_REFERENCES:] if is_transport_reference(ref)]
+    if unresolved:
+        logger.warning(
+            "CONTEXT_INJECTION_FAILURE: %d pasted-content artifact(s) could not be inlined: %s",
+            len(unresolved), ", ".join(Path(ref.target).name for ref in unresolved))
+        warnings.append(
+            "@ context injection refused: pasted content could not be loaded, so the message was not sent "
+            "to the model. Paste it again.")
+        result.blocked = True
+        return result
+    if transport:
+        on_disk = sum(1 for _, (_, block) in transport if block and block.startswith("📎"))
+        logger.info(
+            "TRANSPORT_ARTIFACT_RESOLVED: %d pasted-content artifact(s), inlined=%d on_disk=%d",
+            len(transport), len(transport) - on_disk, on_disk)
+    else:
+        logger.debug("INLINE_CONTEXT: %d @-reference(s), no pasted-content artifact", len(refs))
+
     if injected_tokens > hard_limit:
         warnings.append(f"@ context injection refused: {injected_tokens} tokens exceeds the 50% hard limit ({hard_limit}).")
         result.blocked = True
@@ -297,6 +323,8 @@ def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Pa
         listing = _build_folder_listing(path, cwd, display_base=allowed_root)
         return None, f"📁 {ref.raw} ({estimate_tokens_rough(listing)} tokens)\n{listing}"
     if _is_binary_file(path):
+        if is_transport_reference(ref):  # a paste is always text; binary bytes mean it is corrupt
+            return f"{ref.raw}: pasted content is not valid text", None
         # A bare "not supported" warning was a dead end (the model gave up); the file IS
         # on disk where the agent's tools run, so hand it an actionable block instead.
         return None, _binary_reference_block(ref, path)
@@ -450,8 +478,26 @@ def _is_under(path: Path, root: Path) -> bool:
 # Desktop persists a large plain-text paste as a `.txt` under this Hermes-managed
 # directory (apps/desktop/electron/composer-paste.ts) and attaches it as `@file:`.
 # The chat's cwd is rarely an ancestor of it, so it is the one anchored root the
-# workspace guard admits besides `allowed_root` itself.
+# workspace guard admits besides `allowed_root` itself; `file.attach` staging must
+# therefore keep pastes under it (tui_gateway/prompt_attachments.py), never `attachments/`.
 COMPOSER_PASTES_DIRNAME = "composer-pastes"
+# The paste file's generated name (``pasted_content_<stamp>_<rand>.txt``; staging may add ``-N``).
+_COMPOSER_PASTE_NAME_RE = re.compile(r"pasted_content_[\w.-]+\.txt")
+
+
+def composer_paste_name(path: str | Path) -> str | None:
+    """File name of a Desktop large-paste file (``.../composer-pastes/pasted_content_*.txt``), else None.
+    Splits on both separators: staging judges an upload by the client's own, maybe Windows, path.
+    Recognising one marks prompt transport; it never grants access (admission stays root-based)."""
+    parts = re.split(r"[\\/]", str(path).strip())
+    if len(parts) >= 2 and parts[-2] == COMPOSER_PASTES_DIRNAME and _COMPOSER_PASTE_NAME_RE.fullmatch(parts[-1]):
+        return parts[-1]
+    return None
+
+
+def is_transport_reference(ref: ContextReference) -> bool:
+    """An ``@file:`` ref to a Desktop large-paste file: the user's own prompt text in transit."""
+    return ref.kind == "file" and composer_paste_name(ref.target) is not None
 
 
 def _composer_paste_roots() -> list[Path]:

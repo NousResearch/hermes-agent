@@ -64,8 +64,11 @@ def build_approval_props(prompt, callback_url: str) -> Dict[str, Any]:
     Callback payload and post-action response are identical for both formats."""
     actions: List[Dict[str, Any]] = []
     for label, choice, style in prompt.actions:
+        # Action IDs must match [A-Za-z0-9]+ — no underscores or hyphens. Mattermost 11.9.0
+        # registers the action route with that narrow pattern; "approve_once" 404s at the
+        # router with the generic "could not find the page" error (live-verified).
         actions.append({
-            "id": f"approve_{choice}", "name": label, "type": "button",
+            "id": f"approve{choice}", "name": label, "type": "button",
             "integration": {"url": callback_url,
                             "context": {"session_key": prompt.session_key, "choice": choice}},
         })

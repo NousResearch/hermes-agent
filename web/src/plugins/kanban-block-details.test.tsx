@@ -93,7 +93,10 @@ it("shows the current block kind on the card and existing failure fields in its 
 });
 
 it("keeps legacy tasks without block metadata usable", async () => {
-  const { block_kind, block_recurrences, consecutive_failures, last_failure_error, ...legacy } = task;
+  const legacy: Record<string, unknown> = { ...task };
+  for (const key of ["block_kind", "block_recurrences", "consecutive_failures", "last_failure_error"]) {
+    delete legacy[key];
+  }
   const card = await openBoard(legacy);
   await openDrawer(card);
   expect(row("Status")).toBe("blocked");

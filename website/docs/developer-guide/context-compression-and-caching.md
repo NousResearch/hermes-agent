@@ -261,9 +261,9 @@ auxiliary:
 
 | Parameter | Default | Range | Description |
 |-----------|---------|-------|-------------|
-| `threshold` | `0.50` | 0.0-1.0 | Compression triggers when prompt tokens ≥ `threshold × context_length` (floored at 0.75 below 512K windows) |
+| `threshold` | `0.50` | 0.0-1.0 | Compression triggers when prompt tokens ≥ `threshold × context_length`. On models with context windows below 512K the effective ratio is floored at `0.75` **unless** a matching `model_thresholds` override exists (an explicit per-model value wins over the floor) |
 | `threshold_tokens` | `256000` | int or `null` | Absolute cap on the trigger: compaction fires at the lower of the ratio trigger and this count, so a 1M window compacts at 256K instead of 500K. `null` = ratio-only |
-| `model_thresholds` | `{}` | map | Per-model overrides of `threshold`. Keys are substring-matched against the model name (longest match wins); `"<provider>:<substring>"` keys apply only on that provider. The small-context floor still applies on top (see below) |
+| `model_thresholds` | `{}` | map | Per-model overrides of `threshold`. Keys are substring-matched against the model name (longest match wins); `"<provider>:<substring>"` keys apply only on that provider. A matching override takes precedence over the small-context floor (see below) |
 | `target_ratio` | `0.20` | 0.10-0.80 | Controls tail protection token budget: `threshold_tokens × target_ratio` (legacy mode only — `lean` uses its own clamp) |
 | `tail_mode` | `lean` | `lean`, `legacy` | Tail retention policy. `legacy` keeps a `target_ratio`-sized verbatim tail (~100K+ tokens on big-window models without the `threshold_tokens` cap). `lean` keeps a clamped tail of `2.5% × context window` (10K floor, 25K cap) and instead carries continuity in the summary: a detailed identifier-preserving session log (produced by the same single summary request — lean compaction makes exactly one auxiliary LLM call per attempt), a mechanically extracted anchor index (PR numbers, SHAs, paths, error strings — regex, never paraphrased), every real user message quoted verbatim (newest-first budget), and a `session_search` recovery pointer so the agent can re-access anything summarized away. Oversized regions are evenly sampled into the summarizer input (with explicit elision markers) rather than triggering extra calls. Result on 500K-token real sessions: ~49K retained vs ~162K, with higher recall when paired with recovery (see `evals/compaction/results/`). Old tool results inside the lean tail are demoted to one-line stubs carrying a recovery pointer |
 | `protect_last_n` | `20` | ≥1 | Minimum number of recent messages always preserved |
@@ -339,10 +339,14 @@ Resolution rules:
 - When no key matches (or the map is empty), the global `threshold` applies.
 - The override is re-resolved on every `/model` switch; switching to a model
   with no matching key falls back to the global `threshold`.
-- The **small-context floor still applies on top** of overrides (raise-only):
-  models with context windows below 512K are floored at `0.75`, so an
-  override below the floor is raised to `0.75`, while an override above it
-  (e.g. `0.80`) wins.
+- A **matching per-model override takes precedence over the small-context
+  floor**: an explicit value you set for a model is honored as-is, even below
+  `0.75`. The raise-only `0.75` floor (for windows under 512K) still applies
+  when there is **no** matching override — so a sub-512K model with no entry
+  in `model_thresholds` triggers at `≥ 0.75`, while one with an explicit
+  override (e.g. `0.63`) compresses at exactly that ratio. This lets local /
+  sub-512K models opt into earlier compaction to keep headroom before the hard
+  window limit instead of being forced to trigger late.
 
 Plugin context engines can reuse the same resolution logic via
 `from agent.context_compressor import resolve_model_threshold`; engines that

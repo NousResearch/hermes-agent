@@ -2022,11 +2022,19 @@ def _lower_threshold_to_aux_context(
     # degenerate-window guard. Recommending a value those would override is silently ignored and this
     # warning would reappear every session — so mirror the compressor's own math and only offer the option
     # when the recomputed trigger actually fits the auxiliary model's context.
-    from agent.context_compressor import ContextCompressor as _CC
+    from agent.context_compressor import ContextCompressor as _CC, has_explicit_model_threshold
     recomputed_threshold = None
     if main_ctx and isinstance(compressor, _CC):
+        # Mirror the compressor's own floor decision for its main model: an explicit per-model
+        # override skips the small-context floor, so the feasibility check must too (#67422).
+        _main_model = getattr(compressor, "model", "") or ""
+        _main_provider = getattr(compressor, "provider", "") or ""
         recomputed_threshold = _CC._compute_threshold_tokens(
-            main_ctx, _CC._effective_threshold_percent(main_ctx, safe_pct / 100),
+            main_ctx,
+            _CC._effective_threshold_percent(
+                main_ctx, safe_pct / 100,
+                explicit_override=has_explicit_model_threshold(_main_model, getattr(compressor, "model_thresholds", {}), _main_provider),
+            ),
             getattr(compressor, "max_tokens", None),
         )
     threshold_suggestion_viable = recomputed_threshold is None or recomputed_threshold <= aux_context

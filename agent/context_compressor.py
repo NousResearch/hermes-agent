@@ -1952,6 +1952,20 @@ def resolve_model_threshold(
     return float(model_thresholds[best[1]]) if best else default
 
 
+def has_explicit_model_threshold(model: str, model_thresholds: dict | None, provider: str = "") -> bool:
+    """True when an explicit ``model_thresholds`` entry matches ``model``.
+
+    An explicit per-model override takes precedence over the small-context
+    floor: the operator deliberately chose that ratio for that model (e.g. a
+    local box that must compress before its hard limit). The floor remains the
+    default when no override matches, preserving the anti-thrash protection.
+    Module-level so plugin context engines and the gateway can reuse it."""
+    if not model_thresholds or not model:
+        return False
+    provider = (provider or "").strip().lower()
+    return any(_model_threshold_key_rank(key, model, provider) is not None for key in model_thresholds)
+
+
 def _memory_provider_section(memory_context: str) -> str:
     """Prompt block carrying the sanitized memory-provider JSON, or "" when empty."""
     sanitized = sanitize_memory_context(memory_context)
@@ -2159,7 +2173,11 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
                 custom_providers=self.custom_providers,
             )
             # Raise-only small-context floor; must run after context_length resolves and before threshold_tokens derives.
-            self.threshold_percent = self._effective_threshold_percent(self._resolved_context_length, self._base_threshold_percent)
+            # A matched per-model override takes precedence over the floor (explicit operator choice).
+            self.threshold_percent = self._effective_threshold_percent(
+                self._resolved_context_length, self._base_threshold_percent,
+                explicit_override=has_explicit_model_threshold(self.model, self.model_thresholds, self.provider),
+            )
             self._emit_init_summary_once()
         return self._resolved_context_length
 
@@ -2174,9 +2192,13 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             return
         self._resolved_context_length = value
         # Re-apply the raise-only floor so percent and tokens derive from the same window.
+        # A matched per-model override takes precedence over the floor (explicit operator choice).
         _base = getattr(self, "_base_threshold_percent", None)
         if _base is not None:
-            self.threshold_percent = self._effective_threshold_percent(value, _base)
+            self.threshold_percent = self._effective_threshold_percent(
+                value, _base,
+                explicit_override=has_explicit_model_threshold(self.model, self.model_thresholds, self.provider),
+            )
         self._threshold_tokens = self._tail_token_budget = self._max_summary_tokens = None
         self._emit_init_summary_once()
 
@@ -2617,7 +2639,10 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         guard quotes is the number the compressor installs (#83450). Excludes the auxiliary-summariser
         ceiling, which the feasibility probe re-derives per runtime."""
         base_percent = resolve_model_threshold(model, self.model_thresholds, self._config_threshold_percent, provider)
-        effective_percent = self._effective_threshold_percent(context_length, base_percent)
+        effective_percent = self._effective_threshold_percent(
+            context_length, base_percent,
+            explicit_override=has_explicit_model_threshold(model, self.model_thresholds, provider),
+        )
         threshold = self._compute_threshold_tokens(context_length, effective_percent, self.max_tokens)
         cap = self._effective_threshold_cap(context_length)
         if cap is not None:
@@ -2714,8 +2739,15 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             self.threshold_tokens = _aux_ceiling
 
     @staticmethod
-    def _effective_threshold_percent(context_length: int, threshold_percent: float) -> float:
-        """Raise-only small-context threshold floor: models under 512K trigger at >= 75%."""
+    def _effective_threshold_percent(
+        context_length: int, threshold_percent: float, *, explicit_override: bool = False,
+    ) -> float:
+        """Raise-only small-context threshold floor: models under 512K trigger at >= 75%.
+        Skipped when ``explicit_override`` is set — a deliberate per-model
+        ``model_thresholds`` value wins over the floor (the operator chose that
+        ratio for that model); the floor stays the default when no override matches."""
+        if explicit_override:
+            return threshold_percent
         if context_length and context_length < _SMALL_CTX_WINDOW_LIMIT:
             return max(threshold_percent, _SMALL_CTX_THRESHOLD_PERCENT)
         return threshold_percent

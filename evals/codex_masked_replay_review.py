@@ -111,7 +111,9 @@ def scenario(name, provider="openai-codex", replay=True):
                 "stable_retry_fields": stable, "reasoning_parameters": [p.get("reasoning") for p in requests],
                 "tool_count": len(requests[0].get("tools", [])) if requests else 0,
                 "signed_payload_unchanged": [i.get("encrypted_content") for i in signed_before] == ([ITEM["encrypted_content"]] if replay else []),
-                "replay_enabled_after": agent._codex_reasoning_replay_enabled,
+                "replay_denied_pairs_after": sorted(
+                    f"{kind}/{model}" for kind, model in (getattr(agent, "_codex_replay_denied_pairs", None) or set())
+                ),
                 "canonical_replay_after": any(m.get("codex_reasoning_items") for m in result["messages"])}
     finally:
         agent.close()

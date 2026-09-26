@@ -17,7 +17,6 @@ def _codex_agent(**over):
         _base_url_lower="https://chatgpt.com/backend-api/codex",
         codex_responses_native_compaction=True,
         compression_enabled=True,
-        _codex_reasoning_replay_enabled=True,
         context_compressor=SimpleNamespace(threshold_tokens=765_000),
         tools=None,
     )

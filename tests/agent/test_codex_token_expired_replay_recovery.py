@@ -13,6 +13,7 @@ from __future__ import annotations
 import pytest
 
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.codex_reasoning_replay import denied_pairs
 from agent.turn_recovery import recover_after_classification
 from agent.turn_retry_state import TurnRetryState
 
@@ -39,10 +40,10 @@ class _Agent:
     base_url = "https://chatgpt.com/backend-api/codex"
     model = "gpt-5.3-codex"
     api_key = "same-bearer"
-    _codex_reasoning_replay_enabled = True
 
     def __init__(self):
         self.refresh_calls = 0
+        self._codex_replay_denied_pairs = set()
 
     def _recover_with_credential_pool(self, **kwargs):
         return False, False
@@ -87,7 +88,9 @@ def test_token_expired_strips_cached_reasoning_once_before_the_credential_path()
 
     assert retried is True
     assert agent.refresh_calls == 0  # no refresh token burned on a session-state problem
-    assert agent._codex_reasoning_replay_enabled is False
+    # The deny is scoped to the issuer pair that minted the rejected blob — never session-wide
+    # (agent/codex_reasoning_replay.py); a different pair in the same session keeps replaying.
+    assert denied_pairs(agent) == {("codex_backend", "gpt-5.3-codex")}
     assert not any("codex_reasoning_items" in m for m in messages)
     # A second identical 401 in the same turn is a real auth failure: refresh once, no second strip.
     assert _recover(agent, _Codex401(), retry, messages) == (False, False)
@@ -103,7 +106,7 @@ def test_token_expired_without_cached_reasoning_stays_on_auth_path(err, history)
 
     assert _recover(agent, err, retry, history) == (False, False)
     assert agent.refresh_calls == 1
-    assert agent._codex_reasoning_replay_enabled is True
+    assert denied_pairs(agent) == set()  # no denial: the branch never ran
     assert retry.invalid_encrypted_content_retry_attempted is False
 
 

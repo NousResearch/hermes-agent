@@ -10,6 +10,7 @@ import logging
 import re
 from typing import Any, Callable, Optional
 
+from agent.codex_reasoning_replay import replay_denied_for
 from agent.reasoning_effort import (
     CODEX_ASTRA_EFFORTS, CODEX_LEGACY_EFFORTS,
     XAI_GROK46_EFFORTS, XAI_LEGACY_EFFORTS, clamp_effort, is_astra_model,
@@ -640,6 +641,8 @@ class ResponsesApiTransport(ProviderTransport):
             current_issuer_kind=self._resolve_issuer_kind(kwargs),
             current_issuer_model=self._last_issuer_model,
             native_compaction_eligible=_native_compaction_active(kwargs.get("context_management")),
+            replay_denied_issuer_pairs=kwargs.get("replay_denied_issuer_pairs"),
+            proxy_replay_max_turns=kwargs.get("proxy_replay_max_turns"),
         )
 
     def convert_tools(self, tools: Optional[list[dict[str, Any]]]) -> Any:
@@ -655,9 +658,11 @@ class ResponsesApiTransport(ProviderTransport):
 
         params: instructions, reasoning_config ({effort, enabled}), session_id (transcript id;
         Codex header; cache-scope fallback), cache_scope_id (rotation-stable scope for the
-        cache key / xAI conv header), max_tokens, timeout, request_overrides, provider, base_url,
+        cache key / xAI conv header, max_tokens, timeout, request_overrides, provider, base_url,
         is_github_responses, is_codex_backend, is_xai_responses, github_reasoning_extra,
-        context_management, replay_encrypted_reasoning.
+        context_management, replay_encrypted_reasoning, replay_denied_issuer_pairs
+        (durable issuer-pair deny-list; agent/codex_reasoning_replay.py), proxy_replay_max_turns
+        (encrypted-reasoning replay window for ``other:*`` issuers).
 
         params: instructions: str — system prompt (extracted from messages[0] if not given)
         reasoning_config: dict | None — {effort, enabled} session_id: str | None — transcript/session id;
@@ -707,6 +712,12 @@ class ResponsesApiTransport(ProviderTransport):
         request_overrides = params.get("request_overrides") or {}
         # An override may rewrite the wire model; provenance must be stamped with what actually goes out.
         wire_model = _strip_ctx_variant(request_overrides.get("model", model))
+        # Durable, issuer-pair-scoped replay deny (agent/codex_reasoning_replay.py): the pair whose
+        # sealed blob the provider already rejected replays nothing AND asks for no new blobs; a
+        # different issuer pair on the same session keeps replaying.
+        replay_denied_issuer_pairs = params.get("replay_denied_issuer_pairs")
+        if replay_denied_for(replay_denied_issuer_pairs, self._resolve_issuer_kind(params), wire_model):
+            replay_encrypted_reasoning = False
         kwargs = {
             # ``-900k`` picker variants are Hermes-side aliases; the backend knows only the base slug.
             "model": wire_model,
@@ -715,6 +726,8 @@ class ResponsesApiTransport(ProviderTransport):
                 payload_messages, is_xai_responses=is_xai_responses, is_github_responses=is_github_responses,
                 replay_encrypted_reasoning=replay_encrypted_reasoning, base_url=params.get("base_url"),
                 is_codex_backend=is_codex_backend, context_management=context_management, model=wire_model,
+                replay_denied_issuer_pairs=replay_denied_issuer_pairs,
+                proxy_replay_max_turns=params.get("proxy_replay_max_turns"),
             ),
             "store": False,
         }

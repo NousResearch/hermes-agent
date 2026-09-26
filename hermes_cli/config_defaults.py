@@ -266,6 +266,12 @@ DEFAULT_CONFIG = {
         # on a `model:` entry or a `fallback_providers:` entry to opt in per provider. Default
         # false: strict providers (Mistral, Groq, Cerebras) reject the field.
         "reasoning_echo": False,
+        # Encrypted-reasoning replay window for proxy/aggregator Responses endpoints (custom
+        # providers and relays — ``other:*`` routes): at most this many of the most recent assistant
+        # turns replay their sealed `reasoning.encrypted_content` blobs, bounding what one HTTP 400
+        # `invalid_encrypted_content` can cost. 0 = replay none for those endpoints. First-party
+        # routes (Codex backend, OpenAI, xAI, GitHub Models) always replay in full.
+        "codex_proxy_replay_turns": 2,
         # Turn liveness watchdog: a turn with no observable progress for `timeout_s` seconds is
         # logged, force-interrupted so the UI can retry, and its lease stops renewing so stale-turn
         # cleanup can reclaim the session even if the interrupt can't unwind a wedged frame.

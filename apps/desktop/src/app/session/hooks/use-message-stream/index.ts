@@ -802,15 +802,41 @@ export function useMessageStream({
               (finalText === existingText || finalText.startsWith(existingText) || existingText.startsWith(finalText))
             )
 
-            if (existing.pending || (!interimBoundaryPending && finalText && existingText === finalText)) {
+            // The terminal frame names the stored row it settled, and this
+            // trailing bubble never carried a durable row of its own — it only
+            // ever held text this window streamed. A rewrite shares no prefix
+            // with that text, so every heuristic above misses, the volatile
+            // boundary flag cannot speak for it after a reset, and the append
+            // path paints a second bubble for a row SQLite holds once. The
+            // receipt is the durable identity the flag never was (#74560's
+            // lesson): settle onto the interim. A frame with no receipt keeps
+            // the boundary rules below untouched, so a genuinely distinct
+            // reply still appends.
+            const finalRowId = persistedTurn?.final_assistant_row_id
+
+            const settlesPersistedRow =
+              existing.interim === true &&
+              existing.rowId === undefined &&
+              typeof finalRowId === 'number' &&
+              Number.isSafeInteger(finalRowId) &&
+              finalRowId > 0
+
+            if (
+              existing.pending ||
+              (!interimBoundaryPending && finalText && existingText === finalText) ||
+              settlesPersistedRow
+            ) {
               nextMessages = settleAt(index)
             } else if (
               (interimBoundaryPending && (responsePreviewed || responseTransformed)) ||
               finalContinuesInterim
             ) {
               // Settle the interim in place instead of creating a duplicate —
-              // the DB has one row, so the live UI must agree. Two distinct
+              // the DB has one row, so the live UI must agree. Three distinct
               // settle paths with different boundary requirements:
+              //
+              // • settlesPersistedRow (above) keys on the frame's own durable
+              //   row address, so it needs no boundary flag at all.
               //
               // • responsePreviewed covers the verify-on-stop continuation-
               //   budget case, where the final may be a rewrite sharing no

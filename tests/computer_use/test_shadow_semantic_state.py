@@ -134,3 +134,24 @@ def test_shadow_observe_is_measurement_only():
     # Vision-only captures carry no semantic content: nothing recorded, nothing raised.
     cu_tool._shadow_state_observe(CaptureResult(mode="vision", width=W, height=H), "sess-9")
     assert cu_tool.get_shadow_state_metrics("sess-9")["revision"] == 1
+
+
+def test_shadow_state_store_evicts_metrics_with_oldest_session():
+    cap = CaptureResult(
+        mode="ax",
+        width=W,
+        height=H,
+        elements=_form_elements(),
+        app="TestApp",
+        window_title="Settings",
+    )
+
+    for index in range(cu_tool._SHADOW_STATE_MAX_SESSIONS + 1):
+        cu_tool._shadow_state_observe(cap, f"sess-{index}")
+
+    assert cu_tool.get_shadow_state_metrics("sess-0") == {}
+    assert cu_tool.get_shadow_state_metrics(
+        f"sess-{cu_tool._SHADOW_STATE_MAX_SESSIONS}"
+    )["revision"] == 1
+    assert len(cu_tool._shadow_state_prev) == cu_tool._SHADOW_STATE_MAX_SESSIONS
+    assert len(cu_tool._shadow_state_metrics) == cu_tool._SHADOW_STATE_MAX_SESSIONS

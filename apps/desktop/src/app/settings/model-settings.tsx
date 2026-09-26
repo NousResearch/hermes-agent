@@ -295,13 +295,12 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
         // hits the configured provider, which can be unreachable) must not
         // block the config-backed sections — auxiliary and MOA are fast
         // config-file reads — behind a single all-or-nothing Promise.all.
-        const [modelInfoResult, modelOptionsResult, auxiliaryModelsResult, moaModelsResult] =
-          await Promise.allSettled([
-            getGlobalModelInfo(scopeProfile),
-            getGlobalModelOptions(undefined, scopeProfile),
-            getAuxiliaryModels(scopeProfile),
-            getMoaModels(scopeProfile)
-          ])
+        const [modelInfoResult, modelOptionsResult, auxiliaryModelsResult, moaModelsResult] = await Promise.allSettled([
+          getGlobalModelInfo(scopeProfile),
+          getGlobalModelOptions(undefined, scopeProfile),
+          getAuxiliaryModels(scopeProfile),
+          getMoaModels(scopeProfile)
+        ])
 
         if (profileEpoch.current !== epoch) {
           return

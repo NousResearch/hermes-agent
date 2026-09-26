@@ -543,7 +543,8 @@ describe('preprocessMarkdown', () => {
   // punctuation, so remark-math reads it as a literal dollar and the sentence
   // renders as prose with recoverable copy-out.
   it('does not pair two bare dollars around CJK prose as inline math (#103546)', () => {
-    const input = '...的经典嫌疑是 **$connection 被别的写者整包覆盖**（丢了 `isFullscreen` 字段）...搜 `$connection` 的所有写者：'
+    const input =
+      '...的经典嫌疑是 **$connection 被别的写者整包覆盖**（丢了 `isFullscreen` 字段）...搜 `$connection` 的所有写者：'
 
     const output = preprocessMarkdown(input)
 

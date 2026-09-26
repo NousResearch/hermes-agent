@@ -317,6 +317,22 @@ class TestAllowAnyAttachment:
         assert event.media_urls == []
 
     @pytest.mark.asyncio
+    async def test_attachment_over_cap_is_named_to_the_agent(self, adapter):
+        """A document skipped by the size cap is still named in the turn, next to the user's text."""
+        adapter.config.extra["max_attachment_bytes"] = 1024
+
+        msg = make_message(
+            [make_attachment(filename="q3-report.pdf", content_type="application/pdf", size=2048)],
+            content="summarize the attached report",
+        )
+        await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.media_urls == []
+        assert "q3-report.pdf" in event.text
+        assert "summarize the attached report" in event.text
+
+    @pytest.mark.asyncio
     async def test_max_attachment_bytes_zero_means_unlimited(self, adapter):
         """max_attachment_bytes=0 disables the size cap entirely."""
         adapter.config.extra["max_attachment_bytes"] = 0

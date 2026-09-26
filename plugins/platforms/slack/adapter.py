@@ -904,6 +904,9 @@ _SLACK_EXT_TO_AUDIO_MIME = {
     ".aac": "audio/aac", ".flac": "audio/flac"}
 
 
+_SLACK_MAX_DOCUMENT_BYTES = 20 * 1024 * 1024
+
+
 def _resolve_slack_audio_ext(file_obj: Dict[str, Any], mimetype: str) -> str:
     """Pick a cache extension matching an inbound audio file's bytes.
     Order: STT-accepted filename ext → mimetype lookup → ``.m4a``. Never ``.ogg``: OpenAI rejects
@@ -4821,7 +4824,7 @@ class SlackAdapter(BasePlatformAdapter):
             ext = mime_to_ext.get(mimetype, "")
         # Any extension accepted (authorization is the gate); Slack bot upload cap is 20 MB.
         file_size = f.get("size", 0)
-        if not file_size or file_size > 20 * 1024 * 1024:
+        if not file_size or file_size > _SLACK_MAX_DOCUMENT_BYTES:
             logger.warning("[Slack] Document too large or unknown size: %s", file_size)
             return None
         raw_bytes = await self._download_slack_file_bytes(url, team_id=team_id)
@@ -4866,6 +4869,11 @@ class SlackAdapter(BasePlatformAdapter):
             try:
                 cached = await self._cache_slack_file(kind, f, url, mimetype, team_id)
                 if cached is None:
+                    # The document size gate skipped it. Say so, or the user's "see attached"
+                    # reaches the agent with nothing attached and nothing said.
+                    notices.append(
+                        f"Slack attachment {_attachment_label(f)} was not downloaded: documents over "
+                        f"{_SLACK_MAX_DOCUMENT_BYTES // (1024 * 1024)} MB, or with no size reported, are skipped.")
                     continue
                 cached_path, media_type, injection = cached
                 media_urls.append(cached_path)

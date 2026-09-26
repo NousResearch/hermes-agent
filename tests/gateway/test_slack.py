@@ -1572,6 +1572,31 @@ class TestIncomingDocumentHandling:
         assert os.path.exists(msg_event.media_urls[0])
         assert msg_event.media_types == ["application/pdf"]
 
+    @pytest.mark.asyncio
+    async def test_document_skipped_by_size_gate_is_named_to_the_agent(self, adapter):
+        """A document the size gate skips is still named in the turn, next to the user's text."""
+        with patch.object(
+            adapter, "_download_slack_file_bytes", new_callable=AsyncMock
+        ) as dl:
+            event = self._make_event(
+                text="summarize the attached report",
+                files=[
+                    {
+                        "mimetype": "application/pdf",
+                        "name": "q3-report.pdf",
+                        "url_private_download": "https://files.slack.com/q3-report.pdf",
+                        "size": 25 * 1024 * 1024,
+                    }
+                ],
+            )
+            await adapter._handle_slack_message(event)
+
+        dl.assert_not_called()
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.media_urls == []
+        assert "q3-report.pdf" in msg_event.text
+        assert "summarize the attached report" in msg_event.text
+
 
     @pytest.mark.asyncio
     async def test_txt_document_injects_content(self, adapter):

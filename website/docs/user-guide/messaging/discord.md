@@ -752,6 +752,10 @@ discord:
 
 Equivalent env var: `DISCORD_MAX_ATTACHMENT_BYTES=33554432` (or `0` for no cap).
 
+A file over the cap is not downloaded, but the agent still gets a notice naming the
+skipped file and its size next to the user's message, so a "see attached" request
+doesn't reach the agent with nothing attached and no explanation.
+
 The legacy `discord.allow_any_attachment` flag is now a no-op — any file type is always accepted — and is kept only so existing configs don't error.
 
 :::warning Memory cost of unlimited

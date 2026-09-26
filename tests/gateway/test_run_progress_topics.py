@@ -1998,6 +1998,75 @@ class TerminalCommandAgent:
         return {"final_response": "done", "messages": [], "api_calls": 1}
 
 
+def test_progress_dedup_keeps_fences_balanced_and_legacy_lines_compatible():
+    from gateway.run_turn_runner import TurnRunner
+
+    runner = object.__new__(TurnRunner)
+    state = SimpleNamespace(progress_lines=[])
+    fenced = """💻 terminal
+```
+python - <<'PY'
+print(1)
+```"""
+
+    runner._progress_absorb(state, fenced)
+    runner._progress_absorb(state, ("__dedup__", fenced, 0))
+    assert state.progress_lines == [
+        """💻 terminal
+```
+python - <<'PY'
+print(1)
+(×1)
+```"""
+    ]
+    assert state.progress_lines[0].splitlines()[-1] == "```"
+
+    legacy = SimpleNamespace(progress_lines=["⚙️ execute_code: same"])
+    runner._progress_absorb(legacy, ("__dedup__", "⚙️ execute_code: same", 1))
+    assert legacy.progress_lines == ["⚙️ execute_code: same (×2)"]
+
+
+def test_progress_callback_dedups_replayed_calls_and_distinct_ids():
+    from gateway.run_turn_runner import TurnRunner
+
+    runner = object.__new__(TurnRunner)
+    queued = []
+    runner._ctx = SimpleNamespace(
+        last_progress_msg=[None], last_progress_call_id=[None], repeat_count=[0],
+        progress_replayed_call_ids=set(), progress_queue=SimpleNamespace(put=queued.append),
+        log_queue=None, tool_progress_enabled=True, progress_mode="all", last_tool=[None],
+        _run_still_current=lambda: True, _native_slack_task_cards=False,
+        _thinking_enabled=False,
+    )
+    runner._stream_consumer = lambda: None
+    runner._agent_interrupted = lambda: False
+    runner._progress_live_status = lambda *args: None
+    def build_message(*args):
+        if runner._ctx.progress_mode == "verbose":
+            queued.append("verbose")
+            return None
+        return "same"
+
+    runner._progress_build_message = build_message
+
+    runner.progress_callback("tool.started", "terminal", "one", {}, tool_call_id="call-1")
+    runner.progress_callback("tool.started", "terminal", "two", {}, tool_call_id="call-2")
+    runner.progress_callback("tool.started", "terminal", "one", {}, tool_call_id="call-1")
+    runner.progress_callback("tool.started", "terminal", "text", {})
+    runner.progress_callback("tool.started", "terminal", "text", {})
+
+    assert queued == ["same", "same", ("__dedup__", "same", 1), ("__dedup__", "same", 2)]
+    assert runner._ctx.progress_replayed_call_ids == {"call-1", "call-2"}
+
+    runner._ctx.progress_mode = "verbose"
+    runner.progress_callback("tool.started", "terminal", "verbose", {}, tool_call_id="call-3")
+    runner.progress_callback("tool.started", "terminal", "verbose", {}, tool_call_id="call-3")
+    runner.progress_callback("tool.started", "terminal", "verbose", {}, tool_call_id="call-4")
+
+    assert queued[-2:] == ["verbose", "verbose"]
+    assert runner._ctx.progress_replayed_call_ids == {"call-1", "call-2", "call-3", "call-4"}
+
+
 @pytest.mark.asyncio
 async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path):
     """Terminal progress on a markdown-capable (supports_code_blocks) gateway

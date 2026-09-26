@@ -129,6 +129,9 @@ class TurnRunner:
         if event_type == "subagent.complete":
             self._progress_subagent_notice(preview, kwargs)
             return
+        call_id = kwargs.get("tool_call_id") or kwargs.get("call_id")
+        if event_type == "tool.started" and call_id and call_id in ctx.progress_replayed_call_ids:
+            return
         self._progress_live_status(event_type, tool_name, args)
         # "log" mode: append tool.started lines to the log queue, silent in chat. Handled before
         # the progress_queue guard because log mode runs without a chat progress queue.
@@ -172,9 +175,13 @@ class TurnRunner:
         if ctx.progress_mode == "new" and tool_name == ctx.last_tool[0]:
             return
         ctx.last_tool[0] = tool_name
+        # Record the eligible call before rendering: verbose mode queues its message directly
+        # and returns None, so recording only after _progress_emit misses its replay guard.
+        if call_id:
+            ctx.progress_replayed_call_ids.add(call_id)
         msg = self._progress_build_message(tool_name, preview, args)
         if msg is not None:
-            self._progress_emit(msg)
+            self._progress_emit(msg, call_id=call_id)
 
     def _progress_subagent_notice(self, preview, kwargs: dict) -> None:
         """Only terminal failure statuses render (same notice rail as credit warnings)."""
@@ -299,20 +306,21 @@ class TurnRunner:
             return f"{emoji} {tool_name}: \"{preview}\""
         return f"{emoji} {verb}" if verb_drops_preview(tool_name) else f"{emoji} {verb}{tool_verb_connector(tool_name)}{preview}"
 
-    def _progress_emit(self, msg: str) -> None:
+    def _progress_emit(self, msg: str, *, call_id: str = None) -> None:
         """Dedup consecutive identical lines (execute_code boilerplate), then route to the native
         stream bubble when the consumer accepts tool progress, else the progress queue."""
         ctx = self._ctx
         sc = self._stream_consumer()
         native = sc is not None and getattr(sc, "accepts_tool_progress", False)
-        if msg == ctx.last_progress_msg[0]:
+        same_logical_call = call_id is None or call_id == ctx.last_progress_call_id[0]
+        if msg == ctx.last_progress_msg[0] and same_logical_call:
             ctx.repeat_count[0] += 1
             if native:
                 sc.on_tool_progress(f"{msg} (×{ctx.repeat_count[0] + 1})")
             else:
                 ctx.progress_queue.put(("__dedup__", msg, ctx.repeat_count[0]))
             return
-        ctx.last_progress_msg[0], ctx.repeat_count[0] = msg, 0
+        ctx.last_progress_msg[0], ctx.last_progress_call_id[0], ctx.repeat_count[0] = msg, call_id, 0
         if native:
             sc.on_tool_progress(msg)
         else:
@@ -634,15 +642,31 @@ class TurnRunner:
         """Content bubble landed — close the tool-progress bubble so the next tool starts fresh
         below it; else tool edits hit the ORIGINAL message above (out of order)."""
         st.progress_msg_id, st.progress_lines = None, []
-        self._ctx.last_progress_msg[0], self._ctx.repeat_count[0] = None, 0
+        if self._ctx.last_progress_call_id[0] is None:
+            self._ctx.last_progress_msg[0] = None
+        self._ctx.repeat_count[0] = 0
 
-    def _progress_absorb(self, st, raw) -> Any:
+    @staticmethod
+    def _progress_with_repeat_counter(message: str, count: int) -> str:
+        """Add a repeat marker without making a fenced block syntactically invalid."""
+        marker = f"(×{count + 1})"
+        lines = message.splitlines()
+        if len(lines) >= 2 and lines[-1].strip() == "```":
+            # Keep the closing fence on its own line; Feishu otherwise treats the
+            # marker as code and can render the following row as an empty block.
+            while len(lines) > 1 and lines[-2].strip().startswith("(×") and lines[-2].strip().endswith(")"):
+                lines.pop(-2)
+            lines.insert(len(lines) - 1, marker)
+            return "\n".join(lines)
+        return f"{message} {marker}"
+
+    def _progress_absorb(self, st, raw) -> str:
         """Fold a queue item into the bubble buffer; returns the line to render this tick."""
         if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
             _, base_msg, count = raw
             if not st.progress_lines:
-                return base_msg
-            st.progress_lines[-1] = f"{base_msg} (×{count + 1})"
+                st.progress_lines.append(base_msg)
+            st.progress_lines[-1] = self._progress_with_repeat_counter(base_msg, count)
             return st.progress_lines[-1]
         st.progress_lines.append(raw)
         return raw

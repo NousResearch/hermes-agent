@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { JsonRpcGatewayError, JsonRpcRequestChannel, type JsonRpcTransport } from './json-rpc-channel.js'
 
@@ -285,5 +285,137 @@ describe('JsonRpcRequestChannel', () => {
     const third = sent.at(-1)!
     expect((JSON.parse(third) as { id: string }).id).toBe('srq-3')
     expect((JSON.parse(third) as { result?: { answer?: string } }).result?.answer).toBe('yes')
+  })
+
+  // A hidden window throttles renderer timers, so inbound frames pause for
+  // minutes. The deadline must not fire against that silence — it would close a
+  // healthy socket, park the session server-side, and churn a redial. While
+  // hidden the channel keeps pinging but skips the deadline; returning to
+  // visible refreshes the clock so the first unthrottled tick cannot trip on a
+  // stale timestamp.
+  describe('hidden window', () => {
+    // This suite runs in the plain node environment (no DOM), so `document` is
+    // stubbed here: the channel only reads visibilityState and subscribes to
+    // visibilitychange, both of which this covers.
+    const listeners = new Set<() => void>()
+    let visibility: 'hidden' | 'visible' = 'visible'
+
+    const doc = {
+      addEventListener: (type: string, handler: () => void) => {
+        if (type === 'visibilitychange') {
+          listeners.add(handler)
+        }
+      },
+      get visibilityState() {
+        return visibility
+      },
+      removeEventListener: (type: string, handler: () => void) => {
+        if (type === 'visibilitychange') {
+          listeners.delete(handler)
+        }
+      }
+    }
+
+    const setVisibility = (state: 'hidden' | 'visible') => {
+      visibility = state
+
+      for (const handler of [...listeners]) {
+        handler()
+      }
+    }
+
+    beforeEach(() => {
+      visibility = 'visible'
+      listeners.clear()
+      vi.stubGlobal('document', doc)
+    })
+
+    afterEach(() => {
+      vi.unstubAllGlobals()
+      listeners.clear()
+    })
+
+    it('does not fail the heartbeat while the document is hidden, even with no inbound frames', async () => {
+      vi.useFakeTimers()
+
+      try {
+        const failures: string[] = []
+
+        const channel = new JsonRpcRequestChannel({
+          heartbeatDeadlineMs: 300,
+          heartbeatIntervalMs: 100,
+          heartbeatLiveness: 'any-inbound',
+          onHeartbeatFailure: e => void failures.push(e.message)
+        })
+
+        const { sent, transport } = spyTransport()
+
+        channel.attach(transport)
+        setVisibility('hidden')
+        channel.startHeartbeat()
+
+        // Well past several deadlines with zero inbound frames: still alive.
+        await vi.advanceTimersByTimeAsync(2000)
+
+        expect(failures).toEqual([])
+        // Pings keep flowing while hidden, so a genuinely dead socket still
+        // surfaces through its close/error events rather than the deadline.
+        expect(sent.filter(f => f.includes('gateway.ping')).length).toBeGreaterThan(0)
+
+        channel.stopHeartbeat()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('resumes the deadline once the document is visible again', async () => {
+      vi.useFakeTimers()
+
+      try {
+        const failures: string[] = []
+
+        const channel = new JsonRpcRequestChannel({
+          heartbeatDeadlineMs: 300,
+          heartbeatIntervalMs: 100,
+          heartbeatLiveness: 'any-inbound',
+          onHeartbeatFailure: e => void failures.push(e.message)
+        })
+
+        const { transport } = spyTransport()
+
+        channel.attach(transport)
+        setVisibility('hidden')
+        channel.startHeartbeat()
+
+        await vi.advanceTimersByTimeAsync(2000)
+        expect(failures).toEqual([])
+
+        // Back to visible: the clock was refreshed on the transition, so the
+        // deadline only fires after a full quiet stretch from here.
+        setVisibility('visible')
+        await vi.advanceTimersByTimeAsync(100)
+        expect(failures).toEqual([])
+
+        await vi.advanceTimersByTimeAsync(400)
+        expect(failures).toHaveLength(1)
+
+        channel.stopHeartbeat()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('removes its visibilitychange listener on stopHeartbeat', async () => {
+      const channel = new JsonRpcRequestChannel({ heartbeatIntervalMs: 100 })
+
+      channel.attach(spyTransport().transport)
+      channel.startHeartbeat()
+
+      expect(listeners.size).toBe(1)
+
+      channel.stopHeartbeat()
+
+      expect(listeners.size).toBe(0)
+    })
   })
 })

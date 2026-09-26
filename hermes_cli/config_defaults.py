@@ -2353,6 +2353,10 @@ DEFAULT_CONFIG = {
         # Refresh an installed cua-driver during `hermes update` (best-effort, macOS only). Turn off
         # e.g. on non-admin accounts where /Applications isn't writable.
         "refresh_cua_driver": True,
+        # Proxy for update traffic (channel reads + git fetch), e.g. "http://127.0.0.1:10808".
+        # Empty = no configured proxy (ambient http_proxy/https_proxy env still applies).
+        # This is the config-file equivalent of hermes-update-with-vpn.bat (#124022).
+        "proxy": "",
     },
     # LSP diagnostics (pyright, gopls, rust-analyzer...) in the post-write lint check of
     # write_file/patch. Runs only when the cwd or edited file is inside a git worktree; otherwise

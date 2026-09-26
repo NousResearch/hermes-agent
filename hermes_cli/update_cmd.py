@@ -576,6 +576,10 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False, ch
     Installs that can't honor non-default branches (e.g. Docker) surface a
     one-line notice instead of silently dropping the flag.
     """
+    # updates.proxy -> env before any network use, so the fetch below and the
+    # channel comparison honor the same proxy as the apply path (#124022).
+    from hermes_cli.update_proxy import ensure_update_proxy_env
+    ensure_update_proxy_env()
     # Shared admission gate (#91277 Phase 3): same marker-first decision as
     # the apply path, so --check can never report git state for an install
     # whose real update mechanism is an image pull.
@@ -1265,6 +1269,10 @@ def _apply_pulled_update(
 
 def _cmd_update_impl(args, gateway_mode: bool):
     """Apply the update; the command boundary owns errors, receipts and stdio."""
+    # updates.proxy -> env before any network use (channel read + git fetch),
+    # the in-code equivalent of hermes-update-with-vpn.bat (#124022).
+    from hermes_cli.update_proxy import ensure_update_proxy_env
+    ensure_update_proxy_env()
     opts = _resolve_update_options(args, gateway_mode)
     gw_input_fn, assume_yes = opts.gw_input_fn, opts.assume_yes
 

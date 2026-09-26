@@ -2139,6 +2139,13 @@ updates:
   #             installs where local source edits should not persist
   non_interactive_local_changes: "stash"
 
+  # Proxy for update traffic (channel reads + git fetch), e.g. "http://127.0.0.1:10808".
+  # Needed on networks that cut direct TLS to GitHub / the release-channel host
+  # (SSL UNEXPECTED_EOF / "server closed abruptly"); the config-file equivalent
+  # of hermes-update-with-vpn.bat. Unset by default; ambient http_proxy/https_proxy
+  # env still applies. Set with `hermes config set updates.proxy http://127.0.0.1:10808`.
+  # proxy: "http://127.0.0.1:10808"
+
 
 # =============================================================================
 # Web Dashboard

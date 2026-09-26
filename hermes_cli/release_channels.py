@@ -7,7 +7,7 @@ import json
 import re
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 MAX_SEQUENCE = 2**32 - 1
 MAX_METADATA = 4 * 1024 * 1024
@@ -254,10 +254,21 @@ class _NoRedirect(HTTPRedirectHandler):
 
 
 class ChannelReader:
-    def __init__(self, base_url: str, repository: str | None = None, opener=None):
+    def __init__(self, base_url: str, repository: str | None = None, opener=None, proxy: str | None = None):
         self.base_url = public_base(base_url)
         self.repository = validate_repository(repository) if repository is not None else None
-        self.opener = opener or build_opener(_NoRedirect()).open
+        if opener is not None:
+            self.opener = opener
+            return
+        if proxy is None:
+            # updates.proxy only: ambient env keeps flowing through the default
+            # opener exactly as before, so existing behavior is byte-identical.
+            from hermes_cli.update_proxy import configured_proxy
+            proxy = configured_proxy()
+        handlers: list = [_NoRedirect()]
+        if proxy:
+            handlers.insert(0, ProxyHandler({"http": proxy, "https": proxy}))
+        self.opener = build_opener(*handlers).open
 
     def read_bytes(self, key: str, sha256: str | None = None) -> bytes:
         url = self.base_url + "/" + artifact_key(key)

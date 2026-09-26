@@ -5,15 +5,21 @@ interface NodeTlsCaApi {
   setDefaultCACertificates(certificates: string[]): void
 }
 
-interface WindowsSystemCaResult {
+interface SystemCaResult {
   applied: boolean
   systemCertificateCount: number
   totalCertificateCount: number
   error?: string
 }
 
-function installWindowsSystemCaTrust(tlsApi: NodeTlsCaApi, platform = process.platform): WindowsSystemCaResult {
-  if (platform !== 'win32') {
+// Platforms whose OS trust store tls.getCACertificates('system') can enumerate: the Windows
+// cert store and the macOS keychain (Node reads user + System keychains there, honoring the
+// "Always Trust" SSL policy — Node ≥ 22.15). Linux is deliberately absent: its 'system' store
+// is the OpenSSL directory scan, which the default trust already covers.
+const SYSTEM_CA_PLATFORMS = new Set(['win32', 'darwin'])
+
+function installSystemCaTrust(tlsApi: NodeTlsCaApi, platform = process.platform): SystemCaResult {
+  if (!SYSTEM_CA_PLATFORMS.has(platform)) {
     return {
       applied: false,
       systemCertificateCount: 0,
@@ -75,5 +81,5 @@ function installWindowsSystemCaTrust(tlsApi: NodeTlsCaApi, platform = process.pl
   }
 }
 
-export { installWindowsSystemCaTrust }
-export type { NodeTlsCaApi, WindowsSystemCaResult }
+export { installSystemCaTrust }
+export type { NodeTlsCaApi, SystemCaResult }

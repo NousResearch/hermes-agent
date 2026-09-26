@@ -343,6 +343,8 @@ def stream_tts_to_speaker(
     playback: Optional[_StreamerPlayback] = None
     try:
         tts_config = origin._load_tts_config()
+        from tools.tts_synthesis_policy import enforce_pre_synthesis
+        resolved_provider = provider or origin._get_provider(tts_config)
         # Prefer a chunked streamer for low time-to-first-audio; otherwise per-sentence sync
         # synthesis (universal — edge + every non-streamer).
         from tools.tts_streaming import SentenceChunker, resolve_streaming_provider
@@ -375,6 +377,11 @@ def stream_tts_to_speaker(
                 return
             if stream_max_len and len(cleaned) > stream_max_len:
                 cleaned = cleaned[:stream_max_len]
+            try:
+                cleaned = enforce_pre_synthesis(cleaned, resolved_provider)
+            except ValueError as exc:
+                logger.warning("Streaming TTS script blocked: %s", exc)
+                return
             playback.speak(cleaned)
         while not stop_event.is_set():
             try:

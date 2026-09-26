@@ -22,6 +22,23 @@ from gateway.streaming_tts_consumer import StreamingTTSConsumer
 from tools.tts_streaming import SentenceChunker
 
 
+def test_streaming_clause_is_guarded_before_provider(monkeypatch):
+    from hermes_cli.plugins import PluginManager
+    manager = PluginManager()
+    manager._hooks["pre_tts_synthesis"] = [
+        lambda text: {"action": "block", "message": "raw number"} if any(c.isnumeric() for c in text) else None]
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+    async def run(loop):
+        streamer, adapter = FakeStreamer(), FakeVoiceAdapter()
+        consumer = _make_consumer(adapter, "voice", loop, streamer)
+        consumer._provider = "elevenlabs"
+        with pytest.raises(ValueError, match="raw number"):
+            await consumer._synthesise_and_write("Price 123")
+        assert streamer._clause_count == 0 and adapter.begin_count == 0
+    _run_test(run)
+
+
 # ---------------------------------------------------------------------------
 # Fakes
 # ---------------------------------------------------------------------------

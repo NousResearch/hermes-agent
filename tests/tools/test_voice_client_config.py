@@ -208,3 +208,15 @@ def test_resolution_never_raises(voice_home, monkeypatch):
     result = _resolve()
     assert result["stt"]["mode"] in {"direct", "relay"}
     assert result["tts"]["mode"] in {"direct", "relay"}
+def test_policy_hook_forces_server_relay(monkeypatch):
+    from hermes_cli.plugins import PluginManager
+    from tools import voice_client_config
+    from tools.voice_client_config import resolve_client_voice_config
+    manager = PluginManager()
+    manager._hooks["pre_tts_synthesis"] = [lambda text: None]
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+    monkeypatch.setattr(voice_client_config, "_client_direct_enabled", lambda: True)
+    monkeypatch.setattr(voice_client_config, "_resolve_tts_client_config", lambda: {"mode": "direct", "provider": "elevenlabs"})
+    result = resolve_client_voice_config()
+    assert result["tts"]["mode"] == "relay"
+    assert "policy" in result["tts"]["reason"]

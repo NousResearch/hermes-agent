@@ -39,6 +39,9 @@ it('the Kanban nav row counts unseen events on the active connection', () => {
   $unseenByBoard.set({ [cursorKey('local', 'ops')]: 2, [cursorKey('local', 'research')]: 1 })
   expect(count.get()).toBe(3)
   expect(nav.countLabel?.(3)).toBe('3 unseen task updates')
+
+  $unseenByBoard.set({})
+  expect(count.get()).toBe(0)
 })
 
 it('opening the board page clears that board, not the others', async () => {

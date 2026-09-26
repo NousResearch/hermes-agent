@@ -240,6 +240,39 @@ describe('ChatSidebar navigation activity', () => {
     act(() => count.set(0))
     expect(screen.queryByLabelText(/unseen/)).toBeNull()
   })
+
+  // A throwing plugin `countLabel` degrades to the bare number instead of
+  // crashing the sidebar render.
+  it('keeps the sidebar up when a contributed countLabel throws', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    act(() => {
+      disposeContributions()
+      disposeContributions = registry.registerMany([
+        { area: ROUTES_AREA, id: 'kanban-page', data: { path: '/kanban' }, render: () => null },
+        {
+          area: SIDEBAR_NAV_AREA,
+          id: 'kanban-nav',
+          data: {
+            codicon: 'project',
+            count: atom(3),
+            countLabel: () => {
+              throw new Error('plugin bug')
+            },
+            label: 'Kanban',
+            path: '/kanban'
+          }
+        }
+      ])
+    })
+
+    renderSidebar('/', 'chat')
+    const row = screen.getByRole('button', { name: /^Kanban/ })
+
+    expect(within(row).getByLabelText('3').textContent).toBe('3')
+    expect(warn).toHaveBeenCalled()
+    warn.mockRestore()
+  })
 })
 
 // #67600: a cold-start read that failed used to render as an empty account.

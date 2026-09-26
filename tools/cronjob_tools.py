@@ -470,7 +470,10 @@ def _try_dispatch_background_run(
         if not async_delivery_supported():
             return None
     except Exception:
-        pass
+        # Fail closed like the delegate_task gate above: a probe that raises is not a
+        # proven durable consumer, so run synchronously instead of dispatching on an
+        # unproven lane (#121048).
+        return None
 
     # Routing capture BEFORE the claim: no routable session = no durable consumer for a detached
     # completion, so don't claim-and-dispatch (direct callers like `hermes cron run` exit right after).

@@ -123,7 +123,6 @@ def test_children_abandoned_on_parent_interrupt_are_billed(monkeypatch, release)
     assert [e["api_calls"] for e in combined["results"]] == [3, 4]
 
 
-
 def test_timed_out_child_rolls_up_cost_that_settles_after_timeout(monkeypatch, release):
     child = _LateBilledChild(calls=1, cost=0.09, release=release)
     parent = _parent([child])
@@ -190,3 +189,17 @@ def test_overlapping_deferred_watchers_settle_each_late_dollar_once():
     # This helper owns only the post-snapshot delta; the original 0.02 is
     # rolled by _finalize_child_results from the result entry itself.
     assert parent.session_estimated_cost_usd == pytest.approx(0.03)
+
+
+
+def test_deferred_cost_does_not_cross_parent_session_boundary():
+    child = SimpleNamespace(session_estimated_cost_usd=0.0, session_cost_status="estimated")
+    parent = _parent([child])
+    future = Future()
+
+    _defer_child_cost_rollup(child, future, parent, 0.0)
+    parent.session_id = "new-parent-session"
+    child.session_estimated_cost_usd = 0.11
+    future.set_result(None)
+
+    assert parent.session_estimated_cost_usd == 0.0

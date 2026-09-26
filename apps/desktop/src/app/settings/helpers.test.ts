@@ -5,6 +5,7 @@ import type { HermesConfigRecord } from '@/types/hermes'
 import { defineFieldCopy, fieldCopyForSchemaKey, schemaKeyToFieldCopyKey } from './field-copy'
 import {
   clearsEnabledToolsets,
+  credentialPreview,
   diffConfig,
   enumOptionsFor,
   getNested,
@@ -379,5 +380,15 @@ describe('settings helpers', () => {
 
       expect(diffConfig(baseline, draft)).toEqual({ toolsets: ['memory'] })
     })
+  })
+})
+
+describe('credentialPreview', () => {
+  it('unwraps the backend preview sentinel and masks label-less forms', () => {
+    expect(credentialPreview('«redacted:sk-h...JPJ8»')).toBe('sk-h...JPJ8')
+    expect(credentialPreview('«redacted-secret»')).toBe('••••••••')
+    expect(credentialPreview('«redacted-vault-secret»')).toBe('••••••••')
+    expect(credentialPreview('sk-h...JPJ8')).toBe('sk-h...JPJ8')
+    expect(credentialPreview(null)).toBeNull()
   })
 })

@@ -9,7 +9,7 @@ import { cn } from '@/lib/utils'
 import type { EnvVarInfo } from '@/types/hermes'
 
 import { CONTROL_TEXT } from './constants'
-import { prettyName, withoutKey } from './helpers'
+import { credentialPreview, prettyName, withoutKey } from './helpers'
 import { LIST_ROW_COLUMNS, ListRow } from './primitives'
 import type { EnvRowProps } from './types'
 
@@ -66,7 +66,7 @@ export function KeyField({
   const draft = edits[varKey] ?? ''
   const dirty = draft.trim().length > 0
   const busy = saving === varKey
-  const masked = info.redacted_value ?? '••••••••'
+  const masked = credentialPreview(info.redacted_value) ?? '••••••••'
   const startEdit = () => setEdits(c => ({ ...c, [varKey]: '' }))
   const cancel = () => setEdits(c => withoutKey(c, varKey))
   const update = (e: ChangeEvent<HTMLInputElement>) => setEdits(c => ({ ...c, [varKey]: e.target.value }))

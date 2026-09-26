@@ -38,6 +38,7 @@ import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { DetailColumn, ListColumn, MasterDetail } from '../master-detail'
 import { PageSearchShell } from '../page-search-shell'
 import { CREDENTIAL_CONTROL_CLASS } from '../settings/credential-key-ui'
+import { credentialPreview } from '../settings/helpers'
 import { ListRow } from '../settings/primitives'
 import { SettingsProfileScope } from '../settings/profile-scope'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
@@ -995,7 +996,7 @@ function MessagingField({
             className={CREDENTIAL_CONTROL_CLASS}
             id={fieldId}
             onChange={event => onEdit(field.key, event.target.value)}
-            placeholder={field.is_set ? field.redacted_value || m.replaceValue : copy.placeholder}
+            placeholder={field.is_set ? credentialPreview(field.redacted_value) || m.replaceValue : copy.placeholder}
             type={field.is_password ? 'password' : 'text'}
             value={edits[field.key] || ''}
           />

@@ -1,8 +1,8 @@
 name: lumberroom
 repo: https://github.com/lumberroom/lumberroom-hermes
-sha: 391e6c5171bfd05ce39128edd1db4ed9aff22716
+sha: 87c697f31e0015c64900c2cc40f88beb3ead4a11
 subdir: ""
-version: "1.0.1"
+version: "1.0.2"
 description: lumberroom memory provider. One durable store shared with every agent you use, recalled on
   every turn and written through the engine's own memory_write. Self-hosted open-source engine or
   lumberroom.cloud; OAuth or a static token. Maintained by the lumberroom team.

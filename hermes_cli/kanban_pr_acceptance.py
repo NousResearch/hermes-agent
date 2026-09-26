@@ -50,6 +50,10 @@ def collect_acceptance(contract: str, published_pr: str | None) -> dict:
             return receipt
         repo, number = match[1], int(match[2])
         receipt["pr_url"] = url
+        from hermes_cli.kanban_named_acceptance import collect_named, policy_for
+        policy = policy_for(repo)
+        if policy is not None:
+            return collect_named(repo, number, policy, receipt, _api)
         owner, name = repo.split("/")
         query = '''{repository(owner:%s,name:%s){pullRequest(number:%d){headRefOid baseRefName state
             baseRef{branchProtectionRule{requiredStatusChecks{context app{databaseId}}}}}}}''' % (

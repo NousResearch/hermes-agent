@@ -671,8 +671,34 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // must upload browser bytes to HERMES_HOME/images, then drive `/image`
     // over the PTY (same burst-then-Return timing as handleCopyLast).
     let imageUploadDisposed = false;
-    const pasteDelay = () =>
-      new Promise<void>((resolve) => window.setTimeout(resolve, 40));
+    // A remote browser (a phone on mobile data) can take far longer than 100 ms to round-trip
+    // `/image`: with a fixed delay the Return lands on an empty composer, the kernel swallows
+    // it, and the attachment stays parked in the input box (every further click stacks another
+    // one). Watch the PTY stream for the token to actually land, then submit.
+    let ptyTail = "";
+    const IMAGE_TOKEN_RE = /\[\[\s*Image\s*\d+\s*\]\]/;
+    const sleepMs = (ms: number) =>
+      new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+    const waitForImageToken = async (timeoutMs: number) => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (IMAGE_TOKEN_RE.test(ptyTail)) return true;
+        await sleepMs(60);
+      }
+      return false;
+    };
+    const submitComposerAfterAttach = async () => {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const s = wsRef.current;
+        if (!s || s.readyState !== WebSocket.OPEN) return;
+        s.send("\r");
+        await sleepMs(700);
+        // Token still in the tail means that Return missed; the kernel ignores an empty
+        // Return, so sending another one is harmless.
+        if (!IMAGE_TOKEN_RE.test(ptyTail.slice(-600))) return;
+      }
+    };
+    const pasteDelay = () => sleepMs(40);
     const reportImageUploadError = (err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
       console.warn("[dashboard chat] image upload failed:", message);
@@ -688,13 +714,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           );
           return;
         }
+        // Only look at output produced from here on, so an identical token from an earlier
+        // attachment cannot be mistaken for this one.
+        ptyTail = "";
         ws.send(`/image ${path}`);
-        await new Promise<void>((resolve) => window.setTimeout(resolve, 100));
-        const s = wsRef.current;
-        if (!s || s.readyState !== WebSocket.OPEN) return;
-        s.send("\r");
+        // ~100 ms on a fast LAN; a phone on mobile data may need a second or two.
+        await waitForImageToken(2500);
         await pasteDelay();
       }
+      await submitComposerAfterAttach();
       term.focus();
     };
     const uploadAndAttachImages = (files: File[]) => {
@@ -1428,6 +1456,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         ? () => termRef.current?.scrollToBottom()
         : undefined;
       term.write(rendered, followScroll);
+      // The attachment path waits for the token to land in the composer (see driveImageAttach):
+      // keep the most recent output for that wait loop — tail only, so it cannot grow unbounded.
+      ptyTail = (ptyTail + rendered).slice(-4000);
       noteResumePtyChunk(rendered);
     };
 

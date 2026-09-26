@@ -74,7 +74,11 @@ _HELPFUL_DELTA, _UNHELPFUL_DELTA = 0.05, -0.10
 
 # Entity extraction patterns, applied in order: capitalized multi-word phrases ("John Doe"), double-quoted terms,
 # single-quoted terms, then "X aka Y" (both sides).
-_RE_SINGLE_ENTITY = (re.compile(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b'), re.compile(r'"([^"]+)"'), re.compile(r"'([^']+)'"))
+# The single-quote pattern must not treat an intra-word apostrophe as a delimiter: without the lookarounds,
+# "aren't ... isn't" captures the whole span between the two apostrophes as one entity, and a possessive
+# ("EDI's role ...") opens a match that runs to the next apostrophe in the text. Lengths are bounded so a
+# runaway match cannot store a sentence as an entity name.
+_RE_SINGLE_ENTITY = (re.compile(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b'), re.compile(r'"([^"\n]{1,60})"'), re.compile(r"(?<![\w'\u2019])'([^'\n]{1,60})'(?![\w])"))
 _RE_AKA = re.compile(r'(\w+(?:\s+\w+)*)\s+(?:aka|also known as)\s+(\w+(?:\s+\w+)*)', re.IGNORECASE)
 _ENTITY_NAMES_SQL = "SELECT e.name FROM entities e JOIN fact_entities fe ON fe.entity_id = e.entity_id WHERE fe.fact_id = ?"
 # Entity lookup order: exact name, then aliases (comma-separated; wrapped in commas for whole-alias matching).

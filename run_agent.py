@@ -1497,6 +1497,7 @@ def main(
     query: str = None, model: str = "", api_key: str = None, base_url: str = "", max_turns: int = 10,
     enabled_toolsets: str = None, disabled_toolsets: str = None, list_tools: bool = False,
     save_trajectories: bool = False, save_sample: bool = False, verbose: bool = False, log_prefix_chars: int = 20,
+    browser_test: bool = False,
 ):
     """
     Main function for running the agent directly.
@@ -1520,6 +1521,7 @@ def main(
         verbose (bool): Enable verbose logging for debugging. Defaults to False.
         log_prefix_chars (int): Number of characters to show in log previews for tool calls/responses.
         Defaults to 20.
+        browser_test (bool): Run a small browser smoke-test prompt using the browser toolset.
 
     Toolset Examples:
         - "research": Web search, extract, crawl + vision tools
@@ -1536,6 +1538,9 @@ def main(
     from agent.ssl_verify import install_truststore
 
     install_truststore()
+
+    if browser_test and not enabled_toolsets:
+        enabled_toolsets = "browser"
 
     enabled_toolsets_list = _parse_toolset_arg(enabled_toolsets, "🎯 Enabled toolsets")
     disabled_toolsets_list = _parse_toolset_arg(disabled_toolsets, "🚫 Disabled toolsets")
@@ -1554,8 +1559,11 @@ def main(
         print(f"❌ Failed to initialize agent: {e}")
         return
 
-    user_query = query if query is not None else ("Tell me about the latest developments in Python 3.13 and what new features "
-                                                  "developers should know about. Please search for current information and try it out.")
+    if query is None and browser_test:
+        user_query = "Use the browser tools to open https://example.com and report the page title."
+    else:
+        user_query = query if query is not None else ("Tell me about the latest developments in Python 3.13 and what new features "
+                                                        "developers should know about. Please search for current information and try it out.")
     print(f"\n📝 User Query: {user_query}")
     print("\n" + "=" * 50)
 

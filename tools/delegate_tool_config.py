@@ -121,7 +121,7 @@ def _get_worktree_isolation() -> bool:
 def _get_max_async_children() -> int:
     """Concurrency cap for background delegations == delegation.max_concurrent_children. At capacity a new async
     dispatch is REJECTED (not queued) so a runaway model can't pile up unbounded background work; the caller then
-    runs synchronously. A leftover ``delegation.max_async_children`` key is ignored with a one-time warning."""
+    runs synchronously or rejects per ``delegation.at_capacity``. A leftover ``delegation.max_async_children`` key is ignored with a one-time warning."""
     from tools.delegate_tool import _get_max_concurrent_children
     if _cfg().get("max_async_children") is not None:
         _warn_once(
@@ -130,6 +130,16 @@ def _get_max_async_children() -> int:
             "delegations too. Remove the stale key from config.yaml.",
         )
     return _get_max_concurrent_children()
+
+def _get_at_capacity_policy() -> str:
+    """delegation.at_capacity: what a background dispatch does when the pool is full. ``sync`` (default) runs the
+    batch inline, blocking the parent turn for the children's whole runtime; ``reject`` starts nothing and returns a
+    structured rejection so the parent keeps working. Anything else falls back to ``sync`` with a warning."""
+    policy = str(_cfg().get("at_capacity") or "sync").strip().lower()
+    if policy not in ("sync", "reject"):
+        logger.warning("delegation.at_capacity=%r is not 'sync' or 'reject'; using 'sync'", policy)
+        return "sync"
+    return policy
 
 def _parse_timeout(raw: Any) -> Optional[float]:
     """Seconds → None (<= 0 disables) or max(30, value). Raises on non-numeric."""

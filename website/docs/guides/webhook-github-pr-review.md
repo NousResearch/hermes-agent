@@ -83,7 +83,7 @@ platforms:
 | `secret` (route-level) | HMAC secret for this route. Falls back to `extra.secret` global if omitted. |
 | `events` | List of `X-GitHub-Event` header values to accept. Empty list = accept all. |
 | `prompt` | Template; `{field}` and `{nested.field}` resolve from the GitHub payload. |
-| `deliver` | `github_comment` posts via `gh pr comment`. `log` just writes to the gateway log. |
+| `deliver` | `github_comment` posts via `gh issue comment`, on the event's own PR or issue unless `deliver_extra` names another. `log` just writes to the gateway log. |
 | `deliver_extra.repo` | Resolves to e.g. `org/repo` from the payload. |
 | `deliver_extra.pr_number` | Resolves to the PR number from the payload. |
 

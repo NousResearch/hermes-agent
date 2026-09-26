@@ -264,6 +264,31 @@ class TestFallbackChainAdvancement:
         assert agent.client is not None
 
 
+    def test_xai_oauth_fallback_sets_codex_responses(self):
+        """xai-oauth fallback must leave agent.api_mode as codex_responses.
+
+        Regression for #54671: the xai-oauth provider serves the Responses
+        API (like openai-codex), so the fallback wire must select
+        ``codex_responses`` rather than defaulting to chat_completions.
+        """
+        fbs = [{"provider": "xai-oauth", "model": "grok-4.3"}]
+        agent = _make_agent(fallback_model=fbs)
+        with (
+            patch(
+                "agent.chat_completion_helpers._fallback_entry_unavailable_without_network",
+                return_value=None,
+            ),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(_mock_client(base_url="https://api.x.ai"), "grok-4.3"),
+            ),
+        ):
+            assert agent._try_activate_fallback() is True
+            assert agent.provider == "xai-oauth"
+            assert agent.api_mode == "codex_responses"
+
+
+
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────
 
 

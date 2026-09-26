@@ -609,47 +609,65 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return "Not connected" if not self._running or not self._http_session else (await self._check_managed_bridge_exit() or None)
 
     async def _post_bridge_message(self, path: str, payload: Dict[str, Any], *, timeout: float) -> SendResult:
-        """POST to the bridge; 200 → SendResult(messageId, raw_response), else the error text."""
+        """POST to the bridge; 200 → SendResult(messageId, raw_response), else the error text with
+        ``raw_response["unsent"]`` when nothing was sent."""
+        import aiohttp
         try:
             async with self._bridge_req("post", path, timeout, json=payload) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     return SendResult(success=True, message_id=data.get("messageId"), raw_response=data)
-                return SendResult(success=False, error=await resp.text())
+                # 503: the bridge refuses before sending while WhatsApp is disconnected. A 500 can follow a
+                # bridge-side split that already sent part of the text.
+                return SendResult(success=False, error=await resp.text(), raw_response={"unsent": resp.status == 503})
         except Exception as e:
-            return SendResult(success=False, error=str(e))
+            # A failed connect never reached the bridge; a timeout or a dropped response may have been sent.
+            return SendResult(success=False, error=str(e), raw_response={"unsent": isinstance(e, aiohttp.ClientConnectorError)})
 
     @_needs_bridge
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Format markdown for WhatsApp, chunk preserving code blocks, send sequentially."""
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
-        chat_id = to_whatsapp_jid(chat_id)
-        chunks: list[str] = []
-        delivered: list[Optional[str]] = []  # one entry per confirmed chunk (the bridge may omit an id)
         try:
             chunks = self.truncate_message(self.format_message(content), self._outgoing_chunk_limit())
-            sent_message_ids: list[str] = []
-            last_message_id = None
-            for idx, chunk in enumerate(chunks):
-                payload: Dict[str, Any] = {"chatId": chat_id, "message": chunk}
-                if reply_to and idx == 0:
-                    payload["replyTo"] = reply_to  # Reply-to on the first chunk only.
-                result = await self._post_bridge_message("send", payload, timeout=30)
-                if not result.success:
-                    return self._with_partial_send(
-                        SendResult(success=False, error=result.error), chunks[idx:], delivered, tail_certain=False)
-                last_message_id = result.message_id
-                delivered.append(last_message_id)
-                if last_message_id:
-                    sent_message_ids.append(str(last_message_id))
-                if len(chunks) > 1:
-                    await asyncio.sleep(0.3)  # avoid rate limiting between chunks
-            return SendResult(success=True, message_id=last_message_id, continuation_message_ids=tuple(sent_message_ids[:-1]),
-                              raw_response={"message_ids": sent_message_ids})
         except Exception as e:
-            return self._with_partial_send(
-                SendResult(success=False, error=str(e)), chunks[len(delivered):], delivered, tail_certain=False)
+            return SendResult(success=False, error=str(e))
+        return await self._send_chunks(to_whatsapp_jid(chat_id), chunks, [], reply_to)
+
+    async def _send_chunks(
+        self, jid: str, chunks: list[str], delivered: list[Optional[str]], reply_to: Optional[str]) -> SendResult:
+        """Send ``chunks`` after the ``delivered`` ones (one entry per confirmed chunk; the bridge may omit
+        an id). A failure after a confirmed chunk is a partial result, so the visible head is never re-sent."""
+        for i, chunk in enumerate(chunks):
+            payload: Dict[str, Any] = {"chatId": jid, "message": chunk}
+            if reply_to and not delivered:
+                payload["replyTo"] = reply_to  # Reply-to on the first chunk only.
+            result = await self._post_bridge_message("send", payload, timeout=30)
+            if not result.success:
+                unsent = bool(result.raw_response.get("unsent"))
+                failed = self._with_partial_send(
+                    SendResult(success=False, error=result.error), chunks[i:], delivered, tail_certain=unsent)
+                # Head on screen: only an in-process resume completes the reply once (a ledger
+                # redelivery re-sends the whole text), so a certainly-unsent tail is retried.
+                failed.retryable = unsent and bool(delivered)
+                return failed
+            delivered.append(result.message_id)
+            if len(chunks) > 1:
+                await asyncio.sleep(0.3)  # avoid rate limiting between chunks
+        sent_message_ids = [str(m) for m in delivered if m]
+        return SendResult(success=True, message_id=delivered[-1] if delivered else None,
+                          continuation_message_ids=tuple(sent_message_ids[:-1]), raw_response={"message_ids": sent_message_ids})
+
+    async def _resume_partial_send(
+        self, chat_id: str, result: SendResult, *, reply_to: Optional[str], metadata: Optional[Dict[str, Any]],
+    ) -> Optional[SendResult]:
+        raw = result.raw_response if isinstance(result.raw_response, dict) else {}
+        undelivered = list(raw.get("undelivered_chunks") or ())
+        if not undelivered or await self._bridge_unavailable():
+            return None
+        return await self._send_chunks(
+            to_whatsapp_jid(chat_id), undelivered, list(raw.get("delivered_message_ids") or ()), reply_to)
 
     @_needs_bridge
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:

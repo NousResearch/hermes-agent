@@ -14,10 +14,6 @@ reconciliation. No mocks on the components under test.
     (verified identity, not bare PID existence — #109680).
 """
 import io, contextlib, json, os, subprocess, sys, tempfile, time
-from pathlib import Path
-
-WORKTREE = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(WORKTREE))
 
 import pytest
 

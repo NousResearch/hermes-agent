@@ -1417,6 +1417,29 @@ def test_link_tasks_archived_parent_is_terminal_no_gate(kanban_home):
         assert "dependency_wait" not in [e.kind for e in kb.list_events(conn, child)]
 
 
+def test_worker_context_keeps_handoff_of_archived_parent(kanban_home):
+    """Archiving a completed parent must not drop its handoff from a child
+    that is still open (blocked and retried later, say)."""
+    with kbc.connect() as conn:
+        parent = kb.create_task(conn, title="research")
+        child = kb.create_task(conn, title="implement", parents=(parent,))
+        assert kb.complete_task(conn, parent, summary="findings in here", force=True)
+        assert "findings in here" in kb.build_worker_context(conn, child)
+
+        assert kb.archive_task(conn, parent)
+
+        assert "findings in here" in kb.build_worker_context(conn, child)
+
+
+def test_worker_context_omits_archived_parent_that_never_completed(kanban_home):
+    with kbc.connect() as conn:
+        parent = kb.create_task(conn, title="abandoned")
+        child = kb.create_task(conn, title="implement", parents=(parent,))
+        assert kb.archive_task(conn, parent)
+
+        assert "## Parent task results" not in kb.build_worker_context(conn, child)
+
+
 def test_unlink_tasks_triggers_recompute_ready(kanban_home):
     """Regression test for issue #22459.
 

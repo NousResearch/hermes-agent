@@ -22,14 +22,17 @@ import { NO_PANE_GROUP } from '../../pane-visibility'
 import { allPaneIds, findGroupOfPane } from '../model'
 import { $hiddenTreePanes, $layoutTree, $narrowViewport } from '../store'
 
+import { $paneStates } from '@/store/panes'
+
 import { KeepAlivePaneSlot, useStablePaneHosts } from './keep-alive-panes'
-import { paneChrome } from './track-model'
+import { fixedTrackSize, paneChrome, type TrackContext } from './track-model'
 
 export function NarrowOverlays() {
   const narrow = useStore($narrowViewport)
   const solo = useStore($chatOnboardingSolo)
   const tree = useStore($layoutTree)
   const panes = useContributions('panes')
+  const paneStates = useStore($paneStates)
   const stableHosts = useStablePaneHosts()
   const hiddenPanes = useStore($hiddenTreePanes)
   const [reveal, setReveal] = useState<{ id: string; pinned: boolean } | null>(null)
@@ -128,6 +131,26 @@ export function NarrowOverlays() {
   const revealed = reveal ? collapsibles.find(p => p.id === reveal.id) : undefined
   const sides = [...new Set(collapsibles.map(sideOf))]
 
+  // Size the overlay the way the pane's zone is sized while docked: declared
+  // width refined by the user's drag override (fixedTrackSize), so a pane the
+  // user narrowed stays narrowed here too — reading only data.width would
+  // reset the overlay to the declared size on every reveal.
+  const overlayWidth = (() => {
+    if (!revealed || !tree) {
+      return (revealed?.data as { width?: string } | undefined)?.width ?? '18rem'
+    }
+
+    const zone = findGroupOfPane(tree, revealed.id)
+    const ctx: TrackContext = {
+      paneFor: id => panes.find(p => p.id === id),
+      paneGone: () => false,
+      overrides: paneStates
+    }
+    const track = zone ? fixedTrackSize(zone, 'row', ctx) : null
+
+    return track ?? (revealed.data as { width?: string } | undefined)?.width ?? '18rem'
+  })()
+
   // The revealed pane's ZONE-mates that also left the grid (the sessions zone
   // stacks SESSIONS | BOTS): the overlay mirrors the zone's tab strip so a
   // pane docked into a collapsed zone stays reachable on narrow viewports —
@@ -177,7 +200,7 @@ export function NarrowOverlays() {
           onMouseLeave={onMouseLeave}
           // Match the pane's docked width (sessions ~237px, files its rail
           // width) instead of a fat fixed 20rem — capped for tiny screens.
-          style={{ width: `min(${(revealed.data as { width?: string } | undefined)?.width ?? '18rem'}, 85vw)` }}
+          style={{ width: `min(${overlayWidth}, 85vw)` }}
         >
           {/* Zone-mates share the overlay through the zone's own tab strip
               (SESSIONS | BOTS) — a lone pane keeps the stripless form. */}

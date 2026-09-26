@@ -2041,6 +2041,8 @@ export const deOverrides = {
       provider: 'Anbieter',
       model: 'Modell',
       applying: 'Wird angewendet…',
+      mainAppliedTitle: 'Hauptmodell aktualisiert',
+      mainAppliedMessage: model => `Neue Sitzungen verwenden ${model}.`,
       defaultsLabel: 'Voreinstellungen',
       reasoning: 'Denken',
       reasoningOff: 'Aus',

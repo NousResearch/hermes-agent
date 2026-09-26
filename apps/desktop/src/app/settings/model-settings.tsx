@@ -33,7 +33,7 @@ import { isSubmitEnter } from '@/lib/ime'
 import { cn } from '@/lib/utils'
 import { $customModels, withCustomModels } from '@/store/custom-models'
 import { setMainModelAssignment } from '@/store/model-assignment'
-import { notifyError, readableError } from '@/store/notifications'
+import { notify, notifyError, readableError } from '@/store/notifications'
 import { startManualLocalEndpoint, startManualOnboarding, startManualProviderOAuth } from '@/store/onboarding'
 
 import { hermesConfigCacheWriter, invalidateHermesConfig, useHermesConfigRecord } from '../hooks/use-config-record'
@@ -729,6 +729,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
       const model = result.model || selectedModel
       setMainModel({ provider, model })
       setSwitchStaleAux(result.stale_aux ?? [])
+      notify({ kind: 'success', title: m.mainAppliedTitle, message: m.mainAppliedMessage(model) })
 
       // Live UI stores mirror the ACTIVE profile's model; a scoped apply
       // changed a different profile and must not repaint them.
@@ -743,7 +744,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
       setApplying(false)
     }
   }, [
-    m.loadFailed,
+    m,
     onMainModelChanged,
     refresh,
     scopeProfile,

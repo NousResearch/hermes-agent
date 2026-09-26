@@ -2033,6 +2033,8 @@ export const esOverrides = {
       provider: 'Proveedor',
       model: 'Modelo',
       applying: 'Aplicando...',
+      mainAppliedTitle: 'Modelo principal actualizado',
+      mainAppliedMessage: model => `Las sesiones nuevas usarán ${model}.`,
       defaultsLabel: 'Valores predeterminados',
       reasoning: 'Razonamiento',
       reasoningOff: 'Desactivado',

@@ -5,6 +5,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import type * as ConfigApi from '@/api/config'
 import { I18nProvider, TRANSLATIONS } from '@/i18n'
+import { $notifications, clearNotifications } from '@/store/notifications'
 
 import { ModelSettings } from './model-settings'
 
@@ -409,6 +410,32 @@ describe('ModelSettings', () => {
         task: 'vision',
         base_url: 'http://localhost:11434/v1'
       })
+    )
+  })
+
+  it('confirms a main model apply with a success notification', async () => {
+    clearNotifications()
+    setModelAssignment.mockResolvedValueOnce({
+      ok: true,
+      provider: 'nous',
+      model: 'hermes-4',
+      gateway_tools: [],
+      stale_aux: []
+    })
+
+    renderModelSettings()
+    await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalled())
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }))
+
+    await waitFor(() =>
+      expect($notifications.get()).toContainEqual(
+        expect.objectContaining({
+          kind: 'success',
+          title: 'Main model updated',
+          message: 'New sessions will use hermes-4.'
+        })
+      )
     )
   })
 

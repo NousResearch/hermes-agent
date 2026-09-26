@@ -1771,6 +1771,8 @@ export const en: Translations = {
       provider: 'Provider',
       model: 'Model',
       applying: 'Applying...',
+      mainAppliedTitle: 'Main model updated',
+      mainAppliedMessage: model => `New sessions will use ${model}.`,
       defaultsLabel: 'Defaults',
       reasoning: 'Reasoning',
       reasoningOff: 'Off',

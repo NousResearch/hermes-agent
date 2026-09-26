@@ -1344,6 +1344,175 @@ def test_custom_endpoint_pool_seeds_from_model_config(tmp_path, monkeypatch):
     assert model_entries[0].access_token == "sk-model-key"
 
 
+def test_named_provider_with_own_key_env_is_not_seeded_with_the_main_models_key(
+    tmp_path, monkeypatch
+):
+    """A named ``providers:`` entry that declares its own ``key_env`` must never be seeded
+    with the bare-custom main model's ``api_key`` merely because they share a ``base_url``
+    (regression: the main key leaked into a same-URL provider's own pool, so it was returned
+    for that provider instead of its own credential)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("SECOND_KEY", "second-key")
+    _write_auth_store(tmp_path, {"version": 1})
+
+    import hermes_yaml as yaml
+    config_path = tmp_path / "hermes" / "config.yaml"
+    config_path.write_text(yaml.safe_dump({
+        "model": {
+            "provider": "custom",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "main-key",
+        },
+        "providers": {
+            "second": {
+                "name": "Second account",
+                "api": "https://openrouter.ai/api/v1",
+                "key_env": "SECOND_KEY",
+                "default_model": "google/gemini-2.5-flash",
+            }
+        },
+    }))
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("custom:second-account")
+    entries = pool.entries()
+    model_entries = [e for e in entries if e.source == "model_config"]
+    assert model_entries == []
+    assert all(e.access_token != "main-key" for e in entries)
+
+
+def test_named_provider_pool_prunes_a_stale_model_config_entry_from_before_the_fix(
+    tmp_path, monkeypatch
+):
+    """A user who ran the buggy version has ``model_config`` persisted in the named
+    provider's own pool (auth.json); loading the pool after the fix must drop it, since it
+    is no longer seeded."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("SECOND_KEY", "second-key")
+    _write_auth_store(tmp_path, {
+        "version": 1,
+        "credential_pool": {
+            "custom:second-account": [
+                {
+                    "id": "stale-model-config",
+                    "source": "model_config",
+                    "auth_type": "api_key",
+                    "access_token": "main-key",
+                    "base_url": "https://openrouter.ai/api/v1",
+                    "label": "model_config",
+                }
+            ]
+        },
+    })
+
+    import hermes_yaml as yaml
+    config_path = tmp_path / "hermes" / "config.yaml"
+    config_path.write_text(yaml.safe_dump({
+        "model": {
+            "provider": "custom",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "main-key",
+        },
+        "providers": {
+            "second": {
+                "name": "Second account",
+                "api": "https://openrouter.ai/api/v1",
+                "key_env": "SECOND_KEY",
+                "default_model": "google/gemini-2.5-flash",
+            }
+        },
+    }))
+
+    from agent.credential_pool import load_pool
+    from hermes_cli.auth import read_credential_pool
+
+    pool = load_pool("custom:second-account")
+    assert not pool.has_credentials()
+    assert pool.entries() == []
+
+    # And the prune actually rewrote auth.json, not just the in-memory view.
+    persisted = read_credential_pool(None).get("custom:second-account", [])
+    assert persisted == []
+
+
+def test_named_provider_pool_prunes_a_sanitized_stale_model_config_row(tmp_path, monkeypatch):
+    """What a real install persists for the borrowed ``model_config`` row carries no token;
+    that shape must be pruned too, while a manual row in the same pool is kept."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("SECOND_KEY", "second-key")
+    _write_auth_store(tmp_path, {
+        "version": 1,
+        "credential_pool": {
+            "custom:second-account": [
+                {"id": "m1", "source": "manual", "auth_type": "api_key", "access_token": "manual-key",
+                 "priority": 0},
+                {"id": "x1", "source": "model_config", "auth_type": "api_key", "label": "model_config",
+                 "priority": 1},
+            ]
+        },
+    })
+
+    import hermes_yaml as yaml
+    (tmp_path / "hermes" / "config.yaml").write_text(yaml.safe_dump({
+        "model": {"provider": "custom", "base_url": "https://openrouter.ai/api/v1", "api_key": "main-key"},
+        "providers": {"second": {"name": "Second account", "api": "https://openrouter.ai/api/v1",
+                                 "key_env": "SECOND_KEY"}},
+    }))
+
+    from agent.credential_pool import load_pool
+    from hermes_cli.auth import read_credential_pool
+
+    entries = load_pool("custom:second-account").entries()
+    assert [(e.source, e.access_token) for e in entries] == [("manual", "manual-key")]
+    persisted = read_credential_pool(None).get("custom:second-account", [])
+    assert [row.get("source") for row in persisted] == ["manual"]
+
+
+def test_setup_flow_entry_sharing_the_models_key_env_keeps_model_config(tmp_path, monkeypatch):
+    """``hermes model`` writes ``model.api_key: ${VAR}`` plus a ``custom_providers`` entry with
+    ``key_env: VAR`` for the same endpoint. That entry's credential IS the model's key, so its
+    pool must still be seeded, or the main model has no credential on openrouter.ai."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("HERMES_CUSTOM_OPENROUTER_AI_API_KEY", "setup-key")
+    _write_auth_store(tmp_path, {"version": 1})
+
+    import hermes_yaml as yaml
+    (tmp_path / "hermes" / "config.yaml").write_text(yaml.safe_dump({
+        "model": {"provider": "custom", "base_url": "https://openrouter.ai/api/v1",
+                  "api_key": "${HERMES_CUSTOM_OPENROUTER_AI_API_KEY}"},
+        "custom_providers": [{"name": "OpenRouter", "base_url": "https://openrouter.ai/api/v1",
+                              "key_env": "HERMES_CUSTOM_OPENROUTER_AI_API_KEY"}],
+    }))
+
+    from agent.credential_pool import load_pool
+
+    entries = load_pool("custom:openrouter").entries()
+    assert [(e.source, e.access_token) for e in entries] == [("model_config", "setup-key")]
+
+
+def test_model_key_seeds_its_own_entry_even_behind_a_same_url_sibling(tmp_path, monkeypatch):
+    """The first entry on the URL is a sibling with a different key; the model's own entry
+    comes second. The model key belongs in the second pool, not the first."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("SECOND_KEY", "second-key")
+    monkeypatch.setenv("MAIN_KEY", "main-key")
+    _write_auth_store(tmp_path, {"version": 1})
+
+    import hermes_yaml as yaml
+    (tmp_path / "hermes" / "config.yaml").write_text(yaml.safe_dump({
+        "model": {"provider": "custom", "base_url": "https://llm.example.test/v1", "api_key": "main-key"},
+        "custom_providers": [
+            {"name": "Second account", "base_url": "https://llm.example.test/v1", "key_env": "SECOND_KEY"},
+            {"name": "Main account", "base_url": "https://llm.example.test/v1", "key_env": "MAIN_KEY"},
+        ],
+    }))
+
+    from agent.credential_pool import load_pool
+
+    assert [e.source for e in load_pool("custom:second-account").entries()] == []
+    main_entries = load_pool("custom:main-account").entries()
+    assert [(e.source, e.access_token) for e in main_entries] == [("model_config", "main-key")]
 
 
 

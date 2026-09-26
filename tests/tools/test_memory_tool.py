@@ -308,6 +308,38 @@ class TestMemoryConsolidationGracefulDegrade:
         assert r["done"] is True
         assert "current_entries" not in r
 
+    def test_near_full_store_zero_match_does_not_echo_store(self, store):
+        """A zero-match single-op failure on a near-full store must not echo the
+        whole store back: the entries are ALREADY in the system prompt (frozen
+        snapshot), so the echo re-pays the entire store per failed call — the
+        exact growth that made consolidation retries self-defeating (#97316
+        sibling). At <90% usage the echo stays (cheap, genuinely helpful);
+        at >=90% it is dropped and the usage line points at /memory."""
+        store.add("memory", "e" * 450)  # 450/500 = 90% usage, persisted to disk
+        r = store.replace("memory", "nonexistent", "new")
+        assert r["success"] is False
+        assert "current_entries" not in r
+        assert "usage" in r
+        # Points at the cheap way to see the inventory instead of paying it again.
+        assert "/memory" in r["error"]
+
+    def test_near_full_store_remove_no_match_does_not_echo_store(self, store):
+        """Same guard on the remove path (the loop variant observed in the
+        field: repeated `remove` misses at 98% usage, every miss paying the
+        full store back into the turn)."""
+        store.add("memory", "e" * 450)  # 450/500 = 90% usage
+        r = store.remove("memory", "no such substring anywhere")
+        assert r["success"] is False
+        assert "current_entries" not in r
+
+    def test_healthy_store_zero_match_still_echoes_entries(self, store):
+        """Small-store misses keep the echo: cheap, and genuinely the fastest
+        way for the model to self-correct."""
+        store.add("memory", "fact A")
+        r = store.replace("memory", "nonexistent", "new")
+        assert r["success"] is False
+        assert "current_entries" in r
+
 
     def test_apply_batch_failures_count_toward_budget(self, store):
         """apply_batch is the primary at-capacity consolidation path; its

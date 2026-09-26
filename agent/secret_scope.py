@@ -151,7 +151,10 @@ def current_secret_scope_home() -> Optional[str]:
 # Genuinely-global env vars: process/deployment settings, NOT profile secrets.
 # They keep reading os.environ even in multiplex mode (routing them through the
 # fail-closed path would wrongly crash). Keep this tight — when in doubt a
-# value is a profile secret. Membership is exact name OR prefix.
+# value is a profile secret. Membership is an exact name, except the
+# ``TERMINAL_`` prefix, which tools.terminal_scope owns. Kanban and Telegram
+# names are listed one by one so a new sibling (for example a future
+# ``HERMES_TELEGRAM_*`` credential) stays profile-scoped by default.
 _GLOBAL_ENV_EXACT = frozenset({
     # Hermes runtime / deployment
     "HERMES_HOME", "HERMES_PROFILE", "HERMES_GATEWAY_LOCK_DIR",
@@ -163,6 +166,25 @@ _GLOBAL_ENV_EXACT = frozenset({
     "VIRTUAL_ENV", "PYTHONPATH", "SSL_CERT_FILE",
     # Kanban paths (per-board, not per-profile-secret)
     "HERMES_KANBAN_DB", "HERMES_KANBAN_WORKSPACES_ROOT", "HERMES_KANBAN_BOARD",
+    "HERMES_KANBAN_ATTACHMENTS_ROOT", "HERMES_KANBAN_BRANCH",
+    "HERMES_KANBAN_BUSY_TIMEOUT_MS", "HERMES_KANBAN_CLAIM_LOCK",
+    "HERMES_KANBAN_CLAIM_TTL_SECONDS", "HERMES_KANBAN_CRASH_GRACE_SECONDS",
+    "HERMES_KANBAN_DISPATCH_IN_GATEWAY", "HERMES_KANBAN_GOAL_MAX_TURNS",
+    "HERMES_KANBAN_GOAL_MODE", "HERMES_KANBAN_HOME",
+    "HERMES_KANBAN_LOGS_ROOT", "HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS",
+    "HERMES_KANBAN_ROOT", "HERMES_KANBAN_RUN_ID",
+    "HERMES_KANBAN_SPECIFY_MAX_TOKENS", "HERMES_KANBAN_STOP_NUDGE",
+    "HERMES_KANBAN_TASK", "HERMES_KANBAN_WORKSPACE",
+    # Telegram deployment tuning knobs (the bot token is NOT here).
+    "HERMES_TELEGRAM_DISABLE_FALLBACK_IPS",
+    "HERMES_TELEGRAM_FALLBACK_DISCOVERY_TIMEOUT", "HERMES_TELEGRAM_NOTIFICATIONS",
+    "HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS",
+    "HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT", "HERMES_TELEGRAM_HTTP_POOL_SIZE",
+    "HERMES_TELEGRAM_HTTP_POOL_TIMEOUT", "HERMES_TELEGRAM_HTTP_READ_TIMEOUT",
+    "HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", "HERMES_TELEGRAM_INIT_TIMEOUT",
+    "HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS",
+    "HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS",
+    "HERMES_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS",
     # API-server LISTENER settings — deployment config (compose/systemd env),
     # which the scoped runner reload must keep seeing or containers silently
     # lose the api_server platform. API_SERVER_KEY is a credential: NOT here.
@@ -181,9 +203,7 @@ _GLOBAL_ENV_EXACT = frozenset({
     "GATEWAY_RELAY_WAKE_URL", "GATEWAY_RELAY_DISPLAY_NAME",
 })
 _GLOBAL_ENV_PREFIXES = (
-    "HERMES_KANBAN_",
-    "HERMES_TELEGRAM_",   # tuning knobs (batch delays, fallback toggles) — NOT the token
-    "TERMINAL_",          # terminal/sandbox backend settings
+    "TERMINAL_",          # terminal/sandbox backend settings (tools.terminal_scope)
 )
 
 

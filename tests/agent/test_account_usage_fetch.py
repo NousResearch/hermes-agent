@@ -339,3 +339,214 @@ def test_fetch_portal_account_returns_value_and_keeps_caller_context(monkeypatch
     finally:
         marker.reset(token)
     assert seen == {"force_fresh": True, "marker": "profile-scope"}
+
+
+def test_fetch_account_usage_copilot_success(monkeypatch):
+    captured_headers = {}
+    captured_url = None
+
+    class _MockCopilotClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url, headers=None):
+            nonlocal captured_headers, captured_url
+            captured_url = url
+            captured_headers = dict(headers or {})
+            return _Response(
+                {
+                    "access_type_sku": "free_limited_copilot",
+                    "quota_reset_date": "2026-10-01T00:00:00Z",
+                    "quota_snapshots": {
+                        "chat": {
+                            "credits_used": 15,
+                            "remaining": 85,
+                            "percent_remaining": 85.0,
+                            "quota_reset_date": "2026-10-01T00:00:00Z",
+                            "has_quota": True,
+                        },
+                        "completions": {
+                            "credits_used": 200,
+                            "remaining": 1800,
+                            "percent_remaining": 90.0,
+                            "quota_reset_date": "2026-10-01T00:00:00Z",
+                            "has_quota": True,
+                        },
+                        "premium_interactions": {
+                            "credits_used": 0,
+                            "remaining": 0,
+                            "percent_remaining": 0.0,
+                            "has_quota": False,
+                        },
+                    },
+                }
+            )
+
+    monkeypatch.setattr("agent.account_usage._utc_now", lambda: datetime(2026, 9, 19, 12, 0, tzinfo=timezone.utc))
+    monkeypatch.setattr("hermes_cli.copilot_auth.resolve_copilot_token", lambda: ("gho_test123", "GH_TOKEN"))
+    monkeypatch.setattr("agent.account_usage.httpx.Client", lambda timeout=10.0: _MockCopilotClient())
+
+    snapshot = fetch_account_usage("copilot")
+
+    assert snapshot is not None
+    assert snapshot.provider == "copilot"
+    assert snapshot.plan == "Free Limited Copilot"
+    assert captured_url == "https://api.github.com/copilot_internal/user"
+    assert captured_headers.get("Authorization") == "token gho_test123"
+    assert captured_headers.get("Accept") == "application/json"
+    assert captured_headers.get("User-Agent") == "GitHubCopilotChat/0.26.7"
+    assert captured_headers.get("Editor-Version") == "vscode/1.104.1"
+
+    # premium_interactions has has_quota=False and must be excluded
+    assert len(snapshot.windows) == 2
+    chat_window = snapshot.windows[0]
+    assert chat_window.label == "Chat"
+    assert chat_window.used_percent == 15.0
+    assert chat_window.detail == "85/100 remaining"
+    assert chat_window.reset_at == datetime(2026, 10, 1, 0, 0, tzinfo=timezone.utc)
+
+    comp_window = snapshot.windows[1]
+    assert comp_window.label == "Completions"
+    assert comp_window.used_percent == 10.0
+    assert comp_window.detail == "1800/2000 remaining"
+    assert comp_window.reset_at == datetime(2026, 10, 1, 0, 0, tzinfo=timezone.utc)
+
+    lines = render_account_usage_lines(snapshot)
+    assert lines[0] == "📈 Account limits"
+    assert "copilot (Free Limited Copilot)" in lines[1]
+    assert any("Chat: 85% remaining (15% used)" in line and "85/100 remaining" in line for line in lines)
+    assert any("Completions: 90% remaining (10% used)" in line and "1800/2000 remaining" in line for line in lines)
+
+
+def test_fetch_account_usage_copilot_provider_aliases(monkeypatch):
+    class _MockCopilotClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url, headers=None):
+            return _Response({"access_type_sku": "copilot_pro", "quota_snapshots": {}})
+
+    monkeypatch.setattr("agent.account_usage.httpx.Client", lambda timeout=10.0: _MockCopilotClient())
+
+    for alias in ("copilot", "github-copilot", "github_copilot", "COPILOT"):
+        snapshot = fetch_account_usage(alias, api_key="gho_alias_token")
+        assert snapshot is not None
+        assert snapshot.plan == "Copilot Pro"
+
+
+def test_fetch_account_usage_copilot_credentials_rejected(monkeypatch):
+    import httpx
+
+    class _FailingClient:
+        def __init__(self, status_code):
+            self.status_code = status_code
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url, headers=None):
+            req = httpx.Request("GET", url)
+            resp = httpx.Response(self.status_code, request=req)
+            raise httpx.HTTPStatusError(f"HTTP {self.status_code}", request=req, response=resp)
+
+    monkeypatch.setattr("agent.account_usage.httpx.Client", lambda timeout=10.0: _FailingClient(401))
+    snapshot = fetch_account_usage("copilot", api_key="gho_bad_token")
+
+    assert snapshot is not None
+    assert snapshot.available is False
+    assert snapshot.unavailable_reason == "Copilot credentials rejected by GitHub API (HTTP 401)."
+    lines = render_account_usage_lines(snapshot)
+    assert "Unavailable: Copilot credentials rejected by GitHub API (HTTP 401)." in lines
+
+    monkeypatch.setattr("agent.account_usage.httpx.Client", lambda timeout=10.0: _FailingClient(403))
+    snapshot_403 = fetch_account_usage("copilot", api_key="gho_bad_token")
+    assert snapshot_403 is not None
+    assert snapshot_403.unavailable_reason == "Copilot credentials rejected by GitHub API (HTTP 403)."
+
+
+def test_fetch_account_usage_copilot_no_token_returns_none(monkeypatch):
+    monkeypatch.setattr("hermes_cli.copilot_auth.resolve_copilot_token", lambda: ("", ""))
+    monkeypatch.setattr("hermes_cli.models._resolve_copilot_catalog_api_key", lambda: "")
+
+    assert fetch_account_usage("copilot") is None
+
+
+def test_fetch_account_usage_copilot_strips_auth_prefix(monkeypatch):
+    captured_auth = None
+
+    class _MockCopilotClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url, headers=None):
+            nonlocal captured_auth
+            captured_auth = headers.get("Authorization")
+            return _Response({"access_type_sku": "individual", "quota_snapshots": {}})
+
+    monkeypatch.setattr("agent.account_usage.httpx.Client", lambda timeout=10.0: _MockCopilotClient())
+
+    fetch_account_usage("copilot", api_key="Bearer gho_prefix_token")
+    assert captured_auth == "token gho_prefix_token"
+
+    fetch_account_usage("copilot", api_key="token gho_prefix_token2")
+    assert captured_auth == "token gho_prefix_token2"
+
+
+
+def test_fetch_account_usage_copilot_transport_failures_are_explained(monkeypatch):
+    import httpx
+
+    class _FailingClient:
+        def __init__(self, status_code):
+            self.status_code = status_code
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url, headers=None):
+            request = httpx.Request("GET", url)
+            response = httpx.Response(self.status_code, request=request)
+            raise httpx.HTTPStatusError(
+                f"HTTP {self.status_code}", request=request, response=response
+            )
+
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=10.0: _FailingClient(500),
+    )
+    snapshot = fetch_account_usage("copilot", api_key="gho_server_error")
+    assert snapshot is not None
+    assert snapshot.unavailable_reason == "Copilot API returned HTTP 500."
+
+    class _TransportFailure:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url, headers=None):
+            raise OSError("network down")
+
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=10.0: _TransportFailure(),
+    )
+    snapshot = fetch_account_usage("copilot", api_key="gho_network_error")
+    assert snapshot is not None
+    assert snapshot.unavailable_reason == "Could not reach the Copilot usage API."

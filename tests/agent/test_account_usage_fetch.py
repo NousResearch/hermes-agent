@@ -102,7 +102,8 @@ def test_fetch_account_usage_codex(monkeypatch):
                         "limit_window_seconds": 604800,
                     },
                 },
-                "credits": {"has_credits": True, "balance": 12.5},
+                # The backend model types ``balance`` as a string (Codex credits, not dollars).
+                "credits": {"has_credits": True, "unlimited": False, "balance": "12.5"},
             }
         ),
     )
@@ -115,7 +116,24 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert snapshot.windows[0].label == "Session"
     assert snapshot.windows[0].used_percent == 15.0
     assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_900_000_000, tz=timezone.utc)
-    assert "Credits balance: $12.50" in snapshot.details
+    assert "Credits balance: 13 credits" in snapshot.details
+
+
+@pytest.mark.parametrize(
+    ("credits", "expected"),
+    [
+        ({"has_credits": False, "unlimited": True}, "Credits balance: unlimited"),  # Codex CLI: unlimited wins
+        ({"has_credits": True, "unlimited": False, "balance": None}, "Credits balance: available"),
+        ({"has_credits": True, "unlimited": False, "balance": "not-a-number"}, "Credits balance: available"),
+        ({"has_credits": True, "unlimited": False, "balance": 1234}, "Credits balance: 1234 credits"),
+        ({"has_credits": False, "unlimited": False, "balance": "0"}, None),
+        (None, None),
+    ],
+)
+def test_codex_credits_line_mirrors_the_codex_cli_status_row(credits, expected):
+    from agent.account_usage import _codex_credits_line
+
+    assert _codex_credits_line(credits) == expected
 
 
 def _register_profile(monkeypatch, profile):

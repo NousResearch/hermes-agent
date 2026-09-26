@@ -99,6 +99,49 @@ def source_frontends(project_root: Path) -> tuple[str, ...]:
     return tuple(name for name in ("ui-tui", "web") if (project_root / name / "package.json").is_file())
 
 
+# Workspace dir -> `components:` config key (#123828).
+_FRONTEND_COMPONENT_KEYS = {"ui-tui": "tui", "web": "web"}
+
+
+def _component_enabled(value) -> bool:
+    """True unless *value* is an explicit opt-out; unknown shapes fail open."""
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() not in {"false", "no", "off", "0"}
+    return True
+
+
+def update_enabled_products(
+    frontends: tuple[str, ...], *, desktop: bool
+) -> tuple[tuple[str, ...], bool, tuple[str, ...]]:
+    """Split *frontends* into ``(enabled, desktop_enabled, skipped_labels)`` per the
+    user-declared ``components:`` config set (#123828). Fail-open: any missing or
+    malformed config builds everything, so an update never breaks on config."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        configured = (load_config_readonly() or {}).get("components", {})
+    except Exception:
+        configured = {}
+    if not isinstance(configured, dict):
+        configured = {}
+    enabled = tuple(
+        name for name in frontends
+        if _component_enabled(configured.get(_FRONTEND_COMPONENT_KEYS.get(name, name), True))
+    )
+    desktop_enabled = desktop and _component_enabled(configured.get("desktop", True))
+    skipped = tuple(sorted(
+        [name for name in ("desktop",) if desktop and not desktop_enabled]
+        + [_FRONTEND_COMPONENT_KEYS.get(name, name) for name in frontends if name not in enabled]
+    ))
+    return enabled, desktop_enabled, skipped
+
+
 def build_update_products(project_root: Path, *, desktop: bool) -> None:
     """Prepare the selected union once; a failed product aborts the update."""
     # Both current updates and historical takeover reach this in a fresh target
@@ -110,10 +153,15 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
     frontends = source_frontends(project_root)
     if not frontends:
         return
+    # ponytail: config-gated skip; per-product freshness checks if skips ever need nuance.
+    frontends, desktop, skipped = update_enabled_products(frontends, desktop=desktop)
+    for label in skipped:
+        print(f"  ↷ Skipping {label} (disabled in the components: config set)")
     env = source_build_env(explicit=True)
     workspaces = frontends + (("apps/desktop",) if desktop else ())
-    publish_stage("Updating Node dependencies")
-    prepare_source_dependencies(project_root, workspaces, env=env, explicit=True)
+    if workspaces:
+        publish_stage("Updating Node dependencies")
+        prepare_source_dependencies(project_root, workspaces, env=env, explicit=True)
     if "ui-tui" in frontends:
         publish_stage("Building the TUI")
         build_source_tui(project_root, env=env)

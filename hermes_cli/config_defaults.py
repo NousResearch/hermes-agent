@@ -2318,6 +2318,16 @@ DEFAULT_CONFIG = {
         # Per-probe timeout (seconds) for `hermes doctor --live` real-call probes.
         "live_probe_timeout": 10,
     },
+    # Component-scoped updates (#123828): which products `hermes update` installs and
+    # builds. A Desktop-only user sets tui/web to false to skip the ui-tui + web npm
+    # install and build entirely (launching a skipped product later rebuilds it on
+    # demand, the same on-demand treatment the desktop app already gets). Defaults
+    # build everything; set via e.g. `hermes config set components.tui false`.
+    "components": {
+        "desktop": True,
+        "tui": True,
+        "web": True,
+    },
 
     "updates": {
         # Passive version/banner checks only; explicit `hermes update --check` remains enabled.

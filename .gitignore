@@ -155,6 +155,7 @@ models-dev-upstream/
 
 # Local editor / agent tooling (machine-specific; keep in global config, not the repo)
 .codex/
+.claude/
 .cursor/
 .gemini/
 .zed/

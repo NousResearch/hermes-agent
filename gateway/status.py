@@ -1,6 +1,7 @@
 """Gateway runtime status helpers: PID/lock/marker files under ``{HERMES_HOME}`` (one set per
 home/profile) that tell whether the gateway daemon is running."""
 
+import ast
 import asyncio
 import contextlib
 import copy
@@ -588,29 +589,61 @@ def command_line_runs_inline_source(tokens: list[str]) -> bool:
     return inline_source_flag_index(tokens) is not None
 
 
-def _gateway_command_subcommand(command: str | None) -> str | None:
-    """Hermes gateway lifecycle subcommand from a command line, or None. No loose substring matches
-    (``"gateway" in cmdline`` also matched ``gateway status`` / ``python -m tui_gateway``): needs a
-    Hermes entrypoint plus the ``gateway`` subcommand, or a gateway-dedicated entrypoint. Tokenizes
-    quote-aware (Windows paths with spaces); ``--profile``/``-p`` selectors are stripped anywhere in
-    argv since ``_apply_profile_override`` removes them before argparse."""
-    if not command:
+def _inline_source_flag_token_count(tokens: list[str]) -> int:
+    """Count ``-c`` interpreter flag tokens anywhere in *tokens* — standalone or clustered
+    (``-uc``). Mirrors ``inline_source_flag_index``'s cluster rule: an operand-taking letter
+    (``-X``/``-W``/``-Q``) ends the cluster, so ``-Xc`` is ``-X`` plus an attached option
+    value, never an inline-source flag. Long options and plain words never count."""
+    from hermes_state_holders import _PYTHON_SHORT_OPTIONS_WITH_OPERANDS
+
+    count = 0
+    for token in tokens:
+        if not token.startswith("-") or token.startswith("--") or token == "-":
+            continue
+        for letter in token[1:]:
+            if letter == "c":
+                count += 1
+                break
+            if letter in _PYTHON_SHORT_OPTIONS_WITH_OPERANDS:
+                break
+    return count
+
+
+_RELAUNCH_SYS_ARGV_RE = re.compile(r"sys\.argv\s*=\s*(\[[^\[\]]*\])")
+
+
+def _relaunch_argv_from_inline_source(command: str) -> "Optional[list[str]]":
+    """argv an inline-source process re-binds itself to via a literal ``sys.argv = [...]``
+    assignment, or None.
+
+    ``hermes_cli.venv_sync.relaunch_command`` re-execs a Hermes entry point as ``python -I -c
+    "import sys, runpy; …; sys.argv = ['…/hermes_cli/main.py', 'gateway', 'run']; …"``: that
+    assignment names the argv the process itself runs under, so the list — not the wrapper —
+    is its identity. Contrast the #107002 restart watcher, whose ``-c`` source only READS
+    ``sys.argv`` (``pid = int(sys.argv[1]); cmd = sys.argv[2:]``) and spawns its child LATER:
+    trailing argv there is data, never a self-assignment. Only a literal list of strings counts
+    (``ast.literal_eval`` refuses computed argv), so anything else stays anonymous — the
+    fail-closed behavior of the inline-source guard.
+    """
+    match = _RELAUNCH_SYS_ARGV_RE.search(command)
+    if not match:
         return None
     try:
-        raw_tokens = shlex.split(command, posix=False)
-    except ValueError:
-        raw_tokens = command.split()
-    # Strip surrounding quotes, normalize slashes + case per token.
-    cased_tokens = [t.strip("\"'").replace("\\", "/") for t in raw_tokens]
-    tokens = [t.lower() for t in cased_tokens]
-    if not tokens:
+        argv = ast.literal_eval(match.group(1))
+    except (ValueError, SyntaxError):
         return None
+    if (not isinstance(argv, list) or not argv
+            or not all(isinstance(part, str) for part in argv)):
+        return None
+    return argv
+
+
+def _subcommand_from_tokens(tokens: list[str]) -> "Optional[str]":
+    """Subcommand from already-normalized (lowercased, slash-normalized) argv tokens — the
+    shared tail of the direct-argv path and the venv_sync relaunch path (whose caller already
+    holds the true argv list and skips the lossy space-joined re-tokenization). Every
+    entrypoint-identification guard applies to both paths unchanged."""
     basenames = [t.rsplit("/", 1)[-1] for t in tokens]
-    # ``python -c <src> … -m hermes_cli.main gateway run``: the trailing argv belongs to the program
-    # the inline source will spawn later, not to this process (#107002). Case-preserving tokens:
-    # the operand-taking ``-X``/``-W``/``-Q`` must not be conflated with ``-q``/``-b``.
-    if command_line_runs_inline_source(cased_tokens):
-        return None
     # The launchd job's osascript wrapper (gateway_launchd.launchd_program_arguments) carries the gateway argv
     # inside one AppleScript string; the gateway itself is its child and is matched on its own command line.
     if basenames[0] == "osascript":
@@ -644,8 +677,58 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     for i, token in enumerate(filtered):
         if token == "gateway":
             # Bare `hermes gateway` defaults to `run`.
-            return filtered[i + 1] if i + 1 < len(filtered) else "run"
+            neighbor = filtered[i + 1] if i + 1 < len(filtered) else "run"
+            # A ``sys.argv = ['…', 'gateway', 'run']`` list embedded in TRAILING data (the
+            # #107002 restart watcher replaying a relaunch-shaped argv) re-tokenizes into a
+            # bare ``gateway`` whose neighbor is a list-literal fragment (``','``) — data
+            # residue, never a subcommand. Only a clean subcommand word counts; anything else
+            # keeps scanning so the every-suffix intent walk still reaches the suffix that IS
+            # the embedded command.
+            if re.fullmatch(r"[a-z][a-z0-9-]*", neighbor):
+                return neighbor
     return None
+
+
+def _gateway_command_subcommand(command: str | None) -> str | None:
+    """Hermes gateway lifecycle subcommand from a command line, or None. No loose substring matches
+    (``"gateway" in cmdline`` also matched ``gateway status`` / ``python -m tui_gateway``): needs a
+    Hermes entrypoint plus the ``gateway`` subcommand, or a gateway-dedicated entrypoint. Tokenizes
+    quote-aware (Windows paths with spaces); ``--profile``/``-p`` selectors are stripped anywhere in
+    argv since ``_apply_profile_override`` removes them before argparse."""
+    if not command:
+        return None
+    try:
+        raw_tokens = shlex.split(command, posix=False)
+    except ValueError:
+        raw_tokens = command.split()
+    # Strip surrounding quotes, normalize slashes + case per token.
+    cased_tokens = [t.strip("\"'").replace("\\", "/") for t in raw_tokens]
+    tokens = [t.lower() for t in cased_tokens]
+    if not tokens:
+        return None
+    # ``python -c <src> … -m hermes_cli.main gateway run``: the trailing argv belongs to the program
+    # the inline source will spawn later, not to this process (#107002). Case-preserving tokens:
+    # the operand-taking ``-X``/``-W``/``-Q`` must not be conflated with ``-q``/``-b``. One
+    # inline-source shape IS the program it names: the venv_sync relaunch re-binds the process
+    # via an in-source ``sys.argv = [<literal>]`` assignment, so the reconstructed argv — never
+    # the lossy space-joined token stream — goes through the same tail.
+    if command_line_runs_inline_source(cased_tokens):
+        # Exactly ONE inline-source flag token marks this process's own ``-c`` source. A second
+        # one means the command line also carries an interpreter invocation as DATA — the
+        # #107002 restart watcher can replay a captured gateway argv after its own source, and
+        # now that the relaunched form is recognised that argv can itself be relaunch-shaped
+        # (``_capture_gateway_argv`` → ``_spawn_gateway_restart_watcher``). An assignment in that
+        # embedded region names the CHILD the watcher will spawn, not this process's own argv;
+        # stay anonymous and let ``gateway_spawn_intent_subcommand`` recover the intent from
+        # the suffix.
+        if _inline_source_flag_token_count(cased_tokens) > 1:
+            return None
+        relaunch_argv = _relaunch_argv_from_inline_source(command)
+        if relaunch_argv is None:
+            return None
+        return _subcommand_from_tokens(
+            [part.replace("\\", "/").lower() for part in relaunch_argv])
+    return _subcommand_from_tokens(tokens)
 
 
 def gateway_spawn_intent_subcommand(command: str | None) -> str | None:

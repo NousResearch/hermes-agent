@@ -291,3 +291,19 @@ def test_launch_under_the_owning_update_does_not_run_the_tail_again(tmp_path, mo
     assert completion_tail == []
     assert pending.is_file(), "the owning update's obligation was discharged by its own tail"
 
+
+def test_relaunch_command_output_is_gateway_identity():
+    """venv_sync.relaunch_command's whole point is that the re-exec'd process IS the program it
+    relaunched; the canonical gateway identity matcher must reach the same verdict from the
+    command line a process scan would read, so producer and matcher cannot drift apart."""
+    from gateway.status import gateway_spawn_intent_subcommand, looks_like_gateway_command_line
+
+    root = Path("/opt/hermes-agent")
+    argv = [str(root / "hermes_cli" / "main.py"), "gateway", "run"]
+    original = [sys.executable, "-m", "hermes_cli.main", "gateway", "run"]
+    command = venv_sync.relaunch_command(
+        Path(sys.executable), root, argv, original, "hermes_cli.main")
+    cmdline = " ".join(command)
+    assert looks_like_gateway_command_line(cmdline) is True
+    assert gateway_spawn_intent_subcommand(cmdline) == "run"
+

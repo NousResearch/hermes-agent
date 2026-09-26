@@ -415,8 +415,11 @@ def _unwrap_tool_search_call(
             # in the batch dispatcher, not against a synthetic registry name.
             return function_name, function_args, None
         if underlying not in _tool_search_scoped_names(agent):
+            # Session-gated GUI tools name their missing surface (#120413);
+            # anything else keeps the generic block.
             return function_name, function_args, (
-                f"'{underlying}' is not available in this session. Use tool_search to find tools you can call."
+                _ts.out_of_scope_reason(underlying)
+                or f"'{underlying}' is not available in this session. Use tool_search to find tools you can call."
             )
         # Validate before unwrapping: the generic bridge hides the concrete
         # parameter schema from provider-native tool-call validation.

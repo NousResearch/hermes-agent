@@ -738,8 +738,11 @@ def _dispatch_bridge_tool(function_name: str, function_args: Dict[str, Any],
         return None, (underlying_name, underlying_args)
     # Defense in depth: resolve_underlying_call only checks the global
     # registry; also require membership in the session-scoped catalog.
+    # Session-gated GUI tools fail fast with their real reason (#120413):
+    # tool_search can never surface them in this session.
     if underlying_name not in ts.scoped_deferrable_names(current_defs):
-        return tool_error(f"'{underlying_name}' is not available in this session. "
+        return tool_error(ts.out_of_scope_reason(underlying_name)
+                          or f"'{underlying_name}' is not available in this session. "
                           "Use tool_search to find tools you can call."), None
     # Validate against the deferred tool's concrete schema — the generic
     # ``arguments: object`` bridge schema can't enforce it.

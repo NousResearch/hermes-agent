@@ -540,6 +540,21 @@ def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
                      if n and is_deferrable_tool_name(n, defer_tools))
 
 
+def out_of_scope_reason(name: str) -> Optional[str]:
+    """Fail-fast reason for a registered session-gated GUI tool outside this session's
+    scope (#120413). The generic scope block ("not available ... Use tool_search") sends
+    the model on a round-trip tool_search can never satisfy — the tool is not in this
+    session's catalog at all. Name the missing surface instead. None for anything else
+    (the generic message still applies). Fail-open: never raises."""
+    try:
+        if _registry_toolset(name) in _DIRECT_SURFACE_TOOLSETS:
+            return (f"'{name}' needs a desktop-app session with a GUI surface (preview/terminal panes). "
+                    "This session has none: use it only from the Hermes desktop app, not via tool_search.")
+    except Exception:
+        pass
+    return None
+
+
 def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
     """Parse a ``tool_call`` invocation into (underlying_name, args, error_msg).
 
@@ -579,7 +594,7 @@ __all__ = [
     "build_catalog_listing_with_form", "listing_token_budget", "search_catalog",
     "bridge_tool_schemas", "assemble_tool_defs", "is_bridge_tool", "dispatch_tool_search",
     "dispatch_tool_describe", "resolve_underlying_call", "scoped_deferrable_names",
-    "validate_deferred_call_args", "normalize_tool_call_entries",
+    "out_of_scope_reason", "validate_deferred_call_args", "normalize_tool_call_entries",
     "CONNECTOR_BATCH_SENTINEL", "is_connector_name"]
 
 

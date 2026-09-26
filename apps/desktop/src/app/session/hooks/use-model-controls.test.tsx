@@ -12,7 +12,8 @@ import {
   getCurrentModelSource,
   setCurrentModel,
   setCurrentModelSource,
-  setCurrentProvider
+  setCurrentProvider,
+  setStickyComposerPick
 } from '@/store/session'
 import * as SessionStates from '@/store/session-states'
 
@@ -234,6 +235,62 @@ describe('useModelControls', () => {
         }
       ]
     })
+  })
+
+  // model.sticky_composer_pick: false opts out of #62055 stickiness — a
+  // manual pick applies to the draft it was made on, and the next fresh draft
+  // reseeds from the profile default instead of carrying it forward.
+  it('reseeds a fresh draft from the profile default when sticky picks are off', async () => {
+    setStickyComposerPick(false)
+    const queryClient = new QueryClient()
+    setCurrentModel('tencent/hy3:free')
+    setCurrentProvider('nous')
+    setCurrentModelSource('manual')
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({
+      model: 'poolside/laguna-xs-2.1:free',
+      provider: 'nous'
+    })
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient,
+        requestGateway: vi.fn()
+      })
+    )
+
+    await result.current.refreshCurrentModel()
+
+    expect($currentModel.get()).toBe('poolside/laguna-xs-2.1:free')
+    expect($currentProvider.get()).toBe('nous')
+    expect(getCurrentModelSource()).toBe('default')
+    setStickyComposerPick(true)
+  })
+
+  // Back-compat pin: without the knob a manual pick stays sticky (#62055).
+  it('keeps a manual pick sticky on a fresh draft by default', async () => {
+    vi.mocked(getGlobalModelInfo).mockClear()
+    const queryClient = new QueryClient()
+    setCurrentModel('tencent/hy3:free')
+    setCurrentProvider('nous')
+    setCurrentModelSource('manual')
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({
+      model: 'poolside/laguna-xs-2.1:free',
+      provider: 'nous'
+    })
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient,
+        requestGateway: vi.fn()
+      })
+    )
+
+    await result.current.refreshCurrentModel()
+
+    expect($currentModel.get()).toBe('tencent/hy3:free')
+    expect(getCurrentModelSource()).toBe('manual')
+    expect(getGlobalModelInfo).not.toHaveBeenCalled()
+    setStickyComposerPick(true)
   })
 
   it('preserves a populated model catalog when painting a saved profile default', () => {

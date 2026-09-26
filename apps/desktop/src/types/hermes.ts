@@ -459,6 +459,13 @@ export interface HermesConfig {
     repo_scan_roots?: string[]
     repo_scan_exclude_paths?: string[]
   }
+  model?: {
+    /** Opt-out of sticky composer picks (desktop): when false, a manual
+     *  composer pick applies only to the draft it was made on and new-chat
+     *  drafts reseed from the Settings -> Model default. Unset/true keeps the
+     *  documented sticky behaviour (#62055). */
+    sticky_composer_pick?: boolean
+  }
   terminal?: {
     cwd?: string
     font_family?: string

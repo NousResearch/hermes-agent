@@ -8,7 +8,13 @@ import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
 import { ModelMenuCloseContext } from '@/app/shell/model-menu-panel'
 import { registry } from '@/contrib/registry'
 import { formatModelPillLabel } from '@/lib/model-status-label'
-import { $activeSessionId, $currentModel, setCurrentModel, setCurrentModelSource } from '@/store/session'
+import {
+  $activeSessionId,
+  $currentModel,
+  setCurrentModel,
+  setCurrentModelSource,
+  setStickyComposerPick
+} from '@/store/session'
 
 import { COMPOSER_AREAS, type ComposerModelPillContext, type ComposerModelPillProvider } from './contrib'
 import { requestModelMenuToggle } from './focus'
@@ -50,6 +56,18 @@ describe('ModelPill pinned-override badge', () => {
     render(<ModelPill disabled={false} model={modelState()} />)
 
     expect(screen.queryByTestId('model-pinned-dot')).toBeNull()
+  })
+
+  it('stays quiet when sticky picks are disabled (model.sticky_composer_pick: false)', () => {
+    setStickyComposerPick(false)
+    setCurrentModel('deepseek/deepseek-v4-flash')
+    setCurrentModelSource('manual')
+    $activeSessionId.set(null)
+
+    render(<ModelPill disabled={false} model={modelState({ model: 'deepseek/deepseek-v4-flash' })} />)
+
+    expect(screen.queryByTestId('model-pinned-dot')).toBeNull()
+    setStickyComposerPick(true)
   })
 
   it('stays quiet on a live session (footer shows that session, not the pin)', () => {

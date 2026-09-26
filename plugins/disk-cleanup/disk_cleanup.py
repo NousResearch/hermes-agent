@@ -12,7 +12,6 @@ import contextlib
 import functools
 import json
 import logging
-import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -341,97 +340,33 @@ _TEST_PATTERNS = ("test_", "tmp_")
 _TEST_SUFFIXES = (".test.py", ".test.js", ".test.ts", ".test.md")
 
 
-@functools.lru_cache(maxsize=8)  # keyed by home: a multiplexed process serves several profiles
-def _git_index_path(home: str) -> Optional[str]:
-    """Absolute path of *home*'s git index, or ``None`` when *home* is not a git worktree.
+def _git_tracks(path: Path) -> bool:
+    """True when the git repo enclosing *path* (at any depth) tracks it.
 
-    ``rev-parse --git-path index`` is the portable answer: a plain checkout reports
-    ``.git/index``, a linked worktree (``.git`` is a pointer FILE) the per-worktree index
-    under the main repo's ``.git/worktrees/<name>/``, and an explicit ``GIT_INDEX_FILE``
-    wins. Cached per home: callers only ever need the *stat* of the result, never this
-    subprocess.
+    Asked per candidate: ``guess_category`` only reaches this for ``test_*``/``tmp_*``
+    names, so one ``ls-files --error-unmatch`` is cheap, needs no cache that could outlive
+    the index (a file committed after first classification is seen immediately), and covers
+    both a HERMES_HOME that IS a checkout and one nested in an enclosing repo (a ``~/.git``
+    dotfiles repo tracking ``~/.hermes/scripts/test_x.py``). Unlike a bare ``.git`` probe
+    above HERMES_HOME, an exact tracked check cannot make untracked scratch look Git-owned.
+    Git missing / not a repo / file untracked all mean "not tracked".
     """
     import subprocess
 
     try:
         r = subprocess.run(
-            ["git", "-C", home, "rev-parse", "--git-path", "index"],
-            capture_output=True, text=True, timeout=20,
+            ["git", "-C", str(path.parent), "ls-files", "--error-unmatch", "--", path.name],
+            capture_output=True, timeout=20,
         )
     except (OSError, subprocess.SubprocessError):
-        return None
-    if r.returncode != 0:
-        return None
-    out = r.stdout.strip()
-    if not out:
-        return None
-    p = Path(out)
-    return str(p if p.is_absolute() else Path(home) / p)
-
-
-def _git_index_signature(home: str) -> Optional[Tuple[int, int, int]]:
-    """``(st_mtime_ns, st_size, st_ino)`` of *home*'s git index — a cheap, subprocess-free
-    fingerprint that changes whenever something is staged, committed or unstaged.
-
-    ``None`` when there is no index to stat (not a repo, or nothing added yet). Never
-    raises: a guard that cannot read the index must fall back to the pre-existing
-    behaviour, never break the agent loop.
-    """
-    idx = _git_index_path(home)
-    if idx is None:
-        return None
-    try:
-        st = os.stat(idx)
-    except OSError:
-        return None
-    return (st.st_mtime_ns, st.st_size, st.st_ino)
-
-
-def _git_tracked_index(home: str) -> frozenset:
-    """The set of repo-relative paths ``git ls-files`` reports for *home*.
-
-    One subprocess for the whole home instead of one per candidate file: ``guess_category``
-    runs on every post-tool-call, and this install's userfiles repo tracks thousands of paths.
-
-    The result is cached on the git index's stat signature as well as *home*, so it cannot
-    outlive the index it was read from. A long-lived process (the gateway) that cached the
-    set while a scratch ``test_*`` file was still untracked must not keep reporting it as
-    untracked after that file is staged or committed — otherwise ``quick()`` re-validates
-    the stored ``test`` entry through ``guess_category()``, sees the stale set, and unlinks
-    a file git now owns (#122232). A new index is a new key, so no explicit invalidation
-    hook is needed anywhere.
-
-    Returns an empty set when git is unavailable or the call fails — the caller then treats
-    nothing as tracked, i.e. the pre-existing behaviour.
-    """
-    return _ls_files_cached(home, _git_index_signature(home))
-
-
-@functools.lru_cache(maxsize=8)  # keyed by (home, index signature) — bounded, so index churn cannot grow it
-def _ls_files_cached(home: str, _index_signature: Optional[Tuple[int, int, int]]) -> frozenset:
-    import subprocess
-
-    try:
-        r = subprocess.run(
-            ["git", "-C", home, "ls-files", "-z"],
-            capture_output=True, text=True, errors="surrogateescape", timeout=20,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return frozenset()
-    if r.returncode != 0:
-        return frozenset()
-    return frozenset(p for p in r.stdout.split("\0") if p)
-
-
-def _git_tracks(home: Path, rel: str) -> bool:
-    """True when ``git`` tracks *rel* (repo-relative, ``/``-separated) inside *home*."""
-    return rel.replace("\\", "/") in _git_tracked_index(str(home))
+        return False
+    return r.returncode == 0
 
 
 def _inside_git_worktree(path: Path) -> bool:
     """True if *path* is Git-owned: a ``.git`` entry (a directory in a normal checkout, a
-    pointer FILE in a linked worktree) exists on the directory chain, or — when
-    ``HERMES_HOME`` is itself a checkout — git actually TRACKS the file.
+    pointer FILE in a linked worktree) exists on the directory chain below HERMES_HOME, or
+    an enclosing repo (HERMES_HOME itself, or one above it) actually TRACKS the file.
 
     Files whose repo tracks them are Git-owned — a ``test_*`` file in a worktree is typically
     a committed regression test, not session scratch (#115295).
@@ -440,8 +375,8 @@ def _inside_git_worktree(path: Path) -> bool:
     home kept in a dotfiles repo (``~/.git``) would otherwise make every scratch file look
     Git-owned.
 
-    The parent-chain probe alone misses the case where ``HERMES_HOME`` IS a git checkout (this
-    install: ``~/.hermes`` is the userfiles repo). There every in-home file sits inside a
+    The parent-chain probe alone misses the case where ``HERMES_HOME`` IS (or sits inside) a
+    git checkout (e.g. ``~/.hermes`` as a userfiles repo). There every in-home file sits inside a
     worktree, yet only the TRACKED ones are Git-owned — a scratch file merely living beside
     them is not, and treating the whole home as protected would disable cleanup entirely. Ask
     git about the individual path instead.
@@ -454,11 +389,7 @@ def _inside_git_worktree(path: Path) -> bool:
         below = parents[: parents.index(home)]
     if any((parent / ".git").exists() for parent in below):
         return True
-    if not (home / ".git").exists():
-        return False
-    with contextlib.suppress(ValueError):
-        return _git_tracks(home, str(resolved.relative_to(home)))
-    return False
+    return _git_tracks(resolved)
 
 
 def guess_category(path: Path) -> Optional[str]:

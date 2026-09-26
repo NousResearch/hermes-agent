@@ -577,16 +577,11 @@ class BatchRunner:
         skipped_indices = []
 
         for idx, entry in enumerate(self.dataset):
-            prompt_text = entry.get("prompt", "").strip()
-
-            # Also check conversations format
-            if not prompt_text:
-                conversations = entry.get("conversations", [])
-                for msg in conversations:
-                    role = msg.get("role") or msg.get("from")
-                    if role in {"user", "human"}:
-                        prompt_text = (msg.get("content") or msg.get("value", "")).strip()
-                        break
+            # Same extractor the content scan uses — and it coerces to str, so
+            # the non-string `prompt` values _load_dataset accepts (key presence
+            # only) no longer abort the whole resume with AttributeError on
+            # .strip() (#95322).
+            prompt_text = _entry_prompt_text(entry)
 
             if prompt_text in completed_prompts:
                 skipped_indices.append(idx)
@@ -596,12 +591,20 @@ class BatchRunner:
         return filtered_dataset, skipped_indices
 
     def _apply_resume(self) -> bool:
-        """Rebuild ``self.batches`` from unprocessed prompts. False when nothing is left to run."""
+        """Rebuild ``self.batches`` from unprocessed prompts. False when nothing is left to run.
+
+        Also records ``self._resume_skipped_indices`` — the *current-file*
+        indices of content-completed prompts — so ``run()`` can seed the
+        checkpoint's index set without trusting indices captured before the
+        dataset was edited (#95322).
+        """
+        self._resume_skipped_indices: List[int] = []
         completed_prompt_texts = self._scan_completed_prompts_by_content()
         if not completed_prompt_texts:
             return True
         print(f"   Found {len(completed_prompt_texts)} already-completed prompts by content matching")
         filtered_entries, skipped_indices = self._filter_dataset_by_completed(completed_prompt_texts)
+        self._resume_skipped_indices = skipped_indices
 
         if not filtered_entries:
             print("\n✅ All prompts have already been processed!")
@@ -615,6 +618,22 @@ class BatchRunner:
         print(f"   New batches created:       {len(self.batches)}")
         print("=" * 70 + "\n")
         return True
+
+    def _next_shard_number(self) -> int:
+        """First unused ``batch_N.jsonl`` shard number.
+
+        Resume re-chunks the remaining prompts, so its numbering must continue
+        past the shards an earlier run already wrote. Restarting at 0 would
+        append new rows into the previous run's files and overwrite that run's
+        per-shard ``batch_stats`` with counts for a different prompt subset
+        (#95322).
+        """
+        highest = -1
+        for path in self.output_dir.glob("batch_*.jsonl"):
+            suffix = path.stem[len("batch_"):]
+            if suffix.isdigit():
+                highest = max(highest, int(suffix))
+        return highest + 1
 
     def _worker_config(self) -> Dict[str, Any]:
         """Picklable agent configuration for worker processes.
@@ -640,14 +659,26 @@ class BatchRunner:
             config[key] = getattr(self, key)
         return config
 
-    def _run_pool(self, config, checkpoint_data, completed_prompts_set, checkpoint_lock) -> List[Dict[str, Any]]:
-        """Process all batches in a worker pool, checkpointing after each result."""
+    def _run_pool(
+        self,
+        config,
+        checkpoint_data,
+        completed_prompts_set,
+        checkpoint_lock,
+        shard_offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Process all batches in a worker pool, checkpointing after each result.
+
+        ``shard_offset`` is added to every batch number so a resumed run numbers
+        its shards past the ones already on disk instead of appending into the
+        previous run's files (#95322).
+        """
         print(f"\n🔧 Initializing {self.num_workers} worker processes...")
 
         with Pool(processes=self.num_workers) as pool:
             # output_dir as str for pickling
             tasks = [
-                (batch_num, batch_data, str(self.output_dir), completed_prompts_set, config)
+                (shard_offset + batch_num, batch_data, str(self.output_dir), completed_prompts_set, config)
                 for batch_num, batch_data in enumerate(self.batches)
             ]
             print(f"✅ Created {len(tasks)} batch tasks")
@@ -808,12 +839,26 @@ class BatchRunner:
         config = self._worker_config()
 
         # Index tracking is secondary to content matching (backward compatibility).
-        completed_prompts_set = set(checkpoint_data.get("completed_prompts", []))
+        if resume:
+            # Resume rebuilt self.batches from content-filtered rows carrying
+            # their current-file indices, so the checkpoint's index set —
+            # captured before any dataset edit — points at different rows now.
+            # Re-applying it in the worker would silently skip never-completed
+            # prompts that happen to share a stale index (#95322). Seed from
+            # the fresh indices _apply_resume just computed instead.
+            completed_prompts_set = set(self._resume_skipped_indices)
+            # Number this run's shards past the ones already on disk so new
+            # rows never append into a previous run's batch_*.jsonl / stats
+            # (#95322).
+            shard_offset = self._next_shard_number()
+        else:
+            completed_prompts_set = set(checkpoint_data.get("completed_prompts", []))
+            shard_offset = 0
         start_time = time.time()
 
         # Checkpoint writes happen in the parent process; keep a lock for safety.
         checkpoint_lock = Lock()
-        results = self._run_pool(config, checkpoint_data, completed_prompts_set, checkpoint_lock)
+        results = self._run_pool(config, checkpoint_data, completed_prompts_set, checkpoint_lock, shard_offset)
         total_tool_stats = {}
         total_reasoning_stats = dict.fromkeys(_REASONING_KEYS, 0)
         for batch_result in results:

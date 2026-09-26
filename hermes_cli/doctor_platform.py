@@ -505,6 +505,36 @@ def _check_gateway_supervision(should_fix: bool, f: Finding) -> None:
     _check_s6_supervision(f.issues)
 
 
+def _path_link_dir() -> tuple[Path, str]:
+    """Expected command link directory (mirrors install.sh logic)."""
+    prefix = os.environ.get("PREFIX", "")
+    termux = prefix and (os.environ.get("TERMUX_VERSION") or "com.termux/files/usr" in prefix)
+    return (Path(prefix) / "bin", "$PREFIX/bin") if termux else (Path.home() / ".local" / "bin", "~/.local/bin")
+
+
+def _resolve_pm_entry_point(project_root: Path) -> Path:
+    """Launcher a PM install actually runs, in resolution order (#124050).
+
+    PM staging copies only build inputs into the generation workspace — the
+    extensionless ``hermes`` launcher is neither a ``.py`` file nor a package
+    directory, so ``<gen>/workspace/hermes`` never exists by construction. The
+    launch contract a PM install owns lives on the PATH shim, so resolve from
+    there when the workspace carries no source-tree launcher.
+    """
+    staged = project_root / "hermes"
+    if staged.is_file():
+        return staged
+    link_dir, _display = _path_link_dir()
+    link = link_dir / "hermes"
+    if link.is_symlink():
+        # Resolved target: a healthy shim names the real launcher; a dangling one
+        # names the broken target, which is the actionable warning either way.
+        return link.resolve()
+    if link.is_file():  # regular-file launcher trampoline (stage_launcher output)
+        return link
+    return staged
+
+
 @doctor_check()
 def _check_command_installation(should_fix: bool, f: Finding) -> None:
     """Check the install-owned launch contract without replacing custom commands."""
@@ -532,15 +562,12 @@ def _check_command_installation(should_fix: bool, f: Finding) -> None:
         check_fail("Cannot resolve selected dependencies", str(exc))
         return f.manual_issues.append(_python_repair_hint())
     pm_launcher = selected != base_venv(PROJECT_ROOT) or resolve_store_python(PROJECT_ROOT) is not None
-    venv_bin = PROJECT_ROOT / "hermes" if pm_launcher else selected / "bin" / "hermes"
+    venv_bin = _resolve_pm_entry_point(PROJECT_ROOT) if pm_launcher else selected / "bin" / "hermes"
     if not venv_bin.is_file():
         check_warn("Hermes entry point not found", f"({venv_bin})")
         return f.manual_issues.append("Repair or reinstall the Hermes launcher through the installation owner")
     check_ok(f"Hermes entry point exists ({venv_bin})")
-    # Expected command link directory (mirrors install.sh logic).
-    prefix = os.environ.get("PREFIX", "")
-    termux = prefix and (os.environ.get("TERMUX_VERSION") or "com.termux/files/usr" in prefix)
-    link_dir, display = (Path(prefix) / "bin", "$PREFIX/bin") if termux else (Path.home() / ".local" / "bin", "~/.local/bin")
+    link_dir, display = _path_link_dir()
     link = link_dir / "hermes"
     if link.is_symlink():
         target, expected = link.resolve(), venv_bin.resolve()

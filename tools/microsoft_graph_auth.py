@@ -15,6 +15,13 @@ DEFAULT_GRAPH_SCOPE = "https://graph.microsoft.com/.default"
 DEFAULT_GRAPH_AUTHORITY_URL = "https://login.microsoftonline.com"
 DEFAULT_TOKEN_SKEW_SECONDS = 120
 
+# Defensive body-size cap for Microsoft Graph token-endpoint responses.  Tokens are small
+# JSON payloads (typically < 4 KB), but a hostile, broken, or proxy-interposed endpoint
+# could stream an unbounded body before ``response.json()`` raises.  Cap reads so the
+# provider never buffers more than this from a single response.  Mirrors the pattern in
+# ``agent/account_usage.py::_get_json`` (#54949) and openclaw/openclaw#97628 (#54974).
+_MSGRAPH_TOKEN_RESPONSE_MAX_BYTES = 64 * 1024
+
 _REQUIRED_ENV = ("MSGRAPH_TENANT_ID", "MSGRAPH_CLIENT_ID", "MSGRAPH_CLIENT_SECRET")
 
 
@@ -134,6 +141,16 @@ class MicrosoftGraphTokenProvider:
         if response.status_code >= 400:
             raise MicrosoftGraphTokenError("Microsoft Graph token request failed with HTTP "
                                            f"{response.status_code}: {_extract_error_detail(response)}")
+        # Defensive body cap (#54974): bound the bytes we buffer before ``response.json()``
+        # raises.  Normal token payloads are < 4 KB; 64 KiB is generous.  ``httpx.Response.content``
+        # reads the buffered body eagerly, so a hostile endpoint cannot stream beyond the cap
+        # without us catching it here.
+        body = response.content
+        if len(body) > _MSGRAPH_TOKEN_RESPONSE_MAX_BYTES:
+            raise MicrosoftGraphTokenError(
+                f"Microsoft Graph token response body exceeds cap "
+                f"({len(body)} > {_MSGRAPH_TOKEN_RESPONSE_MAX_BYTES} bytes)"
+            )
         try:
             payload = response.json()
         except ValueError as exc:
@@ -153,6 +170,12 @@ class MicrosoftGraphTokenProvider:
 def _extract_error_detail(response: httpx.Response) -> str:
     """Best human-readable detail from a token-endpoint error body: ``error_description``,
     then the Graph-style ``error`` object/string, then a bare ``code``, then raw text."""
+    # Defensive body cap (#54974): same cap as the success path; the helper is called from
+    # error branches that already know the status code is non-2xx, so the body can still be
+    # hostile / proxy-interposed.
+    body = response.content
+    if len(body) > _MSGRAPH_TOKEN_RESPONSE_MAX_BYTES:
+        return f"(token-error body exceeds {_MSGRAPH_TOKEN_RESPONSE_MAX_BYTES}-byte cap)"
     try:
         payload = response.json()
     except ValueError:

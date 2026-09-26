@@ -112,3 +112,66 @@ class TestMicrosoftGraphTokenProvider:
         with pytest.raises(MicrosoftGraphTokenError) as exc:
             await provider.get_access_token()
         assert "bad secret" in str(exc.value)
+
+    async def test_oversized_token_response_body_is_rejected(self):
+        """#54974: a hostile / proxy-interposed token endpoint must not be allowed to
+        buffer an unbounded response body.  ``_fetch_access_token`` enforces a
+        ``_MSGRAPH_TOKEN_RESPONSE_MAX_BYTES`` cap; an over-cap body raises
+        ``MicrosoftGraphTokenError`` instead of consuming the unbounded bytes.
+        """
+        from tools.microsoft_graph_auth import _MSGRAPH_TOKEN_RESPONSE_MAX_BYTES
+
+        cap = _MSGRAPH_TOKEN_RESPONSE_MAX_BYTES
+        oversized = b"x" * (cap + 1)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=oversized)
+
+        provider = MicrosoftGraphTokenProvider(
+            GraphCredentials("tenant", "client", "secret"),
+            transport=httpx.MockTransport(handler),
+        )
+        with pytest.raises(MicrosoftGraphTokenError) as exc:
+            await provider.get_access_token()
+        assert "exceeds cap" in str(exc.value)
+
+    async def test_oversized_error_response_body_is_capped_in_diagnostic(self):
+        """#54974: same body cap applies to error-path parsing so a hostile error body
+        can't smuggle an unbounded response past the helper either.  ``_extract_error_detail``
+        returns a cap-notice string instead of attempting to JSON-decode the oversize body."""
+        from tools.microsoft_graph_auth import _MSGRAPH_TOKEN_RESPONSE_MAX_BYTES
+
+        cap = _MSGRAPH_TOKEN_RESPONSE_MAX_BYTES
+        oversized = b"x" * (cap + 1)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(401, content=oversized)
+
+        provider = MicrosoftGraphTokenProvider(
+            GraphCredentials("tenant", "client", "secret"),
+            transport=httpx.MockTransport(handler),
+        )
+        with pytest.raises(MicrosoftGraphTokenError) as exc:
+            await provider.get_access_token()
+        # ``_extract_error_detail`` returns a cap-notice, and ``_fetch_access_token`` wraps it
+        # with the HTTP status code prefix.
+        assert f"{cap}-byte cap" in str(exc.value)
+
+    async def test_small_token_response_body_is_accepted_unchanged(self):
+        """Sanity: small (under-cap) payloads are unaffected by the cap."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": "real-token",
+                    "expires_in": 3600,
+                    "token_type": "Bearer",
+                },
+            )
+
+        provider = MicrosoftGraphTokenProvider(
+            GraphCredentials("tenant", "client", "secret"),
+            transport=httpx.MockTransport(handler),
+        )
+        token = await provider.get_access_token()
+        assert token == "real-token"

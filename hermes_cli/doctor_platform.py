@@ -577,3 +577,49 @@ def _check_command_installation(should_fix: bool, f: Finding) -> None:
     if verb == "Created" and str(link_dir) not in os.environ.get("PATH", "").split(os.pathsep):
         check_warn(f"{display} is not on your PATH", "(add it to your shell config: export PATH=\"$HOME/.local/bin:$PATH\")")
         f.manual_issues.append(f"Add {display} to your PATH")
+
+
+_WEB_EXTRA_PINS = {
+    "fastapi": "0.133.1",
+    "uvicorn": "0.41.0",
+    "starlette": "1.3.1",
+    "python-multipart": "0.0.32",
+}
+
+
+@doctor_check()
+def _check_web_surface(should_fix: bool, f: Finding) -> None:
+    """Import-check the web surface and flag pin drift (#124214).
+
+    The dashboard dies at import time when fastapi/starlette are updated out of
+    lockstep (fastapi 0.115 still passes ``on_startup`` to Router while
+    starlette 1.x removed it) — with zero visible output and no listening port.
+    doctor previously reported nothing; this check surfaces both the import
+    failure and any web-extra pin drift so a user learns their dashboard is
+    broken BEFORE they need it as a recovery path.
+    """
+    import importlib
+    import importlib.metadata
+
+    try:
+        importlib.import_module("hermes_cli.web_server")
+    except Exception as exc:  # noqa: BLE001 - surface any import-time failure
+        _fail_and_issue(
+            "Web surface (dashboard)",
+            f"import hermes_cli.web_server failed: {exc}",
+            f"Repair: run `hermes pm install --extra web` (or `uv pip install "
+            f"--python <venv> fastapi=={_WEB_EXTRA_PINS['fastapi']} "
+            f"\"uvicorn[standard]=={_WEB_EXTRA_PINS['uvicorn']}\"`)",
+            f.issues,
+        )
+        return
+    for pkg, pinned in _WEB_EXTRA_PINS.items():
+        try:
+            installed = importlib.metadata.version(pkg)
+        except importlib.metadata.PackageNotFoundError:
+            continue  # absent-but-optional web extra; not a failure
+        if installed != pinned:
+            check_warn(
+                "Web surface (dashboard)",
+                f"{pkg}: installed {installed} vs pinned {pinned} (pyproject web extra)",
+            )

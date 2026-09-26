@@ -93,6 +93,7 @@ const MARKDOWN_LINK_SPLIT_RE = new RegExp(
 // (e.g. http://localhost:8080/piwo) are user-facing content and must survive.
 const LOCAL_PREVIEW_URL_RE = /(^|\s)https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?(?=\s|$)/gi
 const LOCAL_PREVIEW_ONLY_RE = /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?$/i
+const LOOPBACK_URL_RE = /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?(?:[/?#]|$)/i
 const URL_ONLY_LINE_RE = /^\s*https?:\/\/\S+\s*$/i
 // Autolink-shaped spans (bare or angle-bracketed http(s) URLs) that must be
 // skipped by lone-tilde escaping: `~` is legal in URL paths and must survive.
@@ -883,7 +884,12 @@ function normalizeFenceBlocks(text: string): string {
       continue
     }
 
-    if (closeIndex !== -1 && isUrlOnlyBlock(bodyLines)) {
+    // Public URL-only fences become compact clickable links. Keep loopback
+    // URLs fenced, though: normalizeVisibleProse intentionally strips local
+    // preview-server URLs, so demoting one here would erase an explicitly
+    // requested CLI/API endpoint from the answer.
+    const hasLoopbackUrl = bodyLines.some(line => LOOPBACK_URL_RE.test(line.trim()))
+    if (closeIndex !== -1 && isUrlOnlyBlock(bodyLines) && !hasLoopbackUrl) {
       extend(out, bodyLines)
       index = closeIndex + 1
 

@@ -18,13 +18,49 @@ import { $connection } from '@/store/session'
 
 import { useComposerActions } from '../../hooks/use-composer-actions'
 import type { QueueEditState } from '../composer-utils'
-import { type ComposerTarget, getActiveComposer, markActiveComposer } from '../focus'
+import { type ComposerTarget, getActiveComposer, markActiveComposer, requestComposerFocus } from '../focus'
 import { composerPlainText } from '../rich-editor'
 import { type ComposerScope, ComposerScopeProvider, MAIN_COMPOSER_SCOPE } from '../scope'
 
 import { useComposerDraft } from './use-composer-draft'
 
 const mockComposerApi = { setText: vi.fn() }
+
+it('state autofocus preserves clarify typing while an explicit focus request still works', async () => {
+  let draft!: ReturnType<typeof useComposerDraft>
+
+  function Harness({ focusKey }: { focusKey: string }) {
+    draft = useComposerDraft({
+      activeQueueSessionKey: null,
+      focusKey,
+      inputDisabled: false,
+      queueEditRef: { current: null },
+      sessionId: null
+    })
+
+    return <div data-slot="composer-rich-input" ref={draft.editorRef} tabIndex={0} />
+  }
+
+  const view = render(<Harness focusKey="before" />)
+  const form = globalThis.document.createElement('form')
+  const card = globalThis.document.createElement('div')
+  card.dataset.slot = 'clarify-inline'
+  const field = globalThis.document.createElement('textarea')
+  card.append(field)
+  form.append(card)
+  globalThis.document.body.append(form)
+
+  try {
+    field.focus()
+    view.rerender(<Harness focusKey="after" />)
+    expect(globalThis.document.activeElement).toBe(field)
+    act(() => requestComposerFocus('main'))
+    await waitFor(() => expect(globalThis.document.activeElement).toBe(draft.editorRef.current))
+  } finally {
+    view.unmount()
+    form.remove()
+  }
+})
 
 vi.mock('@assistant-ui/react', () => ({
   useAui: () => ({ composer: () => mockComposerApi }),
@@ -519,6 +555,66 @@ describe('useComposerDraft — a hidden keep-alive tab never auto-focuses its co
     expect(getHiddenDraft().editorRef.current?.textContent).toBe('')
     expectForegroundSelectionPreserved(foreground)
     foreground.editor.remove()
+  })
+
+  it('preserves the document selection while initializing a detached editor', async () => {
+    const foreground = createForegroundSelection()
+    const host = globalThis.document.createElement('div')
+    const selection = window.getSelection()!
+    const addRange = selection.addRange.bind(selection)
+    const endpoints: boolean[][] = []
+
+    const addRangeSpy = vi.spyOn(selection, 'addRange').mockImplementation(range => {
+      endpoints.push([range.startContainer.isConnected, range.endContainer.isConnected])
+      addRange(range)
+    })
+
+    const removeRangesSpy = vi.spyOn(selection, 'removeAllRanges')
+    let draft!: ReturnType<typeof useComposerDraft>
+
+    function DetachedDraft() {
+      draft = useComposerDraft({
+        activeQueueSessionKey: 'session-detached',
+        focusKey: null,
+        inputDisabled: false,
+        queueEditRef: { current: null },
+        sessionId: 'session-detached'
+      })
+
+      return <div contentEditable data-slot="composer-rich-input" ref={draft.editorRef} tabIndex={0} />
+    }
+
+    markActiveComposer('main')
+    stashSessionDraft('session-detached', 'restored draft', [])
+    const view = render(<DetachedDraft />, { container: host })
+
+    try {
+      expect(draft.editorRef.current!.isConnected).toBe(false)
+      expect(composerPlainText(draft.editorRef.current!)).toBe('restored draft')
+      expect(draft.draftRef.current).toBe('restored draft')
+      expect(mockComposerApi.setText).toHaveBeenCalledWith('restored draft')
+      expect(endpoints).toEqual([])
+      expect(removeRangesSpy).not.toHaveBeenCalled()
+      expectForegroundSelectionPreserved(foreground)
+
+      globalThis.document.body.append(host)
+      act(() => draft.loadIntoComposer('connected draft', []))
+      expect(composerPlainText(draft.editorRef.current!)).toBe('connected draft')
+      expect(endpoints).toEqual([[true, true]])
+      expect(selection.isCollapsed).toBe(true)
+      const caret = selection.getRangeAt(0)
+      expect(caret.startContainer).toBe(draft.editorRef.current)
+      expect(caret.startOffset).toBe(draft.editorRef.current!.childNodes.length)
+      act(() => requestComposerFocus('main'))
+      await waitFor(() => expect(globalThis.document.activeElement).toBe(draft.editorRef.current))
+    } finally {
+      view.unmount()
+      addRangeSpy.mockRestore()
+      removeRangesSpy.mockRestore()
+      host.remove()
+      foreground.editor.remove()
+      clearSessionDraft('session-detached')
+    }
   })
 
   it('does not move the document selection when hidden composer refs are requested', () => {

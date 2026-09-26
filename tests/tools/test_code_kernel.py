@@ -590,3 +590,175 @@ class TestStaleStagingDirSweep(unittest.TestCase):
                 self.assertFalse(old.exists())
                 self.assertTrue(young.exists())
                 self.assertTrue(bystander.exists())
+
+
+class TestCellStdoutSpill(unittest.TestCase):
+    """The runner-side full-stdout spill is a second emitter of cell output: it must
+    carry the same secret redaction the inline result gets, and it must never write
+    through a name the cell could have replanted as a symlink."""
+
+    def test_cell_spill_on_disk_is_sanitized(self):
+        import stat as stat_mod
+        from agent.redact import redact_sensitive_text
+        from hermes_constants import get_hermes_dir
+        secret = "ghp_" + "0123456789abcdef"
+        masked = redact_sensitive_text(secret, code_file=True)
+        with _kernel_config():
+            probe = _run("import os\nprint(os.environ['HERMES_KERNEL_SPILL_DIR'])")
+            kernel_tmp = probe["output"].strip()
+            # The secret lands PAST the runner's 1MB clip: the host-side spill of the
+            # clipped head cannot contain it, so a masked remnant in the published file
+            # proves the runner spill (not the fallback) is what was published.
+            result = _run("print('x' * 1_050_000)\n"
+                          "print('\\x1b[31m" + secret + "\\x1b[0m')")
+        self.assertEqual(result["status"], "success", result)
+        self.assertNotIn(secret, result["output"])  # inline copy is masked
+        spill = result.get("stdout_spill_path", "")
+        self.assertTrue(spill, result)
+        # Published under the host spill dir, not the cell-writable kernel tmpdir:
+        # survives kernel teardown and post-publish mutation by later cells.
+        self.assertEqual(os.path.dirname(spill),
+                         str(get_hermes_dir("cache/exec", "exec_spill")))
+        self.assertIn("FULL output saved", result.get("warning", ""))
+        # The raw tmpdir copy is dropped once republished.
+        self.assertFalse(os.path.exists(
+            os.path.join(kernel_tmp, "cell_000002_stdout.txt")))
+        body = Path(spill).read_text(encoding="utf-8")
+        self.assertNotIn(secret, body)
+        self.assertIn(masked, body)            # masked remnant proves the pipeline ran
+        self.assertNotIn("\x1b[", body)        # ANSI-stripped like the inline copy
+        self.assertGreater(len(body), 1_000_000)  # full spill, not the 1MB clip
+        if os.name == "posix":
+            self.assertEqual(stat_mod.S_IMODE(os.stat(spill).st_mode), 0o600)
+
+    def test_cell_spill_path_survives_sys_exit_teardown(self):
+        """A cell that spills and then sys.exit()s kills its kernel, which rmtree()s the
+        tmpdir the runner wrote to. The advertised spill path must still resolve."""
+        import stat as stat_mod
+        with _kernel_config():
+            result = _run("print('y' * 1_100_000)\nimport sys\nsys.exit(0)")
+        # sys.exit() ends the kernel: tmpdir is rmtree'd before the caller pages the
+        # spill, so the published path must live outside it.
+        self.assertTrue(result["kernel"]["ended"], result)
+        spill = result.get("stdout_spill_path", "")
+        self.assertTrue(spill, result)
+        self.assertTrue(os.path.isfile(spill))
+        self.assertIn("y" * 100, Path(spill).read_text(encoding="utf-8"))
+        if os.name == "posix":
+            self.assertEqual(stat_mod.S_IMODE(os.stat(spill).st_mode), 0o600)
+
+    @pytest.mark.skipif(os.name != "posix", reason="symlink squat is a POSIX primitive")
+    def test_cell_spill_refuses_preplanted_symlink(self):
+        """A cell sharing the kernel tmpdir can squat cell_NNNNNN_stdout.txt with a
+        symlink; the runner's spill write must not follow it onto a host file."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp, "victim.txt")
+            target.write_text("keep me", encoding="utf-8")
+            with _kernel_config():
+                result = _run(
+                    "import os\n"
+                    "d = os.environ['HERMES_KERNEL_SPILL_DIR']\n"
+                    "os.symlink(" + repr(str(target)) + ", os.path.join(d, 'cell_000001_stdout.txt'))\n"
+                    "print('x' * 1_100_000)")
+            self.assertEqual(result["status"], "success", result)
+            self.assertEqual(target.read_text(encoding="utf-8"), "keep me")
+            spill = result.get("stdout_spill_path", "")
+            if spill:
+                # If a spill was still produced it must be a real file, not the link.
+                self.assertFalse(os.path.islink(spill))
+
+    def test_sanitize_cell_spill_drops_paths_outside_tmpdir(self):
+        """A spill path outside the kernel tmpdir is never read or rewritten."""
+        from types import SimpleNamespace
+        from tools.code_kernel import _sanitize_cell_spill
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+            foreign = Path(b, "cell_000001_stdout.txt")
+            foreign.write_text("raw ghp_0123456789abcdef", encoding="utf-8")
+            kernel = SimpleNamespace(tmpdir=a)
+            self.assertEqual(_sanitize_cell_spill(kernel, str(foreign)), "")
+            self.assertIn("ghp_0123456789abcdef",
+                          foreign.read_text(encoding="utf-8"))
+
+    @pytest.mark.skipif(os.name != "posix", reason="O_NOFOLLOW is a POSIX primitive")
+    def test_sanitize_cell_spill_refuses_replanted_symlink(self):
+        """A link swapped in after the runner wrote must not be read through."""
+        from types import SimpleNamespace
+        from tools.code_kernel import _sanitize_cell_spill
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+            foreign = Path(b, "victim.txt")
+            foreign.write_text("sentinel", encoding="utf-8")
+            link = Path(a, "cell_000001_stdout.txt")
+            os.symlink(foreign, link)
+            kernel = SimpleNamespace(tmpdir=a)
+            self.assertEqual(_sanitize_cell_spill(kernel, str(link)), "")
+            self.assertEqual(foreign.read_text(encoding="utf-8"), "sentinel")
+
+    @pytest.mark.skipif(os.name != "posix", reason="FIFO and intermediate symlinks are POSIX primitives")
+    def test_sanitize_cell_spill_refuses_fifo_and_dotdot(self):
+        """A cell can forge or swap the published name; a FIFO there would park the
+        host thread at open() (under kernel.lock), and a 'tmpdir/link/../victim'
+        spelling escapes the lexical parent check through a planted intermediate
+        link. Both must fail closed without touching the foreign file."""
+        import threading
+        from types import SimpleNamespace
+        from tools.code_kernel import _sanitize_cell_spill
+        with tempfile.TemporaryDirectory() as outer:
+            a = os.path.join(outer, "kertmp")   # kernel tmpdir
+            b = os.path.join(outer, "b")        # symlink target dir
+            os.mkdir(a)
+            os.mkdir(b)
+            kernel = SimpleNamespace(tmpdir=a)
+            fifo = Path(a, "cell_000001_stdout.txt")
+            os.mkfifo(fifo)
+            done = []
+            t = threading.Thread(
+                target=lambda: done.append(_sanitize_cell_spill(kernel, str(fifo))))
+            t.start()
+            t.join(timeout=15)
+            self.assertEqual(done, [""])       # returned, did not block on the FIFO
+            self.assertFalse(fifo.exists())    # the name is cleaned up either way
+            # a/link/../victim.txt resolves through the planted link to
+            # outer/victim.txt: a lexical abspath() parent check sees 'a', the
+            # filesystem sees outer/. The read and the cleanup unlink must both
+            # stay confined.
+            victim = Path(outer, "victim.txt")
+            victim.write_text("sentinel", encoding="utf-8")
+            os.symlink(b, os.path.join(a, "link"))
+            spell = os.path.join(a, "link", "..", "victim.txt")
+            self.assertEqual(_sanitize_cell_spill(kernel, spell), "")
+            self.assertEqual(victim.read_text(encoding="utf-8"), "sentinel")
+
+    def test_sanitize_cell_spill_refuses_oversized_swap(self):
+        """A swapped-in file bigger than the runner's spill cap is not a spill."""
+        from types import SimpleNamespace
+        from tools.code_kernel import _CELL_SPILL_READ_CAP, _sanitize_cell_spill
+        with tempfile.TemporaryDirectory() as a:
+            big = Path(a, "cell_000001_stdout.txt")
+            with open(big, "wb") as f:
+                f.truncate(_CELL_SPILL_READ_CAP + 1)
+            kernel = SimpleNamespace(tmpdir=a)
+            self.assertEqual(_sanitize_cell_spill(kernel, str(big)), "")
+            self.assertFalse(big.exists())
+
+    def test_cell_result_failclosed_keeps_partial_host_spill(self):
+        """When the cell spill cannot be republished, the result must not leave a
+        spill path the warning disclaims: the host spill of the clipped head is
+        sanitized and pageable, so the warning names it as the partial file."""
+        from types import SimpleNamespace
+        from tools.code_kernel import _BoundedBuffer, _cell_result
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+            foreign = Path(a, "cell_000001_stdout.txt")
+            foreign.write_text("raw ghp_0123456789abcdef", encoding="utf-8")
+            kernel = SimpleNamespace(tmpdir=b, raw=_BoundedBuffer(),
+                                     stderr=_BoundedBuffer(), execution_count=1,
+                                     tool_call_counter=[0])
+            payload = {"status": "ok", "stdout": "x" * 60_000,
+                       "stdout_clipped": True,
+                       "stdout_spill_path": str(foreign), "execution_count": 1}
+            result = _cell_result(kernel, ("k",), "success", payload, timeout=30,
+                                  sandbox_tools=frozenset(), reused=False,
+                                  state_reset=False, exec_start=time.monotonic())
+            self.assertTrue(foreign.exists())       # foreign file never touched
+        self.assertIn("stdout_spill_path", result)  # host spill of the clipped head
+        self.assertIn("Only the first part", result["warning"])
+        self.assertIn(result["stdout_spill_path"], result["warning"])

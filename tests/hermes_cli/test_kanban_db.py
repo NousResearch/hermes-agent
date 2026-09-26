@@ -985,6 +985,134 @@ def test_is_managed_scratch_path_rejects_kanban_metadata_subtrees(kanban_home):
     assert kb._is_managed_scratch_path(task_dir)
 
 
+_needs_symlinks = pytest.mark.skipif(
+    sys.platform == "win32", reason="Symlinks require elevated privileges on Windows"
+)
+
+
+def _symlink_dir(link: Path, target: Path) -> None:
+    target.mkdir(parents=True, exist_ok=True)
+    if link.is_dir() and not link.is_symlink():
+        link.rmdir()
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(target, target_is_directory=True)
+
+
+def _user_tree(root: Path) -> Path:
+    victim = root / "project"
+    victim.mkdir(parents=True)
+    (victim / "keep.txt").write_text("user data", encoding="utf-8")
+    return victim
+
+
+def _resolve_task_workspace(conn, task_id: str) -> Path:
+    task = kb.get_task(conn, task_id)
+    assert task is not None
+    return kbw.resolve_workspace(task)
+
+
+def _complete_scratch_task_at(conn, path: Path) -> str:
+    """A legacy explicit-path scratch task pointing at *path*, then completed."""
+    t = kb.create_task(conn, title="scratch")
+    kbw.set_workspace_path(conn, t, path)
+    assert kb.complete_task(conn, t, result="done")
+    return t
+
+
+@_needs_symlinks
+def test_symlinked_workspaces_root_does_not_widen_scratch_cleanup(kanban_home, tmp_path):
+    """A workspaces root that is a symlink to a broad directory must not make
+    every path inside the symlink target "managed". Only paths that are
+    lexically below the root (i.e. reached through it) are scratch; a path
+    named directly inside the target is user data (#28818)."""
+    broad = tmp_path / "user-data"
+    victim = _user_tree(broad)
+    _symlink_dir(kanban_home / "kanban" / "workspaces", broad)
+
+    assert not kb._is_managed_scratch_path(victim)
+    with kbc.connect() as conn:
+        _complete_scratch_task_at(conn, victim)
+    assert (victim / "keep.txt").read_text(encoding="utf-8") == "user data"
+
+
+@_needs_symlinks
+def test_symlinked_board_workspaces_root_does_not_widen_scratch_cleanup(kanban_home, tmp_path):
+    broad = tmp_path / "user-data"
+    victim = _user_tree(broad)
+    _symlink_dir(kanban_home / "kanban" / "boards" / "ops" / "workspaces", broad)
+
+    assert kb._managed_scratch_path_info(victim) == (False, None)
+    in_tree = kanban_home / "kanban" / "boards" / "ops" / "workspaces" / "t_1"
+    in_tree.mkdir()
+    assert kb._managed_scratch_path_info(in_tree) == (True, "ops")
+
+
+@_needs_symlinks
+def test_symlinked_workspaces_root_still_cleans_in_tree_scratch(kanban_home, tmp_path):
+    """Relocating the workspaces root to another disk via a symlink keeps
+    scratch cleanup working for tasks created through the root."""
+    relocated = tmp_path / "big-disk" / "kanban-workspaces"
+    _symlink_dir(kanban_home / "kanban" / "workspaces", relocated)
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="relocated scratch")
+        ws = _resolve_task_workspace(conn, t)
+        kbw.set_workspace_path(conn, t, ws)
+        assert (relocated / t).is_dir()
+        assert kb.complete_task(conn, t, result="done")
+    assert not (relocated / t).exists()
+    assert relocated.is_dir(), "the root itself is never removed"
+
+
+@_needs_symlinks
+def test_workspaces_root_override_symlink_is_the_lexical_anchor(kanban_home, tmp_path, monkeypatch):
+    """``HERMES_KANBAN_WORKSPACES_ROOT`` (pinned into every worker) gets the
+    same treatment: tasks under the override are cleaned even when it is a
+    symlink; paths only inside its target are not."""
+    broad = tmp_path / "user-data"
+    victim = _user_tree(broad)
+    pinned = tmp_path / "pinned-workspaces"
+    _symlink_dir(pinned, broad)
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", str(pinned))
+
+    assert not kb._is_managed_scratch_path(pinned)
+    assert not kb._is_managed_scratch_path(victim)
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="pinned scratch")
+        ws = _resolve_task_workspace(conn, t)
+        assert ws == pinned / t
+        kbw.set_workspace_path(conn, t, ws)
+        assert kb.complete_task(conn, t, result="done")
+        _complete_scratch_task_at(conn, victim)
+    assert not (broad / t).exists()
+    assert (victim / "keep.txt").read_text(encoding="utf-8") == "user data"
+
+
+@_needs_symlinks
+def test_symlinked_hermes_home_scratch_cleanup(tmp_path, monkeypatch):
+    """A HERMES_HOME that is a symlink (relocated storage) keeps cleanup
+    working, including for a path recorded by a process that spelled the
+    home by its real location."""
+    real_home = tmp_path / "storage" / "hermes"
+    real_home.mkdir(parents=True)
+    link_home = tmp_path / "hermes-link"
+    link_home.symlink_to(real_home, target_is_directory=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(link_home))
+    kb.init_db()
+    assert kb.kanban_home() == link_home
+
+    with kbc.connect() as conn:
+        linked = kb.create_task(conn, title="linked spelling")
+        linked_ws = _resolve_task_workspace(conn, linked)
+        kbw.set_workspace_path(conn, linked, linked_ws)
+        real_ws = real_home / "kanban" / "workspaces" / "t_realpath"
+        real_ws.mkdir(parents=True)
+        assert kb.complete_task(conn, linked, result="done")
+        _complete_scratch_task_at(conn, real_ws)
+    assert not linked_ws.exists()
+    assert not real_ws.exists()
+
+
 # ---------------------------------------------------------------------------
 # Tenancy
 # ---------------------------------------------------------------------------

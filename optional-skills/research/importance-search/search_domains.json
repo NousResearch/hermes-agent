@@ -1,0 +1,5 @@
+{"domains":{
+"ai-tech":{"label":"AI/Tech","keywords":["AI agent","LLM","generative AI","AI startup"],"youtube_queries":["AI agent 2026","LLM news"],"x_influencers":["AnthropicAI","OpenAI","sama","GoogleDeepMind","xai","Zai_org","demishassabis","karpathy"]},
+"finance":{"label":"Finance","keywords":["stock market","interest rates","bitcoin"],"youtube_queries":["stock market 2026"],"x_influencers":["WSJmarkets","business","DeItaone"]},
+"general":{"label":"General","keywords":["breaking news","major events"],"youtube_queries":["breaking news"],"x_influencers":["BBCBreaking","Reuters"]}
+}}

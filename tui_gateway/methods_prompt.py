@@ -488,7 +488,8 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
 
 
 def _run_after_agent_ready(
-    rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author=None
+    rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author=None,
+    image_paths=None,
 ):
     """Turn thread body: patient wait for a deferred build (a slow build must not eat the
     accepted in-flight message), then run."""
@@ -519,7 +520,7 @@ def _run_after_agent_ready(
             return
     _run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata,
-        terminal_callback=hosted_terminal_callback, turn_author=turn_author)
+        terminal_callback=hosted_terminal_callback, turn_author=turn_author, image_paths=image_paths)
 
 
 _TRUNCATION_PARAMS = (
@@ -561,6 +562,22 @@ def _lock_in_submit_turn(
 _CLIENT_SURFACES = frozenset({"hud", "voice-live"})
 
 
+def _submit_image_paths(rid, raw_paths):
+    """``(paths, err)`` for ``prompt.submit.image_paths``: each entry resolved like ``image.attach``. ``None``
+    (field absent) keeps the legacy behaviour of consuming the session's ``image.attach`` staging slot; a
+    list, even empty, binds exactly those images to this submit and leaves the slot untouched."""
+    if raw_paths is None:
+        return None, None
+    from cli import _IMAGE_EXTENSIONS, _resolve_attachment_path
+    paths = []
+    for raw in raw_paths:
+        resolved = _resolve_attachment_path(raw)
+        if resolved is None or resolved.suffix.lower() not in _IMAGE_EXTENSIONS:
+            return None, _err(rid, 4016, f"image not found or unsupported: {raw}")
+        paths.append(str(resolved))
+    return paths, None
+
+
 @method("prompt.submit")
 def _(rid, params: dict) -> dict:
     from hermes_cli.input_sanitize import sanitize_user_prompt_text
@@ -598,6 +615,11 @@ def _(rid, params: dict) -> dict:
     err = (
         _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback)
         if internal_hosted_submit else _legacy_group_fence_error(rid, session, params))
+    if err is not None:
+        return err
+    # After the session/ownership gates: a caller that may not submit here must not learn which host
+    # paths exist from the 4016 below. Before any side effect, so a bad path leaves the session untouched.
+    image_paths, err = _submit_image_paths(rid, params.get("image_paths"))
     if err is not None:
         return err
     if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
@@ -650,7 +672,7 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4009, "session busy")
         busy_response = _handle_busy_submit(
             rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author,
-            display_kind=display_kind)
+            display_kind=display_kind, image_paths=image_paths)
         if busy_response is not None:
             return busy_response
     raw_rebind_ids = params.get("rebind_survivor_row_ids")
@@ -666,7 +688,8 @@ def _(rid, params: dict) -> dict:
             logger.debug("isolated compute turns carry no author yet; the turn from %s runs unattributed",
                          turn_author.get("id"))
         isolated_response = _submit_prompt_to_compute_host(
-            rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata)
+            rid, sid, session, text, image_paths=image_paths,
+            display_kind=display_kind, display_metadata=display_metadata)
         if not isolated_response.get("error"):
             # The truncation already happened inline above (memory + DB).
             isolated_response["result"].update(survivor_fields)
@@ -693,7 +716,8 @@ def _(rid, params: dict) -> dict:
         _start_agent_build(sid, session)
     run_thread = threading.Thread(
         target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author),
+            rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author,
+            image_paths),
         daemon=True)
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread

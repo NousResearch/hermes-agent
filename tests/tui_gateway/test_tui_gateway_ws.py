@@ -160,6 +160,7 @@ def test_ws_ready_advertises_heartbeat_and_ping_is_inline(monkeypatch):
     ready = sent[0]["params"]
     assert ready["type"] == "gateway.ready"
     assert ready["payload"]["heartbeat"] is True
+    assert ready["payload"]["atomic_image_submit"] is True
     assert sent[1] == {
         "jsonrpc": "2.0",
         "result": {"ok": True},

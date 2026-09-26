@@ -523,3 +523,166 @@ class TestFields:
         footers = "".join(z.read(n).decode("utf-8") for n in z.namelist()
                           if n.startswith("word/footer"))
         assert "NUMPAGES" in footers
+
+
+# The content-story style contract is shared; numbering's pStyle is not
+# a content-story use. ZIP/XML and the validator CLI are real, not mocked.
+STYLE_STORIES = [
+    ("document", "pStyle"), ("document", "rStyle"),
+    ("document", "tblStyle"),
+    ("comments", "pStyle"), ("comments", "rStyle"),
+    ("comments", "tblStyle"),
+    ("header1", "pStyle"), ("footer1", "rStyle"),
+    ("footnotes", "pStyle"), ("endnotes", "tblStyle"),
+]
+
+
+def _style_probe(tmp_path, part, tag, defined):
+    import zipfile
+    from lxml import etree
+
+    sid = "ProbeCustomStyle"
+    doc = Document()
+    doc.add_paragraph("Body")
+    if defined:
+        from docx.enum.style import WD_STYLE_TYPE
+        doc.styles.add_style(sid, {
+            "pStyle": WD_STYLE_TYPE.PARAGRAPH,
+            "rStyle": WD_STYLE_TYPE.CHARACTER,
+            "tblStyle": WD_STYLE_TYPE.TABLE,
+        }[tag])
+    base = tmp_path / "base.docx"
+    doc.save(base)
+    with zipfile.ZipFile(base) as src:
+        parts = {name: src.read(name) for name in src.namelist()}
+    content = {
+        "pStyle": f'<w:p><w:pPr><w:pStyle w:val="{sid}"/></w:pPr></w:p>',
+        "rStyle": f'<w:p><w:r><w:rPr><w:rStyle w:val="{sid}"/></w:rPr>'
+                  '<w:t>Probe</w:t></w:r></w:p>',
+        "tblStyle": f'<w:tbl><w:tblPr><w:tblStyle w:val="{sid}"/></w:tblPr>'
+                    '<w:tblGrid><w:gridCol w:w="1000"/></w:tblGrid>'
+                    '<w:tr><w:tc><w:p/></w:tc></w:tr></w:tbl>',
+    }[tag]
+    if part == "document":
+        root = etree.fromstring(parts["word/document.xml"])
+        root.find(q("body")).insert(0, etree.fromstring(
+            f'<w:wrapper xmlns:w="{W}">{content}</w:wrapper>')[0])
+        parts["word/document.xml"] = etree.tostring(root)
+    elif part is not None:
+        roots = {
+            "comments": ("comments", '<w:comment w:id="0" w:author="Tester">', '</w:comment>'),
+            "header1": ("hdr", "", ""), "footer1": ("ftr", "", ""),
+            "footnotes": ("footnotes", '<w:footnote w:id="1">', '</w:footnote>'),
+            "endnotes": ("endnotes", '<w:endnote w:id="1">', '</w:endnote>'),
+            "numbering": ("numbering", '<w:abstractNum w:abstractNumId="99"><w:lvl w:ilvl="0">', '</w:lvl></w:abstractNum>'),
+        }
+        root_tag, prefix, suffix = roots[part]
+        if part == "numbering":
+            content = f'<w:pStyle w:val="{sid}"/>'
+        parts[f"word/{part}.xml"] = (
+            f'<w:{root_tag} xmlns:w="{W}">{prefix}{content}{suffix}</w:{root_tag}>'
+        ).encode()
+        kind = {"header1": "header", "footer1": "footer"}.get(part, part)
+        ct = "http://schemas.openxmlformats.org/package/2006/content-types"
+        types = etree.fromstring(parts["[Content_Types].xml"])
+        if not any(x.get("PartName") == f"/word/{part}.xml" for x in types):
+            etree.SubElement(types, f"{{{ct}}}Override", {
+                "PartName": f"/word/{part}.xml",
+                "ContentType": f"application/vnd.openxmlformats-officedocument.wordprocessingml.{kind}+xml",
+            })
+        parts["[Content_Types].xml"] = etree.tostring(types)
+        pr = "http://schemas.openxmlformats.org/package/2006/relationships"
+        rels = etree.fromstring(parts["word/_rels/document.xml.rels"])
+        if not any(x.get("Target") == f"{part}.xml" for x in rels):
+            etree.SubElement(rels, f"{{{pr}}}Relationship", {
+                "Id": "rProbe", "Target": f"{part}.xml",
+                "Type": f"http://schemas.openxmlformats.org/officeDocument/2006/relationships/{kind}",
+            })
+        parts["word/_rels/document.xml.rels"] = etree.tostring(rels)
+    if defined is None:
+        # A malformed optional story must not prevent the body style check.
+        parts[f"word/{part}.xml"] = b"<malformed"
+        body = etree.fromstring(parts["word/document.xml"])
+        p = etree.SubElement(body.find(q("body")), q("p"))
+        etree.SubElement(etree.SubElement(p, q("pPr")), q("pStyle"), {q("val"): sid})
+        parts["word/document.xml"] = etree.tostring(body)
+    path = tmp_path / "probe.docx"
+    with zipfile.ZipFile(path, "w") as dst:
+        for name, data in parts.items():
+            dst.writestr(name, data)
+    return path, sid
+
+
+@pytest.mark.parametrize("part,tag,defined", [
+    pytest.param(part, tag, defined, id=f"{part}-{tag}-{'defined' if defined else 'missing'}")
+    for part, tag in STYLE_STORIES for defined in (False, True)
+] + [pytest.param(None, "pStyle", False, id="optional-stories-absent"),
+     pytest.param("numbering", "pStyle", False, id="numbering-not-content-story")]
+  + [pytest.param(part, "pStyle", None, id=f"malformed-{part}-body-continues")
+     for part in ("comments", "header1", "footer1", "footnotes", "endnotes")])
+def test_content_story_style_references(tmp_path, part, tag, defined):
+    path, sid = _style_probe(tmp_path, part, tag, defined)
+    before = path.read_bytes()
+    proc = run_raw("docx_validate.py", path)
+    assert not proc.stderr
+    report = json.loads(proc.stdout)
+    missing = [i for i in report["issues"] if i["code"] == "missing-style"]
+    if defined is None:
+        code = "bad-comments-xml" if part == "comments" else "bad-story-xml"
+        assert proc.returncode == 1 and report["ok"] is False
+        assert any(i["code"] == code and f"word/{part}.xml" in i["detail"]
+                   for i in report["issues"])
+        assert any(sid in i["detail"] and "word/document.xml" in i["detail"] for i in missing)
+        assert path.read_bytes() == before
+        return
+    should_detect = part not in (None, "numbering") and not defined
+    assert bool(missing) == should_detect, (part, tag, report)
+    if should_detect:
+        assert proc.returncode == 1 and report["ok"] is False
+        assert any(sid in i["detail"] for i in missing)
+        if part != "document":
+            assert all(f"word/{part}.xml" in i["detail"] for i in missing)
+    else:
+        assert proc.returncode == 0 and report == {"ok": True, "issues": []}
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("custom_part", [None, "document", "comments"])
+def test_native_implicit_comment_styles_do_not_hide_missing_custom_styles(tmp_path, custom_part):
+    import zipfile
+    from lxml import etree
+
+    # python-docx's native comment producer intentionally emits these built-ins
+    # without definitions (CT_Comments.add_comment / CT_R._new_comment_reference).
+    doc = Document()
+    run = doc.add_paragraph("Anchor").runs[0]
+    comment = doc.add_comment(run, text="Review", author="Tester")
+    sid = "MissingCustomStyle"
+    if custom_part:
+        # Latent metadata controls UI behavior; it is NOT a styleId definition.
+        doc.styles.latent_styles.add_latent_style(sid)
+        para = doc.add_paragraph("Custom") if custom_part == "document" else comment.add_paragraph("Custom")
+        para._p.style = sid
+    path = tmp_path / "native-comments.docx"
+    doc.save(path)
+    with zipfile.ZipFile(path) as zf:
+        styles = etree.fromstring(zf.read("word/styles.xml"))
+        explicit = {e.get(q("styleId")) for e in styles.iter(q("style"))}
+        assert not {"CommentText", "CommentReference", sid} & explicit
+        body = etree.fromstring(zf.read("word/document.xml"))
+        comments = etree.fromstring(zf.read("word/comments.xml"))
+        assert any(e.get(q("val")) == "CommentReference" for e in body.iter(q("rStyle")))
+        assert any(e.get(q("val")) == "CommentText" for e in comments.iter(q("pStyle")))
+        assert any(e.get(q("val")) == "CommentReference" for e in comments.iter(q("rStyle")))
+    before = path.read_bytes()
+    proc = run_raw("docx_validate.py", path)
+    assert not proc.stderr
+    report = json.loads(proc.stdout)
+    missing = [i for i in report["issues"] if i["code"] == "missing-style"]
+    assert not any("CommentText" in i["detail"] or "CommentReference" in i["detail"] for i in missing), report
+    if custom_part:
+        assert proc.returncode == 1 and report["ok"] is False
+        assert any(sid in i["detail"] and f"word/{custom_part}.xml" in i["detail"] for i in missing)
+    else:
+        assert proc.returncode == 0 and report == {"ok": True, "issues": []}
+    assert path.read_bytes() == before

@@ -26,7 +26,12 @@ logger = logging.getLogger(__name__)
 
 _TIMEOUT = 30.0
 _ENV_KEEP = ("PATH", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "SystemRoot",
-             "TMPDIR", "TMP", "TEMP", "XDG_CONFIG_HOME", "BITWARDENCLI_APPDATA_DIR")
+             "TMPDIR", "TMP", "TEMP", "XDG_CONFIG_HOME", "BITWARDENCLI_APPDATA_DIR",
+             # bw is a Node program and Node trusts only its bundled CA store, never the
+             # OS keychain. A self-hosted Vaultwarden behind a private CA (mkcert, corporate
+             # root) is therefore unreachable unless this path reaches the child. Not a
+             # secret: a filesystem path to a public certificate.
+             "NODE_EXTRA_CA_CERTS")
 
 
 class BitwardenLoginBackend(LoginBackend):

@@ -231,3 +231,25 @@ def test_onepassword_backend_env_forwards_config_directory(monkeypatch):
     backend = OnePasswordLoginBackend({"enabled": True})
 
     assert backend._env(None)["OP_CONFIG_DIR"] == "/tmp/op-config"
+
+
+def test_bitwarden_backend_env_forwards_node_extra_ca_certs(monkeypatch):
+    """A self-hosted Vaultwarden behind a private CA is only reachable if the extra CA
+    bundle survives into the `bw` child: bw is a Node program, and Node trusts its own
+    bundled store rather than the OS keychain. Without this the child fails every TLS
+    handshake with UNABLE_TO_VERIFY_LEAF_SIGNATURE while the parent process, which does
+    carry the variable, reaches the same server fine."""
+    monkeypatch.setenv("NODE_EXTRA_CA_CERTS", "/tmp/rootCA.pem")
+    backend = BitwardenLoginBackend({"enabled": True})
+
+    assert backend._env(None)["NODE_EXTRA_CA_CERTS"] == "/tmp/rootCA.pem"
+
+
+def test_bitwarden_backend_env_omits_unset_passthrough_keys(monkeypatch):
+    """The allowlist copies only what the parent actually has — an unset optional key is
+    absent from the child env, never forwarded as an empty string that Node would read as
+    a real (missing) certificate path."""
+    monkeypatch.delenv("NODE_EXTRA_CA_CERTS", raising=False)
+    backend = BitwardenLoginBackend({"enabled": True})
+
+    assert "NODE_EXTRA_CA_CERTS" not in backend._env(None)

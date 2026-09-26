@@ -1289,10 +1289,12 @@ function CatalogEntryCard(props: CatalogEntryCardProps) {
 
   const caps = entry.capabilities;
   const chips: string[] = [];
-  if (caps.provides_tools.length) chips.push(`${caps.provides_tools.length} tools`);
-  if (caps.provides_hooks.length) chips.push(`${caps.provides_hooks.length} hooks`);
+  if (caps.provides_tools.length)
+    chips.push(t.pluginsPage.catalogToolsChip.replace("{count}", String(caps.provides_tools.length)));
+  if (caps.provides_hooks.length)
+    chips.push(t.pluginsPage.catalogHooksChip.replace("{count}", String(caps.provides_hooks.length)));
   if (caps.provides_middleware.length)
-    chips.push(`${caps.provides_middleware.length} middleware`);
+    chips.push(t.pluginsPage.catalogMiddlewareChip.replace("{count}", String(caps.provides_middleware.length)));
   if (caps.requires_env.length) chips.push(`env: ${caps.requires_env.join(", ")}`);
 
   const isRemoved = removed !== null;

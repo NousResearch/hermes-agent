@@ -16,6 +16,13 @@ extracts both caption sequences, normalizes the HTML one (strip tags,
 collapse whitespace, unescape entities, drop the Vazirmatn-only BOM-ish
 zero-width joiners), and fails when the sequences drift.
 
+It also verifies the «راه‌اندازی سریع در ۶ گام» quickstart section
+(guide.html ``<section id="quickstart">`` vs PersianGuide's ``QUICKSTART``
+array): the step count must match and every TSX ``cmd`` must appear
+verbatim, in order, inside its matching guide.html step. Desc prose may be
+reworded per surface; commands may not — they are the exact strings a user
+copies, so only verbatim presence counts.
+
 Dependency-free (stdlib only, like scripts/check_compat_pointers.py) so a
 CI job can run it before any setup step.
 
@@ -53,6 +60,21 @@ FIGURE_RE = re.compile(
 #   { src: "guide-images/01-first-launch.png", caption: "۱ — ..." },
 ENTRY_RE = re.compile(
     r"""\{\s*src:\s*"(?P<src>[^"]+)",\s*caption:\s*"(?P<caption>[^"]*)",?\s*\}"""
+)
+
+# Quickstart: guide.html's numbered <li> steps inside <section id="quickstart">
+# vs PersianGuide.tsx's QUICKSTART array ({ cmd: "...", desc: "..." },
+# one per step — desc may contain escaped quotes, cmd never does).
+QUICKSTART_SECTION_RE = re.compile(
+    r'<section id="quickstart">(?P<body>.*?)</section>', re.DOTALL
+)
+QUICKSTART_LI_RE = re.compile(r"<li>(?P<li>.*?)</li>", re.DOTALL)
+QUICKSTART_TSX_ARRAY_RE = re.compile(
+    r"const QUICKSTART[^=]*=\s*\[(?P<body>.*?)\n\];", re.DOTALL
+)
+QUICKSTART_TSX_ENTRY_RE = re.compile(
+    r"""\{\s*cmd:\s*"(?P<cmd>[^"]+)",\s*desc:\s*"(?P<desc>(?:[^"\\]|\\.)*)",?\s*\}""",
+    re.VERBOSE,
 )
 
 # Normalization: the HTML caption carries markup the TSX copy stores as
@@ -113,12 +135,36 @@ def extract_tsx_walkthrough() -> list[tuple[str, str]]:
     return entries
 
 
+def extract_html_quickstart_steps() -> list[str]:
+    """Normalized text of each numbered step in guide.html's quickstart section."""
+    try:
+        text = GUIDE_HTML.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise SystemExit(f"✗ cannot read {GUIDE_HTML}: {exc}")
+    section = QUICKSTART_SECTION_RE.search(text)
+    if not section:
+        return []
+    return [_normalize_caption(m.group("li")) for m in QUICKSTART_LI_RE.finditer(section.group("body"))]
+
+
+def extract_tsx_quickstart_cmds() -> list[str]:
+    """The ``cmd`` values of PersianGuide.tsx's QUICKSTART array, in order."""
+    try:
+        text = PERSIAN_GUIDE.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise SystemExit(f"✗ cannot read {PERSIAN_GUIDE}: {exc}")
+    array = QUICKSTART_TSX_ARRAY_RE.search(text)
+    if not array:
+        return []
+    return [m.group("cmd") for m in QUICKSTART_TSX_ENTRY_RE.finditer(array.group("body"))]
+
+
 def main(argv: list[str]) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
 
     parser = argparse.ArgumentParser(
-        description="Fail when PersianGuide.tsx walkthrough captions drift from guide.html figcaptions."
+        description="Fail when PersianGuide.tsx walkthrough captions or quickstart commands drift from guide.html."
     )
     parser.add_argument(
         "--diff",
@@ -171,6 +217,31 @@ def main(argv: list[str]) -> int:
                 f"{src}: caption drift\n  guide.html:      {html_map[src]}\n  PersianGuide.tsx: {tsx_map[src]}"
             )
 
+    # Quickstart commands: TSX cmd must appear verbatim, in order, inside its
+    # matching HTML step (HTML steps carry extra <code> probes around the
+    # command, so containment — not equality — is the invariant). Desc prose
+    # may drift; commands may not.
+    html_steps = extract_html_quickstart_steps()
+    tsx_cmds = extract_tsx_quickstart_cmds()
+    if not html_steps:
+        errors.append(f'no <li> steps found in <section id="quickstart"> of {GUIDE_HTML.name}')
+    if not tsx_cmds:
+        errors.append(f"no QUICKSTART array entries found in {PERSIAN_GUIDE.name}")
+    if html_steps and tsx_cmds:
+        if len(html_steps) != len(tsx_cmds):
+            errors.append(
+                f"quickstart step count drifted: guide.html has {len(html_steps)}, "
+                f"PersianGuide.tsx has {len(tsx_cmds)}"
+            )
+        for idx, cmd in enumerate(tsx_cmds):
+            if idx < len(html_steps):
+                if cmd not in html_steps[idx]:
+                    errors.append(
+                        f"quickstart step {idx + 1} command drift\n"
+                        f"  PersianGuide.tsx cmd: {cmd}\n"
+                        f"  guide.html step:      {html_steps[idx]}"
+                    )
+
     if errors:
         print(
             f"✗ guide.html and PersianGuide.tsx walkthroughs have drifted "
@@ -190,8 +261,13 @@ def main(argv: list[str]) -> int:
         return 1
 
     print(
-        f"✓ walkthrough in sync: {len(html_figs)} figures match between "
+        f"✓ in sync: {len(html_figs)} walkthrough figures match between "
         f"guide.html and PersianGuide.tsx"
+        + (
+            f", quickstart commands match across {len(html_steps)} steps"
+            if html_steps and tsx_cmds
+            else ""
+        )
     )
     return 0
 

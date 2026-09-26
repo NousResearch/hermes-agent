@@ -657,11 +657,15 @@ export default function McpPage() {
                     </Badge>
                     {server.auth && (
                       <Badge tone="outline">
-                        auth:{" "}
-                        {server.auth === "header" ? "bearer" : server.auth}
+                        {t.mcp.authBadge.replace(
+                          "{type}",
+                          server.auth === "header" ? "bearer" : server.auth,
+                        )}
                       </Badge>
                     )}
-                    {!server.enabled && <Badge tone="outline">disabled</Badge>}
+                    {!server.enabled && (
+                    <Badge tone="outline">{t.mcp.disabledBadge}</Badge>
+                  )}
                   </div>
                   <div className="flex items-center gap-4 text-xs text-muted-foreground">
                     {server.transport === "http" ? (
@@ -771,18 +775,18 @@ export default function McpPage() {
             className="flex items-center gap-2 text-muted-foreground"
           >
             <Package className="h-4 w-4" />
-            <span id="mcp-catalog">Catalog ({catalog.length})</span>
+            <span id="mcp-catalog">
+              {t.mcp.catalogHeading.replace("{count}", String(catalog.length))}
+            </span>
           </H2>
         </div>
 
-        <p className="text-xs text-muted-foreground">
-          Browse Nous-approved MCP servers and install them with one click.
-        </p>
+        <p className="text-xs text-muted-foreground">{t.mcp.catalogIntro}</p>
 
         {catalog.length === 0 && (
           <Card>
             <CardContent className="py-8 text-center text-sm text-muted-foreground">
-              No catalog entries available.
+              {t.mcp.catalogEmpty}
             </CardContent>
           </Card>
         )}
@@ -804,7 +808,9 @@ export default function McpPage() {
                     >
                       {entry.transport}
                     </Badge>
-                    <Badge tone="outline">auth: {entry.auth_type}</Badge>
+                    <Badge tone="outline">
+                      {t.mcp.authBadge.replace("{type}", entry.auth_type)}
+                    </Badge>
                     {isHttpUrl(entry.source) ? (
                       <a
                         href={entry.source}
@@ -812,7 +818,7 @@ export default function McpPage() {
                         rel="noopener noreferrer"
                         className="text-xs text-primary underline underline-offset-2 hover:opacity-80"
                       >
-                        source ↗
+                        {t.mcp.sourceLink}
                       </a>
                     ) : (
                       entry.source && (
@@ -884,7 +890,7 @@ export default function McpPage() {
                   {entry.post_install && (
                     <details className="mt-1 text-xs text-muted-foreground">
                       <summary className="cursor-pointer select-none">
-                        Setup notes
+                        {t.mcp.setupNotes}
                       </summary>
                       <p className="mt-1 whitespace-pre-wrap">
                         {entry.post_install.trim()}

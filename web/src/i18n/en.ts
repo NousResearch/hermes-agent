@@ -298,6 +298,14 @@ export const en: Translations = {
     perDayAvg: "/day avg",
     acrossModels: "across {count} models",
     inOut: "{input} in / {output} out",
+    hiddenTitle: "Token analytics hidden",
+    hiddenBody1:
+      "The token, cost, and per-day analytics on this page are a local debug estimate. They only count successful main-agent responses with a usable usage block, and silently exclude auxiliary calls (context compression, title generation, vision, session search, web extract, smart approvals, MCP routing, plugin LLM access) plus provider-side retries and fallback attempts. Cache writes are missing entirely.",
+    hiddenBody2:
+      "On models with heavy auxiliary traffic (Kimi K2.6, MiniMax M2.7) the local total can be 10x–100x lower than what your provider bills. Hiding these numbers is safer than letting them look authoritative.",
+    hiddenBody3:
+      "Check your provider dashboard (OpenRouter, Anthropic, etc.) for actual usage and billing. To re-enable the local debug estimate anyway, set",
+    configLink: "in Config",
   },
 
   models: {
@@ -324,6 +332,13 @@ export const en: Translations = {
     addPreset: "Add preset",
     saving: "Saving…",
     save: "Save",
+    settingsHeading: "Model Settings",
+    appliesToNewSessions: "applies to new sessions",
+    auxiliaryTasksHeading: "Auxiliary tasks",
+    ctxUnit: "{count} ctx",
+    outUnit: "{count} out",
+    auxOverridesSummary: "{count} overrides · {rest} auto",
+    auxAllAuto: "{count} tasks · all auto",
   },
 
   logs: {
@@ -334,6 +349,7 @@ export const en: Translations = {
     component: "Component",
     lines: "Lines",
     noLogLines: "No log lines found",
+    filterAll: "All",
   },
 
   cron: {
@@ -420,6 +436,12 @@ export const en: Translations = {
     fieldProfile: "Profile",
     allProfiles: "All profiles",
     defaultOption: "Default",
+    jobsTab: "Jobs",
+    blueprintsTab: "Blueprints",
+    savedChanges: "Saved changes",
+    defaultJobLabel: "Cron job",
+    noToolsetsAvailable: "No toolsets available.",
+    noSkillsForProfile: "No skills installed for this profile.",
   },
 
   profiles: {
@@ -545,6 +567,9 @@ export const en: Translations = {
       "Plugins install disabled; enable it after install to activate.",
     catalogRequiresEnv: "Requires env",
     removedFromCatalog: "Removed from catalog",
+    catalogToolsChip: "{count} tools",
+    catalogHooksChip: "{count} hooks",
+    catalogMiddlewareChip: "{count} middleware",
   },
 
   skills: {
@@ -1140,6 +1165,19 @@ export const en: Translations = {
     revokeDescriptionPlain:
       "This user will lose access. This cannot be undone.",
     revoke: "Revoke",
+    pendingHeading: "Pending requests ({count})",
+    noPendingRequests: "No pending pairing requests",
+    approvedHeading: "Approved users ({count})",
+    noApprovedUsers: "No approved users",
+    minutesAgo: "{count}m ago",
+    clearPendingConfirm: "Clear all pending pairing requests?",
+    clearedToast: "Cleared {count} pending request(s)",
+    clearFailed: "Could not clear pending requests: {error}",
+    approvedToast: "Approved: \"{name}\"",
+    approveFailed: "Could not approve the pairing request: {error}",
+    revokeFailed: "Could not revoke access: {error}",
+    revokedToast: "Revoked: \"{name}\"",
+    clearPending: "Clear pending",
   },
 
   profileBuilder: {
@@ -1211,6 +1249,13 @@ export const en: Translations = {
     enable: "Enable",
     disable: "Disable",
     endpoint: "Endpoint:",
+    catalogHeading: "Catalog ({count})",
+    catalogIntro: "Browse Nous-approved MCP servers and install them with one click.",
+    catalogEmpty: "No catalog entries available.",
+    setupNotes: "Setup notes",
+    authBadge: "auth: {type}",
+    sourceLink: "source ↗",
+    disabledBadge: "disabled",
   },
 
   files: {
@@ -1237,12 +1282,17 @@ export const en: Translations = {
     deleteFolderDescription: "This removes the folder and everything inside it.",
     deleteFileDescription: "This removes the file.",
     create: "Create",
+    chooseFiles: "Choose files",
   },
 
   webhooks: {
     loadFailed: "Failed to load webhooks",
     gatewayRestarting: "Gateway restarting…",
     restartFailed: "Failed to restart: {error}",
+    restartFailedExit: "Gateway restart failed with exit {exit}.",
+    restartFailedManual:
+      "Gateway restart failed (exit {exit}) — restart manually",
+    restartFailedDetail: "Gateway restart failed{detail}",
     enabledRestarting: "Webhooks enabled; gateway restarting…",
     enabledRestartFailed: "Webhooks enabled; gateway restart failed{detail}",
     enableFailed: "Failed to enable webhooks: {error}",
@@ -1277,9 +1327,151 @@ export const en: Translations = {
     log: "Log",
     enabled: "Enabled: \"{name}\"",
     disabled: "Disabled: \"{name}\"",
+    subscriptionsHeading: "Subscriptions ({count})",
+    subscriptionsHint:
+      "Subscription changes hot-reload once the webhook receiver is running. Disabled subscriptions reject incoming events.",
+    empty: "No webhook subscriptions yet.",
+    needRestartHint:
+      "Webhooks are enabled, but the gateway still needs a restart before the receiver can come online.",
+    restartPending: "Gateway restarting…",
+    enableRestartPending: "Webhooks enabled; gateway restarting…",
   },
 
   channels: {
+    catalog: {
+      telegram: {
+        name: "Telegram",
+        desc: "Run Hermes from Telegram DMs, groups, and topics.",
+      },
+      discord: {
+        name: "Discord",
+        desc: "Connect Hermes to Discord DMs, channels, and threads.",
+      },
+      slack: {
+        name: "Slack",
+        desc: "Use Hermes from Slack via Socket Mode. Add allowed Slack member IDs so connected bots can respond.",
+      },
+      mattermost: {
+        name: "Mattermost",
+        desc: "Connect Hermes to Mattermost channels and direct messages.",
+      },
+      matrix: {
+        name: "Matrix",
+        desc: "Use Hermes in Matrix rooms and direct messages.",
+      },
+      whatsapp: {
+        name: "WhatsApp",
+        desc: "Use Hermes through the bundled WhatsApp bridge with QR-based auth.",
+      },
+      signal: {
+        name: "Signal",
+        desc: "Connect through a signal-cli REST bridge.",
+      },
+      bluebubbles: {
+        name: "BlueBubbles (iMessage)",
+        desc: "Use Hermes through iMessage via a BlueBubbles server.",
+      },
+      homeassistant: {
+        name: "Home Assistant",
+        desc: "Control your smart home from Hermes via Home Assistant.",
+      },
+      email: {
+        name: "Email",
+        desc: "Talk to Hermes through an IMAP/SMTP mailbox.",
+      },
+      sms: {
+        name: "SMS (Twilio)",
+        desc: "Send and receive text messages via Twilio.",
+      },
+      dingtalk: {
+        name: "DingTalk",
+        desc: "Connect Hermes to DingTalk groups (钉钉).",
+      },
+      feishu: {
+        name: "Feishu / Lark",
+        desc: "Use Hermes inside Feishu / Lark.",
+      },
+      googlechat: {
+        name: "Google Chat",
+        desc: "Connect Hermes to Google Chat via Cloud Pub/Sub.",
+      },
+      wecom: {
+        name: "WeCom (group bot)",
+        desc: "Send-only WeCom group bot via webhook.",
+      },
+      wecomcallback: {
+        name: "WeCom (app)",
+        desc: "Two-way WeCom integration via callback app.",
+      },
+      weixin: {
+        name: "Weixin / WeChat (Personal)",
+        desc: "Connect a personal WeChat account through Tencent's iLink Bot API.",
+      },
+      qqbot: {
+        name: "QQ Bot",
+        desc: "Connect Hermes to a QQ Bot from the QQ Open Platform.",
+      },
+      yuanbao: {
+        name: "Yuanbao (元宝)",
+        desc: "Connect Hermes to Tencent Yuanbao.",
+      },
+      apiserver: {
+        name: "API server",
+        desc: "Expose Hermes as an OpenAI-compatible HTTP API for tools like Open WebUI.",
+      },
+      webhook: {
+        name: "Webhooks",
+        desc: "Receive events from GitHub, GitLab, and other webhook sources.",
+      },
+      a2a: {
+        name: "A2A",
+        desc: "No extra packages needed (stdlib only)",
+      },
+      buzz: {
+        name: "Buzz",
+        desc: "Requires the buzz CLI binary (https://github.com/block/buzz) on PATH or at BUZZ_CLI_PATH",
+      },
+      photon: {
+        name: "iMessage via Photon",
+        desc: "Use Hermes through iMessage via Photon's managed Spectrum platform.",
+      },
+      irc: {
+        name: "IRC",
+        desc: "Relay messages between an IRC channel (or DMs) and Hermes.",
+      },
+      line: {
+        name: "LINE",
+        desc: "Use Hermes from LINE via the LINE Messaging API webhook.",
+      },
+      msgraphwebhook: {
+        name: "Microsoft Graph Webhook",
+        desc: "Receive Microsoft Graph change notifications (Teams meetings, Outlook, …).",
+      },
+      teams: {
+        name: "Microsoft Teams",
+        desc: "Connect Hermes to Microsoft Teams chats via the Bot Framework.",
+      },
+      ntfy: {
+        name: "ntfy",
+        desc: "Chat with Hermes over ntfy push topics (ntfy.sh or self-hosted).",
+      },
+      raft: {
+        name: "Raft",
+        desc: "Join a Raft workspace as an external agent.",
+      },
+      relay: {
+        name: "Relay (experimental)",
+        desc: "Generic relay adapter fronted by the Hermes Relay connector.",
+      },
+      simplex: {
+        name: "SimpleX Chat",
+        desc: "Talk to Hermes over SimpleX Chat via a local simplex-chat daemon.",
+      },
+      whatsappcloud: {
+        name: "WhatsApp Cloud API",
+        desc: "Use Hermes via Meta's hosted WhatsApp Cloud API (no local bridge).",
+      },
+    },
     loadFailed: "Could not load channels: {error}",
     nothingToSave: "Nothing to save — fill in at least one field.",
     fieldRequired: "{field} is required",
@@ -1296,5 +1488,42 @@ export const en: Translations = {
     telegramSavedRestarting: "Telegram saved; gateway restarting…",
     telegramRestartFailed: "Telegram saved; gateway restart failed: {error}",
     telegramRestartFailedDetail: "Telegram saved; gateway restart failed{detail}",
+    stateConnected: "Connected",
+    statePendingRestart: "Restart to apply",
+    stateGatewayStopped: "Gateway stopped",
+    stateStartupFailed: "Start failed",
+    stateDisconnected: "Disconnected",
+    stateNotConfigured: "Not configured",
+    stateDisabled: "Disabled",
+    stateFatal: "Error",
+    modeLabel: "Mode",
+    modeBot: "Bot",
+    modeSelfChat: "Self-chat",
+    allowedWhatsAppNumbers: "Allowed WhatsApp numbers",
+    telegramQuickSetup: "Quick setup",
+    telegramRecommended: "recommended",
+    telegramQuickSetupHint:
+      "Scan a QR code and confirm in Telegram. Hermes creates the bot and detects your Telegram user ID automatically.",
+    telegramCreateWithQr: "Create with QR",
+    telegramStarting: "Starting…",
+    telegramOwnBot: "Use your own bot",
+    telegramOwnBotHint:
+      "Create a bot with @BotFather, or connect one you already have, by entering its token and choosing who can use it.",
+    telegramManualSetup: "Manual setup",
+    telegramBothOptionsHint:
+      "Both options connect a bot you control and save its credentials only to this Hermes installation.",
+    telegramOwnBotTitle: "Use your own Telegram bot",
+    configureChannel: "Configure {name}",
+    botFatherGuide: "BotFather guide",
+    setupGuide: "Setup guide",
+    telegramIntro:
+      "Connect a bot you already own, or create one in Telegram before filling in this form.",
+    telegramStep1: "Open @BotFather, send /newbot, and follow its prompts.",
+    telegramStep2: "Copy the complete bot token BotFather gives you.",
+    telegramStep3:
+      "Message @userinfobot to find your numeric Telegram user ID, then add it below for immediate access.",
+    openBotFather: "Open @BotFather",
+    botFatherTokenInvalid:
+      "Paste the complete token from @BotFather (for example, 123456789:ABC…).",
   },
 };

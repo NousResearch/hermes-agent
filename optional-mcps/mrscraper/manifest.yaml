@@ -1,0 +1,43 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: mrscraper
+description: Scrape pages, extract structured data, map sites, and search Google.
+source: https://docs.mrscraper.com/docs/getting-started/mcp-server
+
+# Official hosted Streamable HTTP server. Its 401 challenge advertises MCP
+# protected-resource metadata and an OAuth authorization server with dynamic
+# client registration and PKCE. No local package or static key is required.
+transport:
+  type: http
+  url: https://mcp.mrscraper.com/mcp
+
+auth:
+  type: oauth
+
+# The server currently exposes seven tools: fetch, scrape, serp, status,
+# rerun, results, and result. With no fixed tool filter, installation lets
+# users choose among the tools available at connection time.
+
+suggest:
+  keywords:
+    - mrscraper
+    - mr scraper
+  hosts:
+    - mrscraper.com
+
+post_install: |
+  On first connection, Hermes opens MrScraper browser sign-in. Approve access
+  and start a new session to load its tools. If sign-in does not start, run:
+    hermes mcp login mrscraper
+
+  The server provides fetch (page HTML), scrape (structured fields, listings,
+  and site URL maps), serp (Google results), status (account quota), rerun
+  (saved scrapers), results (stored run list), and result (one stored run).
+  Review or change enabled tools with:
+    hermes mcp configure mrscraper
+
+  Requests send target URLs, page content, and extraction instructions to
+  MrScraper's cloud service. Scraping and search can consume account tokens;
+  use status to inspect your remaining quota before large jobs.

@@ -83,7 +83,7 @@ export function resolveVersionStatus({
 }: VersionStatusInput): VersionStatusResult {
   // The label names the distance past the release; the commit stays in the
   // tooltip and the expanded version details.
-  const version: null | string = rawVersion && shortVersion(rawVersion)
+  const version: null | string = rawVersion && rawVersion !== 'unknown' ? shortVersion(rawVersion) : null
   const client = target === 'client'
   const busy = applying || restarting
   // updateAvailable covers every "behind but uncountable" shape: shallow

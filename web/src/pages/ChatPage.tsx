@@ -420,6 +420,19 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     (title: string | null) => setSessionTitleState({ scope: titleScope, title }),
     [titleScope],
   );
+  // The session the embedded TUI is actually running, from its session.info. It can differ from
+  // `?resume=` after /resume, /new or /branch inside the PTY, or the server's active-session
+  // fallback; the header title and the SESSIONS highlight follow it, not the URL (#94716).
+  const [liveSessionState, setLiveSessionState] = useState<{ scope: string; id: string } | null>(null);
+  const liveSessionId = liveSessionState?.scope === titleScope ? liveSessionState.id : null;
+  const activeSessionId = liveSessionId ?? resumeParam;
+  const handleLiveSessionChange = useCallback(
+    (id: string) =>
+      setLiveSessionState((prev) =>
+        prev?.scope === titleScope && prev.id === id ? prev : { scope: titleScope, id },
+      ),
+    [titleScope],
+  );
 
   useEffect(() => {
     if (!isActive) {
@@ -432,12 +445,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   }, [isActive, sessionTitle, setTitle]);
 
   useEffect(() => {
-    if (!resumeParam) return;
+    if (!activeSessionId) return;
 
     let cancelled = false;
 
     api
-      .getSessionDetail(resumeParam, scopedProfile)
+      .getSessionDetail(activeSessionId, scopedProfile)
       .then((session) => {
         if (cancelled) return;
         handleSessionTitleChange(normalizeSessionTitle(session.title));
@@ -449,7 +462,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     return () => {
       cancelled = true;
     };
-  }, [resumeParam, scopedProfile, handleSessionTitleChange]);
+  }, [activeSessionId, scopedProfile, handleSessionTitleChange]);
 
   useEffect(() => {
     if (!resumeParam) return;
@@ -1895,10 +1908,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 profile={scopedProfile}
                 onDashboardNewSessionRequest={startFreshDashboardChat}
                 onSessionTitleChange={handleSessionTitleChange}
+                onLiveSessionChange={handleLiveSessionChange}
               />
             </div>
             <ChatSessionList
-              activeSessionId={resumeParam}
+              activeSessionId={activeSessionId}
               profile={scopedProfile}
               onPicked={closeMobilePanel}
               onNewChat={startFreshDashboardChat}
@@ -2104,13 +2118,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 profile={scopedProfile}
                 onDashboardNewSessionRequest={startFreshDashboardChat}
                 onSessionTitleChange={handleSessionTitleChange}
+                onLiveSessionChange={handleLiveSessionChange}
               />
             </div>
 
             {/* Session switcher fills the remaining height below the model box. */}
             <div className="min-h-0 flex-1 overflow-hidden">
               <ChatSessionList
-                activeSessionId={resumeParam}
+                activeSessionId={activeSessionId}
                 profile={scopedProfile}
                 onNewChat={startFreshDashboardChat}
                 workspaceCwd={workspaceCwd}

@@ -8,6 +8,7 @@ Usage: ``python -m hermes_cli.main web [--port 8080]``.
 
 from contextlib import asynccontextmanager
 
+import atexit
 import asyncio
 from collections import deque
 import hmac
@@ -23,7 +24,11 @@ import time
 import urllib.parse
 
 from hermes_cli.install_identity import get_install_id as _shared_get_install_id
-from hermes_cli.process_identity import is_desktop_owned_backend
+from hermes_cli.process_identity import (
+    _pid_alive_matches,
+    _process_create_time,
+    is_desktop_owned_backend,
+)
 from hermes_cli.pty_session import run_reaper
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -337,6 +342,12 @@ _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 _SSH_OWNER_NONCE: Optional[str] = None
 _SSH_RUNTIME_PURELIB: Optional[Tuple[str, int, int]] = None
 _SSH_RUNTIME_MARKER: Optional[str] = None
+_SSH_RUNTIME_MARKER_OWNER_PID: Optional[int] = None
+_SSH_RUNTIME_MARKER_PAYLOAD: Optional[str] = None
+_SSH_RUNTIME_MARKER_NAME = re.compile(r"\.hermes-ssh-runtime-[0-9a-f]{16}")
+_SSH_RUNTIME_MARKER_PAYLOAD_RE = re.compile(
+    r"pid=([1-9][0-9]*)\n(?:create_time=([0-9]+(?:\.[0-9]+)?)\n?)?"
+)
 
 
 def _apply_ssh_session_token(token: str) -> None:
@@ -345,25 +356,99 @@ def _apply_ssh_session_token(token: str) -> None:
         _SESSION_TOKEN = token
 
 
+def _remove_ssh_runtime_marker() -> None:
+    global _SSH_RUNTIME_MARKER, _SSH_RUNTIME_MARKER_OWNER_PID, _SSH_RUNTIME_MARKER_PAYLOAD
+    marker = _SSH_RUNTIME_MARKER
+    owner_pid = _SSH_RUNTIME_MARKER_OWNER_PID
+    payload = _SSH_RUNTIME_MARKER_PAYLOAD
+    _SSH_RUNTIME_MARKER = None
+    _SSH_RUNTIME_MARKER_OWNER_PID = None
+    _SSH_RUNTIME_MARKER_PAYLOAD = None
+    if marker is None or owner_pid != os.getpid() or payload is None:
+        return
+    try:
+        if Path(marker).read_text(encoding="utf-8") == payload:
+            os.unlink(marker)
+    except (OSError, UnicodeError):
+        pass
+
+
+def _parse_ssh_runtime_marker(payload: str) -> Optional[Tuple[int, Optional[float]]]:
+    match = _SSH_RUNTIME_MARKER_PAYLOAD_RE.fullmatch(payload)
+    if match is None:
+        return None
+    create_time = float(match.group(2)) if match.group(2) is not None else None
+    return int(match.group(1)), create_time
+
+
+def _sweep_dead_ssh_runtime_markers(purelib: str) -> None:
+    try:
+        with os.scandir(purelib) as entries:
+            for entry in entries:
+                if _SSH_RUNTIME_MARKER_NAME.fullmatch(entry.name) is None:
+                    continue
+                try:
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    marker_stat = entry.stat(follow_symlinks=False)
+                    payload = Path(entry.path).read_text(encoding="utf-8")
+                except (OSError, UnicodeError):
+                    continue
+                identity = _parse_ssh_runtime_marker(payload)
+                if identity is None:
+                    continue
+                pid, create_time = identity
+                if (
+                    _pid_alive_matches(
+                        pid, create_time, strict=create_time is not None
+                    )
+                    is not False
+                ):
+                    continue
+                try:
+                    current_stat = os.stat(entry.path, follow_symlinks=False)
+                    current_payload = Path(entry.path).read_text(encoding="utf-8")
+                    if (
+                        (current_stat.st_dev, current_stat.st_ino)
+                        != (marker_stat.st_dev, marker_stat.st_ino)
+                        or current_payload != payload
+                    ):
+                        continue
+                    os.unlink(entry.path)
+                except (OSError, UnicodeError):
+                    pass
+    except OSError:
+        pass
+
+
 def _apply_ssh_owner_nonce(nonce: Optional[str]) -> None:
-    global _SSH_OWNER_NONCE, _SSH_RUNTIME_PURELIB, _SSH_RUNTIME_MARKER
+    global _SSH_OWNER_NONCE, _SSH_RUNTIME_PURELIB
+    global _SSH_RUNTIME_MARKER, _SSH_RUNTIME_MARKER_OWNER_PID, _SSH_RUNTIME_MARKER_PAYLOAD
+    _remove_ssh_runtime_marker()
     _SSH_OWNER_NONCE = nonce
     _SSH_RUNTIME_PURELIB = None
-    _SSH_RUNTIME_MARKER = None
     if nonce:
         try:
             purelib = sysconfig.get_paths()["purelib"]
         except (KeyError, OSError):
             return
+        _sweep_dead_ssh_runtime_markers(purelib)
         # Primary identity: a marker FILE in site-packages. A replaced venv
         # loses it deterministically; pip installs leave it. A bare (dev, ino)
         # snapshot alone is NOT enough: ext4 reuses directory inodes at once,
         # so `rm -rf venv && uv venv` can land on the same inode undetected.
         try:
             marker = os.path.join(purelib, f".hermes-ssh-runtime-{nonce}")
+            owner_pid = os.getpid()
+            create_time = _process_create_time(owner_pid)
+            payload = f"pid={owner_pid}\n"
+            if create_time is not None:
+                payload += f"create_time={create_time}\n"
             with open(marker, "w", encoding="utf-8") as fh:
-                fh.write(f"pid={os.getpid()}\n")
+                fh.write(payload)
             _SSH_RUNTIME_MARKER = marker
+            _SSH_RUNTIME_MARKER_OWNER_PID = owner_pid
+            _SSH_RUNTIME_MARKER_PAYLOAD = payload
         except OSError:
             pass  # read-only site-packages — fall back to the stat snapshot
         try:
@@ -371,6 +456,9 @@ def _apply_ssh_owner_nonce(nonce: Optional[str]) -> None:
             _SSH_RUNTIME_PURELIB = (purelib, st.st_dev, st.st_ino)
         except OSError:
             pass
+
+
+atexit.register(_remove_ssh_runtime_marker)
 
 
 def _ssh_runtime_intact() -> bool:
@@ -1590,7 +1678,6 @@ def start_server(
 # The whole block is removed by reverting the commit that added it.
 from typing import List  # noqa: F401,E402
 from typing import Literal  # noqa: F401,E402
-import atexit  # noqa: F401,E402
 import base64  # noqa: F401,E402
 import binascii  # noqa: F401,E402
 import concurrent.futures  # noqa: F401,E402

@@ -1,10 +1,13 @@
 import os
+import subprocess
+import sys
 import types
 
 import pytest
 from fastapi.testclient import TestClient
 
 from hermes_cli import web_server
+from hermes_cli.process_identity import _process_create_time
 
 
 def test_ssh_ownership_endpoint_requires_token_and_returns_exact_nonce(monkeypatch):
@@ -110,6 +113,164 @@ def test_ssh_runtime_marker_survives_in_place_installs(tmp_path, monkeypatch):
         assert web_server._ssh_runtime_intact() is True
     finally:
         web_server._apply_ssh_owner_nonce(None)
+
+
+def test_clearing_ssh_owner_nonce_removes_its_runtime_marker(tmp_path, monkeypatch):
+    purelib = tmp_path / "site-packages"
+    purelib.mkdir()
+    monkeypatch.setattr(
+        web_server,
+        "sysconfig",
+        types.SimpleNamespace(get_paths=lambda *a, **k: {"purelib": str(purelib)}),
+    )
+
+    web_server._apply_ssh_owner_nonce("0123456789abcdef")
+    marker = purelib / ".hermes-ssh-runtime-0123456789abcdef"
+    assert marker.is_file()
+
+    web_server._apply_ssh_owner_nonce(None)
+
+    assert not marker.exists()
+
+
+def test_clearing_ssh_owner_nonce_keeps_a_replacement_runtime_marker(tmp_path, monkeypatch):
+    purelib = tmp_path / "site-packages"
+    purelib.mkdir()
+    monkeypatch.setattr(
+        web_server,
+        "sysconfig",
+        types.SimpleNamespace(get_paths=lambda *a, **k: {"purelib": str(purelib)}),
+    )
+
+    web_server._apply_ssh_owner_nonce("0123456789abcdef")
+    marker = purelib / ".hermes-ssh-runtime-0123456789abcdef"
+    marker.write_text("pid=999999\n", encoding="utf-8")
+
+    web_server._apply_ssh_owner_nonce(None)
+
+    assert marker.read_text(encoding="utf-8") == "pid=999999\n"
+
+
+def test_ssh_runtime_marker_is_removed_when_process_exits(tmp_path):
+    purelib = tmp_path / "site-packages"
+    purelib.mkdir()
+    script = f"""
+import types
+from hermes_cli import web_server
+web_server.sysconfig = types.SimpleNamespace(
+    get_paths=lambda: {{"purelib": {str(purelib)!r}}}
+)
+web_server._apply_ssh_owner_nonce("0123456789abcdef")
+"""
+
+    subprocess.run([sys.executable, "-c", script], check=True, timeout=30)
+
+    marker = purelib / ".hermes-ssh-runtime-0123456789abcdef"
+    assert not marker.exists()
+
+
+def test_ssh_runtime_marker_sweep_ignores_scandir_iteration_errors(monkeypatch):
+    class BrokenScandir:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def __iter__(self):
+            raise OSError("site-packages changed during iteration")
+
+    monkeypatch.setattr(
+        web_server, "os", types.SimpleNamespace(scandir=lambda _path: BrokenScandir())
+    )
+
+    web_server._sweep_dead_ssh_runtime_markers("/unused")
+
+
+def test_ssh_runtime_marker_sweep_keeps_a_path_replaced_during_liveness_check(
+    tmp_path, monkeypatch
+):
+    purelib = tmp_path / "site-packages"
+    purelib.mkdir()
+    marker = purelib / ".hermes-ssh-runtime-fedcba9876543210"
+    marker.write_text("pid=999999\n", encoding="utf-8")
+    replacement = f"pid={os.getpid()}\n"
+
+    def replace_before_reporting_dead(*_args, **_kwargs):
+        marker.write_text(replacement, encoding="utf-8")
+        return False
+
+    monkeypatch.setattr(web_server, "_pid_alive_matches", replace_before_reporting_dead)
+    monkeypatch.setattr(
+        web_server,
+        "sysconfig",
+        types.SimpleNamespace(get_paths=lambda *a, **k: {"purelib": str(purelib)}),
+    )
+
+    web_server._apply_ssh_owner_nonce("0123456789abcdef")
+    try:
+        assert marker.read_text(encoding="utf-8") == replacement
+    finally:
+        web_server._apply_ssh_owner_nonce(None)
+
+
+def test_ssh_owner_nonce_sweeps_reused_pid_marker(tmp_path, monkeypatch):
+    purelib = tmp_path / "site-packages"
+    purelib.mkdir()
+    stale = purelib / ".hermes-ssh-runtime-fedcba9876543210"
+    stale.write_text(f"pid={os.getpid()}\ncreate_time=0.0\n", encoding="utf-8")
+    monkeypatch.setattr(
+        web_server,
+        "sysconfig",
+        types.SimpleNamespace(get_paths=lambda *a, **k: {"purelib": str(purelib)}),
+    )
+
+    web_server._apply_ssh_owner_nonce("0123456789abcdef")
+    try:
+        assert not stale.exists()
+    finally:
+        web_server._apply_ssh_owner_nonce(None)
+
+
+def test_ssh_owner_nonce_sweeps_dead_runtime_markers_only(tmp_path, monkeypatch):
+    purelib = tmp_path / "site-packages"
+    purelib.mkdir()
+    exited = subprocess.Popen([sys.executable, "-c", "pass"])
+    exited.wait(timeout=10)
+    assert exited.returncode == 0
+    dead = purelib / ".hermes-ssh-runtime-fedcba9876543210"
+    dead.write_text(f"pid={exited.pid}\n", encoding="utf-8")
+    malformed = purelib / ".hermes-ssh-runtime-bb00000000000002"
+    malformed.write_text("pid=\n", encoding="utf-8")
+    unmatched = purelib / ".hermes-ssh-runtime-NOT-A-NONCE"
+    unmatched.write_text(f"pid={exited.pid}\n", encoding="utf-8")
+    live_process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"]
+    )
+    live_create_time = _process_create_time(live_process.pid)
+    assert live_create_time is not None
+    live = purelib / ".hermes-ssh-runtime-aa00000000000001"
+    live.write_text(
+        f"pid={live_process.pid}\ncreate_time={live_create_time}\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        web_server,
+        "sysconfig",
+        types.SimpleNamespace(get_paths=lambda *a, **k: {"purelib": str(purelib)}),
+    )
+
+    try:
+        web_server._apply_ssh_owner_nonce("0123456789abcdef")
+        current = purelib / ".hermes-ssh-runtime-0123456789abcdef"
+        assert current.is_file()
+        assert not dead.exists()
+        assert malformed.is_file()
+        assert unmatched.is_file()
+        assert live.is_file()
+    finally:
+        web_server._apply_ssh_owner_nonce(None)
+        live_process.terminate()
+        live_process.wait(timeout=10)
 
 
 @pytest.mark.platforms("linux")

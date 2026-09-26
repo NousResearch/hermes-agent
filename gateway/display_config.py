@@ -16,6 +16,7 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "tool_progress": "all",
     "tool_progress_grouping": "accumulate",  # "accumulate" = edit one bubble; "separate" = one msg per tool
     "show_reasoning": False,
+    "thinking_progress": False,
     "reasoning_style": "code",  # "code" (💭 **Reasoning:** + fence), "blockquote" ("> "), "subtext" ("-# " Discord)
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
@@ -77,6 +78,49 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
 
 # Canonical set of per-platform overrideable keys (for validation).
 OVERRIDEABLE_KEYS = frozenset(_GLOBAL_DEFAULTS.keys())
+
+_ADAPTER_OVERRIDE_BOOL_SETTINGS = frozenset({
+    "show_reasoning", "thinking_progress", "streaming", "interim_assistant_messages",
+    "suppress_warning_notifications", "busy_ack_detail", "busy_steer_ack_enabled",
+    "cleanup_progress",
+})
+_ADAPTER_OVERRIDE_CHOICES: dict[str, frozenset[str]] = {
+    "tool_progress": frozenset({"off", "names", "new", "all", "verbose", "log"}),
+    "tool_progress_grouping": frozenset({"accumulate", "separate"}),
+    "reasoning_style": frozenset({"code", "blockquote", "subtext"}),
+    "live_status": frozenset({"full", "verb", "off"}),
+}
+
+
+def normalise_adapter_display_override(setting: str, value: Any) -> Any:
+    """Validate and normalize one adapter-provided per-source display value.
+
+    Profile YAML keeps its historical permissive normalization. Adapter hooks are a
+    plugin boundary, so malformed values must fail closed instead of silently
+    normalizing to a more verbose mode.
+    """
+    if setting not in OVERRIDEABLE_KEYS or value is None:
+        raise ValueError("unsupported display override")
+    if setting in _ADAPTER_OVERRIDE_BOOL_SETTINGS:
+        if type(value) is not bool:
+            raise ValueError("display override must be boolean")
+        return value
+    if setting == "long_running_notifications":
+        if type(value) is bool:
+            return value
+        if type(value) is str and value.strip().lower() == "generic":
+            return "generic"
+        raise ValueError("invalid long-running notification mode")
+    if setting == "tool_preview_length":
+        if type(value) is not int or value < 0:
+            raise ValueError("tool preview length must be a non-negative integer")
+        return value
+    choices = _ADAPTER_OVERRIDE_CHOICES.get(setting)
+    if choices is not None and type(value) is str:
+        normalized = value.strip().lower()
+        if normalized in choices:
+            return normalized
+    raise ValueError("invalid display override value")
 
 
 def resolve_display_setting(user_config: dict, platform_key: str, setting: str, fallback: Any = None) -> Any:
@@ -183,7 +227,8 @@ def _norm_int(value: Any) -> int:
 
 
 _NORMALISERS: dict[str, Any] = {
-    "tool_progress": _norm_tristate("all", "off", {"off", "new", "all", "verbose", "log"}),
+    "tool_progress": _norm_tristate(
+        "all", "off", {"off", "names", "new", "all", "verbose", "log"}),
     "show_reasoning": _norm_bool,
     "streaming": _norm_bool,
     "interim_assistant_messages": _norm_bool,

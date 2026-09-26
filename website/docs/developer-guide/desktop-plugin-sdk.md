@@ -1580,9 +1580,13 @@ in a `jsx()` call isn't imported. Add it to the import line.
 
 **`ctx.rest` returns 404.** The backend isn't mounted: confirm
 `~/.hermes/plugins/<id>/dashboard/manifest.json` has `"api": "plugin_api.py"`,
-that the plugin is in `plugins.enabled` in `config.yaml`, and restart the gateway
-(backend routes mount at startup). Tail `~/.hermes/logs/errors.log` for
-`Failed to load plugin <id> API routes`.
+that the plugin is in `plugins.enabled` in `config.yaml`, and call the authenticated
+`GET /api/dashboard/plugins/rescan` endpoint on its `hermes serve` backend. Tail `~/.hermes/logs/errors.log` for
+`Failed to load plugin <id> API routes`. Check the response's `restart_required` list:
+routers with startup/shutdown hooks or a custom/composed lifespan cannot be installed or
+updated live (including handler-only edits); restart the backend to load those generations.
+Existing lifecycle-backed routes are retained until then. `policy_error: true` means plugin
+API routes were disabled because activation policy could not be read; fix the policy and rescan.
 
 **`ctx.socket` never fires.** On an OAuth remote it's a no-op by design — use your
 polling fallback. Otherwise verify the backend exposes the matching

@@ -56,7 +56,7 @@ Blunt instruments: `web.cache_ttl_minutes: 1` (min) or
 ### Gateway issues
 Check logs first:
 ```bash
-grep -i "failed to send\|error" ~/.hermes/logs/gateway.log | tail -20
+grep -i "failed to send\|error" ${HERMES_HOME:-~/.hermes}/logs/gateway.log | tail -20
 ```
 
 Common gateway problems:

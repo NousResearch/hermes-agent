@@ -1,0 +1,24 @@
+name: local-system-one-hermes
+title: Local System One
+repo: https://github.com/NMTZ-z/system-one-benchmark-lab
+sha: 823aff58d97b989f3468dbd2c2b12526c6e6936e
+subdir: integrations/hermes/local-system-one-hermes
+description: >-
+  Local System One / Laya Typed Decisions control plane for Hermes Agent.
+  Sends task text to a loopback sidecar for reversible OFF/Shadow/Canary
+  routing decisions, with explicit Canary acknowledgement and fail-open behavior.
+maintainer: NMTZ-z
+tier: community
+category: automation
+requires_hermes: ">=0.21.4"
+version: "0.5.2"
+docs_url: https://github.com/NMTZ-z/system-one-benchmark-lab/tree/823aff58d97b989f3468dbd2c2b12526c6e6936e/integrations/hermes/local-system-one-hermes
+readme: true
+platforms: [macos]
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware:
+    - llm_request
+  requires_env: []

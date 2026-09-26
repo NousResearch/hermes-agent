@@ -142,7 +142,8 @@ _TERMINAL_PROVIDER_REASONS = frozenset({
 })
 
 
-def _single_query_exit_code(result, *, credentials_rate_limited: bool = False) -> int:
+def _single_query_exit_code(result, *, credentials_rate_limited: bool = False,
+                            credentials_terminal: bool = False) -> int:
     """Map a one-shot turn result onto a process exit code, for both `-q` and `-Q`.
 
     0 only when the turn completed; 130 when it was interrupted; 1 when it failed, stopped
@@ -154,13 +155,18 @@ def _single_query_exit_code(result, *, credentials_rate_limited: bool = False) -
     The same sentinel applies when credential resolution itself is a quota/rate-limit
     AuthError (no turn result object is produced). One that failed on a terminal provider
     error (credential revoked, model gone) exits ``KANBAN_TERMINAL_PROVIDER_EXIT_CODE``
-    (EX_CONFIG): the dispatcher blocks the card at once.
+    (EX_CONFIG): the dispatcher blocks the card at once. The same code applies
+    before a turn when credential resolution explicitly requires re-authentication;
+    unknown startup failures retain exit 1.
     """
     from cli import _TERMINAL_PROVIDER_REASONS, _TRANSIENT_PROVIDER_REASONS
     if not isinstance(result, dict):
         if credentials_rate_limited and os.environ.get("HERMES_KANBAN_TASK"):
             from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
             return KANBAN_RATE_LIMIT_EXIT_CODE
+        if credentials_terminal and os.environ.get("HERMES_KANBAN_TASK"):
+            from hermes_cli.kanban_db import KANBAN_TERMINAL_PROVIDER_EXIT_CODE
+            return KANBAN_TERMINAL_PROVIDER_EXIT_CODE
         return 1
     if result.get("interrupted"):
         return 130
@@ -489,7 +495,8 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
                     _run_quiet_single_query(cli, effective_query, emitter=emitter)
 
             fail_code = _single_query_exit_code(
-                None, credentials_rate_limited=getattr(cli, "_credentials_rate_limited", False))
+                None, credentials_rate_limited=getattr(cli, "_credentials_rate_limited", False),
+                credentials_terminal=getattr(cli, "_credentials_terminal", False))
             if emitter is not None:
                 emitter.emit_result({"failed": True, "error": "credentials or agent init failed"},
                                     session_id=cli.session_id or "", exit_code=fail_code)
@@ -511,6 +518,9 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
         cli._print_exit_summary(clear_screen=False)
         # Same exit contract as `-Q`: scripts and the Kanban dispatcher read the outcome from
         # the exit code. This path used to fall through to an implicit 0 for every outcome.
-        exit_single_query(_single_query_exit_code(cli._last_turn_result))
+        exit_single_query(_single_query_exit_code(
+            cli._last_turn_result,
+            credentials_rate_limited=getattr(cli, "_credentials_rate_limited", False),
+            credentials_terminal=getattr(cli, "_credentials_terminal", False)))
     finally:
         _finalize_single_query(cli)

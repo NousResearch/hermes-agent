@@ -104,9 +104,11 @@ def _connect() -> sqlite3.Connection:
     # hardening so this writer doesn't create/leave the file (and its WAL
     # sidecars) at the process umask. See hermes_state._secure_state_db_files.
     from hermes_state import _secure_state_db_files
+    from hermes_constants import mkdir_under_hermes_home
 
     path = _db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # A late replay or writer must not resurrect a removed named profile.
+    mkdir_under_hermes_home(path.parent)
     _secure_state_db_files(path, create_main=True)
     # wal=False: SessionDB owns state.db's journal mode (_initialize_schema applies the barriers).
     conn = open_db(path, db_label="state.db (async_delegation)", busy_timeout_ms=10_000,

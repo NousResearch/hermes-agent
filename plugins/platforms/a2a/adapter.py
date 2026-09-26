@@ -532,9 +532,20 @@ class A2AAdapter(BasePlatformAdapter):
         text = protocol.extract_text(params)
         context_id = protocol.extract_context_id(params) or protocol.new_context_id()
         task_id = protocol.new_task_id()
+        message_id = protocol.extract_message_id(params)
+        scope = self._scope_for_agent(agent)
+        # messageId idempotency: a retried messageId returns the SAME existing task
+        # (current state) without starting a second dispatch — no duplicate task.
+        if message_id:
+            existing = self.tasks.get_by_message_id(message_id, *scope)
+            if existing:
+                logger.info("A2A: idempotent retry for message_id=%s -> existing task %s (state=%s); no re-dispatch",
+                            message_id, existing["task_id"], existing["state"])
+                return protocol.build_task(existing["task_id"], existing["context_id"], existing["state"],
+                                           existing.get("reply", ""), created_at=existing.get("created_iso", "")), None
         turn = self._turns.track(context_id)
         max_turns = protocol.max_pingpong_turns()
-        rec = self.tasks.create(task_id, context_id, peer, *self._scope_for_agent(agent))
+        rec = self.tasks.create(task_id, context_id, peer, *scope, message_id=message_id)
         if turn > max_turns:
             protocol.metrics.anti_loop_triggers += 1
             logger.warning("A2A: anti-loop triggered for context %s (turn %d > %d)", context_id, turn, max_turns)
@@ -548,13 +559,27 @@ class A2AAdapter(BasePlatformAdapter):
         protocol.metrics.inbound_total += 1
         self._register_inline_push(task_id, params, agent=agent)
         if not agent.get("local", True):
-            self._activate_task(task_id)
+            # Forwarded / cross-profile agents: run the profile subprocess OFF the HTTP
+            # worker thread so message/send returns WORKING + a stable task id immediately.
+            # _forward_in_background resolves the pending future; _rpc_message_send's
+            # background worker finalizes the store (COMPLETED/FAILED) for tasks/get polling.
+            fut = self._add_pending(task_id, context_id)
             try:
-                reply, state = self._forward_to_profile(agent, peer, context_id, framed)
-                self._record_outcome(task_id, context_id, peer, state, reply)
-                return protocol.build_task(task_id, context_id, state, reply, created_at=rec["created_iso"]), None
-            finally:
+                if self._loop is not None:
+                    asyncio.run_coroutine_threadsafe(
+                        asyncio.to_thread(self._forward_in_background, agent, peer, context_id, framed, task_id),
+                        self._loop,
+                    )
+                else:
+                    threading.Thread(target=self._forward_in_background,
+                                     args=(agent, peer, context_id, framed, task_id),
+                                     name=f"a2a-fwd-{task_id}", daemon=True).start()
+            except Exception as e:
                 self._pop_pending(task_id)
+                return self._end_task(rec, protocol.STATE_FAILED, security.redact_outbound(f"Forward dispatch failed: {e}"))
+            self.tasks.set_state(task_id, protocol.STATE_WORKING)
+            return None, {"task_id": task_id, "context_id": context_id, "peer": peer, "future": fut,
+                          "created_iso": rec["created_iso"], "started": time.time()}
         if self._loop is None or self._message_handler is None:
             return self._end_task(rec, protocol.STATE_FAILED, "Agent gateway not ready to accept A2A tasks.")
         fut = self._add_pending(task_id, context_id)
@@ -608,6 +633,19 @@ class A2AAdapter(BasePlatformAdapter):
                 _state_db(profile, "UPDATE sessions SET title = ? WHERE id = ?", (session_title, session_id),
                           "A2A: could not title forwarded session", commit=True)
             return security.redact_outbound((proc.stdout or "").strip()), protocol.STATE_COMPLETED
+
+    def _forward_in_background(self, agent: dict, peer: str, context_id: str, framed: str, task_id: str) -> None:
+        """Run a forwarded profile task off the HTTP thread and resolve its pending future.
+
+        The future is consumed by ``_rpc_message_send``'s background worker, which then
+        finalizes the TaskStore record (COMPLETED/FAILED) so ``tasks/get`` observes it.
+        """
+        try:
+            reply, state = self._forward_to_profile(agent, peer, context_id, framed)
+        except Exception as exc:
+            reply = security.redact_outbound(f"[forward dispatch error: {exc}]")
+            state = protocol.STATE_FAILED
+        self._resolve_task(task_id, state, reply)
 
     def _record_outcome(self, task_id: str, context_id: str, peer: str, state: str, reply: str,
                         started: Optional[float] = None) -> None:
@@ -663,8 +701,26 @@ class A2AAdapter(BasePlatformAdapter):
     def _rpc_message_send(self, req_id: Any, params: dict, peer: str, agent: Optional[dict] = None, v1_response: bool = False) -> dict:
         task, pending = self._prepare_task(params, peer, agent=agent)
         if task is None:
-            state, reply = self._finalize_task(pending, *self._await_reply(pending))
-            task = protocol.build_task(pending["task_id"], pending["context_id"], state, reply, created_at=pending["created_iso"])
+            # Async long-task path: return WORKING + the stable task id immediately and finish
+            # the agent work in a background task. HQ polls tasks/get on the SAME id until
+            # terminal — the original message is never re-sent, so no duplicate execution.
+            assert pending is not None  # (None, pending) when task is None
+            p: dict = pending
+            task_id, context_id = p["task_id"], p["context_id"]
+
+            def _background(p: dict = p, task_id: str = task_id) -> None:
+                try:
+                    state, reply = self._await_reply(p)
+                    self._finalize_task(p, state, reply)
+                except Exception as exc:
+                    logger.exception("A2A: background task %s failed", task_id)
+                    self._finalize_task(p, protocol.STATE_FAILED, f"[async execution error: {exc}]")
+
+            if self._loop is not None:
+                asyncio.run_coroutine_threadsafe(asyncio.to_thread(_background, p), self._loop)
+            else:
+                threading.Thread(target=_background, args=(p,), name=f"a2a-bg-{task_id}", daemon=True).start()
+            task = protocol.build_task(task_id, context_id, protocol.STATE_WORKING, "", created_at=p["created_iso"])
         return _ok(req_id, protocol.send_message_response(task) if v1_response else task)
 
     @staticmethod

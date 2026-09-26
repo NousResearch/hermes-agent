@@ -38,6 +38,15 @@ def _rpc_token_ok(request: dict, rpc_token: str) -> bool:
     )
 
 
+def _refusal(tool_name: str, message: str) -> str:
+    """An error result in the shape the tool's stub promises. The ``terminal`` stub documents a
+    dict with "output" and "exit_code", so scripts index those keys; a bare ``{"error": ...}``
+    turned a budget or dispatch refusal into a KeyError inside the user's cell."""
+    if tool_name == "terminal":
+        return tool_error(message, output=message, exit_code=-1)
+    return tool_error(message)
+
+
 def _handle_rpc_request(request: dict, *, allowed_tools: frozenset, tool_call_counter: list,
                         max_tool_calls: int, dispatch, tool_call_log: list, call_start: float,
                         where: str) -> str:
@@ -49,8 +58,8 @@ def _handle_rpc_request(request: dict, *, allowed_tools: frozenset, tool_call_co
         return tool_error(f"Tool '{tool_name}' is not available in execute_code. "
                           f"Available: {', '.join(sorted(allowed_tools))}")
     if tool_call_counter[0] >= max_tool_calls:
-        return tool_error(f"Tool call limit reached ({max_tool_calls}). "
-                          "No more tool calls allowed in this execution.")
+        return _refusal(tool_name, f"Tool call limit reached ({max_tool_calls}). "
+                                   "No more tool calls allowed in this execution.")
     if tool_name == "terminal" and isinstance(tool_args, dict):
         for param in _TERMINAL_BLOCKED_PARAMS:
             tool_args.pop(param, None)
@@ -60,7 +69,7 @@ def _handle_rpc_request(request: dict, *, allowed_tools: frozenset, tool_call_co
             result = dispatch(tool_name, tool_args)
     except Exception as exc:
         logger.error("Tool call failed in %s: %s", where, exc, exc_info=True)
-        result = tool_error(str(exc))
+        result = _refusal(tool_name, str(exc))
     tool_call_counter[0] += 1
     tool_call_log.append({"tool": tool_name, "args_preview": str(tool_args)[:80],
                           "duration": round(time.monotonic() - call_start, 2)})

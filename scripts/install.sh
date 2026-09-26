@@ -449,6 +449,20 @@ stage_repository() {
                 log_warn "clearing unmerged index entries from a previous conflict"
                 git -C "$INSTALL_DIR" reset -q || fail "cannot clear the unmerged index in $INSTALL_DIR"
             fi
+            # An intent-to-add entry (`git add -N`, routinely left behind by editors that show a
+            # new file in diffs) is never "uptodate", so `git stash push` refuses the whole stash
+            # with "Entry '<path>' not uptodate. Cannot merge." Promoting it to a real staged add
+            # keeps the content -- it comes back as a staged addition after the restore, the
+            # closest `git stash` can represent it.
+            local ita_paths
+            ita_paths="$(git -C "$INSTALL_DIR" status --porcelain -z \
+                | tr '\0' '\n' | awk 'substr($0,1,2)==" A"{print substr($0,4)}')"
+            if [ -n "$ita_paths" ]; then
+                log_warn "making intent-to-add file(s) stashable"
+                while IFS= read -r p; do
+                    [ -n "$p" ] && git -C "$INSTALL_DIR" add -- "$p"
+                done <<< "$ita_paths"
+            fi
             run_logged "Stashing local changes" \
                 git -C "$INSTALL_DIR" stash push --include-untracked -m "hermes-install-autostash-$stamp" \
                 || fail "could not stash local changes in $INSTALL_DIR; commit or move them aside, then rerun"

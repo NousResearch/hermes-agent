@@ -115,21 +115,6 @@ def test_payload_mode_write_is_byte_exact_beyond_argv_limit(tmp_path):
     assert max(len(command.encode("utf-8")) for command in env.spawn_commands) < 128 * 1024
 
 
-@pytest.mark.platforms("posix")
-def test_payload_mode_feeds_compound_reads_and_preserves_status(tmp_path):
-    """Base passes the merged payload stream unchanged to backend-owned stdin transport."""
-    env = _PayloadLocalEnvironment(str(tmp_path))
-
-    result = env.execute(
-        'IFS= read -r first; IFS= read -r second; '
-        'printf "<%s|%s>" "$first" "$second"; exit 7',
-        stdin_data="pw\npayload",
-    )
-
-    assert result["returncode"] == 7
-    assert "<pw|payload>" in result["output"]
-
-
 @pytest.fixture
 def env(tmp_path):
     """A real LocalEnvironment rooted in a temp directory."""

@@ -44,6 +44,9 @@ hermes send --to slack:#eng --subject "[CI] build.log" --file build.log
 # Thread target (Telegram topic, Discord thread)
 hermes send --to telegram:-1001234567890:17585 "threaded reply"
 
+# Reply to a specific Telegram message (fails instead of posting unanchored)
+hermes send --to telegram:-1001234567890:17585 --reply-to 4567 "answer"
+
 # List every configured target
 hermes send --list
 
@@ -61,6 +64,7 @@ hermes send --list telegram
 | `message` (positional) | Message text. Omit to read from `--file` or stdin. |
 | `-f, --file PATH` | Read the body from a file. `--file -` forces stdin. |
 | `-s, --subject LINE` | Prepend a header/subject line before the body. |
+| `--reply-to MESSAGE_ID` | Telegram only: send as a reply to that message. Needs an explicit `telegram:chat_id[:thread_id]` target. |
 | `-l, --list` | List available targets. Optional positional platform filter. |
 | `-q, --quiet` | No stdout on success (exit code only — ideal for scripts). |
 | `--json` | Emit the raw JSON result of the send. |

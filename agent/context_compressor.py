@@ -3413,15 +3413,22 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         runway = max(reclaimed, self.proactive_prune_tokens, self.proactive_prune_min_reclaim_tokens)
         next_rearm_tokens = after + runway
         if session_db and session_id:
+            model_config_patch = {PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: next_rearm_tokens}
+            rewritten = None
             try:
-                from agent.conversation_compression_archive import coverage_for_commit
-                covered_ids, unresolved_held = coverage_for_commit(session_db, session_id, messages)
-                session_db.archive_and_compact(
-                    session_id, pruned_msgs,
-                    model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: next_rearm_tokens},
-                    watermark=_archive_watermark_for(session_db, session_id, messages),
-                    covered_ids=covered_ids, unresolved_held=unresolved_held,
-                )
+                # Raises StaleHeldHistory when another compaction already won, for both commit paths.
+                watermark = _archive_watermark_for(session_db, session_id, messages)
+                rewritten = self._rewrite_pruned_rows_in_place(
+                    session_db, session_id, messages, pruned_msgs, model_config_patch)
+                if rewritten is None:
+                    from agent.conversation_compression_archive import coverage_for_commit
+                    covered_ids, unresolved_held = coverage_for_commit(session_db, session_id, messages)
+                    session_db.archive_and_compact(
+                        session_id, pruned_msgs,
+                        model_config_patch=model_config_patch,
+                        watermark=watermark,
+                        covered_ids=covered_ids, unresolved_held=unresolved_held,
+                    )
             except StaleHeldHistory:
                 # Another compaction already committed this session's history; a lease-less prune of the
                 # generation this process holds would publish beside the winner. Leave the input alone.
@@ -3432,12 +3439,55 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
                 logger.warning("Proactive tool-result prune DB commit failed; keeping the original transcript: %s", exc)
                 return messages, 0
             # Shared post-commit stamp site with the in-place commit and micro-compaction sync.
-            # See #98450.
-            stamp_db_persisted_markers(pruned_msgs)
+            # See #98450. The in-place rewrite wrote no new rows, so only already-durable messages
+            # carry the marker; unwritten ones reach the DB through the next flush.
+            if rewritten is None:
+                stamp_db_persisted_markers(pruned_msgs)
+            else:
+                stamp_db_persisted_markers([
+                    replacement for original, replacement in zip(messages, pruned_msgs)
+                    if original.get(_DB_PERSISTED_MARKER)])
         self._proactive_prune_rearm_tokens = next_rearm_tokens
         # Reclamation just ran: let a future lockout warn again.
         self._last_reclaim_block_warn = None
         return pruned_msgs, pruned_count
+
+    def _rewrite_pruned_rows_in_place(
+        self, session_db: Any, session_id: str, messages: List[Dict[str, Any]],
+        pruned_msgs: List[Dict[str, Any]], model_config_patch: Dict[str, Any],
+    ) -> Optional[int]:
+        """Commit a prune by rewriting only its changed rows (#124102); ``None`` means use the full rewrite.
+
+        A prune edits the content of a few existing messages and never adds, drops or reorders one, so the
+        durable rows it touched can be updated where they are. That needs a store with
+        ``rewrite_pruned_rows`` and unwritten messages only at the end (the next flush appends those in
+        order; one sitting before durable rows would land out of order). A row the store cannot name
+        exactly also falls back: ``archive_and_compact`` handles every shape.
+        """
+        rewrite = getattr(session_db, "rewrite_pruned_rows", None)
+        if not callable(rewrite) or len(messages) != len(pruned_msgs):
+            return None
+        from hermes_state_errors import PruneRowUnresolvedError
+
+        ignored = {_DB_PERSISTED_MARKER, "_row_id"}
+        changes: List[tuple] = []
+        unwritten_seen = False
+        for original, replacement in zip(messages, pruned_msgs):
+            if not isinstance(original, dict) or not isinstance(replacement, dict):
+                return None
+            if not original.get(_DB_PERSISTED_MARKER):
+                unwritten_seen = True
+                continue
+            if unwritten_seen:
+                return None
+            if ({k: v for k, v in original.items() if k not in ignored}
+                    != {k: v for k, v in replacement.items() if k not in ignored}):
+                changes.append((original, replacement))
+        try:
+            return rewrite(session_id, changes, model_config_patch=model_config_patch)
+        except PruneRowUnresolvedError as exc:
+            logger.info("Proactive prune: in-place rewrite refused (%s); using the full rewrite", exc)
+            return None
 
     def _compute_summary_budget(self, turns_to_summarize: List[Dict[str, Any]]) -> int:
         """Scale the summary token budget with content size and context window."""

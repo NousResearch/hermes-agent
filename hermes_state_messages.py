@@ -29,6 +29,11 @@ _INSERT_MESSAGE_SQL = """INSERT INTO messages (session_id, role, content, tool_c
                    codex_message_items, platform_message_id, observed, _compressed_summary, active, api_content, display_kind,
                    display_metadata, display_identity)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+# _INSERT_MESSAGE_SQL's columns in bind order, so a row rewrite can diff _message_row_params by name.
+_MESSAGE_ROW_COLUMNS = tuple(
+    column.strip() for column in _INSERT_MESSAGE_SQL.split("(", 1)[1].split(")", 1)[0].split(","))
+# A prune only changes what a message says; who said it, when, and in which row never move.
+_PRUNE_FIXED_COLUMNS = frozenset({"session_id", "role", "tool_call_id", "timestamp", "active", "display_identity"})
 # Every column this module knows how to read: the ones it writes plus the three SQLite/compaction
 # owns. `_row_to_message_dict` drops raw bytes ONLY outside this set — a schema column keeps its
 # key (and its typed decoder) even when a row holds a BLOB, so no reader ever loses msg["content"].
@@ -897,6 +902,99 @@ class SessionMessagesMixin:
             conn.execute(f"{_SET_COUNTERS_SQL}{', model_config = ?' if patch else ''} WHERE id = ?",
                 (inserted, tool_calls_total, *((patched_model_config,) if patch else ()), session_id))
             return inserted
+        return self._execute_write(_do)
+
+    def rewrite_pruned_rows(self, session_id: str, changes: List[Tuple[Dict[str, Any], Dict[str, Any]]], *,
+        model_config_patch: Optional[Dict[str, Any]] = None) -> int:
+        """Proactive-prune commit that rewrites only the changed rows, in place (#124102).
+
+        ``archive_and_compact`` is a generation writer: it archives every active row and re-inserts the whole
+        list, which is right for summary compaction (the row set changes) but makes each prune grow the store
+        by the full live transcript although a prune only edits a few rows' content. Each
+        ``(original, replacement)`` in *changes* is a persisted message the prune edited. Its row is named by
+        ``original["_row_id"]``, else by its tool call id (tool results) or tool-call ids (assistant turns),
+        else by the single active row with the same role and stored content. That row gets one archived twin
+        of its pre-prune self (``active=0, compacted=1``: still searchable, like the originals
+        ``archive_and_compact`` keeps), then takes the replacement's changed columns under its own id.
+        Unchanged rows, model order, row ids and concurrently appended rows are untouched; the FTS and
+        display-identity triggers keep both indexes consistent; the counters are unchanged because no row
+        enters or leaves the live set.
+
+        Raises :class:`PruneRowUnresolvedError` before writing anything when a row cannot be named exactly (a
+        merged dict, zero or several matches, an inactive row, a user row, or a row that no longer holds the
+        original), so the caller can commit through ``archive_and_compact``. Returns the rows rewritten.
+        """
+        from agent.conversation_compression_archive import ABSORBED_ROW_IDS
+        from hermes_state_errors import PruneRowUnresolvedError
+
+        def _call_ids(tool_calls: Any) -> List[Any]:
+            return [call.get("id") if isinstance(call, dict) else None for call in (_parse_tool_calls(tool_calls) or [])]
+
+        def _resolve(conn, original: Dict[str, Any]) -> Any:
+            role = original.get("role")
+            if role not in ("assistant", "tool") or original.get(ABSORBED_ROW_IDS):
+                raise PruneRowUnresolvedError(f"a {role} message is not rewritten in place")
+            row_id = original.get("_row_id")
+            if isinstance(row_id, int) and not isinstance(row_id, bool) and row_id > 0:
+                ids = [row_id]
+            elif role == "tool" and original.get("tool_call_id"):
+                ids = [int(row["id"]) for row in conn.execute(
+                    "SELECT id FROM messages WHERE session_id = ? AND active = 1 AND role = 'tool' AND tool_call_id = ?",
+                    (session_id, original["tool_call_id"])).fetchall()]
+            elif role == "assistant" and _call_ids(original.get("tool_calls")):
+                wanted = _call_ids(original.get("tool_calls"))
+                ids = [int(row["id"]) for row in conn.execute(
+                    "SELECT id, tool_calls FROM messages WHERE session_id = ? AND active = 1 AND role = 'assistant' "
+                    "AND tool_calls IS NOT NULL", (session_id,)).fetchall() if _call_ids(row["tool_calls"]) == wanted]
+            else:
+                ids = self._matching_active_ids(conn, session_id, original)
+            if len(ids) != 1:
+                raise PruneRowUnresolvedError(f"{len(ids)} live rows match a pruned {role} message")
+            row = conn.execute(
+                "SELECT id, role, content, tool_call_id, tool_calls, timestamp, display_identity, "
+                "COALESCE(display_order, id) AS display_order FROM messages "
+                "WHERE id = ? AND session_id = ? AND active = 1", (ids[0], session_id)).fetchone()
+            if (row is None or row["role"] != role
+                    or (row["tool_call_id"] or None) != (original.get("tool_call_id") or None)
+                    or (role == "assistant" and _call_ids(row["tool_calls"]) != _call_ids(original.get("tool_calls")))
+                    or (role == "tool" and row["content"] != self._encode_content(original.get("content")))):
+                raise PruneRowUnresolvedError(f"row {ids[0]} no longer holds the pruned {role} message")
+            return row
+
+        def _do(conn):
+            patch = model_config_patch is not None
+            patched_model_config = self._merge_model_config_json(
+                conn, session_id, model_config_patch, on_missing="raise") if patch else None
+            updates: List[Tuple[int, List[str], List[Any], Any, Any]] = []
+            for original, replacement in changes:
+                row = _resolve(conn, original)
+                role, timestamp = row["role"], row["timestamp"]
+                if replacement.get("role") != role:
+                    raise PruneRowUnresolvedError("a prune replacement changed the message role")
+                before = self._message_row_params(session_id, role, original, _parse_tool_calls(
+                    original.get("tool_calls")), timestamp, keep_reasoning=role == "assistant")
+                after = self._message_row_params(session_id, role, replacement, _parse_tool_calls(
+                    replacement.get("tool_calls")), timestamp, keep_reasoning=role == "assistant")
+                changed = [column for column, old, new in zip(_MESSAGE_ROW_COLUMNS, before, after)
+                           if old != new and column not in _PRUNE_FIXED_COLUMNS]
+                if changed:
+                    updates.append((int(row["id"]), changed, [
+                        value for column, value in zip(_MESSAGE_ROW_COLUMNS, after) if column in changed],
+                        row["display_identity"], row["display_order"]))
+            twin_columns = ", ".join(c for c in self._message_column_names(conn)
+                                     if c not in ("id", "active", "compacted", "display_order"))
+            for row_id, columns, values, identity, order in updates:
+                twin_id = conn.execute(f"INSERT INTO messages ({twin_columns}, active, compacted) "
+                             f"SELECT {twin_columns}, 0, 1 FROM messages WHERE id = ?", (row_id,)).lastrowid
+                conn.execute(f"UPDATE messages SET {', '.join(f'{column} = ?' for column in columns)} WHERE id = ?",
+                             [*values, row_id])
+                # The identity trigger just nulled both rows; the twin is the live row's superseded body and
+                # keeps its display slot (one page row per display_order; #117750's stored-identity dedupe).
+                conn.execute("UPDATE messages SET display_identity = ?, display_order = ? WHERE id IN (?, ?)",
+                             (identity, order, row_id, twin_id))
+            if patch:
+                conn.execute("UPDATE sessions SET model_config = ? WHERE id = ?", (patched_model_config, session_id))
+            return len(updates)
         return self._execute_write(_do)
 
     def _message_column_names(self, conn) -> List[str]:

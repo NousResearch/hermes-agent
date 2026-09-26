@@ -3390,6 +3390,77 @@ class TestModelContextLength:
         assert result["model"]["default"] == "anthropic/claude-opus-4.6"
 
 
+class TestUnsafeIntRoundTrip:
+    """Regression for #123439: a 19-digit platform id must survive the config page's
+    GET -> JSON.parse -> edit -> JSON.stringify -> PUT round trip. A JS number cannot
+    represent > 2**53 - 1, so the API must keep ids as strings on the wire."""
+
+    _SNOWFLAKE = 1532136816336044092
+
+    @staticmethod
+    def _browser_round_trip(obj):
+        """Simulate JSON.parse(JSON.stringify(...)): Python ints would be preserved,
+        browser numbers are IEEE-754 doubles and large ones round."""
+        import json
+
+        parsed = json.loads(json.dumps(obj))
+
+        def walk(value):
+            if isinstance(value, dict):
+                return {k: walk(v) for k, v in value.items()}
+            if isinstance(value, list):
+                return [walk(v) for v in value]
+            if isinstance(value, int) and not isinstance(value, bool) and abs(value) > 2**53 - 1:
+                return int(float(value))
+            return value
+
+        return walk(parsed)
+
+    def test_get_stringifies_unsafe_ids(self):
+        import json
+
+        from hermes_cli.web_server_config import _normalize_config_for_web
+
+        norm = _normalize_config_for_web({"discord": {"home_channel": self._SNOWFLAKE}})
+        # Quoted -> JSON.parse cannot round it.
+        assert f'"home_channel": "{self._SNOWFLAKE}"' in json.dumps(norm)
+
+    def test_round_trip_preserves_id_on_disk(self):
+        from hermes_cli.config import load_config, save_config
+        from hermes_cli.web_server_config import (
+            _denormalize_config_from_web,
+            _normalize_config_for_web,
+        )
+
+        save_config({
+            "model": "anthropic/claude-sonnet-4",
+            "discord": {"home_channel": self._SNOWFLAKE},
+        })
+
+        norm = _normalize_config_for_web(load_config())
+        browser = self._browser_round_trip(norm)
+        browser["model"] = "anthropic/claude-sonnet-4"  # unrelated edit
+        save_config(_denormalize_config_from_web(browser))
+
+        assert load_config()["discord"]["home_channel"] == self._SNOWFLAKE
+
+    def test_rounded_number_is_refused(self):
+        """Insurance: a client that sent a bare rounded number must not corrupt disk."""
+        import pytest
+        from fastapi import HTTPException
+
+        from hermes_cli.config import save_config
+        from hermes_cli.web_server_config import _denormalize_config_from_web
+
+        save_config({"discord": {"home_channel": self._SNOWFLAKE}})
+        with pytest.raises(HTTPException) as excinfo:
+            _denormalize_config_from_web({
+                "model": "anthropic/claude-sonnet-4",
+                "discord": {"home_channel": int(float(self._SNOWFLAKE))},
+            })
+        assert excinfo.value.status_code == 400
+
+
 class TestDenormalizeProviderSwitch:
     """The flat Config-page Model field carries no provider info. When the
     model string changes to one served by a different provider, the saved

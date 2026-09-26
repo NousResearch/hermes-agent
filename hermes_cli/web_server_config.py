@@ -520,6 +520,88 @@ def _apply_main_model_assignment(model_cfg: "Any", result: "ModelSwitchResult", 
     return model_cfg
 
 
+# JSON numbers above JavaScript's Number.MAX_SAFE_INTEGER (2**53 - 1) cannot round-trip
+# through a browser: JSON.parse turns them into IEEE-754 doubles and ``String(double)``
+# writes back a DIFFERENT integer. The config page GETs the whole config, holds it in JS
+# state, and PUTs it back on any edit — so a Discord snowflake such as
+# 1532136816336044092 was silently persisted as ...044000 on an unrelated save (#123439).
+_JS_MAX_SAFE_INT = 2**53 - 1
+
+
+def _stringify_unsafe_ints(value: Any) -> Any:
+    """Serialize ints above the JS safe range as strings (recursive).
+
+    A quoted JSON string survives ``JSON.parse`` -> ``JSON.stringify`` byte-for-byte;
+    ``_restore_unsafe_ints`` converts it back to the on-disk int shape on the way in.
+    """
+    if isinstance(value, dict):
+        return {k: _stringify_unsafe_ints(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_stringify_unsafe_ints(v) for v in value]
+    if isinstance(value, int) and not isinstance(value, bool) and abs(value) > _JS_MAX_SAFE_INT:
+        return str(value)
+    return value
+
+
+def _restore_unsafe_ints(incoming: Any, disk: Any) -> Any:
+    """Coerce a stringified id back to its exact on-disk int, position by position.
+
+    Only fires where the on-disk value was itself an unsafe int and the incoming digit
+    string reproduces it exactly, so genuine string fields and any client that rounded
+    (which yields a different integer) are left untouched.
+    """
+    if isinstance(incoming, dict) and isinstance(disk, dict):
+        return {k: _restore_unsafe_ints(v, disk.get(k)) for k, v in incoming.items()}
+    if isinstance(incoming, list) and isinstance(disk, list):
+        return [
+            _restore_unsafe_ints(v, disk[i] if i < len(disk) else None)
+            for i, v in enumerate(incoming)
+        ]
+    if (
+        isinstance(incoming, str)
+        and isinstance(disk, int)
+        and not isinstance(disk, bool)
+        and abs(disk) > _JS_MAX_SAFE_INT
+        and incoming.isdigit()
+        and int(incoming) == disk
+    ):
+        return disk
+    return incoming
+
+
+def _reject_rounded_unsafe_ints(incoming: Any, disk: Any) -> None:
+    """Refuse a save that would persist a rounded id (#123439).
+
+    Insurance for a client that sent a bare JSON number where disk held an unsafe int:
+    the number that arrives is a different integer, so the write would be silent
+    corruption. ``_stringify_unsafe_ints`` prevents this for the dashboard's own round
+    trip; this catches any other client.
+    """
+    if isinstance(incoming, dict) and isinstance(disk, dict):
+        for key, value in incoming.items():
+            _reject_rounded_unsafe_ints(value, disk.get(key))
+    elif isinstance(incoming, list) and isinstance(disk, list):
+        for index, value in enumerate(incoming):
+            _reject_rounded_unsafe_ints(value, disk[index] if index < len(disk) else None)
+    elif (
+        isinstance(incoming, int)
+        and not isinstance(incoming, bool)
+        and isinstance(disk, int)
+        and not isinstance(disk, bool)
+        and abs(disk) > _JS_MAX_SAFE_INT
+        and incoming != disk
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Refusing to save: a numeric id was received as "
+                f"{incoming}, but the value on disk is {disk}. JavaScript cannot "
+                "represent integers above 2^53 exactly, so this save would corrupt "
+                "the id. Send the id as a string."
+            ),
+        )
+
+
 def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
     """Flatten a dict-form ``model`` to its string form (the schema is built from
     DEFAULT_CONFIG where ``model`` is a string) and surface ``model_context_length``
@@ -532,7 +614,7 @@ def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
         config["model_context_length"] = ctx_len if isinstance(ctx_len, int) else 0
     else:
         config["model_context_length"] = 0
-    return config
+    return _stringify_unsafe_ints(config)
 
 
 # ---------------------------------------------------------------------------
@@ -876,6 +958,19 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
     from hermes_cli.config import load_config
     config = dict(config)
     config.pop("_model_meta", None)
+
+    # Reverse the unsafe-int stringification so a browser round trip cannot re-type a
+    # snowflake-sized id (#123439). Compare against the raw on-disk shape; a client that
+    # already rounded sends a DIFFERENT integer, which is deliberately left for the
+    # save-time guard in the config router to reject.
+    try:
+        disk_raw = read_raw_config()
+        _reject_rounded_unsafe_ints(config, disk_raw)
+        config = _restore_unsafe_ints(config, disk_raw)
+    except HTTPException:
+        raise
+    except Exception:
+        pass
 
     ctx_sent = "model_context_length" in config
     ctx_override = config.pop("model_context_length", 0)

@@ -373,10 +373,15 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
         if not history:
             return _err(rid, 4008, "nothing to branch — send a message first")
     # Only an explicitly chosen existing workspace persists as cwd; the launch-dir fallback is "No workspace".
+    # ``cwd_explicit`` is the desktop's provenance. Host isdir is not intent: the
+    # launch profile's directory often exists here while the target profile's SSH cwd does not.
     explicit_cwd = False
     raw_cwd = _str_param(params, "cwd")  # unguarded, as on BASE: only the path check is best-effort
-    with contextlib.suppress(Exception):
-        explicit_cwd = bool(raw_cwd) and os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd)))
+    if "cwd_explicit" in params:
+        explicit_cwd = bool(params.get("cwd_explicit")) and bool(raw_cwd)
+    else:
+        with contextlib.suppress(Exception):
+            explicit_cwd = bool(raw_cwd) and os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd)))
     _enable_gateway_prompts()
     session_model_override, create_reasoning_override, create_service_tier_override = _create_overrides(params)
     now = time.time()
@@ -949,7 +954,11 @@ def _(rid, params: dict) -> dict:
         _resume_follow_tip(ctx)
         if (resp := _resume_guard(ctx)) is not None:
             return resp
-        ctx.profile_resume_cwd = _str_param(ctx.found, "cwd") or _profile_configured_cwd(ctx.profile_home)
+        ctx.profile_resume_cwd = (
+            _str_param(ctx.found, "cwd")
+            or _profile_configured_cwd(ctx.profile_home)
+            or _declared_remote_profile_cwd(ctx.profile_home)
+        )
         # Fast path: reuse a session live IN THIS PROFILE (never another profile's runtime).
         with _session_resume_lock:
             live = _find_live_session_by_key(ctx.target, ctx.profile_home)

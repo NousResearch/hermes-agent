@@ -19,13 +19,13 @@
 #             requested emits all of them.
 #   --repo    repository to read tags from (default: this checkout).
 #
-# Reads tags from the local checkout, so it needs one fetched with tags
-# (actions/checkout with fetch-depth: 0, or `fetch-tags: true`). A shallow
-# checkout has no tags and this exits non-zero rather than silently emitting an
-# empty matrix.
+# Reads tags from the local checkout. A shallow clone may list tag names
+# whose commits are missing; this script deepens the graph once and then
+# keeps only tags that are ancestors of HEAD, so a rewritten release cannot
+# enter the matrix (#100947).
 #
-# Only vYYYY.M.D[.N] release tags are considered; the repo also carries
-# backup/* and one-off tags that are not releases.
+# Only vYYYY.M.D[.N] release tags that are ancestors of HEAD are considered;
+# the repo also carries backup/* and one-off tags that are not releases.
 
 set -euo pipefail
 
@@ -66,17 +66,47 @@ fi
 
 # sort -V orders v2026.4.8 before v2026.4.13 (numeric), which a plain
 # lexicographic sort gets wrong.
-mapfile -t tags < <(
+mapfile -t all_tags < <(
   git -C "$REPO" tag --list 'v*' \
     | grep -E '^v[0-9]{4}\.[0-9]+\.[0-9]+(\.[0-9]+)?$' \
     | sort -V
 )
 
+# Drop tags that are not ancestors of HEAD. After a history rewrite those
+# names still exist but `hermes update` cannot reach them from current main.
+collect_reachable() {
+  tags=()
+  if [ "${#all_tags[@]}" -gt 0 ]; then
+    for tag in "${all_tags[@]}"; do
+      if git -C "$REPO" merge-base --is-ancestor "${tag}^{}" HEAD 2>/dev/null; then
+        tags+=("$tag")
+      fi
+    done
+  fi
+}
+
+collect_reachable
+listed="${#all_tags[@]}"
+# Tags listed but not ancestral: usually a shallow checkout with
+# fetch-tags (the GHA picker). Deepen once, then re-filter. Rewritten
+# tags stay out even after a full graph is present.
+if [ "$listed" -gt "${#tags[@]}" ]; then
+  git -C "$REPO" fetch --unshallow --tags >/dev/null 2>&1 \
+    || git -C "$REPO" fetch --deepen=2147483647 --tags >/dev/null 2>&1 \
+    || true
+  mapfile -t all_tags < <(
+    git -C "$REPO" tag --list 'v*' \
+      | grep -E '^v[0-9]{4}\.[0-9]+\.[0-9]+(\.[0-9]+)?$' \
+      | sort -V
+  )
+  collect_reachable
+fi
+
 total="${#tags[@]}"
 if [ "$total" -eq 0 ]; then
-  echo "error: no release tags found in $REPO" >&2
-  echo '       A shallow clone has no tags: fetch with tags (actions/checkout' >&2
-  echo '       with fetch-depth: 0, or fetch-tags: true).' >&2
+  echo "error: no reachable release tags found in $REPO" >&2
+  echo '       Need tags that are ancestors of HEAD, with a complete commit' >&2
+  echo '       graph (fetch-tags plus a non-shallow history).' >&2
   exit 1
 fi
 

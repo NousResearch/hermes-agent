@@ -700,6 +700,7 @@ def execute_code(
     task_id: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
     reset: bool = False,
+    intent: Optional[str] = None,
 ) -> str:
     """Run Python in the session's persistent kernel (local) or on the remote terminal backend,
     with RPC access to a subset of Hermes tools; returns the JSON result string. "Sandbox" means
@@ -765,7 +766,8 @@ def execute_code(
     # the session context. A Docker sandbox with host bind mounts gets no container fast-path.
     # See #30882.
     from tools.approval import check_execute_code_guard
-    _guard = check_execute_code_guard(code, env_type, has_host_access=_docker_has_host_access(_env_config))
+    _guard = check_execute_code_guard(code, env_type, has_host_access=_docker_has_host_access(_env_config),
+                                      intent=intent)
     if not _guard.get("approved", False):
         return _error_result(_guard.get("message") or "execute_code blocked by approval guard.",
                              user_summary=_guard.get("user_summary"))
@@ -927,6 +929,11 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
                     "Python code to execute. Import tools with "
                     f"`from hermes_tools import {import_str}` "
                     "and print your final result to stdout.")},
+                "intent": {"type": "string", "description": (
+                    "Optional plain-language summary of what this code does and why — shown to "
+                    "the user at the top of the approval card when the code is flagged. One short "
+                    "sentence, e.g. 'Read-only: count flagged commands in the approval history DB'. "
+                    "Strongly recommended whenever the code may need approval.")},
                 "reset": {"type": "boolean", "description": (
                     "Discard the kernel's persistent state and start fresh before running this code.")},
             },
@@ -952,7 +959,8 @@ def _execute_code_handler(args: dict, **kwargs) -> str:
         return tool_error(f"execute_code received a {type(code).__name__} in 'code', but it "
                           "requires Python source as a string. Retry as execute_code(code=\"...\").")
     return execute_code(code=code or "", task_id=kwargs.get("task_id"),
-                        enabled_tools=kwargs.get("enabled_tools"), reset=bool(args.get("reset", False)))
+                        enabled_tools=kwargs.get("enabled_tools"), reset=bool(args.get("reset", False)),
+                        intent=args.get("intent"))
 
 
 registry.register(

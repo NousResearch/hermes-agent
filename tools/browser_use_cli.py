@@ -73,6 +73,33 @@ _hermes_ensure_own_tab()
 del _hermes_ensure_own_tab
 """
 
+# browser_harness.helpers binds its per-CDP timeout at function definition time,
+# separately from browser_exec(timeout_s). Apply an explicit browser config value
+# inside the CLI process without editing the uv-managed installation.
+def _ipc_response_timeout_preamble(seconds: int) -> str:
+    return f"""\
+try:
+    from browser_harness import helpers as _hermes_bh_helpers
+except ImportError:
+    pass  # older CLI versions may not provide browser_harness
+else:
+    _hermes_cdp = _hermes_bh_helpers.cdp
+    _hermes_defaults = getattr(_hermes_cdp, '__defaults__', None)
+    if _hermes_defaults and len(_hermes_defaults) == 2 and _hermes_defaults[0] is None:
+        _hermes_cdp.__defaults__ = (None, {seconds}.0)
+"""
+
+
+def _configured_ipc_response_timeout() -> Optional[int]:
+    raw = _read_browser_cfg().get("ipc_response_timeout_seconds")
+    if raw is None:
+        return None  # Browser Use's own default when not explicitly configured
+    if type(raw) is int and 5 <= raw <= 120:
+        return raw
+    logger.warning("browser.ipc_response_timeout_seconds must be an integer between 5 and 120")
+    return None
+
+
 _DEFAULT_TIMEOUT_S = 300
 _MIN_TIMEOUT_S = 5
 _MAX_TIMEOUT_S = 1800
@@ -602,6 +629,9 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     private_browser = env.pop(_PRIVATE_BROWSER_SENTINEL, None)  # always pop: never exported to the CLI
     if session and not private_browser:
         code = _OWN_TAB_PREAMBLE + code
+    ipc_timeout = _configured_ipc_response_timeout()
+    if ipc_timeout is not None:
+        code = _ipc_response_timeout_preamble(ipc_timeout) + code
 
     workspace = _workspace_dir(task_id)
     if workspace:

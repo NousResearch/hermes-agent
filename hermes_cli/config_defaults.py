@@ -396,6 +396,12 @@ DEFAULT_CONFIG = {
         # preview builds). Entries match exactly, as "*.wildcard", or as a domain suffix
         # ("mysite.dev" also covers "preview.mysite.dev"). localhost/private IPs always exempt.
         "cache_exempt_hosts": [],
+        # Exa freshness bound, passed through to exa-py get_contents(max_age_hours=...). Unset =
+        # Exa's default cache-first behavior. 0 = always-live crawl (freshness even when
+        # cache_enabled is False — Exa serves its own cached copy otherwise); N = crawl when the
+        # cached copy is older than N hours. Keyed SDK path only; the keyless ring doesn't
+        # accept a freshness option.
+        "exa_max_age_hours": None,
     },
 
     "browser": {

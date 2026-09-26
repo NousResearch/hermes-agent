@@ -639,10 +639,25 @@ class GatewayModelCommandsMixin:
             logger.error("Failed to save config key %s: %s", key_path, e)
             return False
 
+    def _live_agent_for_session_control(self, session_key: str):
+        """Return this session's running agent without touching its cached prompt or transcript."""
+        return (getattr(self, "_running_agents", None) or {}).get(session_key)
+
+    def _evict_idle_agent_after_session_control(self, session_key: str) -> None:
+        if self._live_agent_for_session_control(session_key) is None:
+            self._evict_cached_agent(session_key)
+
     def _set_reasoning_override(self, session_key: str, value) -> None:
-        """Store (or clear with None) the session reasoning override and drop the cached agent."""
+        """Apply a session override to the live tool loop's next model request."""
         self._set_session_reasoning_override(session_key, value)
-        self._evict_cached_agent(session_key)
+        agent = self._live_agent_for_session_control(session_key)
+        if agent is not None:
+            effective = value if value is not None else self._resolve_session_reasoning_config(
+                session_key=session_key, model=getattr(agent, "model", ""),
+            )
+            agent.reasoning_config = dict(effective) if isinstance(effective, dict) else effective
+        else:
+            self._evict_idle_agent_after_session_control(session_key)
 
     def _apply_reasoning_selection(
         self, session_key: str, platform_key: str, value: str, persist_global: bool = False,
@@ -660,9 +675,8 @@ class GatewayModelCommandsMixin:
         if value == "reset":
             if persist_global:
                 return t("gateway.reasoning.reset_global_unsupported")
-            self._set_session_reasoning_override(session_key, None)
+            self._set_reasoning_override(session_key, None)
             self._reasoning_config = self._load_reasoning_config()
-            self._evict_cached_agent(session_key)
             return t("gateway.reasoning.reset_done")
 
         parsed = parse_reasoning_effort(value)
@@ -762,6 +776,31 @@ class GatewayModelCommandsMixin:
             return None  # Picker sent — adapter handles the response
         return t("gateway.reasoning.status", level=level, scope=scope, display=display_state)
 
+    def _apply_live_service_tier(self, session_key: str, tier: str | None) -> None:
+        """Change only inference request fields; leave the already-built request untouched."""
+        agent = self._live_agent_for_session_control(session_key)
+        if agent is None:
+            self._evict_idle_agent_after_session_control(session_key)
+            return
+        from hermes_cli.models import resolve_fast_mode_overrides
+        from agent.fast_mode import DEFAULT_WINDOW_SECONDS
+        import time
+
+        baseline = getattr(agent, "_gateway_base_request_overrides", None)
+        if baseline is None:
+            baseline = dict(getattr(agent, "request_overrides", None) or {})
+            agent._gateway_base_request_overrides = dict(baseline)
+        overrides = dict(baseline)
+        if tier == "priority":
+            overrides.update(resolve_fast_mode_overrides(
+                agent.model, provider=getattr(agent, "provider", None),
+                base_url=getattr(agent, "base_url", None),
+            ) or {})
+        agent.request_overrides = overrides
+        agent.service_tier = tier
+        agent._fast_until = (time.monotonic() + getattr(agent, "fast_auto_seconds", DEFAULT_WINDOW_SECONDS)
+                             if tier == "auto" else 0.0)
+
     def _apply_fast_selection(self, session_key: str, value: str, persist: bool = False) -> str:
         """Apply a /fast argument (typed or picked) and return the reply."""
         selection = _FAST_SELECTIONS.get(value)
@@ -772,11 +811,11 @@ class GatewayModelCommandsMixin:
         self._service_tier = tier
         if persist and self._save_gateway_config_key("agent.service_tier", saved_value):
             self._set_session_service_tier_override(session_key, None, clear=True)  # global wins
-            self._evict_cached_agent(session_key)
+            self._apply_live_service_tier(session_key, tier)
             return t("gateway.fast.saved", label=label)
         # Session override — also the fallback after a failed config write (as /reasoning --global).
         self._set_session_service_tier_override(session_key, tier)
-        self._evict_cached_agent(session_key)
+        self._apply_live_service_tier(session_key, tier)
         return t("gateway.fast.session_only", label=label)
 
     async def _handle_fast_command(self, event: MessageEvent) -> Optional[str]:

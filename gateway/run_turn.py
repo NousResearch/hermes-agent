@@ -322,6 +322,7 @@ class GatewayTurnMixin:
         runtime["capabilities"] = dict(runtime["capabilities"] or {})
         base_request_overrides = dict(runtime_kwargs.get("request_overrides") or {})
         route = {
+            "base_request_overrides": base_request_overrides,
             "model": model,
             "runtime": runtime,
             "signature": (

@@ -9,7 +9,7 @@ import sys
 import threading
 import time
 import hermes_yaml as yaml
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
@@ -788,6 +788,49 @@ def _plugin_api_mount_skip_reason(plugin: Dict[str, Any], enabled_set: set, disa
     return None
 
 
+async def _plugin_route_secret_scope(profile: Optional[str] = None):
+    """Bind the launch (or ``?profile=``-requested) profile's secret scope around a
+    plugin API request so a handler's ``get_secret()`` /
+    ``resolve_runtime_provider()`` resolves that profile's credentials instead of
+    failing closed under multi-profile hosting.
+
+    Without this, ``/api/plugins/<id>/…`` dispatch installs no scope, and once
+    ``hermes serve`` has activated multi-profile hosting (``set_multiplex_active``)
+    every unscoped ``get_secret`` raises ``UnscopedSecretError`` — silently, since
+    plugins fold failures into a "no data" contract (#120310). This mirrors the
+    fixes already landed for the sibling dashboard paths: install/update routes
+    (#115256 → PR #116816) and MCP connect (#113746). No-op when multiplexing is
+    off, so single-profile hosts keep reading ``os.environ`` exactly as before.
+
+    Delegates to ``_config_profile_scope`` — the SAME seam the config
+    (``?profile=``) routes use — so the three approaches resolve credentials
+    identically. That distinction matters:
+      * The dashboard's own profile binds ``launch_secret_scope(process_home)``,
+        not a bare ``build_profile_secret_scope``: env-only launch credentials
+        (systemd ``Environment=``, ``op run``, Compose) have no ``.env`` to
+        rebuild from, and only the launch scope carries them past the fail-closed
+        flip. A bare ``build_profile_secret_scope`` would resolve such a key to
+        nothing under multiplexing.
+      * A ``?profile=`` request first hydrates that profile's external secret
+        sources (``hydrate_profile_secret_sources``) before building the mapping.
+
+    ``async`` on purpose: a sync yield-dependency has its setup and teardown run
+    on separate threadpool threads, so the secret-scope token would be created in
+    a different ``contextvars`` context than it is reset in. Here setup and
+    teardown (the ``with`` block's ``__enter__``/``__exit__``) share the one
+    request-task context; a sync plugin handler run in the threadpool still sees
+    the scope because ``run_in_threadpool`` copies the current context into the
+    worker.
+    """
+    from agent.secret_scope import is_multiplex_active
+    if not is_multiplex_active():
+        yield
+        return
+    from hermes_cli.web_server_profiles import _config_profile_scope
+    with _config_profile_scope(profile):
+        yield
+
+
 def _mount_plugin_api_routes():
     """Import and mount backend API routes from plugins that declare them.
 
@@ -861,7 +904,11 @@ def _mount_plugin_api_routes():
             if router is None:
                 _log.warning("Plugin %s api file has no 'router' attribute", plugin["name"])
                 continue
-            app.include_router(router, prefix=f"/api/plugins/{plugin['name']}")
+            app.include_router(
+                router,
+                prefix=f"/api/plugins/{plugin['name']}",
+                dependencies=[Depends(_plugin_route_secret_scope)],
+            )
             _log.info("Mounted plugin API routes: /api/plugins/%s/", plugin["name"])
         except Exception as exc:
             _log.warning("Failed to load plugin %s API routes: %s", plugin["name"], exc)

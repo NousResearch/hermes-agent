@@ -9,6 +9,7 @@ import logging
 import re
 import threading
 import time
+import unicodedata
 from pathlib import Path
 from typing import Any, MutableMapping, Optional
 from gateway.platforms.event import MessageEvent
@@ -402,6 +403,56 @@ def is_table_atom(text: str) -> bool:
 
 _SENTENCE_END_NEWLINE_RE = re.compile(r'[。！？.!?]\n')
 
+# Code points that never start a grapheme cluster: ZWJ, variation selectors, emoji skin-tone
+# modifiers, tag characters (flag sequences), ideographic variation selectors.
+_CLUSTER_EXTENDERS = frozenset(
+    [0x200D] + list(range(0xFE00, 0xFE10)) + list(range(0x1F3FB, 0x1F400))
+    + list(range(0xE0020, 0xE0080)) + list(range(0xE0100, 0xE01F0))
+)
+
+
+def _is_regional_indicator(ch: str) -> bool:
+    return 0x1F1E6 <= ord(ch) <= 0x1F1FF
+
+
+def _inside_grapheme(text: str, cut: int) -> bool:
+    """True when ``text[cut-1]`` and ``text[cut]`` belong to one user-perceived character.
+
+    Covers what actually shows up in chat text: combining marks (``é`` as ``e`` + U+0301), ZWJ
+    emoji sequences (families, professions), skin-tone modifiers, variation selectors, flag pairs
+    (two regional indicators) and ``\r\n``.
+    """
+    prev, cur = text[cut - 1], text[cut]
+    if ord(cur) in _CLUSTER_EXTENDERS or ord(prev) == 0x200D:
+        return True
+    if unicodedata.category(cur) in ("Mn", "Mc", "Me"):
+        return True
+    if prev == "\r" and cur == "\n":
+        return True
+    if _is_regional_indicator(cur) and _is_regional_indicator(prev):
+        run = 0
+        i = cut - 1
+        while i >= 0 and _is_regional_indicator(text[i]):
+            run += 1
+            i -= 1
+        return run % 2 == 1  # an odd run before the cut means ``prev`` is the first half of a flag
+    return False
+
+
+def grapheme_safe_cut(text: str, cut: int) -> int:
+    """Largest position ``<= cut`` that does not land inside a grapheme cluster.
+
+    Hard splits at a plain code-point budget tore ``👨‍👩‍👧`` into three people and ``é`` into
+    ``e`` + a floating accent across two messages (openclaw/openclaw#151959 hit the same). Backing
+    up only ever shrinks the head, so a UTF-16 or byte budget stays honoured.
+    """
+    if cut <= 0 or cut >= len(text):
+        return cut
+    safe = cut
+    while safe > 0 and _inside_grapheme(text, safe):
+        safe -= 1
+    return safe or cut  # a whole window that is one cluster cannot be split; keep the budget cut
+
 
 def _cp_budget(text, budget, len_fn):
     """Code-point count of the longest prefix of *text* within *budget* ``len_fn`` units
@@ -428,7 +479,7 @@ def split_at_paragraph_boundary(text, max_chars, len_fn=None):
     cut = pos + 2 if pos > 0 else (sentence_ends[-1] if sentence_ends else 0)
     if not cut:
         pos = window.rfind('\n')
-        cut = pos + 1 if pos > 0 else len(window)
+        cut = pos + 1 if pos > 0 else grapheme_safe_cut(text, len(window))
     return text[:cut], text[cut:]
 
 
@@ -626,7 +677,7 @@ def _chunk_newline_preferred(text, limit, len_fn):
         budget = _cp_budget(remaining, split_limit, len_fn)
         split_at = remaining.rfind("\n", 0, budget)
         if split_at < budget // 2:
-            split_at = budget
+            split_at = grapheme_safe_cut(remaining, budget)
         chunks.append(remaining[:split_at])
         remaining = remaining[split_at:].lstrip("\n")
     if remaining:

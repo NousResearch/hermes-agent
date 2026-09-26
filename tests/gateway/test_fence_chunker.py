@@ -176,6 +176,33 @@ def test_mixed_emoji_newline_text_utf16_limit():
     assert all(c for c in chunks)
 
 
+# ── Hard splits never land inside a grapheme cluster (openclaw/openclaw#151959) ──
+
+_FAMILY = "👨\u200d👩\u200d👧\u200d👦"
+_FLAG = "🇺🇸"
+
+
+@pytest.mark.parametrize("cluster", [_FAMILY, "e\u0301", _FLAG, "👍🏽"])
+@pytest.mark.parametrize("prefer_paragraphs", [True, False])
+@pytest.mark.parametrize("len_fn", [len, utf16_len])
+def test_hard_split_keeps_grapheme_clusters_whole(cluster, prefer_paragraphs, len_fn):
+    """A single line longer than the limit is cut at the budget; every cluster in it must land
+    whole in one chunk (every budget below tries a cut somewhere inside the first cluster)."""
+    text = "a" * 10 + cluster + cluster + "Z"
+    for limit in range(max(8, len_fn(cluster)), 10 + len_fn(cluster)):
+        chunks = split_text_fence_aware(text, limit, len_fn, prefer_paragraphs=prefer_paragraphs)
+        assert "".join(chunks) == text
+        assert all(len_fn(c) <= limit for c in chunks)
+        assert sum(c.count(cluster) for c in chunks) == 2, (limit, chunks)
+
+
+def test_hard_split_still_progresses_when_window_is_one_cluster():
+    """Backing up must not stall the loop: a window that is a single cluster is cut at the budget."""
+    text = _FAMILY * 3
+    chunks = split_text_fence_aware(text, 3, prefer_paragraphs=False)
+    assert "".join(chunks) == text and len(chunks) > 1
+
+
 # ── split_markdown_atoms: empty ``` ``` blocks (main parity) ─────────────────
 
 

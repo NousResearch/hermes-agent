@@ -2,7 +2,8 @@
 
 Remote backends offer one primitive — ``env.execute(cmd)``, run-to-completion
 — so the three things the local kernel gets from owning a child are rebuilt:
-a detached runner (``nohup ... &``, PID recorded, ``kill -0`` probed per cell);
+a detached supervisor (``nohup ... &``, PID recorded, ``kill -0`` probed per cell)
+owning a runner in its own process group, reaped on disposal or runner exit;
 a file-based CELL protocol in the kernel dir (``cell_req_NNNNNN.json`` /
 ``cell_res_NNNNNN.json``), sibling to the unchanged file-based TOOL-RPC protocol
 (req_/res_) whose host-side ``_rpc_poll_loop`` starts per cell with the calling
@@ -45,6 +46,8 @@ import contextlib
 import io
 import json
 import os
+import signal
+import subprocess
 import sys
 import time
 import traceback
@@ -90,8 +93,43 @@ def main():
                 return
 
 
+def supervise():
+    # Keep teardown outside the user-code interpreter: a cell may replace its
+    # signal handlers, and the runner may exit before its descendants do.
+    os.setsid()  # windows-footgun: ok - generated code runs on POSIX remote target
+    stopping = False
+    def stop(signum, frame):
+        nonlocal stopping
+        stopping = True
+    signal.signal(signal.SIGTERM, stop)
+    worker = subprocess.Popen([sys.executable, __file__, "--cell-worker"])
+    try:
+        while not stopping and worker.poll() is None:
+            time.sleep(0.05)
+    finally:
+        # Give the parent a chance to reap its own children before retiring the
+        # group. Always sweep it, even if the parent already exited naturally.
+        if worker.poll() is None:
+            worker.terminate()
+            try:
+                worker.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass
+        # We still lead the group, so its ID cannot be recycled between the
+        # worker's exit and this signal. Retire ourselves with the descendants.
+        try:
+            with open(os.path.join(KDIR, "stopping"), "w", encoding="utf-8"):
+                pass
+        finally:
+            os.killpg(os.getpgrp(), signal.SIGKILL)  # windows-footgun: ok - generated code runs on POSIX remote target
+
+
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:] == ["--cell-worker"]:
+        del sys.argv[1:]
+        main()
+    else:
+        supervise()
 '''
 
 
@@ -136,9 +174,13 @@ class RemoteKernel:
     def kill(self) -> None:
         """Best-effort kill of the runner and its subprocesses, then rm -rf."""
         q_pid = shlex.quote(self.pid)
+        stopping = shlex.quote(f"{self.kernel_dir}/stopping")
         for cmd, failure in (
-            # Kill the runner's children if the shell gave it a group, then the PID itself.
-            (f"pkill -TERM -P {q_pid} 2>/dev/null; kill {q_pid} 2>/dev/null; true",
+            # The supervisor owns the worker group; keep the dir until it has
+            # reached its final group signal. No ps/pkill dependency on minimal images.
+            (f"kill {q_pid} 2>/dev/null; "
+             f"for attempt in 1 2 3 4 5 6 7 8 9 10; do "
+             f"[ -f {stopping} ] && break; kill -0 {q_pid} 2>/dev/null || break; sleep 1; done; true",
              "remote kernel kill failed (transport?)"),
             (f"rm -rf {shlex.quote(self.kernel_dir)}", "remote kernel dir cleanup failed"),
         ):
@@ -219,7 +261,7 @@ def _spawn_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
                              generate_hermes_tools_module(list(sandbox_tools), transport="file"))
         env_prefix = (f"HERMES_KERNEL_DIR={q_dir} HERMES_RPC_DIR={shlex.quote(kernel_dir + '/rpc')} "
                       f"HERMES_RPC_TOKEN={shlex.quote(rpc_token)} PYTHONDONTWRITEBYTECODE=1 PYTHONPATH={q_dir}")
-        started = _sh(env, f"cd {q_dir} && nohup env {env_prefix} python3 kernel_runner.py "
+        started = _sh(env, f"cd {q_dir} || exit; nohup env {env_prefix} python3 kernel_runner.py "
                            f"> {q_dir}/runner.log 2>&1 & echo PID:$!", timeout=20)
         pid = next((line.strip()[4:].strip() for line in started.splitlines()
                     if line.strip().startswith("PID:")), "")

@@ -107,6 +107,11 @@ def get_current_session_key(default: str = "default") -> str:
     return get_session_env("HERMES_SESSION_KEY", default)
 
 
+def get_current_turn_id(default: str = "") -> str:
+    """Return the conversation turn bound around tool execution ("" outside a turn)."""
+    return _approval_turn_id.get() or default
+
+
 def _session_env(name: str) -> str:
     """Session-scoped env value, contextvar-first so one cron/-q job cannot taint
     unrelated gateway/API/TUI turns in the same process; process env is the

@@ -32,7 +32,8 @@ from tools.file_tools_paths import (
 from tools.file_tools_write_guards import (
     _READ_DEDUP_STATUS_MESSAGE, _check_approval_required_write, _check_binary_document_write,
     _check_cross_profile_path, _check_protected_instruction_write, _check_sensitive_path,
-    _is_internal_file_tool_content, _stale_overwrite_blocker, _stale_write_refusal)
+    _is_internal_file_tool_content, _stale_overwrite_blocker, _stale_write_refusal,
+    protected_write_digest)
 from tools.file_tools_read_tracking import (
     _bump_consecutive, _cap_read_tracker_data, _check_file_staleness, _check_not_found_cache,
     _file_metadata, _file_version,
@@ -759,12 +760,14 @@ def _resolve_or_none(filepath: str, task_id: str) -> str | None:
 
 
 def _write_precheck_error(paths: list[str], content_paths: list[str], task_id: str,
-                          cross_profile: bool) -> str | None:
+                          cross_profile: bool, write_digest: str = "") -> str | None:
     """Run the shared write/patch guards in order; return the first error string.
 
     Order matters: hard denies (sensitive path, mirror) and the corruption
     guard run before anything that could prompt the user, and ONE approval
-    prompt covers every path of a multi-file patch.
+    prompt covers every path of a multi-file patch. ``write_digest`` carries
+    the operation payload's identity into the protected-instruction gate, which
+    only reuses a gateway grant for a byte-identical follow-up this turn.
     """
     for p in paths:
         err = _check_sensitive_path(p, task_id) or (
@@ -775,7 +778,7 @@ def _write_precheck_error(paths: list[str], content_paths: list[str], task_id: s
         err = _check_binary_document_write(p, task_id)
         if err:
             return err
-    return (_check_protected_instruction_write(paths, task_id)
+    return (_check_protected_instruction_write(paths, task_id, write_digest)
             or _check_approval_required_write(paths, task_id))
 
 
@@ -862,7 +865,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     # write_file checks the binary-document guard before the mirror guard.
     err = (_check_sensitive_path(path, task_id)
            or _check_binary_document_write(path, task_id)
-           or _check_protected_instruction_write([path], task_id)
+           or _check_protected_instruction_write([path], task_id, protected_write_digest("write_file", content))
            or _check_approval_required_write([path], task_id)
            or (None if cross_profile else _check_cross_profile_path(path, task_id)))
     if not err and _is_internal_file_tool_content(content):
@@ -962,7 +965,11 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             return collected
         _paths_to_check += collected[0]
         _content_write_paths += collected[1]
-    precheck_err = _write_precheck_error(_paths_to_check, _content_write_paths, task_id, cross_profile)
+    precheck_err = _write_precheck_error(
+        _paths_to_check, _content_write_paths, task_id, cross_profile,
+        # Replace mode: old/new text. V4A: the whole patch (its per-path hunks,
+        # path headers included) — so any change to what would be written re-asks.
+        protected_write_digest("patch", mode, old_string, new_string, patch, replace_all))
     if precheck_err:
         return tool_error(precheck_err)
     try:

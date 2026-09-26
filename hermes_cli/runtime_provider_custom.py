@@ -235,19 +235,22 @@ def codex_model_provider_id(requested_provider: str) -> Optional[str]:
 # ── identity recovery (bare "custom" -> durable ``custom:<name>``) ─────────────────────────
 
 
-def _find_custom_identity(matches: Callable[[Dict[str, Any]], bool]) -> Optional[str]:
-    """First entry in ``providers:`` then legacy ``custom_providers:`` where ``matches(entry)``
-    holds, as its canonical ``custom:<name>`` slug."""
+def _find_custom_identity(matches: Callable[[Dict[str, Any]], bool]) -> list[str]:
+    """Every distinct canonical ``custom:<name>`` slug among the ``providers:`` entries (then the
+    legacy ``custom_providers:`` list) where ``matches`` holds — deduped, since the compatible view
+    repeats keyed entries. The LIST is the contract: recovery callers must see that SEVERAL entries
+    match instead of taking config order's first as identity (#117819 review)."""
     rp = _rp()
     try:
         config = rp.load_config()
     except Exception:
-        return None
+        return []
+    hits: list[str] = []
     providers = config.get("providers")
     if isinstance(providers, dict):
         for ep_name, entry in providers.items():
             if isinstance(entry, dict) and matches(entry):
-                return custom_provider_slug(str(ep_name), str(ep_name))
+                hits.append(custom_provider_slug(str(ep_name), str(ep_name)))
     try:
         custom_providers = rp.get_compatible_custom_providers(config)
     except Exception:
@@ -255,65 +258,88 @@ def _find_custom_identity(matches: Callable[[Dict[str, Any]], bool]) -> Optional
     for entry in custom_providers or []:
         name = entry.get("name") if isinstance(entry, dict) else None
         if isinstance(name, str) and name.strip() and matches(entry):
-            return custom_provider_slug(name, str(entry.get("provider_key", "") or ""))
-    return None
+            hits.append(custom_provider_slug(name, str(entry.get("provider_key", "") or "")))
+    return list(dict.fromkeys(hits))
+
+
+def _endpoint_identity_hits(base_url: Any) -> list[str]:
+    """Candidate ``custom:<name>`` identities whose configured entry owns ``base_url``."""
+    target = _normalize_base_url_for_match(base_url)
+    if not target:
+        return []
+    return _find_custom_identity(
+        lambda entry: _normalize_base_url_for_match(_entry_url(entry)) == target)
 
 
 def find_custom_provider_identity(base_url: str) -> Optional[str]:
-    """Map an endpoint URL back to its canonical ``custom:<name>`` menu key. Session persistence
-    stores the agent's *resolved* provider, which for every named custom endpoint is the literal
-    string ``"custom"`` — the entry name is lost, and the api_key is deliberately never persisted."""
-    target = _normalize_base_url_for_match(base_url)
-    if not target:
-        return None
-    return _find_custom_identity(lambda entry: _normalize_base_url_for_match(_entry_url(entry)) == target)
+    """Map an endpoint URL back to its canonical ``custom:<name>`` menu key — only when exactly
+    one configured entry owns it (a shared endpoint is ambiguity, not identity — #117819 review).
+    Session persistence stores the agent's *resolved* provider, which for every named custom
+    endpoint is the literal string ``"custom"`` — the entry name is lost, and the api_key is
+    deliberately never persisted."""
+    hits = _endpoint_identity_hits(base_url)
+    return hits[0] if len(hits) == 1 else None
 
 
 def _model_id_matches(value: Any, target: str) -> bool:
     return isinstance(value, str) and value.strip().lower() == target
 
 
+def _entry_serves_model(entry: Dict[str, Any], target: str) -> bool:
+    if any(_model_id_matches(entry.get(key), target) for key in ("model", "default_model")):
+        return True
+    models = entry.get("models")
+    if isinstance(models, dict):
+        return any(str(mid).strip().lower() == target for mid in models)
+    if isinstance(models, list):
+        return any(_model_id_matches(item.get("id") or item.get("name") if isinstance(item, dict) else item, target)
+                   for item in models)
+    return False
+
+
+def _model_identity_hits(model: Any) -> list[str]:
+    """Candidate ``custom:<name>`` identities whose configured entry serves ``model``."""
+    target = str(model or "").strip().lower()
+    if not target:
+        return []
+    return _find_custom_identity(lambda entry: _entry_serves_model(entry, target))
+
+
 def find_custom_provider_identity_by_model(model: str) -> Optional[str]:
     """Map a model id back to the ``custom:<name>`` entry that serves it — companion to
     :func:`find_custom_provider_identity` for persistence paths where no base_url survived the
-    round-trip (the session row always stores the model name)."""
-    target = str(model or "").strip().lower()
-    if not target:
-        return None
-
-    def _entry_serves_model(entry: Dict[str, Any]) -> bool:
-        if any(_model_id_matches(entry.get(key), target) for key in ("model", "default_model")):
-            return True
-        models = entry.get("models")
-        if isinstance(models, dict):
-            return any(str(mid).strip().lower() == target for mid in models)
-        if isinstance(models, list):
-            return any(_model_id_matches(item.get("id") or item.get("name") if isinstance(item, dict) else item, target)
-                       for item in models)
-        return False
-
-    return _find_custom_identity(_entry_serves_model)
+    round-trip (the session row always stores the model name). Only when exactly ONE entry
+    serves it: several owners means config order decided, not identity (#117819 review)."""
+    hits = _model_identity_hits(model)
+    return hits[0] if len(hits) == 1 else None
 
 
 def canonical_custom_identity(*, base_url: Optional[str] = None, config_provider: Optional[str] = None,
                               model: Optional[str] = None) -> Optional[str]:
     """Recover the durable menu identity for a bare custom provider. Match a configured
     endpoint first, then the ownership-checked managed server, then a configured model or
-    provider. Every session persistence/restore path shares this lookup."""
+    provider. Every session persistence/restore path shares this lookup. A tier whose evidence
+    points at SEVERAL entries returns None — config order is not identity, so an ambiguous
+    recovery is never applied or persisted (#117819 review)."""
     rp = _rp()
+    # Only a tier with NO match falls through to the next source; an ambiguous tier stops here.
     if base_url:
-        identity = find_custom_provider_identity(base_url)
-        if identity:
-            return identity
+        hits = _endpoint_identity_hits(base_url)
+        if len(hits) == 1:
+            return hits[0]
+        if len(hits) > 1:
+            return None
         # The managed server has no custom-provider config entry. Recover its menu key
         # from the ownership-checked endpoint, never from a model name or a fixed port.
         from hermes_cli.local_runtime.endpoint import _state_endpoint
         endpoint = _state_endpoint()
         if endpoint and _normalize_base_url_for_match(base_url) == _normalize_base_url_for_match(endpoint["base_url"]):
             return "llamacpp"
-    identity = find_custom_provider_identity_by_model(model) if model else None
-    if identity:
-        return identity
+    hits = _model_identity_hits(model)
+    if len(hits) == 1:
+        return hits[0]
+    if len(hits) > 1:
+        return None
     candidate = str(config_provider or "").strip()
     if not candidate:
         try:

@@ -2252,6 +2252,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _select_agent_runtime(
         self, runtime_kwargs: Dict[str, Any], model: str, *, requested_model: Optional[str],
         requested_provider: Optional[str], route: Optional[Dict[str, Any]], session_model: Optional[str],
+        session_billing_provider: Optional[str] = None,
+        session_billing_base_url: Optional[str] = None,
         confirmed_runtime_lock: bool, gateway_session_key: Optional[str], session_id: Optional[str]) -> tuple:
         """Apply the model/provider precedence chain for one agent (mutates ``runtime_kwargs``):
         confirmed Browser lock > session ``/model`` override > session-persisted model >
@@ -2284,8 +2286,28 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         elif session_row_model and not confirmed_runtime_lock:
             # A session-persisted raw model (no route alias) is a standing selection that pins
             # this session's turns ahead of per-request body values.
+            row_provider = current_provider
+            # The row's persisted billing class (bare "custom" for any named custom entry) is the
+            # authoritative flag — the CURRENT runtime may have moved on (profile re-selected), so
+            # the heal must fire from state that records what the row actually ran on, not from
+            # whatever provider the ambient runtime resolves to today (#117710 review).
+            row_billing = _clean_request_string(session_billing_provider)
+            if row_billing == "custom" or (row_provider or "").strip().lower() == "custom":
+                # Bare "custom" is the resolved billing class, not a routable identity: the row's
+                # model was persisted by a turn that ran a named ``custom:<name>`` entry, whose
+                # identity only survives in config (#117710). Resolve it back the same way every
+                # other restore path does, or the pinned model runs on the credential-less
+                # OpenRouter fallback and the turn dies with "No LLM provider configured".
+                # The row's endpoint (billing_base_url) disambiguates entries that share a model id.
+                with suppress(Exception):
+                    from hermes_cli.runtime_provider import canonical_custom_identity
+                    healed = canonical_custom_identity(
+                        base_url=_clean_request_string(session_billing_base_url) or None,
+                        model=session_row_model) or None
+                    if healed:
+                        row_provider = healed
             self._apply_provider_runtime(
-                runtime_kwargs, current_provider, target_model=session_row_model)
+                runtime_kwargs, row_provider, target_model=session_row_model)
             model = resolve_effective_model(None, session_row_model, model)
             if request_model or request_provider:
                 logger.debug(
@@ -2325,7 +2347,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         status_callback=None, gateway_session_key: Optional[str] = None,
         requested_model: Optional[str] = None, requested_provider: Optional[str] = None,
         model_options: Optional[Dict[str, Any]] = None, route: Optional[Dict[str, Any]] = None,
-        session_model: Optional[str] = None, confirmed_runtime_lock: bool = False,
+        session_model: Optional[str] = None, session_billing_provider: Optional[str] = None,
+        session_billing_base_url: Optional[str] = None, confirmed_runtime_lock: bool = False,
         room_dispatch: Optional[Dict[str, Any]] = None,
         room_execution_policy: Optional[Dict[str, Any]] = None) -> Any:
         """Create an AIAgent from the gateway runtime config + platform toolsets.
@@ -2352,7 +2375,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         model, session_override, request_model, request_provider = self._select_agent_runtime(
             runtime_kwargs, model,
             requested_model=requested_model, requested_provider=requested_provider, route=route,
-            session_model=session_model, confirmed_runtime_lock=confirmed_runtime_lock,
+            session_model=session_model, session_billing_provider=session_billing_provider,
+            session_billing_base_url=session_billing_base_url,
+            confirmed_runtime_lock=confirmed_runtime_lock,
             gateway_session_key=gateway_session_key, session_id=session_id)
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
@@ -3343,6 +3368,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         run_kwargs = dict(
             user_message=user_message, ephemeral_system_prompt=system_prompt, session_id=session_id,
             gateway_session_key=gateway_session_key, route=route, session_model=session_model,
+            session_billing_provider=session.get("billing_provider") if isinstance(session, dict) else None,
+            session_billing_base_url=session.get("billing_base_url") if isinstance(session, dict) else None,
             requested_runtime=runtime_request.get("requested") or {},
             route_source=runtime_request.get("route_source") or "global",
             confirmed_runtime_lock=lock_active, turn_author=turn_author,
@@ -4134,6 +4161,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         gateway_session_key: Optional[str] = None, requested_model: Optional[str] = None,
         requested_provider: Optional[str] = None, model_options: Optional[Dict[str, Any]] = None,
         route: Optional[Dict[str, Any]] = None, session_model: Optional[str] = None,
+        session_billing_provider: Optional[str] = None, session_billing_base_url: Optional[str] = None,
         requested_runtime: Optional[Dict[str, Any]] = None, route_source: str = "global",
         confirmed_runtime_lock: bool = False, bind_declared_conversation: bool = False,
         session_history_delivery: str = "", turn_author: Optional[Dict[str, Any]] = None,
@@ -4182,7 +4210,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         reasoning_callback=reasoning_callback, status_callback=status_callback,
                         gateway_session_key=gateway_session_key, requested_model=requested_model,
                         requested_provider=requested_provider, model_options=model_options, route=route,
-                        session_model=session_model, confirmed_runtime_lock=confirmed_runtime_lock)
+                        session_model=session_model, session_billing_provider=session_billing_provider,
+                        session_billing_base_url=session_billing_base_url,
+                        confirmed_runtime_lock=confirmed_runtime_lock)
                     if agent_ref is not None:
                         agent_ref[0] = agent
                     if resume_unanswered_turn:

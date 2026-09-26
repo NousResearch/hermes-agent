@@ -523,3 +523,88 @@ class TestPersistence:
 
         assert stdout_buf.getvalue() == ""
         assert stderr_buf.getvalue() == "ACP noise\n"
+
+
+class TestRestoreHealsBareCustomProvider:
+    """Regression for #117710: a persisted ACP session that ran on a named
+    ``custom:<name>`` entry keeps only the bare billing class ``custom`` on the row.
+    ``_restore`` must recover the entry identity (endpoint first, then model) before
+    rebuilding the agent, the same invariant api_server applies on /chat, or the
+    resume dies with "no endpoint credentials found" (aleck31's A/B on this issue)."""
+
+    def _seed_session(self, db, *, base_url, provider="custom", model="custom-model-1"):
+        db.create_session(session_id="acp-s1", source="acp", model=model)
+        # Mirror the write path: the first accounted usage stamps the row with the bare
+        # billing class (agent.provider == "custom") and the entry's endpoint.
+        db._execute_write(
+            lambda conn: conn.execute(
+                "UPDATE sessions SET model = ?, billing_provider = ?, billing_base_url = ? WHERE id = ?",
+                (model, provider, base_url, "acp-s1")))
+        db.append_message("acp-s1", role="user", content="hello")
+
+    def test_restore_resolves_named_entry_from_row_endpoint(self, monkeypatch, tmp_path):
+        """The entry is identified by the row's billing_base_url — the identity
+        survives even when the profile's model.provider no longer names it."""
+        from hermes_state import SessionDB
+        seen = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                seen.update(kwargs)
+
+        config = {"model": {"default": "custom-model-1", "provider": "openai"},
+                  "custom_providers": [
+                      {"name": "sigv4-bedrock", "base_url": "https://bedrock.example/v1",
+                       "api_key": "sk-custom", "api_mode": "chat_completions",
+                       "model": "custom-model-1"}]}
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested=None, **_kw: {
+                "provider": requested, "api_mode": "chat_completions",
+                "base_url": "https://bedrock.example/v1" if requested == "custom:sigv4-bedrock" else None,
+                "api_key": "sk-custom" if requested == "custom:sigv4-bedrock" else None})
+        monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kw: None)
+        monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+
+        db = SessionDB(tmp_path / "state.db")
+        self._seed_session(db, base_url="https://bedrock.example/v1")
+
+        manager = SessionManager(db=db)
+        restored = manager.get_session("acp-s1")
+
+        assert restored is not None
+        # The healed identity must reach resolve_runtime_provider, and the agent
+        # receives the entry's credentials — not the credential-less fallback.
+        assert seen.get("provider") == "custom:sigv4-bedrock"
+        assert seen.get("api_key") == "sk-custom"
+        assert seen.get("base_url") == "https://bedrock.example/v1"
+
+    def test_restore_unhealable_row_keeps_old_failure_mode(self, monkeypatch, tmp_path):
+        """A row whose endpoint matches no configured entry stays on today's
+        behavior (bare ``custom`` through the resolver) — healing is best-effort."""
+        from hermes_state import SessionDB
+        seen = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                seen.update(kwargs)
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested=None, **_kw: {"provider": requested, "api_mode": "chat_completions",
+                                           "base_url": None, "api_key": None})
+        monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kw: None)
+        monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+
+        db = SessionDB(tmp_path / "state.db")
+        self._seed_session(db, base_url="https://nowhere.example/v1")
+
+        manager = SessionManager(db=db)
+        restored = manager.get_session("acp-s1")
+        assert restored is not None
+        assert seen.get("provider") == "custom"
+        assert seen.get("api_key") is None

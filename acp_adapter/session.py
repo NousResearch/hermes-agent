@@ -430,6 +430,21 @@ class SessionManager:
 
         meta = _parse_model_config(row.get("model_config"))
         cwd, model = meta.get("cwd", "."), row.get("model") or None
+        row_base_url = row.get("billing_base_url") or meta.get("base_url") or None
+
+        # persisted rows keep the RESOLVED provider — the bare class ``custom`` — and lose the
+        # entry identity (same class as the gateway /chat bug, #117710). Recover ``custom:<name>``
+        # from config before resolving, or the rebuild dies with "no endpoint credentials found"
+        # on a machine that was working a call earlier.
+        requested_provider = meta.get("provider") or row.get("billing_provider")
+        if (requested_provider or "").strip().lower() == "custom":
+            try:
+                from hermes_cli.runtime_provider import canonical_custom_identity
+                healed = canonical_custom_identity(base_url=row_base_url or None, model=model or None)
+                if healed:
+                    requested_provider = healed
+            except Exception:
+                logger.debug("ACP session %s: custom-provider identity heal failed", session_id, exc_info=True)
 
         # repair_alternation: this list becomes the resumed agent's LIVE conversation; a durable
         # ``user;user`` violation in state.db would otherwise re-fire the pre-request repair every request.
@@ -442,8 +457,8 @@ class SessionManager:
         try:
             agent = self._make_agent(
                 session_id=session_id, cwd=cwd, model=model, api_mode=meta.get("api_mode") or None,
-                requested_provider=meta.get("provider") or row.get("billing_provider"),
-                base_url=meta.get("base_url") or row.get("billing_base_url"))
+                requested_provider=requested_provider,
+                base_url=row_base_url)
         except Exception:
             logger.warning("Failed to recreate agent for ACP session %s", session_id, exc_info=True)
             return None

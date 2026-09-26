@@ -164,6 +164,20 @@ class GatewayAgentCacheMixin:
         if is_foreign_provider_endpoint(provider, override.get("base_url")):
             override["base_url"] = None  # left over from a switch that kept the previous provider's URL
         if provider:
+            # A persisted /model switch that ran a named custom:<name> entry may keep only the
+            # resolved billing class "custom" (older builds; #117710) — recover the entry identity
+            # before resolving, or credentials resolve against nothing.
+            healed = None
+            try:
+                if (provider or "").strip().lower() == "custom":
+                    from hermes_cli.runtime_provider import canonical_custom_identity
+                    healed = canonical_custom_identity(
+                        base_url=persisted.get("base_url") or None,
+                        model=persisted.get("model") or None) or None
+                    if healed:
+                        provider = healed
+            except Exception:
+                logger.debug("session model override: custom provider identity heal failed", exc_info=True)
             # Re-resolve credentials for the persisted provider. On failure (e.g. credentials removed
             # since the switch) keep the credential-less override — _resolve_session_agent_runtime
             # retries the resolution for that provider on each turn (default route + notice meanwhile).
@@ -182,6 +196,14 @@ class GatewayAgentCacheMixin:
                     # api_mode was just re-derived from the target model; a relay URL persisted by an older
                     # build for another wire (/v1-stripped) or the other family is healed to match (#96066).
                     override["base_url"] = normalize_opencode_base_url(provider, override.get("api_mode"), override["base_url"])
+                if healed:
+                    # Repair the durable override itself: the identity and endpoint inferred from the
+                    # CURRENT config must replace the bare custom + stale URL, or the next gateway
+                    # restart re-rehydrates from the same broken state (#117710 review).
+                    override["provider"] = provider
+                    if runtime.get("base_url"):
+                        override["base_url"] = runtime.get("base_url")
+                    store.set_model_override(session_key, override)
             except Exception:
                 logger.debug(
                     "Credential re-resolution failed for persisted override "

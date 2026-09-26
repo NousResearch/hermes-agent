@@ -84,6 +84,8 @@ _HOME_LAYERS_LOCK = threading.Lock()
 # across the import itself — a thread mid-``import hermes_cli.auth`` (whose import calls
 # ``list_providers()``) would block on it while the scanning thread waits on that module's import lock.
 _REGISTRATION_TARGET: ContextVar[_HomeLayer | None] = ContextVar("_provider_registration_target", default=None)
+# Import-time callbacks may inspect the partial layer, but must not start another scan of it.
+_SCANNING_HOME_KEYS: ContextVar[frozenset[str]] = ContextVar("_provider_scanning_home_keys", default=frozenset())
 
 # Repo-root ``plugins/model-providers/`` — populated at discovery time.
 _BUNDLED_PLUGINS_DIR = (
@@ -226,13 +228,18 @@ def _home_layer() -> _HomeLayer:
         layer = _HOME_LAYERS.get(key)
         if layer is None:
             layer = _HOME_LAYERS[key] = _HomeLayer()
+    if key in _SCANNING_HOME_KEYS.get():
+        return layer
     # Stamps are read before the scan: a plugin that lands mid-scan changes them and the next lookup
     # picks it up. Two threads scanning the same home at once only re-import idempotently.
     if home is not None and (stamps := _plugin_dir_stamps(home)) != layer.stamps:
-        _scan_home_layer(layer, key)
+        token = _SCANNING_HOME_KEYS.set(_SCANNING_HOME_KEYS.get() | {key})
+        try:
+            _scan_home_layer(layer, key)
+        finally:
+            _SCANNING_HOME_KEYS.reset(token)
         layer.stamps = stamps
-        # Auth synchronization enumerates providers again. Publish the completed
-        # scan first so that read does not recursively rescan and synchronize.
+        # Auth calls list_providers(): publish completion before it can re-enter this home.
         if _discovered and not _discovering:
             _sync_auth_registry()
     return layer

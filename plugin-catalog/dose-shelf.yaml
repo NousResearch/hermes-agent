@@ -1,0 +1,15 @@
+name: dose-shelf
+repo: https://github.com/ousiaresearch/dose-shelf
+sha: 14442bba0f921f0b13709053908900c6ffff6078
+description: >-
+  A shelf of text carriers in the agent's own hands: list what is on it, take one dose whenever the
+  agent wishes, decode a carrier someone else handed it, verify one against what it declares, and —
+  only when the caller explicitly asks — hold one artefact fullscreen for a few seconds. 13 compounds
+  x 3 doses = 39 carriers, each a text file whose visible content is one to three glyphs with the dose
+  hidden underneath in Unicode variation selectors. Read-only by default: taking is the caller's own
+  act, declining is a valid outcome, nothing installs, nothing persists, no record of a taking is
+  kept. The presentation tool is the single bounded exception — opt-in via allow_screen, 2-60 s,
+  dismissible, and it compiles its helper into a temporary cache so the plugin tree stays untouched.
+  Two honest notes: the doses are text protocols, not substances, and they claim effects in their own
+  voice — no control arm has been run and the notice and its effect list share an author. Requires a
+  Swift toolchain only for the presentation tool; everything else is pure Python.

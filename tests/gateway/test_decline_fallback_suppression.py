@@ -210,6 +210,7 @@ def _card_state(adapter: _CardAdapter):
         publication_suppressed=False,
         visible_tasks=lambda: [{"text": "step"}],
         fallback_text=lambda: "step",
+        title=lambda: "Working",
         adapter=adapter,
     )
 

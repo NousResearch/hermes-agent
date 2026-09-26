@@ -3246,6 +3246,7 @@ export const zhHant = defineLocale({
     updateNow: '立即更新',
     maybeLater: '稍後再說',
     moreChanges: count => `另有 ${count} 項變更。`,
+    copyFullLog: '複製完整更新日誌',
     manualTitle: '從終端機更新',
     manualUnavailableTitle: '無法從這裡更新',
     manualBody: '您是從命令列安裝的 Hermes，因此更新也需要在那裡執行。請將此指令貼到終端機：',

@@ -27,6 +27,15 @@ def resolve_skin() -> dict:
         return {}
 
 
+def _skin_changed_payload() -> dict:
+    """``resolve_skin()`` tagged with the profile whose config it resolved from. ``skin.changed`` fans out
+    to every transport of a process that may serve several profiles, and Desktop now persists an applied
+    skin into the profile's ``desktop.theme`` — so a client on another profile must be able to tell the
+    change is not its own. ``_watcher_home()`` is the bound override (a ``config.set`` for that profile)
+    or the launch home (the watcher thread)."""
+    return {**resolve_skin(), "profile": profile_name_for_home(_watcher_home()) or "default"}
+
+
 # (name, user-file mtime) of the last skin broadcast: ``skin.changed`` fires on a name
 # switch OR a live color edit of the active skin, and nothing else.
 _last_skin_sig: tuple[str, float | None] | None = None
@@ -81,7 +90,7 @@ def _broadcast_skin_if_changed() -> None:
         if sig == _last_skin_sig:
             return
         _last_skin_sig = sig
-        _broadcast_global_event("skin.changed", resolve_skin())
+        _broadcast_global_event("skin.changed", _skin_changed_payload())
 
 
 def _active_pet():

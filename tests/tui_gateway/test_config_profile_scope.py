@@ -200,3 +200,30 @@ def test_launch_profile_cwd_write_updates_non_local_terminal_task(tmp_path, monk
     assert _read_yaml(launch)["terminal"]["cwd"] == str(new_cwd)
     assert server.os.environ["TERMINAL_CWD"] == str(new_cwd)
     assert server._terminal_task_cwd(None) == str(new_cwd)
+
+
+def test_skin_changed_names_the_profile_whose_config_moved(tmp_path, monkeypatch):
+    """``skin.changed`` fans out to every transport of a process serving several profiles, and Desktop
+    persists an applied skin into that client's profile. The payload must name whose ``display.skin``
+    moved so a client on another profile leaves its appearance alone."""
+    import hermes_cli.skin_engine as skin_engine
+
+    launch, worker = _homes(tmp_path)
+    _bind_homes(monkeypatch, launch, worker)
+    monkeypatch.setattr(server, "_last_skin_sig", None, raising=False)
+    monkeypatch.setattr(skin_engine, "_active_skin", None)
+    monkeypatch.setattr(skin_engine, "_active_skin_name", "default")
+    broadcasts = []
+    monkeypatch.setattr(
+        server, "_broadcast_global_event", lambda event, payload=None: broadcasts.append((event, payload))
+    )
+
+    _set({"key": "skin", "value": "mono", "profile": "code"})
+    _set({"key": "skin", "value": "slate"})
+
+    assert [(event, payload["name"], payload["profile"]) for event, payload in broadcasts] == [
+        ("skin.changed", "mono", "code"),
+        ("skin.changed", "slate", "default"),
+    ]
+    assert _read_yaml(worker)["display"]["skin"] == "mono"
+    assert _read_yaml(launch)["display"]["skin"] == "slate"

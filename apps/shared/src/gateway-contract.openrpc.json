@@ -31954,6 +31954,77 @@
         "title": "SkillsReloadResult",
         "type": "object"
       },
+      "SkinChangedPayload": {
+        "additionalProperties": true,
+        "description": "``tui_gateway/change_watcher.py::_skin_changed_payload`` \u2014 the resolved skin plus the profile whose\nconfig it came from. The event reaches every transport of a process that may serve several profiles,\nso a client ignores a change tagged for another. Older backends send no ``profile``.",
+        "properties": {
+          "name": {
+            "default": "",
+            "title": "Name",
+            "type": "string"
+          },
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "colors": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Colors",
+            "type": "object"
+          },
+          "light_colors": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Light Colors",
+            "type": "object"
+          },
+          "dark_colors": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Dark Colors",
+            "type": "object"
+          },
+          "branding": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Branding",
+            "type": "object"
+          },
+          "banner_logo": {
+            "default": "",
+            "title": "Banner Logo",
+            "type": "string"
+          },
+          "banner_hero": {
+            "default": "",
+            "title": "Banner Hero",
+            "type": "string"
+          },
+          "tool_prefix": {
+            "default": "",
+            "title": "Tool Prefix",
+            "type": "string"
+          },
+          "help_header": {
+            "default": "",
+            "title": "Help Header",
+            "type": "string"
+          },
+          "profile": {
+            "default": "",
+            "title": "Profile",
+            "type": "string"
+          }
+        },
+        "title": "SkinChangedPayload",
+        "type": "object"
+      },
       "SkinPayload": {
         "additionalProperties": true,
         "description": "``tui_gateway/change_watcher.py::resolve_skin`` \u2014 the resolved active skin (``HermesSkin``).\n``{}`` when the skin engine failed to load. Colour maps are token \u2192 colour string.",
@@ -38424,7 +38495,7 @@
         {
           "name": "payload",
           "schema": {
-            "$ref": "#/components/schemas/SkinPayload"
+            "$ref": "#/components/schemas/SkinChangedPayload"
           }
         }
       ]

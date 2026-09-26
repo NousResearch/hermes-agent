@@ -4331,6 +4331,21 @@ export interface SkinPayload {
   help_header?: string
   [key: string]: unknown
 }
+/** ``tui_gateway/change_watcher.py::_skin_changed_payload`` — the resolved skin plus the profile whose config it came from. The event reaches every transport of a process that may serve several profiles, so a client ignores a change tagged for another. Older backends send no ``profile``. */
+export interface SkinChangedPayload {
+  name?: string
+  description?: string
+  colors?: Record<string, string>
+  light_colors?: Record<string, string>
+  dark_colors?: Record<string, string>
+  branding?: Record<string, string>
+  banner_logo?: string
+  banner_hero?: string
+  tool_prefix?: string
+  help_header?: string
+  profile?: string
+  [key: string]: unknown
+}
 /** ``hermes_cli/free_tier_bootstrap.py::SetupRecord.as_payload``. */
 export interface SetupReadyPayload {
   provider_configured: boolean
@@ -5555,7 +5570,7 @@ export interface BackendGatewayEventMap {
   /** The free-tier bootstrap finished (broadcast); the desktop's setup gate reads the record. */
   'setup.ready': SetupReadyPayload
   /** The active skin moved (name switch or live colour edit); repaint from this palette. */
-  'skin.changed': SkinPayload
+  'skin.changed': SkinChangedPayload
   /** Transient status line (kind: status, lifecycle, compacting, goal, loop, heartbeat, process, …). */
   'status.update': StatusUpdatePayload
   /** A child finished (status + observability rollup). */

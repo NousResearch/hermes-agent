@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useStatusSnapshot } from '@/app/shell/hooks/use-status-snapshot'
 import { getStatus } from '@/hermes'
 import { $setupReadyTick } from '@/store/live-sync'
+import { $activeGatewayProfile } from '@/store/profile'
+import { $pendingSkinApply, __resetBackendSkinSync } from '@/themes/backend-sync'
 
 import { handleLifecycleEvent } from './lifecycle'
 import type { GatewayEventContext } from './types'
@@ -101,5 +103,38 @@ describe('handleLifecycleEvent setup.ready', () => {
 
     expect(requestGateway).not.toHaveBeenCalled()
     expect($setupReadyTick.get()).toBe(0)
+  })
+})
+
+describe('handleLifecycleEvent skin.changed', () => {
+  afterEach(() => {
+    __resetBackendSkinSync()
+    $activeGatewayProfile.set('default')
+  })
+
+  function skinChanged(name: string, profile?: string) {
+    const payload = { name, ...(profile ? { profile } : {}) }
+
+    handleLifecycleEvent({
+      ...setupReadyContext(true),
+      event: { payload, type: 'skin.changed' },
+      payload: payload as GatewayEventContext['payload']
+    })
+
+    return $pendingSkinApply.get()
+  }
+
+  // One process serves several profiles and fans skin.changed out to every
+  // socket, each stamped with ITS profile — so the socket stamp passes for
+  // whichever profile is active. The payload's tag names whose config moved;
+  // applying another profile's change would persist it into this one's.
+  it("applies the active profile's tagged change, ignores another profile's, and keeps untagged events", () => {
+    $activeGatewayProfile.set('work')
+
+    expect(skinChanged('mono', 'default')).toBeNull()
+    expect(skinChanged('mono', 'work')).toBe('mono')
+
+    __resetBackendSkinSync()
+    expect(skinChanged('slate')).toBe('slate')
   })
 })

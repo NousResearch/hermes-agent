@@ -12,6 +12,7 @@ import {
   type PetChangeMeta,
   setChangeEventsAvailable
 } from '@/store/live-sync'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { markRuntimeGone } from '@/store/runtime-gone'
 import { dropSessionState, unbindTileRuntime } from '@/store/session-states'
 // Leaf import (not the `@/themes` barrel) to avoid pulling the ThemeProvider
@@ -53,7 +54,15 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
   if (event.type === 'skin.changed') {
     // A runtime skin switch (Hermes activating an authored skin, or `/skin`
     // on another surface). Only the active source+profile's change repaints.
-    if (fromActiveSource()) {
+    // One process may serve several profiles and broadcasts to every socket,
+    // so the socket's stamp alone can't tell whose config moved; the backend
+    // tags it. An untagged event (older backend) keeps the source check alone.
+    const owner = (event as GatewayEvent<'skin.changed'>).payload?.profile
+
+    if (
+      fromActiveSource() &&
+      (!owner || normalizeProfileKey(owner) === normalizeProfileKey($activeGatewayProfile.get()))
+    ) {
       ingestBackendSkin(payload as HermesSkin | undefined, { apply: true })
     }
 

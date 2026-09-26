@@ -48,6 +48,14 @@ class SkinPayload(OpenPayload):
     help_header: str = ""
 
 
+class SkinChangedPayload(SkinPayload):
+    """``tui_gateway/change_watcher.py::_skin_changed_payload`` — the resolved skin plus the profile whose
+    config it came from. The event reaches every transport of a process that may serve several profiles,
+    so a client ignores a change tagged for another. Older backends send no ``profile``."""
+
+    profile: str = ""
+
+
 class GatewayReadyPayload(Payload):
     """``tui_gateway/entry.py`` (stdio) / ``tui_gateway/ws.py`` (WebSocket) first frame."""
 
@@ -59,7 +67,7 @@ class GatewayReadyPayload(Payload):
 
 event("gateway.ready", GatewayReadyPayload,
       doc="First frame of a connection: the resolved skin, the change-event capability and the replay epoch.")
-event("skin.changed", SkinPayload,
+event("skin.changed", SkinChangedPayload,
       doc="The active skin moved (name switch or live colour edit); repaint from this palette.")
 
 

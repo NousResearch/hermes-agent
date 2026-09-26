@@ -447,7 +447,7 @@ def _set_personality(rid, params, key, value, session):
 def _set_skin(rid, params, key, value, session):
     _write_config_key("display.skin", value)
     # Every surface repaints; sync the watcher baseline so the poll loop doesn't re-broadcast.
-    _broadcast_global_event("skin.changed", resolve_skin())
+    _broadcast_global_event("skin.changed", _skin_changed_payload())
     _note_skin_broadcast()
     return _kv(rid, key, value)
 

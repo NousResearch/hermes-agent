@@ -130,6 +130,104 @@ class TestSessionIsolationKeying:
         assert terminal_tool._resolve_container_task_id("x") in {"x", "y"}
 
 
+class TestRoutedScopeQualification:
+    """A routed profile scope must qualify raw per-session container keys (#123989).
+
+    A multiplexed host serves every profile in one process, and header-less
+    API-server clients derive the same fingerprint session id from identical
+    opening messages. Under per-session isolation (container_persistent: false)
+    the raw key was profile-blind: the second profile's turn attached to the
+    first profile's sandbox. A ``HERMES_HOME`` override (multiplex turns —
+    named AND default —, per-profile TUI/desktop RPC, cron ticks) now qualifies
+    the key; CLI and single-profile gateways keep the historical raw key.
+    """
+
+    def test_no_override_keeps_raw_key(self, monkeypatch):
+        _enable_isolation(monkeypatch)
+        from hermes_constants import get_hermes_home_override
+        assert get_hermes_home_override() is None
+        assert terminal_tool._resolve_container_task_id("api-abc123") == "api-abc123"
+
+    def test_routed_profile_qualifies_the_key(self, monkeypatch, tmp_path):
+        _enable_isolation(monkeypatch)
+        home = tmp_path / "profiles" / "research"
+        home.mkdir(parents=True)
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        token = set_hermes_home_override(str(home))
+        try:
+            assert terminal_tool._resolve_container_task_id("api-abc123") == (
+                f"profile:research:api-abc123")
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_fingerprint_collision_isolated_across_profiles(self, monkeypatch, tmp_path):
+        """The reported bug: same opening message, two profiles, one process."""
+        _enable_isolation(monkeypatch)
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        raw = "api-9a5f7809eec0aac1"
+        keys = {}
+        for name in ("research", "default"):
+            home = tmp_path / "profiles" / name
+            home.mkdir(parents=True)
+            token = set_hermes_home_override(str(home))
+            try:
+                keys[name] = terminal_tool._resolve_container_task_id(raw)
+            finally:
+                reset_hermes_home_override(token)
+        assert keys["research"] != keys["default"]
+        assert keys["research"].endswith(f":{raw}")
+        assert keys["default"].endswith(f":{raw}")
+
+    def test_routed_subagent_alias_resolves_qualified_parent(self, monkeypatch, tmp_path):
+        _enable_isolation(monkeypatch)
+        home = tmp_path / "profiles" / "research"
+        home.mkdir(parents=True)
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        token = set_hermes_home_override(str(home))
+        try:
+            terminal_tool.register_container_alias("subagent-1", "api-abc123")
+            assert terminal_tool._resolve_container_task_id("subagent-1") == (
+                "profile:research:api-abc123")
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_cwd_records_qualified_symmetric(self, monkeypatch, tmp_path):
+        _enable_isolation(monkeypatch)
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        raw = "api-abc123"
+        home_a = tmp_path / "profiles" / "research"
+        home_a.mkdir(parents=True)
+        token = set_hermes_home_override(str(home_a))
+        try:
+            terminal_tool.record_session_cwd(raw, "/workspace/a")
+            assert terminal_tool.get_session_cwd(raw) == "/workspace/a"
+        finally:
+            reset_hermes_home_override(token)
+        # A different profile's scope reads a different slot for the same raw id.
+        home_b = tmp_path / "profiles" / "default"
+        home_b.mkdir(parents=True)
+        token = set_hermes_home_override(str(home_b))
+        try:
+            assert terminal_tool.get_session_cwd(raw) is None
+            terminal_tool.record_session_cwd(raw, "/workspace/b")
+            assert terminal_tool.get_session_cwd(raw) == "/workspace/b"
+            terminal_tool.clear_session_cwd(raw)
+            assert terminal_tool.get_session_cwd(raw) is None
+        finally:
+            reset_hermes_home_override(token)
+        # Profile A's record is untouched by B's clear.
+        token = set_hermes_home_override(str(home_a))
+        try:
+            assert terminal_tool.get_session_cwd(raw) == "/workspace/a"
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_cwd_records_unqualified_without_override(self, monkeypatch, tmp_path):
+        _enable_isolation(monkeypatch)
+        terminal_tool.record_session_cwd("task-1", "/tmp/x")
+        assert terminal_tool._session_cwd.get("task-1") == "/tmp/x"
+
+
 class TestSessionScopedMountResolution:
     """_resolve_task_host_cwd: the single owner of the cwd→/workspace mount policy."""
 

@@ -21,8 +21,10 @@ def homes(tmp_path, monkeypatch):
 
     The full wipe otherwise boots out real launchd jobs, rmtrees real
     ~/Library/Caches dirs and /Applications/Hermes.app, and (on Windows) edits
-    the registry — so stub those helpers and fail loudly on any stray rmtree or
-    subprocess instead of silently touching the developer's machine.
+    the registry — so stub those helpers and refuse any stray rmtree or
+    subprocess instead of silently touching the developer's machine. Refusals
+    are recorded in ``violations`` because the uninstall steps catch and log
+    exceptions, so a raised AssertionError alone would leave the test green.
     """
     home = tmp_path / "hermes-home"
     home.mkdir()
@@ -42,24 +44,29 @@ def homes(tmp_path, monkeypatch):
     monkeypatch.setattr(gui_uninstall, "desktop_userdata_dir", lambda: userdata)
 
     real_rmtree = shutil.rmtree
+    violations: list[str] = []
 
     def confined_rmtree(path, *args, **kwargs):
-        assert Path(path).is_relative_to(tmp_path), f"rmtree outside tmp: {path}"
+        if not Path(path).is_relative_to(tmp_path):
+            violations.append(f"rmtree outside tmp: {path}")
+            raise AssertionError(violations[-1])
         return real_rmtree(path, *args, **kwargs)
 
     def no_subprocess(*args, **kwargs):
-        raise AssertionError(f"unexpected subprocess: {args}")
+        violations.append(f"unexpected subprocess: {args}")
+        raise AssertionError(violations[-1])
 
     monkeypatch.setattr(shutil, "rmtree", confined_rmtree)
     monkeypatch.setattr(uninstall.subprocess, "run", no_subprocess)
-    return home, project_root, userdata
+    return home, project_root, userdata, violations
 
 
 @pytest.mark.parametrize("full_uninstall", [False, True])
 def test_uninstall_desktop_userdata_kept_unless_full(homes, full_uninstall):
     """Keep-data preserves Electron userData; only the full wipe removes it."""
-    home, project_root, userdata = homes
+    home, project_root, userdata, violations = homes
     uninstall._perform_uninstall(
         project_root=project_root, hermes_home=home, full_uninstall=full_uninstall,
         remove_profiles=False, named_profiles=[])
+    assert violations == []
     assert (userdata / "connections.json").exists() is not full_uninstall

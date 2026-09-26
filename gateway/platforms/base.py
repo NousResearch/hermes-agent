@@ -4313,6 +4313,19 @@ class BasePlatformAdapter(ABC):
         if ephemeral_ttl and ephemeral_ttl > 0 and result.success and result.message_id:
             delivery_adapter._schedule_ephemeral_delete(event.source.chat_id, result.message_id, ephemeral_ttl)
 
+    async def _deliver_final_with_attachments(
+        self, event: MessageEvent, session_key: str, extracted: "_ExtractedResponse",
+        metadata: Dict[str, Any], *, is_ephemeral_response: bool, ephemeral_ttl: int,
+        record_delivery: Callable) -> bool:
+        """Combined text+attachment delivery for adapters whose reply token is single-use
+        and whose media rides the SAME call (LINE: replies are free, pushes are metered
+        per recipient — a text-then-attachment turn spent the reply on the text and pushed
+        every image). Default: not combined (False); the caller falls through to the normal
+        text-then-attachments lane. An override owns the whole delivery — ledger bracket,
+        send, record_delivery feeds — and drains the attachments it delivered from
+        *extracted* so the follow-up lane cannot re-deliver them."""
+        return False
+
     async def _notify_turn_error(self, event: MessageEvent, e: BaseException) -> Optional[dict]:
         """Tell the user a turn failed rather than leaving radio silence (last resort:
         a failing notice is logged, never raised). Returns the thread metadata used."""
@@ -4523,7 +4536,10 @@ class BasePlatformAdapter(ABC):
                 if text_content or extracted.images or extracted.media_files or extracted.local_files \
                         or _tts_paths or _tts_caption_delivered:
                     self.pause_typing_for_chat(event.source.chat_id)
-                if text_content and not _tts_caption_delivered:
+                if text_content and not _tts_caption_delivered and not await self._deliver_final_with_attachments(
+                        event, session_key, extracted, _final_thread_metadata,
+                        is_ephemeral_response=is_ephemeral_response, ephemeral_ttl=_ephemeral_ttl,
+                        record_delivery=_record_delivery):
                     await self._send_final_text(
                         event, session_key, text_content, _final_thread_metadata,
                         is_ephemeral_response, _ephemeral_ttl, _record_delivery)

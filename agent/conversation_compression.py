@@ -3144,12 +3144,10 @@ def _rebuild_system_prompt_at_boundary(agent: Any, system_message: str) -> str:
         # the next fresh agent). Keep the seeded bytes; the live agent's own compaction propagates updates.
         # Returning here also deliberately skips _refresh_agent_tool_definitions: its MCP refresh persists
         # the agent's tool names, which would overwrite the session's saved tools[] with the memory-only set.
-        seeded_system_prompt = agent._cached_system_prompt or ""
-        agent._cached_system_prompt = seeded_system_prompt
-        if seeded_system_prompt:
+        if agent._cached_system_prompt:
             from agent.system_prompt import reconstruct_static_prefix
             reconstruct_static_prefix(agent, system_message=system_message, log_label="compression seeded-prompt")
-        return seeded_system_prompt
+        return agent._cached_system_prompt
     cached_system_prompt = agent._cached_system_prompt
     agent._invalidate_system_prompt()
 

@@ -156,11 +156,11 @@ def merge_platform_sections(yaml_cfg: dict, gateway_cfg: Any, gw_data: dict) -> 
                 continue
             existing = platforms_data.get(plat_name, {})
             existing = existing if isinstance(existing, dict) else {}
-            merged_extra = {**existing.get("extra", {}), **plat_block.get("extra", {})}
+            merged_extra = {**_coerce_dict(existing.get("extra")), **_coerce_dict(plat_block.get("extra"))}
             if "enabled" in plat_block:
                 merged_extra["_enabled_explicit"] = True
             merged = {**existing, **plat_block}
-            if merged_extra:
+            if merged_extra or "extra" in merged:
                 merged["extra"] = merged_extra
             platforms_data[plat_name] = merged
 
@@ -354,8 +354,10 @@ def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
             os.environ.pop("GATEWAY_ALLOW_ALL_USERS", None)
     tl_require_mention = yaml_cfg.get("require_mention")
     if tl_require_mention is not None and "require_mention" not in (yaml_cfg.get("telegram") or {}):
-        tg_plat = platforms_data.setdefault(Platform.TELEGRAM.value, {})
-        tg_plat.setdefault("extra", {}).setdefault("require_mention", tl_require_mention)
+        # _dict_slot self-heals a non-mapping platform entry or extra (e.g. a scalar arriving via
+        # gateway.json, which never passes through merge_platform_sections' coercion).
+        tg_extra = _dict_slot(_dict_slot(platforms_data, Platform.TELEGRAM.value), "extra")
+        tg_extra.setdefault("require_mention", tl_require_mention)
         # Also bridge to the TELEGRAM_REQUIRE_MENTION env var that the adapter reads at runtime. This used
         # to live in the telegram_cfg block in core; it stays in core because it keys off the TOP-LEVEL
         # require_mention (not a telegram: block), so the telegram plugin's apply_yaml_config_fn hook —
@@ -370,8 +372,8 @@ def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
     # (plugins/platforms/whatsapp/adapter.py). #41112 / #3823.
     signal_cfg = yaml_cfg.get("signal", {})
     if isinstance(signal_cfg, dict) and "require_mention" in signal_cfg:
-        sig_plat = platforms_data.setdefault(Platform.SIGNAL.value, {})
-        sig_plat.setdefault("extra", {}).setdefault("require_mention", signal_cfg["require_mention"])
+        sig_extra = _dict_slot(_dict_slot(platforms_data, Platform.SIGNAL.value), "extra")
+        sig_extra.setdefault("require_mention", signal_cfg["require_mention"])
         if not skip_env_bridge and not os.getenv("SIGNAL_REQUIRE_MENTION"):
             os.environ["SIGNAL_REQUIRE_MENTION"] = str(signal_cfg["require_mention"]).lower()
 

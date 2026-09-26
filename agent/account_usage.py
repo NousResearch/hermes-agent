@@ -429,6 +429,29 @@ def _plural(count: int) -> str:
     return "s" if count != 1 else ""
 
 
+def _codex_credits_line(credits: Any) -> Optional[str]:
+    """The Codex CLI's credit row (``codex-rs/tui/src/status/rate_limits.rs::credit_status_row``).
+
+    ``balance`` arrives as a STRING (backend model ``CreditStatusDetails.balance: Option<Option<String>>``)
+    denominated in Codex credits, not dollars — a numeric-only gate dropped the line for every real
+    account. ``unlimited`` renders even without ``has_credits``; a hidden balance is "available".
+    """
+    if not isinstance(credits, dict):
+        return None
+    if credits.get("unlimited"):
+        return "Credits balance: unlimited"
+    if not credits.get("has_credits"):
+        return None
+    raw = credits.get("balance")
+    try:
+        value = float(str(raw).strip()) if raw is not None and not isinstance(raw, bool) else None
+    except ValueError:
+        value = None
+    if value is not None and math.isfinite(value) and value > 0:
+        return f"Credits balance: {math.floor(value + 0.5)} credits"  # Rust ``f64::round`` (half away from zero)
+    return "Credits balance: available"
+
+
 def _fetch_codex_account_usage(
     base_url: Optional[str] = None, api_key: Optional[str] = None,
 ) -> Optional[AccountUsageSnapshot]:
@@ -452,11 +475,9 @@ def _fetch_codex_account_usage(
     count = _codex_banked_resets(payload)
     if count > 0:
         details.append(f"You have {count} reset{_plural(count)} banked - use /usage reset to activate")
-    credits, balance = payload.get("credits") or {}, (payload.get("credits") or {}).get("balance")
-    if credits.get("has_credits") and _is_num(balance):
-        details.append(f"Credits balance: ${float(balance):.2f}")
-    elif credits.get("has_credits") and credits.get("unlimited"):
-        details.append("Credits balance: unlimited")
+    credits_line = _codex_credits_line(payload.get("credits"))
+    if credits_line:
+        details.append(credits_line)
     return _snapshot("openai-codex", "usage_api", windows, details, plan=_title_case_slug(payload.get("plan_type")),
                      raw=payload)
 

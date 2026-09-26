@@ -4337,7 +4337,7 @@ class GatewayRunner(
         return GatewayRunner._get_or_create_pool(
             self, "_executor", lambda: _UnboundedThreadExecutor(thread_name_prefix="hermes-gateway"))
 
-    def _get_housekeeping_executor(self) -> concurrent.futures.ThreadPoolExecutor:
+    def _get_housekeeping_executor(self) -> concurrent.futures.Executor:
         """Return the gateway-owned executor for best-effort session housekeeping."""
         return GatewayRunner._get_or_create_pool(
             self, "_housekeeping_executor",

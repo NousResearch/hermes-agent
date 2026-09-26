@@ -25,6 +25,7 @@ import pytest
 
 from gateway.run import GatewayRunner
 
+
 def _runner(cleanup=None, *, cleanup_timeout=0.5):
     runner = GatewayRunner.__new__(GatewayRunner)
     runner._executor_lock = threading.Lock()

@@ -199,8 +199,7 @@ def _normalize_to_supported_image(
             "This is an SVG, which vision models cannot read directly, and no "
             "SVG rasterizer is installed (tried cairosvg, svglib, rsvg-convert, "
             "inkscape). Convert the SVG to PNG first — e.g. open it in a browser "
-            "and screenshot it, or install a rasterizer "
-            "(`pip install cairosvg`) — then re-run vision_analyze on the PNG.")
+            "and screenshot it — then re-run vision_analyze on the PNG.")
     # HEIF/AVIF need a codec Pillow's core doesn't always carry, served by DIFFERENT optional
     # backends that must not be gated on one another: HEIC/HEIF (HEVC) needs the pillow-heif
     # plugin registered; AVIF (AV1) is native in Pillow >= 11.3 while pillow-heif wheels are
@@ -309,7 +308,7 @@ def _crop_image_region(
         from PIL import Image
     except ImportError:
         return None, None, (
-            "region cropping requires Pillow (`pip install Pillow`); "
+            "region cropping requires Pillow (run `hermes pm repair`); "
             "retry without the region parameter.")
     if not (isinstance(region, (list, tuple)) and len(region) == 4
             and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in region)):

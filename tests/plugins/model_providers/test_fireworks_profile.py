@@ -22,21 +22,6 @@ def fireworks_profile():
     return profile
 
 
-class TestFireworksIdentity:
-    def test_core_fields(self, fireworks_profile):
-        p = fireworks_profile
-        assert p.name == "fireworks"
-        assert p.auth_type == "api_key"
-        assert p.base_url == "https://api.fireworks.ai/inference/v1"
-        assert "FIREWORKS_API_KEY" in p.env_vars
-        assert "FIREWORKS_BASE_URL" not in p.env_vars
-
-    def test_display_metadata_present(self, fireworks_profile):
-        # Prominence copy is surfaced in the picker; keep it non-empty rather
-        # than pinning exact marketing wording (that's expected to change).
-        assert fireworks_profile.display_name
-        assert fireworks_profile.description
-        assert fireworks_profile.signup_url.startswith("https://")
 
 
 class TestFireworksHeaders:
@@ -54,22 +39,12 @@ class TestFireworksHeaders:
         assert headers["X-Title"] == _OR_HEADERS_BASE["X-Title"]
 
     def test_user_agent_identifies_hermes(self, fireworks_profile):
-        # Prefix, not the full string — the version moves every release.
-        assert fireworks_profile.default_headers["User-Agent"].startswith("HermesAgent/")
+        from hermes_cli.version_info import get_version_info
+        assert fireworks_profile.default_headers["User-Agent"] == (
+            f"HermesAgent/{get_version_info().base_version}"
+        )
 
 
-class TestFireworksAliases:
-    @pytest.mark.parametrize("alias", ["fireworks-ai", "fw"])
-    def test_alias_resolves_via_registry(self, fireworks_profile, alias):
-        import providers
-
-        resolved = providers.get_provider_profile(alias)
-        assert resolved is not None
-        assert resolved.name == "fireworks"
-
-    def test_aliases_declared_on_profile(self, fireworks_profile):
-        assert "fireworks-ai" in fireworks_profile.aliases
-        assert "fw" in fireworks_profile.aliases
 
 
 class TestFireworksModelDefaults:

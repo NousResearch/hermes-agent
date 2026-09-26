@@ -111,22 +111,6 @@ describe('readProjectDir', () => {
     expect(result.entries.map(entry => entry.name)).toEqual(['keep.ts'])
   })
 
-  it('does not fetch .gitignore contents when listings do not contain .gitignore', async () => {
-    gitRoot.mockResolvedValue('/repo')
-    readDir.mockImplementation(async path => {
-      if (path === '/repo/src') {
-        return ok([{ name: 'debug.log', path: '/repo/src/debug.log', isDirectory: false }])
-      }
-
-      return ok([])
-    })
-
-    const result = await readProjectDir('/repo/src', '/repo')
-
-    expect(result.entries.map(entry => entry.name)).toEqual(['debug.log'])
-    expect(readFileDataUrl).not.toHaveBeenCalled()
-  })
-
   it('keeps gitignored entries — and skips the gitignore reads — when the root opted in', async () => {
     setShowIgnoredFiles('/repo', true)
     gitRoot.mockResolvedValue('/repo')

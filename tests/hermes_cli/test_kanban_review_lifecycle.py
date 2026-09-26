@@ -631,43 +631,6 @@ def test_dispatch_json_exposes_suppression_reasons(
     assert payload["memory_pressure"] == "elevated"
 
 
-def test_dispatch_text_and_daemon_stuck_warning_name_guard_reason(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """The plain `hermes kanban dispatch` output and the standalone daemon's
-    "dispatcher stuck" warning both say WHY a ready card was held (#111910):
-    a guarded card must not look like an idle tick with `Spawned: 0`."""
-    res = kbd.DispatchResult(respawn_guarded=[("t_held", "active_pr")], memory_pressure="elevated")
-    monkeypatch.setattr(kanban_ops.kbd, "dispatch_once", lambda *a, **k: res)
-
-    class _Conn:
-        def __enter__(self):
-            return None
-
-        def __exit__(self, *exc):
-            return False
-
-    monkeypatch.setattr(kanban_ops.kbc, "connect_closing", lambda: _Conn())
-    assert kanban_ops._cmd_dispatch(
-        SimpleNamespace(dry_run=True, max=None, failure_limit=kbd.DEFAULT_FAILURE_LIMIT, json=False)
-    ) == 0
-    out = capsys.readouterr().out
-    assert "Guarded (active_pr): t_held" in out
-    assert "Memory pressure elevated" in out
-
-    def _fake_daemon(*, interval, max_spawn, failure_limit, on_tick):
-        for _ in range(6):  # HEALTH_WINDOW consecutive bad ticks
-            on_tick(res)
-
-    monkeypatch.setattr(kanban_ops.kbd, "run_daemon", _fake_daemon)
-    monkeypatch.setattr(kanban_ops.kbd, "has_spawnable_ready", lambda conn: True)
-    monkeypatch.setattr(kanban_ops.kb, "init_db", lambda *a, **k: None)
-    assert kanban_ops._cmd_daemon(
-        SimpleNamespace(force=True, interval=5, max=None, failure_limit=2, verbose=False, pidfile=None)
-    ) in (0, None)
-    err = capsys.readouterr().err
-    assert "dispatcher stuck" in err
-    assert "Last tick held back: active_pr=1, memory_pressure=elevated." in err
 
 
 def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(

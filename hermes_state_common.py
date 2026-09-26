@@ -10,6 +10,7 @@ import sys
 import time
 from typing import Any
 
+from hermes_cli.timefmt import EPOCH_MAX, EPOCH_MIN
 from agent.skill_commands import SKILL_EXCERPT_JOINT, SKILL_SCAFFOLD_SQL_LIKE, describe_skill_invocation
 from agent.context_compressor import (LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX, _MERGED_PRIOR_CONTEXT_HEADER,
     _MERGED_SUMMARY_DELIMITER, _SUMMARY_END_MARKER)
@@ -200,6 +201,17 @@ def _legacy_reset_child_sql(alias: str, reasons_sql: str) -> str:
         f"            AND {alias}.session_key != ''            AND {alias}.session_key = p.session_key)")
 
 
+def _non_continuation_child_sql(child: str = "", parent: str = "?") -> str:
+    """``  AND ...`` clauses rejecting children that are NOT compression continuations of *parent*
+    (branch/delegate/reset forks, tool sessions).  Markers are bound to the parent id: continuations
+    inherit ``model_config`` verbatim, so a marker naming another row is inherited, not a fork.
+    ``child`` is the column prefix (``""``, ``"c."``); single owner so prune and compression agree."""
+    return "".join(
+        f"  AND COALESCE({_sql_json_extract(f'{child}model_config', f'$.{marker}')}, '') != {parent}\n"
+        for marker in ("_branched_from", "_delegate_from", "_reset_from")
+    ) + f"  AND COALESCE({child}source, '') != 'tool'\n"
+
+
 # A reset starts a separate user-visible conversation though rows keep parent_session_id for lineage.
 # Stable marker, or the same-key fallback for pre-marker rows (exact key keeps subagent children out).
 _RESET_CHILD_SQL = (f"{_sql_json_extract('{a}.model_config', '$._reset_from')} IS NOT NULL"
@@ -216,12 +228,24 @@ def _ephemeral_child_sql(alias: str = "s") -> str:
         f" AND NOT ({_COMPRESSION_CHILD_SQL.format(a=alias)}) AND NOT ({_RESET_CHILD_SQL.format(a=alias)}))")
 
 
+_SQL_IN_WINDOW = f"BETWEEN {EPOCH_MIN!r} AND {EPOCH_MAX!r}"
+
+
+def _sql_in_window(expr: str) -> str:
+    """*expr* when it is inside the ``coerce_epoch`` window, else NULL."""
+    return f"(SELECT _win.v FROM (SELECT {expr} AS v) _win WHERE _win.v {_SQL_IN_WINDOW})"
+
+
 def _sql_freshest_of(activity: str, session_id_expr: str, started: str) -> str:
     """Freshest of *activity* and the latest message timestamp for *session_id_expr*, else *started*.
-    Heartbeats are rate-limited (~60s) so ``last_activity_at`` can lag a newer message; never use it alone."""
-    msg_max = f"(SELECT MAX(_act_m.timestamp) FROM messages _act_m WHERE _act_m.session_id = {session_id_expr})"
-    return (f"COALESCE((SELECT MAX(_act_v.v) FROM (SELECT {activity} AS v UNION ALL SELECT {msg_max}) _act_v), "
-        f"{started})")
+    Heartbeats are rate-limited (~60s) so ``last_activity_at`` can lag a newer message; never use it alone.
+    Cells outside the ``coerce_epoch`` window (garbage doubles salvaged from a damaged page, TEXT) are
+    skipped, fallback included, or one bad row pins the session's recency to ``5e+246`` (#91536); a
+    session with no trusted cell at all is NULL."""
+    msg_max = (f"(SELECT MAX(_act_m.timestamp) FROM messages _act_m WHERE _act_m.session_id = {session_id_expr}"
+        f" AND _act_m.timestamp {_SQL_IN_WINDOW})")
+    return (f"COALESCE((SELECT MAX(_act_v.v) FROM (SELECT {activity} AS v UNION ALL SELECT {msg_max}) _act_v"
+        f" WHERE _act_v.v {_SQL_IN_WINDOW}), {_sql_in_window(started)})")
 
 
 def _sql_session_last_active(alias: str = "s") -> str:
@@ -387,6 +411,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     compression_fallback_streak INTEGER NOT NULL DEFAULT 0,
     compression_ineffective_count INTEGER NOT NULL DEFAULT 0,
     compression_recovery_deadline REAL,
+    compression_overload_streak INTEGER NOT NULL DEFAULT 0,
     profile_name TEXT,
     transport_profile TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,
@@ -669,6 +694,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_handoff_state
     ON sessions(handoff_state, started_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_system_prompt_hash
     ON sessions(system_prompt_hash);
+CREATE INDEX IF NOT EXISTS idx_sessions_tool_names
+    ON sessions(tool_names);
 -- Recent-session browsing must never derive recency by scanning messages.
 -- This expression is the durable, indexable approximation used to preselect
 -- a small candidate set before compression-chain and preview hydration.

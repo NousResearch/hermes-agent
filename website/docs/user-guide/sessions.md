@@ -456,7 +456,7 @@ hermes sessions export --format md --model sonnet --min-messages 50 --redact
 hermes sessions export --format md --session-id 20250305_091523_a1b2c3d4 --delete-after-verified --yes
 ```
 
-Markdown/QMD export writes one `.md` or `.qmd` file per exported session plus a `manifest.jsonl` with the file path, message count, lineage ids, and SHA-256. Bulk export requires at least one filter; a bare bulk export is refused. `--delete-after-verified` is intentionally limited to `--session-id` and requires `--yes`. Because deleting a parent session also removes its delegate/subagent sessions, this mode exports and verifies each delegate in a separate file before deleting anything. If the delegate set changes during export, deletion is refused. `--redact` scrubs secrets (API keys, tokens, credentials) from message content and tool output before writing — recommended for any export you plan to share.
+Markdown/QMD export writes one `.md` or `.qmd` file per exported session plus a `manifest.jsonl` with the file path, message count, lineage ids, and SHA-256. Bulk export requires at least one filter; a bare bulk export is refused. `--delete-after-verified` is intentionally limited to `--session-id` and requires `--yes`. Because deleting a parent session also removes its delegate/subagent sessions, this mode exports and verifies each delegate in a separate file before deleting anything. Markdown/QMD files hold the full history shown by the session, including turns archived by in-place compaction. Deletion compares that exact display transcript and the delegate set again inside the same database transaction that performs the delete; any intervening append, rewrite, rewind, compaction, or delegate change refuses deletion. The same display-history rule applies to `--format html`, `--only user-prompts` (with either Markdown or JSONL output), and `/save md|html`. Full-session JSON/JSONL exports and `/save json` remain live-only because importing archived turns would restore them as live model context. `--redact` scrubs secrets (API keys, tokens, credentials) from message content and tool output before writing — recommended for any export you plan to share.
 
 ### Delete a Session
 
@@ -467,6 +467,8 @@ hermes sessions delete 20250305_091523_a1b2c3d4
 # Delete without confirmation
 hermes sessions delete 20250305_091523_a1b2c3d4 --yes
 ```
+
+Deleting a session that is still open in a running chat does not stop that chat: its next save recreates the session under the same id with the full in-memory transcript. Close the chat first if you want the session gone.
 
 ### Rename a Session
 
@@ -569,6 +571,7 @@ delete them too.
 
 :::info
 Pruning only deletes **ended** sessions (sessions that have been explicitly ended or auto-reset). Active sessions are never pruned.
+A conversation that compression split into several sessions is pruned as a unit: its older segments stay while any later segment does.
 :::
 
 ### Bulk-Archive Sessions
@@ -656,6 +659,54 @@ conversation stays readable via `/resume` and session search either way —
 routing is the only thing the repair changes. Back up first
 (`cp ~/.hermes/state.db ~/.hermes/state.db.bak`).
 
+### Repair Degraded Stored Prompts
+
+Older builds affected by #122822 could let gateway hygiene or gateway `/compress`
+persist a detached maintenance agent's reduced-toolset system prompt over the
+live session. After the root fix in PR #122825 is installed, use
+`hermes sessions repair-prompts` to find rows that were already degraded.
+
+The scan is conservative: it only proposes a repair when the stored prompt is
+missing the `## Skill Safety` guidance **and** the persisted `tools[]` pin
+contains `skill_manage` (which always emits that guidance). Rows with no
+readable pin, or with a `memory`-only pin (which is also a legitimate
+`toolsets: [memory]` setup), are reported as **unverifiable** and are not
+changed by this scan; clear them explicitly by `SESSION_ID` if needed. A
+memory-only row also becomes repairable on its own: once the session is resumed, its
+`tools[]` pin re-pins the full tool surface, after which a scan sees
+`skill_manage` without the Skill Safety guidance and clears it.
+
+```bash
+# Report verified candidates and unverifiable rows; writes nothing
+hermes sessions repair-prompts
+
+# Clear verified degraded prompts after confirmation
+hermes sessions repair-prompts --apply
+
+# Machine-readable report
+hermes sessions repair-prompts --json
+
+# Non-interactive automation: apply and report the ids actually cleared
+hermes sessions repair-prompts --apply --json
+
+# Explicit destructive override for one session (id or unique prefix).
+# This clears the stored prompt even when it is healthy.
+hermes sessions repair-prompts SESSION_ID --apply
+```
+
+Clearing the prompt intentionally stores NULL; the next turn rebuilds and persists healthy bytes,
+which causes one expected
+`Stored system prompt ... is null; rebuilding from scratch` warning for each
+repaired session. That warning is the consequence of this explicit repair, not
+evidence of a new corruption.
+
+Run the repair only after the #122822 root fix is present; otherwise a later
+maintenance compaction can degrade the row again.
+
+A running gateway keeps each cached session's old prompt in memory, so restart
+the gateway after `--apply` (`hermes gateway restart`) for repaired rows to
+take effect.
+
 ### Repair State Crossed Between Profiles
 
 Every profile owns one `state.db`, and every gateway session key names the
@@ -725,11 +776,13 @@ waiting out openers (a holder that appears mid-way makes SQLite refuse instead
 of racing it), and verifies the file header reports the new mode. It reminds
 you to set `database.journal_mode` to the same value when the config disagrees,
 because the next open re-applies the configured mode. The holder scan is local
-and POSIX-only, so it cannot see a process in another container or VM sharing
-the volume, and on Windows there is no scan at all — the command refuses there
-outright unless you pass `--force` after stopping every Hermes process
-yourself. Enabling WAL is also refused when the store sits on a cross-VM
-filesystem (virtiofs/9p), where WAL shared memory corrupts silently.
+(open-file tables on Linux/macOS, the Restart Manager on Windows), so it
+cannot see a process in another container or VM sharing the volume. If the
+scan itself fails the command refuses because it cannot prove the store is
+quiet; `--force` waives only that case after you have stopped every Hermes
+process yourself — a process the scan does find is always refused. Enabling
+WAL is also refused when the store sits on a cross-VM filesystem (virtiofs/9p),
+where WAL shared memory corrupts silently.
 
 
 ## Importing Sessions from Claude Code and Codex CLI
@@ -1025,7 +1078,9 @@ Only **ended** sessions are ever deleted. Active sessions are never auto-pruned,
 regardless of age. Ended sessions are aged from their last activity — the
 freshest of live activity, latest message, or session start — so a long-lived
 conversation used recently is not deleted merely because it began before the
-retention window.
+retention window. The same holds for a conversation that compression split into
+several sessions: its older segments are kept while any later segment is, and
+are pruned together with it once the whole conversation qualifies.
 
 **Stale open sessions from automation.** Some producers — cron jobs, kanban
 workers, subagents, one-shot CLI runs — can die without ever marking their

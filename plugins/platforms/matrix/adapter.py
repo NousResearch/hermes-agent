@@ -703,8 +703,8 @@ def matrix_deps_present() -> bool:
     and runs from ``create_adapter()`` when this returns False (#79812).
     """
     try:
-        from tools.lazy_deps import is_available
-        return is_available("platform.matrix")
+        from pm import available as is_available
+        return is_available("matrix")
     except Exception:  # pragma: no cover — defensive
         return False
 
@@ -728,33 +728,38 @@ def ensure_matrix_deps() -> bool:
     whole ``platform.matrix`` group when ANY declared package is missing — short-circuiting on
     ``import mautrix`` left asyncpg/aiosqlite uninstalled forever.
 
-    Lazy-installs the full ``platform.matrix`` feature group via ``tools.lazy_deps.ensure_and_bind``
-    whenever any of the declared packages (mautrix, Markdown, aiosqlite, asyncpg, aiohttp-socks) is missing
-    — not just mautrix itself. Previously this short-circuited on ``import mautrix``, which left the other
-    four packages uninstalled forever and broke E2EE connect with ``No module named 'asyncpg'`` (#31116).
+    Lazy-installs the full ``platform.matrix`` feature group via
+    ``pm.extras.ensure_and_bind`` whenever any of the declared
+    packages (mautrix, Markdown, aiosqlite, asyncpg, aiohttp-socks) is
+    missing — not just mautrix itself.  Previously this short-circuited on
+    ``import mautrix``, which left the other four packages uninstalled
+    forever and broke E2EE connect with ``No module named 'asyncpg'``
+    (#31116).  Rebinds module-level type globals on success.
     """
-    try:
-        from tools.lazy_deps import feature_missing, ensure_and_bind
-        missing = feature_missing("platform.matrix")
-    except Exception as exc:  # pragma: no cover — defensive
-        logger.debug("Matrix: lazy_deps lookup failed: %s", exc)
-        missing = ()
-        ensure_and_bind = None  # type: ignore[assignment]
-    if ensure_and_bind is None:
+    from pm import extras
+
+    def _import():
+        from mautrix.types import (
+            ContentURI, EventID, EventType, PresenceState, RoomCreatePreset, RoomID, TrustState, UserID)
+        return {
+            "ContentURI": ContentURI,
+            "EventID": EventID,
+            "EventType": EventType,
+            "PresenceState": PresenceState,
+            "RoomCreatePreset": RoomCreatePreset,
+            "RoomID": RoomID,
+            "TrustState": TrustState,
+            "UserID": UserID,
+        }
+
+    # A complete install (module-level imports already bound the types) needs no sync; only a
+    # partial one goes through ensure_and_bind, which rebinds after the install.
+    if extras.missing("matrix") and not extras.ensure_and_bind("matrix", _import, globals()):
+        logger.warning(
+            "Matrix: required packages not installed or need a restart. "
+            "Run `hermes pm install`, then restart Hermes."
+        )
         return False
-    if missing:
-        def _import():
-            from mautrix.types import (
-                ContentURI, EventID, EventType, PresenceState, RoomCreatePreset, RoomID, TrustState, UserID)
-            return {
-                "ContentURI": ContentURI, "EventID": EventID, "EventType": EventType, "PresenceState": PresenceState,
-                "RoomCreatePreset": RoomCreatePreset, "RoomID": RoomID, "TrustState": TrustState, "UserID": UserID}
-        if not ensure_and_bind("platform.matrix", _import, globals(), prompt=False):
-            logger.warning(
-                "Matrix: required packages not installed (%s). Run: pip install "
-                "'mautrix[encryption]' asyncpg aiosqlite Markdown aiohttp-socks",
-                ", ".join(missing) if missing else "platform.matrix")
-            return False
     e2ee_mode = _resolve_e2ee_mode()
     if e2ee_mode == "required" and not _check_e2ee_deps():
         logger.error(
@@ -1435,7 +1440,7 @@ class MatrixAdapter(BasePlatformAdapter):
         root = result.message_id if result.success else None
         if not root:
             return None
-        self._threads.mark(str(root))  # replies in this thread bypass require_mention, like inbound roots
+        await self._threads.mark_async(str(root))  # replies in this thread bypass require_mention, like inbound roots
         return str(root)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
@@ -2080,7 +2085,7 @@ class MatrixAdapter(BasePlatformAdapter):
             user_name=display_name, thread_id=thread_id, chat_topic=identity.room_topic,
             guild_id=identity.server_name, parent_chat_id=room_id if thread_id else None, message_id=event_id)
         if thread_id:
-            self._threads.mark(thread_id)  # covers real roots and synthetic ones alike
+            await self._threads.mark_async(thread_id)  # covers real roots and synthetic ones alike
         self._background_read_receipt(room_id, event_id)
         return body, is_dm, chat_type, thread_id, display_name, source
 
@@ -3088,19 +3093,15 @@ def interactive_setup() -> None:
         if want_e2ee:
             save_env_value("MATRIX_ENCRYPTION", "true")
             print_success("E2EE enabled")
-        matrix_pkg = "mautrix[encryption]" if want_e2ee else "mautrix"
-        from tools.lazy_deps import ensure as _lazy_ensure, feature_missing
-        _missing_before = feature_missing("platform.matrix")
-        if _missing_before:
-            print_info(f"Installing {matrix_pkg} (+ {len(_missing_before)} runtime deps)...")
-            try:
-                _lazy_ensure("platform.matrix", prompt=False)
-                print_success(f"{matrix_pkg} installed")
-            except Exception as exc:
-                print_warning(
-                    "Install failed — run manually: pip install "
-                    "'mautrix[encryption]' asyncpg aiosqlite Markdown aiohttp-socks")
-                print_info(f"  Error: {exc}")
+        try:
+            from pm import sync_venv
+
+            print_info("Preparing Matrix dependencies...")
+            sync_venv(["matrix"], explicit=True)
+            print_success("Matrix dependencies prepared. Restart Hermes to use them.")
+        except Exception as exc:
+            print_warning(f"Matrix dependencies could not be prepared: {exc}")
+            print_info("Run `hermes pm install`, then restart Hermes.")
         print_info("🔒 Security: Restrict who can use your bot")
         print_info("   Matrix user IDs look like @username:server")
         allowed_users = prompt("Allowed user IDs (comma-separated, leave empty for open access)")

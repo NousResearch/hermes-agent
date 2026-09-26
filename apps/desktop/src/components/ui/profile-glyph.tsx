@@ -1,4 +1,5 @@
 import { profileColorSoft } from '@/lib/profile-color'
+import { profileShortLabel } from '@/lib/profile-short-label'
 import { cn } from '@/lib/utils'
 
 import { Codicon } from './codicon'
@@ -26,7 +27,7 @@ export function ProfileGlyph({
     )
   }
 
-  const initial = name.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'
+  const initial = profileShortLabel(name)
 
   return (
     <span

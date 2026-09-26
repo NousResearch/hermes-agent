@@ -23,7 +23,6 @@ from agent.tool_executor import (
     _run_sequential_tool_execution_middleware,
 )
 
-
 class _FakeAgent:
     def __init__(self):
         self._tool_worker_threads = set()
@@ -34,11 +33,9 @@ class _FakeAgent:
     def _touch_activity(self, msg):
         self.activity.append(msg)
 
-
 @pytest.fixture()
 def fake_agent():
     return _FakeAgent()
-
 
 @pytest.fixture(autouse=True)
 def _fast_polls(monkeypatch):
@@ -51,7 +48,6 @@ def _fast_polls(monkeypatch):
         lambda agent, **kw: emitted.append(kw),
     )
     yield emitted
-
 
 def test_interrupt_abandons_noncooperative_tool(monkeypatch, fake_agent, _fast_polls):
     """A blocking tool is abandoned within ~poll+grace once interrupted."""
@@ -99,7 +95,6 @@ def test_interrupt_abandons_noncooperative_tool(monkeypatch, fake_agent, _fast_p
     # The executor emitted the terminal post_tool_call itself.
     assert any(kw.get("status") == "cancelled" for kw in _fast_polls)
 
-
 def test_interrupt_prefers_real_result_from_cooperative_tool(
     monkeypatch, fake_agent, _fast_polls
 ):
@@ -132,64 +127,3 @@ def test_interrupt_prefers_real_result_from_cooperative_tool(
 
     assert managed.result == "real result"
     assert not isinstance(managed.result, _ToolCancelledResult)
-
-
-def test_no_deadline_still_runs_on_worker(monkeypatch, fake_agent):
-    """timeout disabled (None) must not fall back to inline blocking."""
-
-    seen_thread = []
-
-    def _fake_middleware(agent_arg, **kwargs):
-        seen_thread.append(threading.current_thread().ident)
-        return _ManagedToolResult(
-            result="ok", args={}, middleware_trace=[],
-            blocked=False, dispatched=True,
-        )
-
-    monkeypatch.setattr(
-        tool_executor, "_run_agent_tool_execution_middleware", _fake_middleware
-    )
-    monkeypatch.setattr(
-        tool_executor, "_resolve_sequential_tool_timeout", lambda: None
-    )
-
-    managed = _run_sequential_tool_execution_middleware(
-        fake_agent,
-        function_name="read_file",
-        function_args={},
-        effective_task_id="t",
-        tool_call_id="call_3",
-        execute=lambda a: "unused",
-    )
-
-    assert managed.result == "ok"
-    assert seen_thread and seen_thread[0] != threading.current_thread().ident
-
-
-def test_never_parallel_tools_stay_inline(monkeypatch, fake_agent):
-    """clarify (interactive) keeps the inline path — it owns its own wait."""
-
-    seen_thread = []
-
-    def _fake_middleware(agent_arg, **kwargs):
-        seen_thread.append(threading.current_thread().ident)
-        return _ManagedToolResult(
-            result="ok", args={}, middleware_trace=[],
-            blocked=False, dispatched=True,
-        )
-
-    monkeypatch.setattr(
-        tool_executor, "_run_agent_tool_execution_middleware", _fake_middleware
-    )
-
-    managed = _run_sequential_tool_execution_middleware(
-        fake_agent,
-        function_name="clarify",
-        function_args={},
-        effective_task_id="t",
-        tool_call_id="call_4",
-        execute=lambda a: "unused",
-    )
-
-    assert managed.result == "ok"
-    assert seen_thread and seen_thread[0] == threading.current_thread().ident

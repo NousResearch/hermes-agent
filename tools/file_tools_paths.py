@@ -9,7 +9,10 @@ edits to the agent process cwd, e.g. the main repo during a worktree session).
 import os
 import posixpath
 import sys
+import time
 from pathlib import Path, PurePosixPath
+
+from agent.runtime_self_protection import split_entry
 
 # ``TERMINAL_CWD`` values that mean "not configured" ("." from a stale config;
 # "auto"/"cwd" are wizard placeholders). gateway/run.py sanitizes the same set.
@@ -17,6 +20,9 @@ _TERMINAL_CWD_SENTINELS = frozenset({"", ".", "./", "auto", "cwd"})
 _CONTAINER_PATH_BACKENDS_FALLBACK = frozenset({"docker", "singularity", "modal", "daytona", "vercel_sandbox"})
 # Backend name inferred from the live environment's class name (first match wins).
 _ENV_CLASS_NAME_HINTS = ("local", "ssh", "docker", "singularity", "modal", "daytona")
+# Container task id -> monotonic time of the last failed SSH bring-up in path resolution.
+_SSH_HOME_RETRY_AFTER = 30.0
+_ssh_home_failed_at: dict[str, float] = {}
 
 
 def _expand_tilde(path: str) -> str:
@@ -163,13 +169,97 @@ def _anchor(text: str, base, container_paths: bool) -> Path | PurePosixPath:
     return p.resolve()
 
 
+def _ssh_remote_anchor(task_id: str) -> str:
+    """Working directory on the SSH target, read RAW: ``_authoritative_workspace_root``
+    expands ``~`` on the Hermes host, which names a directory the remote does not have.
+
+    Same precedence (session record, registered override, ``$TERMINAL_CWD``); a
+    value that is neither ``~``-prefixed nor POSIX-absolute (a Windows or relative
+    host path) is skipped. ``coerce_ssh_remote_cwd`` maps the host subprocess home back to ``~``.
+    """
+    from agent.runtime_cwd import scope_terminal_cwd
+    from tools.terminal_tool import get_session_cwd, resolve_task_overrides
+    from tools.terminal_tool_config import coerce_ssh_remote_cwd
+
+    for raw in (get_session_cwd(task_id), resolve_task_overrides(task_id).get("cwd"), scope_terminal_cwd()):
+        text = str(raw or "").strip()
+        if text.lower() not in _TERMINAL_CWD_SENTINELS and (text.startswith("~") or posixpath.isabs(text)):
+            return coerce_ssh_remote_cwd(text, "ssh")
+    return "~"
+
+
+def _ssh_remote_home(task_id: str) -> str | None:
+    """The SSH user's home as detected at connect (``echo $HOME``), else None.
+
+    Brings the environment up through the file tools' own creator (same cwd
+    and cache as the call that follows) when none is live: they resolve before
+    touching the backend, and a first call keyed ``~/x`` while later ones key
+    ``/home/u/x`` splits read tracking and staleness checks for one file. A
+    failed bring-up is remembered briefly so one tool call's several
+    resolutions don't each wait out the SSH connect timeout; the tool's own
+    backend call reports the error.
+    """
+    from tools.file_tools import _get_file_ops
+    from tools.terminal_tool import _resolve_container_task_id
+    from tools.terminal_tool_lifecycle import get_active_env
+
+    key = _resolve_container_task_id(task_id)
+    env = get_active_env(task_id)
+    if env is None:
+        if time.monotonic() - _ssh_home_failed_at.get(key, float("-inf")) < _SSH_HOME_RETRY_AFTER:
+            return None
+        try:
+            env = _get_file_ops(task_id).env
+        except Exception:  # noqa: BLE001 — connect failure
+            _ssh_home_failed_at[key] = time.monotonic()
+            return None
+    _ssh_home_failed_at.pop(key, None)
+    # A guessed /home/<user> (``echo $HOME`` failed) must not stand in for the real home.
+    home = getattr(env, "_remote_home", None) if getattr(env, "_remote_home_detected", False) else None
+    return home if isinstance(home, str) and posixpath.isabs(home) else None
+
+
+def _resolve_ssh_path(filepath: str, task_id: str) -> PurePosixPath:
+    """Resolve *filepath* in the SSH target's namespace, never via the Hermes host
+    (``Path.resolve()`` and ``get_subprocess_home()`` both name host directories).
+
+    ``~`` becomes the remote home once the live environment has detected it, so the
+    result is absolute and the write guards see the real target. Before that it stays
+    ``~``-prefixed for the remote shell; ``~user`` always does.
+    """
+    text = str(filepath or "").strip()
+    if not text.startswith("~") and not posixpath.isabs(text):
+        text = posixpath.join(_ssh_remote_anchor(task_id), text)
+    if text == "~" or text.startswith("~/"):
+        home = _ssh_remote_home(task_id)
+        text = home + text[1:] if home else text
+    if not text.startswith("~"):
+        return _normalize_without_host_deref(text)
+    head, _, tail = text.partition("/")
+    tail = posixpath.normpath(tail) if tail else "."
+    return PurePosixPath(head if tail == "." else f"{head}/{tail}")
+
+
+def _ssh_path_escapes_home(resolved: str) -> bool:
+    """True for a still-``~``-relative SSH path that climbs above ``~``: its absolute
+    target is unknown until the remote home is, so no path guard can classify it."""
+    tail = resolved.partition("/")[2] if resolved.startswith("~") else ""
+    return tail == ".." or tail.startswith("../")
+
+
 def _resolve_base_dir(
     task_id: str = "default", *, container_paths: bool | None = None) -> Path | PurePosixPath:
     """Return the ABSOLUTE base directory for resolving relative paths:
-    ``_authoritative_workspace_root``, else the process cwd as a last resort."""
-    root = _authoritative_workspace_root(task_id)
+    ``_authoritative_workspace_root``, else the process cwd as a last resort.
+
+    SSH resolves in the remote namespace (callers passing *container_paths* have
+    already ruled SSH out).
+    """
     if container_paths is None:
+        if _terminal_env_type_for_task(task_id) == "ssh":
+            return _resolve_ssh_path(".", task_id)
         container_paths = _uses_container_paths(task_id)
+    root = _authoritative_workspace_root(task_id)
     # A backend's relative cwd is anchored to the process cwd once, here.
     return _anchor(_host_text(root or os.getcwd(), container_paths), os.getcwd, container_paths)
 
@@ -177,26 +267,44 @@ def _resolve_base_dir(
 def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | PurePosixPath:
     """Resolve *filepath* against the task's absolute base directory
     (absolute inputs are returned resolved-but-unanchored)."""
+    if _terminal_env_type_for_task(task_id) == "ssh":
+        return _resolve_ssh_path(filepath, task_id)
     container_paths = _uses_container_paths(task_id)
     return _anchor(_host_text(filepath, container_paths),
                    lambda: _resolve_base_dir(task_id, container_paths=container_paths), container_paths)
 
 
+def _resolve_entry_for_task(filepath: str, task_id: str = "default") -> Path | PurePosixPath:
+    """``_resolve_path_for_task`` for an operation on the directory entry itself (delete,
+    rename): the parent is resolved, but a symlink in the last component is kept, since
+    resolving it aims the operation at the file the link points to."""
+    parent, name = split_entry(filepath)
+    if name in ("", ".", "..") or (not parent and name.startswith("~")):
+        return _resolve_path_for_task(filepath, task_id)
+    return _resolve_path_for_task(parent or ".", task_id) / name
 
-def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "default") -> str | None:
+
+
+def _path_resolution_warning(filepath: str, resolved: Path | PurePosixPath, task_id: str = "default") -> str | None:
     """Warn when a RELATIVE path resolved OUTSIDE the task's workspace root (the
     edit is about to land in a different checkout than the terminal's cwd).
-    ``None`` for absolute paths, an unknown root, or a path under the root."""
+    ``None`` for absolute paths, an unknown root, or a path under the root.
+    SSH compares in the remote namespace, as ``_resolve_path_for_task`` resolved it."""
     try:
-        if Path(_expand_tilde(filepath)).is_absolute():
-            return None
-        workspace_root = _authoritative_workspace_root(task_id)
-        if not workspace_root:
-            return None
-        if _uses_container_paths(task_id):
-            root = _normalize_without_host_deref(Path(_expand_tilde(workspace_root)))
+        if _terminal_env_type_for_task(task_id) == "ssh":
+            if filepath.startswith("~") or posixpath.isabs(filepath):
+                return None
+            root = _resolve_ssh_path(".", task_id)
         else:
-            root = Path(_expand_tilde(workspace_root)).resolve()
+            if Path(_expand_tilde(filepath)).is_absolute():
+                return None
+            workspace_root = _authoritative_workspace_root(task_id)
+            if not workspace_root:
+                return None
+            if _uses_container_paths(task_id):
+                root = _normalize_without_host_deref(Path(_expand_tilde(workspace_root)))
+            else:
+                root = Path(_expand_tilde(workspace_root)).resolve()
         if resolved.is_relative_to(root):
             return None
         return (

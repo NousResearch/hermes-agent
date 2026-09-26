@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 
-import yaml
+import hermes_yaml as yaml
 
 
 POOL_KEY = "sk-real-b-ai-pool-key-12345"

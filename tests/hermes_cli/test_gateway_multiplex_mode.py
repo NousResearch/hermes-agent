@@ -20,7 +20,6 @@ import hermes_constants
 from gateway.config import GatewayConfig, load_gateway_config
 from hermes_cli import gateway_migrate as gm
 from hermes_cli import gateway_multiplex_mode as mode
-from hermes_cli.config_defaults import DEFAULT_CONFIG
 
 
 @pytest.fixture
@@ -53,7 +52,6 @@ def _name(home: Path) -> str:
 def test_default_config_is_on_but_the_loader_leaves_an_unset_flag_undecided():
     """DEFAULT_CONFIG says on; GatewayConfig keeps "unset" distinguishable from "chosen" so the boot
     guard can tell them apart (an explicit value must survive verbatim)."""
-    assert DEFAULT_CONFIG["gateway"]["multiplex_profiles"] is True
     assert GatewayConfig.from_dict({}).multiplex_profiles is None
     assert not GatewayConfig.from_dict({}).multiplex_profiles  # readers treat undecided as off
     assert GatewayConfig.from_dict({"gateway": {"multiplex_profiles": False}}).multiplex_profiles is False
@@ -92,6 +90,36 @@ def test_preflight_blocker_and_single_profile_keep_the_unset_default_standalone(
         shutil.rmtree(root / sub)
     decision = mode.resolve_multiplex_mode(load_gateway_config())
     assert decision == mode.MultiplexDecision(False, "guard", mode.SINGLE_PROFILE_REASON)
+
+
+def test_standalone_named_profile_leaves_nothing_to_multiplex(fleet):
+    """A sole named profile that opts itself out via `gateway.standalone: true` is not
+    served, so the host still has a single profile to serve: guard, not multiplex."""
+    root, _services, _pids = fleet
+    shutil.rmtree(root / "profiles/ops")  # exactly one named profile remains
+    (root / "profiles/coder/config.yaml").write_text("gateway:\n  standalone: true\n")
+    decision = mode.resolve_multiplex_mode(load_gateway_config())
+    assert decision == mode.MultiplexDecision(False, "guard", mode.SINGLE_PROFILE_REASON)
+
+
+@pytest.mark.parametrize("flag", ["", "  multiplex_profiles: true\n", "  multiplex_profiles: false\n"])
+def test_standalone_launcher_never_multiplexes_other_profiles(fleet, flag):
+    from gateway.run import _profile_runtime_scope
+
+    root, _services, _pids = fleet
+    solo = root / "profiles/coder"
+    (solo / "config.yaml").write_text("gateway:\n  standalone: true\n" + flag)
+    # Real loader + runtime scopes: A -> B -> A, without borrowing the launch home's config.
+    for home in (solo, root, solo):
+        with _profile_runtime_scope(home):
+            cfg = load_gateway_config()
+            decision = mode.resolve_multiplex_mode(cfg)
+        if home == solo:
+            assert decision.enabled is False
+            assert cfg.multiplex_profiles is False
+            assert "this profile is standalone" in decision.reason
+        else:
+            assert decision.enabled is True
 
 
 def test_explicit_true_is_never_second_guessed_and_explicit_false_is_retired(fleet, monkeypatch):

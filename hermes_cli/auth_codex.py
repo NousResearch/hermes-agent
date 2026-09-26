@@ -71,10 +71,31 @@ def _codex_base_url() -> str:
     return os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/") or DEFAULT_CODEX_BASE_URL
 
 
+def _codex_pool_route_base_url(entry_base_url: Optional[str] = "") -> str:
+    """Base URL the chat route sends a pooled Codex credential to — the same rule
+    ``runtime_provider._pool_entry_mode_and_url`` applies (``HERMES_CODEX_BASE_URL`` > ``model.base_url``
+    while the row still carries the canonical URL > the row's own URL). A pooled gateway key belongs to
+    that host only; composing it with the ambient default sends it to chatgpt.com (#121486)."""
+    base = _stripped(entry_base_url).rstrip("/")
+    try:
+        from hermes_cli.config import load_config_readonly
+        from hermes_cli.runtime_provider import _pool_entry_mode_and_url
+        model_cfg = load_config_readonly().get("model")
+        return _pool_entry_mode_and_url(
+            "openai-codex", None, model_cfg if isinstance(model_cfg, dict) else {}, "", base)[1]
+    except Exception:
+        logger.debug("Codex pool route base resolution failed", exc_info=True)
+        # Profile-scoped override only (never the raw process env: a multiplexed sibling's gateway).
+        with suppress(Exception):
+            from agent.secret_scope import get_secret_str
+            base = _stripped(get_secret_str("HERMES_CODEX_BASE_URL", "")).rstrip("/") or base
+        return base or DEFAULT_CODEX_BASE_URL
+
+
 def _codex_runtime_result(
-    api_key: str, *, source: str, last_refresh: Optional[str]) -> Dict[str, Any]:
+    api_key: str, *, source: str, last_refresh: Optional[str], base_url: Optional[str] = None) -> Dict[str, Any]:
     return {
-        "provider": "openai-codex", "base_url": _codex_base_url(), "api_key": api_key,
+        "provider": "openai-codex", "base_url": base_url or _codex_base_url(), "api_key": api_key,
         "source": source, "last_refresh": last_refresh, "auth_mode": "chatgpt"}
 
 
@@ -337,30 +358,44 @@ def _codex_login_post(url: str, *, failure: Tuple[str, str], **kwargs: Any) -> "
 _CODEX_AUTH_BODY_MAX_BYTES = 1024 * 1024  # real OAuth/device-auth payloads are a few hundred bytes
 
 
-class _CappedByteStream(httpx.SyncByteStream):
-    """Body stream that raises once more than ``_CODEX_AUTH_BODY_MAX_BYTES`` came off the wire.
+def _capped_byte_stream_class() -> type:
+    """Build the capped stream subclass on first use.
 
-    httpx type-checks ``response.stream`` against ``SyncByteStream``, so the cap has to be a
-    stream subclass rather than a bare generator.
+    The base class is ``httpx.SyncByteStream``; naming it at module scope would resolve the
+    lazy ``httpx`` proxy at import time and put httpx back on the interactive-CLI startup path
+    (see ``auth_constants``).
     """
+    cached = getattr(_capped_byte_stream_class, "cls", None)
+    if cached is not None:
+        return cached
 
-    def __init__(self, response: "httpx.Response") -> None:
-        self._response, self._raw = response, response.stream
+    class _CappedByteStream(httpx.SyncByteStream):
+        """Body stream that raises once more than ``_CODEX_AUTH_BODY_MAX_BYTES`` came off the wire.
 
-    def __iter__(self) -> Iterator[bytes]:
-        total = 0
-        for chunk in self._raw:  # type: ignore[union-attr]  # sync client only
-            total += len(chunk)
-            if total > _CODEX_AUTH_BODY_MAX_BYTES:
-                self.close()
-                raise _codex_err(
-                    f"Codex auth response from {self._response.url.host} exceeded "
-                    f"{_CODEX_AUTH_BODY_MAX_BYTES // 1024} KiB; refusing to parse it.",
-                    "codex_auth_response_too_large", relogin=False)
-            yield chunk
+        httpx type-checks ``response.stream`` against ``SyncByteStream``, so the cap has to be a
+        stream subclass rather than a bare generator.
+        """
 
-    def close(self) -> None:
-        self._raw.close()  # type: ignore[union-attr]
+        def __init__(self, response: "httpx.Response") -> None:
+            self._response, self._raw = response, response.stream
+
+        def __iter__(self) -> Iterator[bytes]:
+            total = 0
+            for chunk in self._raw:  # type: ignore[union-attr]  # sync client only
+                total += len(chunk)
+                if total > _CODEX_AUTH_BODY_MAX_BYTES:
+                    self.close()
+                    raise _codex_err(
+                        f"Codex auth response from {self._response.url.host} exceeded "
+                        f"{_CODEX_AUTH_BODY_MAX_BYTES // 1024} KiB; refusing to parse it.",
+                        "codex_auth_response_too_large", relogin=False)
+                yield chunk
+
+        def close(self) -> None:
+            self._raw.close()  # type: ignore[union-attr]
+
+    _capped_byte_stream_class.cls = _CappedByteStream  # type: ignore[attr-defined]
+    return _CappedByteStream
 
 
 def _cap_codex_response_body(response: "httpx.Response") -> None:
@@ -370,7 +405,7 @@ def _cap_codex_response_body(response: "httpx.Response") -> None:
     200 with megabytes of "JSON" is cut off at the cap instead of being fully buffered and parsed
     (#55253). Same cap for every status: error bodies are small diagnostics too.
     """
-    response.stream = _CappedByteStream(response)
+    response.stream = _capped_byte_stream_class()(response)
 
 
 def _codex_http_client(**kwargs: Any) -> "httpx.Client":
@@ -562,7 +597,7 @@ def resolve_codex_runtime_credentials(
     usable access_token but the pool (``credential_pool.openai-codex``) does.
 
     This closes the divergence between the chat path (singleton-only via this function) and the auxiliary
-    path (pool-first via ``_read_codex_access_token``). Without this fallback, a user whose tokens live only
+    path (pool-first via ``auxiliary_client._resolve_codex_credential_and_base``). Without this fallback, a user whose tokens live only
     in the pool — for example after a manual pool seed, a partial re-auth, or pool-only restoration from a
     backup — gets a bare HTTP 401 ``Missing Authentication header`` from the wire instead of a usable
     credential. See issue #32992.
@@ -597,26 +632,31 @@ def resolve_codex_runtime_credentials(
             if imported:
                 data = {"tokens": imported, "last_refresh": imported.get("last_refresh")}
     if data is None:
-        pool_token = _pool_codex_access_token()
+        pool_token, pool_base = _pool_codex_credential()
         if pool_token and force_refresh and not read_only:
             # Pool-only setup: a forced refresh must rotate the pool entry, not resend its token.
             from agent.credential_pool import load_pool
             refreshed = load_pool("openai-codex").try_refresh_matching(api_key_hint=pool_token)
             pool_token = refreshed.runtime_api_key if refreshed is not None else ""
         if pool_token:
-            return _codex_runtime_result(pool_token, source="credential_pool", last_refresh=None)
+            # Report the host this row routes to, not the ambient default: a pooled gateway key
+            # paired with chatgpt.com leaks to every consumer of this result (#121486).
+            return _codex_runtime_result(pool_token, source="credential_pool", last_refresh=None,
+                                         base_url=_codex_pool_route_base_url(pool_base))
         pool_rate_limit = _codex_pool_rate_limit_status()
         if pool_rate_limit:
             # Before surfacing the persisted cooldown, ask the usage endpoint whether the quota
             # reset early (banked reset redeemed, plan upgraded): ``last_error_reset_at`` can be
-            # days in the future while the account is already usable again.
-            if _probe_codex_pool_entry_quota_restored(pool_rate_limit):
+            # days in the future while the account is already usable again. Never from a
+            # read-only caller: the picker fingerprint resolves on every cache-only read.
+            if not read_only and _probe_codex_pool_entry_quota_restored(pool_rate_limit):
                 logger.info("Codex quota restored upstream — clearing stale pool cooldown(s).")
                 clear_codex_pool_quota_cooldowns()
-                pool_token = _pool_codex_access_token()
+                pool_token, pool_base = _pool_codex_credential()
                 if pool_token:
                     return _codex_runtime_result(
-                        pool_token, source="credential_pool", last_refresh=None)
+                        pool_token, source="credential_pool", last_refresh=None,
+                        base_url=_codex_pool_route_base_url(pool_base))
             reset_at = pool_rate_limit.get("reset_at")
             in_future = isinstance(reset_at, (int, float)) and reset_at > time.time()
             raise _codex_quota_exhausted_error(int(reset_at - time.time()) if in_future else None)
@@ -801,7 +841,8 @@ def _probe_codex_pool_entry_quota_restored(entry: Dict[str, Any]) -> Optional[bo
             logger.debug("Failed to persist refreshed Codex pool tokens", exc_info=True)
     if not token:
         return None
-    return _probe_codex_quota_restored(token, base_url=entry.get("base_url"))
+    # The row keeps the canonical URL; a gateway key belongs to its route host (#121486).
+    return _probe_codex_quota_restored(token, base_url=_codex_pool_route_base_url(entry.get("base_url")))
 
 
 def clear_codex_pool_quota_cooldowns(access_token: Optional[str] = None) -> int:
@@ -874,12 +915,13 @@ def _pool_entries(auth_store: Dict[str, Any], provider_id: str) -> Optional[List
     return entries if isinstance(entries, list) else None
 
 
-def _pool_codex_access_token() -> str:
-    """First non-empty pool access_token not in an exhaustion cooldown window, else "".
+def _pool_codex_credential() -> Tuple[str, str]:
+    """``(access_token, row base_url)`` of the first pool entry with a non-empty access_token that is
+    not in an exhaustion cooldown window, so the caller routes the token to the host that row belongs
+    to; ``("", "")`` when none is usable.
 
     Fallback for ``resolve_codex_runtime_credentials`` when the singleton has no creds; reads
-    through ``read_credential_pool`` so a profile inherits the global-root pool (#34143).
-    """
+    through ``read_credential_pool`` so a profile inherits the global-root pool (#34143)."""
     from agent.credential_pool import _parse_absolute_timestamp
     from hermes_cli.auth import _nonempty_str, read_credential_pool
     try:
@@ -890,10 +932,10 @@ def _pool_codex_access_token() -> str:
             reset_at = _parse_absolute_timestamp(entry.get("last_error_reset_at"))
             in_cooldown = reset_at is not None and reset_at > time.time()
             if _nonempty_str(token) and not in_cooldown:
-                return token.strip()
+                return token.strip(), _stripped(entry.get("base_url"))
     except Exception:
         logger.debug("Codex pool fallback lookup failed", exc_info=True)
-    return ""
+    return "", ""
 
 
 def _login_openai_codex(args, pconfig: ProviderConfig, *, force_new_login: bool = False) -> None:

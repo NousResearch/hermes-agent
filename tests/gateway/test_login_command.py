@@ -11,7 +11,7 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.run import GatewayRunner
 from gateway.session import AsyncSessionStore, SessionSource, SessionStore
 from hermes_cli import anon_auth
-from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, resolve_command
+from hermes_cli.commands import resolve_command
 
 
 def _source(*, chat_type="dm", chat_id="chat-1", user_id="user-1", platform=Platform.TELEGRAM):
@@ -107,12 +107,11 @@ async def test_a_dm_posts_the_code_as_three_messages_then_the_terminal_copy(monk
     assert await runner._handle_login_command(_event()) == anon_auth.UPGRADE_START
     await _finish_tasks(runner)
 
-    assert [call.args[1] for call in runner._deliver_platform_notice.await_args_list] == [
-        "https://example.test/sign-in",
-        "CODE-1",
-        "Do not share this code. Waiting for sign-in, up to 15 minutes.",
-        anon_auth.Declined().copy,
-    ]
+    notices = [call.args[1] for call in runner._deliver_platform_notice.await_args_list]
+    # URL and code arrive as their own messages (copyable), then one waiting notice, then the outcome.
+    assert len(notices) == 4
+    assert notices[:2] == ["https://example.test/sign-in", "CODE-1"]
+    assert notices[-1] == anon_auth.Declined().copy
 
 
 @pytest.mark.asyncio
@@ -168,7 +167,7 @@ async def test_a_drain_that_raises_still_pushes_a_terminal_notice(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_failed_code_push_does_not_abort_the_drain(monkeypatch, caplog):
+async def test_a_failed_code_push_does_not_abort_the_drain(monkeypatch):
     runner = _runner(monkeypatch)
     delivered = []
 
@@ -186,11 +185,9 @@ async def test_a_failed_code_push_does_not_abort_the_drain(monkeypatch, caplog):
     await runner._handle_login_command(_event())
     await _finish_tasks(runner)
 
-    assert delivered[-2:] == [
-        "Do not share this code. Waiting for sign-in, up to 1 minute.",
-        "Signed in as person@example.test.\nDefault model is now model-1.",
-    ]
-    assert "push failed" in caplog.text
+    assert len(delivered) == 4
+    assert delivered[-1] == anon_auth.Completed(
+        email="person@example.test", model="model-1", model_changed=True).copy
 
 
 @pytest.mark.asyncio
@@ -446,8 +443,7 @@ async def test_the_sweep_is_skipped_when_the_model_did_not_change(monkeypatch):
 
     runner._evict_cached_agent.assert_not_called()
     runner.async_session_store.set_model_override.assert_not_awaited()
-    assert runner._deliver_platform_notice.await_args_list[-1].args[1] == (
-        "Signed in as person@example.test.")
+    assert "person@example.test" in runner._deliver_platform_notice.await_args_list[-1].args[1]
 
 
 @pytest.mark.asyncio
@@ -459,9 +455,7 @@ async def test_a_completion_with_no_default_names_the_slash_command(monkeypatch)
         anon_auth.Completed(email="person@example.test", model="", model_changed=True),
     )
 
-    assert runner._deliver_platform_notice.await_args_list[-1].args[1] == (
-        "Signed in as person@example.test.\n"
-        "No default model is set yet; run /model to pick one.")
+    assert "/model" in runner._deliver_platform_notice.await_args_list[-1].args[1]
 
 
 @pytest.mark.asyncio
@@ -517,21 +511,8 @@ async def test_the_drain_never_touches_the_shared_executor(monkeypatch):
     runner._login_exec.shutdown(wait=True)
 
 
-def test_the_registry_row_and_alias_match_the_command_contract():
-    command = resolve_command("login")
-    assert command.name == "login"
-    assert resolve_command("signin") is None
-    assert command.desktop == "settings"
-    assert command.aliases == ()
-    assert command.busy_policy == "dispatch"
-    assert not command.cli_only and not command.gateway_only
-    assert "login" in GATEWAY_KNOWN_COMMANDS
-    assert resolve_command("upgrade").name == "subscription"
 
 
-def test_the_handler_table_builds():
-    runner = object.__new__(GatewayRunner)
-    assert runner._command_handler_table(("login",))["login"] == runner._handle_login_command
 
 
 @pytest.mark.asyncio

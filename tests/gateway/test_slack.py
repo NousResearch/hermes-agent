@@ -4546,6 +4546,70 @@ class TestThreadImageContext:
         a._download_slack_file.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_cold_start_delivers_thread_root_audio_voice_note(
+        self, adapter_with_session_store
+    ):
+        """An audio/mp4 voice-note root is cached through the audio route and
+        delivered as VOICE while retaining its thread marker."""
+        a = self._prep(adapter_with_session_store)
+        a._download_slack_file = AsyncMock(return_value="/tmp/hermes-cached.mp4")
+        audio_url = "https://files.slack.com/T1-F_AUDIO/voice-note.mp4"
+        a._app.client.conversations_replies = self._replies(
+            root_files=[
+                {
+                    "id": "F_AUDIO",
+                    "name": "voice-note.mp4",
+                    "mimetype": "audio/mp4",
+                    "subtype": "slack_audio",
+                    "url_private_download": audio_url,
+                }
+            ]
+        )
+
+        await a._handle_slack_message(self._thread_event())
+
+        a.handle_message.assert_awaited_once()
+        msg_event = a.handle_message.call_args[0][0]
+        assert msg_event.media_urls == ["/tmp/hermes-cached.mp4"]
+        assert msg_event.media_types == ["audio/mp4"]
+        assert msg_event.message_type == MessageType.VOICE
+        assert "[audio: voice-note.mp4]" in msg_event.channel_context
+        a._download_slack_file.assert_awaited_once_with(
+            audio_url, ".mp4", audio=True, team_id="T_TEAM"
+        )
+
+    @pytest.mark.asyncio
+    async def test_cold_start_delivers_mislabeled_thread_root_voice_clip(
+        self, adapter_with_session_store
+    ):
+        """A Slack voice clip mislabeled video/mp4 still uses the audio route."""
+        a = self._prep(adapter_with_session_store)
+        a._download_slack_file = AsyncMock(return_value="/tmp/hermes-cached.mp4")
+        audio_url = "https://files.slack.com/T1-F_AUDIO/voice-note.mp4"
+        a._app.client.conversations_replies = self._replies(
+            root_files=[
+                {
+                    "id": "F_AUDIO",
+                    "name": "voice-note.mp4",
+                    "mimetype": "video/mp4",
+                    "subtype": "slack_audio",
+                    "url_private_download": audio_url,
+                }
+            ]
+        )
+
+        await a._handle_slack_message(self._thread_event())
+
+        a.handle_message.assert_awaited_once()
+        msg_event = a.handle_message.call_args[0][0]
+        assert msg_event.media_types == ["audio/mp4"]
+        assert msg_event.message_type == MessageType.VOICE
+        assert "[video: voice-note.mp4]" in msg_event.channel_context
+        a._download_slack_file.assert_awaited_once_with(
+            audio_url, ".mp4", audio=True, team_id="T_TEAM"
+        )
+
+    @pytest.mark.asyncio
     async def test_root_image_download_failure_degrades_to_marker(
         self, adapter_with_session_store
     ):

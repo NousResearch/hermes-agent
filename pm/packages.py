@@ -468,7 +468,7 @@ class Nodejs(_BionicDebArm, BinaryPackage, DebPackage):
         return f"https://nodejs.org/dist/v{version}/node-v{version}-{plat}.{ext}"
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
-        return node_latest_versions()
+        return node_latest_versions(target, host_target=current_target())
 
 
 @register

@@ -565,6 +565,8 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
             context_cwd_is_launch_artifact=_context_cwd_is_launch_artifact(session))
     finally:
         _clear_session_context(tokens)
+    with session["history_lock"]:
+        _retire_queued_user_rows(session, _queued_envelopes(session))  # discarded with the queue below
     session.update(updates)
     session.pop("queued_prompts", None)
     with session["history_lock"]:

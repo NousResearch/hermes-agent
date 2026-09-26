@@ -338,7 +338,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     # -(non-)reasoning and -multi-agent variants; "grok" is the catch-all.
     "grok-composer": 200000, "grok-build-latest": 500000, "grok-build": 256000, "grok-code-fast": 256000,
     "grok-2-vision": 8192, "grok-4-fast": 2000000, "grok-4.20": 2000000,
-    "grok-4.6": 500000, "grok-4.5": 500000, "grok-4.3": 1000000, "grok-4": 256000,
+    "grok-4.7": 500000, "grok-4.6": 500000, "grok-4.5": 500000, "grok-4.3": 1000000, "grok-4": 256000,
     "grok-3": 131072, "grok-2": 131072, "grok": 131072,
     # Kimi — K3 is 1 Mi (matches the endpoint-scoped override); older Kimi 256K.
     "kimi-k3": 1_048_576, "kimi": 262144,
@@ -1528,7 +1528,7 @@ def _model_name_suggests_minimax_m3(model: str) -> bool:
 _PRE_CATALOG_STALE_KEYS = frozenset({
     "minimax-m3",  # 1M; "minimax" catch-all persisted 204,800
     "muse-spark-1.3", "muse-spark",  # 1M; pre-entry builds fell through to the 256K fallback
-    "grok-4.3", "grok-4.6",  # 1M / 500K; "grok-4" catch-all persisted 256,000
+    "grok-4.3", "grok-4.6", "grok-4.7",  # 1M / 500K / 500K; "grok-4" catch-all persisted 256,000
     "grok-4-fast", "grok-4.20",  # 2M; fell through to the 256K fallback
     "qwen3.6-plus",  # 1M; "qwen" catch-all persisted 131,072
     # V4 / V4.1 Flash: 1M. Pre-entry builds matched the family catch-all and persisted 128K.

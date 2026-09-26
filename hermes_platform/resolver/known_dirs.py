@@ -25,6 +25,17 @@ def rust_tool_dirs() -> tuple[str, ...]:
     return ("~/.cargo/bin",) if _POSIX else ("%USERPROFILE%/.cargo/bin",)
 
 
+def uv_tool_dirs() -> tuple[str, ...]:
+    """uv's install locations outside PATH, in uv's own install order: the per-user
+    installer's ``~/.local/bin`` (every OS — that is where uv's docs put it), then
+    Homebrew (Apple Silicon ``/opt``, Intel / from-source ``/usr/local``). The tilde
+    form is deliberate: callers that only ``expanduser`` (the stdio launcher
+    fallback) get the same result as ``locate_command``'s expandvars+expanduser."""
+    if _POSIX:
+        return ("~/.local/bin", "/opt/homebrew/bin", "/usr/local/bin")
+    return ("~/.local/bin",)
+
+
 def node_tool_dirs() -> tuple[str, ...]:
     return ("~/.npm-global/bin", "~/.bun/bin", "~/.volta/bin") if _POSIX else ("%APPDATA%/npm", "%USERPROFILE%/.bun/bin", "%LOCALAPPDATA%/Volta/bin")
 

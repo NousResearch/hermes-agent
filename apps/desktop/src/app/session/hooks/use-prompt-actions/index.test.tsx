@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getLatestSessionMessages, getSession } from '@/hermes'
 import { textPart, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { $compactingSessions, setSessionCompacting } from '@/store/compaction'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
 import { $queuedPromptsBySession, getQueuedPrompts } from '@/store/composer-queue'
 import { requestGatewayForAgent } from '@/store/gateway'
@@ -1093,6 +1094,82 @@ describe('usePromptActions /btw', () => {
     await handle!.submitText('/btw anything')
 
     expect(requestGateway).toHaveBeenCalledWith('slash.exec', expect.objectContaining({ command: 'btw anything' }))
+    expect(renderedSeedTexts(seeds).some(text => text.includes('legacy gateway'))).toBe(true)
+  })
+})
+
+describe('usePromptActions /background', () => {
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  // #97635: the slash-worker route prints the completion from a
+  // fire-and-forget thread after process_command already returned — past the
+  // worker's stdout capture window — so the result never reached the desktop
+  // conversation that started the task. The dedicated prompt.background RPC
+  // is the TUI's path; the response arrives later as a background.complete
+  // gateway event.
+  it('routes through prompt.background (not slash.exec) and renders the start notice', async () => {
+    const seeds: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.background') {
+        return { task_id: 'bg_104613_385db3' } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/background summarize the top HN stories')
+
+    expect(requestGateway).toHaveBeenCalledWith('prompt.background', {
+      session_id: RUNTIME_SESSION_ID,
+      text: 'summarize the top HN stories'
+    })
+    expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
+    expect(requestGateway).not.toHaveBeenCalledWith('command.dispatch', expect.anything())
+    expect(renderedSeedTexts(seeds).some(text => text.includes('bg_104613_385db3'))).toBe(true)
+  })
+
+  it('falls back to the slash worker when an older gateway lacks prompt.background', async () => {
+    const seeds: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.background') {
+        throw new Error('method not found: prompt.background')
+      }
+
+      if (method === 'slash.exec') {
+        return { output: 'Background task started by legacy gateway' } as never
+      }
+
+      throw new Error(`unexpected method: ${method}`)
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/background anything')
+
+    expect(requestGateway).toHaveBeenCalledWith('slash.exec', expect.objectContaining({ command: 'background anything' }))
     expect(renderedSeedTexts(seeds).some(text => text.includes('legacy gateway'))).toBe(true)
   })
 })
@@ -5340,6 +5417,35 @@ describe('usePromptActions submit entry-time runtime ownership proof (#64789/#65
     expect(
       calls.find(c => c.method === 'prompt.submit' && c.params?.session_id === RUNTIME_SESSION_B_RESUMED)
     ).toBeDefined()
+  })
+})
+
+describe('usePromptActions cancelRun', () => {
+  afterEach(() => {
+    cleanup()
+    $compactingSessions.set({})
+    vi.restoreAllMocks()
+  })
+
+  it('clears a stuck compaction overlay so Stop dismisses "Summarizing thread"', async () => {
+    // A hung compaction never emits message.start/complete/error, so the
+    // per-session compacting flag (and its overlay) sticks. Stop is the user's
+    // only recourse and must clear it.
+    setSessionCompacting(RUNTIME_SESSION_ID, true)
+    expect($compactingSessions.get()[RUNTIME_SESSION_ID]).toBe(true)
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await handle!.cancelRun()
+
+    expect($compactingSessions.get()[RUNTIME_SESSION_ID]).toBeUndefined()
+    expect(requestGateway).toHaveBeenCalledWith('session.interrupt', { session_id: RUNTIME_SESSION_ID })
   })
 })
 

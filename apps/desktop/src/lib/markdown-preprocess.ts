@@ -113,12 +113,61 @@ const DIRECTIVE_LINE_ONLY_RE = /^[ \t]*::[a-z][a-z0-9-]{0,63}\{[^{}\n]{0,1024}\}
 const HTML_TAG_RE = /<\/?([A-Za-z][A-Za-z0-9:_-]*)(?:\s+[^<>]*?)?\/?>/g
 
 const SAFE_HTML_TAG_NAMES = new Set([
-  'a', 'abbr', 'b', 'blockquote', 'br', 'cite', 'code', 'data', 'del', 'details',
-  'div', 'em', 'figcaption', 'figure', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr',
-  'i', 'img', 'ins', 'kbd', 'li', 'mark', 'ol', 'p', 'pre', 'q', 'rp', 'rt',
-  'ruby', 's', 'samp', 'small', 'span', 'strong', 'sub', 'summary', 'sup', 'table',
-  'tbody', 'td', 'tfoot', 'th', 'thead', 'tr', 'u', 'ul', 'var', 'wbr'
+  'a',
+  'abbr',
+  'b',
+  'blockquote',
+  'br',
+  'cite',
+  'code',
+  'data',
+  'del',
+  'details',
+  'div',
+  'em',
+  'figcaption',
+  'figure',
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  'h6',
+  'hr',
+  'i',
+  'img',
+  'ins',
+  'kbd',
+  'li',
+  'mark',
+  'ol',
+  'p',
+  'pre',
+  'q',
+  'rp',
+  'rt',
+  'ruby',
+  's',
+  'samp',
+  'small',
+  'span',
+  'strong',
+  'sub',
+  'summary',
+  'sup',
+  'table',
+  'tbody',
+  'td',
+  'tfoot',
+  'th',
+  'thead',
+  'tr',
+  'u',
+  'ul',
+  'var',
+  'wbr'
 ])
+
 const CITATION_MARKER_RE = /(?<=[\p{L}\p{N})\].,!?:;"'”’])\[(?:\d+(?:\s*,\s*\d+)*)\](?!\()/gu
 // Markdown links whose target is a filesystem path on the agent's machine:
 // `[report](/home/user/report.md)`, `[notes](file:///srv/notes.txt)`,
@@ -345,6 +394,7 @@ function escapeUnknownHtmlLikeTags(text: string): string {
     return tag.replace(/</g, '&lt;').replace(/>/g, '&gt;')
   })
 }
+
 // Rewrite filesystem-path links to the renderer's hash-href door (#82140).
 // A plain path/file: href names a file on the AGENT's machine: Streamdown's
 // URL hardening blocks `file:`/`~/` outright, and an absolute path renders

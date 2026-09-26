@@ -8,6 +8,7 @@ and the pet signature only moves for a *renderable* pet.
 """
 
 import os
+import sqlite3
 import time
 
 import pytest
@@ -27,12 +28,28 @@ def watcher_home(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_change_broadcast_at", {})
     monkeypatch.setattr(server, "_bot_relay_outbox_seen", 0)
     monkeypatch.setattr(server, "_pairing_roots_cache", None, raising=False)
+    monkeypatch.setattr(server, "_sessions_db_sig_cache", {})
 
     events = []
     monkeypatch.setattr(
         server, "_broadcast_global_event", lambda ev, payload=None: events.append((ev, payload))
     )
     return tmp_path, events
+
+
+def _write_session_change(db_path, title):
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS sessions "
+        "(id TEXT PRIMARY KEY, title TEXT, last_activity_at REAL, message_count INTEGER)"
+    )
+    conn.execute(
+        "INSERT INTO sessions(id, title, last_activity_at, message_count) VALUES ('s1', ?, 1, 1) "
+        "ON CONFLICT(id) DO UPDATE SET title = excluded.title",
+        (title,),
+    )
+    conn.commit()
+    conn.close()
 
 
 def test_first_sighting_seeds_without_broadcasting(watcher_home):
@@ -59,7 +76,7 @@ def test_state_db_move_broadcasts_sessions_changed(watcher_home):
     home, events = watcher_home
     server._broadcast_watched_changes(now=0.0)
 
-    (home / "state.db").write_text("x")
+    _write_session_change(home / "state.db", "created")
     server._broadcast_watched_changes(now=10.0)
 
     assert ("sessions.changed", {}) in events
@@ -76,7 +93,7 @@ def test_served_profile_store_move_broadcasts_sessions_changed(watcher_home, mon
     assert server._profile_home("bot") == bot_home
     server._broadcast_watched_changes(now=0.0)
 
-    (bot_home / "state.db").write_text("x")
+    _write_session_change(bot_home / "state.db", "created")
     server._broadcast_watched_changes(now=10.0)
 
     assert ("sessions.changed", {}) in events
@@ -177,13 +194,13 @@ def test_sessions_floor_coalesces_burst_but_keeps_trailing_edge(watcher_home):
     home, events = watcher_home
     server._broadcast_watched_changes(now=0.0)
 
-    (home / "state.db").write_text("x")
+    _write_session_change(home / "state.db", "first")
     server._broadcast_watched_changes(now=10.0)
     events.clear()
 
     # A second write lands inside the 2s floor: no broadcast yet…
     time.sleep(0.02)
-    (home / "state.db").write_text("xy")
+    _write_session_change(home / "state.db", "second")
     server._broadcast_watched_changes(now=11.0)
     assert events == []
 
@@ -308,7 +325,7 @@ def test_broken_probe_never_kills_the_pass(watcher_home, monkeypatch):
         "cron.changed",
         (1.0, lambda: (_ for _ in ()).throw(RuntimeError("boom")), lambda: {}),
     )
-    (home / "state.db").write_text("x")
+    _write_session_change(home / "state.db", "created")
     server._broadcast_watched_changes(now=10.0)
 
     # The broken cron probe is skipped; sessions still broadcasts.

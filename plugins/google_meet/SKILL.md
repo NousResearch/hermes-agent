@@ -1,6 +1,6 @@
 ---
 name: google_meet
-description: Join a Google Meet call, transcribe live captions, optionally speak in realtime, and do the followup work afterwards. Use when the user asks the agent to sit in on a meeting, take notes, summarize, respond in-call, or action items from it.
+description: Join Google Meet calls to transcribe, speak, and summarize.
 version: 0.2.0
 platforms:
   - linux

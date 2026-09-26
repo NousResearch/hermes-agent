@@ -324,6 +324,23 @@ class SessionManager:
             value = getattr(state.agent, key, None)
             if isinstance(value, str) and value.strip():
                 session_meta[key] = value.strip()
+        # The agent's resolved provider for a named ``providers:`` entry is the bare billing class
+        # ``"custom"``, which is not routable on restore (resolve_runtime_provider falls through to the
+        # OpenRouter default with no api_key -> "No LLM provider configured"). Persist the durable
+        # ``custom:<name>`` identity instead, recovered from the endpoint URL / model — the same
+        # contract as the TUI/desktop heal (canonical_custom_identity docstring: every persist/restore
+        # path must run bare "custom" through this helper).
+        if str(session_meta.get("provider") or "").strip().lower() == "custom":
+            try:
+                from hermes_cli.runtime_provider import canonical_custom_identity
+
+                healed = canonical_custom_identity(base_url=session_meta.get("base_url") or None,
+                                                   model=model_str or None)
+                if healed:
+                    session_meta["provider"] = healed
+            except Exception:
+                logger.debug("ACP save: custom provider identity recovery failed", exc_info=True)
+        cwd_json = json.dumps(session_meta)
 
         try:
             if db.get_session(state.session_id) is None:
@@ -431,6 +448,23 @@ class SessionManager:
         meta = _parse_model_config(row.get("model_config"))
         cwd, model = meta.get("cwd", "."), row.get("model") or None
 
+        requested_provider = meta.get("provider") or row.get("billing_provider")
+        restored_base_url = meta.get("base_url") or row.get("billing_base_url")
+        # Heal rows persisted before the save-side fix above (and rows written by other writers): a
+        # bare ``"custom"`` provider cannot be routed by resolve_runtime_provider — recover the
+        # ``custom:<name>`` identity from the persisted endpoint URL / session model before rebuilding
+        # the agent, mirroring the TUI/desktop restore heal.
+        if str(requested_provider or "").strip().lower() == "custom":
+            try:
+                from hermes_cli.runtime_provider import canonical_custom_identity
+
+                healed = canonical_custom_identity(base_url=restored_base_url or None, model=model)
+                if healed:
+                    logger.info("ACP restore: healed bare 'custom' provider for %s -> %s", session_id, healed)
+                    requested_provider = healed
+            except Exception:
+                logger.debug("ACP restore: custom provider identity recovery failed", exc_info=True)
+
         # repair_alternation: this list becomes the resumed agent's LIVE conversation; a durable
         # ``user;user`` violation in state.db would otherwise re-fire the pre-request repair every request.
         try:
@@ -442,8 +476,7 @@ class SessionManager:
         try:
             agent = self._make_agent(
                 session_id=session_id, cwd=cwd, model=model, api_mode=meta.get("api_mode") or None,
-                requested_provider=meta.get("provider") or row.get("billing_provider"),
-                base_url=meta.get("base_url") or row.get("billing_base_url"))
+                requested_provider=requested_provider, base_url=restored_base_url)
         except Exception:
             logger.warning("Failed to recreate agent for ACP session %s", session_id, exc_info=True)
             return None

@@ -272,6 +272,12 @@ def _stub_external_worker_launch(scheduler, monkeypatch):
     handoff = Mock(return_value={"id": "exec-1", "handoff_pending": 1})
     monkeypatch.setattr(scheduler, "mark_execution_handoff_pending", handoff)
     monkeypatch.setattr(scheduler.subprocess, "Popen", popen)
+    # The worker-env pin resolves the committed dependency environment from install
+    # state: force repo-root-only here so launch-path tests never read the real
+    # ~/.hermes (home_io_guard). Pin-content tests stub it explicitly per case.
+    import cron.scheduler_worker_env as worker_env_mod
+
+    monkeypatch.setattr(worker_env_mod, "_committed_site_packages", lambda _root: None)
     observed_statuses = iter(
         [
             {"id": "exec-1", "status": "running"},
@@ -313,6 +319,10 @@ def test_scoped_wrapper_exit_without_user_bus_names_the_cause_and_invalidates_pr
     monkeypatch.setattr(pr, "systemd_user_bus_env", lambda base_env=None: dict(base_env or {}))
     monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", True)
     monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_PROBED_AT", pr.time.monotonic())
+    # Worker-env pin reads install state: keep this launch-path test off the real home.
+    import cron.scheduler_worker_env as worker_env_mod
+
+    monkeypatch.setattr(worker_env_mod, "_committed_site_packages", lambda _root: None)
 
     with pytest.raises(RuntimeError, match="user D-Bus session .* disappeared"):
         scheduler._launch_external_cron_worker(job)
@@ -375,6 +385,10 @@ def test_launch_external_worker_honors_ack_within_adoption_grace(
 
     job = {"id": "job-cold", "execution_id": "exec-cold", "prompt": "work"}
     monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
+    # Worker-env pin reads install state: keep this launch-path test off the real home.
+    import cron.scheduler_worker_env as worker_env_mod
+
+    monkeypatch.setattr(worker_env_mod, "_committed_site_packages", lambda _root: None)
     monkeypatch.setattr(
         "tools.process_registry.restart_safe_gateway_child_argv",
         lambda command, **_kw: GatewayChildDispatch("scoped", ["scope", "--", *command]),
@@ -441,6 +455,10 @@ def test_worker_dying_before_ack_names_its_stderr_cause(tmp_path, monkeypatch):
 
     monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
     monkeypatch.setattr(scheduler, "mark_execution_handoff_pending", lambda execution_id: {"id": execution_id})
+    # Worker-env pin reads install state: keep this launch-path test off the real home.
+    import cron.scheduler_worker_env as worker_env_mod
+
+    monkeypatch.setattr(worker_env_mod, "_committed_site_packages", lambda _root: None)
     monkeypatch.setattr(
         "tools.process_registry.restart_safe_gateway_child_argv",
         lambda command, *, unit_suffix, require_restart_safe_scope=False: GatewayChildDispatch(
@@ -589,8 +607,15 @@ def test_launch_external_worker_pins_the_gateways_tree_on_pythonpath(
     """#112729: the worker starts in ``cron.scheduler`` (no ``hermes_cli.main`` bootstrap),
     so its import path must be explicit — a rotted editable mapping or PYTHONSAFEPATH
     otherwise kills it with "No module named 'cron'" before the ack. The spawn env carries
-    the gateway's own checkout first and keeps the gateway's other PYTHONPATH entries."""
+    the gateway's own checkout first and keeps the gateway's other PYTHONPATH entries.
+
+    The pin also carries the committed dependency environment's site-packages: the
+    gateway runs on the bundled store Python with deps activated at boot, and a bare
+    ``-m`` child never runs that bootstrap -- without it the worker dies with
+    "No module named 'ruamel'" instead. The site-packages lookup reads install state,
+    so it is stubbed here (real PM state is covered by the unit tests below)."""
     import cron.scheduler as scheduler
+    import cron.scheduler_worker_env as worker_env_mod
     from tools.process_registry import GatewayChildDispatch
 
     job = {"id": "job-1", "execution_id": "exec-1", "prompt": "work"}
@@ -599,13 +624,21 @@ def test_launch_external_worker_pins_the_gateways_tree_on_pythonpath(
         "tools.process_registry.restart_safe_gateway_child_argv",
         lambda command, **_: GatewayChildDispatch("degraded", command),
     )
+    fake_site = tmp_path / "fake-site-packages"
+    fake_site.mkdir()
     monkeypatch.setenv("PYTHONPATH", str(tmp_path / "user-libs"))
+    # After the test's own stub: _stub_external_worker_launch pins repo-root-only by
+    # default, which would shadow this case's site-packages.
     spawned, _payloads, _handoff, _get = _stub_external_worker_launch(scheduler, monkeypatch)
+    monkeypatch.setattr(
+        worker_env_mod, "_committed_site_packages", lambda _root: fake_site
+    )
 
     assert scheduler._launch_external_cron_worker(job) is True
     repo_root = Path(scheduler.__file__).resolve().parent.parent
     entries = spawned[0][1]["env"]["PYTHONPATH"].split(os.pathsep)
     assert entries[0] == str(repo_root)
+    assert entries[1] == str(fake_site)
     assert str(tmp_path / "user-libs") in entries
     assert spawned[0][1]["cwd"] == str(repo_root)
 
@@ -634,18 +667,74 @@ def test_launch_external_worker_pin_extends_the_sanitized_env_not_os_environ(
         lambda **_: {"PATH": os.environ.get("PATH", ""),
                      "PYTHONPATH": str(tmp_path / "kept-by-sanitizer")},
     )
+    fake_site = tmp_path / "fake-site-packages"
+    fake_site.mkdir()
+    # After the test's own stub: _stub_external_worker_launch pins repo-root-only by
+    # default, which would shadow this case's site-packages.
     spawned, _payloads, _handoff, _get = _stub_external_worker_launch(scheduler, monkeypatch)
+    monkeypatch.setattr(
+        worker_env_mod, "_committed_site_packages", lambda _root: fake_site
+    )
     repo_root = Path(scheduler.__file__).resolve().parent.parent
 
     assert scheduler._launch_external_cron_worker(job) is True
     entries = spawned[0][1]["env"]["PYTHONPATH"].split(os.pathsep)
-    assert entries == [str(repo_root), str(tmp_path / "kept-by-sanitizer")]
+    assert entries == [str(repo_root), str(fake_site), str(tmp_path / "kept-by-sanitizer")]
 
     # Wheel / pipx layout: repo_root == purelib -> untouched.
     monkeypatch.setattr(worker_env_mod, "_installed_purelib", lambda: repo_root)
     untouched = {"PYTHONPATH": str(tmp_path / "kept-by-sanitizer")}
     assert worker_env_mod.pin_hermes_tree_on_pythonpath(dict(untouched), repo_root) == untouched
     assert "PYTHONPATH" not in worker_env_mod.pin_hermes_tree_on_pythonpath({}, repo_root)
+
+
+def test_pin_site_packages_lookup_never_touches_install_state_without_commit(
+    tmp_path, monkeypatch,
+):
+    """The site-packages half of the pin degrades to repo-root-only when there is no
+    committed environment: fresh installs, unreadable records, and vanished trees must
+    keep the historical #112729 behaviour, never raise."""
+    import cron.scheduler_worker_env as worker_env_mod
+    import pm.environments as pm_env
+
+    repo_root = tmp_path / "checkout"
+    repo_root.mkdir()
+    monkeypatch.setattr(worker_env_mod, "_installed_purelib", lambda: tmp_path / "other")
+
+    # No pm package importable at all (fresh/foreign tree).
+    monkeypatch.setitem(__import__("sys").modules, "pm.environments", None)
+    assert worker_env_mod._committed_site_packages(repo_root) is None
+
+    # Committed record exists but its tree is gone.
+    monkeypatch.setattr(pm_env, "committed_venv", lambda _root: tmp_path / "gone-venv")
+    assert worker_env_mod._committed_site_packages(repo_root) is None
+
+    # Committed venv exists but site-packages was never built.
+    bare_venv = tmp_path / "bare-venv"
+    bare_venv.mkdir()
+    monkeypatch.setattr(pm_env, "committed_venv", lambda _root: bare_venv)
+    monkeypatch.setattr(pm_env, "site_packages",
+                        lambda _venv: bare_venv / "lib" / "python3.14" / "site-packages")
+    assert worker_env_mod._committed_site_packages(repo_root) is None
+
+    # No site-packages half -> repo-root-only pin, same as before the fix.
+    monkeypatch.setattr(worker_env_mod, "_committed_site_packages", lambda _root: None)
+    env = {"PYTHONPATH": str(tmp_path / "user-libs")}
+    pinned = worker_env_mod.pin_hermes_tree_on_pythonpath(dict(env), repo_root)
+    assert pinned["PYTHONPATH"].split(os.pathsep) == [
+        str(repo_root), str(tmp_path / "user-libs")]
+
+
+def test_pin_skips_site_packages_equal_to_the_checkout(tmp_path, monkeypatch):
+    """A site-packages path resolving to the checkout itself (wheel-style coalesced
+    layout) adds no second entry: it would only duplicate the repo-root pin."""
+    import cron.scheduler_worker_env as worker_env_mod
+
+    repo_root = tmp_path / "checkout"
+    repo_root.mkdir()
+    monkeypatch.setattr(worker_env_mod, "_committed_site_packages", lambda _root: repo_root)
+    pinned = worker_env_mod.pin_hermes_tree_on_pythonpath({}, repo_root)
+    assert pinned["PYTHONPATH"].split(os.pathsep) == [str(repo_root)]
 
 
 def test_shared_run_path_hands_gateway_fire_to_external_worker(monkeypatch):

@@ -424,7 +424,6 @@ def _cmd_purge(args) -> int:
     import time
     from hermes_cli.config import cfg_get, load_config
     from tools import skill_ledger, skill_usage
-    from tools.skill_usage import _archive_dir
     ttl_days = getattr(args, "days", None)
     if ttl_days is None:
         ttl_days = int(cfg_get(load_config(), "curator", "archive_ttl_days", default=0) or 0)
@@ -433,11 +432,12 @@ def _cmd_purge(args) -> int:
             "curator: purge disabled (curator.archive_ttl_days is 0). Set the "
             "config key or pass --days N to purge archives older than N days.")
         return 1
-    archive_root = _archive_dir()
+    archive_root = skill_usage._archive_dir()
     if not archive_root.exists():
         print("curator: no archive directory — nothing to purge.")
         return 0
     cutoff = time.time() - ttl_days * 86400
+    usage = skill_usage.load_usage()
 
     def _archived_ts(p: Path) -> float:
         # The NEWER of the record's archived_at and the dir mtime: archives made before
@@ -445,8 +445,9 @@ def _cmd_purge(args) -> int:
         # archived_at survives a manual un-archive + re-archive. Never purge before either says so.
         # Key by the SKILL.md frontmatter name: older archives were flattened under the directory
         # name (`accelerate` for `huggingface-accelerate`), which is not the usage-record key.
-        rec = skill_usage.get_record(skill_usage._read_skill_name(p / "SKILL.md", fallback=p.name))
-        at = skill_usage._parse_iso_timestamp(rec.get("archived_at")) if rec.get("state") == skill_usage.STATE_ARCHIVED else None
+        rec = usage.get(skill_usage._read_skill_name(p / "SKILL.md", fallback=p.name)) or {}
+        archived = rec.get("state") == skill_usage.STATE_ARCHIVED
+        at = skill_usage._parse_iso_timestamp(rec.get("archived_at")) if archived else None
         return max(at.timestamp(), p.stat().st_mtime) if at else p.stat().st_mtime
 
     candidates = sorted(

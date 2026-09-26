@@ -1040,6 +1040,11 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           ${hermes-agent}/bin/hermes --version 2>&1 | grep -qi "hermes" || (echo "FAIL: version check"; exit 1)
           echo "PASS: Version check"
 
+          echo "=== Checking voice audio runtime ==="
+          ${hermesVenv}/bin/python3 -c \
+            'import sounddevice as sd; assert sd.get_portaudio_version()[0] > 0'
+          echo "PASS: sounddevice loaded PortAudio"
+
           echo "=== All checks passed ==="
           mkdir -p $out
           echo "ok" > $out/result

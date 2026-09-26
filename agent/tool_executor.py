@@ -26,13 +26,16 @@ from agent.display import (
     build_tool_label as _build_tool_label,
     get_cute_tool_message as _get_cute_tool_message_impl,
     get_tool_emoji as _get_tool_emoji,
+    tool_row_emoji as _tool_row_emoji,
     redact_tool_args_for_display as _redact_tool_args_for_display,
     _detect_tool_failure,
 )
+from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
 from agent.message_sanitization import coalesce_tool_call_id
 from agent.inline_tool_executors import (
     INLINE_TOOL_EXECUTORS,
     InlineToolContext,
+    apply_transform_tool_result,
     emit_terminal_post_tool_call,
     tool_hook_ids,
 )
@@ -42,6 +45,7 @@ from agent.tool_dispatch_helpers import (
     _is_multimodal_tool_result,
     _multimodal_text_summary,
     _append_subdir_hint_to_multimodal,
+    _context_pruned_argument_paths,
     _plan_tool_batch_segments,
     make_tool_result_message,
 )
@@ -633,11 +637,21 @@ def _run_with_activity_heartbeat(agent, function_name: str, fn):
         thread.join(timeout=2.0)
 
 
-def _blocked_tool_result(agent, ref: _ToolCallRef, *, block_message: Optional[str], block_error_type: str, guardrail_decision) -> str:
-    """Synthesize the result for a call blocked by scope/plugin (``block_message``) or by
-    guardrail policy (``guardrail_decision``) and emit its terminal post_tool_call."""
-    if block_message is not None:
-        result, error_type, error_message = json.dumps({"error": block_message}, ensure_ascii=False), block_error_type, block_message
+_PRUNED_TOOL_ARGUMENTS_ERROR = "suspected_pruned_tool_arguments"
+_PRUNED_TOOL_ARGUMENTS_MESSAGE = (
+    "Tool was not executed because effect-capable arguments contain a Hermes context-compression artifact. "
+    "Recover the exact content from its durable source or re-read it, then issue a complete new call; "
+    "do not retry these arguments. To remove a marker that already landed in a file, match it by its "
+    f"{_COMPRESSION_MARKER_PREFIX.strip('⟪:')} prefix (e.g. a terminal sed on that line) instead of quoting the full marker."
+)
+
+
+def _blocked_tool_result(agent, ref: _ToolCallRef, *, block_body: dict[str, Any] | None, block_error_type: str, guardrail_decision) -> str:
+    """Synthesize the result for a call blocked by scope/plugin/pruned-args (``block_body``, the
+    JSON the model sees) or by guardrail policy (``guardrail_decision``) and emit its terminal post_tool_call."""
+    if block_body is not None:
+        result = json.dumps(block_body, ensure_ascii=False)
+        error_type, error_message = block_error_type, block_body.get("message") or block_body["error"]
     else:
         result = agent._guardrail_block_result(guardrail_decision)
         error_type = "guardrail_block"
@@ -674,7 +688,7 @@ def _dispatch_authorized_once(
     begin_execution,
     authorization_gate: _ConcurrentToolAuthorizationGate | None,
 ) -> Any:
-    """Hermes policy (scope → plugin pre-hooks → guardrails) then the one real dispatch.
+    """Hermes policy (scope → plugin pre-hooks → pruned-arg check → guardrails) then the one real dispatch.
 
     Plugin ``modify`` hooks may rewrite ``ref.args`` (mirrored into ``state.args``).
     ``begin_execution`` (concurrent start-order gate) is advanced exactly once on every
@@ -692,19 +706,33 @@ def _dispatch_authorized_once(
         resolve = lambda: _pre_tool_block(agent, ref)  # noqa: E731
         block_message, ref.args = resolve() if authorization_gate is None else authorization_gate.run(resolve)
         state.args = ref.args
+    block_body = None if block_message is None else {"error": block_message}
+
+    # Checked once, after plugin modify hooks (which may replace arguments) and
+    # before guardrails or real dispatch: a copied compression marker in an
+    # effect-capable argument must never reach the tool.
+    if block_body is None:
+        pruned_paths = _context_pruned_argument_paths(ref.name, ref.args)
+        if pruned_paths:
+            block_body = {
+                "error": _PRUNED_TOOL_ARGUMENTS_ERROR,
+                "message": _PRUNED_TOOL_ARGUMENTS_MESSAGE,
+                "argument_paths": pruned_paths,
+            }
+            block_error_type = _PRUNED_TOOL_ARGUMENTS_ERROR
 
     guardrail_decision = None
-    if block_message is None:
+    if block_body is None:
         guardrail_decision = agent._tool_guardrails.before_call(ref.name, ref.args)
         if guardrail_decision.allows_execution:
             guardrail_decision = None
 
-    if block_message is not None or guardrail_decision is not None:
+    if block_body is not None or guardrail_decision is not None:
         _advance_start_order()
         state.blocked = True
         return _blocked_tool_result(
             agent, ref,
-            block_message=block_message, block_error_type=block_error_type, guardrail_decision=guardrail_decision,
+            block_body=block_body, block_error_type=block_error_type, guardrail_decision=guardrail_decision,
         )
 
     if ref.name == "memory":
@@ -1096,6 +1124,17 @@ def _commit_tool_result(
     # string-safe fallback so a rejected image result never poisons history.
     _tool_content = agent._tool_result_content_for_active_model(function_name, persisted_result)
     tool_message = make_tool_result_message(function_name, _tool_content, tool_call_id, effect_disposition=effect_disposition)
+    # Prepare presentation data before the append. The emitting completion callback
+    # stays below the durability fence; raw tool/model content remains unchanged.
+    prepare_metadata = getattr(agent, "tool_result_metadata_callback", None)
+    if not blocked and prepare_metadata:
+        try:
+            display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
+            metadata = prepare_metadata(tool_call_id, function_name, display_args, function_result)
+            if metadata:
+                tool_message["display_metadata"] = metadata
+        except Exception as callback_error:
+            logging.debug("Tool result metadata callback error: %s", callback_error)
     messages.append(tool_message)
     if not _flush_session_db_after_tool_progress(agent, messages, stage=f"tool result {function_name}"):
         return None
@@ -1555,7 +1594,7 @@ def _start_quiet_tool_spinner(agent, function_name: str, function_args: dict, *,
     face = random.choice(KawaiiSpinner.get_waiting_faces())
     if label is None:
         display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
-        label = f"{_get_tool_emoji(function_name)} {_build_tool_label(function_name, display_args) or function_name}"
+        label = f"{_tool_row_emoji(function_name, display_args)} {_build_tool_label(function_name, display_args) or function_name}"
     spinner = KawaiiSpinner(f"{face} {label}", spinner_type='dots', print_fn=agent._print_fn)
     spinner.start()
     return spinner
@@ -1592,6 +1631,7 @@ class _SequentialDispatch:
     is_delegate: bool = False
     finish_spinner: bool = True
     finish_in_finally: bool = True  # inline tools print their completion line only on success
+    transform_applied: bool = False  # True when execute already fired transform_tool_result
 
 
 def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _SequentialDispatch:
@@ -1656,6 +1696,7 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
         error_log="handle_function_call raised for %s: %s",
         handles_keyboard_interrupt=True,
         finish_spinner=bool(agent.quiet_mode),
+        transform_applied=True,  # handle_function_call fires transform_tool_result itself
     )
 
 
@@ -1726,19 +1767,28 @@ def _run_sequential_call(
     return managed, tool_duration
 
 
-def _publish_sequential_result(agent, messages: list, ref: _ToolCallRef, managed: _ManagedToolResult, *, tool_duration: float, index: int, budget: BudgetConfig) -> bool:
+def _publish_sequential_result(agent, messages: list, ref: _ToolCallRef, managed: _ManagedToolResult, *, tool_duration: float, index: int, budget: BudgetConfig, transform_applied: bool) -> bool:
     """Terminal hook → observe → commit → completion callbacks/print for one sequential
     result; False when the incremental flush failed (the caller must stop the batch)."""
     ref.args, ref.trace, function_result = managed.args, managed.middleware_trace, managed.result
     _execution_timed_out = isinstance(function_result, (_ToolTimeoutResult, _ToolCancelledResult))
-    # Multimodal dict results (_multimodal=True) are not sliceable as strings.
-    _result_len = len(function_result) if isinstance(function_result, str) else len(str(function_result))
-    _is_error_result, _ = _detect_tool_failure(ref.name, function_result)
     # Inline-dispatched runtime tools never reach handle_function_call, so the
     # executor owns the one terminal post_tool_call per tool_call_id (the inner
     # observer is suppressed); also stops an abandoned timeout worker reporting late.
+    # transform_tool_result follows the observer, unless the dispatch already fired it.
     if not managed.blocked and not _execution_timed_out:
         ref.emit_post(agent, function_result, duration_ms=int(tool_duration * 1000))
+        if not transform_applied:
+            function_result = apply_transform_tool_result(
+                agent, function_name=ref.name, function_args=ref.args, result=function_result,
+                effective_task_id=ref.task_id, tool_call_id=ref.call_id,
+                duration_ms=int(tool_duration * 1000),
+            )
+    # Classify the result the model will actually see, i.e. after any transform; the
+    # registry and concurrent paths both classify post-transform.
+    # Multimodal dict results (_multimodal=True) are not sliceable as strings.
+    _result_len = len(function_result) if isinstance(function_result, str) else len(str(function_result))
+    _is_error_result, _ = _detect_tool_failure(ref.name, function_result)
     committed = _commit_tool_result(
         agent, messages, ref, function_result,
         budget=budget, tool_duration=tool_duration, is_error=_is_error_result, blocked=managed.blocked,
@@ -1809,7 +1859,8 @@ def _execute_tool_calls_sequential(agent, assistant_message, messages: list, eff
             display_index=i,
             tool_start_time=tool_start_time,
         )
-        if not _publish_sequential_result(agent, messages, ref, managed, tool_duration=tool_duration, index=i, budget=_tool_budget):
+        if not _publish_sequential_result(agent, messages, ref, managed, tool_duration=tool_duration, index=i,
+                                          budget=_tool_budget, transform_applied=dispatch.transform_applied):
             return
 
         if agent._interrupt_requested and i < len(tool_calls):

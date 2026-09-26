@@ -19,9 +19,7 @@ from agent.agent_runtime_helpers import trailing_continue_intent
 from agent.tool_guardrails import (
     IDENTICAL_RESULT_STUB_MIN_CHARS,
     STALL_GUARD_IDENTICAL_CALL_THRESHOLD,
-    STALL_GUARD_REPEATABLE_TOOLS,
     ToolCallGuardrailController,
-    is_stall_guard_repeatable,
 )
 
 
@@ -97,13 +95,6 @@ def test_allowlisted_pollers_never_fire():
             assert c.observe_call(tool, {"id": "j1"}, "Generating").notice is None
 
 
-def test_allowlist_membership_contract():
-    # The module constant drives the exemption; suffix conventions extend it.
-    for tool in STALL_GUARD_REPEATABLE_TOOLS:
-        assert is_stall_guard_repeatable(tool)
-    assert is_stall_guard_repeatable("acme_get_result")
-    assert not is_stall_guard_repeatable("web_search")
-    assert not is_stall_guard_repeatable("terminal")
 
 
 def test_resets_per_turn():

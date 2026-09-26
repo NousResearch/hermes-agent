@@ -33,6 +33,11 @@ export interface HostBackendAttachDeps {
   readLedger: (path: string) => string | null
   /** Resolve the token the backend actually serves at `GET /`. */
   resolveServedToken: (baseUrl: string) => Promise<string | null>
+  /**
+   * Session token the backend published for this record when `GET /` withholds
+   * it. Absent readers keep the dashboard-HTML-only handshake.
+   */
+  publishedTokenFor?: (record: HostBackendRecord) => string | null
   /** Reject unless the backend answers its readiness probe. */
   waitForReady: (baseUrl: string, token: string) => Promise<unknown>
   /** Reject unless `/api/ws` accepts the token — the leg the renderer uses. */
@@ -48,6 +53,12 @@ function wsUrlFor(baseUrl: string, token: string): string {
   return `${baseUrl.replace(/^http/, 'ws')}/api/ws?token=${encodeURIComponent(token)}`
 }
 
+function nonemptyToken(value: string | null | undefined): string | null {
+  const token = String(value ?? '').trim()
+
+  return token || null
+}
+
 /**
  * Validate one candidate all the way to a usable connection, or return null.
  *
@@ -57,8 +68,18 @@ function wsUrlFor(baseUrl: string, token: string): string {
  */
 async function validate(record: HostBackendRecord, deps: HostBackendAttachDeps): Promise<AttachedBackend | null> {
   const baseUrl = recordBaseUrl(record)
+  const servedToken = nonemptyToken(await deps.resolveServedToken(baseUrl).catch(() => null))
+  let publishedToken: string | null = null
 
-  const token = await deps.resolveServedToken(baseUrl).catch(() => null)
+  if (!servedToken && deps.publishedTokenFor) {
+    try {
+      publishedToken = nonemptyToken(deps.publishedTokenFor(record))
+    } catch {
+      publishedToken = null
+    }
+  }
+
+  const token = servedToken || publishedToken
 
   if (!token) {
     deps.log(`[attach] ${baseUrl} (pid ${record.pid}) did not publish a session token; not attaching`)

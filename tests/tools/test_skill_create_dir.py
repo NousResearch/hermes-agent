@@ -95,11 +95,17 @@ class TestDisplaySkillCreateDir:
         _write_config(isolated_home, f"skills:\n  create_dir: {brain}\n")
         assert "opt-brain" in display_skill_create_dir()
 
-    def test_schema_helper_follows_config(self, isolated_home, tmp_path):
-        from tools.skill_manager_tool import _display_create_dir
-        brain = tmp_path / "opt-brain"
-        _write_config(isolated_home, f"skills:\n  create_dir: {brain}\n")
-        assert "opt-brain" in _display_create_dir()
+
+def test_tool_schema_stays_stable_when_skill_creation_home_changes(isolated_home, tmp_path):
+    from tools.skill_manager_tool import SKILL_MANAGE_SCHEMA
+    from tools.registry import registry
+
+    _write_config(isolated_home, f"skills:\n  create_dir: {tmp_path / 'first-brain'}\n")
+    first = registry.get_definitions({"skill_manage"})[0]
+    _write_config(isolated_home, f"skills:\n  create_dir: {tmp_path / 'second-brain'}\n")
+    second = registry.get_definitions({"skill_manage"})[0]
+    assert first == second
+    assert first["function"]["description"] == SKILL_MANAGE_SCHEMA["description"]
 
 
 class TestDiscovery:

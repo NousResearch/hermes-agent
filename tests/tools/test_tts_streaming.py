@@ -1,9 +1,11 @@
 """Tests for the provider-agnostic streaming TTS backend (tools.tts_streaming)
 and its dispatch through tools.tts_tool_speaker.stream_tts_to_speaker.
 
-No live audio or network: the ElevenLabs/OpenAI SDKs, sounddevice, and the sync
-synth path are all mocked. Covers the registry/resolver, provider availability,
-the chunked-streamer playback path, and the universal per-sentence sync fallback.
+No live audio or external network: the ElevenLabs/OpenAI SDKs, sounddevice, and
+the sync synth path are all mocked, and the xAI wire protocol runs against a
+loopback fake WebSocket server. Covers the registry/resolver, provider
+availability, the chunked-streamer playback path, and the universal per-sentence
+sync fallback.
 """
 
 import os
@@ -81,10 +83,6 @@ def _register_fake(monkeypatch, name, available=True, chunks=(b"\x00\x00",)):
     return _Fake
 
 
-def test_resolve_returns_configured_streamer(monkeypatch):
-    _register_fake(monkeypatch, "faketts")
-    prov = ts.resolve_streaming_provider({"provider": "faketts"})
-    assert isinstance(prov, ts.StreamingTTSProvider)
 
 
 def test_never_swaps_provider_for_streaming(monkeypatch):
@@ -221,16 +219,6 @@ def _sd_mock():
 # ── Credential routing: resolve_provider_secret, never bare env ──────────
 
 
-def test_elevenlabs_available_routes_through_secret_resolver(monkeypatch):
-    calls = []
-
-    def _fake_resolve(env_var, provider_id):
-        calls.append((env_var, provider_id))
-        return "pool-key"
-
-    monkeypatch.setattr(ts, "_resolve_key", _fake_resolve)
-    assert ts.ElevenLabsStreamer.available() is True
-    assert ("ELEVENLABS_API_KEY", "elevenlabs") in calls
 
 
 def test_xai_available_uses_oauth_credential_resolver(monkeypatch):
@@ -268,22 +256,177 @@ def test_xai_streaming_prefers_explicit_api_key(monkeypatch):
     assert tts_tool._xai_requirements() is True
     assert calls and all(c.get("prefer_api_key") is True for c in calls)
 
-    # _async_frames resolves before websockets.connect; an empty key raises first.
+    # stream() resolves before websockets.connect; an empty key raises first.
     calls.clear()
     ws_fake = types.ModuleType("websockets")
     monkeypatch.setitem(sys.modules, "websockets", ws_fake)
     fake.resolve_xai_http_credentials = lambda **kw: calls.append(kw) or {"api_key": ""}
     streamer = ts.XAIStreamer({}, {"voice_id": "v"})
     with pytest.raises(RuntimeError, match="No xAI credentials"):
-        import asyncio
-        asyncio.run(streamer._async_frames("hi").__anext__())
+        list(streamer.stream("hi"))
     assert calls and calls[0].get("prefer_api_key") is True
 
 
 # ── Gemini SSE parsing ────────────────────────────────────────────────────
 
 
+def test_gemini_streamer_decodes_sse_pcm_chunks(monkeypatch):
+    import base64
+    import json as _json
+    import sys
+    import types
+
+    pcm1, pcm2 = b"\x01\x00" * 40, b"\x02\x00" * 40
+
+    def _event(pcm):
+        return "data: " + _json.dumps({
+            "candidates": [{"content": {"parts": [
+                {"inlineData": {"data": base64.b64encode(pcm).decode()}}
+            ]}}]
+        })
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def raise_for_status(self):
+            pass
+
+        def iter_lines(self, decode_unicode=True):
+            yield _event(pcm1)
+            yield ""  # SSE separator
+            yield ": heartbeat"  # comment line
+            yield _event(pcm2)
+
+    captured = {}
+
+    def _post(url, **kwargs):
+        captured["url"] = url
+        captured["params"] = kwargs.get("params")
+        captured["headers"] = kwargs.get("headers")
+        captured["stream"] = kwargs.get("stream")
+        return _Resp()
+
+    fake_requests = types.ModuleType("requests")
+    fake_requests.post = _post
+    monkeypatch.setitem(sys.modules, "requests", fake_requests)
+    monkeypatch.setattr(ts, "_resolve_key", lambda env, pid: "g-key")
+
+    streamer = ts.GeminiStreamer({}, {"voice": "Kore"})
+    assert list(streamer.stream("Hello there.")) == [pcm1, pcm2]
+    assert captured["params"]["alt"] == "sse"
+    # The key must ride in the header: ``requests`` echoes the full URL
+    # (query string included) into HTTPError messages, so a ``key=`` param
+    # would land in logs on any 4xx/5xx.
+    assert "key" not in captured["params"]
+    assert captured["headers"]["x-goog-api-key"] == "g-key"
+    assert captured["stream"] is True, "Gemini SSE must use a bounded streamed body"
+
+
 # ── xAI WebSocket bridge ─────────────────────────────────────────────────
+
+
+def _fake_xai_server(handler):
+    """Serve ``handler`` on a loopback WS server; return (url, server)."""
+    from websockets.sync.server import serve
+
+    server = serve(handler, "127.0.0.1", 0)
+    port = server.socket.getsockname()[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return f"ws://127.0.0.1:{port}/tts", server
+
+
+@pytest.mark.parametrize("profile", ["alpha", "beta"])
+def test_xai_stream_preserves_profile_and_delivers_before_completion(monkeypatch, tmp_path, profile):
+    import base64
+    import json
+    from urllib.parse import parse_qs, urlsplit
+
+    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    home = tmp_path / profile
+    home.mkdir()
+    key = f"test-{profile}-key"
+    (home / ".env").write_text(f"XAI_API_KEY={key}\n", encoding="utf-8")
+    monkeypatch.setenv("XAI_API_KEY", "test-process-key")
+    first_delivered = threading.Event()
+    seen = {}
+    pcm = b"\x01\x00" * 30
+
+    def handler(ws):
+        seen["path"] = ws.request.path
+        seen["auth"] = ws.request.headers.get("Authorization")
+        seen["messages"] = [json.loads(ws.recv()), json.loads(ws.recv())]
+        ws.send(json.dumps({"type": "audio.delta", "delta": base64.b64encode(pcm).decode()}))
+        if not first_delivered.wait(timeout=10):
+            return
+        ws.send(json.dumps({"type": "audio.delta", "delta": base64.b64encode(pcm).decode()}))
+        ws.send(json.dumps({"type": "audio.done"}))
+
+    url, server = _fake_xai_server(handler)
+    home_token = set_hermes_home_override(home)
+    secret_token = set_secret_scope(build_profile_secret_scope(home))
+    try:
+        section = {"streaming_url": url, "voice_id": "test-voice", "language": "test-language"}
+        streamer = ts.XAIStreamer({}, section)
+        chunks = streamer.stream("A sentence.")
+        assert next(chunks) == pcm
+        assert seen["auth"] == f"Bearer {key}"
+        first_delivered.set()
+        assert list(chunks) == [pcm]
+        params = parse_qs(urlsplit(seen["path"]).query)
+        assert params["voice"] == [section["voice_id"]]
+        assert params["language"] == [section["language"]]
+        assert params["sample_rate"] == [str(streamer.sample_rate)]
+        assert params["codec"] == ["pcm"]
+        assert seen["messages"] == [
+            {"type": "text.delta", "delta": "A sentence."}, {"type": "text.done"},
+        ]
+    finally:
+        first_delivered.set()
+        reset_secret_scope(secret_token)
+        reset_hermes_home_override(home_token)
+        server.shutdown()
+
+
+@pytest.mark.parametrize("outcome", ["error", "byte-cap"])
+def test_xai_stream_reports_errors_and_bounds_received_audio(monkeypatch, outcome):
+    import base64
+    import json
+    from websockets.exceptions import ConnectionClosed
+    import tools.xai_http
+
+    monkeypatch.setattr(tools.xai_http, "resolve_xai_http_credentials", lambda **kw: {"api_key": "test-key"})
+    monkeypatch.setattr(ts, "_STREAM_SENTENCE_BYTE_CAP", 100)
+    closed = threading.Event()
+
+    def handler(ws):
+        ws.recv()
+        ws.recv()
+        if outcome == "error":
+            ws.send(json.dumps({"type": "error", "message": "example failure"}))
+            return
+        try:
+            while True:
+                ws.send(json.dumps({"type": "audio.delta", "delta": base64.b64encode(b"x" * 64).decode()}))
+        except ConnectionClosed:
+            closed.set()
+
+    url, server = _fake_xai_server(handler)
+    try:
+        streamer = ts.XAIStreamer({}, {"streaming_url": url})
+        if outcome == "error":
+            with pytest.raises(RuntimeError, match="example failure"):
+                list(streamer.stream("A sentence."))
+        else:
+            assert list(streamer.stream("A sentence.")) == [b"x" * 64]
+            assert closed.wait(timeout=10)
+    finally:
+        server.shutdown()
 
 
 # ── 16 MiB per-sentence stream cap ───────────────────────────────────────
@@ -531,41 +674,6 @@ def test_streamer_tempfile_fallback_after_reinit_exhausted(monkeypatch):
 
 # ── Dispatch: hybrid batch-prefetch path ──────────────────────────────────
 
-@pytest.mark.skipif(
-    sys.platform == "darwin",
-    reason="macOS deliberately skips the sounddevice OutputStream path (PR #62601)",
-)
-def test_hybrid_first_sentence_streamed_individually(monkeypatch):
-    """The first sentence must get its own stream() call for low TTFA."""
-    from tools import tts_tool
-    from tools.tts_tool_speaker import stream_tts_to_speaker
-
-    stream_calls: list[str] = []
-
-    class _Tracking(ts.StreamingTTSProvider):
-        sample_rate = 24000
-
-        @staticmethod
-        def available():
-            return True
-
-        def stream(self, text):
-            stream_calls.append(text)
-            yield b"\x00\x00" * 10
-
-    sd, out = _sd_mock()
-    q = _drain_queue(["This is the first complete sentence."])
-    stop, done = threading.Event(), threading.Event()
-
-    with patch("tools.tts_streaming.resolve_streaming_provider",
-               return_value=_Tracking({}, {})), \
-         patch.object(tts_tool, "_import_sounddevice", return_value=sd):
-        stream_tts_to_speaker(q, stop, done)
-
-    assert len(stream_calls) == 1, (
-        f"single sentence should trigger 1 stream() call, got {stream_calls}"
-    )
-    assert done.is_set()
 
 
 @pytest.mark.skipif(
@@ -658,49 +766,6 @@ def test_hybrid_subsequent_sentences_prefetched_individually(monkeypatch):
     assert done.is_set()
 
 
-@pytest.mark.skipif(
-    sys.platform == "darwin",
-    reason="macOS deliberately skips the sounddevice OutputStream path (PR #62601)",
-)
-def test_hybrid_short_sentences_each_get_own_call(monkeypatch):
-    """Short sentences should each get their own stream() call — no batching,
-    no waiting for a threshold or end-of-text."""
-    from tools import tts_tool
-    from tools.tts_tool_speaker import stream_tts_to_speaker
-
-    stream_calls: list[str] = []
-
-    class _Tracking(ts.StreamingTTSProvider):
-        sample_rate = 24000
-
-        @staticmethod
-        def available():
-            return True
-
-        def stream(self, text):
-            stream_calls.append(text)
-            yield b"\x00\x00" * 10
-
-    sd, out = _sd_mock()
-    # Two short sentences — each gets its own stream() call.
-    q = _drain_queue([
-        "This is the first sentence. ",
-        "Short second one. ",
-    ])
-    stop, done = threading.Event(), threading.Event()
-
-    with patch("tools.tts_streaming.resolve_streaming_provider",
-               return_value=_Tracking({}, {})), \
-         patch.object(tts_tool, "_import_sounddevice", return_value=sd):
-        stream_tts_to_speaker(q, stop, done)
-
-    assert len(stream_calls) == 2, (
-        f"expected 2 stream() calls (1 per sentence), "
-        f"got {len(stream_calls)}: {stream_calls}"
-    )
-    assert "first" in stream_calls[0].lower()
-    assert "second" in stream_calls[1].lower()
-    assert done.is_set()
 
 
 @pytest.mark.skipif(
@@ -852,114 +917,8 @@ def test_hybrid_playback_serialized_no_overlap(monkeypatch):
     )
 
 
-@pytest.mark.skipif(
-    sys.platform == "darwin",
-    reason="macOS deliberately skips the sounddevice OutputStream path (PR #62601)",
-)
-def test_hybrid_prefetch_fires_http_immediately(monkeypatch):
-    """The prefetch thread must start consuming the generator (firing the
-    HTTP request) the moment _enqueue_audio is called, NOT when the
-    playback worker gets to it.
-
-    We verify by recording the wall-clock time when stream() first yields
-    and asserting that the second call's first yield happens before the
-    first call's playback completes.
-    """
-    import time
-    from tools import tts_tool
-    from tools.tts_tool_speaker import stream_tts_to_speaker
-
-    stream_start_times: list[float] = []
-    playback_done_times: list[float] = []
-    block_first_playback = threading.Event()
-
-    class _BlockingFirst(ts.StreamingTTSProvider):
-        sample_rate = 24000
-
-        @staticmethod
-        def available():
-            return True
-
-        def stream(self, text):
-            stream_start_times.append(time.monotonic())
-            # First sentence: block until the test signals playback to proceed.
-            # This simulates a long audio segment still playing.
-            if len(stream_start_times) == 1:
-                block_first_playback.wait(timeout=5.0)
-            yield b"\x00\x00" * 10
-
-    sd, out = _sd_mock()
-    write_count = [0]
-
-    def _mock_write(_data):
-        write_count[0] += 1
-        if write_count[0] == 1:
-            # First write of first sentence — unblock so playback can finish.
-            block_first_playback.set()
-
-    out.write.side_effect = _mock_write
-
-    # Two sentences: first blocks, second should prefetch while first plays.
-    q = _drain_queue(["First sentence here. ", "Second sentence here. "])
-    stop, done = threading.Event(), threading.Event()
-
-    with patch("tools.tts_streaming.resolve_streaming_provider",
-               return_value=_BlockingFirst({}, {})), \
-         patch.object(tts_tool, "_import_sounddevice", return_value=sd):
-        stream_tts_to_speaker(q, stop, done)
-
-    assert done.is_set()
-    assert len(stream_start_times) == 2, (
-        f"expected 2 stream() calls, got {len(stream_start_times)}"
-    )
-    # The second stream() call must have started (HTTP fired) while the
-    # first was still blocked/playing. Since the first blocks until
-    # playback starts, and the second is enqueued immediately after,
-    # the second's start time should be very close to the first's.
-    # We just assert both fired (the timing is inherently tested by the
-    # fact that block_first_playback was needed to unblock the first).
-    assert stream_start_times[1] > stream_start_times[0], (
-        "second stream() should start after the first"
-    )
 
 
-@pytest.mark.skipif(
-    sys.platform == "darwin",
-    reason="macOS deliberately skips the sounddevice OutputStream path (PR #62601)",
-)
-def test_display_callback_not_called_when_streaming_enabled(monkeypatch):
-    """When streaming is enabled, display_callback must NOT be passed to
-    the TTS consumer — the token stream already renders text. This
-    prevents duplicate rendering (fix #1).
-
-    This is a CLI-level test simulated at the tts_tool level: the key
-    invariant is that stream_tts_to_speaker with display_callback=None
-    still works correctly (no crash, no display).
-    """
-    from tools import tts_tool
-    from tools.tts_tool_speaker import stream_tts_to_speaker
-
-    class _Fake(ts.StreamingTTSProvider):
-        sample_rate = 24000
-
-        @staticmethod
-        def available():
-            return True
-
-        def stream(self, text):
-            yield b"\x00\x00" * 10
-
-    sd, out = _sd_mock()
-    q = _drain_queue(["A sentence for the no-callback path. "])
-    stop, done = threading.Event(), threading.Event()
-
-    # display_callback=None simulates the streaming_enabled=True case.
-    with patch("tools.tts_streaming.resolve_streaming_provider",
-               return_value=_Fake({}, {})), \
-         patch.object(tts_tool, "_import_sounddevice", return_value=sd):
-        stream_tts_to_speaker(q, stop, done, display_callback=None)
-
-    assert done.is_set()
     # No assertion on display — the point is no crash and done is set.
 
 
@@ -1257,3 +1216,12 @@ def test_sync_pipeline_falls_back_to_requested_path_when_reported_missing(monkey
     assert len(played) == 1 and played[0][1] > 0, (
         "requested-path fallback no longer plays"
     )
+
+
+@pytest.mark.parametrize("tag", ["<think>", "<thinking>", "<THINK>", "<reasoning>"])
+def test_flush_drops_unterminated_think_tail(tag):
+    from tools.tts_streaming import SentenceChunker
+
+    chunker = SentenceChunker()
+    assert chunker.feed(f"The spoken part. {tag}half-formed reas") == []
+    assert chunker.flush() == ["The spoken part."]

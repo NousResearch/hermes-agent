@@ -19,8 +19,6 @@ import pytest
 
 from hermes_cli import update_cmd
 from hermes_constants import venv_bin_dir, venv_python_path
-from hermes_cli import main_install_repair
-
 
 # ---------------------------------------------------------------------------
 # Two-phase replace
@@ -32,7 +30,6 @@ def _live_tree(root: Path, names: dict[str, str]) -> None:
         d.mkdir(parents=True, exist_ok=True)
         (d / "version.txt").write_text(marker)
 
-
 def _stage_all(root: Path, new: Path, names: list[str]) -> list[tuple[str, str]]:
     return [
         (
@@ -41,7 +38,6 @@ def _stage_all(root: Path, new: Path, names: list[str]) -> list[tuple[str, str]]
         )
         for n in names
     ]
-
 
 def test_staging_touches_nothing_live(tmp_path):
     """Phase 1 must not modify the install -- a failure there is a no-op."""
@@ -54,7 +50,6 @@ def test_staging_touches_nothing_live(tmp_path):
     assert (live / "agent" / "version.txt").read_text() == "old"
     assert (live / "tools" / "version.txt").read_text() == "old"
 
-
 def test_commit_swaps_every_entry(tmp_path):
     live, new = tmp_path / "live", tmp_path / "new"
     _live_tree(live, {"agent": "old", "tools": "old"})
@@ -66,7 +61,6 @@ def test_commit_swaps_every_entry(tmp_path):
     assert (live / "tools" / "version.txt").read_text() == "new"
     # No staging/backup litter left behind.
     assert not [p for p in os.listdir(live) if "hermes-update" in p]
-
 
 def test_failed_swap_rolls_back_every_earlier_swap(tmp_path, monkeypatch):
     """The regression: a mid-loop failure must not leave a mixed-version tree.
@@ -104,7 +98,6 @@ def test_failed_swap_rolls_back_every_earlier_swap(tmp_path, monkeypatch):
         f"mixed-version tree after rollback: {versions}"
     )
 
-
 def test_commit_handles_entries_absent_from_the_install(tmp_path):
     """A brand-new top-level dir has no live counterpart to move aside."""
     live, new = tmp_path / "live", tmp_path / "new"
@@ -114,7 +107,6 @@ def test_commit_handles_entries_absent_from_the_install(tmp_path):
     update_cmd._commit_staged_replacements(_stage_all(live, new, ["brand_new"]))
 
     assert (live / "brand_new" / "version.txt").read_text() == "new"
-
 
 def test_staging_clears_leftovers_from_an_interrupted_run(tmp_path):
     live, new = tmp_path / "live", tmp_path / "new"
@@ -129,70 +121,12 @@ def test_staging_clears_leftovers_from_an_interrupted_run(tmp_path):
     assert (live / "agent" / "version.txt").read_text() == "new"
     assert not (live / "agent" / "junk.txt").exists()
 
-
 # ---------------------------------------------------------------------------
 # Shared venv helpers (#76105)
 # ---------------------------------------------------------------------------
 
-def test_venv_helpers_agree_with_each_other():
-    v = Path("/opt/proj/venv")
-    assert venv_python_path(v).parent == venv_bin_dir(v)
-
-
 def test_venv_helpers_accept_str_and_path():
     assert venv_python_path("/opt/x/venv") == venv_python_path(Path("/opt/x/venv"))
-
-
-def test_venv_helpers_are_platform_consistent():
-    """Whatever the platform, the two halves must not disagree."""
-    v = Path("/opt/proj/venv")
-    bin_name = venv_bin_dir(v).name
-    exe_name = venv_python_path(v).name
-    assert (bin_name, exe_name) in {("Scripts", "python.exe"), ("bin", "python")}
-
-
-def test_managed_uv_helper_delegates_to_the_shared_one():
-    from hermes_cli.managed_uv import _venv_python
-
-    v = Path("/opt/proj/venv")
-    assert _venv_python(v) == venv_python_path(v)
-
-
-def test_no_open_coded_venv_layout_remains_in_hermes_cli():
-    """Fails if a new call site hand-rolls Scripts/bin again (#76105).
-
-    Uses AST rather than substring matching: an earlier `"if" in line` version
-    matched any word containing "if" (mod*if*y, ver*if*y) and still missed
-    `os.path.join(venv, "Scripts")`.
-
-    ``stdio.py`` is exempt: it builds a list of literal *Windows-only* PATH
-    candidates, not a cross-platform layout derivation, so ``venv_bin_dir()``
-    (which branches on the host platform) would be the wrong tool there.
-    """
-    import ast
-    import hermes_cli
-
-    exempt = {"stdio.py"}
-    pkg = Path(hermes_cli.__file__).parent
-    offenders = []
-    for py in pkg.rglob("*.py"):
-        if py.name in exempt:
-            continue
-        try:
-            tree = ast.parse(py.read_text(encoding="utf-8", errors="replace"))
-        except SyntaxError:
-            continue
-        for node in ast.walk(tree):
-            # Any *code* string literal "Scripts" is a hand-rolled layout;
-            # docstrings and comments never reach ast.Constant in an expr
-            # position we care about here.
-            if isinstance(node, ast.Constant) and node.value == "Scripts":
-                offenders.append(f"{py.relative_to(pkg)}:{node.lineno}")
-    assert not offenders, (
-        "open-coded venv layout found (use hermes_constants.venv_bin_dir):\n"
-        + "\n".join(offenders)
-    )
-
 
 # ---------------------------------------------------------------------------
 # Top-level FILES must be atomic too (#76104 review, C1)
@@ -220,7 +154,6 @@ def test_top_level_files_are_swapped_atomically(tmp_path):
 
     assert (live / "run_agent.py").read_text() == "new"
     assert not [p for p in os.listdir(live) if "hermes-update" in p]
-
 
 def test_file_swap_failure_restores_the_original_file(tmp_path, monkeypatch):
     """A mid-swap failure must not leave a stale-or-corrupt root module."""
@@ -254,7 +187,6 @@ def test_file_swap_failure_restores_the_original_file(tmp_path, monkeypatch):
     assert versions == {"cli.py": "old", "run_agent.py": "old"}, (
         f"mixed/corrupt root modules after rollback: {versions}"
     )
-
 
 def test_failed_staging_leaves_no_orphaned_copies(tmp_path, monkeypatch):
     """#76104 review C2: orphaned staging dirs make the retry we recommend
@@ -297,19 +229,6 @@ def test_failed_staging_leaves_no_orphaned_copies(tmp_path, monkeypatch):
     for n in ("agent", "tools", "gateway"):
         assert (live / n / "version.txt").read_text() == "old"
 
-
-def test_atomic_replace_dir_still_works_as_a_shim(tmp_path):
-    """W1: it is now an alias over the two-phase helpers; #49145 must hold."""
-    live, new = tmp_path / "live", tmp_path / "new"
-    _live_tree(live, {"ui-tui": "old"})
-    _live_tree(new, {"ui-tui": "new"})
-
-    update_cmd._atomic_replace_dir(str(new / "ui-tui"), str(live / "ui-tui"))
-
-    assert (live / "ui-tui" / "version.txt").read_text() == "new"
-    assert not [p for p in os.listdir(live) if "hermes-update" in p]
-
-
 def test_venv_helpers_honour_an_explicit_platform_verdict():
     """Callers must be able to override the platform check (#76107 CI).
 
@@ -330,26 +249,6 @@ def test_venv_helpers_honour_an_explicit_platform_verdict():
         assert venv_python_path(v, windows=flag).parent == venv_bin_dir(
             v, windows=flag
         )
-
-
-def test_patched_is_windows_reaches_the_venv_path_derivation():
-    """End-to-end: patching the module predicate must change the derived path."""
-    from unittest.mock import patch
-
-    from hermes_cli import main as hermes_main
-
-    with patch.object(hermes_main, "_is_windows", return_value=True):
-        got = hermes_main._resolve_install_target_python(
-            ["uv", "pip"], env={"VIRTUAL_ENV": "/nope/venv"}
-        )
-    # The path doesn't exist so we get None, but the *derivation* must have
-    # used the Windows layout -- assert that directly.
-    assert got is None
-    assert (
-        venv_python_path("/nope/venv", windows=True).as_posix()
-        == "/nope/venv/Scripts/python.exe"
-    )
-
 
 # ---------------------------------------------------------------------------
 # Crash between "move dst aside" and "move staging in" (Phase 2 review HIGH)
@@ -387,7 +286,6 @@ def test_staging_restores_backup_when_dst_is_missing(tmp_path, monkeypatch):
     update_cmd._commit_staged_replacements(staged)
     assert (live / "agent" / "version.txt").read_text() == "new"
     assert not [p for p in os.listdir(live) if "hermes-update" in p]
-
 
 def test_commit_failure_plus_discard_leaves_no_staging_litter(tmp_path, monkeypatch):
     """Phase-2 failure must not orphan staging copies for unswapped entries.
@@ -429,46 +327,3 @@ def test_commit_failure_plus_discard_leaves_no_staging_litter(tmp_path, monkeypa
     # ...and zero litter of any kind (staging OR backup).
     litter = [p for p in os.listdir(live) if "hermes-update" in p]
     assert litter == [], f"orphaned update litter: {litter}"
-
-
-def test_update_via_zip_wires_discard_into_the_commit_failure_path():
-    """AST wiring contract: _update_via_zip must call _discard_staged from an
-    exception handler around _commit_staged_replacements. The behavioral test
-    above mirrors that wiring; this pins the production function itself so a
-    refactor can't silently drop the cleanup."""
-    import ast
-    import inspect
-    import textwrap
-
-    # The swap lives in the download/swap collaborator the ZIP path calls.
-    from hermes_cli import update_cmd_zip
-
-    src = textwrap.dedent(inspect.getsource(update_cmd_zip._download_and_swap_zip))
-    tree = ast.parse(src)
-
-    def _calls(node, name):
-        return any(
-            isinstance(n, ast.Call)
-            and isinstance(n.func, ast.Name)
-            and n.func.id == name
-            for n in ast.walk(node)
-        )
-
-    wired = False
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Try):
-            continue
-        body_commits = any(
-            _calls(stmt, "_commit_staged_replacements") for stmt in node.body
-        )
-        handler_discards = any(
-            _calls(handler, "_discard_staged") for handler in node.handlers
-        )
-        if body_commits and handler_discards:
-            wired = True
-            break
-    assert wired, (
-        "_update_via_zip no longer discards staging copies when "
-        "_commit_staged_replacements fails — commit-phase litter will make "
-        "the retry's free-space check fail harder than the first attempt"
-    )

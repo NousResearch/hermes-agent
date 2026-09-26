@@ -208,17 +208,19 @@ class SessionCompressionMixin:
         _insert_session_row's compression-fork backfill: the child stays on the parent's profile and keeps
         gateway routing/origin columns; no owner on either side -> this store's profile."""
         system_prompt_hash = self._store_system_prompt(conn, system_prompt)
+        # The child continues the parent's tools[] pin (the compaction refresh re-pinned it just
+        # before publish), or its first hop to another surface re-derives the array.
         conn.execute(
             """INSERT INTO sessions (
                    id, source, model, model_config, system_prompt,
-                   system_prompt_hash,
+                   system_prompt_hash, tool_names,
                    parent_session_id, cwd, git_branch, git_repo_root,
                    profile_name, user_id, session_key, chat_id, chat_type,
                    thread_id, display_name, origin_json, started_at
-                ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 child_session_id, source, model, json.dumps(model_config) if model_config else None,
-                system_prompt_hash, parent_session_id, cwd or parent["cwd"], parent["git_branch"],
+                system_prompt_hash, parent["tool_names"], parent_session_id, cwd or parent["cwd"], parent["git_branch"],
                 parent["git_repo_root"],
                 profile_name or parent["profile_name"] or self._own_profile_name(),
                 parent["user_id"], parent["session_key"], parent["chat_id"], parent["chat_type"],
@@ -262,7 +264,7 @@ class SessionCompressionMixin:
             parent = conn.execute(
                 """SELECT ended_at, end_reason, cwd, git_branch, git_repo_root,
                           user_id, session_key, chat_id, chat_type,
-                          thread_id, display_name, origin_json, profile_name
+                          thread_id, display_name, origin_json, profile_name, tool_names
                    FROM sessions WHERE id = ?""",
                 (parent_session_id,),
             ).fetchone()

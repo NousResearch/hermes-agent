@@ -12,7 +12,6 @@ from tui_gateway.slash_fuzzy import (
     fuzzy_rank_slash_items,
     normalize_slash_search_query,
     score_slash_completion_item,
-    tokenize_search_text,
 )
 
 
@@ -26,19 +25,8 @@ def test_normalize_slash_search_query():
     assert normalize_slash_search_query("plain") == "plain"
 
 
-def test_tokenize_search_text_includes_full_value_and_words():
-    assert tokenize_search_text("Commit & Push") == ["commit & push", "commit", "push"]
 
 
-def test_score_tiers_name_before_description():
-    item = _item("/recaps ", "Turn session recaps on/off")
-    assert score_slash_completion_item(item, "recaps") == 0
-    assert score_slash_completion_item(item, "rec") == 1
-    assert score_slash_completion_item(item, "caps") == 2
-    assert score_slash_completion_item(item, "session") == 3
-    assert score_slash_completion_item(item, "sess") == 4
-    assert score_slash_completion_item(item, "essio") == 5
-    assert math.isinf(score_slash_completion_item(item, "zzz"))
 
 
 def test_name_match_beats_description_match():

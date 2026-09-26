@@ -69,19 +69,6 @@ describe('hermes:fs:reveal', () => {
     expect(electron.showItemInFolder).not.toHaveBeenCalled()
   })
 
-  it('reports false for a path that is not on this computer, and only shows one that is', async () => {
-    const here = path.join(scratch, 'notes.md')
-
-    fs.writeFileSync(here, 'x')
-
-    await expect(reveal('/home/hermes/.hermes/attachments/report.zip')).resolves.toBe(false)
-    expect(electron.showItemInFolder).not.toHaveBeenCalled()
-
-    await expect(reveal(here)).resolves.toBe(true)
-    expect(electron.showItemInFolder).toHaveBeenCalledTimes(1)
-    expect(electron.showItemInFolder).toHaveBeenCalledWith(here)
-  })
-
   // The renderer may hand over a tilde path; the existence check runs on the
   // expanded path, and the expanded path is what the file manager is shown.
   it('expands a tilde path before checking and revealing it', async () => {

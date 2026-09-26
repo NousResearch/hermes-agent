@@ -19,8 +19,24 @@ from typing import Any, Dict
 from agent.display import KawaiiSpinner
 from agent.interrupt_control import interrupt_issuer
 from agent.turn_context_compaction import _reanchor
+from agent.turn_truncation import boosted_output_cap
 
 logger = logging.getLogger("agent.conversation_loop")
+
+
+def _anchors_current_turn(messages: Any, idx: Any, user_message: Any) -> bool:
+    """True when ``messages[idx]`` is this turn's user row (verbatim, or its user-originated view)."""
+    if not isinstance(idx, int) or not 0 <= idx < len(messages):
+        return False
+    msg = messages[idx]
+    if not (isinstance(msg, dict) and msg.get("role") == "user"):
+        return False
+    if msg.get("content") == user_message:
+        return True
+    from agent.context_compressor import user_originated_turn_view
+
+    view = user_originated_turn_view(msg)
+    return view is not None and view.get("content") == user_message
 
 ITERATION_BUDGET_WARNING_TEMPLATE = (
     "[SYSTEM NOTICE — iteration budget checkpoint] You have used {used} of {maximum} "
@@ -205,6 +221,18 @@ def prepare_iteration(
                     current_turn_user_idx, _reanchored_idx, agent.session_id or "-",
                 )
                 current_turn_user_idx = _reanchored_idx
+    # Mid-turn compaction (post-tool gate, overflow restart, recovery) rebuilds ``messages`` without
+    # handing back a new index. A stale index splits the request's replay prefix inside this turn's
+    # tool rows: prefix canonicalization then drops the assistant tool_call whose result fell past the
+    # split, the orphaned result is sanitized away, and the model silently loses tool output that
+    # state.db still holds. A valid index always lands on this turn's user row; re-anchor otherwise.
+    if user_message is not None and not _anchors_current_turn(messages, current_turn_user_idx, user_message):
+        _reanchored_idx = _reanchor(agent, messages, user_message)
+        request_logger.info(
+            "Re-anchored stale current_turn_user_idx %s -> %s (session=%s)",
+            current_turn_user_idx, _reanchored_idx, agent.session_id or "-",
+        )
+        current_turn_user_idx = _reanchored_idx
     return IterationPrep(
         action="fallthrough", messages=messages, request_logger=request_logger,
         current_turn_user_idx=current_turn_user_idx,
@@ -502,15 +530,10 @@ def apply_retry_restarts(
         return _verdict("continue")
 
     if _retry.restart_with_length_continuation:
-        # Boost output budget per retry: 2×, 4×, 8×, 16× base, capped at 32 768, via
-        # _ephemeral_max_output_tokens. Keep a larger original provider/model
-        # default as the floor so retries never downshift.
-        _boost = (agent.max_tokens or 4096) * (2 ** length_continue_retries)
-        _requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
-        if _requested_cap is not None:
-            _boost = max(_boost, _requested_cap)
-        _boost_cap = max(32768, _requested_cap or 0)
-        agent._ephemeral_max_output_tokens = min(_boost, _boost_cap)
+        # Boost the output budget per retry (shared ladder, see boosted_output_cap).
+        agent._ephemeral_max_output_tokens = boosted_output_cap(
+            agent, agent._requested_output_cap_from_api_kwargs(api_kwargs), length_continue_retries
+        )
         return _verdict("continue")
 
     # All retries may exhaust with `response` still None; break out cleanly.

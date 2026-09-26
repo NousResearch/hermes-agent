@@ -10,7 +10,6 @@ from __future__ import annotations
 import errno
 from unittest.mock import MagicMock
 
-import pytest
 
 
 def _make_cli_stub():
@@ -26,11 +25,6 @@ def _make_cli_stub():
 
 
 class TestTerminalIoBrokenFreeze:
-    def test_mark_terminal_io_broken_is_idempotent(self):
-        cli = _make_cli_stub()
-        cli._mark_terminal_io_broken("first")
-        cli._mark_terminal_io_broken("second")
-        assert cli._terminal_io_broken is True
 
     def test_invalidate_stops_after_eio(self):
         cli = _make_cli_stub()

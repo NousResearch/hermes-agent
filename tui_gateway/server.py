@@ -619,33 +619,37 @@ def _profile_configured_cwd(profile_home: Path | None) -> str | None:
     env var (issue #40334). Returns an absolute, existing directory, or None for placeholders / missing /
     invalid paths.
     """
-    return _configured_cwd_from_cfg({"terminal": _profile_terminal_cfg(profile_home)}) if profile_home else None
-
-
-def _profile_terminal_cfg(profile_home: Path | str | None) -> dict:
-    """A named profile's ``terminal:`` section from ITS config.yaml ({} for the launch profile / fail-open)."""
     if profile_home is None:
-        return {}
+        return None
     with contextlib.suppress(Exception):
         from hermes_cli.config_effective import load_user_config_effective
         p = Path(profile_home) / "config.yaml"
-        cfg = load_user_config_effective(p) if p.exists() else {}
-        terminal_cfg = cfg.get("terminal") if isinstance(cfg, dict) else None
-        return terminal_cfg if isinstance(terminal_cfg, dict) else {}
-    return {}
+        return _configured_cwd_from_cfg(load_user_config_effective(p)) if p.exists() else None
+    return None
+
+
+def _profile_terminal_policy(profile_home: Path | str | None) -> dict:
+    """A named profile's effective ``TERMINAL_*`` policy — the one its turns run under
+    (``tools/terminal_scope.py::build_profile_terminal_scope``: defaults <- ``.env`` <- ``config.yaml``).
+    {} for the launch profile or an unreadable profile."""
+    if profile_home is None:
+        return {}
+    from tools.terminal_scope import TerminalPolicyUnavailable, build_profile_terminal_scope
+    try:
+        return build_profile_terminal_scope(profile_home)
+    except TerminalPolicyUnavailable:
+        return {}
 
 
 def _profile_terminal_backend(profile_home: Path | str | None) -> str | None:
-    """A named profile's ``terminal.backend`` from ITS config.yaml; None for the launch profile.
+    """A named profile's terminal backend; None for the launch profile.
 
-    Same reason as :func:`_profile_configured_cwd`: at ``session.create`` the multiplex gateway has NOT yet
-    rebound HERMES_HOME to the target profile, so ``_effective_terminal_backend()`` reads the LAUNCH profile.
-    A missing key is ``local`` (the default) — never the launch profile's backend, which would make a local
-    profile's paths look remote whenever the app was launched from an ssh profile.
+    At ``session.create`` the multiplex gateway has NOT yet rebound HERMES_HOME to the target profile, so
+    ``_effective_terminal_backend()`` reads the LAUNCH profile's backend, which must never leak into a named one.
     """
     if profile_home is None:
         return None
-    return str(_profile_terminal_cfg(profile_home).get("backend") or "").strip().lower() or "local"
+    return str(_profile_terminal_policy(profile_home).get("TERMINAL_ENV") or "local").strip().lower() or "local"
 
 
 def _launch_configured_cwd() -> str | None:
@@ -2596,12 +2600,13 @@ def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | Non
         if db is not None:
             row = db.get_session(key) if hasattr(db, "get_session") else None
             if row and row.get("cwd"):
+                # An ssh session's stored cwd is its workspace: explicit, so the remote terminal uses it instead of
+                # the profile's ~. Other backends keep main's semantics (resolved outside the sessions lock: I/O).
+                remote = _cwd_is_remote(profile_home)
                 with _sessions_lock:
                     if sid in _sessions:
                         _sessions[sid]["cwd"] = row["cwd"]
-                        # A remote session's stored cwd is its workspace: explicit, so the ssh/docker terminal uses
-                        # it instead of the profile's ~. Local rows keep settle-following as before.
-                        if not _session_is_local_backend(_sessions[sid]):
+                        if remote:
                             _sessions[sid]["explicit_cwd"] = True
             elif hasattr(db, "update_session_cwd"):
                 try:

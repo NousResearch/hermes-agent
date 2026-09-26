@@ -29,31 +29,23 @@ def _completion_cwd(params: dict | None = None) -> str:
     # workspace pick (``cwd_explicit``) wins over the profile config. Path equality
     # cannot tell the two apart, so the desktop ships the flag alongside the path.
     client_cwd = params.get("cwd")
+    profile_home = _profile_home(params.get("profile"))
     if not params.get("cwd_explicit") and client_cwd:
-        profile_home = _profile_home(params.get("profile"))
-        profile_cwd = _profile_configured_cwd(profile_home)
-        if profile_cwd:
+        if profile_cwd := _profile_workspace_cwd(profile_home):
             return profile_cwd
-        # An ssh profile's terminal.cwd is not on this host, so the isdir check above drops it.
-        if remote_cwd := _declared_remote_profile_cwd(profile_home):
-            return remote_cwd
     # A session bound to another profile resolves its workspace from THAT profile's config before the launch profile's
     # env var; the dashboard's in-memory gateway does NOT inherit the PTY child's bridged TERMINAL_CWD, so a configured
     # terminal.cwd is read directly.
     raw = (client_cwd or _sessions.get(params.get("session_id") or "", {}).get("cwd")
-           or _profile_configured_cwd(_profile_home(params.get("profile"))) or _launch_configured_cwd()
+           or _profile_workspace_cwd(profile_home) or _launch_configured_cwd()
            or os.environ.get("TERMINAL_CWD") or os.getcwd())
-    # The BOUND profile's backend, not the launch profile's: under multiplex HERMES_HOME is not yet rebound at
-    # session.create, so the process-global _effective_terminal_backend() would misread an ssh/docker profile as
-    # local and drop its remote cwd to getcwd().
-    # A non-local backend's cwd lives inside the target environment, not on the host: pass it raw (as
-    # _terminal_task_cwd_with_source does) instead of the local isdir gate that would drop it to getcwd().
-    if _bound_terminal_backend(_profile_home(params.get("profile"))) != "local":
-        return str(raw)
     with contextlib.suppress(Exception):
         resolved = os.path.abspath(os.path.expanduser(str(raw)))
         if os.path.isdir(resolved):
             return resolved
+    # An ssh cwd lives on the remote host, so the host isdir check above cannot vouch for it: pass it raw.
+    if _cwd_is_remote(profile_home):
+        return str(raw)
     return os.getcwd()
 
 
@@ -67,22 +59,32 @@ def _workdir_terminal_cfg(key: str) -> str:
 
 
 def _bound_terminal_backend(profile_home) -> str:
-    """Terminal backend of the profile a session/RPC is bound to: a named profile's own config, else the process's."""
-    return _profile_terminal_backend(Path(profile_home) if profile_home else None) or _effective_terminal_backend()
+    """Terminal backend of the profile a session/RPC is bound to: a named profile's own policy, else the process's."""
+    return _profile_terminal_backend(profile_home) or _effective_terminal_backend()
+
+
+def _cwd_is_remote(profile_home) -> bool:
+    """Whether the bound profile's working directory lives on another host (ssh), so a host ``isdir`` check cannot
+    vouch for it. Docker and the other backends mount or copy HOST paths and keep the host checks."""
+    return _bound_terminal_backend(profile_home) == "ssh"
 
 
 def _declared_remote_profile_cwd(profile_home) -> str | None:
     """A named ssh profile's own ``terminal.cwd`` (``~``, ``~/…`` or absolute), unchecked against this host.
 
     ``_profile_configured_cwd`` requires ``os.path.isdir``; an ssh working directory lives on the remote, so that
-    check drops it and the launch profile's ``TERMINAL_CWD`` wins. Only a profile that itself declares
-    ``backend: ssh`` qualifies — placeholders (``.``/``auto``/``cwd``) fail the shape check.
+    check drops it and the launch profile's ``TERMINAL_CWD`` wins.
     """
-    terminal = _profile_terminal_cfg(profile_home)
-    if str(terminal.get("backend") or "").strip().lower() != "ssh":
+    policy = _profile_terminal_policy(profile_home)
+    if str(policy.get("TERMINAL_ENV") or "").strip().lower() != "ssh":
         return None
-    raw = str(terminal.get("cwd") or "").strip()
+    raw = str(policy.get("TERMINAL_CWD") or "").strip()
     return raw if raw == "~" or raw.startswith("~/") or os.path.isabs(raw) else None
+
+
+def _profile_workspace_cwd(profile_home) -> str | None:
+    """A named profile's configured workspace: a host dir, or an ssh profile's remote dir."""
+    return _profile_configured_cwd(profile_home) or _declared_remote_profile_cwd(profile_home)
 
 
 def _terminal_task_cwd(session: dict | None) -> str:
@@ -95,13 +97,14 @@ def _terminal_task_cwd_with_source(session: dict | None) -> tuple[str, str]:
     """``(cwd, source)``: ``"session"`` for THIS session's workspace (``explicit_cwd``/tracked dir), ``"process"`` for
     the global ``TERMINAL_CWD``/``terminal.cwd`` fallback — under per-session docker isolation that is a PREVIOUS
     session's launch artifact, so terminal_tool refuses it as a bind-mount source."""
-    backend = _bound_terminal_backend((session or {}).get("profile_home"))
+    profile_home = (session or {}).get("profile_home")
+    backend = _bound_terminal_backend(profile_home)
     if backend != "local":
         # THIS session's explicit workspace beats the LAST session's env var.
         if session and session.get("explicit_cwd") and session.get("cwd"):
             return str(session["cwd"]), "session"
         # Process TERMINAL_CWD is the launch profile's; a named ssh profile's own terminal.cwd wins over it.
-        if remote_cwd := _declared_remote_profile_cwd((session or {}).get("profile_home")):
+        if remote_cwd := _declared_remote_profile_cwd(profile_home):
             return remote_cwd, "session"
         raw = os.environ.get("TERMINAL_CWD", "").strip() or _workdir_terminal_cfg("cwd")
         if raw and raw not in {".", "auto", "cwd"}:
@@ -157,19 +160,11 @@ def _heal_dead_cwd(cwd: str) -> str:
     return probe
 
 
-def _is_local_terminal_backend() -> bool:
-    backend = (os.environ.get("TERMINAL_ENV") or "").strip().lower()
-    return not backend or backend == "local"
-
-
 def _session_is_local_backend(session: dict | None) -> bool:
-    """Whether THIS session's terminal backend is local. A multiplexed gateway serves many profiles from
-    ONE process, so the env-only _is_local_terminal_backend() reports the LAUNCH profile (usually local)
-    for a session actually bound to an ssh/docker profile - which then heals its remote cwd to a host
-    ancestor (/home) and persists that. Read the BOUND profile's backend first (profile_home), falling
-    back to the process env only when the session carries no profile."""
-    # The process fallback reads env OR config: a per-profile gateway (hermes -p felix) sets terminal.backend=ssh
-    # in config but leaves TERMINAL_ENV unset, so an env-only check would heal a live remote cwd to /home.
+    """Whether THIS session's cwd can be stat'ed / git-probed here. The bound profile's backend, not the launch
+    process's: one multiplexed gateway serves many profiles, and a per-profile gateway (``hermes -p x``) may set
+    ``terminal.backend`` in config without ``TERMINAL_ENV`` — either way an env-only check would heal a live remote
+    cwd to its nearest host ancestor (``/home``) and persist that."""
     return _bound_terminal_backend(session.get("profile_home") if session else None) == "local"
 
 
@@ -327,10 +322,9 @@ def _ensure_session_db_row(session: dict) -> bool:
             return _db_error is None
         row_model, model_config = _workdir_row_model_config(session)
         try:
-            persisted_cwd = _persisted_session_cwd(session)
             db.create_session(
                 key, source=_session_source(session), model=row_model, model_config=model_config or None,
-                parent_session_id=session.get("parent_session_id") or None, cwd=persisted_cwd,
+                parent_session_id=session.get("parent_session_id") or None, cwd=_persisted_session_cwd(session),
                 # The login this session was opened under, in the same ``<provider>:<id>`` form the agent is
                 # built with — the row is the only place the identity reaches the store, and the upsert can't
                 # add it later (user_id is set at insert). None (no password provider, legacy token, stdio)
@@ -343,12 +337,6 @@ def _ensure_session_db_row(session: dict) -> bool:
                 # backfill ran stayed NULL forever: profile-keyed matching then drops them from the sidebar
                 # and deep links can't resolve them (#99222).
                 profile_name=profile_name_for_home(profile_home) or _current_profile_name())
-            # create_session is INSERT OR IGNORE: if the AIAgent's lazy create already minted this row WITHOUT a
-            # cwd (a non-local project session, where the cwd is only known here), the create above is a no-op and
-            # the cwd never lands -> the sidebar tree drops the session to Home. Force the chosen cwd onto the row.
-            if persisted_cwd:
-                with contextlib.suppress(Exception):
-                    db.update_session_cwd(key, persisted_cwd)
             # Born hidden (session.create hidden=true, or set_hidden before the row existed): apply the deferred intent.
             if session.get("pending_hidden"):
                 try:
@@ -601,17 +589,13 @@ def _persist_session_cwd_and_schedule_git_meta(session: dict, cwd: str, *, db=No
 def _set_session_cwd(session: dict, cwd: str) -> str:
     from hermes_constants import translate_cwd_for_wsl_backend
     cwd = translate_cwd_for_wsl_backend(str(cwd))
-    resolved = os.path.abspath(os.path.expanduser(cwd))
-    # A non-local backend's workspace lives inside the target environment, not on the host: the local
-    # isdir gate would reject a valid remote project dir ("working directory does not exist"). Trust the
-    # bound profile's backend and store the path raw, mirroring _completion_cwd's non-local exemption.
-    if not _session_is_local_backend(session):
-        session.update(cwd=cwd, explicit_cwd=True, cwd_from_settle=False)
-        _register_session_cwd(session)
-        _persist_session_cwd_and_schedule_git_meta(session, cwd)
-        return cwd
-    if not os.path.isdir(resolved):
-        raise ValueError(f"working directory does not exist: {cwd}")
+    # An ssh workspace lives on the remote host: stored raw, never host-validated.
+    if _cwd_is_remote(session.get("profile_home")):
+        resolved = cwd
+    else:
+        resolved = os.path.abspath(os.path.expanduser(cwd))
+        if not os.path.isdir(resolved):
+            raise ValueError(f"working directory does not exist: {cwd}")
     # An explicit user choice: persisted as the workspace (not the launch-dir fallback), superseding a settle-adopted cwd.
     session.update(cwd=resolved, explicit_cwd=True, cwd_from_settle=False)
     _register_session_cwd(session)

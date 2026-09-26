@@ -69,6 +69,19 @@ def test_automatic_build_preserves_pm_admission_intent(monkeypatch):
     assert intent == [False]
 
 
+def test_source_build_enables_electron_get_for_standard_proxy_env(monkeypatch):
+    from hermes_cli.source_build import source_build_env
+
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7890")
+    monkeypatch.delenv("ELECTRON_GET_USE_PROXY", raising=False)
+    monkeypatch.setattr(pm, "ensure", lambda name, **kwargs: Runner(name, kwargs["base_env"]))
+
+    env = source_build_env()
+
+    assert env["HTTPS_PROXY"] == "http://127.0.0.1:7890"
+    assert env["ELECTRON_GET_USE_PROXY"] == "1"
+
+
 def test_installed_npm_does_not_authorize_missing_workspace_dependencies(source_checkout, monkeypatch):
     from hermes_cli.source_build import prepare_source_dependencies, source_build_env
 

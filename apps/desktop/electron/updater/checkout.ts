@@ -35,6 +35,7 @@ export interface CheckoutStrategyDeps {
   defaultUpdateBranch: string
   updateHandoffDwellMs: number
   resolveUpdaterBinary: () => string | null
+  resolveProxyEnvironment?: () => Promise<NodeJS.ProcessEnv>
   /**
    * True when one remote gateway serves this Desktop (app-global remote /
    * cloud / SSH). The hand-off then tells `hermes update` not to (re)start a
@@ -73,6 +74,13 @@ export function buildManualUpdateCommand(currentBranch: string | null | undefine
  */
 export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrategy {
   const mechanism: UpdaterMechanism = deps.isWindows ? 'windows-handoff' : 'posix-handoff'
+
+  async function sourceHandoffEnvironment(updateRoot: string): Promise<NodeJS.ProcessEnv> {
+    return {
+      ...((await deps.resolveProxyEnvironment?.()) ?? {}),
+      ...sourceUpdateEnvironment(updateRoot, deps.hermesHome)
+    }
+  }
 
   async function check(opts: { force?: boolean } = {}): Promise<UpdaterStatusWire> {
     const root: string = deps.resolveUpdateRoot()
@@ -267,7 +275,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
       child = spawnUpdaterProcess(wrapped.command, wrapped.args, {
         cwd: deps.hermesHome,
         env: {
-          ...sourceUpdateEnvironment(updateRoot, deps.hermesHome),
+          ...(await sourceHandoffEnvironment(updateRoot)),
           HERMES_UPDATE_STARTED_AT: String(updateStartedAt)
         },
         detached: wrapped.detached,
@@ -292,7 +300,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
       child = spawnUpdaterProcess(updater, updaterArgs, {
         cwd: deps.hermesHome,
         env: {
-          ...sourceUpdateEnvironment(updateRoot, deps.hermesHome)
+          ...(await sourceHandoffEnvironment(updateRoot))
         },
         detached: true,
         stdio: 'ignore'
@@ -438,7 +446,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
     const child = spawnUpdaterProcess(handoff.command, args, {
       cwd: deps.hermesHome,
       env: {
-        ...sourceUpdateEnvironment(updateRoot, deps.hermesHome),
+        ...(await sourceHandoffEnvironment(updateRoot)),
         HERMES_UPDATE_STARTED_AT: String(updateStartedAt)
       },
       detached: true,

@@ -62,6 +62,7 @@ it.each([true, false])(
   'hand-off passes the no-gateway flag iff a remote gateway serves the app: %s',
   async (remote: boolean): Promise<void> => {
     const { root, deps } = handoffFixture(remote)
+    deps.resolveProxyEnvironment = async (): Promise<NodeJS.ProcessEnv> => ({ HERMES_PROXY_BRIDGE_TEST: '1' })
     const spawned: string[][] = []
     const spawnOptions: Parameters<typeof updaterProcess.spawnUpdaterProcess>[2][] = []
     vi.spyOn(updaterProcess, 'spawnUpdaterProcess').mockImplementation(
@@ -84,6 +85,7 @@ it.each([true, false])(
       // The Windows cmd wrapper must inherit its hidden console; the POSIX
       // script needs to outlive Electron as a detached child (#116161).
       expect(spawnOptions[0]?.detached).toBe(!IS_WINDOWS)
+      expect(spawnOptions[0]?.env?.HERMES_PROXY_BRIDGE_TEST).toBe('1')
       expect(args).toContain(IS_WINDOWS ? '-Branch' : '--branch')
 
       if (remote) {

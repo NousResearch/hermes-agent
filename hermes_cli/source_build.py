@@ -39,6 +39,11 @@ def source_build_env(base_env: dict | None = None, *, explicit: bool = False) ->
     python = str(project_python(root)) if running_from_selected_environment(root) else sys.executable
     env = {**os.environ, **(base_env or {}), "CI": "1", "HERMES_PYTHON": python,
            "PYTHON": python}
+    # @electron/get deliberately ignores HTTP(S)_PROXY unless this opt-in is
+    # present. Honor an operator's standard proxy variables without choosing a
+    # mirror or redirecting downloads to a third party.
+    if any(env.get(key) for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")):
+        env.setdefault("ELECTRON_GET_USE_PROXY", "1")
     env.pop("ESBUILD_BINARY_PATH", None)
     npmrc = get_hermes_home() / "npmrc"
     if npmrc.is_file():

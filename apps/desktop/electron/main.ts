@@ -524,6 +524,7 @@ import { ChannelStrategy } from './updater/channel-strategy'
 import { verifyPreparedChannelInstaller } from './updater/channel-windows-host'
 import { createCheckoutStrategy } from './updater/checkout'
 import { readSourceUpdate, type SourceUpdate } from './updater/checkout-source'
+import { sourceUpdateProxyEnvironment } from './updater/proxy-environment'
 import { ExternalStrategy } from './updater/external'
 import { readUpdatesFeedBaseFromConfig, resolveFeedBaseUrl } from './updater/feed-config'
 import { createChannelMacStrategy, createMacStrategy } from './updater/mac-client'
@@ -3505,6 +3506,17 @@ function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
       }),
     resolveUpdateRoot,
     resolveUpdaterBinary,
+    resolveProxyEnvironment: async (): Promise<NodeJS.ProcessEnv> => {
+      try {
+        const resolvedProxy = await session.defaultSession.resolveProxy('https://github.com/electron/electron/releases/')
+
+        return sourceUpdateProxyEnvironment(resolvedProxy)
+      } catch (error) {
+        rememberLog(`[updates] system proxy resolution skipped: ${error instanceof Error ? error.message : String(error)}`)
+
+        return {}
+      }
+    },
     remoteGatewayActive: globalRemoteActive,
 
     emitUpdateProgress,

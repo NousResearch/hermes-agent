@@ -28,6 +28,18 @@ def _url_blocked(_bt, url: str) -> bool:
     return _bt._is_always_blocked_url(url) or not _bt._is_safe_url(url)
 
 
+# Content-less pages the attach/navigation paths deliberately park the browser on
+# (e.g. the fresh ``about:blank`` created at attach). They carry no document and
+# no network target, so they are "no page loaded yet", not a private target —
+# reporting them as a private/internal address sends the agent into a
+# navigate-retry loop instead of an empty-page retry.
+_CONTENTLESS_PAGE_URLS = frozenset({"about:blank", "about:srcdoc", "about:newtab"})
+
+
+def _is_contentless_page(url: str) -> bool:
+    return (url or "").strip().lower() in _CONTENTLESS_PAGE_URLS
+
+
 # URL-shaped literals embedded in a JS expression (http/https only). fetch/XHR/navigate
 # to a private host never updates ``location.href``, so the post-eval page-URL recheck
 # can't see it; pre-screen the literals instead.
@@ -49,7 +61,11 @@ def _current_page_private_url(effective_task_id: str) -> Optional[str]:
         url_result = _session._run_browser_command(effective_task_id, "eval", ["window.location.href"], timeout=5, _engine_override="auto")
         if url_result.get("success"):
             current_url = url_result.get("data", {}).get("result", "").strip().strip('"').strip("'")
-            if current_url and _url_blocked(_bt, current_url):
+            if (
+                current_url
+                and not _is_contentless_page(current_url)
+                and _url_blocked(_bt, current_url)
+            ):
                 return current_url
     except Exception as exc:
         _bt.logger.debug("_current_page_private_url: probe failed (%s)", exc)
@@ -160,7 +176,11 @@ def _camofox_current_page_private_url(tab_id: str, user_id: str) -> Optional[str
         data = _post(f"/tabs/{tab_id}/evaluate", body={"expression": "window.location.href", "userId": user_id})
         current_url = str(data.get("result") if isinstance(data, dict) else data or "")
         current_url = current_url.strip().strip('"').strip("'")
-        if current_url and _url_blocked(_bt, current_url):
+        if (
+            current_url
+            and not _is_contentless_page(current_url)
+            and _url_blocked(_bt, current_url)
+        ):
             return current_url
     except Exception as exc:
         _bt.logger.debug("_camofox_current_page_private_url: probe failed (%s)", exc)

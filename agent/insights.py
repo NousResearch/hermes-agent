@@ -2,12 +2,12 @@
 usage, activity, model/platform breakdowns). ``InsightsEngine(db).generate(days=30)`` → ``format_terminal(report)``."""
 
 import json
-import sqlite3
 import time
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional, Protocol, runtime_checkable
 
 from agent.usage_pricing import CanonicalUsage, estimate_usage_cost, format_cost_label, format_duration_compact, has_known_pricing
 from hermes_cli.timefmt import coerce_epoch
@@ -15,20 +15,91 @@ from hermes_time import safe_strftime
 
 _TOKEN_KEYS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
 _SKILL_TOOLS = {"skill_view", "skill_manage"}
+_SESSION_COLS = ("id, source, model, started_at, ended_at, message_count, tool_call_count, "
+                 "input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, billing_provider, "
+                 "billing_base_url, billing_mode, estimated_cost_usd, actual_cost_usd, cost_status, "
+                 "cost_source, api_call_count")
+
+
+class InsightsReadError(RuntimeError):
+    """Insights cannot produce a fresh, complete report from the selected store."""
+
+
+@dataclass(frozen=True)
+class InsightsSnapshot:
+    """Canonical analytics rows. Backends must not expose cursors or connections here."""
+    sessions: tuple[Mapping[str, Any], ...]
+    tool_rows: tuple[Mapping[str, Any], ...]
+    assistant_tool_call_rows: tuple[Mapping[str, Any], ...]
+    skill_tool_call_rows: tuple[Mapping[str, Any], ...]
+    message_stats: Mapping[str, Any]
+    model_usage_rows: tuple[Mapping[str, Any], ...]
+
+
+@runtime_checkable
+class InsightsReadStore(Protocol):
+    def flush_token_counts(self, timeout: float = 5.0) -> bool: ...
+    def read_insights_snapshot(self, *, cutoff: float, source: str | None) -> InsightsSnapshot: ...
+
+
+class SqliteInsightsReadStore:
+    """Compatibility analytics adapter; SQLite details stay outside the engine."""
+    _ASSISTANT_INDEX = "idx_messages_assistant_calls_by_session"
+
+    def __init__(self, db: Any) -> None:
+        self._db = db
+        self._conn = db._conn
+        try:
+            self._has_assistant_index = bool(self._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?", (self._ASSISTANT_INDEX,)).fetchone())
+        except Exception:
+            self._has_assistant_index = False
+
+    def flush_token_counts(self, timeout: float = 5.0) -> bool:
+        flush = getattr(self._db, "flush_token_counts", None)
+        return True if not callable(flush) else bool(flush(timeout))
+
+    def read_insights_snapshot(self, *, cutoff: float, source: str | None) -> InsightsSnapshot:
+        predicate, params = "s.started_at >= ?", [cutoff]
+        if source is not None:
+            predicate += " AND s.source = ?"
+            params.append(source)
+        assistant_from = "messages m"
+        if self._has_assistant_index:
+            assistant_from += f" INDEXED BY {self._ASSISTANT_INDEX}"
+        def rows(sql: str, values: list[Any] = params) -> tuple[Mapping[str, Any], ...]:
+            return tuple(dict(row) for row in self._conn.execute(sql, values).fetchall())
+        sessions = rows(f"SELECT {_SESSION_COLS} FROM sessions s WHERE {predicate} ORDER BY s.started_at DESC")
+        tool_rows = rows("SELECT m.session_id, m.tool_name, COUNT(*) AS count FROM messages m JOIN sessions s ON s.id=m.session_id "
+                         f"WHERE {predicate} AND m.role='tool' AND m.tool_name IS NOT NULL GROUP BY m.session_id, m.tool_name")
+        assistant_rows = rows(f"SELECT m.session_id, m.tool_calls FROM {assistant_from} JOIN sessions s ON s.id=m.session_id "
+                              f"WHERE {predicate} AND m.role='assistant' AND m.tool_calls IS NOT NULL")
+        skill_rows = rows(f"SELECT m.tool_calls, m.timestamp FROM {assistant_from} JOIN sessions s ON s.id=m.session_id "
+                          f"WHERE {predicate} AND m.role='assistant' AND m.tool_calls IS NOT NULL "
+                          "AND (instr(m.tool_calls, 'skill_view') > 0 OR instr(m.tool_calls, 'skill_manage') > 0)")
+        stats_rows = rows("SELECT COUNT(*) AS total_messages, SUM(CASE WHEN m.role='user' THEN 1 ELSE 0 END) AS user_messages, "
+                          "SUM(CASE WHEN m.role='assistant' THEN 1 ELSE 0 END) AS assistant_messages, "
+                          "SUM(CASE WHEN m.role='tool' THEN 1 ELSE 0 END) AS tool_messages FROM messages m JOIN sessions s ON s.id=m.session_id "
+                          f"WHERE {predicate}")
+        try:
+            usage_rows = rows("SELECT u.session_id, u.model, u.billing_provider, u.billing_base_url, u.api_call_count, "
+                              "u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens, u.reasoning_tokens, "
+                              "u.estimated_cost_usd, u.actual_cost_usd, u.cost_status, u.cost_source, u.billing_mode "
+                              "FROM session_model_usage u JOIN sessions s ON s.id=u.session_id " + f"WHERE {predicate}")
+        except Exception as exc:
+            if "no such table" not in str(exc).lower():
+                raise
+            usage_rows = ()
+        stats = dict(stats_rows[0]) if stats_rows else {}
+        return InsightsSnapshot(sessions, tool_rows, assistant_rows, skill_rows, stats, usage_rows)
 
 
 def _fmt_est_cost(est_cost: float) -> str:
-    """Shared label helper so sub-cent totals render at 4dp, not "~$0.00".
-
-    Routes through ``format_cost_label`` so sub-cent aggregates render at 4dp instead of collapsing to
-    "~$0.00" (#79220 bug class — the same dishonesty this module's cost buckets exist to fix, #77223).
-    """
     return format_cost_label(Decimal(str(est_cost)))
 
 
 def _estimate_cost(session_or_model: Dict[str, Any] | str, input_tokens: int = 0, output_tokens: int = 0, *, cache_read_tokens: int = 0,
                    cache_write_tokens: int = 0, provider: Optional[str] = None, base_url: Optional[str] = None) -> tuple[float, str]:
-    """Estimate the USD cost for a session row or a model/token tuple."""
     if isinstance(session_or_model, dict):
         s = session_or_model
         model = s.get("model") or ""
@@ -46,26 +117,30 @@ def _bar_chart(values: List[int], max_width: int = 20) -> List[str]:
     return ["" for _ in values] if peak == 0 else ["█" * max(1, int(v / peak * max_width)) if v > 0 else "" for v in values]
 
 
+def _safe_float(val):
+    try: return float(val) if val is not None else 0.0
+    except (ValueError, TypeError): return 0.0
+
+
+def _safe_int(val):
+    try: return int(val) if val is not None else 0
+    except (ValueError, TypeError): return 0
+
+
 def _short_model(model: Optional[str]) -> str:
-    """Display name: strip the provider prefix; empty → "unknown"."""
     return (model or "unknown").split("/")[-1]
 
 
 def _parse_json(raw: Any, kind: type) -> Any:
-    """JSON-decode *raw* when it is a string; the value if it is a *kind*, else None."""
     try:
-        if isinstance(raw, str):
-            raw = json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return None
+        if isinstance(raw, str): raw = json.loads(raw)
+    except (json.JSONDecodeError, TypeError): return None
     return raw if isinstance(raw, kind) else None
 
 
 def _iter_functions(raw_calls: Any):
-    """Yield the ``function`` dict of every well-formed entry in a tool_calls column."""
     for call in _parse_json(raw_calls, list) or []:
-        if isinstance(call, dict):
-            yield call.get("function", {})
+        if isinstance(call, dict): yield call.get("function", {})
 
 
 def _hour12(hr: int) -> str:
@@ -76,195 +151,80 @@ def _day(ts: Any) -> str:
     return safe_strftime(datetime.fromtimestamp(ts), "%b %d") if ts and (ts := coerce_epoch(ts)) else "?"
 
 
-def _scoped(before: str, after: str = "", *, src: str = " AND s.source = ?") -> tuple[str, str]:
-    """(unfiltered, source-filtered) query pair sharing one body. Built once at class definition,
-    so no runtime value can alter query structure."""
-    return before + after, before + src + after
-
-
 class InsightsEngine:
-    """Analyzes session history from a SessionDB (or raw sqlite3 connection)."""
+    """Backend-neutral analysis and formatting over an :class:`InsightsReadStore`."""
+    def __init__(self, store: Any):
+        self.store: InsightsReadStore = store if isinstance(store, InsightsReadStore) else SqliteInsightsReadStore(store)
+        self._snapshot: InsightsSnapshot | None = None
 
-    _SESSION_COLS = ("id, source, model, started_at, ended_at, "
-                     "message_count, tool_call_count, input_tokens, output_tokens, "
-                     "cache_read_tokens, cache_write_tokens, billing_provider, "
-                     "billing_base_url, billing_mode, estimated_cost_usd, "
-                     "actual_cost_usd, cost_status, cost_source, api_call_count")
-
-    _GET_SESSIONS_ALL, _GET_SESSIONS_WITH_SOURCE = _scoped(
-        f"SELECT {_SESSION_COLS} FROM sessions WHERE started_at >= ?",
-        " ORDER BY started_at DESC",
-        src=" AND source = ?",
-    )
-
-    # ``INDEXED BY`` pins the partial index so the plan is deterministic on a
-    # fresh state.db (before ANALYZE) for both branches; without it the
-    # source-filtered probe falls back to idx_messages_session_active and scans
-    # each session's non-tool-call rows. The pin is a HARD dependency (SQLite
-    # raises ``no such index``): read-only opens skip ``_init_schema``, so an
-    # older writer's DB may lack it — ``__init__`` probes once and falls back
-    # to the unpinned variants (identical rows, optimizer-chosen plan).
-    _MESSAGES_ASSISTANT_CALLS_INDEX = "idx_messages_assistant_calls_by_session"
-    _ASSISTANT_CALLS = (
-        f" FROM messages m INDEXED BY {_MESSAGES_ASSISTANT_CALLS_INDEX}"
-        " JOIN sessions s ON s.id = m.session_id"
-        " WHERE s.started_at >= ?"
-    )
-    _GET_TOOL_CALLS_ALL, _GET_TOOL_CALLS_WITH_SOURCE = _scoped(
-        "SELECT m.session_id, m.tool_calls" + _ASSISTANT_CALLS,
-        " AND m.role = 'assistant' AND m.tool_calls IS NOT NULL",
-    )
-    _GET_SKILL_CALLS_ALL, _GET_SKILL_CALLS_WITH_SOURCE = _scoped(
-        "SELECT m.tool_calls, m.timestamp" + _ASSISTANT_CALLS,
-        " AND m.role = 'assistant' AND m.tool_calls IS NOT NULL"
-        " AND (instr(m.tool_calls, 'skill_view') > 0"
-        " OR instr(m.tool_calls, 'skill_manage') > 0)",
-    )
-    _GET_TOOL_NAMES_ALL, _GET_TOOL_NAMES_WITH_SOURCE = _scoped(
-        """SELECT m.session_id, m.tool_name, COUNT(*) as count
-                   FROM messages m
-                   JOIN sessions s ON s.id = m.session_id
-                   WHERE s.started_at >= ?""",
-        """
-                     AND m.role = 'tool' AND m.tool_name IS NOT NULL
-                   GROUP BY m.session_id, m.tool_name""",
-    )
-    _GET_MESSAGE_STATS_ALL, _GET_MESSAGE_STATS_WITH_SOURCE = _scoped(
-        """SELECT
-                     COUNT(*) as total_messages,
-                     SUM(CASE WHEN m.role = 'user' THEN 1 ELSE 0 END) as user_messages,
-                     SUM(CASE WHEN m.role = 'assistant' THEN 1 ELSE 0 END) as assistant_messages,
-                     SUM(CASE WHEN m.role = 'tool' THEN 1 ELSE 0 END) as tool_messages
-                   FROM messages m
-                   JOIN sessions s ON s.id = m.session_id
-                   WHERE s.started_at >= ?""",
-    )
-    _GET_MODEL_USAGE_ALL, _GET_MODEL_USAGE_WITH_SOURCE = _scoped(
-        "SELECT u.session_id, u.model, u.billing_provider, u.billing_base_url,"
-        " u.api_call_count, u.input_tokens, u.output_tokens,"
-        " u.cache_read_tokens, u.cache_write_tokens, u.reasoning_tokens,"
-        " u.estimated_cost_usd, u.actual_cost_usd, u.cost_status,"
-        " u.cost_source, u.billing_mode"
-        " FROM session_model_usage u"
-        " JOIN sessions s ON s.id = u.session_id"
-        " WHERE s.started_at >= ?",
-    )
-    _PINNED = ("_GET_TOOL_CALLS", "_GET_SKILL_CALLS")
-
-    def __init__(self, db):
-        self.db = db
-        self._conn = db._conn
-        try:
-            self._has_assistant_calls_index = bool(self._conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?", (self._MESSAGES_ASSISTANT_CALLS_INDEX,)).fetchone())
-        except sqlite3.Error:
-            self._has_assistant_calls_index = False
-        if not self._has_assistant_calls_index:
-            strip = f" INDEXED BY {self._MESSAGES_ASSISTANT_CALLS_INDEX}"
-            for base in self._PINNED:
-                for suffix in ("_ALL", "_WITH_SOURCE"):
-                    setattr(self, base + suffix, getattr(self, base + suffix).replace(strip, ""))
-
-    def _query(self, base: str, cutoff: float, source: Optional[str]) -> list:
-        """Rows of ``<base>_WITH_SOURCE`` or ``<base>_ALL`` (instance attrs, so the unpinned fallback applies)."""
-        sql, params = (getattr(self, base + "_WITH_SOURCE"), (cutoff, source)) if source else (getattr(self, base + "_ALL"), (cutoff,))
-        return self._conn.execute(sql, params).fetchall()
+    def _fresh_snapshot(self, cutoff: float, source: str | None) -> InsightsSnapshot:
+        if not self.store.flush_token_counts():
+            raise InsightsReadError("token accounting flush did not complete; refusing stale insights")
+        return self.store.read_insights_snapshot(cutoff=cutoff, source=source)
 
     def generate(self, days: int = 30, source: str = None) -> Dict[str, Any]:
-        """Generate a complete insights report for the last ``days`` days, optionally filtered by source platform."""
         cutoff = time.time() - (days * 86400)
-        # Drain the SessionDB's async accounting queue so counters are exact
-        # (self.db may be a raw sqlite3 connection in tests — guard).
-        flush = getattr(self.db, "flush_token_counts", None)
-        if callable(flush):
-            flush()
+        self._snapshot = self._fresh_snapshot(cutoff, source)
         sessions = self._get_sessions(cutoff, source)
         tool_usage = self._get_tool_usage(cutoff, source)
         skill_usage = self._get_skill_usage(cutoff, source)
         message_stats = self._get_message_stats(cutoff, source)
         if not sessions:
-            return {"days": days, "source_filter": source, "empty": True, "overview": {}, "models": [], "platforms": [], "tools": [],
-                    "skills": self._compute_skill_breakdown([]), "activity": {}, "top_sessions": []}
+            return {"days": days, "source_filter": source, "empty": True, "overview": {}, "models": [], "platforms": [], "tools": [], "skills": self._compute_skill_breakdown([]), "activity": {}, "top_sessions": []}
         models = self._compute_model_breakdown(sessions, cutoff, source)
-        return {
-            "days": days, "source_filter": source, "empty": False, "generated_at": time.time(),
-            "overview": self._compute_overview(sessions, message_stats, models),
-            "models": models,
-            "platforms": self._compute_platform_breakdown(sessions),
-            "tools": self._compute_tool_breakdown(tool_usage),
-            "skills": self._compute_skill_breakdown(skill_usage),
-            "activity": self._compute_activity_patterns(sessions),
-            "top_sessions": self._compute_top_sessions(sessions),
-        }
+        return {"days": days, "source_filter": source, "empty": False, "generated_at": time.time(),
+                "overview": self._compute_overview(sessions, message_stats, models), "models": models,
+                "platforms": self._compute_platform_breakdown(sessions), "tools": self._compute_tool_breakdown(tool_usage),
+                "skills": self._compute_skill_breakdown(skill_usage), "activity": self._compute_activity_patterns(sessions),
+                "top_sessions": self._compute_top_sessions(sessions)}
 
     def get_usage_breakdown(self, days: int = 30, source: str = None) -> Dict[str, Any]:
-        """Analytics-usage payload (tools + skills) without a full generate(); the
-        instr()-prefiltered skill query loads only skill_view/skill_manage messages."""
         cutoff = time.time() - (days * 86400)
-        return {"tools": self._compute_tool_breakdown(self._get_tool_usage(cutoff, source)),
-                "skills": self._compute_skill_breakdown(self._get_skill_usage(cutoff, source))}
+        self._snapshot = self._fresh_snapshot(cutoff, source)
+        return {"tools": self._compute_tool_breakdown(self._get_tool_usage(cutoff, source)), "skills": self._compute_skill_breakdown(self._get_skill_usage(cutoff, source))}
 
-    # ------------------------------------------------------------------ SQL
+    def _require_snapshot(self) -> InsightsSnapshot:
+        if self._snapshot is None:
+            # Compatibility for callers of the formerly query-backed private helpers.
+            self._snapshot = self._fresh_snapshot(0.0, None)
+        return self._snapshot
 
     def _get_sessions(self, cutoff: float, source: str = None) -> List[Dict]:
-        # Coerce the two epoch columns once at load: one corrupt/TEXT cell must degrade to "unknown"
-        # for that session, never abort the whole report (#99959).
-        rows = [dict(row) for row in self._query("_GET_SESSIONS", cutoff, source)]
+        rows = [dict(row) for row in self._require_snapshot().sessions]
         for row in rows:
-            for col in ("started_at", "ended_at"):
-                row[col] = coerce_epoch(row.get(col), session_id=row.get("id"), field=col)
+            for col in ("started_at", "ended_at"): row[col] = coerce_epoch(row.get(col), session_id=row.get("id"), field=col)
         return rows
 
     def _get_tool_usage(self, cutoff: float, source: str = None) -> List[Dict]:
-        """Tool call counts from two sources: ``tool_name`` on 'tool' rows (set
-        by the gateway) and ``tool_calls`` JSON on assistant rows (covers CLI,
-        where tool_name is not populated). The two views are reconciled PER
-        SESSION (max — they describe the same calls), then summed across
-        sessions: a global max dropped every call from a session that only
-        carried the other representation (#9814)."""
-        by_session_tool = Counter()
-        for row in self._query("_GET_TOOL_NAMES", cutoff, source):
-            by_session_tool[(row["session_id"], row["tool_name"])] += row["count"]
-        calls_by_session_tool = Counter()
-        for row in self._query("_GET_TOOL_CALLS", cutoff, source):
-            try:
-                names = filter(None, (fn.get("name") for fn in _iter_functions(row["tool_calls"])))
-                calls_by_session_tool.update((row["session_id"], name) for name in names)
-            except (TypeError, AttributeError):
-                continue
-        tool_counts = Counter()
-        for key in set(by_session_tool) | set(calls_by_session_tool):
-            tool_counts[key[1]] += max(by_session_tool.get(key, 0), calls_by_session_tool.get(key, 0))
-        return [{"tool_name": name, "count": count} for name, count in tool_counts.most_common()]
+        by_session_tool, calls_by_session_tool = Counter(), Counter()
+        snapshot = self._require_snapshot()
+        for row in snapshot.tool_rows: by_session_tool[(row["session_id"], row["tool_name"])] += row["count"]
+        for row in snapshot.assistant_tool_call_rows:
+            try: calls_by_session_tool.update((row["session_id"], name) for name in filter(None, (fn.get("name") for fn in _iter_functions(row["tool_calls"]))))
+            except (TypeError, AttributeError): continue
+        counts = Counter()
+        for key in set(by_session_tool) | set(calls_by_session_tool): counts[key[1]] += max(by_session_tool.get(key, 0), calls_by_session_tool.get(key, 0))
+        return [{"tool_name": name, "count": count} for name, count in counts.most_common()]
 
     def _get_skill_usage(self, cutoff: float, source: str = None) -> List[Dict]:
-        """Extract per-skill usage from assistant tool calls."""
         skill_counts: Dict[str, Dict[str, Any]] = {}
-        for row in self._query("_GET_SKILL_CALLS", cutoff, source):
-            timestamp = row["timestamp"]
+        for row in self._require_snapshot().skill_tool_call_rows:
             for func in _iter_functions(row["tool_calls"]):
                 tool_name = func.get("name")
-                if tool_name not in _SKILL_TOOLS:
-                    continue
+                if tool_name not in _SKILL_TOOLS: continue
                 skill_name = (_parse_json(func.get("arguments"), dict) or {}).get("name")
-                if not isinstance(skill_name, str) or not skill_name.strip():
-                    continue
+                if not isinstance(skill_name, str) or not skill_name.strip(): continue
                 entry = skill_counts.setdefault(skill_name, {"skill": skill_name, "view_count": 0, "manage_count": 0, "last_used_at": None})
                 entry["view_count" if tool_name == "skill_view" else "manage_count"] += 1
-                if timestamp is not None and (entry["last_used_at"] is None or timestamp > entry["last_used_at"]):
-                    entry["last_used_at"] = timestamp
+                timestamp = row.get("timestamp")
+                if timestamp is not None and (entry["last_used_at"] is None or timestamp > entry["last_used_at"]): entry["last_used_at"] = timestamp
         return list(skill_counts.values())
 
     def _get_message_stats(self, cutoff: float, source: str = None) -> Dict:
-        rows = self._query("_GET_MESSAGE_STATS", cutoff, source)
-        return dict(rows[0]) if rows else {"total_messages": 0, "user_messages": 0, "assistant_messages": 0, "tool_messages": 0}
+        return {key: _safe_int(self._require_snapshot().message_stats.get(key)) for key in ("total_messages", "user_messages", "assistant_messages", "tool_messages")}
 
     def _get_model_usage(self, cutoff: float, source: str = None) -> List[Dict]:
-        """Per-model usage rows; [] when the table is missing (older DB) so the caller falls back to the per-session aggregate."""
-        try:
-            return [dict(row) for row in self._query("_GET_MODEL_USAGE", cutoff, source)]
-        except sqlite3.OperationalError:
-            return []
+        return [dict(row) for row in self._require_snapshot().model_usage_rows]
 
     # -------------------------------------------------------------- Compute
 

@@ -7,6 +7,10 @@ survive process restarts and appear in ``session_search``; ``load_session`` /
 from __future__ import annotations
 
 from hermes_constants import get_hermes_home, translate_cwd_for_wsl_backend, windows_path_to_wsl
+from state_store_runtime_readiness import (
+    PostgreSQLRuntimeActivationError,
+    require_legacy_state_db_runtime,
+)
 
 import copy
 import json
@@ -109,7 +113,14 @@ def _expand_acp_enabled_toolsets(toolsets: List[str] | None = None,
 
 
 def _parse_model_config(mc: Any) -> dict:
-    """Decode a persisted model_config JSON blob; ``{}`` when absent/invalid/non-dict."""
+    """Decode a persisted model_config blob; ``{}`` when absent/invalid/non-dict.
+
+    Accepts the JSON string SQLite stores and the jsonb mapping PostgreSQL
+    projects (psycopg decodes ``jsonb`` to a dict), so restore/list behave the
+    same on either backend.
+    """
+    if isinstance(mc, dict):
+        return mc
     try:
         meta = json.loads(mc) if mc else None
     except (json.JSONDecodeError, TypeError):
@@ -170,11 +181,13 @@ class SessionManager:
         self._agent_factory = agent_factory
         self._db_instance = db  # None → lazy-init on first use
         self._cwd_backfilled = False
+        self._pg_store_instance = None  # selected-PostgreSQL facade; lazy like _db_instance
 
     # ---- public API ---------------------------------------------------------
 
     def create_session(self, cwd: str = ".") -> SessionState:
         """Create a new session with a unique ID and a fresh AIAgent."""
+        self._require_legacy_session_runtime()
         cwd = _translate_acp_cwd(cwd)
         session_id = str(uuid.uuid4())
         agent = self._make_agent(session_id=session_id, cwd=cwd)
@@ -185,6 +198,7 @@ class SessionManager:
     def get_session(self, session_id: str) -> Optional[SessionState]:
         """Return the session, transparently restoring it from the DB (e.g. after
         a process restart) when it is not in memory; ``None`` if unknown."""
+        self._require_legacy_session_runtime()
         with self._lock:
             state = self._sessions.get(session_id)
         if state is not None:
@@ -209,6 +223,7 @@ class SessionManager:
 
     def list_sessions(self, cwd: str | None = None) -> List[Dict[str, Any]]:
         """Return lightweight info dicts for all sessions (memory + database)."""
+        self._require_legacy_session_runtime()
         normalized_cwd = _normalize_cwd_for_compare(cwd) if cwd else None
         db = self._get_db()
         persisted_rows: dict[str, dict[str, Any]] = {}
@@ -287,16 +302,71 @@ class SessionManager:
             self._persist(state)
         return state
 
+    def _selected_postgresql(self) -> bool:
+        """True when the active profile selected the PostgreSQL state store.
+
+        Resolves the same merged config ``_make_agent`` loads, so an override
+        home is honored. Reads never open ``state.db``; a misconfigured
+        state-store section raises ``StateStoreConfigurationError`` (fail-closed)
+        rather than degrading to SQLite.
+        """
+        from hermes_cli.config import load_config
+        from state_store import resolve_state_store_config
+
+        # Fail-closed: a malformed state_store section raises rather than
+        # degrading to the SQLite path. An injected SessionDB does not override
+        # the check — the refusal boundary must not depend on call order.
+        return resolve_state_store_config(load_config() or {}).backend == "postgresql"
+
+    def _selected_store(self):
+        """Open the CLI session-store facade once for a selected PostgreSQL runtime.
+
+        Cached exactly like ``_db_instance``: acquisition is not free, and ACP
+        must hold one store handle per process instead of reopening per turn.
+        The facade is the same bounded contract the CLI uses — it implements
+        the ACP persistence surface (ensure/create_session, get_session,
+        update_session_meta, replace_messages(active_only=...),
+        get_messages_as_conversation(repair_alternation=...)) or rejects
+        loudly; it never falls back to opening SQLite ``state.db``.
+        """
+        if self._pg_store_instance is None:
+            from cli_session_store import open_cli_session_store
+            from hermes_cli.config import load_config
+
+            self._pg_store_instance = open_cli_session_store(load_config() or {})
+        return self._pg_store_instance
+
+    def _require_legacy_session_runtime(self) -> bool:
+        """Bound the persistence boundary by backend.
+
+        Legacy SQLite runtime: unchanged — the typed refusal guard runs before
+        any session or provider side effect, and the caller proceeds on the
+        shared SessionDB. Selected PostgreSQL (ACP S2): the guard is skipped and
+        the manager dispatches to the PostgreSQL CLI session-store facade
+        instead of refusing; ``True`` tells the call sites to route there.
+        """
+        if self._selected_postgresql():
+            return True
+        require_legacy_state_db_runtime(home=get_hermes_home())
+        return False
+
     def _get_db(self):
-        """Lazily acquire the process-shared SessionDB; ``None`` if unavailable (e.g. import
-        error in a minimal test env). ``HERMES_HOME`` is resolved here, not via the import-time
-        ``DEFAULT_DB_PATH``, so test fixtures that change the env var later are honoured. The
-        registry handle is the one in-process tools (delegation, session_search, goals) also
-        acquire, so the ACP server holds ONE writer on state.db instead of two (#100896)."""
+        """Lazily acquire the persistence handle for the active backend.
+
+        Selected PostgreSQL dispatches to the CLI session-store facade
+        (``_selected_store``); a selected profile must never open or create a
+        fallback ``state.db``. Legacy SQLite keeps the process-shared registry
+        handle — the one in-process tools also acquire, so ACP keeps one
+        state-db writer.
+        """
+        if self._require_legacy_session_runtime():
+            return self._selected_store()
         if self._db_instance is None:
             try:
                 from hermes_state_registry import acquire
                 self._db_instance = acquire(get_hermes_home() / "state.db")
+            except PostgreSQLRuntimeActivationError:
+                raise
             except Exception:
                 logger.debug("SessionDB unavailable for ACP persistence", exc_info=True)
         if self._db_instance is not None and not self._cwd_backfilled:

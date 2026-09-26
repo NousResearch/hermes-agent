@@ -15,7 +15,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Mapping
 
-from gateway import hosted_rooms
+from gateway.hosted_room_coordination import sqlite_hosted_room_coordination
 from gateway.hosted_room_peer import (
     GatewayRoomCatalog, HostedRoomPeerError, TransportSecurity, validate_room_link_url)
 from gateway.hosted_rooms_common import DbPath, compact_json, exact_fields, identifier
@@ -105,7 +105,7 @@ def _short_string(value: Any, field: str) -> str:
 
 
 def _link_rows(db_path: DbPath) -> list[dict[str, Any]]:
-    rows = hosted_rooms.list_room_link_records(db_path)
+    rows = sqlite_hosted_room_coordination(db_path).list_room_link_records()
     if len(rows) > MAX_LINKS:
         raise HostedRoomPeerError("stored room link list is invalid")
     return rows
@@ -127,7 +127,7 @@ def load_room_links_tolerant(db_path: DbPath) -> tuple[tuple[StoredRoomLink, ...
 
 
 def save_room_link(db_path: DbPath, link: StoredRoomLink) -> None:
-    hosted_rooms.upsert_room_link_record(db_path, record=link.as_record(), max_links=MAX_LINKS)
+    sqlite_hosted_room_coordination(db_path).upsert_room_link_record(record=link.as_record(), max_links=MAX_LINKS)
     if os.name == "posix":
         with contextlib.suppress(OSError):
             Path(db_path).chmod(0o600)
@@ -136,8 +136,8 @@ def save_room_link(db_path: DbPath, link: StoredRoomLink) -> None:
 def mark_room_link_status(db_path: DbPath, *, room_id: str, member_id: str, status: str) -> bool:
     if status not in _STATUSES:
         raise HostedRoomPeerError("stored room link status is invalid")
-    return hosted_rooms.update_room_link_status(
-        db_path, room_id=_short_string(room_id, "room_id"), member_id=_short_string(member_id, "member_id"),
+    return sqlite_hosted_room_coordination(db_path).update_room_link_status(
+        room_id=_short_string(room_id, "room_id"), member_id=_short_string(member_id, "member_id"),
         status=status)
 
 

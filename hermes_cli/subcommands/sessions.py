@@ -127,7 +127,7 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
         "bare number of days, or ISO timestamp)")
 
     sessions_optimize = sessions_subparsers.add_parser(
-        "optimize", help="Reclaim disk space: merge FTS5 segments + VACUUM (no data change)")
+        "optimize", help="Optimize the selected session store (SQLite FTS/VACUUM or bounded PostgreSQL VACUUM ANALYZE)")
     _flag(sessions_optimize, "--force",
         help="Run even while another Hermes process (gateway, Desktop, dashboard, cron) holds state.db — rewriting the store under a live writer can leave every agent refusing turns until all writers are stopped")
 

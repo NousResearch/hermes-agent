@@ -12,6 +12,28 @@ from tools import desktop_ui
 from tools.registry import registry, tool_error
 
 
+def _postgresql_runtime_activation_error() -> str | None:
+    """Return a bounded refusal before the legacy reaction path can acquire SQLite."""
+    from hermes_constants import get_hermes_home
+    from state_store import StateStoreConfigurationError
+    from state_store_runtime_readiness import PostgreSQLRuntimeActivationError, require_legacy_state_db_runtime
+
+    try:
+        require_legacy_state_db_runtime(home=get_hermes_home())
+    except StateStoreConfigurationError:
+        return tool_error(
+            "Message reactions cannot access the selected state-store configuration.",
+            error_type="state_store_configuration_error",
+        )
+    except PostgreSQLRuntimeActivationError as exc:
+        return tool_error(
+            "Message reactions require legacy session runtime support when PostgreSQL is selected.",
+            error_type="postgresql_runtime_activation",
+            missing_capabilities=list(exc.report.missing_capabilities),
+        )
+    return None
+
+
 def _open_session_db():
     """Open the SessionDB for the profile owning this turn, or ``None``."""
     try:
@@ -27,6 +49,9 @@ def react_to_message_tool(emoji: str, message_row_id=None, messages_back=None) -
     session_key = get_session_env("HERMES_SESSION_KEY", "") or get_session_env("HERMES_SESSION_ID", "")
     if not session_key:
         return tool_error("No active session — reactions need a persisted conversation.")
+    activation_error = _postgresql_runtime_activation_error()
+    if activation_error is not None:
+        return activation_error
     db = _open_session_db()
     if db is None:
         return tool_error("Session storage is unavailable.")

@@ -188,20 +188,20 @@ class DurableTurnLease:
             return False
         try:
             if self.db.refresh_session_turn_lease(
-                self._current_session_id(), self.holder, ttl_seconds=LEASE_TTL_SECONDS
+                self.session_id, self.holder, ttl_seconds=LEASE_TTL_SECONDS
             ):
                 return None
             if self.stop.is_set():
                 return False
             logger.error(
-                "Lost session turn lease while turn is active: %s", self._current_session_id()
+                "Lost session turn lease while turn is active: %s", self.session_id
             )
             self._interrupt_turn("Session turn lease lost; stopping to protect the transcript.")
         except Exception:
             if self.stop.is_set():
                 return False
             logger.warning(
-                "Failed to refresh session turn lease: %s", self._current_session_id(), exc_info=True,
+                "Failed to refresh session turn lease: %s", self.session_id, exc_info=True,
             )
             self._interrupt_turn(
                 "Session turn lease could not be refreshed; stopping to protect the transcript."

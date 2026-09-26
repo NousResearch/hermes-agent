@@ -148,7 +148,10 @@ def scan_approval_history(db_path: Optional[Path] = None, days: int = 90) -> lis
     """``(command, dangerous_class_description)`` records for dangerous-classified terminal commands
     that actually executed (i.e. carried an implied user approval).
     """
+    from state_store_maintenance import require_state_store_maintenance
     from tools.approval_detection import detect_dangerous_command, detect_hardline_command
+
+    require_state_store_maintenance("approvals-suggest")
     path = Path(db_path) if db_path else default_db_path()
     if not path.exists():
         return []
@@ -315,6 +318,13 @@ def _render_text(proposals: list[Proposal], days: int) -> None:
 
 def suggest_command(args) -> int:
     """Entry point for ``hermes approvals suggest``."""
+    from state_store_maintenance import StateStoreMaintenanceError, require_state_store_maintenance
+
+    try:
+        require_state_store_maintenance("approvals-suggest")
+    except StateStoreMaintenanceError as exc:
+        print(exc)
+        return 2
     db_path = Path(args.db) if getattr(args, "db", None) else default_db_path()
     days = getattr(args, "days", 90)
     if not db_path.exists():

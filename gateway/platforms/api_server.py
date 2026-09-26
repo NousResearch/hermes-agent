@@ -28,6 +28,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from state_store_runtime_readiness import PostgreSQLRuntimeActivationError
+
 # _resolve_request_profile result for a /p/<profile>/ prefix this gateway does not serve (-> 404);
 # distinct from None (no prefix / multiplexing off -> default profile).
 _PROFILE_REJECTED = object()
@@ -144,6 +146,23 @@ from gateway.platforms.base import (
     MEDIA_TAG_CLEANUP_RE, BasePlatformAdapter, SendResult, _terminal_sentinel_start, is_network_accessible,
     validate_media_delivery_path)
 from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+
+
+def _selected_run_store_factory():
+    """Build the run-idempotency store for the selected state-store backend.
+
+    Defaults to the module-global ``RunIdempotencyStore`` (SQLite) so the existing
+    constructor monkeypatch keeps working; a selected PostgreSQL backend opens a fresh
+    PostgreSQL store and fails closed on a missing/unreachable DSN.
+    """
+    from gateway.platforms.api_server_run_idempotency_adapter import (
+        selected_run_idempotency_store_factory)
+    factory = selected_run_idempotency_store_factory()
+    if factory is None:
+        return RunIdempotencyStore()
+    return factory()
+
+
 from agent.redact import redact_sensitive_text
 from agent.interrupt_compat import request_hard_interrupt
 from gateway.readiness import collect_runtime_readiness
@@ -971,6 +990,8 @@ def _admit_api_agent_request(handler):
         self._pending_agent_requests += 1
         try:
             return await handler(self, request, *args, **kwargs)
+        except PostgreSQLRuntimeActivationError as exc:
+            return self._session_db_unavailable(exc)
         finally:
             _release_pending_api_work(self, reservation)
             _api_agent_request_reservation.reset(token)
@@ -991,7 +1012,10 @@ def _require_auth(handler):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
-        return await handler(self, request, *args, **kwargs)
+        try:
+            return await handler(self, request, *args, **kwargs)
+        except PostgreSQLRuntimeActivationError as exc:
+            return self._session_db_unavailable(exc)
     return _wrapped
 
 
@@ -1217,7 +1241,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._response_store_home = str(get_hermes_home())
         self._response_stores: Dict[str, ResponseStore] = {}
         self._response_store_lock = threading.Lock()
-        _api_runs._initialize_run_state(self, store_factory=RunIdempotencyStore)
+        _api_runs._initialize_run_state(self, store_factory=_selected_run_store_factory)
         self._session_db: Optional[Any] = None  # explicit override (tests/manual wiring)
         self._session_dbs: Dict[str, Any] = {}  # per-profile-home SessionDB cache
         self._session_db_cache_lock = threading.Lock()
@@ -1858,6 +1882,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _open_and_cache_session_db(self, home) -> Optional[Any]:
         """Cached SessionDB for ``home`` (shared by both ``_ensure_session_db*``). Never writes
         ``self._session_db`` (explicit override only), so no profile pins later requests."""
+        # ``home`` is captured on the loop thread and is the authoritative target: inside the
+        # ``to_thread`` worker the per-profile scope that redirects ``get_hermes_home()`` is
+        # invisible, so a selected-PostgreSQL foreign profile must be refused HERE, with the
+        # exact target home, before acquire — not left to SessionDB's own launch-home guard.
+        from state_store_runtime_readiness import require_legacy_state_db_runtime
+        require_legacy_state_db_runtime(home=home)
         from hermes_state_registry import acquire
         key = str(home)
         with self._session_db_cache_lock:
@@ -1893,6 +1923,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         try:
             from hermes_constants import get_hermes_home
             return self._open_and_cache_session_db(get_hermes_home())
+        except PostgreSQLRuntimeActivationError:
+            raise
         except Exception as e:
             logger.debug("SessionDB unavailable for API server: %s", e)
             return None
@@ -1918,6 +1950,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 if cached is not None:
                     return cached
                 return await asyncio.to_thread(self._open_and_cache_session_db, home)
+        except PostgreSQLRuntimeActivationError:
+            raise
         except Exception as e:
             logger.debug("SessionDB unavailable for API server: %s", e)
             return None
@@ -2961,8 +2995,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return default if parsed < 0 else min(parsed, maximum)
 
     @staticmethod
-    def _session_db_unavailable() -> "web.Response":
-        return _error_response("Session database unavailable", 503, code="session_db_unavailable")
+    def _session_db_unavailable(exc=None) -> "web.Response":
+        if exc is None:
+            return _error_response("Session database unavailable", 503, err_type="service_unavailable_error",
+                                   code="session_db_unavailable")
+        return web.json_response(
+            {**_openai_error("Session database unavailable", "service_unavailable_error",
+                             code="session_db_unavailable"), "diagnostic": exc.report.as_dict()}, status=503)
 
     @staticmethod
     def _session_response(session: Dict[str, Any]) -> Dict[str, Any]:

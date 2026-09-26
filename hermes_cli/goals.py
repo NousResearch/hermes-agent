@@ -528,6 +528,19 @@ def _get_session_db() -> Optional[Any]:
         logger.debug("GoalManager: SessionDB bootstrap failed (%s)", exc)
         return None
 
+    # Session controls have their own backend-neutral resolver.  Crucially, a
+    # selected PostgreSQL store is opened before any legacy SessionDB path is
+    # considered, so a bad PG configuration cannot silently create state.db.
+    try:
+        from hermes_cli.config import load_config
+        from state_store import resolve_state_store_config
+        if resolve_state_store_config(load_config() or {}).backend == "postgresql":
+            from session_control_store import get_session_control_store
+            return get_session_control_store()
+    except Exception as exc:
+        logger.warning("GoalManager: selected PostgreSQL control store unavailable: %s", exc)
+        return None
+
     cached = _DB_CACHE.get(home)
     if cached is not None and _registry_tore_down(cached):
         # ``hermes profile delete`` force-closes every handle under the profile home

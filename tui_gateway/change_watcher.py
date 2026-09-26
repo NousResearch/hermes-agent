@@ -117,6 +117,53 @@ def _pet_changed_payload() -> dict:
     return {"enabled": False}
 
 
+def _pg_excluded_session_roots() -> tuple[Path, ...]:
+    """Homes whose ``state.db`` mtime is NOT a sessions signal under selected PG.
+
+    Under a selected-PostgreSQL profile the SQLite file is (at best) a stale
+    import leftover: a moving mtime would broadcast ``sessions.changed`` and
+    make clients refetch from a store the runtime refuses to open.  SQLite
+    homes are never excluded.  Memoised per (home, config mtime) on the
+    FUNCTION OBJECT (bodies are rebound onto server.py's globals, so module
+    globals here are not the body's globals) so the 0.5 s tick pays the config
+    read only when the homes or a config.yaml mtime actually move.
+    """
+    import time as _time
+
+    roots = (_watcher_home(), *_served_profile_homes)
+    config_mtimes = tuple(
+        _watcher_mtime_ns(root / "config.yaml") for root in roots
+    )
+    cache_key = (tuple(map(str, roots)), config_mtimes)
+    cached = getattr(_pg_excluded_session_roots, "_cache", None)
+    if (cached is not None and cached[0] == cache_key
+            and _time.monotonic() - cached[1] < _PG_EXCLUDED_CACHE_TTL_S):
+        return cached[2]
+    from state_store import resolve_state_store_config
+
+    excluded = tuple(
+        root for root in roots
+        if resolve_state_store_config(
+            _read_profile_config_for_watch(root)).backend == "postgresql"
+    )
+    _pg_excluded_session_roots._cache = (cache_key, _time.monotonic(), excluded)
+    return excluded
+
+
+_PG_EXCLUDED_CACHE_TTL_S = 30.0
+
+
+def _read_profile_config_for_watch(home: Path) -> dict:
+    """Raw config mapping for one home; unreadable/absent => {} (=> SQLite)."""
+    try:
+        import yaml
+
+        raw = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+        return raw if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+
 def _sessions_sig():
     """Newest mtime across state.db + WAL: the one thing messaging-gateway turns and cron runs
     all move. Served sibling profile homes are probed too, else a routed Bot Chat never refreshes.
@@ -125,9 +172,13 @@ def _sessions_sig():
     gateway's transports; the shared SQLite file is the one thing they all move (#58671). A backend serving
     several profiles owns one store per profile, so every served sibling home is
     """
+    # Selected-PostgreSQL homes: the SQLite mtime is not a sessions signal there
+    # (the runtime refuses the store); watching it broadcasts false refreshes.
+    pg_roots = _pg_excluded_session_roots()
     return _newest_mtime_ns(
         root / name
         for root in (_watcher_home(), *_served_profile_homes)
+        if root not in pg_roots
         for name in ("state.db", "state.db-wal"))
 
 

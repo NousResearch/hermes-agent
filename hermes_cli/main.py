@@ -364,6 +364,7 @@ from hermes_cli.subcommands.approvals import build_approvals_parser
 from hermes_cli.subcommands.dump import build_dump_parser
 from hermes_cli.subcommands.debug import build_debug_parser
 from hermes_cli.subcommands.backup import build_backup_parser
+from hermes_cli.subcommands.state_store import build_state_store_parser
 from hermes_cli.subcommands.import_cmd import build_import_cmd_parser
 from hermes_cli.subcommands.import_agent import build_import_agent_parser
 from hermes_cli.subcommands.config import build_config_parser
@@ -1268,9 +1269,10 @@ def _session_db():
     callers fall through to their ``return None``."""
     db = None
     try:
-        from hermes_state import SessionDB
+        from cli_session_store import open_cli_session_store
+        from hermes_cli.config import load_config
 
-        db = SessionDB(read_only=True)
+        db = open_cli_session_store(load_config(), read_only=True)
     except Exception:
         pass
     try:
@@ -1450,9 +1452,7 @@ def _create_titled_session(title: str) -> Optional[str]:
         from hermes_state_registry import acquire
 
         new_session_id = mint_session_id()
-        # The CLI acquires the registry handle for this same path moments later; share it
-        # instead of minting a second writer for one INSERT (close() releases the refcount).
-        db = acquire()
+        db = open_cli_session_store(load_config())
         db.create_session(new_session_id, source="cli")
         db.set_session_title(new_session_id, title)
         return new_session_id
@@ -2291,6 +2291,13 @@ def cmd_backup(args):
         raise SystemExit(1)  # archive written but incomplete: never shell-success for a timer
 
 
+def cmd_state_store(args):
+    """Dispatch PostgreSQL-native state-store maintenance."""
+    from hermes_cli.subcommands.state_store import run_state_store_command
+
+    return run_state_store_command(args)
+
+
 def _print_version_info(*, check_updates: bool = True) -> None:
     # Shared with the `hermes --version` pre-import fast path.
     _startup_fast.print_fast_version_info(check_updates=check_updates)
@@ -2527,7 +2534,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "auth", "status", "cron", "doctor", "config", "pairing", "skills", "tools", "mcp",
         "sessions", "insights", "update", "uninstall", "profile", "dashboard", "serve",
         "desktop", "gui", "honcho", "claw", "plugins", "security", "acp", "webhook", "peer",
-        "memory", "dump", "debug", "backup", "import", "completion", "logs", "usage",
+        "memory", "dump", "debug", "backup", "state-store", "import", "completion", "logs", "usage",
     }
     _SESSION_FLAGS = {"-c", "--continue", "-r", "--resume"}
 
@@ -3463,6 +3470,7 @@ def _build_cli_parser():
     build_dump_parser(subparsers, cmd_dump=cmd_dump)
     build_debug_parser(subparsers, cmd_debug=cmd_debug)
     build_backup_parser(subparsers, cmd_backup=cmd_backup)
+    build_state_store_parser(subparsers, cmd_state_store=cmd_state_store)
     build_checkpoints_parser(subparsers)
     build_import_cmd_parser(subparsers, cmd_import=cmd_import)
     build_import_agent_parser(subparsers, cmd_import_agent=cmd_import_agent)

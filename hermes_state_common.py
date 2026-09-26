@@ -553,6 +553,21 @@ CREATE TABLE IF NOT EXISTS session_turn_leases (
     expires_at REAL NOT NULL
 );
 
+-- Additive no-route handoff foundation. Existing turns retain the legacy
+-- session_turn_leases path until a consumer carries the receipt end-to-end.
+CREATE TABLE IF NOT EXISTS session_runtime_owners (
+    namespace TEXT NOT NULL DEFAULT '', session_id TEXT NOT NULL,
+    installation_id TEXT NOT NULL, host TEXT NOT NULL, process_generation TEXT NOT NULL,
+    fence INTEGER NOT NULL, expires_at REAL NOT NULL, updated_at REAL NOT NULL,
+    PRIMARY KEY (namespace, session_id)
+);
+CREATE TABLE IF NOT EXISTS session_runtime_turns (
+    namespace TEXT NOT NULL DEFAULT '', session_id TEXT NOT NULL, turn_id TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('running', 'indeterminate', 'settled')),
+    owner_fence INTEGER NOT NULL, receipt_json TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL,
+    PRIMARY KEY (namespace, session_id, turn_id)
+);
+
 CREATE TABLE IF NOT EXISTS async_delegations (
     delegation_id TEXT PRIMARY KEY,
     origin_session TEXT NOT NULL,
@@ -599,6 +614,8 @@ CREATE INDEX IF NOT EXISTS idx_messages_assistant_calls_by_session
     WHERE role = 'assistant' AND tool_calls IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
 CREATE INDEX IF NOT EXISTS idx_session_turn_leases_expires ON session_turn_leases(expires_at);
+CREATE INDEX IF NOT EXISTS idx_session_runtime_owners_expires ON session_runtime_owners(expires_at);
+CREATE INDEX IF NOT EXISTS idx_session_runtime_turns_state ON session_runtime_turns(namespace, session_id, state);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usage(session_id);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_model ON session_model_usage(model);
 CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery

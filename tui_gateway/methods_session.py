@@ -37,10 +37,18 @@ def _with_db(code: int, *, session_scoped: bool):
     """Append a db arg — the session's db (after ``_with_session``) or ``_profile_db(params)``; ``code`` when None."""
     def deco(fn):
         def handler(rid, params: dict, *session) -> dict:
-            with (_session_db(session[0]) if session_scoped else _profile_db(params)) as db:
-                if db is None:
-                    return _db_unavailable_error(rid, code=code)
-                return fn(rid, params, *session, db)
+            try:
+                with (_session_db(session[0]) if session_scoped else _profile_db(params)) as db:
+                    if db is None:
+                        return _db_unavailable_error(rid, code=code)
+                    return fn(rid, params, *session, db)
+            except Exception as exc:
+                # Rebound body: module-level imports are invisible here (method_ctx.bind_module) —
+                # the readiness import MUST be function-local or this handler NameErrors.
+                from state_store_runtime_readiness import PostgreSQLRuntimeActivationError
+                if isinstance(exc, PostgreSQLRuntimeActivationError):
+                    return _err(rid, code, f"session database unavailable: {exc}", data=exc.report.as_dict())
+                raise
         return _with_session(handler) if session_scoped else handler
     return deco
 
@@ -85,8 +93,17 @@ def _make_agent_in_context(sid: str, key: str, **kwargs):
 
 
 def _profile_session_db(profile_home):
-    """``(db, owns)``: a DEDICATED handle on ``profile_home``'s state.db, else the shared launch db."""
+    """``(db, owns)``: a DEDICATED handle on ``profile_home``'s state.db, else the shared launch db.
+
+    A selected-PostgreSQL target profile is refused BEFORE the registry opens/creates its
+    state.db (``tui-api-session-runtime``): covers session.resume, session.create branch seeding
+    and the session.branch agent build in one place. Function-local import — this body is rebound
+    onto server.py globals and cannot see module-level names."""
     if profile_home:
+        # Rebind-proof ordering: the guard must run BEFORE acquire(), never only inside the
+        # registry (the launch home is a different config realm than the target profile's).
+        from state_store_runtime_readiness import require_legacy_state_db_runtime
+        require_legacy_state_db_runtime(home=Path(profile_home))
         from hermes_state_registry import acquire
         return acquire(Path(profile_home) / "state.db"), True
     return _get_db(), False
@@ -292,7 +309,12 @@ def _seed_branch_row(record: dict, key: str, parent_session_id: str, history: li
             record["pending_title"] = None
             # The first submit's _persist_branch_seed is the fallback for a failed seed, not a second copy.
             record["_branch_seed_persisted"] = True
-    except Exception:
+    except Exception as exc:
+        # A selected-PostgreSQL profile is a routing refusal, not a seed failure — never fall back
+        # to the lazy row path for it (function-local import: rebound bodies see only server globals).
+        from state_store_runtime_readiness import PostgreSQLRuntimeActivationError
+        if isinstance(exc, PostgreSQLRuntimeActivationError):
+            raise
         logger.warning("seeded-branch persistence failed for %s; falling back to lazy row creation", key,
                        exc_info=True)
 
@@ -947,7 +969,14 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4006, "session_id required")
     ctx = _Resume(rid, params, target)
     # Profile scope: a DEDICATED handle we own until the agent takes it; else the shared launch db.
-    ctx.db, ctx.owns_db = _profile_session_db(ctx.profile_home)
+    try:
+        ctx.db, ctx.owns_db = _profile_session_db(ctx.profile_home)
+    except Exception as exc:
+        # Rebound body: function-local import only (module-level names are invisible here).
+        from state_store_runtime_readiness import PostgreSQLRuntimeActivationError
+        if isinstance(exc, PostgreSQLRuntimeActivationError):
+            return _err(rid, 5000, f"session database unavailable: {exc}", data=exc.report.as_dict())
+        raise
     try:
         if ctx.db is None:
             return _db_unavailable_error(rid, code=5000)

@@ -4,6 +4,7 @@ import pytest
 
 from hermes_cli.session_listing import (
     format_gateway_session_listing,
+    query_cli_session_listing,
     query_session_listing,
 )
 
@@ -70,6 +71,46 @@ class TestQuerySessionListingSearch:
 
         assert [r["id"] for r in rows] == ["sess_an94"]
         assert rows[0]["is_current_session"] is True
+
+
+class TestQueryCliSessionListing:
+    """The interactive CLI history is a scoped CLI family, not a gateway-wide list."""
+
+    def test_merges_cli_and_oneshot_by_mru_without_gateway_rows(self):
+        class Store:
+            def list_sessions_rich(self, *, source, **_kwargs):
+                rows = {
+                    "cli": [
+                        {"id": "cli-old", "source": "cli", "title": "CLI old", "last_active": 10},
+                        {"id": "shared", "source": "cli", "title": "CLI copy", "last_active": 20},
+                    ],
+                    "oneshot": [
+                        {"id": "oneshot-new", "source": "oneshot", "title": "One-shot", "last_active": 30},
+                        {"id": "shared", "source": "oneshot", "title": "One-shot copy", "last_active": 25},
+                    ],
+                }
+                assert source in rows
+                return rows[source]
+
+        rows = query_cli_session_listing(Store(), limit=10, include_unnamed=True)
+
+        assert [(row["id"], row["source"]) for row in rows] == [
+            ("oneshot-new", "oneshot"), ("shared", "oneshot"), ("cli-old", "cli"),
+        ]
+
+    def test_limit_is_applied_after_merge_and_uses_stable_tie_breaker(self):
+        class Store:
+            def list_sessions_rich(self, *, source, **_kwargs):
+                return [
+                    {"id": "z-cli", "source": source, "title": "Z", "last_active": 100},
+                    {"id": "a-cli", "source": source, "title": "A", "last_active": 100},
+                ] if source == "cli" else [
+                    {"id": "m-one", "source": source, "title": "M", "last_active": 100},
+                ]
+
+        rows = query_cli_session_listing(Store(), limit=2, include_unnamed=True)
+
+        assert [row["id"] for row in rows] == ["a-cli", "m-one"]
 
 
 class TestFormatGatewaySessionListing:

@@ -419,7 +419,13 @@ def _get_db():
             # use, not import time (#112692). See _launch_state_db_path.
             _db, _db_error = acquire(_launch_state_db_path()), None
         except Exception as exc:
+            # PostgreSQL selection is not a no-store mode. Returning None here
+            # makes public session callers reinterpret an unavailable durable
+            # store as an empty/missing in-memory session.
+            from state_store_runtime_readiness import PostgreSQLRuntimeActivationError
             _db_error = str(exc)
+            if isinstance(exc, PostgreSQLRuntimeActivationError):
+                raise
             logger.warning("TUI session store unavailable — continuing without state.db features: %s", exc)
             return None
     return _db
@@ -481,6 +487,9 @@ def _profile_db(params: dict | None = None, *, writer: bool = False):
                 db = _open_session_db_at_path(Path(profile_home) / "state.db", read_only=True)
             owns = True
         except Exception as exc:
+            from state_store_runtime_readiness import PostgreSQLRuntimeActivationError
+            if isinstance(exc, PostgreSQLRuntimeActivationError):
+                raise
             logger.warning("TUI profile session store unavailable for %s: %s", profile, exc)
             db, owns = None, False
     try:

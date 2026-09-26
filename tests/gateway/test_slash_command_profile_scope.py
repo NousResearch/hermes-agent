@@ -86,6 +86,8 @@ async def test_insights_opens_session_db_under_the_routed_home(
 
     monkeypatch.setattr(hermes_state, "SessionDB", _RecordingDB)
     monkeypatch.setattr(insights_mod, "InsightsEngine", _Engine)
+    import cli_session_store
+    monkeypatch.setattr(cli_session_store, "open_selected_read_store", lambda config: _RecordingDB())
 
     with _profile_runtime_scope(profile_home):
         result = await runner._handle_insights_command(_Event(""))

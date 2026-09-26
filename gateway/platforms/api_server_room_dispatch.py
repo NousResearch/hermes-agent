@@ -49,6 +49,16 @@ async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
 
 
 def _room_dispatch_error(exc: Exception, *, _openai_error) -> "web.Response":
+    from state_store_runtime_readiness import PostgreSQLRuntimeActivationError
+    if isinstance(exc, PostgreSQLRuntimeActivationError):
+        # Selected PostgreSQL cannot serve a hosted-room dispatch through the legacy
+        # SessionDB; surface the canonical typed 503 (with diagnostic) instead of the
+        # generic 403 so the caller can tell configuration state from a policy refusal.
+        return web.json_response(
+            {**_openai_error(
+                "Session database unavailable", "service_unavailable_error",
+                code="session_db_unavailable"), "diagnostic": exc.report.as_dict()},
+            status=503)
     message, code = str(exc), "invalid_room_dispatch"
     lowered = message.lower()
     if "execution policy" in lowered or "remote room execution requires" in lowered:

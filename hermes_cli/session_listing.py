@@ -77,6 +77,52 @@ def query_session_listing(
     return result
 
 
+def _listing_mru_key(row: dict[str, Any]) -> tuple[float, str]:
+    """Deterministic descending-MRU key for independently scoped listing pages."""
+    try:
+        activity = float(row.get("last_active") or row.get("started_at") or 0)
+    except (TypeError, ValueError):
+        activity = 0.0
+    return -activity, str(row.get("id") or "")
+
+
+def query_cli_session_listing(
+    session_db: Any,
+    *,
+    current_session_id: str | None = None,
+    include_current_session: bool = False,
+    include_unnamed: bool = False,
+    limit: int = 10,
+    exclude_sources: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Return the interactive CLI family (``cli`` + ``oneshot``), never gateway sources.
+
+    Each source remains an independently bounded query so selected PostgreSQL stores do not
+    hydrate an unbounded cross-source page. Merge only the two user-visible CLI origins, then
+    deduplicate by session id and apply a deterministic MRU order for numeric resume selection.
+    """
+    scoped_rows = [
+        row
+        for source in ("cli", "oneshot")
+        for row in query_session_listing(
+            session_db,
+            source=source,
+            current_session_id=current_session_id,
+            include_current_session=include_current_session,
+            include_all_sources=False,
+            include_unnamed=include_unnamed,
+            limit=limit,
+            exclude_sources=exclude_sources,
+        )
+    ]
+    rows_by_id: dict[str, dict[str, Any]] = {}
+    for row in sorted(scoped_rows, key=_listing_mru_key):
+        session_id = str(row.get("id") or "")
+        if session_id and session_id not in rows_by_id:
+            rows_by_id[session_id] = row
+    return sorted(rows_by_id.values(), key=_listing_mru_key)[:limit]
+
+
 def format_gateway_session_listing(
     rows: list[dict[str, Any]],
     *,

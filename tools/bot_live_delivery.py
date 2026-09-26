@@ -29,8 +29,20 @@ _OWNER_KEYS = ("profile_home", "session_id", "lease_id", "live_session_id")
 _TERMINAL = frozenset({"settled", "failed", "cancelled", "ambiguous"})
 
 
+def _require_legacy_mailbox_runtime(profile_home: Path | str) -> None:
+    """Refuse selected PostgreSQL before this SQLite/JSON mailbox touches disk.
+
+    The mailbox's owner lineage and permanent receipts are one at-most-once
+    protocol. They cannot be split across PostgreSQL and the legacy files.
+    """
+    from state_store_runtime_readiness import require_legacy_state_db_runtime
+
+    require_legacy_state_db_runtime(home=Path(profile_home))
+
+
 def find_canonical_owner(profile_home: Path | str) -> dict[str, Any] | None:
     """Return the exact Bot Chat tip's lease, including unsupported CLI owners."""
+    _require_legacy_mailbox_runtime(profile_home)
     from hermes_cli.active_sessions import active_session_registry_snapshot
     from hermes_state import SessionDB
 
@@ -204,6 +216,7 @@ def deliver_to_live_owner(
     Retry with the same id AND pinned owner/message to inspect the existing
     state. Reusing an id with a different payload is an error, never an overwrite.
     """
+    _require_legacy_mailbox_runtime(profile_home)
     pinned = _owner(profile_home, owner)
     if not isinstance(message, str):
         raise ValueError("message must be a string")
@@ -226,6 +239,7 @@ def deliver_to_live_owner(
 
 
 def _matches(home: Path | str, record: dict, owner: dict) -> bool:
+    _require_legacy_mailbox_runtime(home)
     pinned = record["owner"]
     if any(pinned[key] != owner[key] for key in ("profile_home", "lease_id", "live_session_id")):
         return False
@@ -249,6 +263,7 @@ def claim_pending_delivery(
     stored session's compression chain. A new lease/live session cannot steal it.
     Caller must hold its normal turn-admission guard before invoking this.
     """
+    _require_legacy_mailbox_runtime(profile_home)
     current = _owner(profile_home, owner)
     if not _root(profile_home).is_dir():
         return None
@@ -272,6 +287,7 @@ def complete_delivery(
     reply: str = "", error: str = "", reason: str = "",
 ) -> dict[str, Any]:
     """Persist an immutable terminal receipt; duplicate identical completion is safe."""
+    _require_legacy_mailbox_runtime(profile_home)
     key = _delivery_id(delivery_id)
     if status not in _TERMINAL:
         raise ValueError("invalid terminal delivery status")
@@ -294,6 +310,7 @@ def complete_delivery(
 
 def read_delivery_result(profile_home: Path | str, delivery_id: str) -> dict[str, Any] | None:
     """Read admission/claim/terminal state without waiting or deleting its receipt."""
+    _require_legacy_mailbox_runtime(profile_home)
     return _read(_root(profile_home) / f"{_delivery_id(delivery_id)}.json")
 
 

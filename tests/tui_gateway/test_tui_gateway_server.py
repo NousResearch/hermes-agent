@@ -18455,6 +18455,38 @@ def test_notification_poller_skips_consumed(monkeypatch):
             process_registry.completion_queue.get_nowait()
 
 
+def test_notification_poller_starts_no_turn_after_stop(monkeypatch):
+    """After the user pressed Stop, a completion that arrives must not start an
+    automatic model turn; it waits (requeued) until the user submits again."""
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    started = []
+    sess = _session(running=False, _turn_cancel_requested=True)
+    server._sessions["sid_stopped"] = sess
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_run_prompt_submit", lambda *a, **kw: started.append(a) or True)
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    process_registry._completion_consumed.discard("proc_after_stop")
+    isolated_queue.put({
+        "type": "completion", "session_id": "proc_after_stop", "command": "make build",
+        "exit_code": 0, "output": "ok",
+    })
+    stop = threading.Event()
+    stop.set()
+
+    try:
+        server._notification_poller_loop(stop, "sid_stopped", sess)
+
+        assert started == []
+        assert sess["running"] is False
+        assert isolated_queue.get_nowait()["session_id"] == "proc_after_stop"
+    finally:
+        server._sessions.pop("sid_stopped", None)
+
+
 def test_notification_poller_requeues_when_busy(monkeypatch):
     """When the agent is busy, the poller requeues the event."""
     import queue as _queue_mod

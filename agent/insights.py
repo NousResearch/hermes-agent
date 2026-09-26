@@ -435,7 +435,10 @@ class InsightsEngine:
 
     _TOP_METRICS = (
         ("Most messages", lambda s: s.get("message_count") or 0, "{} msgs"),
-        ("Most tokens", lambda s: (s.get("input_tokens") or 0) + (s.get("output_tokens") or 0), "{:,} tokens"),
+        # Token volume is prompt + completion: `input_tokens` excludes cache reads/writes.
+        ("Most tokens", lambda s: ((s.get("input_tokens") or 0) + (s.get("cache_read_tokens") or 0)
+                                   + (s.get("cache_write_tokens") or 0) + (s.get("output_tokens") or 0)),
+         "{:,} tokens"),
         ("Most tool calls", lambda s: s.get("tool_call_count") or 0, "{} calls"),
     )
 

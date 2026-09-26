@@ -183,7 +183,14 @@ function SidebarSessionRowImpl({
   // it reaches all four row render paths at once, the set only changes when a
   // tile opens or closes, and the boolean bails every unaffected row out.
   const openUnfocused = useStoreSelector($openStoredSessionIds, open => !isSelected && open.has(session.id))
-  const totalTokens = session.input_tokens + session.output_tokens
+  // Cache reads/writes are part of the prompt volume: `input_tokens` counts only the
+  // cache MISSES, so a cached provider (DeepSeek reports 94-98% hits) would otherwise
+  // show a few percent of what the provider bills.
+  const totalTokens =
+    (session.input_tokens || 0) +
+    (session.cache_read_tokens || 0) +
+    (session.cache_write_tokens || 0) +
+    (session.output_tokens || 0)
   const cost = sessionCostUsd(session)
 
   // Tokens, cost and age share one figure rather than each claiming a column:

@@ -536,6 +536,12 @@ export interface SessionInfo {
    *  tile or route can hold a middle segment's id from when IT was the tip. */
   _lineage_ids?: null | string[]
   input_tokens: number
+  /** Prompt-cache buckets, straight off the `sessions` row. Display totals MUST add
+   *  these back: ``input_tokens`` counts only UNCACHED input (cache hits are stored
+   *  in ``cache_read_tokens``), so a cache-heavy provider would otherwise show a few
+   *  percent of the real prompt volume. Optional: older backends omit them. */
+  cache_read_tokens?: null | number
+  cache_write_tokens?: null | number
   /** Spend for the session, straight off the `sessions` row. `actual` is set
    *  when the provider reported a price; `estimated` is our own pricing-table
    *  math. Both are 0 on subscription auth that never quotes a price, which is
@@ -894,6 +900,10 @@ export interface AnalyticsDailyEntry {
 
 export interface AnalyticsModelEntry {
   api_calls: number
+  /** Prompt-cache reads: prompt volume the provider billed, so a per-model total that
+   *  skips it under-reports a cached provider by an order of magnitude. Optional:
+   *  present once the backend sums the column. */
+  cache_read_tokens?: null | number
   estimated_cost: number
   input_tokens: number
   model: string

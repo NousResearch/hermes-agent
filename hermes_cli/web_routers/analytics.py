@@ -99,12 +99,14 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
         by_model = _rows(db, """
             SELECT model,
                    SUM(input_tokens) as input_tokens,
+                   COALESCE(SUM(cache_read_tokens), 0) as cache_read_tokens,
                    SUM(output_tokens) as output_tokens,
                    COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
                    COUNT(*) as sessions,
                    SUM(COALESCE(api_call_count, 0)) as api_calls
             FROM sessions WHERE started_at > ? AND model IS NOT NULL
-            GROUP BY model ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
+            GROUP BY model
+            ORDER BY SUM(input_tokens) + COALESCE(SUM(cache_read_tokens), 0) + SUM(output_tokens) DESC
         """, cutoff)
 
         # Fold in auxiliary usage (vision, compression, ...) from session_model_usage.
@@ -188,7 +190,8 @@ def _fold_session_only_rows(raw_rows: List[Dict[str, Any]]) -> List[Dict[str, An
                 continue
             target["sessions"] = (target.get("sessions") or 0) + (row.get("sessions") or 0)
             target["last_used_at"] = max(target.get("last_used_at") or 0, row.get("last_used_at") or 0)
-            total_tokens = (target.get("input_tokens") or 0) + (target.get("output_tokens") or 0)
+            total_tokens = ((target.get("input_tokens") or 0) + (target.get("cache_read_tokens") or 0)
+                            + (target.get("output_tokens") or 0))
             sessions = target.get("sessions") or 0
             target["avg_tokens_per_session"] = total_tokens / sessions if sessions else 0
         rows.append(target)
@@ -247,10 +250,10 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
                    SUM(COALESCE(api_call_count, 0)) as api_calls,
                    SUM(tool_call_count) as tool_calls,
                    MAX(started_at) as last_used_at,
-                   AVG(input_tokens + output_tokens) as avg_tokens_per_session
+                   AVG(input_tokens + COALESCE(cache_read_tokens, 0) + output_tokens) as avg_tokens_per_session
             FROM sessions WHERE started_at > ? AND model IS NOT NULL AND model != ''
             GROUP BY model, billing_provider
-            ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
+            ORDER BY SUM(input_tokens) + COALESCE(SUM(cache_read_tokens), 0) + SUM(output_tokens) DESC
         """, cutoff)
 
         # Aux-only models (dedicated vision/compression) as (model, provider) rows,
@@ -270,7 +273,11 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
 
         rows = _fold_session_only_rows(raw_rows)
         rows.sort(
-            key=lambda r: (r.get("input_tokens") or 0) + (r.get("output_tokens") or 0),
+            # Cache reads are prompt volume too: a cache-heavy model must not rank on
+            # its cache misses alone.
+            key=lambda r: (r.get("input_tokens") or 0)
+            + (r.get("cache_read_tokens") or 0)
+            + (r.get("output_tokens") or 0),
             reverse=True,
         )
 

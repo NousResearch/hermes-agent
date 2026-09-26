@@ -10,6 +10,7 @@ import queue
 import time
 
 import pytest
+from unittest.mock import patch
 
 import tools.process_registry as pr
 from tools.process_registry import ProcessRegistry
@@ -80,3 +81,77 @@ def test_terminal_dispatch_heartbeat_implies_notify_and_refuses_foreground(monke
     bg = json.loads(dispatch({"command": "sleep 1", "background": True, "heartbeat": 120}))
     assert "error" not in bg or not bg["error"]
     assert captured["heartbeat"] == 120 and captured["notify_on_complete"] is True
+
+
+def _live_recoverable_entry(tmp_path, registry, *, heartbeat_seconds=30):
+    """Spawn a live host process and write a checkpoint entry naming it, so
+    ``recover_from_checkpoint`` adopts it as a detached session."""
+    import json as _json
+    import subprocess as _sp
+    import sys as _sys
+
+    proc = _sp.Popen([_sys.executable, "-c", "import time; time.sleep(60)"])
+    entry = {
+        "session_id": "proc_recover_hb",
+        "command": "sleep 60",
+        "pid": proc.pid,
+        "pid_scope": "host",
+        "host_start_time": registry._safe_host_start_time(proc.pid),
+        "task_id": "t1",
+        "session_key": "session-hb",
+        "heartbeat_seconds": heartbeat_seconds,
+    }
+    checkpoint = tmp_path / "procs.json"
+    checkpoint.write_text(_json.dumps([entry]))
+    return proc, checkpoint
+
+
+def test_recovery_rearms_checkpointed_heartbeat(tmp_path, monkeypatch):
+    """A recovered session with a checkpointed heartbeat beats again. The checkpoint
+    persists ``heartbeat_seconds`` for exactly this, but recovery never re-armed the
+    timer thread, so the process ran silent until its completion notice."""
+    import tools.process_registry as _pr
+
+    monkeypatch.setattr(_pr, "HEARTBEAT_MIN_SECONDS", 1)
+    monkeypatch.setattr(_pr, "HEARTBEAT_TICK_SECONDS", 0.1)
+    registry = ProcessRegistry()
+    monkeypatch.setattr(registry, "_host_pid_is_ours", lambda pid, start: True)
+    proc, checkpoint = _live_recoverable_entry(tmp_path, registry, heartbeat_seconds=1)
+    try:
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+            assert registry.recover_from_checkpoint() == 1
+
+        session = registry.get("proc_recover_hb")
+        assert session is not None and session.heartbeat_seconds == 1
+        assert registry._heartbeat_thread is not None and registry._heartbeat_thread.is_alive()
+        assert _wait_until(
+            lambda: any(e.get("type") == "heartbeat" and e.get("session_id") == "proc_recover_hb"
+                        for e in list(registry.completion_queue.queue)),
+            timeout=10), list(registry.completion_queue.queue)
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_recovery_rearm_uses_the_persisted_interval(tmp_path, monkeypatch):
+    """The re-armed cadence is the checkpointed value floored at HEARTBEAT_MIN_SECONDS,
+    matching arm_heartbeat's contract; nothing beats before the floor elapses."""
+    import tools.process_registry as _pr
+
+    monkeypatch.setattr(_pr, "HEARTBEAT_MIN_SECONDS", 60)
+    registry = ProcessRegistry()
+    monkeypatch.setattr(registry, "_host_pid_is_ours", lambda pid, start: True)
+    # Interval below the floor is clamped up, matching arm_heartbeat's contract.
+    proc, checkpoint = _live_recoverable_entry(tmp_path, registry, heartbeat_seconds=5)
+    try:
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+            assert registry.recover_from_checkpoint() == 1
+
+        session = registry.get("proc_recover_hb")
+        assert session.heartbeat_seconds == 60
+        # No heartbeat was requested before the floor elapses: nothing queued.
+        assert not any(e.get("type") == "heartbeat"
+                       for e in list(registry.completion_queue.queue))
+    finally:
+        proc.kill()
+        proc.wait()

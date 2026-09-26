@@ -114,5 +114,12 @@ class ProcessCheckpointMixin:
                     "notify_on_complete": session.notify_on_complete,
                     "parent_session_id": session.parent_session_id,
                 })
+            # Re-arm the heartbeat so a checkpointed interval keeps beating after recovery.
+            # ``heartbeat_seconds`` is persisted precisely so the cadence survives a restart,
+            # but the timer thread lives in the registry process and died with it: without
+            # this, a recovered session beats zero more times while the gateway drains its
+            # completion notice through the resumed watcher above.
+            if session.heartbeat_seconds > 0:
+                self.arm_heartbeat(session, session.heartbeat_seconds)
         self._write_checkpoint(extra_entries=unresolved_scope_entries)
         return recovered

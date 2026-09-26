@@ -621,14 +621,20 @@ def needs_reasoning_echo(provider: Any, model: Any, base_url: Any) -> bool:
     return reasoning_echo_family(provider, model, base_url) is not None
 
 
-def stale_thinking_reaches_wire(api_mode: Any, provider: Any, model: Any, base_url: Any) -> bool:
+def stale_thinking_reaches_wire(api_mode: Any, provider: Any, model: Any, base_url: Any,
+                                forced_strip: bool = False) -> bool:
     """True when stale assistant reasoning text is actually replayed on the wire for the route.
 
     The single wire-truth predicate the compaction TRIGGER estimator and the tail-budget
     walks must share: if they disagree, a reasoning-heavy session can look over-threshold
     to preflight yet fully tail-protected to the walk — an infinite compaction loop.
     ``codex_responses`` never reads the text keys (continuity rides the encrypted sidecar).
+    ``forced_strip`` is the route's ``model.reasoning_echo: never`` override: the family rule
+    still matches, but the payload policy strips the field, so no stale thinking rides the wire.
+    Both callers derive it from ``reasoning_params.read_reasoning_echo_mode`` so they cannot drift.
     """
+    if forced_strip:
+        return False
     return (api_mode or "") != "codex_responses" and needs_reasoning_echo(provider, model, base_url)
 
 

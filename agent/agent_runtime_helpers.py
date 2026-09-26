@@ -1001,6 +1001,8 @@ def _apply_primary_runtime_fields(agent, rt: Dict[str, Any]) -> None:
         agent._transport_cache.clear()
     agent.api_key = rt["api_key"]
     agent._reasoning_echo_flag = rt.get("reasoning_echo_flag", False)
+    agent._reasoning_echo_mode = rt.get("reasoning_echo_mode", "")
+    agent._thinking_pad_cache = None
     agent.request_overrides = dict(rt.get("request_overrides") or {})
     agent._client_kwargs = dict(rt["client_kwargs"])
 
@@ -1311,6 +1313,7 @@ def restore_primary_runtime(agent) -> bool:
             model=rt["compressor_model"], context_length=rt["compressor_context_length"],
             base_url=rt["compressor_base_url"], api_key=rt["compressor_api_key"],
             provider=rt["compressor_provider"], api_mode=rt.get("compressor_api_mode", ""),
+            reasoning_echo_mode=rt.get("reasoning_echo_mode", ""),
         )
         # Same rule as fallback activation: refresh an existing verdict only; never-probed sessions stay lazy.
         if getattr(agent, "_compression_feasibility_checked", False) is True:
@@ -1975,7 +1978,7 @@ def _apply_switched_provider_request_overrides(agent, new_provider):
 _SWITCH_SNAPSHOT_FIELDS = (
     "model", "provider", "requested_provider", "base_url", "api_mode", "api_key", "client",
     "_anthropic_client", "_anthropic_api_key", "_anthropic_base_url", "_is_anthropic_oauth",
-    "_config_context_length", "_reasoning_echo_flag", "runtime_capabilities",
+    "_config_context_length", "_reasoning_echo_flag", "_reasoning_echo_mode", "runtime_capabilities",
     "_credential_pool", "_credential_pool_entry_id",
 )
 _MISSING = object()
@@ -2118,8 +2121,8 @@ def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_
     agent._config_context_length = None
     agent.model = new_model
     agent.provider = agent.requested_provider = new_provider
-    # Re-read reasoning_echo so the flag reflects the new primary model (see _reasoning_echo_opt_in).
-    agent._reasoning_echo_flag = agent._read_reasoning_echo_from_config()
+    # Re-read reasoning_echo so the mode reflects the new primary model (see _reasoning_echo_opt_in).
+    agent._sync_reasoning_echo_from_config()
     # Empty base_url while the provider changes means upstream resolution failed; falling back to
     # the old provider's URL pairs the wrong host and persists via _primary_runtime. Fail loud.
     # Same-provider re-select (credential refresh) may keep the URL.
@@ -2221,6 +2224,8 @@ def _update_switch_compressor(agent, custom_providers, effective_context_length,
             api_key=agent.api_key,  # context_compressor forwards to call_llm; callable preserved
             provider=agent.provider,
             api_mode=agent.api_mode,
+            # ``_swap_switch_runtime`` already re-synced this from config for the new primary.
+            reasoning_echo_mode=getattr(agent, "_reasoning_echo_mode", ""),
         )
     except Exception:
         _restore_switch_snapshot(agent, snapshot)
@@ -2246,6 +2251,7 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> Dict[str, Any]:
         "use_native_cache_layout": agent._use_native_cache_layout,
         "reasoning_config": dict(agent.reasoning_config) if getattr(agent, "reasoning_config", None) else None,
         "reasoning_echo_flag": getattr(agent, "_reasoning_echo_flag", False),
+        "reasoning_echo_mode": getattr(agent, "_reasoning_echo_mode", ""),
         # Overrides must travel with the switched-to identity or a later recovery/restore resurrects
         # PRE-switch overrides from the stale init snapshot.
         # See #75091.

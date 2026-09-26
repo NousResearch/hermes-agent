@@ -2005,6 +2005,9 @@ def _update_fallback_context_compressor(agent) -> None:
     compressor.update_model(  # callable api_key preserved → call_llm
         model=agent.model, context_length=fb_context_length, base_url=agent.base_url,
         api_key=getattr(agent, "api_key", ""), provider=agent.provider, api_mode=agent.api_mode,
+        # The fallback entry's mode (set on the agent just above); a config read here would see the
+        # primary's, leaving the estimator and the tail walk disagreeing on the active route.
+        reasoning_echo_mode=getattr(agent, "_reasoning_echo_mode", ""),
     )
     # Fallback activation is an error path: refresh an EXISTING verdict eagerly (the ceiling was voided by
     # update_model()), but a session that never probed keeps its lazy compaction-time probe rather than
@@ -2136,8 +2139,13 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
             agent._config_context_length = None
             agent.model, agent.provider, agent.requested_provider = fb_model, fb_provider, fb_provider
             agent.base_url, agent.api_mode = fb_base_url, fb_api_mode
-            # reasoning_content echo opt-in travels with the active provider; restore_primary_runtime reverts it.
-            agent._reasoning_echo_flag = bool(fb.get("reasoning_echo", False))
+            # reasoning_content echo policy travels with the active provider; restore_primary_runtime reverts it.
+            # A fallback entry may carry "never" to force the strip side; absent/False stays auto (family rules).
+            from agent.reasoning_params import REASONING_ECHO_ALWAYS, normalize_reasoning_echo_mode
+
+            agent._reasoning_echo_mode = normalize_reasoning_echo_mode(fb.get("reasoning_echo")) or ""
+            agent._reasoning_echo_flag = agent._reasoning_echo_mode == REASONING_ECHO_ALWAYS
+            agent._thinking_pad_cache = None
             if hasattr(agent, "_transport_cache"):
                 agent._transport_cache.clear()
             agent._fallback_activated = True

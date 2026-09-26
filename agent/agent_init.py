@@ -1949,6 +1949,12 @@ def _compressor_max_tokens(agent):
 
 
 def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_context_length, session_db):
+    # ``model.reasoning_echo`` travels with the compressor: the compaction trigger estimator and the
+    # tail walk must agree on the ACTIVE route or compaction loops. At init the active route is the
+    # configured one, so a config read is correct here (switch/fallback pass theirs explicitly).
+    from agent.reasoning_params import read_reasoning_echo_mode
+
+    _reasoning_echo_mode = read_reasoning_echo_mode() or ""
     _selected_engine = _select_context_engine(_agent_cfg)
     if _selected_engine is not None:
         agent.context_compressor = _selected_engine
@@ -1971,6 +1977,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
         agent.context_compressor.update_model(
             model=agent.model, context_length=_plugin_ctx_len, base_url=agent.base_url,
             api_key=getattr(agent, "api_key", ""), provider=agent.provider, api_mode=agent.api_mode,
+            reasoning_echo_mode=_reasoning_echo_mode,
         )
         if not agent.quiet_mode:
             _ra().logger.info("Using context engine: %s", _selected_engine.name)
@@ -1989,6 +1996,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             proactive_prune_min_reclaim_tokens=cs.proactive_prune_min_reclaim,
             min_tail_user_messages=cs.min_tail_users, tail_mode=cs.tail_mode,
             custom_providers=_custom_providers,
+            reasoning_echo_mode=_reasoning_echo_mode,
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):
@@ -2261,6 +2269,7 @@ def _snapshot_primary_runtime(agent):
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,
         "reasoning_echo_flag": getattr(agent, "_reasoning_echo_flag", False),
+        "reasoning_echo_mode": getattr(agent, "_reasoning_echo_mode", ""),
         # Engine state _try_activate_fallback() overwrites (getattr: plugin engines may lack them).
         "compressor_model": getattr(_cc, "model", agent.model),
         "compressor_base_url": getattr(_cc, "base_url", agent.base_url),
@@ -2429,8 +2438,8 @@ def init_agent(
 
     _set_defaults(agent, _CONTROL_STATE)
 
-    # reasoning_content echo opt-in; switch_model / fallback / restore keep it in sync.
-    agent._reasoning_echo_flag = agent._read_reasoning_echo_from_config()
+    # reasoning_content echo policy (``model.reasoning_echo``); switch_model / fallback / restore keep it in sync.
+    agent._sync_reasoning_echo_from_config()
     agent.request_overrides = dict(request_overrides or {})
     agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns
     agent._force_ascii_payload = False

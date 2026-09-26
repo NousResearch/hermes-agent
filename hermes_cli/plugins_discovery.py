@@ -31,7 +31,7 @@ ENTRY_POINT_CAPABILITIES_GROUP = "hermes_agent.plugin_capabilities"
 # plugin.json per harness). Their plugin.json is not an Agent Plugins v1 manifest and can never validate, so
 # parsing it on every discovery pass only spams warnings (#101962).
 _FOREIGN_HARNESS_MANIFEST_DIRS = frozenset({
-    ".claude-plugin", ".codex-plugin", ".cursor-plugin", ".devin-plugin", ".kimi-plugin",
+    ".claude-plugin", ".codex-plugin", ".cursor-plugin", ".devin-plugin", ".kimi-plugin", ".muse-plugin",
 })
 
 

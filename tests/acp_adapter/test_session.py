@@ -426,6 +426,91 @@ class TestPersistence:
 
 
 
+    # -- #122699: a non-owning rewrite never drops another writer's turn -----------------------
+
+    @staticmethod
+    def _non_owning(tmp_path):
+        agent = SimpleNamespace(model="test-model")  # no _session_db => non-owning => rewrite branch
+        db = SessionDB(tmp_path / "state.db")
+        return db, SessionManager(agent_factory=lambda: agent, db=db)
+
+    def test_a_second_writers_turn_stays_live_through_a_non_owning_save(self, tmp_path):
+        db, manager = self._non_owning(tmp_path)
+        state = manager.create_session(cwd="/work")
+        state.history += [{"role": "user", "content": "ask 1"}, {"role": "assistant", "content": "answer 1"}]
+        manager.save_session(state.session_id)
+        # Another editor on the same session appends a turn this state never saw.
+        db.append_message(state.session_id, "user", content="from the other editor")
+        db.append_message(state.session_id, "assistant", content="its answer")
+
+        state.history.append({"role": "user", "content": "ask 2"})
+        manager.save_session(state.session_id)  # e.g. a model switch or mode change
+
+        live = [m["content"] for m in db.get_messages(state.session_id)]
+        assert live == ["ask 1", "answer 1", "from the other editor", "its answer", "ask 2"]
+        assert db.get_session(state.session_id)["message_count"] == 5
+        # Nothing was archived or deleted: every row ever written is still live.
+        assert len(db.get_messages(state.session_id, include_inactive=True)) == 5
+
+    def test_a_second_writers_turn_between_this_states_rows_stays_live(self, tmp_path):
+        """A foreign row BELOW this state's newest row: a watermark cap would archive it."""
+        db, manager = self._non_owning(tmp_path)
+        state = manager.create_session(cwd="/work")
+        state.history.append({"role": "user", "content": "ask 1"})
+        manager.save_session(state.session_id)
+        db.append_message(state.session_id, "user", content="from the other editor")
+        state.history.append({"role": "assistant", "content": "answer 1"})
+        manager.save_session(state.session_id)  # inserted after the foreign row
+        manager.save_session(state.session_id)  # the next non-owning save must not drop it
+
+        live = [m["content"] for m in db.get_messages(state.session_id)]
+        assert live == ["ask 1", "from the other editor", "answer 1"]
+        assert len(db.get_messages(state.session_id, include_inactive=True)) == 3
+
+    def test_reset_still_drops_this_states_rows_but_not_another_writers(self, tmp_path):
+        db, manager = self._non_owning(tmp_path)
+        state = manager.create_session(cwd="/work")
+        state.history += [{"role": "user", "content": "mine"}, {"role": "assistant", "content": "mine too"}]
+        manager.save_session(state.session_id)
+        db.append_message(state.session_id, "user", content="theirs")
+
+        state.history.clear()  # /reset
+        manager.save_session(state.session_id)
+
+        assert [m["content"] for m in db.get_messages(state.session_id)] == ["theirs"]
+        # This state's own rows are archived, not deleted: still recoverable and searchable.
+        archived = {m["content"] for m in db.get_messages(state.session_id, include_inactive=True)}
+        assert {"mine", "mine too"} <= archived
+
+    def test_a_restored_session_keeps_turns_written_after_it_loaded(self, tmp_path):
+        """Editor A resumes a session, editor B keeps working in it, then A saves before its first
+        turn (mode/config change): A's stale snapshot must not drop B's turns."""
+        db, manager = self._non_owning(tmp_path)
+        state = manager.create_session(cwd="/work")
+        state.history += [{"role": "user", "content": "ask 1"}, {"role": "assistant", "content": "answer 1"}]
+        manager.save_session(state.session_id)
+        with manager._lock:
+            del manager._sessions[state.session_id]
+        restored = manager.get_session(state.session_id)  # A resumes from the DB
+        db.append_message(state.session_id, "user", content="B asks")
+        db.append_message(state.session_id, "assistant", content="B's answer")
+
+        manager.save_session(restored.session_id)
+
+        live = [m["content"] for m in db.get_messages(state.session_id)]
+        assert live == ["ask 1", "answer 1", "B asks", "B's answer"]
+        assert len(db.get_messages(state.session_id, include_inactive=True)) == 4
+
+    def test_a_single_writer_non_owning_save_rewrites_nothing(self, tmp_path):
+        db, manager = self._non_owning(tmp_path)
+        state = manager.create_session(cwd="/work")
+        state.history += [{"role": "user", "content": "ask"}, {"role": "assistant", "content": "answer"}]
+        manager.save_session(state.session_id)
+        ids = [m["id"] for m in db.get_messages(state.session_id)]
+        manager.save_session(state.session_id)
+        assert [m["id"] for m in db.get_messages(state.session_id)] == ids
+        assert len(db.get_messages(state.session_id, include_inactive=True)) == 2
+
     def test_only_restores_acp_sessions(self, manager):
         """get_session should not restore non-ACP sessions from DB."""
         db = manager._get_db()
@@ -474,6 +559,8 @@ class TestPersistence:
         # Load-time durability stamp (#92231): rows materialized from the DB
         # are marked persisted so a later flush can't re-append them.
         assert msg.pop("_db_persisted", None) is True
+        # Restore loads row ids so a later non-owning rewrite can tell its rows from another writer's.
+        assert isinstance(msg.pop("_row_id", None), int)
         assert restored.history == [{
             "role": "assistant",
             "content": "hello",

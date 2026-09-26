@@ -8,7 +8,7 @@ import json
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Collection, Dict, List, Optional, Tuple
 
 from agent.context_compressor import (
     _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY, MODEL_ONLY_DISPLAY_METADATA_KEY, _is_checkpoint_item,
@@ -57,6 +57,9 @@ _DISPLAY_INDEX_MISSING_SQL = ("SELECT 1 FROM messages WHERE session_id = ?" + _D
 _ACTIVE_IDS_SQL = "SELECT id FROM messages WHERE session_id = ? AND active = 1 ORDER BY id"
 _LIVE_IDENTITY_SQL = ("SELECT id, role, content, tool_call_id, tool_calls FROM messages "
                       "WHERE session_id = ? AND active = 1 ORDER BY id LIMIT ?")
+_LIVE_IDENTITY_ALL_SQL = ("SELECT id, role, content, tool_call_id, tool_calls FROM messages "
+                          "WHERE session_id = ? AND active = 1 ORDER BY id")
+_ARCHIVE_CHUNK = 500  # ids per archive UPDATE, well under SQLite's bound-parameter limit
 _SET_COUNTERS_SQL = "UPDATE sessions SET message_count = ?, tool_call_count = ?"
 _RESET_COUNTERS_SQL = "UPDATE sessions SET message_count = 0, tool_call_count = 0 WHERE id = ?"
 _SET_DISPLAY_META_SQL = "UPDATE messages SET display_metadata = ? WHERE id = ?"
@@ -555,7 +558,8 @@ class SessionMessagesMixin:
         return rewritten
 
     def replace_messages(self, session_id: str, messages: List[Dict[str, Any]], active_only: bool = False,
-        archive_dropped: bool = False, reject_active_turn_lease: bool = False) -> None:
+        archive_dropped: bool = False, reject_active_turn_lease: bool = False,
+        held_row_ids: Optional[Collection[int]] = None) -> None:
         """Atomically replace a session's messages (/retry, /undo, /compress). DESTRUCTIVE by default (rows
         DELETEd, leave FTS). ``active_only`` spares soft-archived rows (needed with in-place compaction).
         ``archive_dropped`` SOFT-archives live rows rewind-style: what rewind/edit/regenerate must use, since
@@ -573,6 +577,12 @@ class SessionMessagesMixin:
         of *messages* is inserted (#82956: archiving and re-inserting the kept prefix grew the archive by
         the whole transcript on every rewind). The live view is identical either way; only the durability
         of the dropped turns differs.
+
+        ``held_row_ids`` (with ``archive_dropped``) names every live row the caller's *messages* was built
+        from. A live row outside it was appended by another writer the caller never saw: it is neither
+        matched nor archived and stays live in place, so a rewrite from a stale view cannot drop a
+        concurrent writer's turn from the conversation (#122699). Only held rows that *messages* no longer
+        keeps are archived.
         """
         from hermes_state_errors import CompressionSessionClosedError
         def _do(conn):
@@ -582,7 +592,11 @@ class SessionMessagesMixin:
             elif _ended_by_compression(conn.execute(_ENDED_ROW_SQL, (session_id,)).fetchone()):
                 raise CompressionSessionClosedError(session_id)
             kept = kept_tool_calls = 0
-            if archive_dropped:
+            live_rows = None  # rows left live beside the kept prefix (held-row mode keeps foreign rows)
+            if archive_dropped and held_row_ids is not None:
+                kept, live_rows, kept_tool_calls = self._archive_dropped_held_rows(
+                    conn, session_id, messages, held_row_ids)
+            elif archive_dropped:
                 # Only the first len(messages)+1 live rows matter: the prefix to match plus the row whose
                 # id anchors the archive UPDATE (which itself covers every later row via `id >= ?`).
                 live = conn.execute(_LIVE_IDENTITY_SQL, (session_id, len(messages) + 1)).fetchall()
@@ -596,8 +610,51 @@ class SessionMessagesMixin:
                 conn.execute(f"DELETE FROM messages WHERE session_id = ?{' AND active = 1' if active_only else ''}", (session_id,))
             inserted, inserted_tool_calls = self._insert_message_rows(conn, session_id, messages[kept:])
             conn.execute(f"{_SET_COUNTERS_SQL} WHERE id = ?",
-                         (kept + inserted, kept_tool_calls + inserted_tool_calls, session_id))
+                         ((kept if live_rows is None else live_rows) + inserted,
+                          kept_tool_calls + inserted_tool_calls, session_id))
         self._execute_write(_do)
+
+    def _archive_dropped_held_rows(self, conn, session_id: str, messages: List[Dict[str, Any]],
+                                   held_row_ids: Collection[int]) -> Tuple[int, int]:
+        """``replace_messages(held_row_ids=...)``: match *messages* in order against the live rows, skipping
+        live rows the caller never held, and archive only held rows past the first divergence.
+
+        Returns ``(kept, live_rows, live_tool_calls)``: *kept* messages already durable (stamped with their
+        ``_row_id``), then the row and tool-call counts of every row left live, kept and foreign alike.
+        """
+        held = set(held_row_ids)
+        live = conn.execute(_LIVE_IDENTITY_ALL_SQL, (session_id,)).fetchall()
+        kept = live_rows = live_tool_calls = 0
+        archive: List[int] = []
+        diverged = False
+        for row in live:
+            if not diverged and kept < len(messages) and self._matches_live_row(messages[kept], row):
+                messages[kept]["_row_id"] = row[0]
+                kept += 1
+            elif row[0] not in held:
+                pass  # another writer's row: this caller never saw it, so it has no say over it
+            else:
+                diverged = True
+                archive.append(row[0])
+                continue
+            live_rows += 1
+            live_tool_calls += _tool_calls_len(row[4], scalar=1)
+        for start in range(0, len(archive), _ARCHIVE_CHUNK):
+            chunk = archive[start:start + _ARCHIVE_CHUNK]
+            # FTS triggers don't fire on `active`: replaced turns stay searchable (include_inactive=True).
+            conn.execute(f"UPDATE messages SET active = 0 WHERE session_id = ? AND id IN ({_placeholders(chunk)})",
+                         (session_id, *chunk))
+        return kept, live_rows, live_tool_calls
+
+    def _matches_live_row(self, msg: Dict[str, Any], row) -> bool:
+        """True when *msg* writes the same identity columns as the live *row* (the kept-prefix compare)."""
+        role = msg.get("role", "unknown")
+        # Cheap scalars first; the content compare pays decode/sanitize/encode on both sides.
+        if row[1] != role or row[3] != msg.get("tool_call_id"):
+            return False
+        return self._row_identity(role, msg.get("content"), msg.get("tool_call_id"),
+                                  _parse_tool_calls(msg.get("tool_calls"))) == self._row_identity(
+            row[1], self._decode_content(row[2]), row[3], _parse_tool_calls(row[4]))
 
     @classmethod
     def _row_identity(cls, role: str, content: Any, tool_call_id: Any, tool_calls: Any) -> tuple:
@@ -612,13 +669,7 @@ class SessionMessagesMixin:
         matched message gets its existing ``_row_id`` stamped, as a fresh insert would set it."""
         kept = 0
         for row, msg in zip(live, messages):
-            role = msg.get("role", "unknown")
-            # Cheap scalars first; the content compare pays decode/sanitize/encode on both sides.
-            if row[1] != role or row[3] != msg.get("tool_call_id"):
-                break
-            identity = self._row_identity(role, msg.get("content"), msg.get("tool_call_id"),
-                                          _parse_tool_calls(msg.get("tool_calls")))
-            if identity != self._row_identity(row[1], self._decode_content(row[2]), row[3], _parse_tool_calls(row[4])):
+            if not self._matches_live_row(msg, row):
                 break
             msg["_row_id"] = row[0]
             kept += 1

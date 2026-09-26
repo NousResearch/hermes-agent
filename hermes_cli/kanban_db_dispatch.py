@@ -397,21 +397,29 @@ def _pid_recycled(pid: Optional[int], started_at) -> bool:
     """True when a live ``pid`` is NOT the process fingerprinted at spawn (or the fingerprint can no
     longer be read). Signalling it would hit a stranger. ``None`` fingerprint = legacy row, never
     recycled; the UNVERIFIED marker is always foreign. An integer fingerprint (rows written before the
-    boot witness was added) compares the start time only."""
+    boot witness was added) compares the start time only.
+
+    An UNREADABLE *current* fingerprint is "identity unknown", never "recycled":
+    ``None != started_at`` used to false-kill every live worker on a sweeper
+    that cannot read start times (no psutil in its interpreter — the mixed-
+    interpreter gateway fleet), crashing delivered cards to ``blocked``. Unknown
+    identity keeps the existence answer for liveness and the refusal answer for
+    signalling, exactly like an UNVERIFIED spawn row (#111791 incident class).
+    """
     if started_at is None or not pid:
         return False
     if started_at == UNVERIFIED_WORKER_FINGERPRINT:
         return True
     if isinstance(started_at, str) and "|" in started_at:
-        return _process_fingerprint(int(pid)) != started_at
+        return _process_fingerprint(int(pid)) not in (None, started_at)
     from gateway.status import _start_times_agree, get_process_start_time
     current = get_process_start_time(int(pid))
     if current is None:
-        return True
+        return False
     try:
         return not _start_times_agree(current, started_at)
     except (TypeError, ValueError):
-        return True
+        return False
 
 
 def _kill_fn(signal_fn) -> Optional[Callable[[int, int], None]]:

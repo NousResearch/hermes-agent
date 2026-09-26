@@ -29,7 +29,9 @@ from tools.registry import registry, tool_error
 
 from hermes_time import get_timezone_name
 from tools.code_execution_env import _resolve_child_cwd, _resolve_child_python
-from tools.code_execution_rpc import _private_dirs_cmd, _remote_write, _rpc_poll_loop
+from tools.code_execution_rpc import (
+    _execute_checked, _private_dirs_cmd, _remote_write, _rpc_poll_loop,
+)
 from tools.tool_output_truncate import head_tail_split, truncation_notice
 
 logger = logging.getLogger(__name__)
@@ -452,24 +454,21 @@ def _get_or_create_env(task_id: str):
         return env, env_type
 
 
-def _ship_file_to_remote(env, remote_path: str, content: str) -> None:
+def _ship_file_to_remote(env, remote_path: str, content: str, *, atomic: bool = False) -> None:
     """Write *content* owner-only to *remote_path*; the payload rides
-    ``stdin_data``, never an ``echo`` argv (see _remote_write). Raises on write failure: the
-    caller ships secrets and code into dirs it believes are locked down, so a
-    silent failure would run the next step against a missing or half-written
-    file."""
-    result = _remote_write(env, remote_path, content)
-    if not isinstance(result, dict) or result.get("returncode", 1) != 0:
-        raise RuntimeError(
-            f"remote file ship failed for {remote_path!r}: "
-            f"{(result or {}).get('output', result)!r}")
+    ``stdin_data``, never an ``echo`` argv (see _remote_write). Raises on write
+    failure: the caller ships secrets and code into dirs it believes are locked
+    down, so a silent failure would run the next step against a missing or
+    half-written file."""
+    _remote_write(env, remote_path, content, atomic=atomic, check=True)
 
 
-def _ship_env_file_and_launch_prefix(env, remote_dir: str, env_name: str,
-                                     env_map: dict) -> str:
-    """Ship *env_map* as KEY=value lines to ``remote_dir/env_name`` and return a
-    command prefix that sources it inside a subshell; the caller appends the
-    launch command and the closing ``)``.
+def _ship_env_file_and_launch(env, remote_dir: str, env_name: str, launch: str, *,
+                              rpc_dir: str, rpc_token: str, **extra_env: str) -> str:
+    """Ship the sandbox env (RPC dir + token, PYTHONDONTWRITEBYTECODE, the routed
+    profile's TZ, plus *extra_env*) as KEY=value lines to ``remote_dir/env_name``
+    and return the complete command that sources it inside a subshell and runs
+    *launch* there.
 
     The subshell is load-bearing: every env.execute() runs inside the backend's
     session wrapper, which re-dumps ``export -p`` into the shared session
@@ -478,9 +477,15 @@ def _ship_env_file_and_launch_prefix(env, remote_dir: str, env_name: str,
     them into every later command on the backend (the #71296 snapshot-leak
     class). The token also stays off the remote shell's argv, which co-tenant
     users can read via ps for the command's lifetime."""
+    env_map = {"HERMES_RPC_DIR": rpc_dir, "HERMES_RPC_TOKEN": rpc_token,
+               "PYTHONDONTWRITEBYTECODE": "1", **extra_env}
+    tz = get_timezone_name()  # routed profile's timezone, not the bridged default's
+    if tz:
+        env_map["TZ"] = tz
     lines = "".join(f"{k}={shlex.quote(v)}\n" for k, v in env_map.items())
     _ship_file_to_remote(env, f"{remote_dir}/{env_name}", lines)
-    return f"cd {shlex.quote(remote_dir)} && ( set -a && . ./{env_name} && set +a && "
+    return (f"cd {shlex.quote(remote_dir)} && "
+            f"( set -a && . ./{env_name} && set +a && {launch} )")
 
 
 def _env_temp_dir(env: Any) -> str:
@@ -596,12 +601,8 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
         # Private dirs: the sandbox lives under a shared temp dir and carries the
         # RPC token (in req files) and tool results. Fail closed on setup
         # failure rather than ship secrets into a dir that stayed permissive.
-        setup = env.execute(
-            _private_dirs_cmd([f"{sandbox_dir}/rpc"], [sandbox_dir, f"{sandbox_dir}/rpc"]),
-            cwd="/", timeout=10)
-        if not isinstance(setup, dict) or setup.get("returncode", 1) != 0:
-            raise RuntimeError(
-                f"remote sandbox setup failed: {(setup or {}).get('output', setup)!r}")
+        _execute_checked(env, _private_dirs_cmd(sandbox_dir, f"{sandbox_dir}/rpc"),
+                         "remote sandbox setup", timeout=10)
         rpc_token = secrets.token_urlsafe(32)
         _ship_file_to_remote(env, f"{sandbox_dir}/hermes_tools.py",
                              generate_hermes_tools_module(list(sandbox_tools), transport="file"))
@@ -617,17 +618,11 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
         # The token travels in a sourced env file, never in argv. No umask on
         # the launch command: the 700 dirs + explicit 0600 writes cover Hermes'
         # files, and user code keeps the remote's default file modes.
-        env_map = {"HERMES_RPC_DIR": f"{sandbox_dir}/rpc",
-                   "HERMES_RPC_TOKEN": rpc_token,
-                   "PYTHONDONTWRITEBYTECODE": "1"}
-        tz = get_timezone_name()  # routed profile's timezone, not the bridged default's
-        if tz:
-            env_map["TZ"] = tz
-        launch_prefix = _ship_env_file_and_launch_prefix(
-            env, sandbox_dir, "sandbox.env", env_map)
+        launch_cmd = _ship_env_file_and_launch(
+            env, sandbox_dir, "sandbox.env", "exec python3 script.py",
+            rpc_dir=f"{sandbox_dir}/rpc", rpc_token=rpc_token)
         logger.info("Executing code on %s backend (task %s)...", env_type, effective_task_id[:8])
-        script_result = env.execute(f"{launch_prefix} exec python3 script.py )",
-                                    timeout=timeout)
+        script_result = env.execute(launch_cmd, timeout=timeout)
         stdout_text = script_result.get("output", "") or ""
         exit_code = script_result.get("returncode", -1)
         # Backend exit codes: 124 = timeout wrapper, 130 = SIGINT.

@@ -2655,6 +2655,14 @@ def _seed_copilot_singleton(seed: _Seeder) -> None:
     # Copilot tokens are resolved dynamically via `gh auth token` or env vars
     # (COPILOT_GITHUB_TOKEN / GH_TOKEN); they don't live in the auth store.
     try:
+        config = _load_config_safe()
+        providers = config.get("providers") if isinstance(config, dict) else None
+        provider_config = providers.get(seed.provider) if isinstance(providers, dict) else None
+        if isinstance(provider_config, dict):
+            from hermes_cli.config import is_provider_enabled
+
+            if not is_provider_enabled(provider_config):
+                return
         from hermes_cli.copilot_auth import (
             COPILOT_ENV_VARS,
             resolve_copilot_token,

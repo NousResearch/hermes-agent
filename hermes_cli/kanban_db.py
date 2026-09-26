@@ -2458,7 +2458,10 @@ def release_stale_claims(
         # observable progress — reclaim even if the PID is alive (logic loop).
         heartbeat_stale = hb is not None and (now - int(hb)) > DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS
         started_at = _row_get(row, "worker_started_at")
-        if (host_local and row["worker_pid"] and _worker_alive(row["worker_pid"], started_at)
+        # ``not_dead``, not ``alive``: an unprovable worker must HOLD its claim too. Releasing it
+        # beside a process that may still be running is how a duplicate is spawned next to it
+        # (#123811); the worker's own fence still lets it close the card.
+        if (host_local and row["worker_pid"] and _worker_not_dead(row["worker_pid"], started_at)
                 and not heartbeat_stale):
             _extend_live_stale_claim(conn, row, now)
             continue
@@ -2698,32 +2701,304 @@ class ArtifactPreservationError(RuntimeError):
 
 
 class LiveClaimError(ValueError):
-    """``complete_task`` refused: the task is ``running`` under a live claim and
-    the caller neither owns its run (``expected_run_id``) nor passed ``force``.
-    Completing anyway would close the worker's run row underneath a process
-    that is still executing. A ``ValueError`` so tool error handlers treat it
-    as recoverable."""
+    """``complete_task`` refused: the task is ``running`` under a claim that may still
+    protect a live run, and the caller neither owns its run (``expected_run_id``)
+    nor passed ``force``. Completing anyway would close the worker's run row
+    underneath a process that is still executing. A ``ValueError`` so tool error
+    handlers treat it as recoverable. ``verdict`` carries the tri-state liveness
+    answer (``alive`` / ``unknown``) so a caller can render the right escape
+    (see :func:`live_claim_refusal`)."""
 
-    def __init__(self, task_id: str):
-        super().__init__(
-            f"{task_id} is running under a live worker claim; pass expected_run_id "
-            "(worker ownership) or force=True (explicit operator override) instead "
-            "of closing the live run"
+    def __init__(self, task_id: str, *, verdict: str = "alive",
+                 run_id: Optional[int] = None, detail: Optional[str] = None):
+        # ``verdict`` defaults to the proven-live answer (``WORKER_ALIVE``), which is resolved at
+        # call time in :func:`live_claim_refusal`; the literal keeps this default off the
+        # dispatch import that lands at the bottom of the module.
+        self.task_id = task_id
+        self.verdict = verdict
+        self.run_id = run_id
+        super().__init__(detail or live_claim_refusal(task_id, verdict=verdict, run_id=run_id))
+
+
+def live_claim_refusal(task_id: str, *, verdict: str, run_id: Optional[int] = None) -> str:
+    """The ONE refusal text for a transition refused because the claim may protect a run.
+
+    ``verdict`` is the tri-state liveness answer. ``alive`` is proof that a worker
+    process owns the run, so both escapes are offered (own the run, or force).
+    ``unknown`` is the cannot-certify case and must NOT offer ``force``: forcing
+    there closes the very run the fence exists to protect, which is how a live
+    worker's run was closed underneath it (#123811). The run-naming escape is
+    offered in both cases — it is the one that is always safe.
+    """
+    if verdict == WORKER_UNKNOWN:
+        owns = (f"Pass expected_run_id={int(run_id)} (your run id)" if run_id
+                else "Pass expected_run_id (your run id)")
+        return (
+            f"{task_id} is running and the worker's process identity cannot be read on this host, "
+            f"so the claim may be live. Nothing was written. {owns} "
+            f"to close the run you hold; do NOT force this card — a live "
+            f"worker's run would be closed underneath it."
         )
+    return (
+        f"{task_id} is running under a live worker claim; pass expected_run_id "
+        "(worker ownership) or force=True (explicit operator override) instead "
+        "of closing the live run"
+    )
+
+
+def live_row_refusal(conn: sqlite3.Connection, task_id: str, *, caller_run_id: Optional[int] = None,
+                     verb: str = "complete") -> str:
+    """Why a transition was refused, read from the LIVE row — never from ``last_failure_error``.
+
+    ``tasks.last_failure_error`` is durable and describes a run that is OVER. Presenting it as the
+    current reason is how a two-day-old crash string answered a live call and sent the operator
+    chasing a stale run (#123811). The live row answers instead: what the card IS now, which run
+    owns it, and whether the caller's own run is superseded by a newer attempt or was closed by the
+    infrastructure — in which case the way back is named. Crash text is quoted only as history, and
+    labelled as such.
+    """
+    task = get_task(conn, task_id)
+    if task is None:
+        return (f"could not {verb} {task_id}: no such card "
+                "(unknown id, stale run, or already terminal)")
+    parts = [f"could not {verb} {task_id}: the live row is status={getattr(task, 'status', '?')}"]
+    owner = _opt_int(getattr(task, "current_run_id", None))
+    if owner is not None:
+        parts.append(f"run {owner} owns it")
+        if caller_run_id is not None and int(caller_run_id) != owner:
+            parts.append(
+                f"your run {int(caller_run_id)} is SUPERSEDED by it — a newer attempt owns the "
+                f"card, so closing it from here would land on that attempt"
+            )
+    else:
+        parts.append("no run owns it")
+        disowned = _newest_disowned_run(conn, task_id)
+        if disowned is not None:
+            parts.append(
+                f"run {disowned} was closed by the INFRASTRUCTURE, not by its worker (a reclaim), "
+                f"so this attempt is recoverable: pass expected_run_id={disowned} and the "
+                f"transition is recorded as a recovery"
+            )
+    history = (getattr(task, "last_failure_error", None) or "").strip()
+    if history:
+        parts.append(f"for history only — NOT the current reason: {history!r}")
+    return "; ".join(parts)
+
+
+def _claim_liveness(trow) -> str:
+    """Tri-state liveness of a ``running`` task's claim: ``alive`` / ``dead`` / ``unknown``.
+
+    ``dead`` means nothing protects the run: the task is not running, holds no claim
+    lock, recorded no worker process, or its worker process is proven gone/recycled.
+    ``unknown`` means the claim may still protect a live worker whose identity cannot
+    be certified (see ``kanban_db_dispatch._worker_liveness``). TTL expiry is
+    deliberately not consulted: ``reclaim_stale_tasks`` extends, not reclaims, the claim
+    of a live worker, so the process is the liveness authority here too.
+    """
+    if (trow is None or trow["status"] != "running" or trow["claim_lock"] is None
+            or not _row_get(trow, "worker_pid")):
+        return WORKER_DEAD
+    return _worker_liveness(_row_get(trow, "worker_pid"), _row_get(trow, "worker_started_at"))
 
 
 def _claim_is_live(trow) -> bool:
-    """True when a ``running`` task's claim still protects a run: the worker process
-    it spawned exists (PID + start-time fingerprint). A claim whose worker is gone,
-    or a library/CLI claim that never spawned one, has no run to protect. TTL expiry
-    is deliberately not consulted: ``reclaim_stale_tasks`` extends, not reclaims, the
-    claim of a live worker, so the process is the liveness authority here too."""
-    return bool(
-        trow["status"] == "running"
-        and trow["claim_lock"] is not None
-        and trow["worker_pid"]
-        and _worker_alive(trow["worker_pid"], trow["worker_started_at"])
+    """True when a ``running`` task's claim is PROVEN to protect a live worker process.
+
+    This is the predicate that REFUSES a transition. An unprovable (``unknown``) claim is
+    deliberately not enough to refuse — see :func:`_close_run_fence` — but it IS enough to
+    keep the claim from being released (:func:`_worker_not_dead`, used by
+    ``release_stale_claims`` / ``_reclaim_dead_workers``).
+    """
+    return _claim_liveness(trow) == WORKER_ALIVE
+
+
+def _run_guard_sql(run_id: Optional[int]) -> tuple[str, tuple]:
+    """The run-ownership CAS every run-closing UPDATE carries.
+
+    ``run_id`` is the run the caller read inside this transaction — the one it named, or the
+    card's active run when it named none. A card with NO active run is matched by
+    ``current_run_id IS NULL``. The guard is what stops a transition landing on a run the caller
+    never read; without it a stale actor's write silently closes its successor's run, which is how
+    a run was requeued while its worker held it (#123811).
+
+    A caller that NAMES a run is admitted on the SUPERSEDED/UN-OWNED split: while
+    ``current_run_id`` is NULL **and its run is the card's newest**, the write lands. That is the
+    half an infrastructure reclaim creates — it NULLs ``current_run_id`` and closes the run
+    underneath a worker that is still executing, and exact equality alone fenced that worker, the
+    only legitimate owner, out of its own card permanently. A SUPERSEDED caller (a newer run
+    exists, so ``MAX(id)`` is not its run) is still refused by the same clause.
+    """
+    if run_id is None:
+        return " AND current_run_id IS NULL", ()
+    return (
+        " AND (current_run_id = ? OR (current_run_id IS NULL AND ? = ("
+        "SELECT MAX(id) FROM task_runs WHERE task_id = tasks.id)))",
+        (int(run_id), int(run_id)),
     )
+
+
+def _close_run_fence(
+    trow, task_id: str, *, expected_run_id: Optional[int], force: bool,
+) -> tuple[bool, str, str, tuple]:
+    """The ONE fence for closing a run: ``(allowed, verdict, guard_sql, guard_params)``.
+
+    ``verdict`` is the tri-state answer that decided it (``""`` when the caller named the
+    run, so the liveness question was never asked). Callers render their own refusal text;
+    an ``unknown`` verdict must render one that offers ``expected_run_id`` and NOT ``force``
+    (:func:`live_claim_refusal`).
+
+    Both directions live here so no path can check one and silently skip the other:
+
+    * the caller NAMED a run — admitted, and the UPDATE is made conditional on it, so a
+      mismatch is refused by the write instead of landing on a successor's run;
+    * the caller named NONE — the claim's liveness decides. A claim PROVEN to protect a
+      live worker is refused (something else owns the run). Anything else is admitted WITH
+      the guard: refusing on an unprovable claim would turn away the worker that owns the
+      card, and the guard already keeps the write off any run the caller did not read.
+    """
+    if trow is None:
+        # Let the UPDATE decide (it cannot match a missing task); never invent a refusal.
+        return True, "", *_run_guard_sql(expected_run_id)
+    current_run_id = _row_get(trow, "current_run_id")
+    if force:
+        return True, "", *_run_guard_sql(
+            int(expected_run_id) if expected_run_id is not None else current_run_id)
+    if expected_run_id is not None:
+        return True, "", *_run_guard_sql(int(expected_run_id))
+    verdict = _claim_liveness(trow)
+    if verdict == WORKER_ALIVE:
+        return False, verdict, "", ()
+    return True, "", *_run_guard_sql(current_run_id)
+# Reasons a run row's ``metadata['reason']`` can carry that mean the run was abandoned by an
+# INFRASTRUCTURE event rather than finished by its worker: a reclaim (orphan reconciliation,
+# stale-claim TTL, crash sweep) or the runtime limit. Written by the reclaim paths in
+# ``kanban_db_dispatch``. A fence that deletes or rewrites history must find one of these before it
+# may proceed — an attempt the worker itself recorded is never "falsified evidence".
+DISOWNED_RUN_REASONS = frozenset({
+    "orphaned_running",
+    "stale_lock",
+    "crashed_worker",
+    "timed_out",
+    "ttl_expired_worker_alive",
+    "heartbeat_stale_worker_alive",
+})
+
+
+def _run_was_disowned(conn: sqlite3.Connection, task_id: str, run_id: Optional[int]) -> bool:
+    """True when the recorded run itself says an infrastructure event abandoned it.
+
+    Reads ``task_runs.metadata['reason']`` — written by every reclaim path — and accepts only
+    :data:`DISOWNED_RUN_REASONS`. A run closed by the worker (or by anything else) is NOT
+    disowned, and every recovery that would rewrite or drop its record must then do nothing.
+    """
+    if not run_id:
+        return False
+    row = conn.execute(
+        "SELECT metadata FROM task_runs WHERE id = ? AND task_id = ?",
+        (int(run_id), task_id),
+    ).fetchone()
+    if row is None:
+        return False
+    raw = _row_get(row, "metadata")
+    if not raw:
+        return False
+    try:
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(parsed, dict):
+        return False
+    reason = parsed.get("reason")
+    if not reason or reason not in DISOWNED_RUN_REASONS:
+        return False
+    # Terminal-only, and never the spawner's record: a ``spawn_failed`` run is the HOST's evidence
+    # that it refused to start an attempt, and the respawn cooldown reads it. Overwriting that row
+    # would erase a cooldown and let a failing card spin, so the premise excludes it by name.
+    state = conn.execute(
+        "SELECT outcome, status FROM task_runs WHERE id = ? AND task_id = ?",
+        (int(run_id), task_id),
+    ).fetchone()
+    if state is None:
+        return False
+    if _row_get(state, "status") == "running" or _row_get(state, "outcome") == "spawn_failed":
+        return False
+    return True
+
+
+def _newest_disowned_run(conn: sqlite3.Connection, task_id: str) -> Optional[int]:
+    """Id of the card's NEWEST run when it is proven abandoned by infrastructure, else ``None``.
+
+    "The card's last run" is the row that stands as its last word on the attempt. It is NOT
+    ``tasks.current_run_id``: an infrastructure reclaim NULLs that column and leaves the abandoned
+    row standing, which is exactly why one authority decides whether that row is disowned.
+    """
+    newest = conn.execute(
+        "SELECT id FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1", (task_id,),
+    ).fetchone()
+    run_id = _opt_int(_row_get(newest, "id")) if newest is not None else None
+    return run_id if _run_was_disowned(conn, task_id, run_id) else None
+
+
+def _reconcile_owned_run(
+    conn: sqlite3.Connection, task_id: str, *, disowned_run_id: Optional[int], summary: str = "",
+) -> Optional[int]:
+    """Record the empty ``completed`` run a recovery owes the attempt history.
+
+    ``summary=""`` is deliberate and is the whole point: the recovery attributes NOTHING to the
+    worker — no prose, no metadata about work, and ``started_at == ended_at`` (via
+    :func:`_synthesize_ended_run`) so elapsed stats are not inflated either. The caller holds the
+    transaction; the failure counter is cleared by :func:`_synthesize_empty_completion_run` outside it.
+    """
+    return _synthesize_ended_run(
+        conn, task_id, outcome="completed", summary=summary,
+        metadata={
+            "recovery": "reclaim",
+            "recovered_from_run_id": _opt_int(disowned_run_id),
+            "infra_reclaimed": True,
+        },
+    )
+
+
+def _synthesize_empty_completion_run(
+    conn: sqlite3.Connection, task_id: str, *, disowned_run_id: Optional[int] = None,
+) -> Optional[int]:
+    """The empty completion run that stops an abandoned attempt standing as the card's last word.
+
+    A reclaim closes the abandoned run as a FAILURE (``reclaimed`` / ``crashed`` / ``timed_out``).
+    When the card then completes with no handoff fields of its own, that failed row is the attempt
+    history's last word — "the card ran on a worker that crashed" beside a delivered artifact — and
+    the reclaim also left ``consecutive_failures`` incremented against a worker that never failed.
+    This records the recovery honestly (see :func:`_reconcile_owned_run`); the CALLER clears that
+    falsified counter after its transaction commits (``complete_task`` already does on success —
+    ``_clear_failure_counter`` opens its own transaction and must never run under an open one).
+
+    GUARDED, in both directions. It refuses unless the run it is reconciling is PROVEN disowned
+    (:func:`_run_was_disowned`, :data:`DISOWNED_RUN_REASONS`): history that a worker recorded is not
+    ours to rewrite. It also refuses beside a live claim — a card whose worker is still running is
+    mid-attempt, not recovered. Returns the synthesized run id, or ``None`` when it did nothing.
+    """
+    if disowned_run_id is None:
+        # "The card's last run": the row that would stand as its last word on the attempt. It is
+        # NOT ``tasks.current_run_id`` — a terminal run leaves that NULL, which is exactly why the
+        # abandoned row survives a completion unless something reconciles it.
+        disowned_run_id = _newest_disowned_run(conn, task_id)
+        if disowned_run_id is None:
+            return None
+    if not _run_was_disowned(conn, task_id, disowned_run_id):
+        return None
+    trow = conn.execute(
+        "SELECT status, claim_lock, worker_pid, worker_started_at, current_run_id FROM tasks "
+        "WHERE id = ?", (task_id,),
+    ).fetchone()
+    if trow is not None and _claim_is_live(trow):
+        return None
+    run_id = _reconcile_owned_run(conn, task_id, disowned_run_id=disowned_run_id, summary="")
+    _append_event(
+        conn, task_id, "recovery_reconciled",
+        {"disowned_run_id": _opt_int(disowned_run_id), "synthesized_run_id": _opt_int(run_id)},
+        run_id=run_id,
+    )
+    return run_id
 
 
 def complete_task(
@@ -2771,15 +3046,29 @@ def complete_task(
         if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
             return False
         trow = conn.execute(
-            "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
+            "SELECT status, claim_lock, worker_pid, worker_started_at, current_run_id "
+            "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         prior_status = trow["status"] if trow else None
-        # Refuse to close a LIVE worker's run without proof of ownership
-        # (expected_run_id) or an explicit human override (force=True); see
-        # _claim_is_live for what "live" means.
-        if expected_run_id is None and not force and trow and _claim_is_live(trow):
-            raise LiveClaimError(task_id)
+        # Refuse to close a worker's run without proof of ownership (expected_run_id) or an
+        # explicit human override (force=True); the claim's liveness decides whether a caller
+        # that names NO run may close at all, and the guard below keeps any admitted write off a
+        # run this caller did not read. See _close_run_fence.
+        allowed, refusal, guard_sql, guard_params = _close_run_fence(
+            trow, task_id, expected_run_id=expected_run_id, force=force,
+        )
+        if not allowed:
+            _verdict = _claim_liveness(trow)
+            _run = _opt_int(_row_get(trow, "current_run_id") if trow is not None else None)
+            raise LiveClaimError(
+                task_id, verdict=_verdict, run_id=_run,
+                # An ``unknown`` verdict must never be rendered with the proven-live text: that
+                # text offers ``force=True``, which is exactly the wrong instruction when the
+                # claim may protect a live worker.
+                detail=(live_claim_refusal(task_id, verdict=_verdict, run_id=_run)
+                        if _verdict == WORKER_UNKNOWN else None),
+            )
         sql = """
                 UPDATE tasks
                    SET status       = 'done',
@@ -2794,9 +3083,8 @@ def complete_task(
                    AND status IN ('running', 'ready', 'blocked', 'review')
                 """
         params: tuple = (result, now, task_id)
-        if expected_run_id is not None:
-            sql += " AND current_run_id = ?"
-            params = (*params, int(expected_run_id))
+        sql += guard_sql
+        params = (*params, *guard_params)
         if conn.execute(sql, params).rowcount != 1:
             return False
         if isinstance(metadata, dict):
@@ -2811,9 +3099,28 @@ def complete_task(
             if prior_status == "review" and not synth_summary and not synth_metadata:
                 synth_summary = _REVIEW_APPROVED_NOTE
                 synth_metadata = {"source_status": "review", "approval": "manual"}
+            # No run was open when this completion landed. Either the card was never claimed, or an
+            # infrastructure reclaim closed the run and NULLed ``current_run_id`` — the un-owned
+            # un-owned branch admits. In the second case the run this lands on must SAY it is the
+            # recovery: the crashed row is left standing as history, and this one names it (#123811).
+            disowned = _newest_disowned_run(conn, task_id)
+            if disowned is not None:
+                synth_metadata = {
+                    **(synth_metadata if isinstance(synth_metadata, dict) else {}),
+                    "recovered_from_run_id": disowned,
+                    "infra_reclaimed": True,
+                }
             run_id = _synthesize_ended_run(
                 conn, task_id, outcome="completed", summary=synth_summary, metadata=synth_metadata,
             )
+        elif run_id is None:
+            # No handoff fields to record, but the card's last run may be an ABANDONED attempt: a
+            # reclaim closed it, not the worker, and left ``consecutive_failures`` incremented
+            # against a worker that never failed. Reconcile it with an empty completion so attempt
+            # history does not read "the card ran on a dead worker" beside delivered work, and so
+            # the falsified counter goes with it. Guarded: it does nothing unless the run is proven
+            # disowned (DISOWNED_RUN_REASONS) and no worker still holds the card.
+            run_id = _synthesize_empty_completion_run(conn, task_id)
         event_summary = handoff_summary
         if prior_status == "review" and not event_summary:
             event_summary = _REVIEW_APPROVED_NOTE
@@ -3233,7 +3540,8 @@ def block_task(
         raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
     with write_txn(conn):
         cur_row = conn.execute(
-            "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?", (task_id,),
+            "SELECT status, block_kind, block_recurrences, current_run_id, claim_lock, worker_pid, "
+            "worker_started_at FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if cur_row is None:
             return False
@@ -3287,9 +3595,21 @@ def block_task(
                    AND status IN ('running', 'ready')
                 """
         params = (*params, task_id)
-        if expected_run_id is not None:
-            sql += " AND current_run_id = ?"
-            params = (*params, int(expected_run_id))
+        # The same fence as complete_task/request_review: a caller that names no run may only
+        # park a card whose claim does not protect a live worker, and every admitted write is
+        # made conditional on the run this caller read.
+        allowed, _refusal, guard_sql, guard_params = _close_run_fence(
+            cur_row, task_id, expected_run_id=expected_run_id, force=False,
+        )
+        if not allowed:
+            _log.warning(
+                "kanban: refusing to block %s — %s", task_id,
+                live_claim_refusal(task_id, verdict=_claim_liveness(cur_row),
+                                   run_id=_opt_int(_row_get(cur_row, "current_run_id"))),
+            )
+            return False
+        sql += guard_sql
+        params = (*params, *guard_params)
         if conn.execute(sql, params).rowcount != 1:
             return False
         run_id = _end_or_synthesize_run(
@@ -3397,8 +3717,16 @@ def request_review(
                 return _ret(False, "task not found")
             # Refuse to clear a live worker's claim without proof of ownership
             # (expected_run_id) or an explicit human override (force=True);
-            # the same fence as complete_task (_claim_is_live).
-            if expected_run_id is None and not force and _claim_is_live(trow):
+            # the same fence as complete_task (_close_run_fence).
+            allowed, fence_verdict, guard_sql, guard_params = _close_run_fence(
+                trow, task_id, expected_run_id=expected_run_id, force=force,
+            )
+            if not allowed:
+                if fence_verdict == WORKER_UNKNOWN:
+                    return _ret(False, live_claim_refusal(
+                        task_id, verdict=fence_verdict,
+                        run_id=_opt_int(_row_get(trow, "current_run_id")),
+                    ))
                 return _ret(
                     False, "task is running under a live claim; pass expected_run_id "
                     "(worker ownership) or force=True (explicit operator "
@@ -3431,10 +3759,11 @@ def request_review(
             if implementer is None and trow["assignee"] != reviewer:
                 implementer = trow["assignee"]
             assignee_sql = ", assignee = ?" if reviewer is not None else ""
-            run_guard = "" if expected_run_id is None else " AND current_run_id = ?"
+            # The guard the fence decided: the run this caller read, or ``current_run_id IS NULL``
+            # when it named none and the card had no active run. Never empty — an unguarded UPDATE
+            # here is what let a transition land on a successor's run (#123811).
             params: tuple[Any, ...] = (
-                *(() if reviewer is None else (reviewer,)), task_id,
-                *(() if expected_run_id is None else (int(expected_run_id),)),
+                *(() if reviewer is None else (reviewer,)), task_id, *guard_params,
             )
             cur = conn.execute(
                 """
@@ -3446,12 +3775,13 @@ def request_review(
                 """ + assignee_sql + """
                  WHERE id = ?
                    AND status IN ('running', 'ready')
-                """ + run_guard,
+                """ + guard_sql,
                 params,
             )
             if cur.rowcount != 1:
                 return _ret(
-                    False, "task is not in running/ready (or expected_run_id did not match the current run)",
+                    False, live_row_refusal(conn, task_id, caller_run_id=expected_run_id,
+                                            verb="request review"),
                 )
             if isinstance(metadata, dict):
                 staged_copies = _stage_completion_artifacts(
@@ -4484,12 +4814,17 @@ from hermes_cli.kanban_db_dispatch import (  # noqa: E402
     DEFAULT_FAILURE_LIMIT,
     DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS,
     DispatchResult,
+    WORKER_ALIVE,
+    WORKER_DEAD,
+    WORKER_UNKNOWN,
     _clear_failure_counter,
     _defer_reclaim_for_live_worker,
     _pid_alive,
     _record_task_failure,
     _terminate_reclaimed_worker,
     _worker_alive,
+    _worker_liveness,
+    _worker_not_dead,
     _worker_survived_termination,
     _worker_terminal_timeout_env,
 )

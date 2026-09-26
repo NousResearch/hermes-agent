@@ -710,6 +710,15 @@ def _handle_complete(args: dict, **kw) -> str:
         except kb.LiveClaimError as claim_err:
             # Env-less caller (orchestrator, another session) on a card a dispatcher
             # worker is executing: refusing here is what keeps that worker's run open.
+            if getattr(claim_err, "verdict", None) == kb.WORKER_UNKNOWN:
+                # The claim may protect a live worker but its process identity could not be read.
+                # NEVER recommend ``--force`` here: forcing is what closes a live worker's run
+                # underneath it (#123811). The run-naming escape is the only one that is safe, and
+                # the kernel's refusal text already says so.
+                return tool_error(
+                    f"kanban_complete refused: {claim_err} Nothing changed. Pass "
+                    f"expected_run_id=<your run id> (worker ownership) if this is your run; do "
+                    f"not force this card.")
             return tool_error(
                 f"kanban_complete refused: {claim_err}. Nothing changed. Wait for the worker "
                 f"to finish, or an operator can run `hermes kanban complete --force {tid}`.")
@@ -741,8 +750,8 @@ def _handle_complete(args: dict, **kw) -> str:
                 raise _Reject(
                     f"could not complete {tid}: unsatisfied parent dependencies: "
                     f"{detail}; complete the parents first (done or archived)")
-            _check(False, (task.last_failure_error if task else None) or
-                   f"could not complete {tid} (unknown id, stale run, or already terminal)")
+            _check(False, kb.live_row_refusal(
+                conn, tid, caller_run_id=_worker_run_id(tid), verb="complete"))
         run = kb.latest_run(conn, tid)
         # Artifact staging is atomic with the completion write, so a worker that
         # read `kanban_attachments` before completing saw an empty list and has
@@ -781,7 +790,8 @@ def _handle_block(args: dict, **kw) -> str:
                f"finished or cannot proceed for another reason, call kanban_complete instead — "
                f"the completion judge will evaluate it.")
         ok = kb.block_task(conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id(tid))
-        _check(ok, f"could not block {tid} (unknown id or not in running/ready)")
+        _check(ok, kb.live_row_refusal(
+            conn, tid, caller_run_id=_worker_run_id(tid), verb="block"))
         landed_kind = kb.get_task(conn, tid).block_kind
         extra: dict = {"block_kind": landed_kind}
         if kind == "dependency" and landed_kind != kind:

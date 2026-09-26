@@ -333,6 +333,27 @@ Always set `MATTERMOST_ALLOWED_USERS` to restrict who can interact with the bot.
 
 For more information on securing your Hermes Agent deployment, see the [Security Guide](../security.md).
 
+## Approval buttons
+
+When a dangerous command needs your OK, the adapter can render Approve Once / Approve Session / Always Approve / Deny **buttons** on a card in the chat (instead of the plain-text `/approve` prompt). A button press is verified against `MATTERMOST_ALLOWED_USERS` and resolves the pending approval directly — the card rewrites itself with the decision and the buttons disappear.
+
+The buttons need a small HTTP endpoint the Mattermost *server* can call back. Configure under `platforms.mattermost` in `config.yaml`:
+
+```yaml
+platforms:
+  mattermost:
+    approval_actions_url: http://<hermes-host>:8647   # base URL the Mattermost server can reach
+    approval_actions_secret: <random-token>           # buttons stay off until this is set
+    approval_actions_port: 8647                       # local bind (default 8647, 0 = ephemeral)
+    approval_escalate_after: 300                      # optional ntfy nudge after N seconds
+```
+
+With `approval_actions_url` + `approval_actions_secret` unset (the default), the adapter reports buttons unsupported and the runner falls back to the plain-text `/approve` prompt — nothing changes for existing installs.
+
+Two server-side notes, both hit live on Mattermost 11.9.0: the card uses legacy attachment actions (`mm_blocks` requires the server-side `MmBlocksEnabled` feature flag, and bot REST posts silently lose those props when it is off), and a plain-HTTP callback URL requires the Hermes host to be in the server's `ServiceSettings.AllowedUntrustedInternalConnections` list.
+
+With `approval_escalate_after` set and an ntfy platform configured (`NTFY_SERVER_URL`/`NTFY_TOPIC`), an approval still unanswered after that many seconds publishes a high-priority ntfy notification whose button deep-links back to the approval card — silence still denies once `approvals.timeout` elapses, and the card is patched with the timeout notice so no dead buttons remain.
+
 ## Notes
 
 - **Self-hosted friendly**: Works with any self-hosted Mattermost instance. No Mattermost Cloud account or subscription required.

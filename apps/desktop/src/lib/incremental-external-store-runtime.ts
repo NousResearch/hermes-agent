@@ -125,6 +125,22 @@ export function syncRepositoryIncrementally(
 }
 
 class IncrementalExternalStoreThreadRuntimeCore extends ExternalStoreThreadRuntimeCore {
+  /**
+   * Idempotent beginEdit — a re-mounting edit-composer subscription calls
+   * beginEdit(messageId) again for a message whose composer is already open;
+   * the vendor base class THROWS "Edit already in progress", surfacing as an
+   * uncaught renderer error that drops the cursor in the active composer (the
+   * desktop "refresh"). Treat a duplicate beginEdit as a no-op: the open
+   * composer stays intact.
+   */
+  override beginEdit(messageId: string): void {
+    if (this.getEditComposer(messageId)) {
+      return
+    }
+
+    super.beginEdit(messageId)
+  }
+
   override __internal_setAdapter(store: ExternalStoreAdapter): void {
     if (!store.messageRepository) {
       super.__internal_setAdapter(store)

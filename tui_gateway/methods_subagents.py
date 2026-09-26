@@ -16,14 +16,21 @@ _SUBAGENT_SNAPSHOT_FIELDS = (
 _SUBAGENT_TAIL_BYTES = 16384
 
 
+def _controls_available(record, session_id, transport, owner):
+    """The roster may follow durable lineage; control still needs this exact live generation."""
+    from tools.delegate_tool_registry import _subagent_transport_matches
+
+    return (record.get("owner_session_id") == session_id
+            and _subagent_transport_matches(record, transport)
+            and record.get("owner_session_record") is owner)
+
+
 def _owned_subagent_records(session_id, transport, owner):
-    from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock, _subagent_transport_matches
+    from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
 
     with _active_subagents_lock:
         return [dict(r) for r in _active_subagents.values()
-                if r.get("owner_session_id") == session_id
-                and _subagent_transport_matches(r, transport)
-                and r.get("owner_session_record") is owner]
+                if _controls_available(r, session_id, transport, owner)]
 
 
 def _visible_subagent_records(session_id, transport, owner):
@@ -35,19 +42,14 @@ def _visible_subagent_records(session_id, transport, owner):
     resume remints the id and rebuilds the session record, and compression rotates the durable key,
     so the exact match alone hid every still-running child from the panel for good (#114909).
     Control RPCs (steer / interrupt / tail) keep the exact generation authority."""
-    from tools.delegate_tool_registry import (
-        _active_subagents, _active_subagents_lock, _owns_subagent_record, _subagent_transport_matches,
-    )
+    from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock, _owns_subagent_record
 
     with _active_subagents_lock:
         records = [dict(r) for r in _active_subagents.values()]
     agent = owner.get("agent")
     # Lineage resolution may read the session DB — evaluated outside the registry lock.
     return [r for r in records
-            if (r.get("owner_session_id") == session_id
-                and _subagent_transport_matches(r, transport)
-                and r.get("owner_session_record") is owner)
-            or _owns_subagent_record(r, agent)]
+            if _controls_available(r, session_id, transport, owner) or _owns_subagent_record(r, agent)]
 
 
 @method("subagent.list")
@@ -57,8 +59,13 @@ def _(rid, params):
     if transport is None or owner is None:
         return _err(rid, 4001, "session not found or not owned by this transport")
     live = _visible_subagent_records(session_id, transport, owner)
+    subagents = []
+    for record in live:
+        snapshot = {key: record.get(key) for key in _SUBAGENT_SNAPSHOT_FIELDS}
+        snapshot["controls_available"] = _controls_available(record, session_id, transport, owner)
+        subagents.append(snapshot)
     return _ok(rid, {
-        "subagents": [{key: r.get(key) for key in _SUBAGENT_SNAPSHOT_FIELDS} for r in live],
+        "subagents": subagents,
         "delegations": [],
     })
 

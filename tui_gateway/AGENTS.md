@@ -96,7 +96,10 @@ records plus children whose durable lineage (`owner_agent_session_id` → compre
 same spine as in-process `delegate_task(action="list")`) is the session's agent, because a
 Desktop reconnect / resume remints the UI session id and compression rotates the key while the
 children keep running (#114909). Control (`steer` / `interrupt` / `tail`) stays pinned to the
-exact session record and transport. Child authority is resolved at RPC time against the owning session's
+exact session record and transport. Each row's `controls_available` is true only for that
+exact owner; a lineage-visible row with false remains readable but must not advertise live
+control. `accepting_steer` says whether the child has a future delivery boundary, not whether
+this client owns that control. Child authority is resolved at RPC time against the owning session's
 LIVE transport slot, so every authenticated reattach path (prompt.submit, queued drain,
 resume, activate, viewer failover) carries it with no registry bookkeeping — never add a
 per-record transport sync at an attach site; foreign or retired generations remain uncontrollable. `last_tool` is the last started tool, not an in-flight

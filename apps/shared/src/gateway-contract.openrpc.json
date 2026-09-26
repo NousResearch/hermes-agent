@@ -33035,10 +33035,15 @@
             ],
             "default": null,
             "title": "Accepting Steer"
+          },
+          "controls_available": {
+            "title": "Controls Available",
+            "type": "boolean"
           }
         },
         "required": [
-          "subagent_id"
+          "subagent_id",
+          "controls_available"
         ],
         "title": "SubagentSnapshot",
         "type": "object"

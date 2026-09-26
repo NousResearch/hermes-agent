@@ -2080,6 +2080,7 @@ export interface SubagentSnapshot {
   tool_count?: number | null
   last_tool?: string | null
   accepting_steer?: boolean | null
+  controls_available: boolean
 }
 /** Lifecycle of one delegated child (``tools/delegate_tool_child_run.py``); ``failed`` / ``error`` / ``timeout`` / ``interrupted`` / ``completed`` are terminal. */
 export type SubagentStatus = 'queued' | 'running' | 'completed' | 'failed' | 'error' | 'timeout' | 'interrupted'

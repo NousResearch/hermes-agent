@@ -71,6 +71,7 @@ def test_snapshot_projects_only_this_sessions_runtime_records(runtime):
         snapshot = call("subagent.list")["result"]
         assert [s["subagent_id"] for s in snapshot["subagents"]] == ["child"]
         assert snapshot["subagents"][0]["last_tool"] == "read_file"
+        assert snapshot["subagents"][0]["controls_available"] is True
         assert snapshot["delegations"] == []
         assert snapshot["subagents"][0]["tool_count"] == 1
         wire = json.dumps(snapshot)
@@ -291,10 +292,14 @@ def test_list_follows_the_conversation_across_ui_sid_and_compression_rotation(ru
 
         # Reminted UI sid, rebuilt session record, same durable conversation.
         server._sessions = {"ui-new": live_session("conv")}
-        assert [r["subagent_id"] for r in call("subagent.list", session_id="ui-new")["result"]["subagents"]] == ["child"]
+        visible = call("subagent.list", session_id="ui-new")["result"]["subagents"]
+        assert [r["subagent_id"] for r in visible] == ["child"]
+        assert visible[0]["controls_available"] is False
         # Compression rotated the durable key as well (conv -> conv2).
         server._sessions = {"ui-new2": live_session("conv2"), "ui-other": live_session("unrelated")}
-        assert [r["subagent_id"] for r in call("subagent.list", session_id="ui-new2")["result"]["subagents"]] == ["child"]
+        visible = call("subagent.list", session_id="ui-new2")["result"]["subagents"]
+        assert [r["subagent_id"] for r in visible] == ["child"]
+        assert visible[0]["controls_available"] is False
         assert call("subagent.list", session_id="ui-other")["result"]["subagents"] == []
         assert "error" in call("subagent.list", session_id="ui-new2", via=SimpleNamespace(write=lambda frame: True))
         # Visibility widened, authority not: control from the rotated sid is still refused.

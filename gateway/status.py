@@ -1451,14 +1451,26 @@ def shared_listener_mirror_platforms(runtime: Optional[dict[str, Any]], profile:
 def profile_platforms_from_multiplexer(runtime: Optional[dict[str, Any]], profile: str) -> dict[str, Any]:
     """The ``<profile>:<platform>`` entries of a multiplexer record, re-keyed to bare platform names — the
     same shape a standalone gateway for ``profile`` writes into its own ``gateway_state.json`` — plus the
-    default listener's api_server/webhook mirrors the profile is served through (``ingress_url`` set)."""
+    default listener's api_server/webhook mirrors the profile is served through (``ingress_url`` set).
+
+    A record with no ``<profile>:`` entries and no ``served_profiles`` roster is NOT a multiplexer
+    record: it is a standalone gateway's own record, which writes bare platform keys. Re-keying it
+    projected ``{}``, so every reader saw "configured but not running" and badged the platform
+    "Restart needed" forever while the bot was connected. Hand those bare entries back unchanged."""
     plats = (runtime or {}).get("platforms")
     if not isinstance(plats, dict):
         return {}
     prefix = f"{profile}:"
     own = {key[len(prefix):]: value for key, value in plats.items()
            if isinstance(key, str) and key.startswith(prefix) and isinstance(value, dict)}
-    return {**shared_listener_mirror_platforms(runtime, profile), **own}
+    if own:
+        return {**shared_listener_mirror_platforms(runtime, profile), **own}
+    if not (runtime or {}).get("served_profiles"):
+        # Standalone record (a serving multiplexer publishes a non-empty roster): its bare keys are
+        # already the profile's own platform map.
+        return {key: value for key, value in plats.items()
+                if isinstance(value, dict) and ":" not in str(key)}
+    return shared_listener_mirror_platforms(runtime, profile)
 
 
 def resolve_gateway_liveness(

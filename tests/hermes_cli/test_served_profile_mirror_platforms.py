@@ -115,3 +115,23 @@ def test_messaging_card_keeps_a_live_own_gateway_record_over_the_multiplexer(ser
     [payload] = messaging._platform_payloads(alpha, [entry])
     assert payload["gateway_running"] is True
     assert payload["state"] == "retrying", payload
+
+
+def test_standalone_record_is_not_rekeyed_into_an_empty_platform_map():
+    """A single-process standalone gateway publishes NO ``served_profiles`` and writes BARE platform
+    keys into its own ``gateway_state.json``. The liveness ladder still reaches the multiplexer rung
+    for the default home (no ``gateway.pid``, no proven own runtime PID), so the record was re-keyed
+    under a ``default:`` prefix, matched nothing, and projected ``platforms: {}`` — every reader
+    badged the platform "Restart needed" forever while the bot was connected."""
+    from gateway.status import profile_platforms_from_multiplexer
+    standalone = {"gateway_state": "running", "served_profiles": [],
+                  "platforms": {"feishu": {"state": "connected"}}}
+    assert profile_platforms_from_multiplexer(standalone, "default") == {"feishu": {"state": "connected"}}
+    assert profile_platforms_from_multiplexer(standalone, "alpha") == {"feishu": {"state": "connected"}}
+    # A serving multiplexer (non-empty roster) keeps the namespaced re-key authoritative: only the
+    # profile's own entries surface, and an unnamespaced key is not lent to a served secondary.
+    mux = {"gateway_state": "running", "served_profiles": ["default", "alpha"],
+           "platforms": {"alpha:telegram": {"state": "connected"},
+                         "feishu": {"state": "connected"}}}
+    assert profile_platforms_from_multiplexer(mux, "alpha") == {"telegram": {"state": "connected"}}
+    assert profile_platforms_from_multiplexer(mux, "default") == {}

@@ -227,9 +227,10 @@ _SUMMARY_TEMPLATE_HEADINGS = frozenset({
 _SUMMARY_HEADING_RE = re.compile(r"^[ \t]*##(?!#)[ \t]*(?P<text>[^\n]*?)[ \t]*#*[ \t]*$")
 # Line-start anchored so a summary that RECORDS a rule ("- User said: do not use tools on prod",
 # "The user asked for answers under 30 words") still passes: only a line that ISSUES the
-# instruction trips it. Same false-positive lesson as #92644.
+# instruction trips it. Same false-positive lesson as #92644. A list or quote marker is layout,
+# not recording, and the templates write bulleted sections, so it may lead the directive too.
 _SELF_DIRECTIVE_RE = re.compile(
-    r"^[ \t]*(?:#{1,6}[ \t]*)?(?:"
+    r"^[ \t]*(?:[-*+][ \t]+|\d+[.)][ \t]+|>[ \t]*)?(?:#{1,6}[ \t]*)?(?:"
     r"(?:additional|extra|new|further|updated)[ \t]+instructions\b"
     r"|instructions[ \t]+for[ \t]+(?:the[ \t]+)?(?:next|following|future|successor)\b"
     r"|you[ \t]+are[ \t]+now\b"

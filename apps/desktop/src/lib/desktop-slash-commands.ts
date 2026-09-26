@@ -579,10 +579,7 @@ export function isDesktopSlashSuggestion(command: string): boolean {
  * executes it (#57641). Gated on `isDesktopSlashCommand` so aliases whose
  * canonical has no desktop surface (e.g. `/reload_mcp`) stay hidden.
  */
-export function isDesktopSlashSuggestionWithOptions(
-  command: string,
-  options: { exactAlias?: string } = {}
-): boolean {
+export function isDesktopSlashSuggestionWithOptions(command: string, options: { exactAlias?: string } = {}): boolean {
   const normalized = normalizeCommand(command)
 
   // Aliases stay hidden so the popover isn't cluttered with duplicates.

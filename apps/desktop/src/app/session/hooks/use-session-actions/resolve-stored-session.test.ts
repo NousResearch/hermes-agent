@@ -270,10 +270,11 @@ describe('resolveStoredSession profile ownership', () => {
       })
     )
 
-    const pending = resolveStoredSession(
-      's1',
-      { connectionId: 'remote-1', profile: 'meta', targetProfile: 'meta' } as never
-    )
+    const pending = resolveStoredSession('s1', {
+      connectionId: 'remote-1',
+      profile: 'meta',
+      targetProfile: 'meta'
+    } as never)
 
     tombstoneSessions(['s1'])
     untombstoneSessions(['s1'])

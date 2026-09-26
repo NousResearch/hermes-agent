@@ -191,6 +191,45 @@ class CLIInitMixin:
         if not (self.base_url and base_url_host_matches(self.base_url, "openrouter.ai")):
             _keys = _keys[::-1]
         self.api_key = api_key or os.getenv(_keys[0]) or os.getenv(_keys[1])
+        # Startup-level selection outlives session boundaries: --model/--provider
+        # describe how the process was launched, so /new and wake-word sessions
+        # reset TO them, not away from them (#74329). Stored resolved (not raw
+        # flags) so a bare --provider keeps its startup resolution; absent flags
+        # stay None so the boundary keeps re-deriving from config.yaml.
+        # A direct-alias --model is ALSO kept by name: the resolved id cannot
+        # recover the alias endpoint (foreign labels fail reverse lookup), so
+        # the boundary replays the name through the same alias path instead.
+        # The effective base_url is kept too (endpoint identity only) for plain
+        # --base-url and alias + mismatched --provider launches the switch pipeline
+        # cannot express; no api_key is stored — credentials re-resolve at the boundary.
+        # Invariant: the five _startup_* attrs below are always set together here.
+        # Contract: these constructor args ARE the launch selection (cli.py passes
+        # the --model/--provider flags; no internal caller passes a temporary
+        # model here — resume guards explicit -m via _explicit_model_override).
+        from hermes_cli.cli_session_mixin import _credential_fingerprint
+
+        # Compare credential identity without retaining another copy of the secret.
+        self._startup_api_key_fingerprint = (
+            _credential_fingerprint(self._explicit_api_key or self.api_key)
+            if model or provider else None)
+        if model or provider:
+            self._startup_model = self.model or None
+            self._startup_provider = self.requested_provider or None
+            # Only explicit/alias endpoints are pinned: self.base_url may still
+            # be the global config URL before lazy provider resolution.
+            self._startup_base_url = self._explicit_base_url or None
+            self._startup_provider_input = (provider or "").strip() or None
+            from hermes_cli import model_switch as _ms
+            _ms._ensure_direct_aliases()
+            _raw_flag = (model or "").strip().lower()
+            self._startup_model_input = (
+                _raw_flag if _raw_flag and _raw_flag in _ms.DIRECT_ALIASES else None)
+        else:
+            self._startup_model = None
+            self._startup_provider = None
+            self._startup_base_url = None
+            self._startup_model_input = None
+            self._startup_provider_input = None
 
     def _init_turn_limits(self, max_turns, run_budget):
         """max_turns: CLI arg > config > env var > default; run budget: CLI flag > config."""

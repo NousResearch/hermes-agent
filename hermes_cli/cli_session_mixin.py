@@ -11,6 +11,7 @@ import contextlib
 import os
 import shutil
 import sys
+from urllib.parse import urlsplit
 
 from hermes_constants import get_hermes_home
 from hermes_state_ids import new_session_id
@@ -58,12 +59,40 @@ def _dim_notice(cli, msg: str, quiet: bool) -> None:
         cli._console_print(f"[dim]{_escape(msg)}[/dim]")
 
 
-def _reset_model_to_config_default(cli, silent: bool) -> None:
-    """/new is a full boundary: re-derive model/provider from config.yaml so a
-    session-only ``/model --session`` switch never leaks into the next session.
-    Best-effort — an unreachable default must never block /new. Module-level helper (like
-    ``_apply_new_session_title``): tests drive ``new_session`` unbound on a SimpleNamespace."""
+def _credential_fingerprint(value):
+    """Hash string secrets; compare token callbacks/objects by process identity."""
+    from hashlib import sha256
+
+    try:
+        if value is None or isinstance(value, str):
+            return sha256(str.encode("" if value is None else value, errors="surrogatepass")).digest()
+    except Exception:
+        pass  # Fingerprinting must never prevent a new session.
+    return ("obj", id(value))
+
+
+def _reset_model_to_session_baseline(cli, silent: bool) -> None:
+    """/new is a full boundary: restore the startup selection (``--model`` /
+    ``--provider`` when the process was launched with them, else config.yaml)
+    so a session-only ``/model --session`` switch never leaks into the next
+    session. Best-effort — an unreachable default must never block /new.
+    Module-level helper (like ``_apply_new_session_title``): tests drive
+    ``new_session`` unbound on a SimpleNamespace."""
     from cli import CLI_CONFIG, _cprint, _split_model_config_default, logger
+    # getattr: unbound test doubles may lack startup attrs.
+    _startup_model = getattr(cli, "_startup_model", None)
+    _startup_provider = getattr(cli, "_startup_provider", None)
+    _startup_input = getattr(cli, "_startup_model_input", None)
+    _startup_base_url = getattr(cli, "_startup_base_url", None)
+    _credential_unchanged = not (_startup_model or _startup_input) or (
+        getattr(cli, "_startup_api_key_fingerprint", None)
+        == _credential_fingerprint(getattr(cli, "api_key", None)))
+    if (_credential_unchanged and _startup_model
+            and _startup_model == getattr(cli, "model", None)
+            and (not _startup_provider or _startup_provider == getattr(cli, "provider", None))
+            and (not _startup_base_url
+                 or _startup_base_url == (getattr(cli, "base_url", None) or ""))):
+        return  # already on the startup route (alias replay skipped: name != id)
     _model_config = CLI_CONFIG.get("model", {})
     if isinstance(_model_config, dict):
         _raw_default = _model_config.get("default") or _model_config.get("model") or ""
@@ -71,21 +100,76 @@ def _reset_model_to_config_default(cli, silent: bool) -> None:
     else:
         _raw_default, _config_provider = (_model_config or ""), ""
     _config_model, _ = _split_model_config_default(_raw_default)
-    if not _config_model or _config_model == getattr(cli, "model", None):
+    # Launch flags are the baseline the boundary resets TO, not an override it
+    # resets away (#74329).
+    if _startup_input:
+        # Direct-alias startup: replay the alias name so the switch pipeline
+        # restores the alias endpoint + credential; the resolved id cannot
+        # recover it (foreign labels fail reverse lookup).
+        _desired_model = _startup_input
+        _desired_provider = getattr(cli, "_startup_provider_input", None) or ""
+    else:
+        _desired_model = _startup_model or _config_model
+        _desired_provider = _startup_provider or _config_provider
+    # Whole-route comparison: provider-only or endpoint-only drift must switch.
+    if not _desired_model or (
+            _credential_unchanged and _desired_model == getattr(cli, "model", None)
+            and (not _desired_provider or _desired_provider == getattr(cli, "provider", None))
+            and (not _startup_base_url
+                 or _startup_base_url == (getattr(cli, "base_url", None) or ""))):
         return
     try:
         from hermes_cli.model_switch import switch_model as _switch_model
 
         r = _switch_model(
-            raw_input=_config_model,
+            raw_input=_desired_model,
             current_provider=cli.provider or "",
             current_model=cli.model or "",
             current_base_url=cli.base_url or "",
             current_api_key=cli.api_key or "",
             is_global=False,
-            explicit_provider=_config_provider or "")
+            explicit_provider=_desired_provider or "",
+            user_providers=CLI_CONFIG.get("providers"),
+            custom_providers=CLI_CONFIG.get("custom_providers"))
         if not r.success:
             return
+        if ((not _startup_input or getattr(cli, "_startup_provider_input", None))
+                and _startup_model and r.new_model == _startup_model
+                and _startup_provider and r.target_provider == _startup_provider
+                and ((_startup_base_url and _startup_base_url != (r.base_url or ""))
+                     or (not _startup_input and not _credential_unchanged
+                         and r.api_key == cli.api_key))):
+            # Plain startup credential drift also needs fresh resolution:
+            # reverse alias lookup may otherwise select the session alias again.
+            # Plain --base-url or alias + mismatched explicit --provider: the
+            # switch pipeline cannot always recover the startup endpoint.
+            # Restore it only with a credential freshly resolved FOR it
+            # (constructor's lazy inputs — never a stored secret, never the
+            # replaced session/provider key). Otherwise fail closed to the
+            # switch result, whose endpoint + key are at least consistent.
+            # Log the host only: raw base URLs can carry sensitive query params.
+            _startup_host = urlsplit(_startup_base_url).hostname or "(unknown host)"
+            try:
+                from hermes_cli.runtime_provider import resolve_runtime_provider as _resolve_rt
+                _startup_rt = _resolve_rt(
+                    requested=r.target_provider, target_model=r.new_model,
+                    explicit_base_url=_startup_base_url) or {}
+            except Exception:
+                _startup_rt = {}
+            if _startup_rt.get("api_key") and (_startup_base_url or _startup_rt.get("base_url")):
+                r.base_url = _startup_base_url or _startup_rt["base_url"]
+                r.api_key = _startup_rt["api_key"]
+                if _startup_rt.get("api_mode"):
+                    r.api_mode = _startup_rt["api_mode"]
+            else:
+                logger.debug(
+                    "Could not re-resolve the credential for startup host %s; keeping %s route",
+                    _startup_host, r.target_provider)
+        # Lazy startup resolution may differ from the constructor fingerprint.
+        # Do not announce a reset when re-resolution found the same live route.
+        _route_changed = (
+            r.new_model, r.target_provider, r.base_url or "", r.api_key or "", r.api_mode or ""
+        ) != (cli.model, cli.provider, cli.base_url or "", cli.api_key or "", cli.api_mode or "")
         if cli.agent:
             cli.agent.switch_model(
                 new_model=r.new_model, new_provider=r.target_provider, api_key=r.api_key,
@@ -102,10 +186,12 @@ def _reset_model_to_config_default(cli, silent: bool) -> None:
             cli.base_url = r.base_url
         if r.api_mode:
             cli.api_mode = r.api_mode
-        if not silent:
-            _cprint(f"  (model reset to config default: {r.new_model})")
+        if not silent and _route_changed:
+            _restored_startup = bool(_startup_input or _startup_model) and r.new_model == _startup_model
+            _kind = "startup selection" if _restored_startup else "config default"
+            _cprint(f"  (model reset to {_kind}: {r.new_model})")
     except Exception:
-        logger.debug("/new model reset to config default failed", exc_info=True)
+        logger.debug("/new model reset to session baseline failed", exc_info=True)
 
 
 def _apply_new_session_title(cli, title: str) -> Optional[str]:
@@ -530,11 +616,12 @@ class CLISessionMixin:
         # An explicit -m/--model was for the previous session only.
         self._explicit_model_override = False
         # Session-scoped overrides (/model --session, /fast, one-turn restores) don't carry over.
-        # Re-derive model/provider and service tier from config.yaml so a session-only switch never leaks
-        # into the next session (#48055, #23131).
+        # Re-derive model/provider from the startup selection (launch flags) or
+        # config.yaml, plus service tier, so a session-only switch never leaks
+        # into the next session (#48055, #23131, #74329).
         self._pending_one_turn_model_restore = None
         self.service_tier = _parse_service_tier_config(CLI_CONFIG["agent"].get("service_tier", ""))
-        _reset_model_to_config_default(self, silent)
+        _reset_model_to_session_baseline(self, silent)
         # After the model reset: the effort belongs to the model the fresh session lands on (a /reasoning
         # session override is dropped, the default model's per-model override is kept).
         _resolve_cli_reasoning(self)

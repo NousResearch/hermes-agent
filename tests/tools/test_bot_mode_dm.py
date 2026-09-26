@@ -11,6 +11,7 @@ import shlex
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 from pathlib import Path
 
@@ -612,23 +613,191 @@ def test_live_dm_runner_retry_never_reexecutes_failed_claim(tmp_path, monkeypatc
     monkeypatch.setenv("HERMES_HOME", str(home))
     owner = dict(profile_home=str(target), session_id="bot", lease_id="lease", live_session_id="live")
     monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: owner)
-    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0)
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("must not launch a model turn"))
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("hello", encoding="utf-8")
     argv = ["hermes", "-p", "researcher"]
-    assert bot_mode_dm._run_delivery(argv, str(dm_file), stdin_file=False) == 0
-    queued = json.loads(capsys.readouterr().out)
-    assert queued["status"] == "queued"
-    claimed = live.claim_pending_delivery(target, owner)
-    assert claimed is not None
-    live.complete_delivery(target, claimed["delivery_id"], status="failed", error="HTTP 429 rate limit")
+
+    def fail_later():
+        time.sleep(0.05)
+        claimed = live.claim_pending_delivery(target, owner)
+        assert claimed is not None
+        live.complete_delivery(target, claimed["delivery_id"], status="failed", error="HTTP 429 rate limit")
+
+    failing = threading.Thread(target=fail_later)
+    failing.start()
+    try:
+        assert bot_mode_dm._run_delivery(argv, str(dm_file), stdin_file=False) == 1
+    finally:
+        failing.join(timeout=2)
+    first = json.loads(capsys.readouterr().out)
+    assert first["status"] == "failed"
     monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: None)
     assert bot_mode_dm._run_delivery(argv, str(dm_file), stdin_file=False) == 1
     failed = json.loads(capsys.readouterr().out)
     assert failed["status"] == "failed"
-    assert failed["delivery_id"] == queued["delivery_id"]
+    assert failed["delivery_id"] == first["delivery_id"]
     assert dm_file.read_text(encoding="utf-8") == "hello"
+
+
+def test_live_dm_wait_reports_reply_after_initial_wait_budget(tmp_path, monkeypatch, capsys):
+    """A retained live receipt must still deliver its reply after the old 300 s boundary."""
+    from tools import bot_live_delivery as live
+
+    owner = dict(profile_home=str(tmp_path), session_id="bot", lease_id="lease", live_session_id="live")
+    record = live.deliver_to_live_owner(tmp_path, owner, "ping", delivery_id="a" * 32)
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: owner)
+
+    def settle_later():
+        time.sleep(0.05)
+        claimed = live.claim_pending_delivery(tmp_path, owner)
+        assert claimed is not None
+        live.complete_delivery(tmp_path, claimed["delivery_id"], status="settled", reply="PONG")
+
+    settling = threading.Thread(target=settle_later)
+    settling.start()
+    try:
+        exit_code = bot_mode_dm._wait_live_dm(str(tmp_path), record["delivery_id"])
+    finally:
+        settling.join(timeout=2)
+
+    notice = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert notice["status"] == "settled"
+    assert notice["reply"] == "PONG"
+
+
+def test_live_dm_wait_releases_queued_runner_when_pinned_owner_is_gone(tmp_path, monkeypatch, capsys):
+    from tools import bot_live_delivery as live
+
+    owner = dict(profile_home=str(tmp_path), session_id="bot", lease_id="lease", live_session_id="live")
+    record = live.deliver_to_live_owner(tmp_path, owner, "ping", delivery_id="c" * 32)
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: None)
+
+    assert bot_mode_dm._wait_live_dm(str(tmp_path), record["delivery_id"]) == 1
+    notice = json.loads(capsys.readouterr().out)
+    assert notice["status"] == "cancelled"
+    final = live.read_delivery_result(tmp_path, record["delivery_id"])
+    assert final is not None and final["status"] == "cancelled"
+
+
+def test_live_dm_wait_rechecks_receipt_when_owner_disappears_at_claim(tmp_path, monkeypatch, capsys):
+    from tools import bot_live_delivery as live
+
+    owner = dict(profile_home=str(tmp_path), session_id="bot", lease_id="lease", live_session_id="live")
+    record = live.deliver_to_live_owner(tmp_path, owner, "ping", delivery_id="f" * 32)
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
+
+    def settle_during_owner_check(_home):
+        claimed = live.claim_pending_delivery(tmp_path, owner)
+        assert claimed is not None
+        live.complete_delivery(tmp_path, claimed["delivery_id"], status="settled", reply="PONG")
+        return None
+
+    monkeypatch.setattr(live, "find_canonical_live_owner", settle_during_owner_check)
+    assert bot_mode_dm._wait_live_dm(str(tmp_path), record["delivery_id"]) == 0
+    notice = json.loads(capsys.readouterr().out)
+    assert notice["status"] == "settled"
+    assert notice["reply"] == "PONG"
+
+
+def test_live_dm_wait_does_not_cancel_a_claim_after_the_last_read(tmp_path, monkeypatch, capsys):
+    from tools import bot_live_delivery as live
+
+    owner = dict(profile_home=str(tmp_path), session_id="bot", lease_id="lease", live_session_id="live")
+    record = live.deliver_to_live_owner(tmp_path, owner, "ping", delivery_id="2" * 32)
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
+    owner_checked = False
+
+    def owner_gone(_home):
+        nonlocal owner_checked
+        owner_checked = True
+        return None
+
+    monkeypatch.setattr(live, "find_canonical_live_owner", owner_gone)
+    original_read = live.read_delivery_result
+    claimed_during_read = False
+
+    def read_then_claim(home, delivery_id):
+        nonlocal claimed_during_read
+        snapshot = original_read(home, delivery_id)
+        assert snapshot is not None
+        if owner_checked and snapshot["status"] == "queued" and not claimed_during_read:
+            claimed_during_read = True
+            claimed = live.claim_pending_delivery(tmp_path, owner)
+            assert claimed is not None
+            live.complete_delivery(tmp_path, delivery_id, status="settled", reply="PONG")
+        return snapshot
+
+    monkeypatch.setattr(live, "read_delivery_result", read_then_claim)
+    assert bot_mode_dm._wait_live_dm(str(tmp_path), record["delivery_id"]) == 0
+    notice = json.loads(capsys.readouterr().out)
+    assert claimed_during_read
+    assert notice["status"] == "settled"
+    assert notice["reply"] == "PONG"
+
+
+def test_live_dm_wait_keeps_claimed_turn_until_it_settles(tmp_path, monkeypatch, capsys):
+    from tools import bot_live_delivery as live
+
+    owner = dict(profile_home=str(tmp_path), session_id="bot", lease_id="lease", live_session_id="live")
+    record = live.deliver_to_live_owner(tmp_path, owner, "ping", delivery_id="d" * 32)
+    assert live.claim_pending_delivery(tmp_path, owner) is not None
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.03)
+    monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: None)
+
+    def settle_later():
+        time.sleep(0.05)
+        live.complete_delivery(tmp_path, record["delivery_id"], status="settled", reply="PONG")
+
+    settling = threading.Thread(target=settle_later)
+    settling.start()
+    try:
+        exit_code = bot_mode_dm._wait_live_dm(str(tmp_path), record["delivery_id"])
+    finally:
+        settling.join(timeout=2)
+
+    assert exit_code == 0
+    notice = json.loads(capsys.readouterr().out)
+    assert notice["status"] == "settled"
+    assert notice["reply"] == "PONG"
+
+
+def test_live_dm_wait_releases_claimed_runner_after_owner_is_gone(tmp_path, monkeypatch, capsys):
+    from tools import bot_live_delivery as live
+
+    owner = dict(profile_home=str(tmp_path), session_id="bot", lease_id="lease", live_session_id="live")
+    record = live.deliver_to_live_owner(tmp_path, owner, "ping", delivery_id="1" * 32)
+    assert live.claim_pending_delivery(tmp_path, owner) is not None
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: None)
+
+    outcomes = []
+    waiting = threading.Thread(target=lambda: outcomes.append(bot_mode_dm._wait_live_dm(
+        str(tmp_path), record["delivery_id"])), daemon=True)
+    waiting.start()
+    waiting.join(timeout=1)
+    stopped_with_unknown_outcome = not waiting.is_alive()
+    if not stopped_with_unknown_outcome:
+        live.complete_delivery(tmp_path, record["delivery_id"], status="failed", error="test cleanup")
+        waiting.join(timeout=2)
+
+    assert stopped_with_unknown_outcome, "a vanished owner must not retain the runner indefinitely"
+    assert outcomes == [0]
+    notice = json.loads(capsys.readouterr().out)
+    assert notice["status"] == "claimed"
+    final = live.read_delivery_result(tmp_path, record["delivery_id"])
+    assert final is not None and final["status"] == "claimed"
 
 
 # ── plaintext tempfile lifecycle ─────────────────────────────────────────────
@@ -1050,15 +1219,26 @@ def test_settled_live_wait_unlinks_the_intent_but_a_pending_one_keeps_it(tmp_pat
     dm_file.write_text("secret plaintext", encoding="utf-8")
     intent = tmp_path / "dm-x.txt.live.json"
     intent.write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0)
+    owner = dict(profile_home=str(tmp_path), session_id="bot", lease_id="lease", live_session_id="live")
+    record = live.deliver_to_live_owner(tmp_path, owner, "ping", delivery_id="b" * 32)
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: owner)
 
-    monkeypatch.setattr(live, "read_delivery_result", lambda home, did: {"status": "queued"})
-    assert bot_mode_dm._wait_live_dm(str(tmp_path), "d1", dm_file=dm_file) == 0
-    assert intent.exists(), "a pending delivery may still be retried from the same intent"
-    assert dm_file.exists()
+    outcomes = []
+    waiting = threading.Thread(target=lambda: outcomes.append(bot_mode_dm._wait_live_dm(
+        str(tmp_path), record["delivery_id"], dm_file=dm_file)), daemon=True)
+    waiting.start()
+    time.sleep(0.05)
+    pending_kept = waiting.is_alive() and intent.exists() and dm_file.exists()
+    claimed = live.claim_pending_delivery(tmp_path, owner)
+    assert claimed is not None
+    live.complete_delivery(tmp_path, claimed["delivery_id"], status="settled", reply="ok")
+    waiting.join(timeout=2)
 
-    monkeypatch.setattr(live, "read_delivery_result", lambda home, did: {"status": "settled", "reply": "ok"})
-    assert bot_mode_dm._wait_live_dm(str(tmp_path), "d1", dm_file=dm_file) == 0
+    assert pending_kept, "a pending delivery keeps its intent while the runner waits"
+    assert not waiting.is_alive()
+    assert outcomes == [0]
     assert not intent.exists()
     assert not dm_file.exists(), "the dm .txt holds the same plaintext as the settled intent"
 

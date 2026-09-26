@@ -2432,6 +2432,17 @@ def init_agent(
     # reasoning_content echo opt-in; switch_model / fallback / restore keep it in sync.
     agent._reasoning_echo_flag = agent._read_reasoning_echo_from_config()
     agent.request_overrides = dict(request_overrides or {})
+
+    # Session affinity headers for proxy routing and upstream prompt caching
+    effective_sid = parent_session_id or session_id
+    if effective_sid:
+        extra_headers = agent.request_overrides.get("extra_headers")
+        if not isinstance(extra_headers, dict):
+            extra_headers = {}
+        extra_headers.setdefault("X-Session-ID", str(effective_sid))
+        extra_headers.setdefault("X-OmniRoute-Session-Key", str(effective_sid))
+        agent.request_overrides["extra_headers"] = extra_headers
+
     agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns
     agent._force_ascii_payload = False
     # Every (provider, model) that rejected image content this session. build_api_request strips

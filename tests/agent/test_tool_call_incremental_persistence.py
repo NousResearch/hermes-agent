@@ -748,6 +748,136 @@ def test_flush_stale_row_id_from_other_session_does_not_fill_child_blank(tmp_pat
     ]
 
 
+def test_flush_sanitized_archived_row_does_not_append_duplicate(tmp_path):
+    """A sanitizer rewrite of an archived row must preserve its durable identity.
+
+    SessionDB already scrubs lone surrogates on the initial write. The outbound sanitizer later makes the
+    same repair on the live dict and pops ``_db_persisted``. Re-appending that inactive row creates a second
+    assistant with the same content and microsecond timestamp, and both rows enter the display projection.
+    """
+    from agent.message_sanitization import _sanitize_messages_surrogates
+
+    agent = _make_agent()
+    db_path = tmp_path / "state.db"
+    session_id = "sess-sanitized-archived-row"
+    db = _attach_real_session_db(agent, db_path, session_id)
+    messages = [
+        {"role": "user", "content": "summarize"},
+        {"role": "assistant", "content": "answer \ud800 tail"},
+    ]
+    agent._flush_messages_to_session_db(messages)
+    assistant_id = messages[-1]["_row_id"]
+    assistant_timestamp = messages[-1]["timestamp"]
+
+    db.archive_and_compact(
+        session_id,
+        compacted_messages=[{"role": "user", "content": "prior turns summarized"}],
+    )
+    assert _sanitize_messages_surrogates(messages) is True
+    agent._db_flush_scan_prefix = None
+
+    assert agent._flush_messages_to_session_db(messages) is True
+
+    all_rows = db.get_messages(session_id, include_inactive=True)
+    assistants = [row for row in all_rows if row.get("role") == "assistant"]
+    assert len(assistants) == 1
+    assert assistants[0]["id"] == assistant_id
+    assert assistants[0]["timestamp"] == assistant_timestamp
+    assert assistants[0]["active"] in (0, False)
+    assert assistants[0]["compacted"] in (1, True)
+    assert assistants[0]["content"] == "answer \ufffd tail"
+    display = db.get_messages(session_id, include_compacted=True)
+    assert [row["content"] for row in display].count("answer \ufffd tail") == 1
+    assert messages[-1]["_row_id"] == assistant_id
+    assert messages[-1]["_db_persisted"] is True
+
+
+def test_flush_sanitized_archived_user_and_tool_rows_do_not_append_duplicates(tmp_path):
+    """Sanitizer rewrites retain durable identity for every persisted transcript role."""
+    from agent.message_sanitization import _sanitize_messages_surrogates
+
+    agent = _make_agent()
+    db_path = tmp_path / "state.db"
+    session_id = "sess-sanitized-archived-non-assistant-rows"
+    db = _attach_real_session_db(agent, db_path, session_id)
+    messages = [
+        {"role": "user", "content": "prompt \ud800 tail"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "name": "terminal",
+            "content": "result \ud800 tail",
+        },
+    ]
+    agent._flush_messages_to_session_db(messages)
+    durable_ids = {message["role"]: message["_row_id"] for message in messages}
+    durable_timestamps = {message["role"]: message["timestamp"] for message in messages}
+
+    db.archive_and_compact(
+        session_id,
+        compacted_messages=[{"role": "user", "content": "prior turns summarized"}],
+    )
+    assert _sanitize_messages_surrogates(messages) is True
+    agent._db_flush_scan_prefix = None
+
+    assert agent._flush_messages_to_session_db(messages) is True
+
+    all_rows = db.get_messages(session_id, include_inactive=True)
+    for role, expected_content in (("user", "prompt \ufffd tail"), ("tool", "result \ufffd tail")):
+        matching = [row for row in all_rows if row.get("role") == role and row.get("content") == expected_content]
+        assert len(matching) == 1
+        assert matching[0]["id"] == durable_ids[role]
+        assert matching[0]["timestamp"] == durable_timestamps[role]
+        assert matching[0]["active"] in (0, False)
+        assert matching[0]["compacted"] in (1, True)
+        live = next(message for message in messages if message["role"] == role)
+        assert live["_row_id"] == durable_ids[role]
+        assert live["_db_persisted"] is True
+
+
+def test_flush_ascii_repair_updates_archived_row_without_resurrecting_it(tmp_path):
+    """A changed archived payload is updated in place while its active/compacted state is preserved."""
+    from agent.message_sanitization import _sanitize_messages_non_ascii
+
+    agent = _make_agent()
+    db_path = tmp_path / "state.db"
+    session_id = "sess-ascii-repaired-archived-row"
+    db = _attach_real_session_db(agent, db_path, session_id)
+    messages = [
+        {"role": "user", "content": "summarize"},
+        {"role": "assistant", "content": "caf\u00e9 answer"},
+    ]
+    agent._flush_messages_to_session_db(messages)
+    assistant_id = messages[-1]["_row_id"]
+
+    db.archive_and_compact(
+        session_id,
+        compacted_messages=[{"role": "user", "content": "prior turns summarized"}],
+    )
+    assert _sanitize_messages_non_ascii(messages) is True
+    agent._db_flush_scan_prefix = None
+
+    assert agent._flush_messages_to_session_db(messages) is True
+
+    all_rows = db.get_messages(session_id, include_inactive=True)
+    assistant = next(row for row in all_rows if row.get("id") == assistant_id)
+    assert assistant["content"] == "caf answer"
+    assert assistant["active"] in (0, False)
+    assert assistant["compacted"] in (1, True)
+    assert len([row for row in all_rows if row.get("role") == "assistant"]) == 1
+    assert not any(row.get("role") == "assistant" for row in db.get_messages(session_id))
+
 def test_flush_archived_same_session_row_id_fills_active_clone(tmp_path):
     """Watermark compaction clones the tail; stale `_row_id` must not win.
 
@@ -863,6 +993,98 @@ def test_flush_atomic_mixed_repair_and_append_rollback_on_failure(tmp_path, monk
     assert len(durable) == 2
     assert durable[-1]["role"] == "assistant"
     assert (durable[-1].get("content") or "") == ""
+
+
+def test_flush_stale_active_user_adopts_concurrent_winner(tmp_path):
+    """A stale non-assistant live dict must not replace a newer durable row."""
+    agent = _make_agent()
+    db_path = tmp_path / "state.db"
+    session_id = "sess-stale-active-user"
+    db = _attach_real_session_db(agent, db_path, session_id)
+    messages = [{"role": "user", "content": "initial"}]
+    agent._flush_messages_to_session_db(messages)
+    row_id = messages[0]["_row_id"]
+
+    db._execute_write(
+        lambda conn: conn.execute(
+            "UPDATE messages SET content = ? WHERE id = ?",
+            (db._encode_content("newer durable content"), row_id),
+        )
+    )
+    messages[0]["content"] = "stale sanitizer copy"
+    messages[0].pop("_db_persisted", None)
+    agent._db_flush_scan_prefix = None
+
+    assert agent._flush_messages_to_session_db(messages) is True
+
+    row = next(item for item in db.get_messages(session_id, include_inactive=True) if item["id"] == row_id)
+    assert row["content"] == "newer durable content"
+    assert messages[0]["content"] == "newer durable content"
+    assert messages[0]["_row_id"] == row_id
+    assert messages[0]["_db_persisted"] is True
+
+
+def test_flush_inactive_row_does_not_select_same_timestamp_collision(tmp_path):
+    """An unrelated active row with the same role/timestamp is not a compaction clone."""
+    agent = _make_agent()
+    db_path = tmp_path / "state.db"
+    session_id = "sess-inactive-timestamp-collision"
+    db = _attach_real_session_db(agent, db_path, session_id)
+    messages = [{"role": "user", "content": "original", "timestamp": 1_700_000_000.0}]
+    agent._flush_messages_to_session_db(messages)
+    original_id = messages[0]["_row_id"]
+
+    db._execute_write(
+        lambda conn: conn.execute(
+            "UPDATE messages SET active = 0, compacted = 0 WHERE id = ?",
+            (original_id,),
+        )
+    )
+    collision_id = db.append_message(
+        session_id, "user", "unrelated active row", timestamp=messages[0]["timestamp"]
+    )
+    messages[0]["content"] = "repaired original"
+    messages[0].pop("_db_persisted", None)
+    agent._db_flush_scan_prefix = None
+
+    assert agent._flush_messages_to_session_db(messages) is True
+
+    rows = {row["id"]: row for row in db.get_messages(session_id, include_inactive=True)}
+    assert rows[original_id]["content"] == "repaired original"
+    assert rows[original_id]["active"] in (0, False)
+    assert rows[collision_id]["content"] == "unrelated active row"
+    assert rows[collision_id]["active"] in (1, True)
+    assert messages[0]["_row_id"] == original_id
+
+
+def test_flush_ascii_repair_persists_structured_tool_fields(tmp_path):
+    """Repair writes every durable field changed by the sanitizer before marking the dict durable."""
+    from agent.message_sanitization import _sanitize_messages_non_ascii
+
+    agent = _make_agent()
+    db_path = tmp_path / "state.db"
+    session_id = "sess-structured-ascii-repair"
+    db = _attach_real_session_db(agent, db_path, session_id)
+    messages = [
+        {
+            "role": "tool",
+            "content": "résult",
+            "tool_call_id": "call-café",
+            "name": "términal",
+        }
+    ]
+    agent._flush_messages_to_session_db(messages)
+    row_id = messages[0]["_row_id"]
+
+    assert _sanitize_messages_non_ascii(messages) is True
+    agent._db_flush_scan_prefix = None
+    assert agent._flush_messages_to_session_db(messages) is True
+
+    row = next(item for item in db.get_messages(session_id, include_inactive=True) if item["id"] == row_id)
+    assert row["content"] == "rsult"
+    assert row["tool_call_id"] == "call-caf"
+    assert row["tool_name"] == "trminal"
+    assert messages[0]["_db_persisted"] is True
 
 
 def test_flush_concurrent_nonblank_winner_adopts_canonical_content(tmp_path):

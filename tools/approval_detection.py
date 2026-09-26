@@ -1262,6 +1262,112 @@ def _iter_shell_command_word_spans(command: str):
             positionals = _COMMAND_WRAPPER_POSITIONAL_ARGS.get(name, 0)
 
 
+_DOCKER_LIFECYCLE_DESCRIPTIONS = frozenset({
+    "docker compose restart/stop/kill/down (container lifecycle)",
+    "docker restart/stop/kill (container lifecycle)",
+})
+# Commands whose arguments and stdin are data, never executed, so docker lifecycle words inside
+# them are prose (`echo`, `git commit -m`, `grep PATTERN`, `hermes kanban create --body`). Every
+# other command's segment is still scanned: xargs, find -exec, ssh, watch and interpreters DO run
+# their arguments, so an allowlist of prose commands (not a denylist of executors) keeps them flagged.
+_DOCKER_LIFECYCLE_PROSE_COMMANDS = frozenset({
+    "cat", "echo", "egrep", "fgrep", "git", "grep", "hermes", "printf", "rg",
+})
+# git can run shell through `-c alias.x='!cmd'`, core.sshCommand, etc., so it is prose only when the
+# subcommand directly follows `git` and only carries messages/patterns.
+_DOCKER_LIFECYCLE_GIT_PROSE_RE = re.compile(r'\S*git\s+(?:commit|grep|log|show|tag|notes)\b')
+
+
+def _command_word_name(word: str) -> str:
+    return os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower()
+
+
+def _drop_prose_heredoc_bodies(command: str) -> str:
+    """Remove here-doc bodies fed to a prose command, keeping the header and following lines.
+
+    The command-start scanner treats every body line as an executable position, so documentation
+    fed to ``cat``/``hermes`` reads as commands. Only bodies whose owning command is in
+    ``_DOCKER_LIFECYCLE_PROSE_COMMANDS`` are dropped: ``ssh host <<EOF`` or ``python3 - <<EOF`` bodies
+    are code and stay visible. An unquoted delimiter expands ``$(...)``/backticks in the body, so such
+    a body stays visible too. Unterminated here-docs drop to the end (the shell would still be
+    waiting for the delimiter). Bodies are removed rather than blanked so huge documents do not turn
+    into long whitespace runs the command-start scanner re-walks from every line.
+    """
+    parts: list[str] = []
+    cursor = 0
+    while cursor < len(command):
+        operator = next((
+            index
+            for kind, index, _, quote in _scan_shell(command, cursor)
+            if kind == "char" and quote is None and command.startswith("<<", index)
+            and (index == 0 or command[index - 1] != "<")
+            and not command.startswith("<<<", index)
+        ), None)
+        if operator is None:
+            break
+        strip_tabs = command.startswith("<<-", operator)
+        _, delimiter_end, delimiter_word = _read_shell_word(command, operator + 2 + strip_tabs)
+        header_end = command.find("\n", delimiter_end)
+        delimiter = _deobfuscate_shell_word_for_detection(delimiter_word)
+        if header_end < 0 or not delimiter:
+            break
+        body_start = header_end + 1
+        line_start = body_start
+        body_end = len(command)
+        while line_start < len(command):
+            line_end = command.find("\n", line_start)
+            if line_end < 0:
+                line_end = len(command)
+            line = command[line_start:line_end]
+            if (line.lstrip("\t") if strip_tabs else line) == delimiter:
+                body_end = line_end + (line_end < len(command))
+                break
+            line_start = line_end + 1
+        body = command[body_start:body_end]
+        expands = not any(ch in delimiter_word for ch in "'\"\\") and ("$(" in body or "`" in body)
+        owners = [_command_word_name(word)
+                  for _, _, word in _iter_shell_command_word_spans(command[cursor:operator])]
+        parts.append(command[cursor:body_start])
+        if expands or not owners or owners[-1] not in _DOCKER_LIFECYCLE_PROSE_COMMANDS:
+            parts.append(body)
+        cursor = body_end
+    parts.append(command[cursor:])
+    return "".join(parts)
+
+
+def _docker_lifecycle_executable_text(command: str) -> str:
+    """Join the command segments that are not led by a prose command, for lifecycle matching.
+
+    Nested ``$(...)``/backtick commands are their own command starts, so ``echo $(docker stop x)``
+    is still scanned even though its ``echo`` segment is skipped. Segments are joined with NUL so a
+    pattern cannot match across two of them.
+    """
+    command = _drop_prose_heredoc_bodies(command)
+    segments = []
+    for start, _, word in _iter_shell_command_word_spans(command):
+        name = _command_word_name(word)
+        segment = _shell_command_segment(command, start).lower()
+        if name in _DOCKER_LIFECYCLE_PROSE_COMMANDS and (
+            name != "git" or _DOCKER_LIFECYCLE_GIT_PROSE_RE.match(segment)
+        ):
+            continue
+        segments.append(segment)
+    return "\0".join(segments)
+
+
+def _docker_lifecycle_requires_raw_scan(command: str, variant: str) -> bool:
+    """Keep policy payloads and shell-carrier code subject to lifecycle detection.
+
+    ``command_allowlist`` is itself an approval boundary: treating its quoted value as prose would
+    let an unattended worker store a lifecycle approval without a prompt. Shell-carrier arguments
+    are executable code, and extracted ``bash -c`` variants must inherit that fact from the source.
+    """
+    return any(
+        "command_allowlist" in candidate.lower() or _contains_shell_carrier(candidate)
+        for candidate in (command, variant)
+    )
+
+
 def _shell_command_segment(command: str, start: int) -> str:
     """Bound a candidate to its command, preserving quoted argument bytes."""
     end = len(command)
@@ -1522,8 +1628,20 @@ def detect_dangerous_command(command: str) -> tuple:
     for command_variant in _command_detection_variants(command):
         command_lower = _lower_preserving_flags(command_variant)
         masked_lower: str | None = None
+        docker_text: str | None = None
         for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
-            if description in _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS:
+            if description in _DOCKER_LIFECYCLE_DESCRIPTIONS:
+                # Only pay for the prose-aware walk when the raw text could match at all.
+                if not pattern_re.search(command_lower):
+                    continue
+                if docker_text is None:
+                    docker_text = (
+                        command_lower if _docker_lifecycle_requires_raw_scan(command, command_variant)
+                        else _docker_lifecycle_executable_text(command_variant)
+                    )
+                if pattern_re.search(docker_text):
+                    return (True, description, description)
+            elif description in _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS:
                 if masked_lower is None:
                     masked_lower = _lower_preserving_flags(
                         _mask_quoted_prose(command_variant)

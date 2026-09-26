@@ -25,10 +25,29 @@
  * mixes cursors; returning reuses prior cursor (never reset to current MAX).
  * Fail-closed: while a board's baseline is unknown, no event can be
  * classified so none is notified. Empty slug ('') suppressed.
+ *
+ * Every map is keyed by (connection scope, board slug) — `cursorKey`, the
+ * same key api.ts's socket cursor uses — so two gateways that share a slug
+ * never classify each other's events.
+ *
+ * Alerts mode (#123596, ./alerts-mode): an emitted event is delivered per
+ * `MODE_DELIVERY` (toast = today, quiet = bottom-right + chime, badge =
+ * silent), and in EVERY mode counts toward `$unseenByBoard` unless the user
+ * is looking at that board (page mounted AND window visible). Counting sits
+ * behind the cursor, so replayed/historical events never count.
  */
 
-import { host, type PluginOs, type PluginRestOptions, type PluginTranslate } from '@hermes/plugin-sdk'
+import {
+  atom,
+  computed,
+  host,
+  playCompletionSound,
+  type PluginOs,
+  type PluginRestOptions,
+  type PluginTranslate
+} from '@hermes/plugin-sdk'
 
+import { $alertsMode, type KanbanAlertsMode } from './alerts-mode'
 import { en } from './i18n'
 
 type Rest = <T>(path: string, opts?: PluginRestOptions) => Promise<T>
@@ -61,6 +80,79 @@ let rest: Rest | null = null
 let translate: PluginTranslate | null = null
 let osDoor: PluginOs | null = null
 
+/** (connection scope, board slug) → one map key. api.ts keys its socket
+ *  cursor with the same function. */
+export function cursorKey(scope: string, slug: string): string {
+  return `${scope}\0${slug}`
+}
+
+/** Unseen emitted terminal events per `cursorKey`. In memory only. */
+export const $unseenByBoard = atom<Record<string, number>>({})
+
+/** The nav-row total: unseen events on the ACTIVE connection's boards. */
+export const $kanbanUnseen = computed([$unseenByBoard, host.state.connectionId], (unseen, connectionId) => {
+  const prefix = cursorKey(connectionId ?? 'local', '')
+  let total = 0
+
+  for (const [key, n] of Object.entries(unseen)) {
+    if (key.startsWith(prefix)) {
+      total += n
+    }
+  }
+
+  return total
+})
+
+/** The board page currently mounted (its `cursorKey`), or null. */
+let viewing: null | string = null
+/** Bumped by `resetCompletionNotify` so a frame awaiting its baseline across a
+ *  plugin unload cannot write counts, cursors or toasts afterwards. */
+let generation = 0
+let detachVisibility: (() => void) | null = null
+
+const documentVisible = () => typeof document !== 'undefined' && document.visibilityState === 'visible'
+
+/** The user is looking at this board: its page is mounted AND the window is visible. */
+const looking = (key: string) => viewing === key && documentVisible()
+
+function clearUnseen(key: string): void {
+  const current = $unseenByBoard.get()
+
+  if (current[key]) {
+    const { [key]: _cleared, ...remaining } = current
+    $unseenByBoard.set(remaining)
+  }
+}
+
+/** Called by the board page while mounted: clears that board's count (if the
+ *  window is visible) and suppresses counting while the user looks at it.
+ *  Returns the unmark; a stale unmark never clears a newer mark. */
+export function markBoardViewing(scope: string, slug: string): () => void {
+  const key = cursorKey(scope, slug)
+  viewing = key
+
+  if (documentVisible()) {
+    clearUnseen(key)
+  }
+
+  return () => {
+    if (viewing === key) {
+      viewing = null
+    }
+  }
+}
+
+/** Plugin unload: forget every cursor, count and viewing mark. */
+export function resetCompletionNotify(): void {
+  generation += 1
+  seenEventIdByBoard.clear()
+  baselinePending.clear()
+  $unseenByBoard.set({})
+  viewing = null
+  detachVisibility?.()
+  detachVisibility = null
+}
+
 /** Resolve a dot-path against the plugin's own English bundle — the same
  *  last-rung fallback the plugin i18n registry applies, usable before (or
  *  without) a bound translator. */
@@ -89,25 +181,45 @@ export function bindCompletionNotify(r: Rest, pluginTranslate?: PluginTranslate,
   rest = r
   translate = pluginTranslate ?? null
   osDoor = os ?? null
+
+  // Coming back to a window left on a board page = looking at it again.
+  detachVisibility?.()
+  detachVisibility = null
+
+  if (typeof document !== 'undefined') {
+    const onVisibility = () => {
+      if (viewing && documentVisible()) {
+        clearUnseen(viewing)
+      }
+    }
+
+    document.addEventListener('visibilitychange', onVisibility)
+    detachVisibility = () => document.removeEventListener('visibilitychange', onVisibility)
+  }
 }
 
-async function ensureBaseline(slug: string): Promise<void> {
-  if (seenEventIdByBoard.has(slug) || baselinePending.has(slug)) {
+async function ensureBaseline(key: string, slug: string): Promise<void> {
+  if (seenEventIdByBoard.has(key) || baselinePending.has(key)) {
     return
   }
 
-  baselinePending.add(slug)
+  const bound = generation
+  baselinePending.add(key)
 
   try {
     const board = (await rest!<{ latest_event_id?: unknown }>(`/board?board=${encodeURIComponent(slug)}`)) as {
       latest_event_id?: unknown
     }
 
-    seenEventIdByBoard.set(slug, typeof board.latest_event_id === 'number' ? board.latest_event_id : 0)
+    if (bound === generation) {
+      seenEventIdByBoard.set(key, typeof board.latest_event_id === 'number' ? board.latest_event_id : 0)
+    }
   } catch {
     // Fail-closed: unknown baseline → notifications stay suppressed.
   } finally {
-    baselinePending.delete(slug)
+    if (bound === generation) {
+      baselinePending.delete(key)
+    }
   }
 }
 
@@ -142,7 +254,18 @@ function rawErrorFor(kind: string, ev: CompletionEvent): string {
   return kind === 'gave_up' ? trimmed(ev.payload?.error) : ''
 }
 
-function notifyOne(kind: string, spec: { titleKey: string; toast: ToastKind }, ev: CompletionEvent): void {
+type Spec = { titleKey: string; toast: ToastKind }
+
+/** `quiet` mode's toast: the quiet corner, and never sticky (warning/error
+ *  default to sticky; an explicit duration overrides that). */
+const QUIET_TOAST = { placement: 'bottom-right', durationMs: 5000 } as const
+
+function notifyOne(
+  kind: string,
+  spec: Spec,
+  ev: CompletionEvent,
+  toastOverrides: Partial<typeof QUIET_TOAST> = {}
+): void {
   const taskId = (ev.task_id ?? '').trim()
   const body = bodyFor(kind, ev)
 
@@ -168,7 +291,8 @@ function notifyOne(kind: string, spec: { titleKey: string; toast: ToastKind }, e
     title,
     message,
     ...(detail ? { detail } : {}),
-    action: { label: t('notify.openKanban'), onClick: () => host.navigate('/kanban') }
+    action: { label: t('notify.openKanban'), onClick: () => host.navigate('/kanban') },
+    ...toastOverrides
   })
 
   // Native OS notification — the desktop shell fires it only while the user
@@ -181,22 +305,35 @@ function notifyOne(kind: string, spec: { titleKey: string; toast: ToastKind }, e
   }
 }
 
-/** Consume one /events frame for a board. Returns true when a terminal-event
- *  notification was fired. Never throws: notification failure cannot
- *  interfere with api.ts cache invalidation. */
-export async function onKanbanEventsFrame(slug: string, events?: CompletionEvent[]): Promise<boolean> {
+/** Per-event delivery by alerts mode. `toast` is today's call unchanged; the
+ *  quiet chime is once per FRAME, so it lives after the loop, not here. */
+const MODE_DELIVERY: Record<KanbanAlertsMode, (kind: string, spec: Spec, ev: CompletionEvent) => void> = {
+  toast: (kind, spec, ev) => notifyOne(kind, spec, ev),
+  quiet: (kind, spec, ev) => notifyOne(kind, spec, ev, QUIET_TOAST),
+  badge: () => undefined
+}
+
+/** Consume one /events frame for a board on connection `scope`. Returns true
+ *  when a terminal event was emitted (delivered per the alerts mode — in
+ *  `badge` mode that is the count alone). Never throws: notification failure
+ *  cannot interfere with api.ts cache invalidation. */
+export async function onKanbanEventsFrame(slug: string, events?: CompletionEvent[], scope = 'local'): Promise<boolean> {
   if (!events?.length || slug === '' || !rest) {
     return false
   }
 
-  await ensureBaseline(slug)
-  const seen = seenEventIdByBoard.get(slug)
+  const key = cursorKey(scope, slug)
+  const bound = generation
+  await ensureBaseline(key, slug)
+  const seen = seenEventIdByBoard.get(key)
 
-  if (seen === undefined) {
+  if (seen === undefined || bound !== generation) {
     return false
   } // fail-closed
 
-  let fired = false
+  const mode = $alertsMode.get()
+  let emitted = false
+  let lastEmittedId = 0
   let cursor = seen
 
   for (const ev of events) {
@@ -205,18 +342,32 @@ export async function onKanbanEventsFrame(slug: string, events?: CompletionEvent
     }
 
     cursor = ev.id
-    seenEventIdByBoard.set(slug, cursor)
+    seenEventIdByBoard.set(key, cursor)
     const spec = TERMINAL_NOTIFY.get(ev.kind ?? '')
 
     if (spec) {
+      if (!looking(key)) {
+        const unseen = $unseenByBoard.get()
+        $unseenByBoard.set({ ...unseen, [key]: (unseen[key] ?? 0) + 1 })
+      }
+
       try {
-        notifyOne(ev.kind!, spec, ev)
-        fired = true
+        MODE_DELIVERY[mode](ev.kind!, spec, ev)
+        emitted = true
+        lastEmittedId = ev.id
       } catch {
         /* swallowed */
       }
     }
   }
 
-  return fired
+  if (mode === 'quiet' && emitted && !looking(key)) {
+    try {
+      playCompletionSound(`kanban:${scope}:${slug}:${lastEmittedId}`)
+    } catch {
+      /* swallowed */
+    }
+  }
+
+  return emitted
 }

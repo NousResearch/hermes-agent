@@ -214,6 +214,21 @@ type KanbanMessages = {
     openKanban: string
     artifacts: (n: number) => string
   }
+  // Kanban alerts mode (#123596): how terminal worker events reach you
+  alerts: {
+    title: string
+    description: string
+    /** Caption beside the board-local picker: a device preference, not board config. */
+    thisDevice: string
+    toast: string
+    toastDesc: string
+    quiet: string
+    quietDesc: string
+    badge: string
+    badgeDesc: string
+    /** Accessible label for the unseen-event count. */
+    unseen: (n: number) => string
+  }
 }
 
 export const en: KanbanMessages = {
@@ -427,6 +442,19 @@ export const en: KanbanMessages = {
     timedOutTitle: 'Task took too long — Hermes will retry it automatically',
     openKanban: 'Open Kanban',
     artifacts: (n: number) => `${n} artifacts`
+  },
+  alerts: {
+    title: 'Kanban alerts',
+    description: 'How finished, blocked, and failed tasks get your attention.',
+    thisDevice: 'On this device',
+    toast: 'Toast',
+    toastDesc: 'A toast at the top; blockers and failures stay until you dismiss them.',
+    quiet: 'Quiet',
+    quietDesc:
+      'A corner toast that closes by itself, plus the completion sound from Settings ▸ Notifications. Silent while sounds are muted.',
+    badge: 'Badge only',
+    badgeDesc: 'No toast, sound, or system notification — just a count on Kanban.',
+    unseen: (n: number) => (n === 1 ? '1 unseen task update' : `${n} unseen task updates`)
   }
 }
 
@@ -640,6 +668,19 @@ const ja: KanbanMessages = {
     timedOutTitle: 'タスクに時間がかかりすぎました — Hermes が自動で再試行します',
     openKanban: 'かんばんを開く',
     artifacts: (n: number) => `成果物 ${n} 件`
+  },
+  alerts: {
+    title: 'カンバンの通知',
+    description: 'タスクの完了・ブロック・失敗をどう知らせるか。',
+    thisDevice: 'このデバイスのみ',
+    toast: 'トースト',
+    toastDesc: '上部にトーストを表示。ブロックや失敗は閉じるまで残ります。',
+    quiet: '控えめ',
+    quietDesc:
+      '隅に自動で閉じるトーストを表示し、設定 ▸ 通知 の完了サウンドを鳴らします。サウンドをミュート中は鳴りません。',
+    badge: 'バッジのみ',
+    badgeDesc: 'トースト・サウンド・システム通知なし。カンバンに件数だけ表示します。',
+    unseen: (n: number) => `未確認のタスク更新 ${n} 件`
   }
 }
 
@@ -850,6 +891,18 @@ const zh: KanbanMessages = {
     timedOutTitle: '任务耗时过长 — Hermes 将自动重试',
     openKanban: '打开看板',
     artifacts: (n: number) => `${n} 个产物`
+  },
+  alerts: {
+    title: '看板提醒',
+    description: '任务完成、阻塞或失败时如何提醒你。',
+    thisDevice: '仅此设备',
+    toast: '弹出提示',
+    toastDesc: '在顶部弹出提示；阻塞和失败会一直保留，直到你关闭。',
+    quiet: '安静',
+    quietDesc: '在角落弹出会自动关闭的提示，并播放“设置 ▸ 通知”中的完成音效。音效静音时不发声。',
+    badge: '仅徽标',
+    badgeDesc: '不弹提示、不播音效、不发系统通知——只在看板上显示数量。',
+    unseen: (n: number) => `${n} 条未查看的任务更新`
   }
 }
 
@@ -1060,6 +1113,18 @@ const zhHant: KanbanMessages = {
     timedOutTitle: '任務耗時過長 — Hermes 將自動重試',
     openKanban: '開啟看板',
     artifacts: (n: number) => `${n} 個產物`
+  },
+  alerts: {
+    title: '看板提醒',
+    description: '任務完成、受阻或失敗時如何提醒你。',
+    thisDevice: '僅此裝置',
+    toast: '彈出提示',
+    toastDesc: '在頂部彈出提示；受阻和失敗會一直保留，直到你關閉。',
+    quiet: '安靜',
+    quietDesc: '在角落彈出會自動關閉的提示，並播放「設定 ▸ 通知」中的完成音效。音效靜音時不發聲。',
+    badge: '僅徽章',
+    badgeDesc: '不彈提示、不播音效、不發系統通知——只在看板上顯示數量。',
+    unseen: (n: number) => `${n} 則未查看的任務更新`
   }
 }
 

@@ -21,6 +21,7 @@ import {
 } from '@hermes/plugin-sdk'
 import { useState } from 'react'
 
+import { AlertsModeRow } from './alerts-mode-row'
 import {
   autoDescribeProfile,
   fetchOrchestration,
@@ -150,6 +151,7 @@ export function OrchestrationPanel() {
 
   return (
     <div className="flex flex-col gap-4 border-t border-(--ui-stroke-tertiary) px-4 py-3">
+      <AlertsModeRow showDeviceScope />
       <div className="flex flex-wrap items-end gap-4">
         <ProfilePicker
           label={k.orchestratorProfile}

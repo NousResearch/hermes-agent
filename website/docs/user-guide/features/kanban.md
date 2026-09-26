@@ -1230,6 +1230,14 @@ Workers receive `$HERMES_TENANT` and namespace their memory writes by prefix. Th
 
 The Desktop app's Kanban plugin surfaces the same terminal events natively — no gateway platform required. While the Kanban board's live event socket is connected, each `completed`, `blocked`, `gave_up`, `crashed`, `timed_out`, or routed-to-triage (`block_loop_detected`) event raises an in-app toast with the worker's handoff (summary, block reason, or error) and an "Open Kanban" action. When you're away from the Hermes window, the same event also fires a native OS notification (gated by **Settings ▸ Notifications ▸ Plugin notifications**), so a task hitting a blocker while you're in another app still reaches you.
 
+**Alerts mode.** Pick how those events get your attention under **Settings ▸ Notifications ▸ Kanban alerts** (the same picker sits in the board's settings panel):
+
+- **Toast** (default) — the behavior above: a toast at the top, where blockers and failures stay until dismissed, plus the native notification when you're away.
+- **Quiet** — a corner toast that closes by itself, plus one completion sound per burst (the sound chosen under Settings ▸ Notifications; silent while sounds are muted). The native notification still fires when you're away.
+- **Badge only** — no toast, sound, or native notification.
+
+In every mode the Kanban sidebar row and the board switcher show a count of task updates you haven't seen; opening the board clears it. The setting is per device (it isn't tied to a profile or synced to the backend), and the count is kept per gateway connection, so switching gateways shows that gateway's count.
+
 Coverage window: desktop notifications ride the live event stream, so they fire only while the app is running with the Kanban plugin enabled. Events that land while the app is closed are not replayed as notifications on next launch — use a gateway subscription (below) for delivery that must survive the app being closed.
 
 ## Gateway notifications

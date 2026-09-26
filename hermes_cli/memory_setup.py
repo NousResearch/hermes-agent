@@ -119,6 +119,23 @@ def _schema_of(provider) -> list:
     return provider.get_config_schema() if hasattr(provider, "get_config_schema") else []
 
 
+def _saved_provider_config(provider, provider_name: str, config: dict) -> dict:
+    """Values to offer as current on (re-)setup. Providers overriding ``save_config`` keep their
+    config outside ``memory.<name>`` (holographic: ``plugins.hermes-memory-store``); when they
+    expose ``load_saved_config`` it is authoritative — otherwise schema defaults are offered as
+    current and written back over the saved values. Falls back to the ``memory.<name>`` block."""
+    if hasattr(provider, "load_saved_config"):
+        try:
+            saved = provider.load_saved_config()
+        except Exception as e:
+            print(f"  Could not load saved provider config: {e}")
+        else:
+            if isinstance(saved, dict):
+                return dict(saved)
+    block = config.get("memory", {}).get(provider_name, {})
+    return block if isinstance(block, dict) else {}
+
+
 def _get_available_providers() -> list:
     """Discover memory providers from plugins/memory/ as ``(name, setup_hint, provider)`` tuples."""
     try:
@@ -276,9 +293,7 @@ def cmd_setup(args) -> None:
     if _post_setup_hook(provider, config):
         return
 
-    provider_config = config["memory"].get(name, {})
-    if not isinstance(provider_config, dict):
-        provider_config = {}
+    provider_config = _saved_provider_config(provider, name, config)
     env_writes: dict = {}
     schema = _schema_of(provider)
     if schema and not _prompt_schema_fields(name, schema, provider_config, env_writes):
@@ -377,6 +392,8 @@ def cmd_status(args) -> None:
 
     if provider_name:
         provider_config = mem_config.get(provider_name, {})
+        if provider is not None and hasattr(provider, "load_saved_config"):
+            provider_config = _saved_provider_config(provider, provider_name, config)
         display_config = provider_config
         if provider and hasattr(provider, "get_status_config"):
             try:

@@ -122,3 +122,66 @@ def test_cmd_status_memory_tool_gate_enabled(capsys, monkeypatch):
     assert re.search(r"Memory tool:\s+enabled", captured)
     assert re.search(r"Memory injection:\s+enabled", captured)
     assert re.search(r"User profile:\s+disabled", captured)
+
+
+# ---------------------------------------------------------------------------
+# re-run setup must offer the provider's SAVED config (#123571)
+# ---------------------------------------------------------------------------
+
+
+def test_saved_provider_config_falls_back_to_memory_block_when_reader_raises():
+    class Broken:
+        def load_saved_config(self):
+            raise RuntimeError("boom")
+
+    config = {"memory": {"x": {"a": "1"}}}
+    assert memory_setup._saved_provider_config(Broken(), "x", config) == {"a": "1"}
+
+
+def test_cmd_setup_rerun_offers_provider_saved_config(tmp_path, monkeypatch):
+    """#123571: holographic persists under plugins.hermes-memory-store (save_config override),
+    but the wizard seeded its prompts from memory.holographic — always empty — so pressing
+    Enter through a re-run wrote schema defaults over the saved db_path / auto_extract /
+    default_trust. Providers exposing load_saved_config are authoritative now. Real provider
+    discovery and real config.yaml I/O against a temp HERMES_HOME; only the curses picker,
+    the deps installer and stdin are stubbed."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db_path = str(tmp_path / "data" / "facts.db")
+    saved = {"auto_extract": "true", "db_path": db_path, "default_trust": "0.7"}
+    (tmp_path / "config.yaml").write_text(
+        "memory:\n"
+        "  provider: holographic\n"
+        "plugins:\n"
+        "  hermes-memory-store:\n"
+        f"    db_path: {db_path}\n"
+        "    auto_extract: 'true'\n"
+        "    default_trust: '0.7'\n"
+    )
+
+    providers = memory_setup._get_available_providers()
+    idx = next(i for i, (name, _hint, _p) in enumerate(providers) if name == "holographic")
+    _name, _hint, provider = providers[idx]
+
+    # The provider's own read path surfaces the saved values (pre-run, exact).
+    assert provider.load_saved_config() == saved
+
+    def fake_select(title, items, default=0, *, cancel_returns=None):
+        if title == "Memory provider setup":
+            return idx
+        return default  # Enter: keep the offered current value
+
+    monkeypatch.setattr(memory_setup, "_curses_select", fake_select)
+    monkeypatch.setattr(memory_setup, "_prompt", lambda label, default=None, secret=False: default or "")
+    monkeypatch.setattr(memory_setup, "_install_dependencies", lambda name: None)
+    monkeypatch.setattr(memory_setup, "get_hermes_home", lambda: tmp_path)
+
+    memory_setup.cmd_setup(SimpleNamespace())
+
+    # Pressing Enter through the wizard left the saved values intact.
+    import hermes_yaml as yaml
+
+    raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+    after = raw["plugins"]["hermes-memory-store"]
+    for key, val in saved.items():
+        assert after.get(key) == val, f"{key}: {after.get(key)!r} != saved {val!r}"
+    assert raw["memory"]["provider"] == "holographic"

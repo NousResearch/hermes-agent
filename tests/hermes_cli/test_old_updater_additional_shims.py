@@ -62,6 +62,17 @@ def test_retired_ensure_reports_unavailable_without_installing(prompt, no_extern
         ensure("memory.honcho", prompt=prompt)
 
 
+@pytest.mark.parametrize("specs", [[], ["honcho-ai"]])
+def test_retired_install_specs_reports_unavailable_without_installing(specs, no_external_work):
+    from tools.lazy_deps import install_specs
+
+    # Plugin callers cannot know they are talking to a shim; the same catchable failure
+    # as ensure() lets them degrade. SystemExit here kills in-session callers' threads
+    # (an agent-build thread never becomes ready: "Available Tools" stays empty until /new).
+    with pytest.raises(ImportError, match="relaunch"):
+        install_specs(specs, timeout=120)
+
+
 def test_live_dingtalk_dependencies_use_pm_not_retired_installer(monkeypatch):
     from plugins.platforms.dingtalk import adapter
     from pm import extras

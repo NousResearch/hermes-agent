@@ -214,6 +214,26 @@ def _get_mcp_servers(config: Optional[dict] = None) -> Dict[str, dict]:
     return servers if servers and isinstance(servers, dict) else {}
 
 
+def _get_visible_mcp_servers(config: Optional[dict] = None) -> Dict[str, dict]:
+    """Native ``mcp_servers`` merged with portable Agent Plugin MCP servers, so
+    ``hermes mcp`` subcommands can see and authenticate a portable one too
+    (issue #87253). Native entries win on name collision.
+
+    Reuses the tui_gateway RPC layer's merge
+    (``tui_gateway.mcp_rpc_helpers.server_configs_with_sources``) instead of
+    merging again here: that helper (and the dashboard's) takes
+    ``_get_mcp_servers()``'s result as its OWN "native" baseline to tag which
+    entries are plugin-owned, so ``_get_mcp_servers()`` itself must stay
+    native-only — merging portables into it would make those callers merge
+    twice and silently lose the ownership tag they use to block writes to a
+    portable-only name.
+    """
+    from tui_gateway.mcp_rpc_helpers import server_configs_with_sources
+
+    servers, _plugins = server_configs_with_sources(_get_mcp_servers(config))
+    return servers
+
+
 def _tool_filters(cfg: dict) -> Tuple[Optional[list], Optional[list]]:
     """Return the ``(include, exclude)`` tool lists from a server config; ``None`` = key absent.
 
@@ -641,7 +661,7 @@ def cmd_mcp_add(args):
         _info('  hermes mcp add myserver --preset mypreset')
         return
 
-    if name in _get_mcp_servers() and not _confirm(
+    if name in _get_visible_mcp_servers() and not _confirm(
         f"Server '{name}' already exists. Overwrite?", default=False
     ):
         _info("Cancelled.")
@@ -698,15 +718,29 @@ def cmd_mcp_add(args):
 def cmd_mcp_remove(args):
     """Remove an MCP server from config."""
     name = args.name
-    if _lookup_server(name, _get_mcp_servers()) is None:
+    if _lookup_server(name, _get_visible_mcp_servers()) is None:
         return
     if not _confirm(f"Remove server '{name}'?", default=True):
         _info("Cancelled.")
         return
-    _remove_mcp_server(name)
+
+    if not _remove_mcp_server(name):
+        _error(
+            f"'{name}' is provided by a portable Agent Plugin, not the native "
+            "config — disable the plugin to remove it."
+        )
+        return
     _success(f"Removed '{name}' from config")
-    # Route OAuth cleanup through MCPOAuthManager so any provider cached in this process (e.g. from
-    # an earlier `hermes mcp test`) is evicted too.
+
+    if name in _get_visible_mcp_servers():
+        _warning(
+            f"A portable Agent Plugin also provides '{name}'; it remains "
+            "active and was not removed."
+        )
+
+    # Clean up OAuth tokens if they exist — route through MCPOAuthManager so
+    # any provider instance cached in the current process (e.g. from an
+    # earlier `hermes mcp test` in the same session) is evicted too.
     try:
         from tools.mcp_oauth_manager import get_manager
         get_manager().remove(name)
@@ -717,7 +751,7 @@ def cmd_mcp_remove(args):
 
 def cmd_mcp_list(args=None):
     """List all configured MCP servers."""
-    servers = _get_mcp_servers()
+    servers = _get_visible_mcp_servers()
     if not servers:
         print()
         _info("No MCP servers configured.")
@@ -788,7 +822,7 @@ def cmd_mcp_test(args):
     already owns 2 for usage errors, so "no such server" stays distinguishable from "bad flags").
     """
     name = args.name
-    cfg = _lookup_server(name, _get_mcp_servers(), "Available")
+    cfg = _lookup_server(name, _get_visible_mcp_servers(), "Available")
     if cfg is None:
         return 3
     print()
@@ -918,7 +952,7 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
 
 def cmd_mcp_login(args):
     """Run an explicit browser or device authorization for an OAuth-based MCP server."""
-    cfg = _lookup_server(args.name, _get_mcp_servers())
+    cfg = _lookup_server(args.name, _get_visible_mcp_servers())
     if cfg is not None:
         _reauth_oauth_server(args.name, cfg, flow=getattr(args, "flow", None))
 
@@ -931,7 +965,7 @@ def cmd_mcp_reauth(args):
     This is the self-service fix for the recurring stale-client ritual in GH#36767 (and avoids the startup
     popup storm when several servers go stale at once).
     """
-    servers = _get_mcp_servers()
+    servers = _get_visible_mcp_servers()
     name = getattr(args, "name", None)
     if getattr(args, "all", False):
         oauth_servers = [(n, c) for n, c in servers.items() if c.get("auth") == "oauth" and c.get("url")]
@@ -998,8 +1032,15 @@ def cmd_mcp_configure(args):
         print("Error: 'hermes mcp configure' requires an interactive terminal.", file=_sys.stderr)
         _sys.exit(1)
     name = args.name
-    cfg = _lookup_server(name, _get_mcp_servers(), "Available")
+    cfg = _lookup_server(name, _get_visible_mcp_servers(), "Available")
     if cfg is None:
+        return
+
+    if name not in load_config().get("mcp_servers", {}):
+        _error(
+            f"'{name}' is provided by a portable Agent Plugin, not the native "
+            "config, so its tool selection can't be edited here."
+        )
         return
 
     print()

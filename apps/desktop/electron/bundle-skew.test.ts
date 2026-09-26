@@ -275,6 +275,28 @@ describe('createBundleSkewProbe', () => {
     expect(spawnsOf(calls, 'rev-list')).toBe(2)
   })
 
+  // The cache key is read from rev-parse, but the expensive calls used to
+  // resolve the literal 'HEAD' again. HEAD can move between them, so a commit
+  // landing mid-probe made the answer describe a different commit than its key —
+  // and merge-base and rev-list could even disagree with each other. Both must
+  // run against the one sha the key was built from.
+  it('pins merge-base and rev-list to the resolved HEAD sha, not the symbolic HEAD', async () => {
+    const head = 'f'.repeat(40)
+    const { calls, git } = gitScripted({ count: '2\n', head })
+    const probe = createBundleSkewProbe({ stamp: STAMP, runGit: git, repoRoot: REPO })
+
+    expect(await probe()).toEqual({ desktopCommitsBehind: 2, outOfSync: true })
+
+    expect(calls.find(args => args[0] === 'merge-base')).toEqual(['merge-base', '--is-ancestor', STAMP.commit, head])
+    expect(calls.find(args => args[0] === 'rev-list')).toEqual([
+      'rev-list',
+      '--count',
+      `${STAMP.commit}..${head}`,
+      '--',
+      ...RUNTIME_PATHS
+    ])
+  })
+
   it('gives up at the timeout, resolves not-stale and aborts the git call', async () => {
     let signal: AbortSignal | undefined
 

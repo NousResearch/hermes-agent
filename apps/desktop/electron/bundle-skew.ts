@@ -14,8 +14,13 @@
  * exist in the source tree AFTER that stamp commit, the running renderer is
  * provably missing desktop changes the installed runtime has:
  *
- *   git merge-base --is-ancestor <stampCommit> HEAD
- *   git rev-list --count <stampCommit>..HEAD -- <RUNTIME_PATHS>
+ *   git merge-base --is-ancestor <stampCommit> <headSha>
+ *   git rev-list --count <stampCommit>..<headSha> -- <RUNTIME_PATHS>
+ *
+ * Both calls take one resolved sha, never the symbolic HEAD. The probe reads
+ * HEAD once with `git rev-parse`, keys its cache on that sha, and hands the
+ * same sha to both calls: should HEAD move mid-probe, the answer still
+ * describes the commit its key names instead of a newer one.
  *
  * Ancestry has to come first, because `A..HEAD` only means "how far HEAD is
  * ahead of A" when A is an ancestor of HEAD. When it is not, the range
@@ -110,9 +115,15 @@ export function isFallbackCommit(commit: string): boolean {
 export async function detectBundleSkew(
   stamp: BundleSkewStamp | null,
   runGit: RunGit,
-  repoRoot: string
+  repoRoot: string,
+  /**
+   * The commit to measure against. The probe passes the sha it resolved and
+   * keyed on; the default resolves the symbolic HEAD once per git call, which
+   * is only safe when nothing else can move HEAD mid-call.
+   */
+  head = 'HEAD'
 ): Promise<BundleSkewResult> {
-  return (await answerBundleSkew(stamp, runGit, repoRoot)).result
+  return (await answerBundleSkew(stamp, runGit, repoRoot, head)).result
 }
 
 /**
@@ -130,7 +141,8 @@ export async function detectBundleSkew(
 async function answerBundleSkew(
   stamp: BundleSkewStamp | null,
   runGit: RunGit,
-  repoRoot: string
+  repoRoot: string,
+  head: string
 ): Promise<BundleSkewAnswer> {
   if (!stamp?.commit || stamp.source === 'fallback' || isFallbackCommit(stamp.commit)) {
     return { cacheable: false, result: NOT_STALE }
@@ -148,7 +160,7 @@ async function answerBundleSkew(
     // would be told "app build out of date" backwards. Ancestry is what makes
     // this a proof that the renderer PREDATES the tree, which is the claim the
     // warning actually makes.
-    const ancestry = await runGit(['merge-base', '--is-ancestor', stamp.commit, 'HEAD'], {
+    const ancestry = await runGit(['merge-base', '--is-ancestor', stamp.commit, head], {
       cwd: repoRoot
     })
 
@@ -161,7 +173,7 @@ async function answerBundleSkew(
       return { cacheable: false, result: NOT_STALE }
     }
 
-    const result = await runGit(['rev-list', '--count', `${stamp.commit}..HEAD`, '--', ...RUNTIME_PATHS], {
+    const result = await runGit(['rev-list', '--count', `${stamp.commit}..${head}`, '--', ...RUNTIME_PATHS], {
       cwd: repoRoot
     })
 
@@ -260,13 +272,17 @@ export function createBundleSkewProbe({
         return NOT_STALE
       }
 
-      const key = `${cwd}:${stamp.commit}:${head.stdout.trim()}`
+      // One sha, resolved once. It is both the cache key and the commit the
+      // expensive calls below run against, so a HEAD that moves during the
+      // probe cannot make a cached answer describe a commit other than its key.
+      const headSha = head.stdout.trim()
+      const key = `${cwd}:${stamp.commit}:${headSha}`
 
       if (key === cachedKey) {
         return cachedResult
       }
 
-      const answer = await answerBundleSkew(stamp, signaled, cwd)
+      const answer = await answerBundleSkew(stamp, signaled, cwd, headSha)
 
       // Cache only an answer git actually produced, and only from a run that
       // is still current: a run the timeout aborted answers fail-quiet (not

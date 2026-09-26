@@ -172,7 +172,7 @@ function CommandItem({ className, ...props }: React.ComponentProps<typeof Comman
 
 /** The trailing check a menu row wears when it's the current value — same glyph and spot as DropdownMenu/Select. */
 function CommandItemCheck({ checked }: { checked: boolean }) {
-  return checked ? <Codicon className="ml-auto ps-2 text-foreground" name="check" size="0.75rem" /> : null
+  return checked ? <Codicon className="ms-auto ps-2 text-foreground" name="check" size="0.75rem" /> : null
 }
 
 function CommandShortcut({ className, ...props }: React.ComponentProps<'span'>) {

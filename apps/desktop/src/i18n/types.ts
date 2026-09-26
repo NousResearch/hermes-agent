@@ -1450,6 +1450,29 @@ export interface Translations {
       editsProfile: (profile: string) => string
     }
     mcp: {
+      catalogEmpty: string,
+      catalogEnabled: string,
+      catalogEnvPrompt: (name: string) => string,
+      catalogInstall: string,
+      catalogInstallStarted: (name: string) => string,
+      catalogInstalled: string,
+      catalogInstalling: string,
+      catalogNeedsInstall: string,
+      emptyDesc: string,
+      emptyTitle: string,
+      failedLoad: string,
+      importButton: string,
+      importConfirm: string,
+      importConfirmMany: (count: number) => string,
+      importNoMatch: string,
+      importPlaceholder: string,
+      newServer: string,
+      reload: string,
+      tabCatalog: string,
+      tabServers: string,
+      unsavedConnect: string,
+      unusedPill: string,
+      waitingForBrowser: string,
       loading: string
       invalidJson: string
       saveFailed: string

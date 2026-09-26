@@ -328,7 +328,7 @@ export function UpdateStatusCard({
           <UpdateActions target={target} u={u} view={view} />
 
           {showReleaseNotes && (
-            <Button asChild className="ml-auto" size="sm" variant="text">
+            <Button asChild className="ms-auto" size="sm" variant="text">
               <a
                 href={RELEASE_NOTES_URL}
                 onClick={event => {

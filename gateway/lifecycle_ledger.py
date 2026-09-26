@@ -326,3 +326,35 @@ def read_prior_exit_label(profile_home: Path) -> str:
         return {"exited": "clean", "running": "unclean"}.get(phase, "unknown")
     except Exception:
         return "unknown"
+
+
+def read_lifecycle_status(home: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+    """Lifecycle sentinel annotated with read-time liveness, or None when unreadable.
+
+    ``alive`` is True only when ``phase == "running"`` and the recorded PID is a live
+    process of the sentinel's incarnation (``_pid_is_sentinel_owner``: pid-liveness plus
+    the create-time PID-reuse guard) — a ``phase == "running"`` sentinel for a dead PID
+    is the same stale-after-unclean-death record as a ``"running"`` ``gateway_state.json``.
+    ``heartbeat_age_s`` is seconds since the loop heartbeat's ``updated_at`` (None when
+    missing/unparseable). Read-path only — never raises, never writes.
+    """
+    try:
+        sentinel = _read_json(get_lifecycle_sentinel_path(home))
+    except Exception:
+        return None
+    if not isinstance(sentinel, dict):
+        return None
+    status = dict(sentinel)
+    try:
+        alive = sentinel.get("phase") == "running" and _pid_is_sentinel_owner(
+            sentinel.get("pid"), sentinel.get("start_time"), sentinel.get("create_time"))
+    except Exception:
+        alive = False
+    status["alive"] = bool(alive)
+    try:
+        from gateway.shutdown_watchdog import get_loop_heartbeat_age_s
+
+        status["heartbeat_age_s"] = get_loop_heartbeat_age_s(home)
+    except Exception:
+        status["heartbeat_age_s"] = None
+    return status

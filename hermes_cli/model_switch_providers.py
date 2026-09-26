@@ -1251,6 +1251,11 @@ def list_authenticated_providers(
     return _finalize_picker_rows(b.results, user_providers, current_model)
 
 
+def _same_model_id(a: str, b: str) -> bool:
+    """True when ``a`` and ``b`` are equal or differ only by a leading ``namespace/`` prefix."""
+    return a == b or a.endswith("/" + b) or b.endswith("/" + a)
+
+
 def _finalize_picker_rows(results: list, user_providers, current_model: str) -> list:
     """Post-passes: drop ``providers.<name>.enabled: false`` rows, inject the current model, sort."""
     # The enabled post-filter covers built-in rows (sections 1-2) that bypass the per-section
@@ -1277,7 +1282,11 @@ def _finalize_picker_rows(results: list, user_providers, current_model: str) -> 
             if not row.get("is_current") or row.get("native_catalog_empty"):
                 continue
             models = row.get("models") or []
-            if current_model not in models:
+            # ``current_model`` is usually stored bare (``claude-opus-4-8``) while a catalog may
+            # list it namespaced (``relay/claude-opus-4-8``); a plain ``in`` misses that and the
+            # pickers (which strip the prefix for display) show the model twice. Match on the
+            # ``/`` boundary so ``openai/gpt-5`` vs ``azure/gpt-5`` are NOT collapsed.
+            if not any(_same_model_id(current_model, m) for m in models):
                 from hermes_cli.models import _model_requires_account_discovery
 
                 if _model_requires_account_discovery(row.get("slug"), current_model):

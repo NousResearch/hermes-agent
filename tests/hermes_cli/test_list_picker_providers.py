@@ -272,3 +272,65 @@ def test_non_blocking_listing_opens_no_socket(monkeypatch, tmp_path):
 
     assert live == [], f"cache-only listing ran live probes in the request path: {live}"
     assert any(r.get("slug") == "openrouter" and r.get("models") for r in rows), "OpenRouter row lost its curated snapshot"
+
+
+def _stub_catalogs(monkeypatch):
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.PROVIDER_TO_MODELS_DEV", {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models", lambda *a, **kw: [])
+
+
+def test_current_model_not_duplicated_when_catalog_entry_is_namespaced(monkeypatch):
+    """A bare ``current_model`` whose catalog entry is namespaced is not injected a second time.
+
+    Config stores the model bare (``claude-opus-4-8``) while the provider's catalog lists it as
+    ``relay/claude-opus-4-8``. The pickers strip the prefix for display, so a re-injected bare id
+    renders as a duplicate row.
+    """
+    _stub_catalogs(monkeypatch)
+    result = model_switch.list_authenticated_providers(
+        current_provider="custom:relay",
+        current_base_url="http://localhost:9099/v1",
+        current_model="claude-opus-4-8",
+        custom_providers=[{
+            "name": "Relay", "base_url": "http://localhost:9099/v1", "api_key": "x",
+            "models": ["relay/claude-opus-4-8", "relay/claude-sonnet-5"],
+        }],
+    )
+    row = next(p for p in result if p.get("is_current"))
+    display = [m.split("/")[-1] for m in row["models"]]
+    assert display.count("claude-opus-4-8") == 1, row["models"]
+    assert row["total_models"] == len(row["models"])
+
+
+def test_current_model_injected_when_genuinely_absent(monkeypatch):
+    """The namespace-aware check must not over-match: an uncurated current model stays selectable."""
+    _stub_catalogs(monkeypatch)
+    result = model_switch.list_authenticated_providers(
+        current_provider="custom:relay",
+        current_base_url="http://localhost:9099/v1",
+        current_model="some-uncurated-model",
+        custom_providers=[{
+            "name": "Relay", "base_url": "http://localhost:9099/v1", "api_key": "x",
+            "models": ["relay/claude-opus-4-8"],
+        }],
+    )
+    row = next(p for p in result if p.get("is_current"))
+    assert "some-uncurated-model" in row["models"], row["models"]
+
+
+@pytest.mark.parametrize("current,catalog,injected", [
+    ("claude-opus-4-8", ["relay/claude-opus-4-8", "relay/claude-sonnet-5"], False),
+    ("relay/claude-opus-4-8", ["claude-opus-4-8"], False),
+    ("claude-opus-4-8", ["claude-opus-4-8"], False),
+    # Suffix match must sit on the ``/`` boundary: ``my-gpt-5`` is not ``gpt-5``.
+    ("gpt-5", ["openai/my-gpt-5"], True),
+    # Two different namespaces are different models, not one model twice.
+    ("azure/gpt-5", ["openai/gpt-5"], True),
+])
+def test_finalize_picker_rows_namespace_aware_presence(current, catalog, injected):
+    row = {"slug": "relay", "is_current": True, "models": list(catalog), "total_models": len(catalog)}
+    out = model_switch_providers._finalize_picker_rows([row], {}, current)[0]
+    assert (out["models"][0] == current and len(out["models"]) == len(catalog) + 1) is injected, out["models"]
+    assert out["total_models"] == len(out["models"])

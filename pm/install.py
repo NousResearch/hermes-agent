@@ -745,6 +745,8 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
         from pm.publication import StagedPlugin
         with _venv_install_lock(patient=explicit or repair):
             recover_publication(paths.repo_root())
+            from pm.workspace import heal_installed_workspaces
+            heal_installed_workspaces(paths.repo_root())
             change = _publication(plugins)
             if isinstance(change, StagedPlugin) and not change.active:
                 _publish_inactive(change)

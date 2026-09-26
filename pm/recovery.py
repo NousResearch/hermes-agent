@@ -51,11 +51,14 @@ def repair_dependencies(project_root: Path) -> None:
     """Restore this installation's recorded set; never repair a foreign tree."""
     from pm.client import sync_venv
     from pm.paths import repo_root
+    from pm.workspace import heal_installed_workspaces
 
     if Path(project_root).resolve() != repo_root().resolve():
         raise InstallError("venv", "recovery root does not match this PM installation")
+    heal_installed_workspaces(project_root)
     with contextlib.redirect_stdout(sys.stderr):
         sync_venv(repair=True)
+
 
 
 def refresh_dependencies(project_root: Path) -> str:

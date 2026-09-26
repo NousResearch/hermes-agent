@@ -75,7 +75,7 @@ def test_unreachable_failure_pulls_next_run_earlier_then_ladder_exhausts(
     assert weekly["id"] not in {due["id"] for due in get_due_jobs()}
 
 
-def test_will_retry_mirrors_plan_retry_yield_and_terminal_paths(tmp_cron_home):
+def test_will_retry_mirrors_plan_retry_yield(tmp_cron_home):
     """The notice-suppression predictor must mirror what ``plan_retry`` will actually do
     for THIS failure:
 

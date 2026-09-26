@@ -175,13 +175,7 @@ def update_plugin(
                 raise pc.PluginOperationError(
                     f"The updated plugin renamed itself to '{installed_name}', but that plugin already exists.")
             pc._check_manifest_version(manifest, installed_name)
-            try:
-                pc._scan_plugin_tree(staged, source, force=False)
-            except pc.PluginScanBlocked as exc:
-                if not merged:
-                    raise
-                from hermes_cli.plugins_cmd_install import _preserved_files_note
-                raise pc.PluginScanBlocked(_preserved_files_note(exc, merged), scan_result=exc.scan_result) from exc
+            pc._scan_merged_tree(staged, source, merged, force=False)
             pc._copy_example_files(staged, pc._console())
             _refresh_declared_dependencies(target, staged, manifest, interactive=interactive)
             if tree_digest(target) != before:

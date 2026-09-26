@@ -269,19 +269,6 @@ def _refuse_unavailable_portable_plugin(plugin_name: str, tree: Path) -> None:
         )
 
 
-def _preserved_files_note(exc: Exception, merged) -> str:
-    """Scan-block text for a tree that also holds user files preserved from the installed copy."""
-    preserved = {str(rel) for rel in merged}
-    findings = getattr(getattr(exc, "scan_result", None), "findings", None) or []
-    hits = sorted({f.file for f in findings if f.file in preserved})
-    if hits:
-        note = ("These findings come from user files preserved from the installed copy: "
-                f"{', '.join(hits)}. Move or remove them and retry the update.")
-    else:
-        note = "The scanned tree included user files preserved from the installed copy."
-    return f"{exc}\n\n{note}"
-
-
 def _install_plugin_core(
     identifier: str,
     *,
@@ -345,14 +332,8 @@ def _install_plugin_core(
         # admits the final bytes.
         merged = before_swap(manifest, tmp_target) if before_swap is not None else None
         # Scan BEFORE anything is moved into place; raises PluginScanBlocked when blocked.
-        try:
-            _pc()._scan_plugin_tree(tmp_target, identifier, force=force, scan_decision_cb=scan_decision_cb,
-                                    reviewed_pin=at_reviewed_pin)
-        except _pc().PluginScanBlocked as exc:
-            if not merged:
-                raise
-            raise _pc().PluginScanBlocked(_preserved_files_note(exc, merged),
-                                          scan_result=exc.scan_result) from exc
+        _pc()._scan_merged_tree(tmp_target, identifier, merged, force=force, scan_decision_cb=scan_decision_cb,
+                                reviewed_pin=at_reviewed_pin)
         if not python_deps:
             from pm.workspace import enabled_plugin_dirs
 

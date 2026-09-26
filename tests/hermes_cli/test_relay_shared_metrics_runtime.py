@@ -7,6 +7,8 @@ import json
 import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from time import monotonic
 from types import SimpleNamespace
 from typing import Any
 
@@ -2419,6 +2421,69 @@ def test_failed_flush_keeps_daily_export_open_for_later_task(
     assert metrics["hermes.task_run.finished"]["value"] == 2
     assert flush_attempts == 2
     assert "Hermes shared-metrics task flush failed" in caplog.text
+
+
+def test_wedged_task_flush_does_not_block_results_or_pile_up_workers(
+    direct_runtime, monkeypatch
+):
+    started = threading.Event()
+    release = threading.Event()
+    flush_attempts = 0
+
+    def wedged_flush() -> None:
+        nonlocal flush_attempts
+        flush_attempts += 1
+        started.set()
+        release.wait(5)
+
+    direct_runtime.subscribers.flush = wedged_flush
+    monkeypatch.setattr(relay_shared_metrics, "_LIFECYCLE_FLUSH_WAIT_SECONDS", 0.05)
+
+    def finish_task(task_id: str) -> None:
+        lifecycle.invoke_hook(
+            "pre_llm_call",
+            session_id="s1",
+            task_id=task_id,
+            platform="subagent",
+        )
+        lifecycle.invoke_hook(
+            "on_session_end",
+            session_id="s1",
+            task_id=task_id,
+            platform="subagent",
+            completed=True,
+            failed=False,
+            interrupted=False,
+            turn_exit_reason="text_response(stop)",
+        )
+
+    began = monotonic()
+    finish_task("t1")
+    elapsed = monotonic() - began
+
+    assert started.is_set()
+    assert elapsed < 0.5, "task completion must not wait for a wedged Relay flush"
+
+    finish_task("t2")
+    assert flush_attempts == 1, "later task completions must reuse the in-flight flush"
+
+    began = monotonic()
+    lifecycle.invoke_hook("subagent_stop", child_session_id="s1")
+    assert monotonic() - began < 0.5, "subagent cleanup must not wait for the same flush"
+
+    release.set()
+    with relay_shared_metrics._RUNTIME_LOCK:
+        [runtime] = [
+            runtime
+            for runtime in relay_shared_metrics._RUNTIMES.values()
+            if isinstance(runtime, relay_shared_metrics._Runtime)
+        ]
+    with runtime._flush_lock:
+        thread = runtime._flush_thread
+    if thread is not None:
+        thread.join(2)
+        assert not thread.is_alive()
+    assert flush_attempts == 2, "the worker must drain task events queued while it was stuck"
 
 
 def test_skill_lifecycle_flows_through_relay_to_a_privacy_safe_package(

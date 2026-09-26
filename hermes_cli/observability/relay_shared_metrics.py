@@ -26,6 +26,10 @@ _RUNTIME_FAILED = object()
 _RUNTIMES: dict[str, _Runtime | object] = {}
 _RUNTIME_LOCK = threading.RLock()
 
+# Preserve the synchronous fast path for the usual in-memory drain, but never let a
+# wedged Relay subscriber keep an agent result or lifecycle hook from returning.
+_LIFECYCLE_FLUSH_WAIT_SECONDS = 0.5
+
 _ABORTED = {"failed": True, "turn_exit_reason": "system_aborted"}
 
 
@@ -160,6 +164,11 @@ class _Runtime:
         # Guards the opt-in send pass: at most one in flight per process.
         self._send_lock = threading.RLock()
         self._send_thread: threading.Thread | None = None
+        # A subscriber flush is normally immediate. Run it single-flight so a broken
+        # subscriber cannot pile up threads when later tasks also finish.
+        self._flush_lock = threading.RLock()
+        self._flush_thread: threading.Thread | None = None
+        self._flush_pending_message: str | None = None
         self._subscriber_name = f"{SUBSCRIBER_NAME}.{self.host.runtime_id}"
         self.subscriber = SharedMetricsSubscriber(
             SharedMetricsStore(), get_version_info().base_version, runtime_id=self.host.runtime_id
@@ -442,7 +451,7 @@ class _Runtime:
                 session, _text(event, "task_id"), event
             )
         if finished:
-            self._flush_and_export("Hermes shared-metrics task flush failed")
+            self._flush_bounded("Hermes shared-metrics task flush failed")
 
     def close_session(self, event: dict[str, Any]) -> None:
         session = self._session(event)
@@ -452,16 +461,9 @@ class _Runtime:
             session, {**event, **_ABORTED, "completed": False, "interrupted": False}
         ):
             return
-        try:
-            self.relay.subscribers.flush()
-        except Exception as exc:
-            logger.warning(
-                "Hermes shared-metrics session %s closed with errors: subscriber flush failed: %s",
-                session.session_id,
-                exc,
-            )
-        else:
-            self._export()
+        self._flush_bounded(
+            f"Hermes shared-metrics session {session.session_id} subscriber flush failed"
+        )
         with self._sessions_lock:
             _forget(self._sessions, session.session_id, session)
 
@@ -473,7 +475,8 @@ class _Runtime:
             self._safe(self.close_session, {"session_id": session_id})
         if not self._registered:
             return
-        self._flush_and_export("Hermes shared-metrics shutdown flush failed")
+        self._flush_bounded("Hermes shared-metrics shutdown flush failed")
+        self._join_flush_thread()
         self._deregister()
         self._release()
 
@@ -557,6 +560,54 @@ class _Runtime:
             logger.warning(failure_message, exc_info=True)
         else:
             self._export()
+
+    def _flush_bounded(self, failure_message: str) -> None:
+        """Flush metrics without letting a wedged subscriber block lifecycle progress."""
+
+        def run() -> None:
+            message = failure_message
+            while True:
+                self._flush_and_export(message)
+                with self._flush_lock:
+                    if self._flush_pending_message is not None:
+                        message = self._flush_pending_message
+                        self._flush_pending_message = None
+                        continue
+                    if self._flush_thread is threading.current_thread():
+                        self._flush_thread = None
+                    return
+
+        with self._flush_lock:
+            thread = self._flush_thread
+            if thread is not None and thread.is_alive():
+                # The active flush may already have snapshotted its queue. Remember that
+                # another lifecycle event completed, so the worker drains once more.
+                self._flush_pending_message = failure_message
+                return
+            thread = threading.Thread(
+                target=run,
+                name="hermes-shared-metrics-flush",
+                daemon=True,
+            )
+            self._flush_thread = thread
+            thread.start()
+
+        thread.join(_LIFECYCLE_FLUSH_WAIT_SECONDS)
+        if thread.is_alive():
+            logger.warning(
+                "Hermes shared-metrics lifecycle flush exceeded %.1fs; continuing in background",
+                _LIFECYCLE_FLUSH_WAIT_SECONDS,
+            )
+
+    def _join_flush_thread(self, timeout: float = 2.0) -> None:
+        """Give an in-flight daemon flush a bounded chance to finish before shutdown."""
+        with self._flush_lock:
+            thread = self._flush_thread
+        if thread is not None and thread.is_alive():
+            try:
+                thread.join(timeout)
+            except Exception:
+                logger.debug("Shared-metrics flush thread join failed", exc_info=True)
 
     def _abort_session(self, session: _MetricsSession, base_event: dict[str, Any]) -> bool:
         """Mark the session closing and system-abort its open tasks; False if already closing."""

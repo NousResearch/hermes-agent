@@ -136,12 +136,20 @@ def _kick_managed_boot(config: dict | None) -> None:
 
 
 def _boot_in_flight(config: dict | None) -> bool:
-    """True when the managed runtime is enabled and PM holds an installed engine."""
+    """True when the managed runtime is enabled and PM holds the CONFIGURED engine installed.
+
+    The gate must agree with the boot it gates: ``ensure_local_runtime`` starts
+    ``installed_engine(section["backend"])``, while probing with the default ``"auto"`` runs the
+    NVIDIA-only vendor probe → ``("cpu",)`` on an AMD box → None even though the hand-set
+    ``llamacpp-hip`` engine is installed. That read as "no engine": the boot wait was skipped and
+    the on-demand kick never fired for every explicit non-auto backend.
+    """
     with suppress(Exception):
         config = _load_config_if_none(config)
-        if not ((config or {}).get("local_runtime") or {}).get("enabled"):
+        section = (config or {}).get("local_runtime") or {}
+        if not section.get("enabled"):
             return False
         from hermes_cli.local_runtime.binaries import installed_engine
 
-        return installed_engine() is not None
+        return installed_engine(section.get("backend", "auto")) is not None
     return False

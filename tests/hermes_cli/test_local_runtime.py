@@ -455,14 +455,51 @@ def test_boot_in_flight_real_gate(tmp_path, monkeypatch):
     -> True; either missing -> False."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     from hermes_cli.local_runtime import endpoint as ep
-    monkeypatch.setattr("hermes_cli.local_runtime.binaries.installed_engine", lambda: None)
+    monkeypatch.setattr("hermes_cli.local_runtime.binaries.installed_engine",
+                        lambda backend="auto", **_kw: None)
 
     enabled = {"local_runtime": {"enabled": True}}
     assert ep._boot_in_flight(enabled) is False
-    monkeypatch.setattr("hermes_cli.local_runtime.binaries.installed_engine", lambda: object())
+    monkeypatch.setattr("hermes_cli.local_runtime.binaries.installed_engine",
+                        lambda backend="auto", **_kw: object())
     assert ep._boot_in_flight(enabled) is True
     # Disabled -> False even when installed.
     assert ep._boot_in_flight({"local_runtime": {"enabled": False}}) is False
+
+
+def test_boot_in_flight_honours_the_configured_backend(tmp_path, monkeypatch):
+    """The gate must probe the CONFIGURED backend, not auto-detection (#123795).
+
+    Only the PM store lookup is faked, so the real ``installed_engine`` ladder runs:
+    with a vendor probe that cannot see the GPU, "auto" resolves to ("cpu",) — so an
+    installed ``llamacpp-hip`` engine read as "no engine installed" for every
+    hand-set backend, which skipped the boot wait and the on-demand kick and left a
+    headless gateway with no way back to a running model once the Desktop app (the
+    process that owned ``llama-server``) closed. The gate now mirrors
+    ``ensure_local_runtime``, which boots ``installed_engine(section["backend"])``.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.local_runtime import binaries, endpoint as ep
+
+    ladder: list[tuple[str, ...]] = []
+
+    def _fake_installed(candidates, allow_outdated=True):
+        ladder.append(tuple(candidates))
+        return object() if "hip" in candidates else None  # only llamacpp-hip installed
+
+    monkeypatch.setattr(binaries, "_installed", _fake_installed)
+    monkeypatch.setattr("hermes_cli.local_runtime.bootstrap._detect_gpu_vendor", lambda: None)
+
+    # Hand-set backend: the engine that IS installed must be the one probed.
+    cfg = {"local_runtime": {"enabled": True, "backend": "hip"}}
+    assert ep._boot_in_flight(cfg) is True
+    assert "hip" in ladder[-1], ladder
+
+    # Same machine with no explicit backend: the auto rung never reaches the
+    # installed engine — the asymmetry the gate used to inherit for hand-set
+    # backends too, and the reason the boot never fired on that box.
+    assert ep._boot_in_flight({"local_runtime": {"enabled": True}}) is False
+    assert "hip" not in ladder[-1], ladder
 
 
 def test_idle_sweep_unloads_idle_models(tmp_path, monkeypatch, stub_server):

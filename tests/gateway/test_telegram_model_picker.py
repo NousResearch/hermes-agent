@@ -127,12 +127,13 @@ class TestTelegramBedrockPickerNavigation:
         "us.amazon.nova-lite-v1:0",
     ]
 
-    def _picker(self, models, total_models=None, extra_providers=()):
+    def _picker(self, models, total_models=None, extra_providers=(), bedrock=True):
         adapter = _make_adapter()
+        first = [{"slug": "bedrock", "name": "AWS Bedrock", "models": models,
+                  "total_models": total_models if total_models is not None else len(models),
+                  "is_current": True}] if bedrock else []
         adapter._model_picker_state["12345"] = {
-            "providers": [{"slug": "bedrock", "name": "AWS Bedrock", "models": models,
-                           "total_models": total_models if total_models is not None else len(models),
-                           "is_current": True}, *extra_providers],
+            "providers": [*first, *extra_providers],
             "current_model": models[0] if models else "",
             "current_provider": "bedrock",
             "session_key": "s",
@@ -235,3 +236,31 @@ class TestTelegramBedrockPickerNavigation:
         _buttons, text = await self._render(adapter, "mp:bedrock")
         assert "98 more available" in text
         assert "\\_98 more" not in text, f"literal underscores leaked into the hint: {text!r}"
+
+    @pytest.mark.asyncio
+    async def test_provider_family_submenu_keeps_long_member_labels_readable(self, rendered_keyboards):
+        """A provider FAMILY submenu (``mpg:``) must not ellipsize its members.
+
+        The top-level list folds families behind one button, so the member names
+        are only ever read here — and real ones are long (``Kimi / Kimi Coding
+        Plan``, ``ChatGPT or Codex Subscription``). Sharing a two-column row is
+        exactly what hid ``✓ AWS Bedrock (1…``'s count at the top level (#94986);
+        this sibling path reaches the same layout helper, so it must clamp the
+        same way instead of truncating the member's identity.
+        """
+        from hermes_cli.models_catalog_static import PROVIDER_GROUPS
+
+        from plugins.platforms.telegram.model_picker_display import TWO_COLUMN_BUDGET
+
+        _label, _desc, members = PROVIDER_GROUPS["kimi"]
+        adapter, _ = self._picker(
+            [], bedrock=False,
+            extra_providers=[{"slug": slug, "name": name, "models": ["m"], "total_models": 1}
+                             for slug, name in zip(members, ("Kimi / Kimi Coding Plan", "Kimi / Moonshot (China)"))])
+        rows, _text = await self._render_rows(adapter, "mpg:kimi")
+        for row in rows:
+            for button in row:
+                if not str(button.callback_data).startswith("mp:"):
+                    continue
+                assert len(row) == 1 or len(button.text) <= TWO_COLUMN_BUDGET, (
+                    f"{button.text!r} shares a two-column row and loses its tail: {[b.text for b in row]}")

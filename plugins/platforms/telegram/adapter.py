@@ -4706,7 +4706,7 @@ class TelegramAdapter(BasePlatformAdapter):
             if not members:
                 await query.answer(text="Group not found.")
                 return
-            rows = self._rows_of_two([self._provider_button(p) for p in members])
+            rows = self._rows_fitting_labels([self._provider_button(p) for p in members])
             rows.append(self._picker_back_cancel_row())
             await self._picker_edit(
                 query, f"⚙ *Model Configuration*\n\nProvider family: *{_label or group_id}*\n\nSelect a provider:",

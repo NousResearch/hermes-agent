@@ -13,23 +13,28 @@ Hermes Agent 会自动发现并加载上下文文件，以塑造其行为方式�
 | 文件 | 用途 | 发现方式 |
 |------|---------|-----------| 
 | **.hermes.md** / **HERMES.md** | 项目指令（最高优先级） | 向上遍历至 git 根目录 |
-| **AGENTS.md** | 项目指令、规范、架构说明 | 启动时的 CWD 及子目录（渐进式） |
+| **AGENTS.override.md** | 针对所在目录替代 AGENTS.md 的个人指令（通常加入 gitignore） | Git 根目录至启动 CWD；更深子目录渐进发现 |
+| **AGENTS.md** / **agents.md** | 项目指令、规范、架构说明 | Git 根目录至启动 CWD；更深子目录渐进发现 |
 | **CLAUDE.md** | Claude Code 上下文文件（同样支持检测） | 启动时的 CWD 及子目录（渐进式） |
 | **SOUL.md** | 当前 Hermes 实例的全局个性与语气定制 | 仅 `HERMES_HOME/SOUL.md` |
 | **.cursorrules** | Cursor IDE 编码规范 | 仅 CWD |
 | **.cursor/rules/*.mdc** | Cursor IDE 规则模块 | 仅 CWD |
 
 :::info 优先级系统
-每次会话仅加载**一种**项目上下文类型（先匹配先生效）：`.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`。**SOUL.md** 始终作为 agent 身份独立加载（插槽 #1）。
+每次会话仅加载**一种**项目上下文类型（首个非空类型生效）：`.hermes.md` → `AGENTS.override.md` / `AGENTS.md` / `agents.md` 目录链 → `CLAUDE.md` → `.cursorrules`。**SOUL.md** 作为 agent 身份独立加载。
 :::
 
 ## AGENTS.md
 
 `AGENTS.md` 是主要的项目上下文文件。它告知 agent 项目的结构、需要遵循的规范以及任何特殊指令。
 
+### 目录链（Git 根目录 → 工作目录）
+
+工作目录位于 Git 仓库中时，Hermes 在会话启动时按根目录到工作目录的顺序加载 AGENTS 文件。每个目录依次尝试 `AGENTS.override.md`、`AGENTS.md`、`agents.md`，取首个非空且可读的文件。更深目录的内容出现在后面，因此拥有更高优先级；相同内容只加载一次。Git 仓库外仅检查工作目录。
+
 ### 渐进式子目录发现
 
-会话启动时，Hermes 将工作目录中的 `AGENTS.md` 加载到系统 prompt（提示词）中。在会话期间，当 agent 通过 `read_file`、`terminal`、`search_files` 等工具导航进入子目录时，它会**渐进式发现**这些目录中的上下文文件，并在其变得相关的时刻将其注入对话。
+会话启动时，Hermes 将 Git 根目录至工作目录的 AGENTS 文件链加载到系统 prompt（提示词）中。在会话期间，当 agent 通过 `read_file`、`terminal`、`search_files` 等工具进入启动目录下的更深子目录时，它会**渐进式发现**这些目录中的上下文文件，并在其变得相关时注入对话。
 
 ```
 my-project/
@@ -106,10 +111,10 @@ Hermes 兼容 Cursor IDE 的 `.cursorrules` 文件和 `.cursor/rules/*.mdc` 规�
 
 上下文文件由 `agent/prompt_builder.py` 中的 `build_context_files_prompt()` 加载：
 
-1. **扫描工作目录** — 依次检查 `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`（先匹配先生效）
+1. **按优先级发现** — 依次检查 `.hermes.md` → 根目录到 CWD 的 AGENTS 链 → `CLAUDE.md` → `.cursorrules`（首个非空类型生效）
 2. **读取内容** — 以 UTF-8 文本读取每个文件
 3. **安全扫描** — 检查内容是否存在 prompt 注入模式
-4. **截断** — 超过 20,000 个字符的文件进行首尾截断（70% 头部，20% 尾部，中间插入标记）
+4. **截断** — 每个文件使用 70% 头部、20% 尾部和中间标记。若 `config.yaml` 显式设置正数 `context_file_max_chars`，该值优先；否则上限随模型上下文窗口动态调整，最低 20,000、最高 500,000 字符。加入来源标题后，合并的 AGENTS 链还会再次执行同一上限
 5. **组装** — 所有部分合并在 `# Project Context` 标题下
 6. **注入** — 组装后的内容添加到系统 prompt
 
@@ -119,9 +124,9 @@ Hermes 兼容 Cursor IDE 的 `.cursorrules` 文件和 `.cursor/rules/*.mdc` 规�
 
 1. **路径提取** — 每次工具调用后，从参数（`path`、`workdir`、shell 命令）中提取文件路径
 2. **祖先目录遍历** — 检查该目录及最多 5 个父目录（跳过已访问的目录）
-3. **提示加载** — 若发现 `AGENTS.md`、`CLAUDE.md` 或 `.cursorrules`，则加载（每个目录先匹配先生效）
+3. **提示加载** — 每个目录依次尝试 `AGENTS.override.md`、`AGENTS.md`、`agents.md`、`CLAUDE.md`、`.cursorrules`，加载首个非空文件
 4. **安全扫描** — 与启动文件相同的 prompt 注入扫描
-5. **截断** — 每个文件最多 8,000 个字符
+5. **截断** — 每个文件使用固定的 32,000 字符预览上限；配置和模型上下文窗口不会改变该值。超限时保留头尾和指向完整文件的标记，并记录日志，但不会产生启动上下文的聊天警告
 6. **注入** — 追加到工具结果中，使模型在上下文中自然看到
 
 最终 prompt 部分大致如下：
@@ -144,7 +149,7 @@ The following project context files have been loaded and should be followed:
 
 注意，SOUL 内容直接插入，不带额外的包装文本。
 
-## 安全性：Prompt 注入防护
+## 安全性：Prompt 注入防护 {#security-prompt-injection-protection}
 
 所有上下文文件在被纳入之前都会扫描潜在的 prompt 注入。扫描器检查以下内容：
 
@@ -157,11 +162,13 @@ The following project context files have been loaded and should be followed:
 - **密钥文件访问**：`cat .env`、`cat credentials`
 - **不可见字符**：零宽空格、双向覆盖字符、词连接符
 
-若检测到任何威胁模式，该文件将被拦截：
+若项目上下文文件（`.hermes.md`、`AGENTS.md`、`CLAUDE.md`、`.cursorrules`）或由分发包提供的身份文件包含威胁模式，该文件将被拦截：
 
 ```
 [BLOCKED: AGENTS.md contained potential prompt injection (prompt_injection). Content not loaded.]
 ```
+
+您在 `HERMES_HOME` 中自行编写的 `SOUL.md` 处理方式不同：扫描命中时，Hermes 会记录包含匹配模式的警告并照常加载文件，`/context` 也会标记该警告。这样，身份文件仍可安全地记录攻击语句示例。若这些文字不是您写入的，应将警告视为文件可能被他人修改的信号。此例外不适用于由配置文件分发包管理的 `SOUL.md`；第三方分发的身份文件命中扫描时仍会被拦截。
 
 :::warning
 此扫描器可防范常见注入模式，但不能替代对上下文文件的人工审查。对于非本人编写的共享仓库，请务必验证 AGENTS.md 的内容。
@@ -171,21 +178,21 @@ The following project context files have been loaded and should be followed:
 
 | 限制 | 值 |
 |-------|-------|
-| 每个文件最大字符数 | 20,000（约 7,000 个 token） |
+| 每个文件最大字符数 | 显式的 `context_file_max_chars`；否则随模型上下文窗口动态调整，最低 20,000、最高 500,000 |
 | 头部截断比例 | 70% |
 | 尾部截断比例 | 20% |
 | 截断标记 | 10%（显示字符数并建议使用文件工具） |
 
-当文件超过 20,000 个字符时，截断提示如下：
+当文件超过适用上限时，截断提示会包含保留字符数和供 `read_file` 使用的完整路径：
 
 ```
-[...truncated AGENTS.md: kept 14000+4000 of 25000 chars. Use file tools to read the full file.]
+[...truncated AGENTS.md: kept 14000+4000 of 25000 chars. The middle is omitted — if you need the full instructions, read the complete file with the read_file tool: /path/to/AGENTS.md]
 ```
 
 ## 有效使用上下文文件的技巧
 
 :::tip AGENTS.md 最佳实践
-1. **保持简洁** — 远低于 20K 字符；agent 每轮都会读取
+1. **保持简洁** — 低于适用上限；agent 每轮都会读取
 2. **使用标题结构** — 用 `##` 分节描述架构、规范、重要说明
 3. **包含具体示例** — 展示首选代码模式、API 结构、命名规范
 4. **说明禁止事项** — 例如「不得直接修改迁移文件」

@@ -13,17 +13,17 @@ Hermes Agent automatically discovers and loads context files that shape how it b
 | File | Purpose | Discovery |
 |------|---------|-----------| 
 | **.hermes.md** / **HERMES.md** | Project instructions (highest priority) | Walks to git root |
-| **AGENTS.override.md** | Personal, per-directory override of AGENTS.md (typically gitignored) | CWD at startup + subdirectories progressively |
-| **AGENTS.md** | Project instructions, conventions, architecture | CWD at startup + subdirectories progressively |
+| **AGENTS.override.md** | Personal, per-directory replacement for AGENTS.md (typically gitignored) | Git root through startup CWD + deeper subdirectories progressively |
+| **AGENTS.md** / **agents.md** | Project instructions, conventions, architecture | Git root through startup CWD + deeper subdirectories progressively |
 | **CLAUDE.md** | Claude Code context files (also detected) | CWD at startup + subdirectories progressively |
 | **SOUL.md** | Global personality and tone customization for this Hermes instance | `HERMES_HOME/SOUL.md` only |
 | **.cursorrules** | Cursor IDE coding conventions | CWD only |
 | **.cursor/rules/*.mdc** | Cursor IDE rule modules | CWD only |
 
 :::info Priority system
-Only **one** project context type is loaded per session (first match wins): `.hermes.md` → `AGENTS.override.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`. **SOUL.md** is always loaded independently as the agent identity (slot #1).
+Only **one** project context type is loaded per session (first non-empty match wins): `.hermes.md` → the `AGENTS.override.md` / `AGENTS.md` / `agents.md` directory chain → `CLAUDE.md` → `.cursorrules`. **SOUL.md** is loaded independently as the agent identity.
 
-If an `AGENTS.override.md` exists next to an `AGENTS.md`, the override is loaded **instead of** the committed file — keep a personal (usually gitignored) `AGENTS.override.md` when you want different instructions than the ones checked into the repo, without editing the tracked `AGENTS.md`.
+If a non-empty readable `AGENTS.override.md` exists next to an `AGENTS.md`, the override is loaded **instead of** the committed file — keep a personal (usually gitignored) `AGENTS.override.md` when you want different instructions than the ones checked into the repo, without editing the tracked `AGENTS.md`.
 :::
 
 ## AGENTS.md
@@ -48,7 +48,7 @@ Outside a git repository, only the working directory itself is checked — paren
 
 ### Progressive Subdirectory Discovery
 
-At session start, Hermes loads the `AGENTS.md` from your working directory into the system prompt. As the agent navigates into subdirectories during the session (via `read_file`, `terminal`, `search_files`, etc.), it **progressively discovers** context files in those directories and injects them into the conversation at the moment they become relevant.
+At session start, Hermes loads the `AGENTS.md` chain from the git root through your working directory into the system prompt. As the agent navigates into deeper subdirectories during the session (via `read_file`, `terminal`, `search_files`, etc.), it **progressively discovers** context files below the startup directory and injects them into the conversation when they become relevant.
 
 ```
 my-project/
@@ -125,10 +125,10 @@ This means your existing Cursor conventions automatically apply when using Herme
 
 Context files are loaded by `build_context_files_prompt()` in `agent/prompt_builder.py`:
 
-1. **Scan working directory** — checks for `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules` (first match wins)
+1. **Discover by priority** — checks for `.hermes.md` → the root-to-CWD AGENTS chain → `CLAUDE.md` → `.cursorrules` (first non-empty type wins)
 2. **Content is read** — each file is read as UTF-8 text
 3. **Security scan** — content is checked for prompt injection patterns
-4. **Truncation** — files exceeding the character cap are head/tail truncated (70% head, 20% tail, with a marker in the middle). The cap is an explicit `context_file_max_chars` from config.yaml when set; otherwise it scales dynamically with the model's context window (floor 20,000 chars, ceiling 500,000)
+4. **Truncation** — files exceeding the character cap are head/tail truncated (70% head, 20% tail, with a marker in the middle). The cap is an explicit `context_file_max_chars` from config.yaml when set; otherwise it scales dynamically with the model's context window (floor 20,000 chars, ceiling 500,000). The merged AGENTS chain is capped again after provenance headings are added
 5. **Assembly** — all sections are combined under a `# Project Context` header
 6. **Injection** — the assembled content is added to the system prompt
 
@@ -138,7 +138,7 @@ Context files are loaded by `build_context_files_prompt()` in `agent/prompt_buil
 
 1. **Path extraction** — after each tool call, file paths are extracted from arguments (`path`, `workdir`, shell commands)
 2. **Ancestor walk** — the directory and up to 5 parent directories are checked (stopping at already-visited directories)
-3. **Hint loading** — if an `AGENTS.md`, `CLAUDE.md`, or `.cursorrules` is found, it's loaded (first match per directory)
+3. **Hint loading** — if an `AGENTS.override.md`, `AGENTS.md`, `agents.md`, `CLAUDE.md`, or `.cursorrules` is found, the first matching non-empty file for that directory is loaded
 4. **Security scan** — same prompt injection scan as startup files
 5. **Truncation** — capped at 32,000 characters per file (a fixed preview cap; `context_file_max_chars` and the model's context window do not change it). An oversized hint keeps its head/tail marker pointing at the full file and is logged, but does not raise the chat truncation warning that startup context files do
 6. **Injection** — appended to the tool result, so the model sees it in context naturally
@@ -210,7 +210,7 @@ This scanner protects against common injection patterns, but it's not a substitu
 When a file exceeds the configured limit, the truncation message reads:
 
 ```
-[...truncated AGENTS.md: kept 14000+4000 of 25000 chars. Use file tools to read the full file.]
+[...truncated AGENTS.md: kept 14000+4000 of 25000 chars. The middle is omitted — if you need the full instructions, read the complete file with the read_file tool: /path/to/AGENTS.md]
 ```
 
 ## Tips for Effective Context Files

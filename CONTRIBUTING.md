@@ -958,6 +958,7 @@ refactor/description   # Code restructuring
 2. **Test manually**: Run `hermes` and exercise the code path you changed
 3. **Check cross-platform impact**: If you touch file I/O, process management, or terminal handling, consider macOS, Linux, and WSL2
 4. **Keep PRs focused**: One logical change per PR. Don't mix a bug fix with a refactor with a new feature.
+5. **Refresh before squash-merging**: A stale branch can reintroduce code that `main` has already fixed. Rebase or reset the branch onto current `main`, then inspect the post-merge diff before completing the merge.
 
 ### PR description
 

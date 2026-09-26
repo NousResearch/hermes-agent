@@ -1,48 +1,56 @@
-# Project Context Files
+# Project context files
 
-Hermes injects project-level instructions into the system prompt by reading context files from the working directory. The discovery order is **first match wins** — only one project context source is loaded per session.
+Hermes can add one project-context type to the system prompt. `SOUL.md` is separate identity input and does not participate in this priority list.
 
-| File (in priority order) | Discovery | Use when |
+## Discovery and precedence
+
+The first context type with non-empty content wins:
+
+| Priority | Type | Search scope |
 |---|---|---|
-| `.hermes.md` / `HERMES.md` | Walks parents up to the git root, stops at git root | You want hierarchical project rules (root + per-package overrides) |
-| `AGENTS.md` / `agents.md` | **Cwd only** — subdirectory and parent copies are ignored | You want portable agent instructions that work the same in Hermes, Claude Code, Codex, etc. |
-| `CLAUDE.md` / `claude.md` | Cwd only | Same as AGENTS.md, Claude-flavored |
-| `.cursorrules` / `.cursor/rules/*.mdc` | Cwd only | Migrating from Cursor |
+| 1 | `.hermes.md`, then `HERMES.md` | Nearest match from the working directory up to the Git root |
+| 2 | `AGENTS.md` family | Every directory from the Git root to the working directory |
+| 3 | `CLAUDE.md`, then `claude.md` | Working directory only |
+| 4 | `.cursorrules` and `.cursor/rules/*.mdc` | Working directory only. Non-empty Cursor files are concatenated |
 
-`SOUL.md` (in `$HERMES_HOME`) is independent and always loaded when present — it sets the agent's identity, not project rules.
+Without a Git root, Hermes checks only the working directory for the `AGENTS.md` family. This prevents an unrelated file in a home or temporary parent directory from gaining prompt authority.
 
-### Pick the right one
+For each directory in an `AGENTS.md` chain, Hermes tries these names in order:
 
-- **Use `.hermes.md`** when you want Hermes-specific behavior that lives above the cwd (root + subtree), or when you want rules to inherit from a parent directory. The parent walk stops at the git root, so a home-level `.hermes.md` won't leak into every project (a git repo's root is the boundary).
-- **Use `AGENTS.md`** when the same project will also be worked on by other agents (Codex, Claude Code, OpenCode). Those tools all have their own conventions for `AGENTS.md`, and the "cwd only" contract keeps the file portable.
-- **Don't put project rules in `~/.hermes/AGENTS.md`** (or any other home-level location). When Hermes runs with that directory as cwd, the file loads — but only for that one directory. For cross-project context, use `SOUL.md` (in `$HERMES_HOME`, identity-only) or install a skill via `hermes skills install`.
+1. `AGENTS.override.md`
+2. `AGENTS.md`
+3. `agents.md`
 
-### Size and truncation
+The first non-empty readable file wins for that directory. An empty or unreadable higher-priority file falls through to the next name. Hermes merges selected files root first and working directory last, so deeper guidance has later precedence. Byte-identical content is included once. `AGENTS.override.md` is therefore a same-directory replacement, not an extra layer beside `AGENTS.md`.
 
-Each context file is capped at 20,000 characters. Files longer than that get **head + tail** truncated (the middle is dropped, with a `[...truncated...]` marker). For large project rules, prefer splitting into multiple skills over cramming one file.
+Only the winning non-empty context type loads. A non-empty `.hermes.md` shadows the entire `AGENTS.md` chain. `CLAUDE.md` and Cursor rules load only when neither earlier type has non-empty content.
 
-### Security
+## Progressive subdirectory hints
 
-All context files pass through the threat-pattern scanner before reaching the system prompt. Patterns matching prompt injection or promptware are replaced with a `[BLOCKED: ...]` placeholder. This means an `AGENTS.md` containing obvious injection attempts won't reach the model — the scanner blocks the content, not the file, so the rest of the file still loads.
+The startup prompt contains the `AGENTS.md` chain only through the initial working directory. When a tool later enters or accesses a deeper directory, `agent/subdirectory_hints.py` may attach that directory's local hint file to the tool result. Hints stay inside the working tree, skip excluded dependency/cache/archive directories, honor `AGENTS.override.md`, and deduplicate identical content. They do not rebuild the system prompt.
 
-### Disable for one session
+## Size and truncation
 
-`hermes --ignore-rules` skips auto-injection of all project context files (`.hermes.md`, `AGENTS.md`, `CLAUDE.md`, `.cursorrules`) **and** `SOUL.md` identity, plus user config, plugins, and MCP servers. Use it to isolate whether a problem is your setup or Hermes itself.
+`context_file_max_chars` in `config.yaml`, when set to a positive number, is the cap. Otherwise Hermes derives the cap from the model context window:
 
-### Example: a small `.hermes.md`
+- 6% of the window after converting tokens to the prompt builder's character estimate.
+- A 20,000-character floor.
+- A 500,000-character ceiling.
+- 20,000 characters when the context length is unknown.
 
-```markdown
-# My Project
+Hermes applies the cap to each selected file section. It also applies the same cap to the merged `AGENTS.md` chain, so depth cannot multiply the budget without limit. Truncation keeps the head and tail, inserts a marker, names the source path for `read_file`, logs the event, and queues a session warning. Progressive subdirectory hints use their own fixed preview limit and warning behavior.
 
-Hermes: when working in this repo, follow these rules.
+Keep universal rules at the repository root and local non-inferable rules in nested files. Put architecture, tutorials, inventories, and process detail in maintained docs behind precise pointers.
 
-## Build
-- Always run `make test` before declaring a change done.
-- Use `uv run` for Python, not `pip install`.
+## Security and control
 
-## Style
-- Prefer `pathlib.Path` over `os.path`.
-- No `print()` in production code — use the `logger`.
-```
+Project context passes through the prompt-injection scanner before inclusion. A blocked project file becomes a `[BLOCKED: ...]` marker rather than executable prompt text. Symlinked subdirectory hints must resolve inside the working tree and may not target denied paths.
 
-That file at `/home/me/projects/myrepo/.hermes.md` is auto-loaded when Hermes runs in any subdirectory of `/home/me/projects/myrepo`, but not when it runs in `/home/me/other-project`.
+`hermes --ignore-rules` disables automatic project-context loading for that session along with the other user customization layers documented by `hermes --help`. Use it to isolate configuration problems, not as a permanent fix.
+
+## Implementation references
+
+- Discovery, precedence, and truncation: `agent/prompt_builder.py`
+- Manifest used by context inspection: `agent/context_file_sources.py`
+- Later directory hints: `agent/subdirectory_hints.py`
+- Prompt ordering: `website/docs/developer-guide/prompt-assembly.md`

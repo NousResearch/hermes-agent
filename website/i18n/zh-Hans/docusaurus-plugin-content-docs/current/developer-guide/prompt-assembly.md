@@ -127,10 +127,12 @@ def load_soul_md() -> Optional[str]:
     if not soul_path.exists():
         return None
     content = soul_path.read_text(encoding="utf-8").strip()
-    content = _scan_context_content(content, "SOUL.md")  # Security scan
-    content = _truncate_content(content, "SOUL.md")       # Cap defaults to 20k chars, configurable
+    content = _scan_context_content(content, "SOUL.md", user_authored=True)  # 安全扫描：警告并加载，不拦截
+    content = _truncate_content(content, "SOUL.md")       # 上限随模型上下文扩展（最低 20k）；显式配置优先
     return content
 ```
+
+此简化示例描述用户自行编写的 `SOUL.md`。运行时会根据 `distribution.yaml` 判断文件所有权；由配置文件分发包管理的 `SOUL.md` 会以 `user_authored=False` 扫描，命中威胁模式时仍会被拦截。
 
 当 `load_soul_md()` 返回内容时，它会替换硬编码的 `DEFAULT_AGENT_IDENTITY`。随后调用 `build_context_files_prompt()` 时传入 `skip_soul=True`，以防止 SOUL.md 出现两次（一次作为身份，一次作为上下文文件）。
 
@@ -161,7 +163,7 @@ def build_context_files_prompt(cwd=None, skip_soul=False):
     # Priority: first match wins — only ONE project context loaded
     project_context = (
         _load_hermes_md(cwd_path)       # 1. .hermes.md / HERMES.md (walks to git root)
-        or _load_agents_md(cwd_path)    # 2. AGENTS.md (cwd only)
+        or _load_agents_md(cwd_path)    # 2. AGENTS chain (git root to cwd)
         or _load_claude_md(cwd_path)    # 3. CLAUDE.md (cwd only)
         or _load_cursorrules(cwd_path)  # 4. .cursorrules / .cursor/rules/*.mdc
     )
@@ -192,13 +194,13 @@ def build_context_files_prompt(cwd=None, skip_soul=False):
 | 优先级 | 文件 | 搜索范围 | 说明 |
 |--------|------|----------|------|
 | 1 | `.hermes.md`、`HERMES.md` | 从 CWD 向上至 git 根目录 | Hermes 原生项目配置 |
-| 2 | `AGENTS.md` | 仅 CWD | 常见 agent 指令文件 |
+| 2 | `AGENTS.override.md`、`AGENTS.md`、`agents.md` | Git 根目录至 CWD；Git 仓库外仅 CWD | 每个目录取首个非空文件，override 优先，按根目录到 CWD 合并 |
 | 3 | `CLAUDE.md` | 仅 CWD | Claude Code 兼容性 |
 | 4 | `.cursorrules`、`.cursor/rules/*.mdc` | 仅 CWD | Cursor 兼容性 |
 
 所有上下文文件均会：
 - **安全扫描** — 检查 prompt 注入模式（不可见 unicode、"ignore previous instructions"、凭据窃取尝试）
-- **截断处理** — 使用 70/20 头尾比例上限为 20,000 字符，并附截断标记
+- **截断处理** — 每个已加载文件使用 70/20 头尾比例和含读取路径的截断标记；多文件 AGENTS 链在添加来源标题并合并后还会再执行一次上限检查。未显式配置时，上限随模型上下文窗口动态调整，最低 20,000 字符、最高 500,000 字符；`config.yaml` 中显式的 `context_file_max_chars` 优先
 - **剥离 YAML frontmatter** — `.hermes.md` 的 frontmatter 会被移除（保留供未来配置覆盖使用）
 
 ## 仅在 API 调用时生效的层
@@ -221,7 +223,7 @@ def build_context_files_prompt(cwd=None, skip_soul=False):
 `agent/prompt_builder.py` 使用**优先级系统**扫描并清理项目上下文文件——只加载一种类型（先匹配先赢）：
 
 1. `.hermes.md` / `HERMES.md`（向上遍历至 git 根目录）
-2. `AGENTS.md`（启动时的 CWD；子目录在会话期间通过 `agent/subdirectory_hints.py` 逐步发现）
+2. `AGENTS.override.md` / `AGENTS.md` / `agents.md`（Git 仓库中每个目录取首个非空文件，从根目录到启动 CWD 合并；Git 仓库外仅检查 CWD）。会话进入更深目录时，`agent/subdirectory_hints.py` 再添加局部提示
 3. `CLAUDE.md`（仅 CWD）
 4. `.cursorrules` / `.cursor/rules/*.mdc`（仅 CWD）
 

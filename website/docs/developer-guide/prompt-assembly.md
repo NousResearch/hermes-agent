@@ -222,7 +222,7 @@ def build_context_files_prompt(cwd=None, skip_soul=False):
     # Priority: first match wins — only ONE project context loaded
     project_context = (
         _load_hermes_md(cwd_path)       # 1. .hermes.md / HERMES.md (walks to git root)
-        or _load_agents_md(cwd_path)    # 2. AGENTS.md (cwd only)
+        or _load_agents_md(cwd_path)    # 2. AGENTS chain (git root to cwd)
         or _load_claude_md(cwd_path)    # 3. CLAUDE.md (cwd only)
         or _load_cursorrules(cwd_path)  # 4. .cursorrules / .cursor/rules/*.mdc
     )
@@ -253,13 +253,13 @@ def build_context_files_prompt(cwd=None, skip_soul=False):
 | Priority | Files | Search scope | Notes |
 |----------|-------|-------------|-------|
 | 1 | `.hermes.md`, `HERMES.md` | CWD up to git root | Hermes-native project config |
-| 2 | `AGENTS.md` | CWD only | Common agent instruction file |
+| 2 | `AGENTS.override.md`, `AGENTS.md`, `agents.md` | Git root to CWD; CWD only outside Git | One non-empty file per directory; override first; merged root first |
 | 3 | `CLAUDE.md` | CWD only | Claude Code compatibility |
 | 4 | `.cursorrules`, `.cursor/rules/*.mdc` | CWD only | Cursor compatibility |
 
 All context files are:
 - **Security scanned** — checked for prompt injection patterns (invisible unicode, "ignore previous instructions", credential exfiltration attempts). A hit replaces a project file with a `[BLOCKED: …]` marker; the user's own `SOUL.md` in `HERMES_HOME` is warned about and loaded anyway (it is human-approved on write, so it is the same trust class as `config.yaml`)
-- **Truncated** — capped at `context_file_max_chars` characters using a 70/20 head/tail split with a truncation marker. The cap scales with the model's context window (20,000-char floor, 500K ceiling); an explicit `context_file_max_chars` in `config.yaml` always wins.
+- **Truncated** — each loaded file is capped at `context_file_max_chars` characters using a 70/20 head/tail split with a read-path marker. A multi-file AGENTS result is capped again after provenance labels and merging. The cap scales with the model's context window (20,000-char floor, 500K ceiling); an explicit `context_file_max_chars` in `config.yaml` always wins.
 - **YAML frontmatter stripped** — `.hermes.md` frontmatter is removed (reserved for future config overrides)
 
 ## API-call-time-only layers
@@ -284,7 +284,7 @@ Local memory and user profile data are captured in the system prompt's **volatil
 `agent/prompt_builder.py` scans and sanitizes project context files using a **priority system** — only one type is loaded (first match wins):
 
 1. `.hermes.md` / `HERMES.md` (walks to git root)
-2. `AGENTS.md` (CWD at startup; subdirectories discovered progressively during the session via `agent/subdirectory_hints.py`)
+2. `AGENTS.override.md` / `AGENTS.md` / `agents.md` (one non-empty file per directory from git root to startup CWD, merged root first; outside a Git repository, CWD only). `agent/subdirectory_hints.py` adds scoped hints when work later enters deeper directories.
 3. `CLAUDE.md` (CWD only)
 4. `.cursorrules` / `.cursor/rules/*.mdc` (CWD only)
 

@@ -177,13 +177,23 @@ def _stage_session_file_attachment(
     root.mkdir(parents=True, exist_ok=True)
     filename = _sanitize_attachment_name(filename)
     target = root / filename
-    if target.exists():
-        stem = Path(filename).stem or "attachment"
-        suffix = Path(filename).suffix
-        counter = 2
-        while (target := root / f"{stem}-{counter}{suffix}").exists():
+    stem = Path(filename).stem or "attachment"
+    suffix = Path(filename).suffix
+    counter = 2
+    while True:
+        try:
+            upload = target.open("xb")
+        except FileExistsError:
+            target = root / f"{stem}-{counter}{suffix}"
             counter += 1
-    target.write_bytes(payload)
+        else:
+            break
+    try:
+        with upload:
+            upload.write(payload)
+    except BaseException:
+        target.unlink(missing_ok=True)
+        raise
     return target.resolve(), True
 
 

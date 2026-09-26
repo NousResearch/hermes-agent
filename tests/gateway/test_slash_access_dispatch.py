@@ -172,6 +172,44 @@ async def test_non_admin_with_empty_user_commands_gets_floor_only():
     assert "Tier: user" in whoami_result
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("message", ["Please contact support.", ""])
+@pytest.mark.parametrize("entry", ["idle", "busy", "quick"])
+async def test_configured_denial_preserves_dispatch_gate(message, entry):
+    """Custom/empty refusals never grant execution (regression for #117217)."""
+    runner = _make_runner(platform_extra={
+        "allow_admin_from": ["111"], "command_denied_message": message,
+    })
+    source = _make_source(user_id="999")
+    runner._handle_restart_command = AsyncMock(side_effect=AssertionError("denied command ran"))
+    command = "/restart"
+    if entry == "busy":
+        key = build_session_key(source)
+        runner._running_agents[key] = MagicMock()
+        runner._running_agents_ts[key] = 0
+    elif entry == "quick":
+        runner.config.quick_commands = {"restricted": {"type": "alias", "target": "/restart"}}
+        command = "/restricted"
+    result = await runner._handle_message(_make_event(command, source))
+    assert result == message
+    runner._handle_restart_command.assert_not_awaited()
+
+
+@pytest.mark.parametrize("override", [None, False, 42, [], {}])
+def test_denial_override_keeps_default_and_authorization(override):
+    runner = _make_runner(platform_extra={"allow_admin_from": ["111"]})
+    source = _make_source(user_id="999")
+    original = runner._check_slash_access(source, "restart")
+    extra = runner.config.platforms[Platform.DISCORD].extra
+    extra["command_denied_message"] = override
+    assert runner._check_slash_access(source, "restart") == original
+    extra["command_denied_message"] = "custom"
+    assert runner._check_slash_access(_make_source(user_id="111"), "restart") is None
+    assert runner._check_slash_access(source, "help") is None
+    extra["user_allowed_commands"] = ["restart"]
+    assert runner._check_slash_access(source, "restart") is None
+
+
 # ---------------------------------------------------------------------------
 # Gate ALLOW — admin and listed user
 # ---------------------------------------------------------------------------

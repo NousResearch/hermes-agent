@@ -241,15 +241,28 @@ class InterruptControlMixin:
                 self._pending_steer = None
         return True
 
-    def steer(self, text: str) -> bool:
+    def steer(self, text: str, *, _notify: bool = True) -> bool:
         """Queue user text for delivery as its own user row after the current tool batch finishes (no
-        interrupt); multiple calls concatenate with newlines. Returns False for empty text."""
+        interrupt); multiple calls concatenate with newlines. Returns False for empty text.
+
+        On acceptance the optional ``_steer_accepted_callback(text)`` observer fires (outside the
+        steer lock) so a frontend that did not originate the call — an attached TUI watching an
+        external steer — can render the accepted text immediately. Internal re-queues
+        (``redirect()`` degrading to steer, the redirect-restart fallback) pass
+        ``_notify=False``: their callers already acknowledged the text."""
         if not text or not text.strip():
             return False
         cleaned = text.strip()
         with _ic_lock(self, "_pending_steer_lock"):
             existing = _ic_slot(self, "_pending_steer_lock", "_pending_steer")
             self._pending_steer = (existing + "\n" + cleaned) if existing else cleaned
+        if _notify:
+            observer = getattr(self, "_steer_accepted_callback", None)
+            if callable(observer):
+                try:
+                    observer(cleaned)
+                except Exception:
+                    logger.debug("steer observer failed", exc_info=True)
         return True
 
     def redirect(self, text: str) -> bool:
@@ -277,7 +290,7 @@ class InterruptControlMixin:
         # `sleep` poller, a build), so ask the tool workers to YIELD: terminal hands the live
         # process to the background registry and returns; tools that don't yield are unaffected.
         if getattr(self, "_executing_tools", False):
-            accepted = self.steer(cleaned)
+            accepted = self.steer(cleaned, _notify=False)
             if accepted:
                 tracker = getattr(self, "_tool_worker_threads", None)
                 tracker_lock = getattr(self, "_tool_worker_threads_lock", None)

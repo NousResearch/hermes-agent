@@ -1,6 +1,7 @@
 import time
 from contextlib import closing
 import pytest
+from hermes_cli.sessions_cmd import _note_pinned_skipped
 from hermes_state import SessionDB
 
 
@@ -47,7 +48,7 @@ def test_prune_sessions_respects_touch_session_activity(tmp_path):
         assert db.get_session("active_by_heartbeat") is not None
 
 
-def test_prune_keeps_the_compressed_segments_of_a_chat_still_in_use(tmp_path):
+def test_prune_keeps_the_compressed_segments_of_a_chat_still_in_use(tmp_path, capsys):
     """A rotated conversation ages as one: its old compressed-away segments stay while a later segment
     is still in use, and go together once the whole chat is idle. The CLI/dashboard preview lists what prune deletes."""
     with closing(SessionDB(tmp_path / "state.db")) as db:
@@ -74,6 +75,13 @@ def test_prune_keeps_the_compressed_segments_of_a_chat_still_in_use(tmp_path):
         db._conn.commit()
 
         idle = {"idle", "idle-2", "idle-3"}
+        # The CLI pinned-skip note counts pinned rows, not the unpinned ancestors a pinned tip spares.
+        db._conn.execute("UPDATE sessions SET pinned = 1 WHERE id = 'idle-3'")
+        db._conn.commit()
+        _note_pinned_skipped(db, {"older_than_days": 90, "lineage_tips_only": False}, "prune")
+        assert "Note: 1 pinned session also match" in capsys.readouterr().out
+        db._conn.execute("UPDATE sessions SET pinned = 0 WHERE id = 'idle-3'")
+        db._conn.commit()
         assert {c["id"] for c in db.list_prune_candidates(older_than_days=90, whole_lineages=True)} == idle
         assert db.prune_sessions(older_than_days=90) == len(idle)
         assert db.get_compression_lineage("live-3") == ["live", "live-2", "live-3"]

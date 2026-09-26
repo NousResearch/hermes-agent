@@ -2108,10 +2108,12 @@ def _branch_live(rid, params: dict, session: dict, *, omit_messages: bool = Fals
         if isinstance(count := params.get("count"), int) and count > 0:
             history = history[:count]
         new_key, new_sid, source = _new_session_key(), uuid.uuid4().hex[:8], _session_source(session)
+        branch_explicit_cwd = bool(session.get("explicit_cwd"))
+        branch_cwd = _session_cwd(session)
         try:
             title = params.get("name", "") or _branch_title(db, old_key)
             home = session.get("profile_home")
-            _persist_branch(db, new_key, old_key, title, history, source=source, cwd=_session_cwd(session),
+            _persist_branch(db, new_key, old_key, title, history, source=source, cwd=branch_cwd,
                             profile_name=profile_name_for_home(home) or _current_profile_name(),
                             model=_session_default_model(session), copy_fields=_BRANCH_COPY_FIELDS,
                             title_source="user" if params.get("name") else "derived",
@@ -2119,7 +2121,10 @@ def _branch_live(rid, params: dict, session: dict, *, omit_messages: bool = Fals
         except Exception as e:
             return _err(rid, 5008, f"branch failed: {e}")
     try:
-        agent = _build_branch_agent(session, new_sid, new_key, history, source)
+        branch_session = dict(session)
+        branch_session["explicit_cwd"] = branch_explicit_cwd
+        branch_session["cwd"] = branch_cwd
+        agent = _build_branch_agent(branch_session, new_sid, new_key, history, source)
     except Exception as e:
         return _err(rid, 5000, f"agent init failed on branch: {e}")
     response = {"session_id": new_sid, "stored_session_id": new_key, "title": title, "parent": old_key,

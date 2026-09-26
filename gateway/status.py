@@ -780,14 +780,42 @@ def _host_gateway_serves_home(pid: int, profile_home: Path) -> bool:
     while multiplexing every profile, so :func:`_command_line_belongs_to_profile` rejects every
     secondary and the profile reads as "not running" while its messages are being served. The live
     served set is the only proof; the argv rule stays as the fallback when no record exists.
+
+    Two bounds keep this off the hot path's critical section. The owner record is read FIRST,
+    without dialing anything, so with no owner on the host -- the common case for a crashed or
+    pre-claim install -- the whole cost is one stat. The dial that follows is bounded
+    (:data:`gateway.host_attach.IDENTIFY_TIMEOUT_S`), because ``get_running_pid`` is polled by
+    ``gateway stop``'s post-kill confirmation and by every status read, and the control socket's
+    own 2 s client timeout would otherwise be re-paid on every poll by a wedged owner. Both only
+    make the answer arrive sooner or be provably False: the served set still comes from the
+    owner's own answer, and a timeout yields the same ``served_known=False`` an unanswered socket
+    already did.
     """
     try:
-        from gateway.host_attach import host_gateway, profile_name_for_home
+        from gateway import host_rendezvous
 
-        owner = host_gateway()
+        record = host_rendezvous.read_record(host_rendezvous.ROLE_GATEWAY)
+        if record is None:
+            return False
+        from gateway.host_attach import IDENTIFY_TIMEOUT_S, host_gateway, profile_name_for_home
+
+        owner = host_gateway(identify_timeout=IDENTIFY_TIMEOUT_S)
     except Exception:
         return False
-    return owner is not None and owner.pid == pid and owner.serves(profile_name_for_home(profile_home))
+    if owner is None or owner.pid != pid or not owner.serves(profile_name_for_home(profile_home)):
+        return False
+    # The served set is keyed by PROFILE NAME, and a home outside any ``<root>/profiles/`` dir --
+    # a second installation on the same machine -- normalizes to ``default``, the same name the
+    # owner serves. Without the home check, one install's owner would vouch for another's gateway
+    # and keep its token locks unreclaimable. The check is the owner's ROOT, not its launch home:
+    # a served secondary legitimately lives under ``<root>/profiles/<name>``, and the one thing
+    # that must never pass is a different install's root.
+    from hermes_constants import get_default_hermes_root
+
+    root = Path(get_default_hermes_root())
+    return _same_hermes_home(root, profile_home) or _same_hermes_home(
+        root / "profiles" / (profile_name_for_home(profile_home) or ""), profile_home
+    )
 
 
 def _record_matches_live_gateway_pid(
@@ -796,12 +824,30 @@ def _record_matches_live_gateway_pid(
     """True when a live PID still identifies as this gateway record. The live command line wins (a
     stale record's argv must not make a recycled PID count as a gateway; with ``expected_home`` it
     must also belong to that profile — or serve it as the host multiplexer); unreadable cmdline
-    (Windows/EACCES) -> persisted record."""
+    (Windows/EACCES) -> persisted record.
+
+    The host-multiplexer proof RESCUES an argv the strict matcher cannot read. Since the #107002
+    fix the matchers answer ``None`` for an interpreter running inline source (#121635), and the
+    gateway this install launched itself is exactly that: ``<python> -I -c '<bootstrap>' gateway
+    run`` (``hermes_cli._launchers``). Consulted after the argv check, the rescue never applies.
+    :func:`_host_gateway_serves_home` asks a different question — the live owner's PID+createTime
+    incarnation and its served set, never argv — so it can answer for a bootstrap-launched gateway
+    and still cannot be answered by a restart watcher's borrowed argv (#107002): the watcher is
+    neither the recorded host PID nor in its served set.
+    """
     live_cmdline = _read_process_cmdline(pid)
     if not live_cmdline:
         return _record_looks_like_gateway(record)
     if not looks_like_gateway_runtime_command_line(live_cmdline):
-        return False
+        # Unscoped callers pass no ``expected_home``. Anchor on the record's OWN home -- that is the
+        # identity being validated, and the caller's own ``HERMES_HOME`` is a different thing: the
+        # one unscoped caller checks the PID/lock identity files of a TARGET home, not the reader's.
+        # Falling back to the process home only when the record names none keeps ``expected_home is
+        # None`` meaning "unscoped", not "the reader's home", and stops a bootstrap-launched host from
+        # reporting no PID at all (which is what unlinked ``gateway.pid``/``gateway.lock`` from under
+        # a live process).
+        home = expected_home or record.get("hermes_home") or _get_process_hermes_home()
+        return _host_gateway_serves_home(pid, Path(str(home)))
     if expected_home is not None and _host_gateway_serves_home(pid, expected_home):
         return True
     return expected_home is None or _command_line_belongs_to_profile(live_cmdline, expected_home)
@@ -1612,6 +1658,13 @@ def _scoped_lock_record_is_stale(existing: dict[str, Any], existing_pid: Optiona
     if _start_times_conflict(recorded_start, current_start):
         return True
     if not _looks_like_gateway_process(existing_pid):
+        # Same inline-source rescue as _record_matches_live_gateway_pid: a bootstrap-launched owner
+        # (``<python> -I -c '<bootstrap>' gateway run``) is judged dead here on a READABLE command
+        # line, and its scoped token locks get taken over while it still serves them. The host
+        # proof cannot be answered by a non-owner, so a watcher's borrowed argv is still rejected.
+        home = existing.get("hermes_home") or _get_process_hermes_home()
+        if _host_gateway_serves_home(existing_pid, Path(str(home))):
+            return _process_is_stopped(existing_pid)
         if _read_process_cmdline(existing_pid) is not None:
             return True
         if None in (recorded_start, current_start) and not _record_looks_like_gateway(existing):
@@ -1830,8 +1883,16 @@ def clear_takeover_marker(target_home: Optional[Path] = None) -> None:
 def _validated_scoped_lock_gateway_owner(record: dict[str, Any]) -> Optional[tuple[int, int, Path]]:
     """Resolve a live scoped-lock owner to a verified ``(pid, start_time, home)``. A lock file is
     only a claim: the record, the target home's PID record, and the live process must agree on
-    PID, start-time, gateway identity, and home. Missing legacy metadata fails closed."""
-    if not isinstance(record, dict) or not _record_looks_like_gateway(record):
+    PID, start-time, gateway identity, and home. Missing legacy metadata fails closed.
+
+    Gateway identity is the same inline-source rescue as :func:`_record_matches_live_gateway_pid`,
+    and it is what keeps ``--replace`` able to reclaim this owner's lock. A bootstrap-launched
+    owner fails both argv checks here (its live cmdline and the ``sys.argv`` it persisted, which
+    for a ``python -c`` process is ``['-c', ...]``), so without the host proof the lock its owner
+    is actively serving could never be taken over by a replace — a wedge, not a safety property.
+    Every other corroboration below is unchanged and still required.
+    """
+    if not isinstance(record, dict):
         return None
     owner_pid = _pid_from_record(record)
     owner_start_time = record.get("start_time")
@@ -1844,16 +1905,26 @@ def _validated_scoped_lock_gateway_owner(record: dict[str, Any]) -> Optional[tup
     ):
         return None
     target_home = _canonical_hermes_home(raw_home)
+    if not _record_looks_like_gateway(record) and not _host_gateway_serves_home(
+        owner_pid, target_home
+    ):
+        return None
     if _scoped_lock_owner_state(owner_pid, owner_start_time) != "same":
         return None
     live_cmdline = _read_process_cmdline(owner_pid)
-    if live_cmdline is not None and not looks_like_gateway_runtime_command_line(live_cmdline):
+    if (
+        live_cmdline is not None
+        and not looks_like_gateway_runtime_command_line(live_cmdline)
+        and not _host_gateway_serves_home(owner_pid, target_home)
+    ):
         return None
-    # The target home's own PID record must corroborate the claim.
+    # The target home's own PID record must corroborate the claim. Its argv suffers the same
+    # inline-source blindness (the owner's own ``sys.argv``), so the host proof answers it too.
     pid_record = _read_json_file(target_home / "gateway.pid") or {}
     pid_record_home = pid_record.get("hermes_home")
     if (
-        not _record_looks_like_gateway(pid_record)
+        (not _record_looks_like_gateway(pid_record)
+         and not _host_gateway_serves_home(owner_pid, target_home))
         or _pid_from_record(pid_record) != owner_pid
         or pid_record.get("start_time") != owner_start_time
         or not isinstance(pid_record_home, str)

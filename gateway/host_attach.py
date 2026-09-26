@@ -113,11 +113,30 @@ def _record_home(record) -> Path:
     return Path(record.home) if getattr(record, "home", "") else Path(get_default_hermes_root())
 
 
-def _identify(home: Path) -> Optional[dict]:
+#: Ceiling for an IDENTITY-only probe: the answer is yes/no, so a slow owner is a "no", never a
+#: reason to hold a caller. Hot poll paths (``gateway status``, ``gateway stop``'s post-kill
+#: confirmation) ask this per candidate, and the 2 s memo TTL is not a bound on a wedged owner's
+#: socket -- it costs the full client timeout on EVERY poll while its record keeps proving live.
+#: This bounds the WAIT to the first answer, which is the common wedge (an owner that never accepts);
+#: a connection that is accepted and then stalls on its reply is bounded by the same budget, and
+#: anything past it falls through to the client's own timeout with the verdict it had anyway.
+IDENTIFY_TIMEOUT_S = 0.25
+
+
+def _identify(home: Path, timeout: Optional[float] = None) -> Optional[dict]:
     try:
         from gateway.control_socket import identify_gateway
 
-        return identify_gateway(home)
+        if timeout is None:
+            return identify_gateway(home)
+        # Only pass the kwarg when the callee accepts it, so a one-argument patch of
+        # ``identify_gateway`` keeps working exactly as before instead of raising a TypeError that
+        # the blanket ``except`` below would turn into "owner did not answer" -- which reads a
+        # healthy multiplexer as absent.
+        try:
+            return identify_gateway(home, timeout=timeout)
+        except TypeError:
+            return identify_gateway(home)
     except Exception:
         logger.debug("host gateway identify failed for %s", home, exc_info=True)
         return None
@@ -164,7 +183,7 @@ def invalidate_host_gateway_cache() -> None:
     _cached_probe = None
 
 
-def _probe_host_gateway(wait_for_channel: float) -> Optional[HostGateway]:
+def _probe_host_gateway(wait_for_channel: float, identify_timeout: Optional[float] = None) -> Optional[HostGateway]:
     from gateway import host_rendezvous as hr
 
     record = hr.read_record(hr.ROLE_GATEWAY)
@@ -177,7 +196,7 @@ def _probe_host_gateway(wait_for_channel: float) -> Optional[HostGateway]:
     home = _record_home(record)
     deadline = time.monotonic() + max(0.0, wait_for_channel)
     while True:
-        identity = _identify(home)
+        identity = _identify(home, identify_timeout)
         if _identity_matches(identity, record, home):
             return HostGateway(record.pid, home, _served_from_identity(identity))
         if time.monotonic() >= deadline:
@@ -187,7 +206,8 @@ def _probe_host_gateway(wait_for_channel: float) -> Optional[HostGateway]:
     return HostGateway(record.pid, home, (), served_known=False)
 
 
-def host_gateway(*, wait_for_channel: float = 0.0) -> Optional[HostGateway]:
+def host_gateway(*, wait_for_channel: float = 0.0,
+                 identify_timeout: Optional[float] = None) -> Optional[HostGateway]:
     """The one live host gateway, or ``None``.
 
     The served set comes from the owner's control socket and nowhere else; a record with no live
@@ -197,7 +217,7 @@ def host_gateway(*, wait_for_channel: float = 0.0) -> Optional[HostGateway]:
     now = time.monotonic()
     if wait_for_channel <= 0 and _cached_probe is not None and now - _cached_probe[0] < HOST_GATEWAY_CACHE_TTL_S:
         return _cached_probe[1]
-    result = _probe_host_gateway(wait_for_channel)
+    result = _probe_host_gateway(wait_for_channel, identify_timeout)
     _cached_probe = (time.monotonic(), result)
     return result
 
@@ -284,7 +304,8 @@ def standalone_rescan_message(profile: str) -> str:
         "to the host gateway before starting this profile's gateway.")
 
 
-def _coexisting_gateways(owner: Optional[HostGateway]):
+def _coexisting_gateways(owner: Optional[HostGateway],
+                       identify_timeout: Optional[float] = None):
     """A standalone lock owner can hide a multiplexer launched beside it.
 
     Use the existing per-home liveness and control channels, not the single host
@@ -303,14 +324,15 @@ def _coexisting_gateways(owner: Optional[HostGateway]):
             continue
         seen.add(pid)
         peer = HostGateway(pid, home, (), served_known=False)
-        identity = _identify(home)
+        identity = _identify(home, identify_timeout)
         if isinstance(identity, dict) and _identity_matches(identity, peer, home):
             peer = HostGateway(pid, home, _served_from_identity(identity),
                                standalone=identity.get("multiplex") is False)
         yield peer
 
 
-def standalone_attach_decision(our_home: Path, owner: Optional[HostGateway]) -> Optional[HostAttachDecision]:
+def standalone_attach_decision(our_home: Path, owner: Optional[HostGateway],
+                              identify_timeout: Optional[float] = None) -> Optional[HostAttachDecision]:
     """An opt-out permits coexistence only after every live gateway confirms we are unserved.
 
     Shared by the initial attach check and the lock-losing race check.
@@ -320,7 +342,7 @@ def standalone_attach_decision(our_home: Path, owner: Optional[HostGateway]) -> 
     if not profile_is_standalone(our_home):
         return None
     profile = profile_name_for_home(our_home)
-    for peer in _coexisting_gateways(owner):
+    for peer in _coexisting_gateways(owner, identify_timeout):
         if not peer.served_known:
             return HostAttachDecision(REFUSE, _unknown_served_message(peer, profile), peer, transient=True)
         if peer.serves(profile):
@@ -329,14 +351,19 @@ def standalone_attach_decision(our_home: Path, owner: Optional[HostGateway]) -> 
     return HostAttachDecision(START, "", owner)
 
 
-def decide(our_home: Path, *, replace: bool = False) -> HostAttachDecision:
+def decide(our_home: Path, *, replace: bool = False,
+           identify_timeout: Optional[float] = None) -> HostAttachDecision:
     """Attach, rescan-then-attach, replace or refuse; configured standalone profiles may coexist.
 
     Never raises: a broken probe degrades to ``START``, i.e. exactly the pre-rendezvous behaviour.
+
+    ``identify_timeout`` bounds every identity probe this decision makes, including the
+    per-peer scan of coexisting profile gateways; ``None`` (the default) leaves each probe at
+    the control socket's own client timeout, unchanged.
     """
     profile = profile_name_for_home(our_home)
     try:
-        gateway = host_gateway()
+        gateway = host_gateway(identify_timeout=identify_timeout)
     except Exception:
         logger.debug("host gateway probe failed; starting as before", exc_info=True)
         return HostAttachDecision(START, "")
@@ -349,7 +376,7 @@ def decide(our_home: Path, *, replace: bool = False) -> HostAttachDecision:
         # the lock holder respawn-storms. Such an owner takes the non-replace path below instead.
         return HostAttachDecision(REPLACE_HOST, "", gateway)
     if gateway.served_known:
-        standalone = standalone_attach_decision(our_home, gateway)
+        standalone = standalone_attach_decision(our_home, gateway, identify_timeout)
         if standalone is not None:
             return standalone
     if gateway.serves(profile):
@@ -361,7 +388,7 @@ def decide(our_home: Path, *, replace: bool = False) -> HostAttachDecision:
         if waited is None:
             return HostAttachDecision(START, "")
         gateway = waited
-        standalone = standalone_attach_decision(our_home, gateway)
+        standalone = standalone_attach_decision(our_home, gateway, identify_timeout)
         if standalone is not None:
             return standalone
         if gateway.serves(profile):

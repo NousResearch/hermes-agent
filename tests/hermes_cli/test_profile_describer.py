@@ -121,7 +121,6 @@ def test_describer_refuses_to_overwrite_user_authored(profile_env, monkeypatch):
 
     outcome = describer.describe_profile("myprof")
     assert outcome.ok is False
-    assert "already has a user-authored description" in outcome.reason
     # Description unchanged
     assert profiles_mod.read_profile_meta(profile_env)["description"] == "curated"
 

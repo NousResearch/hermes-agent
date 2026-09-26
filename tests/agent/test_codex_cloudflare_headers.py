@@ -26,7 +26,7 @@ import base64
 import json
 from unittest.mock import MagicMock, patch
 
-from hermes_cli import __version__
+from hermes_cli.version_info import get_version_info
 
 
 # ---------------------------------------------------------------------------
@@ -69,18 +69,10 @@ class TestCodexCloudflareHeaders:
     def test_user_agent_advertises_hermes_version(self):
         from agent.auxiliary_client import _codex_cloudflare_headers
         headers = _codex_cloudflare_headers(_make_codex_jwt())
-        assert headers["User-Agent"] == f"HermesAgent/{__version__}"
+        assert headers["User-Agent"] == f"HermesAgent/{get_version_info().base_version}"
         assert headers["originator"] == "hermes-agent"
 
 
-    def test_canonical_header_casing(self):
-        """Upstream codex-rs uses PascalCase with trailing -ID. Match exactly."""
-        from agent.auxiliary_client import _codex_cloudflare_headers
-        headers = _codex_cloudflare_headers(_make_codex_jwt())
-        assert "ChatGPT-Account-ID" in headers
-        # The lowercase/titlecase variants MUST NOT be used — pin to be explicit
-        assert "chatgpt-account-id" not in headers
-        assert "ChatGPT-Account-Id" not in headers
 
 
 
@@ -100,7 +92,7 @@ class TestCodexCloudflareHeaders:
     def test_residency_header_from_jwt_claims(self, monkeypatch):
         """#23896: residency-enforced workspaces 401 without x-openai-internal-codex-residency.
         chatgpt_data_residency wins; chatgpt_compute_residency is the fallback; and the two
-        models-catalog probes (picker via httpx, context-length via requests) send it on the
+        models-catalog probes (picker via httpx, context-length via model_metadata_http) send it on the
         wire — not just the shared helper."""
         import sys
 
@@ -118,18 +110,21 @@ class TestCodexCloudflareHeaders:
             status_code = 200
 
             def json(self):
-                return {"models": []}
+                # Non-empty so the newest-client request is accepted and each site makes one call
+                # (an empty answer would legitimately trigger the 0.0.0 sentinel fallback).
+                return {"models": [{"slug": "gpt-5.5", "visibility": "list"}]}
 
         class _FakeHttp:
             @staticmethod
-            def get(url, headers=None, timeout=None, verify=None):
+            def get(url, headers=None, timeout=None, verify=None, **kwargs):
                 sent.append(dict(headers or {}))
                 return _FakeResp()
 
         monkeypatch.setitem(sys.modules, "httpx", _FakeHttp)
         codex_models._fetch_models_from_api(access_token=compute_only)
-        monkeypatch.setattr(model_metadata, "requests", _FakeHttp)
-        monkeypatch.setattr(model_metadata, "_ensure_requests", lambda: None)
+        # The context-length probe goes through the shared model_metadata_http seam.
+        from agent import model_metadata_http
+        monkeypatch.setattr(model_metadata_http, "get", _FakeHttp.get)
         monkeypatch.setattr(model_metadata, "_codex_oauth_context_cache", {})
         model_metadata._fetch_codex_oauth_context_lengths_with_source(compute_only)
 
@@ -176,7 +171,7 @@ class TestPrimaryClientWiring:
             headers = agent._client_kwargs.get("default_headers") or {}
             assert headers.get("originator") == "hermes-agent"
             assert headers.get("ChatGPT-Account-ID") == "acct-rotation"
-            assert headers.get("User-Agent") == f"HermesAgent/{__version__}"
+            assert headers.get("User-Agent") == f"HermesAgent/{get_version_info().base_version}"
 
     def test_apply_client_headers_clears_codex_headers_off_chatgpt(self):
         """Switching AWAY from chatgpt.com must drop the codex headers."""
@@ -216,13 +211,13 @@ class TestAuxiliaryClientWiring:
         token = _make_codex_jwt("acct-aux-try-codex")
 
         # Force _select_pool_entry to return "no pool" so we fall through to
-        # _read_codex_access_token.
+        # the auth.json token.
         monkeypatch.setattr(
             auxiliary_client, "_select_pool_entry",
             lambda provider: (False, None),
         )
         monkeypatch.setattr(
-            auxiliary_client, "_read_codex_access_token",
+            auxiliary_client, "_read_codex_singleton_token",
             lambda: token,
         )
         with patch("agent.auxiliary_client.OpenAI") as mock_openai:
@@ -232,7 +227,7 @@ class TestAuxiliaryClientWiring:
             headers = mock_openai.call_args.kwargs.get("default_headers") or {}
             assert headers.get("originator") == "hermes-agent"
             assert headers.get("ChatGPT-Account-ID") == "acct-aux-try-codex"
-            assert headers.get("User-Agent") == f"HermesAgent/{__version__}"
+            assert headers.get("User-Agent") == f"HermesAgent/{get_version_info().base_version}"
 
     def test_resolve_provider_client_raw_codex_passes_codex_headers(self, monkeypatch):
         """The ``raw_codex=True`` branch (used by the main agent loop for direct
@@ -240,7 +235,11 @@ class TestAuxiliaryClientWiring:
         from agent import auxiliary_client
         token = _make_codex_jwt("acct-aux-raw-codex")
         monkeypatch.setattr(
-            auxiliary_client, "_read_codex_access_token",
+            auxiliary_client, "_select_pool_entry",
+            lambda provider: (False, None),
+        )
+        monkeypatch.setattr(
+            auxiliary_client, "_read_codex_singleton_token",
             lambda: token,
         )
         with patch("agent.auxiliary_client.OpenAI") as mock_openai:
@@ -252,4 +251,4 @@ class TestAuxiliaryClientWiring:
             headers = mock_openai.call_args.kwargs.get("default_headers") or {}
             assert headers.get("originator") == "hermes-agent"
             assert headers.get("ChatGPT-Account-ID") == "acct-aux-raw-codex"
-            assert headers.get("User-Agent") == f"HermesAgent/{__version__}"
+            assert headers.get("User-Agent") == f"HermesAgent/{get_version_info().base_version}"

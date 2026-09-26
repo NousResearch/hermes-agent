@@ -12,8 +12,10 @@ _WARNING = "No env user allowlists configured"
 
 
 def _runner(platforms, tmp_path):
-    config = GatewayConfig(platforms=platforms, sessions_dir=tmp_path / "sessions")
-    return GatewayRunner(config)
+    # The policy check reads only ``self.config``; skip the full runner construction.
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(platforms=platforms, sessions_dir=tmp_path / "sessions")
+    return runner
 
 
 @pytest.mark.parametrize(

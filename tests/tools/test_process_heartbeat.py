@@ -33,7 +33,7 @@ def _wait_until(pred, timeout: float, interval: float = 0.05) -> bool:
     return pred()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_heartbeat_carries_only_new_output_and_stops_at_exit(tmp_path, monkeypatch):
     monkeypatch.setattr(pr, "HEARTBEAT_MIN_SECONDS", 1)
     monkeypatch.setattr(pr, "HEARTBEAT_TICK_SECONDS", 0.1)

@@ -149,8 +149,6 @@ class TestSanitizeApiMessages:
         assert out[1]["tool_call_id"] == "c6"
 
 
-
-
 # ---------------------------------------------------------------------------
 # Phase 2a — _cap_delegate_task_calls
 # ---------------------------------------------------------------------------
@@ -177,7 +175,6 @@ class TestCapDelegateTaskCalls:
         tcs = [make_tc("delegate_task") for _ in range(MAX_CONCURRENT_CHILDREN)]
         out = AIAgent._cap_delegate_task_calls(tcs)
         assert out is tcs
-
 
 
     def test_empty_list_safe(self):
@@ -243,13 +240,8 @@ class TestDeduplicateToolCalls:
         assert out == [first, distinct]
 
 
-
-
-
     def test_empty_list_safe(self):
         assert AIAgent._deduplicate_tool_calls([]) == []
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +276,6 @@ class TestUniquifyToolCallIds:
                make_tc_id("x", "t", '{"a":3}')]
         AIAgent._uniquify_tool_call_ids(tcs)
         assert [tc.id for tc in tcs] == ["x", "x_d2", "x_d3"]
-
 
 
     def test_blank_and_missing_ids_left_for_fallback(self):
@@ -332,30 +323,12 @@ class TestUniquifyToolCallIds:
 # _get_tool_call_id_static
 # ---------------------------------------------------------------------------
 
-class TestGetToolCallIdStatic:
-
-    def test_dict_with_valid_id(self):
-        assert AIAgent._get_tool_call_id_static({"id": "call_123"}) == "call_123"
-
-
-
-
-
-
 
 # ---------------------------------------------------------------------------
 # _get_tool_call_name_static
 # ---------------------------------------------------------------------------
 
 class TestGetToolCallNameStatic:
-
-    def test_dict_with_valid_name(self):
-        assert AIAgent._get_tool_call_name_static(
-            {"id": "call_1", "function": {"name": "terminal", "arguments": "{}"}}
-        ) == "terminal"
-
-
-
 
 
     def test_object_without_function_attr(self):

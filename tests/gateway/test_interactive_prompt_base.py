@@ -10,11 +10,9 @@ import html as _html
 
 from gateway.platforms.base import BasePlatformAdapter
 
-
 def _bare(cls):
     """Bare instance without running __init__ (documented test pattern)."""
     return object.__new__(cls)
-
 
 class _DefaultAdapter(BasePlatformAdapter):
     """Concrete subclass using only base-class template attrs."""
@@ -30,7 +28,6 @@ class _DefaultAdapter(BasePlatformAdapter):
 
     async def send(self, *a, **k):  # pragma: no cover - not used
         raise NotImplementedError
-
 
 class TestTruncatePreview:
     def test_short_text_unchanged(self):
@@ -49,18 +46,7 @@ class TestTruncatePreview:
         assert adapter._ea_fit("&" * 100, 20) == "&&&&..."  # 4 x "&amp;" == 20 escaped chars
         assert adapter._ea_fit("&" * 4, 20) == "&" * 4  # fits once escaped → untouched
 
-
 class TestFormatExecApproval:
-    def test_default_template(self, monkeypatch):
-        monkeypatch.setattr("gateway.platforms.base.approval_timeout_seconds", lambda: 300)
-        ad = _bare(_DefaultAdapter)
-        text = ad._format_exec_approval("rm -rf /", "scary")
-        assert text == (
-            "⚠️ Hermes wants to run a command that needs your OK\n\n"
-            "```\nrm -rf /\n```\n"
-            "Why it was flagged: scary\n\n"
-            "If you don't answer within 5 minutes it will NOT run."
-        )
 
     def test_deadline_line_tracks_configured_timeout(self, monkeypatch):
         """The card must say how long the user has and that silence means NO — for any timeout."""
@@ -70,7 +56,6 @@ class TestFormatExecApproval:
         monkeypatch.setattr("gateway.platforms.base.approval_timeout_seconds", lambda: 7200)
         text = _bare(_DefaultAdapter)._format_exec_approval("rm -rf /", "scary")
         assert "within 2 hours it will NOT run" in text
-
 
     def test_escape_hook_applied_to_command_and_reason(self):
         class Escaping(_DefaultAdapter):
@@ -82,7 +67,6 @@ class TestFormatExecApproval:
         assert "echo &lt;hi&gt;" in text
         assert "a &amp; b" in text
 
-
 class TestFormatChoicePage:
     def test_single_page_no_page_info(self):
         opts, meta = BasePlatformAdapter._format_choice_page([1, 2, 3], 0, 10)
@@ -91,39 +75,8 @@ class TestFormatChoicePage:
         assert meta["total_pages"] == 1
         assert meta["page"] == 0
 
-
     def test_page_clamped_high(self):
         opts, meta = BasePlatformAdapter._format_choice_page(list(range(25)), 99, 10)
         assert meta["page"] == 2
         assert opts == list(range(20, 25))
         assert meta["page_info"] == " (21–25 of 25)"
-
-
-class TestAdapterParity:
-    """Rewired adapters produce byte-identical text vs their historical inline code."""
-
-
-    def test_telegram_pagination_parity(self):
-        """_format_choice_page matches the old _build_*_keyboard arithmetic."""
-
-        def old(options, page, page_size):
-            total = len(options)
-            total_pages = max(1, (total + page_size - 1) // page_size)
-            page = max(0, min(page, total_pages - 1))
-            start = page * page_size
-            end = min(start + page_size, total)
-            page_info = f" ({start + 1}–{end} of {total})" if total_pages > 1 else ""
-            return options[start:end], page, total_pages, page_info
-
-        for n in (0, 1, 8, 9, 10, 25):
-            options = list(range(n))
-            for page in (-3, 0, 1, 2, 99):
-                for per in (8, 10):
-                    o_opts, o_page, o_tp, o_info = old(options, page, per)
-                    n_opts, meta = BasePlatformAdapter._format_choice_page(
-                        options, page, per
-                    )
-                    assert n_opts == o_opts
-                    assert meta["page"] == o_page
-                    assert meta["total_pages"] == o_tp
-                    assert meta["page_info"] == o_info

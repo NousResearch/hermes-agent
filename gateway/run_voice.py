@@ -18,6 +18,7 @@ from difflib import SequenceMatcher
 from types import SimpleNamespace
 from typing import Dict, List, Optional
 
+from agent.async_utils import consume_detached_task_result
 from gateway.config import Platform
 from gateway.platforms.base import build_auto_tts_output_path
 from gateway.platforms.event import MessageEvent, MessageType
@@ -267,13 +268,16 @@ class GatewayVoiceMixin:
             logger.info("Suppressing duplicate voice transcript for guild=%s user=%s: %s",
                         guild_id, user_id, transcript[:100])
             return
-        # Echo the transcript into the text channel (after auth, with mention sanitization).
+        # Echo the transcript into the text channel (after auth, with mention sanitization) in the
+        # background: awaiting Discord's API here held every voice reply back by ~0.35 s.
         with suppress(Exception):
             channel = adapter._client.get_channel(text_ch_id)
             if channel:
                 safe_text = transcript[:2000].replace("@everyone", "@\u200beveryone")
                 safe_text = safe_text.replace("@here", "@\u200bhere")
-                await channel.send(f"**[Voice]** <@{user_id}>: {safe_text}")
+                echo = self._retain_background_task(
+                    asyncio.ensure_future(channel.send(f"**[Voice]** <@{user_id}>: {safe_text}")))
+                echo.add_done_callback(consume_detached_task_result)
         # Bound text channel's channel_prompt: voice input gets the same per-channel context.
         channel_prompt = None
         if callable(resolver := getattr(adapter, "_resolve_channel_prompt", None)):

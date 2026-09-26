@@ -662,9 +662,11 @@ class VoiceReceiver:
     SAMPLE_RATE = 48000        # Discord native rate
     CHANNELS = 2               # Discord sends stereo
 
-    def __init__(self, voice_client, allowed_user_ids: set = None):
+    def __init__(self, voice_client, allowed_user_ids: set = None, silence_threshold: Optional[float] = None):
         self._vc = voice_client
         self._allowed_user_ids = allowed_user_ids or set()
+        if silence_threshold:
+            self.SILENCE_THRESHOLD = float(silence_threshold)
         self._running = False
         self._secret_key: Optional[bytes] = None
         self._dave_session = None
@@ -3399,6 +3401,18 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             "voice_playback_timeout_seconds", self.PLAYBACK_TIMEOUT, minimum=1,
         )
 
+    def _load_voice_silence_threshold(self) -> float:
+        """Silence that ends a spoken utterance (``discord.voice_silence_threshold_seconds``, read on
+        each join). Lower replies sooner but can split a sentence at a thinking pause; 0.3–5 s."""
+        try:
+            from hermes_cli.config import read_raw_config
+            raw = ((read_raw_config() or {}).get("discord") or {}).get("voice_silence_threshold_seconds")
+            if raw is not None:
+                return min(5.0, max(0.3, float(raw)))
+        except Exception as e:
+            logger.debug("Could not load discord.voice_silence_threshold_seconds: %s", e)
+        return VoiceReceiver.SILENCE_THRESHOLD
+
     def _voice_timeout_limit(self) -> int:
         return int(getattr(self, "_voice_timeout_seconds", self.VOICE_TIMEOUT))
 
@@ -3570,7 +3584,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if source is not None:
                 self._voice_sources[guild_id] = source
             try:
-                receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids)
+                receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids,
+                                         silence_threshold=self._load_voice_silence_threshold())
                 receiver.start()
                 self._voice_receivers[guild_id] = receiver
                 self._voice_listen_tasks[guild_id] = asyncio.ensure_future(

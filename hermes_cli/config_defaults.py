@@ -1576,6 +1576,9 @@ DEFAULT_CONFIG = {
         # Minimum seconds before force-stopping a VC playback; the adapter probes clip duration and
         # extends this floor so long TTS isn't cut off.
         "voice_playback_timeout_seconds": 120,
+        # Seconds of silence that end a spoken utterance in a voice channel (read on each join, 0.3-5).
+        # Lower replies sooner but may split a sentence at a thinking pause.
+        "voice_silence_threshold_seconds": 1.5,
         # Voice-channel software mixer (plugins/platforms/discord/voice_mixer.py): ambient
         # "thinking" bed, verbal acks and TTS OVERLAP (ambient ducked) vs stop-and-swap.
         "voice_fx": {

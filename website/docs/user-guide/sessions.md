@@ -789,7 +789,7 @@ The tool infers what you want from which arguments you set. There's no `mode` pa
 session_search(query="auth refactor", limit=3)
 ```
 
-Runs FTS5, dedupes hits by session lineage, and returns the top N sessions. Discovery uses adaptive detail by default: the highest-ranked result includes its full context window and bookends, while lower-ranked results stay compact. Pass `detail="full"` to fully hydrate every result.
+Runs FTS5, dedupes hits by conversation, and returns the top N sessions. "Conversation" here means a compression lineage: when auto-compression rotates a chat onto a fresh session id, the old segment and its continuation count as one hit. Sessions that merely share a `parent_session_id` because of `/new`, `/branch` or delegation are distinct conversations and each gets its own hit, labelled with its own title and date (same rule as the dashboard's session search). Discovery uses adaptive detail by default: the highest-ranked result includes its full context window and bookends, while lower-ranked results stay compact. Pass `detail="full"` to fully hydrate every result.
 
 Each result carries:
 

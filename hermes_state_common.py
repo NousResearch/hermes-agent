@@ -317,6 +317,18 @@ def _ended_by_compression(row) -> bool:
     return row is not None and row["ended_at"] is not None and row["end_reason"] == "compression"
 
 
+def is_compression_edge(child, parent) -> bool:
+    """True when *child* continues *parent* after auto-compression — the one parent edge
+    that makes two session rows the SAME conversation. ``/new`` resets, branches and
+    delegation children also set ``parent_session_id`` but start distinct conversations,
+    so search surfaces must not fold them together."""
+    if not isinstance(child, dict) or not isinstance(parent, dict):
+        return False
+    parent_ended_at, started_at = parent.get("ended_at"), child.get("started_at")
+    return (parent.get("end_reason") == "compression" and parent_ended_at is not None
+            and started_at is not None and started_at >= parent_ended_at)
+
+
 def _placeholders(items) -> str:
     """``?,?,?`` for one bound parameter per element of *items* (a sequence or an int count)."""
     return ",".join("?" for _ in range(items if isinstance(items, int) else len(items)))

@@ -26,6 +26,7 @@ from hermes_cli.web_routers._common import (
     CORRUPT_STORE_DETAIL, corrupt_store_as_status, log as _log, destructive_profile, http_failure,
 )
 from hermes_state import is_malformed_db_error
+from hermes_state_common import is_compression_edge
 from hermes_state_errors import StateDbReplacedError, is_transient_sqlite_error
 from hermes_state_health import STORAGE_CORRUPT, note_storage_error, storage_state
 
@@ -265,16 +266,6 @@ def get_sessions(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-def _is_compression_edge(child: dict, parent: dict) -> bool:
-    parent_ended_at = parent.get("ended_at")
-    started_at = child.get("started_at")
-    return (
-        parent.get("end_reason") == "compression"
-        and parent_ended_at is not None
-        and started_at is not None
-        and started_at >= parent_ended_at)
-
-
 @search_router.get("/api/sessions/search")
 async def search_sessions(
     q: str = "", limit: int = 20, profile: Optional[str] = None, source: str = None,
@@ -319,7 +310,7 @@ async def search_sessions(
                     s = get_session(cur)
                     parent = s.get("parent_session_id") if isinstance(s, dict) else None
                     parent_session = get_session(parent) if parent else None
-                    if not parent_session or not _is_compression_edge(s, parent_session):
+                    if not parent_session or not is_compression_edge(s, parent_session):
                         root = cur
                         break
                     cur = parent

@@ -500,6 +500,8 @@ def local_models_status():
     import pm
 
     current = pm.installed_package(binaries.BACKEND_PACKAGES[runtime_backend]) if runtime_backend else None
+    # The pane must list models from the old per-profile layout even while the runtime is off.
+    _quiet(bootstrap.adopt_legacy_models, [], warn="legacy model adoption failed: %r")
     mdir = bootstrap.models_dir()
     running = _state_endpoint()
     # Resident models from the live router ({} when down): Loaded pills + eject. A failed read is never

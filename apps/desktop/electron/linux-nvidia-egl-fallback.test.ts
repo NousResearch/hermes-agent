@@ -1,17 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import {
-  decideNvidiaEglFallback,
-  NVIDIA_BROKEN_EGL_MAJOR,
-  parseNvidiaDriverMajor
-} from './linux-nvidia-egl-fallback'
+import { decideNvidiaEglFallback, NVIDIA_BROKEN_EGL_MAJOR, parseNvidiaDriverMajor } from './linux-nvidia-egl-fallback'
 
 const LINUX = { env: {}, platform: 'linux' as const, isWsl: false, remoteDisplayReason: null }
 
 describe('parseNvidiaDriverMajor', () => {
   it('parses the major from /proc/driver/nvidia/version content', () => {
-    const text =
-      'NVRM version: NVIDIA UNIX x86_64 Kernel Module  580.82.09  Mon Jul 21 19:44:16 UTC 2025\n'
+    const text = 'NVRM version: NVIDIA UNIX x86_64 Kernel Module  580.82.09  Mon Jul 21 19:44:16 UTC 2025\n'
 
     expect(parseNvidiaDriverMajor(text)).toBe(580)
   })
@@ -46,12 +41,8 @@ describe('decideNvidiaEglFallback', () => {
   })
 
   it('stays off on non-linux platforms', () => {
-    expect(
-      decideNvidiaEglFallback({ ...LINUX, platform: 'darwin', driverMajor: 580 }).enable
-    ).toBe(false)
-    expect(
-      decideNvidiaEglFallback({ ...LINUX, platform: 'win32', driverMajor: 580 }).enable
-    ).toBe(false)
+    expect(decideNvidiaEglFallback({ ...LINUX, platform: 'darwin', driverMajor: 580 }).enable).toBe(false)
+    expect(decideNvidiaEglFallback({ ...LINUX, platform: 'win32', driverMajor: 580 }).enable).toBe(false)
   })
 
   it('stays off under WSLg', () => {

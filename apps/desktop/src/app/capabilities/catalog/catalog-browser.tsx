@@ -83,11 +83,13 @@ function mergeInstalled(
     if (!installed) {
       return [entry]
     }
+
     remaining.delete(installed.id)
 
     if (seen.has(installed.id)) {
       return []
     }
+
     seen.add(installed.id)
 
     return [
@@ -153,6 +155,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
     if (!selectedEntryId) {
       return
     }
+
     setSelectedId(selectedEntryId)
     setDetailOpen(true)
   }, [selectedEntryId])
@@ -162,12 +165,15 @@ export const CatalogBrowser = memo(function CatalogBrowser({
 
   const entries = mergeInstalled(data ?? [], installedEntries ?? [], matchInstalled)
   const filtered = sortCatalog(filterCatalog(entries, facets, deferredQuery, isInstalled), sort, kind)
+
   const discover =
     kind === 'plugins' && !facets.categories.length && !facets.tags.length && !deferredQuery && !facets.installedOnly
+
   const sections =
     discover && cardView
       ? groupCatalogPlugins(filtered).map(([key, items]) => ({ key, ...PLUGIN_CATEGORIES[key], entries: items }))
       : []
+
   const pageOrder = sections.length ? sections.flatMap(section => section.entries) : filtered
 
   const selected = entries.find(entry => entry.id === selectedId) ?? filtered[0]
@@ -195,6 +201,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
     if (custom) {
       return custom
     }
+
     const installed = isInstalled(entry)
 
     return (
@@ -207,6 +214,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
           if (kind === 'plugins') {
             setDetailOpen(false)
           }
+
           onInstall(entry)
         }}
       />

@@ -59,9 +59,7 @@ describe('blob preview URL ownership handoff', () => {
     // Mirrors use-composer-submit: clone → clear({ retainPreviewUrls }) → dispatch clone.
     const revokeObjectURL = stubRevokeObjectURL()
     const blobUrl = 'blob:hermes-direct-submit-1'
-    addComposerAttachment(
-      attachment({ id: 'image:drop', kind: 'image', label: 'Lattice.png', previewUrl: blobUrl })
-    )
+    addComposerAttachment(attachment({ id: 'image:drop', kind: 'image', label: 'Lattice.png', previewUrl: blobUrl }))
 
     const submittedAttachments = $composerAttachments.get().map(item => ({ ...item }))
     mainComposerScope.clear({ retainPreviewUrls: true })

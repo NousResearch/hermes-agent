@@ -256,9 +256,7 @@ test('remote session reads keep small requests on one call', async () => {
     }
   )
 
-  assert.deepEqual(calls, [
-    { profile: 'remote-work', path: '/api/sessions?limit=20&offset=0&profile=remote-work' }
-  ])
+  assert.deepEqual(calls, [{ profile: 'remote-work', path: '/api/sessions?limit=20&offset=0&profile=remote-work' }])
   assert.equal(result, expected)
 })
 
@@ -513,9 +511,7 @@ test('remote session reads carry the profile scope against a multi-profile backe
     }
   )
 
-  assert.deepEqual(calls, [
-    { profile: 'wife', path: '/api/sessions?limit=20&offset=0&profile=wife' }
-  ])
+  assert.deepEqual(calls, [{ profile: 'wife', path: '/api/sessions?limit=20&offset=0&profile=wife' }])
 })
 
 // The same read for the OTHER scope sharing the backend names ITS scope — the
@@ -554,7 +550,7 @@ test('remote session reads fall back to the unscoped list when the remote reject
       calls.push(path)
 
       if (path.includes('profile=wife')) {
-        const error: any = new Error('404: Profile \'wife\' does not exist.')
+        const error: any = new Error("404: Profile 'wife' does not exist.")
         error.statusCode = 404
         throw error
       }
@@ -563,10 +559,7 @@ test('remote session reads fall back to the unscoped list when the remote reject
     }
   )
 
-  assert.deepEqual(calls, [
-    '/api/sessions?limit=20&offset=0&profile=wife',
-    '/api/sessions?limit=20&offset=0'
-  ])
+  assert.deepEqual(calls, ['/api/sessions?limit=20&offset=0&profile=wife', '/api/sessions?limit=20&offset=0'])
   assert.equal((result.sessions[0] as { id: string }).id, 's-1')
 })
 
@@ -658,10 +651,7 @@ test('per-session remote reads carry the owner profile scope', () => {
     pathWithRemoteOwnerScope('/api/sessions/s-1?limit=50', 'wife'),
     '/api/sessions/s-1?limit=50&profile=wife'
   )
-  assert.equal(
-    pathWithRemoteOwnerScope('/api/sessions/s-1', 'wife'),
-    '/api/sessions/s-1?profile=wife'
-  )
+  assert.equal(pathWithRemoteOwnerScope('/api/sessions/s-1', 'wife'), '/api/sessions/s-1?profile=wife')
   // Existing pagination params survive the scope.
   assert.equal(
     pathWithRemoteOwnerScope('/api/sessions/s-1/messages?limit=100&offset=200', 'wife'),

@@ -39,6 +39,7 @@ describe('markdown prose renders tilde ranges and unknown tags literally', () =>
     const text =
       'The proxy wraps calls in <tool_call> and results in <observation> blocks. ' +
       'Keep the rest visible after the tag. The message tail must NOT vanish.'
+
     const { container } = render(<MarkdownTextContent isRunning={false} text={text} />)
 
     expect(container.textContent).toContain('<tool_call>')
@@ -49,9 +50,7 @@ describe('markdown prose renders tilde ranges and unknown tags literally', () =>
   })
 
   it('leaves math comparisons untouched', () => {
-    const { container } = render(
-      <MarkdownTextContent isRunning={false} text={'如果 a < b 且 2<3 则原样保留。'} />
-    )
+    const { container } = render(<MarkdownTextContent isRunning={false} text={'如果 a < b 且 2<3 则原样保留。'} />)
 
     expect(container.textContent).toContain('a < b')
     expect(container.textContent).toContain('2<3')

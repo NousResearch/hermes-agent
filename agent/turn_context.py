@@ -765,6 +765,17 @@ def _collect_pre_llm_call_context(
             platform=getattr(agent, "platform", None) or "",
             parent_session_id=getattr(agent, "_parent_session_id", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
+            # Gateway route metadata (additive, "" outside a gateway). These are the
+            # values the gateway passed at agent construction, so a plugin can tell
+            # which chat / forum topic a turn came from. session_id above is an opaque
+            # conversation id and does not carry the route. Routing facts only —
+            # never an authorization claim.
+            gateway_session_key=getattr(agent, "_gateway_session_key", None) or "",
+            chat_id=getattr(agent, "_chat_id", None) or "",
+            chat_type=getattr(agent, "_chat_type", None) or "",
+            thread_id=getattr(agent, "_thread_id", None) or "",
+            user_id_alt=getattr(agent, "_user_id_alt", None) or "",
+            user_name=getattr(agent, "_user_name", None) or "",
         )
         try:
             # Spill oversized per-hook context to disk so a runaway plugin can't inflate every subsequent

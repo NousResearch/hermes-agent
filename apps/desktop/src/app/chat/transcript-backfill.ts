@@ -51,10 +51,25 @@ export function mergeOlderTranscriptPage(existing: ChatMessage[], olderPage: Cha
 
   const existingRowIndices = new Map<number, number>()
   const existingIdIndices = new Map<string, number>()
+  // Part-level durable identity. Hydration folds a turn's tool rows and its
+  // final reply into one bubble addressed by its FIRST source row
+  // (message.rowId), while the final reply rides inside as a text part with
+  // its own sourceRowId. Message-level matching alone misses that shared
+  // final row and appends the fold next to the settled live bubble, so the
+  // same reply renders twice (#123801).
+  // ponytail: fold-level dedup — a fold carrying unheld rows alongside the
+  // shared one is dropped whole; merge at part granularity if that loss matters.
+  const existingPartRowIndices = new Map<number, number>()
 
   existing.forEach((message, index) => {
     if (message.rowId !== undefined) {
       existingRowIndices.set(message.rowId, index)
+    }
+
+    for (const part of message.parts) {
+      if (part.type === 'text' && part.sourceRowId !== undefined) {
+        existingPartRowIndices.set(part.sourceRowId, index)
+      }
     }
 
     existingIdIndices.set(message.id, index)
@@ -68,10 +83,31 @@ export function mergeOlderTranscriptPage(existing: ChatMessage[], olderPage: Cha
   let pending: ChatMessage[] = []
   let lastAnchor = -1
 
+  const partRowAnchor = (message: ChatMessage): number | undefined => {
+    for (const part of message.parts) {
+      if (part.type !== 'text' || part.sourceRowId === undefined) {
+        continue
+      }
+
+      const anchor = existingRowIndices.get(part.sourceRowId) ?? existingPartRowIndices.get(part.sourceRowId)
+
+      if (anchor !== undefined) {
+        return anchor
+      }
+    }
+
+    return undefined
+  }
+
   for (const message of olderPage) {
     const anchor =
       (message.rowId !== undefined ? existingRowIndices.get(message.rowId) : undefined) ??
-      existingIdIndices.get(message.id)
+      existingIdIndices.get(message.id) ??
+      // Either side of the match may be a folded part row: a fetched single
+      // row already held inside a live fold, or a fetched fold carrying a
+      // row the store already holds.
+      (message.rowId !== undefined ? existingPartRowIndices.get(message.rowId) : undefined) ??
+      partRowAnchor(message)
 
     if (anchor === undefined) {
       pending.push(message)

@@ -4,7 +4,10 @@ Optional per-task ``output_schema`` (a JSON Schema object): the child gets an
 OUTPUT CONTRACT block appended to its context, the parent validates the final
 answer with jsonschema, and on failure sends exactly ONE bounded retry turn
 carrying the validation errors verbatim (more retries make frontier models
-drop fields that were right the first time; the schema is never re-pasted).
+drop fields that were right the first time). The retry re-pastes the schema
+and replays the child's transcript: a long child run compacts, and a child
+that cannot see the contract answers with a refusal that can itself validate
+and replace its real findings.
 """
 
 from __future__ import annotations
@@ -106,13 +109,37 @@ def validate_output(text: str, schema: Dict[str, Any]) -> Tuple[bool, List[str]]
     return not rendered, rendered
 
 
-def build_retry_message(errors: List[str]) -> str:
-    """Single bounded retry turn: errors verbatim, schema deliberately NOT re-pasted."""
+def build_retry_message(errors: List[str], schema: Optional[dict] = None) -> str:
+    """Single bounded retry turn: errors verbatim, plus the schema when the caller has it.
+
+    The schema is re-pasted because the child may no longer hold it. Omitting it assumes
+    the contract is still in the child's context, which is true only while that context
+    survives: a long child run compacts, and the OUTPUT CONTRACT block goes with it.
+    Measured on a research batch, 4/4 children answered the retry turn with an "output
+    contract schema was not provided" refusal — and against a permissive schema that
+    refusal VALIDATES, so it replaces the child's real findings with an empty shell.
+
+    ``schema=None`` keeps the original wording verbatim for callers that do not have it.
+    """
     error_block = "\n".join(f"- {e}" for e in errors)
+    if schema is None:
+        return ("Your previous final response was rejected by the output contract "
+                "validator. Validation errors:\n" f"{error_block}\n\n"
+                "Reply with ONLY the corrected JSON object matching the OUTPUT "
+                "CONTRACT schema from your task context. No prose, no explanations.")
+    try:
+        schema_block = json.dumps(schema, indent=2, sort_keys=True)
+    except (TypeError, ValueError):
+        schema_block = repr(schema)
     return ("Your previous final response was rejected by the output contract "
             "validator. Validation errors:\n" f"{error_block}\n\n"
-            "Reply with ONLY the corrected JSON object matching the OUTPUT "
-            "CONTRACT schema from your task context. No prose, no explanations.")
+            "OUTPUT CONTRACT schema (restated in full — do NOT rely on earlier "
+            "context, it may have been compacted away):\n"
+            f"```json\n{schema_block}\n```\n\n"
+            "Re-derive the answer from the work you already did and reply with ONLY "
+            "the corrected JSON object matching that schema. Do NOT report that the "
+            "schema or your context is missing — the schema is above. No prose, no "
+            "explanations.")
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

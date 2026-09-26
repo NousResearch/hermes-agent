@@ -1474,14 +1474,18 @@ class SessionSessionsMixin:
     def session_count(
         self, source: str = None, sources: List[str] = None, cwd_prefix: str = None,
         min_message_count: int = 0, include_archived: bool = False, archived_only: bool = False,
-        exclude_children: bool = False, exclude_sources: List[str] = None,
+        exclude_children: bool = False, exclude_sources: List[str] = None, exclude_hidden: bool = False,
     ) -> int:
-        """Count sessions with list_sessions_rich's filters so a paired "load more" total matches."""
+        """Count sessions with list_sessions_rich's filters so a paired "load more" total matches.
+        A listing total passes ``exclude_hidden``: the list drops hidden rows (except in the
+        archived-only view), so counting them promises pages that never arrive."""
         where_clauses, params = _session_filter_where(
             exclude_children=exclude_children, source=source, sources=sources,
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
             archived_only=archived_only, include_archived=include_archived,
         )
+        if exclude_hidden and not archived_only:
+            where_clauses.append("s.hidden = 0")
         return self._read_one(f"SELECT COUNT(*) FROM sessions s{_where_sql(where_clauses, ' ')}", params)[0]
 
     def session_count_ge(self, n: int = 1) -> bool:

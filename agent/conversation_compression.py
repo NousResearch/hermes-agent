@@ -1692,6 +1692,11 @@ def _adopt_live_compression_child(
     agent.session_id = child_session_id
     _rebind_session_context(child_session_id)
     agent._session_db_created = True
+    # The agent now owns the child session, so any prompt the parent cached belongs to a
+    # different session row: drop it before the seed below. The turn gates on this slot
+    # (``turn_context``: restore/rebuild runs only while it is None), so a parent prompt left
+    # in place would be sent for the child turn with no identity check at all.
+    agent._cached_system_prompt = None
     child_prompt = child.get("system_prompt")
     if child_prompt:
         # The tip's stored bytes are seeded straight into the cache slot the turn gates on

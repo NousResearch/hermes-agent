@@ -97,9 +97,15 @@ def _cfg() -> Dict:
 
 def external_backend_classes():
     from agent.vault_backends.bitwarden import BitwardenLoginBackend
-    from agent.vault_backends.keychain import MacOSKeychainLoginBackend
     from agent.vault_backends.onepassword import OnePasswordLoginBackend
-    return (OnePasswordLoginBackend, BitwardenLoginBackend, MacOSKeychainLoginBackend)
+    classes = [OnePasswordLoginBackend, BitwardenLoginBackend]
+    # The Keychain backend is the OS itself, not an installable manager: it exists as a source
+    # only on darwin, so the host gate lives at registration rather than in ``is_installed``
+    # (which detection tests patch wholesale).
+    if sys.platform == "darwin":
+        from agent.vault_backends.keychain import MacOSKeychainLoginBackend
+        classes.append(MacOSKeychainLoginBackend)
+    return tuple(classes)
 
 
 def is_installed(name: str) -> bool:

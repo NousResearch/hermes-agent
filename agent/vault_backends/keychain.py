@@ -61,7 +61,6 @@ import atexit
 import os
 import pathlib
 from pathlib import Path
-import pty
 import re
 import secrets
 import select
@@ -108,7 +107,12 @@ def _prompt_security(argv: Sequence[str], replies: Sequence[str],
     prompt from stalling). ``argv``/``env`` NEVER contain the reply lines. Returns a
     CompletedProcess: returncode 0 on clean exit, -9 if it had to be killed.
     """
-    prev_sigchld = signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+    # The pty prompt path only ever runs on macOS (`security` is the OS binary), so the
+    # POSIX-only module is imported here: a module-level import would break `import
+    # agent.vault_backends.keychain` on Windows for the CLI and test collection.
+    import pty
+
+    prev_sigchld = signal.signal(signal.SIGCHLD, signal.SIG_DFL)  # windows-footgun: ok — darwin-only pty path
     pid, master = None, None
     out = b""
     written = 0
@@ -123,7 +127,7 @@ def _prompt_security(argv: Sequence[str], replies: Sequence[str],
             # Inherited SIG_IGN on SIGCHLD (uv-managed CPython / asyncio callers set it)
             # would break the child's own wait() inside `security`, hanging the binary
             # before its first prompt — reset the default disposition before exec.
-            signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+            signal.signal(signal.SIGCHLD, signal.SIG_DFL)  # windows-footgun: ok — darwin-only pty path
             try:
                 os.execve(_SEC, [_SEC, *argv], dict(env or os.environ))
             except Exception:  # pragma: no cover
@@ -210,7 +214,7 @@ def _prompt_security(argv: Sequence[str], replies: Sequence[str],
             except OSError:
                 pass
         try:
-            signal.signal(signal.SIGCHLD, prev_sigchld)
+            signal.signal(signal.SIGCHLD, prev_sigchld)  # windows-footgun: ok — darwin-only pty path
         except ValueError:  # pragma: no cover — non-main thread
             pass
     return subprocess.CompletedProcess([_SEC, *argv], rc if rc is not None else -9, out, b"")
@@ -220,7 +224,7 @@ def _physical_lock(path: str) -> None:
     """Best-effort physical re-lock (attended-lease expiry / process exit)."""
     try:
         subprocess.run([_SEC, "lock-keychain", path],
-                       capture_output=True, timeout=_SEC_TIMEOUT)
+                       capture_output=True, stdin=subprocess.DEVNULL, timeout=_SEC_TIMEOUT)
     except Exception:
         pass
 
@@ -345,8 +349,8 @@ class MacOSKeychainLoginBackend(LoginBackend):
         try:
             return subprocess.run(  # noqa: S603 — argv list, no shell
                 [_SEC, *args], cwd=str(cwd) if cwd else str(self._file().parent),
-                capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=_SEC_TIMEOUT, env=self._env())
+                capture_output=True, stdin=subprocess.DEVNULL, text=True, encoding="utf-8",
+                errors="replace", timeout=_SEC_TIMEOUT, env=self._env())
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError(f"keychain operation timed out after {_SEC_TIMEOUT:.0f}s") from exc
         except OSError as exc:
@@ -366,7 +370,7 @@ class MacOSKeychainLoginBackend(LoginBackend):
         """Unattended mode: unlock with the sidecar password (read into this process)."""
         pw_path = self._pw_file()
         try:
-            pw = pw_path.read_text(encoding="utf-8").strip()
+            pw = pw_path.read_text(encoding="utf-8-sig").strip()
         except OSError:
             return False
         if not pw:
@@ -630,6 +634,6 @@ def provision(file: Optional[Path] = None, password_file: Optional[Path] = None,
     # 24h auto-lock, mirroring the hermes.keychain-db wrapper pattern; best-effort.
     subprocess.run(  # noqa: S603 — argv list, no shell
         [_SEC, "set-keychain-settings", "-ut", "86400", str(kc_path)],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=_SEC_TIMEOUT)
+        capture_output=True, stdin=subprocess.DEVNULL, text=True, encoding="utf-8",
+        errors="replace", timeout=_SEC_TIMEOUT)
     return kc_path, pw_path

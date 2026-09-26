@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   $wakeWord,
@@ -6,9 +6,12 @@ import {
   applyWakeStatus,
   applyWakeStopResult,
   armWakeWord,
+  releaseWakeWord,
   resetWakeWordState,
   resumeWakeAfterVoice,
   toggleWakeWord,
+  WAKE_OWNED_RETRY_MS,
+  wakeListenerRole,
   type WakeRequester
 } from './wake-word'
 
@@ -369,5 +372,82 @@ describe('resumeWakeAfterVoice (post-voice reconcile)', () => {
     await resumeWakeAfterVoice(request)
 
     expect($wakeWord.get()).toMatchObject({ available: false, listening: false })
+  })
+})
+
+describe('HUD handoff: one window holds the wake listener', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('the app window releases while a HUD is up; the HUD and a lone app window claim', () => {
+    expect(wakeListenerRole(false, true)).toBe('release')
+    expect(wakeListenerRole(false, false)).toBe('claim')
+    expect(wakeListenerRole(true, true)).toBe('claim')
+  })
+
+  it('release stops without persist, so wake_word.enabled stays on', async () => {
+    applyWakeStartResult({ phrase: 'hey hermes', started: true })
+
+    const request = requester(() => ({ stopped: true }))
+
+    await releaseWakeWord(request)
+
+    expect(request).toHaveBeenCalledWith('wake.stop', {})
+    expect($wakeWord.get()).toMatchObject({ enabled: true, listening: false, notice: '' })
+  })
+
+  it('a claiming window retries while the previous owner still holds the lease', async () => {
+    vi.useFakeTimers()
+    let starts = 0
+
+    const request = requester(method => {
+      if (method === 'wake.status') {
+        return { available: true, listening: false, phrase: 'hey hermes' }
+      }
+
+      starts += 1
+
+      // The app window's release lands after the HUD's first two attempts.
+      return starts < 3
+        ? { owner_surface: 'gui', reason: 'owned', started: false }
+        : { phrase: 'hey hermes', started: true }
+    })
+
+    const armed = armWakeWord(request, { retryOwned: 5 })
+    await vi.advanceTimersByTimeAsync(2 * WAKE_OWNED_RETRY_MS)
+    await armed
+
+    expect(starts).toBe(3)
+    expect($wakeWord.get()).toMatchObject({ listening: true, notice: '' })
+  })
+
+  it('gives up after retryOwned and keeps the refusal as the notice', async () => {
+    vi.useFakeTimers()
+
+    const request = requester(method =>
+      method === 'wake.status'
+        ? { available: true, listening: false, phrase: 'hey hermes' }
+        : { owner_surface: 'tui', reason: 'owned', started: false }
+    )
+
+    const armed = armWakeWord(request, { retryOwned: 2 })
+    await vi.advanceTimersByTimeAsync(2 * WAKE_OWNED_RETRY_MS)
+    await armed
+
+    expect(request).toHaveBeenCalledTimes(4) // status + first start + 2 retries
+    expect($wakeWord.get()).toMatchObject({ listening: false, notice: 'another surface owns the listener' })
+  })
+
+  it('does not retry other refusals', async () => {
+    const request = requester(method =>
+      method === 'wake.status'
+        ? { available: true, listening: false, phrase: 'hey hermes' }
+        : { reason: 'disabled', started: false }
+    )
+
+    await armWakeWord(request, { retryOwned: 5 })
+
+    expect(request).toHaveBeenCalledTimes(2)
   })
 })

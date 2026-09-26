@@ -1021,24 +1021,24 @@ class CLICommandsMixin:
         """Handle /copy [number] — copy assistant output to clipboard."""
         from cli import _assistant_copy_text
         arg = _command_arg(cmd_original)
+        # Number only responses with copyable text, as the TUI does: a turn that only called
+        # tools is not a response the user can see or copy, so it must not take a number.
         assistant = [m for m in self.conversation_history if m.get("role") == "assistant"]
         if not assistant:
             return _cp(f"  {_t('copy.nothing_yet')}")
+        responses = [text for m in assistant if (text := _assistant_copy_text(m.get("content")))]
+        if not responses:
+            return _cp(f"  {_t('copy.nothing_in_responses')}")
         if arg:
             try:
                 idx = int(arg) - 1
             except ValueError:
                 return _cp(f"  {_t('copy.usage')}")
-            if idx < 0 or idx >= len(assistant):
-                return _cp(f"  {_t('copy.invalid_number', max=len(assistant))}")
-        else:  # latest response that has copyable text
-            idx = next((i for i in range(len(assistant) - 1, -1, -1)
-                        if _assistant_copy_text(assistant[i].get("content"))), -1)
-            if idx < 0:
-                return _cp(f"  {_t('copy.nothing_in_responses')}")
-        text = _assistant_copy_text(assistant[idx].get("content"))
-        if not text:
-            return _cp(f"  {_t('copy.nothing_in_response')}")
+            if idx < 0 or idx >= len(responses):
+                return _cp(f"  {_t('copy.invalid_number', max=len(responses))}")
+        else:
+            idx = len(responses) - 1
+        text = responses[idx]
         try:
             from hermes_cli.clipboard import is_remote_shell_session, write_clipboard_text
             # Over SSH native tools write the REMOTE clipboard; OSC 52 reaches the user's terminal.

@@ -199,6 +199,56 @@ def _launcher_fallback(command: str, *, windows: Optional[bool] = None) -> str:
 _node_fallback = _launcher_fallback
 
 
+def _uv_fallback(command: str, *, windows: Optional[bool] = None) -> str:
+    """PM's store ``uv``/``uvx`` for a bare ``uv``/``uvx``; *command* unchanged when none exists.
+
+    Asked first, before ``_launcher_fallback``: PM keeps uv off PATH on purpose (``Uv.on_path``
+    is False) and stages it under ``<home>/tools/uv-<version>-<target>`` (#101269). Upstream's
+    known-dir table leads with the managed ``<home>/bin`` ahead of the user's install dirs, and
+    the store is where that managed uv lives — deferring to ``~/.local/bin`` first would
+    silently invert that managed-before-user order. Only a machine with no store entry falls
+    through to those directories. ``uvx`` ships beside ``uv`` inside the store
+    entry, so read the entry read-only (``pm.operations.uv_binary``) and pick the sibling the
+    config asked for; ``windows`` injectable, as for ``_npx_bin_candidates``."""
+    from pm.operations import uv_binary
+
+    uv = uv_binary()
+    if uv is None:
+        return command
+    directory = os.path.dirname(str(uv))
+    stem = os.path.basename(command)
+    if stem.lower().endswith(".exe"):
+        stem = stem[:-4]
+    is_windows = os.name == "nt" if windows is None else windows
+    suffixes = (".exe", "") if is_windows else ("",)
+    for suffix in suffixes:
+        candidate = os.path.join(directory, stem + suffix)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return command
+
+
+def _pin_store_uv_state(env: dict) -> None:
+    """Route the store uv's writes into Hermes state (Hermes-owned writes never reach
+    ordinary user uv state; these are the four axes uv writes through).
+
+    The cache/python paths are the ones ``pm.packages.uv_cache_dir()`` resolves — the cache is
+    machine-scoped and shared across profiles — but that function is not called: it seeds a
+    shipped bundle cache on first use, and a resolver must stay read-only. The tool axes have no
+    PM equivalent, so they land beside the cache: ``uvx`` installs the tool environment into
+    ``UV_TOOL_DIR`` (probed: even a failed run creates it), and its default would be
+    ``~/.local/share/uv/tools`` — ordinary user uv state. ``setdefault`` so a server config's
+    own explicit ``UV_*`` env still wins; the safe-env allowlist already strips the user's shell
+    values."""
+    from hermes_constants import get_default_hermes_root
+
+    cache = get_default_hermes_root() / "cache" / "uv"
+    env.setdefault("UV_CACHE_DIR", str(cache))
+    env.setdefault("UV_PYTHON_INSTALL_DIR", str(cache.parent / "uv-python"))
+    env.setdefault("UV_TOOL_DIR", str(cache.parent / "uv-tools"))
+    env.setdefault("UV_TOOL_BIN_DIR", str(cache.parent / "uv-tool-bin"))
+
+
 def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
     """Resolve a stdio command against the exact subprocess env (bare launchers under a filtered PATH).
 
@@ -207,8 +257,9 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
     "resolve" against an env the child will never be spawned with. An absent child PATH is a
     miss; an explicitly empty one keeps its cwd-only meaning (same distinction the child's
     ``execvp`` will see). Bare ``npx``/``npm``/``node``/``uv``/``uvx`` still fall through to
-    their explicit well-known install directories, everything else stays as-written for an
-    honest spawn failure."""
+    their explicit well-known install directories; a bare ``uv``/``uvx`` tries PM's own store
+    first and only then those directories — everything else stays as-written for an honest
+    spawn failure."""
     resolved_command = os.path.expanduser(str(command).strip())
     resolved_env = dict(env or {})
     if os.sep not in resolved_command:
@@ -219,7 +270,15 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
         if which_hit:
             resolved_command = which_hit
         elif resolved_command in {"npx", "npm", "node", "uv", "uvx"}:
-            resolved_command = _launcher_fallback(resolved_command)
+            store_hit = _uv_fallback(resolved_command) if resolved_command in {"uv", "uvx"} else resolved_command
+            if store_hit != resolved_command:
+                resolved_command = store_hit
+                _pin_store_uv_state(resolved_env)
+            else:
+                # No store entry: the well-known install dirs (which still carry the
+                # managed <home>/bin slot first) answer, and a bare command that misses
+                # everywhere stays bare for an honest spawn failure.
+                resolved_command = _launcher_fallback(resolved_command)
     command_dir = os.path.dirname(resolved_command)
     if command_dir:
         resolved_env = _prepend_path(resolved_env, command_dir)

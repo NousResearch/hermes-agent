@@ -17,9 +17,9 @@ def _is_windows() -> bool:
     return sys.platform == "win32"
 
 
-#: Launcher command names install.ps1's Set-PathVariable exposes from the
-#: managed binary dir (the default Hermes root's ``bin``, next to uv.exe)
-#: on the user PATH. Keep in lockstep with WINDOWS_BIN_LAUNCHERS in
+#: Launcher command names install.ps1's Set-LauncherUserPath exposes from the
+#: managed binary dir (the default Hermes root's ``bin``) on the user PATH.
+#: Keep in lockstep with WINDOWS_BIN_LAUNCHERS in
 #: hermes_cli/_launchers.py and scripts/install.ps1.
 _WINDOWS_BIN_LAUNCHERS = ("hermes", "hermes-acp")
 

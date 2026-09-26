@@ -600,9 +600,11 @@ def _managed_runtime_path_entries() -> list[str]:
     - the pm store's node/npm entries — installed to satisfy the desktop and
       browser toolchain. ``tools/browser_tool.py`` already does this for its own
       subprocesses; the agent's shell deserves the same.
-    - ``$HERMES_HOME/bin`` — the managed ``uv``. ``install.sh`` writes it there
-      and nothing has ever put that directory on PATH, so an install whose only
-      uv is the managed one looks uv-less to both the agent and the model.
+    - ``$HERMES_HOME/bin`` — the published ``hermes``/``hermes-acp`` launchers,
+      plus, on a pre-PM home, the ``uv``/``uvx`` an older installer dropped
+      there until the update self-heal removes them. Nothing else puts that
+      directory on the subshell PATH, so an install whose only launcher (or
+      only legacy uv) lives there is invisible to both the agent and the model.
 
     Resolved per call rather than cached in a module constant because
     ``get_hermes_home()`` is profile-scoped and a managed runtime can appear

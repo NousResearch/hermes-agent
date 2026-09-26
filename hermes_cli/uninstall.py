@@ -409,6 +409,73 @@ def remove_portable_tooling_windows(hermes_home: Path) -> list[Path]:
     return _remove_each((t for t in targets if t.exists()), lambda t: shutil.rmtree(t) or True)
 
 
+#: The pre-PM uv family an old install/`uv self` pair dropped in ``$HERMES_HOME/bin``.
+LEGACY_MANAGED_UV_NAMES = ("uv", "uvx", "uv.exe", "uvx.exe")
+
+#: Bounded wait on PM's install lock before touching those binaries: legacy migration is a
+#: shared mutation under the one install lock, fail-closed on timeout. Module-level so
+#: tests can shorten it.
+_LEGACY_UV_LOCK_TIMEOUT = 10.0
+
+
+def _pm_install_lock():
+    """PM's shared install lock, but only where a store already exists to serialize with.
+
+    The root is ``writable_store_root()`` because that is the one PM's installs lock:
+    ``ensure()`` and ``_InstallOperation.lock()`` both build ``Store(writable_store_root())``.
+    ``store_root()`` alone would be a *different* file on a sealed payload install (where it
+    resolves inside the read-only payload) — locking it would serialize against nobody.
+
+    Taking the lock unconditionally would create ``<store>/.install.lock`` — i.e. the store dir —
+    during an uninstall that had already removed it. With no store, no PM operation can be
+    mid-flight, so there is nothing to serialize against.
+    """
+    from contextlib import nullcontext
+
+    from pm.paths import writable_store_root
+    from pm.store import Store
+
+    root = writable_store_root()
+    if not root.is_dir():
+        return nullcontext()
+    return Store(root).install_lock(timeout=_LEGACY_UV_LOCK_TIMEOUT)
+
+
+def remove_legacy_managed_uv(hermes_home: Path) -> list[Path]:
+    """Delete the pre-PM ``uv``/``uvx`` binaries sitting in ``$HERMES_HOME/bin``.
+
+    PM stages uv inside its own store and keeps it off PATH (``Uv.on_path`` is
+    False), so these are dead weight — and load-bearing while they last: on
+    Windows ``install.ps1``'s ``Set-LauncherUserPath`` PREPENDS that directory
+    to the User PATH, so a leftover ``uv.exe`` shadowed the user's own uv in
+    every shell (#101269), and ``tools/environments/local.py`` appends the same
+    directory to the agent terminal's PATH, where it shadowed it again.
+
+    Only the binaries go — the directory holds the ``hermes`` launchers and may
+    hold the user's own scripts. Never raises; returns what was removed.
+    """
+    removed: list[Path] = []
+    try:
+        with _pm_install_lock():
+            for uv_name in LEGACY_MANAGED_UV_NAMES:
+                uv_binary = hermes_home / "bin" / uv_name
+                if uv_binary.is_file():
+                    try:
+                        uv_binary.unlink()
+                        removed.append(uv_binary)
+                    except Exception as e:
+                        log_warn(f"Could not remove {uv_binary}: {e}")
+    except OSError as e:
+        # Fail closed either way: ``TimeoutError`` (an ``OSError`` subclass) means a PM
+        # operation may still be writing, and a payload store that is read-only cannot even
+        # create the lock file. Leave the binaries for the next run — doctor and `hermes
+        # update` both retry — and never let it escape: doctor's check runs with
+        # ``on_error=None``, so an exception here would abort the whole run.
+        log_warn(f"Skipped legacy uv cleanup: {e}")
+        return []
+    return removed
+
+
 def remove_legacy_runtime_trees(hermes_home: Path) -> list[Path]:
     """Delete managed-runtime trees a PRE-SPLIT install left in HERMES_HOME.
 
@@ -419,8 +486,8 @@ def remove_legacy_runtime_trees(hermes_home: Path) -> list[Path]:
     survives "keep my data" uninstalls, because it is not data.
 
     Only the exact managed layout is removed: ``node/`` (a tree the
-    installer owned wholesale) and ``bin/uv`` (the single binary, NOT the
-    whole ``bin/`` dir — a user's own scripts can live there). Profile
+    installer owned wholesale) and the ``bin/uv`` family (the binaries, NOT
+    the whole ``bin/`` dir — a user's own scripts can live there). Profile
     state is never touched.
     """
     removed: list[Path] = []
@@ -433,14 +500,7 @@ def remove_legacy_runtime_trees(hermes_home: Path) -> list[Path]:
         except Exception as e:
             log_warn(f"Could not remove {node_tree}: {e}")
 
-    for uv_name in ("uv", "uv.exe"):
-        uv_binary = hermes_home / "bin" / uv_name
-        if uv_binary.is_file():
-            try:
-                uv_binary.unlink()
-                removed.append(uv_binary)
-            except Exception as e:
-                log_warn(f"Could not remove {uv_binary}: {e}")
+    removed.extend(remove_legacy_managed_uv(hermes_home))
 
     return removed
 

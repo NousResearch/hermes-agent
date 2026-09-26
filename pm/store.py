@@ -391,18 +391,28 @@ class Store:
         return target
 
     @contextmanager
-    def install_lock(self):
-        """Serialize writers using the same advisory lock as runtime publication."""
+    def install_lock(self, *, timeout: float | None = None):
+        """Serialize writers using the same advisory lock as runtime publication.
+
+        ``timeout`` bounds the whole wait and raises ``TimeoutError`` instead of queueing
+        indefinitely: one shared lock, fail-closed on timeout. A caller that must not hang
+        behind a long build (an update self-heal, a doctor ``--fix``) passes one; the default
+        keeps waiting, as PM's own installs do.
+        """
         from pm.filesystem import lock_fd
         self.root.mkdir(parents=True, exist_ok=True)
         lock = self.root / ".install.lock"
         fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o600)
+        deadline = None if timeout is None else time.monotonic() + timeout
         try:
             # A second `hermes pm install` behind an sdist build otherwise sits
             # silent for minutes; say what it is waiting on.
-            if not lock_fd(fd, wait=True, timeout=2):
+            first = 2.0 if deadline is None else min(2.0, timeout)
+            if not lock_fd(fd, wait=True, timeout=first):
                 print(f"waiting for {lock} (another PM operation holds it)", file=sys.stderr, flush=True)
-                lock_fd(fd, wait=True)
+                remaining = None if deadline is None else max(deadline - time.monotonic(), 0.0)
+                if not lock_fd(fd, wait=True, timeout=remaining):
+                    raise TimeoutError(f"install lock {lock} still held after {timeout}s")
             yield
         finally:
             os.close(fd)

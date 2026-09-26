@@ -916,6 +916,29 @@ def _print_plugin_compat_notice() -> None:
     print(f"\n{colour}⚠  {lines[0]}\033[0m\n   {lines[1]}")
 
 
+def _purge_legacy_managed_uv() -> None:
+    """Drop the pre-PM ``uv``/``uvx`` a legacy install left in each home's ``bin``.
+
+    PM stages uv in its own store and keeps it off PATH, so those binaries are
+    dead weight — and they still shadow the user's own uv while they last: on
+    Windows ``install.ps1`` PREPENDS ``bin`` to the User PATH, and
+    ``tools/environments/local.py`` appends it to the agent terminal (#101269).
+
+    Runs only once the store carries its own uv: until then the legacy binary is
+    the only uv this install has, and removing it would replace a working
+    toolchain with none. Profiles get their own copy because the pre-PM resolver
+    was profile-scoped, so ``ensure_uv()`` could install one per home.
+    """
+    import pm
+    from hermes_cli.profiles import list_profiles
+    from hermes_cli.uninstall import remove_legacy_managed_uv
+
+    if not pm.is_installed("uv"):
+        return
+    for profile in list_profiles(lazy_skill_count=True):
+        remove_legacy_managed_uv(profile.path)
+
+
 def _print_post_update_notices_and_self_heals() -> None:
     """Best-effort notices (FTS optimize, curator) and self-heals (FHS PATH, ACP launcher,
     Windows bin launchers, cua-driver refresh) that run after the summary."""
@@ -936,6 +959,7 @@ def _print_post_update_notices_and_self_heals() -> None:
         ('FHS PATH guard check failed: %s', _ensure_fhs_path_guard),
         ('CLI launcher exposure failed: %s', lambda: _launchers.expose_cli(_m().PROJECT_ROOT)),
         ('Windows bin launcher migration failed: %s', _migrate_windows_bin_path),
+        ('Legacy managed uv cleanup failed: %s', _purge_legacy_managed_uv),
         ('cua-driver refresh failed: %s', _refresh_cua_driver_after_update),
         ('Default PM tool install failed: %s', _install_default_tools_after_update),
         ('Checkpoint footprint notice failed: %s', _print_checkpoint_footprint_notice),

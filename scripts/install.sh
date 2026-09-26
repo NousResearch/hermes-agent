@@ -213,21 +213,6 @@ uv_bootstrap_target() {
     esac
 }
 
-# version_at_least HAVE WANT: dotted numeric comparison; a pre-release or
-# build suffix on a component is ignored ("0.12.3-rc1" reads as 0.12.3).
-version_at_least() {
-    local have="$1" want="$2" h w
-    while [ -n "$want" ]; do
-        h="${have%%.*}"; h="${h%%[!0-9]*}"
-        w="${want%%.*}"; w="${w%%[!0-9]*}"
-        [ "${h:-0}" -gt "${w:-0}" ] && return 0
-        [ "${h:-0}" -lt "${w:-0}" ] && return 1
-        case "$have" in *.*) have="${have#*.}" ;; *) have="" ;; esac
-        case "$want" in *.*) want="${want#*.}" ;; *) want="" ;; esac
-    done
-    return 0
-}
-
 # Provision uv for this host from the pinned pm/lock.json artifact. Stages
 # the EXACT artifact pm itself uses into the same store slot
 # (<store>/uv-<version>-<target>/, the store pm's store_root() resolves),
@@ -236,18 +221,11 @@ version_at_least() {
 UV_CMD=""
 ensure_uv() {
     [ -n "$UV_CMD" ] && return 0
-    local _path_uv _path_version
-    if _path_uv="$(command -v uv 2>/dev/null)"; then
-        # Developer shortcut: a uv on PATH fetches nothing, but only one at
-        # least as new as the pin -- the bootstrap passes flags older uv
-        # lacks (`python install --no-bin` arrived in 0.7).
-        _path_version="$("$_path_uv" --version 2>/dev/null | awk '{print $2}')"
-        if [ -n "$_path_version" ] && version_at_least "$_path_version" "$UV_PIN_VERSION"; then
-            UV_CMD="$_path_uv"
-            return 0
-        fi
-        log_warn "uv on PATH (${_path_version:-does not run}) is older than the pinned $UV_PIN_VERSION; staging the pin"
-    fi
+    # No PATH borrow (#101269): a uv the user installed is theirs, and it is
+    # not the pin — running it here makes a user-controlled binary the byte
+    # authority for the whole bootstrap, and leaves the store without the copy
+    # pm/doctor/MCP resolve later. The staged copy is sha256-verified against
+    # pm/lock.json, and a rerun hits it and fetches nothing.
     local _target
     if ! _target="$(uv_bootstrap_target)"; then
         fail "no pinned uv build for this platform ($(uname -s) $(uname -m)); install uv manually: https://docs.astral.sh/uv/"
@@ -564,6 +542,14 @@ stage_venv() {
 # The application dependency graph is never installed in this interpreter.
 bootstrap_python() {
     ensure_uv
+    # uv's default state (~/.cache/uv, ~/.local/share/uv) belongs to the USER's
+    # uv, so a Hermes download must not land in it (#101269). Pin both to the
+    # Hermes root: the cache matches pm.packages.uv_cache_dir(), and the python
+    # dir is what the `find` below reads back after `python install` writes it.
+    # --system still finds a host interpreter, so a machine with one downloads
+    # nothing either way.
+    export UV_CACHE_DIR="$HERMES_HOME/cache/uv"
+    export UV_PYTHON_INSTALL_DIR="$HERMES_HOME/cache/uv-python"
     local _py
     # Read packages.python.version by following object names and braces, not
     # indentation — same pre-Python reader contract as setup-hermes.sh's pin().

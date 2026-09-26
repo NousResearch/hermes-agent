@@ -75,6 +75,119 @@ def test_node_fallback_uses_active_profile_home(tmp_path, monkeypatch):
     assert command == str(npx_path)
 
 
+def test_resolve_stdio_command_resolves_bare_uvx_against_pms_store(tmp_path, monkeypatch):
+    """A bare ``uvx`` resolves against PM's store, and stays bare without one (#101269).
+
+    PM keeps uv off PATH (``Uv.on_path`` is False) and stages it under
+    ``<home>/tools/uv-<version>-<target>``, which no well-known-install table covers — so before
+    this, ``command: uvx`` resolved to nothing on a machine with no uv of its own. The store is
+    asked first: the ``<HERMES_HOME>/bin`` slot it replaces held this managed uv ahead of
+    ``~/.local/bin`` and Homebrew, so asking the user's dirs first would invert that order. The
+    other half matters as much — with no store either, the lookup must keep the bare command, so
+    the spawn fails honestly instead of on a path we invented. The access probe is pinned to the
+    store entry so a uv the host running this test has installed cannot answer for a directory the
+    resolver only reaches when there is no store."""
+    import pm._uv
+
+    entry = tmp_path / "tools" / "uv-0.0.0-darwin-arm64"
+    entry.mkdir(parents=True)
+    for name in ("uv", "uvx"):
+        binary = entry / name
+        binary.write_text("", encoding="utf-8")
+        binary.chmod(0o755)
+    empty_path = str(tmp_path / "empty")
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("HOME", str(tmp_path / "user"))
+    monkeypatch.setattr(
+        "tools.mcp_tool_config.os.access",
+        lambda path, mode: str(path).startswith(str(entry)),
+    )
+
+    monkeypatch.setattr(pm._uv, "_toolchain", lambda **kwargs: (entry / "uv", None))
+    command, env = _resolve_stdio_command("uvx", {"PATH": empty_path})
+    assert command == str(entry / "uvx")
+    assert env["PATH"].split(os.pathsep)[0] == str(entry)  # uvx's dir wins the lookup
+
+    monkeypatch.setattr(pm._uv, "_toolchain", lambda **kwargs: None)
+    command, env = _resolve_stdio_command("uvx", {"PATH": empty_path})
+    assert command == "uvx"           # honest miss, not a fabricated path
+    assert env["PATH"] == empty_path  # untouched: no command_dir to prepend
+
+
+def test_store_uv_beats_a_user_installed_uvx(tmp_path, monkeypatch):
+    """The store answers before the user's own install dirs (#101269).
+
+    ``~/.local/bin/uvx`` exists *and* a store entry exists: the managed one wins — the
+    managed-before-user order upstream's ``<HERMES_HOME>/bin`` slot establishes. The
+    converse — no store, user dir wins — is covered by
+    ``test_resolve_stdio_command_finds_uvx_in_user_local_bin``, whose ``HERMES_HOME`` has none.
+    """
+    import pm._uv
+
+    user_bin = tmp_path / "user" / ".local" / "bin"
+    user_bin.mkdir(parents=True)
+    user_uvx = user_bin / "uvx"
+    user_uvx.write_text("", encoding="utf-8")
+    user_uvx.chmod(0o755)
+
+    entry = tmp_path / "tools" / "uv-0.0.0-darwin-arm64"
+    entry.mkdir(parents=True)
+    for name in ("uv", "uvx"):
+        binary = entry / name
+        binary.write_text("", encoding="utf-8")
+        binary.chmod(0o755)
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("HOME", str(tmp_path / "user"))
+    monkeypatch.setattr(pm._uv, "_toolchain", lambda **kwargs: (entry / "uv", None))
+
+    command, _env = _resolve_stdio_command("uvx", {"PATH": str(tmp_path / "empty")})
+    assert command == str(entry / "uvx")
+
+
+def test_store_uv_writes_land_in_hermes_state(tmp_path, monkeypatch):
+    """The store uv's cache, Python and tool dirs go under the Hermes root, and a config's own
+    ``UV_*`` still wins (a Hermes-owned uv never writes ordinary user uv state).
+
+    The tool axes matter as much as the cache: ``uvx`` installs its tool environment into
+    ``UV_TOOL_DIR``, whose default is ``~/.local/share/uv/tools`` — so leaving it unpinned hands
+    an MCP launch a write into the user's own uv state."""
+    import pm._uv
+    from hermes_constants import get_default_hermes_root
+
+    entry = tmp_path / "tools" / "uv-0.0.0-darwin-arm64"
+    entry.mkdir(parents=True)
+    for name in ("uv", "uvx"):
+        binary = entry / name
+        binary.write_text("", encoding="utf-8")
+        binary.chmod(0o755)
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("HOME", str(tmp_path / "user"))
+    monkeypatch.setattr(pm._uv, "_toolchain", lambda **kwargs: (entry / "uv", None))
+
+    command, env = _resolve_stdio_command("uvx", {"PATH": str(tmp_path / "empty")})
+    assert command == str(entry / "uvx")
+    root = get_default_hermes_root()
+    assert root == tmp_path / "hermes"  # this test's home, never the developer's real one
+    assert env["UV_CACHE_DIR"] == str(root / "cache" / "uv")
+    assert env["UV_PYTHON_INSTALL_DIR"] == str(root / "cache" / "uv-python")
+    assert env["UV_TOOL_DIR"] == str(root / "cache" / "uv-tools")
+    assert env["UV_TOOL_BIN_DIR"] == str(root / "cache" / "uv-tool-bin")
+    # None of the four may land under the user's own home.
+    for key in ("UV_CACHE_DIR", "UV_PYTHON_INSTALL_DIR", "UV_TOOL_DIR", "UV_TOOL_BIN_DIR"):
+        assert not env[key].startswith(str(tmp_path / "user")), key
+
+    _command, env = _resolve_stdio_command(
+        "uvx", {"PATH": str(tmp_path / "empty"), "UV_CACHE_DIR": "/config/uv-cache",
+                "UV_TOOL_DIR": "/config/uv-tools"})
+    assert env["UV_CACHE_DIR"] == "/config/uv-cache"                      # config wins
+    assert env["UV_TOOL_DIR"] == "/config/uv-tools"
+    assert env["UV_PYTHON_INSTALL_DIR"] == str(root / "cache" / "uv-python")
+    assert env["UV_TOOL_BIN_DIR"] == str(root / "cache" / "uv-tool-bin")
+
+
 def test_resolve_stdio_command_falls_back_to_usr_local_bin():
     """When ``npx`` isn't on the filtered PATH and isn't under ``$HERMES_HOME/node/bin``
     or ``~/.local/bin``, the resolver should still locate it at ``/usr/local/bin/npx``.

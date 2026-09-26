@@ -1,9 +1,9 @@
 """Guard: Hermes-owned subprocesses must not resolve managed runtimes by bare PATH.
 
-Hermes installs runtimes for itself — ``uv`` at ``$HERMES_HOME/bin/uv``, Node at
-``$HERMES_HOME/node``. Neither directory is on the ambient PATH of an arbitrary
-process, so ``shutil.which("uv")`` / ``shutil.which("node")`` in Hermes's own
-code has two failure modes:
+Hermes installs runtimes for itself — ``uv`` in the PM store (``$HERMES_HOME/
+tools/uv-<version>-<target>``) and Node under ``$HERMES_HOME/node``. Neither
+lands on the ambient PATH of an arbitrary process, so ``shutil.which("uv")`` /
+``shutil.which("node")`` in Hermes's own code has two failure modes:
 
 * the managed runtime is invisible, so the caller reports "not installed" or
   degrades to a slower tier on a machine that has exactly what it needed; and
@@ -12,8 +12,9 @@ code has two failure modes:
   keep resolving it across reboots.
 
 The fix per call site is one of ``find_node_executable()``,
-``iter_hermes_node_dirs()``, ``resolve_uv()``, or ``ensure_uv()``. This test is
-the ratchet that stops a new bare lookup from being added back.
+``iter_hermes_node_dirs()``, ``pm.uv_binary()`` (lookup) or ``pm.ensure("uv")``
+(may install). This test is the ratchet that stops a new bare lookup from being
+added back.
 
 Reading source is normally banned (see AGENTS.md). It is the right tool here and
 only here: the property under test is "no call site anywhere in the tree spells
@@ -327,11 +328,11 @@ def test_no_unreviewed_bare_managed_runtime_lookups():
     assert not unexpected, (
         "Bare PATH lookup for a Hermes-managed runtime.\n\n"
         + "\n".join(f"  {rel}:{lineno}  which({cmd!r})" for rel, cmd, lineno in unexpected)
-        + "\n\n$HERMES_HOME/bin (uv) and $HERMES_HOME/node are not on an "
+        + "\n\nThe PM store's uv and $HERMES_HOME/node are not on an "
         "arbitrary process's PATH, so this resolves a system copy — or nothing "
         "— on an install that has a managed one.\n"
         "Use instead:\n"
-        "  uv       -> managed_uv.resolve_uv() (lookup) or ensure_uv() (may install)\n"
+        "  uv       -> pm.uv_binary() (lookup) or pm.ensure('uv') (may install)\n"
         "  node/npm -> hermes_constants.find_node_executable()\n"
         "  PATH env -> hermes_constants.iter_hermes_node_dirs()\n"
         "If PATH really is the right question, add the site to _ALLOWED with a "

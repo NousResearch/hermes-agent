@@ -295,6 +295,9 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark', chatFontFamily 
     '--ui-success': harmonize('#10b981', midground, 0.25),
     '--dt-font-sans': resolveChatFontFamily(chatFontFamily, typo.fontSans),
     '--dt-font-mono': typo.fontMono,
+    ...(typo.baseSize ? { '--dt-base-size': typo.baseSize } : {}),
+    ...(typo.lineHeight ? { '--dt-line-height': typo.lineHeight } : {}),
+    ...(typo.letterSpacing ? { '--dt-letter-spacing': typo.letterSpacing } : {}),
     '--noise-opacity-mul': isDark ? 'calc(0.04 / 0.21)' : 'calc(0.34 / 0.21)'
   }
 

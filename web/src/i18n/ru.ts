@@ -150,7 +150,7 @@ export const ru: Translations = {
     deleteEmpty: "Удалить пустые",
     deleteEmptyConfirmTitle: "Удалить пустые сессии?",
     deleteEmptyConfirmMessage:
-      "Это безвозвратно удалит {count} сессий без сообщений. Активные и архивные сессии будут пропущены. Это действие нельзя отменить.",
+      "Будут безвозвратно удалены пустые сессии ({count}). Активные и архивные сессии будут пропущены. Это действие нельзя отменить.",
     emptySessionsDeleted: "Удалено пустых сессий: {count}",
     failedToDeleteEmpty: "Не удалось удалить пустые сессии",
     selectSession: "Выбрать сессию",
@@ -158,9 +158,9 @@ export const ru: Translations = {
     clearSelection: "Снять выделение",
     selectedCount: "Выбрано: {count}",
     deleteSelected: "Удалить {count}",
-    deleteSelectedConfirmTitle: "Удалить {count} сессий?",
+    deleteSelectedConfirmTitle: "Удалить выбранные сессии ({count})?",
     deleteSelectedConfirmMessage:
-      "Это безвозвратно удалит {count} выбранных сессий и все их сообщения. Это действие нельзя отменить.",
+      "Выбранные сессии ({count}) и все их сообщения будут безвозвратно удалены. Это действие нельзя отменить.",
     selectedSessionsDeleted: "Удалено сессий: {count}",
     failedToDeleteSelected: "Не удалось удалить выбранные сессии",
     resumeInChat: "Продолжить в чате",

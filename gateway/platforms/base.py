@@ -1689,6 +1689,7 @@ class ExecApprovalPrompt:
     description: str
     smart_denied: bool
     metadata: Optional[dict[str, Any]] = None
+    request_id: Optional[str] = None
 
     @property
     def choices(self) -> list[str]:

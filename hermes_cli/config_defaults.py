@@ -257,6 +257,12 @@ DEFAULT_CONFIG = {
         # vision_analyze and prepend the description. vision_analyze stays a tool regardless.
         "image_input_mode": "auto",
         "disabled_toolsets": [],
+        # Global thinking/reasoning effort for the main agent. Empty = provider default (for local
+        # thinking models such as Qwen3.6/3.8 that means thinking ON). `none`/`false`/`off` disables
+        # thinking; minimal|low|medium|high|xhigh|max|ultra set a level. Read by
+        # hermes_constants.resolve_reasoning_config(), written by the setup wizard (`hermes setup`)
+        # and `/reasoning --global`; a matching entry in `reasoning_overrides` below wins over it.
+        "reasoning_effort": "",
         # Model name (any reasonable spelling) -> effort level; overrides agent.reasoning_effort
         # when the current model matches. Edit in config.yaml (no CLI support: dots in keys).
         "reasoning_overrides": {},

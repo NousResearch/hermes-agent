@@ -730,6 +730,15 @@ def _handle_complete(args: dict, **kw) -> str:
                 f"kanban_complete blocked: {empty_err}. Your task is still in-flight (no state "
                 f"change). Retry kanban_complete with a non-empty summary or result describing "
                 f"what was done.")
+        except kb.UnlandedCardError as land_err:
+            # A landing card cannot close on approval or on green checks. Nothing
+            # was mutated and the event landed; name the missing evidence and the
+            # two ways forward so the worker retries instead of stalling.
+            return tool_error(
+                f"kanban_complete blocked: {land_err} Your task is still in-flight (no state "
+                f"change). Retry with metadata carrying the landed evidence "
+                f"(merged_commit / deploy_stamp / live_sha256 + merged_blob_sha256), or — if the "
+                f"deliverable is not a landing — retry without the landing claim.")
         task = kb.get_task(conn, tid)
         if not ok:
             # complete_task reports every refusal as bare False; a reopened or

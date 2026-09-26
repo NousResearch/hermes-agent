@@ -446,6 +446,30 @@ def _cmd_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_routed(routed: list[dict]) -> None:
+    """Report what ``diagnostics --route`` filed (or would file, dry-run)."""
+    if not routed:
+        return
+    print(f"stranded-card routing: {len(routed)} card(s) considered")
+    for entry in routed:
+        scope = " (whole-board population)" if entry.get("collapsed") else ""
+        if entry["outcome"] == "filed":
+            print(f"  filed  {entry['repair_card']} for {entry['task_id']}{scope} "
+                  f"({entry['cause']} -> {entry['owner']}, severity {entry['severity']})")
+        elif entry["outcome"] == "dry_run":
+            print(f"  dry-run would file a repair card for {entry['task_id']}{scope} "
+                  f"({entry['cause']} -> {entry['owner']}, severity {entry['severity']})")
+        elif entry["outcome"] == "existing":
+            print(f"  exists {entry['repair_card']} already covers {entry['task_id']}{scope} "
+                  f"({entry['cause']})")
+        elif entry["outcome"] == "capped":
+            print(f"  capped {entry['task_id']}{scope} ({entry['cause']}) - per-pass limit "
+                  f"reached, next tick files it")
+        else:
+            print(f"  skip   {entry['task_id']} is itself a repair card (never routed)")
+    print()
+
+
 def _print_diagnostics(diags, indent: str, *, with_kind: bool) -> None:
     """Shared human rendering for ``show`` and ``diagnostics`` (suggested actions only)."""
     sev_marker = {"warning": "⚠", "error": "!!", "critical": "!!!"}
@@ -638,6 +662,10 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
     diag_config = kd.config_from_runtime_config(load_config())
 
     with kbc.connect_closing() as conn:
+        # Board-state facts for the ready lane (queue position, lane occupancy,
+        # fleet capacity) — what lets `stranded_in_ready` name WHY the card is
+        # not running instead of guessing. Same seam the dashboard uses.
+        facts_by_task = kd.board_facts_for_ready_lane(conn, config=diag_config)
         # Either one-task mode or fleet mode.
         if getattr(args, "task", None):
             task = kb.get_task(conn, args.task)
@@ -645,7 +673,8 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
                 return _err(f"no such task: {args.task}")
             diags_by_task = {args.task: kd.compute_task_diagnostics(
                 task, kb.list_events(conn, args.task), kb.list_runs(conn, args.task),
-                graph=kb.task_graph_context(conn, args.task), config=diag_config)}
+                graph=kb.task_graph_context(conn, args.task), config=diag_config,
+                board_facts=facts_by_task)}
         else:
             # Fleet mode: pull all non-archived tasks + their events/runs.
             rows = list(conn.execute("SELECT * FROM tasks WHERE status != 'archived'").fetchall())
@@ -658,9 +687,19 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
                 for r in rows:
                     tid = r["id"]
                     dl = kd.compute_task_diagnostics(r, ev_by.get(tid, []), run_by.get(tid, []),
-                                                     graph=graph_by.get(tid), config=diag_config)
+                                                     graph=graph_by.get(tid), config=diag_config,
+                                                     board_facts=facts_by_task)
                     if dl:
                         diags_by_task[tid] = dl
+
+        # --route: turn the detection into the control. Files at most one repair
+        # card per (stranded card, cause), routed by the fixed cause->owner table.
+        routed: list[dict] = []
+        if getattr(args, "route", False):
+            routed = kd.route_stranded_cards(
+                conn, board=getattr(args, "board", None), config=diag_config,
+                min_severity="error", dry_run=bool(getattr(args, "dry_run", False)),
+            )
 
         sev = getattr(args, "severity", None)
         if sev:
@@ -682,12 +721,15 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
     if getattr(args, "json", False):
         # Per-task rows unchanged; the home-scope allowlist rides as a trailing row
         # (task_id null) so existing `payload[0]["diagnostics"]` consumers keep working.
+        # The routing outcomes stay on the text path: this payload's shape is a
+        # published contract, and a new key would move it for every consumer.
         _print_json([{"task_id": tid, **meta.get(tid, {}), "diagnostics": [d.to_dict() for d in dl]}
                      for tid, dl in diags_by_task.items()]
                     + [{"task_id": None, "dispatch_profiles": allowlist, "diagnostics": []}])
         return 0
 
     print(f"kanban.dispatch_profiles: {allowlist}")
+    _print_routed(routed)
     if not diags_by_task:
         print("No active diagnostics on this board.")
         return 0
@@ -929,6 +971,11 @@ def _cmd_complete(args: argparse.Namespace) -> int:
             except kb.EmptyCompletionError as empty_err:
                 fail_msg[tid] = (f"cannot complete {tid}: {empty_err}. Pass --result/--summary "
                                  f"describing what was done (an empty completion is not evidence).")
+                return False
+            except kb.UnlandedCardError as land_err:
+                fail_msg[tid] = (f"cannot complete {tid}: {land_err} Pass --metadata JSON carrying "
+                                 f"the landed evidence, or --force for an explicit operator "
+                                 f"override.")
                 return False
             if not done:
                 # complete_task returns bare False for a dependency refusal too;

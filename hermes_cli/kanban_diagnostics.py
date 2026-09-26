@@ -679,12 +679,227 @@ def _rule_block_unblock_cycling(task, events, runs, now, cfg) -> list[Diagnostic
     )]
 
 
+# --- Stranded-in-ready routing: board-state causes and their owners ---
+#
+# The rule below can only see (task, events, runs, cfg) — it has no connection
+# and must stay that way. "Why is this card not running?" is a question about the
+# BOARD, so the facts come from a caller that has one
+# (:func:`board_facts_for_ready_lane`) and ride in through
+# ``cfg["_board_facts"]``, the same seam the graph rules use for ``_graph``.
+# Without them the diagnostic degrades to its old generic text — never to a guess.
+#
+# Cause -> owner is a fixed table: the mapping is not inferred at runtime, so the
+# same board state always routes to the same lane.
+STRANDED_CAUSE_ASSIGNEE_UNKNOWN = "assignee_unknown"
+STRANDED_CAUSE_FLEET_AT_CAPACITY = "fleet_at_capacity"
+STRANDED_CAUSE_LANE_QUEUE_AHEAD = "lane_queue_ahead"
+STRANDED_CAUSE_LANE_NO_WORKER = "lane_no_worker"
+
+#: ``default`` is the ops head — the hub every cross-lane need routes through, and
+#: the owner of host/dispatch-capacity/worker-availability questions.
+DEFAULT_REPAIR_OWNER = "default"
+
+#: Cause -> owner lane, or the constant ``LANE_AUTHORITY`` for "the lane that owns
+#: this card's own queue" (its design authority: a queue deeper than the spawn
+#: budget is a queue-shaping decision, not a host fault).
+LANE_AUTHORITY = "<lane-authority>"
+STRANDED_CAUSE_OWNER = {
+    STRANDED_CAUSE_ASSIGNEE_UNKNOWN: DEFAULT_REPAIR_OWNER,
+    STRANDED_CAUSE_FLEET_AT_CAPACITY: DEFAULT_REPAIR_OWNER,
+    STRANDED_CAUSE_LANE_NO_WORKER: DEFAULT_REPAIR_OWNER,
+    STRANDED_CAUSE_LANE_QUEUE_AHEAD: LANE_AUTHORITY,
+}
+
+#: Deterministic remedy text per cause, carried into the repair card.
+STRANDED_CAUSE_REMEDY = {
+    STRANDED_CAUSE_ASSIGNEE_UNKNOWN:
+        "create the missing profile, or reassign the card to a profile that exists",
+    STRANDED_CAUSE_FLEET_AT_CAPACITY:
+        "raise kanban.max_in_progress, or drain the in-flight fleet that is holding the slots",
+    STRANDED_CAUSE_LANE_QUEUE_AHEAD:
+        "re-prioritise the card (a NEGATIVE priority front-runs a same-priority age group) "
+        "or split the lane's queue",
+    STRANDED_CAUSE_LANE_NO_WORKER:
+        "find why the lane has no worker despite a free slot (spawn failure, missing profile "
+        "in kanban.dispatch_profiles, or a down external pool)",
+}
+
+#: Role suffix -> the design authority that grooms that lane's queue.
+_LANE_ROLE_SUFFIXES = ("coder", "worker", "sme", "reviewer", "stl")
+
+#: Prefix for the auto-filed repair cards' ``idempotency_key``. Doubles as the
+#: one-generation guard: a card that carries this prefix is never routed again, so
+#: a stuck repair card cannot spawn repair cards of its own.
+REPAIR_IDEMPOTENCY_PREFIX = "kanban-stranded-repair:"
+
+
+def _profile_exists(name: str) -> Optional[bool]:
+    """``True``/``False`` when this host can answer, ``None`` when it cannot.
+
+    Lazy import: diagnostics are also computed in dashboard/plugin contexts where
+    the profiles module may not be importable, and an unknown answer must never
+    be reported as a missing profile.
+    """
+    if not name:
+        return False
+    try:
+        from hermes_cli.profiles import profile_exists
+    except Exception:
+        return None
+    try:
+        return bool(profile_exists(name))
+    except Exception:
+        return None
+
+
+def lane_design_authority(assignee: str) -> str:
+    """The lane that owns *assignee*'s queue shape — e.g. ``demo-coder`` -> ``demo-stl``.
+
+    Falls back to :data:`DEFAULT_REPAIR_OWNER` when the assignee does not follow
+    the ``<lane>-<role>`` convention or the derived profile does not exist.
+    """
+    name = (assignee or "").strip()
+    if not name:
+        return DEFAULT_REPAIR_OWNER
+    head, _, role = name.rpartition("-")
+    candidate = name if role == "stl" else (f"{head}-stl" if head and role in _LANE_ROLE_SUFFIXES else "")
+    if not candidate:
+        return DEFAULT_REPAIR_OWNER
+    existing = _profile_exists(candidate)
+    if existing is False and candidate != DEFAULT_REPAIR_OWNER:
+        return DEFAULT_REPAIR_OWNER
+    return candidate
+
+
+def stranded_cause(facts: Optional[dict], assignee: str) -> str:
+    """Classify, from board facts alone, why a ready card has no worker.
+
+    Ordered and total: every input yields exactly one cause, so the same board
+    state always produces the same owner and the same repair card.
+    """
+    if not facts:
+        return ""
+    if facts.get("profile_exists") is False:
+        return STRANDED_CAUSE_ASSIGNEE_UNKNOWN
+    cap = facts.get("fleet_cap")
+    if isinstance(cap, int) and cap > 0 and int(facts.get("fleet_running") or 0) >= cap:
+        return STRANDED_CAUSE_FLEET_AT_CAPACITY
+    if int(facts.get("queue_ahead") or 0) > 0:
+        return STRANDED_CAUSE_LANE_QUEUE_AHEAD
+    return STRANDED_CAUSE_LANE_NO_WORKER
+
+
+def stranded_cause_detail(cause: str, facts: Optional[dict], assignee: str) -> str:
+    """One deterministic sentence naming the board state that explains the cause."""
+    facts = facts or {}
+    queue_ahead = int(facts.get("queue_ahead") or 0)
+    lane_running = int(facts.get("lane_running") or 0)
+    fleet_running = int(facts.get("fleet_running") or 0)
+    cap = facts.get("fleet_cap")
+    if cause == STRANDED_CAUSE_ASSIGNEE_UNKNOWN:
+        return f"assignee {assignee!r} has no profile on this host, so no worker can be spawned for it"
+    if cause == STRANDED_CAUSE_FLEET_AT_CAPACITY:
+        return (f"the fleet is at its concurrency cap ({fleet_running}/{cap} running), so this "
+                f"card's lane cannot get a spawn slot")
+    if cause == STRANDED_CAUSE_LANE_QUEUE_AHEAD:
+        return (f"{queue_ahead} ready card(s) for {assignee!r} rank ahead of it in the dispatch "
+                f"order, and the lane has {lane_running} running")
+    if cause == STRANDED_CAUSE_LANE_NO_WORKER:
+        return (f"nothing ranks ahead of it, the fleet has a free slot "
+                f"({fleet_running}/{cap if cap else 'unset'} running), and {assignee!r} has no "
+                f"running card — the spawn did not happen")
+    return ""
+
+
+def stranded_owner(cause: str, assignee: str) -> str:
+    """The lane that owns the fix for *cause* (fixed table, never inferred)."""
+    owner = STRANDED_CAUSE_OWNER.get(cause, DEFAULT_REPAIR_OWNER)
+    if owner == LANE_AUTHORITY:
+        return lane_design_authority(assignee)
+    return owner
+
+
+def _fleet_cap(cfg: Optional[dict]) -> Optional[int]:
+    kanban_cfg = (cfg or {}).get("kanban")
+    if isinstance(kanban_cfg, dict):
+        cap = kanban_cfg.get("max_in_progress")
+        if isinstance(cap, int) and cap > 0:
+            return cap
+    return None
+
+
+def board_facts_for_ready_lane(conn, *, config: Optional[dict] = None) -> dict[str, dict]:
+    """``{task_id: facts}`` for the ready lane, read in dispatch order.
+
+    Dispatch order is the dispatcher's own (``priority DESC, created_at ASC``, see
+    ``kanban_db_dispatch._lane_rows``): a card is only "not running" relative to
+    the cards that beat it to the queue, so the order is part of the fact set.
+    Unassigned or claimed rows have no lane question to answer and are omitted.
+    """
+    rows = conn.execute(
+        "SELECT id, assignee, status, claim_lock, idempotency_key FROM tasks "
+        "WHERE status = 'ready' AND assignee IS NOT NULL AND assignee != '' "
+        "AND claim_lock IS NULL ORDER BY priority DESC, created_at ASC"
+    ).fetchall()
+    running_by_assignee: dict[str, int] = {}
+    for row in conn.execute(
+        "SELECT assignee, COUNT(*) AS n FROM tasks WHERE status = 'running' "
+        "AND assignee IS NOT NULL GROUP BY assignee"
+    ):
+        running_by_assignee[row["assignee"]] = int(row["n"])
+    fleet_running = sum(running_by_assignee.values())
+    cap = _fleet_cap(config)
+    ahead: dict[str, int] = {}
+    facts: dict[str, dict] = {}
+    for row in rows:
+        assignee = row["assignee"]
+        facts[row["id"]] = {
+            "assignee": assignee,
+            "queue_ahead": ahead.get(assignee, 0),
+            "lane_running": running_by_assignee.get(assignee, 0),
+            "fleet_running": fleet_running,
+            "fleet_cap": cap,
+            "profile_exists": _profile_exists(assignee),
+        }
+        ahead[assignee] = ahead.get(assignee, 0) + 1
+    return facts
+
+
+def _route_action(task_id: str, assignee: str, facts: dict) -> Optional[DiagnosticAction]:
+    """The routing action for a stranded card: owner + cause, from board state."""
+    cause = stranded_cause(facts, assignee)
+    if not cause:
+        return None
+    owner = stranded_owner(cause, assignee)
+    why = stranded_cause_detail(cause, facts, assignee)
+    return DiagnosticAction(
+        kind="route",
+        label=f"Route repair to {owner} ({cause})",
+        payload={
+            "owner": owner,
+            "cause": cause,
+            "task_id": task_id,
+            "assignee": assignee,
+            "reason": why,
+            "remedy": STRANDED_CAUSE_REMEDY.get(cause, ""),
+        },
+        suggested=True,
+    )
+
+
 def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     """Assigned, unclaimed, ``ready`` for >= cfg["stranded_threshold_seconds"]
     (default 30 min). Deliberately age-based and identity-agnostic so it
     catches typo'd assignees, deleted profiles, and down external worker
     pools alike without a registry to curate. Unassigned tasks are excluded —
-    the dispatcher's ``skipped_unassigned`` already covers them."""
+    the dispatcher's ``skipped_unassigned`` already covers them.
+
+    When the caller supplies ``cfg["_board_facts"]`` (see
+    :func:`board_facts_for_ready_lane`) the diagnostic also names WHY the card is
+    not running — queue position, lane occupancy, fleet capacity — and carries a
+    ``route`` action naming the owning lane. Without those facts it reports only
+    what it can see, never a guessed cause.
+    """
     threshold_seconds = float(cfg.get("stranded_threshold_seconds", 30 * 60))
     if _task_field(task, "status") != "ready":
         return []
@@ -717,22 +932,42 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     else:
         severity = "warning"
 
-    actions = [
+    facts = (cfg.get("_board_facts") or {}).get(_task_field(task, "id")) or {}
+    route = _route_action(_task_field(task, "id"), assignee, facts) if facts else None
+    if route is not None:
+        cause = route.payload["cause"]
+        why = route.payload["reason"]
+        detail = (f"This task has been ready for {age_str} but nothing has claimed it. Why, from "
+                  f"board state: {why}. Owner of the fix: {route.payload['owner']} — "
+                  f"{route.payload['remedy']}.")
+        data = {
+            "ready_since": last_ready_ts, "age_seconds": int(age_seconds),
+            "assignee": assignee, "threshold_seconds": int(threshold_seconds),
+            "cause": cause, "owner": route.payload["owner"], "cause_detail": why,
+            "queue_ahead": facts.get("queue_ahead"), "lane_running": facts.get("lane_running"),
+            "fleet_running": facts.get("fleet_running"), "fleet_cap": facts.get("fleet_cap"),
+            "profile_exists": facts.get("profile_exists"),
+        }
+    else:
+        detail = (f"This task has been ready for {age_str} but nothing has claimed it. Common "
+                  f"causes: assignee {assignee!r} is misspelled, the profile was deleted, or the "
+                  f"external worker pool for this lane is down. Confirm the assignee is correct and "
+                  f"that a worker is actually polling for it.")
+        data = {"ready_since": last_ready_ts, "age_seconds": int(age_seconds),
+                "assignee": assignee, "threshold_seconds": int(threshold_seconds)}
+    actions = [a for a in (
+        route,
         DiagnosticAction(kind="reassign", label="Reassign to a different worker",
                          payload={"current_assignee": assignee}),
         _cli_hint("Check dispatcher status", "hermes kanban diagnostics"),
-    ]
+    ) if a is not None]
     return [Diagnostic(
         kind="stranded_in_ready", severity=severity,
         title=f"Ready for {age_str} with no worker",
-        detail=f"This task has been ready for {age_str} but nothing has claimed it. Common causes: "
-               f"assignee {assignee!r} is misspelled, the profile was deleted, or the external worker "
-               f"pool for this lane is down. Confirm the assignee is correct and that a worker is "
-               f"actually polling for it.",
+        detail=detail,
         actions=actions,
         first_seen_at=last_ready_ts, last_seen_at=last_ready_ts, count=1,
-        data={"ready_since": last_ready_ts, "age_seconds": int(age_seconds),
-              "assignee": assignee, "threshold_seconds": int(threshold_seconds)},
+        data=data,
     )]
 
 
@@ -810,14 +1045,23 @@ def compute_task_diagnostics(
     now: Optional[int] = None,
     config: Optional[dict] = None,
     graph: Optional[dict] = None,
+    board_facts: Optional[dict] = None,
 ) -> list[Diagnostic]:
     """Run every rule for one task; critical first, then error, warning; ties
-    broken by most-recent ``last_seen_at``."""
+    broken by most-recent ``last_seen_at``.
+
+    ``board_facts`` is the caller's read of the board for this task (see
+    :func:`board_facts_for_ready_lane`) — the rules cannot open a connection, so
+    board-level questions like "why is this ready card not running?" arrive as
+    data. Omitted, every rule behaves exactly as before.
+    """
     now_ts = int(now if now is not None else time.time())
     config = config or {}
     cfg = {**DEFAULT_CONFIG, **config}
     if graph is not None:
         cfg["_graph"] = graph
+    if board_facts:
+        cfg["_board_facts"] = board_facts
     if not _has_explicit_threshold(config) and "failure_limit" in config:
         cfg["failure_threshold"] = _positive_int(
             config.get("failure_limit"), DEFAULT_CONFIG["failure_threshold"],
@@ -831,6 +1075,228 @@ def compute_task_diagnostics(
             continue
     severity_idx = {s: i for i, s in enumerate(SEVERITY_ORDER)}
     out.sort(key=lambda d: (-severity_idx.get(d.severity, -1), -(d.last_seen_at or 0)))
+    return out
+
+
+def repair_idempotency_key(task_id: str, cause: str) -> str:
+    """The one key that makes routing idempotent: one open repair card per
+    (stranded card, cause). A second pass — or a second dispatcher — returns the
+    same card instead of filing a twin."""
+    return f"{REPAIR_IDEMPOTENCY_PREFIX}{task_id}:{cause}"
+
+
+def _existing_repair_card(conn, key: str) -> Optional[str]:
+    row = conn.execute(
+        "SELECT id FROM tasks WHERE idempotency_key = ? AND status != 'archived' "
+        "ORDER BY created_at DESC LIMIT 1",
+        (key,),
+    ).fetchone()
+    return row["id"] if row else None
+
+
+def bulk_repair_key(cause: str) -> str:
+    """Key for a collapsed repair card: one per cause for the whole board."""
+    return f"{REPAIR_IDEMPOTENCY_PREFIX}bulk:{cause}"
+
+
+def _stranded_repair_body(row, diagnostic: Diagnostic, route: dict, key: str) -> str:
+    """The repair card's body — the diagnosis, verbatim and deterministic."""
+    age_seconds = float(diagnostic.data.get("age_seconds") or 0)
+    age = f"{age_seconds / 3600:.1f}h" if age_seconds >= 3600 else f"{int(age_seconds / 60)}m"
+    facts = diagnostic.data
+    return (
+        f"Auto-filed by the kanban dispatcher's stranded-card router — no human in the loop.\n\n"
+        f"Stranded card: {row['id']} — {row['title']}\n"
+        f"Assignee: {row['assignee']}\n"
+        f"Ready for: {age}\n"
+        f"Severity: {diagnostic.severity}\n\n"
+        f"Why it is not running (board state, not inference): {route['reason']}\n\n"
+        f"Cause: {route['cause']}\n"
+        f"Board facts: queue_ahead={facts.get('queue_ahead')} "
+        f"lane_running={facts.get('lane_running')} "
+        f"fleet_running={facts.get('fleet_running')}/{facts.get('fleet_cap')} "
+        f"profile_exists={facts.get('profile_exists')}\n\n"
+        f"Required fix: {route['remedy']}\n\n"
+        f"Routing is idempotent: idempotency key {key} guarantees exactly one open repair "
+        f"card per (stranded card, cause). A repair card is never itself routed — if this card "
+        f"strands too, the board's `stranded_in_ready` diagnostic reports it and no further card "
+        f"is filed.\n"
+    )
+
+
+def _age_label(seconds) -> str:
+    """Age as the diagnostics render it: ``2.1h`` / ``45m``."""
+    value = float(seconds or 0)
+    return f"{value / 3600:.1f}h" if value >= 3600 else f"{int(value / 60)}m"
+
+
+def _bulk_repair_body(cause: str, entries: list[dict], key: str) -> str:
+    """Body for a collapsed repair card: one card standing for a stalled board."""
+    shown = entries[:20]
+    lines = "\n".join(
+        f"- {e['task_id']}  {e['assignee']}  ready {e['age']}  {e['title'][:70]}" for e in shown
+    )
+    more = f"\n... and {len(entries) - len(shown)} more." if len(entries) > len(shown) else ""
+    facts = entries[0]["facts"]
+    return (
+        f"Auto-filed by the kanban dispatcher's stranded-card router — no human in the loop.\n\n"
+        f"{len(entries)} ready cards are stranded with cause {cause}. Past "
+        f"{len(shown) if len(shown) < len(entries) else len(entries)} cards of one cause this "
+        f"card stands for the population instead of one card per stuck card.\n\n"
+        f"Why they are not running (board state, not inference): {entries[0]['reason']}\n\n"
+        f"Board facts (oldest card): queue_ahead={facts.get('queue_ahead')} "
+        f"lane_running={facts.get('lane_running')} "
+        f"fleet_running={facts.get('fleet_running')}/{facts.get('fleet_cap')}\n\n"
+        f"Required fix: {STRANDED_CAUSE_REMEDY.get(cause, '')}\n\n"
+        f"Stranded cards:\n{lines}{more}\n\n"
+        f"Routing is idempotent: idempotency key {key} guarantees exactly one open repair "
+        f"card per (board, cause).\n"
+    )
+
+
+def route_stranded_cards(
+    conn,
+    *,
+    board: Optional[str] = None,
+    now: Optional[int] = None,
+    config: Optional[dict] = None,
+    min_severity: str = "error",
+    limit: int = 2,
+    collapse_over: int = 3,
+    dry_run: bool = False,
+) -> list[dict]:
+    """Turn the ``stranded_in_ready`` detection into a control: file the repair.
+
+    Detection without a control is a log line. For every ready card that has
+    waited longer than the stranded threshold at ``min_severity`` or above, this
+    files exactly ONE repair card on the same board, routed to the lane that owns
+    the cause (fixed table — see ``STRANDED_CAUSE_OWNER``), carrying the board
+    facts that explain it. Idempotent per (card, cause), capped at ``limit`` new
+    cards per pass, and one generation deep: a repair card is never itself routed.
+
+    Past ``collapse_over`` cards of one cause the whole population gets ONE card
+    (idempotency key ``bulk:<cause>``) instead of a card each: a board-wide stall
+    is one systemic condition, and a card per stuck card would bury the board it
+    is meant to report on.
+
+    Returns one entry per stranded card considered:
+    ``{"task_id", "cause", "owner", "severity", "repair_card", "collapsed",
+    "outcome"}`` with ``outcome`` in ``filed`` / ``existing`` / ``dry_run`` /
+    ``capped`` / ``skipped_repair_card``.
+    """
+    from hermes_cli import kanban_db as kb
+
+    now_ts = int(now if now is not None else time.time())
+    cfg = dict(config or {})
+    threshold_seconds = float(
+        cfg.get("stranded_threshold_seconds", DEFAULT_CONFIG["stranded_threshold_seconds"])
+    )
+    # Sound pre-filter: ready_since >= created_at, so a card created inside the
+    # threshold window cannot be stranded yet. Keeps the per-tick scan bounded.
+    rows = conn.execute(
+        "SELECT id, title, assignee, created_at, idempotency_key FROM tasks "
+        "WHERE status = 'ready' AND assignee IS NOT NULL AND assignee != '' "
+        "AND claim_lock IS NULL AND created_at <= ? "
+        "ORDER BY priority DESC, created_at ASC",
+        (now_ts - int(threshold_seconds),),
+    ).fetchall()
+    if not rows:
+        return []
+    facts_by_task = board_facts_for_ready_lane(conn, config=cfg)
+    out: list[dict] = []
+    candidates: list[dict] = []
+    for row in rows:
+        task_id = row["id"]
+        seen = row["idempotency_key"]
+        if isinstance(seen, str) and seen.startswith(REPAIR_IDEMPOTENCY_PREFIX):
+            out.append({"task_id": task_id, "cause": "", "owner": "", "severity": "",
+                        "repair_card": None, "collapsed": False,
+                        "outcome": "skipped_repair_card"})
+            continue
+        # The pre-filter query is deliberately narrow; the rules read a whole task
+        # row, so load the canonical one instead of handing them a partial Row.
+        task = kb.get_task(conn, task_id)
+        if task is None:
+            continue
+        diags = compute_task_diagnostics(
+            task, kb.list_events(conn, task_id), kb.list_runs(conn, task_id),
+            now=now_ts, config=cfg, board_facts={task_id: facts_by_task.get(task_id, {})},
+        )
+        for diagnostic in diags:
+            if diagnostic.kind != "stranded_in_ready":
+                continue
+            if not severity_at_or_above(diagnostic.severity, min_severity):
+                continue
+            route = next((a.payload for a in diagnostic.actions if a.kind == "route"), None)
+            if not route:
+                continue
+            candidates.append({"task_id": task_id, "owner": route["owner"], "cause": route["cause"],
+                               "severity": diagnostic.severity, "row": row, "diagnostic": diagnostic,
+                               "route": route})
+            break
+
+    # Collapse a board-wide stall: past `collapse_over` cards of one cause, ONE
+    # card stands for the population instead of a card per stranded card. A
+    # dispatch stall is systemic — hundreds of per-card repair cards are noise.
+    by_cause: dict[str, list[dict]] = {}
+    for cand in candidates:
+        by_cause.setdefault(cand["cause"], []).append(cand)
+    filed = 0
+    for cause, group in by_cause.items():
+        collapsed = len(group) > max(int(collapse_over), 1)
+        key = bulk_repair_key(cause) if collapsed else repair_idempotency_key(
+            group[0]["task_id"], cause)
+        headline = {"cause": cause, "owner": group[0]["owner"], "severity": group[0]["severity"],
+                    "collapsed": collapsed}
+        existing = _existing_repair_card(conn, key)
+        if existing:
+            out.append({**headline, "task_id": group[0]["task_id"],
+                        "repair_card": existing, "outcome": "existing"})
+            continue
+        if dry_run:
+            out.append({**headline, "task_id": group[0]["task_id"],
+                        "repair_card": None, "outcome": "dry_run"})
+            continue
+        if filed >= max(int(limit), 0):
+            for cand in group:
+                out.append({**headline, "task_id": cand["task_id"],
+                            "repair_card": None, "outcome": "capped"})
+            continue
+        if collapsed:
+            entries = [{"task_id": cand["task_id"], "assignee": cand["row"]["assignee"],
+                        "title": cand["row"]["title"],
+                        "age": _age_label(cand["diagnostic"].data.get("age_seconds")),
+                        "reason": cand["route"]["reason"],
+                        "facts": cand["diagnostic"].data} for cand in group]
+            title = f"Dispatch starvation: {len(group)} cards stranded ({cause})"
+            body = _bulk_repair_body(cause, entries, key)
+        else:
+            title = f"Dispatch starvation: {group[0]['task_id']} is {cause}"
+            body = _stranded_repair_body(group[0]["row"], group[0]["diagnostic"],
+                                        group[0]["route"], key)
+        repair_card = kb.create_task(
+            conn,
+            title=title,
+            body=body,
+            assignee=group[0]["owner"],
+            idempotency_key=key,
+            creator_task_id=group[0]["task_id"],
+            board=board,
+        )
+        # Audit the routing on the stranded card itself: one event per individually
+        # routed card, one for a collapsed population (N events per tick is the
+        # write amplification this collapse exists to avoid).
+        for cand in (group[:1] if collapsed else group):
+            with kb.write_txn(conn):
+                kb._append_event(
+                    conn, cand["task_id"], "stranded_routed",
+                    {"repair_card": repair_card, "cause": cause, "owner": group[0]["owner"],
+                     "severity": cand["severity"], "collapsed": collapsed,
+                     "cards": len(group) if collapsed else 1},
+                )
+        filed += 1
+        out.append({**headline, "task_id": group[0]["task_id"],
+                    "repair_card": repair_card, "outcome": "filed"})
     return out
 
 

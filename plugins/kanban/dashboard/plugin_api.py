@@ -195,8 +195,8 @@ def _placeholders(ids: list) -> str:
 
 
 def _compute_task_diagnostics(conn: sqlite3.Connection, task_ids: Optional[list[str]] = None) -> dict[str, list[dict]]:
-    """``{task_id: [diagnostic_dict, ...]}`` (tasks with none omitted) via three aggregate
-    queries (tasks, events, runs) — slurps the board; paginate if profiling shows a hotspot."""
+    """``{task_id: [diagnostic_dict, ...]}`` (tasks with none omitted) via four aggregate
+    queries (tasks, events, runs, ready-lane facts) — slurps the board; paginate if profiling shows a hotspot."""
     from hermes_cli.config import load_config
 
     if task_ids is not None and not task_ids:
@@ -220,11 +220,16 @@ def _compute_task_diagnostics(conn: sqlite3.Connection, task_ids: Optional[list[
     events_by_task = _rows_by_task("task_events")
     runs_by_task = _rows_by_task("task_runs")
     graph_by_task = kanban_db.task_graph_contexts(conn, row_ids)
+    # Board-state facts (queue position, lane occupancy, fleet capacity) so a
+    # stranded card's diagnostic names WHY it is not running instead of listing
+    # possible causes. One extra aggregate over the ready lane.
+    board_facts = kd.board_facts_for_ready_lane(conn, config=diag_config)
     out: dict[str, list[dict]] = {}
     for r in rows:
         tid = r["id"]
         diags = kd.compute_task_diagnostics(
-            r, events_by_task[tid], runs_by_task[tid], config=diag_config, graph=graph_by_task.get(tid))
+            r, events_by_task[tid], runs_by_task[tid], config=diag_config, graph=graph_by_task.get(tid),
+            board_facts=board_facts)
         if diags:
             out[tid] = [d.to_dict() for d in diags]
     return out

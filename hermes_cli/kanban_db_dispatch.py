@@ -1972,7 +1972,42 @@ def dispatch_once(
     # Lock released. Fire the tick observer strictly OUTSIDE the critical
     # section: a slow subscriber must never stall a sibling dispatcher's tick.
     _kb._fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)
+    # Stranded-card routing: the detection without a control is a log line. Runs
+    # outside the lock (it writes a card, and a slow pass must not extend the tick
+    # critical section); never fails the tick.
+    if not dry_run and not getattr(result, "skipped_locked", False):
+        _route_stranded_cards(conn, board=board)
     return result
+
+
+def _route_stranded_cards(conn, *, board: Optional[str]) -> list:
+    """File repair cards for ready cards this tick could not spawn.
+
+    The rule that reports ``stranded_in_ready`` is read-only; this is its acting
+    half — see ``kanban_diagnostics.route_stranded_cards``. One repair card per
+    (stranded card, cause), routed by a fixed cause→owner table, idempotent, and
+    one generation deep. Any failure is logged and swallowed: a tick must never
+    die on diagnostics.
+    """
+    try:
+        from hermes_cli import kanban_diagnostics as kd
+        from hermes_cli.config import load_config
+        try:
+            cfg = kd.config_from_runtime_config(load_config())
+        except Exception:
+            cfg = {}
+        routed = kd.route_stranded_cards(conn, board=board, config=cfg)
+    except Exception as exc:  # noqa: BLE001 — a tick must not die here
+        _kb._log.warning("kanban dispatcher: stranded-card routing failed: %s", exc)
+        return []
+    for entry in routed:
+        if entry.get("outcome") == "filed":
+            _kb._log.info(
+                "kanban dispatcher: filed repair card %s for stranded %s (%s -> %s, severity %s)",
+                entry["repair_card"], entry["task_id"], entry["cause"], entry["owner"],
+                entry["severity"],
+            )
+    return routed
 
 
 def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -> Optional[int]:

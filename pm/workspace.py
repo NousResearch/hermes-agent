@@ -82,10 +82,20 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
         files.update(str(p.relative_to(source)) for p in source.glob(pattern))
     files.update(p.name for p in source.glob("*.py"))
 
-    excluded = {".git", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", "release", "uv.lock"}
+    excluded = {".git", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", "release"}
+    #: Names that are build OUTPUT at the root but a build INPUT below it.
+    #: ``pm/runtime.py`` hashes ``pm/uv.lock`` for the identity of the runtime
+    #: every later PM operation re-resolves, and bundled dashboard plugins ship
+    #: a tracked ``dist/`` the dashboard serves; the root copies regenerate
+    #: their own, so only the root drops them.
+    nested_inputs = {"uv.lock", "dist"}
+
     def ignore(directory, names):
-        return [name for name in names if name in excluded or name.startswith(".")
-                or name.endswith(".egg-info") or (Path(directory) / name).is_symlink()]
+        nested = Path(directory) != source
+        return [name for name in names
+                if (name in excluded and not (nested and name in nested_inputs))
+                or name.startswith(".") or name.endswith(".egg-info")
+                or (Path(directory) / name).is_symlink()]
 
     for entry in source.iterdir():
         if (entry.is_dir() and not entry.is_symlink() and entry.name not in excluded

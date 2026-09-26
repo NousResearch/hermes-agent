@@ -63,6 +63,16 @@ def test_real_build_inputs_stay_in_generated_root(tmp_path, monkeypatch):
     metadata = core / "pyproject.toml"
     metadata.write_text(metadata.read_text().replace('backend-path=["build"]', 'backend-path=["."]'))
     (core / ".env").write_text("must not copy")
+    # Nested artifact dirs inside a copied package root are build inputs, not
+    # output: PM hashes ``pm/uv.lock`` for its own runtime identity, and bundled
+    # dashboard plugins ship a tracked ``dist/`` the dashboard serves. Only the
+    # root copies (which the workspace regenerates) are dropped.
+    nested = core / "pm"
+    nested.mkdir()
+    (nested / "pyproject.toml").write_text('[project]\nname="nested"\nversion="1"\n')
+    (nested / "uv.lock").write_text("NESTED LOCK\n")
+    (nested / "dist").mkdir()
+    (nested / "dist/asset.js").write_text("ASSET\n")
     monkeypatch.setattr(workspace.paths, "repo_root", lambda: core)
     root, venv = tmp_path / "staging", tmp_path / "venv"
     uv = shutil.which("uv")
@@ -75,6 +85,9 @@ def test_real_build_inputs_stay_in_generated_root(tmp_path, monkeypatch):
                            cwd=tmp_path, text=True, capture_output=True, check=True, timeout=30)
     assert probe.stdout.strip() == "recorded plugin bytes"
     assert not (root / ".env").exists()
+    assert (root / "pm" / "uv.lock").read_text() == "NESTED LOCK\n"
+    assert (root / "pm" / "dist" / "asset.js").read_text() == "ASSET\n"
+    assert not (root / "dist").exists(), "the root dist stays excluded"
     assert not list(core.glob("*.egg-info")), "build must not write into the original core"
     assert not (core / "uv.lock").exists()
 

@@ -1601,6 +1601,7 @@ platform_toolsets:
 #     voice: "Kore"
 #     audio_tags: false
 #     persona_prompt_file: ""  # e.g. ~/.hermes/tts/radio-host.md
+#     style: ""  # Gemini 3.8: optional concise speech_metadata.style; overrides persona file
 #   xai:
 #     voice_id: "eve"       # built-in or custom voice ID from xAI Console
 #     language: "en"        # BCP-47 code ("en", "pt-BR") or "auto"

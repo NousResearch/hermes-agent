@@ -320,7 +320,7 @@ class SessionPortabilityMixin:
             return [self._with_messages(session, True, include_inactive) for session in sessions]
         messages_by_session = {session["id"]: [] for session in sessions}
         session_ids = list(messages_by_session)
-        active_clause = "" if include_inactive else " AND active = 1"
+        active_clause = self._active_clause(include_inactive, False)
         # Stay below SQLite's legacy 999-variable limit while replacing the per-session N+1 reads.
         for start in range(0, len(session_ids), 900):
             chunk = session_ids[start:start + 900]

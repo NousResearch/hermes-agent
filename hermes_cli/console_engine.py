@@ -657,7 +657,7 @@ def _guard_exports(db, session_ids: list[str]) -> None:
         return
     try:
         for session_id in session_ids:
-            db.assert_export_safe(session_id, max_messages=limit, include_inactive=True)
+            db.assert_export_safe(session_id, max_messages=limit)
     except SessionExportTooLargeError as exc:
         raise ConsoleCommandError(
             f"Session '{exc.session_id}' has more than {limit:,} "

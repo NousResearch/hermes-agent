@@ -1401,10 +1401,9 @@ class SessionSessionsMixin:
             )
         return statuses
 
-    def assert_export_safe(self, session_id: str, max_messages: Optional[int] = None,
-                           include_inactive: bool = False) -> int:
-        """Row count of this segment — live rows, or every row with ``include_inactive``, matching what
-        the export materializes — or raise SessionExportTooLargeError (the LIMITed subquery
+    def assert_export_safe(self, session_id: str, max_messages: Optional[int] = None) -> int:
+        """Row count of this segment — every row, archived included, as the transfer export materializes
+        it — or raise SessionExportTooLargeError (the LIMITed subquery
         stops once the bound is exceeded). ``None`` resolves ``sessions.max_export_messages``; 0 disables
         the guard."""
         from hermes_state import SessionExportTooLargeError, resolved_max_export_messages
@@ -1414,9 +1413,8 @@ class SessionSessionsMixin:
             raise ValueError("max_messages must be non-negative")
         if max_messages == 0:
             return 0
-        active_clause = "" if include_inactive else " AND active = 1"
         row = self._read_one(
-            f"SELECT COUNT(*) FROM (SELECT 1 FROM messages WHERE session_id = ?{active_clause} LIMIT ?)",
+            "SELECT COUNT(*) FROM (SELECT 1 FROM messages WHERE session_id = ? LIMIT ?)",
             (session_id, max_messages + 1),
         )
         message_count = int(row[0] if row else 0)

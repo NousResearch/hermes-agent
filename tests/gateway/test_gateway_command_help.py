@@ -41,8 +41,10 @@ async def test_help_sanitizes_slash_command_mentions_for_telegram(monkeypatch):
         _make_event("/help", Platform.TELEGRAM)
     )
 
-    assert "`/linear`" in result
-    assert "`/custom_thing`" in result
+    command_lines = [line for line in result.splitlines() if line.startswith("- `/")]
+    assert command_lines, "gateway help should render commands as a bulleted list"
+    assert "- `/linear`" in result
+    assert "- `/custom_thing`" in result
     assert "`/Linear`" not in result
     assert "`/Custom-Thing`" not in result
 
@@ -59,7 +61,9 @@ async def test_commands_sanitizes_slash_command_mentions_for_telegram(monkeypatc
         _make_event("/commands 999", Platform.TELEGRAM)
     )
 
-    assert "`/linear`" in result
+    command_lines = [line for line in result.splitlines() if line.startswith("- `/")]
+    assert command_lines, "gateway command pages should render commands as a bulleted list"
+    assert "- `/linear`" in result
     assert "`/Linear`" not in result
 
 

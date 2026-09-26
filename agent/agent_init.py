@@ -1371,6 +1371,13 @@ def _apply_agent_section(agent, _agent_cfg):
         agent._skill_nudge_interval = int(_agent_cfg.get("skills", {}).get("creation_nudge_interval", 10))
 
     _agent_section = _cfg_dict(_agent_cfg, "agent")
+    # Codex app-server's native wall-clock deadline. Keep the historical 600s
+    # default while allowing long-running tool turns to opt out with 0.
+    try:
+        _codex_timeout = float(_agent_section.get("codex_app_server_turn_timeout", 600))
+        agent._codex_app_server_turn_timeout = max(0.0, _codex_timeout)
+    except (TypeError, ValueError):
+        agent._codex_app_server_turn_timeout = 600.0
     agent.budget_warning_ratio = normalize_budget_warning_ratio(
         _agent_section.get("budget_warning_ratio")
     )

@@ -1211,6 +1211,8 @@ agent:
   # The default (30 min) is a safety valve for wedged agents, not a target
   # latency; raise it for long unattended turns. Env: HERMES_RESTART_AFTER_TURN_TIMEOUT.
   # restart_after_turn_timeout: 1800
+  # Codex app-server wall-clock turn deadline in seconds; 0 disables this host-side deadline.
+  # codex_app_server_turn_timeout: 600
 
   # Upper bound (seconds) a submitted prompt waits for the deferred agent
   # build (MCP discovery, model metadata, skills scan) before failing with a

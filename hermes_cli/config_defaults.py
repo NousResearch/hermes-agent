@@ -101,6 +101,9 @@ DEFAULT_CONFIG = {
         # Default 30 min is a safety valve for wedged agents, not a target latency — an interactive `hermes
         # gateway restart` must never block for hours on a turn that wedged (#79133).
         "restart_after_turn_timeout": 1800,
+        # Codex app-server turn deadline. 0 disables the host-side wall-clock
+        # deadline; subprocess death and explicit interruption remain active.
+        "codex_app_server_turn_timeout": 600,
         # Max seconds a submitted prompt waits for the deferred agent build (MCP discovery, model
         # metadata, skills scan) before failing visibly. The prompt is delivered as soon as the
         # build completes (progress notice past 30s), so this only fires on a hung build. Raise for

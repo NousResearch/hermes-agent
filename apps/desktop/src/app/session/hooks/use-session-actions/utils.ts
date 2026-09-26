@@ -795,12 +795,14 @@ export function preserveLocalPendingTurnMessages(
   // unacknowledged repeat whose committed twin predates the acknowledged
   // boundary (and never enters this window) still survives.
   const newestAuthoritativeUser = [...remainingNext].reverse().find(message => message.role === 'user')
+
   const acknowledgedUserCandidates = remainingNext.filter(
     message =>
       message.role === 'user' &&
       !isGatewaySystemMarker(message) &&
       (message.rowId !== undefined || message === newestAuthoritativeUser)
   )
+
   const preserved: ChatMessage[] = []
   // Authoritative id → richer local pending row. Replacing (not appending)
   // avoids painting both the empty inflight shell and the full stream bubble.
@@ -886,9 +888,14 @@ export function preserveLocalPendingTurnMessages(
       isOptimisticUser &&
       acknowledgedUserCandidates.some(
         candidate =>
-          (!conflictingTranscriptIdentity(message, candidate) &&
-            textWithoutReferenceLines(chatMessageText(candidate)) === textWithoutReferenceLines(chatMessageText(message))) ||
-          sameAttachmentTurn(candidate, message)
+          // #122079: the tolerant arm widens the TEXT compare only — it stays
+          // inside the identity gate, so a rowId-bearing optimistic row is
+          // never swallowed by a committed row it provably is not (a genuine
+          // repeat of the same captioned paste). The rowId-less paste from
+          // #120978 carries no identity and keeps matching tolerantly.
+          !conflictingTranscriptIdentity(message, candidate) &&
+          (textWithoutReferenceLines(chatMessageText(candidate)) === textWithoutReferenceLines(chatMessageText(message)) ||
+            sameAttachmentTurn(candidate, message))
       )
     ) {
       continue

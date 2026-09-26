@@ -274,6 +274,11 @@ class PythonEnvironment:
         env = _base_environment(self.env)
         env.update(UV_PYTHON=str(self.python), UV_PROJECT_ENVIRONMENT=str(self.destination),
                    UV_CACHE_DIR=str(self.cache), UV_PYTHON_DOWNLOADS="never")
+        # Source builds uv drives can meet cmake 4.x, which refuses
+        # cmake_minimum_required below 3.5 (vendored libolm in python-olm
+        # declares 3.4, #122733). The floor only lifts what cmake would
+        # reject outright, and an explicit user value still wins.
+        env.setdefault("CMAKE_POLICY_VERSION_MINIMUM", "3.5")
         with tempfile.TemporaryDirectory(prefix="pm-uv-config-") as config:
             env.update(XDG_CONFIG_HOME=config, XDG_CONFIG_DIRS=config)
             command = [str(self.uv), *args]

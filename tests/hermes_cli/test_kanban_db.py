@@ -2008,3 +2008,55 @@ def test_archive_non_running_task_does_not_attempt_termination(kanban_home):
             (t,),
         ).fetchone()
         assert row is None
+
+
+# ---------------------------------------------------------------------------
+# Board-DB alias staging refusal (#120480)
+# ---------------------------------------------------------------------------
+
+
+def test_complete_task_refuses_board_db_hard_link_without_opening_it(kanban_home, monkeypatch):
+    """A hard link to the board DB inside the scratch workspace must be refused
+    BEFORE any open(): POSIX close() on any same-inode descriptor drops this
+    process's SQLite WAL write lock mid-transaction (#120480)."""
+    import hermes_cli.kanban_db as kb_module
+
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="db alias")
+        ws = kbw.resolve_workspace(kb.get_task(conn, t))
+        kbw.set_workspace_path(conn, t, ws)
+        db_file = Path(conn.execute("PRAGMA database_list").fetchone()[2])
+        assert db_file.is_file()
+        alias = ws / "evidence.bin"
+        os.link(db_file, alias)
+        db_stat = db_file.stat()
+        assert alias.stat().st_ino == db_stat.st_ino
+
+        opened_inodes = []
+        real_copy = kb_module._copy_capped
+
+        def _spy_copy(src, dest, artifact):
+            st = Path(src).stat()
+            opened_inodes.append((st.st_dev, st.st_ino))
+            return real_copy(src, dest, artifact)
+
+        monkeypatch.setattr(kb_module, "_copy_capped", _spy_copy)
+        with pytest.raises(kb.ArtifactPreservationError):
+            kb.complete_task(conn, t, result="ok", metadata={"artifacts": [str(alias)]})
+        assert (db_stat.st_dev, db_stat.st_ino) not in opened_inodes
+        assert kb.get_task(conn, t).status != "done"
+
+
+def test_complete_task_stages_same_name_non_db_file(kanban_home):
+    """A benign workspace file that merely shares the board sidecar's NAME
+    (different inode) must still stage — the #120480 refusal is by inode."""
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="same name")
+        ws = kbw.resolve_workspace(kb.get_task(conn, t))
+        kbw.set_workspace_path(conn, t, ws)
+        benign = ws / "kanban.db-shm"
+        benign.write_bytes(b"benign-bytes")
+        assert kb.complete_task(conn, t, result="ok", metadata={"artifacts": [str(benign)]})
+        persisted = Path(kb.list_events(conn, t)[-1].payload["artifacts"][0])
+    assert persisted.exists()
+    assert persisted.read_bytes() == b"benign-bytes"

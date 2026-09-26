@@ -3004,6 +3004,33 @@ def _merge_completion_prose_artifacts(
     return updated
 
 
+def _board_db_identities(conn: sqlite3.Connection) -> set[tuple[int, int]]:
+    """``(st_dev, st_ino)`` of the DB files this connection locks.
+
+    POSIX drops advisory locks process-wide on close() of ANY descriptor for
+    the same inode, so staging must never open() these inodes here (#120480).
+    Read from the live connection (not the board resolver) so an explicitly
+    pinned ``db_path`` is covered too."""
+    identities: set[tuple[int, int]] = set()
+    try:
+        rows = conn.execute("PRAGMA database_list").fetchall()
+    except Exception:
+        return identities
+    for row in rows:
+        try:
+            db_file = row[2]
+        except (IndexError, TypeError):
+            continue
+        if not db_file:
+            continue
+        base = Path(str(db_file))
+        for suffix in ("", "-shm", "-wal", "-journal"):
+            with contextlib.suppress(OSError):
+                st = (base.parent / (base.name + suffix)).stat()
+                identities.add((st.st_dev, st.st_ino))
+    return identities
+
+
 def _persist_scratch_completion_artifacts(
     conn: sqlite3.Connection, task_id: str, metadata: dict,
 ) -> None:
@@ -3028,6 +3055,10 @@ def _persist_scratch_completion_artifacts(
     persisted: list[str] = []
     used_destinations: set[Path] = set()
     changed = False
+    # ponytail: refuse by inode instead of copying in a child process; leaves
+    # a TOCTOU window (swap between stat and open) — escalate to a short-lived
+    # copier child if workers are ever adversarial rather than buggy.
+    board_db_identities = _board_db_identities(conn)
 
     def _discard_copies() -> None:
         _discard_staged_copies(used_destinations, attachment_dir)
@@ -3048,9 +3079,18 @@ def _persist_scratch_completion_artifacts(
             continue
 
         problem = None
-        if not src.is_file():
+        try:
+            src_stat = resolved_src.stat()
+        except OSError:
+            src_stat = None
+        if not src.is_file() or src_stat is None:
             problem = f"declared scratch artifact is unavailable or not a regular file: {artifact}"
-        elif resolved_src.stat().st_size > KANBAN_ATTACHMENT_MAX_BYTES:
+        elif (src_stat.st_dev, src_stat.st_ino) in board_db_identities:
+            problem = (
+                f"declared scratch artifact aliases the board database "
+                f"(staging it would release this process's SQLite lock): {artifact}"
+            )
+        elif src_stat.st_size > KANBAN_ATTACHMENT_MAX_BYTES:
             problem = (
                 f"declared scratch artifact exceeds the "
                 f"{KANBAN_ATTACHMENT_MAX_BYTES}-byte limit: {artifact}"

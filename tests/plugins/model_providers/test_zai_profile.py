@@ -136,18 +136,24 @@ class TestZaiGLM52ReasoningEffort:
 
 
 class TestZaiGLM53ReasoningEffort:
-    """GLM-5.3's graded low/medium/high/max effort scale (issue #91789).
+    """GLM-5.3's graded effort scale (#91789, #96222).
 
-    Verified live on api.z.ai/api/coding/paas/v4: all four levels accepted
-    with monotonic reasoning-token scaling. Unlike 5.2, low and medium must
-    reach the wire instead of clamping up to high.
+    The coding-plan routes (…/api/coding/paas/v4) accept all four levels
+    (issue #91789), but both standard endpoints (api.z.ai/api/paas/v4 and
+    open.bigmodel.cn/api/paas/v4) reject ``medium`` for glm-5.3/-flash/
+    -flashx with the "always-thinking" HTTP 400 — accepted set is
+    low/high/max (#96222, independently reproduced 2026-09-21). One shared
+    low/high/max vocabulary serves both routes: ``medium`` clamps down to
+    ``low`` (never escalates, and stays a 200 on the coding routes).
     """
 
     @pytest.mark.parametrize(
         ("effort", "expected"),
         [
             ("low", "low"),
-            ("medium", "medium"),
+            # medium is a 400 on both standard endpoints (#96222) —
+            # nearest-weaker clamp is low.
+            ("medium", "low"),
             ("high", "high"),
             ("max", "max"),
             ("xhigh", "max"),

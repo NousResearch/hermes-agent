@@ -584,7 +584,11 @@ def _configure_ui_meta(profile_dir, params, applied) -> None:
         if expected is not None and not isinstance(expected, dict):
             raise ValueError("ui_meta_expected_revisions must be an object")
         with _profile_ui_meta_lock:
-            existing = _read_profile_yaml(profile_dir)
+            # Strict read: this is a read-modify-write of the whole file. The fail-open
+            # _read_profile_yaml turns a YAML typo or a transient EMFILE/EIO into {}, and the
+            # write-back below would then replace profile.yaml with only ui_meta, dropping role/
+            # display_name/previous_names/description. A raise lands in the except below.
+            existing = _lazy("hermes_cli.profiles", "_load_yaml_dict_strict")(profile_dir / "profile.yaml")
             raw_revisions = existing.get("_ui_meta_revisions")
             revisions = _clean_revisions(raw_revisions if isinstance(raw_revisions, dict) else {})
             conflicts = {}

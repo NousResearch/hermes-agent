@@ -1447,10 +1447,11 @@ class TestWriteProfileMetaDurability:
     """``profile.yaml`` must survive an interrupted ``write_profile_meta``.
 
     ``write_profile_meta`` is a read-modify-write whose docstring promises
-    "unspecified fields preserve existing values".  Its read half swallows
-    any parse error and falls back to ``{}``, so a truncated profile.yaml is
-    not transient corruption — the *next* call reads ``{}`` and silently and
-    permanently drops every field the caller did not explicitly pass.
+    "unspecified fields preserve existing values". Its read half now raises
+    on a read/parse error instead of silently falling back to ``{}`` — see
+    ``TestWriteProfileMetaStrictRead`` below — so a transient EMFILE/EIO or a
+    YAML typo on an otherwise-intact profile.yaml can no longer be read as
+    empty and overwritten with just the fields this call passed.
     """
 
     @staticmethod
@@ -1539,6 +1540,69 @@ class TestWriteProfileMetaDurability:
         assert (profile_dir / "profile.yaml").is_symlink()
         assert "updated" in real.read_text(encoding="utf-8-sig")
         assert [p.name for p in profile_dir.iterdir() if p.name.endswith(".tmp")] == []
+
+
+class TestWriteProfileMetaStrictRead:
+    """``write_profile_meta`` must refuse to write when an EXISTING profile.yaml cannot be read or
+    parsed, instead of treating the failure as an empty file and silently wiping every field the
+    caller did not pass (role, display_name, previous_names, ui_meta, description)."""
+
+    @staticmethod
+    def _seed(tmp_path):
+        profile_dir = tmp_path / "coder"
+        profile_dir.mkdir()
+        (profile_dir / "profile.yaml").write_text(
+            "role: setup\ndisplay_name: Coder\nprevious_names: [dev]\n", encoding="utf-8"
+        )
+        return profile_dir
+
+    def test_read_error_raises_and_leaves_file_unchanged(self, tmp_path):
+        profile_dir = self._seed(tmp_path)
+        path = profile_dir / "profile.yaml"
+        before = path.read_text(encoding="utf-8")
+        real_read_text = Path.read_text
+
+        def _flaky_read_text(self, *args, **kwargs):
+            if self == path:
+                raise OSError(24, "Too many open files")
+            return real_read_text(self, *args, **kwargs)
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(Path, "read_text", _flaky_read_text)
+            with pytest.raises(OSError):
+                profiles.write_profile_meta(profile_dir, description="new")
+
+        assert path.read_text(encoding="utf-8") == before
+
+    def test_bad_yaml_raises_and_leaves_file_unchanged(self, tmp_path):
+        profile_dir = self._seed(tmp_path)
+        path = profile_dir / "profile.yaml"
+        path.write_text("role: [unterminated\n", encoding="utf-8")
+        before = path.read_text(encoding="utf-8")
+
+        with pytest.raises(yaml.YAMLError):
+            profiles.write_profile_meta(profile_dir, description="new")
+
+        assert path.read_text(encoding="utf-8") == before
+
+    def test_non_mapping_yaml_raises_and_leaves_file_unchanged(self, tmp_path):
+        profile_dir = self._seed(tmp_path)
+        path = profile_dir / "profile.yaml"
+        path.write_text("- just\n- a\n- list\n", encoding="utf-8")
+        before = path.read_text(encoding="utf-8")
+
+        with pytest.raises(ValueError):
+            profiles.write_profile_meta(profile_dir, description="new")
+
+        assert path.read_text(encoding="utf-8") == before
+
+    def test_missing_profile_yaml_is_still_created(self, tmp_path):
+        profile_dir = tmp_path / "fresh"
+        profile_dir.mkdir()
+
+        profiles.write_profile_meta(profile_dir, description="hello")
+
+        assert profiles.read_profile_meta(profile_dir)["description"] == "hello"
 
 
 # ===================================================================

@@ -111,3 +111,53 @@ def test_two_concurrent_writers_cannot_both_replace_the_same_revision(home):
     loser = next(result for result in results if result["ui_meta"] is False)
     assert loser["ui_meta_conflicts"]["shared-room"]["actual"] == 1
     assert _default_profile()["ui_meta_revisions"]["shared-room"] == 1
+
+
+_SEEDED_PROFILE_YAML = (
+    "role: setup\n"
+    "display_name: Coder\n"
+    "previous_names:\n- dev\n"
+    "description: original\n"
+    "ui_meta:\n  hermes-bots:\n    title: Coder\n"
+)
+
+
+def test_unparseable_profile_yaml_is_refused_not_replaced(home):
+    """A ui_meta edit must not rewrite a profile.yaml it could not parse: the read-modify-write
+    used to read it as ``{}`` and replace the file with only ui_meta, dropping role/display_name/
+    previous_names/description while reporting the section applied."""
+    path = home / "profile.yaml"
+    path.write_text(_SEEDED_PROFILE_YAML + "extra: [unterminated\n", encoding="utf-8")
+    before = path.read_bytes()
+
+    applied = _configure({"hermes-bots": {"title": "Renamed"}})
+
+    assert applied["ui_meta"] is False
+    assert path.read_bytes() == before
+
+
+def test_read_error_on_profile_yaml_is_refused_not_replaced(home, monkeypatch):
+    """A transient read error (EMFILE/EIO) on an intact profile.yaml must fail the ui_meta
+    section, not wipe every field it did not touch. A description in the same request must not
+    land on a truncated file either."""
+    from pathlib import Path
+
+    path = home / "profile.yaml"
+    path.write_text(_SEEDED_PROFILE_YAML, encoding="utf-8")
+    before = path.read_bytes()
+    real_read_text = Path.read_text
+
+    def flaky_read_text(self, *args, **kwargs):
+        if self.name == "profile.yaml":
+            raise OSError(24, "Too many open files")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", flaky_read_text)
+    applied = srv._methods["profiles.configure"]("configure", {
+        "name": "default", "ui_meta": {"hermes-bots": {"title": "Renamed"}},
+        "description": "edited",
+    })["result"]["applied"]
+    monkeypatch.setattr(Path, "read_text", real_read_text)
+
+    assert applied["ui_meta"] is False
+    assert path.read_bytes() == before

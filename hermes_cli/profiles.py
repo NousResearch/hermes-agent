@@ -630,6 +630,23 @@ def _load_yaml_dict(path: Path) -> Optional[dict]:
     return data if isinstance(data, dict) else None
 
 
+def _load_yaml_dict_strict(path: Path) -> dict:
+    """Return the mapping in a YAML file for a WRITE path: ``{}`` only when the file is genuinely
+    missing; a read/parse error or a non-mapping top level raises instead of silently discarding
+    the file's contents. ``_load_yaml_dict``'s fail-open ``None`` is fine for callers that just
+    display the result, but write_profile_meta() used it as ``existing = _load_yaml_dict(path) or
+    {}`` — a transient EMFILE/EIO or a YAML typo turned into an empty dict, and the write-back then
+    replaced the whole file with that empty dict plus only the fields this call passed, wiping
+    role/display_name/previous_names/ui_meta/description that were never touched."""
+    if not path.is_file():
+        return {}
+    import hermes_yaml as yaml
+    data = yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: top-level YAML must be a mapping, got {type(data).__name__}")
+    return data
+
+
 # (path, kind) -> (file signature, the small derived value). `list_profiles` re-reads three YAML
 # files PER PROFILE, and it is the shared body of `GET /api/profiles` and `profiles.list`, which the
 # Bots roster polls every 5s per connection — so an installer-seeded config.yaml (the annotated
@@ -904,13 +921,15 @@ def write_profile_meta(
 ) -> None:
     """Update ``profile.yaml`` in place: only passed fields are overwritten; the file is
     created if missing. The profile directory itself must exist. ``role`` grants backend
-    capabilities, so no client-facing writer passes it through."""
+    capabilities, so no client-facing writer passes it through. Raises (never writes) if an
+    EXISTING profile.yaml cannot be read or parsed, instead of silently treating it as empty
+    and overwriting it with just the passed fields."""
     if not profile_dir.is_dir():
         raise FileNotFoundError(f"profile directory does not exist: {profile_dir}")
     if role is not None and role not in PROFILE_ROLES:
         raise ValueError(f"unknown profile role: {role!r}")
     path = profile_dir / "profile.yaml"
-    existing: dict = _load_yaml_dict(path) or {}
+    existing: dict = _load_yaml_dict_strict(path)
     if role is not None:
         existing["role"] = role
     if description is not None:

@@ -92,6 +92,25 @@ def _seed_file(client, root, name="out/hello.txt"):
 
 
 
+@pytest.mark.parametrize("client_fixture", ["local_files_client", "forced_files_client"])
+def test_mkdir_creates_a_folder_the_picker_can_list_and_enter(client_fixture, request):
+    """The desktop remote folder picker's New folder: mkdir an absolute child of
+    the folder it is browsing, then list the parent and navigate into the result."""
+    client, root = request.getfixturevalue(client_fixture)
+    root.mkdir(exist_ok=True)
+    listed = client.get("/api/fs/list", params={"path": str(root)}).json()
+    assert "error" not in listed
+
+    created = client.post("/api/files/mkdir", json={"path": str(root / "fresh project")})
+
+    assert created.status_code == 200
+    new_dir = created.json()["path"]
+    assert (root / "fresh project").is_dir()
+    after = client.get("/api/fs/list", params={"path": str(root)}).json()["entries"]
+    assert {"name": "fresh project", "path": new_dir, "isDirectory": True} in after
+    assert client.get("/api/fs/list", params={"path": new_dir}).json() == {"entries": []}
+
+
 def test_download_authenticates_via_query_token(forced_files_client):
     client, root = forced_files_client
     file_path = _seed_file(client, root, name="out/demo.mp4")

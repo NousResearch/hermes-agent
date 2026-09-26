@@ -17,7 +17,6 @@ import pytest
 
 import hermes_cli.auth as auth
 
-
 @pytest.fixture
 def store_file(tmp_path):
     f = tmp_path / "auth.json"
@@ -27,12 +26,10 @@ def store_file(tmp_path):
     )
     return f
 
-
 def _fail_read(exc):
     def _read(self, *args, **kwargs):
         raise exc
     return _read
-
 
 @pytest.mark.parametrize(
     "exc",
@@ -57,7 +54,6 @@ def test_read_failure_raises_and_leaves_the_store_alone(store_file, monkeypatch,
         "a read failure is not corruption and must not write a .corrupt sidecar"
     )
 
-
 def test_unparseable_json_still_degrades_and_preserves_a_copy(store_file):
     store_file.write_text("{ not json", encoding="utf-8")
 
@@ -68,9 +64,6 @@ def test_unparseable_json_still_degrades_and_preserves_a_copy(store_file):
     assert corrupt.exists(), "genuine corruption must still be preserved"
     assert corrupt.read_text(encoding="utf-8") == "{ not json"
 
-
 def test_healthy_store_is_returned_unchanged(store_file):
     result = auth._load_auth_store(store_file)
     assert result["providers"]["nous"]["api_key"] == "secret"
-
-

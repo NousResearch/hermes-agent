@@ -4,11 +4,11 @@ sha: 176f8c2de1369f569c489b831d143b78128b5535
 subdir: hindsight-integrations/hermes
 version: "1.0.1"
 description: Hindsight long-term memory provider — knowledge graph, entity resolution and multi-strategy
-  retrieval (recall/reflect/retain tools plus automatic per-turn capture); cloud, local embedded or local
-  external mode. Maintained by Vectorize; the same provider that shipped in-tree. Disclosure — in
-  local_embedded mode the plugin installs the `hindsight-all` PyPI package into the Hermes venv on first
-  use through core's lazy-install path (honours security.allow_lazy_installs), and `hermes memory setup`
-  fetches its bank-template catalog from raw.githubusercontent.com (vectorize-io/hindsight main).
+  retrieval (recall/reflect/retain tools plus automatic per-turn capture). Maintained by Vectorize;
+  cloud and local external modes are available. Local embedded mode is not supported on PM-managed
+  Hermes with this plugin pin — it still calls the retired lazy-install path for `hindsight-all`.
+  `hermes memory setup` fetches its bank-template catalog from raw.githubusercontent.com
+  (vectorize-io/hindsight main).
 maintainer: vectorize-io
 tier: community
 category: memory

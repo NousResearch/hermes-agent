@@ -9,8 +9,9 @@
 # hermes_bootstrap must be the very first import (UTF-8 stdio on Windows; no-op on POSIX).
 try:
     import hermes_bootstrap  # noqa: F401
-except ModuleNotFoundError:
-    pass  # partial `hermes update` — only skips the Windows UTF-8 stdio setup
+except ModuleNotFoundError as exc:  # partial `hermes update` left the bootstrap unregistered
+    if exc.name != "hermes_bootstrap":
+        raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
 
 import sys
 
@@ -137,7 +138,7 @@ from agent.client_lifecycle import ClientLifecycleMixin
 from agent.stream_delivery import StreamDeliveryMixin
 from agent.status_output import StatusOutputMixin
 from agent.api_request_hooks import ApiRequestHooksMixin
-from agent.api_error_summary import PROVIDER_STREAM_PARSE_MARKERS, ApiErrorSummaryMixin
+from agent.api_error_summary import ApiErrorSummaryMixin, is_provider_stream_parse_error
 from agent.interrupt_control import InterruptControlMixin
 from agent.turn_explainers import TurnExplainersMixin
 from agent.activity_tracking import ActivityTrackingMixin
@@ -299,6 +300,7 @@ class AIAgent(
         pass_session_id: bool = False, requested_provider: str = None,
         capabilities: Dict[str, bool] | None = None, cwd: str | None = None,
         side_agent: bool = False, memory_manager=None,
+        tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent`` (same keyword parameters, minus ``tool_delay``)."""
         init_kwargs = {k: v for k, v in locals().items() if k not in ("self", "tool_delay")}
@@ -514,9 +516,7 @@ class AIAgent(
     def _is_provider_stream_parse_error(self, error: BaseException) -> bool:
         """True for a malformed Anthropic event-stream frame (surfaced by the SDK as a plain ``ValueError``);
         that is wire trouble, not local validation, so it follows the truncated-JSON retry path."""
-        return (getattr(self, "api_mode", None) == "anthropic_messages" and isinstance(error, ValueError)
-                and not isinstance(error, (UnicodeEncodeError, json.JSONDecodeError))
-                and any(marker in str(error).strip().lower() for marker in PROVIDER_STREAM_PARSE_MARKERS))
+        return getattr(self, "api_mode", None) == "anthropic_messages" and is_provider_stream_parse_error(error)
 
     _log_stream_retry = _forward("agent.stream_diag", "log_stream_retry")
     _emit_stream_drop = _forward("agent.stream_diag", "emit_stream_drop")
@@ -597,7 +597,7 @@ class AIAgent(
         if uses_implicit_default and base_url and is_local_endpoint(base_url):
             return float("inf")
 
-        from agent.chat_completion_helpers import _high_effort_silence_floor, estimate_request_context_tokens
+        from agent.chat_completion_helpers import _high_effort_silence_floor, cap_to_run_budget, estimate_request_context_tokens
         est_tokens = estimate_request_context_tokens(api_payload)
         timeout = max(stale_base, 240.0) if est_tokens > 100_000 else max(stale_base, 150.0) if est_tokens > 50_000 else stale_base
         explicit = self._stale_timeout_is_explicit()
@@ -607,11 +607,8 @@ class AIAgent(
             timeout = max(timeout, _high_effort_silence_floor(self))
         # Run-budget cap: an implicit stale timeout is capped at half the remaining budget (>= 60s) so one
         # hung call cannot eat the run. Never raises the timeout; explicit user config still wins.
-        run_budget = getattr(self, "run_budget_seconds", None)
-        started = getattr(self, "_run_budget_started_at", None)
-        if run_budget and started and not explicit:
-            remaining = float(run_budget) - (time.time() - started)
-            timeout = min(timeout, max(60.0, remaining * 0.5))
+        if not explicit:
+            timeout = cap_to_run_budget(self, timeout)
         return timeout
 
     def _stale_timeout_is_explicit(self) -> bool:
@@ -1531,6 +1528,14 @@ def main(
     print("=" * 50)
     if list_tools:
         return _print_tool_listing()
+
+    # One TLS authority: trust the OS store before any outbound call (bare
+    # requests/urllib included) resolves a CA bundle — see agent/ssl_verify.py.
+    # The `hermes` CLI does this in hermes_cli.main; this console script
+    # bypasses it. Never raises.
+    from agent.ssl_verify import install_truststore
+
+    install_truststore()
 
     enabled_toolsets_list = _parse_toolset_arg(enabled_toolsets, "🎯 Enabled toolsets")
     disabled_toolsets_list = _parse_toolset_arg(disabled_toolsets, "🚫 Disabled toolsets")

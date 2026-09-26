@@ -134,6 +134,65 @@ def test_set_paused_roundtrip(curator_env):
 
 
 
+@pytest.mark.parametrize("bad_days", [0, -5])
+def test_non_positive_archive_after_days_falls_back_to_default(curator_env, monkeypatch, bad_days):
+    """``curator.archive_after_days: 0`` (or negative) collapses archive_cutoff onto or past "now",
+    which would mass-archive every skill with any past activity on the very next automatic pass.
+    ``hermes curator prune --days`` already refuses the same value; apply_automatic_transitions()
+    runs unconfirmed on an idle tick, so it must fall back to the default instead."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "just-used")
+    _backdate(u, "just-used", 0)
+    monkeypatch.setattr(c, "_load_config", lambda: {"archive_after_days": bad_days})
+
+    counts = c.apply_automatic_transitions()
+
+    assert counts["archived"] == 0
+    assert u.load_usage()["just-used"]["state"] == u.STATE_ACTIVE
+    assert c.get_archive_after_days() == c.DEFAULT_ARCHIVE_AFTER_DAYS
+
+
+@pytest.mark.parametrize("bad_days", [0, -5])
+def test_non_positive_stale_after_days_falls_back_to_default(curator_env, monkeypatch, bad_days):
+    """Same bound for ``stale_after_days`` — a non-positive value must not zero out the
+    use_count==0 grace floor apply_automatic_transitions() relies on."""
+    c = curator_env["curator"]
+    monkeypatch.setattr(c, "_load_config", lambda: {"stale_after_days": bad_days})
+    assert c.get_stale_after_days() == c.DEFAULT_STALE_AFTER_DAYS
+
+
+@pytest.mark.parametrize("bad_hours", [0, -3])
+def test_non_positive_interval_hours_falls_back_to_default(curator_env, monkeypatch, bad_hours):
+    """``curator.interval_hours: 0`` (or negative) made should_run_now() true on every idle tick,
+    re-running the review pass each time; it must fall back to the default interval instead."""
+    c = curator_env["curator"]
+    monkeypatch.setattr(c, "_load_config", lambda: {"interval_hours": bad_hours})
+    now = datetime.now(timezone.utc)
+    c.save_state({"last_run_at": (now - timedelta(minutes=1)).isoformat()})
+
+    assert c.get_interval_hours() == c.DEFAULT_INTERVAL_HOURS
+    assert c.should_run_now(now=now) is False
+
+
+def test_bad_bounded_value_warns_once_per_distinct_value(curator_env, monkeypatch, caplog):
+    """The dashboard status endpoint polls these getters, so a bad value logs once, not per poll;
+    a different bad value (the user edited config again) logs again."""
+    c = curator_env["curator"]
+    cfg = {"archive_after_days": 0}
+    monkeypatch.setattr(c, "_load_config", lambda: cfg)
+    with caplog.at_level("WARNING", logger=c.logger.name):
+        for _ in range(3):
+            c.get_archive_after_days()
+        cfg["archive_after_days"] = -1
+        c.get_archive_after_days()
+        c.get_archive_after_days()
+    msgs = [r.getMessage() for r in caplog.records if "archive_after_days" in r.getMessage()]
+    assert len(msgs) == 2, msgs
+    assert "got 0" in msgs[0] and "got -1" in msgs[1]
+
+
 def test_pinned_skill_is_never_touched(curator_env):
     c = curator_env["curator"]
     u = curator_env["usage"]

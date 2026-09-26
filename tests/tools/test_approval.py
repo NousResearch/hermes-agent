@@ -111,6 +111,7 @@ class TestDetectDangerousRm:
             assert "delete" in desc.lower()
 
 
+    @pytest.mark.platforms("linux")
     def test_nonrecursive_verification_artifact_cleanup_is_not_dangerous(self):
         with mock_patch("tempfile.gettempdir", return_value="/tmp"):
             for prefix in ("hermes-verify-", "hermes-ad-hoc-"):
@@ -120,6 +121,7 @@ class TestDetectDangerousRm:
                     None,
                 )
 
+    @pytest.mark.require_symlinks
     def test_symlinked_temp_dir_only_exempts_canonical_target(self, tmp_path):
         real_temp = tmp_path / "real-temp"
         real_temp.mkdir()
@@ -1701,58 +1703,52 @@ class TestApprovalTimeoutIsNotConsent:
 
         self._force_short_timeout(monkeypatch, seconds=2)
         notified = []
-        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
-        result_holder = {}
 
-        thread = threading.Thread(
-            target=lambda: result_holder.setdefault(
-                "result", mod.check_all_command_guards("rm -rf .git", "local")
-            )
-        )
-        thread.start()
-        for _ in range(200):
-            if notified:
-                break
-            time.sleep(0.005)
+        def notify(data):
+            # The real queue entry is already pending here. Inspect/respond at
+            # publication, without racing thread startup or the approval deadline.
+            notified.append(data)
+            request_id = data["request_id"]
+            assert request_id
+            assert mod.list_gateway_approvals(self.SESSION_KEY) == [data]
+            assert mod.ack_gateway_approval(self.SESSION_KEY, request_id) is True
+            assert mod.list_gateway_approvals(self.SESSION_KEY) == [data]
+            assert mod.resolve_gateway_approval(
+                self.SESSION_KEY, "once", request_id=request_id
+            ) == 1
 
-        request_id = notified[0]["request_id"]
-        assert request_id
-        assert mod.list_gateway_approvals(self.SESSION_KEY) == [notified[0]]
-        assert mod.ack_gateway_approval(self.SESSION_KEY, request_id) is True
-        assert mod.resolve_gateway_approval(
-            self.SESSION_KEY, "once", request_id=request_id
-        ) == 1
-        thread.join(timeout=5)
-        assert result_holder["result"]["approved"] is True
+        mod.register_gateway_notify(self.SESSION_KEY, notify)
+        result = mod.check_all_command_guards("rm -rf .git", "local")
+
+        assert len(notified) == 1
+        assert result["approved"] is True
+        assert mod.list_gateway_approvals(self.SESSION_KEY) == []
 
     def test_stale_request_id_cannot_resolve_current_approval(self, monkeypatch):
         from tools import approval as mod
 
         self._force_short_timeout(monkeypatch, seconds=2)
         notified = []
-        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
-        result_holder = {}
-        thread = threading.Thread(
-            target=lambda: result_holder.setdefault(
-                "result", mod.check_all_command_guards("rm -rf .git", "local")
-            )
-        )
-        thread.start()
-        for _ in range(200):
-            if notified:
-                break
-            time.sleep(0.005)
 
-        request_id = notified[0]["request_id"]
-        assert mod.resolve_gateway_approval(
-            self.SESSION_KEY, "once", request_id="stale-request"
-        ) == 0
-        assert mod.list_gateway_approvals(self.SESSION_KEY)
-        assert mod.resolve_gateway_approval(
-            self.SESSION_KEY, "deny", request_id=request_id
-        ) == 1
-        thread.join(timeout=5)
-        assert result_holder["result"]["approved"] is False
+        def notify(data):
+            notified.append(data)
+            assert mod.resolve_gateway_approval(
+                self.SESSION_KEY, "once", request_id="stale-request"
+            ) == 0
+            assert mod.list_gateway_approvals(self.SESSION_KEY) == [data]
+            assert mod.resolve_gateway_approval(
+                self.SESSION_KEY, "deny", request_id=data["request_id"]
+            ) == 1
+
+        mod.register_gateway_notify(self.SESSION_KEY, notify)
+        result = mod.check_all_command_guards("rm -rf .git", "local")
+
+        assert len(notified) == 1
+        assert result["approved"] is False
+        assert result["user_consent"] is False
+        # Callback assertions are caught as notify_failed; require the actual denial.
+        assert result["outcome"] == "denied"
+        assert mod.list_gateway_approvals(self.SESSION_KEY) == []
 
 
 # =========================================================================

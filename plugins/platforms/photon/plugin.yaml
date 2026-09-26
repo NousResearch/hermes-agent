@@ -39,7 +39,7 @@ optional_env:
     prompt: "Auto-start the sidecar?"
     password: false
   - name: PHOTON_NODE_BIN
-    description: "Path to the node binary (default: shutil.which('node'))"
+    description: "Path to the node binary (default: PM's pinned node, then PATH)"
     prompt: "Node executable path"
     password: false
   - name: PHOTON_DASHBOARD_HOST

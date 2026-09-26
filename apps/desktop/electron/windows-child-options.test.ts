@@ -2,7 +2,8 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { stopBackendChild, stopBackendTreesForUpdate } from './backend-child'
+import { stopBackendChild } from './backend-child'
+import { createLocalBackendLifecycle } from './local-backend-lifecycle'
 import { hiddenWindowsChildOptions } from './windows-child-options'
 
 test('hiddenWindowsChildOptions adds windowsHide:true on Windows when unset', () => {
@@ -137,21 +138,33 @@ test('stopBackendChild swallows errors thrown by the kill strategy', () => {
   })
 })
 
-test('Windows update tree-kills captured roots without pre-signalling the primary backend', () => {
+test('Windows shutdown tree-kills before waiting, and joins an overlapping stop', async (): Promise<void> => {
   const primary = makeChild({ pid: 101 })
-  const pooled = makeChild({ pid: 202 })
   const events: string[] = []
+  let exit!: () => void
 
-  stopBackendTreesForUpdate(primary.child, {
-    forceKillProcessTree: pid => events.push(`tree:${pid}`),
-    stopAllPoolBackends: () => {
-      events.push('pool-stop')
-      // Production stopAllPoolBackends() already tree-kills every pool root.
-      events.push(`tree:${pooled.child.pid}`)
-    }
+  const lifecycle = createLocalBackendLifecycle<typeof primary.child>({
+    stopChild: (child: typeof primary.child): void =>
+      stopBackendChild(child, {
+        forceKillProcessTree: (pid: number): void => {
+          events.push(`tree:${pid}`)
+        },
+        isWindows: true
+      }),
+    waitForExit: (): Promise<void> =>
+      new Promise<void>((resolve: () => void): void => {
+        events.push('wait')
+        exit = resolve
+      }),
+    cancelSetup: (): void => {}
   })
 
-  assert.deepEqual(events, ['tree:101', 'pool-stop', 'tree:202'])
-  assert.deepEqual(primary.calls, [], 'the primary root must not be signalled before taskkill /T sees it')
-  assert.deepEqual(pooled.calls, [])
+  const child = lifecycle.spawn((): typeof primary.child => primary.child)
+  const stopped = lifecycle.stop(child)
+  assert.equal(lifecycle.stop(child), stopped)
+  const shutdown = lifecycle.shutdown()
+  assert.deepEqual(events, ['tree:101', 'wait'])
+  assert.deepEqual(primary.calls, [], 'taskkill must enumerate descendants before the root can exit')
+  exit()
+  await Promise.all([stopped, shutdown])
 })

@@ -302,7 +302,7 @@ class TestLocalNetworkConnectHint:
         assert _connect_error_detail(err) == str(err)
         assert _connect_error_detail(RuntimeError("auth failed")) == "auth failed"
 
-    @pytest.mark.macos_only
+    @pytest.mark.platforms("macos")
     def test_ehostunreach_under_launchd_names_the_remedy(self, monkeypatch):
         """Only the launchd-supervised gateway can be denied by Local Network Privacy (#71206)."""
         from plugins.platforms.homeassistant.adapter import _connect_error_detail

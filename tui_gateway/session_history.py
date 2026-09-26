@@ -237,6 +237,11 @@ def _history_to_messages(history: list[dict], *, profile_home=None) -> list[dict
             # `context` is an 80-char preview; ship args so a full-call renderer isn't truncated.
             labels = _bridged_tool_labels(name, args)
             messages.append({"role": "tool", "name": name, "context": _tool_ctx(name, args),
+                             # Edit cards need the original result; other tool outputs
+                             # remain omitted from this compact display projection.
+                             **({"content": m.get("content")} if name in {"write_file", "patch", "skill_manage"} else {}),
+                             **{key: m[key] for key in ("tool_call_id", "timestamp", "display_metadata")
+                                if m.get(key) is not None},
                              **({"args": args} if args else {}), **({"labels": labels} if labels else {})})
             continue
         # Assistant detail sidecars can carry the only visible reply or reasoning after resume/reload.

@@ -864,6 +864,8 @@ class SessionStore(
             )
             return True
 
+
+
     def has_any_sessions(self) -> bool:
         """Whether any session has ever been created. SQLite is the source of truth (ended sessions
         count); the current session is already in the DB when this runs, hence ``> 1``."""

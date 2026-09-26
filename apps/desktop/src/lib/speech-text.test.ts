@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { sanitizeTextForSpeech } from './speech-text'
+import { cutSentences, IncrementalSpeechSentenceBuffer, sanitizeTextForSpeech } from './speech-text'
 
 describe('sanitizeTextForSpeech', () => {
   it('does not speak placeholders for fenced code blocks', () => {
@@ -223,5 +223,64 @@ After the table.`
     Example A | 10`
 
     expect(sanitizeTextForSpeech(text)).toContain('Item | Value')
+  })
+})
+
+describe('cutSentences', () => {
+  it('emits complete sentences and holds the incomplete tail', () => {
+    const { sentences, rest } = cutSentences('This is the first full sentence. And then it keeps goi', false)
+
+    expect(sentences).toEqual(['This is the first full sentence.'])
+    expect(rest).toBe('And then it keeps goi')
+  })
+
+  it('buffers too-short fragments instead of firing per abbreviation', () => {
+    const { sentences, rest } = cutSentences('e.g. it continues', false)
+
+    expect(sentences).toEqual([])
+    expect(rest).toBe('e.g. it continues')
+  })
+
+  it('flush drains everything including the tail', () => {
+    const { sentences, rest } = cutSentences('First complete sentence right here. tail bit', true)
+
+    expect(sentences).toEqual(['First complete sentence right here.', 'tail bit'])
+    expect(rest).toBe('')
+  })
+
+  it('handles CJK terminators', () => {
+    const { sentences } = cutSentences(
+      '这是一个完整的中文句子，它的长度足够超过最小句子门槛，所以会被切分出来。 下一句',
+      true
+    )
+
+    expect(sentences[0]).toContain('。')
+    expect(sentences).toHaveLength(2)
+  })
+
+  it('cuts a short CJK opener alone when the backend sends tts.streaming.min_len', () => {
+    const text = '记得，叫团团。 然后我们再说第二句话，这一句要长一些才行。 '
+
+    // Historical 24-char floor (older backend, no key): the opener rides with sentence two.
+    expect(cutSentences(text, false).sentences).toEqual(['记得，叫团团。 然后我们再说第二句话，这一句要长一些才行。'])
+    // tts.streaming.min_len = 6 (the CJK voice setup from #96927): spoken on its own.
+    expect(cutSentences(text, false, 6).sentences).toEqual([
+      '记得，叫团团。',
+      '然后我们再说第二句话，这一句要长一些才行。'
+    ])
+  })
+})
+
+describe('IncrementalSpeechSentenceBuffer', () => {
+  it('does not hold later sentences when prose mentions a <thinking tag', () => {
+    const buffer = new IncrementalSpeechSentenceBuffer()
+
+    expect(buffer.append('Wrap the plan in a <thinking> tag first. ')).toEqual([
+      'Wrap the plan in a <thinking> tag first.'
+    ])
+    expect(buffer.append('Then the answer follows here in prose. And a tail')).toEqual([
+      'Then the answer follows here in prose.'
+    ])
+    expect(buffer.flush()).toEqual(['And a tail'])
   })
 })

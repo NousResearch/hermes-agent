@@ -35,19 +35,30 @@ def get_provider_env(name: str) -> str:
         from hermes_cli.config import get_env_value
 
         val = get_env_value(name)
-    except Exception:  # noqa: BLE001 — config layer optional here
+    except Exception as exc:  # noqa: BLE001 — config layer optional here
+        try:
+            from agent.secret_scope import UnscopedSecretError
+        except ImportError:
+            UnscopedSecretError = ()  # type: ignore[assignment,misc]
+        if isinstance(exc, UnscopedSecretError):
+            raise
         val = None
-    if val is None and not _secret_scope_bound():
+    scope_bound, multiplex_active = _secret_scope_state()
+    if val is None and multiplex_active and not scope_bound:
+        from agent.secret_scope import UnscopedSecretError
+
+        raise UnscopedSecretError(name, f"get_provider_env({name!r}) called with no active profile scope")
+    if val is None and not scope_bound:
         val = os.getenv(name, "")
     return (val or "").strip()
 
 
-def _secret_scope_bound() -> bool:
+def _secret_scope_state() -> tuple[bool, bool]:
     try:
-        from agent.secret_scope import current_secret_scope
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
     except Exception:  # noqa: BLE001 — stripped install without the scope module
-        return False
-    return current_secret_scope() is not None
+        return False, False
+    return current_secret_scope() is not None, is_multiplex_active()
 
 
 class WebSearchProvider(ProviderBase):

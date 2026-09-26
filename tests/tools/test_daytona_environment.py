@@ -53,9 +53,8 @@ def _patch_daytona_imports(monkeypatch):
 @pytest.fixture()
 def daytona_sdk(monkeypatch):
     """Provide a mock daytona SDK module and return it for assertions."""
-    # The SDK itself is faked below.  Do not ask lazy_deps to install the
-    # optional package while exercising that fake.
-    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *args, **kwargs: None)
+    # The SDK itself is faked below; bypass the PM install while exercising it.
+    monkeypatch.setattr("tools.environments.daytona.ensure_lazy_dep", lambda extra: None)
     return _patch_daytona_imports(monkeypatch)
 
 
@@ -117,6 +116,12 @@ def make_env(daytona_sdk, monkeypatch):
 # ---------------------------------------------------------------------------
 
 class TestCwdResolution:
+    def test_constructor_prepares_sdk_once(self, make_env, monkeypatch):
+        calls = []
+        monkeypatch.setattr("tools.environments.daytona.ensure_lazy_dep", calls.append)
+        make_env()
+        assert calls == ["daytona"]
+
     def test_default_cwd_resolves_home(self, make_env):
         env = make_env(home_dir="/home/testuser")
         assert env.cwd == "/home/testuser"

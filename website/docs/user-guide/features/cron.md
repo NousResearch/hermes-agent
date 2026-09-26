@@ -457,10 +457,15 @@ identically on every tick — and to alert every time. A 429 the model API
 returns mid-run is not held this way; it is retried on the normal cadence.
 
 Instead, the scheduler **parks the job**: the one failure alert says the
-window is closed and that the job is held, `next_run_at` moves to the first
-scheduled occurrence after the window (`quota_hold_until` on the job record),
-and nothing fires or alerts until then. Any run that reaches the model clears
-the hold. One-shot jobs are not held.
+window is closed and that the job is held. If the provider reopens well before
+a **sparse** cron job's next natural occurrence (at least half a schedule
+period early), a blocked scheduled occurrence retries once at that recovery
+boundary; a second quota failure waits for the natural schedule. Dense
+schedules, manual runs and interval jobs retain their natural next run.
+Otherwise, missed occurrences are coalesced and
+`next_run_at` moves to the first scheduled occurrence after the window. The
+parked instant is stored as `quota_hold_until`; nothing fires or alerts before
+it. Any run that reaches the model clears the hold. One-shot jobs are not held.
 
 ### Failure incidents: alert once, remind on a cooldown, acknowledge
 
@@ -1248,7 +1253,7 @@ The `wakeAgent` gate gives you a $0 way to decide whether a scheduled job should
 **File-change gate** — only run when a watched file has new content since the last successful tick. The scheduler records each job's `last_run_at`; compare it against the file's mtime.
 
 ```bash
-#!/bin/bash
+#!/usr/bin/env bash
 # ~/.hermes/scripts/feed-changed.sh
 FEED="$HOME/data/feed.json"
 STATE="$HOME/.hermes/scripts/.feed-changed.last"
@@ -1273,7 +1278,7 @@ cronjob(action="create", name="process-feed",
 **External-flag gate** — only run when some other process has signalled readiness (e.g. a deploy hook drops a file, a CI job sets a value in your state store).
 
 ```bash
-#!/bin/bash
+#!/usr/bin/env bash
 # ~/.hermes/scripts/flag-ready.sh
 if test -f ~/.hermes/cache/scratch/new-data-ready; then
   rm -f ~/.hermes/cache/scratch/new-data-ready

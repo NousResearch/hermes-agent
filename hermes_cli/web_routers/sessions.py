@@ -22,9 +22,11 @@ from hermes_cli.web_server_gateway import _strip_session_list_rows
 from hermes_cli.web_server_sessions import _maybe_auto_archive_for_profile, _session_latest_descendant
 from hermes_cli.web_models import (
     BulkDeleteSessions, SessionImport, SessionOwnerBackfill, SessionPrune, SessionRename)
-from hermes_cli.web_routers._common import CORRUPT_STORE_DETAIL, log as _log, destructive_profile, http_failure
+from hermes_cli.web_routers._common import (
+    CORRUPT_STORE_DETAIL, corrupt_store_as_status, log as _log, destructive_profile, http_failure,
+)
 from hermes_state import is_malformed_db_error
-from hermes_state_errors import is_transient_sqlite_error
+from hermes_state_errors import StateDbReplacedError, is_transient_sqlite_error
 from hermes_state_health import STORAGE_CORRUPT, note_storage_error, storage_state
 
 list_router = APIRouter()
@@ -160,6 +162,10 @@ def _resolve_session_id(db, session_id: str) -> Optional[str]:
                 "Sessions cannot be read until it is repaired — run "
                 "`hermes doctor` for diagnosis."),
         ) from exc
+    except StateDbReplacedError:
+        # RuntimeError family, not sqlite3: same 503 payload as the analytics reads (#110054).
+        with corrupt_store_as_status(db.db_path):
+            raise
 
 
 # ``le=100`` on limit: an unbounded limit lets one request drag every session
@@ -250,6 +256,10 @@ def get_sessions(
             raise HTTPException(status_code=500, detail="Internal server error") from exc
         _log.error("GET /api/sessions: state.db at %s is corrupt: %s", db_path, exc)
         raise HTTPException(status_code=503, detail=dict(CORRUPT_STORE_DETAIL)) from exc
+    except StateDbReplacedError:
+        # RuntimeError family, not sqlite3: same 503 payload as the analytics reads (#110054).
+        with corrupt_store_as_status(_session_db_path_for_profile(profile)):
+            raise
     except Exception:
         _log.exception("GET /api/sessions failed")
         raise HTTPException(status_code=500, detail="Internal server error")

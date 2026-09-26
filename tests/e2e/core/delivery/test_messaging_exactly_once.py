@@ -46,7 +46,7 @@ from tests.e2e.core.delivery._fake_platform import (
     visible_copies,
     wait_until,
 )
-from tests.e2e.core.delivery._pending_fixes import expect_gap, known_failure
+from tests.e2e.core.delivery._pending_fixes import known_failure
 from tests.fakes.fake_llm_provider import FakeLLMServer, StallMidStream, Text, ToolCall
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="SIGKILL + process-group restart harness")
@@ -252,18 +252,6 @@ FAULTS = {
 }
 
 
-# Streaming gaps #120315 fixes: an overflowing first send keeps the " (n/n)" indicator on the live
-# tail that later chunks extend / a sealed remainder over the limit is re-sent; a failed first send
-# leaves an uneditable partial preview next to the final. Every cell here fails every run while the
-# gap is open (the chunk pacing above puts each chunk in its own consumer tick).
-STREAM_OVERFLOW_GAP = "LIVE GAP (fixed by #120315): streamed overflow / failed first send"
-STREAM_OVERFLOW_GAP_CELLS = {
-    ("burst_overflow", "fk_tg"), ("burst_overflow", "fk_dc"),
-    ("long_streamed", "fk_dc"),
-    ("stream_timeout_first_send", "fk_tg"), ("stream_timeout_first_send", "fk_dc"),
-}
-
-
 STREAM_ACK_LOST_GAP = (
     "LIVE GAP (#53449/#25349 family): on a streaming platform the stream consumer's first send is the "
     "whole short reply; when the platform accepts it but the ack is lost (timeout), the consumer reports "
@@ -284,7 +272,7 @@ def faults_fired(gw: GatewayProcess, aid: str) -> List[dict]:
 
 @pytest.mark.parametrize("platform", list(PLATFORMS))
 @pytest.mark.parametrize("fault", list(FAULTS))
-def test_delivery_fault_matrix(gw, director, platform, fault, request):
+def test_delivery_fault_matrix(gw, director, platform, fault):
     kind, op, target, build, expect = FAULTS[fault]
     token = f"{platform}.{fault}"
     chat = f"m-{platform}-{fault}"
@@ -303,8 +291,6 @@ def test_delivery_fault_matrix(gw, director, platform, fault, request):
                f"{token} complete reply\n" + dump(gw, platform, chat), proc=gw.proc, log=gw.log)
     if kind is not None:
         assert faults_fired(gw, aid), f"injected {kind} never hit a platform call\n{dump(gw, platform, chat)}"
-    if (fault, platform) in STREAM_OVERFLOW_GAP_CELLS:
-        expect_gap(request, 120315, STREAM_OVERFLOW_GAP)
     guard = (known_failure(STREAM_ACK_LOST_SIGNATURE, STREAM_ACK_LOST_GAP,
                            on_xfail=lambda: XFAILED_TOKENS.add(token))
              if fault == "ack_lost" and STREAMING[platform] else contextlib.nullcontext())

@@ -18,8 +18,8 @@ from hermes_startup_watchdog import report_startup_progress
 from hermes_state_common import (
     _LISTABLE_CHILD_SQL, _PREVIEW_ELIGIBLE_SQL, _PREVIEW_RAW_SELECT, _RECOVERABLE_END_REASONS,
     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _shape_preview,
-    _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id, escape_like as _escape_like,
-    _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
+    _sql_in_window, _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id,
+    escape_like as _escape_like, _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
 )
 
 # caplog tests pin the "hermes_state" logger name.
@@ -1267,7 +1267,9 @@ class SessionSessionsMixin:
     ) -> List[Dict[str, Any]]:
         """List sessions with preview and ``last_active`` in one query. ``order_by_last_active`` sorts
         by the chain TIP via a recursive CTE (the only path honouring ``id_query`` / ``search_query``);
-        ``include_pinned`` back-fills pins the page missed, still obeying the other filters."""
+        ``include_pinned`` back-fills pins the page missed, still obeying the other
+        filters except archived: a pin is an explicit keep, so a pinned row stamped
+        archived must still return."""
         self.flush_token_counts()  # rows carry token/cost totals
         where_clauses, params = _session_filter_where(
             exclude_children=not include_children, source=source, sources=sources, session_key=session_key,
@@ -1281,7 +1283,6 @@ class SessionSessionsMixin:
         if not include_hidden and not archived_only:
             where_clauses.append("s.hidden = 0")
         where_sql = _where_sql(where_clauses)
-        base_where_params = list(params)  # pinned back-fill reuses the WHERE before LIMIT/OFFSET
         # Shared projection head of the three list queries (whitespace is part of the SQL text).
         select_head = (
             f"SELECT {self._compact_session_cols() if compact_rows else 's.*'}"
@@ -1322,7 +1323,7 @@ class SessionSessionsMixin:
                     GROUP BY root_id
                 )
                 {select_head}{_sql_session_last_active("s")} AS last_active,
-                    COALESCE(cm.effective_last_active, s.started_at) AS _effective_last_active
+                    COALESCE(cm.effective_last_active, {_sql_in_window("s.started_at")}) AS _effective_last_active
                 FROM sessions s
                 LEFT JOIN chain_max cm ON cm.root_id = s.id
                 {prompt_join}
@@ -1342,17 +1343,27 @@ class SessionSessionsMixin:
             params.extend([limit, offset])
         sessions = [self._list_row(row) for row in self._read_all(query, params)]
         # Pinned back-fill runs BEFORE compression projection so a back-filled root
-        # projects to its tip like any other row.
+        # projects to its tip like any other row. Do not inherit the archived
+        # constraint: the sidebar lists with include_archived=False, and a pin
+        # must stay reachable even when that row is also archived.
         if include_pinned:
             seen_ids = {s["id"] for s in sessions}
-            pinned_where = f"{where_sql} AND s.pinned = 1" if where_sql else "WHERE s.pinned = 1"
+            pinned_clauses, pinned_params = _session_filter_where(
+                exclude_children=not include_children, source=source, sources=sources,
+                session_key=session_key, exclude_sources=exclude_sources, cwd_prefix=cwd_prefix,
+                min_message_count=min_message_count, archived_only=False, include_archived=True,
+            )
+            if not include_hidden and not archived_only:
+                pinned_clauses.append("s.hidden = 0")
+            pinned_clauses.append("s.pinned = 1")
+            pinned_where = _where_sql(pinned_clauses)
             pinned_query = f"""
                 {select_head}{_sql_session_last_active("s")} AS last_active
                 {from_sessions}
                 {pinned_where}
                 ORDER BY s.started_at DESC
             """
-            for row in self._read_all(pinned_query, base_where_params):
+            for row in self._read_all(pinned_query, pinned_params):
                 s = self._list_row(row)
                 if s["id"] not in seen_ids:
                     seen_ids.add(s["id"])

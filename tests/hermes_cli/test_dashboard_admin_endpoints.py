@@ -799,7 +799,7 @@ class TestUpdateCheckEndpoint:
         # Stub the shared checker so the contract is deterministic (no network).
         import hermes_cli.banner as banner
 
-        monkeypatch.setattr(banner, "check_for_updates", lambda: 5)
+        monkeypatch.setattr("hermes_cli.source_check.check_for_updates", lambda **kw: {"behind": 5, "commits": []})
 
         r = self.client.get("/api/hermes/update/check")
         assert r.status_code == 200
@@ -837,6 +837,14 @@ class TestUpdateCheckEndpoint:
         assert body["update_available"] is False
         assert body["behind"] is None
         assert "managed outside this dashboard" in body["message"]
+        # No runnable command exists; clients render update_command verbatim
+        # as a copyable shell line, so prose here is a fake command.
+        assert body["update_command"] == ""
+
+        refused = self.client.post("/api/hermes/update").json()
+        assert refused["ok"] is False
+        assert refused["error"] == "dashboard_update_managed_externally"
+        assert refused["update_command"] == ""
 
 
 class TestDebugShareEndpoint:

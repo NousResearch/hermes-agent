@@ -43,7 +43,7 @@ def test_exec_schtasks_decodes_ansi_output_under_utf8_mode(monkeypatch):
     assert gateway_windows._is_access_denied(err) and gateway_windows._should_fall_back(1, err)
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_exec_schtasks_round_trips_non_ascii_task_argument_live(monkeypatch):
     """Real schtasks.exe on a real task whose argument carries a non-ASCII (ANSI-representable)
     character, queried from a UTF-8-mode interpreter: the template/live comparison in
@@ -102,7 +102,7 @@ def test_schtasks_encoding_falls_back_to_utf8(monkeypatch):
 
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_build_gateway_argv_keeps_venv_console_python_for_uv_venv(monkeypatch, tmp_path):
     """No pythonw / base-interpreter detour: the venv console python.exe is
     launched hidden (CREATE_NO_WINDOW) so descendants inherit its hidden
@@ -149,7 +149,7 @@ def test_build_gateway_argv_keeps_venv_console_python_for_uv_venv(monkeypatch, t
     assert str(project) in env_overlay["PYTHONPATH"].split(gateway_windows.os.pathsep)
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_spawn_detached_marks_primary_breakaway_success(monkeypatch, tmp_path, caplog):
     """A successful breakaway spawn reports true without a warning."""
     argv = ["python.exe", "-m", "hermes_cli.main", "gateway", "run"]
@@ -181,7 +181,7 @@ def test_spawn_detached_marks_primary_breakaway_success(monkeypatch, tmp_path, c
     assert not caplog.records
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_spawn_detached_warns_and_marks_no_breakaway_fallback(
     monkeypatch, tmp_path, caplog
 ):
@@ -264,7 +264,7 @@ class TestStableWindowsGatewayWorkingDir:
 
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_elevated_gateway_command_uses_hidden_console_python(monkeypatch):
     """UAC handoff launches console python with SW_HIDE — a single hidden
     console, not console-less pythonw (#54220/#56747), and no visible
@@ -616,6 +616,7 @@ def _arrange_uninstalled_start(monkeypatch):
     monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda: spawns.append(1) or 4242)
     monkeypatch.setattr(gateway_windows, "_report_gateway_start", lambda via: None)
     monkeypatch.setattr(gateway_windows, "_stdin_console_mode_ok", lambda: True)
+    monkeypatch.setattr(gateway_windows, "_stdout_isatty", lambda: True)
     return installs, spawns
 
 
@@ -634,6 +635,20 @@ def test_start_with_nul_stdin_starts_the_gateway_but_never_installs_login_persis
     monkeypatch.setattr(setup, "is_interactive_stdin", lambda: True)
     monkeypatch.setattr(gateway_windows, "_stdin_console_mode_ok", lambda: False)
     monkeypatch.setattr(setup, "prompt_yes_no", lambda *a, **k: pytest.fail("no prompt on a NUL stdin"))
+
+    gateway_windows.start()
+
+    assert installs == [] and spawns == [1]
+    assert "hermes gateway install" in capsys.readouterr().out
+
+
+def test_start_with_captured_stdout_never_asks_even_on_a_console_stdin(monkeypatch, capsys):
+    """Pre-#122234 Desktop update hand-offs run the NEW `gateway start --all` with the hand-off
+    console as stdin and stdout captured until exit. A question there is invisible and never answered."""
+    installs, spawns = _arrange_uninstalled_start(monkeypatch)
+    monkeypatch.setattr(setup, "is_interactive_stdin", lambda: True)
+    monkeypatch.setattr(gateway_windows, "_stdout_isatty", lambda: False)
+    monkeypatch.setattr(setup, "prompt_yes_no", lambda *a, **k: pytest.fail("no prompt into captured stdout"))
 
     gateway_windows.start()
 

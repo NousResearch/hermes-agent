@@ -31,19 +31,16 @@ from typing import Any, Dict
 
 import pytest
 
-
 from gateway.config import PlatformConfig
 from plugins.platforms.photon.adapter import PhotonAdapter
 
 _MODULE = Path("plugins/platforms/photon/sidecar/stream-staleness.mjs").resolve()
-
 
 def _make_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:
     monkeypatch.setenv("PHOTON_PROJECT_ID", "test-project-id")
     monkeypatch.setenv("PHOTON_PROJECT_SECRET", "test-project-secret")
     cfg = PlatformConfig(enabled=True, token="", extra={})
     return PhotonAdapter(cfg)
-
 
 # -- Sidecar decision rules (execute the real node module) -------------------
 
@@ -64,7 +61,6 @@ def _run_staleness_harness(script: str) -> Dict[str, Any]:
     assert run.returncode == 0, run.stderr
     return json.loads(run.stdout)
 
-
 def test_probe_message_id_is_guid_shaped_and_unique() -> None:
     out = _run_staleness_harness(
         """
@@ -77,7 +73,6 @@ def test_probe_message_id_is_guid_shaped_and_unique() -> None:
     assert re.fullmatch(guid_re, out["first"])
     assert re.fullmatch(guid_re, out["second"])
     assert out["first"] != out["second"]
-
 
 def test_probe_rejection_classification_is_strict() -> None:
     """Only not-found-shaped rejections prove liveness; everything else is
@@ -106,7 +101,6 @@ def test_probe_rejection_classification_is_strict() -> None:
         assert out[name]["alive"] is False, name
         assert out[name]["inconclusive"] is True, name
 
-
 def test_should_probe_requires_silence_past_threshold_and_cooldown() -> None:
     out = _run_staleness_harness(
         """
@@ -126,7 +120,6 @@ def test_should_probe_requires_silence_past_threshold_and_cooldown() -> None:
     assert out["pastThresholdButCoolingDown"] is False
     assert out["watchdogDisabled"] is False
     assert out["watchdogDisabledNegative"] is False
-
 
 def test_zombie_requires_probe_proven_connectivity_never_silence_alone() -> None:
     """The core conservatism rule: shared lines can be quiet for hours, so a
@@ -156,7 +149,6 @@ def test_zombie_requires_probe_proven_connectivity_never_silence_alone() -> None
     assert out["notSilentEnough"] is False
     assert out["disabled"] is False
 
-
 # -- Adapter surfacing of the new /healthz staleness fields ------------------
 
 def _healthz_payload(**staleness: Any) -> Dict[str, Any]:
@@ -177,7 +169,6 @@ def _healthz_payload(**staleness: Any) -> Dict[str, Any]:
             },
         },
     }
-
 
 @pytest.mark.asyncio
 async def test_monitor_surfaces_zombie_suspected_without_fatal(
@@ -215,7 +206,6 @@ async def test_monitor_surfaces_zombie_suspected_without_fatal(
         "suspected zombie stream" in rec.message for rec in caplog.records
     )
 
-
 # -- Adapter watchdog: inconclusive never counts toward respawn --------------
 
 @pytest.mark.asyncio
@@ -245,5 +235,3 @@ async def test_inconclusive_probes_never_accumulate_toward_respawn(
             adapter._probe_failures += 1
 
     assert adapter._probe_failures == 0
-
-

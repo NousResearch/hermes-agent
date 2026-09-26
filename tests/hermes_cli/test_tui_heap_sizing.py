@@ -16,7 +16,6 @@ from hermes_cli import main_tui_launch
 V2 = "/sys/fs/cgroup/memory.max"
 V1 = "/sys/fs/cgroup/memory/memory.limit_in_bytes"
 
-
 def _fake_open(files: dict):
     """Return an open() shim serving cgroup paths from ``files`` (path->str)."""
     real_open = builtins.open
@@ -31,16 +30,10 @@ def _fake_open(files: dict):
 
     return opener
 
-
 def _read(files: dict):
     with mock.patch.object(builtins, "open", _fake_open(files)):
         return main_tui_launch._read_cgroup_memory_limit()
 
-
 class TestReadCgroupMemoryLimit:
     def test_v2_max_is_unlimited(self):
         assert _read({V2: "max"}) is None
-
-
-
-

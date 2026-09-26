@@ -23,9 +23,9 @@ def enforce_pre_synthesis(text: str, provider: str) -> str:
 
     try:
         required = required_pre_synthesis_plugins()
+        manager = get_plugin_manager()
         if required:
             discover_plugins()
-            manager = get_plugin_manager()
             for key in required:
                 if not manager.has_plugin_hook(key, "pre_tts_synthesis"):
                     raise ValueError(f"required pre_tts_synthesis plugin {key!r} is unavailable")
@@ -36,7 +36,13 @@ def enforce_pre_synthesis(text: str, provider: str) -> str:
 
     def apply(script: str) -> str:
         result = script
-        for decision in invoke_hook("pre_tts_synthesis", text=script, provider=provider):
+        decisions = invoke_hook("pre_tts_synthesis", text=script, provider=provider)
+        # Dispatch may have raced a plugin unload. Do not rely on the pre-dispatch
+        # availability check alone: an empty callback list otherwise approves speech.
+        for key in required:
+            if not manager.has_plugin_hook(key, "pre_tts_synthesis"):
+                raise ValueError(f"required pre_tts_synthesis plugin {key!r} is unavailable")
+        for decision in decisions:
             if not isinstance(decision, dict):
                 raise ValueError("pre_tts_synthesis returned an invalid directive")
             if decision.get("action") == "block" and set(decision) <= {"action", "message"}:

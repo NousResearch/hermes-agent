@@ -83,3 +83,46 @@ async def test_model_picker_clears_controls_before_running_switch_callback():
     interaction.edit_original_response.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_model_picker_on_timeout_does_not_overwrite_completed_switch():
+    """Regression: once a model switch resolves, the 120s Discord view timeout
+    must NOT edit the stored message to the expired embed — otherwise the
+    green "Model Switched" confirmation is clobbered with a stale "Selection
+    expired" message. (#69685)"""
+    from unittest.mock import AsyncMock
+
+    async def on_model_selected(chat_id, model_id, provider_slug):
+        return "Model switched"
+
+    view = ModelPickerView(
+        providers=[{
+            "slug": "kimi",
+            "name": "Kimi",
+            "models": ["k3"],
+            "total_models": 1,
+            "is_current": False,
+        }],
+        current_model="x",
+        current_provider="kimi",
+        session_key="session-1",
+        on_model_selected=on_model_selected,
+        allowed_user_ids={"123"},
+    )
+    view._selected_provider = "kimi"
+
+    # Simulate a completed switch: resolved=True, message edit was awaited.
+    view.resolved = True
+    view._message = SimpleNamespace(
+        edit=AsyncMock(),
+    )
+
+    # The stale 120s timer fires.
+    await view.on_timeout()
+
+    # The message edit must NOT have been awaited — the confirmation
+    # embed is the authoritative post-switch state.
+    view._message.edit.assert_not_awaited()
+    # resolved is still True (idempotent).
+    assert view.resolved is True
+
+

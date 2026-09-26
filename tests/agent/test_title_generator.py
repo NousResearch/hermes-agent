@@ -14,6 +14,7 @@ from agent.title_generator import (
     maybe_auto_title,
     wait_for_title_upgrades,
     _title_language,
+    _auto_title_enabled,
 )
 from hermes_state import SessionDB
 
@@ -77,6 +78,47 @@ class TestGenerateTitle:
         with patch("hermes_cli.config.load_config", side_effect=RuntimeError("bad config")), \
          patch("hermes_cli.config.load_config_readonly", side_effect=RuntimeError("bad config")):
             assert _title_language() == ""
+
+    @pytest.mark.parametrize("raw", [True, "true", "yes", "on", "1", " True "])
+    def test_recognised_truthy_values_enable_titling(self, raw):
+        from agent import title_generator as tg
+
+        with patch.object(tg, "_title_config", return_value={"enabled": raw}):
+            assert _auto_title_enabled() is True
+
+    @pytest.mark.parametrize("raw", [False, "false", "no", "off", "0"])
+    def test_recognised_falsy_values_disable_titling(self, raw):
+        from agent import title_generator as tg
+
+        with patch.object(tg, "_title_config", return_value={"enabled": raw}):
+            assert _auto_title_enabled() is False
+
+    @pytest.mark.parametrize("raw", ["ture", "treu", "enabled", "maybe", ""])
+    def test_unrecognised_value_keeps_titling_on_and_warns(self, raw, caplog):
+        """A value the truthy set doesn't recognise is a typo, not consent.
+
+        ``enabled: ture`` is YAML for the string "ture", which is not in
+        ``TRUTHY_STRINGS`` — so a user typing it while trying to *enable*
+        titling silently loses it. Only ``enabled`` values that actually say
+        "off" turn titling off; anything else keeps the documented default and
+        says so in the log.
+        """
+        from agent import title_generator as tg
+
+        with patch.object(tg, "_title_config", return_value={"enabled": raw}):
+            assert _auto_title_enabled() is True
+
+        assert any(
+            "title_generation.enabled" in r.message and raw in r.message
+            for r in caplog.records
+        )
+
+    def test_absent_key_keeps_documented_default(self):
+        from agent import title_generator as tg
+
+        for cfg in ({}, {"enabled": None}):
+            with patch.object(tg, "_title_config", return_value=cfg):
+                assert _auto_title_enabled() is True
 
 
     def test_generate_title_disables_reasoning(self):

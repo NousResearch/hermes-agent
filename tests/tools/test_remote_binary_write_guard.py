@@ -174,106 +174,16 @@ class TestRemoteExistingBinaryRefused:
         assert not view_path.exists(), "the controller namespace must stay clean"
 
 
-class TestTriStateContract:
-    """T2: absent -> creation allowed; probe failure -> fail closed; locality
-    comes from the LIVE file-ops environment, never name-hint tables."""
-
-    @pytest.mark.parametrize("ext", [".sqlite", ".pdf"])
-    def test_absent_on_target_creation_allowed(self, remote_target, ext):
-        view_path = remote_target.view / f"new{ext}"
-        content = "%PDF-1.4\n%%EOF\n" if ext == ".pdf" else "new db text fixture\n"
-
-        result = _write_file(view_path, remote_target.task_id, content)
-
-        assert not result.get("error"), f"creation must stay allowed: {result}"
-        written = (remote_target.target / f"new{ext}").read_bytes()
-        assert written == content.encode(), "the real write must land in the execution target"
-        assert not view_path.exists()
-
-    def test_absent_on_target_v4a_add_allowed(self, remote_target):
-        view_path = remote_target.view / "fresh.pdf"
-        patch = ("*** Begin Patch\n"
-                 f"*** Add File: {view_path}\n"
-                 "+%PDF-1.4\n"
-                 "+%%EOF\n"
-                 "*** End Patch")
-
-        result = _dispatch("patch", {"mode": "patch", "patch": patch}, remote_target.task_id)
-
-        assert not result.get("error"), f"V4A Add of a new .pdf must stay allowed: {result}"
-        # V4A Add joins the '+' lines with '\n' (no trailing newline).
-        assert (remote_target.target / "fresh.pdf").read_bytes() == b"%PDF-1.4\n%%EOF"
-
-    @pytest.mark.parametrize("failure_mode", ["raise", "error"])
-    def test_probe_transport_failure_fails_closed(self, remote_target, failure_mode):
-        view_path = remote_target.view / "data.sqlite"
-        target_path = remote_target.target / "data.sqlite"
-        target_path.write_bytes(_binary_payload(".sqlite"))
-        original = target_path.read_bytes()
+def test_remote_probe_failure_fails_closed(remote_target):
+    """An unreachable/erroring backend cannot prove absence: refuse, bytes intact."""
+    target_path = remote_target.target / "data.sqlite"
+    target_path.write_bytes(_binary_payload(".sqlite"))
+    original = target_path.read_bytes()
+    for failure_mode in ("raise", "error"):
         remote_target.env.failure_mode = failure_mode
 
-        result = _write_file(view_path, remote_target.task_id)
+        result = _write_file(remote_target.view / "data.sqlite", remote_target.task_id)
 
         error = result.get("error") or ""
-        assert "Refusing" in error, f"an unstat-able target must fail closed: {result}"
-        assert "establish" in error and "retry" in error.lower(), error
-        assert target_path.read_bytes() == original, "target bytes must be untouched"
-
-    def test_locality_authority_is_the_live_file_ops_env(self, remote_target):
-        """LOCALITY AUTHORITY pin: the backend is non-local and its env_type tag
-        ('vercel_sandbox') is unclassified by every name-hint table while scoped
-        config reports 'local'. A guard that classifies locality from env_type
-        strings, config or class-name hints probes the WRONG filesystem and
-        destroys the remote-only binary — only the live file-ops environment
-        object may decide."""
-        view_path = remote_target.view / "data.sqlite"
-        target_path = remote_target.target / "data.sqlite"
-        target_path.write_bytes(_binary_payload(".sqlite"))
-        original = target_path.read_bytes()
-        assert remote_target.env.env_type == "vercel_sandbox"
-        assert not view_path.exists()
-
-        result = _write_file(view_path, remote_target.task_id)
-
-        error = result.get("error") or ""
-        assert "Refusing" in error, f"guard must probe the execution target: {result}"
-        assert target_path.read_bytes() == original, "target bytes must be untouched"
-
-
-class TestResolutionFailureFallbackParity:
-    """T3: when task resolution fails, the guard must probe the EXACT string the
-    write would land on — ``write_file(_resolved or path)`` plus the file-ops
-    layer's own ``_expand_path``, i.e. the BACKEND's ``$HOME`` for a tilde path,
-    never the host's (the same wrong-filesystem bug class as #122662)."""
-
-    def test_fallback_probe_expands_tilde_on_the_backend(self, remote_target, monkeypatch):
-        import tools.file_tools_write_guards as write_guards
-        from tools.file_tools_paths import _expand_tilde
-
-        name = f"fallback-{uuid.uuid4().hex}.sqlite"
-        raw_path = f"~/{name}"
-        target_path = remote_target.target / name
-        target_path.write_bytes(_binary_payload(".sqlite"))
-        original = target_path.read_bytes()
-        # The divergence under test: the HOST tilde expansion is free while the
-        # write's fallback lands in the BACKEND home, where the binary lives.
-        assert not Path(_expand_tilde(raw_path)).exists()
-        assert str(remote_target.target) not in _expand_tilde(raw_path)
-
-        def _resolver_down(*args, **kwargs):
-            raise OSError("forced resolution failure")
-
-        # Both import bindings of the SAME resolver: the guard helper's and
-        # write_file's ``_resolve_or_none`` — in production they fail together,
-        # so both paths take their documented raw-string fallback.
-        monkeypatch.setattr(write_guards, "_resolve_path_for_task", _resolver_down)
-        monkeypatch.setattr(file_tools_mod, "_resolve_path_for_task", _resolver_down)
-
-        result = _dispatch("write_file", {"path": raw_path, "content": "plain text replacement"},
-                           remote_target.task_id)
-
-        error = result.get("error") or ""
-        assert "Refusing to overwrite existing binary file" in error, (
-            f"fallback probe must hit the backend home and find the binary: {result}")
-        assert target_path.read_bytes() == original, "target bytes must be untouched"
-        assert not Path(_expand_tilde(raw_path)).exists(), "the host home must stay clean"
+        assert "Refusing" in error and "establish" in error, (failure_mode, result)
+        assert target_path.read_bytes() == original

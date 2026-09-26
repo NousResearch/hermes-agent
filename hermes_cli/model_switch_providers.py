@@ -983,7 +983,7 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
                 "slug": ep_name, "name": _group_display_name(display_name), "api_url": api_url, "models": [],
                 "has_explicit_models": False,
                 "api_key": inline_api_key or _scoped_key_env(key_env),
-                "headers": headers, "api_mode": ep_cfg.get("api_mode"),
+                "headers": headers, "api_mode": _entry_api_mode(ep_cfg),
                 "discovery_allowed": bool(api_url) and _discover_flag(ep_cfg), "raw_names": [], "aliases": set()}
         grp = ep_groups[group_key]
         # ``default_model`` is the legacy key; ``model`` matches custom_providers.

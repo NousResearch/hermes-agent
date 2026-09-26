@@ -115,6 +115,34 @@ async def test_failed_replay_detaches_session_so_reaper_reclaims_it():
 
 
 @pytest.mark.asyncio
+async def test_reap_idle_keeps_a_detached_session_that_is_still_producing_output():
+    """A disconnected session whose PTY keeps printing (a long-running turn) must survive
+    reap_idle: idle time runs from the last output, not from the moment the client left."""
+    from hermes_cli.pty_session import PtySessionRegistry
+
+    reg = PtySessionRegistry(ttl=60.0, max_sessions=2, buffer_cap=1024, read_timeout=0.01)
+    bridge = FakeBridge([b""])
+    s, _ = await reg.attach_or_spawn("k", spawn=lambda: bridge)
+    ws = FakeWS()
+    await s.attach(ws)
+    s.detach(ws)
+    detached_at = s.last_detached_at
+    assert detached_at is not None
+
+    # Far past the TTL since the client left, but the PTY printed one second ago.
+    now = detached_at + 3600.0
+    s.buffer.last_append_at = now - 1.0
+    await reg.reap_idle(now=now)
+    assert "k" in reg._sessions
+    assert not bridge.closed
+
+    # Once it is silent for the whole TTL it is reaped as before (leak guard intact).
+    await reg.reap_idle(now=now + 61.0)
+    assert "k" not in reg._sessions
+    assert bridge.closed
+
+
+@pytest.mark.asyncio
 async def test_drain_send_failure_detaches_current_socket_but_not_a_replacement():
     from hermes_cli.pty_session import PtySession
 

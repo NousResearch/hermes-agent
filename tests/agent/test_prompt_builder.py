@@ -637,6 +637,19 @@ class TestStripYamlFrontmatter:
 
 
 
+    def test_tui_hint_specifies_markdown_and_math(self):
+        """TUI renderer supports markdown and renders LaTeX math to unicode.
+        The prompt hint must instruct the model to use $...$ / $$...$$ delimiters,
+        avoid wrapping formulas in ```latex code fences, and avoid raw HTML tags.
+        """
+        tui_hint = PLATFORM_HINTS["tui"]
+        assert "markdown" in tui_hint.lower()
+        assert "math" in tui_hint.lower()
+        assert "$inline$" in tui_hint or "$$" in tui_hint
+        assert "```latex" in tui_hint
+        assert "<details>" in tui_hint or "html" in tui_hint.lower()
+
+
 
 
 

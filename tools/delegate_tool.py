@@ -388,7 +388,10 @@ def _build_children(
         try:
             child = _build_child_preserving_parent_tools(
                 task_index=i, goal=t["goal"], context=_child_context,
-                toolsets=None,  # always inherit the parent's toolsets
+                # Per-task toolset scoping: when the task specifies enabled_toolsets,
+                # restrict the child to exactly those names (intersected for safety
+                # inside _resolve_child_toolsets). When omitted, child inherits.
+                toolsets=t.get("enabled_toolsets") or None,
                 model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
                 parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
             )
@@ -684,6 +687,13 @@ DELEGATE_TASK_SCHEMA = {
                             "is enabled; otherwise the whole call returns as one message). Tasks sharing a group return "
                             "together in ONE message; ungrouped tasks return individually as each finishes. This does not "
                             "order execution; if B needs A's output, dispatch B after A returns.",
+                        ),
+                        "enabled_toolsets": _p(
+                            "array",
+                            "Optional. Restrict this child's tools to these toolset or tool names only. "
+                            "Intersected with the parent's enabled toolsets for safety; blocked tools are "
+                            "always stripped. Omit to inherit the parent's full set (default).",
+                            items={"type": "string"},
                         ),
                     },
                     "required": ["goal"],

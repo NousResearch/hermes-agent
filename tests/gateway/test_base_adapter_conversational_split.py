@@ -1,11 +1,12 @@
 """Tests for the shared conversational-split infrastructure on the base adapter.
 
 The ``split_outgoing_*`` extra keys, the fence-aware blank-line splitter
-(``_outgoing_message_parts``), and the ``config.extra`` coercion helpers were
-lifted from the Telegram/WhatsApp adapters onto ``BasePlatformAdapter`` so
-every platform (Telegram, WhatsApp, Photon/iMessage) shares one
-implementation. These tests exercise the shared methods directly against a
-minimal concrete subclass, independent of any specific platform.
+(``_outgoing_message_parts``), and the ``config.extra`` bool parser live on
+``BasePlatformAdapter`` so every platform (Telegram, WhatsApp, Photon/iMessage)
+shares one implementation; the split delay is read through the shared
+``_coerce_float_extra`` parser. These tests exercise the shared methods
+directly against a minimal concrete subclass, independent of any specific
+platform.
 """
 from typing import Any, Dict, Optional
 
@@ -81,18 +82,22 @@ class TestCoerceFloatExtra:
         )
 
     def test_min_and_max_clamp(self):
-        adapter = _make_adapter(k="-5")
-        assert adapter._coerce_float_extra("k", 0.6, min_value=0.0) == 0.0
+        adapter = _make_adapter(k="0.5")
+        assert (
+            adapter._coerce_float_extra("k", 30.0, min_value=1.0, max_value=300.0)
+            == 1.0
+        )
         adapter = _make_adapter(k="900")
         assert (
             adapter._coerce_float_extra("k", 30.0, min_value=1.0, max_value=300.0)
             == 300.0
         )
 
-    def test_negative_without_explicit_floor_falls_back_to_default(self):
-        # WhatsApp semantics: delays feed asyncio.sleep(), so a negative
-        # value without a declared floor is rejected rather than clamped.
+    def test_negative_values_fall_back_to_default(self):
+        # Delays feed asyncio.sleep(), so a negative value is rejected rather
+        # than clamped — with or without an explicit floor.
         assert _make_adapter(k="-5")._coerce_float_extra("k", 5.0) == 5.0
+        assert _make_adapter(k="-5")._coerce_float_extra("k", 0.6, min_value=0.0) == 0.6
 
 
 class TestInitConversationalSplitConfig:

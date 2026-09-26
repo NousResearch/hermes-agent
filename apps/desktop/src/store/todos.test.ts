@@ -3,9 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { TodoItem } from '@/lib/todos'
 
 import {
+  $todoRevisionsBySession,
   $todosBySession,
   clearActiveSessionTodos,
   clearSessionTodos,
+  restoreSessionTodosFromSnapshot,
   setSessionTodos,
   todosForHydration
 } from './todos'
@@ -38,6 +40,14 @@ describe('setSessionTodos finished-list auto-clear', () => {
     vi.advanceTimersByTime(5_000)
 
     expect($todosBySession.get().s1).toBeUndefined()
+  })
+
+  it('clears finished lists for session ids that collide with object prototype keys', () => {
+    setSessionTodos('toString', [todo('a', 'completed')])
+
+    vi.advanceTimersByTime(5_000)
+
+    expect(Object.hasOwn($todosBySession.get(), 'toString')).toBe(false)
   })
 
   it('cancels the pending clear when a new active list arrives', () => {
@@ -85,6 +95,11 @@ describe('clearActiveSessionTodos (turn-end cleanup)', () => {
 
     expect($todosBySession.get().s1).toBeUndefined()
   })
+
+  it('ignores an inherited prototype key on an empty map', () => {
+    expect(() => clearActiveSessionTodos('toString')).not.toThrow()
+    expect(Object.hasOwn($todosBySession.get(), 'toString')).toBe(false)
+  })
 })
 
 describe('todosForHydration (stale-active guard on restore)', () => {
@@ -101,5 +116,53 @@ describe('todosForHydration (stale-active guard on restore)', () => {
 
   it('returns null when there is nothing stored', () => {
     expect(todosForHydration(null)).toBeNull()
+  })
+})
+
+describe('revisioned snapshots', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    clearSessionTodos('s1')
+  })
+
+  afterEach(() => {
+    clearSessionTodos('s1')
+    vi.useRealTimers()
+  })
+
+  it('rejects a snapshot older than the latest live update', () => {
+    setSessionTodos('s1', [todo('new', 'in_progress')], 5)
+    setSessionTodos('s1', [todo('old', 'pending')], 4)
+
+    expect($todosBySession.get().s1?.[0]?.id).toBe('new')
+    expect($todoRevisionsBySession.get().s1).toBe(5)
+  })
+
+  it('restores an active snapshot only while the session is running', () => {
+    const snapshot = { revision: 7, todos: [todo('active', 'in_progress')] }
+
+    restoreSessionTodosFromSnapshot('s1', snapshot, false)
+    expect($todosBySession.get().s1).toBeUndefined()
+
+    restoreSessionTodosFromSnapshot('s1', snapshot, true)
+    expect($todosBySession.get().s1?.[0]?.id).toBe('active')
+  })
+
+  it('applies an unversioned update after a revisioned snapshot (tool.start merge)', () => {
+    setSessionTodos('s1', [todo('a', 'pending'), todo('b', 'pending')], 5)
+    setSessionTodos('s1', [todo('a', 'completed'), todo('b', 'pending')])
+
+    expect($todosBySession.get().s1?.[0]?.status).toBe('completed')
+    expect($todoRevisionsBySession.get().s1).toBe(5)
+  })
+
+  it('does not stamp a watermark from an unused empty snapshot', () => {
+    restoreSessionTodosFromSnapshot('s1', { revision: 0, todos: [] }, true)
+
+    expect($todosBySession.get().s1).toBeUndefined()
+    expect($todoRevisionsBySession.get().s1).toBeUndefined()
+
+    setSessionTodos('s1', [todo('a', 'in_progress')])
+    expect($todosBySession.get().s1?.[0]?.id).toBe('a')
   })
 })

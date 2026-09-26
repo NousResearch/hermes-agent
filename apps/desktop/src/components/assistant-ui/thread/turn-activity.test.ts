@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest'
 import { activitySignature, toolNarratesWait } from './turn-activity'
 
 const text = (value: string) => ({ text: value, type: 'text' })
+
 const call = (toolName: string, settled: boolean) => ({
   toolName,
   type: 'tool-call',
@@ -50,6 +51,15 @@ describe('toolNarratesWait', () => {
   it('does not defer to silent tools, which render nothing to narrate with', () => {
     expect(toolNarratesWait([call('todo', false)])).toBe(false)
     expect(toolNarratesWait([call('react_to_message', false)])).toBe(false)
+  })
+
+  it('does not defer to a call sealed without a result', () => {
+    const sealed = { completedAt: 5, toolName: 'terminal', type: 'tool-call' }
+
+    expect(toolNarratesWait([text('working'), sealed])).toBe(false)
+    expect(activitySignature([text('working'), sealed])).not.toBe(
+      activitySignature([text('working'), call('terminal', false)])
+    )
   })
 
   it('defers to a call in flight even when a later part follows it', () => {

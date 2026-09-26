@@ -1,23 +1,13 @@
-"""_tui_need_npm_install: auto npm when node_modules is behind the lockfile."""
-
+"""TUI launch consumes the shared dependency preparation and compiler."""
+import json
 import os
-import types
 from pathlib import Path
+import shutil
+import subprocess
 
 import pytest
-
-
-@pytest.fixture
-def main_mod():
-    import hermes_cli.main as m
-
-    return m
-
-
-def _touch_ink(root: Path) -> None:
-    ink = root / "node_modules" / "@hermes" / "ink" / "package.json"
-    ink.parent.mkdir(parents=True, exist_ok=True)
-    ink.write_text("{}")
+from hermes_cli import main_tui_launch
+from tests.hermes_cli.test_source_build import source_checkout, source_products, _events  # noqa: F401
 
 
 def _touch_tui_entry(root: Path) -> None:
@@ -26,159 +16,153 @@ def _touch_tui_entry(root: Path) -> None:
     entry.write_text("console.log('tui')")
 
 
-def _assert_utf8_replace_capture(kwargs: dict) -> None:
-    assert kwargs["text"] is True
-    assert kwargs["encoding"] == "utf-8"
-    assert kwargs["errors"] == "replace"
+def test_need_rebuild_when_tui_bundle_missing(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "entry.tsx").write_text("console.log('src')")
+
+    assert main_tui_launch._tui_need_rebuild(tmp_path) is True
+
+
+def test_unreceipted_bundle_is_stale_even_when_newer(tmp_path: Path) -> None:
+    _touch_tui_entry(tmp_path)
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "entry.tsx").write_text("console.log('src')")
+    os.utime(src / "entry.tsx", (100, 100))
+    os.utime(tmp_path / "dist" / "entry.js", (200, 200))
+
+    assert main_tui_launch._tui_need_rebuild(tmp_path) is True
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-def test_make_tui_argv_uses_bundled_tui_when_workspace_missing(
-    tmp_path: Path, main_mod, monkeypatch
-) -> None:
-    """Prebuilt-install regression (#56665): a prebuilt install (Docker
-    image, Nix build, or prior `npm run build`) ships
-    hermes_cli/tui_dist/entry.js but never ships ui-tui/ (that directory only
-    exists in a git checkout). _make_tui_argv must try the bundled entry.js
-    BEFORE _ensure_tui_workspace() — requiring the workspace first hard-exits
-    every prebuilt dashboard Chat tab connection with `sys.exit(1)` (surfaced
-    to the user as the unhelpful "Chat unavailable: 1") despite a perfectly
-    runnable bundled TUI on disk. The bundled shortcut must succeed without
-    ever touching the (missing) ui-tui workspace or git.
-    """
+@pytest.fixture
+def tui_source(source_products, monkeypatch):
     monkeypatch.delenv("HERMES_TUI_DIR", raising=False)
-    monkeypatch.setattr(main_mod, "_ensure_tui_node", lambda: None)
-
-    bundled_entry = tmp_path / "bundled" / "entry.js"
-    bundled_entry.parent.mkdir(parents=True)
-    bundled_entry.write_text("// bundled TUI")
-    monkeypatch.setattr(main_mod, "_find_bundled_tui", lambda: bundled_entry)
-
-    def which(name: str) -> str | None:
-        if name == "node":
-            return "/usr/bin/node"
-        raise AssertionError(f"unexpected shutil.which({name!r}) call — bundled path must not need npm/git")
-
-    monkeypatch.setattr(main_mod.shutil, "which", which)
-
-    def fail_run(*_args, **_kwargs):
-        raise AssertionError("bundled TUI path must not spawn any subprocess (no npm install/build, no git restore)")
-
-    monkeypatch.setattr(main_mod.subprocess, "run", fail_run)
-
-    # ui-tui/ deliberately does not exist under tmp_path, and there is no
-    # .git either — this mirrors a prebuilt (Docker/Nix) install exactly.
-    tui_dir = tmp_path / "ui-tui"
-    assert not tui_dir.exists()
-
-    argv, cwd = main_mod._make_tui_argv(tui_dir, tui_dev=False)
-
-    assert argv == ["/usr/bin/node", "--expose-gc", str(bundled_entry)]
-    assert cwd == bundled_entry.parent
-
-
-# ── _workspace_root helper ──────────────────────────────────────────
-
-
-
-
-    # (Smoke test: just confirm _tui_need_npm_install doesn't crash)
-    # It won't need install because the lockfile exists and there's no
-    # hidden lockfile to compare against, and ink is missing → True.
-    # But the key invariant is: ws_root for the need-check == ws_root
-    # for the install cwd — both use _workspace_root(sub).
-
-
-def test_no_stray_lockfiles_in_workspace_subdirs(main_mod) -> None:
-    """Workspace sub-directories must not contain their own package-lock.json.
-
-    With a single workspace root lockfile, per-directory lockfiles are
-    always accidental (typically from running ``npm install`` inside the
-    wrong directory).  They cause ``_workspace_root`` to treat the
-    sub-package as standalone, which breaks hoisted ``node_modules``
-    resolution and can silently diverge the install cwd from the
-    lockfile-check root.
-
-    This is an invariant, not a change-detector: the workspace structure
-    is not expected to gain per-dir lockfiles.
-    """
-    root = main_mod.PROJECT_ROOT
-    # Workspace members that live one level below the root and should
-    # NOT have their own lockfile.  (ui-tui/packages/* members are
-    # two levels deep and even less likely to get accidental lockfiles,
-    # but we check them too for completeness.)
-    subdirs = [
-        root / "ui-tui",
-        root / "web",
-        root / "apps" / "desktop",
-        root / "apps" / "shared",
-    ]
-    # Also sweep ui-tui/packages/* (hermes-ink etc.)
-    tui_pkgs = root / "ui-tui" / "packages"
-    if tui_pkgs.is_dir():
-        subdirs.extend(d for d in tui_pkgs.iterdir() if d.is_dir())
-
-    stray = [d for d in subdirs if (d / "package-lock.json").is_file()]
-    assert not stray, (
-        "stray package-lock.json found in workspace sub-directory(es); "
-        "delete them and run `npm install` from the repo root instead: "
-        + ", ".join(str(d / "package-lock.json") for d in stray)
-    )
-
-
-def test_make_tui_argv_omits_workspace_and_scrubs_esbuild_override(
-    tmp_path: Path, main_mod, monkeypatch
-) -> None:
-    """When ui-tui/ has its own package-lock.json, _workspace_root returns
-    tui_dir itself.  npm install --workspace ui-tui would fail in that case
-    because npm cannot find a workspace named "ui-tui" inside ui-tui/.
-    The fix omits --workspace and runs plain npm install from tui_dir.
-    See #42973. The npm child must also ignore an inherited esbuild binary
-    override: a version mismatch makes esbuild's postinstall abort (#87405).
-    """
-    tui_dir = tmp_path / "ui-tui"
-    tui_dir.mkdir()
-    (tui_dir / "package.json").write_text("{}")
-    # Simulate curl-install layout: tui_dir has its own lockfile
-    (tui_dir / "package-lock.json").write_text("{}")
-    # Parent also has lockfile (but _workspace_root prefers tui_dir's own)
-    (tmp_path / "package-lock.json").write_text("{}")
-
+    monkeypatch.delenv("HERMES_TUI_FORCE_BUILD", raising=False)
     monkeypatch.delenv("TERMUX_VERSION", raising=False)
     monkeypatch.setenv("PREFIX", "/usr")
-    monkeypatch.setenv("ESBUILD_BINARY_PATH", "/opt/esbuild-0.28.2")
-    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
-    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
-    calls = []
+    monkeypatch.setenv("HERMES_NODE", shutil.which("node"))
+    monkeypatch.setattr(main_tui_launch, "_find_bundled_tui", lambda: None)
+    return source_products
 
-    def fake_run(*args, **kwargs):
-        calls.append((args, kwargs))
-        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+@pytest.mark.platforms("posix")
+def test_source_launch_prepares_base_union_but_compiles_only_tui(tui_source):
+    root, acquired = tui_source
+    argv, cwd = main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=False)
+    assert cwd == root / "ui-tui"
+    assert argv[-1] == str(cwd / "dist/entry.js")
+    assert (cwd / "dist/entry.js").read_text() == "tui"
+    assert [event["step"] for event in _events(root)] == ["deps", "tui"]
+    assert acquired == ["npm"]
+    assert (root / "node_modules/ui-tui").exists()
+    assert (root / "node_modules/web").exists()
+    assert not (root / "node_modules/apps-desktop").exists()
 
-    main_mod._make_tui_argv(tui_dir, tui_dev=False)
 
-    install_cmd = calls[0][0][0]
-    # Must NOT contain --workspace when npm_cwd == tui_dir
-    assert "--workspace" not in install_cmd, (
-        f"npm install should omit --workspace when tui_dir has its own lockfile, got: {install_cmd}"
-    )
-    assert Path(install_cmd[0]).name in {"npm", "npm.cmd"}
-    assert install_cmd[1] == "install"
-    # cwd must be tui_dir (standalone), not parent
-    assert calls[0][1]["cwd"] == str(tui_dir)
-    assert "ESBUILD_BINARY_PATH" not in calls[0][1]["env"]
-    assert calls[1][0][0][1:] == ["run", "build"]
-    assert "ESBUILD_BINARY_PATH" not in calls[1][1]["env"]
+@pytest.mark.platforms("posix")
+def test_source_compile_failure_stops_launch_without_reinstall(tui_source):
+    root, acquired = tui_source
+    (root / "fail-tui").touch()
+    with pytest.raises(subprocess.CalledProcessError):
+        main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=False)
+    assert [event["step"] for event in _events(root)] == ["deps", "tui"]
+    assert acquired == ["npm"]
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("termux", [False, True])
+def test_fresh_bundle_does_not_prepare_or_compile(tui_source, monkeypatch, termux):
+    root, acquired = tui_source
+    _touch_tui_entry(root / "ui-tui")
+    from tests.hermes_cli.test_source_build import stamp_product
+    stamp_product(root, "tui", root / "ui-tui/dist")
+    if termux:
+        monkeypatch.setenv("TERMUX_VERSION", "test")
+    argv, cwd = main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=False)
+    assert argv[-1] == str(cwd / "dist/entry.js")
+    assert _events(root) == []
+    assert acquired == []
+
+
+@pytest.mark.platforms("posix")
+def test_prebuilt_bundle_launch_does_not_touch_missing_source(tmp_path, monkeypatch):
+    bundled = tmp_path / "bundle/entry.js"
+    bundled.parent.mkdir()
+    bundled.write_text("console.log('prebuilt')")
+    monkeypatch.delenv("HERMES_TUI_DIR", raising=False)
+    monkeypatch.setenv("HERMES_NODE", shutil.which("node"))
+    monkeypatch.setattr(main_tui_launch, "_find_bundled_tui", lambda: bundled)
+    argv, cwd = main_tui_launch._make_tui_argv(tmp_path / "missing-source", tui_dev=False)
+    result = subprocess.run(argv, cwd=cwd, check=True, capture_output=True, text=True)
+    assert result.stdout.strip() == "prebuilt"
+    assert not (tmp_path / "missing-source").exists()
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("local_tsx", [False, True])
+def test_dev_launch_builds_ink_before_running_source(tui_source, local_tsx):
+    root, acquired = tui_source
+    ink = root / "ui-tui/packages/hermes-ink"
+    ink.mkdir(parents=True)
+    (ink / "package.json").write_text(json.dumps({
+        "name": "fixture-ink", "version": "1.0.0", "scripts": {"build": "node build.mjs"},
+    }))
+    (ink / "build.mjs").write_text("import { writeFileSync } from 'node:fs'; writeFileSync('built', 'ink');")
+    manifest = json.loads((root / "package.json").read_text())
+    manifest["workspaces"].append("ui-tui/packages/hermes-ink")
+    (root / "package.json").write_text(json.dumps(manifest))
+    subprocess.run([shutil.which("npm"), "install", "--package-lock-only", "--ignore-scripts", "--offline"], cwd=root, check=True)
+    tsx = root / "ui-tui/node_modules/.bin/tsx"
+    if local_tsx:
+        hook = root / "log.mjs"
+        hook.write_text(hook.read_text() + "\nimport { mkdirSync, writeFileSync } from 'node:fs'; "
+                        "mkdirSync('ui-tui/node_modules/.bin', {recursive: true}); "
+                        "writeFileSync('ui-tui/node_modules/.bin/tsx', 'fixture tsx');\n")
+    argv, cwd = main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=True)
+    assert (ink / "built").read_text() == "ink"
+    assert argv == ([str(tsx), "src/entry.tsx"] if local_tsx else [shutil.which("npm"), "start"])
+    assert cwd == root / "ui-tui"
+    assert acquired == ["npm"]
+    assert [event["step"] for event in _events(root)] == ["deps"]
+
+
+@pytest.mark.platforms("posix")
+def test_runtime_node_comes_from_pm_without_legacy_repair(tmp_path, monkeypatch):
+    import pm
+    from pm.package import Runner
+
+    node = shutil.which("node")
+    managed = tmp_path / "bin/node"
+    managed.parent.mkdir()
+    managed.symlink_to(node)
+    monkeypatch.delenv("HERMES_NODE", raising=False)
+    acquired = []
+
+    def acquire(name):
+        acquired.append(name)
+        return Runner(name, {"PATH": str(managed.parent)})
+
+    monkeypatch.setattr(pm, "ensure", acquire)
+    assert main_tui_launch._tui_node_bin("node") == str(managed)
+    assert acquired == ["node"]
+
+
+@pytest.mark.platforms("linux")
+def test_tui_rebuild_preserves_the_prepared_desktop_and_web_union(tui_source):
+    from hermes_cli.source_build import build_update_products
+
+    root, acquired = tui_source
+    build_update_products(root, desktop=True)
+    before = _events(root)
+    main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=False)
+    assert _events(root) == before, "fresh launch must not prepare or rebuild"
+    src = root / "ui-tui/src/entry.tsx"
+    src.parent.mkdir()
+    src.write_text("changed tui source")
+    os.utime(root / "ui-tui/dist/entry.js", (1, 1))
+    main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=False)
+    assert _events(root) == [*before, {"step": "tui"}]
+    assert acquired == ["npm", "npm"]
+    assert (root / "node_modules/web").exists()
+    assert (root / "node_modules/apps-desktop").exists()

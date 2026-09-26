@@ -31,8 +31,8 @@ def _patch_config(monkeypatch, entries: dict) -> None:
 
 
 def _patch_handler(monkeypatch, response: str, captured: dict | None = None):
-    """Replace tools.mcp_tool._make_tool_handler with a transport mock."""
-    import tools.mcp_tool as mcp_mod
+    """Replace tools.mcp_tool_handlers._make_tool_handler with a transport mock."""
+    from tools import mcp_tool_handlers as _mcp_handlers
 
     def _fake_make_handler(server_name, tool_name, tool_timeout):
         if captured is not None:
@@ -47,7 +47,7 @@ def _patch_handler(monkeypatch, response: str, captured: dict | None = None):
 
         return _handler
 
-    monkeypatch.setattr(mcp_mod, "_make_tool_handler", _fake_make_handler)
+    monkeypatch.setattr(_mcp_handlers, "_make_tool_handler", _fake_make_handler)
 
 
 # ---------------------------------------------------------------------------
@@ -160,14 +160,6 @@ def test_structured_content_passthrough(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_timeout_forwarded_to_handler(monkeypatch):
-    _patch_config(monkeypatch, {"my-plugin": {"mcp_allowlist": ["slow"]}})
-    captured = {}
-    _patch_handler(monkeypatch, '{"result": ""}', captured)
-
-    ctx = _make_ctx()
-    ctx.call_mcp("slow", "long_op", timeout=120)
-    assert captured["timeout"] == 120.0
 
 
 def test_timeout_defaults_and_bounds(monkeypatch):

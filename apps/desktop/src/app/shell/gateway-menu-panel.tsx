@@ -6,7 +6,7 @@ import { LogView } from '@/components/ui/log-view'
 import { Tip } from '@/components/ui/tooltip'
 import { getLogs } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { LayoutDashboard, RefreshCw } from '@/lib/icons'
+import { LayoutDashboard, Power, RefreshCw } from '@/lib/icons'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { cn } from '@/lib/utils'
 import { reconnectGateway } from '@/store/gateway-reconnect'
@@ -171,29 +171,17 @@ export function GatewayMenuPanel({
           </span>
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
-          {!gatewayOpen && (
-            <Tip label={copy.reconnectGateway}>
-              <Button
-                aria-label={copy.reconnectGateway}
-                className="text-muted-foreground hover:text-foreground"
-                disabled={reconnecting}
-                onClick={reconnect}
-                size="icon-xs"
-                variant="ghost"
-              >
-                <RefreshCw className={cn(reconnecting && 'animate-spin')} />
-              </Button>
-            </Tip>
-          )}
-          <Tip label={t.commandCenter.restartGateway}>
+          {/* An open transport can still be wedged; recovery must remain reachable. */}
+          <Tip label={copy.reconnectGateway}>
             <Button
-              aria-label={t.commandCenter.restartGateway}
+              aria-label={copy.reconnectGateway}
               className="text-muted-foreground hover:text-foreground"
-              onClick={restart}
+              disabled={reconnecting}
+              onClick={reconnect}
               size="icon-xs"
               variant="ghost"
             >
-              <RefreshCw />
+              <RefreshCw className={cn(reconnecting && 'animate-spin')} />
             </Button>
           </Tip>
           <Tip label={copy.openSystem}>
@@ -205,6 +193,21 @@ export function GatewayMenuPanel({
               variant="ghost"
             >
               <LayoutDashboard />
+            </Button>
+          </Tip>
+          {/* Restart is the heavy, disruptive action: keep it visually distinct
+              (power icon, destructive hover) and separated from the benign
+              reconnect/system buttons so it can't be hit by mistake. */}
+          <span aria-hidden className="mx-1 h-4 w-px bg-border/70" />
+          <Tip label={t.commandCenter.restartGateway}>
+            <Button
+              aria-label={t.commandCenter.restartGateway}
+              className="text-muted-foreground hover:text-destructive"
+              onClick={restart}
+              size="icon-xs"
+              variant="ghost"
+            >
+              <Power />
             </Button>
           </Tip>
         </div>

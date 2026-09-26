@@ -48,6 +48,30 @@ describe('transitionAnsiCodes weight family', () => {
   it('unchanged styles emit nothing', () => {
     expect(transitionAnsiCodes([BOLD, FG_PINK], [BOLD, FG_PINK])).toEqual([])
   })
+
+  // Real tool output (ls/grep) ships COMPOUND sequences like `[1;31m` whose
+  // endCode is `[0m` — weight detection must parse params, not endCodes.
+  const compound = (params: string) => ({ type: 'ansi' as const, code: `${ESC}[${params}m`, endCode: `${ESC}[0m` })
+
+  it('compound bold → compound dim resets the weight family', () => {
+    expect(codes(transitionAnsiCodes([compound('1;31')], [compound('2;37')]))).toEqual([`${ESC}[22m`, `${ESC}[2;37m`])
+  })
+
+  it('compound bold → compound bold (color change) stays minimal', () => {
+    expect(codes(transitionAnsiCodes([compound('1;31')], [compound('1;32')]))).toEqual([`${ESC}[1;32m`])
+  })
+
+  it('compound weight removal to plain emits the reset', () => {
+    expect(codes(transitionAnsiCodes([compound('1;31')], [FG_GRAY]))).toEqual([`${ESC}[22m`, `${ESC}[38;5;245m`])
+  })
+
+  it('extended-color arguments are not read as weight atoms', () => {
+    // `38;2;r;g;b` / `38;5;N` carry literal 2/5 sub-params: not SGR atoms.
+    const tc = { type: 'ansi' as const, code: `${ESC}[38;2;120;87;109m`, endCode: `${ESC}[39m` }
+
+    expect(codes(transitionAnsiCodes([tc], [FG_GRAY]))).toEqual([`${ESC}[38;5;245m`])
+    expect(codes(transitionAnsiCodes([FG_PINK], [tc]))).toEqual([`${ESC}[38;2;120;87;109m`])
+  })
 })
 
 describe('StylePool.transition weight correctness', () => {

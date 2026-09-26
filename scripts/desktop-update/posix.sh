@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # posix.sh -- repo-owned macOS/Linux Desktop update hand-off.
 #
 # The whole job: wait for the Desktop to exit, run `hermes update`, tell the
@@ -11,7 +11,7 @@
 # CONTRACT (keep in sync with apps/desktop/electron/main.ts):
 #   bash scripts/desktop-update/posix.sh
 #     --install-root <path>    repo checkout (HERMES_HOME/hermes-agent)
-#     --branch <ref>           branch to update against
+#     [--branch <ref> | --channel stable|canary|main]  default: branch main
 #     --desktop-pid <pid>      the Electron main process to wait out
 #     [--relaunch-target <p>]  mac: running .app to swap+reopen;
 #                              linux: running binary (omit = no relaunch)
@@ -19,12 +19,15 @@
 #     [--sandbox-fallback]     linux: the caller vouches for a sandbox opt-out
 #                              (ELECTRON_DISABLE_SANDBOX / --no-sandbox launch)
 #     [--no-ui] [--no-marker-cleanup] [--self-test-ui] [--self-test-gate]
+#     [--self-test-marker]
 #     [-- <args...>]           linux: filtered launch args to replay
 #
 # The shim (ui.html in a chromeless browser app window) is decoration: it
-# polls /progress for `done` or `error` and reacts. It owns nothing --
+# polls /progress for the current stage or a terminal event and reacts. The
+# stages come from the gates below, never from child output. It owns nothing --
 # relaunch, result file, marker hygiene all happen here, identically, when
-# no renderer exists. No chromium-family browser found = no UI, fine.
+# no renderer exists. No chromium-family browser found = no UI, fine; macOS
+# never opens one (see find_browser).
 #
 # ORDERING (the durable-truth rule): swap and relaunch are DECIDED AND
 # EXECUTED before the result file is written, the marker is removed, or a
@@ -34,38 +37,56 @@
 set -u
 
 ORIGINAL_ARGS=("$@")
-INSTALL_ROOT="" BRANCH="main" DESKTOP_PID=0 RELAUNCH_TARGET=""
+INSTALL_ROOT="" BRANCH="main" CHANNEL="" DESKTOP_PID=0 RELAUNCH_TARGET=""
+BRANCH_EXPLICIT=0
 RELAUNCH_CWD="" SANDBOX_FALLBACK=0 RELAUNCH_ARGS=()
-NO_UI=0 NO_MARKER_CLEANUP=0 SELF_TEST_UI=0 SELF_TEST_GATE=0 HANDOFF_DAEMONIZED=0
+NO_GATEWAY=0
+NO_UI=0 NO_MARKER_CLEANUP=0 SELF_TEST_UI=0 SELF_TEST_GATE=0 SELF_TEST_MARKER=0
+SELF_TEST_TCC_HEAL=0
+HANDOFF_DAEMONIZED=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --install-root) INSTALL_ROOT="$2"; shift 2 ;;
-    --branch) BRANCH="$2"; shift 2 ;;
+    --branch) BRANCH="$2"; BRANCH_EXPLICIT=1; shift 2 ;;
+    --channel)
+      case "${2:-}" in
+        stable|canary|main) CHANNEL="$2" ;;
+        *) echo "--channel must be stable, canary, or main" >&2; exit 64 ;;
+      esac
+      shift 2 ;;
     --desktop-pid) DESKTOP_PID="$2"; shift 2 ;;
     --relaunch-target) RELAUNCH_TARGET="$2"; shift 2 ;;
     --relaunch-cwd) RELAUNCH_CWD="$2"; shift 2 ;;
     --sandbox-fallback) SANDBOX_FALLBACK=1; shift ;;
+    --no-gateway) NO_GATEWAY=1; shift ;;
     --no-ui) NO_UI=1; shift ;;
     --no-marker-cleanup) NO_MARKER_CLEANUP=1; shift ;;
     --self-test-ui) SELF_TEST_UI=1; shift ;;
     --self-test-gate) SELF_TEST_GATE=1; shift ;;
+    --self-test-tcc-heal) SELF_TEST_TCC_HEAL=1; shift ;;
     --daemonized) HANDOFF_DAEMONIZED=1; shift ;;
+    --self-test-marker) SELF_TEST_MARKER=1; NO_UI=1; NO_MARKER_CLEANUP=1; shift ;;
     --) shift; RELAUNCH_ARGS=("$@"); shift $# ;;
     *) echo "unknown arg: $1" >&2; exit 64 ;;
   esac
 done
 [ "$SELF_TEST_UI" -eq 1 ] || [ -n "$INSTALL_ROOT" ] || { echo "--install-root is required" >&2; exit 64; }
+[ "$BRANCH_EXPLICIT" -eq 0 ] || [ -z "$CHANNEL" ] || { echo "--branch and --channel are mutually exclusive" >&2; exit 64; }
+TARGET_ARGS=(--branch "$BRANCH")
+[ -z "$CHANNEL" ] || TARGET_ARGS=(--channel "$CHANNEL")
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HERMES_HOME="${INSTALL_ROOT:+$(dirname "$INSTALL_ROOT")}"
+HERMES_HOME="${HERMES_HOME:-${INSTALL_ROOT:+$(dirname "$INSTALL_ROOT")}}"
 HERMES_HOME="${HERMES_HOME:-${TMPDIR:-/tmp}}"
+export HERMES_HOME
 MARKER="$HERMES_HOME/.hermes-update-in-progress"
 LOG_DIR="$HERMES_HOME/logs"; mkdir -p "$LOG_DIR" 2>/dev/null || true
 LOG="$LOG_DIR/desktop-update-handoff.log"
 RESULT="$HERMES_HOME/.hermes-update-result.json"
 STATUS="${TMPDIR:-/tmp}/hermes-update-status.$$"
+STARTED_AT="$(date +%s)"  # the shim's elapsed clock; see serve-ui.py
 
-UI_SERVER_PID="" UI_BROWSER_PID="" FINAL_CODE=1
+UI_SERVER_PID="" UI_BROWSER_PID="" UI_PANEL_PID="" UI_PROFILE_DIR="" FINAL_CODE=1
 FINAL_MSG="update did not complete"
 DONE_NOTE=""  # set when the update succeeded but the app will NOT reopen itself
 
@@ -147,27 +168,79 @@ notify_fallback() { # status message — renderer-free recovery surface.
   log "NOTICE: no notification surface accepted; outcome reaches the user via the result dialog on next launch: $2"
 }
 
-publish() { # status message -- atomic replace; the server reads per poll
+write_status() { # status message -- atomic replace; the server reads per poll
   printf '{"status":"%s","message":"%s"}' "$(json_escape "$1")" "$(json_escape "$2")" > "$STATUS.tmp" \
     && mv -f "$STATUS.tmp" "$STATUS" 2>/dev/null || true
+}
+
+publish_stage() { # a long wait the orchestrator is already gating on. No poll
+  # beat (that would add a second per stage to every update) and no
+  # notification fallback (there is nothing here for the user to act on).
+  write_status "running" "$1"
+}
+
+publish() { # terminal event -- the page must render it before teardown
+  write_status "$1" "$2"
   [ -n "$UI_SERVER_PID" ] && sleep 1  # one poll beat to render the state
   [ -z "$UI_SERVER_PID" ] && notify_fallback "$1" "$2"
 }
 
 find_browser() {
   local c
-  if [ "$(uname)" = "Darwin" ]; then
-    for c in "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
-             "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge" \
-             "/Applications/Chromium.app/Contents/MacOS/Chromium" \
-             "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"; do
-      [ -x "$c" ] && { echo "$c"; return; }
-    done
-  else
-    for c in google-chrome google-chrome-stable chromium chromium-browser microsoft-edge brave-browser; do
-      command -v "$c" 2>/dev/null && return
-    done
-  fi
+  # No Microsoft Edge and no Brave, on purpose. Edge's OS-level
+  # Microsoft-account integration signs a fresh throwaway profile into the
+  # user's MSA and renders its own "syncing your data" notification — MSA
+  # email included — inside this window that is titled "Hermes" (#88410).
+  # Brave paints its own P3A privacy-notice bar over the progress page in
+  # the same window — cramped to unreadability at the shim's small size
+  # (#88682). The throwaway --user-data-dir below cannot block either; the
+  # remaining Chromium-family browsers carry no first-run chrome of their
+  # own into a fresh profile.
+  #
+  # No browser at all on macOS. A second --user-data-dir is a second instance
+  # of the same bundle, and the Dock records every one as a new recent-app
+  # tile it never merges with the pinned browser: one more duplicate Chrome
+  # icon per update (#96374). A stable profile would not help (still a second
+  # instance). notify_fallback + the next-boot result dialog carry the outcome.
+  [ "$(uname)" = "Darwin" ] && return
+  for c in google-chrome google-chrome-stable chromium chromium-browser; do
+    command -v "$c" 2>/dev/null && return
+  done
+}
+
+# The shim is decoration; launching a browser the user does NOT use is not.
+# A Safari/Firefox/Helium user who merely has Chrome installed watched Chrome
+# open on every update — a "why is Chrome opening?" surprise (community
+# report, Aug 2026). Only render the shim when the system DEFAULT browser is
+# itself Chromium-family; otherwise skip the window and let notify_fallback +
+# the durable result file carry the outcome. Best-effort on purpose: any
+# detection failure keeps today's behavior (0 = allowed).
+default_browser_is_chromium() {
+  local handler=""
+  # Linux only (find_browser never picks one on macOS). xdg-settings is the
+  # authority; missing tool = permissive.
+  command -v xdg-settings >/dev/null 2>&1 || return 0
+  handler="$(xdg-settings get default-web-browser 2>/dev/null)" || return 0
+  [ -n "$handler" ] || return 0
+  case "$handler" in
+    *chrome*|*chromium*|*Chrome*|*Chromium*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+start_status_panel() { # the macOS no-browser shim: osascript (JXA) panel.
+  # Best-effort by design: osascript missing or the panel exiting instantly
+  # (syntax, headless session) just means no UI, exactly as before. The panel
+  # polls $STATUS itself and self-exits after a terminal state, so this pid
+  # only needs killing on OUR early teardown paths.
+  local py="$1" panel="$SCRIPT_DIR/update-panel.js"
+  [ -n "$py" ] || py="/usr/bin/python3"  # unused by osascript; keeps the wrapper shape
+  "$py" -c 'import os, signal, sys; os.setsid(); signal.signal(signal.SIGTERM, signal.SIG_IGN); os.execv(sys.argv[1], sys.argv[1:])' \
+    /usr/bin/osascript -l JavaScript "$panel" "$STATUS" >>"$LOG" 2>&1 &
+  UI_PANEL_PID=$!
+  sleep 1
+  kill -0 "$UI_PANEL_PID" 2>/dev/null || { UI_PANEL_PID=""; return; }
+  log "shim: status panel pid=$UI_PANEL_PID"
 }
 
 start_ui() {
@@ -176,9 +249,26 @@ start_ui() {
   py="${INSTALL_ROOT:+$INSTALL_ROOT/venv/bin/python3}"
   [ -x "${py:-/nonexistent}" ] || py="$(command -v python3 2>/dev/null)"
   browser="$(find_browser)"
+  if [ -n "$browser" ] && ! default_browser_is_chromium; then
+    log "shim: default browser is not Chromium-family; skipping UI window"
+    browser=""
+  fi
+  if [ "$(uname)" = "Darwin" ] && [ -z "$browser" ] && [ -f "$SCRIPT_DIR/update-panel.js" ]; then
+    # No Chromium renderer may host ui.html (Safari/Firefox default, or no
+    # Chrome): draw the same progress as a native panel instead. Reads the
+    # same $STATUS JSON — no server, no browser, no other-app scripting.
+    start_status_panel "$py"
+    [ -n "$UI_PANEL_PID" ] && return
+    log "shim: status panel did not start; continuing without UI"
+  fi
   { [ -f "$html" ] && [ -n "$py" ] && [ -n "$browser" ]; } || { log "shim: no renderer; skipping UI"; return; }
 
-  publish "running" ""
+  UI_PROFILE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hermes-update-ui-XXXXXXXX")" || {
+    UI_PROFILE_DIR=""
+    log "shim: could not allocate a browser profile; skipping UI"
+    return
+  }
+  publish_stage ""
   # The Desktop's final teardown targets the updater process group.  Put both
   # UI processes in their own sessions so neither the HTTP server nor a Chrome
   # renderer becomes collateral damage (Chrome surfaces that renderer death as
@@ -190,7 +280,7 @@ start_ui() {
   # window showed ERR_CONNECTION_REFUSED for the whole run; upstream #66753).
   # stop_ui ends the server with SIGKILL instead — it is stateless HTTP.
   "$py" -c 'import os, signal, sys; os.setsid(); signal.signal(signal.SIGTERM, signal.SIG_IGN); signal.signal(signal.SIGHUP, signal.SIG_IGN); os.execv(sys.argv[1], sys.argv[1:])' \
-    "$py" "$SCRIPT_DIR/serve-ui.py" "$html" "$STATUS" > "$LOG_DIR/desktop-update-ui-port" 2>>"$LOG" &
+    "$py" "$SCRIPT_DIR/serve-ui.py" "$html" "$STATUS" "$STARTED_AT" > "$LOG_DIR/desktop-update-ui-port" 2>>"$LOG" &
   UI_SERVER_PID=$!
   for i in $(seq 1 10); do
     port="$(tr -cd '0-9' < "$LOG_DIR/desktop-update-ui-port" 2>/dev/null)"
@@ -201,21 +291,39 @@ start_ui() {
 
   # Throwaway profile: new window/process we own; user's browser untouched.
   "$py" -c 'import os, signal, sys; os.setsid(); signal.signal(signal.SIGTERM, signal.SIG_DFL); os.execv(sys.argv[1], sys.argv[1:])' \
-    "$browser" --app="http://127.0.0.1:$port/" --user-data-dir="${TMPDIR:-/tmp}/hermes-update-ui-$$" \
+    "$browser" --app="http://127.0.0.1:$port/" --user-data-dir="$UI_PROFILE_DIR" \
     --no-first-run --no-default-browser-check --window-size=280,320 >/dev/null 2>&1 &
   UI_BROWSER_PID=$!
   log "shim: app window on 127.0.0.1:$port"
 }
 
-stop_ui() { # error state leaves the window up for the user to read
+stop_ui() { # error/manual outcomes keep the window up briefly so a watching
+  # user can read the message, then close it. The outcome is also durably
+  # written to the result file and surfaced in a dialog on the next Desktop
+  # boot (handoff-result.ts), so the shim window never lingers indefinitely —
+  # before this, each aborted update left another orphan browser window on
+  # screen until the user closed it by hand.
+  if [ "${1:-}" = "leave-window" ]; then
+    sleep "${HERMES_UPDATE_SHIM_GRACE_SECONDS:-15}"
+  fi
   if [ -n "$UI_SERVER_PID" ]; then
     # The server ignores TERM/HUP (see start_ui) — KILL is its off switch.
     { kill -9 "$UI_SERVER_PID" && wait "$UI_SERVER_PID"; } 2>/dev/null
   fi
-  if [ "${1:-}" != "leave-window" ] && [ -n "$UI_BROWSER_PID" ]; then
+  if [ -n "$UI_BROWSER_PID" ]; then
     { kill "$UI_BROWSER_PID" && wait "$UI_BROWSER_PID"; } 2>/dev/null
   fi
-  UI_SERVER_PID="" UI_BROWSER_PID=""
+  if [ -n "$UI_PANEL_PID" ]; then
+    # The panel ignores TERM (SIG_IGN survives execv, same contract as the
+    # HTTP server) — KILL is its off switch. leave-window grace is the panel's
+    # own delay terminal-state sleep, so we just end it.
+    { kill -9 "$UI_PANEL_PID" && wait "$UI_PANEL_PID"; } 2>/dev/null
+  fi
+  if [ -n "$UI_PROFILE_DIR" ]; then
+    rm -rf "$UI_PROFILE_DIR" 2>/dev/null || true
+    UI_PROFILE_DIR=""
+  fi
+  UI_SERVER_PID="" UI_BROWSER_PID="" UI_PANEL_PID=""
 }
 
 # ── relaunch ────────────────────────────────────────────────────────────────
@@ -235,6 +343,16 @@ stop_ui() { # error state leaves the window up for the user to read
 GATE="" GATE_MSG=""
 linux_gate() {
   local unpacked="$INSTALL_ROOT/apps/desktop/release/linux-unpacked" sb arg
+  # Canonicalise both sides before the prefix compare. On some distros
+  # (e.g. Fedora/ostree) /home is a symlink to /var/home; the relaunch
+  # target is read from /proc/<pid>/exe, which the kernel canonicalises
+  # through symlinks, while INSTALL_ROOT keeps the original spelling —
+  # the raw prefix match then false-gates as "skew" and tells the user
+  # to reinstall an app that is fine. readlink -m canonicalises existing
+  # leading components without requiring the full path to exist (unlike
+  # -f); a no-op when both sides are already spelled the same.
+  unpacked="$(readlink -m -- "$unpacked")"
+  [ -n "$RELAUNCH_TARGET" ] && RELAUNCH_TARGET="$(readlink -m -- "$RELAUNCH_TARGET")"
   case "$RELAUNCH_TARGET" in
     "$unpacked"/*) ;;
     *) GATE=skew GATE_MSG="Backend updated, but the desktop app package (AppImage/deb/rpm) was not changed. Update or reinstall it to match."; return ;;
@@ -243,6 +361,10 @@ linux_gate() {
   sb="$unpacked/chrome-sandbox"
   if [ ! -e "$sb" ]; then GATE=relaunch; return; fi
   if [ -u "$sb" ] && [ "$(stat -c %u "$sb" 2>/dev/null)" = "0" ]; then GATE=relaunch; return; fi
+  # Namespace sandbox usable => Electron never consults the setuid helper,
+  # so a non-root chrome-sandbox does not block relaunch (mirrors the
+  # _desktop_linux_userns_sandbox_available() probe in hermes_cli/main.py).
+  if unshare --user --map-root-user true 2>/dev/null; then GATE=relaunch; return; fi
 
   case "${ELECTRON_DISABLE_SANDBOX:-}" in 1|true|TRUE|True) GATE=relaunch; return ;; esac
   [ "$SANDBOX_FALLBACK" -eq 1 ] && { GATE=relaunch; return; }
@@ -264,6 +386,7 @@ mac_swap() {
   # the copy in. Every step checked; a failed final move ROLLS BACK so the
   # user always has a launchable app, and the result file tells the truth.
   if [ "$FINAL_CODE" -eq 0 ] && [ -n "$rebuilt" ] && [ -d "$RELAUNCH_TARGET" ] && [ "$rebuilt" != "$RELAUNCH_TARGET" ]; then
+    publish_stage "Installing the new app"
     rm -rf "$RELAUNCH_TARGET.new" "$RELAUNCH_TARGET.old" 2>/dev/null || true
     if ! /usr/bin/ditto "$rebuilt" "$RELAUNCH_TARGET.new"; then
       rm -rf "$RELAUNCH_TARGET.new" 2>/dev/null || true
@@ -333,10 +456,10 @@ launch_app() { # attempted BEFORE the terminal event (launch acceptance is
 MANUAL=0  # 1 = update landed but the user must act (result protocol field)
 
 write_result() {
-  printf '{"ok":%s,"exit_code":%s,"manual":%s,"message":"%s","branch":"%s","finished_at":%s}' \
+  printf '{"ok":%s,"exit_code":%s,"manual":%s,"message":"%s","branch":"%s","channel":"%s","finished_at":%s}' \
     "$([ "$FINAL_CODE" -eq 0 ] && echo true || echo false)" "$FINAL_CODE" \
     "$([ "$MANUAL" -eq 1 ] && echo true || echo false)" \
-    "$(json_escape "$FINAL_MSG")" "$(json_escape "$BRANCH")" "$(date +%s)" \
+    "$(json_escape "$FINAL_MSG")" "$(json_escape "$BRANCH")" "$(json_escape "$CHANNEL")" "$(date +%s)" \
     > "$RESULT.tmp" 2>/dev/null && mv -f "$RESULT.tmp" "$RESULT" 2>/dev/null || true
 }
 
@@ -393,7 +516,151 @@ finish() {
 }
 trap finish EXIT
 
+# ── legacy macOS TCC anchor self-heal (#95759) ──────────────────────────────
+# The reverted TCC interpreter anchor (#95425/#95541) left some installs with
+# a real-file `venv/bin/python` copy plus a `.tcc-anchor-source` marker, and
+# `python3`/`python3.N` aliases that die at interpreter init ("No module
+# named 'encodings'"). On those installs EVERY normal CLI entrypoint is dead
+# (`venv/bin/hermes` has a `python3` shebang), so no Python-side heal —
+# doctor OR in-update — can ever run. This shell is the last surface that
+# still executes, so the heal lives here (recovery design after @aeonsong's
+# #96231; heal-point observation by @ahrazzle / @tokenfires on #95759).
+#
+# Ping-pong coherence with the re-landed forward anchor
+# (hermes_cli/macos_tcc_anchor.ensure_tcc_anchor, which re-anchors whenever
+# `venv/bin/python` is a uv-managed symlink): this heal is gated on the
+# interpreter FAILING its boot probe, so a healthy anchored install is never
+# touched; and when it does restore symlinks, the very `hermes update` run it
+# unblocks re-installs a boot-gated healthy anchor — a one-shot convergence,
+# not a loop.
+
+tcc_probe_python() { # interpreter path → 0 iff it boots a real stdlib.
+  # PYTHONHOME/PYTHONPATH are scrubbed: an inherited PYTHONHOME papers over
+  # exactly the prefix-resolution failure this probe exists to detect.
+  [ -x "$1" ] || return 1
+  env -u PYTHONHOME -u PYTHONPATH -u PYTHONSTARTUP -u __PYVENV_LAUNCHER__ \
+    "$1" -c 'import encodings' >/dev/null 2>&1
+}
+
+TCC_HEAL_STATE="not-run"
+
+tcc_heal_rollback() { # restore every .tcc-heal-old.$$ backup in a bin dir
+  local b
+  for b in "$1"/*.tcc-heal-old.$$; do
+    [ -e "$b" ] || [ -L "$b" ] || continue
+    mv -f "$b" "${b%.tcc-heal-old.$$}" 2>/dev/null || true
+  done
+}
+
+tcc_heal_cleanup() { # heal landed: drop the backups
+  local b
+  for b in "$1"/*.tcc-heal-old.$$; do
+    [ -e "$b" ] || [ -L "$b" ] || continue
+    rm -f "$b" 2>/dev/null || true
+  done
+}
+
+tcc_alias_names() { # existing python3 / python3.N entries in a bin dir
+  local a
+  for a in "$1"/python3 "$1"/python3.*; do
+    [ -e "$a" ] || [ -L "$a" ] || continue
+    case "${a##*/}" in
+      python3|python3.[0-9]|python3.[0-9][0-9]) printf '%s\n' "$a" ;;
+    esac
+  done
+}
+
+tcc_anchor_heal() { # $1 = venv bin dir. 0 iff python3 boots on exit.
+  local bin="$1" marker src alias staged
+  local py="$bin/python" py3="$bin/python3"
+  if tcc_probe_python "$py3"; then TCC_HEAL_STATE="healthy"; return 0; fi
+  marker="$bin/.tcc-anchor-source"
+  [ -f "$marker" ] || { TCC_HEAL_STATE="no-marker"; return 1; }
+  src="$(head -1 "$marker" 2>/dev/null)"
+  case "$src" in
+    "$bin"/*) TCC_HEAL_STATE="unsafe-source"; return 1 ;;
+    /*) ;;
+    *) TCC_HEAL_STATE="invalid-marker"; return 1 ;;
+  esac
+  if tcc_probe_python "$py"; then
+    # #95541 alias-brick: the anchored copy itself boots; only the aliases
+    # are dead. Aliases over a real-file anchor must be REAL FILES (hard
+    # link, else copy) — an alias *symlink* onto the copy is the exact
+    # crash shape being healed here.
+    TCC_HEAL_STATE="healed-aliases"
+    while IFS= read -r alias; do
+      [ -n "$alias" ] || continue
+      mv "$alias" "$alias.tcc-heal-old.$$" 2>/dev/null \
+        || { tcc_heal_rollback "$bin"; TCC_HEAL_STATE="failed"; return 1; }
+      if ! { ln "$py" "$alias" 2>/dev/null || cp -p "$py" "$alias" 2>/dev/null; }; then
+        tcc_heal_rollback "$bin"; TCC_HEAL_STATE="failed"; return 1
+      fi
+    done <<EOF_ALIASES
+$(tcc_alias_names "$bin")
+EOF_ALIASES
+  elif [ -x "$src" ] && tcc_probe_python "$src"; then
+    # Full restore to the pre-anchor layout: python → symlink to the
+    # marker-recorded store interpreter, aliases → symlinks to python.
+    TCC_HEAL_STATE="healed-symlinks"
+    mv "$py" "$py.tcc-heal-old.$$" 2>/dev/null \
+      || { TCC_HEAL_STATE="failed"; return 1; }
+    if ! ln -s "$src" "$py" 2>/dev/null; then
+      tcc_heal_rollback "$bin"; TCC_HEAL_STATE="failed"; return 1
+    fi
+    while IFS= read -r alias; do
+      [ -n "$alias" ] || continue
+      staged="$alias.tcc-heal-new.$$"
+      mv "$alias" "$alias.tcc-heal-old.$$" 2>/dev/null \
+        || { tcc_heal_rollback "$bin"; TCC_HEAL_STATE="failed"; return 1; }
+      if ! { ln -s python "$staged" 2>/dev/null && mv "$staged" "$alias" 2>/dev/null; }; then
+        rm -f "$staged" 2>/dev/null
+        tcc_heal_rollback "$bin"; TCC_HEAL_STATE="failed"; return 1
+      fi
+    done <<EOF_ALIASES
+$(tcc_alias_names "$bin")
+EOF_ALIASES
+  else
+    # Recorded source gone or itself unbootable (the vanished-uv-store
+    # class from #95759): fail closed, touch nothing.
+    TCC_HEAL_STATE="source-missing"; return 1
+  fi
+  if tcc_probe_python "$py3"; then
+    if [ "$TCC_HEAL_STATE" = "healed-symlinks" ]; then
+      # Marker asserts the anchored layout; the symlink layout is done
+      # with it. (The alias-heal branch KEEPS it: real-file python +
+      # real-file aliases is exactly the layout ensure_tcc_anchor marks.)
+      rm -f "$marker" 2>/dev/null || true
+    fi
+    tcc_heal_cleanup "$bin"
+    return 0
+  fi
+  tcc_heal_rollback "$bin"
+  TCC_HEAL_STATE="failed"
+  return 1
+}
+
+tcc_pick_update_invoke() { # sets UPDATE_INVOKE; safety net past a failed heal
+  # Last-resort class: aliases still dead but the anchored copy boots. The
+  # launchd gateway proves `venv/bin/python -m hermes_cli.main` works when
+  # every alias entrypoint is bricked — drive the update the same way.
+  local bin="$1"
+  UPDATE_INVOKE=("$bin/hermes")
+  if ! tcc_probe_python "$bin/python3" && tcc_probe_python "$bin/python"; then
+    UPDATE_INVOKE=("$bin/python" -m hermes_cli.main)
+  fi
+}
+
 # ── self-tests: no update, touch nothing ────────────────────────────────────
+if [ "$SELF_TEST_TCC_HEAL" -eq 1 ]; then
+  # Runs the REAL heal + invoke selection against --install-root and reports;
+  # tests/scripts/desktop_update/test_desktop_update_tcc_heal.py drives the state matrix through it.
+  trap - EXIT
+  tcc_anchor_heal "$INSTALL_ROOT/venv/bin" || true
+  tcc_pick_update_invoke "$INSTALL_ROOT/venv/bin"
+  echo "state=$TCC_HEAL_STATE invoke=${UPDATE_INVOKE[*]}"
+  exit 0
+fi
+
 if [ "$SELF_TEST_GATE" -eq 1 ]; then
   # Prints the gate decision for the given --install-root/--relaunch-target
   # and exits; scripts/desktop-update/repro.sh gate asserts the matrix.
@@ -448,12 +715,28 @@ fi
 # command has returned; the already-running server keeps the inherited setting
 # until normal cleanup closes it.
 trap '' TERM
-log "hand-off start: root=$INSTALL_ROOT branch=$BRANCH desktopPid=$DESKTOP_PID pid=$$"
+log "hand-off start: root=$INSTALL_ROOT branch=$BRANCH channel=$CHANNEL desktopPid=$DESKTOP_PID pid=$$"
 rm -f "$RESULT" 2>/dev/null || true
 
 # Marker claim: same cross-process lock contract as windows.ps1 /
 # update_lock.py (the `hermes update` child adopts it via process ancestry).
-printf '%s\n%s\n' "$$" "$(date +%s)" > "$MARKER" 2>/dev/null || log "WARNING: could not write update marker"
+# The Desktop supplies one acquisition time for the whole ownership chain.
+NOW="$(date +%s)"
+STARTED_AT="${HERMES_UPDATE_STARTED_AT:-$NOW}"
+case "$STARTED_AT" in ''|*[!0-9]*) STARTED_AT="$NOW" ;; esac
+MIN_STARTED_AT=$((NOW - 1200))
+# Compare the validated decimal strings before doing arithmetic. Shell integer
+# expansion can wrap on an attacker-controlled value wider than signed 64-bit.
+if [ "${#STARTED_AT}" -ne "${#NOW}" ] \
+    || [[ "$STARTED_AT" > "$NOW" || "$STARTED_AT" < "$MIN_STARTED_AT" ]]; then
+  STARTED_AT="$NOW"
+fi
+printf '%s\n%s\n' "$$" "$STARTED_AT" > "$MARKER" 2>/dev/null || log "WARNING: could not write update marker"
+
+if [ "$SELF_TEST_MARKER" -eq 1 ]; then
+  trap - EXIT
+  exit 0
+fi
 
 # Wait out the Desktop (FAIL CLOSED: updating under live backends bricks).
 if [ "$DESKTOP_PID" -gt 0 ] 2>/dev/null; then
@@ -471,8 +754,42 @@ fi
 sleep 1
 start_ui
 
-HERMES_BIN="$INSTALL_ROOT/venv/bin/hermes"
-[ -x "$HERMES_BIN" ] || { FINAL_CODE=3 FINAL_MSG="Update aborted: $HERMES_BIN is missing. The install needs repair (run the Hermes installer or hermes doctor)."; log "$FINAL_MSG"; exit 3; }
+# Current installs publish an installation-bound launcher. Only pre-PM
+# checkouts use the old shim/TCC rescue; a damaged PM install must not retarget.
+LEGACY_INSTALL=0
+[ -d "$INSTALL_ROOT/pm" ] || LEGACY_INSTALL=1
+select_update_invoke() {
+  HERMES_BIN="$INSTALL_ROOT/.hermes/bin/hermes"
+  if [ -x "$HERMES_BIN" ]; then
+    UPDATE_INVOKE=("$HERMES_BIN")
+    return 0
+  fi
+  if [ -f "$INSTALL_ROOT/hermes_cli/_launchers.py" ]; then
+    local candidate version reported expected
+    expected="$(cd "$INSTALL_ROOT" && pwd -P)" || return 1
+    for candidate in "$HOME/.local/bin/hermes" "$HERMES_HOME/bin/hermes"; do
+      [ -x "$candidate" ] || continue
+      version="$("$candidate" --version 2>/dev/null)" || continue
+      reported="$(printf '%s\n' "$version" | sed -n 's/^Install directory: //p')"
+      [ -d "$reported" ] || continue
+      [ "$(cd "$reported" && pwd -P)" = "$expected" ] || continue
+      HERMES_BIN="$candidate"
+      UPDATE_INVOKE=("$candidate")
+      return 0
+    done
+  fi
+  if [ "$LEGACY_INSTALL" -eq 1 ] && [ ! -d "$INSTALL_ROOT/pm" ]; then
+    HERMES_BIN="$INSTALL_ROOT/venv/bin/hermes"
+    [ -x "$HERMES_BIN" ] || return 1
+    if [ "$(uname)" = Darwin ]; then
+      tcc_anchor_heal "$INSTALL_ROOT/venv/bin" || log "TCC anchor rescue failed ($TCC_HEAL_STATE)"
+    fi
+    tcc_pick_update_invoke "$INSTALL_ROOT/venv/bin"
+    return 0
+  fi
+  return 1
+}
+select_update_invoke || { FINAL_CODE=3 FINAL_MSG="Update aborted: the installation launcher at $HERMES_BIN is missing. Repair this installation."; log "$FINAL_MSG"; exit 3; }
 
 # Run FROM the install root: `hermes update` resolves the tree it mutates
 # from the working directory, and we inherit the Desktop's cwd (which can be
@@ -485,32 +802,82 @@ cd "$INSTALL_ROOT" || {
   log "$FINAL_MSG"; exit 3
 }
 export PYTHONUNBUFFERED=1
-log "running: hermes update --yes --gateway --branch $BRANCH"
-OUT="$("$HERMES_BIN" update --yes --gateway --branch "$BRANCH" 2>&1)"; CODE=$?
+# The takeover children (hermes update -> _update_takeover/update_finish and
+# the PM sync / build stages they drive) publish their stages back into the
+# shim's UI through this file; without a watching UI the variable is simply
+# absent and the helper no-ops.
+export HERMES_UPDATE_STATUS_FILE="$STATUS"
+# --keep-stash: never re-apply local source edits after the update (they stay
+# parked in git stash). Probe --help first: older installed backends don't
+# know the flag and argparse would abort with exit 2, which collides with the
+# "close all Hermes windows" sentinel.
+KEEP_STASH=""
+if "${UPDATE_INVOKE[@]}" update --help 2>/dev/null | grep -q -- '--keep-stash'; then
+  KEEP_STASH="--keep-stash"
+else
+  log "installed hermes predates --keep-stash; running without it"
+fi
+# --gateway restarts the local messaging gateway after the update. The
+# Desktop omits it (--no-gateway) when it is served by a remote gateway
+# (#117529): restarting a local one there is never wanted, and with the same
+# channel credentials as the remote host it becomes a competing long-poll
+# consumer (e.g. Telegram rejects one of the two getUpdates callers).
+GATEWAY_FLAG="--gateway"
+if [ "$NO_GATEWAY" -eq 1 ]; then
+  GATEWAY_FLAG=""
+  log "update requested without --gateway (remote-served Desktop)"
+fi
+log "running: ${UPDATE_INVOKE[*]} update --yes $GATEWAY_FLAG $KEEP_STASH ${TARGET_ARGS[*]}"
+publish_stage "Updating code and dependencies"
+OUT="$("${UPDATE_INVOKE[@]}" update --yes $GATEWAY_FLAG $KEEP_STASH "${TARGET_ARGS[@]}" 2>&1)"; CODE=$?
 printf '%s\n' "$OUT" >> "$LOG" 2>/dev/null
 log "hermes update exit code: $CODE"
 
-if [ "$CODE" -ne 0 ] && [ "$CODE" -ne 2 ]; then
+if [ "$LEGACY_INSTALL" -eq 1 ] && [ "$CODE" -ne 0 ] && [ "$CODE" -ne 2 ]; then
   # Retry once: update-boundary class (fresh code on disk, stale in memory).
   # Exit 2 ("close all Hermes windows") is not retryable.
+  #
+  # A parked-branch SKIP (checkout on a feature branch with unmerged
+  # commits) is also deterministic — the retry would hit the exact same
+  # branch state and skip again, so it only wastes time. Detect the skip
+  # by its banner, skip the retry, and surface an honest message with a
+  # dedicated exit code (8) so callers can distinguish "skipped" from a
+  # real failure.
+  if printf '%s' "$OUT" | grep -q "CODE UPDATE SKIPPED"; then
+    log "hermes update skipped (checkout parked on a non-target branch); not retrying"
+    FINAL_CODE=8
+    FINAL_MSG="Update skipped: the git checkout is on a branch that isn't fully merged into $BRANCH. Switch to the target branch and update again (see the terminal output for the exact commands)."
+    exit 8
+  fi
   log "retrying once (freshly pulled fix loads on the second run)"
-  OUT="$("$HERMES_BIN" update --yes --gateway --branch "$BRANCH" 2>&1)"; CODE=$?
+  publish_stage "Retrying update"
+  select_update_invoke || { FINAL_CODE=3 FINAL_MSG="Updated installation launcher is missing; repair this installation."; exit 3; }
+  OUT="$("${UPDATE_INVOKE[@]}" update --yes $GATEWAY_FLAG $KEEP_STASH "${TARGET_ARGS[@]}" 2>&1)"; CODE=$?
   printf '%s\n' "$OUT" >> "$LOG" 2>/dev/null
   log "retry exit code: $CODE"
 fi
 trap 'on_signal TERM' TERM
 
-# Truthful completion: `hermes update` calls a GUI build failure non-fatal
-# (exit 0). For a Desktop-driven update that would relaunch the OLD build
-# and call it success -- retry the build once, propagate honestly.
-if [ "$CODE" -eq 0 ] && printf '%s' "$OUT" | grep -q "Desktop build failed"; then
+# Pre-PM update code could report a failed desktop build with exit zero.
+# Current composition propagates failure and never enters this legacy repair.
+if [ "$LEGACY_INSTALL" -eq 1 ] && [ "$CODE" -eq 0 ] && printf '%s' "$OUT" | grep -q "Desktop build failed"; then
   log "desktop build failed inside hermes update; retrying build"
-  "$HERMES_BIN" desktop --force-build --build-only >> "$LOG" 2>&1 || {
+  publish_stage "Rebuilding Desktop"
+  "${UPDATE_INVOKE[@]}" desktop --force-build --build-only >> "$LOG" 2>&1 || {
     FINAL_CODE=6 FINAL_MSG="Code and dependencies updated, but the Desktop app rebuild failed - you are running the previous build. Run hermes desktop --force-build from a terminal to retry."
     exit 6
   }
 fi
 
 if [ "$CODE" -eq 0 ]; then FINAL_CODE=0 FINAL_MSG="Update complete."
-else FINAL_CODE="$CODE" FINAL_MSG="Update failed (exit $CODE). Run hermes debug share in a terminal to send a report."; fi
+else
+  FINAL_CODE="$CODE" FINAL_MSG="Update failed (exit $CODE). Run hermes debug share in a terminal to send a report."
+  # The bricked-venv class is fixable and must not read as a generic exit 1:
+  # a dead interpreter with a failed/impossible heal means retrying can never
+  # succeed — tell the user what is actually wrong (#95759).
+  if [ "$LEGACY_INSTALL" -eq 1 ] && ! tcc_probe_python "$INSTALL_ROOT/venv/bin/python3" \
+      && ! tcc_probe_python "$INSTALL_ROOT/venv/bin/python"; then
+    FINAL_MSG="Update failed: the Python interpreter inside $INSTALL_ROOT/venv cannot start (heal state: $TCC_HEAL_STATE). Reinstall the runtime with the Hermes installer, or run hermes doctor --fix from a terminal if any hermes command still works."
+  fi
+fi
 exit "$FINAL_CODE"

@@ -215,7 +215,7 @@ test('startup reap rotates unprocessed records ahead of survivors so trailing or
 
   const ownership = createOwnership(store, {
     matchesParent: async entry => {
-      if (entry.pid !== live.parentPid || entry.parentStartMarker !== live.parentStartMarker) {
+      if (entry.parentPid !== live.parentPid || entry.parentStartMarker !== live.parentStartMarker) {
         return false
       }
 

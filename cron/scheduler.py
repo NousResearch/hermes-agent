@@ -2001,6 +2001,13 @@ def _run_agent_with_watchdog(
     return result
 
 
+# Set by ``_final_response_from_result`` for the run in flight, so the caller can downgrade an
+# iteration-limit fallback to a soft failure: the summary is still delivered, but the run is not
+# recorded as "ok".
+_ITER_LIMIT_FALLBACK: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "cron_iteration_limit_fallback", default=False)
+
+
 def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgent) -> str:
     """Deliverable final response from a ``run_conversation`` result. Raises RuntimeError on
     `failed=True`/`completed=False`: the error text may sit in `final_response` and would otherwise
@@ -2013,6 +2020,8 @@ def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgen
     turn_exit_reason = str(result.get("turn_exit_reason") or "")
     final_response_text = (result.get("final_response") or "").strip()
     max_iteration_summary = is_max_iteration_handoff(result)
+    # Hand a delivered-but-unfinished run down to the caller (see _ITER_LIMIT_FALLBACK).
+    _ITER_LIMIT_FALLBACK.set(max_iteration_summary)
     if result.get("failed") is True or (result.get("completed") is False and not max_iteration_summary):
         raise RuntimeError(result.get("error") or final_response_text or "agent reported failure")
     if max_iteration_summary:
@@ -3270,6 +3279,14 @@ def _run_one_job_body(
         if d.success and not final_response.strip():
             d.success = False
             d.error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
+
+        # A run that stopped at its iteration limit delivered a fallback summary, not the finished
+        # work: the text still goes out (it is a resumable handoff), but recording "ok" reported
+        # "nothing to see" for a job that did not do the thing.
+        if d.success and _ITER_LIMIT_FALLBACK.get():
+            d.success = False
+            d.error = ("Agent hit the iteration limit; the delivered text is a fallback, "
+                       "not evidence the work completed")
 
         if _fire_claim_ownership_lost():
             # #105861: the claim check is one sample; a miss AFTER a completed delivery must not

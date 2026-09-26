@@ -3406,15 +3406,6 @@ def request_review(
                     "(worker ownership) or force=True (explicit operator "
                     "override) instead of clearing the live run's claim",
                 )
-            if reviewer is None:
-                reviewer = _prior_reviewer(conn, task_id)
-                if reviewer is False:
-                    return _ret(
-                        False, "re-review has no durable reviewer provenance (the "
-                        "latest changes_requested event is missing or "
-                        "malformed); pass reviewer= explicitly",
-                    )
-            reviewer = _canonical_assignee(reviewer)
             # The actor is the run that did the work. ``assignee`` is the actor
             # only while a worker holds the card; on a never-claimed card it is
             # whoever the operator assigned -- possibly the reviewer itself,
@@ -3432,6 +3423,21 @@ def request_review(
                 implementer = arow["profile"] if arow else None
             if implementer is None and trow["assignee"] != reviewer:
                 implementer = trow["assignee"]
+            if reviewer is None:
+                prior_reviewer = _prior_reviewer(conn, task_id)
+                if prior_reviewer is False:
+                    return _ret(
+                        False, "re-review has no durable reviewer provenance (the "
+                        "latest changes_requested event is missing or "
+                        "malformed); pass reviewer= explicitly",
+                    )
+                reviewer = prior_reviewer if isinstance(prior_reviewer, str) else None
+            reviewer = _resolve_reviewer(reviewer, implementer=implementer)
+            if reviewer is None:
+                return _ret(
+                    False, "no valid reviewer profile is available; configure "
+                    "kanban.default_reviewer or create a Hermes profile",
+                )
             assignee_sql = ", assignee = ?" if reviewer is not None else ""
             run_guard = "" if expected_run_id is None else " AND current_run_id = ?"
             params: tuple[Any, ...] = (
@@ -3498,6 +3504,42 @@ def _prior_reviewer(conn: sqlite3.Connection, task_id: str):
 
 def _nonblank_str(value: Any) -> Optional[str]:
     return value if isinstance(value, str) and value.strip() else None
+
+
+def _resolve_reviewer(reviewer: Optional[str], *, implementer: Optional[str]) -> Optional[str]:
+    """Choose a dispatchable reviewer without breaking manual reviewer lanes.
+
+    A valid explicit reviewer wins. If the operator configured
+    ``kanban.default_reviewer``, it repairs an invalid explicit reviewer and is
+    used for omitted reviewers. Without that opt-in fallback, an explicit name
+    remains untouched for backward-compatible human-only review routing; an
+    omitted reviewer is selected deterministically from real profiles.
+    """
+    explicit = _canonical_assignee(reviewer)
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.profiles import list_profiles, profile_exists
+    except Exception:
+        return explicit
+
+    def valid(value: Any) -> Optional[str]:
+        candidate = _canonical_assignee(value)
+        return candidate if candidate and profile_exists(candidate) else None
+
+    try:
+        configured = valid((load_config() or {}).get("kanban", {}).get("default_reviewer"))
+    except Exception:
+        configured = None
+    if explicit:
+        return explicit if valid(explicit) or configured is None else configured
+    if configured:
+        return configured
+    candidates = sorted(
+        filter(None, (valid(getattr(profile, "name", None)) for profile in list_profiles()))
+    )
+    if not candidates:
+        return None
+    return next((name for name in candidates if name != implementer), candidates[0])
 
 
 def request_changes(

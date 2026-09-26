@@ -179,7 +179,19 @@ class MicroCompactionMixin:
         # history we lack.
         entry = next((e for e in reversed(messages) if _is_micro_marker(e)), None)
         if entry is not None:
-            entry["content"] = self._render_micro_marker_content(fresh_summary)
+            live = self._strip_context_summary_handoff_message(entry)
+            if live is None:
+                entry["content"] = self._render_micro_marker_content(fresh_summary)
+            else:
+                # Rehydration absorbed the summary, not the carrier's live payload.
+                if entry.get(_cc()._DB_PERSISTED_MARKER):
+                    # The archived original remains the display copy of this payload.
+                    entry["display_metadata"] = {**(entry.get("display_metadata") or {}),
+                                                 _cc().MODEL_ONLY_DISPLAY_METADATA_KEY: True}
+                entry["content"] = live.get("content")
+                self._merge_summary_into_tail_row(
+                    entry, self._with_summary_prefix(fresh_summary), entry["role"], False,
+                )
             # Content changed: clear the persisted stamp so the DB sync rewrites the row. An
             # in-place pop on a live dict would be identity-skipped by the bounded flush scan;
             # flag the finalizer.
@@ -468,7 +480,20 @@ class MicroCompactionMixin:
         # it has MICRO_COMPACT_MARKER_KEY (provably absorbed); a batch marker holds MORE history.
         stale = [i for i, m in enumerate(result) if _is_micro_marker(m)][:-1] if supersede else []
         if stale:
-            result = self._merge_adjacent_user_turns([m for i, m in enumerate(result) if i not in stale])
+            retained = []
+            for i, message in enumerate(result):
+                if i in stale:
+                    message = self._strip_context_summary_handoff_message(message)
+                    if message is None:
+                        continue
+                    message.pop(cc.MICRO_COMPACT_MARKER_KEY, None)
+                    if message.get(cc._DB_PERSISTED_MARKER):
+                        message["display_metadata"] = {**(message.get("display_metadata") or {}),
+                                                       cc.MODEL_ONLY_DISPLAY_METADATA_KEY: True}
+                    message.pop(cc._DB_PERSISTED_MARKER, None)
+                    cc.drop_stale_api_content(message)
+                retained.append(message)
+            result = self._merge_adjacent_user_turns(retained)
 
         # Deliberately no _strip_persistence_markers: micro archives in place under the same session
         # id, so stamps stay accurate and a failed archive keeps the append-only flush idempotent.

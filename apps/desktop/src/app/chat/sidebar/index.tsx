@@ -307,7 +307,7 @@ function searchResultToSession(result: SessionSearchResult): SessionInfo {
     preview: stripFtsMarkers(result.snippet ?? '').trim() || null,
     source: result.source ?? null,
     started_at: ts,
-    title: null,
+    title: result.title?.trim() || null,
     tool_call_count: 0
   }
 }

@@ -60,6 +60,19 @@ class _FakeSessionDB:
             )
         ][:limit]
 
+    def search_sessions_by_title(
+        self,
+        query,
+        limit=20,
+        include_archived=True,
+        source=None,
+        sources=None,
+        exclude_sources=None,
+    ):
+        assert query == "20260603"
+        assert include_archived is True
+        return []
+
     def search_messages(
         self,
         query,
@@ -171,3 +184,77 @@ def test_desktop_session_search_stamps_the_requested_profile(monkeypatch):
         (row["profile"], row["is_default_profile"])
         for row in response["results"]
     } == {("worker", False)}
+
+
+class _FakeTitleSessionDB(_FakeSessionDB):
+    """The title/channel lane ranks between id matches and FTS content hits."""
+
+    title_lane_sources = None
+
+    def search_sessions_by_id(self, query, limit=20, **_kw):
+        return []
+
+    def search_sessions_by_title(
+        self,
+        query,
+        limit=20,
+        include_archived=True,
+        source=None,
+        sources=None,
+        exclude_sources=None,
+    ):
+        assert query == "portal"
+        assert include_archived is True
+        type(self).title_lane_sources = (source, sources, exclude_sources)
+        return [
+            {
+                "id": "titled_session",
+                "title": "DNS Portal Investigation",
+                "display_name": "Ops / #infra",
+                "preview": "first user message",
+                "source": "discord",
+                "model": "claude",
+                "started_at": 300,
+                "last_active": 350,
+            }
+        ]
+
+    def search_messages(self, query, source_filter=None, exclude_sources=None, limit=20, fields=None):
+        assert query == "portal*"
+        return [
+            # Content hit on the session the title lane already surfaced: deduped.
+            {
+                "session_id": "titled_session",
+                "snippet": "portal mentioned in content",
+                "role": "user",
+                "source": "discord",
+                "model": "claude",
+                "session_started": 300,
+            },
+            {
+                "session_id": "content_only",
+                "snippet": "another portal content hit",
+                "role": "assistant",
+                "source": "cli",
+                "model": "gpt",
+                "session_started": 400,
+            },
+        ]
+
+
+def test_desktop_session_search_ranks_title_matches_before_content_matches(monkeypatch):
+    monkeypatch.setattr("hermes_state.SessionDB", _FakeTitleSessionDB)
+
+    response = asyncio.run(
+        _rt_sessions.search_sessions(q="portal", limit=5, exclude_sources="cron")
+    )
+
+    results = response["results"]
+    assert [r["session_id"] for r in results] == ["titled_session", "content_only"]
+    assert results[0]["title"] == "DNS Portal Investigation"
+    assert results[0]["display_name"] == "Ops / #infra"
+    assert results[0]["snippet"] == "first user message"
+    assert results[0]["role"] is None
+    assert results[0]["last_active"] == 350
+    # The source filters reach the title lane like they reach the id lane.
+    assert _FakeTitleSessionDB.title_lane_sources == (None, None, ["cron"])

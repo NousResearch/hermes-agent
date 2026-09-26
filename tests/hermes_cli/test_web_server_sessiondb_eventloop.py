@@ -80,6 +80,9 @@ class _ReadDB:
     def search_sessions_by_id(self, q, **_kw):
         return self._hit([{"id": "sess-1", "preview": "hello", "started_at": 1.0}])
 
+    def search_sessions_by_title(self, q, **_kw):
+        return self._hit([])
+
     def search_messages(self, **_kw):
         return self._hit([])
 

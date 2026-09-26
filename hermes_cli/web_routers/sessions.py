@@ -280,7 +280,7 @@ def _is_compression_edge(child: dict, parent: dict) -> bool:
 async def search_sessions(
     q: str = "", limit: int = 20, profile: Optional[str] = None, source: str = None,
     sources: str = None, exclude_sources: str = None):
-    """Search sessions by ID (first) plus FTS5 message content.
+    """Search sessions by ID (first), title / channel / platform, then FTS5 message content.
 
     Results are deduped by compression lineage, not raw ``session_id``:
     auto-compression rotates a chat onto a fresh id and leaves the old segment
@@ -398,6 +398,20 @@ async def search_sessions(
                 preview = (row.get("preview") or "").strip()
                 snippet = preview or f"Session ID: {sid}"
                 add_lineage_result(sid, hit_payload(row, snippet, None, row.get("started_at")))
+
+            # Title / channel / platform matches next: a title is human-assigned intent and
+            # ``display_name`` carries a messaging session's server/channel/thread names, so
+            # these outrank message-content hits, and a titled session stays findable after it
+            # scrolls out of the client's loaded list.
+            for row in db.search_sessions_by_title(
+                q, limit=safe_limit, include_archived=True, source=source_filter,
+                sources=source_list or None, exclude_sources=exclude_list or None):
+                title = (row.get("title") or "").strip()
+                display_name = (row.get("display_name") or "").strip()
+                snippet = (row.get("preview") or "").strip() or title or display_name
+                payload = hit_payload(row, snippet, None, row.get("started_at"))
+                payload.update({"title": title or None, "display_name": display_name or None})
+                add_lineage_result(row.get("id"), payload)
 
             # Prefix wildcards so partial words match ("nimb" -> "nimb*");
             # quoted phrases and existing wildcards are kept as-is.

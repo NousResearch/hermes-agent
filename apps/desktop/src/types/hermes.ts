@@ -1307,6 +1307,10 @@ export interface SessionSearchResult {
   session_started: number | null
   snippet: string
   source: string | null
+  /** Session title (rich-row backed hits and the title/channel lane). */
+  title?: string | null
+  /** Messaging server/channel/thread path when the title/channel lane matched it. */
+  display_name?: string | null
 }
 
 export interface SessionSearchResponse {

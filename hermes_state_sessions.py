@@ -86,6 +86,23 @@ _PREVIEW_COL_SQL = f"""COALESCE(
                     ) AS _preview_raw"""
 
 
+# Platform names + common aliases -> ``sessions.source`` ids, so session search
+# reads a token like "discord" or "tg" as platform intent. Mirrors SOURCE_LABELS /
+# SOURCE_ALIASES in apps/desktop/src/lib/session-source.ts (generic aliases such as
+# "app" or "terminal" are left out: they would boost a whole platform on a common word).
+_PLATFORM_SEARCH_ALIASES: Dict[str, Tuple[str, ...]] = {
+    "api_server": ("api_server",), "bluebubbles": ("bluebubbles",), "cli": ("cli",),
+    "codex": ("codex",), "desktop": ("desktop",), "dingtalk": ("dingtalk",),
+    "discord": ("discord",), "email": ("email",), "feishu": ("feishu",),
+    "homeassistant": ("homeassistant",), "imessage": ("bluebubbles", "photon"),
+    "matrix": ("matrix",), "mattermost": ("mattermost",), "photon": ("photon",),
+    "qq": ("qqbot",), "qqbot": ("qqbot",), "signal": ("signal",), "slack": ("slack",),
+    "sms": ("sms",), "telegram": ("telegram",), "tg": ("telegram",), "tui": ("tui",),
+    "wa": ("whatsapp",), "webhook": ("webhook",), "wechat": ("weixin",), "wecom": ("wecom",),
+    "weixin": ("weixin",), "whatsapp": ("whatsapp",), "yuanbao": ("yuanbao",),
+}
+
+
 def _where_sql(clauses: List[str], lead: str = "") -> str:
     """``WHERE a AND b`` (with *lead* prefix) or "" when there are no clauses."""
     return f"{lead}WHERE {' AND '.join(clauses)}" if clauses else ""
@@ -1246,6 +1263,91 @@ class SessionSessionsMixin:
         s["preview"] = _shape_preview(s.pop("_preview_raw", ""))
         s.pop("_effective_last_active", None)
         return s
+
+    def search_sessions_by_title(
+        self, query: str, limit: int = 20, include_archived: bool = True, source: str = None,
+        sources: List[str] = None, exclude_sources: List[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Search listable sessions by title, channel/thread name (``display_name``) and platform.
+
+        Titles are human-assigned intent (``/title``, desktop rename, auto-titling) and
+        ``display_name`` carries a messaging session's server/channel/thread path, so these hits
+        should outrank message-content hits. Matching is per whitespace token: a token counts when
+        it is a substring of the title or display path, or names the row's platform
+        (``_PLATFORM_SEARCH_ALIASES``). Rows matching more tokens rank first; ties break on where
+        the best match landed (whole-query title exact > prefix > substring > token in title >
+        token in display path > platform only), then recency. Visibility matches the sidebar:
+        sub-agent runs, compression continuations and hidden rows are excluded, and only rows with
+        a title or display path are candidates.
+        """
+        needle = " ".join((query or "").lower().split())
+        if not needle or limit <= 0:
+            return []
+        tokens = needle.split()
+        where, params = _session_filter_where(
+            exclude_children=True, source=source, sources=sources, exclude_sources=exclude_sources,
+            include_archived=include_archived,
+        )
+        where += [
+            "s.hidden = 0",
+            "(COALESCE(TRIM(s.title), '') != '' OR COALESCE(TRIM(s.display_name), '') != '')",
+        ]
+        text_clauses: List[str] = []
+        text_params: List[Any] = []
+        for tok in tokens:
+            pattern = f"%{_escape_like(tok)}%"
+            text_clauses += [
+                "LOWER(COALESCE(s.title, '')) LIKE ? ESCAPE '\\'",
+                "LOWER(COALESCE(s.display_name, '')) LIKE ? ESCAPE '\\'",
+            ]
+            text_params += [pattern, pattern]
+        text_hit = f"({' OR '.join(text_clauses)})"
+        platform_sources = sorted(
+            {src for tok in tokens for src in _PLATFORM_SEARCH_ALIASES.get(tok, ())})
+        if platform_sources:
+            where.append(
+                f"({text_hit} OR s.source IN ({_session_ids_placeholders(platform_sources)}))")
+            params += text_params + platform_sources
+        else:
+            where.append(text_hit)
+            params += text_params
+        # SQL only narrows (text hits before platform-only rows, then recency); Python ranks.
+        rows = self._read_all(
+            f"SELECT s.id, s.title, s.display_name, s.source, s.model, s.started_at, "
+            f"{_sql_session_last_active('s')} AS last_active, {_PREVIEW_COL_SQL} "
+            f"FROM sessions s {_where_sql(where)} "
+            f"ORDER BY CASE WHEN {text_hit} THEN 0 ELSE 1 END, s.started_at DESC, s.id DESC LIMIT ?",
+            params + text_params + [max(limit * 8, 80)],
+        )
+
+        def rank(item: Tuple[int, sqlite3.Row]) -> Tuple[int, int, int]:
+            index, row = item
+            title = " ".join((row["title"] or "").lower().split())
+            display = (row["display_name"] or "").lower()
+            row_source = (row["source"] or "").lower()
+            matched, tier = 0, 6
+            for tok in tokens:
+                tiers = [t for t, hit in (
+                    (3, tok in title), (4, tok in display),
+                    (5, row_source in _PLATFORM_SEARCH_ALIASES.get(tok, ())),
+                ) if hit]
+                if tiers:
+                    matched += 1
+                    tier = min(tier, *tiers)
+            if title == needle:
+                tier = 0
+            elif title.startswith(needle):
+                tier = 1
+            elif needle in title:
+                tier = 2
+            return (-matched, tier, index)
+
+        out: List[Dict[str, Any]] = []
+        for _, row in sorted(enumerate(rows), key=rank)[:limit]:
+            d = dict(row)
+            d["preview"] = _shape_preview(d.pop("_preview_raw", ""))
+            out.append(d)
+        return out
 
     def list_sessions_rich(
         self, source: str = None, sources: List[str] = None, exclude_sources: List[str] = None,

@@ -4973,6 +4973,77 @@ class TestSessionIdSearch:
         assert [s["id"] for s in db.search_sessions_by_id("ABCD12")] == ["20260603_090200_abcd12"]
 
 
+class TestSessionTitleSearch:
+    """Title / channel / platform lane of the session search endpoint."""
+
+    def _seed(self, db, sid, *, title=None, display_name=None, source="cli", started_at=None):
+        db.create_session(session_id=sid, source=source, model="test-model")
+        db.append_message(session_id=sid, role="user", content=f"first message of {sid}")
+        if title is not None:
+            db.set_session_title(sid, title)
+        if display_name is not None or started_at is not None:
+            db._conn.execute(
+                "UPDATE sessions SET display_name = COALESCE(?, display_name),"
+                " started_at = COALESCE(?, started_at) WHERE id = ?",
+                (display_name, started_at, sid),
+            )
+            db._conn.commit()
+
+    def test_ranks_exact_then_prefix_then_substring_case_insensitively(self, db):
+        self._seed(db, "sub", title="About deploy stuff", started_at=300)
+        self._seed(db, "pre", title="Deploy pipeline", started_at=200)
+        self._seed(db, "exact", title="Deploy", started_at=100)
+        self._seed(db, "other", title="Unrelated", started_at=400)
+
+        hits = db.search_sessions_by_title("DEPLOY")
+        assert [h["id"] for h in hits] == ["exact", "pre", "sub"]
+        assert hits[0]["title"] == "Deploy"
+        assert hits[0]["preview"] == "first message of exact"
+
+    def test_matches_channel_path_and_platform_per_token(self, db):
+        self._seed(db, "thread", title="Pin-Sync Bug Recovery", source="discord",
+                   display_name="Daemonarchy / #voice-assitant / Desktop App", started_at=100)
+        self._seed(db, "titled", title="Voice pipeline design", source="cli", started_at=200)
+        self._seed(db, "platform_only", title="Groceries", source="discord", started_at=300)
+        self._seed(db, "miss", title="Errands", source="telegram", started_at=400)
+
+        ids = [h["id"] for h in db.search_sessions_by_title("voice discord")]
+        # Both tokens (channel + platform) beat one token; a title token beats a
+        # platform-only row; the telegram row matches nothing.
+        assert ids == ["thread", "titled", "platform_only"]
+        assert [h["id"] for h in db.search_sessions_by_title("tg")] == ["miss"]
+
+    def test_excludes_untitled_hidden_subagent_and_filtered_rows(self, db):
+        self._seed(db, "untitled")  # no title, no display path
+        self._seed(db, "parent", title="Visible needle session")
+        db.create_session(session_id="child", source="cli", parent_session_id="parent",
+                          model_config={"_delegate_from": "parent"})
+        db.set_session_title("child", "Hidden needle child")
+        self._seed(db, "hidden", title="Hidden needle row")
+        db._conn.execute("UPDATE sessions SET hidden = 1 WHERE id = 'hidden'")
+        db._conn.commit()
+        self._seed(db, "cron_run", title="Cron needle", source="cron")
+
+        assert [h["id"] for h in db.search_sessions_by_title("needle", exclude_sources=["cron"])] == [
+            "parent"]
+        assert [h["id"] for h in db.search_sessions_by_title("needle", source="cron")] == ["cron_run"]
+        # A platform-only query still requires human-facing text (title or display path).
+        cli_ids = {h["id"] for h in db.search_sessions_by_title("cli")}
+        assert "parent" in cli_ids and "untitled" not in cli_ids
+
+    def test_like_wildcards_are_literal_and_empty_query_is_empty(self, db):
+        self._seed(db, "pct", title="100% coverage plan")
+        self._seed(db, "digits", title="1000 things")
+        self._seed(db, "under", title="a_b notes")
+        self._seed(db, "plain", title="axb notes")
+
+        assert [h["id"] for h in db.search_sessions_by_title("100%")] == ["pct"]
+        assert [h["id"] for h in db.search_sessions_by_title("a_b")] == ["under"]
+        assert db.search_sessions_by_title("") == []
+        assert db.search_sessions_by_title("   ") == []
+        assert db.search_sessions_by_title("plan", limit=0) == []
+
+
 
 
 

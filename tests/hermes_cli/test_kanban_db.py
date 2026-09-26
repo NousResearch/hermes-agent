@@ -1570,6 +1570,55 @@ def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
 
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX source launcher is a shell shim")
+def test_resolve_hermes_argv_uses_checkout_shim_for_isolated_source_launcher(tmp_path, monkeypatch):
+    """An isolated source launcher imports in-process but its child cannot `-m` that module."""
+    import shlex
+    import subprocess
+    import sys
+    import types
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    package = tmp_path / "hermes_cli"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "main.py").write_text("def main(): print('source-shim-ok')\n", encoding="utf-8")
+    shim = tmp_path / ".hermes" / "bin" / "hermes"
+    shim.parent.mkdir(parents=True)
+    command = (f"import sys; sys.path.insert(0, {str(tmp_path)!r}); "
+               "from hermes_cli.main import main; main()")
+    shim.write_text(
+        "#!/bin/sh\nexec " + shlex.quote(sys.executable) + " -I -c " + shlex.quote(command) + " \"$@\"\n",
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    monkeypatch.setattr(kbd, "__file__", str(package / "kanban_db_dispatch.py"))
+    monkeypatch.setattr(kbd, "sys", types.SimpleNamespace(
+        executable=sys.executable,
+        flags=types.SimpleNamespace(isolated=1),
+    ))
+    monkeypatch.delenv("HERMES_BIN", raising=False)
+    argv = kbd._resolve_hermes_argv()
+    result = subprocess.run(argv, cwd=str(tmp_path.parent), capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "source-shim-ok"
+    assert argv == [str(shim)]
+
+
+def test_resolve_hermes_argv_isolated_without_checkout_shim_keeps_module_fallback(tmp_path, monkeypatch):
+    import sys
+    import types
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    monkeypatch.setattr(kbd, "__file__", str(tmp_path / "hermes_cli" / "kanban_db_dispatch.py"))
+    monkeypatch.setattr(kbd, "sys", types.SimpleNamespace(
+        executable=sys.executable,
+        flags=types.SimpleNamespace(isolated=1),
+    ))
+    monkeypatch.delenv("HERMES_BIN", raising=False)
+    assert kbd._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
+
+
 def test_resolve_hermes_argv_module_actually_runs():
     """The fallback module name must be importable + runnable.
 

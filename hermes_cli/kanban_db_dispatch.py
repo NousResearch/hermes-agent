@@ -2534,12 +2534,13 @@ def _hermes_path_argv(path: str) -> list[str]:
 def _resolve_hermes_argv() -> list[str]:
     """Resolve the ``hermes`` invocation as argv for ``Popen``: ``$HERMES_BIN``
     (path-like -> absolute; bare names keep PATH semantics, never a
-    same-directory file), then the running interpreter's ``sys.executable -m
-    hermes_cli.main`` (exactly this install; also covers shim-less cron,
-    systemd ``User=``, launchd), then ``which("hermes")`` (Windows: safe PATH
-    search, batch shims fall back to the module form) only when ``hermes_cli``
-    is not importable. The module argv must win over PATH: a PATH-first lookup
-    lets an attacker-planted ``hermes`` shadow the running install (#111569).
+    same-directory file), then this checkout's trusted POSIX source shim when
+    the running process uses isolated Python, then ``sys.executable -m
+    hermes_cli.main`` (exactly this install for ordinary interpreters), then
+    ``which("hermes")`` only when ``hermes_cli`` is not importable. The module
+    form must win over PATH: a PATH-first lookup lets an attacker-planted
+    ``hermes`` shadow the running install (#111569). Isolated source launchers
+    insert the checkout into their own sys.path; a child ``-m`` loses it.
     Mirrors ``gateway.run._resolve_hermes_bin``; local because ``hermes_cli``
     sits below ``gateway`` in the dependency order.
     """
@@ -2557,6 +2558,13 @@ def _resolve_hermes_argv() -> list[str]:
 
     try:
         if importlib.util.find_spec("hermes_cli") is not None:
+            # The source launcher uses `python -I -c` and inserts this checkout
+            # into sys.path in-process. A child `python -m` cannot inherit that
+            # insertion, so invoke this checkout's own shim instead.
+            if os.name == "posix" and sys.flags.isolated:
+                source_shim = Path(__file__).resolve().parents[1] / ".hermes" / "bin" / "hermes"
+                if source_shim.is_file() and os.access(source_shim, os.X_OK):
+                    return [str(source_shim)]
             return _module_hermes_argv()
     except Exception:
         pass

@@ -591,7 +591,7 @@ def _command_script_path(command: str) -> str:
     except ValueError:
         return command
     return (next((p for p in parts if p.lower().endswith(_SCRIPT_EXTENSIONS)), None)
-            or next((p for p in parts if "/" in p or p.startswith("~")), None) or parts[0])
+            or next((p for p in parts if "/" in p or os.sep in p or p.startswith("~")), None) or parts[0])
 
 
 def _resolve_effective_accept(cfg: Dict[str, Any], accept_hooks_arg: bool) -> bool:

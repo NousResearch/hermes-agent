@@ -62,6 +62,19 @@ class TestShellHooksWindowsPaths:
             f"python {script}"
         )
 
+    @pytest.mark.platforms("windows")
+    def test_interpreter_prefixed_backslash_path_is_the_script(self, tmp_path):
+        """A backslash path with an extension outside the script list (``.ps1``) is still the
+        path-like token, so the approval mtime and the runnable check see the real file."""
+        from agent.shell_hooks import script_is_executable, script_mtime_iso
+
+        script = tmp_path / "guard.ps1"
+        script.write_text("exit 0\n", encoding="utf-8")
+        command = f"powershell -NoProfile -File {script}"
+
+        assert script_mtime_iso(command) == script_mtime_iso(str(script)) is not None
+        assert script_is_executable(command)
+
 
 class TestWindowsMarketingVersion:
     """#51755 — Windows 11 must not be reported as Windows 10."""

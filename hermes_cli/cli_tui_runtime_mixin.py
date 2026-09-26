@@ -54,6 +54,7 @@ class CLITuiRuntimeMixin:
             lambda: self._drain_process_notifications("cli-idle"),
             self._maybe_fire_loop_tick,
             self._maybe_resume_parked_goal,
+            self._maybe_start_native_turn,
         ):
             with suppress(Exception):
                 step()
@@ -449,6 +450,10 @@ class CLITuiRuntimeMixin:
         """Teardown after the app exits: interrupt agent, stop voice/pet, persist + close session, cleanup, exit summary."""
         from cli import _DIM, _RST, _cprint, _invoke_interrupted_session_end, _run_cleanup, set_approval_callback, set_secret_capture_callback, set_sudo_password_callback
         self._should_exit = True
+        # Fence native turn sources (e.g. coordination wake) before identity rotates, so a
+        # pending outer wake is canceled rather than delivered into a closing session.
+        with suppress(Exception):
+            self._fence_native_turn_sources("session close")
         self._pet_stop_anim()
         # Without this line the terminal sits silent through the whole cleanup window.
         with suppress(Exception):

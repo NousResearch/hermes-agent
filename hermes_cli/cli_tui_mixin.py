@@ -1003,6 +1003,8 @@ class CLITuiMixin:
             self._attached_images.clear()
             event.app.invalidate()
         else:
+            with suppress(Exception):
+                self._fence_native_turn_sources("user_exit")
             self._should_exit = True
             event.app.exit()
 
@@ -1024,11 +1026,15 @@ class CLITuiMixin:
         if self._agent_running and self.agent:
             if now - self._last_ctrl_c_time < 2.0:
                 print("\n⚡ Force exiting...")
+                with suppress(Exception):
+                    self._fence_native_turn_sources("user_exit")
                 self._should_exit = True
                 event.app.exit()
                 return
             self._last_ctrl_c_time = now
             print("\n⚡ Interrupting agent... (press Ctrl+C again to force exit)")
+            with suppress(Exception):
+                self._fence_native_turn_sources("user_stop")
             request_hard_interrupt(self.agent)
         else:
             self._tui_clear_or_exit(event)
@@ -1046,6 +1052,8 @@ class CLITuiMixin:
             return
         if self._agent_running and self.agent:
             print("\n⚡ Interrupting agent...")
+            with suppress(Exception):
+                self._fence_native_turn_sources("user_stop")
             request_hard_interrupt(self.agent)
         else:
             self._tui_clear_or_exit(event)

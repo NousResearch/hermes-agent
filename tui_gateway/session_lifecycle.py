@@ -494,6 +494,15 @@ def _pop_session_by_id(sid: str) -> dict | None:
     """Atomically detach one live session from the registry — the ownership claim for teardown (a concurrent
     close/reaper no-ops). Separate from ``_teardown_session``: slow finalization must not run under the resume lock."""
     with _sessions_lock:
+        session = _sessions.get(sid)
+        if session is not None and str(getattr(session.get("agent"), "session_id", "") or ""):
+            # Fence source-owned events synchronously while this exact identity
+            # and ownership lease are still registered.  Detaching first would
+            # leave an admission race between close/new/switch and poll.
+            try:
+                _fence_tui_native_session(sid, session, "session_close")
+            except Exception:
+                logger.warning("Native turn source boundary fence failed", exc_info=True)
         session = _sessions.pop(sid, None)
         if session is not None:
             from hermes_constants import get_hermes_home

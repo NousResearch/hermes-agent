@@ -7,6 +7,8 @@ inside each method (``from cli import ...``) — never at module load time (impo
 
 from __future__ import annotations
 
+from hermes_cli.cli_native_turn_mixin import fence_native_turn_sources_for
+
 import contextlib
 import os
 import shutil
@@ -493,6 +495,9 @@ class CLISessionMixin:
             CLI_CONFIG, _parse_service_tier_config,
             _sync_process_session_id, datetime)
         from hermes_cli.cli_model_switch_mixin import _resolve_cli_reasoning
+        # Fence native turn sources before the identity rotates: a pending outer wake must
+        # not be delivered into the new session.
+        fence_native_turn_sources_for(self, "new_session")
         old_session_id = self.session_id
         _boundary_snapshot = None
         if self.agent:

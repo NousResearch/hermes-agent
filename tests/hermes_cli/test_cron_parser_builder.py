@@ -46,6 +46,45 @@ def test_email_subject_policy_is_available_on_create_and_edit():
     assert parser.parse_args(["cron", "edit", "job-id"]).email_subject_policy is None
 
 
+def test_email_subject_policy_flows_through_cli_create_and_edit(monkeypatch, capsys):
+    import hermes_cli.cron as cron_cli
+    from cron import jobs
+
+    calls = []
+
+    def api(**kwargs):
+        calls.append(kwargs)
+        if kwargs["action"] == "create":
+            return {
+                "success": True, "job_id": "job-1", "name": "Service report",
+                "schedule": "every day", "skills": [], "next_run_at": "later",
+                "job": {"enabled": True},
+            }
+        return {
+            "success": True,
+            "job": {"job_id": "job-1", "name": "Service report", "schedule": "every day", "skills": []},
+        }
+
+    monkeypatch.setattr(cron_cli, "_cron_api", api)
+    monkeypatch.setattr(cron_cli, "_warn_if_gateway_not_running", lambda: None)
+    monkeypatch.setattr(jobs, "resolve_job_ref", lambda _ref: {"id": "job-1", "skills": []})
+    parser = _build()
+
+    create_args = parser.parse_args([
+        "cron", "create", "every day", "Summarize status", "--name", "Service report",
+        "--email-subject-policy", "report",
+    ])
+    assert cron_cli.cron_create(create_args) == 0
+    assert calls[-1]["email_subject_policy"] == "report"
+
+    edit_args = parser.parse_args([
+        "cron", "edit", "job-1", "--email-subject-policy", "legacy",
+    ])
+    assert cron_cli.cron_edit(edit_args) == 0
+    assert calls[-1]["email_subject_policy"] == "legacy"
+    capsys.readouterr()
+
+
 def test_cron_accept_hooks_flag_on_run_and_tick():
     parser = _build()
     # --accept-hooks is suppressed-default; present only when passed.

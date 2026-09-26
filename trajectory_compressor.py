@@ -21,6 +21,8 @@ import hermes_yaml as yaml
 import logging
 import asyncio
 from pathlib import Path
+
+from agent.compression_marker import elide_middle
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -401,7 +403,7 @@ class TrajectoryCompressor:
             turn = trajectory[i]
             value = turn.get("value", "")
             if len(value) > 3000:
-                value = value[:1500] + "\n...[truncated]...\n" + value[-500:]
+                value = elide_middle(value, 1500, 500)
             parts.append(f"[Turn {i} - {turn.get('from', 'unknown').upper()}]:\n{value}")
         return "\n\n".join(parts)
 

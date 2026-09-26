@@ -22,6 +22,43 @@ _COMPRESSION_MARKER_TEMPLATE = (
     "output — always write full, untruncated content.⟫"
 )
 
+
+# Every other model-visible elision uses the same counted marker, while omitting the
+# tool-call-specific second sentence so it still fits small renderer caps.
+_ELISION_MARKER_TEMPLATE = (
+    _COMPRESSION_MARKER_PREFIX
+    + " {omitted:,} of {total:,} chars omitted here by Hermes's context compressor.⟫"
+)
+
+
+def _elision_marker(omitted: int, total: int) -> str:
+    return _ELISION_MARKER_TEMPLATE.format(omitted=omitted, total=total)
+
+
+def elide(text: str, limit: int) -> str:
+    """Cap ``text`` at ``limit`` chars; return the marker alone if it cannot fit."""
+    if not isinstance(limit, int) or limit <= 0:
+        raise ValueError("limit must be a positive integer")
+    if len(text) <= limit:
+        return text
+    total = len(text)
+    head_len = limit - len(_elision_marker(omitted=total, total=total))
+    if head_len <= 0:
+        return _elision_marker(omitted=total, total=total)
+    kept = text[:head_len].rstrip()
+    return kept + _elision_marker(omitted=total - len(kept), total=total)
+
+
+def elide_middle(text: str, head: int, tail: int) -> str:
+    """Keep the head and tail while marking the omitted middle as non-original."""
+    if head < 0 or tail < 0:
+        raise ValueError("head and tail must be non-negative")
+    if len(text) <= head + tail:
+        return text
+    marker = _elision_marker(omitted=len(text) - head - tail, total=len(text))
+    return text[:head] + marker + (text[-tail:] if tail else "")
+
+
 # A minted marker (prefix + rendered counts through the first sentence). The prefix alone
 # does not match, so source/docs that mention the constant can still be edited.
 _COMPRESSION_MARKER_RE = re.compile(

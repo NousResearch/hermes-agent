@@ -1063,6 +1063,32 @@ class TestFTS5Search:
 
 
 
+    def test_lowercase_interior_operators_are_uppercased(self):
+        """FTS5 only honours uppercase operators; ``python or rust`` must not
+        search for the literal word "or"."""
+        from hermes_state import SessionDB
+        s = SessionDB._sanitize_fts5_query
+        assert s('python or rust') == 'python OR rust'
+        assert s('python and rust') == 'python AND rust'
+        # Lowercase "not" is usually prose; it must not become an exclusion.
+        assert s('tests do not pass') == 'tests do not pass'
+        assert s('python NOT java') == 'python NOT java'
+        # Quoted phrases keep their words verbatim.
+        assert s('"cats or dogs" or fish') == '"cats or dogs" OR fish'
+        # Stacked operators are not "between terms"; left untouched.
+        assert s('python or or rust') == 'python or or rust'
+
+    def test_lowercase_or_matches_either_term(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="I write python daily")
+        db.append_message("s1", role="assistant", content="rust is memory safe")
+        db.append_message("s1", role="user", content="java is verbose")
+
+        snippets = [r["snippet"] for r in db.search_messages("python or rust")]
+        assert len(snippets) == 2
+        assert any("python" in s for s in snippets)
+        assert any("rust" in s for s in snippets)
+
     def test_long_search_query_is_capped_and_does_not_crash(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="user", content="bounded sanitizer target")

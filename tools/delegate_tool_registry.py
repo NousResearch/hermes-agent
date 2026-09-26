@@ -25,6 +25,40 @@ _active_subagents: Dict[str, Dict[str, Any]] = {}
 _RECENT_SUBAGENTS_CAP = 200
 _recent_subagents: Dict[str, Dict[str, Any]] = {}
 
+# Per-parent-session circuit breaker for delegate_task control actions whose
+# target subagent no longer exists or has closed steering. The original bug
+# (#94858) was the model repeatedly calling delegate_task(action='steer',
+# subagent_id='sa-0-X') against an already-finished child; the tool kept
+# returning a recoverable-looking error ("No live subagent 'sa-0-X' ...")
+# and the model kept retrying, burning tokens and CPU until the operator
+# killed the gateway. The fix has two halves:
+#   1. The control-path error is always marked non-retryable (recoverable=False
+#      + an explicit "do not retry" hint) so a well-behaved model stops on
+#      the first failure.
+#   2. This counter tracks how many times the SAME parent-session has failed
+#      against the SAME subagent_id; once the count exceeds
+#      _STALE_SUBAGENT_RETRY_LIMIT, every further attempt short-circuits with
+#      an obvious "you are in a retry loop" message that names the loop and
+#      points at action='list' as the alternative. This catches the actual
+#      misbehaving model that ignored the recoverable=False marker.
+#
+# Keyed by (parent_session_id, subagent_id) so siblings and grandchildren
+# don't share state, and the live agent object identity isn't required (a
+# parent-agent rebuild in the CLI mid-session would orphan anything keyed on
+# the AIAgent instance). Cleared automatically when the child re-registers
+# (a recycled public id maps to a new run) because we look it up at every
+# call rather than caching success counts.
+_dead_subagent_hits: Dict[tuple, int] = {}
+_dead_subagent_hits_lock = threading.Lock()
+# Bound is intentionally small: one transient miss is plausible, two is
+# already suspicious, three is a loop. The model is given no slack past three.
+_STALE_SUBAGENT_RETRY_LIMIT = 3
+# Ceiling on live breaker keys. Only reached by a session that keeps meeting
+# brand-new dead ids; eviction then prefers non-tripped keys (see
+# _record_dead_subagent_hit) so an already-tripped breaker is never laundered.
+_DEAD_SUBAGENT_HITS_CAP = 1024
+
+
 def get_subagent_attribution(task_id: Optional[str]) -> Optional[Dict[str, Any]]:
     """``{subagent_id, goal, delegation_id}`` for a process task_id that belongs to a live or recently-finished child
     (children run their terminal sessions under ``task_id == subagent_id``), else None."""
@@ -54,6 +88,19 @@ def _register_subagent(record: Dict[str, Any]) -> None:
     record.setdefault("accepting_steer", True)
     with _active_subagents_lock:
         _active_subagents[sid] = record
+    # A recycled public id means a brand-new run with a clean miss
+    # counter. Without this, a parent that retried a dead id earlier in
+    # the same session would inherit the per-(parent, target) count
+    # and trip the loop detector on the very first call against the
+    # new, perfectly healthy child. See #94858.
+    #
+    # The record may not carry owner_agent_session_id (test doubles, and any
+    # future spawn path that forgets it), so fall back to the "" bucket the
+    # miss counter itself uses when the parent has no session_id. Resetting
+    # only when the field is present left a recycled id inheriting its
+    # predecessor's counter -- the exact false positive the guard exists for.
+    owner_sid = str(record.get("owner_agent_session_id") or "")
+    _reset_dead_subagent_hits(owner_sid, sid)
 
 def _unregister_subagent(subagent_id: str, *, agent: Any = None) -> None:
     """Drop the live record (exact agent identity when given) and keep a bounded attribution stub."""
@@ -68,6 +115,78 @@ def _unregister_subagent(subagent_id: str, *, agent: Any = None) -> None:
         _recent_subagents[sid] = {k: record.get(k) for k in ("goal", "delegation_id", "owner_agent_session_id")}
         while len(_recent_subagents) > _RECENT_SUBAGENTS_CAP:
             _recent_subagents.pop(next(iter(_recent_subagents)), None)
+
+def _record_dead_subagent_hit(parent_session_id: Optional[str], subagent_id: str) -> int:
+    """Increment the per-(parent, target) miss counter and return the new total.
+
+    Bounded eviction keeps the dict small even under spam: a runaway loop hits
+    the same key forever, so eviction is defensive against fresh ids arriving
+    while a breaker is already tripped. Two properties the plain FIFO lacked:
+    eviction only ever drops a key that has NOT tripped (a live breaker is never
+    silently un-tripped by unrelated traffic and handed full slack again), and it
+    only runs when a NEW key is inserted (one session hammering one dead id never
+    evicts anything, so the loop it is meant to catch keeps its own counter).
+    """
+    if not subagent_id:
+        return 0
+    key = (str(parent_session_id or ""), subagent_id)
+    with _dead_subagent_hits_lock:
+        is_new_key = key not in _dead_subagent_hits
+        count = _dead_subagent_hits.get(key, 0) + 1
+        _dead_subagent_hits[key] = count
+        if is_new_key and len(_dead_subagent_hits) > _DEAD_SUBAGENT_HITS_CAP:
+            for candidate, seen in _dead_subagent_hits.items():
+                if candidate != key and seen <= _STALE_SUBAGENT_RETRY_LIMIT:
+                    del _dead_subagent_hits[candidate]
+                    break
+        return count
+
+
+def _reset_dead_subagent_hits(parent_session_id: Optional[str], subagent_id: str) -> None:
+    """Drop the (parent, target) miss counter when the child re-registers.
+
+    A recycled public id means a brand-new run, so any previous "stale"
+    misses against the same string are no longer evidence of a loop.
+    """
+    if not subagent_id:
+        return
+    key = (str(parent_session_id or ""), subagent_id)
+    with _dead_subagent_hits_lock:
+        _dead_subagent_hits.pop(key, None)
+
+
+def _non_retryable_subagent_error(
+    *,
+    subagent_id: str,
+    reason: str,
+    hint: str,
+    loop_count: Optional[int] = None,
+) -> str:
+    """Build the structured JSON error for an unreachable / closed subagent.
+
+    The model treats any ``{"error": "..."}`` result as "I should fix this
+    and try again" unless the payload makes the terminal nature explicit.
+    This helper always tags the error with ``recoverable=False`` and a
+    hard-line "do not retry" message; when the per-session circuit breaker
+    has tripped (loop_count > _STALE_SUBAGENT_RETRY_LIMIT), it additionally
+    flags ``loop_detected=True`` and names the offending call so the model
+    can see exactly what went wrong.
+
+    The shape is stable JSON so a future prompt-builder or guardrail can
+    pattern-match on the keys without re-parsing the prose.
+    """
+    payload: Dict[str, Any] = {
+        "error": reason,
+        "recoverable": False,
+        "subagent_id": subagent_id,
+        "do_not_retry": True,
+        "hint": hint,
+    }
+    if loop_count is not None and loop_count > _STALE_SUBAGENT_RETRY_LIMIT:
+        payload["loop_detected"] = True
+        payload["attempts"] = loop_count
+    return json.dumps(payload, ensure_ascii=False)
+
 
 def _close_subagent_steering(subagent_id: str, agent: Any) -> Optional[str]:
     """Atomically close steer acceptance and drain its final durable artifact. ``steer_subagent`` holds the same
@@ -271,24 +390,30 @@ def _handle_control_action(action: str, subagent_id: Optional[str], message: Opt
     sid = (subagent_id or "").strip()
     if not sid:
         return tool_error(f"action='{action}' requires subagent_id (from the spawn dispatch response or action='list').")
+    # The parent session id is the durable spine the rest of delegate_tool
+    # uses (a CLI rebuild swaps the AIAgent instance mid-session but keeps
+    # session_id). Using the live agent object directly would orphan the
+    # counter on the very first rebuild and let a fresh instance re-enter
+    # the loop with a clean slate.
+    parent_sid = str(getattr(parent_agent, "session_id", "") or "")
     with _active_subagents_lock:
         record = _active_subagents.get(sid)
     if record is None or not _owns_subagent_record(record, parent_agent):
-        return tool_error(
-            f"No live subagent '{sid}' in this conversation's spawn tree. It "
-            "may have already finished (its result arrives as a normal "
-            "completion message). Use action='list' to see live children."
-        )
+        return _stale_subagent_error(parent_sid, sid, action, target_missing=True)
     if action == "steer" and not (message or "").strip():
         return tool_error("action='steer' requires a non-empty 'message' describing the course correction.")
     outcome = _CONTROL_OUTCOMES.get(action)
     if outcome is None:
         return tool_error(f"Unknown action '{action}'. Use spawn, list, steer, or stop.")
-    status, note, failure = outcome
+    status, note, _failure = outcome
     ok = interrupt_subagent(sid) if action == "stop" else steer_subagent(sid, message.strip())
     if ok:
         return json.dumps({"action": action, "subagent_id": sid, "status": status, "note": note}, ensure_ascii=False)
-    return tool_error(failure.format(sid=sid))
+    # Record still exists and we own it, but the child vanished / closed its steer
+    # window between the ownership check and the call. Same terminal class as a
+    # missing target from the model's point of view: retrying will never flip the
+    # answer, and #94858 showed models WILL retry unless the error is unambiguous.
+    return _stale_subagent_error(parent_sid, sid, action, target_missing=False)
 
 # action -> (success status, success note, failure error template)
 _CONTROL_OUTCOMES = {
@@ -308,3 +433,72 @@ _CONTROL_OUTCOMES = {
         "message; re-delegate a follow-up task if more work is needed.",
     ),
 }
+
+
+def _stale_subagent_error(
+    parent_session_id: Optional[str],
+    subagent_id: str,
+    action: str,
+    *,
+    target_missing: bool,
+) -> str:
+    """Build the structured, non-retryable error for a dead/closed subagent.
+
+    One entry point so the per-(parent, target) circuit breaker and the
+    ``recoverable=False`` JSON shape stay in lockstep — any future change
+    to the loop-detection wording has exactly one site to update.
+
+    ``target_missing=True`` is the original #94858 case (no record at all,
+    or the parent doesn't own it); ``target_missing=False`` is the
+    "record exists but is no longer accepting" case (closed steering or
+    a child that vanished between checks). Both are terminal: retrying
+    will never flip the answer, so both go through the same bounded
+    counter and structured payload.
+    """
+    miss_count = _record_dead_subagent_hit(parent_session_id, subagent_id)
+    if target_missing:
+        reason = (
+            f"No live subagent '{subagent_id}' in this conversation's "
+            "spawn tree. It may have already finished (its result "
+            "arrives as a normal completion message)."
+        )
+    else:
+        reason = (
+            f"Subagent '{subagent_id}' is no longer accepting "
+            f"{action} (finishing or already finished). Its result "
+            "arrives as a normal completion message."
+        )
+    if miss_count > _STALE_SUBAGENT_RETRY_LIMIT:
+        # Loop detected: same parent keeps hitting the same dead id. The
+        # regular "do not retry" hint isn't enough — the model is ignoring
+        # it, so name the loop and point at the actual alternative.
+        reason = (
+            f"RETRY LOOP DETECTED: you have called "
+            f"delegate_task(action='{action}', subagent_id='{subagent_id}') "
+            f"{miss_count} times against a subagent that no longer exists "
+            f"or has already finished. The previous {miss_count - 1} "
+            f"attempt(s) already returned this error and you ignored the "
+            f"'do_not_retry' flag. Do not call delegate_task with this "
+            f"subagent_id again."
+        )
+        hint = (
+            "If you still need work done, call delegate_task(action='list') "
+            "to see any live children, or spawn a fresh subagent with "
+            "delegate_task(action='spawn', goal=...). The dead subagent's "
+            "result, if any, is already in the conversation as a normal "
+            "completion message — re-reading it does not require a tool call."
+        )
+    else:
+        hint = (
+            f"Do not retry delegate_task(action='{action}', "
+            f"subagent_id='{subagent_id}'). The subagent is gone. If you "
+            "need to know its current state, call "
+            "delegate_task(action='list') for live children, or wait for "
+            "its completion message to arrive."
+        )
+    return _non_retryable_subagent_error(
+        subagent_id=subagent_id,
+        reason=reason,
+        hint=hint,
+        loop_count=miss_count,
+    )

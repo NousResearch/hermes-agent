@@ -486,6 +486,27 @@ def dispatch_tool_search(args: Dict[str, Any], *, current_tool_defs: List[Dict[s
     return json.dumps(payload, ensure_ascii=False)
 
 
+def _resolve_oauth_wire_alias(name: Any) -> Optional[str]:
+    """Canonical tool name for an Anthropic OAuth wire alias
+    (``chat_history_lookup`` -> ``session_search``), else None (#120858).
+    Last-resort fallback only — every caller tries all native lookups first, so a
+    real tool registered under the wire name always wins. Single source of truth
+    stays ``agent.anthropic_adapter._OAUTH_TOOL_NAME_REVERSE_ALIASES`` (lazy import:
+    the adapter chain must not load at tool-registry import time)."""
+    if not isinstance(name, str) or not name:
+        return None
+    from agent.anthropic_adapter import _OAUTH_TOOL_NAME_REVERSE_ALIASES
+    return _OAUTH_TOOL_NAME_REVERSE_ALIASES.get(name)
+
+
+def _has_native_owner(name: str, session_names: Iterable[str]) -> bool:
+    """True when ``name`` belongs to a real tool — in this session's ``tool_defs``
+    (deferrable or not) or in the registry. Precedence is native ownership, not
+    deferability: a core / direct-surface tool under the wire name is reachable
+    only through the visible surface, so the alias fallback must not claim it."""
+    return name in session_names or _registry_entry(name) is not None
+
+
 def dispatch_tool_describe(args: Dict[str, Any], *, current_tool_defs: List[Dict[str, Any]],
                            config: Optional[ToolSearchConfig] = None,
                            connector_describe: Optional[Any] = None) -> str:
@@ -497,6 +518,7 @@ def dispatch_tool_describe(args: Dict[str, Any], *, current_tool_defs: List[Dict
         return err
     deferrable = _deferrable_in(current_tool_defs)
     by_name = {name: _fn(td) for td, name in zip(deferrable, _tool_def_names(deferrable)) if name}
+    session_names = {name for name in _tool_def_names(current_tool_defs) if name}
     remote_schemas, hosted_failure = remote_schemas_for(names, current_tool_defs, connector_describe)
 
     tools: Dict[str, Dict[str, Any]] = {}
@@ -506,6 +528,17 @@ def dispatch_tool_describe(args: Dict[str, Any], *, current_tool_defs: List[Dict
     for name in names:
         fn = by_name.get(name)
         remote_fn = remote_schemas.get(name)
+        if fn is None and remote_fn is None and not _has_native_owner(name, session_names):
+            # #120858: OAuth wire alias (chat_history_lookup) — resolve to the
+            # registered tool but answer under the REQUESTED name so the model
+            # sees a consistent name. Native ownership always wins: gated on
+            # ``_has_native_owner`` so a real tool under the wire name — even one
+            # that never enters the deferrable subset — is never hijacked.
+            canonical = _resolve_oauth_wire_alias(name)
+            if canonical is not None:
+                fn = by_name.get(canonical)
+                if fn is None:
+                    remote_fn = remote_schemas.get(canonical)
         if fn is not None:
             tools[name] = {"description": fn.get("description", ""),
                            "parameters": fn.get("parameters", {})}
@@ -568,6 +601,13 @@ def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[s
     name = entries[0]["name"]
     raw_args = entries[0]["arguments"]
     if not is_deferrable_tool_name(name, load_config_readonly().effective_defer_tools):
+        # #120858: OAuth wire alias — dispatch the registered tool, but only when
+        # nothing native owns the name (a registered non-deferrable tool under the
+        # wire name is a wrong-door call, never an alias to ``session_search``).
+        canonical = _resolve_oauth_wire_alias(name)
+        if canonical is not None and not _has_native_owner(name, ()) and is_deferrable_tool_name(
+                canonical, load_config_readonly().effective_defer_tools):
+            return canonical, raw_args, None
         return None, {}, not_deferrable_error(name)
     return name, raw_args, None
 

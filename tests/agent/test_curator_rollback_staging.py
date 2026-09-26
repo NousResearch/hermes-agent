@@ -69,3 +69,45 @@ def test_failed_rollback_keeps_unrestored_metadata(
             relative /= "local-history"
         copies = [root / relative for root in (skills, staging[0])]
         assert any(path.is_file() and path.read_bytes() == content for path in copies)
+
+
+@pytest.mark.parametrize("mode", ["rename_fails", "collision"])
+def test_retain_staging_never_raises(tmp_path, monkeypatch, mode):
+    """A failed rollback returns a failure, never raises, even when retaining the staging dir fails or collides."""
+    home = tmp_path / "home"
+    skills = home / "skills"
+    skills.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from agent import curator_backup as curator
+
+    skill = skills / "alpha"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("snap\n", encoding="utf-8")
+    target = curator.snapshot_skills()
+    (skill / ".git").write_bytes(b"meta")
+
+    real_move = curator.shutil.move
+
+    def fail_move(src, dst, *a, **k):
+        if Path(src).name == ".git":
+            raise PermissionError("injected carry failure")
+        return real_move(src, dst, *a, **k)
+
+    monkeypatch.setattr(curator.shutil, "move", fail_move)
+    backups = skills / ".curator_backups"
+    if mode == "rename_fails":
+        def boom(self, *a, **k):
+            raise PermissionError("injected rename")
+        monkeypatch.setattr(Path, "rename", boom)
+    else:
+        monkeypatch.setattr(curator, "_utc_id", lambda: "2020-01-01T00-00-00Z")
+        (backups / ".rollback-unrestored-2020-01-01T00-00-00Z").mkdir(parents=True)
+
+    ok, message, restored = curator.rollback(target.name)  # must not raise
+    assert not ok and restored is None
+    assert "could not restore alpha/.git" in message
+    if mode == "rename_fails":
+        assert "rename failed" in message and ".rollback-staging-" in message
+    else:
+        kept = backups / ".rollback-unrestored-2020-01-01T00-00-00Z-1"
+        assert kept.is_dir() and str(kept) in message

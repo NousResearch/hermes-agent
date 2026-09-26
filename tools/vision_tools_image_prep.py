@@ -284,6 +284,11 @@ def _validate_raster_image_decodable(
     return None
 
 
+# xAI rejects the whole request when either side is under 8 px
+# ("Image dimensions 1x1 are too small. Both width and height must be at least 8 pixels.").
+_MIN_PROVIDER_IMAGE_DIMENSION = 8
+
+
 def _image_exceeds_dimension(image_path: Path, max_dimension: int) -> bool:
     """True if the longest side exceeds ``max_dimension`` px (Anthropic's 8000px per-side cap is
     independent of bytes). False without Pillow or on unreadable files — a missing soft
@@ -294,6 +299,37 @@ def _image_exceeds_dimension(image_path: Path, max_dimension: int) -> bool:
             return max(_img.size) > max_dimension
     except Exception:
         return False
+
+
+def _image_below_min_dimension(
+    image_path: Path, min_dimension: int = _MIN_PROVIDER_IMAGE_DIMENSION,
+) -> Optional[tuple]:
+    """``(width, height)`` when either side is below ``min_dimension``, else None.
+
+    A 1x1 PNG decodes as a valid image (Word leaves those in as spacers), so the
+    decode gate does not catch it. None without Pillow or on an unreadable file —
+    a missing decoder must not reject every image.
+    """
+    try:
+        from PIL import Image as _PILImage
+        with _PILImage.open(image_path) as img:
+            width, height = img.size
+    except Exception:
+        return None
+    if width < min_dimension or height < min_dimension:
+        return (width, height)
+    return None
+
+
+def below_min_dimension_message(width: int, height: int) -> str:
+    """Tool-result text for an image the provider would reject as too small."""
+    minimum = _MIN_PROVIDER_IMAGE_DIMENSION
+    return (
+        f"Image is {width}x{height} px, below the {minimum} px minimum. "
+        "The provider rejects the entire request when any attached image is "
+        f"smaller than {minimum}x{minimum}. This file is a spacer or placeholder, "
+        "not a picture. Skip it and continue with the other images."
+    )
 
 
 def _crop_image_region(

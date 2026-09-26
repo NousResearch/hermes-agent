@@ -25,7 +25,7 @@ from agent.error_classifier import FailoverReason, classify_api_error
 from agent.message_sanitization import (
     _looks_like_corrupt_image_rejection, _looks_like_image_content_rejection, _sanitize_messages_non_ascii,
     _sanitize_messages_surrogates, _sanitize_structure_non_ascii, _sanitize_structure_surrogates,
-    _strip_images_from_messages, _strip_non_ascii,
+    _strip_images_from_messages, _strip_non_ascii, _strip_undersized_images_from_messages,
     close_interrupted_tool_sequence,
 )
 from agent.thinking_timeout_guidance import build_thinking_timeout_guidance, is_thinking_timeout
@@ -735,6 +735,14 @@ def recover_after_classification(
         if _strip_request_images_and_retry(agent, api_messages):
             return True, recovered_with_pool
         logger.info("image-corrupt recovery: no image parts found to strip; surfacing original error.")
+
+    # A 1x1 spacer fails the provider minimum and 400s the whole request, including
+    # the real images beside it. Drop only the undersized parts and retry those.
+    if classified.reason == FailoverReason.image_too_small:
+        if isinstance(api_messages, list) and _strip_undersized_images_from_messages(api_messages):
+            _vlines(agent, "⚠️  Provider rejected an image smaller than 8 px — dropped that image and retrying...")
+            return True, recovered_with_pool
+        logger.info("image-too-small recovery: no undersized image parts found; surfacing original error.")
 
     # Anthropic OAuth subscription rejected the 1M-context beta: disable it for this
     # session, rebuild the client, retry once. Reactive so capable subscriptions keep 1M.

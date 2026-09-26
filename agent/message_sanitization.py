@@ -7,12 +7,14 @@ characters that would crash ``json.dumps`` in the OpenAI SDK or be rejected upst
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
 import re
+import struct
 from functools import partial
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from agent.vision_message_prep import _provider_model_key
 
@@ -336,6 +338,111 @@ def serialized_messages_bytes(messages: list) -> int:
 
 
 _IMAGE_PART_TYPES = {"image_url", "image", "input_image"}
+
+
+def _raster_size(raw: bytes) -> Optional[tuple]:
+    """Pixel size from a PNG, GIF, or JPEG header. None when the container is unrecognized."""
+    if len(raw) >= 24 and raw[:8] == b"\x89PNG\r\n\x1a\n":
+        return struct.unpack(">II", raw[16:24])
+    if raw[:6] in (b"GIF87a", b"GIF89a") and len(raw) >= 10:
+        return struct.unpack("<HH", raw[6:10])
+    if raw[:2] != b"\xff\xd8":
+        return None
+    index = 2
+    while index + 8 < len(raw):
+        if raw[index] != 0xFF:
+            index += 1
+            continue
+        marker = raw[index + 1]
+        if marker in (0xC0, 0xC1, 0xC2):
+            height, width = struct.unpack(">HH", raw[index + 5:index + 9])
+            return width, height
+        if marker in (0xD8, 0xD9):
+            index += 2
+            continue
+        segment = struct.unpack(">H", raw[index + 2:index + 4])[0]
+        index += 2 + segment
+    return None
+
+
+def _part_image_url(part: dict) -> Optional[str]:
+    image = part.get("image_url", part.get("image"))
+    if isinstance(image, str):
+        return image
+    if isinstance(image, dict):
+        url = image.get("url") or image.get("data")
+        return url if isinstance(url, str) else None
+    return None
+
+
+def _data_url_is_below_min_dimension(url: str, min_dimension: int = 8) -> bool:
+    """True only when the data URL decodes to a raster smaller than ``min_dimension`` on either side.
+
+    Unrecognized or undecodable payloads are left alone: this must not drop a good image
+    because its container was unfamiliar.
+    """
+    if not isinstance(url, str) or not url.startswith("data:image"):
+        return False
+    _header, _sep, payload = url.partition(",")
+    if not payload:
+        return False
+    try:
+        raw = base64.b64decode(payload, validate=False)
+    except Exception:
+        return False
+    size = _raster_size(raw)
+    if size is None:
+        return False
+    width, height = size
+    return width < min_dimension or height < min_dimension
+
+
+def _part_is_undersized_image(part: Any, min_dimension: int = 8) -> bool:
+    if not isinstance(part, dict) or part.get("type") not in _IMAGE_PART_TYPES:
+        return False
+    url = _part_image_url(part)
+    return url is not None and _data_url_is_below_min_dimension(url, min_dimension)
+
+
+def _strip_undersized_images_from_messages(messages: list, min_dimension: int = 8) -> bool:
+    """Drop image parts smaller than ``min_dimension`` on either side. Larger images stay.
+
+    Same empty-message rules as :func:`_strip_images_from_messages`. Looks at ``content``
+    and ``output`` so both the agent message list and a Responses ``function_call_output``
+    body are covered.
+    """
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from agent.turn_context import drop_stale_api_content
+
+    found = False
+    to_delete = []
+    for i, msg in enumerate(messages):
+        if not isinstance(msg, dict):
+            continue
+        changed = False
+        for key in ("content", "output"):
+            parts = msg.get(key)
+            if not isinstance(parts, list):
+                continue
+            kept = [part for part in parts if not _part_is_undersized_image(part, min_dimension)]
+            if len(kept) == len(parts):
+                continue
+            changed = True
+            found = True
+            if kept:
+                msg[key] = kept
+            elif key == "content" and (msg.get("role") == "tool" or msg.get("tool_calls")):
+                msg[key] = "[image content removed — smaller than the provider minimum]"
+            elif key == "content":
+                to_delete.append(i)
+            else:
+                msg[key] = kept
+        if changed:
+            msg.pop(_DB_PERSISTED_MARKER, None)
+            drop_stale_api_content(msg)
+    for i in reversed(dict.fromkeys(to_delete)):
+        del messages[i]
+    return found
 
 
 def _strip_images_from_messages(messages: list) -> bool:

@@ -46,6 +46,7 @@ class FailoverReason(enum.Enum):
     context_overflow = "context_overflow"  # Context too large — compress, not failover
     payload_too_large = "payload_too_large"  # 413 — compress payload
     image_too_large = "image_too_large"   # Native image part exceeds provider's per-image limit — shrink and retry
+    image_too_small = "image_too_small"   # Provider minimum dimension — drop only the undersized parts and retry
     image_corrupt = "image_corrupt"       # Provider can't decode image bytes — strip and retry (shrinking won't help)
     model_not_found = "model_not_found"  # 404 or invalid model — fallback to different model
     provider_policy_blocked = "provider_policy_blocked"  # Aggregator account data/privacy policy excluded the only endpoint
@@ -206,6 +207,16 @@ _IMAGE_TOO_LARGE_PATTERNS = (
 _IMAGE_CORRUPT_PATTERNS = (
     "invalid png image", "invalid jpeg image", "base64 string of provided image cannot be decoded",
     "downloaded response does not contain a valid jpg, png, webp, or ico image",
+)
+
+# xAI: "Image dimensions 1x1 are too small. Both width and height must be at
+# least 8 pixels." The file decodes, so this is not image_corrupt, and shrinking
+# cannot grow a spacer, so this is not image_too_large. Recovery drops only the
+# parts under the minimum. "are too small" (not "is too small") avoids unrelated
+# 400s such as "context window is too small".
+_IMAGE_TOO_SMALL_PATTERNS = (
+    "are too small",
+    "must be at least 8 pixels",
 )
 
 # 400s rejecting list-type ``content`` in tool messages (Xiaomi MiMo "text is
@@ -473,6 +484,8 @@ _V_CONTEXT_OVERFLOW = _v(_R.context_overflow, should_compress=True)
 _V_PAYLOAD_TOO_LARGE = _v(_R.payload_too_large, should_compress=True)
 _V_OVERLOADED, _V_SERVER_ERROR, _V_TIMEOUT, _V_UNKNOWN = map(_v, (_R.overloaded, _R.server_error, _R.timeout, _R.unknown))
 _V_IMAGE_TOO_LARGE, _V_IMAGE_CORRUPT = _v(_R.image_too_large), _v(_R.image_corrupt)
+# Non-retryable when nothing undersized can be dropped: resending the same body 400s again.
+_V_IMAGE_TOO_SMALL = _v(_R.image_too_small, retryable=False)
 _V_MULTIMODAL, _V_INVALID_ENCRYPTED = _v(_R.multimodal_tool_content_unsupported), _v(_R.invalid_encrypted_content)
 _V_REASONING_MANDATORY = _v(_R.reasoning_mandatory, should_compress=False, should_fallback=False)
 # Same recovery hints as format_error: consumers without a merge-and-retry step (the main loop
@@ -585,6 +598,7 @@ def _first_match(error_msg: str, rules: Sequence[tuple[Sequence[str], Any]]) -> 
 # bytes need strip not shrink; image-shrink is cheaper than context compression.
 _IMAGE_TOOL_RULES = (
     (_MULTIMODAL_TOOL_CONTENT_PATTERNS, _V_MULTIMODAL), (_IMAGE_CORRUPT_PATTERNS, _V_IMAGE_CORRUPT),
+    (_IMAGE_TOO_SMALL_PATTERNS, _V_IMAGE_TOO_SMALL),
     (_IMAGE_TOO_LARGE_PATTERNS, _V_IMAGE_TOO_LARGE),
 )
 

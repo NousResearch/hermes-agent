@@ -27,20 +27,51 @@ def completion_tail(monkeypatch):
 
     The real child is ``hermes_cli/source_completion.py`` from the checkout under test — a
     scratch tree here — building products with the selected interpreter; the tests below
-    cover the sync decision, not the build.
+    cover the sync decision, not the build. ``interrupt_wait`` makes the next ``wait()``
+    raise KeyboardInterrupt, as ^C does to the parent inside the real call.
     """
     class Spawned(list):
         exit_code = 0
         kwargs: dict = {}
+        interrupt_wait = False
+        terminated = False
 
     spawned = Spawned()
 
-    def call(command, **kwargs):
+    class FakeTail:
+        def __init__(self):
+            self.args = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def wait(self, timeout=None):
+            if spawned.interrupt_wait:
+                spawned.interrupt_wait = False
+                raise KeyboardInterrupt
+            return spawned.exit_code
+
+        def terminate(self):
+            spawned.terminated = True
+
+        def kill(self):
+            pass
+
+        def communicate(self, *args, **kwargs):
+            return ("", "")
+
+        def poll(self):
+            return None
+
+    def popen(command, **kwargs):
         spawned.append(command)
         spawned.kwargs = kwargs
-        return spawned.exit_code
+        return FakeTail()
 
-    monkeypatch.setattr(venv_sync.subprocess, "call", call)
+    monkeypatch.setattr(venv_sync.subprocess, "Popen", popen)
     return spawned
 
 
@@ -113,6 +144,40 @@ def test_completion_tail_output_stays_off_stdout(tmp_path, monkeypatch, completi
     monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
     venv_sync.prepare_launch(root, [])
     assert completion_tail.kwargs["stdout"] is sys.__stderr__
+
+
+def test_interrupted_tail_is_terminated_and_the_marker_survives_for_the_next_launch(
+        tmp_path, monkeypatch, completion_tail):
+    """^C while the tail child runs must not leave that child prompting in the background.
+
+    The interactive install the tail performs (a plugin dependency y/N) swallows SIGINT in
+    its own input(), so the parent has to terminate it explicitly; the pending marker stays
+    armed so the next launch finishes the tail instead of stranding a half-done migration.
+    """
+    import pm
+    from hermes_cli import _launchers
+
+    root = _self_checkout(tmp_path, monkeypatch)
+    fact = runtime_facts_path(root)
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: fact.is_file())
+    fact.parent.mkdir(parents=True, exist_ok=True)
+    fact.write_text(json.dumps({"packages": {"venv": {"stamp": "complete", "extras": ["all"]}}}))
+    monkeypatch.setattr(pm, "sync_venv", lambda *a, **kw: None)
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+
+    pending = venv_sync.completion_pending_path(root)
+    pending.parent.mkdir(parents=True, exist_ok=True)
+    pending.write_text("source update tail not finished\n")
+
+    completion_tail.interrupt_wait = True
+    with pytest.raises(KeyboardInterrupt):
+        venv_sync.prepare_launch(root, [])
+    assert completion_tail.terminated, "the tail child was left alive after ^C"
+    assert pending.is_file(), "an interrupted tail must stay armed for the next launch"
+
+    completion_tail.exit_code = 0
+    assert venv_sync.prepare_launch(root, []) is None
+    assert not pending.exists(), "the retried tail did not clear the completion marker"
 
 
 def test_first_launch_syncs_without_marker_then_uses_completion_fact(tmp_path, monkeypatch, completion_tail):

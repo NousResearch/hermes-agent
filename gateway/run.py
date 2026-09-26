@@ -5261,7 +5261,12 @@ def _start_gateway_configure_logging(verbosity: Optional[int]) -> None:
         _stderr_handler.setLevel(_stderr_level)
         _stderr_handler.setFormatter(_gateway_stderr_formatter())
         root = logging.getLogger()
-        root.addHandler(_stderr_handler)
+        # Under a service manager stderr is usually a file. Attached directly to root, this
+        # handler turns every WARNING+ logged on the event loop into a synchronous disk write
+        # (a slow disk then blocks the loop, e.g. a platform heartbeat). Route it through the
+        # same async QueueListener the rotating file handlers use.
+        from hermes_logging import _register_queued_handler
+        _register_queued_handler(_stderr_handler)
         if _stderr_level < root.level:  # so DEBUG records can reach the handler
             root.setLevel(_stderr_level)
 

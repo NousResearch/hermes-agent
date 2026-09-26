@@ -120,8 +120,9 @@ def _resolve_openrouter_runtime(
     explicit > CUSTOM_BASE_URL > trusted ``model.base_url`` > OPENROUTER_BASE_URL > default.
     OPENAI_BASE_URL never picks the endpoint (config.yaml is the single source of truth for endpoint
     URLs); it is read only to keep an OPENAI_API_KEY bound to another host out of the OpenRouter
-    fallback. OpenRouter contexts prefer OPENROUTER_API_KEY; custom endpoints never receive the
-    OpenRouter key and only get env keys gated on their authoritative hosts."""
+    fallback. OpenRouter contexts prefer OPENROUTER_API_KEY, except that a bare ``custom`` block on a
+    trusted openrouter.ai ``model.base_url`` uses the key configured beside it first; custom endpoints
+    never receive the OpenRouter key and only get env keys gated on their authoritative hosts."""
     rp = _rp()
     model_cfg = rp._get_model_config()
     cfg_base_url = model_cfg.get("base_url") if isinstance(model_cfg.get("base_url"), str) else ""
@@ -156,17 +157,23 @@ def _resolve_openrouter_runtime(
                 and base_url == (env_openrouter_base_url or "").rstrip("/"))
         )
     )
+    from hermes_cli.runtime_provider_custom import _model_cfg_key_env_for
     if is_openrouter_context:
         # OPENAI_API_KEY is a legacy home for an OpenRouter key -- unless OPENAI_BASE_URL binds it
         # to another host, where sending it to OpenRouter leaks that host's credential.
         openai_base_host = base_url_hostname(get_secret_str("OPENAI_BASE_URL", "").strip())
         openai_key_ok = not openai_base_host or openai_base_host == base_url_hostname(base_url)
-        candidates = [explicit_api_key, get_secret_str("OPENROUTER_API_KEY"),
-                      get_secret_str("OPENAI_API_KEY") if openai_key_ok else ""]
+        # A bare ``provider: custom`` block whose trusted model.base_url is on openrouter.ai keeps
+        # the key declared beside it, ahead of env keys, as on any other custom host.
+        cfg_key_ok = requested_norm == "custom" and use_config_base_url and base_url == cfg_base_url.strip().rstrip("/")
+        # An unresolved ``${VAR}`` is not a key: sending it would 401 a setup that works on the env key.
+        cfg_literal_ok = cfg_key_ok and "${" not in cfg_api_key
+        candidates = [explicit_api_key, (cfg_api_key if cfg_literal_ok else ""),
+                      (_model_cfg_key_env_for(model_cfg, base_url) if cfg_key_ok else ""),
+                      get_secret_str("OPENROUTER_API_KEY"), get_secret_str("OPENAI_API_KEY") if openai_key_ok else ""]
     else:
         # ``model.api_key`` and ``model.key_env`` back a trusted config base_url only; the key_env
         # rung is what a bare ``provider: custom`` block relies on (#67453).
-        from hermes_cli.runtime_provider_custom import _model_cfg_key_env_for
         candidates = [explicit_api_key, (cfg_api_key if use_config_base_url else ""),
                       (_model_cfg_key_env_for(model_cfg, base_url) if use_config_base_url else ""),
                       *rp._host_gated_env_key_candidates(base_url, ollama=True)]

@@ -72,6 +72,18 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
         help="Hide disabled skills. Use with -p <profile> to see exactly "
         "which skills will load for that profile.")
 
+    skills_enable = skills_subparsers.add_parser(
+        "enable", help="Enable one or more disabled skills (takes effect next session)")
+    skills_enable.add_argument("names", nargs="+", help="Skill name(s) to enable")
+    skills_enable.add_argument("--platform", help="Toggle only for one platform's list")
+
+    skills_disable = skills_subparsers.add_parser(
+        "disable", help="Disable one or more skills without uninstalling them")
+    skills_disable.add_argument("names", nargs="+", help="Skill name(s) to disable")
+    skills_disable.add_argument("--platform", help="Toggle only for one platform's list")
+
+    skills_subparsers.add_parser("disabled", help="Show currently disabled skills")
+
     skills_check = skills_subparsers.add_parser(
         "check", help="Check installed hub skills for updates")
     skills_check.add_argument("name", nargs="?", help="Specific skill to check (default: all)")

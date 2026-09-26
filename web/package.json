@@ -12,7 +12,9 @@
     "preview": "vite preview",
     "typecheck": "tsc -p . --noEmit",
     "test": "vitest run",
-    "check": "npm run typecheck && npm run test && npm run lint"
+    "i18n:check": "node ../scripts/i18n-sync.mjs --check",
+    "i18n:sync": "node ../scripts/i18n-sync.mjs --fix",
+    "check": "npm run i18n:check && npm run typecheck && npm run test && npm run lint"
   },
   "dependencies": {
     "@hermes/shared": "file:../apps/shared",

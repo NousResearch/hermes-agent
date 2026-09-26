@@ -9,6 +9,15 @@ describe('model-status-label', () => {
     expect(displayModelName('claude-fable-5-1')).toBe('Fable 5.1')
   })
 
+  it('keeps the base and versioned deepseek ids visually distinct', () => {
+    // `deepseek-flash` and `deepseek-v4.1-flash` are distinct ids some
+    // aggregators serve side by side; their picker rows must never collapse
+    // to the same display name.
+    expect(displayModelName('deepseek/deepseek-flash')).toBe('Deepseek Flash')
+    expect(displayModelName('deepseek/deepseek-v4.1-flash')).toBe('Deepseek V4.1 Flash')
+    expect(displayModelName('deepseek/deepseek-flash')).not.toBe(displayModelName('deepseek/deepseek-v4.1-flash'))
+  })
+
   it('renders the Anthropic 1M-context route suffix as a tag, never raw brackets', () => {
     expect(modelDisplayParts('claude-sonnet-5[1m]')).toEqual({ name: 'Sonnet 5', tag: '1M' })
     expect(modelDisplayParts('claude-fable-5-1[1m]')).toEqual({ name: 'Fable 5.1', tag: '1M' })

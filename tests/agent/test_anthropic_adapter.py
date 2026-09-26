@@ -51,6 +51,29 @@ def test_missing_sdk_error_reports_why_the_lazy_install_did_not_land(monkeypatch
     assert pm.install_hint("anthropic") not in str(excinfo.value)
 
 
+def test_a_declined_install_still_tells_the_user_how_to_install_it(monkeypatch):
+    """Same suppression as above, opposite verdict: a decline leaves the install command as the
+    only way forward. _require_sdk forwards ensure_import's remedy, so drive the real one.
+    """
+    import pm
+    from pm import extras
+    from agent import anthropic_adapter
+
+    monkeypatch.setattr(extras, "available", lambda extra: False)
+    monkeypatch.setattr(extras, "extra_supported", lambda extra, **kwargs: True)
+    monkeypatch.delitem(sys.modules, "prompt_toolkit.application.current", raising=False)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
+    monkeypatch.setattr(anthropic_adapter, "_anthropic_sdk", ...)
+    monkeypatch.setattr(anthropic_adapter, "_anthropic_install_error", None)
+    monkeypatch.setitem(sys.modules, "anthropic", None)
+
+    with pytest.raises(ImportError) as excinfo:
+        build_anthropic_client("sk-ant-api03-test")
+    assert pm.install_hint("anthropic") in str(excinfo.value)
+
+
 class TestBuildAnthropicClient:
 
 

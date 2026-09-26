@@ -1500,6 +1500,29 @@ class TestRequireBoto3VersionCheck:
         assert str(restart) in str(excinfo.value)
         assert pm.install_hint("bedrock") not in str(excinfo.value)
 
+    def test_a_declined_install_still_tells_the_user_how_to_install_it(self, monkeypatch):
+        """Suppressing the hint is right for a restart (above) and wrong for a decline, and
+        _require_boto3 cannot tell the two apart: it forwards whatever remedy ensure_import set.
+        So this drives the real ensure_import rather than a hand-built InstallError.
+        """
+        import sys
+
+        import pm
+        from pm import extras
+        from agent.bedrock_adapter import _require_boto3
+
+        monkeypatch.setattr(extras, "available", lambda extra: False)
+        monkeypatch.setattr(extras, "extra_supported", lambda extra, **kwargs: True)
+        monkeypatch.delitem(sys.modules, "prompt_toolkit.application.current", raising=False)
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda prompt: "n")
+
+        with patch.dict("sys.modules", {"boto3": None}):
+            with pytest.raises(ImportError) as excinfo:
+                _require_boto3()
+        assert pm.install_hint("bedrock") in str(excinfo.value)
+
 
 
 class TestImageBase64Decoding:

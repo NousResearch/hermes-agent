@@ -101,6 +101,24 @@ def _image_error_max_dimension(error: Exception) -> Optional[int]:
     return max_dimension if 512 <= max_dimension <= 8000 else None
 
 
+def _default_shrink_dimension(agent: Any) -> int:
+    """Per-route fallback when the rejection names no pixel ceiling.
+
+    DeepSeek's "unsupported image" 400 carries no ceiling, and its floor drops to
+    4096 px/side for 15+-image requests — below the generic 8000 px fallback — so
+    the single shrink retry would re-send an oversized payload (#122449). Route
+    detection reuses the reasoning-echo family table, the repo's single DeepSeek
+    route identifier (provider / model substring / host).
+    """
+    from agent.message_sanitization import matches_reasoning_echo_family
+
+    if matches_reasoning_echo_family(
+        "deepseek", getattr(agent, "provider", ""), getattr(agent, "model", ""), getattr(agent, "base_url", "")
+    ):
+        return 4000
+    return 8000
+
+
 def _try_refresh_nous_paid_entitlement_credentials(agent) -> bool:
     """Refresh Nous runtime credentials after a fresh paid-entitlement check."""
     try:
@@ -661,7 +679,7 @@ def recover_after_classification(
     if classified.reason == FailoverReason.image_too_large and not _retry.image_shrink_retry_attempted:
         _retry.image_shrink_retry_attempted = True
         if agent._try_shrink_image_parts_in_messages(
-            api_messages, max_dimension=_image_error_max_dimension(api_error) or 8000
+            api_messages, max_dimension=_image_error_max_dimension(api_error) or _default_shrink_dimension(agent)
         ):
             _vlines(agent, "📐 Image(s) exceeded provider size limit — shrank and retrying...")
             return True, recovered_with_pool

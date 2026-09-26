@@ -349,18 +349,13 @@ def _git_tracks(path: Path) -> bool:
     both a HERMES_HOME that IS a checkout and one nested in an enclosing repo (a ``~/.git``
     dotfiles repo tracking ``~/.hermes/scripts/test_x.py``). Unlike a bare ``.git`` probe
     above HERMES_HOME, an exact tracked check cannot make untracked scratch look Git-owned.
+    ``:(literal)`` stops git globbing the name (``test_[1].py`` must not match ``test_1.py``).
     Git missing / not a repo / file untracked all mean "not tracked".
     """
-    import subprocess
+    from hermes_cli.source_check import _git_ok
 
-    try:
-        r = subprocess.run(
-            ["git", "-C", str(path.parent), "ls-files", "--error-unmatch", "--", path.name],
-            capture_output=True, timeout=20,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return r.returncode == 0
+    return _git_ok(["-C", str(path.parent), "ls-files", "--error-unmatch", "--",
+                    ":(literal)" + path.name], timeout=5)
 
 
 def _inside_git_worktree(path: Path) -> bool:
@@ -373,23 +368,18 @@ def _inside_git_worktree(path: Path) -> bool:
 
     Only ``.git`` entries strictly BELOW ``HERMES_HOME`` count for the parent-chain probe: a
     home kept in a dotfiles repo (``~/.git``) would otherwise make every scratch file look
-    Git-owned.
-
-    The parent-chain probe alone misses the case where ``HERMES_HOME`` IS (or sits inside) a
-    git checkout (e.g. ``~/.hermes`` as a userfiles repo). There every in-home file sits inside a
-    worktree, yet only the TRACKED ones are Git-owned — a scratch file merely living beside
-    them is not, and treating the whole home as protected would disable cleanup entirely. Ask
-    git about the individual path instead.
+    Git-owned. Git is only asked when a ``.git`` exists at or above HERMES_HOME; otherwise no
+    repo can track the file and the spawn is skipped.
     """
-    home = get_hermes_home()
     resolved = path.resolve()
     parents = list(resolved.parents)
-    below = parents
+    above: List[Path] = []
     with contextlib.suppress(ValueError):
-        below = parents[: parents.index(home)]
-    if any((parent / ".git").exists() for parent in below):
+        i = parents.index(get_hermes_home())
+        parents, above = parents[:i], parents[i:]
+    if any((parent / ".git").exists() for parent in parents):
         return True
-    return _git_tracks(resolved)
+    return any((parent / ".git").exists() for parent in above) and _git_tracks(resolved)
 
 
 def guess_category(path: Path) -> Optional[str]:

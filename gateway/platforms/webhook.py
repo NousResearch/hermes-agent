@@ -404,7 +404,8 @@ class WebhookAdapter(BasePlatformAdapter):
     def _resolve_request_profile(self, request: "web.Request"):
         """Resolve + validate the /p/<profile>/ URL prefix: None (no prefix, or multiplexing off and the
         prefix names this gateway's own profile), the profile name (served under multiplexing), or
-        ``_PROFILE_REJECTED`` (unknown / not served → 404)."""
+        ``_PROFILE_REJECTED`` (unknown / not served → 404). Membership is resolved per name so the
+        prefix middleware does not enumerate ``profiles/`` on every request."""
         profile = (request.match_info.get("profile") or "").strip()
         if not profile:
             return None
@@ -418,11 +419,11 @@ class WebhookAdapter(BasePlatformAdapter):
                     return None
             return _PROFILE_REJECTED
         try:
-            from hermes_cli.profiles import profiles_to_serve
-            served = {name for name, _ in profiles_to_serve(multiplex=True)}
+            from hermes_cli.profiles import profile_is_served
+            served = profile_is_served(profile, multiplex=True)
         except Exception:
             return _PROFILE_REJECTED
-        return profile if profile in served else _PROFILE_REJECTED
+        return profile if served else _PROFILE_REJECTED
 
     @staticmethod
     def _route_allows_profile(route_config: dict, request_profile: Optional[str]) -> bool:

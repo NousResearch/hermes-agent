@@ -40,11 +40,8 @@ class TestApiServerProfileResolution:
     def test_unserved_prefix_is_rejected(self, monkeypatch):
         adapter = _make_adapter(multiplex=True)
         monkeypatch.setattr(
-            "hermes_cli.profiles.profiles_to_serve",
-            lambda multiplex: [
-                ("default", "/profiles/default"),
-                ("worker", "/profiles/worker"),
-            ],
+            "hermes_cli.profiles.profile_is_served",
+            lambda name, multiplex: name in {"default", "worker"},
         )
 
         assert (

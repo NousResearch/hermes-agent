@@ -15,7 +15,7 @@ import time
 from contextlib import contextmanager
 from typing import Any, Callable, Optional
 
-from agent.redact import redact_sensitive_text
+from agent.redact import redact_sensitive_json, redact_sensitive_text
 from hermes_cli.goals import judge_goal
 from tools.registry import no_cache_check_fn, registry, tool_error
 from hermes_cli.config import cfg_get, load_config
@@ -329,11 +329,10 @@ def _redact_opt(value: Any) -> Any:
 
 
 def _redact_metadata(metadata: dict) -> Optional[dict]:
-    """Redact via a JSON round-trip; None if the result can't be re-parsed."""
-    try:
-        return json.loads(redact_sensitive_text(json.dumps(metadata), force=True))
-    except json.JSONDecodeError:
-        return None
+    """Redact per leaf. Masking the serialized text is not JSON-safe: an ENV-style
+    secret at the end of a string leaf (``{"x": "DB_PASSWORD=abc"}``) had its closing
+    quote eaten, the re-parse failed, and the UNREDACTED dict was stored."""
+    return redact_sensitive_json(metadata, force=True)
 
 
 def _coerce_str_list(value: Any, name: str, what: str, *, strip: bool = False):

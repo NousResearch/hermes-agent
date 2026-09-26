@@ -46,6 +46,18 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
+def _redact_json(value: Any, enabled: bool) -> Any:
+    """Redact a parsed JSON structure leaf by leaf when enabled (see ``_redact``)."""
+    if not enabled:
+        return value
+    try:
+        from agent.redact import redact_sensitive_json
+        return redact_sensitive_json(value, force=True)
+    except Exception as exc:
+        logger.warning("Trace upload redaction failed; refusing upload", exc_info=True)
+        raise TraceRedactionError(_REDACTION_BLOCKED_MESSAGE) from exc
+
+
 def _redact(text: Any, enabled: bool) -> Any:
     """Redact a string body when enabled (``force=True``: an upload scrubs even if log redaction is off)."""
     if not enabled or not isinstance(text, str) or not text:
@@ -97,11 +109,9 @@ def _tool_calls_to_blocks(tool_calls: Any, redact: bool) -> List[Dict[str, Any]]
         fn = tc.get("function") or {}
         parsed = _parse_tool_args(fn.get("arguments"))
         if redact:
-            try:
-                parsed = json.loads(_redact(json.dumps(parsed), redact))
-            except (json.JSONDecodeError, ValueError):
-                logger.warning("Trace upload redacted tool arguments are not valid JSON; refusing upload")
-                raise TraceRedactionError(_REDACTION_BLOCKED_MESSAGE)
+            # Per leaf, never serialize-then-redact: masking the text form can eat a
+            # closing quote, and the re-parse failure used to refuse the whole upload.
+            parsed = _redact_json(parsed, redact)
         blocks.append({"type": "tool_use", "id": tc.get("id") or f"toolu_{uuid.uuid4().hex[:16]}",
                        "name": fn.get("name") or tc.get("name") or "tool", "input": parsed})
     return blocks

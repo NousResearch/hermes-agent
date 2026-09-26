@@ -826,8 +826,9 @@ class GoogleChatAdapter(BasePlatformAdapter):
         if self._debug_raw:
             # Contains message text + sender email: redact and gate at DEBUG.
             try:
-                from agent.redact import redact_sensitive_text
-                dump = redact_sensitive_text(json.dumps(envelope))
+                from agent.redact import redact_sensitive_json
+
+                dump = json.dumps(redact_sensitive_json(envelope))
             except Exception:
                 dump = "<redact filter unavailable>"
             logger.debug("[GoogleChat] RAW envelope (redacted): %s", dump[:2000])

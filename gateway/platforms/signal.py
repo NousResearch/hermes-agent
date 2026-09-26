@@ -491,13 +491,18 @@ class SignalAdapter(BasePlatformAdapter):
         logger.debug("Signal: message from %s in %s: %s", redact_phone(sender), chat_id[:20], (text or "")[:50])
         await self.handle_message(event)
 
+    def _group_chat_allowed(self, group_id: Optional[str]) -> bool:
+        """Silent group-allowlist predicate — the policy ``_group_allowed`` logs about."""
+        return bool(self.group_allow_from) and (
+            "*" in self.group_allow_from or group_id in self.group_allow_from)
+
     def _group_allowed(self, group_id: str) -> bool:
         """Group policy from SIGNAL_GROUP_ALLOWED_USERS: unset → groups disabled; IDs → only those
         groups; "*" → all. DM auth is run.py's (_is_user_authorized)."""
         if not self.group_allow_from:
             logger.debug("Signal: ignoring group message (no SIGNAL_GROUP_ALLOWED_USERS)")
             return False
-        if "*" not in self.group_allow_from and group_id not in self.group_allow_from:
+        if not self._group_chat_allowed(group_id):
             logger.debug("Signal: group %s not in allowlist", group_id[:8] if group_id else "?")
             return False
         return True
@@ -949,11 +954,24 @@ class SignalAdapter(BasePlatformAdapter):
         return (raw["sender"], raw["timestamp_ms"]) if ok else None
 
     def _reactions_enabled(self, event: "MessageEvent" = None) -> bool:
-        """SIGNAL_REACTIONS env gate, then the DM allowlist: reactions fire before run.py's auth gate,
-        so an unauthorized contact's 👀 would otherwise reveal a listening bot."""
+        """SIGNAL_REACTIONS env gate, then the scope that admits THIS message.
+
+        ``SIGNAL_GROUP_ALLOWED_USERS`` decides a group event: ``_handle_envelope`` drops unlisted
+        groups before an event exists, so an event that reaches these hooks is already admitted and
+        reacts whoever wrote it. Gating groups on the DM allowlist silenced reactions in a
+        group-scoped install, where that allowlist is deliberately empty (no DM access), leaving the
+        allowlisted group with none either. DMs keep the sender gate: these hooks fire before
+        run.py's auth gate, so an unauthorized contact's 👀 would otherwise reveal a listening bot.
+        """
         if str(_sig_secret("SIGNAL_REACTIONS", "true")).lower() in {"false", "0", "no"}:
             return False
-        sender = getattr(getattr(event, "source", None), "user_id", None) if event is not None else None
+        source = getattr(event, "source", None)
+        if source is None:
+            return True
+        chat_id = getattr(source, "chat_id", None) or ""
+        if chat_id.startswith("group:"):
+            return self._group_chat_allowed(chat_id[len("group:"):])
+        sender = getattr(source, "user_id", None)
         return not (sender and "*" not in self.dm_allow_from and sender not in self.dm_allow_from)
 
     async def on_processing_start(self, event: MessageEvent) -> None:

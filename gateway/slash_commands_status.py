@@ -24,6 +24,67 @@ logger = logging.getLogger("gateway.run")
 _LIST_CAP = 12  # /agents shows at most this many rows per section
 
 
+def _chat_work_state(runner, session_key: str, queue_depth: int, home) -> str:
+    """Read existing owners only; never drain, reconcile, or acknowledge work.
+
+    This is a liveness snapshot, not a promise of successful completion. Silent
+    servers and future cron wakeups deliberately do not constitute continuing work.
+    """
+    if runner._running_agents.get(session_key) is not None or queue_depth:
+        return "Yes"
+    try:
+        import sqlite3
+        from contextlib import closing
+        from tools.async_delegation import list_async_delegations
+        from tools.process_registry import process_registry
+
+        if any(d.get("session_key") == session_key and d.get("status") in
+               {"running", "stalling", "finalizing"} for d in list_async_delegations()):
+            return "Yes"
+        # list_sessions() reconciles exits; introspection must not own that transition.
+        with process_registry._lock:
+            processes = [p for p in (*process_registry._running.values(),
+                                     *process_registry._finished.values())
+                         if p.session_key == session_key and p.notify_on_complete]
+            active = any(not p.exited for p in processes)
+        if active:
+            return "Yes"
+        with process_registry.completion_queue.mutex:
+            if any(e.get("session_key") == session_key
+                   for e in process_registry.completion_queue.queue):
+                return "Yes"
+        if any(key[0] == session_key and batch for key, batch in
+               getattr(runner, "_completion_notification_batches", {}).items()):
+            return "Yes"
+        lock = getattr(runner, "_completion_delivery_lock", None)
+        if lock is not None:
+            with lock:
+                inflight = set(runner._completion_deliveries_inflight)
+                delivered = set(getattr(runner, "_completion_deliveries_delivered", {}))
+            if any(("completion", p.id, p.started_at) in inflight for p in processes):
+                return "Yes"
+            # A watcher can hold an event between queue removal and admission.
+            # Without a receipt that gap cannot honestly be reported as idle.
+            if any(p.exited and ("completion", p.id, p.started_at) not in delivered
+                   for p in processes):
+                return "Unknown"
+        # The in-memory delegation tail does not carry delivery acknowledgements.
+        # Read its existing ledger without creating a DB, migrating it, or claiming rows.
+        path = home / "state.db"
+        if path.exists():
+            with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True,
+                                         timeout=0.1)) as db:
+                if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                              "AND name='async_delegations'").fetchone():
+                    if db.execute("SELECT 1 FROM async_delegations WHERE origin_session=? "
+                                  "AND delivery_state='pending' LIMIT 1", (session_key,)).fetchone():
+                        return "Yes"
+        return "No"
+    except Exception:
+        logger.debug("Current-chat work status unavailable", exc_info=True)
+        return "Unknown"
+
+
 def _clean_str(value: Any) -> str:
     """Strip and return a non-empty string value, or empty string."""
     return value.strip() if isinstance(value, str) and value.strip() else ""
@@ -300,9 +361,17 @@ class GatewayStatusCommandsMixin:
                            pct=f"{mark}{pct}"))
         elif context_used:
             lines.append(t("gateway.status.context_used", used=mark + _fmt(context_used)))
-        state = t("gateway.status.state_yes") if fields["agent_running"] else t("gateway.status.state_no")
+        state = t("gateway.status.state_yes") if agent is not None else t("gateway.status.state_no")
+        try:
+            home = self._resolve_profile_home_for_source(source)
+            work_state = await asyncio.to_thread(_chat_work_state, self, session_key, queue_depth, home)
+        except Exception:
+            work_state = "Unknown"
         lines += [t("gateway.status.tokens", tokens=fields["tokens"]),
-                  t("gateway.status.agent_running", state=state)]
+                  f"**Work continuing (this chat):** {work_state}",
+                  t("gateway.status.agent_running", state=state) + " (foreground)"]
+        lines.append("Work includes background tasks and pending automatic continuation; "
+                     "not a guarantee of success. Future cron wakeups and silent servers are excluded.")
         if queue_depth:
             lines.append(t("gateway.status.queued", count=queue_depth))
         if source.platform == Platform.MATRIX:

@@ -104,10 +104,22 @@ export function urlSlugTitleLabel(value: string): string {
       continue
     }
 
-    const titled = cleaned.replace(/\b[a-z]/g, c => c.toUpperCase())
+    // Title-case word slugs (`some-guide` → `Some Guide`), but keep the
+    // exact casing of a separator-less token that looks like a
+    // case-sensitive identifier — it carries a digit, a dot, or mixed case,
+    // as in a release tag (`v1.0.1`) or a filename (`README.md`) — so the
+    // link never invents a different identifier. A plain lowercase word
+    // (`quantumcomputing` → `Quantumcomputing`) still title-cases. (#121321)
+    const looksLikeIdentifier =
+      /\d/.test(cleaned) || /[A-Z]/.test(cleaned) || cleaned.includes('.')
 
-    if (titled.length >= 4) {
-      return titled
+    const label =
+      looksLikeIdentifier && !cleaned.includes(' ')
+        ? cleaned
+        : cleaned.replace(/\b[a-z]/g, c => c.toUpperCase())
+
+    if (label.length >= 4) {
+      return label
     }
   }
 

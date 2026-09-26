@@ -4426,6 +4426,20 @@ class SlackAdapter(BasePlatformAdapter):
                 normalized_event[key] = event.get(key)
         if changed_event_ts:
             normalized_event["_slack_changed_event_ts"] = changed_event_ts
+        # A metadata-only frame adds NO content: the folded revision body is empty AND so is the
+        # body it replaces. Slack emits these for thread-parent bookkeeping (reply counters, the
+        # ``agent_session`` status block) where the text is unchanged, so an empty body here is a
+        # counter move, not a turn -- it must never be dispatched as an empty-bodied turn. This is
+        # gated on the ``message_changed`` path (only this normalizer runs for that subtype), so a
+        # genuinely empty message with NO subtype still dispatches as ``['']``.
+        revision_body = self._folded_message_body(updated_message, team_id)
+        if not revision_body.strip():
+            previous_message = event.get("previous_message")
+            previous_body = (
+                self._folded_message_body(previous_message, team_id)
+                if isinstance(previous_message, dict) else "")
+            if not previous_body.strip():
+                return None
         return normalized_event
 
     @staticmethod

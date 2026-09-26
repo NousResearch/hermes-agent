@@ -3059,7 +3059,10 @@ def test_metadata_only_and_streaming_matrix():
     'V5_previous_message_absent__inner_ts_claimed': [],
     'V6_real_metadata_only__claimed_but_earlier_turn_was_handed_blank': [],
     'V7_real_metadata_only__parent_turn_still_in_flight': [],
-    'V8_empty_body_metadata_only_frame__inner_ts_unclaimed': [(0, 'da39a3ee5e6b')],
+    # Flipped by the content-free guard (this change): case V8 is the SAME frame as the new
+    # DETECTOR test -- an empty body AND an empty previous_message add no content -- so the
+    # consumer is now handed NOTHING instead of an empty turn. V8b (ts claimed) was already [].
+    'V8_empty_body_metadata_only_frame__inner_ts_unclaimed': [],
     'V8b_empty_body_metadata_only_frame__inner_ts_claimed': [],
     'S1_real_in_progress_opener_then_its_completion': [(2980, '1f8bbea5fff5')],
     'S2_real_in_progress_opener_alone__no_completion_in_the_window': [(0, 'da39a3ee5e6b')],
@@ -3112,3 +3115,51 @@ def test_log_line_shape_comes_from_the_streaming_opener_not_the_parent_edit():
     assert all(ids == [None] for ids in meta_reply_ids.values()), meta_reply_ids
     assert delivered and delivered[0]["chars"] == 0, delivered
     assert delivered[0]["reply_to_id"] == PARENT_TS, delivered
+
+
+def _content_free_changed_frame():
+    """A ``message_changed`` frame that adds NO content at all.
+
+    ``hidden=True``, a fresh outer ``ts``/``event_ts``, inner ``ts == thread_ts ==`` the thread
+    parent, inner ``text == ""`` with no blocks, and a ``previous_message`` that is EMPTY too --
+    the shape Slack emits for thread-parent bookkeeping (reply counters, the ``agent_session``
+    status block) where the text is unchanged. Same construction as case
+    ``V8_empty_body_metadata_only_frame__inner_ts_unclaimed``.
+    """
+    frame = _event(META_ONLY)
+    frame["message"]["text"] = ""
+    frame["message"].pop("blocks", None)
+    frame["message"]["ts"] = frame["message"]["thread_ts"] = PARENT_TS
+    frame["previous_message"] = json.loads(json.dumps(frame["message"]))
+    return frame
+
+
+def test_content_free_changed_frame_with_no_claim_state_delivers_nothing():
+    """A content-free ``message_changed`` frame is bookkeeping, never an agent turn.
+
+    The frame carries NO body on either side (inner ``text`` empty, no blocks; ``previous_message``
+    empty) and arrives with NO claim state (fresh process, claim evicted). Its folded body adds
+    nothing, so the consumer must be handed NOTHING -- an empty-bodied turn for a metadata-only
+    frame is the defect this closes.
+
+    SENSITIVITY: DETECTOR -- without the empty/flat-body guard the frame is dispatched and the
+    consumer is handed ``['']``; with it the frame is dropped and the consumer is handed nothing.
+    The sibling case ``V8b`` (SAME frame, ts already claimed) already delivers nothing and must
+    stay that way.
+    """
+    result = _measure([(_content_free_changed_frame(), _body(META_ONLY))])
+    print("PROBE_CONTENT_FREE " + json.dumps({
+        "case": "V9_content_free_changed_frame__inner_ts_unclaimed",
+        "delivered": [
+            {"chars": len(t or ""), "sha1": hashlib.sha1((t or "").encode("utf-8")).hexdigest()[:12]}
+            for t in result["texts"]
+        ],
+        "still_held": result["still_held"],
+    }, sort_keys=True))
+
+    delivered = result["texts"]
+    assert delivered == [], (
+        f"consumer was handed {delivered!r} for a content-free message_changed frame (empty body "
+        "AND empty previous_message, no claim state). A metadata-only bookkeeping frame adds no "
+        "content and must never become a turn."
+    )

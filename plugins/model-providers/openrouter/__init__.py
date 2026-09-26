@@ -4,6 +4,7 @@ import logging
 from typing import Any
 
 from agent.portal_tags import get_affinity_scope, get_conversation_context
+from agent.prompt_cache_scope import GROK_AGGREGATOR_MODEL_PREFIXES, is_fork_cache_scope
 from agent.transports.codex import _cache_scope_from_session_id
 from providers import register_provider
 from providers.base import ProviderProfile
@@ -190,7 +191,11 @@ class OpenRouterProfile(ProviderProfile):
                 extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
         # xAI's prompt cache is pinned per backend server via this header.
         grok_conv_id = _sticky_key(session_id)
-        if grok_conv_id and model and model.startswith(("x-ai/grok-", "xai/grok-")):
+        # A cache-parity fork carries the parent's ambient scope; on Grok that key would evict
+        # the parent's server slot, so honour the fork-derived scope (agent/prompt_cache_scope.py).
+        if is_fork_cache_scope(context.get("cache_scope_id")):
+            grok_conv_id = context["cache_scope_id"]
+        if grok_conv_id and model and model.startswith(GROK_AGGREGATOR_MODEL_PREFIXES):
             top_level["extra_headers"] = {"x-grok-conv-id": grok_conv_id}
         return extra_body, top_level
 

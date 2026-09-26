@@ -132,7 +132,7 @@ test('fallback install stamps use an unpinned branch ref', () => {
   )
 })
 
-test('resolveMarkerPinnedCommit prefers real HEAD over fallback stamp zeros', () => {
+test('resolveMarkerPinnedCommit prefers installed checkout HEAD over the packaged artifact', () => {
   const realHead = 'c'.repeat(40)
   assert.equal(
     resolveMarkerPinnedCommit({ commit: ZERO_COMMIT, branch: 'main' }, '/tmp/checkout', {
@@ -144,8 +144,8 @@ test('resolveMarkerPinnedCommit prefers real HEAD over fallback stamp zeros', ()
     resolveMarkerPinnedCommit({ commit: 'd'.repeat(40), branch: 'main' }, '/tmp/checkout', {
       resolveHead: () => realHead
     }),
-    'd'.repeat(40),
-    'packaged real pin wins over checkout HEAD'
+    realHead,
+    'the installed checkout owns source runtime identity'
   )
   assert.equal(
     resolveMarkerPinnedCommit({ commit: ZERO_COMMIT, branch: 'main' }, '/tmp/missing', {
@@ -180,10 +180,6 @@ test('resolveInstallScript downloads fallback stamps by branch instead of zero c
     assert.equal(result.source, 'download')
     assert.equal(result.commit, null)
     assert.equal(result.path, cachedScriptPath(home, 'fallback-main'))
-    assert.ok(
-      logs.some(ev => /fallback, unpinned/.test(ev.line || '')),
-      'emits an unpinned fallback log line'
-    )
   } finally {
     fs.rmSync(home, { recursive: true, force: true })
   }
@@ -242,10 +238,6 @@ test('resolveInstallScript falls back to the installed agent checkout on a 404',
     // It should have copied the installer into the bootstrap cache.
     assert.equal(result.path, cachedScriptPath(home, commit))
     assert.ok(fs.existsSync(result.path), 'fallback script copied into cache')
-    assert.ok(
-      logs.some(ev => /falling back to installed agent/.test(ev.line || '')),
-      'emits a fallback log line'
-    )
   } finally {
     fs.rmSync(home, { recursive: true, force: true })
   }

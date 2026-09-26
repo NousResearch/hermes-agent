@@ -18,6 +18,7 @@ import {
   setCurrentReasoningEffort,
   setCurrentReasoningEffortWire,
   setCurrentServiceTier,
+  setSessionStartedAt,
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
@@ -35,9 +36,19 @@ import { SessionStateCache } from '../session-state-cache'
 
 import {
   invalidatePersistedDisplayTranscriptAuthority,
-  suppressTranscriptForView
+  suppressTranscriptForView,
+  transcriptRowContentKey
 } from './use-session-actions/transcript-provenance'
 import { chatMessageArraysEquivalent } from './use-session-actions/utils'
+
+// A held transcript gate hides only the unproven CACHED prefix (the ids
+// captured when the hold was armed) — rows that arrive live during the hold
+// still paint, which is the point of the fix (#117867).
+interface TranscriptViewGate {
+  cutoffIds: ReadonlySet<string>
+  cutoffKeys: ReadonlySet<string>
+  token: symbol
+}
 
 interface SessionStateCacheOptions {
   activeSessionId: string | null
@@ -143,7 +154,7 @@ export function useSessionStateCache({
   const sessionStateCache = sessionStateByRuntimeIdRef.current
   const pendingViewStateRef = useRef<{ sessionId: string; state: ClientSessionState } | null>(null)
   const viewSyncRafRef = useRef<number | null>(null)
-  const transcriptViewGateByRuntimeIdRef = useRef(new Map<string, symbol>())
+  const transcriptViewGateByRuntimeIdRef = useRef(new Map<string, TranscriptViewGate>())
   // Runtime id whose transcript currently occupies `$messages` — lets the
   // flush below tell a same-session refresh from a thread switch.
   const viewSessionIdRef = useRef<string | null>(null)
@@ -226,16 +237,25 @@ export function useSessionStateCache({
     }
   }, [])
 
-  const holdSessionTranscriptView = useCallback((runtimeId: string): (() => void) => {
-    const token = Symbol(runtimeId)
-    transcriptViewGateByRuntimeIdRef.current.set(runtimeId, token)
+  const holdSessionTranscriptView = useCallback(
+    (runtimeId: string): (() => void) => {
+      const token = Symbol(runtimeId)
+      const cached = sessionStateCache.get(runtimeId)
 
-    return () => {
-      if (transcriptViewGateByRuntimeIdRef.current.get(runtimeId) === token) {
-        transcriptViewGateByRuntimeIdRef.current.delete(runtimeId)
+      transcriptViewGateByRuntimeIdRef.current.set(runtimeId, {
+        cutoffIds: new Set((cached?.messages ?? []).map(message => message.id)),
+        cutoffKeys: new Set((cached?.messages ?? []).map(transcriptRowContentKey)),
+        token
+      })
+
+      return () => {
+        if (transcriptViewGateByRuntimeIdRef.current.get(runtimeId)?.token === token) {
+          transcriptViewGateByRuntimeIdRef.current.delete(runtimeId)
+        }
       }
-    }
-  }, [])
+    },
+    [sessionStateCache]
+  )
 
   const flushPendingViewState = useCallback(() => {
     const pending = pendingViewStateRef.current
@@ -279,6 +299,9 @@ export function useSessionStateCache({
     setBusy(pending.state.busy)
     setMutableRef(busyRef, pending.state.busy)
     setAwaitingResponse(pending.state.awaitingResponse)
+    // Keep the foreground duration anchored to the runtime's first renderer
+    // attachment. Background state remains cached without stealing this view.
+    setSessionStartedAt(pending.state.runtimeStartedAt)
     // Mirror the focused session's per-session turn clock into the global
     // atom the statusbar timer reads. Keeps a backgrounded turn's elapsed
     // time intact on focus instead of zeroing it (the "timer restarts" bug).
@@ -300,7 +323,8 @@ export function useSessionStateCache({
         return
       }
 
-      const viewState = suppressTranscriptForView(state, transcriptViewGateByRuntimeIdRef.current.has(sessionId))
+      const gate = transcriptViewGateByRuntimeIdRef.current.get(sessionId)
+      const viewState = suppressTranscriptForView(state, gate ?? null)
 
       syncRuntimeMetadataToView(viewState)
       pendingViewStateRef.current = { sessionId, state: viewState }

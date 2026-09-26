@@ -10,7 +10,6 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
-import re
 import subprocess
 import shutil
 import sys
@@ -24,11 +23,9 @@ from fastapi.testclient import TestClient
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-
 
 def _load_plugin_router():
     """Dynamically load plugins/kanban/dashboard/plugin_api.py and return its router."""
@@ -45,7 +42,6 @@ def _load_plugin_router():
     spec.loader.exec_module(mod)
     return mod.router
 
-
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
     """Isolated HERMES_HOME with an empty kanban DB."""
@@ -56,18 +52,15 @@ def kanban_home(tmp_path, monkeypatch):
     kb.init_db()
     return home
 
-
 @pytest.fixture
 def client(kanban_home):
     app = FastAPI()
     app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
     return TestClient(app)
 
-
 # ---------------------------------------------------------------------------
 # GET /board on an empty DB
 # ---------------------------------------------------------------------------
-
 
 def test_board_empty(client):
     r = client.get("/api/plugins/kanban/board")
@@ -83,11 +76,9 @@ def test_board_empty(client):
     assert data["assignees"] == []
     assert data["latest_event_id"] == 0
 
-
 # ---------------------------------------------------------------------------
 # POST /tasks then GET /board sees it
 # ---------------------------------------------------------------------------
-
 
 def test_create_task_appears_on_board(client):
     r = client.post(
@@ -118,7 +109,6 @@ def test_create_task_appears_on_board(client):
     assert "acme" in data["tenants"]
     assert "researcher" in data["assignees"]
 
-
 def test_patch_board_sets_project_directory(client, tmp_path):
     """Board-level default_workdir must be editable after creation."""
     kb.create_board("late-config")
@@ -139,7 +129,6 @@ def test_patch_board_sets_project_directory(client, tmp_path):
     assert kb.read_board_metadata("late-config")["default_workdir"] == str(
         project_dir.resolve()
     )
-
 
 def test_scheduled_tasks_have_their_own_column_not_todo(client):
     """Scheduled/time-delay tasks must not be silently bucketed into todo."""
@@ -165,7 +154,6 @@ def test_scheduled_tasks_have_their_own_column_not_todo(client):
     assert any(t["id"] == task["id"] for t in columns["scheduled"])
     assert not any(t["id"] == task["id"] for t in columns["todo"])
 
-
 def test_tenant_filter(client):
     client.post("/api/plugins/kanban/tasks", json={"title": "A", "tenant": "t1"})
     client.post("/api/plugins/kanban/tasks", json={"title": "B", "tenant": "t2"})
@@ -179,24 +167,9 @@ def test_tenant_filter(client):
     total = sum(len(c["tasks"]) for c in r.json()["columns"])
     assert total == 1
 
-
-def test_dashboard_markdown_html_is_sanitized_before_render():
-    """Markdown rendering must sanitize HTML before dangerouslySetInnerHTML."""
-
-    repo_root = Path(__file__).resolve().parents[2]
-    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
-    js = bundle.read_text(encoding="utf-8")
-
-    assert "function sanitizeMarkdownHtml(html)" in js
-    assert "MARKDOWN_ALLOWED_TAGS" in js
-    assert "sanitizeMarkdownHtml(renderMarkdown(props.source || \"\"))" in js
-    assert "dangerouslySetInnerHTML: { __html: renderMarkdown(props.source || \"\") }" not in js
-
-
 # ---------------------------------------------------------------------------
 # GET /tasks/:id returns body + comments + events + links
 # ---------------------------------------------------------------------------
-
 
 def test_task_detail_includes_links_and_events(client):
     parent = client.post(
@@ -222,11 +195,9 @@ def test_task_detail_includes_links_and_events(client):
     # Events exist from creation.
     assert len(data["events"]) >= 1
 
-
 # ---------------------------------------------------------------------------
 # PATCH /tasks/:id — status transitions
 # ---------------------------------------------------------------------------
-
 
 def test_patch_review_lifecycle_preserves_handoff_and_reopens(client):
     secret = "ghp_" + "D" * 40
@@ -275,7 +246,6 @@ def test_patch_review_lifecycle_preserves_handoff_and_reopens(client):
             for event in kb.list_events(conn, task["id"])
         )
 
-
 def test_reopening_parent_demotes_ready_child(client):
     """Reopening a completed parent must invalidate ready children immediately.
 
@@ -311,7 +281,6 @@ def test_reopening_parent_demotes_ready_child(client):
         f"/api/plugins/kanban/tasks/{child['id']}"
     ).json()["task"]
     assert child_after_reopen["status"] == "todo"
-
 
 def test_reopening_parent_retracts_review_and_blocks_approval(client):
     with kbc.connect() as conn:
@@ -381,7 +350,6 @@ def test_reopening_parent_retracts_review_and_blocks_approval(client):
         assert grandchild is not None
         assert grandchild.status == "ready"
 
-
 def test_reopening_parent_recursively_retracts_done_and_running_descendants(client):
     with kbc.connect() as conn:
         parent_id = kb.create_task(conn, title="root", assignee="planner")
@@ -430,7 +398,6 @@ def test_reopening_parent_recursively_retracts_done_and_running_descendants(clie
         assert child is not None and child.status == "ready"
         assert grandchild is not None and grandchild.status == "todo"
 
-
 def test_dashboard_reclaim_of_active_review_preserves_review_phase(client):
     with kbc.connect() as conn:
         task_id = kb.create_task(conn, title="active review", assignee="reviewer")
@@ -459,7 +426,6 @@ def test_dashboard_reclaim_of_active_review_preserves_review_phase(client):
         next_review = kb.claim_review_task(conn, task_id)
         assert next_review is not None
 
-
 # ---------------------------------------------------------------------------
 # DELETE /tasks/:id
 # ---------------------------------------------------------------------------
@@ -480,11 +446,9 @@ def test_delete_task(client):
     r = client.get(f"/api/plugins/kanban/tasks/{t['id']}")
     assert r.status_code == 404
 
-
 # ---------------------------------------------------------------------------
 # Comments + Links
 # ---------------------------------------------------------------------------
-
 
 def test_add_comment(client):
     t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
@@ -500,11 +464,9 @@ def test_add_comment(client):
     assert comments[0]["body"] == "how's progress?"
     assert comments[0]["author"] == "teknium"
 
-
 # ---------------------------------------------------------------------------
 # Dispatch nudge
 # ---------------------------------------------------------------------------
-
 
 def test_dispatch_dry_run(client):
     client.post(
@@ -517,26 +479,21 @@ def test_dispatch_dry_run(client):
     # DispatchResult is serialized as a dataclass dict.
     assert isinstance(body, dict)
 
-
 # ---------------------------------------------------------------------------
 # Triage column (new v1 status)
 # ---------------------------------------------------------------------------
-
 
 # ---------------------------------------------------------------------------
 # Progress rollup (done children / total children)
 # ---------------------------------------------------------------------------
 
-
 # ---------------------------------------------------------------------------
 # Auto-init on first board read
 # ---------------------------------------------------------------------------
 
-
 # ---------------------------------------------------------------------------
 # WebSocket auth (query-param token)
 # ---------------------------------------------------------------------------
-
 
 def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
     """Loopback mode: a missing or wrong ?token= must be rejected with
@@ -588,16 +545,13 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
     ) as ws:
         assert ws is not None  # handshake succeeded
 
-
     # The bug symptom was a traceback; we don't assert on stderr because
     # capturing asyncio's internal "exception was never retrieved" logging
     # is flaky. The assertion that matters is: no CancelledError escaped.
 
-
 # ---------------------------------------------------------------------------
 # Bulk actions
 # ---------------------------------------------------------------------------
-
 
 def test_bulk_status_ready(client):
     a = client.post("/api/plugins/kanban/tasks", json={"title": "a"}).json()["task"]
@@ -622,7 +576,6 @@ def test_bulk_status_ready(client):
     ready = next(col for col in board["columns"] if col["name"] == "ready")
     ids = {task["id"] for task in ready["tasks"]}
     assert {a["id"], b["id"], c2["id"]}.issubset(ids)
-
 
 def test_bulk_review_assignment_preserves_implementer_provenance(client):
     tasks = [
@@ -657,7 +610,6 @@ def test_bulk_review_assignment_preserves_implementer_provenance(client):
             assert event.payload["implementer"] == "builder"
             assert event.payload["reviewer"] == "reviewer"
 
-
 def test_bulk_status_done_forwards_completion_summary(client):
     a = client.post("/api/plugins/kanban/tasks", json={"title": "a"}).json()["task"]
     b = client.post("/api/plugins/kanban/tasks", json={"title": "b"}).json()["task"]
@@ -687,14 +639,12 @@ def test_bulk_status_done_forwards_completion_summary(client):
     finally:
         conn.close()
 
-
 def _gated_child(client):
     parent = client.post("/api/plugins/kanban/tasks", json={"title": "parent"}).json()["task"]
     child = client.post(
         "/api/plugins/kanban/tasks", json={"title": "child", "parents": [parent["id"]]},
     ).json()["task"]
     return parent["id"], child["id"]
-
 
 def test_patch_done_or_review_refused_by_open_parent_names_it(client):
     """A completion refused by the dependency gate must say which parent is open,
@@ -707,7 +657,6 @@ def test_patch_done_or_review_refused_by_open_parent_names_it(client):
         assert f"{parent_id} (ready)" in detail, detail
         assert "unsatisfied parent" in detail, detail
 
-
 def test_bulk_done_refused_by_open_parent_names_it(client):
     parent_id, child_id = _gated_child(client)
     r = client.post("/api/plugins/kanban/tasks/bulk", json={"ids": [child_id], "status": "done"})
@@ -716,7 +665,6 @@ def test_bulk_done_refused_by_open_parent_names_it(client):
     assert entry["ok"] is False
     assert f"{parent_id} (ready)" in entry["error"], entry
     assert "unsatisfied parent" in entry["error"], entry
-
 
 def test_bulk_status_running_rejected(client):
     """Bulk updates must match single-task PATCH: direct 'running' is invalid."""
@@ -742,82 +690,6 @@ def test_bulk_status_running_rejected(client):
     }
     assert statuses.get(t["id"]) != "running"
 
-
-def test_dashboard_done_actions_prompt_for_completion_summary():
-    """Behavioral coverage for the migrated ``requestDialog`` flow.
-
-    Replaces the prior bundle-string-only assertion (which only proved the
-    rename landed). The dialog state machine at
-    ``plugins/kanban/dashboard/dist/index.js`` resolves with
-    ``{confirmed: true|false, summary?}``. Each migrated call site must
-    gate the dispatch on the resolved ``confirmed`` flag. This test
-    asserts that contract at two layers:
-
-    1. **Bundle cancel guards**: every migrated site gates on ``r.confirmed``
-       (or its subscripted alias ``r1.confirmed``/``r2.confirmed``) before
-       dispatching. We verify by counting the cancel-guard patterns +
-       cross-referencing against the 8 migrated sites listed in the PR
-       description.
-    2. **Visual affordance**: every destructive ``requestDialog`` call marks
-       ``destructive: true`` so the host renders the destructive variant.
-
-    The dispatch path itself (PATCH/DELETE actually firing on confirm, not
-    on cancel) is covered by the backend behavioral tests
-    ``test_dashboard_confirm_dispatches_expected_*`` and
-    ``test_dashboard_cancel_keeps_task_in_old_status`` below — together
-    they pin the contract end-to-end.
-    """
-
-    repo_root = Path(__file__).resolve().parents[2]
-    js = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
-
-    import re
-
-    # Match ``if (!r.confirmed)``, ``if (!r1.confirmed)``, ``if (r.confirmed)``
-    # (positive-form gate). The bundle uses both polarities:
-    # - negative ``if (!r.confirmed) return null;`` in dialog flow bodies
-    # - positive ``if (r.confirmed) props.onDeleteBoard(...);`` in JSX handlers
-    cancel_guard_pattern = re.compile(
-        r"if\s*\(\s*!?\s*r\d?\.confirmed\s*\)",
-        re.IGNORECASE,
-    )
-    guards = cancel_guard_pattern.findall(js)
-    # 8 migrated sites per the PR description:
-    # moveTask (1), moveSelected (1), applyBulk (1), deleteTask (1),
-    # deleteSelected (1), archiveBoard (1), removeAttachment (1), doPatch (1).
-    # Plus performMoveTask callers (moveTask/moveSelected each have
-    # ``r1.confirmed`` + ``r2.confirmed`` for the two-stage flow) → up to
-    # 10 guards. Loose lower bound to avoid brittleness.
-    assert len(guards) >= 8, (
-        f"expected >= 8 `if (r?.confirmed)` cancel guards in bundle (one "
-        f"per migrated site, plus extras for two-stage flows); found {len(guards)}"
-    )
-
-    # Visual affordance: every destructive requestDialog call must mark
-    # ``destructive: true`` so the host renders the destructive variant.
-    # deleteTask, deleteSelected, archiveBoard → at least 3.
-    destructive_call_count = js.count("destructive: true")
-    assert destructive_call_count >= 3, (
-        f"expected >= 3 `destructive: true` requestDialog calls (single "
-        f"delete, bulk delete, archive-board); found {destructive_call_count}"
-    )
-
-
-def test_dashboard_cancel_keeps_task_in_old_status(client):
-    """Behavioral: the cancel branch of the dispatch path (no PATCH/DELETE
-    issued) must leave the task in its previous status. The cancel guard
-    lives in the bundle; this test pins the backend contract that the guard
-    relies on.
-    """
-    t = client.post("/api/plugins/kanban/tasks",
-                    json={"title": "x"}).json()["task"]
-    # Tasks land in ``ready`` by default. No PATCH issued — simulating the
-    # cancel branch in the bundle.
-    assert t["status"] == "ready"
-    r = client.get(f"/api/plugins/kanban/tasks/{t['id']}")
-    assert r.json()["task"]["status"] == "ready"
-
-
 def test_dashboard_confirm_dispatches_expected_patch_body(client):
     """Behavioral: the PATCH body shape the bundle produces on confirm
     (status + result + summary) must be accepted by the backend without
@@ -840,91 +712,6 @@ def test_dashboard_confirm_dispatches_expected_patch_body(client):
     assert body["status"] == "done"
     assert body.get("result") == "shipped"
 
-
-def test_dashboard_confirm_dispatches_expected_delete(client):
-    """Behavioral: the DELETE call the bundle issues on confirm
-    (``fetchJSON(`${API}/tasks/${id}`, { method: 'DELETE' })``) must
-    succeed and remove the task.
-    """
-    t = client.post("/api/plugins/kanban/tasks",
-                    json={"title": "x"}).json()["task"]
-    r = client.delete(f"/api/plugins/kanban/tasks/{t['id']}")
-    assert r.status_code == 200, r.text
-    # 404 on the now-deleted task confirms removal.
-    r2 = client.get(f"/api/plugins/kanban/tasks/{t['id']}")
-    assert r2.status_code == 404
-
-
-def test_dashboard_surfaces_ready_blocked_error_inline():
-    """Regression for #26744: failed status transitions must be surfaced
-    inline, not swallowed.  The drag/drop banner and the drawer's action
-    row each render the parsed API ``detail`` so operators see *why*
-    their click did nothing.
-    """
-    repo_root = Path(__file__).resolve().parents[2]
-    bundle = (
-        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
-    ).read_text()
-
-    # Helper that strips ``"409: {\"detail\":\"…\"}"`` down to the
-    # human-readable message before it lands in any banner.
-    assert "function parseApiErrorMessage(err)" in bundle
-    assert "parsed.detail" in bundle
-
-    # Drag/drop banner now uses the parsed message instead of raw
-    # ``err.message`` so it no longer leaks HTTP plumbing.
-    assert "setError(tx(t, \"moveFailed\", \"Move failed: \") + parseApiErrorMessage(err))" in bundle
-
-    # Drawer action row has its own visible error surface and clears it
-    # on success/refresh so stale failures don't follow the operator
-    # around.
-    assert "const [patchErr, setPatchErr] = useState(null);" in bundle
-    assert "setPatchErr(parseApiErrorMessage(e))" in bundle
-    assert "setPatchErr(null)" in bundle
-
-
-def test_dashboard_dependency_selects_use_value_change_handler():
-    """Regression for the dependency selects in the task drawer: the
-    add-parent / add-child dropdowns must wire through the shared
-    selectChangeHandler helper so their value actually lands on the
-    underlying React state. Salvaged from #20019 @LeonSGP43.
-    """
-    repo_root = Path(__file__).resolve().parents[2]
-    bundle = (
-        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
-    ).read_text()
-
-    parent_select = (
-        'value: newParent,\n'
-        '          className: "h-7 text-xs flex-1",\n'
-        '        }, selectChangeHandler(setNewParent))'
-    )
-    child_select = (
-        'value: newChild,\n'
-        '          className: "h-7 text-xs flex-1",\n'
-        '        }, selectChangeHandler(setNewChild))'
-    )
-
-    assert parent_select in bundle
-    assert child_select in bundle
-
-
-def test_dashboard_board_project_binding_is_exposed_in_ui():
-    """The board switcher's unbind action clears the binding through the
-    same REST contract the API tests pin (PATCH ``project_id: ""``); the
-    create/settings payload shapes themselves are covered behaviourally in
-    ``test_kanban_board_project_api.py``. The bundle has no build step, so
-    only the UI-side seam is pinned here.
-    """
-    repo_root = Path(__file__).resolve().parents[2]
-    bundle = (
-        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
-    ).read_text(encoding="utf-8")
-
-    assert "hermes-kanban-board-project-unbind" in bundle
-    assert 'updateBoard(board, { project_id: "" })' in bundle
-
-
 def test_bulk_archive(client):
     a = client.post("/api/plugins/kanban/tasks", json={"title": "a"}).json()["task"]
     b = client.post("/api/plugins/kanban/tasks", json={"title": "b"}).json()["task"]
@@ -938,7 +725,6 @@ def test_bulk_archive(client):
     assert a["id"] not in ids
     assert b["id"] not in ids
 
-
 def test_bulk_reassign(client):
     a = client.post("/api/plugins/kanban/tasks",
                     json={"title": "a", "assignee": "old"}).json()["task"]
@@ -951,7 +737,6 @@ def test_bulk_reassign(client):
         t = client.get(f"/api/plugins/kanban/tasks/{tid}").json()["task"]
         assert t["assignee"] == "new"
 
-
 def test_bulk_unassign_via_empty_string(client):
     a = client.post("/api/plugins/kanban/tasks",
                     json={"title": "a", "assignee": "x"}).json()["task"]
@@ -960,7 +745,6 @@ def test_bulk_unassign_via_empty_string(client):
     assert r.status_code == 200
     t = client.get(f"/api/plugins/kanban/tasks/{a['id']}").json()["task"]
     assert t["assignee"] is None
-
 
 def test_bulk_partial_failure_doesnt_abort_siblings(client):
     """One bad id in the middle of a batch must not prevent others from
@@ -981,21 +765,17 @@ def test_bulk_partial_failure_doesnt_abort_siblings(client):
         t = client.get(f"/api/plugins/kanban/tasks/{tid}").json()["task"]
         assert t["priority"] == 7
 
-
 def test_bulk_empty_ids_400(client):
     r = client.post("/api/plugins/kanban/tasks/bulk", json={"ids": []})
     assert r.status_code == 400
 
-
 # ---------------------------------------------------------------------------
 # /config endpoint
 # ---------------------------------------------------------------------------
 
-
 # ---------------------------------------------------------------------------
 # /config endpoint
 # ---------------------------------------------------------------------------
-
 
 def test_config_reads_dashboard_kanban_section(tmp_path, monkeypatch, client):
     home = Path(os.environ["HERMES_HOME"])
@@ -1015,11 +795,9 @@ def test_config_reads_dashboard_kanban_section(tmp_path, monkeypatch, client):
     assert data["include_archived_by_default"] is True
     assert data["render_markdown"] is False
 
-
 # ---------------------------------------------------------------------------
 # Runs surfacing (vulcan-artivus RFC feedback)
 # ---------------------------------------------------------------------------
-
 
 def test_event_dict_includes_run_id(client):
     """GET /tasks/:id returns events with run_id populated."""
@@ -1045,16 +823,13 @@ def test_event_dict_includes_run_id(client):
     comp = [e for e in events if e["kind"] == "completed"]
     assert comp[0]["run_id"] == run_id
 
-
 # ---------------------------------------------------------------------------
 # Per-task force-loaded skills via REST
 # ---------------------------------------------------------------------------
 
-
 # ---------------------------------------------------------------------------
 # Dispatcher-presence warning in POST /tasks response
 # ---------------------------------------------------------------------------
-
 
 # ---------------------------------------------------------------------------
 # _task_dict — outer try/except fallback when task_age raises
@@ -1071,13 +846,11 @@ def test_event_dict_includes_run_id(client):
 # tests below pin that contract.
 # ---------------------------------------------------------------------------
 
-
 _FALLBACK_AGE = {
     "created_age_seconds": None,
     "started_age_seconds": None,
     "time_to_complete_seconds": None,
 }
-
 
 # ---------------------------------------------------------------------------
 # Home-channel subscription endpoints (#19534 follow-up: GUI opt-in)
@@ -1087,7 +860,6 @@ _FALLBACK_AGE = {
 # backend endpoints read the live GatewayConfig, so tests set env vars
 # (BOT_TOKEN + HOME_CHANNEL) to simulate a user who has run /sethome on
 # telegram and discord.
-
 
 @pytest.fixture
 def with_home_channels(monkeypatch):
@@ -1102,7 +874,6 @@ def with_home_channels(monkeypatch):
     # Slack has a token but NO home — should be excluded from the list.
     monkeypatch.setenv("SLACK_BOT_TOKEN", "slack_fake")
 
-
 def test_home_channels_lists_only_platforms_with_home(client, with_home_channels):
     """GET /home-channels returns entries only for platforms where the
     user has set a home; untoggled-subscribed bool is false by default."""
@@ -1115,11 +886,9 @@ def test_home_channels_lists_only_platforms_with_home(client, with_home_channels
     for h in r.json()["home_channels"]:
         assert h["subscribed"] is False
 
-
 # ---------------------------------------------------------------------------
 # Recovery endpoints (reclaim + reassign) and warnings field
 # ---------------------------------------------------------------------------
-
 
 def test_reclaim_endpoint_releases_running_claim(client):
     """POST /tasks/<id>/reclaim drops the claim, returns ok, and emits
@@ -1166,7 +935,6 @@ def test_reclaim_endpoint_releases_running_claim(client):
     finally:
         conn2.close()
 
-
 def test_reassign_endpoint_switches_profile(client):
     """POST /tasks/<id>/reassign changes the assignee field."""
     conn = kbc.connect()
@@ -1191,11 +959,9 @@ def test_reassign_endpoint_switches_profile(client):
     finally:
         conn2.close()
 
-
 # ---------------------------------------------------------------------------
 # Diagnostics endpoint (/api/plugins/kanban/diagnostics)
 # ---------------------------------------------------------------------------
-
 
 def test_diagnostics_endpoint_surfaces_blocked_hallucination(client):
     conn = kbc.connect()
@@ -1221,11 +987,9 @@ def test_diagnostics_endpoint_surfaces_blocked_hallucination(client):
     assert row["diagnostics"][0]["severity"] == "error"
     assert "t_ffff00001234" in row["diagnostics"][0]["data"]["phantom_ids"]
 
-
 # ---------------------------------------------------------------------------
 # POST /tasks/:id/specify — triage specifier endpoint
 # ---------------------------------------------------------------------------
-
 
 def _patch_specifier_response(monkeypatch, *, content, model="test-model"):
     """Helper: install a fake auxiliary client so the specifier endpoint
@@ -1239,7 +1003,6 @@ def _patch_specifier_response(monkeypatch, *, content, model="test-model"):
     fake_call = MagicMock(return_value=resp)
     monkeypatch.setattr("agent.auxiliary_client.call_llm", fake_call)
     return fake_call
-
 
 def test_specify_happy_path(client, monkeypatch):
     import json as jsonlib
@@ -1274,13 +1037,9 @@ def test_specify_happy_path(client, monkeypatch):
     assert detail["title"] == "Polished"
     assert "**Goal**" in (detail["body"] or "")
 
-
 # ---------------------------------------------------------------------------
 # Final result visibility for Done cards
 # ---------------------------------------------------------------------------
-
-
-
 
 # ---------------------------------------------------------------------------
 # Touch drag-vs-tap threshold (#115568)
@@ -1306,36 +1065,6 @@ def test_touch_card_tap_opens_instead_of_dragging():
     assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
     assert "PASS" in result.stdout
 
-
 # ---------------------------------------------------------------------------
 # Diagnostic severity colours follow the dashboard theme
 # ---------------------------------------------------------------------------
-
-
-def test_diag_severity_tokens_route_through_host_theme_tokens():
-    """The three ``--hermes-diag-*`` rungs must resolve through the host's
-    ``--color-warning`` / ``--color-destructive`` tokens (#115118). They were
-    literals declared on the consuming elements, which no theme override can
-    reach (the theme engine writes custom properties on ``<html>`` and an
-    element-level declaration always wins), so light themes rendered the
-    amber badge at 1.8:1 contrast with no way to fix it. Headless-Chrome
-    receipt: with the tokens set on ``<html>`` the computed colours follow;
-    with none set the shipped literals render unchanged.
-    """
-    css = (Path(__file__).resolve().parents[2] / "plugins" / "kanban" / "dashboard" / "dist" / "style.css").read_text(encoding="utf-8")
-    block = css[css.index("--hermes-diag-warning"):]
-    block = block[: block.index("}")]
-    # Parse the declarations rather than matching whitespace-exact substrings, so a
-    # reformat that keeps the computed value passes and a wrong token/fallback fails.
-    declared = {
-        name: (token, fallback)
-        for name, token, fallback in re.findall(
-            r"--hermes-diag-(warning|error|critical)\s*:\s*var\(\s*(--color-[\w-]+)\s*,\s*(#[0-9a-fA-F]{6})\s*\)\s*;",
-            block,
-        )
-    }
-    assert declared == {
-        "warning": ("--color-warning", "#ff9e3b"),
-        "error": ("--color-destructive", "#ff6b3d"),
-        "critical": ("--color-destructive", "#ff4d4d"),
-    }

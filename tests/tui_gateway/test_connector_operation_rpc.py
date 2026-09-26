@@ -71,8 +71,18 @@ def owned(monkeypatch):
 
 
 def _rpc(client, method, **params):
-    return server.dispatch({"jsonrpc": "2.0", "id": 7, "method": method, "params": {"session_id": SID, **params}},
-                           client.transport)
+    before = len(client.frames)
+    response = server.dispatch({"jsonrpc": "2.0", "id": 7, "method": method,
+                                "params": {"owner": {"type": "session", "session_id": SID}, **params}}, client.transport)
+    if response is not None:
+        return response
+    deadline = time.time() + 2
+    while time.time() < deadline:
+        replies = [frame for frame in list(client.frames)[before:] if frame.get("id") == 7]
+        if replies:
+            return replies[-1]
+        time.sleep(0.01)
+    raise AssertionError("no reply")
 
 
 def _connect_rpc(client, **params):

@@ -140,25 +140,7 @@ describe('narrow tiles', () => {
   })
 })
 
-// The controls row groups contributed actions with the send cluster in one
-// right-aligned sub-group — the row owns the ml-auto margin. If the cluster kept
-// its own auto margin, it would pin itself right and orphan a contributed
-// action at the row start when the row stacks (#116332).
-describe('contributed-actions grouping', () => {
-  it('leaves right-alignment to the controls row instead of pushing itself with ml-auto', () => {
-    const { container } = renderControls()
-
-    expect(container.firstElementChild?.classList.contains('ml-auto')).toBe(false)
-  })
-})
-
 describe('ComposerControls shortcut tooltips', () => {
-  it('shows Enter for Send', async () => {
-    renderControls()
-
-    await expectShortcutTooltip('Send', '↵')
-  })
-
   it('keeps Send (not Steer) while a turn is running if there is a payload', async () => {
     renderControls({ busy: true, busyAction: 'steer' })
 

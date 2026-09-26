@@ -4,6 +4,7 @@ import { readJson, readKey, writeKey } from '@/lib/storage'
 import { normalize } from '@/lib/text'
 
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from './layout'
+import { clearExplicitPreviewOpen, noteExplicitPreviewOpen } from './preview-explicit'
 import { normalizeProfileKey } from './profile'
 import { canOpenBrowserWindow, openBrowserInNewWindow } from './windows'
 
@@ -19,6 +20,9 @@ import { canOpenBrowserWindow, openBrowserInNewWindow } from './windows'
  * Tabs are global and outlive the session that created them, like tabs
  * anywhere else — they close when you close them.
  */
+
+/** How an HTML file target shows: the live page, or its source. */
+export type PreviewRenderMode = 'preview' | 'source'
 
 export interface PreviewTarget {
   binary?: boolean
@@ -38,7 +42,7 @@ export interface PreviewTarget {
   mimeType?: string
   path?: string
   previewKind?: 'binary' | 'html' | 'image' | 'pdf' | 'text'
-  renderMode?: 'preview' | 'source'
+  renderMode?: PreviewRenderMode
   source: string
   /** Runtime-only target that cannot be restored from persisted state. */
   transient?: boolean
@@ -51,11 +55,6 @@ export interface PreviewServerRestart {
   taskId: string
   url: string
 }
-
-/** Where an open came from. Only affects how an HTML file is first rendered:
- *  browsing files is "peek at the source", a tool/link handing you something is
- *  "run it". Not a separate code path — just a property of the target. */
-export type PreviewRecordSource = 'explicit-link' | 'file-browser' | 'manual' | 'tool-result'
 
 export interface PreviewTab {
   id: RightRailTabId
@@ -505,31 +504,48 @@ function browserTabId(tabs: PreviewTab[]): RightRailTabId {
   return tabs.findLast(isBrowserTab)?.id ?? mintBrowserTabId()
 }
 
-// Browsing files is "peek at the source"; a tool or an explicit link handing
-// you an HTML file means "run it".
-function isFilePreviewSource(source: PreviewRecordSource): boolean {
-  return source === 'file-browser' || source === 'manual'
-}
-
-function previewTargetForSource(target: PreviewTarget, source: PreviewRecordSource): PreviewTarget {
-  if (target.kind !== 'file' || target.previewKind !== 'html' || target.renderMode === 'source') {
+/** HTML files open rendered unless the caller asks for a mode. A re-open keeps
+ *  the mode the tab is already in, so refreshing the target never undoes a
+ *  user's Source pick. */
+function withRenderMode(target: PreviewTarget, existing?: PreviewTarget): PreviewTarget {
+  if (target.kind !== 'file' || target.previewKind !== 'html' || target.renderMode) {
     return target
   }
 
-  return { ...target, renderMode: isFilePreviewSource(source) ? 'source' : 'preview' }
+  return { ...target, renderMode: existing?.renderMode ?? 'preview' }
+}
+
+/** An agent hand-over means "show the page": an HTML file opens rendered even
+ *  when its tab is sitting in Source, unlike a re-open from the Files pane. */
+export function renderedHtmlTarget(target: PreviewTarget): PreviewTarget {
+  return target.kind === 'file' && target.previewKind === 'html' && !target.renderMode
+    ? { ...target, renderMode: 'preview' }
+    : target
+}
+
+/** Flip a tab between live Render and Source in place. Same tab id. */
+export function setPreviewRenderMode(tabId: string, renderMode: PreviewRenderMode) {
+  const current = $previewTabs.get()
+  const index = current.findIndex(tab => tab.id === tabId)
+
+  if (index === -1 || current[index]?.target.renderMode === renderMode) {
+    return
+  }
+
+  $previewTabs.set(current.map((item, i) => (i === index ? { ...item, target: { ...item.target, renderMode } } : item)))
 }
 
 /** Open (or re-front) the tab for `target`. Re-opening an existing tab refreshes
  *  its target so a stale label/path can't outlive the thing it points at. The
  *  only way anything reaches a preview. */
-export function openPreview(target: PreviewTarget, source: PreviewRecordSource = 'manual') {
-  const resolved = previewTargetForSource(target, source)
+export function openPreview(target: PreviewTarget) {
   const current = $previewTabs.get()
-  const id = resolved.kind === 'url' ? browserTabId(current) : previewTabId(resolved)
+  const id = target.kind === 'url' ? browserTabId(current) : previewTabId(target)
   const index = current.findIndex(tab => tab.id === id)
-  const tab: PreviewTab = { id, target: resolved }
+  const tab: PreviewTab = { id, target: withRenderMode(target, current[index]?.target) }
 
   $previewTabs.set(index === -1 ? [...current, tab] : current.map((item, i) => (i === index ? tab : item)))
+  noteExplicitPreviewOpen(id)
   selectRightRailTab(id)
 }
 
@@ -551,6 +567,7 @@ export function newBrowserTab() {
   const id = mintBrowserTabId()
 
   $previewTabs.set([...$previewTabs.get(), { id, target: blankPage() }])
+  noteExplicitPreviewOpen(id)
   selectRightRailTab(id)
 }
 
@@ -567,7 +584,15 @@ export function closeRightRailTab(tabId: string) {
   $previewTabs.set(next)
 
   if ($rightRailActiveTabId.get() === tabId) {
-    selectRightRailTab(next[Math.min(index, next.length - 1)]?.id ?? null)
+    const nextId = next[Math.min(index, next.length - 1)]?.id ?? null
+
+    if (nextId) {
+      noteExplicitPreviewOpen(nextId)
+    } else {
+      clearExplicitPreviewOpen()
+    }
+
+    selectRightRailTab(nextId)
   }
 
   if (next.length === 0) {
@@ -617,6 +642,7 @@ export function closeArtifactPreviewTabs() {
 
 /** Close every tab so the rail's panes leave the tree. */
 export function closeRightRail() {
+  clearExplicitPreviewOpen()
   $previewTabs.set([])
   selectRightRailTab(null)
 }

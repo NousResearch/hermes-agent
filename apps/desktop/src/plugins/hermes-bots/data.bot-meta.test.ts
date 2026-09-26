@@ -114,6 +114,37 @@ describe('a save reports what the SERVER did, not just what the screen shows', (
   })
 })
 
+describe('a save for a bot on the pooled local backend', () => {
+  it('is admitted while warm bot backends hold every background slot', async () => {
+    // Main's pool admission, reduced: cap 3 with one slot reserved for
+    // foreground dials. Two warm bots hold both background slots and beta's
+    // backend is cold, so a dial without an explicit priority (background,
+    // main's default) waits out its slot deadline and fails.
+    hostMock.requestProfile.mockImplementation(
+      async (
+        _route: unknown,
+        method: string,
+        _params: unknown,
+        _timeoutMs?: number,
+        options?: { spawnPriority?: 'background' | 'foreground' }
+      ) => {
+        if ((options?.spawnPriority ?? 'background') === 'background') {
+          throw new Error('Local backend start for "beta" timed out while waiting for a free slot. (background)')
+        }
+
+        return method === 'profiles.configure' ? { applied: { ui_meta: true } } : {}
+      }
+    )
+
+    const beta = { connectionId: 'local', connectionKind: 'local', name: 'beta', sourceScoped: true } as RosterRow
+
+    await expect(saveBotMeta(beta, { sectionId: 'sec-1', sectionName: 'Clients' })).resolves.toEqual({
+      serverOutcome: 'persisted',
+      serverPersisted: true
+    })
+  })
+})
+
 describe('avatar asset sync fires only on a real change', () => {
   // Edit Profile always sends the image key, changed or not. Firing
   // set_asset for every patch re-uploaded the full data URL — and a no-op

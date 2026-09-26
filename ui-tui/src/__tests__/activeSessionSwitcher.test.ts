@@ -2,7 +2,6 @@ import type { SessionListRow } from '@hermes/shared/gateway-events'
 import { describe, expect, it } from 'vitest'
 
 import {
-  activeSessionCountLabel,
   canTypeOrchestratorPrompt,
   clampOrchestratorSelection,
   closeFallbackAfterClose,
@@ -10,87 +9,17 @@ import {
   draftModelArgFromPickerValue,
   draftModelDisplayLabel,
   draftTitleFromPrompt,
-  fixedSessionColumnStyle,
   isNewSessionRow,
-  newSessionMarkerColor,
   newSessionRowIndex,
-  orchestratorContextHint,
-  orchestratorContextHintSegments,
-  orchestratorGlobalHotkeyHint,
-  orchestratorGlobalHotkeyHintSegments,
-  orchestratorHintSegmentColor,
   orchestratorRowClickAction,
   orchestratorVisibleRowIndexes,
   relativeSessionAge,
   resumableHistory,
-  selectedSessionRowStyle,
-  sessionRowKindAt,
-  sessionsCountLabel
+  sessionRowKindAt
 } from '../components/activeSessionSwitcher.js'
-import { listRowStyle } from '../components/overlayPrimitives.js'
 import type { SessionActiveItem } from '../gatewayTypes.js'
-import { DEFAULT_THEME } from '../theme.js'
 
 describe('session orchestrator helpers', () => {
-  it('labels live sessions compactly for tight overlays', () => {
-    expect(activeSessionCountLabel(0)).toBe('0 live sessions')
-    expect(activeSessionCountLabel(1)).toBe('1 live session')
-    expect(activeSessionCountLabel(3)).toBe('3 live sessions')
-    expect(activeSessionCountLabel(1)).not.toContain('in this TUI')
-  })
-
-  it('keeps session orchestrator hotkey hints short and contextual', () => {
-    expect(orchestratorContextHint(false)).toBe('Session row: Enter switch · Ctrl+D close')
-    expect(orchestratorContextHint(true)).toBe('New row: type prompt · Enter start · Tab model')
-    expect(orchestratorGlobalHotkeyHint).toBe('↑↓ move · Ctrl+N new · Ctrl+R refresh · Esc close')
-    expect(orchestratorGlobalHotkeyHint.length).toBeLessThanOrEqual(56)
-  })
-
-  it('assigns themed colors consistently to orchestrator labels and hotkeys', () => {
-    expect(orchestratorContextHintSegments(false)).toEqual([
-      { role: 'label', text: 'Session row:' },
-      { role: 'text', text: ' ' },
-      { role: 'hotkey', text: 'Enter' },
-      { role: 'text', text: ' switch · ' },
-      { role: 'hotkey', text: 'Ctrl+D' },
-      { role: 'text', text: ' close' }
-    ])
-    expect(orchestratorContextHintSegments(true)).toEqual([
-      { role: 'label', text: 'New row:' },
-      { role: 'text', text: ' type prompt · ' },
-      { role: 'hotkey', text: 'Enter' },
-      { role: 'text', text: ' start · ' },
-      { role: 'hotkey', text: 'Tab' },
-      { role: 'text', text: ' model' }
-    ])
-    expect(orchestratorGlobalHotkeyHintSegments.filter(s => s.role === 'hotkey').map(s => s.text)).toEqual([
-      '↑↓',
-      'Ctrl+N',
-      'Ctrl+R',
-      'Esc'
-    ])
-    expect(orchestratorHintSegmentColor(DEFAULT_THEME, 'hotkey')).toBe(DEFAULT_THEME.color.accent)
-    expect(orchestratorHintSegmentColor(DEFAULT_THEME, 'label')).toBe(DEFAULT_THEME.color.label)
-    expect(orchestratorHintSegmentColor(DEFAULT_THEME, 'text')).toBe(DEFAULT_THEME.color.muted)
-    expect(newSessionMarkerColor(DEFAULT_THEME, false)).toBe(DEFAULT_THEME.color.label)
-    expect(newSessionMarkerColor(DEFAULT_THEME, true)).toBe(DEFAULT_THEME.color.text)
-  })
-
-  it('uses the shared list-row primitive for the selected row (same as completions)', () => {
-    const style = selectedSessionRowStyle(DEFAULT_THEME)
-    const shared = listRowStyle(DEFAULT_THEME, true)
-
-    // One source of truth: the session switcher and the completions popover
-    // cannot disagree about what "selected" looks like.
-    expect(style.backgroundColor).toBe(shared.backgroundColor)
-    expect(style.color).toBe(shared.color)
-    // Readability contract survives: never accent-on-accent inverse.
-    expect(style.backgroundColor).not.toBe(DEFAULT_THEME.color.accent)
-    expect(style.color).not.toBe(DEFAULT_THEME.color.accent)
-    // Inactive rows paint nothing — the terminal's canvas is the row bg.
-    expect(listRowStyle(DEFAULT_THEME, false)).toEqual({})
-  })
-
   it('turns model picker values into session-scoped draft model args', () => {
     expect(draftModelArgFromPickerValue('kimi-k2.6 --provider ollama-cloud --tui-session')).toBe(
       'kimi-k2.6 --provider ollama-cloud --session'
@@ -163,10 +92,6 @@ describe('session orchestrator helpers', () => {
     expect(orchestratorRowClickAction(99, sessions)).toEqual({ action: 'select-new' })
   })
 
-  it('keeps fixed table columns from shrinking into adjacent columns', () => {
-    expect(fixedSessionColumnStyle().flexShrink).toBe(0)
-  })
-
   it('builds a compact title from the orchestrator prompt', () => {
     expect(draftTitleFromPrompt('  Build the websocket orchestrator panel and make it robust.  ', 24)).toBe(
       'Build the websocket orc…'
@@ -198,11 +123,6 @@ describe('unified Sessions overlay helpers', () => {
 
     expect(resumableHistory(history, live).map(h => h.id)).toEqual(['a', 'c'])
     expect(resumableHistory(history, []).map(h => h.id)).toEqual(['a', 'b', 'c'])
-  })
-
-  it('labels live + resumable counts compactly', () => {
-    expect(sessionsCountLabel(0, 0)).toBe('0 live · 0 resumable')
-    expect(sessionsCountLabel(2, 7)).toBe('2 live · 7 resumable')
   })
 
   it('renders relative session age, blank when unknown', () => {

@@ -10,7 +10,10 @@ Five outcomes, in order:
 * ``ATTACH``       — a live host gateway already serves this profile. Nothing to start; exit 0.
 * ``RESCAN``→ATTACH — it does not serve it yet: ask it to reconcile ``profiles/`` now (control
   socket ``rescan-profiles``) and attach once the answer includes us.
-* ``REPLACE_HOST`` — ``--replace`` names the host process as the target, whichever home launched it.
+* ``REPLACE_HOST`` — ``--replace`` targets the host process when it serves this profile, whichever
+  home launched it. An owner that has not published its served set yet is targeted too, but the
+  ownership guard (``run._replace_target_belongs_to_other_profile``) can then only prove it from
+  THIS home's pid record, so from another home the replace is refused (exit 1).
 * ``REFUSE``       — a live MULTIPLEXING gateway exists and cannot be made to serve this profile.
   Never start a second one silently.
 * ``START``        — no live owner, or the owner answers ``multiplex: False``: it is another
@@ -257,23 +260,77 @@ def _unknown_served_message(gateway: HostGateway, profile: str) -> str:
         f"   Whether it will serve profile '{profile}' is unknown, so starting a second gateway\n"
         f"   now could double-bind this profile's platforms. Nothing was started; this is a\n"
         f"   transient state and a service supervisor will retry.\n"
-        f"   Take the host over:  hermes gateway run --replace\n"
-        f"   Start anyway:        hermes gateway run --force")
+        f"   Take the host over (only from the home that launched it):  hermes gateway run --replace\n"
+        f"   Start anyway:  hermes gateway run --force")
 
 
 def _refuse_message(gateway: HostGateway, profile: str) -> str:
+    from hermes_cli.gateway_migrate import MIGRATE_COMMAND
+
     return (
         f"❌ A gateway already owns this host and will not serve profile '{profile}'.\n"
         f"   {gateway.describe()}\n"
         f"   Exactly one gateway per host serves every profile, so starting a second one\n"
         f"   would double-bind this profile's platforms.\n"
-        f"   Fold this profile into it:   hermes gateway migrate --multiplex\n"
-        f"   Or take the host over:       hermes gateway run --replace\n"
-        f"   Or start one anyway:         hermes gateway run --force")
+        f"   Fold this profile into it:   {MIGRATE_COMMAND}\n"
+        f"   Or start one anyway:         hermes gateway run --force\n"
+        f"   (--replace only replaces an owner that serves this profile, so it would not take this one over.)")
+
+
+def standalone_rescan_message(profile: str) -> str:
+    return (
+        f"The host gateway still serves profile '{profile}'; gateway.standalone is not live yet. "
+        "Wait for the host gateway to rescan (<=30s), or send the rescan-profiles control verb "
+        "to the host gateway before starting this profile's gateway.")
+
+
+def _coexisting_gateways(owner: Optional[HostGateway]):
+    """A standalone lock owner can hide a multiplexer launched beside it.
+
+    Use the existing per-home liveness and control channels, not the single host
+    record, to ask every running profile gateway what it actually serves.
+    """
+    from gateway.status import live_gateway_pid_for_home
+    from hermes_cli.profiles import profiles_to_serve
+
+    seen = {os.getpid()}
+    if owner is not None:
+        seen.add(owner.pid)
+        yield owner
+    for _name, home in profiles_to_serve(True, include_standalone=True, include_parked=True):
+        pid = live_gateway_pid_for_home(home)
+        if pid is None or pid in seen:
+            continue
+        seen.add(pid)
+        peer = HostGateway(pid, home, (), served_known=False)
+        identity = _identify(home)
+        if isinstance(identity, dict) and _identity_matches(identity, peer, home):
+            peer = HostGateway(pid, home, _served_from_identity(identity),
+                               standalone=identity.get("multiplex") is False)
+        yield peer
+
+
+def standalone_attach_decision(our_home: Path, owner: Optional[HostGateway]) -> Optional[HostAttachDecision]:
+    """An opt-out permits coexistence only after every live gateway confirms we are unserved.
+
+    Shared by the initial attach check and the lock-losing race check.
+    """
+    from hermes_cli.profiles import profile_is_standalone
+
+    if not profile_is_standalone(our_home):
+        return None
+    profile = profile_name_for_home(our_home)
+    for peer in _coexisting_gateways(owner):
+        if not peer.served_known:
+            return HostAttachDecision(REFUSE, _unknown_served_message(peer, profile), peer, transient=True)
+        if peer.serves(profile):
+            return HostAttachDecision(REFUSE, standalone_rescan_message(profile), peer, transient=True)
+    logger.info("Profile '%s' is standalone by config; starting beside the host multiplexer", profile)
+    return HostAttachDecision(START, "", owner)
 
 
 def decide(our_home: Path, *, replace: bool = False) -> HostAttachDecision:
-    """Attach, rescan-then-attach, replace or refuse — never a second gateway beside a multiplexer.
+    """Attach, rescan-then-attach, replace or refuse; configured standalone profiles may coexist.
 
     Never raises: a broken probe degrades to ``START``, i.e. exactly the pre-rendezvous behaviour.
     """
@@ -284,11 +341,17 @@ def decide(our_home: Path, *, replace: bool = False) -> HostAttachDecision:
         logger.debug("host gateway probe failed; starting as before", exc_info=True)
         return HostAttachDecision(START, "")
     if gateway is None or gateway.pid == os.getpid():
-        return HostAttachDecision(START, "")
-    if replace:
-        # --replace is explicit authority over the host role; the target is the host process,
-        # whichever home launched it.
+        return standalone_attach_decision(our_home, None) or HostAttachDecision(START, "")
+    if replace and (gateway.serves(profile) or not gateway.served_known):
+        # An owner known not to serve us is another profile's gateway: replacing it is always refused
+        # (_replace_target_belongs_to_other_profile fails closed) and the gateway exits, so on a
+        # one-process-per-profile fleet, whose generated units all carry --replace, every unit but
+        # the lock holder respawn-storms. Such an owner takes the non-replace path below instead.
         return HostAttachDecision(REPLACE_HOST, "", gateway)
+    if gateway.served_known:
+        standalone = standalone_attach_decision(our_home, gateway)
+        if standalone is not None:
+            return standalone
     if gateway.serves(profile):
         return HostAttachDecision(ATTACH, attach_message(gateway, profile), gateway, transient=True)
     if not gateway.served_known:
@@ -298,6 +361,9 @@ def decide(our_home: Path, *, replace: bool = False) -> HostAttachDecision:
         if waited is None:
             return HostAttachDecision(START, "")
         gateway = waited
+        standalone = standalone_attach_decision(our_home, gateway)
+        if standalone is not None:
+            return standalone
         if gateway.serves(profile):
             return HostAttachDecision(ATTACH, attach_message(gateway, profile), gateway, transient=True)
     try:
@@ -310,12 +376,15 @@ def decide(our_home: Path, *, replace: bool = False) -> HostAttachDecision:
     if attached is not None and attached.standalone:
         # One-process-per-profile fleet: the owner is another profile's standalone gateway. Refusing
         # here exits 78, which every supervisor treats as permanent — on a launchd fleet that parked
-        # every unit but the first to claim the host lock. Start beside it; the host-lock claim logs
-        # the topology and the `gateway migrate --multiplex` path stays the way to converge.
-        logger.warning(
+        # every unit but the first to claim the host lock. Start beside it. decide() runs twice per
+        # start (CLI guard + start_gateway), so this is INFO; the host-lock claim in run.py logs the
+        # one WARNING with the `gateway migrate --multiplex` converge hint.
+        from hermes_cli.gateway_migrate import MIGRATE_COMMAND
+
+        logger.info(
             "Another profile's standalone gateway owns this host (%s); starting profile '%s' beside it. "
-            "Fold every profile onto one gateway with: hermes gateway migrate --multiplex",
-            attached.describe(), profile)
+            "Fold every profile onto one gateway with: %s",
+            attached.describe(), profile, MIGRATE_COMMAND)
         return HostAttachDecision(START, "")
     if not gateway.served_known:
         # The owner never answered, so we know only that it exists. ATTACH here (on the record's

@@ -10,6 +10,8 @@ from fastapi import HTTPException
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from hermes_cli.profile_memory_config import read_memory_provider_values
+
 # Same logger the code used before extraction (record parity).
 _log = logging.getLogger("hermes_cli.web_server")
 
@@ -193,49 +195,6 @@ def _normalize_memory_provider_schema(name: str, provider: Any) -> List[Dict[str
     return fields
 
 
-def _read_json_file(path: Path) -> Dict[str, Any]:
-    try:
-        data = json.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else {}
-    except Exception:
-        _log.debug("Failed to read JSON config from %s", path, exc_info=True)
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def _read_memory_provider_existing_values(name: str) -> Dict[str, Any]:
-    """Best-effort read of existing provider config across legacy/native stores."""
-    from hermes_cli.config import get_hermes_home, load_config
-
-    hermes_home = get_hermes_home()
-    values: Dict[str, Any] = {}
-    for path in (hermes_home / f"{name}.json", hermes_home / name / "config.json"):
-        values.update(_read_json_file(path))
-
-    try:
-        cfg = load_config()
-    except Exception:
-        cfg = {}
-    if not isinstance(cfg, dict):
-        cfg = {}
-
-    memory_cfg = cfg.get("memory")
-    if isinstance(memory_cfg, dict):
-        provider_cfg = memory_cfg.get(name)
-        if isinstance(provider_cfg, dict):
-            values.update(provider_cfg)
-        legacy_cfg = memory_cfg.get("provider_config")
-        if isinstance(legacy_cfg, dict):
-            values = {**legacy_cfg, **values}
-
-    # Holographic stores under plugins.hermes-memory-store.
-    plugins_cfg = cfg.get("plugins")
-    if name == "holographic" and isinstance(plugins_cfg, dict):
-        holographic_cfg = plugins_cfg.get("hermes-memory-store")
-        if isinstance(holographic_cfg, dict):
-            values.update(holographic_cfg)
-    return values
-
-
 def _env_lookup(env_key: Optional[str]) -> str:
     from hermes_cli.config import load_env
     if not env_key:
@@ -305,7 +264,7 @@ def _field_visible(
 
 
 def _memory_provider_is_configured(name: str, provider: Any) -> bool:
-    data = _read_memory_provider_existing_values(name)
+    data = read_memory_provider_values(name)
     fields = _normalize_memory_provider_schema(name, provider)
     fields_by_key = {field["key"]: field for field in fields}
     return all(

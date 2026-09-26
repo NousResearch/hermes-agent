@@ -8,6 +8,7 @@ import shlex
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
+from hermes_cli.profile_memory_config import read_memory_provider_values
 from hermes_cli.secret_prompt import masked_secret_prompt
 
 _CANCELLED = -1
@@ -276,9 +277,12 @@ def cmd_setup(args) -> None:
     if _post_setup_hook(provider, config):
         return
 
-    provider_config = config["memory"].get(name, {})
+    provider_config = config["memory"].get(name)
     if not isinstance(provider_config, dict):
-        provider_config = {}
+        # The prompts offer provider_config as the current values and save_config writes every
+        # answer back, so a provider that keeps its settings outside memory.<name> (holographic)
+        # must be offered what it saved, not the schema defaults.
+        provider_config = read_memory_provider_values(name)
     env_writes: dict = {}
     schema = _schema_of(provider)
     if schema and not _prompt_schema_fields(name, schema, provider_config, env_writes):

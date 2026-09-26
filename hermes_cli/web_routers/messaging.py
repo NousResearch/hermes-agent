@@ -241,6 +241,11 @@ def _messaging_platform_payload(
     ]
 
     enabled, configured, home_channel = _platform_enablement(platform_id, entry, env_on_disk, scoped)
+    if gateway_running and runtime_platform.get("mirrored_from"):
+        # Served secondary: the default's shared listener already answers this platform at
+        # /p/<profile>/... (enabling it locally 409s), so the secondary's own empty config
+        # must not project Disabled over the live mirror (#121125).
+        enabled, configured = True, True
 
     state = runtime_platform.get("state")
     if not enabled:

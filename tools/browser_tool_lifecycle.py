@@ -386,12 +386,16 @@ def _reap_orphaned_browser_sessions():
         reap_orphaned_lightpanda()
     _best_effort("Lightpanda orphan reap", _reap_lp)
 
-    tmpdir = _bt._socket_safe_tmpdir()
+    # Long session names (cloud ``hermes_<task-id>_*``) overflow the scratch root's budget
+    # and land their socket dirs in the /tmp fallback, so both roots must be scanned
+    # (``max_len=0`` forces the fallback root; the set de-dupes when they coincide).
+    roots = {_bt._socket_safe_tmpdir(), _bt._socket_safe_tmpdir(max_len=0)}
     socket_dirs = []
     # The shared real-profile attach daemon is named, not ``<prefix>_<hex>``; list it explicitly.
-    for prefix in ("agent-browser-h_*", "agent-browser-cdp_*", "agent-browser-hermes_*",
-                   f"agent-browser-{_bt._REAL_PROFILE_SESSION}"):
-        socket_dirs += glob.glob(os.path.join(tmpdir, prefix))
+    for root in roots:
+        for prefix in ("agent-browser-h_*", "agent-browser-cdp_*", "agent-browser-hermes_*",
+                       f"agent-browser-{_bt._REAL_PROFILE_SESSION}"):
+            socket_dirs += glob.glob(os.path.join(root, prefix))
     if not socket_dirs:
         return
 

@@ -362,11 +362,13 @@ def _last_session_key(task_id: str) -> str:
     return task_id
 
 
-def _socket_safe_tmpdir() -> str:
+def _socket_safe_tmpdir(max_len: int | None = None) -> str:
     """Temp root short enough for the agent-browser socket dir and Chrome's SingletonSocket
-    (``hermes_constants.socket_safe_tmpdir``)."""
+    (``hermes_constants.socket_safe_tmpdir``). ``max_len`` tightens the budget for the
+    agent-browser layout, whose ``agent-browser-<session>/<session>.sock`` suffix is far
+    longer than the RPC-socket suffix the default budget covers."""
     from hermes_constants import socket_safe_tmpdir
-    return socket_safe_tmpdir()
+    return socket_safe_tmpdir(max_len=max_len)
 
 
 # Active sessions keyed by "session key": the bare task_id, or f"{task_id}::local"

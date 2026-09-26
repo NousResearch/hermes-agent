@@ -452,6 +452,8 @@ export interface HermesConfig {
     skin?: string
     interim_assistant_messages?: boolean
     timestamps?: boolean
+    /** `interrupt` | `queue` | `steer` — what a busy Enter does. */
+    busy_input_mode?: string
   }
   desktop?: {
     font_family?: string

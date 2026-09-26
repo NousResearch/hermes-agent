@@ -1255,7 +1255,8 @@ export const frOverrides = {
       timezone: 'Fuseau horaire',
       display: {
         personality: 'Personnalité',
-        showReasoning: 'Blocs de raisonnement'
+        showReasoning: 'Blocs de raisonnement',
+        busyInputMode: 'Entrée pendant l’exécution'
       },
       desktop: {
         repoScanEnabled: 'Découverte automatique de dépôts',
@@ -1432,7 +1433,9 @@ export const frOverrides = {
       fallbackProviders: 'Entrées fournisseur:modèle de secours à essayer si le modèle par défaut échoue.',
       display: {
         personality: "Style par défaut de l'assistant pour les nouvelles sessions.",
-        showReasoning: 'Afficher les sections de raisonnement quand le backend les fournit.'
+        showReasoning: 'Afficher les sections de raisonnement quand le backend les fournit.',
+        busyInputMode:
+          "Action de la touche Entrée lorsque l’agent est en cours d’exécution. Interrupt redirige le tour actuel avec votre texte, steer l’ajoute au résultat du prochain outil sans s’arrêter et queue l’exécute une fois le tour terminé."
       },
       desktop: {
         repoScanEnabled: 'Analyser les dossiers locaux à la recherche de dépôts Git à afficher dans Projets.',

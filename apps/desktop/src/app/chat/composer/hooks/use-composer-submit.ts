@@ -10,6 +10,7 @@ import { enqueueQueuedPrompt, type QueuedPromptEntry } from '@/store/composer-qu
 import { hasConnectionRequest, skipConnectionRequest } from '@/store/connection-request'
 import { hasBlockingPromptRequest } from '@/store/prompts'
 
+import type { BusyInputMode } from '../busy-input-mode'
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
 import { onComposerSubmitRequest } from '../focus'
 import { pathifyRefs } from '../path-refs'
@@ -22,6 +23,7 @@ interface UseComposerSubmitArgs {
   activeQueueSessionKeyRef: RefObject<string | null>
   attachments: ComposerAttachment[]
   busy: boolean
+  busyInputMode: BusyInputMode
   compacting: boolean
   clearDraft: () => void
   disabled: boolean
@@ -47,10 +49,10 @@ interface UseComposerSubmitArgs {
 /**
  * The composer's submit engine — the orchestration seam where the draft and
  * queue meet. `submitDraft` is the one decision tree (queue-edit save · slash-
- * now-while-busy · queue · drain · send · stop); `dispatchSubmit` is the shared
- * send-with-restore primitive (re-loads + re-stashes the draft if the gateway
- * rejects, so nothing is ever lost); `steerDraft` redirects the live turn. Reads
- * the draft + queue APIs; owns no state of its own beyond the stable
+ * now-while-busy · busy-input mode · queue · drain · send · stop);
+ * `dispatchSubmit` is the shared send-with-restore primitive (re-loads +
+ * re-stashes the draft if the gateway rejects, so nothing is ever lost).
+ * Reads the draft + queue APIs; owns no state of its own beyond the stable
  * external-submit listener ref.
  */
 export function useComposerSubmit({
@@ -58,6 +60,7 @@ export function useComposerSubmit({
   activeQueueSessionKeyRef,
   attachments,
   busy,
+  busyInputMode,
   compacting,
   clearDraft,
   disabled,
@@ -263,10 +266,25 @@ export function useComposerSubmit({
         clearDraft()
         dispatchSubmit(text)
       } else if (!compacting && !blockingPrompt && !attachments.length && text.trim()) {
-        // Cursor-style stop-and-correct: interrupt the live turn and redirect
-        // it with this text. redirect() preserves the shown reasoning/work; if
-        // the turn already ended, steerDraft re-queues so nothing is lost.
-        steerDraft()
+        // Route by the configured busy-input mode. `interrupt` is the
+        // Cursor-style stop-and-correct: the gateway restarts the active model
+        // request with the shown context (or queues if the turn already
+        // ended). `steer` injects the words into the model's next tool result
+        // without cancelling the turn — the same session.steer RPC
+        // `onSteerHidden` already carries, so it inherits that path's owner
+        // routing and stale-session resume. `queue` waits for the turn to
+        // finish. All three queue on rejection, so nothing is ever lost.
+        if (busyInputMode === 'queue') {
+          queueCurrentDraft()
+        } else if (busyInputMode === 'steer') {
+          if (onSteerHidden) {
+            steerAtToolBoundary(text)
+          } else {
+            queueCurrentDraft()
+          }
+        } else {
+          redirectDraft(text)
+        }
       } else if (payloadPresent) {
         // Attachments can't ride a redirect (no tool-result image carriage) —
         // queue the whole payload for the next turn. Same for a turn parked on
@@ -295,39 +313,77 @@ export function useComposerSubmit({
     focusInput()
   }
 
-  // Redirect the live turn with a correction. The gateway either restarts the
+  // A correction whose RPC rejects (socket dropped, session gone mid-turn)
+  // must not vanish with the already-cleared draft: queue the words so the
+  // turn still sees them. The scope is captured at dispatch time, not read from
+  // the ref inside the callback — a gateway can reject well after the user
+  // switched sessions, and queueing into the now-focused session would
+  // overwrite ITS draft (#54527). With no session yet (a new chat busy before
+  // its first row exists) there is no queue to live in, so the words go back
+  // into the composer and its stash, exactly like a rejected plain submit.
+  const queueRejectedCorrection = (text: string, rejectedScope: string | null) => {
+    if (rejectedScope) {
+      enqueueQueuedPrompt(rejectedScope, { text, attachments: [] })
+    } else {
+      loadIntoComposer(text, [])
+      stashAt(rejectedScope, text, [])
+    }
+  }
+
+  // Redirect the live turn with a correction: the gateway either restarts the
   // active model request with its displayed context or waits for the current
   // tool boundary. If the turn already ended, queue the words instead.
-  const steerDraft = () => {
-    const text = draftRef.current.trim()
+  const redirectDraft = (text: string) => {
 
-    // Guard on live editor state, not the render-lagged `canSteer`: a redirect
-    // fired on a fast Enter must not be dropped because state hasn't synced.
+    // Guard on live editor state, not the render-lagged `canRedirect`: a
+    // redirect fired on a fast Enter must not be dropped because state hasn't
+    // synced. A payload the RPC cannot carry queues instead of being dropped.
     if (!onSteer || !text || attachments.length > 0 || SLASH_COMMAND_RE.test(text)) {
+      queueCurrentDraft()
+
       return
     }
 
     triggerHaptic('submit')
     clearDraft()
 
-    // The draft is already cleared, so a refused or failed redirect must keep
-    // the only copy: queue it for the next turn, or restore it when there is no
-    // queue yet (a new chat is busy before its first session exists).
-    const keep = () => {
-      if (activeQueueSessionKey) {
-        enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments: [] })
-      } else {
-        loadIntoComposer(text, [])
-      }
-    }
+    // Captured after clearDraft, before the RPC: this is the session the words
+    // belong to, and it stays the one they fall back to if the RPC rejects.
+    const rejectedScope = activeQueueSessionKeyRef.current
 
     void Promise.resolve(onSteer(text))
       .then(accepted => {
         if (!accepted) {
-          keep()
+          queueRejectedCorrection(text, rejectedScope)
         }
       })
-      .catch(keep)
+      .catch(() => queueRejectedCorrection(text, rejectedScope))
+  }
+
+  // Tool-boundary steering: the words ride the model's next tool result, so the
+  // live turn keeps running and keeps its work. Same rejection → queue guard.
+  const steerAtToolBoundary = (text: string) => {
+    if (!onSteerHidden || !text || attachments.length > 0 || SLASH_COMMAND_RE.test(text)) {
+      queueCurrentDraft()
+
+      return
+    }
+
+    triggerHaptic('submit')
+    clearDraft()
+
+    // Same dispatch-time scope capture as redirectDraft: the fallback must
+    // target the session the words were aimed at, not whatever is focused by
+    // the time the gateway answers (#54527).
+    const rejectedScope = activeQueueSessionKeyRef.current
+
+    void Promise.resolve(onSteerHidden(text))
+      .then(accepted => {
+        if (!accepted) {
+          queueRejectedCorrection(text, rejectedScope)
+        }
+      })
+      .catch(() => queueRejectedCorrection(text, rejectedScope))
   }
 
   const queueDraft = () => {
@@ -339,5 +395,5 @@ export function useComposerSubmit({
     focusInput()
   }
 
-  return { dispatchSubmit, queueDraft, steerDraft, submitDraft }
+  return { dispatchSubmit, queueDraft, submitDraft }
 }

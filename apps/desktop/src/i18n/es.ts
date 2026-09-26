@@ -1251,7 +1251,8 @@ export const esOverrides = {
       timezone: 'Zona horaria',
       display: {
         personality: 'Personalidad',
-        showReasoning: 'Bloques de razonamiento'
+        showReasoning: 'Bloques de razonamiento',
+        busyInputMode: 'Enter durante la ejecución'
       },
       desktop: {
         repoScanEnabled: 'Detección automática de repositorios',
@@ -1428,7 +1429,9 @@ export const esOverrides = {
       fallbackProviders: 'Entradas proveedor:model de respaldo para probar si falla el modelo predeterminado.',
       display: {
         personality: 'Estilo predeterminado del asistente para sesiones nuevas.',
-        showReasoning: 'Muestra secciones de razonamiento cuando el backend las proporcione.'
+        showReasoning: 'Muestra secciones de razonamiento cuando el backend las proporcione.',
+        busyInputMode:
+          'Define la acción al pulsar Enter mientras el agente está en ejecución. Interrupt redirige el turno actual con tu texto, steer lo añade al siguiente resultado de herramienta sin detener la ejecución y queue lo ejecuta al finalizar el turno.'
       },
       desktop: {
         repoScanEnabled: 'Busca repositorios Git en carpetas locales para mostrarlos en Proyectos.',

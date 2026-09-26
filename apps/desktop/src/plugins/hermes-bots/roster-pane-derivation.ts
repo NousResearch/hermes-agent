@@ -1,4 +1,4 @@
-import { botActivitySession } from './data'
+import { botActivitySession, pruneUnreachableRemoteRows } from './data'
 import { botRosterKey, filterBots, preferReachableSameNameRows } from './data'
 import type { $groupChats } from './group-chat'
 import { groupChatMemberBots, groupChatNames, groupLastActivity } from './group-membership'
@@ -59,7 +59,11 @@ export function deriveRosterRows({
   // Hidden rows remain fully alive and recoverable at the bottom. Every
   // non-display consumer continues to receive the complete roster.
   const hiddenBots = roster.filter(bot => isBotHidden(bot, allMeta))
-  const visibleRoster = roster.filter(bot => !isBotHidden(bot, allMeta))
+  // Remote rows whose gateway is unreachable or removed never paint: their
+  // contents are cached metadata of an AUTHENTICATED gateway, and an offline
+  // cache must not advertise another machine's profile inventory. Routing
+  // (mentions, groups) still sees the full roster below this point.
+  const visibleRoster = pruneUnreachableRemoteRows(roster.filter(bot => !isBotHidden(bot, allMeta)))
   const gatewayRoster = filterBotsByGateway(visibleRoster, gatewayFilter)
 
   const filteredRoster = filterBots(gatewayRoster, allMeta, query).filter((bot: RosterRow) =>

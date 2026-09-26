@@ -1359,6 +1359,22 @@ export function annotateBotSource(bot: RosterRow, sources: GatewaySource[] | nul
   }
 }
 
+/** Hide remote roster rows whose owning gateway is not usable.
+ *
+ *  A remote row's contents (name, handle, title, description) are metadata of
+ *  an AUTHENTICATED gateway — the Desktop learned them while logged in to that
+ *  source and caches them locally. Rendering that cache while the source is
+ *  logged out / unreachable advertises another machine's profile inventory
+ *  with no credential check in between (#115161's sibling concern). Local rows
+ *  and rows whose source health is merely unknown (including connect-on-demand
+ *  SSH) are untouched; only rows the source-health layer has explicitly marked
+ *  unreachable or gateway-removed are pruned. */
+export function pruneUnreachableRemoteRows(bots: RosterRow[] | null | undefined): RosterRow[] {
+  const rows = Array.isArray(bots) ? bots : []
+
+  return rows.filter(bot => !bot?.remoteSource || botSourceStatus(bot).available)
+}
+
 /** The source-health fields botSourceStatus reads. Both a full RosterRow and
  *  the reduced GroupMember satisfy it, and so do the ad-hoc literals the
  *  group/connection headers build. */

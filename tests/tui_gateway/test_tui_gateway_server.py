@@ -1,3 +1,4 @@
+import contextlib
 import json
 import logging
 import os
@@ -22409,16 +22410,15 @@ def test_load_cfg_raw_sees_replacement_with_pinned_mtime_and_size(monkeypatch, t
 
 def test_session_create_uses_bound_profile_backend_not_launch(monkeypatch, tmp_path):
     """The regression: launch profile is LOCAL, the session is bound to an SSH profile.
-    session.create must read the BOUND profile's backend (via _profile_terminal_backend),
-    keep the remote cwd, and mark it explicit — not drop it to the launch dir."""
+    session.create must read the BOUND profile's backend, keep the remote cwd, and mark it
+    explicit — not drop it to the launch dir."""
     remote = "/home/felix/projects/xsd-parser"
     assert not os.path.isdir(remote)
     # Launch process looks local; only the bound profile is ssh.
     monkeypatch.setenv("TERMINAL_ENV", "local")
     monkeypatch.delenv("TERMINAL_CWD", raising=False)
-    monkeypatch.setattr(server, "_load_cfg", lambda: {"terminal": {"backend": "local"}})
+    (tmp_path / "config.yaml").write_text("terminal:\n  backend: ssh\n", encoding="utf-8")
     monkeypatch.setattr(server, "_profile_home", lambda name: tmp_path if name == "felix" else None)
-    monkeypatch.setattr(server, "_profile_terminal_backend", lambda home: "ssh" if home == tmp_path else None)
     monkeypatch.setattr(server, "_schedule_agent_build", lambda sid: None)
     monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
 
@@ -22432,7 +22432,6 @@ def test_session_create_uses_bound_profile_backend_not_launch(monkeypatch, tmp_p
         server._sessions.pop(sid, None)
 
 
-
 def test_workspace_move_accepts_remote_dir_for_bound_ssh_profile(monkeypatch, tmp_path):
     """session.workspace.move must not reject a remote project dir that does not
     exist on the host when the bound profile is ssh (the 'working directory does
@@ -22440,16 +22439,15 @@ def test_workspace_move_accepts_remote_dir_for_bound_ssh_profile(monkeypatch, tm
     remote = "/home/felix/projects/xsd-parser"
     assert not os.path.isdir(remote)
     monkeypatch.setenv("TERMINAL_ENV", "local")  # launch looks local
+    (tmp_path / "config.yaml").write_text("terminal:\n  backend: ssh\n", encoding="utf-8")
     monkeypatch.setattr(server, "_profile_home", lambda name: tmp_path if name == "felix" else None)
-    monkeypatch.setattr(server, "_profile_terminal_backend", lambda home: "ssh" if home == tmp_path else None)
 
     class _DB:
         def get_session(self, key):
             return {"session_key": key}
         def update_session_cwd(self, *a, **k):
             return 1
-    import contextlib as _ctx
-    monkeypatch.setattr(server, "_profile_db", lambda params, **_kw: _ctx.nullcontext(_DB()))
+    monkeypatch.setattr(server, "_profile_db", lambda params, **_kw: contextlib.nullcontext(_DB()))
     monkeypatch.setattr(server.git_probe, "branch", lambda c: None)
     monkeypatch.setattr(server.git_probe, "common_repo_root", lambda c: None)
 
@@ -22457,7 +22455,6 @@ def test_workspace_move_accepts_remote_dir_for_bound_ssh_profile(monkeypatch, tm
         "r1", {"session_key": "sk1", "cwd": remote, "profile": "felix"})
     assert "result" in resp, resp
     assert resp["result"]["cwd"] == remote
-
 
 
 @pytest.mark.parametrize("launch_backend", ["ssh", "local"])
@@ -22489,7 +22486,9 @@ def test_ssh_named_profile_cwd_beats_launch_terminal_cwd(monkeypatch, tmp_path, 
     ) == "/opt/picked"
     # A local launch profile must not "heal" the remote dir to its nearest host ancestor (/home).
     assert server._display_session_cwd({"cwd": remote, "profile_home": str(home)}) == remote
-
+    # "~" names the REMOTE user's home, never this host's.
+    (home / "config.yaml").write_text("terminal:\n  backend: ssh\n  cwd: ~/proj\n", encoding="utf-8")
+    assert server._completion_cwd({"profile": "hunter", "cwd": launch, "cwd_explicit": False}) == "~/proj"
 
 
 def test_named_profile_without_backend_stays_local_under_ssh_launch(monkeypatch, tmp_path):

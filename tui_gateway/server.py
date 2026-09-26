@@ -628,30 +628,6 @@ def _profile_configured_cwd(profile_home: Path | None) -> str | None:
     return None
 
 
-def _profile_terminal_policy(profile_home: Path | str | None) -> dict:
-    """A named profile's effective ``TERMINAL_*`` policy — the one its turns run under
-    (``tools/terminal_scope.py::build_profile_terminal_scope``: defaults <- ``.env`` <- ``config.yaml``).
-    {} for the launch profile or an unreadable profile."""
-    if profile_home is None:
-        return {}
-    from tools.terminal_scope import TerminalPolicyUnavailable, build_profile_terminal_scope
-    try:
-        return build_profile_terminal_scope(profile_home)
-    except TerminalPolicyUnavailable:
-        return {}
-
-
-def _profile_terminal_backend(profile_home: Path | str | None) -> str | None:
-    """A named profile's terminal backend; None for the launch profile.
-
-    At ``session.create`` the multiplex gateway has NOT yet rebound HERMES_HOME to the target profile, so
-    ``_effective_terminal_backend()`` reads the LAUNCH profile's backend, which must never leak into a named one.
-    """
-    if profile_home is None:
-        return None
-    return str(_profile_terminal_policy(profile_home).get("TERMINAL_ENV") or "local").strip().lower() or "local"
-
-
 def _launch_configured_cwd() -> str | None:
     """Launch profile's ``terminal.cwd`` from config.yaml: the dashboard's in-memory gateway gets no bridged
     ``TERMINAL_CWD`` env (only the Node PTY child does), so a fresh /chat would otherwise start in ``os.getcwd()``."""

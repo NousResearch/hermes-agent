@@ -376,7 +376,7 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
     explicit_cwd = False
     raw_cwd = _str_param(params, "cwd")  # unguarded, as on BASE: only the path check is best-effort
     # An ssh profile's cwd lives on the remote host, where the host isdir check cannot vouch for it.
-    remote_cwd = _cwd_is_remote(profile_home)
+    remote_cwd = bool(raw_cwd) and _cwd_is_remote(profile_home)
     with contextlib.suppress(Exception):
         explicit_cwd = bool(raw_cwd) and (remote_cwd or os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd))))
     _enable_gateway_prompts()
@@ -1007,11 +1007,10 @@ def _(rid, params: dict) -> dict:
             ((sid, sess) for sid, sess in list(_sessions.items()) if sess.get("session_key") == target), ("", None))
     # The live session's profile decides (as _set_session_cwd below does); an ssh workspace is never host-validated.
     home = live.get("profile_home") if live is not None else _profile_home(params.get("profile"))
-    target_cwd = translate_cwd_for_wsl_backend(raw)
-    if not _cwd_is_remote(home):
-        target_cwd = os.path.abspath(os.path.expanduser(target_cwd))
-        if not os.path.isdir(target_cwd):
-            return _err(rid, 4017, f"working directory does not exist: {raw}")
+    try:
+        target_cwd = _workspace_cwd(home, translate_cwd_for_wsl_backend(raw))
+    except ValueError:
+        return _err(rid, 4017, f"working directory does not exist: {raw}")
     branch, root = git_probe.branch(target_cwd), git_probe.common_repo_root(target_cwd)
     with _profile_db(params, writer=True) as db:
         if db is None:

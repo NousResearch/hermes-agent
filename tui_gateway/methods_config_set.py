@@ -18,7 +18,29 @@ _profile_scoped = _registry.profile_scoped
 # ── shared helpers
 
 def _write_display_sections(*, sections=None, drop_sections=(), **display_fields) -> None:
-    """Persist ``display.<field>`` + ``display.sections`` edits via the raw (uncached) write-back."""
+    """Persist ``display.<field>`` + ``display.sections`` edits via the raw (uncached) write-back.
+
+    The read→mutate→write is held under ``_cfg_lock`` so concurrent ``/details`` calls
+    (e.g. dashboard + CLI racing on ``display.sections``) cannot lost-update each other.
+    ``_save_cfg`` itself refreshes ``_cfg_cache`` under the same lock, but without an
+    outer lock the load and save would be separate critical sections (see #108534).
+    """
+    # _cfg_lock is rebound from server.py via method_ctx.bind_module; fall back to no-lock
+    # only if the binding is unavailable (unit-test harness without server).
+    _lock = globals().get("_cfg_lock")
+    if _lock is not None:
+        with _lock:
+            cfg = _load_cfg_raw()
+            display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
+            cur = display.get("sections") if isinstance(display.get("sections"), dict) else {}
+            display.update(display_fields)
+            cur.update(sections or {})
+            for name in drop_sections:
+                cur.pop(name, None)
+            display["sections"] = cur
+            cfg["display"] = display
+            _save_cfg(cfg)
+        return
     cfg = _load_cfg_raw()
     display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
     cur = display.get("sections") if isinstance(display.get("sections"), dict) else {}

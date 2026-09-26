@@ -1810,6 +1810,11 @@ display:
   #   false: Full ASCII banner with tool/skill summary (default)
   compact: false
 
+  # Status bar placement. The classic CLI reads display.statusbar, then
+  # display.tui_statusbar. The TUI reads tui_statusbar first and falls back
+  # here. top | bottom | off. hidden, no, false, and 0 also hide it.
+  # statusbar: top
+
   # Tool progress display level (CLI and gateway)
   #   off:     Silent — no tool activity shown, just the final response
   #   new:     Show a tool indicator only when the tool changes (skip repeats)

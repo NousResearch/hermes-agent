@@ -571,10 +571,15 @@ def _status_bar_visible_from_display_config(display_config: object) -> bool:
     """Initial status-bar visibility; both YAML ``off`` (False) and strings like ``"hidden"`` mean off."""
     if not isinstance(display_config, dict):
         display_config = {}
-    statusbar_config = display_config.get("statusbar", display_config.get("tui_statusbar", "top"))
+    # None is "unset" (including the seeded default), so it must not shadow tui_statusbar.
+    statusbar_config = display_config.get("statusbar", None)
+    if statusbar_config is None:
+        statusbar_config = display_config.get("tui_statusbar", "top")
     if isinstance(statusbar_config, str):
         return statusbar_config.strip().lower() not in {"0", "false", "hidden", "no", "off"}
-    return statusbar_config is not False
+    # int 0 is what `hermes config set display.statusbar 0` stores. False == 0, so
+    # compare with == after the string branch; True is not 0.
+    return not (statusbar_config is False or statusbar_config == 0)
 
 
 def _collect_query_images(query: str | None, image_arg: str | None = None) -> tuple[str, list[Path]]:

@@ -69,6 +69,44 @@ class TestGetChannelOverride:
         assert result.model == "topic-model"
 
 
+    def test_thread_id_override_wins_over_parent_chat_override(self):
+        """A topic is more specific than its group: its override must not be shadowed."""
+        parent = ChannelOverride(model="parent-model")
+        topic = ChannelOverride(model="topic-model", system_prompt="Topic policy")
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(
+                    enabled=True,
+                    channel_overrides={"-1001000000001": parent, "1182": topic},
+                ),
+            },
+        )
+        assert _get_channel_override(config, Platform.TELEGRAM, "-1001000000001", thread_id="1182") is topic
+        assert _get_channel_override(config, Platform.TELEGRAM, "-1001000000001") is parent
+
+    def test_chat_scoped_thread_override_isolated_from_same_topic_id(self):
+        """Forum topic IDs are local to a chat, so ``1`` alone is ambiguous."""
+        group_a = ChannelOverride(system_prompt="Group A general")
+        group_b = ChannelOverride(system_prompt="Group B general")
+        legacy = ChannelOverride(system_prompt="Legacy bare topic")
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(
+                    enabled=True,
+                    channel_overrides={
+                        "-1001000000001:1": group_a,
+                        "-1001000000002:1": group_b,
+                        "1": legacy,
+                    },
+                ),
+            },
+        )
+        assert _get_channel_override(config, Platform.TELEGRAM, "-1001000000001", thread_id="1") is group_a
+        assert _get_channel_override(config, Platform.TELEGRAM, "-1001000000002", thread_id="1") is group_b
+        # A chat with no scoped entry still falls back to the bare topic id.
+        assert _get_channel_override(config, Platform.TELEGRAM, "-1001000000003", thread_id="1") is legacy
+
+
 class TestResolveModelForChannel:
     def test_uses_channel_override_when_present(self):
         config = GatewayConfig(

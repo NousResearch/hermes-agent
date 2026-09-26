@@ -583,7 +583,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
 
         # Trivial turns start no work, but may consume a ready pending result.
         if self._is_trivial_prompt(query):
-            ready = self._consume_pending_dialectic()
+            ready = self._format_dialectic_context(self._consume_pending_dialectic())
             return self._log_injection("trivial-prompt", self._truncate_to_budget(ready) if ready else "")
 
         # One-time notice, relayed by the model, that auth is dead and memory is paused.
@@ -593,7 +593,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             parts.append(self._fetch_base_context_layer(query, first_turn_base_deadline))
         self._first_turn_dialectic_wait(query)
         # Consume only results that are already ready; later turns never wait.
-        parts.append(self._consume_pending_dialectic())
+        parts.append(self._format_dialectic_context(self._consume_pending_dialectic()))
         parts = [p for p in parts if p and p.strip()]
         if not parts:
             return self._log_injection("fetched-but-empty")
@@ -635,16 +635,79 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
                       "on a shared gateway it would merge every user onto one peer.")
         return f"[Honcho memory status] Honcho memory is off for this session. {self._peer_failure_text()}\n{advice}"
 
+    @staticmethod
+    def _format_dialectic_context(text: str) -> str:
+        """Make the Dialectic supplement an independently budgeted section."""
+        return f"## Honcho Dialectic\n{text.strip()}" if text and text.strip() else ""
+
+    @staticmethod
+    def _truncate_chars(text: str, limit: int) -> str:
+        """Fit text within a character limit, preferring a nearby word boundary."""
+        if len(text) <= limit:
+            return text
+        if limit <= 0:
+            return ""
+        suffix = " …"
+        if limit <= len(suffix):
+            return suffix[-limit:]
+        truncated = text[:limit - len(suffix)]
+        last_space = truncated.rfind(" ")
+        if last_space > (limit - len(suffix)) * 0.8:
+            truncated = truncated[:last_space]
+        return truncated.rstrip() + suffix
+
     def _truncate_to_budget(self, text: str) -> str:
-        """Truncate text to the context_tokens budget (≈4 chars/token) at a word boundary."""
+        """Fit generated Markdown sections into one shared context budget.
+
+        Short sections stay intact. On overflow, remaining capacity is shared
+        max-min fairly among longer sections so no fixed quota wastes space and
+        no early section can evict every later one.
+        """
         if not self._config or not self._config.context_tokens:
             return text
         budget_chars = self._config.context_tokens * 4
         if len(text) <= budget_chars:
             return text
-        truncated = text[:budget_chars]
-        last_space = truncated.rfind(" ")
-        return (truncated[:last_space] if last_space > budget_chars * 0.8 else truncated) + " …"
+
+        matches = list(re.finditer(r"(?m)^## [^\n]+", text))
+        if not matches:
+            return self._truncate_chars(text, budget_chars)
+
+        preamble = text[:matches[0].start()].strip()
+        sections: list[tuple[str, str]] = []
+        for index, match in enumerate(matches):
+            end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+            sections.append((match.group(0), text[match.end():end].strip()))
+
+        fixed_parts = ([preamble] if preamble else []) + [heading for heading, _ in sections]
+        fixed_chars = len("\n\n".join(fixed_parts)) + sum(bool(body) for _, body in sections)
+        available = budget_chars - fixed_chars
+        if available <= 0:
+            return self._truncate_chars(text, budget_chars)
+
+        lengths = [len(body) for _, body in sections]
+        low, high = 0, max(lengths, default=0)
+        while low < high:
+            cap = (low + high + 1) // 2
+            if sum(min(length, cap) for length in lengths) <= available:
+                low = cap
+            else:
+                high = cap - 1
+        allocations = [min(length, low) for length in lengths]
+        remainder = available - sum(allocations)
+        for index, length in enumerate(lengths):
+            if remainder <= 0:
+                break
+            if length > allocations[index]:
+                allocations[index] += 1
+                remainder -= 1
+
+        rendered = ([preamble] if preamble else []) + [
+            f"{heading}\n{self._truncate_chars(body, allocations[index])}"
+            if body and allocations[index] > 0 else heading
+            for index, (heading, body) in enumerate(sections)
+        ]
+        return "\n\n".join(rendered)
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         """Fire background prefetch threads for the upcoming turn.

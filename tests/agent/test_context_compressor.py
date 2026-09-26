@@ -305,6 +305,63 @@ class TestSummarizeToolResultClarify:
         assert "Choice B" in summary
 
 
+class TestPruneProtectsHead:
+    """Regression for #123935: the Phase-1 / proactive tool-result prune must honour the
+    ``protect_first_n`` head, or the first turn's tool card (e.g. kanban_show) is demoted to a
+    1-line stub before the summarization phase — which does respect the head — ever runs."""
+
+    HEAD_MARKER = "TASK-42 head card"
+    MID_MARKER = "middle scratch result"
+
+    def _session(self):
+        head_content = json.dumps({"card": self.HEAD_MARKER, "detail": "y" * 400})
+        mid_content = json.dumps({"scratch": self.MID_MARKER, "detail": "z" * 400})
+        return [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "start task"},
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "k1", "type": "function",
+                                "function": {"name": "kanban_show", "arguments": "{}"}}],
+            },
+            {"role": "tool", "tool_call_id": "k1", "content": head_content},
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "s1", "type": "function",
+                                "function": {"name": "search_files", "arguments": "{}"}}],
+            },
+            {"role": "tool", "tool_call_id": "s1", "content": mid_content},
+            {"role": "user", "content": "recent request"},
+            {"role": "assistant", "content": "recent response"},
+        ]
+
+    def test_head_bound_spares_first_turn_tool_result(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=3, protect_last_n=2)
+            _ = c.context_length
+        messages = self._session()
+        head_size = c._protect_head_size(messages)
+        assert head_size >= 4  # system + protect_first_n covers the head tool result at idx 3
+
+        pruned, count = c._prune_old_tool_results(
+            messages, protect_tail_count=2, protect_head_count=head_size,
+        )
+        # Head card survives verbatim; the unprotected middle result is still demoted.
+        assert self.HEAD_MARKER in pruned[3]["content"]
+        assert self.MID_MARKER not in pruned[5]["content"]
+        assert count >= 1
+
+    def test_default_head_bound_zero_preserves_prior_behaviour(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=3, protect_last_n=2)
+            _ = c.context_length
+        messages = self._session()
+        # Without the head bound (the old behaviour) the head card is demoted too.
+        pruned, count = c._prune_old_tool_results(messages, protect_tail_count=2)
+        assert self.HEAD_MARKER not in pruned[3]["content"]
+        assert count >= 2
+
+
 class TestShouldCompress:
     def test_below_threshold(self, compressor):
         compressor.last_prompt_tokens = 50000

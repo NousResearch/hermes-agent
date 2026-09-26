@@ -222,6 +222,86 @@ async def test_monitor_to_drain_transcribes_and_echoes_pending_voice_once(
 
 
 @pytest.mark.asyncio
+async def test_queued_voice_transcribes_immediately_and_drain_reuses_it():
+    """A voice note queued behind an active run is transcribed and echoed right away, stays
+    queued, and the drain (even one racing the in-flight STT) reuses that single STT call."""
+    adapter = _PendingVoiceAdapter()
+    runner = _run_agent_runner(adapter)
+    runner._queued_events = {}
+    source = _source()
+    session_key = "telegram:dm:12345"
+    event = MessageEvent(
+        text="", message_type=MessageType.VOICE, source=source,
+        media_urls=["/tmp/queued-voice.ogg"], media_types=["audio/ogg"],
+    )
+    stt_started, release_stt = threading.Event(), threading.Event()
+
+    def _transcribe(*_args):
+        stt_started.set()
+        assert release_stt.wait(timeout=3)
+        return {"success": True, "transcript": "queued hello", "provider": "mock"}
+
+    with patch("tools.transcription_tools.transcribe_audio", side_effect=_transcribe) as mock_transcribe:
+        runner._queue_or_replace_pending_event(session_key, event)
+        assert adapter._pending_messages[session_key] is event  # still queued, FIFO unchanged
+        assert await asyncio.to_thread(stt_started.wait, 3)  # STT began before any drain
+
+        # Current task finishes while STT is still running: the drain joins the in-flight call.
+        drain = asyncio.create_task(
+            runner._run_agent_drain_pending({"final_response": "done"}, adapter, source, session_key)
+        )
+        await asyncio.sleep(0.05)
+        release_stt.set()
+        pending_event, pending = await drain
+        await event._gateway_pending_stt_prefetch
+
+    assert pending_event is event
+    assert pending == '"queued hello"'
+    mock_transcribe.assert_called_once_with("/tmp/queued-voice.ogg", None, "gateway")
+    assert [content for _chat, content, _meta in adapter.sent] == ['🎙️ "queued hello"']
+    assert adapter.sent[0][2].get("_interim_send") is True  # mid-turn: must not seal a live stream
+
+
+@pytest.mark.asyncio
+async def test_text_merged_during_inflight_stt_is_not_lost():
+    """A typed follow-up merged into the queued voice event while STT runs must survive into the
+    transcript the drain reuses."""
+    from gateway.platforms.base import merge_pending_message_event
+
+    adapter = _PendingVoiceAdapter()
+    runner = _run_agent_runner(adapter)
+    runner._queued_events = {}
+    source = _source()
+    session_key = "telegram:dm:12345"
+    event = MessageEvent(
+        text="", message_type=MessageType.VOICE, source=source,
+        media_urls=["/tmp/merge-voice.ogg"], media_types=["audio/ogg"],
+    )
+    stt_started, release_stt = threading.Event(), threading.Event()
+
+    def _transcribe(*_args):
+        stt_started.set()
+        assert release_stt.wait(timeout=3)
+        return {"success": True, "transcript": "spoken part", "provider": "mock"}
+
+    with patch("tools.transcription_tools.transcribe_audio", side_effect=_transcribe):
+        runner._queue_or_replace_pending_event(session_key, event)
+        assert await asyncio.to_thread(stt_started.wait, 3)
+        merge_pending_message_event(
+            adapter._pending_messages, session_key,
+            MessageEvent(text="typed part", message_type=MessageType.TEXT, source=source),
+            merge_text=True,
+        )
+        release_stt.set()
+        await event._gateway_pending_stt_prefetch
+        _pending_event, pending = await runner._run_agent_drain_pending(
+            {"final_response": "done"}, adapter, source, session_key,
+        )
+
+    assert "spoken part" in pending and "typed part" in pending
+
+
+@pytest.mark.asyncio
 async def test_telegram_video_size_gate_rejects_oversized_media_before_download():
     adapter = object.__new__(TelegramAdapter)
     adapter._max_doc_bytes = 1024

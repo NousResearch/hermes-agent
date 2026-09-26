@@ -2100,14 +2100,58 @@ class GatewayInboundMixin:
         monitor and the pending-drain path both need it — one STT call and one echo per message."""
         if hasattr(event, "_gateway_pending_stt_text"):
             return event._gateway_pending_stt_text, list(getattr(event, "_gateway_pending_stt_transcripts", []) or [])
-        audio_paths = self._pending_event_audio_paths(event)
-        if not audio_paths:
-            return user_text if user_text is not None else (getattr(event, "text", None) or None), []
-        text = user_text if user_text is not None else (getattr(event, "text", "") or "")
-        enriched_text, successful_transcripts = await self._enrich_message_with_transcription(text, audio_paths)
+        # Concurrent callers (queued-voice prefetch, interrupt monitor, drain) share one STT call.
+        task = getattr(event, "_gateway_pending_stt_task", None)
+        if task is None:
+            audio_paths = self._pending_event_audio_paths(event)
+            if not audio_paths:
+                return user_text if user_text is not None else (getattr(event, "text", None) or None), []
+            text = user_text if user_text is not None else (getattr(event, "text", "") or "")
+            task = asyncio.ensure_future(self._enrich_message_with_transcription(text, audio_paths))
+            event._gateway_pending_stt_task = task
+        try:
+            enriched_text, successful_transcripts = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            if getattr(event, "_gateway_pending_stt_task", None) is task:
+                del event._gateway_pending_stt_task
+            raise
+        if getattr(event, "_gateway_pending_stt_task", None) is not task:
+            # A merge changed the event while STT ran; retry from the merged event's own text, not
+            # the pre-merge snapshot, or a caption merged mid-STT is cached away.
+            return await self._transcribe_pending_audio_event_once(event)
+        del event._gateway_pending_stt_task
         event._gateway_pending_stt_text = enriched_text
         event._gateway_pending_stt_transcripts = list(successful_transcripts)
         return enriched_text, successful_transcripts
+
+    def _prefetch_queued_voice_transcript(self, event, adapter) -> None:
+        """Start STT for a voice message queued behind an active run, so its transcript echoes now
+        and the queued turn reuses it instead of transcribing after the current task finishes."""
+        if (
+            adapter is None or getattr(event, "internal", False)
+            or hasattr(event, "_gateway_pending_stt_text")
+            or getattr(event, "_gateway_pending_stt_prefetch", None) is not None
+            or not self._pending_event_audio_paths(event)
+        ):
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return  # no loop (sync caller): the drain path transcribes as before
+        from gateway.run import _interim_metadata
+        # The echo lands mid-turn: mark it interim so stream-is-the-message adapters keep the live
+        # stream open rather than sealing it with the transcript.
+        metadata = _interim_metadata(
+            self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
+        )
+        event._gateway_pending_stt_prefetch = self._retain_background_task(asyncio.create_task(
+            self._transcribe_and_echo_pending_voice(
+                event, adapter, event.source, event.text or "", log_context="Voice-queue",
+                metadata=metadata,
+            )
+        ))
 
     async def _echo_pending_stt_transcripts_once(
         self, event, adapter, source, transcripts: List[str], *, metadata=None,

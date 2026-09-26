@@ -406,6 +406,8 @@ class GatewayBusySessionMixin:
             return
 
         self._enqueue_fifo(session_key, event, adapter)
+        if getattr(event, "_gateway_accepted", False):
+            self._prefetch_queued_voice_transcript(event, adapter)
 
     async def _prepare_busy_steer_text(self, event: MessageEvent) -> str:
         """Steerable text for a busy follow-up, transcribing voice-message media first.

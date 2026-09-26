@@ -3545,11 +3545,26 @@ def _parse_cli_args(parser, subparsers, argv):
     return args
 
 
-def _default_to_chat(args) -> None:
+def _exit_if_failed(result: object) -> int:
+    """Turn a handler result into an exit status; a non-zero one exits.
+
+    ``bool`` is never an exit code (a handler returning ``True`` means success,
+    and ``sys.exit(True)`` would wrongly fail with 1) and ``None`` means
+    success.  Non-zero raises here so a bare ``main()`` call still fails the
+    process (regression #117276), while ``SystemExit(main())`` callers and the
+    ``hermes`` console script still see 0 on success.
+    """
+    rc = result if type(result) is int else 0
+    if rc != 0:
+        sys.exit(rc)
+    return rc
+
+
+def _default_to_chat(args):
     """No subcommand given: run chat."""
     _promote_top_level_resume(args)
     _set_chat_arg_defaults(args)
-    cmd_chat(args)
+    return cmd_chat(args)
 
 
 def main():
@@ -3617,13 +3632,13 @@ def main():
         logging.getLogger(__name__).debug("pm startup check failed", exc_info=True)
 
     if _try_termux_fast_tui_launch():
-        return
+        return 0
     if _try_termux_fast_cli_launch():
-        return
+        return 0
     if _try_fast_serve_launch():
-        return
+        return 0
     if _try_fast_chat_launch():
-        return
+        return 0
 
     parser, subparsers = _build_cli_parser()
 
@@ -3641,7 +3656,7 @@ def main():
 
     if args.version:
         cmd_version(args)
-        return
+        return 0
 
     # --yolo must be set *before* plugin discovery: tools.approval freezes
     # _YOLO_MODE_FROZEN at import; set later (inside cmd_chat) it does nothing.
@@ -3658,20 +3673,18 @@ def main():
 
     # No subcommand (optionally with top-level --resume / --continue) → chat.
     if args.command is None:
-        _default_to_chat(args)
-        return
+        return _exit_if_failed(_default_to_chat(args))
 
-    # A handler's int return code becomes the exit code (None = success).
+    # A handler's int return code becomes the exit status (None = success).
     if hasattr(args, "func"):
-        rc = args.func(args)
-        if isinstance(rc, int) and rc != 0:
-            sys.exit(rc)
+        return _exit_if_failed(args.func(args))
     else:
         parser.print_help()
+        return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

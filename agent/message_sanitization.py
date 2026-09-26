@@ -338,11 +338,20 @@ def serialized_messages_bytes(messages: list) -> int:
 _IMAGE_PART_TYPES = {"image_url", "image", "input_image"}
 
 
-def _strip_images_from_messages(messages: list) -> bool:
+_IMAGE_REMOVED_PLACEHOLDER = "[image content removed — server does not support images]"
+
+
+def _strip_images_from_messages(messages: list, *, preserve_alternation: bool = False) -> bool:
     """Remove image content parts from all messages in-place (server rejected images).
 
     ``tool`` / ``tool_calls`` messages left empty get a placeholder, NOT deleted (deleting
     orphans the paired ``tool_call_id`` → HTTP 400); other now-empty messages are dropped.
+    With ``preserve_alternation`` an emptied message is instead kept as that placeholder unless
+    its nearest non-system neighbour on either side has its own role (then keeping it would make
+    two same-role turns adjacent, so it is dropped). Past either end of the list counts as an
+    assistant turn: the request must open on a user turn, and the model's reply follows the last.
+    An image-only user turn between two replies or ending the request, or an image-only
+    assistant reply between two user turns, therefore stays as a placeholder.
     Rewritten messages lose their ``api_content`` sidecar (it carries the removed images):
     a caller rewriting a persisted row must not leave bytes that replay them next turn. The
     current callers pass per-call clones, where this is a no-op.
@@ -364,13 +373,38 @@ def _strip_images_from_messages(messages: list) -> bool:
                 # Rewriting a stamped live dict stales its persisted row; pop the marker.
                 msg.pop(_DB_PERSISTED_MARKER, None)
             elif msg.get("role") == "tool" or msg.get("tool_calls"):
-                msg["content"] = "[image content removed — server does not support images]"
+                msg["content"] = _IMAGE_REMOVED_PLACEHOLDER
                 msg.pop(_DB_PERSISTED_MARKER, None)
             else:
                 to_delete.append(i)
             drop_stale_api_content(msg)
-    for i in reversed(to_delete):
-        del messages[i]
+    if not preserve_alternation:
+        for i in reversed(to_delete):
+            del messages[i]
+        return found
+    # Left to right on the live list, so a run of emptied messages keeps at most the one whose
+    # neighbours both end up with another role. System messages sit outside the alternation and
+    # are skipped; past either edge reads as assistant.
+    def _neighbour_role(j: int, step: int) -> Any:
+        while 0 <= j < len(messages):
+            n = messages[j]
+            role = n.get("role") if isinstance(n, dict) else None
+            if role != "system":
+                return role
+            j += step
+        return "assistant"
+
+    emptied = {id(messages[i]) for i in to_delete}
+    i = 0
+    while i < len(messages):
+        msg = messages[i]
+        if id(msg) in emptied:
+            if msg.get("role") in (_neighbour_role(i - 1, -1), _neighbour_role(i + 1, 1)):
+                del messages[i]
+                continue
+            msg["content"] = _IMAGE_REMOVED_PLACEHOLDER
+            msg.pop(_DB_PERSISTED_MARKER, None)
+        i += 1
     return found
 
 
@@ -425,10 +459,16 @@ def strip_images_for_rejecting_model(agent: Any, api_messages: Any) -> bool:
     converted payload (Bedrock Converse ``{"image": ...}`` blocks carry no ``type``) would slip
     past it. History is never touched. Keyed on each rejecting (provider, model), so a model
     that accepts images gets them again.
+
+    Emptied turns are stripped with ``preserve_alternation``: history keeps an image-only turn and
+    replays it on every request to this model, and dropping it there can leave two same-role turns
+    adjacent — which breaks history's own invariant (``repair_message_sequence`` merges them) and
+    which strict-alternation chat templates (Gemma, Mistral) reject — or leave the request ending
+    on an assistant turn, with no user turn to answer.
     """
     if _provider_model_key(agent) not in agent._image_rejecting_models:
         return False
-    return isinstance(api_messages, list) and _strip_images_from_messages(api_messages)
+    return isinstance(api_messages, list) and _strip_images_from_messages(api_messages, preserve_alternation=True)
 
 
 def _looks_like_image_content_rejection(error_body: str) -> bool:

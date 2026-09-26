@@ -18,6 +18,7 @@ from tools.delegation_live_log import (
     LiveTranscriptWriter,
     create_live_transcripts,
     live_transcript_root,
+    update_manifest_route,
     wrap_progress_callback,
 )
 
@@ -160,6 +161,54 @@ def _fake_run(task_index, goal, child=None, parent_agent=None, **kw):
         "summary": f"done: {goal}", "api_calls": 1,
         "duration_seconds": 0.1, "model": "m", "exit_reason": "completed",
     }
+
+
+def test_delegate_manifest_uses_constructed_child_route(monkeypatch):
+    """The manifest route comes from the child that will run, not null override inputs."""
+    import tools.delegate_tool as dt
+    import tools.delegation_live_log as live_log
+
+    parent = _make_parent()
+    parent.model = "parent/model"
+    parent.provider = "parent-provider"
+    inherited = {
+        "model": None, "provider": None, "base_url": None, "api_key": None,
+        "api_mode": None, "request_overrides": {}, "command": None, "args": [],
+    }
+    child = MagicMock()
+    child.model = "resolved/model"
+    child.provider = "resolved-provider"
+    task = {"goal": "inspect the inherited route"}
+    captured = {}
+
+    monkeypatch.setattr(dt, "_load_config", lambda: {})
+    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *_args, **_kwargs: dict(inherited))
+    monkeypatch.setattr(dt, "_oneshot_spawn_budget", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(live_log, "create_live_transcripts",
+                        lambda *_args, **_kwargs: ("deleg_route", [None], []))
+    monkeypatch.setattr(dt, "_build_children",
+                        lambda *_args, **_kwargs: ([(0, task, child)], None))
+    monkeypatch.setattr(live_log, "update_manifest_route",
+                        lambda delegation_id, **route: captured.update(id=delegation_id, **route))
+    monkeypatch.setattr(dt, "_run_batch", lambda *_args, **_kwargs: "{}")
+
+    dt.delegate_task(tasks=[task], parent_agent=parent)
+
+    assert captured == {
+        "id": "deleg_route", "model": "resolved/model", "provider": "resolved-provider",
+    }
+
+
+def test_update_manifest_route_replaces_null_dispatch_route():
+    delegation_id, _writers, _paths = create_live_transcripts([{"goal": "task"}])
+
+    update_manifest_route(delegation_id, model="resolved/model", provider="resolved-provider")
+
+    manifest = json.loads(
+        (live_transcript_root() / delegation_id / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["model"] == "resolved/model"
+    assert manifest["provider"] == "resolved-provider"
 
 
 if __name__ == "__main__":

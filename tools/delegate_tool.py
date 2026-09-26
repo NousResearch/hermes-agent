@@ -512,7 +512,7 @@ def delegate_task(
     overall_start = time.monotonic()
     # Live transcripts: cache/delegation/live/<id>/task-<n>.log per task, a side channel with zero effect on message
     # content or prompt caching. Best-effort: on failure live_paths is empty and delegation proceeds.
-    from tools.delegation_live_log import create_live_transcripts
+    from tools.delegation_live_log import create_live_transcripts, update_manifest_route
     live_deleg_id, live_writers, live_paths = create_live_transcripts(
         task_list, context, model=creds.get("model"), provider=creds.get("provider")
     )
@@ -525,6 +525,17 @@ def delegate_task(
     )
     if err:
         return tool_error(err)
+    # The credential bundle contains routing inputs; child construction is the authority for the
+    # route that will actually start (it also handles parent inheritance and ACP/provider rewrites).
+    # Current delegate_task has one batch route, so all children should agree. If a future per-task
+    # router makes them differ, leave the batch-level fields alone for that feature to represent.
+    child_routes = [
+        (getattr(child, "model", None), getattr(child, "provider", None))
+        for _index, _task, child in children
+    ]
+    if child_routes and all(route == child_routes[0] for route in child_routes[1:]):
+        effective_model, effective_provider = child_routes[0]
+        update_manifest_route(live_deleg_id, model=effective_model, provider=effective_provider)
     batch = _Batch(
         task_list, children, parent_agent, creds, context, top_role, max_children,
         live_deleg_id, live_writers, live_paths, *origin, overall_start,

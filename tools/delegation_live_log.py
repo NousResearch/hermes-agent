@@ -267,6 +267,18 @@ def _write_manifest(delegation_id: str, task_list: List[Dict[str, Any]],
                 "status": "running"} for i, t in enumerate(task_list)]})
 
 
+def update_manifest_route(delegation_id: Optional[str], *, model: Optional[str], provider: Optional[str]) -> None:
+    """Replace dispatch placeholders with the route of the constructed child before execution starts."""
+    if not delegation_id:
+        return
+    with _best_effort("manifest route update"):
+        mp = _manifest_path(delegation_id)
+        manifest = json.loads(mp.read_text(encoding="utf-8-sig"))
+        manifest["model"] = model
+        manifest["provider"] = provider
+        _dump_json(mp, manifest)
+
+
 def update_manifest_statuses(delegation_id: Optional[str],
                              results: List[Dict[str, Any]]) -> None:
     """Best-effort per-task status update once the batch has aggregated."""

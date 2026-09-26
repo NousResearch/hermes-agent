@@ -753,6 +753,11 @@ def _collect_pre_llm_call_context(
         return ""
     try:
         from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+        from agent.turn_observer_lifecycle import mark_turn_started
+        mark_turn_started(
+            agent, session_id=agent.session_id, task_id=effective_task_id, turn_id=turn_id,
+            model=agent.model, platform=getattr(agent, "platform", None) or "",
+        )
         _pre_results = _invoke_hook(
             "pre_llm_call",
             session_id=agent.session_id,

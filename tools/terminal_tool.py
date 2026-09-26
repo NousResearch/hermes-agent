@@ -554,23 +554,16 @@ def _lookup_active_env(effective_task_id: str, task_id: Optional[str]):
     return None
 
 
-def _resolve_task_host_cwd(config: Dict[str, Any], task_id: Optional[str]) -> Optional[str]:
-    """Host directory to bind-mount at ``/workspace`` for *task_id*'s container.
+def _session_workspace_mount_source(task_id: Optional[str]) -> Optional[str]:
+    """The host directory THIS session chose as its workspace, or None.
 
-    Single owner of the cwd-mount policy for every creation site. Shared-
-    container mode: the ``TERMINAL_CWD``-derived ``config["host_cwd"]``.
-    Per-session isolation (docker + ``container_persistent: false``): only
-    the SESSION's own registered workspace may mount — the process env var is
-    a launch artifact that outlives the session that set it, so deriving a
-    fresh session's mount from it would leak the previous session's directory.
-    Overrides tagged ``cwd_source: "process"`` are refused for the same reason;
-    ``cwd_source: "session"`` or untagged (ACP/RL) overrides mount.
+    The workspace picker records the user's choice as a ``cwd`` override tagged
+    ``cwd_source: "session"``. A ``"process"``-tagged override is a launch artifact
+    (a ``TERMINAL_CWD``/``terminal.cwd`` fallback that outlives the session that set
+    it), never a workspace the user picked. Untagged overrides (ACP ``session/load``
+    project-root switching, RL/benchmark envs) are the session's own, matching the
+    rule the isolation branch already applies.
     """
-    if config.get("env_type") != "docker" or not config.get("docker_mount_cwd_to_workspace"):
-        return None
-    # Top-level CLI parent ("default") is a single-session process — legacy behavior.
-    if not _docker_session_isolation_enabled() or _resolve_container_task_id(task_id) == "default":
-        return config.get("host_cwd")
     overrides = resolve_task_overrides(task_id)
     candidate = overrides.get("cwd")
     if overrides.get("cwd_source") == "process" or not isinstance(candidate, str) or not candidate.strip():
@@ -580,6 +573,94 @@ def _resolve_task_host_cwd(config: Dict[str, Any], task_id: Optional[str]) -> Op
     if not os.path.isdir(candidate) or candidate.startswith(("/workspace", "/root")):
         return None
     return candidate
+
+
+def _live_env_mount_agrees(env: Any, host_cwd: Optional[str]) -> bool:
+    """Whether *env*'s ``/workspace`` bind is backed by *host_cwd*.
+
+    A persistent container is keyed per profile (not per workspace), so the env
+    cached under that key can belong to a DIFFERENT session's workspace. Returning
+    it hands a session someone else's directory: the resolver computes the right
+    source, then ``get_active_env`` short-circuits before it is ever consulted.
+
+    Only compares when a host mount is in play on both sides; a non-container
+    backend, or one with no mount to argue about, always agrees.
+
+    This is also the policy for an explicit ``docker_shared_container_key``: sharing
+    is the deliberate choice of ``_resolve_container_task_id`` (deliberate sharing
+    means identical container identity), NOT a licence for the ``/workspace`` bind to
+    hop between sources. Two profiles that opt into the same key share a container
+    only while they agree on the workspace; a disagreeing pair settles the mount for
+    the profile that asks, exactly as any other reuse would. Callers who want one
+    frozen workspace across profiles pin ``terminal.cwd``.
+    """
+    env_type = getattr(env, "env_type", None)
+    if not env_type or not _is_container_backend(env_type):
+        return True
+    mounted = getattr(env, "host_cwd", None)
+    if host_cwd is None or not isinstance(mounted, str) or not mounted:
+        return True
+    return os.path.abspath(os.path.expanduser(mounted)) == os.path.abspath(os.path.expanduser(host_cwd))
+
+
+def _release_active_env(effective_task_id: str, task_id: Optional[str], host_cwd: Optional[str]) -> None:
+    """Drop a live env whose ``/workspace`` no longer matches this session's source.
+
+    Closing it is what makes the caller's retry create a container with the right
+    bind (run args are immutable at creation, so reusing in place can never fix the
+    mount). If the env is busy the close fails and the caller keeps the live one —
+    a session's own work must never be torn out from under it to satisfy a sibling.
+    """
+    from tools.terminal_tool_lifecycle import get_active_env
+
+    stale = get_active_env(effective_task_id) or get_active_env(task_id or "")
+    if stale is None or _live_env_mount_agrees(stale, host_cwd):
+        return
+    logger.warning(
+        "Docker container for task %s is mounted on %r, not this session's workspace %r "
+        "— releasing it so the right mount is created.",
+        effective_task_id[:24], getattr(stale, "host_cwd", None), host_cwd,
+    )
+    with _env_lock:
+        for key in (effective_task_id, task_id):
+            if key and _active_environments.get(key) is stale:
+                _active_environments.pop(key, None)
+    try:
+        from tools.terminal_tool_lifecycle import _cleanup_env
+        _cleanup_env(stale)
+    except Exception as exc:  # noqa: BLE001 — a busy/failed teardown just leaves it live
+        logger.warning("Could not tear down the stale container for task %s: %s", effective_task_id[:24], exc)
+
+
+def _resolve_task_host_cwd(config: Dict[str, Any], task_id: Optional[str]) -> Optional[str]:
+    """Host directory to bind-mount at ``/workspace`` for *task_id*'s container.
+
+    Single owner of the cwd-mount policy for every creation site. Shared-
+    container mode: the ``TERMINAL_CWD``-derived ``config["host_cwd"]``, but a
+    workspace the SESSION itself chose always wins over it. Per-session isolation
+    (docker + ``container_persistent: false``): only the SESSION's own registered
+    workspace may mount — the process env var is a launch artifact that outlives
+    the session that set it, so deriving a fresh session's mount from it would
+    leak the previous session's directory. Overrides tagged ``cwd_source:
+    "process"`` are refused for the same reason; ``cwd_source: "session"`` or
+    untagged (ACP/RL) overrides mount.
+
+    The explicit-workspace rule applies in shared mode too because shared mode
+    collapses EVERY session onto one profile-scoped container and derives its
+    mount from the backend process cwd — identically for all of them. A desktop
+    backend launched from ``$HOME`` therefore bound the whole home directory at
+    ``/workspace`` while the workspace the user attached to the session was
+    ignored, so the sandbox could read host secrets (``~/.ssh``, ``~/.hermes``)
+    and the agent saw neither the repo it was aimed at nor its own worktree. A
+    deliberate choice is not a launch artifact and must be honoured in both modes;
+    a ``"process"``-tagged fallback stays refused in both.
+    """
+    if config.get("env_type") != "docker" or not config.get("docker_mount_cwd_to_workspace"):
+        return None
+    # Top-level CLI parent ("default") is a single-session process — legacy behavior.
+    if not _docker_session_isolation_enabled() or _resolve_container_task_id(task_id) == "default":
+        return _session_workspace_mount_source(task_id) or config.get("host_cwd")
+    return _session_workspace_mount_source(task_id)
 
 
 # One-shot guard for the config-fallback bridge: after the first attempt
@@ -1086,8 +1167,10 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
 
     with _env_lock:
         env: Any = _lookup_active_env(eff, task_id)
-    if env is not None:
+    if env is not None and _live_env_mount_agrees(env, plan.host_cwd):
         return env
+    if env is not None:
+        _release_active_env(eff, task_id, plan.host_cwd)
 
     with _creation_locks_lock:
         task_lock = _creation_locks.setdefault(eff, threading.Lock())
@@ -1095,8 +1178,10 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
     with task_lock:
         with _env_lock:
             env = _lookup_active_env(eff, task_id)
-        if env is not None:
+        if env is not None and _live_env_mount_agrees(env, plan.host_cwd):
             return env
+        if env is not None:
+            _release_active_env(eff, task_id, plan.host_cwd)
 
         if env_type == "singularity":
             _check_disk_usage_warning()

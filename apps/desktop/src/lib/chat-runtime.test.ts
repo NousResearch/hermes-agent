@@ -11,6 +11,7 @@ import {
   createToolMergeCache,
   messageCreatedAt,
   optimisticAttachmentRef,
+  personalityNamesFromConfig,
   toRuntimeMessage
 } from './chat-runtime'
 
@@ -224,5 +225,25 @@ describe('coalesceToolOnlyAssistants toolCallId uniqueness', () => {
       .map(part => (part as { toolCallId: string }).toolCallId)
 
     expect(ids).toEqual(['call-a', 'call-b'])
+  })
+})
+
+describe('personalityNamesFromConfig', () => {
+  it('reads root-level personalities the runtime honours (#123297)', () => {
+    expect(personalityNamesFromConfig({ personalities: { root_persona: '...' } })).toEqual(['root_persona'])
+  })
+
+  it('merges root and agent blocks, deduping name clashes', () => {
+    const names = personalityNamesFromConfig({
+      personalities: { root_persona: 'r', shared: 'root' },
+      agent: { personalities: { agent_persona: 'a', shared: 'agent' } }
+    })
+
+    expect(new Set(names)).toEqual(new Set(['root_persona', 'shared', 'agent_persona']))
+  })
+
+  it('ignores non-object or array blocks', () => {
+    expect(personalityNamesFromConfig({ personalities: ['nope'], agent: { personalities: 'nope' } })).toEqual([])
+    expect(personalityNamesFromConfig(null)).toEqual([])
   })
 })

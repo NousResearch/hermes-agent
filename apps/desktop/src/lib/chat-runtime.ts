@@ -270,11 +270,21 @@ export function optimisticAttachmentRef(attachment: ComposerAttachment): string 
 export function personalityNamesFromConfig(config: unknown): string[] {
   const root = config && typeof config === 'object' ? (config as Record<string, unknown>) : {}
   const agent = root.agent && typeof root.agent === 'object' ? (root.agent as Record<string, unknown>) : {}
-  const personalities = agent.personalities
 
-  return personalities && typeof personalities === 'object' && !Array.isArray(personalities)
-    ? Object.keys(personalities as Record<string, unknown>)
-    : []
+  // The Python runtime (`hermes_cli.personality.available_personalities`) overlays
+  // built-ins with the root-level `personalities` block, then `agent.personalities`
+  // (agent wins on a name clash). Read both here so a root-registered persona the
+  // CLI/gateway honour also reaches the GUI (#123297).
+  const names = new Set<string>()
+  for (const block of [root.personalities, agent.personalities]) {
+    if (block && typeof block === 'object' && !Array.isArray(block)) {
+      for (const name of Object.keys(block as Record<string, unknown>)) {
+        names.add(name)
+      }
+    }
+  }
+
+  return [...names]
 }
 
 export function normalizePersonalityValue(value: string): string {

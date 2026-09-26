@@ -243,10 +243,17 @@ export function setNested(obj: HermesConfigRecord, path: string, value: unknown)
 }
 
 function personalityOptions(config: HermesConfigRecord): string[] {
-  const custom = getNested(config, 'agent.personalities')
-
-  const customNames =
-    custom && typeof custom === 'object' && !Array.isArray(custom) ? Object.keys(custom as Record<string, unknown>) : []
+  // The Python runtime (`hermes_cli.personality.available_personalities`) honours both
+  // the root-level `personalities` block and `agent.personalities` (agent wins on a name
+  // clash). Read both so a root-registered persona the CLI/gateway resolve also appears in
+  // the dropdown (#123297).
+  const customNames: string[] = []
+  for (const key of ['personalities', 'agent.personalities']) {
+    const block = getNested(config, key)
+    if (block && typeof block === 'object' && !Array.isArray(block)) {
+      customNames.push(...Object.keys(block as Record<string, unknown>))
+    }
+  }
 
   return [...new Set(['', ...BUILTIN_PERSONALITIES, ...customNames])]
 }

@@ -48,7 +48,7 @@ const catalogLeaves = (locale: Locale) =>
 
 const english = catalogLeaves('en')
 
-it.each(['de', 'es', 'fr', 'ja', 'ru', 'zh', 'zh-hant', 'ar'] as const)(
+it.each(['de', 'es', 'fr', 'ja', 'ru', 'zh', 'zh-hant', 'ar', 'cs'] as const)(
   '%s renders localized retirement copy instead of English fallback',
   locale => {
     expect(TRANSLATIONS[locale].updates.discontinuedTitle).not.toBe(TRANSLATIONS.en.updates.discontinuedTitle)

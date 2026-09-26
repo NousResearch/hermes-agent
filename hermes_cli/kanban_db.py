@@ -3215,12 +3215,15 @@ def block_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
     kind: Optional[str] = None, expected_run_id: Optional[int] = None,
 ) -> bool:
-    """``running``/``ready`` -> ``blocked`` (or ``todo`` / ``triage``, see
-    :func:`_route_block`). ``kind='dependency'`` with no incomplete parent is
-    re-kinded to ``needs_input`` (sticky) so ``recompute_ready`` cannot
-    promote it into a context-free respawn. ``transient`` still counts
-    toward the loop breaker so a forever-flaky task escalates. True on any
-    transition.
+    """``running``/``ready``/``todo`` -> ``blocked`` (or ``todo`` / ``triage``, see
+    :func:`_route_block`). ``todo`` is a valid source: a task can be
+    known-blocked before it is ever claimed (a dependency discovered during
+    planning, an unavailable capability), and refusing that forced callers to
+    start the task purely to be allowed to block it. ``kind='dependency'``
+    with no incomplete parent is re-kinded to ``needs_input`` (sticky) so
+    ``recompute_ready`` cannot promote it into a context-free respawn.
+    ``transient`` still counts toward the loop breaker so a forever-flaky
+    task escalates. True on any transition.
 
     An already-``blocked`` card that the failure breaker parked UNTYPED
     (``block_kind IS NULL``, no live run) is classified in place when *kind*
@@ -3259,7 +3262,10 @@ def block_task(
                 "kind": kind, "reason": reason, "classified_in_place": True,
             })
             return True
-        source_status = _retry_status_for_run(conn, task_id) if cur_row["status"] == "running" else "ready"
+        # Report the real source; "ready" was safe only while it was the sole non-running source.
+        source_status = (
+            _retry_status_for_run(conn, task_id) if cur_row["status"] == "running" else cur_row["status"]
+        )
         requested_kind = kind
         rekind_reason = None
         # ``dependency`` only waits on incomplete parents. A worker filing that
@@ -3284,7 +3290,7 @@ def block_task(
                        worker_pid    = NULL,
                        {set_sql}
                  WHERE id = ?
-                   AND status IN ('running', 'ready')
+                   AND status IN ('running', 'ready', 'todo')
                 """
         params = (*params, task_id)
         if expected_run_id is not None:
@@ -3316,8 +3322,9 @@ def _route_block(
     as something to "unblock". Callers that pass ``dependency`` with no
     incomplete parent are re-kinded to ``needs_input`` before this runs
     (see :func:`block_task`). Every other kind counts unblock-loop
-    recurrences: block_task only fires from running/ready (AFTER an unblock
-    returned the task to the pool), so a stored ``block_kind`` equal to the
+    recurrences: block_task fires from running/ready/todo (a re-block after an
+    unblock returned the task to the pool, or a never-claimed task blocked
+    outright), so a stored ``block_kind`` equal to the
     incoming one means blocked -> unblocked -> re-block for the same cause
     (un-typed None compares equal to a prior un-typed block). At
     ``BLOCK_RECURRENCE_LIMIT`` the task routes to ``triage`` for a human.

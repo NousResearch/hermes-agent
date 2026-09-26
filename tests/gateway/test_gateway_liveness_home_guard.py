@@ -76,3 +76,20 @@ def test_a_copied_dir_with_no_identity_files_borrows_neither_the_process_record_
     pooled = fake_root / "profiles" / "eagle"
     pooled.mkdir(parents=True)
     assert status.multiplexer_liveness_for_profile(pooled) is not None
+
+
+def test_a_gateway_relaunched_by_venv_sync_is_still_identified_by_its_record(monkeypatch, fake_root):
+    """A PM-install gateway re-exec'd by ``hermes_cli/venv_sync.py::relaunch_command`` runs its
+    entry point as ``python -I -c "...sys.argv = ['…/hermes_cli/main.py', 'gateway', 'run'];
+    …"``, so its live command line carries the wrapper, not the plain argv. The (pid,
+    start_time) record it wrote must still validate against that live command line — the
+    ladder's rung-1/rung-3 records check (``_record_matches_live_gateway_pid``) reads the live
+    cmdline."""
+    relaunch_cmdline = (
+        "python -I -c import sys, runpy; sys.path.insert(0, '/opt/hermes-agent'); "
+        "sys.argv = ['/opt/hermes-agent/hermes_cli/main.py', 'gateway', 'run']; "
+        "runpy.run_module('hermes_cli.main', run_name='__main__', alter_sys=True)"
+    )
+    _alive(monkeypatch, cmdline=relaunch_cmdline)
+    record = _live_record(fake_root)
+    assert status._record_matches_live_gateway_pid(record, _LIVE_PID) is True

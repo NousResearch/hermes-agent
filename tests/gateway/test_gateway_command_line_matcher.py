@@ -165,3 +165,112 @@ def test_accepts_atomic_desktop_gateway():
     assert matches_runtime(ATOMIC_DESKTOP) is True
 
 
+# ``hermes_cli/venv_sync.py::relaunch_command`` re-execs a Hermes entry point as
+# ``python -I -c "import sys, runpy; …; sys.argv = ['…/hermes_cli/main.py', 'gateway', 'run'];
+# …"`` (hermes_bootstrap's source-update completion path). That in-source assignment re-binds the
+# process to that argv, so the process IS the gateway it names — unlike the #107002 watcher above,
+# whose trailing argv is data for a child it spawns LATER. Without recognition, a PM-install
+# gateway is invisible to every liveness surface: ``hermes gateway status``, the dashboard's
+# ``/api/status`` and the update fleet verification all report it stopped while it runs, and the
+# stale-PID cleanup then unlinks its gateway.pid/gateway.lock.
+RELAUNCH_ACCEPT = [
+    # real /proc shape: the -c body is an unquoted argv element, so shlex(posix=False)
+    # fragments the embedded list — recognition must work on the command string, not tokens
+    "python -I -c import sys, runpy; sys.path.insert(0, '/opt/hermes-agent'); "
+    "sys.argv = ['/opt/hermes-agent/hermes_cli/main.py', 'gateway', 'run']; "
+    "runpy.run_module('hermes_cli.main', run_name='__main__', alter_sys=True)",
+    # quoted-body spelling (ps / log output)
+    'python -I -c "import sys, runpy; sys.path.insert(0, \'/opt/hermes-agent\'); '
+    "sys.argv = ['/opt/hermes-agent/hermes_cli/main.py', 'gateway', 'run']; "
+    "runpy.run_module('hermes_cli.main', run_name='__main__', alter_sys=True)\"",
+    # run_path variant (distlib .exe launchers) carrying a profile selector
+    "python -I -c import sys, runpy; sys.argv = ['/opt/hermes-agent/hermes_cli/main.py', "
+    "'--profile', 'work', 'gateway', 'run']; "
+    "runpy.run_path('/opt/hermes-agent/hermes_cli/main.py', run_name='__main__')",
+    # Windows: relaunch_command's argv!r double-escapes the backslash separators
+    'python.exe -I -c "import sys, runpy; sys.argv = [\'C:\\\\hermes-agent\\\\hermes_cli\\\\main.py\', \'gateway\', \'run\']; '
+    "runpy.run_module('hermes_cli.main', run_name='__main__', alter_sys=True)\"",
+]
+
+
+@pytest.mark.parametrize("cmd", RELAUNCH_ACCEPT)
+def test_accepts_venv_sync_relaunched_gateway(cmd):
+    assert matches(cmd) is True
+    assert matches_runtime(cmd) is True
+    # Identity and spawn-intent agree on the self-rebinding shape: the direct rung now
+    # answers, so gateway_spawn_intent_subcommand no longer mis-reads it either.
+    assert spawn_intent(cmd) == "run"
+
+
+def test_inline_source_assigning_a_non_gateway_argv_stays_anonymous():
+    cmd = (
+        "python -I -c import sys; sys.argv = ['/opt/hermes-agent/hermes_cli/main.py', "
+        "'chat', '-q']; runpy.run_module('hermes_cli.main')"
+    )
+    assert matches(cmd) is False
+    assert matches_runtime(cmd) is False
+
+
+def test_inline_source_only_spawning_a_gateway_later_stays_anonymous():
+    # The #107002 rule enforced against THIS change: a child's argv mentioned without a
+    # sys.argv self-assignment is spawn data, never identity.
+    cmd = (
+        "python -I -c import subprocess; subprocess.run(['python', '-m', "
+        "'hermes_cli.main', 'gateway', 'run'])"
+    )
+    assert matches(cmd) is False
+    assert matches_runtime(cmd) is False
+
+
+@pytest.mark.parametrize(
+    "assignment",
+    [
+        "sys.argv = []",                                   # degenerate: empty list
+        "sys.argv = [sys.executable, 'gateway', 'run']",   # computed, not a literal
+        "sys.argv = [42, 'gateway', 'run']",               # non-string element
+        "sys.argv",                                        # not even an assignment
+    ],
+)
+def test_non_literal_or_degenerate_sys_argv_assignment_does_not_count(assignment):
+    cmd = f"python -I -c import sys; {assignment}; import time; time.sleep(1)"
+    assert matches(cmd) is False
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.spawns_gateway_lookalike
+def test_live_relaunched_process_is_a_gateway_and_a_trailing_argv_spawner_is_not():
+    """E2E on a real ``/proc/<pid>/cmdline``: a relaunch-shaped live process IS the gateway it
+    re-binds to; the same interpreter shape with the gateway argv as TRAILING data (#107002
+    watcher) is not. Pins behavior against the real unquoted-argv /proc spelling shlex mangles."""
+    import subprocess
+    import sys
+    import time
+
+    from gateway.status import _looks_like_gateway_process, _read_process_cmdline
+
+    relaunch_inline = (
+        "import time\n"
+        "import sys; sys.argv = ['/opt/hermes-agent/hermes_cli/main.py', 'gateway', 'run']\n"
+        "time.sleep(300)\n"
+    )
+    watcher_inline = "import sys, time\npid = int(sys.argv[1])\ncmd = sys.argv[2:]\ntime.sleep(300)\n"
+    procs = [
+        subprocess.Popen([sys.executable, "-I", "-c", relaunch_inline]),
+        subprocess.Popen(
+            [sys.executable, "-I", "-c", watcher_inline, "14980",
+             sys.executable, "-m", "hermes_cli.main", "gateway", "run"]),
+    ]
+    try:
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            if all(_read_process_cmdline(p.pid) for p in procs):
+                break
+            time.sleep(0.05)
+        assert _looks_like_gateway_process(procs[0].pid) is True
+        assert _looks_like_gateway_process(procs[1].pid) is False
+    finally:
+        for proc in procs:
+            proc.kill()
+            proc.wait()
+
+

@@ -64,11 +64,37 @@ function outputHash(out) {
     name => !name.split('/').includes('node_modules') && !name.startsWith('native/'))
 }
 
+// The desktop install stamp is a real prepared input — buildDesktop bakes its bytes
+// into electron-main.mjs — but write-build-stamp.mjs rewrites its `builtAt` clock on
+// every build (#123308). Hashing the whole file let a second build racing this one
+// kill it with "inputs changed" for a difference the build machinery itself made.
+// Hash the stamp's provenance identity instead: commit/payload/tag must still
+// invalidate, and only the clock is ignored. The baked bytes DO move with the clock
+// (bundle-electron-main.mjs defines __HERMES_INSTALL_STAMP__ from the raw text), and
+// outputHash below is what notices that — the input hash stops reporting a rebuild as
+// a change it did not make.
+const stampClockFields = new Set(['builtAt'])
+
+// Missing and non-JSON stamps fall back to the whole-file tree hash rather than
+// failing: a missing input must keep reading as one distinct hash, never as a
+// throw, so a build that has not stamped yet stays "not current" instead of
+// aborting. Only a parsable stamp object can have its clock removed.
+function stampContentHash(path) {
+  let identity = null
+  try {
+    identity = JSON.parse(readFileSync(path))
+  } catch { return treeHash(resolve(path), ['.'], () => false) }
+  if (!identity || typeof identity !== 'object' || Array.isArray(identity)) return treeHash(resolve(path), ['.'], () => false)
+  return createHash('sha256').update(JSON.stringify(
+    Object.fromEntries(Object.entries(identity).filter(([key]) => !stampClockFields.has(key))),
+  )).digest('hex')
+}
+
 export function buildInputs(source, product, prepared = {}) {
   return {
     sourceHash: sourceHash(source, product),
     prepared: Object.entries(prepared).sort().map(([name, path]) => ({
-      name, path: resolve(path), hash: treeHash(resolve(path), ['.'], () => false),
+      name, path: resolve(path), hash: name === 'stamp' ? stampContentHash(resolve(path)) : treeHash(resolve(path), ['.'], () => false),
     })),
   }
 }

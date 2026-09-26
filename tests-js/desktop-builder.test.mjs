@@ -156,6 +156,80 @@ test('in-tree desktop products rebuild after build exists without replacing prep
   }
 }, 30000)
 
+test('a desktop build survives the build clock rewriting its own stamp, but a real provenance change still invalidates it', async () => {
+  const { buildDesktop } = await import('../scripts/build/desktop.mjs')
+  const { productCurrent } = await import('../scripts/build/freshness.mjs')
+  const input = fixture()
+  await buildDesktop(input)
+  const stamp = readFileSync(input.stamp, 'utf8')
+  // write-build-stamp.mjs rewrites `builtAt` on EVERY build (build.mjs step 20), so a
+  // second build racing the first must not be killed by its own input changing.
+  const clockMoved = { ...JSON.parse(stamp), builtAt: '2027-01-01T00:00:00.000Z' }
+  expect(clockMoved).not.toEqual(JSON.parse(stamp))
+  put(input.stamp, JSON.stringify(clockMoved))
+  expect(productCurrent({ ...input, product: 'desktop' })).toBe(true)
+  await expect(buildDesktop(input)).resolves.toBeTruthy()
+  expect(productCurrent({ ...input, product: 'desktop' })).toBe(true)
+  // The clock is the only ignored field: provenance that reaches the baked bytes must
+  // still invalidate, or a swapped commit would ship as "current". Each value must
+  // actually differ from the fixture stamp (payload there is already 'light').
+  for (const field of [{ commit: 'd'.repeat(40) }, { payload: 'store' }, { tag: 'v9.9.9' }]) {
+    put(input.stamp, JSON.stringify({ ...JSON.parse(stamp), ...field }))
+    expect(productCurrent({ ...input, product: 'desktop' }), JSON.stringify(field)).toBe(false)
+  }
+  put(input.stamp, stamp)
+  expect(productCurrent({ ...input, product: 'desktop' })).toBe(true)
+}, 60000)
+
+test('a desktop build that another build restamps mid-compile still publishes, and the clock-only rewrite is not what kills it', async () => {
+  const { buildDesktop } = await import('../scripts/build/desktop.mjs')
+  const input = fixture()
+  const raced = { ...JSON.parse(readFileSync(input.stamp, 'utf8')), builtAt: '2027-03-03T00:00:00.000Z' }
+  // The issue's actual shape: a second `hermes desktop` runs write-build-stamp.mjs
+  // while this build is compiling, so recordProduct() re-hashes a stamp whose only
+  // difference is the build clock. Provenance racing in must still fail the build.
+  put(join(input.source, 'apps/desktop/vite.config.mjs'), `
+    import { writeFileSync } from 'node:fs';
+    export default { plugins: [{ name: 'restamp-during-build', buildStart() {
+      writeFileSync(${JSON.stringify(input.stamp)}, ${JSON.stringify(JSON.stringify(raced))})
+    }}] }
+  `)
+  await expect(buildDesktop(input)).resolves.toBeTruthy()
+  expect(existsSync(join(input.out, 'hermes-build.json'))).toBe(true)
+  // The guard itself: a PROVENANCE change during compilation must still throw, or
+  // this test would pass simply because recordProduct stopped guarding anything.
+  const swapped = { ...JSON.parse(readFileSync(input.stamp, 'utf8')), commit: 'e'.repeat(40) }
+  put(join(input.source, 'apps/desktop/vite.config.mjs'), `
+    import { writeFileSync } from 'node:fs';
+    export default { plugins: [{ name: 'swap-commit-during-build', buildStart() {
+      writeFileSync(${JSON.stringify(input.stamp)}, ${JSON.stringify(JSON.stringify(swapped))})
+    }}] }
+  `)
+  await expect(buildDesktop(input)).rejects.toThrow(/inputs changed/)
+}, 60000)
+
+test('a missing or unparsable desktop stamp still hashes to a distinct value instead of failing the build', async () => {
+  const { buildInputs } = await import('../scripts/build/freshness.mjs')
+  const { buildDesktop } = await import('../scripts/build/desktop.mjs')
+  const input = fixture()
+  // prepared[] is sorted by name, so select the stamp entry by name, not index.
+  const stampHash = (path) => buildInputs(input.source, 'desktop', {
+    icons: join(input.icons, 'apps/desktop/public'), stamp: path, nativeDeps: input.nativeDeps,
+  }).prepared.find(entry => entry.name === 'stamp').hash
+  // A missing input must read as one stable hash, never throw: buildDesktop is
+  // allowed to require a stamp, but the freshness probe itself never aborts.
+  const missing = join(dirname(input.stamp), 'not-written-yet.json')
+  expect(stampHash(missing)).toMatch(/^[0-9a-f]{64}$/)
+  expect(stampHash(missing)).toBe(stampHash(missing))
+  expect(stampHash(missing)).not.toBe(stampHash(input.stamp))
+  // Unparsable bytes hash by content, so any edit still invalidates.
+  put(input.stamp, 'not json at all')
+  const junk = stampHash(input.stamp)
+  put(input.stamp, 'still not json, but different')
+  expect(junk).not.toBe(stampHash(input.stamp))
+  await expect(buildDesktop(input)).rejects.toThrow()
+}, 60000)
+
 test('a prepared input changing during desktop compilation cannot publish a current receipt', async () => {
   const { buildDesktop } = await import('../scripts/build/desktop.mjs')
   const input = fixture()

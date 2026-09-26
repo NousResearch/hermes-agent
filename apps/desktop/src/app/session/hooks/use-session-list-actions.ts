@@ -339,6 +339,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         if (owns()) {
           const recents = result.recents
           const recentsErrors = recents.errors ?? result.errors
+
           const scopedRetry =
             recents.retry === true ||
             (sessionProfile !== 'all' && recents.profiles_failed?.[sessionProfile]?.retry === true) ||
@@ -348,11 +349,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
           // A damaged store already has its own notice; Retry can't repair it.
           const retryableErrors = recentsErrors?.filter(e => !result.storage?.[e.profile])
           setSessionsLoadError(
-            Boolean(
-              showLoading &&
-                (scopedRetry || retryableErrors?.length) &&
-                (recents.sessions?.length ?? 0) === 0
-            )
+            Boolean(showLoading && (scopedRetry || retryableErrors?.length) && (recents.sessions?.length ?? 0) === 0)
           )
 
           // Drop rows the user just deleted/archived: a refresh can race an

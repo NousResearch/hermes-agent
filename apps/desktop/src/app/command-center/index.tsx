@@ -162,9 +162,8 @@ export function CommandCenterView({
   // Gate like the other selectors: only subscribe on the Sessions tab so
   // System/Usage/Maintenance don't re-render when $sessionProfilesTruncated
   // ticks on every session fetch.
-  const sessionProfilesTruncated = useStoreSelector(
-    $sessionProfilesTruncated,
-    s => (section === 'sessions' ? s : EMPTY_TRUNCATED)
+  const sessionProfilesTruncated = useStoreSelector($sessionProfilesTruncated, s =>
+    section === 'sessions' ? s : EMPTY_TRUNCATED
   )
 
   const [query, setQuery] = useState('')
@@ -421,48 +420,48 @@ export function CommandCenterView({
                 ) : (
                   <ul>
                     {filteredSessions.map(session => {
-                    const pinId = sessionPinId(session)
-                    const pinned = pinnedSessionIds.includes(pinId)
+                      const pinId = sessionPinId(session)
+                      const pinned = pinnedSessionIds.includes(pinId)
 
-                    return (
-                      <li className="group flex items-center gap-2 py-2" key={session.id}>
-                        <button
-                          className="min-w-0 flex-1 text-left"
-                          onClick={() => onOpenSession(session.id)}
-                          type="button"
-                        >
-                          <div className="truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
-                            {sessionTitle(session)}
+                      return (
+                        <li className="group flex items-center gap-2 py-2" key={session.id}>
+                          <button
+                            className="min-w-0 flex-1 text-left"
+                            onClick={() => onOpenSession(session.id)}
+                            type="button"
+                          >
+                            <div className="truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
+                              {sessionTitle(session)}
+                            </div>
+                            <div className="truncate text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                              {formatTimestamp(session.last_active || session.started_at)}
+                            </div>
+                          </button>
+                          <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                            <RowIconButton
+                              onClick={() => (pinned ? unpinSession(pinId) : pinSession(pinId))}
+                              title={pinned ? cc.unpinSession : cc.pinSession}
+                            >
+                              {pinned ? <BookmarkFilled className="size-3.5" /> : <Bookmark className="size-3.5" />}
+                            </RowIconButton>
+                            <RowIconButton
+                              onClick={() => void exportSession(session.id, { session, title: sessionTitle(session) })}
+                              title={cc.exportSession}
+                            >
+                              <Download className="size-3.5" />
+                            </RowIconButton>
+                            <RowIconButton
+                              className="hover:text-destructive"
+                              onClick={() => setPendingDelete(session)}
+                              title={cc.deleteSession}
+                            >
+                              <Trash2 className="size-3.5" />
+                            </RowIconButton>
                           </div>
-                          <div className="truncate text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                            {formatTimestamp(session.last_active || session.started_at)}
-                          </div>
-                        </button>
-                        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-                          <RowIconButton
-                            onClick={() => (pinned ? unpinSession(pinId) : pinSession(pinId))}
-                            title={pinned ? cc.unpinSession : cc.pinSession}
-                          >
-                            {pinned ? <BookmarkFilled className="size-3.5" /> : <Bookmark className="size-3.5" />}
-                          </RowIconButton>
-                          <RowIconButton
-                            onClick={() => void exportSession(session.id, { session, title: sessionTitle(session) })}
-                            title={cc.exportSession}
-                          >
-                            <Download className="size-3.5" />
-                          </RowIconButton>
-                          <RowIconButton
-                            className="hover:text-destructive"
-                            onClick={() => setPendingDelete(session)}
-                            title={cc.deleteSession}
-                          >
-                            <Trash2 className="size-3.5" />
-                          </RowIconButton>
-                        </div>
-                      </li>
-                    )
-                  })}
-                </ul>
+                        </li>
+                      )
+                    })}
+                  </ul>
                 )}
               </div>
               {hasMoreSessions && !!onLoadMoreSessions && !debouncedQuery && (

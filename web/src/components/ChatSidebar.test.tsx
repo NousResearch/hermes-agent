@@ -4,14 +4,29 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { EVENTS_CONNECT_TIMEOUT_MS } from '@/lib/events-reconnect'
+import type { ModelInfoResponse } from '@/lib/api'
 
 const apiMocks = vi.hoisted(() => ({
   buildWsUrl: vi.fn(async () => 'ws://localhost/api/events?channel=chat-1'),
-  getModelInfo: vi.fn(async () => ({
+  getModelInfo: vi.fn<() => Promise<ModelInfoResponse>>(async () => ({
+    auto_context_length: 0,
     capabilities: { supports_reasoning: false },
-    model: 'test/model'
+    config_context_length: 0,
+    effective_context_length: 0,
+    model: 'test/model',
+    provider: 'test'
   }))
 }))
+
+const modelInfo = (over: Partial<ModelInfoResponse> = {}): ModelInfoResponse => ({
+  auto_context_length: 0,
+  capabilities: { supports_reasoning: false },
+  config_context_length: 0,
+  effective_context_length: 0,
+  model: 'test/model',
+  provider: 'test',
+  ...over
+})
 
 const gatewayMocks = vi.hoisted(() => {
   const handlers = new Map<string, (event: unknown) => void>()
@@ -548,20 +563,16 @@ describe('ChatSidebar event socket reconnect', () => {
 
 describe('ChatSidebar model badge', () => {
   beforeEach(() => {
-    apiMocks.getModelInfo.mockResolvedValue({
-      capabilities: { supports_reasoning: false },
-      model: 'test/model'
-    })
+    apiMocks.getModelInfo.mockResolvedValue(modelInfo())
   })
 
   it('names the model that is actually answering while a fallback is active', async () => {
-    apiMocks.getModelInfo.mockResolvedValue({
+    apiMocks.getModelInfo.mockResolvedValue(modelInfo({
       active_model: 'backup/model-b',
       active_model_provider: 'openrouter',
-      capabilities: { supports_reasoning: false },
       fallback_active: true,
       model: 'primary/model-a'
-    })
+    }))
     const { ChatSidebar } = await import('./ChatSidebar')
 
     await render(<ChatSidebar channel="chat-1" />)
@@ -575,12 +586,11 @@ describe('ChatSidebar model badge', () => {
   })
 
   it('keeps the configured model when nothing is substituted', async () => {
-    apiMocks.getModelInfo.mockResolvedValue({
+    apiMocks.getModelInfo.mockResolvedValue(modelInfo({
       active_model: 'primary/model-a',
-      capabilities: { supports_reasoning: false },
       fallback_active: false,
       model: 'primary/model-a'
-    })
+    }))
     const { ChatSidebar } = await import('./ChatSidebar')
 
     await render(<ChatSidebar channel="chat-1" />)

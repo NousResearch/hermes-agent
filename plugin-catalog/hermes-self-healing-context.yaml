@@ -1,0 +1,21 @@
+name: hermes-self-healing-context
+repo: https://github.com/forumevi/hermes-self-healing-context
+sha: 2227b92a92fb239a994a86c46dd5adf9cdd7afd7
+tier: community
+category: memory
+maintainer: forumevi
+version: "2.0.0"
+title: Hermes Self-Healing Context
+requires_hermes: ">=0.1.0"
+platforms: []
+capabilities:
+  hooks:
+    - on_session_start
+    - on_session_end
+    - post_tool_call
+    - pre_llm_call
+description: |
+  Advanced self-healing engine that intercepts runtime errors, queries local 
+  SQLite FTS5 memory for historical fix patterns, and dynamically patches 
+  the context window for zero-downtime recovery. Features auto-retry for 
+  transient errors, pattern learning, and performance metrics.

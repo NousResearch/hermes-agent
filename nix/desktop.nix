@@ -41,11 +41,6 @@ let
 
   extraRunFlags = lib.concatMapStrings (line: " \\\n      --run ${lib.escapeShellArg line}") extraRun;
 
-  electronHeaders = pkgs.fetchurl {
-    url = "https://artifacts.electronjs.org/headers/dist/v${electron.version}/node-v${electron.version}-headers.tar.gz";
-    sha256 = "sha256-f8bSbLRmtbP93CJAvEBs+sHWDZ1xP2bcpLhC1EnOmZU=";
-  };
-
   # node-pty ships no Electron-tagged prebuild we can trust to match this
   # exact nixpkgs electron version, so it's always compiled from source
   # against Electron's own headers (not whatever Node ran `npm`).
@@ -87,17 +82,21 @@ let
 
       patchShebangs .
 
-      # The native provider runs before compilation. Use the headers for
-      # the exact Electron runtime shipped by this derivation, offline.
-      mkdir -p "$TMPDIR/electron-headers"
-      tar -xzf ${electronHeaders} -C "$TMPDIR/electron-headers" --strip-components=1
+      # The native provider runs before compilation. Compile node-pty against
+      # the exact Electron runtime this derivation ships (the nixpkgs
+      # `electron`). Its headers come from nixpkgs' own `electron.headers`
+      # derivation — version-locked to `electron`, so it tracks every bump
+      # automatically with no hand-pinned hash to go stale, needs no network
+      # (node-gyp's --disturl path can't run in the sandbox), and is already
+      # the --nodedir layout. Same pattern as signal-desktop / github-desktop /
+      # session-desktop / rstudio in nixpkgs.
       ${lib.getExe hermesNpmLib.node-gyp} rebuild \
         --directory=node_modules/node-pty \
         --build-from-source \
         --runtime=electron \
         --target=${electron.version} \
         --arch=${targetArch} \
-        --nodedir="$TMPDIR/electron-headers" \
+        --nodedir=${electron.headers} \
         --disturl="" \
         --offline
 

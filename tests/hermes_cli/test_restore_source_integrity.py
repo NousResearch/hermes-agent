@@ -83,7 +83,9 @@ def test_restore_uses_literal_paths_and_preserves_live_connection(
 
 @pytest.mark.parametrize("entry", ["snapshot", "import"])
 @pytest.mark.parametrize("damage", ["header", "btree", "truncated"])
-def test_corrupt_source_cannot_replace_a_healthy_database(tmp_path, home, entry, damage):
+def test_corrupt_source_cannot_replace_a_healthy_database(
+    tmp_path, capsys, home, entry, damage
+):
     live = home / "state.db"
     with closing(sqlite3.connect(live)) as db:
         db.execute("CREATE TABLE evidence(value TEXT)")
@@ -113,6 +115,9 @@ def test_corrupt_source_cannot_replace_a_healthy_database(tmp_path, home, entry,
     inode = live.stat().st_ino
 
     assert not _restore(entry, home, snapshot_id, source)
+    if entry == "import":
+        captured = capsys.readouterr()
+        assert "failed its integrity check" in captured.out + captured.err
 
     assert live.read_bytes() == before
     assert live.stat().st_ino == inode

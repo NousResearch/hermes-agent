@@ -38,6 +38,7 @@ resetTerminalModes()
 // graceful-exit cleanups is safe.
 process.on('exit', () => {
   resetTerminalModes()
+
   if (NATIVE_MODE) {
     clearNativeTuiFrame()
   }

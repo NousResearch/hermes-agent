@@ -192,6 +192,47 @@ def test_slot_runtime_cache_expires_after_ttl(monkeypatch):
     assert calls["n"] == 2
 
 
+def test_slot_runtime_detects_pool_rotation_within_ttl(monkeypatch, tmp_path):
+    """Regression for #122600: a pool rotation/refresh by another process must be
+    visible before the slot TTL expires — serving the cached key 401s every slot
+    call for up to 5 minutes (Anthropic revokes the old token on refresh)."""
+    import json
+    import time
+
+    import agent.moa_loop as moa
+
+    moa._runtime_cache.clear()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    def _write_pool(token):
+        (tmp_path / "auth.json").write_text(json.dumps({"credential_pool": {"anthropic": [
+            {"id": "a", "source": "manual:hermes_pkce", "auth_type": "oauth",
+             "access_token": token, "refresh_token": "refresh-a",
+             "expires_at": int(time.time()*1000)+3600000, "priority": 0},
+        ]}}))
+
+    live = {"token": "live-key-1"}
+    calls = {"n": 0}
+
+    def counting_resolve(*a, **k):
+        calls["n"] += 1
+        return {"base_url": "http://x", "api_key": live["token"], "api_mode": None}
+
+    import hermes_cli.runtime_provider as rt_mod
+    monkeypatch.setattr(rt_mod, "resolve_runtime_provider", counting_resolve)
+
+    _write_pool("live-key-1")
+    slot = {"provider": "anthropic", "model": "claude-x"}
+    assert moa._slot_runtime(slot)["api_key"] == "live-key-1"
+    assert calls["n"] == 1
+
+    # Another process refreshes in place: same entry, new token, old revoked.
+    _write_pool("live-key-2")
+    live["token"] = "live-key-2"
+    assert moa._slot_runtime(slot)["api_key"] == "live-key-2"
+    assert calls["n"] == 2
+
+
 def test_slot_runtime_resolution_error_is_not_cached(monkeypatch):
     """A transient resolution failure must not pin the bare-kwargs fallback
     for a TTL — the next call must retry the real resolver."""

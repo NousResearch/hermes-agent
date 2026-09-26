@@ -860,7 +860,14 @@ class SessionMessagesMixin:
                     conn, session_id, compacted_messages, proved, tail_count=tail_count,
                     carried_messages=carried_messages, patched_model_config=patched_model_config, patch=patch)
             tail_ids, tail_tool_calls = ([], 0) if watermark is None else self._tail_rows_after_watermark(
-                conn, "SELECT id, tool_calls FROM messages WHERE session_id = ? AND active = 1 AND id > ? ORDER BY id",
+                conn,
+                """SELECT id, tool_calls FROM messages
+                   WHERE session_id = ? AND active = 1 AND id > ?
+                     AND NOT (
+                       role = 'user'
+                       AND COALESCE(content, '') LIKE '[Background process % heartbeat #%'
+                     )
+                   ORDER BY id""",
                 (session_id, int(watermark)))
             # Rewind targets sit AT/BELOW the watermark (all the compressor saw); unbounded, a
             # concurrent append would steal a LIMIT slot.

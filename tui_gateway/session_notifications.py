@@ -536,6 +536,8 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
         completions.append((evt, text))
         return True
     if not _notif_claim_turn(session):
+        if evt.get("type") == "heartbeat":
+            return True
         queue.put(evt)
         if deferred is not None:
             return False

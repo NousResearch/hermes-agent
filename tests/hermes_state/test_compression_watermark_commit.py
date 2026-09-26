@@ -149,6 +149,22 @@ class TestWatermarkCommit:
         assert info["message_count"] == 3
         assert info["tool_call_count"] == 1
 
+    def test_process_heartbeat_is_not_cloned_across_compaction(self, db: SessionDB) -> None:
+        _seed(db)
+        watermark = db.get_active_message_watermark("sess1")
+        db.append_message(
+            "sess1",
+            role="user",
+            content="[Background process proc_test heartbeat #4 — still running after 8m]",
+        )
+        db.append_message("sess1", role="user", content="real follow-up")
+
+        db.archive_and_compact("sess1", SUMMARY, watermark=watermark)
+
+        contents = [row["content"] for row in db.get_messages("sess1")]
+        assert "real follow-up" in contents
+        assert not any("heartbeat #" in content for content in contents)
+
 
 class TestCommitFence:
     def test_commit_refused_when_lease_lost(self, db: SessionDB) -> None:

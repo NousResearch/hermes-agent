@@ -1216,17 +1216,29 @@ class AIAgent(
 
     @staticmethod
     def _deduplicate_tool_calls(tool_calls: list) -> list:
-        """Drop duplicate (tool_name, arguments) pairs in one turn (first wins). Valid JSON arguments are
-        canonicalized so key order/whitespace can't evade dedup; returns the original list when nothing was removed."""
+        """Drop duplicate (tool_name, arguments) pairs in one turn (first wins).
+
+        Valid JSON arguments are canonicalized so key order/whitespace cannot evade dedup.
+        Repeated computer_use key/scroll/wait actions are intentional ordered inputs,
+        so preserve them; removing one changes the requested GUI operation sequence.
+        """
         seen, unique = set(), []
+        repeatable_computer_actions = {"key", "scroll", "wait"}
         for tc in tool_calls:
             arguments = tc.function.arguments
+            parsed_arguments = None
             try:
-                arguments = json.dumps(json.loads(arguments), separators=(",", ":"), sort_keys=True)
+                parsed_arguments = json.loads(arguments)
+                arguments = json.dumps(parsed_arguments, separators=(",", ":"), sort_keys=True)
             except (TypeError, ValueError):
                 pass
             key = (tc.function.name, arguments)
-            if key in seen:
+            repeatable_computer_input = (
+                tc.function.name == "computer_use"
+                and isinstance(parsed_arguments, dict)
+                and str(parsed_arguments.get("action") or "").strip().lower() in repeatable_computer_actions
+            )
+            if key in seen and not repeatable_computer_input:
                 logger.warning("Removed duplicate tool call: %s", tc.function.name)
                 continue
             seen.add(key)

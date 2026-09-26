@@ -1515,9 +1515,9 @@ def restore_quick_snapshot(
                 # restored data instead of continuing to serve stale
                 # cached pages from a replaced inode (issue #65942).
                 if not _safe_restore_db(src, dst):
-                    # Refused (live holder) or failed: the destination was
-                    # left as it was. Count it as a failure, not a restore.
-                    logger.error("Failed to restore %s: live-safe restore refused", rel)
+                    # Refused, failed, or source failed its integrity check:
+                    # dst left as it was. Count as a failure, not a restore.
+                    logger.error("Failed to restore %s: refused or source integrity check failed (see previous log)", rel)
                     continue
             else:
                 shutil.copy2(src, dst)

@@ -406,3 +406,43 @@ def fetch_full_commit_graph(repo_root: Path, **run_kwargs) -> bool:
         encoding="utf-8", errors="replace", timeout=900, **run_kwargs,
     )
     return shallow
+
+# ---- Partial-clone fetch crash (git pack-objects BUG) ---------------------------
+#
+# On a partial clone (``clone --filter=tree:0``), git's promisor fetch runs index-pack
+# with ``--promisor``, whose repack_local_links() feeds pack-objects
+# ``--exclude-promisor-objects-best-effort``; pack-objects then BUG()s (SIGABRT, "should
+# only be called on existing objects") when the link traversal hits a legitimately
+# missing promisor object. Observed with git 2.53.0 / 2.54.0 (#124272): EVERY
+# ``git fetch`` dies, taking the ``update``/``check`` flows of this CLI with it. The
+# crash is deterministic per attempt and one fetch with the promisor machinery
+# disabled clears the state (the reporter's verified workaround), so the fetch paths
+# here retry once with that override instead of leaving the install stuck.
+
+_PACK_OBJECTS_CRASH_MARKERS = (
+    "BUG: builtin/pack-objects.c",
+    "pack-objects died of signal 6",
+    "index-pack failed",
+)
+
+
+def is_partial_clone_pack_objects_crash(stderr: str) -> bool:
+    """True when a fetch failure is the git 2.53/2.54 partial-clone pack-objects BUG (#124272)."""
+    text = stderr or ""
+    return all(marker in text for marker in _PACK_OBJECTS_CRASH_MARKERS)
+
+
+def fetch_with_partial_clone_recovery(runner: Callable[..., subprocess.CompletedProcess],
+                                      git_cmd: List[str], fetch_args: List[str]) -> subprocess.CompletedProcess:
+    """Run a fetch, retrying once with the promisor machinery disabled on the pack-objects BUG.
+
+    ``runner(git_cmd, args) -> CompletedProcess`` and ``git_cmd + fetch_args`` is the plain
+    fetch argv. The retry inserts ``-c remote.origin.promisor=`` (per-invocation only — the
+    user's filter choice stays in their config) and its result is returned whatever its
+    exit code, so the caller keeps its normal failure handling.
+    """
+    result = runner(git_cmd, fetch_args)
+    if result.returncode == 0 or not is_partial_clone_pack_objects_crash(getattr(result, "stderr", "") or ""):
+        return result
+    logger.info("pack-objects crash on a partial clone; retrying the fetch with promisor disabled")
+    return runner(git_cmd + ["-c", "remote.origin.promisor="], fetch_args)

@@ -89,7 +89,12 @@ def fetch_compare_branch(git_cmd: list[str], root: Path, branch: str, depth_args
             fetch_result = _fetch(git_cmd, root, depth_args, "upstream", branch)
             if fetch_result.returncode == 0:
                 return fetch_result, f"upstream/{branch}"
-    return _fetch(git_cmd, root, depth_args, "origin", branch), f"origin/{branch}"
+    from hermes_cli.gitlock import fetch_with_partial_clone_recovery
+    # One retry with the promisor machinery disabled clears the git 2.53/2.54
+    # partial-clone pack-objects crash (#124272).
+    return fetch_with_partial_clone_recovery(
+        lambda gc, a: _git(gc, root, a, **_uc()._no_prompt_git_kwargs()),
+        git_cmd, ["fetch", *depth_args, "origin", branch]), f"origin/{branch}"
 
 
 def repair_shallow_grafts(root: Path) -> None:

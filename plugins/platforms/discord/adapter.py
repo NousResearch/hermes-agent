@@ -4498,19 +4498,21 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                       _t_discord("platform.discord.command.auto_args_description", _DISCORD_APP_COMMAND_TEXT_LIMIT, args_hint=args_hint),
                       None),) if args_hint else ())
             template = f"/{name} {{args}}" if args_hint else f"/{name}"
-            auto_cmd = discord.app_commands.Command(
-                name=discord_name,
-                description=_truncate_discord_component_text(
-                    description or t("platform.discord.command.auto_description_fallback", name=name),
-                    _DISCORD_APP_COMMAND_TEXT_LIMIT),
-                callback=self._slash_proxy(name, args, template, None, strip=bool(args_hint), prefix="auto_slash_"),
-            )
+            # Building the command is inside the try: discord.py rejects a name like "note.add" at
+            # construction, and escaping here would abort the caller's loop and drop every later command.
             try:
+                auto_cmd = discord.app_commands.Command(
+                    name=discord_name,
+                    description=_truncate_discord_component_text(
+                        description or t("platform.discord.command.auto_description_fallback", name=name),
+                        _DISCORD_APP_COMMAND_TEXT_LIMIT),
+                    callback=self._slash_proxy(name, args, template, None, strip=bool(args_hint), prefix="auto_slash_"),
+                )
                 tree.add_command(auto_cmd)
                 already_registered.add(discord_name)
-            except Exception:
-                # e.g. name conflict with a subcommand group.
-                pass
+            except Exception as e:
+                # e.g. name conflict with a subcommand group, or a name Discord does not accept.
+                logger.warning("[%s] Skipped /%s in the Discord slash picker: %s", self.name, name, e)
         try:
             from hermes_cli.commands import COMMAND_REGISTRY, _is_gateway_available, _resolve_config_gates
             try:

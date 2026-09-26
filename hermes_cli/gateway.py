@@ -1598,8 +1598,12 @@ def _print_gateway_process_mismatch(snapshot: GatewayRuntimeSnapshot) -> None:
 def _print_multiplex_standalone_reason() -> None:
     """The boot guard kept an unset-default gateway standalone: say so in status, with the remedy."""
     from hermes_cli.gateway_multiplex_mode import recorded_standalone_warning_lines
-    for line in recorded_standalone_warning_lines():
-        print(line)
+    lines = recorded_standalone_warning_lines()
+    if lines:
+        for line in lines:
+            print(line)
+        # Keep the preflight cross-reference from the preflight-verb work.
+        print("  Check the boot verdict and every blocker: hermes gateway preflight")
 
 
 def _print_served_ingress_urls(profile: str | None = None) -> None:
@@ -5587,10 +5591,16 @@ def _cmd_migrate(args):
     cmd_migrate(args)
 
 
+def _cmd_preflight(args):
+    from hermes_cli.gateway_preflight import cmd_preflight
+    cmd_preflight(args)
+
+
 _GATEWAY_SUBCOMMANDS = {
     None: _cmd_run, "run": _cmd_run, "setup": _cmd_setup, "install": _cmd_install,
     "uninstall": _cmd_uninstall, "start": _cmd_start, "stop": _cmd_stop, "restart": _cmd_restart,
     "status": _cmd_status, "list": _cmd_list, "migrate-legacy": _cmd_migrate_legacy, "migrate": _cmd_migrate,
+    "preflight": _cmd_preflight,
 }
 
 

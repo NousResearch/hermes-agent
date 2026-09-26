@@ -247,6 +247,38 @@ that profile keep their per-process meaning. Parking is the multiplex-native way
 to take one profile offline — it is what closes the "per-profile stop/restart"
 gap the [temporary shim](#temporary-gatewaystandalone-true) was kept open for.
 
+### Checking the mode before boot
+
+`hermes gateway preflight` answers "what mode will this box boot into" without
+starting (or changing) anything — same decision the boot makes, plus every
+blocker that would hold it standalone, each naming its remedy:
+
+```
+$ hermes gateway preflight
+mode: standalone (default only)
+reason: profile(s) 'coder' still run their own gateway; fold them with `hermes gateway migrate --multiplex`
+blocker: profile(s) 'coder' still run their own gateway; fold them with `hermes gateway migrate --multiplex`
+profiles: default
+```
+
+Exit codes: `0` when the host will multiplex (or has only one profile — nothing
+to multiplex, reported as `mode: single`), `1` when a blocker keeps it
+standalone (`mode: standalone (default only)`), so provisioning scripts can
+gate on it. With `--json` it prints the same report as JSON:
+
+```json
+{
+  "mode": "standalone",
+  "reason": "profile(s) 'coder' still run their own gateway; fold them with `hermes gateway migrate --multiplex`",
+  "blockers": [{"reason": "…", "fix": "run `hermes gateway migrate --multiplex` once fixed"}],
+  "profiles": ["default"]
+}
+```
+
+While a gateway is degraded (running standalone by blocker), `hermes gateway
+status` also points at `hermes gateway preflight`, and the gateway log repeats
+the standalone warning at most once every 10 minutes.
+
 ### No new per-profile gateways
 
 By default, one host gateway serves every profile, and a named profile does

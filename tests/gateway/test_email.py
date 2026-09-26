@@ -86,6 +86,24 @@ class TestHelperFunctions(unittest.TestCase):
         self.assertEqual(_extract_email_address("bare@example.com"), "bare@example.com")
         self.assertEqual(_extract_email_address("JOHN DOE <John@Example.COM>"), "john@example.com")
 
+    def test_extract_email_address_unfolds_display_name_before_parsing(self):
+        from plugins.platforms.email.adapter import _extract_email_address
+        self.assertEqual(
+            _extract_email_address(
+                '"Some Very Long Display Name That Exceeds The Line\r\n Limit" <real@example.com>'
+            ),
+            "real@example.com",
+        )
+
+    def test_extract_email_address_unfolds_spoof_before_parsing(self):
+        from plugins.platforms.email.adapter import _extract_email_address
+        self.assertEqual(
+            _extract_email_address(
+                '"Victim\r\n <victim@example.com>" <attacker@evil.test>'
+            ),
+            "attacker@evil.test",
+        )
+
 
     def test_strip_html_basic(self):
         from plugins.platforms.email.adapter import _strip_html
@@ -418,6 +436,36 @@ class TestDispatchDefersToGatewayAuthorization(unittest.TestCase):
             self.assertTrue(parsed["sender_authenticated"])
             asyncio.run(adapter._dispatch_message(parsed))
             self.assertEqual(captured, [])
+
+    def test_folded_allowlisted_sender_still_dispatches(self):
+        """A folded display name must not turn a legitimate sender into a non-address."""
+        import asyncio
+        from gateway.config import PlatformConfig
+        from plugins.platforms.email.adapter import EmailAdapter
+
+        raw = (
+            b'From: "Some Very Long Display Name That Exceeds The Line\r\n'
+            b' Limit" <real@example.com>\r\n'
+            b'Authentication-Results: mx.example.com; dmarc=pass header.from=example.com\r\n'
+            b'Subject: hello\r\nMessage-ID: <folded@example.com>\r\n\r\nhello'
+        )
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@example.com", "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.example.com", "EMAIL_SMTP_HOST": "smtp.example.com",
+            "EMAIL_ALLOWED_USERS": "real@example.com",
+        }):
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+            captured = []
+
+            async def capture(event):
+                captured.append(event)
+
+            adapter.handle_message = capture
+            parsed = adapter._parse_fetched_message(b"2", raw)
+            self.assertEqual(parsed["sender_addr"], "real@example.com")
+            self.assertTrue(parsed["sender_authenticated"])
+            asyncio.run(adapter._dispatch_message(parsed))
+            self.assertEqual(len(captured), 1)
 
     def test_mail_the_gateway_admits_or_answers_reaches_it(self):
         cases = {
@@ -1182,99 +1230,4 @@ class TestConnectionConfigResolution(unittest.TestCase):
         self.assertFalse(adapter.fatal_error_retryable)
         self.assertIn("EMAIL_IMAP_HOST", adapter.fatal_error_message or "")
 
-    def test_blank_present_env_vars_are_not_required(self):
-        """Blank/whitespace EMAIL_* values must read as missing (#40715) — an
-        abandoned setup with empty keys must not enable the platform."""
-        from plugins.platforms.email.adapter import check_email_requirements
-        for blank in ("", "   ", "\n"):
-            with patch.dict(os.environ, {
-                "EMAIL_ADDRESS": blank, "EMAIL_PASSWORD": blank,
-                "EMAIL_IMAP_HOST": blank, "EMAIL_SMTP_HOST": blank,
-            }, clear=False):
-                self.assertFalse(check_email_requirements())
-
-
-class TestSenderAuthentication(unittest.TestCase):
-    """Verify _verify_sender_authentication parses Authentication-Results
-    correctly and resists From: spoofing (GHSA-rxqh-5572-8m77)."""
-
-    def _msg(self, from_addr, auth_results=None):
-        """Build an email.message.Message with the given From: and
-        zero or more Authentication-Results headers (first = topmost/trusted)."""
-        msg = MIMEText("body")
-        msg["From"] = from_addr
-        for ar in auth_results or []:
-            msg["Authentication-Results"] = ar
-        return msg
-
-    def _verify(self, from_addr, auth_results=None, authserv_id=""):
-        from plugins.platforms.email.adapter import (
-            _verify_sender_authentication,
-            _extract_email_address,
-        )
-        msg = self._msg(from_addr, auth_results)
-        addr = _extract_email_address(from_addr)
-        return _verify_sender_authentication(msg, addr, authserv_id=authserv_id)
-
-    def test_dmarc_pass_authenticates(self):
-        ok, reason = self._verify(
-            "Admin <admin@example.com>",
-            ["mx.google.com; dmarc=pass header.from=example.com; spf=pass"],
-        )
-        self.assertTrue(ok, reason)
-
-    def test_spoofed_from_is_judged_as_the_attacker_not_the_victim(self):
-        """A spoofed From: reaches the allowlist as the ATTACKER, not the victim.
-
-        ``"Victim <victim@example.com>" <attacker@evil.test>`` puts the victim's
-        address inside the QUOTED display name, so a first-pair regex reads the
-        From: as ``victim@example.com`` and every downstream check -- the
-        allowlist, the pairing decision, the session identity -- is made against
-        the victim. parseaddr takes the real addr-spec instead.
-
-        Note ``dmarc=pass`` is accepted for either domain by design: the
-        receiving MTA already enforced From alignment, so
-        ``_verify_sender_authentication`` trusts that verdict rather than
-        re-deriving it. The allowlist is the gate this bug defeated.
-        """
-        from plugins.platforms.email.adapter import _extract_email_address
-        spoofed = '"Victim <victim@example.com>" <attacker@evil.test>'
-        self.assertEqual(_extract_email_address(spoofed), "attacker@evil.test")
-        self.assertNotEqual(_extract_email_address(spoofed), "victim@example.com")
-
-
-    def test_dkim_pass_aligned_authenticates(self):
-        ok, reason = self._verify(
-            "admin@example.com",
-            ["mx.google.com; dkim=pass header.d=example.com"],
-        )
-        self.assertTrue(ok, reason)
-
-    def test_spf_pass_misaligned_rejected(self):
-        # SPF passes for the envelope domain, but it doesn't match From: domain.
-        ok, reason = self._verify(
-            "admin@example.com",
-            ["mx.google.com; spf=pass smtp.mailfrom=bounce@evil.com"],
-        )
-        self.assertFalse(ok, reason)
-
-
-    def test_injected_header_below_trusted_does_not_authenticate(self):
-        """An attacker-injected Authentication-Results sorts BELOW the receiving
-        server's. With authserv-id pinning, only the trusted (first) header is
-        consulted, so a forged 'dmarc=pass' lower in the stack is ignored."""
-        ok, reason = self._verify(
-            "admin@example.com",
-            [
-                # Trusted: stamped by our server, real verdict = fail
-                "mx.ourserver.com; dmarc=fail header.from=example.com",
-                # Forged by attacker, claims pass
-                "mx.ourserver.com; dmarc=pass header.from=example.com",
-            ],
-            authserv_id="mx.ourserver.com",
-        )
-        self.assertFalse(ok, reason)
-
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_blank_present_

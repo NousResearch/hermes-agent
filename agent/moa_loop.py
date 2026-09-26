@@ -1443,6 +1443,19 @@ _RELAY_EVENTS: dict[str, tuple[str, str | None, dict[str, str]]] = {
 }
 
 
+def _root_moa_presets() -> set[str]:
+    """Preset names authored in the ROOT ``config.yaml`` — the ``hermes moa
+    configure`` authoring surface — read independently of a profile-scoped
+    ``HERMES_HOME`` (#80318). Empty when the root config is missing/unreadable."""
+    try:
+        import yaml
+        from hermes_constants import get_default_hermes_root
+        raw = yaml.safe_load((get_default_hermes_root() / "config.yaml").read_text(encoding="utf-8")) or {}
+        return set((raw.get("moa") or {}).get("presets") or {})
+    except Exception:
+        return set()
+
+
 def build_moa_facade(agent, preset_name: Any = None) -> MoAClient:
     """Single construction point for ``MoAClient``: a bare ``MoAClient(preset)`` would
     drop the ``reference_callback`` relay and silence display events for the session.
@@ -1463,12 +1476,34 @@ def build_moa_facade(agent, preset_name: Any = None) -> MoAClient:
     if resolved_preset is None and getattr(agent, "provider", None) == "moa":
         resolved_preset = getattr(agent, "model", None)
     resolved_preset = str(resolved_preset or "default")
+    from agent.errors import MoAPresetNotFoundError
     try:
         from hermes_cli.config import load_config
         from hermes_cli.moa_config import normalize_moa_config
         moa_cfg = normalize_moa_config(load_config().get("moa") or {})
-        if resolved_preset not in (moa_cfg.get("presets") or {}):
+        presets = moa_cfg.get("presets") or {}
+        if resolved_preset not in presets:
+            # Two cases, deliberately distinct (#80318):
+            # 1. The preset EXISTS in the root config but is missing from the
+            #    effective (profile-scoped) config — kanban workers run with
+            #    HERMES_HOME=<root>/profiles/<name>, so load_config() reads the
+            #    profile config and misses root-authored presets. Fail loudly
+            #    instead of silently running the hardcoded default preset's
+            #    unrelated (often more expensive) models.
+            # 2. The name exists NOWHERE (drifted name during fallback restore):
+            #    keep the historical silent downgrade to the default preset
+            #    (test_build_moa_facade_ignores_fallback_model_name_when_restoring).
+            if resolved_preset in _root_moa_presets():
+                raise MoAPresetNotFoundError(
+                    f"MoA preset '{resolved_preset}' exists in the root config but is "
+                    f"missing from the effective (profile-scoped) config of this session. "
+                    f"Available in this scope: {', '.join(presets) or '(none)'}. Copy the "
+                    f"preset into the profile's config.yaml or run the session with the "
+                    f"root HERMES_HOME."
+                )
             resolved_preset = moa_cfg.get("default_preset") or "default"
+    except MoAPresetNotFoundError:
+        raise
     except Exception:
         resolved_preset = "default"
     # ``agent`` lets the fan-out wait be aborted on a user interrupt.

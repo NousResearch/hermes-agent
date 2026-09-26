@@ -715,7 +715,7 @@ def _shell_tokens_with_spans(segment: str, start: int):
     for kind, i, _, _ in _scan_shell(segment, start):
         ch = segment[i]
         if kind == "char" and not quote:
-            if ch.isspace() and ch != "\n":
+            if ch in " \t":
                 if token_start is not None:
                     flush(i)
                     value, token_start = [], None
@@ -988,8 +988,17 @@ def _execution_flag_findings(command: str):
                         yield (f"arbitrary program execution via {executable_name} {finding[0]}", finding[1])
 
 
+def _is_escaped(text: str, index: int) -> bool:
+    """True when ``text[index]`` follows an odd backslash run (``\\$'`` is a
+    literal ``$``, so the ``'`` is a plain quote, not ANSI-C)."""
+    j = index - 1
+    while j >= 0 and text[j] == "\\":
+        j -= 1
+    return (index - j - 1) % 2 == 1
+
+
 def _skip_shell_whitespace(command: str, pos: int) -> int:
-    while pos < len(command) and command[pos].isspace():
+    while pos < len(command) and command[pos] in " \t\n":
         pos += 1
     return pos
 
@@ -1011,6 +1020,7 @@ def _scan_shell(text: str, start: int = 0, end: int | None = None, *, subst: str
     escaped (the quoted-prose masker's historical behavior)."""
     n = len(text) if end is None else end
     quote: str | None = None
+    ansi = False  # inside $'...' ANSI-C quoting, where backslash escapes apply
     i = start
     while i < n:
         ch = text[i]
@@ -1019,7 +1029,7 @@ def _scan_shell(text: str, start: int = 0, end: int | None = None, *, subst: str
             kind, j = "comment", text.find("\n", i, n)
             if j < 0:
                 j = n
-        elif quote != "'" and ch == "\\" and i + 1 < n:
+        elif (quote != "'" or ansi) and ch == "\\" and i + 1 < n:
             kind, j = "esc", i + 2
         elif ch == quote or (quote is None and ch in "'\""):
             kind = "quote"
@@ -1039,7 +1049,11 @@ def _scan_shell(text: str, start: int = 0, end: int | None = None, *, subst: str
                 return
         yield (kind, i, j, quote)
         if kind == "quote":
-            quote = None if quote else ch
+            if quote:
+                quote, ansi = None, False
+            else:
+                ansi = ch == "'" and i > 0 and text[i - 1] == "$" and not _is_escaped(text, i - 1)
+                quote = ch
         i = j
 
 
@@ -1064,7 +1078,7 @@ def _read_shell_word(command: str, pos: int) -> tuple[int, int, str]:
     """Read one shell word without executing expansions."""
     start = end = _skip_shell_whitespace(command, pos)
     for kind, i, j, quote in _scan_shell(command, start, subst="u", brace=True):
-        if kind == "char" and quote is None and (command[i].isspace() or command[i] in ";&|<>()"):
+        if kind == "char" and quote is None and command[i] in " \t\n;&|<>()":
             break
         end = j
     return (start, end, command[start:end])
@@ -1130,8 +1144,11 @@ def _deobfuscate_shell_word_for_detection(word: str) -> str:
 
 
 def _is_shell_comment_start(command: str, index: int) -> bool:
-    return command[index] == "#" and (index == 0 or command[index - 1].isspace()
-                                      or command[index - 1] in ";&|()<>")
+    # POSIX: ``#`` opens a comment only at a word start, and word boundaries are
+    # IFS whitespace (space/tab/newline) plus command operators -- ``\r``,
+    # ``\xa0`` etc. are ordinary characters, and ``(``/``)`` after ``$(...)``
+    # continue the word, so ``touch ok\r#x; rm -rf x`` still surfaces the ``rm``.
+    return command[index] == "#" and (index == 0 or command[index - 1] in " \t\n;&|<>")
 
 
 def _iter_shell_command_starts(command: str):
@@ -1150,7 +1167,7 @@ def _iter_shell_command_starts(command: str):
                 # `{` opens a brace group only as its own word (after whitespace or a separator): `${IFS}`
                 # is a parameter expansion and `-{delete,print}` a brace-expansion word, and a start
                 # marked inside either splits the word the flat patterns need to see intact.
-                if command[i] in "(;\n" or (command[i] == "{" and (i == 0 or command[i - 1].isspace()
+                if command[i] in "(;\n" or (command[i] == "{" and (i == 0 or command[i - 1] in " \t\n"
                                                                    or command[i - 1] in "(;&|)")):
                     starts.append(i + 1)
                 elif command[i] in "&|":
@@ -1372,7 +1389,7 @@ def _deny_command_variants(command: str):
             # Collapse only unquoted inter-word whitespace; quoted prose is data.
             parts = []
             for kind, i, j, quote in _scan_shell(tail):
-                if kind == "char" and quote is None and tail[i].isspace():
+                if kind == "char" and quote is None and tail[i] in " \t\n":
                     if not parts or parts[-1] != " ":
                         parts.append(" ")
                 else:

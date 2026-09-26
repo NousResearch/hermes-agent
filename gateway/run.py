@@ -1636,6 +1636,37 @@ def _multiplex_profile_homes(config: object) -> list[tuple[str, "Path"]]:
     return list(profiles_to_serve(multiplex=True))
 
 
+def _recover_pending_flushes(runner) -> int:
+    """Replay the boot-time ``pending_messages`` spool into state.db; returns the count recovered.
+
+    ``_get_flush_dir`` follows the active HERMES_HOME, so a routed turn on a multiplexed gateway spools
+    its stalled transcript backlog under its own profile home. The launch home's spool is replayed
+    first; then each served profile's, inside that profile's HERMES_HOME so the replay also lands in
+    that profile's state.db. After a restart nothing else reads those files.
+    """
+    from gateway.shutdown_flush import recover_pending_to_db
+    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+
+    resolver = runner.session_store.resolve_session_id_for_key
+    recovered = recover_pending_to_db(session_resolver=resolver)
+    if not getattr(runner.config, "multiplex_profiles", False):
+        return recovered
+    launch_home = Path(get_hermes_home()).resolve()
+    for name, home in _multiplex_profile_homes(runner.config):
+        home = Path(home)
+        if home.resolve() == launch_home or not (home / "pending_messages").is_dir():
+            continue
+        token = set_hermes_home_override(str(home))
+        try:
+            recovered += recover_pending_to_db(session_resolver=resolver)
+        except Exception:
+            # One profile's unreadable spool must not keep the others' backlog out of state.db.
+            logger.warning("Pending-message recovery failed for profile %s", name, exc_info=True)
+        finally:
+            reset_hermes_home_override(token)
+    return recovered
+
+
 def _cron_tick_profile_homes(config: object) -> list[tuple[str, "Path"]]:
     """Profile homes the in-process ticker visits: the served set PLUS the process-active
     profile: ``profiles_to_serve`` lists default + every live named profile, but a ``--profile
@@ -5914,10 +5945,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         return False
 
     def _recover_pending() -> None:
-        from gateway.shutdown_flush import recover_pending_to_db
-        recovered = recover_pending_to_db(
-            session_resolver=runner.session_store.resolve_session_id_for_key,
-        )
+        recovered = _recover_pending_flushes(runner)
         if recovered:
             logger.info("Recovered %d pending message(s) from shutdown flush", recovered)
 

@@ -2484,15 +2484,26 @@ stt:
 | `local` (faster-whisper) | `initial_prompt` | Forwarded unchanged to the local model |
 | `openai` | `prompt` | Forwarded unchanged in the transcription request |
 | `groq` | `prompt` | Forwarded unchanged in the transcription request |
-| `mistral` | `prompt` | Forwarded unchanged in the transcription request |
 | `deepinfra` | `prompt` | OpenAI-compatible path, forwarded unchanged |
+| `mistral` | not supported — see `context_bias` below | Logged at DEBUG, the request proceeds without the prompt |
 | `xai` | not supported | Logged at DEBUG, the request proceeds without the prompt |
 | `elevenlabs` | not supported | Logged at DEBUG, the request proceeds without the prompt |
 | `local_command` | not supported | Logged at DEBUG, the request proceeds without the prompt |
 | `stt.providers.<name>` with `type: command` | not supported | Logged at DEBUG, the request proceeds without the prompt |
 | Plugin-registered providers | `prompt` in the `transcribe(**extra)` kwargs | Only sent when a prompt is set, so providers that predate this key see unchanged calls |
 
-**Length.** Whisper-family models only condition on the final ~224 prompt tokens. For the whisper-family backends (`local`, `openai`, `groq`, `deepinfra`) Hermes enforces that cap client-side: an over-long final prompt is truncated to its tail with a logged warning — the request never errors because of prompt length. Other backends (`mistral`, plugin providers) receive the prompt unchanged and own their own validation. Keep hints short and specific either way.
+**Length.** Whisper-family models only condition on the final ~224 prompt tokens. For the whisper-family backends (`local`, `openai`, `groq`, `deepinfra`) Hermes enforces that cap client-side: an over-long final prompt is truncated to its tail with a logged warning — the request never errors because of prompt length. Plugin providers receive the prompt unchanged and own their own validation. Keep hints short and specific either way.
+
+**Mistral (Voxtral).** Voxtral has no `prompt` parameter; its vocabulary hint is `context_bias`, a list of terms read from `stt.mistral.context_bias`, then `stt.context_bias`:
+
+```yaml
+stt:
+  provider: "mistral"
+  mistral:
+    context_bias: ["Hermes", "Teknium", "kanban"]
+```
+
+Each term must be a single token — the API rejects an entry holding a space or a comma, so Hermes splits such entries into their tokens and warns once. If the server still refuses the list, the request is retried once without it: a bad vocabulary costs fidelity, never the transcription.
 
 :::warning Prompts are uploaded with your audio
 The final prompt is sent to the configured STT provider alongside the audio file. Keep secrets and session-derived context out of `stt.prompt` and out of anything a `pre_transcription` hook returns, especially when the provider is a hosted API rather than local `faster-whisper`.

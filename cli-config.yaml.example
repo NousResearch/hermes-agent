@@ -1645,10 +1645,10 @@ stt:
   # Provider behavior:
   #   local (faster-whisper)  -> `initial_prompt`, forwarded unchanged
   #   openai / groq          -> `prompt`, forwarded unchanged
-  #   mistral                -> `prompt`, forwarded unchanged
   #   deepinfra              -> OpenAI-compatible `prompt`, unchanged
   #   local_command/xai/
-  #   elevenlabs             -> unsupported; DEBUG log, then continue
+  #   elevenlabs/mistral     -> unsupported; DEBUG log, then continue
+  #                             (mistral: use `context_bias` below)
   #   plugin providers       -> `prompt` in `**extra`; plugin owns limits
   # prompt: "Hermes, Teknium, Nous Research, kanban"
   local:
@@ -1673,6 +1673,7 @@ stt:
     max_retries: 1             # OpenAI SDK transport retries; set 0 to disable
   # mistral:
   #   model: "voxtral-mini-latest"  # voxtral-mini-latest | voxtral-mini-2602
+  #   context_bias: ["Hermes", "Teknium"]  # Voxtral vocabulary hints; one token per entry (no spaces/commas)
   # deepinfra:
   #   # Model id is discovered live from the DeepInfra catalog filtered
   #   # by the `stt` surface tag — leave `model` blank to take the first

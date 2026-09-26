@@ -54,6 +54,20 @@ export interface BundleSkewResult {
   outOfSync: boolean
 }
 
+/**
+ * One answer plus whether it is worth remembering.
+ *
+ * `detectBundleSkew` fails quiet on two very different things: a git that
+ * answered "no skew" and a git that could not answer at all (unknown object,
+ * shallow clone, not a repo, a throw). They are the same BundleSkewResult, so
+ * a cache that keys off the result alone pins the unknowable one as if it were
+ * proof. `cacheable` carries the distinction the result type cannot.
+ */
+interface BundleSkewAnswer {
+  cacheable: boolean
+  result: BundleSkewResult
+}
+
 export interface RunGitOptions {
   cwd: string
   /**
@@ -98,8 +112,28 @@ export async function detectBundleSkew(
   runGit: RunGit,
   repoRoot: string
 ): Promise<BundleSkewResult> {
+  return (await answerBundleSkew(stamp, runGit, repoRoot)).result
+}
+
+/**
+ * The probe's body, carrying the `cacheable` verdict `detectBundleSkew` must
+ * drop to keep its public signature.
+ *
+ * A trustworthy answer is one git actually produced:
+ *   - merge-base exited 0 (an ancestor) and rev-list exited 0 with a finite
+ *     count — the number describes skew; or
+ *   - merge-base exited exactly 1 — "not an ancestor", which is the real,
+ *     settled answer to the #92233 shape and is worth reusing.
+ * Everything else is unknowable and must not be remembered: merge-base exit
+ * >1, a non-zero rev-list, an unparsable count, and any throw.
+ */
+async function answerBundleSkew(
+  stamp: BundleSkewStamp | null,
+  runGit: RunGit,
+  repoRoot: string
+): Promise<BundleSkewAnswer> {
   if (!stamp?.commit || stamp.source === 'fallback' || isFallbackCommit(stamp.commit)) {
-    return NOT_STALE
+    return { cacheable: false, result: NOT_STALE }
   }
 
   try {
@@ -118,8 +152,13 @@ export async function detectBundleSkew(
       cwd: repoRoot
     })
 
+    // Exit 1 answers "not an ancestor" — a real answer, not a failure.
+    if (ancestry.code === 1) {
+      return { cacheable: true, result: NOT_STALE }
+    }
+
     if (ancestry.code !== 0) {
-      return NOT_STALE
+      return { cacheable: false, result: NOT_STALE }
     }
 
     const result = await runGit(['rev-list', '--count', `${stamp.commit}..HEAD`, '--', ...RUNTIME_PATHS], {
@@ -127,18 +166,22 @@ export async function detectBundleSkew(
     })
 
     if (result.code !== 0) {
-      return NOT_STALE
+      return { cacheable: false, result: NOT_STALE }
     }
 
     const count = Number.parseInt(result.stdout.trim(), 10)
 
-    if (!Number.isFinite(count) || count <= 0) {
-      return { desktopCommitsBehind: Number.isFinite(count) ? count : null, outOfSync: false }
+    if (!Number.isFinite(count)) {
+      return { cacheable: false, result: NOT_STALE }
     }
 
-    return { desktopCommitsBehind: count, outOfSync: true }
+    if (count <= 0) {
+      return { cacheable: true, result: { desktopCommitsBehind: count, outOfSync: false } }
+    }
+
+    return { cacheable: true, result: { desktopCommitsBehind: count, outOfSync: true } }
   } catch {
-    return NOT_STALE
+    return { cacheable: false, result: NOT_STALE }
   }
 }
 
@@ -177,20 +220,34 @@ export function createBundleSkewProbe({
   let cachedKey: string | null = null
   let cachedResult: BundleSkewResult = NOT_STALE
   let inFlight: Promise<BundleSkewResult> | null = null
+  // Bumped per run. A run that the timeout gave up on keeps working in the
+  // background, and must not write its late answer over a newer run's.
+  let generation = 0
 
   const run = async (): Promise<BundleSkewResult> => {
     if (!stamp?.commit || stamp.source === 'fallback' || isFallbackCommit(stamp.commit)) {
       return NOT_STALE
     }
 
+    // The resolved root is part of the cache key: the source tree can be
+    // retargeted at runtime, so the same HEAD under a different root is a
+    // different tree and a different answer.
     const cwd = typeof repoRoot === 'function' ? repoRoot() : repoRoot
     const controller = new AbortController()
     const signaled: RunGit = (args, options) => runGit(args, { ...options, signal: controller.signal })
+    const myGeneration = ++generation
 
     let timer: ReturnType<typeof setTimeout> | null = null
 
+    // Never left pending: a run that succeeds before its timeout settles this
+    // so the losing half of the race does not live on forever.
+    let settleExpired: (result: BundleSkewResult) => void = () => {}
+
     const expired = new Promise<BundleSkewResult>(resolve => {
+      settleExpired = resolve
+
       timer = setTimeout(() => {
+        timer = null
         controller.abort()
         resolve(NOT_STALE)
       }, timeoutMs)
@@ -203,30 +260,41 @@ export function createBundleSkewProbe({
         return NOT_STALE
       }
 
-      const key = `${stamp.commit}:${head.stdout.trim()}`
+      const key = `${cwd}:${stamp.commit}:${head.stdout.trim()}`
 
       if (key === cachedKey) {
         return cachedResult
       }
 
-      const result = await detectBundleSkew(stamp, signaled, cwd)
+      const answer = await answerBundleSkew(stamp, signaled, cwd)
 
-      cachedKey = key
-      cachedResult = result
+      // Cache only an answer git actually produced, and only from a run that
+      // is still current: a run the timeout aborted answers fail-quiet (not
+      // proof), and a late write must never pin that or overwrite a newer
+      // run's result.
+      if (answer.cacheable && !controller.signal.aborted && myGeneration === generation) {
+        cachedKey = key
+        cachedResult = answer.result
+      }
 
-      return result
+      return answer.result
     })()
 
+    // Handle the rejection here, before the race: when `expired` wins, nothing
+    // else is left to observe a late failure, and an unhandled rejection would
+    // take the process with it.
+    const settled = work.catch(() => NOT_STALE)
+
     try {
-      return await Promise.race([work, expired])
-    } catch {
-      // A throwing runGit (git missing, spawn refused) is one of the same
-      // fail-quiet cases detectBundleSkew already answers.
-      return NOT_STALE
+      return await Promise.race([settled, expired])
     } finally {
       if (timer) {
         clearTimeout(timer)
       }
+
+      // Leave no promise pending forever: the losing `expired` promise is
+      // settled too, and resolving an already-settled race is a no-op.
+      settleExpired(NOT_STALE)
     }
   }
 

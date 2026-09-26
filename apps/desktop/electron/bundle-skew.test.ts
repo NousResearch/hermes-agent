@@ -181,6 +181,8 @@ const NOT_STALE = { desktopCommitsBehind: null, outOfSync: false }
 function gitScripted(options: {
   count?: string
   head?: string | (() => string)
+  mergeBaseCode?: number | (() => number)
+  revListCode?: number | (() => number)
   revParseCode?: number | (() => number)
 }): { calls: string[][]; git: RunGit } {
   const calls: string[][] = []
@@ -201,11 +203,15 @@ function gitScripted(options: {
     }
 
     if (args[0] === 'merge-base') {
-      return { code: 0, stderr: '', stdout: '' }
+      const code = typeof options.mergeBaseCode === 'function' ? options.mergeBaseCode() : (options.mergeBaseCode ?? 0)
+
+      return { code, stderr: code === 0 ? '' : 'fatal: git could not answer', stdout: '' }
     }
 
     if (args[0] === 'rev-list') {
-      return { code: 0, stderr: '', stdout: options.count ?? '2\n' }
+      const code = typeof options.revListCode === 'function' ? options.revListCode() : (options.revListCode ?? 0)
+
+      return { code, stderr: code === 0 ? '' : 'fatal: git could not answer', stdout: options.count ?? '2\n' }
     }
 
     return { code: 1, stderr: '', stdout: '' }
@@ -216,6 +222,13 @@ function gitScripted(options: {
 
 function spawnsOf(calls: string[][], verb: string): number {
   return calls.filter(args => args[0] === verb).length
+}
+
+/** Let a pending continuation (a settled git promise) drain its microtasks. */
+function tick(): Promise<void> {
+  return new Promise(resolve => {
+    setTimeout(resolve, 5)
+  })
 }
 
 describe('createBundleSkewProbe', () => {
@@ -275,6 +288,182 @@ describe('createBundleSkewProbe', () => {
 
     expect(await probe()).toEqual(NOT_STALE)
     expect(signal?.aborted).toBe(true)
+  })
+
+  it('reruns the full probe when an aborted git exits non-zero after the timeout', async () => {
+    const pending: { resolve?: (value: { code: number; stderr: string; stdout: string }) => void } = {}
+    const calls: string[][] = []
+    let revListCalls = 0
+
+    const git: RunGit = async (args, options) => {
+      calls.push(args)
+
+      if (args[0] === 'rev-parse') {
+        return { code: 0, stderr: '', stdout: `${'a'.repeat(40)}\n` }
+      }
+
+      if (args[0] === 'merge-base') {
+        return { code: 0, stderr: '', stdout: '' }
+      }
+
+      if (args[0] === 'rev-list') {
+        revListCalls += 1
+
+        if (options.signal?.aborted || revListCalls > 1) {
+          return { code: 130, stderr: 'fatal: killed by the timeout', stdout: '' }
+        }
+
+        return new Promise(resolve => {
+          pending.resolve = resolve
+        })
+      }
+
+      return { code: 1, stderr: '', stdout: '' }
+    }
+
+    const probe = createBundleSkewProbe({ stamp: STAMP, runGit: git, repoRoot: REPO, timeoutMs: 25 })
+
+    expect(await probe()).toEqual(NOT_STALE)
+    expect(spawnsOf(calls, 'rev-list')).toBe(1)
+
+    // The killed git only reports its failure once the probe already gave up.
+    pending.resolve?.({ code: 130, stderr: 'fatal: killed by the timeout', stdout: '' })
+    await tick()
+
+    // A fail-quiet answer that arrived after the timeout is not proof, so the
+    // next call must ask git again instead of trusting a pinned result.
+    await probe()
+
+    expect(spawnsOf(calls, 'rev-list')).toBe(2)
+  })
+
+  it('caches a proven not-an-ancestor answer for an unchanged HEAD', async () => {
+    const { calls, git } = gitScripted({ count: '3\n', mergeBaseCode: 1 })
+    const probe = createBundleSkewProbe({ stamp: STAMP, runGit: git, repoRoot: REPO })
+
+    expect(await probe()).toEqual(NOT_STALE)
+    expect(await probe()).toEqual(NOT_STALE)
+
+    // "the stamp is not an ancestor" is a real answer, not an unknowable one,
+    // so it is reused instead of respawning the expensive merge-base/rev-list.
+    expect(spawnsOf(calls, 'merge-base')).toBe(1)
+    expect(spawnsOf(calls, 'rev-list')).toBe(0)
+  })
+
+  it('does not cache a transient git failure and asks git again on the next call', async () => {
+    let mergeBaseCode = 128
+    const { calls, git } = gitScripted({ count: '2\n', mergeBaseCode: () => mergeBaseCode })
+    const probe = createBundleSkewProbe({ stamp: STAMP, runGit: git, repoRoot: REPO })
+
+    expect(await probe()).toEqual(NOT_STALE)
+    expect(spawnsOf(calls, 'merge-base')).toBe(1)
+
+    mergeBaseCode = 0
+
+    // A git that could not answer is not proof of anything; the next call
+    // must retry rather than trust the pinned not-stale.
+    expect(await probe()).toEqual({ desktopCommitsBehind: 2, outOfSync: true })
+    expect(spawnsOf(calls, 'merge-base')).toBe(2)
+  })
+
+  it('reruns the probe when the repo root changes without HEAD moving', async () => {
+    const { calls, git } = gitScripted({ count: '2\n' })
+    let root = '/repo-a'
+    const probe = createBundleSkewProbe({ stamp: STAMP, runGit: git, repoRoot: () => root })
+
+    expect(await probe()).toEqual({ desktopCommitsBehind: 2, outOfSync: true })
+    expect(spawnsOf(calls, 'rev-list')).toBe(1)
+
+    // The source tree can be retargeted at runtime; the same HEAD under a
+    // different root is a different tree and must not reuse the old answer.
+    root = '/repo-b'
+
+    expect(await probe()).toEqual({ desktopCommitsBehind: 2, outOfSync: true })
+    expect(spawnsOf(calls, 'rev-list')).toBe(2)
+  })
+
+  it('does not let a late old run overwrite a newer answer', async () => {
+    const pending: { resolve?: (value: { code: number; stderr: string; stdout: string }) => void } = {}
+    const calls: string[][] = []
+    let revListCalls = 0
+
+    const git: RunGit = async args => {
+      calls.push(args)
+
+      if (args[0] === 'rev-parse') {
+        return { code: 0, stderr: '', stdout: `${'a'.repeat(40)}\n` }
+      }
+
+      if (args[0] === 'merge-base') {
+        return { code: 0, stderr: '', stdout: '' }
+      }
+
+      if (args[0] === 'rev-list') {
+        revListCalls += 1
+
+        if (revListCalls === 1) {
+          return new Promise(resolve => {
+            pending.resolve = resolve
+          })
+        }
+
+        return { code: 0, stderr: '', stdout: '5\n' }
+      }
+
+      return { code: 1, stderr: '', stdout: '' }
+    }
+
+    const probe = createBundleSkewProbe({ stamp: STAMP, runGit: git, repoRoot: REPO, timeoutMs: 25 })
+
+    // The first run hangs, gives up, and is aborted — but keeps working.
+    expect(await probe()).toEqual(NOT_STALE)
+
+    // A newer run answers for the same HEAD.
+    expect(await probe()).toEqual({ desktopCommitsBehind: 5, outOfSync: true })
+
+    // The abandoned run finally answers, with a different count: a stale run
+    // must not write over the newer, trustworthy result.
+    pending.resolve?.({ code: 0, stderr: '', stdout: '9\n' })
+    await tick()
+
+    expect(await probe()).toEqual({ desktopCommitsBehind: 5, outOfSync: true })
+    expect(spawnsOf(calls, 'rev-list')).toBe(2)
+  })
+
+  it('settles a work rejection that arrives after the timeout without an unhandled rejection', async () => {
+    const pending: { reject?: (error: Error) => void } = {}
+
+    const git: RunGit = async args => {
+      if (args[0] === 'rev-parse') {
+        return new Promise((_resolve, reject) => {
+          pending.reject = reject
+        })
+      }
+
+      return { code: 0, stderr: '', stdout: '' }
+    }
+
+    const seen: unknown[] = []
+
+    const onUnhandled = (reason: unknown): void => {
+      seen.push(reason)
+    }
+
+    process.on('unhandledRejection', onUnhandled)
+
+    try {
+      const probe = createBundleSkewProbe({ stamp: STAMP, runGit: git, repoRoot: REPO, timeoutMs: 25 })
+
+      expect(await probe()).toEqual(NOT_STALE)
+
+      // The probe already gave up; nothing awaited this git any more.
+      pending.reject?.(new Error('git died after the timeout'))
+      await tick()
+
+      expect(seen).toEqual([])
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
   })
 
   it('reports not-stale on an unanswerable HEAD without caching the failure', async () => {

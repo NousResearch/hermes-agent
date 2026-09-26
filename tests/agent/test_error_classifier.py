@@ -677,6 +677,31 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.unknown
         assert result.retryable is True
 
+    def test_nvidia_account_scoped_function_404_fails_over_immediately(self):
+        """NVIDIA lists global ids the account may not serve — fail over at once, no retries."""
+        e = MockAPIError(
+            "Function '3dbd81d3-9db2-4df7-9ffd-9b2ee3b5e19f': Not found for account 'redacted'",
+            status_code=404,
+        )
+        result = classify_api_error(
+            e, provider="nvidia", model="moonshotai/kimi-k2.6"
+        )
+        assert result.reason == FailoverReason.model_entitlement
+        assert result.retryable is False
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
+
+    def test_nvidia_410_gone_is_permanent_retirement(self):
+        """A retired NIM model is gone for every account — never retry, never rotate."""
+        e = MockAPIError("Gone", status_code=410)
+        result = classify_api_error(
+            e, provider="nvidia", model="z-ai/glm-5.2"
+        )
+        assert result.reason == FailoverReason.model_not_found
+        assert result.retryable is False
+        assert result.should_fallback is True
+        assert result.should_rotate_credential is False
+
     # ── Provider policy-block (OpenRouter privacy/guardrail) ──
 
 

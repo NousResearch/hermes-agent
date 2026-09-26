@@ -1,0 +1,41 @@
+manifest_version: 1
+
+name: sugar
+description: "Local-first persistent memory for AI agents - decisions, preferences, error patterns, and project context, searchable from any project. All data stays on your machine."
+source: "https://github.com/roboticforce/sugar"
+
+transport:
+  type: stdio
+  command: "${INSTALL_DIR}/.venv/bin/sugar"
+  args:
+    - "mcp"
+    - "memory"
+
+install:
+  type: git
+  url: "https://github.com/roboticforce/sugar.git"
+  ref: "3d657f565764e428aed339e461d3089f71f51eb3"
+  bootstrap:
+    - "python3 -m venv .venv"
+    - ".venv/bin/pip install \".[mcp]\""
+
+auth:
+  type: none
+
+tools:
+  default_enabled:
+    - store_learning
+    - recall
+    - search_memory
+    - get_project_context
+    - list_recent_memories
+
+post_install: |
+  Sugar is local-first: memory lives on your machine (~/.sugar for global
+  memories, .sugar/ per project). No API key, no account, nothing leaves
+  the machine.
+
+  Start a new Hermes session to load the tools. Run Sugar from inside a
+  project directory so memories are recorded against that project; global
+  memories are available from anywhere. Project-scoped memories stored
+  outside a Sugar project directory are promoted to global scope.

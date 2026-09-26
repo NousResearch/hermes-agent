@@ -56,6 +56,65 @@ def _self_checkout(tmp_path, monkeypatch):
     return root
 
 
+def _committed_checkout(tmp_path, monkeypatch):
+    """A scratch source checkout whose completed stamp names its live HEAD.
+
+    Mirrors a fresh official install: the installer ran the full tail and
+    recorded the tree, so launching at the same commit owes no rebuild.
+    """
+    from hermes_cli import _launchers
+
+    root = tmp_path / "checkout"
+    root.mkdir()
+    (root / "pyproject.toml").write_text("[project]\nname='example'\n")
+    for args in (["init"], ["config", "user.email", "test@example.com"],
+                  ["config", "user.name", "test"], ["add", "-A"],
+                  ["commit", "-m", "init"]):
+        subprocess.run(["git", *args], cwd=root, check=True,
+                         capture_output=True, timeout=30)
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, check=True,
+                            capture_output=True, text=True, timeout=30).stdout.strip()
+    assert head
+    (root / "install-stamp.json").write_text(
+        json.dumps({"updateMechanism": "self", "commit": head}))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+    return root
+
+
+def test_completed_tree_with_stale_pending_marker_skips_tail(tmp_path, monkeypatch, completion_tail):
+    """Fresh install under a preserved home (#123314): the stamp names HEAD, so a
+    leftover source-completion-pending marker owes no rebuild against the same SHA."""
+    import pm
+
+    root = _committed_checkout(tmp_path, monkeypatch)
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
+    pending = venv_sync.completion_pending_path(root)
+    pending.parent.mkdir(parents=True, exist_ok=True)
+    pending.write_text("owed\n")
+    assert venv_sync.prepare_launch(root, []) is None
+    assert completion_tail == []
+    assert not pending.exists()
+
+
+def test_pristine_home_provisions_dependencies_without_rebuild(tmp_path, monkeypatch, completion_tail):
+    """Pristine HERMES_HOME on a freshly installed tree (#123314): with no facts the venv
+    needs provisioning, but the stamp names HEAD so no product rebuild or update is owed."""
+    import pm
+
+    root = _committed_checkout(tmp_path, monkeypatch)
+    assert not venv_sync.completion_pending_path(root).exists()
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: False)
+    syncs = []
+    monkeypatch.setattr(pm, "sync_venv", lambda *args, **kwargs: syncs.append((args, kwargs)))
+    assert venv_sync.prepare_launch(root, []) == Path(sys.executable)
+    assert len(syncs) == 1
+    assert completion_tail == []
+    assert not venv_sync.completion_pending_path(root).exists()
+
+
 @pytest.mark.parametrize("argv", [["--version"], ["-V"], ["--help"], ["-p", "work", "-h"]])
 def test_metadata_query_never_waits_on_source_completion(tmp_path, monkeypatch, argv):
     """`hermes --version` offline must answer from the tree, not run a network-bound sync."""

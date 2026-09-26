@@ -211,6 +211,28 @@ def refuse_foreign_owned_venv(project_root: Path) -> None:
             )
 
 
+def _tree_matches_completed_stamp(root: Path) -> bool:
+    """True when the checkout is the exact tree the last install/update completed.
+
+    Every finished tail records its tree in install-stamp.json (write_source_stamp);
+    when that commit is HEAD, the products in the tree were built for this commit, so
+    a stale venv only needs re-provisioning and a pending marker is a leftover from a
+    previous home/install, never a rebuild of the same SHA (fresh Windows installs and
+    pristine HERMES_HOMEs hit exactly this: #123314). Unreadable state fails closed to
+    running the tail.
+    """
+    try:
+        from hermes_cli.steward import read_install_stamp
+        from hermes_cli.version_info import _run_git
+
+        commit = read_install_stamp(root).get("commit")
+        if not commit or not isinstance(commit, str):
+            return False
+        return _run_git(root, "rev-parse", "HEAD") == commit
+    except Exception:  # noqa: BLE001 — never strand a launch on a provenance read
+        return False
+
+
 def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     """Finish a self-managed source update before importing app dependencies.
 
@@ -292,7 +314,19 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
         if any(_marker_owner_is_live(marker) for marker in legacy_markers):
             raise RuntimeError("an update is still running; wait for it to exit, then relaunch Hermes")
         print("hermes: completing source-update dependencies...", file=sys.stderr, flush=True)
-        _sync_source_dependencies(root, arm=True)
+        completed = _tree_matches_completed_stamp(root)
+        # ponytail: commit-only match; a product dir deleted by hand is rebuilt on demand
+        # by its own entry point (the TUI/web freshness gates), not here.
+        _sync_source_dependencies(root, arm=not completed)
+        if completed:
+            clear_completion(root)
+            return
+    elif _tree_matches_completed_stamp(root):
+        # The stamp names HEAD, so the last install/update already built this tree:
+        # a pending marker is a leftover from a previous home/install, not an
+        # interrupted update, and owing nothing is quieter than announcing one.
+        clear_completion(root)
+        return
     else:
         print("hermes: finishing an interrupted source update...", file=sys.stderr, flush=True)
     # Sync commits the dependency generation, but a source update also owes

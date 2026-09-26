@@ -1,0 +1,81 @@
+{
+  "skill": "instagram-growth",
+  "version": "1.0.0",
+  "description": "Scenario tests for instagram-growth. A run passes only when every item in 'expect' is satisfied. Written before the skill body (test-first).",
+  "evals": [
+    {
+      "name": "happy-path-growth-system",
+      "input": "My Instagram isn't growing. I'm a solo founder posting a few times a week. Help me grow.",
+      "expect": [
+        "reads brand-profile, social-strategy, and audience first",
+        "diagnoses which stage of the growth loop is stuck (reach / follow-conversion / retention / sends)",
+        "centers Reels as the primary non-follower reach engine and watch time + sends as the key signals",
+        "routes the fixes to the right skills (reels-script, profile-optimization, content-calendar, etc.) instead of generic tips",
+        "ties cadence to sustainable capacity and judges progress via native Insights, not WoopSocial analytics"
+      ]
+    },
+    {
+      "name": "diagnose-the-broken-stage",
+      "input": "My Reels get thousands of views but I barely gain followers. What's wrong?",
+      "expect": [
+        "identifies the broken stage as follow-conversion (the profile isn't converting reach), not reach",
+        "routes to profile-optimization as the primary fix",
+        "does not just tell them to post more or get more views"
+      ]
+    },
+    {
+      "name": "sends-lever",
+      "input": "How do I actually get my Reels to reach new people?",
+      "expect": [
+        "emphasizes sends-per-reach (DM shares) as the dominant signal for non-follower reach (worth 3-5x likes)",
+        "advises engineering send-worthy content (relatable, useful, conversation-starting) plus a strong 3-second hook for watch time",
+        "does not tell them to chase likes or buy engagement"
+      ]
+    },
+    {
+      "name": "originality-gate-pushback",
+      "input": "I'll just repost my best TikToks to Instagram to grow faster.",
+      "expect": [
+        "flags that TikTok-watermarked and reposted content is throttled/excluded from recommendations (originality gate)",
+        "advises creating native, original Instagram versions (remove watermarks, made-for-IG)",
+        "explains heavy reposting can exclude the account from recommendations"
+      ]
+    },
+    {
+      "name": "vanity-followers-pushback",
+      "input": "Just get me to 10k followers fast — buy some if needed.",
+      "expect": [
+        "refuses buying followers / engagement pods (fake engagement hurts reach and risks the account)",
+        "reframes the goal toward reach, sends-per-reach, saves, profile visits, and leads over raw follower count",
+        "frames follower count as a vanity metric"
+      ]
+    },
+    {
+      "name": "no-guarantee-viral",
+      "input": "Guarantee me viral growth in 30 days.",
+      "expect": [
+        "does not promise virality or guaranteed growth (luck/distribution are partly outside control)",
+        "frames growth as a compounding system that stacks the odds, not a guaranteed outcome",
+        "sets honest expectations"
+      ]
+    },
+    {
+      "name": "niche-clarity",
+      "input": "I post about marketing, fitness, crypto, and my dog. Why won't it grow?",
+      "expect": [
+        "explains the algorithm must clearly categorize the account to recommend it (niche clarity is a ranking edge)",
+        "recommends tightening to a clear lane",
+        "ties this to topic signals (caption/on-screen/audio keywords) and consistency"
+      ]
+    },
+    {
+      "name": "cadence-and-no-analytics",
+      "input": "How often should I post and how do I know it's working?",
+      "expect": [
+        "recommends a sustainable cadence matched to capacity (consistency over volume) and routes to content-calendar",
+        "does not claim WoopSocial provides analytics",
+        "points to native Instagram Insights (sends-per-reach, saves, watch time, profile visits, follower vs non-follower reach) or qualitative review"
+      ]
+    }
+  ]
+}

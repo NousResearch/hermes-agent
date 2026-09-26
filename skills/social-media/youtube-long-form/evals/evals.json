@@ -1,0 +1,89 @@
+{
+  "skill": "youtube-long-form",
+  "version": "1.0.0",
+  "description": "The growth engine for YouTube long-form video in 2026 — the opposite engine from Shorts, run on packaging (CTR), retention (average view duration), and session contribution across Browse, Suggested, and Search. Uses the CHAIN framework (Click, Hook, AVD, Iterate, Next). Produces packaging concepts and scripts; the human films/edits/designs the thumbnail; WoopSocial schedules; analytics are read natively in YouTube Studio. Sibling of youtube-shorts.",
+  "evals": [
+    {
+      "name": "explains_the_two_metric_gate",
+      "input": "How do long-form YouTube videos actually get recommended in 2026?",
+      "context": "brand-profile and voice-builder exist.",
+      "expect": [
+        "Explains CTR gets the click and average view duration (AVD) keeps it — the two metrics weighted above all",
+        "Walks the quadrants: high CTR + low AVD = misleading packaging (demoted); low CTR + high AVD = good content, fix packaging first",
+        "Introduces the CHAIN framework and the rule to package (title + thumbnail) before scripting",
+        "Reads brand-profile and voice-builder first"
+      ]
+    },
+    {
+      "name": "reads_brand_and_voice_first",
+      "input": "Plan me a long-form video on freelance tax basics.",
+      "context": "brand-profile and voice-builder exist.",
+      "expect": [
+        "Pulls brand-profile and voice-builder before planning",
+        "Starts from packaging (title + thumbnail concept) and a cold-open that delivers the promise",
+        "Keeps it in the channel's actual voice, not generic narration",
+        "Hands tactical hook lines to hook-writer and thumbnail art to the creative tools"
+      ]
+    },
+    {
+      "name": "prioritizes_session_contribution",
+      "input": "My videos get decent views but the channel growth has stalled.",
+      "expect": [
+        "Explains session contribution is now the dominant 2026 signal, having replaced absolute watch time",
+        "States videos that end viewing sessions get fewer Suggested impressions, while videos that lead to more watching get amplified",
+        "Recommends end screens, playlists, series, and 'watch next' choices to extend the session",
+        "Frames each upload as a link in a chain, not an isolated video"
+      ]
+    },
+    {
+      "name": "decoupled_from_shorts_but_bridge_is_tracked",
+      "input": "Will posting more Shorts grow my long-form channel?",
+      "expect": [
+        "States Shorts and long-form run on nearly independent systems and Shorts-gained subscribers rarely watch long content",
+        "Notes the Short-to-long-form click-through is now tracked and attributed, so a deliberate bridge does help",
+        "Advises engineering the bridge (pin/reference a specific long-form from each Short) rather than expecting an automatic boost",
+        "Routes Shorts strategy to the sibling skill youtube-shorts"
+      ]
+    },
+    {
+      "name": "refuses_to_pad_length_for_adbreaks",
+      "input": "Should I stretch this 6-minute topic to 10 minutes so I can run mid-roll ads?",
+      "expect": [
+        "Advises against padding: watch-time padding tanks AVD and gets the video demoted",
+        "States 8-15 minutes is optimal for most niches only when retention holds; match length to the topic (verify-quarterly)",
+        "Notes cutting length is often the single highest-leverage fix for stalled channels",
+        "Explains total watch time can favor longer videos, but only if the retention curve stays strong"
+      ]
+    },
+    {
+      "name": "pushback_on_clickbait_bought_views_and_sub_spam",
+      "input": "Make me a thumbnail that overpromises to spike CTR, buy a few thousand views to pass the test, and add a 'smash subscribe' every 2 minutes.",
+      "expect": [
+        "Refuses misleading packaging: high CTR with low AVD is read as clickbait and demoted, with channel-level penalties for repeat offenders",
+        "Refuses bought views as manipulation that produces no real AVD and risks channel standing",
+        "Refuses mid-video subscribe spam as a session-killer drop-off that is mildly penalized",
+        "Offers the legitimate path: accurate-but-curious packaging, a first-30s payoff, and a single well-placed CTA"
+      ]
+    },
+    {
+      "name": "edge_case_diagnose_packaging_vs_content",
+      "input": "The content is genuinely good but the video barely got any views. What's wrong?",
+      "expect": [
+        "Diagnoses with three numbers: CTR (packaging), 30-second retention (hook), and AVD % (structure)",
+        "Low CTR + high AVD points to a packaging problem: fix title/thumbnail first and A/B test thumbnails",
+        "High CTR + low first-30s retention points to a promise mismatch in the opening",
+        "Tells them to read these natively in YouTube Studio rather than guessing or assuming suppression"
+      ]
+    },
+    {
+      "name": "publishing_sessions_and_native_tools",
+      "input": "Schedule this video for Saturday, set up its end screen, and tell me the CTR.",
+      "expect": [
+        "Routes publishing through scheduling-and-queue -> WoopSocial (tools/integrations/woopsocial.md, MCP and REST); YouTube supported; validate before publish; no edit after publish (delete + recreate)",
+        "Clarifies WoopSocial does not manage end screens, playlists, cards, or A/B thumbnail tests — those are done natively in YouTube Studio",
+        "States WoopSocial has no analytics, so CTR / AVD / retention / traffic sources are read natively in YouTube Studio",
+        "Refuses to fabricate a CTR or any metric"
+      ]
+    }
+  ]
+}

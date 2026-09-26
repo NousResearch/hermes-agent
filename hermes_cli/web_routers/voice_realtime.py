@@ -26,6 +26,7 @@ shared. Keys are resolved under the request's profile: the OpenAI audio key
 from __future__ import annotations
 
 import asyncio
+import ssl
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Optional
 
@@ -207,7 +208,8 @@ def _resolve_key(provider: str) -> str:
 
 
 async def _mint_gemini_token(api_key: str, setup: Dict[str, Any]) -> Dict[str, Any]:
-    async with httpx.AsyncClient(timeout=_MINT_TIMEOUT_S) as client:
+    # The host trust store can include roots that certifi lacks (notably on Windows).
+    async with httpx.AsyncClient(timeout=_MINT_TIMEOUT_S, verify=ssl.create_default_context()) as client:
         response = await client.post(
             f"{GEMINI_API_BASE}/v1alpha/auth_tokens",
             headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
@@ -227,7 +229,7 @@ async def _mint_gemini_token(api_key: str, setup: Dict[str, Any]) -> Dict[str, A
 
 
 async def _mint_client_secret(base_url: str, api_key: str, session: Dict[str, Any]) -> Dict[str, Any]:
-    async with httpx.AsyncClient(timeout=_MINT_TIMEOUT_S) as client:
+    async with httpx.AsyncClient(timeout=_MINT_TIMEOUT_S, verify=ssl.create_default_context()) as client:
         response = await client.post(
             f"{base_url}/realtime/client_secrets",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},

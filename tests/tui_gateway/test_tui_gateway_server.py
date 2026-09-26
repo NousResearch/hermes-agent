@@ -4103,6 +4103,7 @@ def test_persist_live_session_runtime_preserves_resume_metadata(monkeypatch):
             "base_url": "https://custom.example/v1",
             "api_mode": "chat_completions",
             "reasoning_config": {"enabled": True, "effort": "high"},
+            "reasoning_user_override": False,
             "service_tier": "priority",
         },
         "gpt-5.4",
@@ -9645,6 +9646,63 @@ def test_config_set_reasoning_global_scope_clears_session_override(tmp_path, mon
     assert status["result"]["value"] == "high"
 
 
+def test_config_set_reasoning_marks_user_override_for_adaptive(tmp_path, monkeypatch):
+    """A session-scoped effort pick suppresses adaptive escalation on the live
+    agent; a global write is a new baseline and re-enables it."""
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text("agent:\n  reasoning_effort: medium\n", encoding="utf-8")
+    agent = types.SimpleNamespace(reasoning_config=None, reasoning_user_override=False)
+    server._sessions["sid"] = _session(agent=agent)
+
+    server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"session_id": "sid", "key": "reasoning", "value": "low"},
+        }
+    )
+    assert agent.reasoning_user_override is True
+
+    server.handle_request(
+        {
+            "id": "2",
+            "method": "config.set",
+            "params": {
+                "session_id": "sid",
+                "key": "reasoning",
+                "value": "high",
+                "scope": "global",
+            },
+        }
+    )
+    assert agent.reasoning_user_override is False
+
+
+def test_explicit_reasoning_override_ignores_profile_seeded_default():
+    """The Desktop composer ships its seeded (profile-default) effort on
+    session.create — an override merely mirroring the profile config is
+    inherited state and must NOT suppress adaptive escalation. Only a
+    distinct per-session pick counts as explicit."""
+    medium = {"enabled": True, "effort": "medium"}
+    high = {"enabled": True, "effort": "high"}
+
+    # No override at all → inherited.
+    assert server._explicit_reasoning_override(None, medium) is False
+    # The defect scenario: seeded composer value equals the profile config.
+    assert server._explicit_reasoning_override(dict(medium), medium) is False
+    assert server._explicit_reasoning_override(dict(high), high) is False
+    # An unset profile default resolves as the backend fallback (medium).
+    assert server._explicit_reasoning_override(dict(medium), None) is False
+    # Distinct picks are explicit overrides.
+    assert server._explicit_reasoning_override(dict(high), medium) is True
+    assert server._explicit_reasoning_override(dict(high), None) is True
+    assert server._explicit_reasoning_override({"enabled": False}, medium) is True
+    # Thinking-disabled profile: the seeded 'none' mirrors it; re-enabling is
+    # explicit.
+    assert server._explicit_reasoning_override({"enabled": False}, {"enabled": False}) is False
+    assert server._explicit_reasoning_override(dict(medium), {"enabled": False}) is True
+
+
 def test_config_set_verbose_updates_session_mode_and_agent(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     agent = types.SimpleNamespace(verbose_logging=False)
@@ -10130,6 +10188,7 @@ def test_config_set_model_recovers_failed_profile_resume_after_build_completes(
                     "base_url": profile_url,
                     "api_mode": "chat_completions",
                     "reasoning_config": reasoning,
+                    "reasoning_user_override": False,
                 },
             }
         ]
@@ -22390,8 +22449,6 @@ def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
 def test_load_cfg_raw_sees_replacement_with_pinned_mtime_and_size(monkeypatch, tmp_path):
     """#111105: the raw-config cache must not serve (and later write back) a stale document after a
     same-size replacement that keeps the old mtime."""
-    import shutil
-
     cfg = tmp_path / "config.yaml"
     cfg.write_text("model:\n  default: bbbb-route\n", encoding="utf-8")
     monkeypatch.setattr(server, "_active_config_path", lambda: cfg)
@@ -22402,6 +22459,9 @@ def test_load_cfg_raw_sees_replacement_with_pinned_mtime_and_size(monkeypatch, t
     st = cfg.stat()
     other = tmp_path / "other.yaml"
     other.write_text("model:\n  default: aaaa-route\n", encoding="utf-8")
-    shutil.copy2(other, cfg)
+    # Atomic replacement changes the inode even within one filesystem timestamp tick.
+    os.replace(other, cfg)
     os.utime(cfg, ns=(st.st_atime_ns, st.st_mtime_ns))
+    replaced = cfg.stat()
+    assert (replaced.st_mtime_ns, replaced.st_size) == (st.st_mtime_ns, st.st_size)
     assert server._load_cfg_raw()["model"]["default"] == "aaaa-route"

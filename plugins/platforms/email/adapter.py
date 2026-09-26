@@ -323,7 +323,9 @@ def _attach_file(msg: MIMEMultipart, path: Path, filename: str) -> None:
         part = MIMEBase("application", "octet-stream")
         part.set_payload(f.read())
         encoders.encode_base64(part)
-        part.add_header("Content-Disposition", f"attachment; filename={filename}")
+        # The params form quotes the name and RFC 2231-encodes non-ASCII; interpolating it into the header
+        # value cut the name at a space or ';' and RFC 2047-encoded the whole header for non-ASCII names.
+        part.add_header("Content-Disposition", "attachment", filename=filename)
         msg.attach(part)
 
 

@@ -28,6 +28,8 @@ export interface PluginManifest {
    * does not match. This protects against tampered plugin delivery.
    */
   integrity?: string;
+  css_integrity?: string;
+  sdk?: { min: string; max: string };
   source: string;
 }
 

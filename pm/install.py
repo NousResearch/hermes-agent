@@ -674,6 +674,8 @@ def _target_selection(package, fact: dict, *, extras, inputs: dict, repair: bool
         # a pre-workspace ledger) the rebuild resolves against the CURRENT tree,
         # so an extra that tree no longer declares must not ride the ledger
         # into `uv sync` — mirror _still_declared's launch-path prune here.
+        # (record_state writes `environment`/`resolved_lock` only when non-None,
+        # so absence of both keys is exactly "no replayed workspace captured".)
         enabled = recorded if ("environment" in fact or "resolved_lock" in fact) \
             else _still_declared(package, recorded)
         if enabled != recorded:

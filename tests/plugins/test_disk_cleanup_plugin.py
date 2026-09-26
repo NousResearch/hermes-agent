@@ -303,6 +303,11 @@ class TestGitWorktreeFilesNeverCleaned:
         assert dg._inside_git_worktree(scratch) is False
         assert dg.guess_category(tracked) is None
         assert dg.guess_category(scratch) == "test"
+        # An inherited pathspec mode must not make the tracked-file probe miss.
+        for mode in ("GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_ICASE_PATHSPECS"):
+            monkeypatch.setenv(mode, "1")
+            assert dg._inside_git_worktree(tracked) is True, mode
+            monkeypatch.delenv(mode)
 
         # A stale pre-fix entry is dropped by quick()'s re-validation, not deleted, while
         # untracked scratch beside it in the same repo is still cleaned.

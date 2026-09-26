@@ -26,7 +26,8 @@ logger = logging.getLogger(__name__)
 
 MUTATOR_ROUTE_TABLE: dict[str, str] = {
     "prompt.submit": "turn-path", "session.interrupt": "turn-path", "reload.mcp": "run-concurrent",
-    "session.save": "run-concurrent", "session.compress": "idle-gated",
+    "session.save": "run-concurrent", "session.steer": "run-concurrent",
+    "session.redirect": "run-concurrent", "session.compress": "idle-gated",
     "prompt.submit.truncate": "idle-gated", "slash.model": "idle-gated",
     "slash.personality": "idle-gated", "slash.prompt": "idle-gated", "slash.compress": "idle-gated",
     "session.reset": "idle-gated", "session.history.reload": "idle-gated",

@@ -12539,6 +12539,95 @@ def test_session_redirect_rejects_when_idle_without_agent(monkeypatch):
     assert session.get("queued_prompt") is None
 
 
+def _hosted_turn_session(monkeypatch, child_session):
+    """A parent-side metadata mirror of a running compute-host turn whose controls are
+    answered by a real ``ComputeHost`` holding ``child_session`` (the AIAgent owner)."""
+    import io
+
+    from tui_gateway.compute_host import ComputeHost
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
+    parent = _session(running=True, _compute_host_active=True, _compute_host_turn_id="turn-1",
+                      agent_ready=threading.Event(),
+                      inflight_turn={"user": "count to ten", "assistant": "1 2", "streaming": True})
+    parent["agent"] = None  # the child owns the AIAgent; the parent only mirrors it
+    server._sessions["parent-sid"] = parent
+    server._sessions["child-sid"] = child_session
+    sent = []
+
+    def control(sid, *, route_name, payload=None, timeout=30.0, **_kwargs):
+        sent.append((sid, route_name, dict(payload or {})))
+        out = io.StringIO()
+        child = ComputeHost(stdout=out, heartbeat_secs=0)
+        try:
+            # Same process, so the child's record lives under its own sid.
+            child._handle_control({"type": "control", **(payload or {}), "sid": "child-sid",
+                                   "route_name": route_name, "request_id": "ctl"})
+        finally:
+            child.close()
+        return json.loads(out.getvalue().splitlines()[-1])
+
+    monkeypatch.setattr(server, "_send_compute_host_control", control)
+    return parent, sent
+
+
+@pytest.mark.parametrize(("method", "verb", "status"), [
+    ("session.steer", "steer", "queued"), ("session.redirect", "redirect", "redirected")])
+def test_session_correction_reaches_compute_host_agent(monkeypatch, method, verb, status):
+    # With turn isolation the running turn's AIAgent is in the compute-host child and the parent
+    # holds agent=None: steer used to answer 4010 and redirect silently became a next-turn prompt.
+    received = []
+    agent = types.SimpleNamespace(_supports_active_turn_redirect=True,
+                                  steer=lambda t: received.append(("steer", t)) or True,
+                                  redirect=lambda t: received.append(("redirect", t)) or True)
+    parent, sent = _hosted_turn_session(monkeypatch, _session(agent=agent, running=True))
+    try:
+        resp = server.handle_request({"id": "1", "method": method,
+                                      "params": {"session_id": "parent-sid", "text": "use SQLite"}})
+    finally:
+        server._sessions.pop("parent-sid", None)
+        server._sessions.pop("child-sid", None)
+
+    assert resp["result"] == {"status": status, "text": "use SQLite"}
+    assert sent == [("parent-sid", method, {"text": "use SQLite"})]
+    assert received == [(verb, "use SQLite")]
+    assert parent["inflight_turn"]["corrections"] == ["use SQLite"]
+    assert parent.get("queued_prompt") is None
+
+
+def test_session_correction_rejected_by_compute_host_is_not_recorded(monkeypatch):
+    agent = types.SimpleNamespace(steer=lambda _t: False)
+    parent, _sent = _hosted_turn_session(monkeypatch, _session(agent=agent, running=True))
+    try:
+        resp = server.handle_request({"id": "1", "method": "session.steer",
+                                      "params": {"session_id": "parent-sid", "text": "late"}})
+    finally:
+        server._sessions.pop("parent-sid", None)
+        server._sessions.pop("child-sid", None)
+
+    assert resp["result"] == {"status": "rejected", "text": "late"}
+    assert "corrections" not in parent["inflight_turn"]
+
+
+@pytest.mark.parametrize("method", ["session.steer", "session.redirect"])
+def test_session_correction_queues_on_parent_while_compute_host_agent_builds(monkeypatch, method):
+    # The child's turn is still building its agent: the text must land in the PARENT's queue
+    # (drained after the hosted turn ends), never in the child's, which nothing drains.
+    child = _session(running=True)
+    child["agent"] = None
+    parent, _sent = _hosted_turn_session(monkeypatch, child)
+    try:
+        resp = server.handle_request({"id": "1", "method": method,
+                                      "params": {"session_id": "parent-sid", "text": "then add tests"}})
+    finally:
+        server._sessions.pop("parent-sid", None)
+        server._sessions.pop("child-sid", None)
+
+    assert resp["result"] == {"status": "queued", "text": "then add tests"}
+    assert parent["queued_prompt"]["text"] == "then add tests"
+    assert child.get("queued_prompt") is None
+
+
 
 
 def test_session_info_includes_session_title(monkeypatch):

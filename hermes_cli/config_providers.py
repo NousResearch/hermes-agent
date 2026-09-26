@@ -183,6 +183,23 @@ def _normalize_provider_models(models: Any) -> Tuple[Dict[str, Any], bool]:
     return {}, discovered
 
 
+def _normalize_session_affinity_header(value: Any) -> Any:
+    """Normalize ``session_affinity_header`` to a stripped string or a list of stripped names.
+
+    A bare string keeps behaving exactly as before; a list declares more than one header name
+    for gateways with multiple session-aware consumers reading different header names (#116779).
+    """
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (list, tuple)):
+        names: List[str] = []
+        for item in value:
+            if isinstance(item, str) and item.strip() and item.strip() not in names:
+                names.append(item.strip())
+        return names
+    return ""
+
+
 def _normalize_custom_provider_entry(
     entry: Any, *, provider_key: str = "") -> Optional[Dict[str, Any]]:
     """Return a runtime-compatible custom provider entry or ``None``."""
@@ -267,7 +284,7 @@ def _normalize_custom_provider_entry(
 
     # Per-provider extra HTTP headers may carry credentials — never log them downstream.
     _put("extra_headers", normalize_extra_headers(entry.get("extra_headers")))
-    _put("session_affinity_header", _stripped("session_affinity_header"))
+    _put("session_affinity_header", _normalize_session_affinity_header(entry.get("session_affinity_header")))
     _put("ssl_ca_cert", _stripped("ssl_ca_cert"))
 
     ssl_verify = entry.get("ssl_verify")
@@ -509,20 +526,34 @@ def apply_custom_provider_extra_headers_to_client_kwargs(
     client_kwargs["default_headers"] = merged
 
 
-def get_custom_provider_session_affinity_header(
+def get_custom_provider_session_affinity_headers(
     base_url: str,
     custom_providers: Optional[List[Dict[str, Any]]] = None,
-    config: Optional[Dict[str, Any]] = None) -> str:
-    """Header NAME declared as ``session_affinity_header`` on the route-matching entry, else "".
+    config: Optional[Dict[str, Any]] = None) -> List[str]:
+    """Header NAME(s) declared as ``session_affinity_header`` on the route-matching entry, else [].
 
     Opt-in per provider (default off): Hermes never ships a session identifier to an endpoint
-    that did not ask for one (#86241).
+    that did not ask for one (#86241). A gateway with several independent session-aware readers
+    can declare a list instead of a single string, one entry per header name (#116779).
     """
     for entry in _entries_for_route(base_url, custom_providers, config):
         header = entry.get("session_affinity_header")
         if isinstance(header, str) and header.strip():
-            return header.strip()
-    return ""
+            return [header.strip()]
+        if isinstance(header, (list, tuple)):
+            names = [h.strip() for h in header if isinstance(h, str) and h.strip()]
+            if names:
+                return names
+    return []
+
+
+def get_custom_provider_session_affinity_header(
+    base_url: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None) -> str:
+    """Back-compat shim for the pre-#116779 singular API: first declared header name, or ``""``."""
+    headers = get_custom_provider_session_affinity_headers(base_url, custom_providers, config)
+    return headers[0] if headers else ""
 
 
 def get_custom_provider_context_length(

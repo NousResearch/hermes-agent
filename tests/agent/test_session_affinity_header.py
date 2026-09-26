@@ -10,11 +10,13 @@ from unittest.mock import patch
 
 from agent import auxiliary_client as aux
 from agent.chat_completion_helpers import build_api_kwargs
+from hermes_cli.config_providers import _normalize_custom_provider_entry
 from run_agent import AIAgent
 
 _MSGS = [{"role": "user", "content": "hello"}]
 _BASE = "http://localhost:4000/v1"
 _HEADER = "x-litellm-session-id"
+_HEADER_2 = "x-thread-id"
 
 
 def _agent(session_id, api_mode="chat_completions"):
@@ -60,3 +62,26 @@ def test_unconfigured_provider_sends_no_session_header():
             headers = build_api_kwargs(agent, _MSGS).get("extra_headers") or {}
             assert _HEADER not in headers and "x-opencode-session" not in headers
         assert _HEADER not in _aux_headers("sess-A")
+
+
+def _providers_multi():
+    entry = {
+        "name": "litellm-lan", "provider_key": "litellm-lan", "base_url": _BASE,
+        "session_affinity_header": [_HEADER, _HEADER_2],
+    }
+    return patch("hermes_cli.config.get_compatible_custom_providers", return_value=[entry])
+
+
+def test_list_of_header_names_all_carry_the_same_value_on_every_path():
+    with _providers_multi():
+        chat = build_api_kwargs(_agent("sess-A"), _MSGS)["extra_headers"]
+        assert chat[_HEADER] == chat[_HEADER_2] == "sess-A"
+        aux_headers = _aux_headers("sess-A")
+        assert aux_headers[_HEADER] == aux_headers[_HEADER_2] == "sess-A"
+
+
+def test_config_normalization_keeps_a_list_of_header_names():
+    entry = _normalize_custom_provider_entry(
+        {"name": "litellm-lan", "base_url": _BASE, "session_affinity_header": [_HEADER, "", _HEADER_2, _HEADER]},
+        provider_key="litellm-lan")
+    assert entry["session_affinity_header"] == [_HEADER, _HEADER_2]

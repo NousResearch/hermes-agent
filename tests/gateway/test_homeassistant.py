@@ -205,6 +205,23 @@ class TestCooldown:
         await adapter._handle_ha_event(event2)
         assert adapter.handle_message.call_count == 2
 
+    @pytest.mark.asyncio
+    async def test_unforwarded_events_do_not_start_cooldown(self):
+        """Regression for #12062: only a forwarded change may start the per-entity cooldown."""
+        adapter = _make_adapter(watch_all=True, cooldown_seconds=60)
+
+        # An attribute-only update (same state) and an entity removal are both dropped...
+        await adapter._handle_ha_event(_make_event("sensor.temp", "20", "20",
+                                                   new_attrs={"friendly_name": "Temp"}))
+        await adapter._handle_ha_event({"data": {"entity_id": "sensor.temp",
+                                                 "old_state": {"state": "20"}, "new_state": None}})
+        assert adapter.handle_message.call_count == 0
+
+        # ...so the real change right behind them still reaches the agent.
+        await adapter._handle_ha_event(_make_event("sensor.temp", "20", "21",
+                                                   new_attrs={"friendly_name": "Temp"}))
+        assert adapter.handle_message.call_count == 1
+
 
 # ---------------------------------------------------------------------------
 # Config integration (env overrides, round-trip)

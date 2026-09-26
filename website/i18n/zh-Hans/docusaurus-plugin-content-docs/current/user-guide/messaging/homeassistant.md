@@ -157,7 +157,7 @@ platforms:
 | `watch_entities` | *（无）* | 仅监听这些特定实体 ID |
 | `watch_all` | `false` | 设为 `true` 以接收**所有**状态变更（不推荐用于大多数场景） |
 | `ignore_entities` | *（无）* | 始终忽略这些实体（在域/实体过滤器之前应用） |
-| `cooldown_seconds` | `30` | 同一实体两次事件之间的最小间隔秒数 |
+| `cooldown_seconds` | `30` | 同一实体两次转发事件之间的最小间隔秒数（未被转发的仅属性更新不会开始冷却计时） |
 
 :::tip
 从一组精简的域开始 — `climate`、`binary_sensor` 和 `alarm_control_panel` 已覆盖最常用的自动化场景。按需添加更多域。使用 `ignore_entities` 屏蔽 CPU 温度或运行时间计数器等噪声传感器。

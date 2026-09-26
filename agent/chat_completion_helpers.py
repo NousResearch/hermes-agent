@@ -2273,7 +2273,9 @@ def _managed_summary_call(agent, api_request_id: str, request, callback, *, retr
     )
 
 
-def _summary_text(agent, response, **normalize_kwargs) -> str:
+def _summary_text(agent, response, record=None, **normalize_kwargs) -> str:
+    if record is not None:
+        record(response)
     if is_router_timeout_shim(response):
         # Router failure in a 200 envelope (#68396): an empty summary takes the retry slot.
         logger.warning("Iteration summary returned a router timeout shim; retrying")
@@ -2286,7 +2288,7 @@ def _summary_text(agent, response, **normalize_kwargs) -> str:
     return (normalized.content or "").strip()
 
 
-def _codex_summary_attempt(agent, api_messages: list, api_request_id: str):
+def _codex_summary_attempt(agent, api_messages: list, api_request_id: str, record=None):
     def _attempt(retry_count: int) -> str:
         codex_kwargs = agent._build_api_kwargs(api_messages)
         # The transport emits these three as one block (transports/codex.py build_kwargs);
@@ -2297,11 +2299,11 @@ def _codex_summary_attempt(agent, api_messages: list, api_request_id: str):
         # Route through the same seam as normal Codex turns: a direct _run_codex_stream
         # bypasses the stale/TTFB watchdogs, interrupt handling and client cleanup, so an
         # unattended cron summary could wedge forever (#70943).
-        return _summary_text(agent, agent._interruptible_api_call(codex_kwargs))
+        return _summary_text(agent, agent._interruptible_api_call(codex_kwargs), record=record)
     return _attempt
 
 
-def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str):
+def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str, record=None):
     def _attempt(retry_count: int) -> str:
         ant_kw = agent._get_transport().build_kwargs(
             model=agent.model, messages=api_messages, tools=None, max_tokens=agent.max_tokens,
@@ -2309,11 +2311,11 @@ def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str):
             preserve_dots=agent._anthropic_preserve_dots(), base_url=getattr(agent, "_anthropic_base_url", None))
         ant_kw = _merge_nous_portal_messages_extra_body(agent, ant_kw)
         response = _managed_summary_call(agent, api_request_id, ant_kw, agent._anthropic_messages_create, retry_count=retry_count)
-        return _summary_text(agent, response, strip_tool_prefix=agent._is_anthropic_oauth)
+        return _summary_text(agent, response, record=record, strip_tool_prefix=agent._is_anthropic_oauth)
     return _attempt
 
 
-def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
+def _chat_summary_attempt(agent, api_messages: list, api_request_id: str, record=None):
     # Same kwargs builder as the main loop so the summary keeps the cached prefix (tools,
     # prompt_cache_key, xAI alias, Moonshot sanitization). Do not omit tools or force
     # tool_choice="none" here: SGLang renders the prompt with tools=None in that mode and the KV
@@ -2329,7 +2331,7 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
             agent, api_request_id, summary_kwargs,
             lambda request: summary_client.chat.completions.create(**bypass_chat_sdk_request_transform(request, summary_client)),
             retry_count=retry_count)
-        return _summary_text(agent, response)
+        return _summary_text(agent, response, record=record)
     return _attempt
 
 
@@ -2356,14 +2358,24 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     from agent.context_compressor import MAX_ITERATIONS_SUMMARY_REQUEST
     append_message(messages, {"role": "user", "content": MAX_ITERATIONS_SUMMARY_REQUEST})
 
+    def _record_usage(response) -> None:
+        # A full-context request the provider bills like any turn: count it in the session's
+        # tokens, cost and state.db row.
+        from agent.turn_usage import record_response_usage
+        record_response_usage(
+            agent, response, messages=messages, api_call_count=api_call_count + 1,
+            api_duration=time.monotonic() - attempt_started, compression_attempts=0, max_compression_attempts=0,
+        )
+
     try:
         api_messages = _iteration_summary_api_messages(agent, messages)
         build_attempt = _SUMMARY_ATTEMPT_BUILDERS.get(agent.api_mode, _chat_summary_attempt)
-        attempt = build_attempt(agent, api_messages, summary_api_request_id)
+        attempt = build_attempt(agent, api_messages, summary_api_request_id, record=_record_usage)
 
         # One retry on an empty summary; a summary empty once its <think> block is stripped is NOT retried.
         final_response = _EMPTY_SUMMARY_RESPONSE
         for retry_count in (0, 1):
+            attempt_started = time.monotonic()
             text = attempt(retry_count)
             if not text:
                 continue

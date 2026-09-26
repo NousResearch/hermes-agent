@@ -87,7 +87,7 @@ from hermes_cli.old_updater_deps import (  # noqa: F401 — frozen updater surfa
     _refresh_active_memory_provider_dependencies, _update_node_dependencies)
 from hermes_cli.update_cmd_git import (  # noqa: F401
     OFFICIAL_REPO_URL, OFFICIAL_REPO_URLS, SKIP_UPSTREAM_PROMPT_FILE, _ORPHAN_RESCUE_REFS_TO_KEEP,
-    _ORPHAN_RESCUE_REF_MAX_AGE_DAYS, _add_upstream_remote, _assess_parked_branch_switch,
+    _ORPHAN_RESCUE_REF_MAX_AGE_DAYS, _add_upstream_remote, _apply_update_ref, _assess_parked_branch_switch,
     _branch_head_label, _branch_head_suffix, _classify_fetch_failure, _count_commits_between,
     _discard_lockfile_churn, _ensure_non_trampoline_git, _get_origin_url, _git_is_trampoline,
     _has_upstream_remote, _is_fork, _locate_real_git, _mark_skip_upstream_prompt,
@@ -1348,6 +1348,37 @@ def _cmd_update_impl(args, gateway_mode: bool):
         return
 
     try:
+        pin_ref = _m()._resolve_update_ref(args)
+        if pin_ref:
+            pre_pull_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
+            _apply_update_ref(
+                git_cmd,
+                pin_ref,
+                assume_yes=assume_yes,
+                gateway_mode=gateway_mode,
+                gw_input_fn=gw_input_fn,
+                discard_local_changes=opts.discard_local_changes,
+            )
+            post_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
+            completion_request["expected_sha"] = post_sha
+            completion_request["branch"] = "HEAD"
+            _pin_plan = _CheckoutPlan(
+                auto_stash_ref=None,
+                commit_count=1,
+                in_place_update=False,
+                parked_branch_switched=False,
+                prompt_for_restore=False,
+                switch_block_reason=None,
+                upstream_checked=True,
+                pre_sync_sha=pre_pull_sha,
+            )
+            _apply_pulled_update(
+                git_cmd, "HEAD", pre_pull_sha, _pin_plan,
+                _windows_gateway_resume=_windows_gateway_resume,
+                completion_request=completion_request,
+            )
+            return
+
         # Self-heal abandoned .git/*.lock files (crashed fetch) or the fetch fails "File exists".
         from hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs
         cleared = clear_stale_git_locks(_m().PROJECT_ROOT)

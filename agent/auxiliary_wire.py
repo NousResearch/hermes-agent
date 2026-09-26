@@ -14,6 +14,14 @@ def prepare_chat_messages(client, kwargs: dict) -> dict:
     """
     if not isinstance(client, (OpenAI, AsyncOpenAI)) or "messages" not in kwargs:
         return kwargs
+    # The private ``_reasoning_config`` sidecar is consumed only by
+    # ``AnthropicAuxiliaryClient.create``; a plain OpenAI SDK client forwards it
+    # into ``Completions.create()`` and raises TypeError (#123194). The producer
+    # gate (``_build_call_kwargs``) is intentionally wider than the wrap rule —
+    # a declared anthropic_messages demoted to chat_completions (#76836) and
+    # compat-set members leak here — so strip where the resolved wire is known
+    # instead of re-deriving it.
+    kwargs = {k: v for k, v in kwargs.items() if k != "_reasoning_config"}
     messages = ChatCompletionsTransport().convert_messages(
         kwargs["messages"], model=kwargs.get("model"), base_url=str(getattr(client, "base_url", "") or ""),
     )

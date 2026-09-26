@@ -52,6 +52,7 @@ from tools.delegate_tool_tasks import (  # noqa: F401
 from tools.delegate_tool_toolsets import (  # noqa: F401
     DELEGATE_BLOCKED_TOOLS, _expand_parent_toolsets, _resolve_child_toolsets, _strip_blocked_tools,
 )
+from tools.delegate_tool_goal import _apply_goal_mode, _child_goal_cfg  # noqa: F401
 from tools.delegate_tool_results import (  # noqa: F401
     _apply_summary_budget, _build_child_preserving_parent_tools, _run_child_lifecycle, _summarize_tool_arguments,
 )
@@ -336,6 +337,21 @@ def _run_single_child(
         if failure_entry is not None:
             return failure_entry
 
+        # Goal mode (#124292): the child continues inside its OWN conversation under a
+        # bounded between-turns judge, instead of returning mid-task to the parent.
+        _goal_cfg = getattr(child, "_delegate_goal_cfg", None)
+        if isinstance(_goal_cfg, dict):
+            from tools.delegate_tool_goal import _remaining_work_note, run_goal_continuations
+            result, _goal_loop_info = run_goal_continuations(
+                child=child, goal_text=goal, first_result=result, child_task_id=run.child_task_id,
+                relay_text=run.relay_text, max_turns=_goal_cfg.get("max_turns", 0),
+                session_id=str(getattr(child, "session_id", "") or ""),
+            )
+            result["_goal_loop"] = _goal_loop_info
+            _note = _remaining_work_note(_goal_loop_info)
+            if _note:
+                result["remaining_work"] = _note
+
         schema = _validate_child_output_schema(child, result, task_index, run.child_task_id, run.relay_text)
         _merge_late_steer(result, _subagent_id, child)
         # Flush any remaining batched progress to gateway
@@ -397,6 +413,9 @@ def _build_children(
         if _task_schema is not None:
             with _quiet("Could not attach output schema to child %d", i):
                 child._delegate_output_schema = _task_schema
+        _goal_cfg = _child_goal_cfg(t)
+        if _goal_cfg is not None:
+            child._delegate_goal_cfg = _goal_cfg
         # Validated per-task images; absent on image-less tasks, which keep the text-only goal turn.
         _t_images = task_images[i] if task_images and i < len(task_images) else None
         if _t_images:
@@ -442,12 +461,14 @@ def delegate_task(
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
     output_schema: Optional[Dict[str, Any]] = None, images: Optional[List[str]] = None, action: Optional[str] = None,
     subagent_id: Optional[str] = None, message: Optional[str] = None, parent_agent=None,
-    credentials_cfg: Optional[Dict[str, Any]] = None,
+    credentials_cfg: Optional[Dict[str, Any]] = None, goal_mode: bool = False,
+    goal_max_turns: Optional[int] = None,
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
     list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
-    (per-task beats top-level; capability is depth-derived). Returns JSON with one results entry per task, or a
-    dispatch handle when running in the background."""
+    (per-task beats top-level; capability is depth-derived). ``goal_mode=True`` opts every child in the call into a
+    bounded between-turns judge loop (``goal_max_turns`` budget, default 20). Returns JSON with one results entry
+    per task, or a dispatch handle when running in the background."""
     if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
 
@@ -499,6 +520,8 @@ def delegate_task(
         return tool_error(str(exc))
     max_children = _get_max_concurrent_children()
     task_list, err = _normalize_task_list(goal, context, tasks, output_schema, top_role, max_children)
+    if not err:
+        task_list, err = _apply_goal_mode(task_list, goal_mode, goal_max_turns)
     if not err:
         task_schemas, err = _coerce_task_schemas(task_list, output_schema)
     if not err:
@@ -685,6 +708,21 @@ DELEGATE_TASK_SCHEMA = {
                             "together in ONE message; ungrouped tasks return individually as each finishes. This does not "
                             "order execution; if B needs A's output, dispatch B after A returns.",
                         ),
+                        "goal_mode": _p(
+                            "boolean",
+                            "Opt this task into a bounded judge loop: after each turn an auxiliary judge evaluates the "
+                            "subagent's latest response against the goal; a continue verdict feeds a continuation prompt "
+                            "back into the SAME subagent conversation (it keeps its context), until the judge accepts, "
+                            "rules the goal unachievable, or goal_max_turns is reached. Use for long multi-item tasks a "
+                            "subagent might otherwise stop halfway through. Every continuation turn is billed to this "
+                            "delegation. Requires the auxiliary goal judge to be configured.",
+                        ),
+                        "goal_max_turns": _p(
+                            "integer",
+                            "Turn budget for goal_mode (default 20; each turn = one subagent response, judged). Budget "
+                            "exhaustion returns the partial summary plus a structured remaining_work note.",
+                            minimum=1,
+                        ),
                     },
                     "required": ["goal"],
                 },
@@ -743,7 +781,7 @@ registry.register(
         max_iterations=args.get("max_iterations"), role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),
         images=args.get("images"), action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
-        parent_agent=kw.get("parent_agent"),
+        parent_agent=kw.get("parent_agent"), goal_mode=args.get("goal_mode"), goal_max_turns=args.get("goal_max_turns"),
     ),
     check_fn=check_delegate_requirements,
     emoji="🔀",

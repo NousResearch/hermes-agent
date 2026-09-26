@@ -18,6 +18,11 @@ def test_entry_without_ttl_never_expires():
     assert sc.get_cached_entry("srv", "fp") is not None
 
 
+def test_entry_with_ttl_zero_never_expires():
+    sc.write_cache_entry("srv", "fp", tools=[{"name": "t"}], ttl_ms=0)
+    assert sc.get_cached_entry("srv", "fp") is not None
+
+
 def test_entry_within_ttl_served():
     sc.write_cache_entry("srv", "fp", tools=[{"name": "t"}], ttl_ms=60_000)
     entry = sc.get_cached_entry("srv", "fp")

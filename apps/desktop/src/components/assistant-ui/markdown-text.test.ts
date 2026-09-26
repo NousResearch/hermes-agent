@@ -584,4 +584,31 @@ describe('preprocessMarkdown', () => {
 
     expect(output).toContain('$$E = mc^2$$')
   })
+
+  // #123163: a real span's closing `$` must never be re-read as the next
+  // opener. Without atomic consumption the scan pairs span 1's closer with
+  // span 2's opener, reads the CJK prose between them as a prose pair, and
+  // escapes the real span's closing delimiter — destroying span 1.
+  it('preserves two real inline math spans separated by CJK prose (#123163)', () => {
+    const output = preprocessMarkdown('先算 $E = mc^2$ 再代入 $x$ 求解')
+
+    expect(output).toContain('$E = mc^2$')
+    expect(output).toContain('$x$')
+    expect(output).not.toContain('\\$')
+  })
+
+  it('preserves short real spans between CJK prose (#123163)', () => {
+    const output = preprocessMarkdown('$a$ 甲 $b$ 乙 $c$ 丙')
+
+    expect(output).toBe('$a$ 甲 $b$ 乙 $c$ 丙')
+  })
+
+  it('still neutralizes a prose pair that follows a real span (#123163)', () => {
+    // The real span is consumed; the bare-identifier prose pair after it is
+    // still escaped — the #103546 behavior must survive the fix.
+    const output = preprocessMarkdown('已知 $\\alpha = 1$，其中 $connection 是写者，$session 是读者')
+
+    expect(output).toContain('$\\alpha = 1$')
+    expect(output).toContain('\\$connection')
+  })
 })

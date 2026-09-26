@@ -631,11 +631,14 @@ const CJK_RE = /[\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufa
  * non-Latin text, so a CJK body is prose with near certainty.
  *
  * Escaping only the OPENING `$` is enough: the closing `$` loses its partner
- * and renders literally. Real math is untouched — its body carries no CJK —
- * and `$$` display runs are skipped by the same `$$`-run guard the currency
- * escape uses. The one accepted tradeoff: genuine inline math whose body
- * names a CJK variable (`$x = 变量$`) renders as literal prose. Losing one
- * equation is far cheaper than corrupting a sentence's copy-out.
+ * and renders literally. Real math is untouched — its body carries no CJK, and
+ * a declined span is consumed atomically so its closing `$` is never re-read as
+ * the next opener (which would pair it with the following span's opener and
+ * escape a real delimiter, #123163). `$$` display runs are skipped by the same
+ * `$$`-run guard the currency escape uses. The one accepted tradeoff: genuine
+ * inline math whose body names a CJK variable (`$x = 变量$`) renders as literal
+ * prose. Losing one equation is far cheaper than corrupting a sentence's
+ * copy-out.
  */
 function escapeCjkProseDollars(text: string): string {
   let out = ''
@@ -655,11 +658,21 @@ function escapeCjkProseDollars(text: string): string {
     const body = text.slice(cursor + 1, closingIndex)
 
     if (!CJK_RE.test(body)) {
+      // Real inline math: consume the span atomically so its closing `$` is
+      // never re-read as the next opener. Without this, the scan pairs a real
+      // span's closer with the next span's opener, reads the CJK prose between
+      // them as a prose pair, and escapes the real span's closing delimiter —
+      // destroying the first span on any line where CJK prose follows it
+      // (#123163).
+      cursor = closingIndex
       continue
     }
 
     out += `${text.slice(copiedThrough, cursor)}\\$`
     copiedThrough = cursor + 1
+    // Escaped prose pair: only the opener is neutralized; the closing `$`
+    // stays eligible so the remaining prose run keeps neutralizing — it may
+    // pair with the next dollar and be escaped in turn.
   }
 
   return out + text.slice(copiedThrough)

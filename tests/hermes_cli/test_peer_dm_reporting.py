@@ -34,6 +34,13 @@ def _run(monkeypatch, capsys, *, base="http://192.168.2.55:8642", raise_on_post=
     # under test - which failure shape reaches which report - stays fast.
     monkeypatch.setattr(peer_mod, "_DM_TIMEOUT_SLACK_S", 0.1)
     monkeypatch.setattr(peer_mod, "_DM_REPLAY_TIMEOUT_S", 0.1)
+    # `dm_wait_seconds` is read from config, not from the `DM_TIMEOUT_S` constant: DEFAULT_CONFIG
+    # sets it to 600, so patching the constant alone still leaves a 600 s request bound and the
+    # real-socket cases below block on the read until the file timeout kills them. Pin the read.
+    _real_peer_value = peer_mod._peer_value
+    monkeypatch.setattr(
+        peer_mod, "_peer_value",
+        lambda key, default: 0.5 if key == "dm_wait_seconds" else _real_peer_value(key, default))
     if raise_on_post is not None:
         def _request(url, key, **kwargs):
             raise raise_on_post

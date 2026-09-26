@@ -406,6 +406,61 @@ async def test_send_file_attachment_forum_uses_files_kwarg(tmp_path, monkeypatch
 
 
 # ---------------------------------------------------------------------------
+# Lazy-install None window (#121938)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_send_document_survives_lazy_install_none_window(tmp_path, monkeypatch):
+    """#121938: while discord.py is importable, the adapter module's ``discord``
+    global can still be ``None`` — the top-level try block binds it only when the
+    full import set (incl. ``discord.ext.commands``) succeeds. The media path must
+    resolve the module at call time instead of trusting the stale adapter snapshot;
+    file delivery used to die with ``'NoneType' object has no attribute 'File'``."""
+    import plugins.platforms.discord.adapter as discord_platform
+
+    doc = tmp_path / "notes.md"
+    doc.write_bytes(b"# notes")
+
+    monkeypatch.setattr(discord_platform, "discord", None)
+
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    sent_msg = SimpleNamespace(id=4242, attachments=[SimpleNamespace(filename="notes.md")])
+    channel = SimpleNamespace(send=AsyncMock(return_value=sent_msg), type=0)
+    adapter._client = SimpleNamespace(get_channel=lambda _c: channel, fetch_channel=AsyncMock())
+    monkeypatch.setattr(adapter, "_is_forum_parent", lambda _ch: False)
+
+    result = await adapter.send_document("555", str(doc))
+
+    assert result.success is True
+    send_kwargs = channel.send.await_args.kwargs
+    assert isinstance(send_kwargs.get("files"), list) and len(send_kwargs["files"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_send_voice_survives_lazy_install_none_window(tmp_path, monkeypatch):
+    """#121938 (voice lane): same None-window contract for the audio attachment path."""
+    import plugins.platforms.discord.adapter as discord_platform
+
+    audio = tmp_path / "clip.ogg"
+    audio.write_bytes(b"fake-ogg")
+
+    monkeypatch.setattr(discord_platform, "discord", None)
+
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    sent_msg = SimpleNamespace(id=4243, attachments=[SimpleNamespace(filename="clip.ogg")])
+    channel = SimpleNamespace(send=AsyncMock(return_value=sent_msg), type=0)
+    adapter._client = SimpleNamespace(get_channel=lambda _c: channel, fetch_channel=AsyncMock())
+    monkeypatch.setattr(adapter, "_is_forum_parent", lambda _ch: False)
+    monkeypatch.setattr(adapter, "_reply_reference_for_send", lambda *_a, **_k: None)
+
+    result = await adapter.send_voice("555", str(audio))
+
+    assert result.success is True
+    channel.send.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
 # Upload-size preflight (#50846 / #52698)
 # ---------------------------------------------------------------------------
 

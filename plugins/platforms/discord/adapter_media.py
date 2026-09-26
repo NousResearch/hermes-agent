@@ -86,7 +86,15 @@ class DiscordMediaMixin:
 
         See #66797.
         """
-        from plugins.platforms.discord.adapter import _prompt_target_id, discord
+        from plugins.platforms.discord.adapter import _prompt_target_id
+        # The adapter global stays None through the lazy-install window even when base
+        # discord.py is importable (#121938): the top-level try block binds it only if
+        # the full import set (incl. discord.ext.commands) succeeds. Resolve the module
+        # at call time, mirroring send_multiple_images below.
+        try:
+            import discord
+        except ImportError:
+            return SendResult(success=False, error="discord.py not installed. Run: pip install discord.py")
 
         if not self._client:
             return SendResult(success=False, error="Not connected")
@@ -279,7 +287,11 @@ class DiscordMediaMixin:
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, **kwargs,
     ) -> SendResult:
         """Send audio as a Discord file attachment."""
-        from plugins.platforms.discord.adapter import _prompt_target_id, discord
+        from plugins.platforms.discord.adapter import _prompt_target_id
+        try:
+            import discord
+        except ImportError:
+            return SendResult(success=False, error="discord.py not installed. Run: pip install discord.py")
 
         try:
             import io
@@ -374,7 +386,11 @@ class DiscordMediaMixin:
     ) -> SendResult:
         """Download ``url`` and post it as a native attachment (Discord renders those inline).
         ``fallback(metadata)`` is the base-adapter URL send (``error_metadata`` after download failure)."""
-        from plugins.platforms.discord.adapter import _prompt_target_id, _read_url_image_with_redirect_guard, discord, is_safe_url
+        from plugins.platforms.discord.adapter import _prompt_target_id, _read_url_image_with_redirect_guard, is_safe_url
+        try:
+            import discord
+        except ImportError:
+            return await fallback(metadata)
 
         if not self._client:
             return SendResult(success=False, error="Not connected")

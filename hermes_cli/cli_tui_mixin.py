@@ -1554,12 +1554,15 @@ class CLITuiMixin:
                     event.app.exit()
         elif (
             self._should_handle_steer_command_inline(text, has_images=has_images)
-            or self._should_handle_background_command_inline(text, has_images=has_images)):
+            or self._should_handle_background_command_inline(text, has_images=has_images)
+            or self._should_handle_goal_control_command_inline(text, has_images=has_images)
+        ):
             self.process_command(text)
         else:
             return False
-        event.app.current_buffer.reset(append_to_history=True)
-        event.app.invalidate()
+        if event is not None:
+            event.app.current_buffer.reset(append_to_history=True)
+            event.app.invalidate()
         return True
 
     def _tui_enter_while_busy(self, text: str, images: list, payload) -> None:

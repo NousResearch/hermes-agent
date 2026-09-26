@@ -1,4 +1,4 @@
-import { cleanup, render } from '@testing-library/react'
+import { cleanup, render, renderHook } from '@testing-library/react'
 import { type RefObject, StrictMode, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -56,13 +56,23 @@ const sized =
     ref.current = node
   }
 
+const emptyRef = { current: null }
+
 function Harness({ dockHeight, surfaceHeight }: { dockHeight: number; surfaceHeight: number }) {
   const composerDockRef = useRef<HTMLDivElement | null>(null)
   const composerRef = useRef<HTMLFormElement | null>(null)
   const composerSurfaceRef = useRef<HTMLDivElement | null>(null)
   const editorRef = useRef<HTMLDivElement | null>(null)
 
-  useComposerMetrics({ composerDockRef, composerRef, composerSurfaceRef, editorRef, poppedOut: false })
+  useComposerMetrics({
+    composerDockRef,
+    composerRef,
+    composerSurfaceRef,
+    editorRef,
+    hasHardNewline: false,
+    isEmpty: false,
+    poppedOut: false
+  })
 
   return (
     <div data-chat-surface="">
@@ -106,5 +116,23 @@ describe('useComposerMetrics — published clearance survives an effect replay',
 
     expect(surface.style.getPropertyValue(COMPOSER_HEIGHT_VAR)).toBe('200px')
     expect(surface.style.getPropertyValue(COMPOSER_SURFACE_HEIGHT_VAR)).toBe('120px')
+  })
+})
+
+describe('useComposerMetrics — local draft edges', () => {
+  it('stacks a multiline local draft even when the shared runtime is empty', () => {
+    const { result } = renderHook(() =>
+      useComposerMetrics({
+        composerDockRef: emptyRef,
+        composerRef: emptyRef,
+        composerSurfaceRef: emptyRef,
+        editorRef: emptyRef,
+        hasHardNewline: true,
+        isEmpty: false,
+        poppedOut: false
+      })
+    )
+
+    expect(result.current.stacked).toBe(true)
   })
 })

@@ -13,6 +13,7 @@ import re
 from typing import Any, Dict, Optional
 
 from agent.provider_projection import splice_provider_projection
+from agent.think_scrubber import THINK_TAG_NAMES
 from agent.trajectory import has_incomplete_scratchpad
 from agent.turn_truncation import (
     CODEX_FALLBACK_ACTIVATED, continue_codex_incomplete, normalize_response_for_agent, partial_result,
@@ -21,6 +22,12 @@ from agent.turn_truncation import (
 logger = logging.getLogger("agent.conversation_loop")
 
 _REASONING_TAG_RE = re.compile(r'</?(?:REASONING_SCRATCHPAD|think|reasoning)>')
+# One alternation over the shared tag list so this path tracks every tag the scrubber hides.
+_THINK_TAG_ALT = "|".join(THINK_TAG_NAMES)
+_INLINE_REASONING_RE = re.compile(
+    rf'<(?:{_THINK_TAG_ALT})>(.*?)</(?:{_THINK_TAG_ALT})>',
+    re.DOTALL | re.IGNORECASE,
+)
 
 
 @dataclass
@@ -99,21 +106,54 @@ def _fire_post_api_request_hook(
         pass
 
 
-def _relay_thinking(agent: Any, content: str) -> None:
-    """Relay the model's text to the progress callback: subagents send the first line to
-    the parent display; any agent with a structured callback gets ``reasoning.available``."""
-    _think_text = _REASONING_TAG_RE.sub('', content.strip()).strip()
+def _reasoning_preview(agent: Any, content: str, assistant_message: Any = None) -> str:
+    """Reasoning text for the ``reasoning.available`` progress event, or ``""`` when the turn
+    carries no reasoning at all.
+
+    The structured extractor (``agent._extract_reasoning``) is authoritative: native
+    ``reasoning`` / ``reasoning_content`` / ``reasoning_details`` fields first, else inline think
+    blocks. Only when no extractor is available do we fall back to matching the inline blocks
+    ourselves. Plain reply text is never reasoning — clients render this event as the turn's
+    thinking block, so forwarding the answer here prints it twice and dresses visible output up
+    as internal reasoning (#118934, #13007)."""
+    extractor = getattr(agent, "_extract_reasoning", None)
+    if callable(extractor) and assistant_message is not None:
+        try:
+            extracted = extractor(assistant_message)
+        except Exception:
+            extracted = None
+        if isinstance(extracted, str) and extracted.strip():
+            return extracted.strip()
+    if not content:
+        return ""
+    return "\n\n".join(
+        block.strip() for block in _INLINE_REASONING_RE.findall(content) if block and block.strip()
+    )
+
+
+def _relay_thinking(agent: Any, content: str, assistant_message: Any = None) -> None:
+    """Relay the model's output to the progress callback: a subagent sends its first line to
+    the parent display; a top-level agent with a structured callback gets ``reasoning.available``
+    carrying extracted reasoning only — never the visible reply (#118934, #13007)."""
+    _think_text = _REASONING_TAG_RE.sub('', (content or "").strip()).strip()
     first_line = _think_text.split('\n')[0][:80] if _think_text else ""
-    if first_line and getattr(agent, '_delegate_depth', 0) > 0:
-        try:
-            agent.tool_progress_callback("_thinking", first_line)
-        except Exception:
-            pass
-    elif _think_text:
-        try:
-            agent.tool_progress_callback("reasoning.available", "_thinking", _think_text[:500], None)
-        except Exception:
-            pass
+
+    if getattr(agent, '_delegate_depth', 0) > 0:
+        # Subagent lane: an activity preview for the parent, never a reasoning block.
+        if first_line:
+            try:
+                agent.tool_progress_callback("_thinking", first_line)
+            except Exception:
+                pass
+        return
+
+    reasoning_text = _reasoning_preview(agent, content, assistant_message)
+    if not reasoning_text:
+        return
+    try:
+        agent.tool_progress_callback("reasoning.available", "_thinking", reasoning_text[:500], None)
+    except Exception:
+        pass
 
 
 def normalize_model_response(
@@ -152,7 +192,7 @@ def normalize_model_response(
         else:
             agent._vprint(f"{agent.log_prefix}🤖 Assistant: {content[:100]}{'...' if len(content) > 100 else ''}")
     if content and agent.tool_progress_callback:
-        _relay_thinking(agent, content)
+        _relay_thinking(agent, content, assistant_message)
 
     # Incomplete <REASONING_SCRATCHPAD> (opened, never closed): the model ran out of
     # output tokens mid-reasoning — retry up to 2 times, then save as partial.

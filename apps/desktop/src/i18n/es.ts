@@ -3196,6 +3196,18 @@ export const esOverrides = {
     }
   },
   messaging: {
+    filterStatus: 'Estado',
+    filterStatusAll: 'Todos',
+    filterStatusAttention: 'Requiere atención',
+    filterStatusConnected: 'Conectados',
+    filterStatusError: 'Errores',
+    filterStatusInactive: 'Inactivos',
+    sortBy: 'Ordenar',
+    sortDefault: 'Predeterminado',
+    sortNameAsc: 'Nombre A–Z',
+    sortNameDesc: 'Nombre Z–A',
+    sortStatus: 'Estado',
+    searchOperatorsHint: 'La búsqueda admite status:connected y sort:status',
     search: 'Buscar mensajería...',
     loading: 'Cargando plataformas de mensajería...',
     loadFailed: 'No se pudieron cargar las plataformas de mensajería',

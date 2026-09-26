@@ -3213,6 +3213,18 @@ export const frOverrides = {
     }
   },
   messaging: {
+    filterStatus: 'État',
+    filterStatusAll: 'Tous',
+    filterStatusAttention: 'Attention requise',
+    filterStatusConnected: 'Connectés',
+    filterStatusError: 'Erreurs',
+    filterStatusInactive: 'Inactifs',
+    sortBy: 'Trier',
+    sortDefault: 'Par défaut',
+    sortNameAsc: 'Nom A–Z',
+    sortNameDesc: 'Nom Z–A',
+    sortStatus: 'État',
+    searchOperatorsHint: 'La recherche accepte status:connected et sort:status',
     search: 'Rechercher dans la messagerie...',
     loading: 'Chargement des plateformes de messagerie...',
     loadFailed: 'Échec du chargement des plateformes de messagerie',

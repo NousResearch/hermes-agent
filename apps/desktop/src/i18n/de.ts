@@ -3203,6 +3203,18 @@ export const deOverrides = {
     }
   },
   messaging: {
+    filterStatus: 'Status',
+    filterStatusAll: 'Alle',
+    filterStatusAttention: 'Handlungsbedarf',
+    filterStatusConnected: 'Verbunden',
+    filterStatusError: 'Fehler',
+    filterStatusInactive: 'Inaktiv',
+    sortBy: 'Sortieren',
+    sortDefault: 'Standard',
+    sortNameAsc: 'Name A–Z',
+    sortNameDesc: 'Name Z–A',
+    sortStatus: 'Status',
+    searchOperatorsHint: 'Die Suche unterstützt status:connected und sort:status',
     search: 'Messaging durchsuchen...',
     loading: 'Messaging-Plattformen werden geladen...',
     loadFailed: 'Messaging-Plattformen konnten nicht geladen werden',

@@ -2005,8 +2005,9 @@ def _rederive_repeat_for_schedule_change(
     path must honour the same contract, otherwise a one-shot turned recurring keeps its ``times=1``
     budget and retires after one fire, while a recurring job turned one-shot never completes. An
     explicit ``repeat`` in the same update wins; a same-kind schedule edit leaves ``repeat`` alone.
+    Runs after ``_normalize_job_updates``, so an explicit ``repeat`` is already a dict.
     """
-    if "schedule" not in updates or "repeat" in updates:
+    if "schedule" not in updates:
         return
     new_schedule = updates["schedule"]
     if isinstance(new_schedule, str):
@@ -2016,14 +2017,19 @@ def _rederive_repeat_for_schedule_change(
     new_kind = new_schedule.get("kind")
     if old_kind == new_kind:
         return
-    repeat = dict(job.get("repeat") or {})
-    times = repeat.get("times")
-    if new_kind == "once" and times is None:
-        repeat["times"] = 1
-    elif new_kind != "once" and old_kind == "once" and times == 1:
-        repeat["times"] = None
-    else:
-        return
+    explicit = "repeat" in updates
+    repeat = dict(updates["repeat"] if explicit else (job.get("repeat") or {}))
+    if not explicit:
+        times = repeat.get("times")
+        if new_kind == "once" and times is None:
+            repeat["times"] = 1
+        elif new_kind != "once" and old_kind == "once" and times == 1:
+            repeat["times"] = None
+    if new_kind == "once":
+        # ``completed`` counted the recurring schedule's runs, not fires of this new occurrence,
+        # and the due scan deletes a one-shot at completed >= times WITHOUT firing it. Explicit
+        # repeats included: the cronjob tool and ``cron edit --repeat`` copy the stored counter.
+        repeat["completed"] = 0
     repeat.setdefault("completed", 0)
     updates["repeat"] = repeat
 
@@ -2067,8 +2073,8 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
         raise ValueError(f"Cron job field(s) cannot be updated: {', '.join(sorted(bad_fields))}")
 
     def apply(jobs, i, job):
-        _rederive_repeat_for_schedule_change(job, updates)
         _normalize_job_updates(job, updates)
+        _rederive_repeat_for_schedule_change(job, updates)
         _apply_pin_update(job, updates)
         updated = _apply_skill_fields({**job, **updates})
         _reject_terminal_activation(job, updated, job_id)

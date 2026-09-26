@@ -496,6 +496,32 @@ class TestJobCRUD:
         assert updated["schedule"]["kind"] == "once"
         assert updated["repeat"]["times"] == 1
 
+    @pytest.mark.parametrize("via", ["update_job", "update_job+repeat", "cronjob_tool+repeat"])
+    def test_recurring_job_that_ran_turned_oneshot_fires_instead_of_being_deleted(
+        self, tmp_cron_dir, monkeypatch, via,
+    ):
+        """Runs of the old recurring schedule must not spend the one-shot's budget: at
+        completed >= times the due scan deletes the job without firing it. The tool and
+        ``cron edit --repeat`` pass an explicit repeat carrying the stored counter."""
+        import json
+        from tools.cronjob_tools import cronjob
+
+        job = create_job(prompt="water the plants", schedule="every 1h")
+        for _ in range(3):
+            mark_job_run(job["id"], success=True)
+        if via == "update_job":
+            update_job(job["id"], {"schedule": "in 5m"})
+        elif via == "update_job+repeat":
+            update_job(job["id"], {"schedule": "in 5m", "repeat": 1})
+        else:
+            result = json.loads(cronjob(action="update", job_id=job["id"], schedule="in 5m", repeat=1))
+            assert result["success"], result
+
+        later = _hermes_now() + timedelta(minutes=5, seconds=10)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: later)
+        assert job["id"] in {j["id"] for j in get_due_jobs()}
+        assert get_job(job["id"]) is not None
+
     def test_rejects_stale_past_one_shot_at_creation(self, tmp_cron_dir, monkeypatch):
         now = datetime(2026, 3, 18, 4, 30, 0, tzinfo=timezone.utc)
         monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)

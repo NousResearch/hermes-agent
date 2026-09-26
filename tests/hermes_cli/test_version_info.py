@@ -190,6 +190,93 @@ def test_get_version_info_takes_the_version_a_calver_only_release_shipped(tmp_pa
     assert info.derived_version == f"0.21.4+1.g{git('rev-parse', '--short=7', 'HEAD')}"
 
 
+def test_stale_unknown_stamp_defers_to_live_checkout(tmp_path, monkeypatch):
+    """A stamp naming the live commit but no resolvable version must not win.
+
+    ``write_source_stamp`` published ``baseVersion: unknown`` on a checkout
+    whose only reachable tags were CalVer (which ``STABLE_TAG_RE`` rejects on
+    purpose). The stamp then short-circuits ``_stamp_version_info`` and the
+    git walk behind it never runs, so the checkout stays "unknown" forever —
+    even after a semver release becomes reachable, or after the CalVer
+    fallback learns to read the tag's pyproject.
+
+    The stamp is only skipped when it names HEAD and carries no version: a
+    sealed install's stamp, with no ``.git`` beside it to defer to, stays
+    authoritative.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args: str) -> str:
+        result = subprocess.run(
+            ["git", *args], cwd=repo, text=True, capture_output=True, check=True,
+            env={"HOME": str(tmp_path), "PATH": __import__("os").environ["PATH"]},
+        )
+        return result.stdout.strip()
+
+    git("init", "-q")
+    git("config", "user.name", "Hermes Test")
+    git("config", "user.email", "hermes@example.invalid")
+    (repo / "pyproject.toml").write_text(
+        '[project]\nname = "hermes-agent"\nversion = "0.21.5"\n', encoding="utf-8"
+    )
+    git("add", "pyproject.toml")
+    git("commit", "-qm", "release")
+    git("tag", "v2026.9.24")
+
+    # The stamp this checkout was left with: written while the tag's pyproject
+    # could not be read, so the version walk had nothing to record.
+    (repo / "install-stamp.json").write_text(
+        json.dumps(
+            {
+                "commit": git("rev-parse", "HEAD"),
+                "source": "git",
+                "updateMechanism": "self",
+                "baseVersion": "unknown",
+                "displayVersion": f"git.{git('rev-parse', '--short=7', 'HEAD')}",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: repo / "install-stamp.json")
+    monkeypatch.setattr("hermes_cli.version_info._resolve_repo_dir", lambda: repo)
+
+    info = get_version_info()
+
+    assert info.base_version == "0.21.5"
+    assert info.distance == 0
+    assert info.derived_version == "0.21.5"
+    assert info.commit == git("rev-parse", "HEAD")
+    assert info.source == "git"
+
+
+def test_stamped_unknown_version_still_wins_without_git(tmp_path, monkeypatch):
+    """A sealed install's stamp is authoritative even when it says unknown.
+
+    The deferral through to git exists only for a stamp sitting beside the
+    ``.git`` it describes. A Docker/Nix stamp in a stamp-only tree has no live
+    checkout to defer to, so the placeholder it carries is the truth.
+    """
+    stamp = {
+        "commit": "a" * 40,
+        "source": "git",
+        "updateMechanism": "self",
+        "baseVersion": "unknown",
+        "displayVersion": "unknown",
+    }
+    stamp_file = tmp_path / "install-stamp.json"
+    stamp_file.write_text(json.dumps(stamp))
+    monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: stamp_file)
+    monkeypatch.setattr("hermes_cli.version_info._resolve_repo_dir", lambda: None)
+
+    info = get_version_info()
+
+    assert info.base_version == "unknown"
+    assert info.derived_version == "unknown"
+    assert info.commit == "a" * 40
+
+
 def test_resolve_stamp_file_honors_install_root(tmp_path, monkeypatch):
     """Sealed installs (the Nix wrapper) point HERMES_INSTALL_ROOT at the stamp dir."""
     stamp = {"commit": "e" * 40, "source": "nix", "distribution": "nix", "updateMechanism": "external"}

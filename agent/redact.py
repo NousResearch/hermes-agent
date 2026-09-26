@@ -386,10 +386,19 @@ def _looks_like_opaque_credential(value: str) -> bool:
     return sum(bool(re.search(p, value)) for p in (r"[a-z]", r"[A-Z]", r"[0-9]")) >= 2
 
 
-def _should_redact_assignment(key: str, value: str, *, check_keyword: bool) -> bool:
+def _should_redact_assignment(key: str, value: str, *, check_keyword: bool,
+                              opacity_bar: bool = False) -> bool:
     """Shared gate for the ENV / JSON / YAML assignment passes: skip programmatic env
     lookups used as values, optionally require a word-bounded keyword in the key,
-    then redact when the key is unambiguously credential-bearing or the value looks opaque."""
+    then redact when the key is unambiguously credential-bearing or the value looks opaque.
+
+    ``opacity_bar=True`` narrows that last half to value SHAPE: a secret-keyword match masks
+    only when the value is opaque-credential-shaped, so a short scalar setting
+    (``MAX_TOKENS=100``, ``"apiKey": "test"``) survives even under a credential-named key.
+    It is set by ``redact_terminal_output`` — terminal stdout is never classifiable in
+    advance as a source dump or a secret dump, so shape has to decide — and left off
+    everywhere the caller's own context already separates the two: there a definitively
+    credential-bearing key (``SECRET_TOKEN=bailu``) keeps masking any literal value."""
     # Programmatic env lookups reference variable *names*, not secret values — masking them corrupts code
     # snippets in prose/log contexts (issue #2852): ``KEY=os.getenv('X')``.
     # Same programmatic-env-lookup exception as _redact_env above (issue #2852): "apiKey": "os.getenv('X')"
@@ -414,6 +423,13 @@ def _should_redact_assignment(key: str, value: str, *, check_keyword: bool) -> b
         # value is treated as configuration.
         if value[0] == "$" or not any(_OPAQUE_PATH_SEGMENT_RE.fullmatch(seg) for seg in value.split("/")):
             return False
+    # Value-opacity bar: password-class keys mask any literal value (a short password is still a
+    # password); every other key needs a credential-shaped value, so the #43025 fixture class
+    # (``MAX_TOKENS=100``, ``"apiKey": "test"``) stays readable instead of being masked for
+    # merely carrying a credential-ish name.
+    if opacity_bar and not (_has_word_bounded_keyword(key, _PASSWORD_KEY_RE)
+                            or _looks_like_opaque_credential(value)):
+        return False
     return (_has_word_bounded_keyword(key, _STRONG_KEY_KEYWORD_RE)
             or _looks_like_opaque_credential(value))
 
@@ -477,15 +493,6 @@ _PYTHON_REPR_FIELD_RE = re.compile(
     r"(?P<single_prefix>[bB]?)'(?P<single_value>(?:\\.|[^'\\])+)'"
     r"|(?P<double_prefix>[bB]?)\"(?P<double_value>(?:\\.|[^\"\\])+)\""
     r")"
-)
-
-# Terminal/process output normally uses ``code_file=True`` to preserve source.
-# Add repr masking only to high-confidence diagnostic lines: pytest assertion
-# introspection (``E       ...``) and final Python exception lines.
-_PYTEST_DIAGNOSTIC_LINE_RE = re.compile(r"^(?P<prefix>[ \t]*E[ \t]{2,})(?P<body>.*)$")
-_PYTHON_EXCEPTION_LINE_RE = re.compile(
-    r"^(?P<prefix>(?:[A-Za-z_]\w*\.)*[A-Za-z_]\w*"
-    r"(?:Error|Exception|Warning):[ \t]*)(?P<body>.*)$"
 )
 
 # Authorization / Proxy-Authorization, any scheme or bare credential; header
@@ -699,29 +706,6 @@ def _redact_python_repr_fields(text: str) -> str:
     return _PYTHON_REPR_FIELD_RE.sub(_sub, text)
 
 
-def _redact_python_diagnostic_repr_fields(text: str) -> str:
-    """Mask repr fields only on pytest/error lines in source-preserving output."""
-    lines = text.splitlines(keepends=True)
-    for index, line in enumerate(lines):
-        ending = ""
-        body_line = line
-        if line.endswith("\r\n"):
-            body_line, ending = line[:-2], "\r\n"
-        elif line.endswith("\n") or line.endswith("\r"):
-            body_line, ending = line[:-1], line[-1:]
-
-        match = _PYTEST_DIAGNOSTIC_LINE_RE.match(body_line)
-        if match is None:
-            match = _PYTHON_EXCEPTION_LINE_RE.match(body_line)
-        if match is not None:
-            lines[index] = (
-                match.group("prefix")
-                + _redact_python_repr_fields(match.group("body"))
-                + ending
-            )
-    return "".join(lines)
-
-
 def _redact_query_string(query: str) -> str:
     """Replace values of sensitive ``k=v&k=v`` params with ``***``; others pass through."""
     if not query:
@@ -791,17 +775,19 @@ def _mask_token_nonreusable(token: str) -> str:
     return f"«redacted:{label}…»" if label else "«redacted-secret»"
 
 
-def _assignment_sub(render, *, check_keyword: bool):
+def _assignment_sub(render, *, check_keyword: bool, opacity_bar: bool = False):
     """re.sub callback: keep the match unless the key/value pair (groups[0], groups[-1]) needs redaction."""
     def _sub(m):
         groups = m.groups()
-        if not _should_redact_assignment(groups[0], groups[-1], check_keyword=check_keyword):
+        if not _should_redact_assignment(groups[0], groups[-1], check_keyword=check_keyword,
+                                         opacity_bar=opacity_bar):
             return m.group(0)
         return render(groups)
     return _sub
 
 
-def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
+def _redact_assignments(text: str, *, mask_nonreusable: bool = False,
+                        opacity_bar: bool = False) -> str:
     """ENV / config / JSON / YAML assignment passes (skipped for code files). Passes
     that would match ``token=``/``key=`` URL params skip ``://`` text (web-URL query
     params are intentionally passed through, see redact_sensitive_text).
@@ -809,10 +795,14 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     ``mask_nonreusable`` masks the assignments with the ``«redacted:…»`` sentinel that
     ``file_read=True`` already uses for prefix-matched credentials. Without it an agent
     that read a secret-bearing file would hold a head/tail mask shaped like a real but
-    truncated key and could write it back as a dead credential (#35519)."""
+    truncated key and could write it back as a dead credential (#35519).
+
+    ``opacity_bar`` gates every match on value shape rather than key reputation; see
+    ``_should_redact_assignment``."""
     mask = _mask_token_nonreusable if mask_nonreusable else _mask_token
     if "=" in text:
-        _redact_env = _assignment_sub(lambda g: f"{g[0]}={g[1]}{mask(g[2])}{g[1]}", check_keyword=True)
+        _redact_env = _assignment_sub(lambda g: f"{g[0]}={g[1]}{mask(g[2])}{g[1]}", check_keyword=True,
+                                      opacity_bar=opacity_bar)
         text = _ENV_ASSIGN_RE.sub(_redact_env, text)
         if "://" not in text:  # lowercase names would match URL params
             # Skip URLs — the query string may contain ``token=``/``key=`` params that are intentionally
@@ -835,7 +825,8 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
 
     if ":" in text and '"' in text:
         text = _JSON_FIELD_RE.sub(
-            _assignment_sub(lambda g: f'{g[0]}: "{mask(g[1])}"', check_keyword=False), text)
+            _assignment_sub(lambda g: f'{g[0]}: "{mask(g[1])}"', check_keyword=False,
+                            opacity_bar=opacity_bar), text)
 
     # Python mapping repr fields ({'API_KEY': '…'}): single-quoted, so the JSON rule
     # above never sees them — the traceback / pytest-introspection leak shape.
@@ -845,7 +836,8 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     # YAML after JSON: quoted values are handled there (_YAML_ASSIGN_RE skips quotes).
     if ":" in text and "://" not in text:
         text = _YAML_ASSIGN_RE.sub(
-            _assignment_sub(lambda g: f"{g[0]}{g[1]}{mask(g[2])}", check_keyword=True), text)
+            _assignment_sub(lambda g: f"{g[0]}{g[1]}{mask(g[2])}", check_keyword=True,
+                            opacity_bar=opacity_bar), text)
     return text
 
 
@@ -870,7 +862,8 @@ def _redact_phone(m):
 
 def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = False,
                           file_read: bool = False, secret_file: bool = False,
-                          redact_url_credentials: bool = False) -> str:
+                          redact_url_credentials: bool = False,
+                          opacity_bar: bool = False) -> str:
     """Apply all redaction patterns to a block of text.
 
     Safe on any string. Enabled by default (``security.redact_secrets: false``
@@ -889,8 +882,15 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     so the gates are never false-negative.
 
     Set code_file=True to also skip the Python-repr mapping pass (``{'API_KEY': '…'}``
-    fixtures in source); pytest/exception diagnostic lines get a narrow pass in
-    redact_terminal_output instead.
+    fixtures in source).
+
+    Set ``opacity_bar=True`` when the text cannot be classified in advance as a source dump
+    or a secret dump (terminal stdout): the ENV/JSON/YAML/config passes then mask a
+    secret-keyword match only when the VALUE is opaque-credential-shaped, so short scalar
+    settings (``MAX_TOKENS=100``, ``"apiKey": "test"``) stay readable while a prefix-less
+    credential in a ``KEY=value`` line or a JSON field is still masked. Off by default: a
+    caller that knows its text is prose or a credential dump keeps the wider key-name policy
+    (see ``_should_redact_assignment`` for which callers set it).
 
     Set file_read=True for file *content* returned to the agent (read_file / search_files / cat). The old
     mask looked like a real-but-truncated key, so an agent reading it from config.yaml and writing it back
@@ -936,7 +936,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         text = _ZHIPU_API_KEY_RE.sub(lambda m: _zhipu_sub(m.group(1)), text)
 
     if not code_file:
-        text = _redact_assignments(text, mask_nonreusable=file_read)
+        text = _redact_assignments(text, mask_nonreusable=file_read, opacity_bar=opacity_bar)
 
     if "uthorization" in text or "UTHORIZATION" in text:  # cheapest gate over every casing
         text = _AUTH_HEADER_RE.sub(lambda m: m.group(1) + (m.group(2) or "") + _mask_token(m.group(3)), text)
@@ -980,20 +980,21 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     return text
 
 
-# Commands whose stdout is an env-var dump: terminal redaction runs the
-# ENV-assignment pass (code_file=False) for these so opaque tokens with no vendor
-# prefix are masked; everything else uses code_file=True (``MAX_TOKENS=100``).
 # Commands whose stdout is an environment-variable dump (KEY=value lines), NOT source code.
-# ``MY_SERVICE_TOKEN=abc123randomstring``) are still masked. For all other commands, code_file=True is used
-# to avoid mangling legitimate source/config dumps (``MAX_TOKENS=100``, ``"apiKey": "x"`` fixtures,
-# ``postgresql://{user}`` f-string templates). See issue #43025.
+# Terminal redaction no longer keys on this set (see ``redact_terminal_output``): every terminal
+# dump now runs the ENV/JSON/YAML/config passes under the value-opacity bar, so an unprefixed
+# secret (``MY_SERVICE_TOKEN=abc123randomstring``) is masked whatever the command was - including
+# the indirect readers this detection never saw (``ssh host env``, ``sed -n 1,80p secret-file``,
+# ``$(cat .env)``, redirection). Retained as the public predicate, with its callers' semantics and
+# its tests; whether it still has a caller is a separate follow-up. See issue #43025.
 _ENV_DUMP_COMMANDS = frozenset({"env", "printenv", "set", "export", "declare"})
 
 # Commands that read file contents to stdout, plus the filter readers (``grep``/``awk``/``sed``)
 # the model reaches for on config files. A secret-bearing target (``.env`` per AGENTS.md,
 # a shell rc/profile, Hermes' own ``config.yaml`` where ``hermes mcp add --env`` writes
-# tokens) is a credential dump, so the ENV/YAML assignment pass must run. Arbitrary
-# ``config.yaml`` / source files stay on the code_file path (``MAX_TOKENS: 100``).
+# tokens) is a credential dump. Also no longer a terminal-path gate - the same indirect-read
+# blindness applied here - so this set now serves the file-side classifier
+# (``_is_secret_file_arg`` / ``_command_reads_secret_file``) only.
 _FILE_READ_COMMANDS = frozenset({
     "cat", "head", "tail", "type", "bat", "less", "more", "nl",
     "zcat", "tac", "view", "batcat", "grep", "awk", "sed",
@@ -1099,7 +1100,9 @@ def _is_secret_file_arg(arg: str) -> bool:
 def _command_reads_secret_file(command: str | None) -> bool:
     """True if ``command`` reads a secret-bearing file (see ``_is_secret_file_arg``) to
     stdout. Defense-in-depth, not a boundary: indirect reads (``sudo cat .env``, ``$(cat
-    .env)``, unresolved variable paths) are not detected, matching ``is_env_dump_command``."""
+    .env)``, unresolved variable paths) are not detected, matching ``is_env_dump_command``.
+    The terminal path no longer gates on it (see ``redact_terminal_output``); it stays as the
+    public file-classification predicate."""
     if not command or not isinstance(command, str):
         return False
     for seg in _command_segments(command):
@@ -1119,7 +1122,8 @@ def _command_reads_secret_file(command: str | None) -> bool:
 
 def is_env_dump_command(command: str | None) -> bool:
     """True if any pipeline/sequence segment starts with an _ENV_DUMP_COMMANDS
-    token. Conservative: unrecognized → False (callers fall back to code_file=True)."""
+    token. Conservative: unrecognized → False. The terminal path no longer calls this
+    (see ``redact_terminal_output``); it stays as the public predicate."""
     if not command or not isinstance(command, str):
         return False
     for seg in _command_segments(command):
@@ -1155,20 +1159,22 @@ def redact_for_egress(text: str) -> str:
 
 
 def redact_terminal_output(output: str, command: str | None = None, *, force: bool = False) -> str:
-    """Single redaction policy for ALL terminal-output surfaces: the ENV/YAML-assignment
-    pass runs only when ``command`` is an env dump or reads a secret-bearing file (``.env``,
-    shell rc, Hermes ``config.yaml``); otherwise code_file=True avoids false positives on
-    source/config dumps."""
+    """Single redaction policy for ALL terminal-output surfaces (foreground ``terminal`` and
+    ``process(action=poll/log/wait)``): the ENV/JSON/YAML/config assignment passes run on every
+    dump, with the value-opacity bar deciding by VALUE shape.
+
+    The command is NOT classified, and that is the point of the function. Classifying it was the
+    bug: ``is_env_dump_command`` is False for ``ssh host env`` and ``_command_reads_secret_file``
+    is blind to ``sed -n 1,80p secret-file``, so an unprefixed secret arriving as ``KEY=value`` or
+    a ``{"token": …}`` field through any other command was stored verbatim. ``command`` is kept for
+    call-site compatibility; the ``code_file=True`` carve-out it used to select is gone, so shapes
+    that only the command could have protected are now protected by shape instead: a short scalar
+    setting under a credential-named key (``MAX_TOKENS=100``, ``"apiKey": "test"``) stays
+    readable while a prefix-less credential is masked.
+    """
     if not output:
         return output
-    code_file = not (is_env_dump_command(command) or _command_reads_secret_file(command))
-    redacted = redact_sensitive_text(output, force=force, code_file=code_file)
-    # Source-preserving output still gets the Python-repr pass on high-confidence
-    # diagnostic lines (pytest ``E   `` introspection, final exception lines): that is
-    # where {'BRAVE_API_KEY': '…'} leaks, not in source dumps.
-    if code_file and (force or _redact_enabled()) and ":" in redacted and "'" in redacted:
-        redacted = _redact_python_diagnostic_repr_fields(redacted)
-    return redacted
+    return redact_sensitive_text(output, force=force, code_file=False, opacity_bar=True)
 
 
 # --- Prefix pre-screen: derived from _PREFIX_PATTERNS so a new prefix can't

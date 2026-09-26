@@ -2592,7 +2592,8 @@ def _redact_process_result(result: dict) -> dict:
     """Transform, then redact secrets from background-process output before it reaches the
     model, session.db and CLI, mirroring the foreground ``terminal`` pipeline (hook first,
     redaction after) so the two surfaces can't diverge. Respects ``security.redact_secrets``;
-    ``redact_terminal_output`` picks ``code_file`` from the recorded command.
+    ``redact_terminal_output`` masks by VALUE shape and no longer reads the recorded command
+    (the env-dump/.env classifier it used is gone — see issue #43025).
 
     The command string itself is also redacted in case it carried an inline credential. See #43025.
     """

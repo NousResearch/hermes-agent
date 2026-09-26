@@ -22,7 +22,7 @@ class TestKnownPrefixes:
     def test_dotted_sk_and_prefixless_zhipu_keys_fully_masked_on_every_surface(self):
         """A key whose body carries dots must never leave a cleartext tail, and the
         prefix-less Zhipu ``id.secret`` shape must mask at all: on the terminal
-        ``cat``/``grep`` path (code_file=True, the reporter's surface) and on the
+        ``cat``/``grep`` path (the reporter's surface) and on the
         file-read path, where the mask must be the non-reusable sentinel."""
         from agent.redact import redact_terminal_output
 
@@ -1044,13 +1044,17 @@ class TestDbConnstrCodeOutput:
 
 
 class TestTerminalOutputRedaction:
-    """is_env_dump_command + redact_terminal_output — issue #43025.
+    """Terminal-output redaction — issues #43025 / #110567.
 
-    Terminal/process stdout must be redacted on every surface (foreground
-    `terminal` AND background `process(poll/log/wait)`). Env-dump commands
-    and commands that read ``.env`` files get the ENV-assignment pass so
-    opaque tokens (no vendor prefix) are masked; other commands stay on
-    the code_file path to avoid false positives.
+    Terminal/process stdout is masked on every surface (foreground `terminal` AND
+    background `process(poll/log/wait)`) by ONE policy that does not classify the command:
+    the ENV/JSON/YAML/config assignment passes run for every dump, and the value-opacity
+    bar decides by VALUE shape — an opaque prefix-less credential is masked whatever command
+    produced it, while a short scalar setting under a credential-named key
+    (``MAX_TOKENS=100``, ``"apiKey": "test"``) stays readable. Classifying the command was
+    the bug: ``is_env_dump_command('ssh host env')`` is False and ``_command_reads_secret_file``
+    is blind to ``sed -n 1,80p secret-file``, so a prefix-less secret in a ``KEY=value`` line
+    reached the session store verbatim.
     """
 
     def test_is_env_dump_command_detection(self):
@@ -1119,7 +1123,7 @@ class TestTerminalOutputRedaction:
         assert not _command_reads_secret_file(None)
 
     def test_cat_env_file_masks_opaque_token(self):
-        """cat .env → code_file=False → generic ENV pass redacts opaque keys."""
+        """An opaque prefix-less value under a credential key masks (``cat .env``)."""
         from agent.redact import redact_terminal_output
         out = (
             "MISTRAL_API_KEY=abc123opaqueSecretValue\n"
@@ -1132,30 +1136,88 @@ class TestTerminalOutputRedaction:
         assert "DEBUG=true" in red  # non-secret key preserved
 
     def test_cat_env_file_with_flags_masks_opaque_token(self):
-        """cat -n .env → still detected as .env read."""
+        """Flags and the ``cat -n`` gutter do not disturb the mask."""
         from agent.redact import redact_terminal_output
         out = "     1\tMISTRAL_API_KEY=abc123opaqueSecretValue\n"
         red = redact_terminal_output(out, "cat -n .env")
         assert "abc123opaqueSecretValue" not in red
 
     def test_cat_env_file_in_pipeline_masks_opaque_token(self):
-        """cat .env | grep KEY → still detected as .env read."""
+        """A pipeline segment (``cat .env | grep KEY``) masks the same assignment."""
         from agent.redact import redact_terminal_output
         out = "MISTRAL_API_KEY=abc123opaqueSecretValue"
         red = redact_terminal_output(out, "cat .env | grep MISTRAL")
         assert "abc123opaqueSecretValue" not in red
 
-    def test_cat_env_example_not_redacted_as_env(self):
-        """cat .env.example → NOT treated as .env read (template file)."""
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cat probe.json",
+            "ssh host env",              # is_env_dump_command() says False
+            "sed -n 1,80p secret-file",  # _command_reads_secret_file() sees no .env
+            "python app.py",
+            "git log --stat",
+        ],
+    )
+    def test_credential_shaped_assignment_masks_for_any_command(self, command):
+        """Contract: in a command that is neither an env dump nor a ``.env`` read, a
+        prefix-less credential is masked whether it arrives as ``KEY=value`` or as a JSON
+        field — the classifier that used to gate this is gone."""
         from agent.redact import redact_terminal_output
-        out = "MISTRAL_API_KEY=placeholder_value_here"
-        red = redact_terminal_output(out, "cat .env.example")
-        # Should NOT be redacted by the ENV-assignment pass (code_file=True).
-        # The placeholder value should survive since it has no vendor prefix.
-        assert "placeholder_value_here" in red
+
+        secret = "Xk9pQ2mZ7vL4tR8wYb3nJ6hD1fG5sA0cE2uI9oP4qW="
+        env_assign = redact_terminal_output(f"BETTER_AUTH_SECRET={secret}", command)
+        assert secret not in env_assign and "BETTER_AUTH_SECRET=" in env_assign
+        json_field = redact_terminal_output('{"token": "%s"}' % secret, command)
+        assert secret not in json_field and '"token"' in json_field
+
+    @pytest.mark.parametrize(
+        "command",
+        ["cat probe.json", "ssh host env", "sed -n 1,80p secret-file", "python app.py"],
+    )
+    def test_short_scalar_setting_stays_readable_for_any_command(self, command):
+        """The #43025 false-positive class stays out: a short scalar under a credential-named
+        key is a setting, not a credential, so it survives on every command."""
+        from agent.redact import redact_terminal_output
+
+        for text in ("MAX_TOKENS=100", '{"apiKey": "test"}', "api_key: test"):
+            assert redact_terminal_output(text, command) == text
+
+    def test_prefixed_and_header_shapes_do_not_regress_on_any_command(self):
+        """Known-prefix, authorization, JWT and private-key rules run independently of the
+        assignment path, so removing the command classifier cannot weaken them."""
+        from agent.redact import redact_terminal_output
+
+        openai = "sk-pro" + "a" * 30
+        github = "ghp_" + "b" * 36
+        bearer = "opaque-" + "token-1234567890"
+        jwt = "eyJ" + "a" * 16 + "." + "b" * 8 + "." + "c" * 8
+        pem_body = "MIIE" + "A" * 64
+        raw_key = "-----BEGIN PRIVATE KEY-----\n" + pem_body + "\n-----END PRIVATE KEY-----"
+        raw = (
+            f"OPENAI_API_KEY={openai}\nGITHUB_TOKEN={github}\n"
+            f"Authorization: Bearer {bearer}\n{jwt}\n{raw_key}"
+        )
+        for command in ("cat probe.json", "ssh host env", "python app.py"):
+            redacted = redact_terminal_output(raw, command)
+            for cleartext in (openai, github, bearer, jwt, pem_body):
+                assert cleartext not in redacted
+            assert "[REDACTED PRIVATE KEY]" in redacted
+
+    def test_cat_env_example_classifies_by_value_shape_not_file_name(self):
+        """``cat .env.example`` is no longer special: the template-file exemption lived in the
+        deleted command classifier, so value shape decides — a credential-shaped placeholder
+        masks, a short scalar fixture stays readable."""
+        from agent.redact import redact_terminal_output
+
+        red = redact_terminal_output("MISTRAL_API_KEY=placeholder_value_here", "cat .env.example")
+        assert "placeholder_value_here" not in red
+        assert red.startswith("MISTRAL_API_KEY=")
+        keep = "MISTRAL_API_KEY=changeme"
+        assert redact_terminal_output(keep, "cat .env.example") == keep
 
     def test_cat_env_local_masks_opaque_token(self):
-        """cat .env.local → detected as .env read."""
+        """``cat .env.local`` masks an opaque prefix-less value."""
         from agent.redact import redact_terminal_output
         out = "CUSTOM_API_KEY=opaquecustomkey123456"
         red = redact_terminal_output(out, "cat .env.local")
@@ -1222,6 +1284,8 @@ class TestTerminalOutputRedaction:
         ],
     )
     def test_secret_bearing_file_commands_mask_assignments(self, command, output, secret):
+        """These readers used to be the ones the classifier RECOGNISED; they still mask (as
+        every command does now, by value shape), and the file-path shapes stay pinned."""
         from agent.redact import redact_terminal_output
 
         assert secret not in redact_terminal_output(output, command)
@@ -1242,15 +1306,17 @@ class TestTerminalOutputRedaction:
             "sed -n '1,20p' template.yaml",
         ],
     )
-    def test_arbitrary_yaml_and_source_reads_stay_unredacted(self, command):
-        """Only the known secret-bearing files flip the gate: the same opaque value read
-        from project YAML / source code is left alone (code_file path), while the
-        identical text under ``cat .env`` is masked."""
+    def test_assignment_mask_no_longer_depends_on_the_command(self, command):
+        """The deleted classifier flipped the verdict on the FILE NAME: every command below used
+        to leave this assignment verbatim (``code_file=True``) while the byte-identical text
+        under ``cat .env`` was masked. The outcome is now command-independent — same mask,
+        every command."""
         from agent.redact import redact_terminal_output
 
         output = "SERVICE_TOKEN=3JcQ1UzX9vQ2mL7pR4tY8wA1sD5fG6hJ2kSbn7Q0"
-        assert redact_terminal_output(output, command) == output
-        assert "3JcQ1UzX9vQ2mL7pR4tY8wA1sD5fG6hJ2kSbn7Q0" not in redact_terminal_output(output, "cat .env")
+        assert "3JcQ1UzX9vQ2mL7pR4tY8wA1sD5fG6hJ2kSbn7Q0" not in redact_terminal_output(output, command)
+        assert (redact_terminal_output(output, command)
+                == redact_terminal_output(output, "cat .env"))
 
 
     def test_disabled_passes_through(self, monkeypatch):
@@ -1294,22 +1360,38 @@ class TestTerminalOutputRedaction:
         assert secret not in red
         assert "'API_KEY': '***'" in red
 
-    def test_source_dump_preserves_python_repr_fixture(self):
+    def test_source_dump_masks_python_repr_secret_field(self):
+        """Accepted trade of deleting the carve-out: a source dump is no longer exempt, so a
+        ``{'BRAVE_API_KEY': '…'}`` repr field masks on every command — a long opaque value
+        under a credential key is exactly the shape the assignment passes exist for."""
         from agent.redact import redact_terminal_output
 
-        out = "CONFIG = {'BRAVE_API_KEY': 'fixture-value-1234567890'}"
+        secret = "fixture-value-1234567890"
+        out = "CONFIG = {'BRAVE_API_KEY': '%s'}" % secret
+        for command in ("cat config.py", "python dump_source.py", "uv run pytest"):
+            red = redact_terminal_output(out, command, force=True)
+            assert secret not in red
+            assert "CONFIG = {'BRAVE_API_KEY': '***'}" in red
+
+    def test_source_dump_keeps_non_credential_repr_fields(self):
+        """The bar must not turn into a blanket mask: repr fields that are not credentials
+        stay byte-identical, so a source dump is still readable."""
+        from agent.redact import redact_terminal_output
+
+        out = "CONFIG = {'model': 'gpt-4o', 'temperature': '0.2'}"
         assert redact_terminal_output(out, "cat config.py", force=True) == out
-        assert redact_terminal_output(out, "python dump_source.py", force=True) == out
 
-    def test_pytest_source_line_preserves_python_repr_fixture(self):
+    def test_pytest_source_line_masks_python_repr_secret_field(self):
+        """A source line carrying a repr secret field masks beside a pytest assertion line: the
+        repr pass no longer needs the narrow diagnostic-line gate it used to have."""
         from agent.redact import redact_terminal_output
 
-        source = "    CONFIG = {'BRAVE_API_KEY': 'fixture-value-1234567890'}"
-        out = source + "\nE       assert False"
-
+        secret = "fixture-value-1234567890"
+        out = "    CONFIG = {'BRAVE_API_KEY': '%s'}\nE       assert False" % secret
         red = redact_terminal_output(out, "uv run pytest", force=True)
-
-        assert source in red
+        assert secret not in red
+        assert "'BRAVE_API_KEY': '***'" in red
+        assert "E       assert False" in red
 
     def test_disabled_pytest_diagnostic_passes_through(self, monkeypatch):
         from agent.redact import redact_terminal_output

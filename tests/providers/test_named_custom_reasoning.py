@@ -53,3 +53,65 @@ def test_named_custom_fallback_does_not_override_registered_routes(monkeypatch):
     assert get_provider_profile("custom:fixture") is dedicated
     assert get_provider_profile("CUSTOM:unregistered") is get_provider_profile("custom")
     assert get_provider_profile("NONEXISTENT") is None
+
+
+def test_bare_named_custom_memo_caches_the_helper_result(monkeypatch):
+    """The miss-path helper runs once per (home, name); repeats are memo hits.
+
+    Uncached it walks the provider registry per call (~2.5ms; #120901 review),
+    which lands inside per-model prefix loops.
+    """
+    import providers
+    from hermes_constants import get_hermes_home, hermes_home_key
+
+    home, hkey = get_hermes_home(), hermes_home_key()
+    calls = []
+
+    def fake(name):
+        calls.append(name)
+        return False
+
+    with monkeypatch.context() as m:
+        m.setattr("hermes_cli.runtime_provider_custom.has_named_custom_provider", fake)
+        assert providers._has_named_custom_provider("zzz-unknown", home, hkey) is False
+        assert providers._has_named_custom_provider("zzz-unknown", home, hkey) is False
+    assert calls == ["zzz-unknown"], f"second lookup must be a memo hit, got calls={calls}"
+
+
+def test_bare_named_custom_memo_invalidates_on_config_change(monkeypatch):
+    """A config edit re-arms the memo: the signature is the same signal load_config uses."""
+    import providers
+    from hermes_constants import get_hermes_home, hermes_home_key
+
+    home, hkey = get_hermes_home(), hermes_home_key()
+    cfg = home / "config.yaml"
+
+    # No config file: nothing configured.
+    assert providers._has_named_custom_provider("my-endpoint", home, hkey) is False
+
+    cfg.write_text("providers:\n  my-endpoint:\n    base_url: http://127.0.0.1:1/v1\n")
+    assert providers._has_named_custom_provider("my-endpoint", home, hkey) is True
+
+    cfg.write_text("{}\n")
+    assert providers._has_named_custom_provider("my-endpoint", home, hkey) is False
+
+
+def test_bare_named_custom_memo_is_keyed_by_home(monkeypatch):
+    """Two home keys never borrow each other's answers (multiplex isolation)."""
+    import providers
+    from hermes_constants import get_hermes_home
+
+    home = get_hermes_home()
+    answers = {"key-a": True, "key-b": False}
+    current = {"k": "key-a"}
+
+    def fake(name):
+        return answers[current["k"]]
+
+    with monkeypatch.context() as m:
+        m.setattr("hermes_cli.runtime_provider_custom.has_named_custom_provider", fake)
+        assert providers._has_named_custom_provider("n", home, "key-a") is True
+        current["k"] = "key-b"
+        assert providers._has_named_custom_provider("n", home, "key-b") is False
+        # key-a's slot still holds True — key-b's False never leaked into it.
+        assert providers._has_named_custom_provider("n", home, "key-a") is True

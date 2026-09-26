@@ -308,6 +308,10 @@ import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle 
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
 import { notifyLauncherWindowRevealed } from './linux-launcher-ready'
 import { decideNvidiaEglFallback, parseNvidiaDriverMajor } from './linux-nvidia-egl-fallback'
+import {
+  decideStuckAnimationWarning,
+  formatStuckAnimationWarning
+} from './swiftshader-animation-watchdog'
 import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
 import { resolveIpcFileReadPath, resolveMediaRequestPath, resolvePreviewTargetPath } from './local-read-path'
 import { localSkinProfileKey, readLocalSkinPayload } from './local-skin'
@@ -1873,6 +1877,14 @@ function startChromiumLogWatcher(file) {
     truncate: f => fs.truncateSync(f, 0)
   }
 
+  // #124255: a stuck Button animation observer is harmless with GPU
+  // compositing but a silent multi-core burn under the SwiftShader fallback.
+  // The poll already wakes for truncation; piggyback the tail scan on it.
+  // Warn-once per process, best-effort like everything else in this loop.
+  // ponytail: fixed 64KB tail + warn-once flag; per-observer dedupe if repeat
+  // stuck lines across launches ever prove noisy.
+  let stuckAnimationWarned = false
+
   const timer = setInterval(() => {
     try {
       if (reclaimActiveLogIfOversized(file, io)) {
@@ -1880,6 +1892,40 @@ function startChromiumLogWatcher(file) {
       }
     } catch {
       // Best-effort — an unbounded log beats a crashed shell.
+    }
+
+    try {
+      if (!stuckAnimationWarned && NVIDIA_EGL_FALLBACK.enable) {
+        const size = io.size(file)
+
+        if (size !== null && size > 0) {
+          const fd = fs.openSync(file, 'r')
+
+          try {
+            const tailBytes = Math.min(size, 64 * 1024)
+            const buffer = Buffer.alloc(tailBytes)
+            fs.readSync(fd, buffer, 0, tailBytes, size - tailBytes)
+            const decision = decideStuckAnimationWarning({
+              tail: buffer.toString('utf8'),
+              fallbackActive: true
+            })
+
+            if (decision.warn) {
+              stuckAnimationWarned = true
+              rememberLog(
+                formatStuckAnimationWarning({
+                  activeSeconds: decision.activeSeconds,
+                  location: decision.location
+                })
+              )
+            }
+          } finally {
+            fs.closeSync(fd)
+          }
+        }
+      }
+    } catch {
+      // Best-effort — the watchdog must never fail the shell.
     }
   }, ACTIVE_LOG_POLL_MS)
 

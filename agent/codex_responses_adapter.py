@@ -1125,10 +1125,11 @@ class _OutputScan:
         normalized_phase = _lower_or_none(getattr(item, "phase", None))
         is_commentary_phase = normalized_phase in {"commentary", "analysis"}
         self.saw_commentary_phase = self.saw_commentary_phase or is_commentary_phase
-        self.saw_final_answer_phase = self.saw_final_answer_phase or normalized_phase in {"final_answer", "final"}
         message_text = _extract_responses_message_text(item)
         if not message_text:
             return
+        # An empty final marker cannot authorize promoting aggregated commentary to a final.
+        self.saw_final_answer_phase = self.saw_final_answer_phase or normalized_phase in {"final_answer", "final"}
         # commentary/analysis text is mid-turn narration, never the final answer: route it
         # to the reasoning channel; the exact item is still preserved for replay/cache.
         (self.reasoning_parts if is_commentary_phase else self.content_parts).append(message_text)
@@ -1147,6 +1148,11 @@ def _normalize_codex_response(
     response_status = _lower_or_none(getattr(response, "status", None))
     incomplete_reason = str(_field(getattr(response, "incomplete_details", None), "reason", "") or "").strip().lower()
     response_incomplete_content_filter = response_status == "incomplete" and incomplete_reason == "content_filter"
+    # Keep the completed-final override for Azure's soft incomplete envelope (#27988),
+    # but explicit output exhaustion is real truncation, even when one message completed.
+    response_output_exhausted = (
+        response_status == "incomplete" and incomplete_reason in {"max_output_tokens", "length"}
+    )
     output = getattr(response, "output", None)
     if not isinstance(output, list) or not output:
         # Codex can deliver the whole answer via stream events with an empty output.
@@ -1218,6 +1224,7 @@ def _normalize_codex_response(
         finish_reason = "content_filter"
     elif (
         leaked_tool_call_text
+        or response_output_exhausted
         or scan.saw_streaming_or_item_incomplete
         or ((scan.has_incomplete_items or scan.saw_commentary_phase) and not scan.saw_final_answer_phase)
         or (reasoning_only and not trusted_final)

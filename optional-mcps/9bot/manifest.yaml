@@ -1,0 +1,48 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: 9bot
+
+description: >-
+  Manage, automate, and analyze WhatsApp groups, communities, and channels
+  through 9bot.
+
+source: https://github.com/9-bot/mcp
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). OAuth + Dynamic Client Registration;
+# Hermes's MCP client + mcp_oauth_manager handle discovery, PKCE, token
+# exchange, and refresh.
+transport:
+  type: http
+  url: https://mcp.9bot.com.br/mcp
+
+auth:
+  type: oauth
+
+suggest:
+  keywords:
+    - 9bot
+    - whatsapp groups
+    - whatsapp communities
+    - whatsapp automation
+    - whatsapp community management
+  hosts:
+    - 9bot.com.br
+    - mcp.9bot.com.br
+
+post_install: |
+  On first connection, Hermes opens a browser to authenticate with 9bot.
+
+  Sign in using the WhatsApp number associated with your 9bot account
+  and confirm the verification code sent through WhatsApp.
+
+  An active 9bot subscription is required.
+
+  After authentication, restart your Hermes session so the 9bot tools
+  are loaded.
+
+  To authenticate again, run:
+
+    hermes mcp login 9bot

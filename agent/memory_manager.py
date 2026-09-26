@@ -16,6 +16,8 @@ from concurrent.futures import Future, ThreadPoolExecutor, wait
 from functools import partial
 from typing import Any, Callable, Dict, List, Optional
 
+from agent.redact import redact_for_egress
+
 from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION, ctx_bound, spawn_context_thread
 from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.hook_output_spill import get_spill_config, spill_if_oversized
@@ -173,6 +175,49 @@ def sanitize_context(text: str) -> str:
     for pattern in (_INTERNAL_CONTEXT_RE, _INTERNAL_NOTE_RE, _FENCE_TAG_RE):
         text = pattern.sub('', text)
     return text
+
+
+def _redact_content_part(part: Any) -> Any:
+    """Scrub one multimodal content part; non-text parts pass through untouched."""
+    if isinstance(part, str):
+        return redact_for_egress(part)
+    if isinstance(part, dict):
+        text = part.get("text")
+        if isinstance(text, str):
+            redacted = redact_for_egress(text)
+            if redacted != text:
+                part = dict(part)
+                part["text"] = redacted
+    return part
+
+
+def _redact_message_for_egress(message: Any) -> Any:
+    """Copy of ``message`` with string content scrubbed for provider egress.
+
+    Providers archive whatever ``sync_all`` forwards — the turn strings AND the
+    ``messages`` transcript slice (tool outputs included) — so every string
+    content part goes through ``redact_for_egress``, the same fail-closed scrub
+    as telemetry export. Never mutates the caller's transcript: untouched
+    messages return as-is, changed ones as shallow copies.
+    """
+    if not isinstance(message, dict):
+        return message
+    content = message.get("content")
+    if isinstance(content, str):
+        redacted = redact_for_egress(content)
+        if redacted == content:
+            return message
+        message = dict(message)
+        message["content"] = redacted
+        return message
+    if isinstance(content, list):
+        parts = [_redact_content_part(p) for p in content]
+        if len(parts) == len(content) and all(new is old for new, old in zip(parts, content)):
+            return message
+        message = dict(message)
+        message["content"] = parts
+        return message
+    return message
 
 
 class StreamingContextScrubber:
@@ -538,12 +583,21 @@ class MemoryManager:
         Never inline: a provider's ``sync_turn`` may block for minutes, which kept ``run_conversation``
         open after the user saw the response. The single worker also serializes writes (turn N before N+1).
         ``turn_author`` reaches only providers whose ``sync_turn`` accepts it.
+
+        Everything forwarded is provider egress: turn strings AND the ``messages`` transcript slice
+        (tool outputs included) go through ``redact_for_egress`` — the same fail-closed scrub as
+        telemetry export — so secrets are never archived verbatim in a provider's store (#115104).
         """
         providers = list(self._providers)
         clean_user_content = self._strip_skill_scaffolding(user_content) if providers else None
         if not clean_user_content:
             return
-        optional_kwargs = {"messages": messages, "turn_author": turn_author}
+        clean_user_content = redact_for_egress(clean_user_content)
+        assistant_content = redact_for_egress(assistant_content)
+        redacted_messages = (
+            [_redact_message_for_egress(m) for m in messages] if messages is not None else None
+        )
+        optional_kwargs = {"messages": redacted_messages, "turn_author": turn_author}
 
         def _sync(provider: MemoryProvider) -> None:
             kwargs: Dict[str, Any] = {"session_id": session_id}

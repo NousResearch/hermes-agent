@@ -17,6 +17,27 @@ logger = logging.getLogger("hermes_state")
 _TOKEN_COUNTERS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
 
 
+def canonical_billing_base_url(base_url: Optional[str]) -> str:
+    """Canonicalise a billing route URL so one endpoint stays one usage bucket.
+
+    ``billing_base_url`` is part of the ``session_model_usage`` primary key and the
+    natural GROUP BY for "how much of this endpoint have we used", but the two write
+    paths spell the same endpoint differently. The main loop passes the configured
+    string (``https://host/v1``), while the auxiliary path reads the route back off the
+    OpenAI client, whose ``base_url`` is an ``httpx.URL`` that always renders with a
+    trailing slash (``https://host/v1/``). The two then land in separate rows, so every
+    per-endpoint total is split and reads low.
+
+    Trailing slashes carry no routing meaning here, so drop them. Route values that are
+    not URLs have no trailing slash and pass through unchanged.
+    """
+    url = str(base_url or "").strip()
+    stripped = url.rstrip("/")
+    # Degenerate input ("/"): stripping would empty the value and merge the row into the
+    # "route unknown" bucket, which means something else. Keep what the caller gave us.
+    return stripped or url
+
+
 def _token_update_sql(delta: bool) -> str:
     """``UPDATE sessions`` for one usage report: *delta* adds to the stored counters (CLI
     per-call path), otherwise sets them (gateway cumulative path). Cost/route columns
@@ -93,6 +114,8 @@ class SessionUsageMixin:
         """
         # Barrier against queued token deltas — see update_session_model.
         self.flush_token_counts()
+        # Same spelling as the usage rows — see canonical_billing_base_url.
+        base_url = canonical_billing_base_url(base_url)
 
         def _do(conn):
             conn.execute("""UPDATE sessions SET
@@ -284,6 +307,10 @@ class SessionUsageMixin:
         (per-API-call deltas, CLI path); *absolute*=True sets directly (gateway path,
         where the cached agent holds cumulative totals). ``source`` is the session's real surface
         for the row-existence guard; callers that don't know it leave the placeholder."""
+        # Before the locals() snapshot below, so the sessions row and the per-model usage
+        # row agree on how this endpoint is spelled (see canonical_billing_base_url).
+        if billing_base_url is not None:
+            billing_base_url = canonical_billing_base_url(billing_base_url)
         usage = {k: v for k, v in locals().items() if k in _MODEL_USAGE_FIELDS}
         # Ensure the row exists: under concurrent load create_session() may have failed on
         # locking, and the UPDATE would silently affect 0 rows. When this guard is the first
@@ -362,7 +389,9 @@ class SessionUsageMixin:
         conn.execute(_MODEL_USAGE_UPSERT_SQL, (
             session_id, model or sess.get("model") or "unknown",
             billing_provider or sess.get("billing_provider") or "",
-            billing_base_url or sess.get("billing_base_url") or "",
+            # Both writers land here (main loop and every aux call) and they spell the
+            # same endpoint differently, so canonicalise where the key is built.
+            canonical_billing_base_url(billing_base_url or sess.get("billing_base_url") or ""),
             billing_mode or sess.get("billing_mode") or "", task or "", api_call_count or 0, *counts,
             float(estimated_cost_usd or 0.0), float(actual_cost_usd or 0.0), cost_status, cost_source, now, now))
 

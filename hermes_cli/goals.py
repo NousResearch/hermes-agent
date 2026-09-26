@@ -1447,6 +1447,19 @@ class GoalManager:
             "Use /goal resume to keep going, or /goal clear to stop.",
         )
 
+    def _state_changed_during_judge(self, before: Optional[GoalState]) -> Optional[Dict[str, Any]]:
+        """Cancel a stale post-judge write when another command changed the durable goal."""
+        if before is None:
+            return None
+        current = load_goal(self.session_id)
+        if current is None or current.to_json() == before.to_json():
+            return None
+        self._state = current
+        return _decision(
+            current.status, False, None, "interrupted", "goal changed while judge was running",
+            "Goal state changed while the completion judge was running; the current goal state was preserved.",
+        )
+
     def evaluate_after_turn(
         self, last_response: str, *, user_initiated: bool = True,
         background_processes: Optional[List[Dict[str, Any]]] = None,
@@ -1474,10 +1487,14 @@ class GoalManager:
                 return self._budget_pause(state, "gate_failed", gate_decision.get("reason", ""), note=" (a quality gate is still failing)")
             return gate_decision
 
+        persisted_before_judge = load_goal(self.session_id)
         verdict, reason, parse_failed, wait_directive, transport_failed = judge_goal(
             state.goal, last_response, subgoals=state.subgoals or None, background_processes=background_processes,
             contract=state.contract if state.has_contract() else None, active_delegations=active_delegations,
         )
+        concurrent_decision = self._state_changed_during_judge(persisted_before_judge)
+        if concurrent_decision is not None:
+            return concurrent_decision
         state.last_verdict = verdict
         state.last_reason = reason
         # Parse failures reset on any usable reply INCLUDING transport errors, so a flaky network

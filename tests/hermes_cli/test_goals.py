@@ -950,3 +950,31 @@ def test_goal_session_db_is_the_registry_shared_handle(hermes_home):
     finally:
         goals._DB_CACHE.clear()
         registry.release_or_close(db)
+
+
+@pytest.mark.parametrize("mutation, expected_status", [("pause", "paused"), ("clear", "cleared")])
+def test_judge_does_not_overwrite_concurrent_goal_mutation(hermes_home, mutation, expected_status):
+    """A command issued while the judge is running remains authoritative."""
+    from hermes_cli import goals
+    from hermes_cli.goals import GoalManager, load_goal
+
+    session_id = f"judge-race-{mutation}"
+    mgr = GoalManager(session_id=session_id)
+    mgr.set("ship the release")
+
+    def judge(*_args, **_kwargs):
+        other = GoalManager(session_id=session_id)
+        if mutation == "pause":
+            other.pause()
+        else:
+            other.clear()
+        return ("continue", "still going", False, None, False)
+
+    with patch.object(goals, "judge_goal", side_effect=judge):
+        decision = mgr.evaluate_after_turn("did one thing")
+
+    persisted = load_goal(session_id)
+    assert persisted is not None
+    assert persisted.status == expected_status
+    assert decision["should_continue"] is False
+    assert decision["status"] == expected_status

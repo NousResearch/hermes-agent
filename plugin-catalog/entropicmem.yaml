@@ -9,10 +9,14 @@ description: >-
   time (other PII types are warn-only findings) and stored-content injection screening flags and
   warns on recall and prefetch payloads (flag-and-warn, fail-open by design, not a blocking
   filter). Includes a 34-command CLI, destructive-op gates with automatic backups, and an
-  append-only audit log. Disclosure — all memory data stays local (SQLite FTS5 + Markdown vault
-  under HERMES_HOME); the CLI init command appends ENTROPICMEM_* settings to HERMES_HOME/.env; the
-  optional sentence-transformers embedding extra downloads model weights from Hugging Face; the
-  CLI ingest <url> command fetches a user-supplied URL. The provider itself has no network egress.
+  append-only audit log. Disclosure — all memory data (vault markdown, memory.db, index.db, backups) stays local under
+  HERMES_HOME/entropicmem/; a shared publish DB defaults to ~/.hermes/entropicmem-shared/. The CLI init command appends
+  ENTROPICMEM_* settings to HERMES_HOME/.env (append-only). If the optional sentence-transformers extra is importable in
+  the host venv, the provider's remember path downloads all-MiniLM-L6-v2 weights from huggingface.co on first use (no
+  config gate); otherwise the provider has no network egress. The CLI ingest command fetches a user-supplied URL; CLI
+  graph export writes to ./export in the cwd by default and its HTML loads D3/marked from d3js.org and cdn.jsdelivr.net
+  when opened; CLI graph serve starts a loopback HTTP server. entropicmem_patch_core edits the plugin's own Core-memory
+  markdown (Persona/User_Profile), not Hermes core, and is off by default.
 maintainer: Ufonik88
 tier: community
 category: memory

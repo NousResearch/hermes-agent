@@ -5,14 +5,15 @@ import { sameCronSignature } from '@/lib/session-signatures'
 import {
   isMessagingSource,
   LOCAL_SESSION_SOURCE_IDS,
-  MESSAGING_SESSION_SOURCE_IDS,
-  normalizeSessionSource
+  normalizeSessionSource,
+  recentsExcludedSources
 } from '@/lib/session-source'
 import { gatewayActivationEpoch } from '@/store/gateway'
 import {
   $pinnedSessionIds,
   $sessionsLimit,
   $sidebarFiltersActive,
+  $sidebarMessagingInRecents,
   bumpSessionsLimit,
   raiseSessionsLimit,
   SIDEBAR_FILTERED_PAGE_SIZE,
@@ -53,8 +54,9 @@ import { refreshCronJobs as refreshCronJobsStore } from '../../cron/cron-actions
 // (telegram, discord, …) is fetched separately into its own self-managed
 // sidebar section (refreshMessagingSessions). Excluding them here keeps
 // "Load more" paging through interactive local chats instead of
-// interleaving gateway threads that bury them.
-const SIDEBAR_EXCLUDED_SOURCES = ['cron', 'kanban', 'oneshot', 'subagent', 'tool', ...MESSAGING_SESSION_SOURCE_IDS]
+// interleaving gateway threads that bury them. The user can opt in to
+// messaging rows in recents ($sidebarMessagingInRecents); the exclusion list
+// is resolved per fetch by recentsExcludedSources().
 // The messaging slice is the inverse: drop cron + every local source so only
 // external-platform conversations remain, then split per platform in the UI.
 const MESSAGING_EXCLUDED_SOURCES = ['cron', ...LOCAL_SESSION_SOURCE_IDS]
@@ -314,7 +316,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
           listSidebarSessions({
             recentsProfile: sessionProfile,
             recentsLimit: limit,
-            recentsExclude: SIDEBAR_EXCLUDED_SOURCES,
+            recentsExclude: recentsExcludedSources($sidebarMessagingInRecents.get()),
             cronLimit: CRON_SECTION_LIMIT,
             messagingLimit: MESSAGING_SECTION_LIMIT,
             messagingExclude: MESSAGING_EXCLUDED_SOURCES
@@ -480,6 +482,10 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       }),
     [refreshSessions]
   )
+
+  // Flipping the messaging-in-recents preference changes which sources the
+  // recents page holds, so refetch it (listen, not subscribe: no initial call).
+  useEffect(() => $sidebarMessagingInRecents.listen(() => void refreshSessions()), [refreshSessions])
 
   return {
     loadMoreMessagingForPlatform,

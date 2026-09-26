@@ -2569,6 +2569,9 @@ export const deOverrides = {
       autoArchiveDaysLabel: 'Archivieren nach',
       autoArchiveDaysUnit: 'Tagen Inaktivität',
       autoArchiveFailed: 'Auto-Archivierung konnte nicht aktualisiert werden',
+      messagingInRecentsTitle: 'Messaging-Chats in Zuletzt anzeigen',
+      messagingInRecentsDesc:
+        'API-, WhatsApp-, Slack- und andere Plattform-Chats zusammen mit lokalen Chats und Plattform-Symbol anzeigen, statt in eigenen Seitenleistenbereichen.',
       defaultDirTitle: 'Standard-Projektordner',
       defaultDirDesc:
         'Neue Sessions starten in diesem Ordner, sofern Sie keinen anderen wählen. Nicht festlegen, um Ihr Home-Verzeichnis zu verwenden.',
@@ -4061,6 +4064,7 @@ export const deOverrides = {
       backgroundRunning: 'Hintergrundaufgabe läuft',
       draftSession: 'Entwurf – noch nichts gesendet',
       handoffOrigin: platform => `Übergeben von ${platform}`,
+      liveOrigin: platform => `Von ${platform}`,
       ownedByProfile: profile => `Profil: ${profile}`,
       renamed: 'Umbenannt',
       renameFailed: 'Umbenennen fehlgeschlagen',

@@ -2556,6 +2556,9 @@ export const esOverrides = {
       autoArchiveDaysLabel: 'Archivar después de',
       autoArchiveDaysUnit: 'días de inactividad',
       autoArchiveFailed: 'No se pudo actualizar el archivado automático',
+      messagingInRecentsTitle: 'Mostrar chats de mensajería en Recientes',
+      messagingInRecentsDesc:
+        'Muestra los chats de API, WhatsApp, Slack y otras plataformas junto a tus chats locales, con el icono de la plataforma, en lugar de en secciones propias.',
       defaultDirTitle: 'Directorio de proyecto predeterminado',
       defaultDirDesc:
         'Las sesiones nuevas empiezan en esta carpeta salvo que elijas otra. Déjala sin definir para usar tu directorio de inicio.',
@@ -4051,6 +4054,7 @@ export const esOverrides = {
       backgroundRunning: 'Tarea en segundo plano en ejecución',
       draftSession: 'Borrador — aún no se ha enviado nada',
       handoffOrigin: platform => `Transferido desde ${platform}`,
+      liveOrigin: platform => `Desde ${platform}`,
       ownedByProfile: profile => `Perfil: ${profile}`,
       renamed: 'Renombrada',
       renameFailed: 'No se pudo renombrar',

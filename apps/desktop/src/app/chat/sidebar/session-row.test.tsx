@@ -75,7 +75,8 @@ vi.mock('@/lib/chat-runtime', async importOriginal => {
 })
 vi.mock('@/lib/haptics', () => ({ triggerHaptic: vi.fn() }))
 vi.mock('@/lib/session-source', () => ({
-  handoffOriginSource: (state?: string, platform?: string) => (state && platform ? platform : null),
+  sessionOriginBadge: (s: { handoff_platform?: string; handoff_state?: string }) =>
+    s.handoff_state && s.handoff_platform ? { kind: 'handoff', source: s.handoff_platform } : null,
   sessionSourceLabel: (source: string) => source
 }))
 vi.mock('@/lib/time', async importOriginal => {

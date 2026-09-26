@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useState } from 'react'
 
 import { restoreListedSession } from '@/app/session/hooks/use-session-actions/utils'
@@ -19,6 +20,7 @@ import { pathLeaf } from '@/lib/display-path'
 import { triggerHaptic } from '@/lib/haptics'
 import { Archive, ArchiveOff, FolderOpen, Loader2, Trash2 } from '@/lib/icons'
 import { confirm } from '@/store/confirm'
+import { $sidebarMessagingInRecents } from '@/store/layout'
 import { notify, notifyError } from '@/store/notifications'
 import { applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd } from '@/store/session'
 import { untombstoneSessions } from '@/store/session-removal'
@@ -144,6 +146,8 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
 
       <AutoArchiveSetting />
 
+      <MessagingInRecentsSetting />
+
       <SectionHeading
         icon={Archive}
         meta={sessions.length ? String(sessions.length) : undefined}
@@ -201,6 +205,24 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
         </div>
       )}
     </SettingsContent>
+  )
+}
+
+// Opt-in: messaging-platform chats join recents (badged by platform) instead
+// of their own sidebar sections. A window-local presentation preference, so it
+// lives in a persisted renderer atom rather than config.yaml.
+function MessagingInRecentsSetting() {
+  const { t } = useI18n()
+  const s = t.settings.sessions
+  const checked = useStore($sidebarMessagingInRecents)
+
+  return (
+    <ToggleRow
+      checked={checked}
+      description={s.messagingInRecentsDesc}
+      label={s.messagingInRecentsTitle}
+      onChange={on => $sidebarMessagingInRecents.set(on)}
+    />
   )
 }
 

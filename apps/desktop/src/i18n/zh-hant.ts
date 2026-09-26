@@ -1774,6 +1774,9 @@ export const zhHant = defineLocale({
       autoArchiveDaysLabel: '封存前',
       autoArchiveDaysUnit: '天無活動',
       autoArchiveFailed: '無法更新自動封存設定',
+      messagingInRecentsTitle: '在最近中顯示訊息平台工作階段',
+      messagingInRecentsDesc:
+        '將 API、WhatsApp、Slack 等平台工作階段與本機工作階段一起列出並標示平台，而不是放在獨立的側欄區塊。',
       defaultDirTitle: '預設專案目錄',
       defaultDirDesc: '新工作階段預設從此資料夾開始，除非您選擇其他目錄。留空則使用您的家目錄。',
       defaultDirUpdated: '預設專案目錄已更新',
@@ -2817,6 +2820,7 @@ export const zhHant = defineLocale({
       backgroundRunning: '背景任務執行中',
       draftSession: '草稿 — 尚未傳送',
       handoffOrigin: platform => `從 ${platform} 轉接`,
+      liveOrigin: platform => `來自 ${platform}`,
       ownedByProfile: profile => `設定檔：${profile}`,
       renamed: '已重新命名',
       renameFailed: '重新命名失敗',

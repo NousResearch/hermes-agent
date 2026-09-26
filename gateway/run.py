@@ -430,7 +430,17 @@ def _ensure_windows_gateway_venv_imports() -> None:
     candidates: list[Path] = []
     if os.environ.get("VIRTUAL_ENV"):
         candidates.append(Path(os.environ["VIRTUAL_ENV"]))
-    candidates.append(project_root / "venv")
+    # PM owns the dependency environment: prefer the committed generation. The pre-PM in-tree
+    # venv was built for whichever interpreter created it (3.11 here) and loading it from the
+    # store Python mixes ABIs (pywin32/pydantic DLLs fail to load). Fall back to it only when
+    # PM has no committed generation (legacy installs).
+    pm_venv: Path | None = None
+    try:
+        from pm.environments import committed_venv
+        pm_venv = committed_venv(project_root)
+    except Exception:
+        pm_venv = None
+    candidates.append(Path(pm_venv) if pm_venv else (project_root / "venv"))
 
     seen: set[str] = set()
     for venv_dir in candidates:

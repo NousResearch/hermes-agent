@@ -2368,6 +2368,13 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
     def _persist_consecutive_overload_aborts(self) -> None:
         self._durable_write("set_compression_overload_streak", "compression overload streak", self._consecutive_overload_aborts)
 
+    def _reset_consecutive_overload_aborts(self, *, settle: bool = False) -> None:
+        """Zero the sustained-overload budget, writing the row only when it was armed. ``settle``
+        writes unconditionally: another agent on the session may have bumped the row since."""
+        if settle or self._consecutive_overload_aborts:
+            self._consecutive_overload_aborts = 0
+            self._persist_consecutive_overload_aborts()
+
     def _increment_consecutive_overload_aborts(self) -> None:
         """Count one overload abort. The bound row is bumped atomically and is authoritative, so two
         agents on one session cannot lose a strike; memory-only when unbound or the row is missing."""
@@ -2455,8 +2462,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         # sustained-overload budget (#123167). Leaving it armed after the degraded fallback
         # committed would keep the session in degraded mode even after the provider recovers,
         # with no success path left to reset it (the next summary failure can be any class).
-        self._consecutive_overload_aborts = 0
-        self._persist_consecutive_overload_aborts()
+        self._reset_consecutive_overload_aborts(settle=True)
 
     def get_active_compression_failure_cooldown(self, *, refresh: bool = False) -> Optional[Dict[str, Any]]:
         """Return the live compression-failure cooldown for the bound session."""
@@ -2624,8 +2630,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             # Cooldowns are scoped to the failed model/provider; a switch gets an immediate attempt.
             self._clear_compression_failure_cooldown()
             # The overload budget rode those cooldowns; a new runtime restarts it too.
-            self._consecutive_overload_aborts = 0
-            self._persist_consecutive_overload_aborts()
+            self._reset_consecutive_overload_aborts()
         self._verify_compaction_cleared_threshold = self._last_compression_made_progress = False
         # Runway was computed against the previous model's trigger; clear the durable copy too.
         self._reset_proactive_prune_rearm()
@@ -3952,8 +3957,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             for flag, _class, _msg in _TERMINAL_SUMMARY_FAILURES:
                 setattr(self, flag, False)
             # The provider answered a summary again: the sustained-overload budget restarts (#123167).
-            self._consecutive_overload_aborts = 0
-            self._persist_consecutive_overload_aborts()
+            self._reset_consecutive_overload_aborts()
             return self._with_summary_prefix(summary)
         except Exception as e:
             return self._on_summary_failure(e, turns_to_summarize, focus_topic, memory_context)

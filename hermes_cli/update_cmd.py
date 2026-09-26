@@ -1373,10 +1373,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         print("→ Fetching updates...")
         if release_sha:
-            fetch_result = _git_run(git_cmd, ["fetch", "--no-tags", "origin", target_ref], network=True)
+            fetch_args = ["fetch", "--no-tags", "origin", target_ref]
         else:
-            fetch_result = _git_run(git_cmd, ["fetch", "origin", branch], network=True)
+            fetch_args = ["fetch", "origin", branch]
+        from hermes_cli.gitlock import fetch_with_partial_clone_recovery, is_partial_clone_pack_objects_crash
+        # One retry with the promisor machinery disabled clears the git 2.53/2.54
+        # partial-clone pack-objects crash (#124272).
+        fetch_result = fetch_with_partial_clone_recovery(_git_run, git_cmd, fetch_args)
         if fetch_result.returncode != 0:
+            if is_partial_clone_pack_objects_crash(fetch_result.stderr or ""):
+                print("✗ git still crashed after the partial-clone retry. Heal the checkout once manually:")
+                print("  git -c remote.origin.promisor= fetch origin && git fetch origin")
             _print_fetch_failure(fetch_result.stderr)
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             sys.exit(1)

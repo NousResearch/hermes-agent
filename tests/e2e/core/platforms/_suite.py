@@ -12,7 +12,9 @@ A test module declares ``KNOWN`` (scenario -> (pattern, "#<issue> <symptom>")) a
 
 from __future__ import annotations
 
+import importlib.metadata
 import os
+import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -43,6 +45,10 @@ SCENARIOS: Dict[str, Tuple[str, Callable[..., None]]] = {
     # last: it restarts the default rig's gateway
     "planned_restart_notice": ("rig", lambda r, t, d: C.planned_restart_notice_once(r, t, r.restart)),
 }
+
+
+# platform -> the SDK distribution its adapter imports (all from the `messaging` extra)
+_SDK = {"telegram": "python-telegram-bot", "discord": "discord.py", "slack": "slack-bolt"}
 
 
 def scenario_params(skip: Optional[Dict[str, str]] = None) -> List[Any]:
@@ -78,6 +84,15 @@ def rig_fixtures(driver_cls: type) -> Tuple[Any, Any]:
     """``(rig, rig_stream)`` module-scoped fixtures for ``driver_cls``."""
 
     def _make(factory: pytest.TempPathFactory, label: str, extra_cfg: Dict[str, Any], extra_env: Dict[str, str]):
+        # The gateway child runs this interpreter: without the adapter's SDK it only times out later.
+        # (A distribution lookup: the unit-test conftest may leave an SDK stub in sys.modules.)
+        sdk = _SDK[driver_cls.name]
+        try:
+            importlib.metadata.version(sdk)
+        except importlib.metadata.PackageNotFoundError:
+            pytest.fail(f"{sdk} is not installed for {sys.executable}: the test environment lacks the "
+                        "`messaging` extra (`source ./activate --test-extras all,messaging`; CI passes it "
+                        "through setup-pm `extras`)", pytrace=False)
         drv = driver_cls()
         drv.start()
         director = Director()

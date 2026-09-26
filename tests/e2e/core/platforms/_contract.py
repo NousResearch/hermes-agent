@@ -221,10 +221,17 @@ def rejected_finalize_leaves_one_copy(rig: Rig, tag: str, *, group: bool = False
     faults = rig.drv.fail_finalize(lambda text: foot(aid) in norm(text), group=group)
     text, user = f"stream it [in:{token}]", rig.fresh_user()
     inbound = rig.drv.group(text, mention=True) if group else rig.drv.dm(text, user_id=user)
-    wait_reply(rig, inbound.chat_id, aid)
+    # settled once the ending is visible: whole, or completed by a continuation message
+    wait_until(lambda: (any(foot(aid) in norm(v.text) for v in rig.drv.visible(inbound.chat_id))
+                        or _split_seam(rig.drv.visible(inbound.chat_id), aid)),
+               f"reply {aid} visible in {inbound.chat_id}", timeout=TURN_TIMEOUT, on_timeout=rig.ctx)
     barrier(rig, f"finb-{tag}", group=group, user_id=user, attempts=3)
     rig.drv.standin.clear_faults()
     assert any(f.fired for f in faults), f"the finalize fault never fired: nothing was rejected\n{rig.ctx()}"
+    with rig.gate():
+        seam = _split_seam(rig.drv.visible(inbound.chat_id), aid)
+        assert seam is None, (f"the continuation after a rejected finalize resumed mid-word: the answer's "
+                              f"last word is split across two messages ({seam})\n{rig.ctx()}")
     shown = _shown(rig, inbound.chat_id, aid, "q")
     ctx = f"visible: {shown[:300]!r} ... {shown[-300:]!r}\n{rig.ctx()}"
     # the ending is shown exactly once: neither lost nor re-sent by a second final delivery
@@ -236,6 +243,17 @@ def rejected_finalize_leaves_one_copy(rig: Rig, tag: str, *, group: bool = False
         assert shown.count(head(aid)) == 1 and _seamless(_pwords(shown, "q")) == _pwords(body, "q"), (
             f"a partial copy of the answer was left visible after a rejected finalize "
             f"(head shown {shown.count(head(aid))}x)\n{ctx}")
+
+
+def _split_seam(visible: List[Visible], aid: str) -> Optional[str]:
+    """The seam, as the user reads it, where the answer's ending is cut mid-word across two
+    consecutive messages (a continuation that resumed mid-word instead of at a word boundary)."""
+    texts, end = [norm(v.text) for v in visible], foot(aid)
+    for a, b in zip(texts, texts[1:]):
+        for i in range(1, len(end)):
+            if a.endswith(end[:i]) and b.startswith(end[i:]):
+                return f"{a[-40:]!r} | {b[:40]!r}"
+    return None
 
 
 def _pwords(text: str, prefix: str) -> List[str]:

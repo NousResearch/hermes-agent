@@ -21,14 +21,12 @@ pytestmark = [
     pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group gateway harness"),
 ]
 
-_PARTIAL = (r"a partial copy of the answer was left visible after a rejected finalize",
-            "#95430 a rejected closing appendStream/stopStream leaves the partial stream next to the re-posted answer")
+_MIDWORD = (r"the continuation after a rejected finalize resumed mid-word",
+            "#124219 a stream reopened after message_not_in_streaming_state resumes mid-word (word split across "
+            "two messages)")
 KNOWN: dict[str, tuple[str, str]] = {
-    "stream_finalize_rejected": _PARTIAL,
-    "stream_finalize_rejected_group": _PARTIAL,
-    "stream_trailing_whitespace": (
-        r"a streamed reply ending in whitespace is shown != once",
-        "#121326 native streaming re-posts the whole reply when it ends in whitespace"),
+    "stream_finalize_rejected": _MIDWORD,
+    "stream_finalize_rejected_group": _MIDWORD,
     "planned_restart_notice": (
         r"a redelivered /restart restarted the gateway again|a second restart ack means the replayed /restart was obeyed",
         "#121325 a replayed /restart restarts the gateway again (guard needs Telegram update ids)"),

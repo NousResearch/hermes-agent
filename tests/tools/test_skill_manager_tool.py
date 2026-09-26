@@ -959,6 +959,21 @@ class TestPinnedGuard:
         assert (tmp_path / "research" / "my-skill" / "SKILL.md").exists()
         assert (tmp_path / "autonomous-ai-agents" / "hermes-agent" / "SKILL.md").exists()
 
+    def test_delete_by_dir_name_refuses_skill_pinned_or_essential_by_frontmatter_name(self, tmp_path):
+        """Pins and ESSENTIAL_SKILLS key on the frontmatter `name:`; _find_skill resolves by
+        directory. A skill whose directory differs from its frontmatter name must stay guarded."""
+        essential = VALID_SKILL_CONTENT.replace("name: test-skill", "name: hermes-agent")
+        with _skill_dir(tmp_path):
+            _create_skill("deploy-notes", VALID_SKILL_CONTENT)  # frontmatter name: test-skill
+            _create_skill("agent-manual", essential)
+            with self._pin("test-skill"):
+                pinned = _delete_skill("deploy-notes")
+                essential_result = _delete_skill("agent-manual")
+        assert pinned["success"] is False and "pinned" in pinned["error"].lower()
+        assert essential_result["success"] is False and "essential" in essential_result["error"].lower()
+        assert (tmp_path / "deploy-notes" / "SKILL.md").exists()
+        assert (tmp_path / "agent-manual" / "SKILL.md").exists()
+
     def test_broken_sidecar_fails_open(self, tmp_path):
         """If skill_usage.get_record raises, we allow delete through.
 

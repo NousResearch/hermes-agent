@@ -51,7 +51,7 @@ import {
   applyReloadOptimistic,
   applyRewindOptimistic,
   durableRowIdsForRebind,
-  finalizeUserInterruptedMessages,
+  finalizeStoppedMessages,
   planEdit,
   planReload,
   planRestore,
@@ -344,7 +344,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
 
     update(state => ({
       ...state,
-      messages: finalizeUserInterruptedMessages(state.messages, state.streamId),
+      messages: finalizeStoppedMessages(state.messages, state.streamId),
       busy: false,
       awaitingResponse: false,
       streamId: null,

@@ -8,6 +8,7 @@ import {
   applyReloadOptimistic,
   applyRewindOptimistic,
   finalizeInterruptedMessages,
+  finalizeStoppedMessages,
   finalizeUserInterruptedMessages,
   planEdit,
   planReload,
@@ -341,6 +342,15 @@ describe('finalizeUserInterruptedMessages', () => {
     const [message] = finalizeUserInterruptedMessages([settled], null, 11.25)
 
     expect(message.parts[1].interrupted).toBeUndefined()
+  })
+
+  it('flags the live reply as interrupted on stop, but not on a redirect finalize', () => {
+    const [stopped] = finalizeStoppedMessages([toolTurn()], 'assistant-tool', 11.25)
+    const [redirected] = finalizeUserInterruptedMessages([toolTurn()], 'assistant-tool', 11.25)
+
+    expect(stopped.interrupted).toBe(true)
+    expect(stopped.parts[1].interrupted).toBe(true)
+    expect(redirected.interrupted).toBeUndefined()
   })
 
   it('does not mark calls sealed by the non-user settle path', () => {

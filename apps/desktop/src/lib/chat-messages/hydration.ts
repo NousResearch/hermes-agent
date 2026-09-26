@@ -168,6 +168,10 @@ function timelineDisplayText(metadata: SessionMessage['display_metadata']): stri
   return typeof text === 'string' && text.trim() ? text : undefined
 }
 
+function messageInterrupted(metadata: SessionMessage['display_metadata']): boolean {
+  return parseDisplayMetadata(metadata)?.interrupted === true
+}
+
 function messageReactions(metadata: SessionMessage['display_metadata']): MessageReaction[] {
   const reactions = parseDisplayMetadata(metadata)?.reactions
 
@@ -500,6 +504,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       ...(rowId !== undefined ? { rowId } : {}),
       ...(pendingAbsorbedRows > 0 ? { serverRowSpan: pendingAbsorbedRows + 1 } : {}),
       ...(reactions.length ? { reactions } : {}),
+      ...(message.role === 'assistant' && messageInterrupted(message.display_metadata) ? { interrupted: true } : {}),
       ...(extractedAttachmentRefs ? { attachmentRefs: extractedAttachmentRefs } : {})
     })
 

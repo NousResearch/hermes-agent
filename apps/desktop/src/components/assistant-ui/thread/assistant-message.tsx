@@ -294,6 +294,7 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
           >
             {/* Todos render in the composer status stack now, not inline. */}
             {MESSAGE_PARTS}
+            <StoppedNotice />
             <AssistantStatusSlot />
             <AssistantPreviewEmbeds />
             <MessagePrimitive.Error>
@@ -336,6 +337,28 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
         </>
       )}
     </MessagePrimitive.Root>
+  )
+}
+
+const StoppedNotice: FC = () => {
+  const { t } = useI18n()
+
+  const stopped = useAuiState(
+    s => s.message.status?.type !== 'running' && s.message.metadata?.custom?.interrupted === true
+  )
+
+  if (!stopped) {
+    return null
+  }
+
+  return (
+    <div
+      className="flex items-center gap-1 px-(--message-text-indent) pt-1 text-[0.72rem] text-(--ui-text-tertiary)"
+      data-slot="aui_assistant-message-stopped"
+    >
+      <Codicon className="size-3" name="debug-stop" />
+      {t.assistant.thread.responseStopped}
+    </div>
   )
 }
 

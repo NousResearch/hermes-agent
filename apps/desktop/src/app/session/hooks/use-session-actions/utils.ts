@@ -221,6 +221,7 @@ const COMPARED_FIELDS = [
   'hidden',
   'branchGroupId',
   'interim',
+  'interrupted',
   'reactions',
   'timestamp',
   'completedAt',

@@ -101,6 +101,17 @@ describe('toChatMessages', () => {
     expect(messages[0].parts.map(p => p.timestamp)).toEqual([1, 2, 3])
   })
 
+  it('restores the stopped flag on a persisted interrupted reply', () => {
+    const messages = toChatMessages([
+      { role: 'user', content: 'tell a story', timestamp: 1 },
+      { role: 'assistant', content: 'Once upon', timestamp: 2, display_metadata: '{"interrupted": true}' },
+      { role: 'user', content: 'again', timestamp: 3 },
+      { role: 'assistant', content: 'The end.', timestamp: 4 }
+    ])
+
+    expect(messages.map(message => message.interrupted)).toEqual([undefined, true, undefined, undefined])
+  })
+
   it('starts a hydrated bubble at an earlier leading tool call', () => {
     const messages = toChatMessages([
       {

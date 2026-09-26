@@ -444,6 +444,21 @@ export function finalizeUserInterruptedMessages(
   return finalizeInterruptedMessages(marked, streamId, occurredAt)
 }
 
+/** Stop finalize: the live reply is also flagged `interrupted` so it reads as cut short. */
+export function finalizeStoppedMessages(
+  messages: ChatMessage[],
+  streamId?: null | string,
+  occurredAt = Date.now() / 1000
+): ChatMessage[] {
+  const flagged = messages.map(message =>
+    message.role === 'assistant' && (message.pending || message.id === streamId)
+      ? { ...message, interrupted: true }
+      : message
+  )
+
+  return finalizeUserInterruptedMessages(flagged, streamId, occurredAt)
+}
+
 /**
  * Arrival-ordered mid-turn user insert (#73793, #83151).
  *

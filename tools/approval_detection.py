@@ -165,15 +165,136 @@ def _mask_quoted_prose(command: str) -> str:
 
 # ---- Sudo stdin guard: without SUDO_PASSWORD configured, an explicit "sudo -S" is the LLM piping
 # a guessed password via stdin (brute-force vector). Unconditional block.
-_SUDO_STDIN_RE = re.compile(r'(?:^|[;&|`\n]|&&|\|\||\$\()\s*sudo\s+-S\b', re.IGNORECASE)
+_SUDO_STDIN_DESCRIPTION = "sudo password guessing via stdin (sudo -S/--stdin)"
+
+
+def _sudo_long_option(option: str) -> str | None:
+    """Resolve a ``--``-spelled sudo option to its canonical long form. GNU getopt_long accepts
+    any unambiguous prefix, so ``--st`` is ``--stdin`` and ``--u`` is ``--user``. Ambiguous or
+    unknown spellings error out inside real sudo, so callers may treat them either way."""
+    if option in _SUDO_LONG_OPTIONS:
+        return option
+    matches = [long for long in _SUDO_LONG_OPTIONS if long.startswith(option)]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _sudo_segment_requests_stdin(segment: str) -> bool:
+    """Whether a command segment starting at a ``sudo``/``sudoedit`` word activates ``-S``
+    before the command operand.
+
+    Walks sudo's own option words with the same quote-aware lexing and redirect skipping the
+    command-word iterator uses (so ``sudo 2>/dev/null -S`` and spliced flags like ``-''S`` are
+    seen). Cluster-aware: an operand-taking letter shadows the rest of its token, so ``-uS``
+    is ``-u`` with operand ``S`` (no stdin read) while ``-ES`` is ``-E -S``. sudo accepts
+    interspersed ``VAR=value`` assignments ahead of the command operand, and GNU getopt_long
+    accepts unambiguous long-option prefixes (``--st`` IS ``--stdin``)."""
+    _, pos, _ = _read_shell_word(segment, 0)
+    while True:
+        pos = _skip_shell_whitespace(segment, pos)
+        while (redirect := _SHELL_REDIRECTION_RE.match(segment, pos)):
+            _, pos, _ = _read_shell_word(segment, redirect.end())
+            pos = _skip_shell_whitespace(segment, pos)
+        _, end, word = _read_shell_word(segment, pos)
+        if end <= pos:
+            return False
+        pos = end
+        token = _deobfuscate_shell_word_for_detection(word)
+        if token == "--":
+            return False
+        if not token.startswith("-"):
+            if _ENV_ASSIGNMENT_RE.fullmatch(token):
+                continue
+            return False
+        if token.startswith("--"):
+            option, _, attached = token.partition("=")
+            resolved = _sudo_long_option(option)
+            if resolved == "--stdin":
+                return True
+            takes_operand = resolved in _SUDO_LONG_OPTIONS_WITH_ARG and not attached
+        else:
+            takes_operand = False
+            for p, ch in enumerate(token[1:], 1):
+                if ch == "S":
+                    return True
+                if f"-{ch}" in _SUDO_OPTIONS_WITH_OPTIONAL_ARG:
+                    break
+                if f"-{ch}" in _SUDO_OPTIONS_WITH_ARG:
+                    takes_operand = p + 1 == len(token)
+                    break
+        if takes_operand:
+            pos = _skip_shell_whitespace(segment, pos)
+            while (redirect := _SHELL_REDIRECTION_RE.match(segment, pos)):
+                _, pos, _ = _read_shell_word(segment, redirect.end())
+                pos = _skip_shell_whitespace(segment, pos)
+            _, pos, _ = _read_shell_word(segment, pos)
+
+
+# Variants/payloads a single guard call may walk before giving up: linear "eval"/"env -S"
+# carrier chains otherwise pay O(payloads * command_length) on the synchronous approval path.
+# Exhaustion fails closed: a command too deep to verify is not proven safe.
+_SUDO_GUARD_VARIANT_LIMIT = 64
+_SUDO_GUARD_LIMIT_DESCRIPTION = "sudo-stdin check exceeded analysis budget"
 
 
 def _check_sudo_stdin_guard(command: str) -> tuple:
     """Detect ``sudo -S`` without configured SUDO_PASSWORD -> (is_blocked, description). When
     SUDO_PASSWORD is set, ``_transform_sudo_command`` injects ``-S`` itself, so this guard only
-    fires when the LLM wrote it explicitly."""
-    if "SUDO_PASSWORD" not in os.environ and _SUDO_STDIN_RE.search(_normalize_command_for_detection(command).lower()):
-        return (True, "sudo password guessing via stdin (sudo -S)")
+    fires when the LLM wrote it explicitly.
+
+    Command-position spellings are walked structurally (the same wrapper chain, subshell, and
+    shell-carrier machinery the hardline floor uses), so ``env sudo -S``, ``(sudo -S id)`` or
+    ``bash -c 'sudo -S id'`` cannot slip past a regex anchored only on separators."""
+    if "SUDO_PASSWORD" in os.environ:
+        return (False, None)
+    if _command_parser_limit_exceeded(command):
+        return (True, _PARSER_LIMIT_DESCRIPTION)
+    # The raw command joins the variants: normalization can erase spellings the deobfuscator
+    # would recover (an ANSI-C escape like $'\165'), and dedup keeps each variant visited once.
+    pending, seen = [command] + list(_command_detection_variants(command)), set()
+    while pending:
+        if len(seen) >= _SUDO_GUARD_VARIANT_LIMIT:
+            return (True, _SUDO_GUARD_LIMIT_DESCRIPTION)
+        variant = pending.pop()
+        if variant in seen:
+            continue
+        if _command_parser_limit_exceeded(variant):
+            return (True, _PARSER_LIMIT_DESCRIPTION)
+        seen.add(variant)
+        for start, _, word in _iter_shell_command_word_spans(variant):
+            name = os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower()
+            if name in ("sudo", "sudoedit"):
+                if _sudo_segment_requests_stdin(_shell_command_segment(variant, start)):
+                    return (True, _SUDO_STDIN_DESCRIPTION)
+            elif name in ("env", "eval"):
+                # env -S spells argv as one string; eval concatenates its args as code. Both
+                # re-enter the walk as payload variants.
+                tokens = _shell_segment_tokens(_shell_command_segment(variant, start), 0)
+                if not tokens:
+                    continue
+                if name == "env":
+                    payload = _env_split_payload(tokens)
+                    if payload is None and (operand := _env_split_operand(tokens)):
+                        # env -S expands ${NAME} inside its operand, which the projection
+                        # declines; scan the raw operand rather than drop it.
+                        payload = operand[0] + " " + " ".join(tokens[operand[1]:])
+                        if "$" in operand[0]:
+                            # Unresolvable expansion: assignments aside, a leading sudo word
+                            # may exec sudo whose flags come from the expansion. Fail closed.
+                            words = operand[0].split()
+                            while words and _ENV_ASSIGNMENT_RE.fullmatch(words[0]):
+                                words.pop(0)
+                            if words and os.path.basename(
+                                    _deobfuscate_shell_word_for_detection(words[0])).lower() \
+                                    in ("sudo", "sudoedit"):
+                                return (True, _SUDO_STDIN_DESCRIPTION)
+                else:
+                    payload = " ".join(tokens[1:]) or None
+                if payload:
+                    # shlex strips $'...' quoting, leaving a bare "$cmd" prefix artifact.
+                    pending.append(payload[1:] if payload.startswith("$") else payload)
+        for _, payload in _execution_flag_findings(variant):
+            if payload:
+                pending.append(payload[1:] if payload.startswith("$") else payload)
     return (False, None)
 
 
@@ -576,7 +697,16 @@ _SIMPLE_SHELL_LITERAL_RE = re.compile(r"^[A-Za-z0-9_./:@%+=,-]+$")
 _ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
 _COMMAND_WRAPPER_WORDS = {"sudo", "env", "exec", "nohup", "setsid", "time", "command", "builtin",
                           "nice", "timeout", "stdbuf", "ionice", "chrt", "taskset", "chroot"}
-_SUDO_OPTIONS_WITH_ARG = {"-c", "--close-from", "-g", "--group", "-h", "--host", "-p", "--prompt", "-u", "--user"}
+_SUDO_OPTIONS_WITH_ARG = {
+    "-a", "--auth-type", "-C", "--close-from", "-c", "--login-class", "-D", "--chdir",
+    "-g", "--group", "-h", "--host", "-p", "--prompt", "-R", "--chroot", "-r", "--role",
+    "-T", "--command-timeout", "-t", "--type", "-U", "--other-user", "-u", "--user",
+}
+# Options with an OPTIONAL operand own the rest of their cluster token but never a separate
+# word: `-lS` lists the command "S" while `sudo -l -S id` still parses -S.
+_SUDO_OPTIONS_WITH_OPTIONAL_ARG = {"-l", "--list"}
+_SUDO_LONG_OPTIONS_WITH_ARG = frozenset(o for o in _SUDO_OPTIONS_WITH_ARG if o.startswith("--"))
+_SUDO_LONG_OPTIONS = _SUDO_LONG_OPTIONS_WITH_ARG | {"--stdin"}
 # Adapted from embwl0x's command-position work in #76063. Option operands are
 # data, not executable positions; option spelling remains case-sensitive.
 _COMMAND_WRAPPER_OPTIONS_WITH_ARG = {
@@ -595,7 +725,7 @@ _COMMAND_WRAPPER_NON_EXECUTING_OPTIONS = {
 }
 _COMMAND_WRAPPER_POSITIONAL_ARGS = {"chroot": 1, "chrt": 1, "taskset": 1, "timeout": 1}
 _SHELL_COMMAND_TRANSITIONS = {"if", "then", "else", "elif", "do", "while", "until", "!"}
-_SHELL_REDIRECTION_RE = re.compile(r"(?:[0-9]+)?(?:>>|<<|<>|>&|<&|>\||[<>])")
+_SHELL_REDIRECTION_RE = re.compile(r"(?:(?:[0-9]+)?(?:>>|<<|<>|>&|<&|>\||[<>])|&>>|&>)")
 
 _INTERPRETER_NAME_RES = tuple((family, re.compile(pattern)) for family, pattern in (
     ("python", r"py(?:\.exe)?|python[23]?(?:\.\d+)*(?:\.exe)?"), ("node", r"node(?:js)?(?:\.exe)?"),
@@ -851,11 +981,19 @@ def _shell_segment_tokens(segment: str, start: int) -> list[str] | None:
         return None
 
 
+def _is_redirect_operator_at(command: str, i: int) -> bool:
+    """Whether ``command[i]`` sits inside a redirection operator (``>&``, ``<&``, ``&>``,
+    ``>|``) rather than acting as a command separator."""
+    return ((i > 0 and command[i] in "&|" and command[i - 1] in "<>")
+            or (command[i] == "&" and i + 1 < len(command) and command[i + 1] == ">"))
+
+
 def _iter_top_level_shell_segments(command: str):
     """Yield top-level command segments in one left-to-right pass."""
     start = 0
     for kind, i, j, quote in _scan_shell(command, comments=True):
-        if kind == "comment" or (kind == "char" and quote is None and command[i] in ";&|\n"):
+        if kind == "comment" or (kind == "char" and quote is None and command[i] in ";&|\n"
+                                 and not _is_redirect_operator_at(command, i)):
             if start < i:
                 yield command[start:i]
             start = j
@@ -1118,12 +1256,64 @@ def _strip_shell_word_syntax(word: str) -> str:
     )
 
 
+_ANSI_C_ESCAPES = {"a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "n": "\n",
+                   "r": "\r", "t": "\t", "v": "\v", "\\": "\\", "'": "'", '"': '"', "?": "?"}
+
+
+def _expand_ansi_c_quotes(word: str) -> str:
+    """Resolve ``$'...'`` ANSI-C quoting (``\\xHH``, ``\\ooo``, ``\\uXXXX`` and friends) and drop
+    the ``$`` on ``$"..."`` locale quoting inside a word, so ``sudo $'-S'`` spells ``sudo -S``."""
+    out, i = [], 0
+    while i < len(word):
+        if word[i] == "$" and i + 1 < len(word) and word[i + 1] in "'\"":
+            if word[i + 1] == '"':
+                out.append('"')
+                i += 2
+                continue
+            j, buf = i + 2, []
+            while j < len(word) and word[j] != "'":
+                if word[j] == "\\" and j + 1 < len(word):
+                    esc = word[j + 1]
+                    decoded, consumed = None, 0
+                    if esc in _ANSI_C_ESCAPES:
+                        decoded, consumed = _ANSI_C_ESCAPES[esc], 2
+                    elif esc == "x" or esc in "uU":
+                        digits = 2 if esc == "x" else 4 if esc == "u" else 8
+                        match = re.match(rf"[0-9A-Fa-f]{{1,{digits}}}", word[j + 2:])
+                        if match:
+                            decoded = chr(int(match.group(0), 16))
+                            consumed = 2 + len(match.group(0))
+                    elif esc in "01234567":
+                        match = re.match(r"[0-7]{1,3}", word[j + 1:])
+                        decoded = chr(int(match.group(0), 8))
+                        consumed = 1 + len(match.group(0))
+                    if decoded is not None:
+                        buf.append(decoded)
+                        j += consumed
+                    else:
+                        # Unknown escapes keep their backslash, matching the shell.
+                        buf.extend((word[j], esc))
+                        j += 2
+                else:
+                    buf.append(word[j])
+                    j += 1
+            if j >= len(word):
+                out.append(word[i:])
+                return "".join(out)
+            out.append("".join(buf))
+            i = j + 1
+            continue
+        out.append(word[i])
+        i += 1
+    return "".join(out)
+
+
 def _deobfuscate_shell_word_for_detection(word: str) -> str:
     """Approximate how shell syntax can spell a command word: collapses quoting/escaping plus
     simple literal command substitutions in the word itself. Intentionally narrow and non-executing."""
     for _ in range(2):
         previous = word
-        word = _strip_shell_word_syntax(_replace_simple_shell_expansions(word))
+        word = _strip_shell_word_syntax(_replace_simple_shell_expansions(_expand_ansi_c_quotes(word)))
         if word == previous:
             break
     return word
@@ -1150,10 +1340,13 @@ def _iter_shell_command_starts(command: str):
                 # `{` opens a brace group only as its own word (after whitespace or a separator): `${IFS}`
                 # is a parameter expansion and `-{delete,print}` a brace-expansion word, and a start
                 # marked inside either splits the word the flat patterns need to see intact.
-                if command[i] in "(;\n" or (command[i] == "{" and (i == 0 or command[i - 1].isspace()
-                                                                   or command[i - 1] in "(;&|)")):
+                # `)` closes a case pattern (`a) cmd;;`) or subshell, putting the next word at
+                # a command position; `&`/`|` inside a redirect operator (2>&1, &>f, >|f) are
+                # not separators.
+                if command[i] in "(;\n)" or (command[i] == "{" and (i == 0 or command[i - 1].isspace()
+                                                                    or command[i - 1] in "(;&|)")):
                     starts.append(i + 1)
-                elif command[i] in "&|":
+                elif command[i] in "&|" and not _is_redirect_operator_at(command, i):
                     repeated = i + 1 < end and command[i + 1] == command[i]
                     skip = i + 1 if repeated else skip
                     starts.append(i + 1 + repeated)
@@ -1266,7 +1459,8 @@ def _shell_command_segment(command: str, start: int) -> str:
     """Bound a candidate to its command, preserving quoted argument bytes."""
     end = len(command)
     for kind, i, _, quote in _scan_shell(command, start, subst="uq", brace=True, comments=True):
-        if kind == "comment" or (kind == "char" and quote is None and command[i] in ";&|\n)`"):
+        if kind == "comment" or (kind == "char" and quote is None and command[i] in ";&|\n)`"
+                                 and not _is_redirect_operator_at(command, i)):
             end = i
             break
     return command[start:end].strip()
@@ -1330,25 +1524,49 @@ def _split_env_string(payload: str) -> list[str] | None:
     return args
 
 
-def _env_split_payload(tokens: list[str]) -> str | None:
+def _env_split_operand(tokens: list[str]) -> tuple[str, int] | None:
+    """Return ``(raw -S/--split-string operand, index of the argv after it)`` for an env
+    invocation, or None when env runs a plain command.
+
+    Short-option clusters are walked character by character: operand-free letters (-i, -0,
+    -v) pass through and the first operand-taking letter (-S, -u, -C, -a) owns the rest of
+    its token or the following word, so ``env -iS'cmd'`` finds its operand."""
     index = 1
     while index < len(tokens):
         token = tokens[index]
         if token == "--" or not token.startswith("-"):
             return None
         option, equals, value = token.partition("=")
-        if option == "--split-string" or token.startswith("-S"):
-            attached = equals if option == "--split-string" else len(token) > 2
-            if not attached:
-                index += 1
-            payload = (value if option == "--split-string" else token[2:]) if attached else (
-                tokens[index] if index < len(tokens) else "")
-            args = _split_env_string(payload)
-            # Protect literal separators when reusing command-position detection;
-            # only a real shell -c carrier may turn these argv bytes into code.
-            return shlex.join(args + tokens[index + 1:]) if args is not None else None
-        index += 2 if not equals and option in _COMMAND_WRAPPER_OPTIONS_WITH_ARG["env"] else 1
+        if option == "--split-string":
+            if equals:
+                return value, index + 1
+            return (tokens[index + 1] if index + 1 < len(tokens) else ""), index + 2
+        if token.startswith("--"):
+            index += 2 if not equals and option in _COMMAND_WRAPPER_OPTIONS_WITH_ARG["env"] else 1
+            continue
+        for k, ch in enumerate(token[1:], 1):
+            if f"-{ch}" not in _COMMAND_WRAPPER_OPTIONS_WITH_ARG["env"]:
+                continue
+            attached = token[k + 1:]
+            if ch == "S":
+                operand = attached if attached else (
+                    tokens[index + 1] if index + 1 < len(tokens) else "")
+                return operand, index + (1 if attached else 2)
+            index += 0 if attached else 1
+            break
+        index += 1
     return None
+
+
+def _env_split_payload(tokens: list[str]) -> str | None:
+    found = _env_split_operand(tokens)
+    if found is None:
+        return None
+    operand, index = found
+    args = _split_env_string(operand)
+    # Protect literal separators when reusing command-position detection;
+    # only a real shell -c carrier may turn these argv bytes into code.
+    return shlex.join(args + tokens[index:]) if args is not None else None
 
 
 def _deny_command_variants(command: str):
@@ -1448,6 +1666,14 @@ def _command_detection_variants(command: str):
     faithful = _normalize_command_for_detection(_mark_command_starts(_mask_quoted_newlines(command), marker=" \n"))
     if fresh(faithful):
         yield faithful
+    # Wrapper transitions are also real command positions: `sudo -u root rm`, `timeout 5 rm`,
+    # `chroot /tmp rm`. _mark_command_starts only marks structural starts, so the word-span
+    # walk's positions get their own marked variant for the anchored patterns.
+    span_starts = sorted({s for s, _, _ in _iter_shell_command_word_spans(normalized) if s > 0})
+    if span_starts:
+        span_marked = _splice(normalized, [(s, s, "\n") for s in span_starts])
+        if fresh(span_marked):
+            yield span_marked
     # Quoting/escaping can spell an executable in pieces (r\m, r''m). Keep that deobfuscation scoped
     # to command words so arguments don't false-positive.
     # One variant with EVERY command word deobfuscated, not one full-length variant per word: a heredoc

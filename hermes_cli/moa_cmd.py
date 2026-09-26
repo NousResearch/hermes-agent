@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 from hermes_cli.config import load_config, save_config
@@ -123,9 +125,115 @@ def _cmd_list(cfg: dict, args) -> None:
     _print_config(cfg)
 
 
+def _slot_from_text(entry: Any, *, where: str) -> dict[str, str]:
+    """``provider/model`` text, or a ``{provider, model}`` mapping, as a slot dict.
+
+    Fails closed: ``normalize_moa_config`` deliberately drops a half-filled slot at save time
+    (read-time tolerance is not a write-time contract), so a typo in a declared slot would
+    otherwise write a preset that is quietly missing that model. Splits on the FIRST ``/`` —
+    provider slugs never contain one, while model ids carry their own namespace
+    (``openrouter`` + ``deepseek/deepseek-v4-pro``).
+    """
+    if isinstance(entry, dict):
+        provider = str(entry.get("provider") or "").strip()
+        model = str(entry.get("model") or "").strip()
+    elif isinstance(entry, str):
+        provider, _, model = entry.strip().partition("/")
+        provider, model = provider.strip(), model.strip()
+    else:
+        raise SystemExit(f"{where}: expected 'provider/model', got {entry!r}")
+    if not provider or not model:
+        raise SystemExit(f"{where}: '{entry}' must be 'provider/model' with both halves filled")
+    if provider.lower() == "moa":
+        # MoA is a virtual provider: a preset inside a preset is a recursive tree the runtime
+        # only catches mid-turn (same rule as moa_config._slot_problem).
+        raise SystemExit(f"{where}: '{entry}' — the MoA provider cannot be used inside a preset")
+    return {"provider": provider, "model": model}
+
+
+def _declared_slots(args) -> tuple[list[dict[str, str]] | None, str | None] | None:
+    """``(reference_models, aggregator)`` declared on the command line; None to stay interactive.
+
+    Any of ``--slots`` / ``--slots-file`` / ``--aggregator`` switches ``configure`` to the
+    declarative path. A file object's ``aggregator`` is a default that ``--aggregator`` overrides;
+    when both slot sources are given the file wins (it carries the richer payload).
+    """
+    slots = getattr(args, "slots", None)
+    slots_file = getattr(args, "slots_file", None)
+    aggregator = str(getattr(args, "aggregator", None) or "").strip() or None
+    if not slots and not slots_file and not aggregator:
+        return None
+
+    refs: list[dict[str, str]] | None = None
+    if slots_file:
+        where = f"--slots-file {slots_file}"
+        try:
+            payload = json.loads(Path(slots_file).read_text(encoding="utf-8"))
+        except OSError as exc:
+            raise SystemExit(f"{where}: {exc}")
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"{where}: not valid JSON ({exc})")
+        if isinstance(payload, dict):
+            aggregator = aggregator or (str(payload.get("aggregator") or "").strip() or None)
+            payload = payload.get("reference_models")
+        if not isinstance(payload, list) or not payload:
+            raise SystemExit(f"{where}: needs a non-empty list of 'provider/model' slots")
+        refs = [_slot_from_text(item, where=where) for item in payload]
+    if slots:
+        entries = [part for part in str(slots).split(",") if part.strip()]
+        if not entries:
+            raise SystemExit("--slots: no slots given")
+        refs = [_slot_from_text(part, where="--slots") for part in entries]
+    return refs, aggregator
+
+
+def _configure_declared(
+    cfg: dict, moa: dict[str, Any], preset_name: str,
+    refs: list[dict[str, Any]] | None, aggregator: str | None,
+) -> None:
+    """Write a preset from declared slots without ever opening the picker.
+
+    Declared slots REPLACE the preset's reference list — a preset is declarative state, so
+    ``--slots`` converges it instead of appending. Whatever the caller did not declare is
+    inherited from the preset being updated; creating a preset still needs an aggregator,
+    because there is nothing to inherit and choosing one silently would prompt.
+    """
+    existing = moa["presets"].get(preset_name)
+    if refs is None:
+        if existing is None:
+            raise SystemExit(
+                f"--aggregator needs an existing preset to update: no MoA preset named "
+                f"'{preset_name}' (pass --slots to create it)")
+        refs = [{**slot, "enabled": bool(slot.get("enabled", True))}
+                for slot in existing.get("reference_models") or []]
+    else:
+        refs = [{**slot, "enabled": True} for slot in refs]
+    if aggregator is not None:
+        aggregator_slot = _slot_from_text(aggregator, where="--aggregator")
+    elif existing is not None:
+        aggregator_slot = dict(existing.get("aggregator") or {})
+    else:
+        raise SystemExit(f"--aggregator is required to create MoA preset '{preset_name}'")
+    preset = dict(existing or {})
+    preset["reference_models"] = refs
+    preset["aggregator"] = aggregator_slot
+    moa["presets"][preset_name] = preset
+    moa.setdefault("default_preset", preset_name)
+    notice = _provider_mismatch_notice(cfg, aggregator_slot)
+    if notice:
+        print(notice)
+    _save(cfg, moa)
+    print(f"Saved MoA preset: {preset_name}")
+    _print_config(cfg)
+
+
 def _cmd_configure(cfg: dict, args) -> None:
     moa = _moa_section(cfg)
     preset_name = (getattr(args, "name", None) or moa.get("default_preset") or DEFAULT_MOA_PRESET_NAME).strip()
+    declared = _declared_slots(args)
+    if declared is not None:
+        _configure_declared(cfg, moa, preset_name, *declared)
+        return
     current = moa["presets"].get(preset_name, moa["presets"][moa["default_preset"]])
     print(f"Configure MoA preset: {preset_name}")
     print("Pick at least one reference model; choose Done when finished.")

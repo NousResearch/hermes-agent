@@ -73,10 +73,20 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/tools
 # must be declared here. The list is the `ldd ... | grep "not found"` set of
 # the pinned chrome binary in this base image, mapped to trixie package
 # names (see .hermes/plans/termux-removal-commit-spec.md).
+# The third list is the VAAPI runtime for the /dev/dri devices users pass in
+# for hardware video encode. pm stages a pinned BtbN ffmpeg (below) built
+# --enable-vaapi --enable-libvpl --enable-libdrm, but it reaches libva through
+# implib-gen stubs that dlopen libva-drm.so.2 on first use, and libva then
+# dlopens a per-vendor *_drv_video.so. Neither ships in the base image now
+# that ffmpeg no longer comes from apt, so -hwaccel vaapi aborts inside the
+# generated stub ("Assertion in generated code") instead of even falling back
+# to a software encode. ~18 MB, covering Intel (iHD: Gen9+ / Arc), AMD
+# (radeonsi, r600), nouveau and virtio-gpu.
 RUN apt-get -o Acquire::Retries=3 update && \
     apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
     ca-certificates curl iputils-ping python3 python-is-python3 gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev libatomic1 procps git openssh-client docker-cli xz-utils \
-    libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 libcairo2 libcups2t64 libdbus-1-3 libgbm1 libglib2.0-0t64 libnspr4 libnss3 libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2 && \
+    libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 libcairo2 libcups2t64 libdbus-1-3 libgbm1 libglib2.0-0t64 libnspr4 libnss3 libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2 \
+    intel-media-va-driver mesa-va-drivers libva2 libva-drm2 && \
     rm -rf /var/lib/apt/lists/*
 
 # Bot Screen (opt-in): PACKAGES["apt"] from tools/bot_desktop/runtime.py plus apt

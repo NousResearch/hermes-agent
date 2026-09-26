@@ -516,6 +516,34 @@ class TestUpdate:
         assert not any(outside.iterdir())
         assert soul.read_text(encoding="utf-8") == before  # refused before the first write
 
+    def test_an_owned_directory_inside_a_skill_is_replaced_whole(self, profile_env):
+        """``scripts/`` under a skill root holds no ``SKILL.md`` of its own, but it is that
+        skill's content, not a category: owning it replaces it like the skill itself."""
+        mf = DistributionManifest(
+            name="owned-support",
+            version="0.1.0",
+            distribution_owned=["SOUL.md", "skills/research/web-search/"],
+        )
+        staged = _make_staging_dir(profile_env, "owned-support", manifest=mf)
+        skill = staged / "skills" / "research" / "web-search"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("web search\n", encoding="utf-8")
+        scripts = skill / "scripts"
+        scripts.mkdir()
+        (scripts / "run.py").write_text("print(1)\n", encoding="utf-8")
+        plan = install_distribution(str(staged), name="owned-support")
+
+        installed_scripts = plan.target_dir / "skills" / "research" / "web-search" / "scripts"
+        (installed_scripts / "local-only.py").write_text("local\n", encoding="utf-8")
+        mf.distribution_owned = ["SOUL.md", "skills/research/web-search/scripts/"]
+        write_manifest(staged, mf)
+        (scripts / "run.py").write_text("print(2)\n", encoding="utf-8")
+
+        update_distribution("owned-support")
+
+        assert not (installed_scripts / "local-only.py").exists()
+        assert (installed_scripts / "run.py").read_text(encoding="utf-8") == "print(2)\n"
+
     def test_update_merges_cron_jobs_without_losing_local_state(self, profile_env):
         """Updating one shipped definition cannot replace the profile's whole cron store."""
         from cron.jobs import create_job, list_jobs, pause_job, resume_job, update_job, use_cron_store

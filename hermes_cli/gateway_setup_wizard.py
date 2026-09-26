@@ -796,8 +796,12 @@ _WIZARD_NO_SERVICE_LINES = {
 }
 
 
-def _wizard_service_status_block() -> None:
-    """Pre-platform service status: warnings, then offer to start an installed-but-stopped service."""
+def _wizard_service_status_block() -> bool:
+    """Pre-platform service status: warnings, then offer to start an installed-but-stopped service.
+
+    Returns True when the start question was already asked here, so the
+    post-setup step can skip re-asking it later in the same run (#121130).
+    """
     print()
     service_installed = _gw()._is_service_installed()
     service_running = _gw()._is_service_running()
@@ -815,9 +819,11 @@ def _wizard_service_status_block() -> None:
     elif service_installed:
         _gw().print_warning("Gateway service is installed but not running.")
         _wizard_offer_service_action("start", "  Start it now?", "Failed to start", windows=False)
+        return True
     else:
         _gw().print_info("Gateway service is not installed yet.")
         _gw().print_info("You'll be offered to install it after configuring platforms.")
+    return False
 
 
 def _wizard_platform_loop() -> None:
@@ -874,8 +880,13 @@ def _wizard_install_service(backend: str) -> None:
         _gw().print_info("  You can try manually: hermes gateway install")
 
 
-def _wizard_post_setup() -> None:
-    """Offer to install/start/restart the gateway once at least one platform has progress."""
+def _wizard_post_setup(start_offered: bool = False) -> None:
+    """Offer to install/start/restart the gateway once at least one platform has progress.
+
+    ``start_offered`` reuses the pre-platform status block's answer: when the
+    start question was already asked there, a still-stopped service is left
+    alone instead of being re-prompted (#121130).
+    """
     print()
     print(_gw().color("─" * 58, _gw().Colors.DIM))
     if _gw()._served_profile_needs_no_service():
@@ -886,7 +897,10 @@ def _wizard_post_setup() -> None:
     if service_running:
         _wizard_offer_service_action("restart", "  Restart the gateway to pick up changes?", "Restart failed")
     elif service_installed:
-        _wizard_offer_service_action("start", "  Start the gateway service?", "Start failed")
+        if not start_offered:
+            _wizard_offer_service_action("start", "  Start the gateway service?", "Start failed")
+        # Else: the start question was already asked up front; a still-stopped
+        # service stays untouched instead of being re-prompted (#121130).
     else:
         print()
         backend = _gw()._service_backend()
@@ -913,7 +927,7 @@ def gateway_setup():
     for banner_line in _WIZARD_BANNER:
         print(_gw().color(banner_line, _gw().Colors.MAGENTA))
 
-    _wizard_service_status_block()
+    _wizard_start_offered = _wizard_service_status_block()
     _wizard_platform_loop()
 
     # Meaningful progress on any platform; ``_platform_status`` already handles plugin dual states.
@@ -922,7 +936,7 @@ def gateway_setup():
         return not (s == "not configured" or s.startswith("partially") or s.startswith("plugin disabled"))
 
     if any(_is_progress(_gw()._platform_status(p)) for p in _gw()._all_platforms()):
-        _gw()._wizard_post_setup()
+        _gw()._wizard_post_setup(start_offered=_wizard_start_offered)
     else:
         print()
         _gw().print_info("No platforms configured. Run 'hermes gateway setup' when ready.")

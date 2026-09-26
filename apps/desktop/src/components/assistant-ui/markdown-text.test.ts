@@ -572,6 +572,18 @@ describe('preprocessMarkdown', () => {
     expect(output).not.toContain('\\$x^2')
   })
 
+  it('keeps every real inline math span when CJK prose separates them (#123163)', () => {
+    expect(preprocessMarkdown('$E = mc^2$ 代入 $x$ 求解')).toBe('$E = mc^2$ 代入 $x$ 求解')
+    expect(preprocessMarkdown('$a$ 与 $b$ 之间的说明')).toBe('$a$ 与 $b$ 之间的说明')
+    expect(preprocessMarkdown('$a$ 甲 $b$ 乙 $c$ 丙')).toBe('$a$ 甲 $b$ 乙 $c$ 丙')
+    // Backslash commands are real math too; the closer must not be re-opened.
+    expect(preprocessMarkdown('根据 $\\alpha$ 和 $\\beta$ 计算')).toBe('根据 $\\alpha$ 和 $\\beta$ 计算')
+  })
+
+  it('still escapes a CJK variable inside one equation and keeps the next span (#103546)', () => {
+    expect(preprocessMarkdown('$x = 变量$ 与 $y$')).toBe('\\$x = 变量\\$ 与 $y$')
+  })
+
   it('leaves real inline math adjacent to CJK untouched (#103546)', () => {
     const output = preprocessMarkdown('其中 $\\alpha = 1$，所以')
 

@@ -72,14 +72,41 @@ CREATE TABLE IF NOT EXISTS memory_banks (
 
 _HELPFUL_DELTA, _UNHELPFUL_DELTA = 0.05, -0.10
 
-# Entity extraction patterns, applied in order: capitalized multi-word phrases ("John Doe"), double-quoted terms,
-# single-quoted terms, then "X aka Y" (both sides).
-_RE_SINGLE_ENTITY = (re.compile(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b'), re.compile(r'"([^"]+)"'), re.compile(r"'([^']+)'"))
-_RE_AKA = re.compile(r'(\w+(?:\s+\w+)*)\s+(?:aka|also known as)\s+(\w+(?:\s+\w+)*)', re.IGNORECASE)
+# Entity extraction patterns. A NAME token starts uppercase, contains at least one lowercase letter
+# or digit, and ends alphanumerically, so trailing punctuation is not swallowed ("Acme." -> "Acme").
+#
+# The "lowercase letter or digit" requirement is what keeps bare initials and initialisms out of the
+# index. `[A-Z][a-z]+` -- the original -- also rejected them, so the only tokens newly accepted here
+# are those containing a digit ("B2B", "NS-606", "V2.0"), which is the actual defect being fixed.
+# Accepting all-caps tokens split one person across two entities ("The CEO John Smith approved"
+# became "CEO John Smith" instead of "John Smith") and admitted junk ("I Think", "OK Google").
+_CAP = r"[A-Z](?=[A-Za-z0-9&.\-]*[a-z0-9])[A-Za-z0-9&.\-]*[A-Za-z0-9]"
+# Applied in order: capitalised multi-word phrases ("John Doe", "B2B Scaler") and quoted terms.
+#
+# NOTE the deliberate limit: a single capitalised word is NOT matched on its own. Requiring two words
+# is what keeps ordinary sentence-initial words out of the index, and a loose single-token rule (e.g.
+# "any capitalised token containing a digit") buys "NS-606" at the cost of "Q3", "B2B" and every
+# other alphanumeric label -- junk entities that then co-occur with real ones and pollute related().
+# Single-word names are covered instead by names the store already knows (_known_names_in), and by
+# link_entities() for a name seen for the first time.
+_RE_SINGLE_ENTITY = (re.compile(rf'\b({_CAP}(?:\s+{_CAP})+)\b'), re.compile(r'"([^"]+)"'), re.compile(r"'([^']+)'"))
+# Both sides are restricted to capitalised NAME tokens. With a bare `\w+` the right-hand side ran on
+# greedily -- "Alice Cooper aka The Falcon joined" produced an entity called "Falcon joined".
+_RE_AKA = re.compile(rf'({_CAP}(?:\s+{_CAP})*)\s+(?i:aka|also known as)\s+({_CAP}(?:\s+{_CAP})*)')
+# A leading article is not part of a name. Without this, "The Robosmart pilot renewed" yields an entity
+# named "The Robosmart", which co-occurs with the real "Robosmart" and so pollutes related() as well as
+# probe(): the junk entity looks like a genuine second party.
+_RE_LEADING_ARTICLE = re.compile(r'^(?:The|A|An)\s+(?=[A-Z])')
 _ENTITY_NAMES_SQL = "SELECT e.name FROM entities e JOIN fact_entities fe ON fe.entity_id = e.entity_id WHERE fe.fact_id = ?"
 # Entity lookup order: exact name, then aliases (comma-separated; wrapped in commas for whole-alias matching).
 _ENTITY_LOOKUPS = ("SELECT entity_id FROM entities WHERE name LIKE ?",
                    "SELECT entity_id FROM entities WHERE ',' || aliases || ',' LIKE '%,' || ? || ',%'")
+_ENTITY_GAZETTEER_SQL = "SELECT name, aliases FROM entities"
+
+
+def _strip_leading_article(name: str) -> str:
+    """Drop a leading "The"/"A"/"An" so it is not stored as part of the name."""
+    return _RE_LEADING_ARTICLE.sub("", name, count=1).strip()
 
 
 def _clamp_trust(value: float) -> float:
@@ -214,14 +241,52 @@ class MemoryStore:
             return {"fact_id": fact_id, "old_trust": old_trust, "new_trust": new_trust, "helpful_count": row["helpful_count"] + increment}
 
     def _extract_entities(self, text: str) -> list[str]:
-        """Regex entity candidates (see the pattern table), deduplicated case-insensitively in first-seen order."""
+        """Entity candidates: the regex table, "X aka Y", plus names already in the store.
+
+        Known names are matched directly because the patterns deliberately require TWO capitalised
+        words -- loose enough to catch every capitalised word otherwise. That makes a single-word
+        name ("Robosmart", "Miranda") invisible to the patterns, so names the store already knows are
+        matched explicitly. A single-word name the store has NEVER seen is still not discoverable
+        here, by design; link_entities() is the explicit path for that.
+        """
         raw = [m.group(1) for pattern in _RE_SINGLE_ENTITY for m in pattern.finditer(text)]
         for m in _RE_AKA.finditer(text):
             raw += [m.group(1), m.group(2)]
+        raw += self._known_names_in(text)
         uniq: dict[str, str] = {}  # lower-cased key -> first-seen spelling, insertion-ordered
         for name in filter(None, (n.strip() for n in raw)):
-            uniq.setdefault(name.lower(), name)
+            stripped = _strip_leading_article(name)
+            if stripped:
+                uniq.setdefault(stripped.lower(), stripped)
         return list(uniq.values())
+
+    def _known_names_in(self, text: str) -> list[str]:
+        """Canonical names of entities already in the store that appear in `text`.
+
+        The gazetteer and its alternation are cached until a new entity is created: rebuilding
+        them on every add_fact would scan the whole entities table once per fact."""
+        gazetteer = self._entry.get("gazetteer")  # shared per DATABASE, not per instance
+        if gazetteer is None:
+            lookup: dict[str, str] = {}
+            for row in self._conn.execute(_ENTITY_GAZETTEER_SQL).fetchall():
+                canonical = row["name"]
+                lookup[canonical.lower()] = canonical
+                for alias in (row["aliases"] or "").split(","):
+                    alias = alias.strip()
+                    if alias:
+                        lookup.setdefault(alias.lower(), canonical)
+            # Longest first, so "B2B Scaler LLC" wins over "B2B Scaler".
+            pattern = (re.compile(r"(?<!\w)(" + "|".join(re.escape(k) for k in sorted(lookup, key=len, reverse=True)) + r")(?!\w)",
+                                  re.IGNORECASE) if lookup else None)
+            gazetteer = (lookup, pattern)
+            self._entry["gazetteer"] = gazetteer
+        lookup, pattern = gazetteer
+        if pattern is None:
+            return []
+        found: dict[str, str] = {}
+        for match in pattern.finditer(text):
+            found.setdefault(match.group(1).lower(), lookup[match.group(1).lower()])
+        return list(found.values())
 
     def _link_entities(self, fact_id: int, content: str) -> None:
         """Extract entities from content, resolve/create them, and link each to the fact."""
@@ -229,12 +294,62 @@ class MemoryStore:
             self._write("INSERT OR IGNORE INTO fact_entities (fact_id, entity_id) VALUES (?, ?)",
                         (fact_id, self._resolve_entity(name)))
 
+    def link_entities(self, fact_id: int, names: "list[str]") -> list[int]:
+        """Link `names` to `fact_id`, creating entities as needed; returns their entity ids.
+
+        The public write-side counterpart to the read-only entity lookups. Extraction is
+        deliberately high-precision, so this is how a caller attaches an entity it already knows
+        about -- notably a single-word name the extractor has never seen."""
+        if isinstance(names, str):  # a bare string would iterate CHARACTERS and create one entity per letter
+            names = [names]
+        with self._lock:
+            if self._one("SELECT fact_id FROM facts WHERE fact_id = ?", (fact_id,)) is None:
+                raise KeyError(f"fact_id {fact_id} not found")
+            ids: list[int] = []
+            for name in names or []:
+                clean = _strip_leading_article((name or "").strip())
+                if not clean:
+                    continue
+                entity_id = self._resolve_entity(clean)
+                self._write("INSERT OR IGNORE INTO fact_entities (fact_id, entity_id) VALUES (?, ?)",
+                            (fact_id, entity_id))
+                if entity_id not in ids:
+                    ids.append(entity_id)
+            return ids
+
+    def reindex_entities(self, fact_id: "int | None" = None, prune: bool = False) -> dict:
+        """Re-run entity extraction over stored facts and link whatever it now finds.
+
+        `prune=True` also REMOVES links the current extractor would not produce, which is what
+        actually repairs a store polluted before an extraction fix: re-extraction can only ever
+        ADD, so a row carrying junk like "The Robosmart" would otherwise keep it forever. Off by
+        default because it equally drops entities attached explicitly via link_entities().
+
+        HRR vectors AND category banks are recomputed: entities are encoded into the vectors as
+        roles, and probe(category=...) reads the banks.
+        """
+        with self._lock:
+            if fact_id is None:
+                rows = self._conn.execute("SELECT fact_id, content FROM facts").fetchall()
+            else:
+                rows = self._conn.execute("SELECT fact_id, content FROM facts WHERE fact_id = ?", (fact_id,)).fetchall()
+            for row in rows:
+                row_id = int(row["fact_id"])
+                if prune:
+                    self._write("DELETE FROM fact_entities WHERE fact_id = ?", (row_id,))
+                self._link_entities(row_id, row["content"])
+                self._compute_hrr_vector(row_id, row["content"])
+            for category_row in self._conn.execute("SELECT DISTINCT category FROM facts").fetchall():
+                self._rebuild_bank(category_row["category"])
+            return {"facts": len(rows)}
+
     def _resolve_entity(self, name: str) -> int:
         """Return the entity_id for a case-insensitive name or alias match, creating the entity if absent."""
         for sql in _ENTITY_LOOKUPS:
             row = self._one(sql, (name,))
             if row is not None:
                 return int(row["entity_id"])
+        self._entry["gazetteer"] = None  # a new entity changes the gazetteer for every instance
         return int(self._write("INSERT INTO entities (name) VALUES (?)", (name,)).lastrowid)  # type: ignore[arg-type]
 
     def _compute_hrr_vector(self, fact_id: int, content: str) -> None:

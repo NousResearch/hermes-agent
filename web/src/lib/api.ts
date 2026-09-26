@@ -2566,6 +2566,11 @@ export interface ModelInfoResponse {
     max_output_tokens?: number;
     model_family?: string;
   };
+  /** Model the last turn actually ran on (empty/absent when unknown). */
+  active_model?: string;
+  active_model_provider?: string;
+  /** True while a fallback model is serving turns — the badge should say so. */
+  fallback_active?: boolean;
 }
 
 // ── Model options / assignment types ──────────────────────────────────

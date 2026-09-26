@@ -166,6 +166,12 @@ def hygiene_no_commit_reason(agent) -> str:
     return "in-place commit did not complete"
 
 
+# Streaming-TTS finalisation (#60671): a consumer this long without progress is stuck and gets aborted;
+# one still synthesising a long reply keeps draining, up to the hard cap.
+STREAMING_TTS_STALL_SECONDS = 10.0
+STREAMING_TTS_FINALIZE_MAX_SECONDS = 300.0
+
+
 class GatewayTurnMixin:
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
@@ -3629,16 +3635,24 @@ class GatewayTurnMixin:
 
     async def _run_agent_finalize_streaming_tts(self, turn_ctx: TurnContext, adapter: Any) -> None:
         """Finalize the streaming-TTS consumer on the outer event-loop thread (covers early returns
-        from run_sync). On drain timeout abort to free the task — audible streams keep whole-file
+        from run_sync). Keep draining while it makes progress (the LLM usually finishes long before
+        TTS does); on a stall or the hard cap abort to free the task — audible streams keep whole-file
         suppression, silent streams stay eligible for the whole-file fallback."""
         _stts = turn_ctx.streaming_tts_consumer_holder[0]
         if _stts is None:
             return
         _stts.finish()
-        try:
-            await _stts.wait_complete(timeout=10.0)
-        except Exception as _stts_done_err:
-            logger.debug("streaming TTS wait_complete error: %s", _stts_done_err)
+        _deadline = time.monotonic() + STREAMING_TTS_FINALIZE_MAX_SECONDS
+        while True:
+            try:
+                await _stts.wait_complete(timeout=STREAMING_TTS_STALL_SECONDS)
+            except Exception as _stts_done_err:
+                logger.debug("streaming TTS wait_complete error: %s", _stts_done_err)
+                break
+            _idle = getattr(_stts, "idle_seconds", None)
+            if (_stts.done or not callable(_idle) or _idle() >= STREAMING_TTS_STALL_SECONDS
+                    or time.monotonic() >= _deadline):
+                break
         if not _stts.done:
             _stts.abort("streaming TTS finalisation timeout")
             await _stts.wait_complete(timeout=2.0)

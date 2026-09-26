@@ -800,6 +800,7 @@ Hermes Agent supports Discord voice messages:
 - **Incoming voice messages** are automatically transcribed using the configured STT provider: local `faster-whisper` (no key), Groq Whisper (`GROQ_API_KEY`), or OpenAI Whisper (`VOICE_TOOLS_OPENAI_KEY`).
 - **Text-to-speech**: Use `/voice tts` to have the bot send spoken audio responses alongside text replies.
 - **Discord voice channels**: Hermes can also join a voice channel, listen to users speaking, and talk back in the channel.
+- **Streaming voice replies**: with a TTS provider that streams PCM (OpenAI or an OpenAI-compatible server via `tts.openai.base_url`, ElevenLabs, Gemini, xAI), Hermes starts speaking in the voice channel after the first sentence while the rest of the reply is still being generated. Other providers keep whole-file playback. To force whole-file playback, set `tts.streaming.provider` to a value that isn't a streaming provider (e.g. `none`).
 
 For the full setup and operational guide, see:
 - [Voice Mode](../features/voice-mode.md)

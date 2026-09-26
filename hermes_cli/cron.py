@@ -320,6 +320,10 @@ def cron_runs(job_id: Optional[str] = None, limit: int = 20):
               f"{record.get('claimed_at', '?')}")
         if record.get("error"):
             print(f"    {record['error']}")
+        # Distinct from ``error``: the job itself may have succeeded and only the notice failed.
+        if record.get("delivery_error"):
+            print(f"    {color('delivery:', Colors.YELLOW)} "
+                  f"{_short_reason(record['delivery_error'])}")
 
 
 _INCIDENT_STATE_COLORS = {"detected": Colors.RED, "alerted": Colors.YELLOW, "resolved": Colors.GREEN,

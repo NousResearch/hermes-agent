@@ -17,6 +17,7 @@ import stat
 from pathlib import Path
 from typing import Any, Optional
 
+from cron.lifecycle_guard import GATEWAY_LIFECYCLE_BLOCK_MARKER
 from tools.shell_heredoc import strip_inert_heredoc_bodies
 
 logger = logging.getLogger("tools.terminal_tool")
@@ -60,8 +61,25 @@ def _safe_command_preview(command: Any, limit: int = 200) -> str:
 
 
 def _blocked_json(error: str, status: str) -> str:
-    """The guard result envelope: exit_code 1 + *error* + *status*."""
-    return json.dumps({"output": "", "exit_code": 1, "error": error, "status": status}, ensure_ascii=False)
+    """The guard result envelope: exit_code 1 + *error* + *status*.
+
+    ``blocked_by`` marks the result as a guard REFUSAL rather than a command
+    that ran and failed. The execute_code sandbox stub keys on it to raise:
+    without it a refusal is just a returned dict, so a script that does not
+    inspect the result (the common ``r = terminal(cmd)`` shape) runs to
+    completion and execute_code reports status=success / exit_code=0 with
+    empty output — a silent block.
+    """
+    return json.dumps(
+        {
+            "output": "",
+            "exit_code": 1,
+            "error": error,
+            "status": status,
+            "blocked_by": GATEWAY_LIFECYCLE_BLOCK_MARKER,
+        },
+        ensure_ascii=False,
+    )
 
 
 _SHELL_LEVEL_BACKGROUND_RE = re.compile(

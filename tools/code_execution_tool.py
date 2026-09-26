@@ -196,7 +196,8 @@ def generate_hermes_tools_module(enabled_tools: List[str],
     ``transport``: ``"uds"`` (local socket client) or ``"file"`` (file RPC, remote backends)."""
     header = _FILE_TRANSPORT_HEADER if transport == "file" else _UDS_TRANSPORT_HEADER
     return header + "\n".join(
-        f"def {name}({sig}):\n    {doc}\n    return _call({name!r}, {args_expr})\n"
+        f"def {name}({sig}):\n    {doc}\n"
+        f"    return _raise_if_blocked({name!r}, _call({name!r}, {args_expr}))\n"
         for name, (sig, doc, args_expr) in sorted(_TOOL_STUBS.items()) if name in set(enabled_tools)
     )
 
@@ -241,6 +242,36 @@ def retry(fn, max_attempts=3, delay=2):
             if attempt < max_attempts - 1:
                 time.sleep(delay * (2 ** attempt))
     raise last_err
+
+
+class ToolCallBlocked(RuntimeError):
+    """A tool call was REFUSED by a Hermes guard; it never ran."""
+
+
+# Marker key set by tools/terminal_tool_guards._blocked_json. Kept in sync with
+# cron.lifecycle_guard.GATEWAY_LIFECYCLE_BLOCK_MARKER by
+# tests/tools/test_execute_code_surfaces_blocks.py.
+_BLOCKED_MARKER_KEY = "blocked_by"
+
+
+def _raise_if_blocked(tool_name, result):
+    """Turn a guard REFUSAL into an exception instead of a return value.
+
+    A refused call comes back as an ordinary dict. A script that does not
+    inspect it (the common ``r = terminal(cmd)`` shape) then runs to
+    completion, and execute_code reports status=success / exit_code=0 with
+    empty output — a silent block, strictly worse than the direct terminal
+    tool, which at least prints why. Raising puts the refusal in the cell's
+    traceback so the caller always sees it.
+    """
+    if not isinstance(result, dict):
+        return result
+    if not result.get(_BLOCKED_MARKER_KEY):
+        return result
+    message = result.get("error") or "blocked by a Hermes guard"
+    raise ToolCallBlocked(
+        tool_name + "() was blocked and did not run: " + str(message)
+    )
 
 '''
 

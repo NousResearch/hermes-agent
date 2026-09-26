@@ -512,9 +512,12 @@ class SessionMessagesMixin:
         row = self._read_one("SELECT role FROM messages WHERE id = ? AND session_id = ? AND active = 1", (int(row_id), session_id))
         return row[0] if row else None
 
-    def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]]) -> tuple[int, int]:
+    def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]], *,
+                             prune_checkpoints: bool = True) -> tuple[int, int]:
         """Insert *messages* as fresh active rows in the caller's txn -> ``(inserted, tool_call_count)``.
-        Never touches sessions.* counters (callers reconcile differently); reasoning kept for assistant rows."""
+        Never touches sessions.* counters (callers reconcile differently); reasoning kept for assistant rows.
+        A caller that re-archives some rows afterwards passes ``prune_checkpoints=False`` and prunes once they
+        are archived again (:meth:`_prune_shadowed_checkpoints`)."""
         now_ts = time.time()
         inserted = tool_calls_total = 0
         for msg in messages:
@@ -533,10 +536,15 @@ class SessionMessagesMixin:
             inserted += 1
             tool_calls_total += _tool_calls_count(tool_calls)
             now_ts = max(now_ts, message_timestamp) + 1e-6
-        carrier = _newest_checkpoint_carrier(messages, "codex_reasoning_items")
-        if carrier >= 0 and isinstance(messages[carrier].get("_row_id"), int):
-            self._drop_shadowed_checkpoint_rows(conn, session_id, messages[carrier]["_row_id"])
+        if prune_checkpoints:
+            self._prune_shadowed_checkpoints(conn, session_id, messages)
         return inserted, tool_calls_total
+
+    def _prune_shadowed_checkpoints(self, conn, session_id: str, live_messages: List[Dict[str, Any]]) -> None:
+        """Keep only the newest checkpoint among *live_messages* (inserted rows carrying ``_row_id``)."""
+        carrier = _newest_checkpoint_carrier(live_messages, "codex_reasoning_items")
+        if carrier >= 0 and isinstance(live_messages[carrier].get("_row_id"), int):
+            self._drop_shadowed_checkpoint_rows(conn, session_id, live_messages[carrier]["_row_id"])
 
     def _drop_shadowed_checkpoint_rows(self, conn, session_id: str, carrier_row_id: int) -> int:
         """Rewrite older active assistant rows so only the row *carrier_row_id* keeps a ``type: "compaction"``

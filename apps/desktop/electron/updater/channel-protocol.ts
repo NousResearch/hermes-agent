@@ -87,8 +87,10 @@ export interface ChannelManifest {
 const SHA256 = /^[a-f0-9]{64}$/
 const COMMIT = /^[a-f0-9]{40}$/
 const BUILD_ID = /^[a-f0-9]{32}$/
+
 const VERSION =
   /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$/
+
 // rc.<N>-vX.Y.Z with N >= 1 without leading zeros and a release version whose
 // major stays within three digits — one regex matching the Python grammar.
 const ARCHIVE_REF = /^rc\.(?:[1-9]\d*)-v(?:0|[1-9]\d{0,2})\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/

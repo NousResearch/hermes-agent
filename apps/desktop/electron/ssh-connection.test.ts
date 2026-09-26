@@ -596,6 +596,7 @@ test('open() records what the failed ssh did in the desktop log (#80836)', async
 
   const logs: string[] = []
   const spawnFn = scriptedSpawn([{ code: 255, stderr: 'me@box: Permission denied (publickey).' }])
+
   const conn = new SshConnection(
     { host: 'box', user: 'me' },
     { spawnFn, mux: false, rememberLog: line => logs.push(line) }

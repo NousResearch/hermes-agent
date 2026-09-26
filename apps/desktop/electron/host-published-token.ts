@@ -50,6 +50,7 @@ export function hostRendezvousDirectory(env: HostRendezvousEnv): string {
   }
 
   const stateHomeEnv = String(env.stateHome || '').trim()
+
   const stateHome =
     stateHomeEnv && path.isAbsolute(stateHomeEnv) ? stateHomeEnv : path.join(env.home, '.local', 'state')
 

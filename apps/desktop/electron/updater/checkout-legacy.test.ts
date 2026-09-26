@@ -93,6 +93,7 @@ it.skipIf(process.platform === 'win32')(
         hermesHome: home,
         channel: 'stable' as const
       }
+
       await expect(readSourceUpdate(probe)).resolves.toMatchObject({ supported: true, channel: 'stable', behind: null })
       fs.rmSync(launcher)
       await expect(readSourceUpdate(probe)).rejects.toThrow('installation launcher is missing')

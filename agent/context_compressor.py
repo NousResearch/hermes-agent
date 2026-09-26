@@ -27,6 +27,7 @@ from agent.auxiliary_client import (
     AuxiliaryExplicitCancellation,
     _coerce_llm_message,
     _is_connection_error,
+    _is_timeout_error,
     _message_field,
     aux_interrupt_protection,
     call_llm,
@@ -744,16 +745,23 @@ def _classify_summary_failure(e: Exception) -> _SummaryFailureKind:
     """
     status = _exc_status_code(e)
     err = str(e).lower()
+    # Keep the timeout taxonomy aligned with the auxiliary transport owner.  In particular the Codex
+    # no-progress guard raises builtin TimeoutError with a "stream stalled" message that contains neither
+    # "timeout" nor "timed out".  _is_connection_error() intentionally overlaps timeouts for transport
+    # retry purposes, so summary failure classification must exclude timeout-class errors from the
+    # terminal premature-stream bucket.
+    timeout = _is_timeout_error(e) or status in {408, 429, 502, 504} or "timeout" in err
     return _SummaryFailureKind(
         # Permanent-looking error on a distinct summary model: fall back to main instead of cooldown.
         model_not_found=status in {404, 503}
         or any(m in err for m in ("model_not_found", "does not exist", "no available channel")),
-        timeout=status in {408, 429, 502, 504} or "timeout" in err or "timed out" in err,
+        timeout=timeout,
         # Malformed/non-JSON bodies (HTML 502 as application/json) surface as JSONDecodeError or
         # APIResponseValidationError "expecting value"; treat as transient.
         json_decode=isinstance(e, json.JSONDecodeError) or "expecting value" in err,
-        # httpx premature-close errors are transient; treat like a timeout, not a 60s cooldown.
-        streaming_closed=_is_connection_error(e),
+        # httpx premature-close errors are transient.  Timeouts share the transport helper on purpose,
+        # but belong to the timeout cooldown ladder rather than the terminal network-failure flag.
+        streaming_closed=_is_connection_error(e) and not timeout,
         # HTTP 200 with empty body from a degraded provider, plus the sibling "no usable response"
         # shapes from _validate_llm_response.
         empty_content=isinstance(e, RuntimeError) and any(

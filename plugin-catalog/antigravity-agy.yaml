@@ -8,7 +8,10 @@ description: >-
   handed back to Hermes. Fails closed on any non-Hermes tool step or silent agent fallback;
   pre-warms agy for fast tool loops. Disclosure — routes inference through Google's official agy
   CLI and counts against the Antigravity/Gemini subscription agy is signed in to; the plugin
-  never reads, copies or links agy's credential files.
+  never reads, copies or links agy's credential files. agy runs in your real HOME with the gateway's environment; by
+  default the plugin moves the agy conversation records created by its own idle pre-warmed processes under
+  ~/.gemini/antigravity-cli/ to the trash (trash-put from PATH; ANTIGRAVITY_AGY_CLEANUP=off disables) and pre-warms up
+  to 4 idle agy processes (~400 MB each).
 maintainer: Realtyxxx
 tier: community
 category: models

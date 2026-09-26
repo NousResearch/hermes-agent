@@ -168,15 +168,17 @@ re-pointed symlink) are not carried onto the new code; copies are
 saved under `~/.hermes/plugins-backup/<name>-<sha>/` and the update warns you.
 The same folder receives any file of yours where the new version has a
 directory (or the reverse). If the installed revision can no longer be
-fetched, files the new version does not ship are kept, except code (Python
-and JavaScript files) and plugin declarations (manifests, `mcp.json`,
+fetched, files the new version does not ship are kept, except code and
+scripts (Python, JavaScript/TypeScript, shell and other script files, and any
+executable file) and plugin declarations (manifests, `mcp.json`,
 dependency files, `desktop/`, `skills/`, `sidecar/`), which go to the backup
 folder along with files the new version ships with different content. Files
 kept this way pass the same security scan as the new version. If the plugin
-writes files while the update is being prepared, the update stops and asks
-you to retry instead of replacing them.
+writes or changes files (including a file's mode) while the update is being
+prepared, the update stops and asks you to retry instead of replacing them.
 If the new pin renames the plugin's manifest, the old directory is removed and
-your enabled flag follows the new name. `hermes plugins list` shows catalog
+your enabled flag follows the new name; if the old directory changed during the
+update, it is kept and the update tells you where. `hermes plugins list` shows catalog
 installs as `catalog:<tier>@<sha>` so you can see provenance at a glance.
 
 PM validates the dependencies of an active plugin before its new code replaces

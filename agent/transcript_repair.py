@@ -1,6 +1,6 @@
-"""Transcript repair for SessionDB batch appends: reconcile in-memory assistant rows with committed SQLite
-rows (blank-row in-place update, concurrent-winner adoption, watermark-compaction clone lookup) and sync
-markers after commit."""
+"""Transcript repair for SessionDB batch appends: reconcile in-memory rows with committed SQLite rows
+(in-place sanitizer rewrites, assistant blank-row repair, concurrent-winner adoption, watermark-compaction
+clone lookup) and sync markers after commit."""
 
 from __future__ import annotations
 
@@ -28,29 +28,30 @@ def resolve_and_repair_transcript_batch(
     encode_content_fn: Callable[[Any], Any],
     decode_content_fn: Callable[[Any], Any],
 ) -> List[Dict[str, Any]]:
-    """Partition a message batch within an active write transaction. An assistant message carrying an
-    existing integer ``_row_id`` targets that SQLite row, or the active clone a watermark compaction made
-    of it. An inactive row without a clone is repaired in place without changing its archive/rewind state;
-    an active blank row is filled, while an active non-blank row (concurrent winner) has its canonical
-    content adopted without overwrite. Returns the messages that must be inserted as fresh rows."""
+    """Partition a message batch within an active write transaction. A message carrying an existing
+    integer ``_row_id`` targets that same-role SQLite row, or the active clone a watermark compaction made
+    of it. Sanitizer rewrites update non-assistant and inactive rows in place without changing archive/rewind
+    state. An active blank assistant row is filled, while an active non-blank assistant row (concurrent
+    winner) has its canonical content adopted without overwrite. Returns rows that need fresh inserts."""
     inserted_rows: List[Dict[str, Any]] = []
     for msg in messages:
         existing_row_id = msg.get("_row_id") if isinstance(msg, dict) else None
         target_row = None
-        if isinstance(existing_row_id, int) and msg.get("role", "unknown") == "assistant":
-            target_row = _active_assistant_row(conn, session_id, existing_row_id)
+        role = msg.get("role", "unknown") if isinstance(msg, dict) else "unknown"
+        if isinstance(existing_row_id, int):
+            target_row = _active_message_row(conn, session_id, existing_row_id, role)
         if target_row is None:
             inserted_rows.append(msg)
             continue
         target_id = int(target_row["id"])
         decoded = decode_content_fn(target_row["content"])
         msg["_row_id"] = target_id
-        if int(target_row["active"] or 0) == 0:
-            # The row identity still belongs to this session, but compaction/rewind removed it from the
-            # model projection. Persist an in-place sanitizer rewrite without resurrecting the row or
-            # appending a second display identity.
+        if int(target_row["active"] or 0) == 0 or role != "assistant":
+            # Sanitizers mutate every transcript role. Preserve the addressed durable identity (or active
+            # compaction clone) so rewound/compacted user and tool rows cannot be appended as duplicates.
+            # Updating content alone leaves active/compacted/display identity state untouched.
             conn.execute(
-                "UPDATE messages SET content = ? WHERE id = ? AND session_id = ? AND active = 0",
+                "UPDATE messages SET content = ? WHERE id = ? AND session_id = ?",
                 (encode_content_fn(msg.get("content")), target_id, session_id),
             )
         elif is_content_blank(decoded):
@@ -64,14 +65,14 @@ def resolve_and_repair_transcript_batch(
     return inserted_rows
 
 
-def _active_assistant_row(conn: sqlite3.Connection, session_id: str, row_id: int):
-    """The active clone for ``row_id``, or the addressed inactive assistant when no clone exists."""
+def _active_message_row(conn: sqlite3.Connection, session_id: str, row_id: int, role: str):
+    """The same-role active clone for ``row_id``, or the addressed inactive row when no clone exists."""
     row = conn.execute(
         "SELECT id, role, active, timestamp, content FROM messages "
         "WHERE id = ? AND session_id = ?",
         (row_id, session_id),
     ).fetchone()
-    if row is None or row["role"] != "assistant":
+    if row is None or row["role"] != role:
         return None
     if int(row["active"] or 0) == 1:
         return row
@@ -79,10 +80,10 @@ def _active_assistant_row(conn: sqlite3.Connection, session_id: str, row_id: int
     # otherwise keep the addressed inactive row so a later sanitizer pass cannot append it as new.
     clone = conn.execute(
         "SELECT id, role, active, timestamp, content FROM messages "
-        "WHERE session_id = ? AND active = 1 AND role = 'assistant' "
+        "WHERE session_id = ? AND active = 1 AND role = ? "
         "AND timestamp IS ? AND id != ? "
         "ORDER BY id DESC LIMIT 1",
-        (session_id, row["timestamp"], row["id"]),
+        (session_id, role, row["timestamp"], row["id"]),
     ).fetchone()
     return clone if clone is not None else row
 

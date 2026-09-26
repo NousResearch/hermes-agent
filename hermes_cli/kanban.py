@@ -112,7 +112,13 @@ def _check_dispatcher_presence(hermes_home: Optional[Path] = None) -> tuple[bool
 
         # Same ladder as the dashboard status endpoints so PID-file-less / cross-container gateways
         # aren't misreported; use_cache=False because this one-shot probe must see the state now.
-        liveness = resolve_gateway_liveness(profile_dir=hermes_home, use_cache=False)
+        # cleanup_stale=False: a scoped probe must never unlink another home's gateway.pid/lock
+        # (get_running_pid's scoped branch forces runtime_pid=None, so the default True always
+        # deletes them on a stale-looking lock — see its docstring, #106406).
+        from gateway.status import get_running_pid  # type: ignore
+        liveness = resolve_gateway_liveness(
+            profile_dir=hermes_home, use_cache=False,
+            pid_probe=lambda path: get_running_pid(path, cleanup_stale=False))
     except Exception:
         return (True, "")  # can't probe — silent
     if liveness.probe_error:  # resolver swallows per-rung failures; "can't tell" != "no gateway"

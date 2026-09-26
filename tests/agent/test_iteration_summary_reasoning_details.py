@@ -76,3 +76,27 @@ class TestSummaryPrefixParity:
         assert by_role["user"]["content"] == "q"
         assert by_role["tool"]["content"] == "r"
         assert history == snapshot  # send-path rewrites never reach the transcript
+
+    def test_strips_lone_surrogates_like_the_send_path(self, make_agent):
+        agent = make_agent("https://api.groq.com/openai/v1", "custom")
+        history = [
+            {"role": "user", "content": "clip \ud800 paste"},
+            {"role": "assistant", "content": "ok \ud83d", "tool_calls": [
+                {"id": "t1", "type": "function",
+                 "function": {"name": "f", "arguments": '{"k": "v\ud800"}'}},
+            ]},
+            {"role": "tool", "tool_call_id": "t1", "content": "r"},
+        ]
+        out = _iteration_summary_api_messages(agent, history)
+        # Main path's third pass rewrites lone surrogates to U+FFFD; anything else diverges the
+        # prefix or makes the SDK's ensure_ascii=False utf-8 encode raise.
+        assert next(m for m in out if m["role"] == "user")["content"] == "clip \ufffd paste"
+        assistant = next(m for m in out if m["role"] == "assistant")
+        assert assistant["content"] == "ok \ufffd"
+        # Canonicalization runs first, so argument surrogates are already ASCII \udXXX escapes.
+        assert assistant["tool_calls"][0]["function"]["arguments"] == '{"k":"v\\ud800"}'
+        json.dumps(out, ensure_ascii=False).encode("utf-8")
+        # The sanitizer is in-place: history must keep its stored bytes.
+        assert history[0]["content"] == "clip \ud800 paste"
+        assert history[1]["content"] == "ok \ud83d"
+        assert history[1]["tool_calls"][0]["function"]["arguments"] == '{"k": "v\ud800"}'

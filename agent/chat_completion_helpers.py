@@ -43,8 +43,8 @@ from agent.model_metadata import is_local_endpoint
 from agent.message_content import flatten_message_text
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, append_message, stamp_message_timestamp
 from agent.message_sanitization import (
-    _sanitize_surrogates, _repair_tool_call_arguments, normalize_finish_reason as _normalize_finish_reason,
-    sanitize_outbound_kwargs, strip_images_for_rejecting_model,
+    _sanitize_messages_surrogates, _sanitize_surrogates, _repair_tool_call_arguments,
+    normalize_finish_reason as _normalize_finish_reason, sanitize_outbound_kwargs, strip_images_for_rejecting_model,
 )
 from agent.reasoning_summaries import append_streamed_reasoning_detail, separate_glued_reasoning_blocks
 from agent.repetition_guard import is_repetition_dominated
@@ -2268,8 +2268,13 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
     for api_msg in api_messages:
         if isinstance(api_msg.get("content"), str):
             api_msg["content"] = api_msg["content"].strip()
-    from agent.conversation_loop import _canonicalize_api_tool_calls
+    from agent.conversation_loop import _canonicalize_api_tool_calls, _clone_message_for_send
     _canonicalize_api_tool_calls(api_messages)
+    # Third closing pass of the main path: lone surrogates -> U+FFFD (else the SDK's utf-8
+    # wire encode raises and burns the summary retries). The sanitizer is in-place and these
+    # rows still share nested dicts with history, so clone first like the main path does.
+    api_messages = [_clone_message_for_send(m) for m in api_messages]
+    _sanitize_messages_surrogates(api_messages)
     return api_messages
 
 

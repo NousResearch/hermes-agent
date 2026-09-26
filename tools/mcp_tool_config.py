@@ -358,7 +358,14 @@ def _filter_suspicious_mcp_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
         return servers
     safe_servers = {}
     for name, cfg in servers.items():
-        issues = validate_mcp_server_entry(name, cfg) if isinstance(cfg, dict) else None
+        if not isinstance(cfg, dict):
+            logger.warning(
+                "Skipping malformed mcp_servers entry %r: entry value is not a dict (got %s). "
+                "Fix or remove this entry in ~/.hermes/config.yaml.",
+                name, type(cfg).__name__,
+            )
+            continue
+        issues = validate_mcp_server_entry(name, cfg)
         if issues:
             logger.warning("Skipping suspicious MCP server '%s': %s", name, "; ".join(issues))
         else:
@@ -373,6 +380,10 @@ def _portable_mcp_servers(safe_servers: Dict[str, dict]) -> None:
         discover_plugins()
         portable = get_plugin_manager().get_portable_mcp_servers()
         for name, cfg in _filter_suspicious_mcp_servers(portable).items():
+            ok, reason = _validate_mcp_entry(name, cfg)
+            if not ok:
+                logger.warning("Skipping malformed portable mcp_servers entry %r: %s.", name, reason)
+                continue
             if name in safe_servers:
                 logger.warning("Portable MCP server '%s' conflicts with native config; skipping", name)
             else:
@@ -381,8 +392,24 @@ def _portable_mcp_servers(safe_servers: Dict[str, dict]) -> None:
         logger.debug("Failed to load portable MCP servers", exc_info=True)
 
 
+def _validate_mcp_entry(name: str, cfg: Any) -> Tuple[bool, str]:
+    """Validate a single ``mcp_servers`` entry.
+
+    Returns ``(is_valid, reason)``. Rules (deliberately minimal, mirroring
+    the connect contract): value must be a dict with ``command`` and/or ``url``.
+    """
+    if not isinstance(cfg, dict):
+        return False, f"entry value is not a dict (got {type(cfg).__name__})"
+    if not cfg.get("command") and not cfg.get("url"):
+        return False, "entry declares neither 'command' (stdio) nor 'url' (http)"
+    return True, ""
+
+
 def _load_mcp_config() -> Dict[str, dict]:
-    """``mcp_servers`` from config.yaml as ``{name: config}`` (empty on error / safe mode), ``${VAR}`` interpolated."""
+    """``mcp_servers`` from config.yaml as ``{name: config}`` (empty on error / safe mode), ``${VAR}`` interpolated.
+
+    Malformed entries (non-dict, or missing both ``command`` and ``url``) are skipped with a warning (issue #33119).
+    """
     try:
         from hermes_cli.config import load_config
         from utils import env_var_enabled as _env_enabled
@@ -396,6 +423,14 @@ def _load_mcp_config() -> Dict[str, dict]:
             pass
         safe_servers: Dict[str, dict] = {}
         for name, cfg in _filter_suspicious_mcp_servers(servers if isinstance(servers, dict) else {}).items():
+            ok, reason = _validate_mcp_entry(name, cfg)
+            if not ok:
+                logger.warning(
+                    "Skipping malformed mcp_servers entry %r: %s. "
+                    "Fix or remove this entry in ~/.hermes/config.yaml.",
+                    name, reason,
+                )
+                continue
             interpolated = _interpolate_env_vars(cfg)
             if isinstance(interpolated, dict):
                 _warn_hidden_whitespace(name, interpolated)

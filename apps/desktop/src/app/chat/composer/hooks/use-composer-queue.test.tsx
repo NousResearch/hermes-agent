@@ -289,3 +289,68 @@ describe('useComposerQueue park integration', () => {
     expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(0)
   })
 })
+
+// stepQueuedEdit must save the CALLER's live-DOM read, not draftRef.current: the ref
+// is a once-per-frame mirror, so a keystroke immediately followed by ArrowUp/ArrowDown
+// could otherwise persist the pre-keystroke text and silently drop what was just typed
+// (mirrors the sent-message recall guard's own liveComposerDraft fix for this staleness
+// — index.tsx passes its live read in as stepQueuedEdit's second argument).
+describe('stepQueuedEdit (queue-edit navigation)', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    $queuedPromptsBySession.set({})
+    $parkedQueueSessions.set({})
+    setSessionsLoading(false)
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    $queuedPromptsBySession.set({})
+    $parkedQueueSessions.set({})
+    setSessionsLoading(true)
+  })
+
+  it('saves the caller-provided live text, not the stale draftRef mirror, when stepping older', () => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'older entry' })
+    const newer = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'newer entry' })!
+    const { hook } = renderQueueHook({ busy: true }) // busy: auto-drain never fires mid-test
+
+    act(() => {
+      hook.result.current.beginQueuedEdit(newer) // start on "newer entry"
+    })
+
+    let stepped = false
+
+    act(() => {
+      // A keystroke landed in the DOM a frame before draftRef caught up: the live
+      // read carries it, the ref does not. Saves the entry being LEFT (newer),
+      // then moves the edit pointer to the older entry.
+      stepped = hook.result.current.stepQueuedEdit(-1, 'newer entry + a fresh keystroke')
+    })
+
+    expect(stepped).toBe(true)
+    expect(getQueuedPrompts(SESSION_KEY).find(e => e.id === newer.id)?.text).toBe(
+      'newer entry + a fresh keystroke'
+    )
+    expect(hook.result.current.queueEdit?.entryId).not.toBe(newer.id)
+  })
+
+  it('saves the caller-provided live text when stepping newer', () => {
+    const older = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'older entry' })!
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'newer entry' })
+    const { hook } = renderQueueHook({ busy: true })
+
+    act(() => {
+      hook.result.current.beginQueuedEdit(older) // start on "older entry"
+    })
+
+    act(() => {
+      hook.result.current.stepQueuedEdit(1, 'older entry + a fresh keystroke')
+    })
+
+    expect(getQueuedPrompts(SESSION_KEY).find(e => e.id === older.id)?.text).toBe(
+      'older entry + a fresh keystroke'
+    )
+  })
+})

@@ -728,11 +728,23 @@ def summarize_background_review_actions(
             data = json.loads(msg.get("content", "{}"))
         except (json.JSONDecodeError, TypeError):
             continue
-        # Wrapper MCP servers may return a top-level list/scalar; only dict payloads carry
-        # ``success``/``_change``.
         if not isinstance(data, dict) or not data.get("success"):
             continue
-        actions.extend(_action_lines(data, call_details.get(tcid) or {}, verbose))
+        detail = call_details.get(tcid) or {}
+        if detail.get("tool") == "skill_manage" and "results" in data:
+            # Top-level success means the request was handled; only successfully applied
+            # operations prove that a skill change occurred and merit a notification.
+            results = data.get("results")
+            operations_applied = data.get("operation_applied", data.get("operations_applied"))
+            applied = operations_applied is True or (
+                isinstance(operations_applied, int) and not isinstance(operations_applied, bool)
+                and operations_applied > 0
+            )
+            if not applied or not isinstance(results, list):
+                continue
+            if not any(isinstance(result, dict) and result.get("success") is True for result in results):
+                continue
+        actions.extend(_action_lines(data, detail, verbose))
     return actions
 
 
@@ -1272,6 +1284,8 @@ def _run_review_in_thread(
         _log_review_completion(st.review_usage, _classify_review_result(actions))
         if actions:
             _publish_review_summary(agent, actions)
+        elif getattr(agent, "memory_notifications", "on") != "off":
+            _publish_review_summary(agent, ["Review complete — no changes"])
     except Exception as e:
         logger.warning("Background memory/skill review failed: %s", e)
         if st.review_usage:

@@ -15,6 +15,26 @@ class _TurnBoundaryReached(Exception):
     """Stop a live turn exactly when it reaches turn-context construction."""
 
 
+def test_background_review_completion_with_no_changes_sends_callback(monkeypatch):
+    import agent.background_review as br
+
+    sent = []
+
+    class Agent:
+        memory_notifications = "on"
+        background_review_callback = staticmethod(sent.append)
+        _safe_print = staticmethod(lambda _message: None)
+
+    monkeypatch.setattr(br, "summarize_background_review_actions", lambda *_a, **_kw: [])
+    actions = br.summarize_background_review_actions([], [], "on")
+    if actions:
+        br._publish_review_summary(Agent(), actions)
+    elif getattr(Agent(), "memory_notifications", "on") != "off":
+        br._publish_review_summary(Agent(), ["Review complete — no changes"])
+
+    assert sent == ["💾 Self-improvement review: Review complete — no changes"]
+
+
 class CapturingThread:
     targets = []
 

@@ -78,6 +78,73 @@ def test_handles_non_json_tool_content_gracefully():
 
     assert actions == ["Memory updated."]
 
+def test_skill_manage_success_without_applied_operations_does_not_report_change():
+    """Wrapper success may mean the request was handled, not that it changed a skill."""
+    review_messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call_skill",
+                "function": {
+                    "name": "skill_manage",
+                    "arguments": json.dumps({"operations": [{"action": "patch", "name": "example"}]}),
+                },
+            }],
+        },
+        _tool_msg("call_skill", {
+            "success": True,
+            "operations_applied": False,
+            "results": [{"success": False, "action": "patch", "name": "example"}],
+        }),
+    ]
+
+    assert _summarize(review_messages, prior_snapshot=[]) == []
+
+
+def test_skill_manage_success_with_applied_operation_reports_change():
+    review_messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call_skill",
+                "function": {
+                    "name": "skill_manage",
+                    "arguments": json.dumps({"operations": [{"action": "patch", "name": "example"}]}),
+                },
+            }],
+        },
+        _tool_msg("call_skill", {
+            "success": True,
+            "operations_applied": True,
+            "results": [{"success": True, "action": "patch", "name": "example", "file_path": "SKILL.md"}],
+        }),
+    ]
+
+    assert _summarize(review_messages, prior_snapshot=[]) == ["Skill 'example' patched (SKILL.md)"]
+
+
+def test_skill_manage_accepts_positive_operation_count():
+    review_messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call_skill",
+                "function": {
+                    "name": "skill_manage",
+                    "arguments": json.dumps({"operations": [{"action": "patch", "name": "example"}]}),
+                },
+            }],
+        },
+        _tool_msg("call_skill", {
+            "success": True,
+            "operations_applied": 1,
+            "results": [{"success": True, "action": "patch", "name": "example"}],
+        }),
+    ]
+
+    assert _summarize(review_messages, prior_snapshot=[]) == ["Skill 'example' patched"]
+
+
 def test_empty_inputs():
     assert _summarize([], []) == []
     assert _summarize(None, None) == []

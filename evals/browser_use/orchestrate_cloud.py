@@ -143,6 +143,8 @@ for task, model, rep in cells:
             [PY, os.path.join(ROOT, "single_run.py"), "pr", task, model, str(rep)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=args.run_timeout,
             env=env,
         )

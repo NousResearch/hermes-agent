@@ -115,7 +115,7 @@ def rollout_stats(path: str) -> dict:
 def codex(args: list, prompt: str, timeout: int = 3600) -> str:
     proc = subprocess.run(
         ["codex", "exec", *args, "--skip-git-repo-check", prompt],
-        cwd=str(WORKDIR), capture_output=True, text=True, timeout=timeout,
+        cwd=str(WORKDIR), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
     )
     return proc.stdout + proc.stderr
 

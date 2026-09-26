@@ -84,6 +84,8 @@ class StreamingWaitMonitor:
                 self._mon.wait_notice_started_ts = None  # Reconnect status has its own owner.
                 self._mon.wait_notice.reset()
                 self._kill_stale_stream(_stale_elapsed)
+            elif (_tool_arg_problem := self._tool_argument_problem()) is not None:
+                self._kill_stale_stream(_stale_elapsed, reason=_tool_arg_problem)
             if self.agent._interrupt_requested:
                 self._abort_for_interrupt(_stale_elapsed)
                 return

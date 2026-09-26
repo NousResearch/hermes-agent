@@ -145,6 +145,15 @@ class DispatchResult:
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
     a failure — a long quota window must never trip the circuit breaker."""
+    gate_auto_resolved: list[str] = field(default_factory=list)
+    """Task ids unblocked this tick because every GitHub PR named in their
+    block reason had merged (see :mod:`hermes_cli.kanban_pr_gate`). Surfaced so
+    dispatch reports and board sweeps can COUNT the automation rather than
+    infer it from card history."""
+    gate_closed_unmerged: list[str] = field(default_factory=list)
+    """Task ids whose gate PR is CLOSED WITHOUT MERGING. Deliberately NOT
+    unblocked: the premise died rather than being satisfied, so a human has to
+    re-point or retire the card. One advisory comment is posted, once."""
     skipped_locked: bool = False
     """True when another process held the board's dispatch lock: this tick did
     no DB writes; the lock holder is making progress on the same board."""
@@ -1916,6 +1925,27 @@ def _memory_pressure_level(sample: Optional[Mapping[str, Any]] = None) -> str:
         return "unknown"
 
 
+def _prefetch_pr_gates_for_tick(
+    conn: sqlite3.Connection, *, dry_run: bool = False,
+):
+    """Perform bounded GitHub I/O before the dispatcher writer lock."""
+    if dry_run:
+        return None
+    try:
+        from hermes_cli import kanban_pr_gate
+
+        return kanban_pr_gate.prefetch_pr_gate_states(conn)
+    except Exception as exc:
+        if type(exc).__name__ == "SandboxEscape":
+            raise  # see _reevaluate_pr_gates_for_tick: never absorbed.
+        _kb._log.warning(
+            "kanban dispatch: PR-gate prefetch failed (%s: %s); "
+            "continuing this tick without gate mutation",
+            type(exc).__name__, exc,
+        )
+        return None
+
+
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -1939,6 +1969,8 @@ def dispatch_once(
     ``skipped_locked=True`` and writes nothing; the lock is keyed on the
     resolved DB path so unrelated boards tick in parallel.
     """
+    pr_gate_prefetch = _prefetch_pr_gates_for_tick(conn, dry_run=dry_run)
+
     def _locked_tick() -> DispatchResult:
         return _dispatch_once_locked(
             conn,
@@ -1953,6 +1985,7 @@ def dispatch_once(
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
             reconcile_orphans=reconcile_orphans,
+            pr_gate_prefetch=pr_gate_prefetch,
         )
 
     try:
@@ -2141,6 +2174,7 @@ def _run_reclaim_phase(
     failure_limit: int,
     reconcile_orphans: bool,
     board: Optional[str] = None,
+    pr_gate_prefetch=None,
 ) -> None:
     """Reclaim stale/orphaned/crashed/timed-out running tasks, then promote."""
     reap_worker_zombies()
@@ -2155,7 +2189,47 @@ def _run_reclaim_phase(
     result.auto_blocked.extend(getattr(detect_crashed_workers, "_last_auto_blocked", []))
     result.rate_limited.extend(getattr(detect_crashed_workers, "_last_rate_limited", []))
     result.timed_out = enforce_max_runtime(conn)
+    # Re-evaluate external PR gates BEFORE promotion so a card whose "merge
+    # PR #N then unblock me" premise is already satisfied becomes spawnable in
+    # the SAME tick. Bounded, cached and fail-safe: see hermes_cli.kanban_pr_gate.
+    _reevaluate_pr_gates(conn, result, prefetched=pr_gate_prefetch)
     result.promoted = _kb.recompute_ready(conn, failure_limit=failure_limit)
+
+
+def _reevaluate_pr_gates(
+    conn: sqlite3.Connection, result: DispatchResult, *, prefetched=None,
+) -> None:
+    """Unblock cards whose every referenced GitHub PR has already merged.
+
+    Fail-open by construction: any exception is logged and the tick continues.
+    A diagnostic that can brick the dispatcher would be worse than the stale
+    block class it exists to close.
+    """
+    if prefetched is None:
+        return
+    try:
+        from hermes_cli import kanban_pr_gate
+
+        for outcome in kanban_pr_gate.reevaluate_pr_gates(
+            conn, prefetched=prefetched,
+        ):
+            if outcome.action == "unblocked":
+                result.gate_auto_resolved.append(outcome.task_id)
+            elif outcome.action == "closed_unmerged":
+                result.gate_closed_unmerged.append(outcome.task_id)
+    except Exception as exc:
+        # A sandbox escape is NOT an ordinary fault to absorb: it means a
+        # harness with a fabricated PR oracle is pointed at a real board. The
+        # fail-open policy below exists so a diagnostic cannot brick dispatch;
+        # applying it here would instead reduce a loud, actionable refusal to a
+        # log line the harness author never reads. Re-raise.
+        if type(exc).__name__ == "SandboxEscape":
+            raise
+        _kb._log.warning(
+            "kanban dispatch: PR-gate re-evaluation failed (%s: %s); "
+            "continuing this tick",
+            type(exc).__name__, exc,
+        )
 
 
 def _tick_spawn_budget(
@@ -2292,6 +2366,7 @@ def _dispatch_once_locked(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    pr_gate_prefetch=None,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
     todo -> ready, then atomically claim each spawnable ready/review row and
@@ -2301,7 +2376,8 @@ def _dispatch_once_locked(
     result = DispatchResult()
     _run_reclaim_phase(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
-        failure_limit=failure_limit, reconcile_orphans=reconcile_orphans, board=board,
+        failure_limit=failure_limit, reconcile_orphans=reconcile_orphans,
+        board=board, pr_gate_prefetch=pr_gate_prefetch,
     )
     may_spawn, spawn_budget = _tick_spawn_budget(
         conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,

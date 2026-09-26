@@ -2370,6 +2370,17 @@ class TestIsTimeoutError:
 
         assert _is_timeout_error(ReadTimeout("slow")) is True
 
+    def test_http_408_and_504_treated_as_timeout(self):
+        from agent.auxiliary_client import _is_timeout_error
+
+        class FakeStatusError(Exception):
+            def __init__(self, status_code):
+                self.status_code = status_code
+
+        assert _is_timeout_error(FakeStatusError(408)) is True
+        assert _is_timeout_error(FakeStatusError(504)) is True
+        assert _is_timeout_error(FakeStatusError(500)) is False
+
 
 class TestIsConnectionError:
     """Tests for _is_connection_error detection."""

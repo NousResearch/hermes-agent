@@ -199,3 +199,32 @@ def test_quiet_single_query_main_finalizes_while_preserving_exit_code(monkeypatc
     assert ("claim", "cli", True) in calls
     assert ("run", "hello", []) in calls
     assert calls[-1] == ("finalize", "quiet-session")
+
+
+def test_finalize_single_query_closes_agent(monkeypatch):
+    from types import SimpleNamespace
+    import hermes_cli.cli_shutdown as cli_shutdown
+
+    calls = []
+    fake_agent = SimpleNamespace(
+        session_id="agent-session",
+        platform="cli",
+        close=lambda: calls.append("agent_close"),
+    )
+    fake_cli = SimpleNamespace(
+        agent=fake_agent,
+        session_id="cli-session",
+        _release_active_session=lambda: calls.append("release"),
+    )
+    import cli as cli_mod
+    monkeypatch.setattr(cli_mod, "_notify_single_query_session_finalize", lambda _cli: calls.append("finalize"))
+    monkeypatch.setattr(cli_mod, "_run_cleanup", lambda **kwargs: calls.append("cleanup"))
+    monkeypatch.setattr(cli_mod, "_wait_for_oneshot_background_completions", lambda _cli: None)
+    monkeypatch.setattr(cli_mod, "_flush_one_shot_session_store", lambda _cli: None)
+
+    cli_shutdown._finalize_single_query(fake_cli)
+
+    assert "agent_close" in calls
+    assert "release" in calls
+    assert calls.index("agent_close") < calls.index("release")
+

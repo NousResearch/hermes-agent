@@ -2,6 +2,8 @@ import type { Translations } from "./types";
 
 export const zh: Translations = {
   common: {
+    loadFailed: "无法加载{what}。请确认面板服务在运行，然后点击重试。",
+    loadFailedDetails: "详情：{detail}",
     save: "保存",
     saving: "保存中...",
     cancel: "取消",
@@ -43,9 +45,11 @@ export const zh: Translations = {
     expand: "展开",
     general: "通用",
     messaging: "消息平台",
+    gateway: "网关",
     pluginLoadFailed:
       "无法加载此插件的脚本。请检查网络请求（dashboard-plugins/…）以及服务器上的插件路径。",
     pluginNotRegistered: "插件脚本未调用 register()，或执行出错。请打开浏览器控制台查看详情。",
+    gatewayHint: "消息平台、API 服务器和 Webhook 在「渠道」页面配置。以下是网关级设置（代理/中继模式与全局白名单）。",
   },
 
   app: {
@@ -89,6 +93,15 @@ export const zh: Translations = {
     statusOverview: "状态概览",
     system: "系统",
     webUi: "管理面板",
+    managingProfile: "正在管理档案",
+    currentProfileOption: "此面板（{name}）",
+    managingProfileBanner: "正在管理档案「{name}」—— 配置、密钥、技能、MCP、模型和新聊天都作用于该档案。",
+    memoryOomRestartBanner: "智能体意外重启，很可能是内存耗尽所致。长会话和大量并发任务会增加内存占用。",
+    memoryCriticalBanner: "智能体内存即将耗尽，可能会重启。可考虑关闭闲置会话或升级内存。",
+    memoryElevatedBanner: "智能体内存偏低。",
+    diskCriticalBanner: "智能体的磁盘几乎已满。新消息、记忆和设置可能无法保存。",
+    diskElevatedBanner: "智能体的磁盘空间将满。可考虑清理旧会话或扩容存储。",
+    dismiss: "忽略",
   },
 
   status: {
@@ -100,6 +113,7 @@ export const zh: Translations = {
     connected: "已连接",
     connectedPlatforms: "已连接平台",
     disconnected: "已断开",
+    disabled: "已禁用",
     error: "错误",
     failed: "失败",
     gateway: "网关",
@@ -122,6 +136,11 @@ export const zh: Translations = {
     updateHermes: "更新 Hermes",
     updatingHermes: "正在更新 Hermes…",
     waitingForOutput: "等待输出…",
+    restartGatewayConfirmMessage: "这将重启 Hermes 网关进程。已连接的渠道和活动会话会在之后自动重连。",
+    restartGatewayConfirmTitle: "重启网关？",
+    updateHermesConfirmMessage: "这将运行 hermes update，完成后重启网关。在此之前活动会话会保留其提示缓存。",
+    updateHermesConfirmNow: "立即更新",
+    updateHermesConfirmTitle: "更新 Hermes？",
   },
 
   sessions: {
@@ -226,6 +245,7 @@ export const zh: Translations = {
   },
 
   cron: {
+    loadWhat: "定时任务",
     confirmDeleteMessage: "将从此计划移除该任务，此操作无法撤销。",
     confirmDeleteTitle: "删除定时任务？",
     newJob: "新建定时任务",
@@ -278,11 +298,13 @@ export const zh: Translations = {
     resume: "恢复",
     triggerNow: "立即触发",
     delivery: {
+      needsHomeChannel: "请先设置主渠道",
       local: "本地",
       telegram: "Telegram",
       discord: "Discord",
       slack: "Slack",
       email: "邮件",
+    noneConfigured: "未配置消息平台。请在「渠道」中配置一个以接收报告。",
     },
   },
 
@@ -293,7 +315,8 @@ export const zh: Translations = {
     nameRequired: "名称必填",
     nameRule:
       "仅允许小写字母、数字、下划线和短横线；首字符必须是字母或数字；最多 64 个字符。",
-    invalidName: "多Agent配置名称非法",    cloneFrom: "从配置文件克隆",
+    invalidName: "多Agent配置名称非法",
+    cloneFrom: "从配置文件克隆",
     cloneFromNone: "无（空白）",
     allProfiles: "多Agent配置列表",
     noProfiles: "暂无多Agent配置。",
@@ -316,9 +339,54 @@ export const zh: Translations = {
     created: "已创建",
     deleted: "已删除",
     renamed: "已重命名",
+    activeProfile: "当前档案",
+    activeBadge: "活跃",
+    setActive: "设为当前",
+    activeSet: "当前档案已设置",
+    gatewayRunning: "网关运行中",
+    gatewayStopped: "网关已停止",
+    gatewayRunningWarning: "此档案的网关正在运行 —— 将被停止。",
+    aliasBadge: "别名",
+    description: "描述",
+    descriptionPlaceholder: "这个档案擅长什么？用于按角色路由看板任务。",
+    noDescription: "暂无描述",
+    editDescription: "编辑描述",
+    descriptionSaved: "描述已保存",
+    reviewBadge: "待审",
+    autoGenerate: "自动生成",
+    generating: "生成中…",
+    describeFailed: "无法生成描述",
+    distribution: "分布",
+    advancedOptions: "高级选项",
+    cloneAll: "克隆全部内容（记忆、会话、技能、状态）",
+    noSkillsOption: "不预置内置技能",
+    descriptionOptional: "描述（可选）",
+    modelOptional: "模型（可选）",
+    modelInherit: "继承自克隆源 / 默认",
+    modelLoading: "正在加载模型…",
+    modelNone: "没有已认证的提供商 —— 请先设置 API 密钥",
+    editModel: "更换模型",
+    modelSaved: "模型已更新",
+    modelSelect: "选择模型",
+    actions: "操作",
   },
 
   pluginsPage: {
+    catalogHeading: "插件目录",
+    catalogHint:
+      "由 Nous 审核、锁定到具体提交的插件。从这里安装可获得供应链安全版本。",
+    catalogSearchPlaceholder: "搜索目录…",
+    catalogEmpty: "没有匹配的目录条目。",
+    catalogEmptyDocsLink: "了解 Hermes 插件",
+    catalogInstallBtn: "安装",
+    catalogInstalledBadge: "已安装 ✓",
+    catalogUpdateBtn: "有可用更新",
+    catalogRemovedBadge: "已移除",
+    catalogConfirmTitle: "安装这个插件？",
+    catalogConfirmInstallNote:
+      "插件安装后默认停用；安装完成后启用即可激活。",
+    catalogRequiresEnv: "需要环境变量",
+    removedFromCatalog: "已从目录移除",
     contextEngineLabel: "上下文引擎",
     dashboardSlots: "面板插槽",
     disableRuntime: "禁用",
@@ -361,6 +429,9 @@ export const zh: Translations = {
   },
 
   skills: {
+    loadWhat: "技能",
+    browseHub: "浏览技能中心",
+    createSkill: "创建技能",
     title: "技能",
     searchPlaceholder: "搜索技能和工具集...",
     enabledOf: "已启用 {enabled}/{total}",
@@ -378,6 +449,9 @@ export const zh: Translations = {
     setupNeeded: "需要配置",
     disabledForCli: "CLI 已禁用",
     more: "还有 {count} 个",
+    profileSelector: "档案",
+    currentProfile: "当前（{name}）",
+    managingProfile: "正在管理「{name}」—— 开关只作用于该档案，不影响本面板。",
   },
 
   config: {
@@ -500,6 +574,12 @@ export const zh: Translations = {
   theme: {
     title: "主题",
     switchTheme: "切换主题",
+    fontTitle: "字体",
+    fontDefault: "跟随主题",
+    fontDefaultHint: "使用当前主题的字体",
+    fontSans: "无衬线",
+    fontSerif: "衬线",
+    fontMono: "等宽",
   },
 
   achievements: {
@@ -776,5 +856,28 @@ export const zh: Translations = {
       "工作区路径（可选，留空则根据负责人推导）",
     logTruncated: "（显示最后 100 KB — 完整日志位于 ",
     logAt: "）",
+    needsAssignee: "需要指定负责人",
+    needsAssigneeHint: "依赖已满足，但在你指定档案之前调度器会跳过此任务。",
+    confirmScheduled: "将此任务移至「已计划」？用于已知的时间延迟，而非等待人工。",
+    newTaskTitle: "新建任务 —— {column}",
+    taskTitleLabel: "标题",
+    assigneeLabel: "负责人",
+    assigneeLabelHint: "（留空 = 由调度器分配）",
+    skillsLabel: "技能",
+    skillsLabelHint: "（可选，逗号分隔）",
+    parentLabel: "父任务",
+    parentLabelHint: "（父任务完成前子任务保持阻塞）",
+    boardSettings: "设置",
+    boardSettingsTitle: "看板设置 —— 名称、描述，以及新任务默认继承的项目目录",
+    boardSettingsTitleFor: "看板设置 —— {name}",
+    projectDirectoryOverrideHint: "新任务会将其作为默认工作目录继承；每个任务仍可在创建对话框中覆盖。",
+    commentHint: "评论会在工作者下次运行或调用 kanban_show() 时送达 —— 无需先阻塞任务。",
+    commentHintTitle: "评论是与任务工作者沟通的通道。评论会立即进入主题串 —— 无需先阻塞任务。运行中的工作者会在下次 kanban_show() 或重新拉起时读取；只有在需要工作者停下来等待你输入时才用阻塞。",
+    create: "创建",
+    saving: "保存中…",
+    trash: {
+      confirmTitle: "删除任务？",
+      confirmManyTitle: "删除 {n} 个任务？",
+    },
   },
 };

@@ -1029,6 +1029,8 @@ class GatewayShutdownMixin:
                     restart_source.platform.value, restart_source.chat_id, restart_source.thread_id
                 )
         notified: set[tuple[str, str, Optional[str]]] = set()
+        # A DM topic reaches its private parent, but a forum topic does not replace a group broadcast.
+        private_topic_parents: set[tuple[int, str]] = set()
         for session_key in self._snapshot_running_agents():
             target = await self._shutdown_notification_target(session_key)
             if target is None:
@@ -1063,11 +1065,15 @@ class GatewayShutdownMixin:
             # shape as the stall watcher). The requester's own chat on an in-chat /restart is the
             # requested outcome of that command and is never suppressed.
             async def _send_active(adapter=adapter, chat_id=chat_id, platform_str=platform_str,
-                                   metadata=metadata, dedup_key=dedup_key):
+                                   metadata=metadata, dedup_key=dedup_key,
+                                   private_topic=platform == Platform.TELEGRAM and thread_id is not None
+                                   and getattr(source, "chat_type", None) in {"dm", "private"}):
                 if await self._send_shutdown_notice(
                     adapter, chat_id, msg, "active chat", platform_str, metadata=metadata
                 ):
                     notified.add(dedup_key)
+                    if private_topic:
+                        private_topic_parents.add((id(adapter), chat_id))
             from gateway.warning_notifications import present_notification
             from gateway.run import _async_profile_runtime_scope
             scope = (_async_profile_runtime_scope(self._resolve_profile_home_for_source(source))
@@ -1097,7 +1103,10 @@ class GatewayShutdownMixin:
             if not self._notice_allowed(platform, "home channel"):
                 continue
             dedup_key = _notice_target_key(platform.value, home.chat_id, home.thread_id)
-            if dedup_key in notified:
+            if dedup_key in notified or (
+                platform == Platform.TELEGRAM and home.thread_id is None
+                and (id(adapter), str(home.chat_id)) in private_topic_parents
+            ):
                 continue
             try:
                 metadata = self._thread_metadata_for_target(platform, home.chat_id, home.thread_id, adapter=adapter)

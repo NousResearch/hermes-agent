@@ -168,6 +168,54 @@ class TestRequestToolApproval:
         assert res["approved"] is False
         assert "no interactive user or gateway" in res["message"].lower()
 
+    def test_api_server_exec_ask_uses_approval_bridge(self, monkeypatch):
+        """Plugin escalation reaches the /v1/runs approval bridge when ask mode is active."""
+        monkeypatch.setattr(approval, "_is_interactive_cli", lambda: False)
+        monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
+        monkeypatch.setattr(tools_approval_context, "_is_gateway_approval_context", lambda: False)
+        monkeypatch.setattr(approval, "_is_cron_approval_context", lambda: False)
+        monkeypatch.setattr(tools_approval_context, "_is_cron_approval_context", lambda: False)
+        monkeypatch.setattr(approval, "_is_single_query_approval_context", lambda: False)
+        monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "manual")
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "api_server")
+
+        notified = []
+
+        def approve(data):
+            notified.append(data)
+            assert approval.resolve_gateway_approval(
+                "test-session", "once", request_id=data["request_id"]
+            ) == 1
+
+        approval.register_gateway_notify("test-session", approve)
+        try:
+            res = request_tool_approval("home_lock", "unlock the front door", rule_key="unlock")
+        finally:
+            approval.unregister_gateway_notify("test-session")
+
+        assert res["approved"] is True
+        assert len(notified) == 1
+        assert notified[0]["pattern_key"] == "plugin_rule:unlock"
+
+    def test_api_server_without_exec_ask_remains_fail_closed(self, monkeypatch):
+        """An api_server call without an active approval bridge must not run ungated."""
+        monkeypatch.setattr(approval, "_is_interactive_cli", lambda: False)
+        monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
+        monkeypatch.setattr(tools_approval_context, "_is_gateway_approval_context", lambda: False)
+        monkeypatch.setattr(approval, "_is_cron_approval_context", lambda: False)
+        monkeypatch.setattr(tools_approval_context, "_is_cron_approval_context", lambda: False)
+        monkeypatch.setattr(approval, "_is_single_query_approval_context", lambda: False)
+        monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "manual")
+        monkeypatch.setattr(approval_context, "_get_unattended_approval_mode", lambda: "deny")
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "api_server")
+
+        res = request_tool_approval("home_lock", "unlock the front door", rule_key="unlock")
+
+        assert res["approved"] is False
+        assert "unattended platform" in res["message"].lower()
+
     def test_yolo_session_bypasses_gate(self, monkeypatch):
         """A --yolo session skips the plugin approval gate (parity with the
         dangerous-command path, via the shared _run_approval_gate)."""

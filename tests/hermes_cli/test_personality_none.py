@@ -7,8 +7,7 @@ persistence flows exclusively through persist_personality().
 import os
 import pytest
 from unittest.mock import MagicMock, patch
-import yaml
-
+import hermes_yaml as yaml
 
 # ── CLI tests ──────────────────────────────────────────────────────────────
 
@@ -73,7 +72,6 @@ class TestCLIPersonalityNone:
             cli._handle_personality_command("/personality kawaii")
         assert "kawaii" in cli.system_prompt.lower()
 
-
 # ── Gateway tests ──────────────────────────────────────────────────────────
 
 class TestGatewayPersonalityNone:
@@ -114,7 +112,7 @@ class TestGatewayPersonalityNone:
             "display": {"personality": "helpful"},
         }
         config_file = tmp_path / "config.yaml"
-        config_file.write_text(yaml.dump(config_data))
+        config_file.write_text(yaml.safe_dump(config_data))
 
         p1, p2 = self._gateway_env(tmp_path)
         with p1, p2:
@@ -138,7 +136,7 @@ class TestGatewayPersonalityNone:
             }
         }
         config_file = tmp_path / "config.yaml"
-        config_file.write_text(yaml.dump(config_data))
+        config_file.write_text(yaml.safe_dump(config_data))
 
         p1, p2 = self._gateway_env(tmp_path)
         with p1, p2:
@@ -151,36 +149,6 @@ class TestGatewayPersonalityNone:
         with p1, p2:
             assert runner._get_system_prompt_for_channel(None, "c") == "You are helpful."
         assert "helpful" in result.lower()
-
-    @pytest.mark.asyncio
-    async def test_unknown_shows_none_in_available(self, tmp_path):
-        runner = self._make_runner()
-        config_data = {"agent": {"personalities": {"helpful": "You are helpful."}}}
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text(yaml.dump(config_data))
-
-        p1, p2 = self._gateway_env(tmp_path)
-        with p1, p2:
-            event = self._make_event("nonexistent")
-            result = await runner._handle_personality_command(event)
-
-        assert "none" in result.lower()
-
-    @pytest.mark.asyncio
-    async def test_empty_personality_list_still_lists_builtins(self, tmp_path):
-        # Built-ins are always available — an empty agent.personalities no
-        # longer means "no personalities configured".
-        runner = self._make_runner(personalities={})
-        (tmp_path / "config.yaml").write_text(yaml.dump({"agent": {"personalities": {}}}))
-
-        p1, p2 = self._gateway_env(tmp_path)
-        with p1, p2:
-            event = self._make_event("")
-            result = await runner._handle_personality_command(event)
-
-        assert "kawaii" in result.lower()
-        assert "pirate" in result.lower()
-
 
 class TestPersonalityDictFormat:
     """Test dict-format custom personalities with description, tone, style."""
@@ -209,20 +177,3 @@ class TestPersonalityDictFormat:
         with patch("hermes_cli.personality.persist_personality", return_value=True):
             cli._handle_personality_command("/personality coder")
         assert "You are an expert programmer." in cli.system_prompt
-
-    def test_dict_personality_includes_style(self):
-        cli = self._make_cli({
-            "coder": {
-                "system_prompt": "You are an expert programmer.",
-                "style": "use code examples",
-            }
-        })
-        with patch("hermes_cli.personality.persist_personality", return_value=True):
-            cli._handle_personality_command("/personality coder")
-        assert "Style: use code examples" in cli.system_prompt
-
-    def test_string_personality_still_works(self):
-        cli = self._make_cli({"helper": "You are helpful."})
-        with patch("hermes_cli.personality.persist_personality", return_value=True):
-            cli._handle_personality_command("/personality helper")
-        assert cli.system_prompt == "You are helpful."

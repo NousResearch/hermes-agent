@@ -75,13 +75,13 @@ def github(tmp_path, monkeypatch):
         thread.join()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_pr_completion_requires_current_required_evidence(github):
     with connect() as conn:
         for conclusion in ("failure", "pending", "cancelled", "timed_out", "action_required", "neutral", "skipped", None, "success"):
             github.update(conclusion=conclusion, head="a" * 40)
             tid = kb.create_task(conn, title="Publish", completion_contract="acme/repo")
-            ok = kb.complete_task(conn, tid, metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+            ok = kb.complete_task(conn, tid, result="done", metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
             assert ok is (conclusion == "success")
             task = kb.get_task(conn, tid)
             assert (task.status == "done") is ok
@@ -96,20 +96,20 @@ def test_pr_completion_requires_current_required_evidence(github):
             github.update(conclusion="success", head="a" * 40)
             github[fault] = True
             tid = kb.create_task(conn, title=fault, completion_contract="acme/repo")
-            assert not kb.complete_task(conn, tid, metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+            assert not kb.complete_task(conn, tid, result="done", metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
             assert kb.get_task(conn, tid).status != "done"
             github.pop(fault)
         # Omission and a sibling repository cannot downgrade the stored declaration.
         tid = kb.create_task(conn, title="publish", completion_contract="acme/repo")
         assert not kb.complete_task(conn, tid, summary="local green")
-        assert not kb.complete_task(conn, tid, metadata={"published_pr": "https://github.com/other/repo/pull/7"})
+        assert not kb.complete_task(conn, tid, result="done", metadata={"published_pr": "https://github.com/other/repo/pull/7"})
         before = len(github["requests"])
         local = kb.create_task(conn, title="local", completion_contract="local-only")
         assert kb.complete_task(conn, local, summary="https://github.com/acme/repo/pull/7 is background context")
         assert len(github["requests"]) == before
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_acceptance_receipts_and_terminal_write_share_run_ownership(github):
     with connect() as conn:
         for conclusion in ("success", "failure"):
@@ -122,7 +122,7 @@ def test_acceptance_receipts_and_terminal_write_share_run_ownership(github):
                     assert kb.unblock_task(rival, tid)
                     github["replacement"] = kb.claim_task(rival, tid).current_run_id
             github.update(conclusion=conclusion, race=reclaim)
-            assert not kb.complete_task(conn, tid, expected_run_id=run_id,
+            assert not kb.complete_task(conn, tid, result="done", expected_run_id=run_id,
                 metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
             assert kb.get_task(conn, tid).current_run_id == github["replacement"]
             assert github["replacement"] != run_id

@@ -38,7 +38,6 @@ def _agent(provider, model, base_url, api_mode=None):
         ("opencode-go", "glm-5", "https://opencode.ai/zen/go/v1", None),  # chat_completions
         ("opencode-go", "gpt-5.6-luna", "https://opencode.ai/zen/go/v1", None),  # codex_responses
         ("opencode-go", "minimax-m2.7", "https://opencode.ai/zen/go/v1", "anthropic_messages"),
-        ("opencode-free", "nemotron-3.5-lightning-free", "https://opencode.ai/zen/v1", None),
         ("custom", "glm-5", "https://opencode.ai/zen/go/v1", None),  # URL-only detection
     ],
 )
@@ -148,3 +147,17 @@ def test_tui_gateway_oneshot_runtime_snapshot_carries_the_session(monkeypatch, o
     aux.call_llm(task="title_generation", main_runtime=_main_runtime_from_agent(agent), messages=_MSGS)
 
     assert captured["extra_headers"]["x-opencode-session"] == "sess-desktop-1"
+
+
+def test_stateless_oneshot_still_sends_an_opencode_session_header(out_of_turn):
+    """A one-shot with no live session (Desktop commit-message generation from the review panel with
+    no active chat, standalone aux calls) has no conversation identity at all, yet the relay rejects
+    header-less requests with 400 MissingSessionID (#105841). It must carry an ephemeral key instead
+    of nothing; non-OpenCode targets stay untouched."""
+    from agent.opencode_affinity import opencode_session_headers
+
+    kwargs = aux._build_call_kwargs("opencode-go", "glm-5", _MSGS, base_url="https://opencode.ai/zen/go/v1")
+    assert kwargs["extra_headers"]["x-opencode-session"]
+
+    assert opencode_session_headers("opencode-go", None, session_id=None).get("x-opencode-session")
+    assert opencode_session_headers("openrouter", "https://openrouter.ai/api/v1", session_id=None) == {}

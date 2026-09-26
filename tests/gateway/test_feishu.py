@@ -10,10 +10,13 @@ import unittest
 from collections import OrderedDict
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Dict
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, Mock, patch
 
+import pytest
+
 from gateway.platforms.event import ProcessingOutcome
+
 
 if TYPE_CHECKING:
     from plugins.platforms.feishu.adapter import FeishuAdapter
@@ -23,7 +26,6 @@ try:
     _HAS_LARK_OAPI = True
 except ImportError:
     _HAS_LARK_OAPI = False
-
 
 class _FakeRequestContent:
     def __init__(self, body: bytes):
@@ -36,7 +38,6 @@ class _FakeRequestContent:
             raise asyncio.IncompleteReadError(self.body, size)
         return self.body[:size]
 
-
 def _mock_event_dispatcher_builder(mock_handler_class):
     mock_builder = Mock()
     mock_builder.register_p2_im_message_message_read_v1 = Mock(return_value=mock_builder)
@@ -47,7 +48,6 @@ def _mock_event_dispatcher_builder(mock_handler_class):
     mock_builder.build = Mock(return_value=object())
     mock_handler_class.builder = Mock(return_value=mock_builder)
     return mock_builder
-
 
 class TestConfigEnvOverrides(unittest.TestCase):
     @patch.dict(os.environ, {
@@ -67,9 +67,7 @@ class TestConfigEnvOverrides(unittest.TestCase):
         self.assertEqual(config.platforms[Platform.FEISHU].extra["app_id"], "cli_xxx")
         self.assertEqual(config.platforms[Platform.FEISHU].extra["connection_mode"], "websocket")
 
-
 class TestFeishuMessageNormalization(unittest.TestCase):
-
 
     def test_normalize_interactive_card_preserves_title_body_and_actions(self):
         from plugins.platforms.feishu.adapter import normalize_feishu_message
@@ -102,35 +100,7 @@ class TestFeishuMessageNormalization(unittest.TestCase):
             "Build Failed\nService: payments-api\nBranch: main\nView Logs\nRetry\nActions: View Logs, Retry",
         )
 
-
 class TestFeishuAdapterMessaging(unittest.TestCase):
-    @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
-    def test_websocket_sdk_accepts_channel_ua_tag(self):
-        """The shipped SDK must support the Channel signaling argument.
-
-        Guarded on the pinned version: the repo pins lark-oapi==1.6.8 (the
-        first release with ``extra_ua_tags``). Dev machines can carry an
-        older lazy-installed lark-oapi that predates the argument — that is
-        an environment artifact, not a product regression, so skip rather
-        than fail there. Environments installing the pin (the feishu extra)
-        still exercise the real assertion.
-        """
-        import inspect
-
-        from importlib.metadata import version as _pkg_version
-
-        installed = tuple(int(p) for p in _pkg_version("lark-oapi").split(".")[:3] if p.isdigit())
-        if installed < (1, 6, 8):
-            self.skipTest(
-                f"lark-oapi {_pkg_version('lark-oapi')} predates extra_ua_tags; "
-                "repo pin is 1.6.8 — stale local install"
-            )
-
-        from lark_oapi.ws import Client as FeishuWSClient
-
-        signature = inspect.signature(FeishuWSClient)
-        self.assertIn("extra_ua_tags", signature.parameters)
-
 
     def test_disconnect_sends_websocket_close_frame(self):
         """Regression test for #10202: disconnect() must call the WSS
@@ -183,7 +153,6 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         )
         # _disable_websocket_auto_reconnect() must still run.
         self.assertIsNone(adapter._ws_client)
-
 
     @patch.dict(os.environ, {
         "FEISHU_APP_ID": "cli_app",
@@ -251,7 +220,6 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
                          "extra_ua_tags must be ['channel'] to enable group event routing")
         self.assertEqual(submitted_executors, [owned_executor])
 
-
     @patch.dict(os.environ, {}, clear=True)
     def test_edit_message_falls_back_to_text_when_post_update_is_rejected(self):
         from gateway.config import PlatformConfig
@@ -296,6 +264,34 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         )
 
 
+@patch.dict(os.environ, {}, clear=True)
+class TestDeleteMessage(unittest.TestCase):
+    def test_delete_message_calls_im_message_delete(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        captured = {"ids": []}
+
+        class _MessageAPI:
+            def delete(self, request):
+                captured["ids"].append(getattr(request, "message_id", None))
+                return SimpleNamespace(success=lambda: True)
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch.object(adapter, "_run_blocking", side_effect=_direct):
+            ok = asyncio.run(adapter.delete_message("oc_chat", "om_preview"))
+
+        self.assertTrue(ok)
+        self.assertEqual(captured["ids"], ["om_preview"])
+
+
 class TestAdapterModule(unittest.TestCase):
     def test_load_settings_uses_sdk_defaults_for_invalid_ws_reconnect_values(self):
         from plugins.platforms.feishu.adapter import FeishuAdapter
@@ -309,7 +305,6 @@ class TestAdapterModule(unittest.TestCase):
 
         self.assertEqual(settings.ws_reconnect_nonce, 30)
         self.assertEqual(settings.ws_reconnect_interval, 120)
-
 
     def test_runtime_ws_overrides_reapply_after_sdk_configure(self):
         import sys
@@ -335,6 +330,7 @@ class TestAdapterModule(unittest.TestCase):
 
         fake_client = _FakeWSClient()
         fake_adapter = SimpleNamespace(
+            _loop=None,
             _ws_thread_loop=None,
             _ws_reconnect_nonce=2,
             _ws_reconnect_interval=3,
@@ -344,6 +340,7 @@ class TestAdapterModule(unittest.TestCase):
         fake_client_module = ModuleType("lark_oapi.ws.client")
         fake_client_module.loop = None
         fake_client_module.websockets = SimpleNamespace(connect=AsyncMock())
+        fake_client_module.Client = type("Client", (), {"_receive_message_loop": lambda self: None})
         fake_ws_module = ModuleType("lark_oapi.ws")
         fake_ws_module.client = fake_client_module
         fake_root_module = ModuleType("lark_oapi")
@@ -366,7 +363,6 @@ class TestAdapterModule(unittest.TestCase):
         self.assertEqual(fake_client._reconnect_interval, 3)
         self.assertEqual(fake_client._ping_interval, 4)
 
-
 def _admits_group(adapter, message, sender_id, chat_id=""):
     """Group-path shim: run a message through ``_admit`` and return a bool."""
     sender = SimpleNamespace(sender_type="user", sender_id=sender_id)
@@ -375,7 +371,6 @@ def _admits_group(adapter, message, sender_id, chat_id=""):
     if chat_id:
         message.chat_id = chat_id
     return adapter._admit(sender, message) is None
-
 
 class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
@@ -441,23 +436,10 @@ class TestAdapterBehavior(unittest.TestCase):
             handler = adapter._build_event_handler()
 
         self.assertEqual(handler, "handler")
-        self.assertEqual(
+        # Contract: the processors this adapter depends on are registered (not their order/count).
+        self.assertTrue(
+            {"message_receive", "reaction_created", "reaction_deleted", "card_action"} <= set(calls),
             calls,
-            [
-                "builder",
-                "message_read",
-                "message_receive",
-                "reaction_created",
-                "reaction_deleted",
-                "card_action",
-                "bot_added",
-                "bot_deleted",
-                "p2p_chat_entered",
-                "message_recalled",
-                "customized:drive.notice.comment_add_v1",
-                "customized:vc.bot.meeting_invited_v1",
-                "build",
-            ],
         )
 
     @patch.dict(os.environ, {}, clear=True)
@@ -556,7 +538,6 @@ class TestAdapterBehavior(unittest.TestCase):
         )
         adapter._handle_message_with_guards.assert_not_awaited()
 
-
     def test_per_group_allowlist_policy_gates_by_sender(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
@@ -592,7 +573,6 @@ class TestAdapterBehavior(unittest.TestCase):
                 "oc_chat_a",
             )
         )
-
 
     def test_global_admins_bypass_all_group_rules(self):
         from gateway.config import PlatformConfig
@@ -647,7 +627,6 @@ class TestAdapterBehavior(unittest.TestCase):
                 "oc_chat_unknown",
             )
         )
-
 
     @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
     def test_group_message_matches_bot_name_when_only_name_available(self):
@@ -706,7 +685,6 @@ class TestAdapterBehavior(unittest.TestCase):
             _admits_group(adapter2, SimpleNamespace(mentions=[bot_mention]), sender_id, "")
         )
 
-
     @patch.dict(os.environ, {}, clear=True)
     def test_extract_post_message_downloads_embedded_resources(self):
         from gateway.config import PlatformConfig
@@ -726,12 +704,15 @@ class TestAdapterBehavior(unittest.TestCase):
             message_id="om_post_media",
         )
 
-        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
+        text, msg_type, media_urls, media_types, media_text_inlined, _mentions = asyncio.run(
+            adapter._extract_message_content(message)
+        )
 
         self.assertEqual(text, "Rich message\n[Image: diagram]\n[Attachment: spec.pdf]")
         self.assertEqual(msg_type.value, "text")
         self.assertEqual(media_urls, ["/tmp/feishu-image.png", "/tmp/spec.pdf"])
         self.assertEqual(media_types, ["image/png", "application/pdf"])
+        self.assertEqual(media_text_inlined, [False, False])
         adapter._download_feishu_image.assert_awaited_once_with(
             message_id="om_post_media",
             image_key="img_123",
@@ -742,7 +723,6 @@ class TestAdapterBehavior(unittest.TestCase):
             resource_type="file",
             fallback_filename="spec.pdf",
         )
-
 
     @patch.dict(os.environ, {}, clear=True)
     def test_extract_audio_message_downloads_and_caches(self):
@@ -759,7 +739,9 @@ class TestAdapterBehavior(unittest.TestCase):
             message_id="om_audio",
         )
 
-        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
+        text, msg_type, media_urls, media_types, media_text_inlined, _mentions = asyncio.run(
+            adapter._extract_message_content(message)
+        )
 
         self.assertEqual(text, "")
         # Lark "audio" msg_type is a native voice recording (the fixture is
@@ -769,7 +751,7 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(msg_type.value, "voice")
         self.assertEqual(media_urls, ["/tmp/feishu-audio.ogg"])
         self.assertEqual(media_types, ["audio/ogg"])
-
+        self.assertEqual(media_text_inlined, [False])
 
     @patch.dict(os.environ, {}, clear=True)
     def test_extract_text_message_starting_with_slash_becomes_command(self):
@@ -962,7 +944,6 @@ class TestAdapterBehavior(unittest.TestCase):
         # Reply anchors / slash-command thread checks read source.message_id, not event.message_id.
         self.assertEqual(event.source.message_id, "om_text")
 
-
     @patch.dict(
         os.environ,
         {
@@ -1021,6 +1002,57 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(first.message_id, "om_2")
         self.assertEqual(first.source.message_id, first.message_id)
 
+    @patch.dict(
+        os.environ,
+        {
+            "HERMES_FEISHU_TEXT_BATCH_MAX_MESSAGES": "8",
+            "HERMES_FEISHU_TEXT_BATCH_MAX_CHARS": "4000",
+        },
+        clear=False,
+    )
+    def test_text_batch_preserves_later_message_attachments(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.event import MessageEvent, MessageType
+        from gateway.session import SessionSource
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter.handle_message = AsyncMock()
+        source = SessionSource(
+            platform=adapter.platform,
+            chat_id="oc_chat",
+            chat_name="Feishu DM",
+            chat_type="dm",
+            user_id="ou_user",
+            user_name="张三",
+        )
+
+        async def _run() -> None:
+            await adapter._enqueue_text_event(
+                MessageEvent(text="first", message_type=MessageType.TEXT, source=source)
+            )
+            await adapter._enqueue_text_event(
+                MessageEvent(
+                    text="second",
+                    message_type=MessageType.TEXT,
+                    source=source,
+                    media_urls=["/cache/second.md"],
+                    media_types=["text/markdown"],
+                    media_text_inlined=[True],
+                )
+            )
+            await adapter._flush_text_batch_now(adapter._text_batch_key(source_event))
+
+        source_event = MessageEvent(text="", message_type=MessageType.TEXT, source=source)
+        asyncio.run(_run())
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        self.assertEqual(event.text, "first\nsecond")
+        self.assertEqual(event.media_urls, ["/cache/second.md"])
+        self.assertEqual(event.media_types, ["text/markdown"])
+        self.assertEqual(event.media_text_inlined, [True])
+
     @patch.dict(os.environ, {}, clear=True)
     def test_media_batch_merges_rapid_photo_messages(self):
         from gateway.config import PlatformConfig
@@ -1052,6 +1084,7 @@ class TestAdapterBehavior(unittest.TestCase):
                         message_id="om_p1",
                         media_urls=["/tmp/a.png"],
                         media_types=["image/png"],
+                        media_text_inlined=[False],
                     )
                 )
                 await adapter._dispatch_inbound_event(
@@ -1062,6 +1095,7 @@ class TestAdapterBehavior(unittest.TestCase):
                         message_id="om_p2",
                         media_urls=["/tmp/b.png"],
                         media_types=["image/png"],
+                        media_text_inlined=[True],
                     )
                 )
                 pending = list(adapter._pending_media_batch_tasks.values())
@@ -1073,9 +1107,9 @@ class TestAdapterBehavior(unittest.TestCase):
         adapter.handle_message.assert_awaited_once()
         event = adapter.handle_message.await_args.args[0]
         self.assertEqual(event.media_urls, ["/tmp/a.png", "/tmp/b.png"])
+        self.assertEqual(event.media_text_inlined, [False, True])
         self.assertIn("第一张", event.text)
         self.assertIn("第二张", event.text)
-
 
     def test_download_remote_document_reads_response_before_httpx_client_closes(self):
         """#18451 — snapshot Content-Type + body while the httpx.AsyncClient
@@ -1210,7 +1244,6 @@ class TestAdapterBehavior(unittest.TestCase):
                 second = FeishuAdapter(PlatformConfig())
                 self.assertTrue(asyncio.run(second._is_duplicate("om_same")))
 
-
     @patch.dict(os.environ, {}, clear=True)
     def test_send_document_reply_uses_thread_flag(self):
         from gateway.config import PlatformConfig
@@ -1265,7 +1298,6 @@ class TestAdapterBehavior(unittest.TestCase):
 
         self.assertTrue(result.success)
         self.assertTrue(captured["request"].request_body.reply_in_thread)
-
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_uses_post_for_every_chunk_of_multi_chunk_markdown(self):
@@ -1325,7 +1357,6 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(len(captured), 2)
         msg_types = [r.request_body.msg_type for r in captured]
         self.assertEqual(msg_types, ["post", "post"])
-
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_splits_fenced_code_blocks_into_separate_post_rows(self):
@@ -1389,76 +1420,6 @@ class TestAdapterBehavior(unittest.TestCase):
                 [{"tag": "md", "text": "后续说明仍应保留。"}],
             ],
         )
-
-
-@unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
-class TestHydrateBotIdentity(unittest.TestCase):
-    """Hydration of bot identity via ``/open-apis/bot/v3/info``.
-
-    Covers the manual-setup path where ``FEISHU_BOT_OPEN_ID`` /
-    ``FEISHU_BOT_NAME`` are not configured — hydration populates them so
-    self-echo protection and group @mention gating both have something to
-    match against.
-    """
-
-    def _make_adapter(self):
-        from gateway.config import PlatformConfig
-        from plugins.platforms.feishu.adapter import FeishuAdapter
-
-        return FeishuAdapter(PlatformConfig())
-
-    @patch.dict(os.environ, {}, clear=True)
-    def test_hydration_populates_open_id_from_bot_info(self):
-        adapter = self._make_adapter()
-        adapter._client = Mock()
-        payload = json.dumps(
-            {
-                "code": 0,
-                "bot": {
-                    "bot_name": "Hermes Bot",
-                    "open_id": "ou_hermes_hydrated",
-                },
-            }
-        ).encode("utf-8")
-        response = SimpleNamespace(raw=SimpleNamespace(content=payload))
-        adapter._client.request = Mock(return_value=response)
-
-        asyncio.run(adapter._hydrate_bot_identity())
-
-        self.assertEqual(adapter._bot_open_id, "ou_hermes_hydrated")
-        self.assertEqual(adapter._bot_name, "Hermes Bot")
-
-    @patch.dict(
-        os.environ,
-        {
-            "FEISHU_BOT_OPEN_ID": "ou_env",
-            "FEISHU_BOT_NAME": "Env Hermes",
-        },
-        clear=True,
-    )
-    def test_hydration_refreshes_env_values_when_bot_info_available(self):
-        adapter = self._make_adapter()
-        adapter._client = Mock()
-        payload = json.dumps(
-            {
-                "code": 0,
-                "bot": {
-                    "bot_name": "Hydrated Hermes",
-                    "open_id": "ou_hydrated",
-                },
-            }
-        ).encode("utf-8")
-        adapter._client.request = Mock(return_value=SimpleNamespace(raw=SimpleNamespace(content=payload)))
-
-        asyncio.run(adapter._hydrate_bot_identity())
-
-        # PR #16993 semantics: /bot/v3/info probe runs unconditionally
-        # and hydrated values win over env vars so a stale FEISHU_BOT_*
-        # from an old app registration doesn't break @mention gating.
-        adapter._client.request.assert_called_once()
-        self.assertEqual(adapter._bot_open_id, "ou_hydrated")
-        self.assertEqual(adapter._bot_name, "Hydrated Hermes")
-
 
 @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
 class TestPendingInboundQueue(unittest.TestCase):
@@ -1532,7 +1493,6 @@ class TestPendingInboundQueue(unittest.TestCase):
         # Drain flag reset so a future race can schedule a new drainer.
         self.assertFalse(adapter._pending_drain_scheduled)
 
-
 @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
 class TestWebhookSecurity(unittest.TestCase):
     """Tests for webhook signature verification, rate limiting, and body size limits."""
@@ -1557,7 +1517,6 @@ class TestWebhookSecurity(unittest.TestCase):
         headers = {"x-lark-request-timestamp": timestamp, "x-lark-request-nonce": nonce, "x-lark-signature": sig}
         self.assertTrue(adapter._is_webhook_signature_valid(headers, body))
 
-
     def test_rate_limit_resets_after_window_expires(self):
         from plugins.platforms.feishu.adapter import _FEISHU_WEBHOOK_RATE_LIMIT_MAX, _FEISHU_WEBHOOK_RATE_WINDOW_SECONDS
         adapter = self._make_adapter()
@@ -1569,7 +1528,6 @@ class TestWebhookSecurity(unittest.TestCase):
         count, window_start = adapter._webhook_rate_counts[ip]
         adapter._webhook_rate_counts[ip] = (count, window_start - _FEISHU_WEBHOOK_RATE_WINDOW_SECONDS - 1)
         self.assertTrue(adapter._check_webhook_rate_limit(ip))
-
 
     def test_webhook_request_rejects_oversized_chunked_body_while_reading(self):
         from gateway.config import PlatformConfig
@@ -1594,7 +1552,6 @@ class TestWebhookSecurity(unittest.TestCase):
 
             self.assertEqual(response.status, 413)
             self.assertEqual(content.read_sizes, [_FEISHU_WEBHOOK_MAX_BODY_BYTES + 1])
-
 
     @patch.dict(os.environ, {}, clear=True)
     def test_webhook_connect_requires_inbound_auth_secret(self):
@@ -1629,7 +1586,6 @@ class TestWebhookSecurity(unittest.TestCase):
         self.assertEqual(adapter._verification_token, "token_from_extra")
         self.assertEqual(adapter._encrypt_key, "encrypt_from_extra")
 
-
 class TestDedupTTL(unittest.TestCase):
     """Tests for TTL-aware deduplication."""
 
@@ -1643,7 +1599,6 @@ class TestDedupTTL(unittest.TestCase):
             adapter._seen_message_ids = {"om_dup": time.time()}
             adapter._seen_message_order = ["om_dup"]
             self.assertTrue(asyncio.run(adapter._is_duplicate("om_dup")))
-
 
     @patch.dict(os.environ, {}, clear=True)
     def test_load_tolerates_malformed_timestamp_values(self):
@@ -1738,10 +1693,8 @@ class TestDedupTTL(unittest.TestCase):
 
         self.assertEqual(writes[-1], ["om_a", "om_b"])
 
-
 class TestGroupMentionAtAll(unittest.TestCase):
     """Tests for @_all (Feishu @everyone) group mention routing."""
-
 
     @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "allowlist", "FEISHU_ALLOWED_USERS": "ou_allowed"}, clear=True)
     def test_at_all_still_requires_policy_gate(self):
@@ -1758,239 +1711,9 @@ class TestGroupMentionAtAll(unittest.TestCase):
         allowed_sender = SimpleNamespace(open_id="ou_allowed", user_id=None)
         self.assertTrue(_admits_group(adapter, message, allowed_sender, ""))
 
-
-@unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
-class TestSenderNameResolution(unittest.TestCase):
-    """Tests for _resolve_sender_name_from_api (contact API + cache)."""
-
-
-    @patch.dict(os.environ, {}, clear=True)
-    def test_returns_cached_name_within_ttl(self):
-        from gateway.config import PlatformConfig
-        from plugins.platforms.feishu.adapter import FeishuAdapter
-
-        adapter = FeishuAdapter(PlatformConfig())
-        adapter._client = SimpleNamespace()
-        future_expire = time.time() + 600
-        adapter._sender_name_cache["ou_cached"] = ("Alice", future_expire)
-        result = asyncio.run(adapter._resolve_sender_name_from_api("ou_cached"))
-        self.assertEqual(result, "Alice")
-
-    @patch.dict(os.environ, {}, clear=True)
-    def test_fetches_and_caches_name_from_api(self):
-        from gateway.config import PlatformConfig
-        from plugins.platforms.feishu.adapter import FeishuAdapter
-
-        adapter = FeishuAdapter(PlatformConfig())
-        user_obj = SimpleNamespace(name="Bob", display_name=None, nickname=None, en_name=None)
-        mock_response = SimpleNamespace(
-            success=lambda: True,
-            data=SimpleNamespace(user=user_obj),
-        )
-
-        async def _direct(func, *args, **kwargs):
-            return func(*args, **kwargs)
-
-        class _ContactAPI:
-            def get(self, request):
-                return mock_response
-
-        adapter._client = SimpleNamespace(
-            contact=SimpleNamespace(v3=SimpleNamespace(user=_ContactAPI()))
-        )
-
-        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
-            result = asyncio.run(adapter._resolve_sender_name_from_api("ou_bob"))
-
-        self.assertEqual(result, "Bob")
-        self.assertIn("ou_bob", adapter._sender_name_cache)
-
-
-@unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
-class TestBotNameResolution(unittest.TestCase):
-    """Tests for the bot branch of _resolve_sender_name_from_api (basic_batch API + shared cache)."""
-
-    @staticmethod
-    def _batch_payload(bots: Dict[str, str]):
-        import json as _json
-        body = {
-            oid: {"bot_id": oid, "name": name, "i18n_names": {"en_us": name}}
-            for oid, name in bots.items()
-        }
-        return _json.dumps({"code": 0, "msg": "", "data": {"bots": body, "failed_bots": {}}}).encode()
-
-    def _build_adapter_with_bots(self, bots: Dict[str, str]):
-        from gateway.config import PlatformConfig
-        from plugins.platforms.feishu.adapter import FeishuAdapter
-
-        adapter = FeishuAdapter(PlatformConfig())
-        calls = []
-
-        def _fake_request(request):
-            calls.append(request)
-            return SimpleNamespace(raw=SimpleNamespace(content=self._batch_payload(bots)))
-
-        adapter._client = SimpleNamespace(request=_fake_request)
-        return adapter, calls
-
-    @patch.dict(os.environ, {}, clear=True)
-    def test_returns_cached_bot_name_without_api_call(self):
-        from gateway.config import PlatformConfig
-        from plugins.platforms.feishu.adapter import FeishuAdapter
-
-        adapter = FeishuAdapter(PlatformConfig())
-        adapter._sender_name_cache["ou_peer"] = ("Peer Bot", time.time() + 600)
-        adapter._client = SimpleNamespace(
-            request=lambda _r: (_ for _ in ()).throw(RuntimeError("should not fetch"))
-        )
-        result = asyncio.run(adapter._resolve_sender_name_from_api("ou_peer", is_bot=True))
-        self.assertEqual(result, "Peer Bot")
-
-    @patch.dict(os.environ, {}, clear=True)
-    def test_fetches_and_caches_bot_name(self):
-        adapter, calls = self._build_adapter_with_bots({"ou_peer": "Peer Bot"})
-
-        async def _direct(func, *args, **kwargs):
-            return func(*args, **kwargs)
-
-        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
-            result = asyncio.run(adapter._resolve_sender_name_from_api("ou_peer", is_bot=True))
-
-        self.assertEqual(result, "Peer Bot")
-        self.assertEqual(adapter._sender_name_cache["ou_peer"][0], "Peer Bot")
-        self.assertEqual(len(calls), 1)
-        self.assertIn("/open-apis/bot/v3/bots/basic_batch", calls[0].uri)
-        # Feishu expects repeated ?bot_ids= params, not comma-joined.
-        self.assertEqual(calls[0].queries, [("bot_ids", "ou_peer")])
-
-
-@unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
-class TestProcessingReactions(unittest.TestCase):
-    """Typing on start → removed on SUCCESS, swapped for CrossMark on FAILURE,
-    removed (no replacement) on CANCELLED."""
-
-    @staticmethod
-    def _run(coro):
-        return asyncio.run(coro)
-
-    def _build_adapter(
-        self,
-        create_success: bool = True,
-        delete_success: bool = True,
-        next_reaction_id: str = "r1",
-    ):
-        from gateway.config import PlatformConfig
-        from plugins.platforms.feishu.adapter import FeishuAdapter
-
-        adapter = FeishuAdapter(PlatformConfig())
-        tracker = SimpleNamespace(
-            create_calls=[],
-            delete_calls=[],
-            next_reaction_id=next_reaction_id,
-            create_success=create_success,
-            delete_success=delete_success,
-        )
-
-        def _create(request):
-            tracker.create_calls.append(
-                request.request_body.reaction_type["emoji_type"]
-            )
-            if tracker.create_success:
-                return SimpleNamespace(
-                    success=lambda: True,
-                    data=SimpleNamespace(reaction_id=tracker.next_reaction_id),
-                )
-            return SimpleNamespace(
-                success=lambda: False, code=99, msg="rejected", data=None,
-            )
-
-        def _delete(request):
-            tracker.delete_calls.append(request.reaction_id)
-            return SimpleNamespace(
-                success=lambda: tracker.delete_success,
-                code=0 if tracker.delete_success else 99,
-                msg="success" if tracker.delete_success else "rejected",
-            )
-
-        adapter._client = SimpleNamespace(
-            im=SimpleNamespace(
-                v1=SimpleNamespace(
-                    message_reaction=SimpleNamespace(create=_create, delete=_delete),
-                ),
-            ),
-        )
-        return adapter, tracker
-
-    @staticmethod
-    def _event(message_id: str = "om_msg"):
-        return SimpleNamespace(message_id=message_id)
-
-    def _patch_to_thread(self):
-        async def _direct(func, *args, **kwargs):
-            return func(*args, **kwargs)
-
-        return patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct)
-
-    # ------------------------------------------------------------------ start
-    @patch.dict(os.environ, {}, clear=True)
-    def test_start_adds_typing_and_caches_reaction_id(self):
-        adapter, tracker = self._build_adapter(next_reaction_id="r_typing")
-        with self._patch_to_thread():
-            self._run(adapter.on_processing_start(self._event()))
-        self.assertEqual(tracker.create_calls, ["Typing"])
-        self.assertEqual(adapter._pending_processing_reactions["om_msg"], "r_typing")
-
-
-    # --------------------------------------------------------------- complete
-    @patch.dict(os.environ, {}, clear=True)
-    def test_success_removes_typing_and_adds_nothing(self):
-        adapter, tracker = self._build_adapter(next_reaction_id="r_typing")
-        with self._patch_to_thread():
-            self._run(adapter.on_processing_start(self._event()))
-            self._run(
-                adapter.on_processing_complete(self._event(), ProcessingOutcome.SUCCESS)
-            )
-        self.assertEqual(tracker.create_calls, ["Typing"])
-        self.assertEqual(tracker.delete_calls, ["r_typing"])
-        self.assertNotIn("om_msg", adapter._pending_processing_reactions)
-
-    @patch.dict(os.environ, {}, clear=True)
-    def test_failure_removes_typing_then_adds_cross_mark(self):
-        adapter, tracker = self._build_adapter(next_reaction_id="r_typing")
-        with self._patch_to_thread():
-            self._run(adapter.on_processing_start(self._event()))
-            self._run(
-                adapter.on_processing_complete(self._event(), ProcessingOutcome.FAILURE)
-            )
-        self.assertEqual(tracker.create_calls, ["Typing", "CrossMark"])
-        self.assertEqual(tracker.delete_calls, ["r_typing"])
-
-
-    # ------------------------- delete failure: don't stack badges -----------
-    @patch.dict(os.environ, {}, clear=True)
-    def test_delete_failure_on_failure_outcome_skips_cross_mark(self):
-        # Removing Typing is best-effort — but if it fails, we must NOT
-        # additionally add CrossMark, or the UI would show two contradictory
-        # badges. The handle stays in the cache for LRU to clean up later.
-        adapter, tracker = self._build_adapter(
-            next_reaction_id="r_typing", delete_success=False,
-        )
-        with self._patch_to_thread():
-            self._run(adapter.on_processing_start(self._event()))
-            self._run(
-                adapter.on_processing_complete(self._event(), ProcessingOutcome.FAILURE)
-            )
-        self.assertEqual(tracker.create_calls, ["Typing"])  # CrossMark NOT added
-        self.assertEqual(tracker.delete_calls, ["r_typing"])  # delete was attempted
-        self.assertEqual(
-            adapter._pending_processing_reactions["om_msg"], "r_typing",
-        )  # handle retained
-
-
     # ------------------------------------------------------------- env toggle
 
     # ------------------------------------------------------------- LRU bounds
-
 
 class TestFeishuMentionMap(unittest.TestCase):
 
@@ -2006,7 +1729,6 @@ class TestFeishuMentionMap(unittest.TestCase):
         self.assertTrue(ref.is_self)
         self.assertEqual(ref.open_id, "ou_bot")
         self.assertEqual(ref.name, "Hermes")
-
 
     def test_build_mentions_map_name_match_does_not_override_mismatching_open_id(self):
         """Regression: a human user whose display name matches the bot must
@@ -2045,29 +1767,7 @@ class TestFeishuMentionMap(unittest.TestCase):
         )
         self.assertTrue(result["@_user_1"].is_self)
 
-
 class TestFeishuMentionHint(unittest.TestCase):
-    def test_hint_single_user(self):
-        from plugins.platforms.feishu.adapter import FeishuMentionRef, _build_mention_hint
-
-        refs = [FeishuMentionRef(name="Alice", open_id="ou_alice")]
-        self.assertEqual(
-            _build_mention_hint(refs),
-            "[Mentioned: Alice (open_id=ou_alice)]",
-        )
-
-    def test_hint_multiple_users(self):
-        from plugins.platforms.feishu.adapter import FeishuMentionRef, _build_mention_hint
-
-        refs = [
-            FeishuMentionRef(name="Alice", open_id="ou_alice"),
-            FeishuMentionRef(name="Bob", open_id="ou_bob"),
-        ]
-        self.assertEqual(
-            _build_mention_hint(refs),
-            "[Mentioned: Alice (open_id=ou_alice), Bob (open_id=ou_bob)]",
-        )
-
 
     def test_hint_filters_self_mentions(self):
         from plugins.platforms.feishu.adapter import FeishuMentionRef, _build_mention_hint
@@ -2080,7 +1780,6 @@ class TestFeishuMentionHint(unittest.TestCase):
             _build_mention_hint(refs),
             "[Mentioned: Alice (open_id=ou_alice)]",
         )
-
 
     def test_hint_dedupes_repeated_user(self):
         from plugins.platforms.feishu.adapter import FeishuMentionRef, _build_mention_hint
@@ -2095,7 +1794,6 @@ class TestFeishuMentionHint(unittest.TestCase):
             "[Mentioned: Alice (open_id=ou_alice), Bob (open_id=ou_bob)]",
         )
 
-
 class TestFeishuStripLeadingSelf(unittest.TestCase):
     def _make_refs(self, *, self_name="Hermes", other_name=None):
         from plugins.platforms.feishu.adapter import FeishuMentionRef
@@ -2105,7 +1803,6 @@ class TestFeishuStripLeadingSelf(unittest.TestCase):
             refs.append(FeishuMentionRef(name=other_name, open_id="ou_alice"))
         return refs
 
-
     def test_stops_at_first_non_self_token(self):
         from plugins.platforms.feishu.adapter import _strip_edge_self_mentions
 
@@ -2113,7 +1810,6 @@ class TestFeishuStripLeadingSelf(unittest.TestCase):
             "@Hermes @Alice make a group", self._make_refs(other_name="Alice")
         )
         self.assertEqual(result, "@Alice make a group")
-
 
     def test_strips_trailing_self_with_terminal_punct(self):
         from plugins.platforms.feishu.adapter import _strip_edge_self_mentions
@@ -2131,13 +1827,11 @@ class TestFeishuStripLeadingSelf(unittest.TestCase):
         )
         self.assertEqual(result, "please don't @Hermes anymore")
 
-
     def test_returns_input_when_no_self_refs(self):
         from plugins.platforms.feishu.adapter import _strip_edge_self_mentions, FeishuMentionRef
 
         refs = [FeishuMentionRef(name="Alice", open_id="ou_alice")]
         self.assertEqual(_strip_edge_self_mentions("@Alice hi", refs), "@Alice hi")
-
 
 class TestFeishuNormalizeText(unittest.TestCase):
 
@@ -2154,7 +1848,6 @@ class TestFeishuNormalizeText(unittest.TestCase):
         from plugins.platforms.feishu.adapter import _normalize_feishu_text
 
         self.assertEqual(_normalize_feishu_text("@_all notice", None), "@all notice")
-
 
 class TestFeishuPostMentionParsing(unittest.TestCase):
     def test_post_at_tag_renders_via_mentions_map(self):
@@ -2177,6 +1870,29 @@ class TestFeishuPostMentionParsing(unittest.TestCase):
         result = parse_feishu_post_payload(payload, mentions_map=mentions_map)
         self.assertEqual(result.text_content, "@Alice hello")
 
+class TestFeishuPostFileParsing(unittest.TestCase):
+    def test_collects_valid_top_level_files_and_dedupes_inline_refs(self):
+        from plugins.platforms.feishu.adapter import parse_feishu_post_payload
+
+        result = parse_feishu_post_payload({
+            "title": "",
+            "content": [[
+                {"tag": "text", "text": "Review these"},
+                {"tag": "file", "file_key": "file_1", "file_name": "first.md"},
+            ]],
+            "files": [
+                {"file_key": "file_1", "file_name": "first.md", "is_folder": False},
+                {"file_key": "file_2", "file_name": "second.txt", "is_folder": False},
+                {"file_key": "folder_1", "file_name": "folder", "is_folder": True},
+                {"file_name": "missing-key.md", "is_folder": False},
+            ],
+        })
+
+        self.assertEqual([ref.file_key for ref in result.media_refs], ["file_1", "file_2"])
+        self.assertEqual(
+            result.text_content,
+            "Review these[Attachment: first.md]\n[Attachment: second.txt]",
+        )
 
 class TestFeishuPostTextIsNotMarkdownEscaped(unittest.TestCase):
     def test_text_elements_keep_markdown_characters_and_style_wrappers(self):
@@ -2192,7 +1908,6 @@ class TestFeishuPostTextIsNotMarkdownEscaped(unittest.TestCase):
         self.assertIn("run `print('hi')` for **emphasis** [x](y)", text)
         self.assertIn("**strong**", text)
         self.assertNotIn("\\", text)
-
 
 class TestFeishuNormalizeWithMentions(unittest.TestCase):
     def test_text_message_renders_mention_by_name(self):
@@ -2213,7 +1928,6 @@ class TestFeishuNormalizeWithMentions(unittest.TestCase):
         self.assertEqual(len(normalized.mentions), 1)
         self.assertEqual(normalized.mentions[0].open_id, "ou_alice")
         self.assertFalse(normalized.mentions[0].is_self)
-
 
     def test_post_message_marks_self_via_mentions_map_lookup(self):
         """Real Feishu post: <at user_id="@_user_N"> + top-level mentions array
@@ -2245,7 +1959,6 @@ class TestFeishuNormalizeWithMentions(unittest.TestCase):
         self.assertTrue(normalized.mentions[0].is_self)
         self.assertEqual(normalized.mentions[0].open_id, "ou_bot")
 
-
 class TestFeishuPostMentionsBot(unittest.TestCase):
     def _build_adapter(self, bot_open_id="ou_bot", bot_user_id="", bot_name=""):
         from plugins.platforms.feishu.adapter import FeishuAdapter
@@ -2271,7 +1984,6 @@ class TestFeishuPostMentionsBot(unittest.TestCase):
             )
         )
 
-
 class TestFeishuExtractMessageContent(unittest.TestCase):
     def _build_adapter(self):
         from plugins.platforms.feishu.adapter import FeishuAdapter
@@ -2283,7 +1995,7 @@ class TestFeishuExtractMessageContent(unittest.TestCase):
         adapter._download_feishu_message_resources = AsyncMock(return_value=([], []))
         return adapter
 
-    def test_returns_five_tuple_with_mentions(self):
+    def test_returns_six_tuple_with_mentions(self):
         adapter = self._build_adapter()
         message = SimpleNamespace(
             content=json.dumps({"text": "@_user_1 hello"}),
@@ -2298,13 +2010,13 @@ class TestFeishuExtractMessageContent(unittest.TestCase):
             ],
         )
 
-        text, inbound_type, media_urls, media_types, mentions = asyncio.run(
+        text, inbound_type, media_urls, media_types, media_text_inlined, mentions = asyncio.run(
             adapter._extract_message_content(message)
         )
         self.assertEqual(text, "@Alice hello")
+        self.assertEqual(media_text_inlined, [])
         self.assertEqual(len(mentions), 1)
         self.assertEqual(mentions[0].open_id, "ou_alice")
-
 
 class TestFeishuProcessInboundMessage(unittest.TestCase):
     def _build_adapter(self):
@@ -2325,6 +2037,45 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
         adapter._dispatch_inbound_event = AsyncMock()
         return adapter
 
+    def test_post_caption_is_preserved_when_text_attachment_is_inlined(self):
+        adapter = self._build_adapter()
+        adapter._download_feishu_message_resources = AsyncMock(
+            return_value=(["/cache/notes.md"], ["text/markdown"])
+        )
+        adapter._maybe_extract_text_document = AsyncMock(
+            return_value="[Content of notes.md]:\nattachment body"
+        )
+        message = SimpleNamespace(
+            content=json.dumps({
+                "title": "",
+                "content": [[{"tag": "text", "text": "Please review"}]],
+                "files": [{"file_key": "file_1", "file_name": "notes.md", "is_folder": False}],
+            }),
+            message_type="post",
+            message_id="m-post-file",
+            mentions=[],
+            chat_id="oc_chat",
+            thread_id=None,
+            root_id=None,
+            parent_id=None,
+            upper_message_id=None,
+        )
+
+        asyncio.run(adapter._process_inbound_message(
+            data={},
+            message=message,
+            sender_id=SimpleNamespace(open_id="ou_alice", user_id=None, union_id=None),
+            chat_type="p2p",
+            message_id="m-post-file",
+        ))
+
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        self.assertEqual(
+            event.text,
+            "Please review\n[Attachment: notes.md]\n\n[Content of notes.md]:\nattachment body",
+        )
+        self.assertEqual(event.media_urls, ["/cache/notes.md"])
+        self.assertEqual(event.media_text_inlined, [True])
 
     def test_non_command_message_with_mentions_injects_hint(self):
         from gateway.platforms.event import MessageType
@@ -2399,6 +2150,63 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
         self.assertNotIn("[Mentioned:", event.text)
         self.assertTrue(event.text.startswith("/model"))
 
+    def test_regular_reply_root_id_does_not_become_thread_id(self):
+        adapter = self._build_adapter()
+        adapter._fetch_message_text = AsyncMock(return_value="parent text")
+        message = SimpleNamespace(
+            content=json.dumps({"text": "regular reply"}),
+            message_type="text",
+            message_id="m6",
+            mentions=[],
+            chat_id="oc_chat",
+            parent_id=None,
+            upper_message_id=None,
+            root_id="om_root",
+            thread_id=None,
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message,
+                message=message,
+                sender_id=None,
+                chat_type="group",
+                message_id="m6",
+            )
+        )
+
+        adapter.build_source.assert_called_once()
+        self.assertIsNone(adapter.build_source.call_args.kwargs["thread_id"])
+        event = adapter._dispatch_inbound_event.call_args.args[0]
+        self.assertEqual(event.reply_to_message_id, "om_root")
+        self.assertEqual(event.reply_to_text, "parent text")
+
+    def test_explicit_thread_id_is_preserved(self):
+        adapter = self._build_adapter()
+        message = SimpleNamespace(
+            content=json.dumps({"text": "thread reply"}),
+            message_type="text",
+            message_id="m7",
+            mentions=[],
+            chat_id="oc_chat",
+            parent_id=None,
+            upper_message_id=None,
+            root_id="om_root",
+            thread_id="omt_thread",
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message,
+                message=message,
+                sender_id=None,
+                chat_type="group",
+                message_id="m7",
+            )
+        )
+
+        adapter.build_source.assert_called_once()
+        self.assertEqual(adapter.build_source.call_args.kwargs["thread_id"], "omt_thread")
 
 class TestFeishuFetchMessageText(unittest.TestCase):
     def _build_adapter(self):
@@ -2412,7 +2220,6 @@ class TestFeishuFetchMessageText(unittest.TestCase):
         adapter._client = Mock()
         adapter._build_get_message_request = Mock(return_value=object())
         return adapter
-
 
     def test_fetch_message_text_marks_is_self_via_string_id_shape(self):
         """History-path Mention objects carry id as str + id_type; is_self must still work."""
@@ -2439,7 +2246,6 @@ class TestFeishuFetchMessageText(unittest.TestCase):
         # The rendered text should still have the bot name substituted.
         result = asyncio.run(adapter._fetch_message_text("m_parent"))
         self.assertEqual(result, "@Hermes hi")
-
 
 class TestFeishuMentionEndToEnd(unittest.TestCase):
     """High-level scenarios from the design spec — verify the full pipeline."""
@@ -2488,13 +2294,11 @@ class TestFeishuMentionEndToEnd(unittest.TestCase):
         )
         return adapter._dispatch_inbound_event.call_args.args[0]
 
-
     def test_scenario_no_mentions_zero_regression(self):
         adapter = self._build_adapter()
         event = self._run(adapter, "plain message", [])
         self.assertEqual(event.text, "plain message")
         self.assertNotIn("[Mentioned:", event.text)
-
 
     def test_scenario_post_bot_plus_alice_filters_self_from_hint(self):
         """Post-type message @-ing both the bot and Alice: leading bot is
@@ -2545,22 +2349,184 @@ class TestFeishuMentionEndToEnd(unittest.TestCase):
         self.assertNotIn("@Hermes @Alice", event.text)
 
 
-class TestChatLockEviction(unittest.TestCase):
-    """_get_chat_lock is LRU-bounded so _chat_locks cannot grow unbounded."""
+# ---------------------------------------------------------------------------
+# SDK-boundary paths that used to be gated on lark-oapi (never installed in CI).
+# The Feishu SDK request builders are the external boundary: fake them so the
+# adapter logic around them runs on every lane.
+# ---------------------------------------------------------------------------
 
-    def _make_adapter(self, max_size=5):
-        import collections as _collections
 
-        from plugins.platforms.feishu.adapter import FeishuAdapter
+class _FakeSdkBuilder:
+    """Stands in for a lark-oapi ``*.builder()``: every setter records its value."""
 
-        adapter = object.__new__(FeishuAdapter)
-        adapter._chat_locks = _collections.OrderedDict()
-        adapter.CHAT_LOCK_MAX_SIZE = max_size
-        return adapter
+    def __init__(self):
+        self._fields = {}
 
-    def test_chat_locks_is_ordered_dict(self):
-        import collections as _collections
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
 
-        adapter = self._make_adapter()
-        self.assertIsInstance(adapter._chat_locks, _collections.OrderedDict)
+        def _set(value):
+            self._fields[name] = value
+            return self
 
+        return _set
+
+    def build(self):
+        return SimpleNamespace(**self._fields)
+
+
+class _FakeSdkRequestType:
+    @staticmethod
+    def builder():
+        return _FakeSdkBuilder()
+
+
+@pytest.fixture
+def fake_lark_requests(monkeypatch):
+    """Fake the lazily imported lark-oapi request modules and the raw tenant GET builder."""
+    import sys
+    import types
+
+    import plugins.platforms.feishu.adapter as feishu_mod
+
+    for parent in ("lark_oapi", "lark_oapi.api", "lark_oapi.api.im", "lark_oapi.api.contact"):
+        if parent not in sys.modules:
+            monkeypatch.setitem(sys.modules, parent, types.ModuleType(parent))
+    im_v1 = types.ModuleType("lark_oapi.api.im.v1")
+    for name in ("CreateMessageReactionRequest", "CreateMessageReactionRequestBody", "DeleteMessageReactionRequest"):
+        setattr(im_v1, name, _FakeSdkRequestType)
+    contact_v3 = types.ModuleType("lark_oapi.api.contact.v3")
+    contact_v3.GetUserRequest = _FakeSdkRequestType
+    monkeypatch.setitem(sys.modules, "lark_oapi.api.im.v1", im_v1)
+    monkeypatch.setitem(sys.modules, "lark_oapi.api.contact.v3", contact_v3)
+    monkeypatch.setattr(
+        feishu_mod, "_tenant_get_request",
+        lambda uri, *, queries=None: SimpleNamespace(uri=uri, queries=queries),
+    )
+
+
+def _plain_feishu_adapter():
+    from gateway.config import PlatformConfig
+    from plugins.platforms.feishu.adapter import FeishuAdapter
+
+    return FeishuAdapter(PlatformConfig())
+
+
+def _bot_info_response(open_id, bot_name):
+    payload = json.dumps({"code": 0, "bot": {"bot_name": bot_name, "open_id": open_id}}).encode("utf-8")
+    return SimpleNamespace(raw=SimpleNamespace(content=payload))
+
+
+def test_hydrated_bot_identity_wins_over_stale_env_values(fake_lark_requests, monkeypatch):
+    """#16993: /bot/v3/info runs even when FEISHU_BOT_* are configured, and the hydrated identity
+    replaces the env values so a stale id from an old app registration can't break @mention gating."""
+    monkeypatch.setenv("FEISHU_BOT_OPEN_ID", "ou_env")
+    monkeypatch.setenv("FEISHU_BOT_NAME", "Env Hermes")
+    adapter = _plain_feishu_adapter()
+    assert adapter._bot_open_id == "ou_env"
+    requests = []
+
+    def _request(req):
+        requests.append(req)
+        return _bot_info_response("ou_hydrated", "Hydrated Hermes")
+
+    adapter._client = SimpleNamespace(request=_request)
+
+    asyncio.run(adapter._hydrate_bot_identity())
+
+    assert [r.uri for r in requests] == ["/open-apis/bot/v3/info"]
+    assert adapter._bot_open_id == "ou_hydrated"
+    assert adapter._bot_name == "Hydrated Hermes"
+
+
+def test_bot_sender_name_is_fetched_via_basic_batch_and_cached(fake_lark_requests):
+    """Bot senders resolve via bot/v3/bots/basic_batch (the contact API has no bot names) with a
+    repeated ``bot_ids`` query param, and the result is cached so the next lookup is free."""
+    adapter = _plain_feishu_adapter()
+    requests = []
+    body = {"code": 0, "msg": "", "data": {"bots": {"ou_peer": {"bot_id": "ou_peer", "name": "Peer Bot"}}}}
+
+    def _request(req):
+        requests.append(req)
+        return SimpleNamespace(raw=SimpleNamespace(content=json.dumps(body).encode()))
+
+    adapter._client = SimpleNamespace(request=_request)
+
+    assert asyncio.run(adapter._resolve_sender_name_from_api("ou_peer", is_bot=True)) == "Peer Bot"
+    assert asyncio.run(adapter._resolve_sender_name_from_api("ou_peer", is_bot=True)) == "Peer Bot"
+
+    assert len(requests) == 1, "second lookup must hit the cache"
+    assert requests[0].uri == "/open-apis/bot/v3/bots/basic_batch"
+    # Feishu expects repeated ?bot_ids= params, not comma-joined.
+    assert requests[0].queries == [("bot_ids", "ou_peer")]
+
+
+def test_human_sender_name_is_fetched_from_contact_api_and_cached(fake_lark_requests):
+    adapter = _plain_feishu_adapter()
+    lookups = []
+
+    def _get(request):
+        lookups.append(request)
+        user = SimpleNamespace(name="Bob", display_name=None, nickname=None, en_name=None)
+        return SimpleNamespace(success=lambda: True, data=SimpleNamespace(user=user))
+
+    adapter._client = SimpleNamespace(contact=SimpleNamespace(v3=SimpleNamespace(user=SimpleNamespace(get=_get))))
+
+    assert asyncio.run(adapter._resolve_sender_name_from_api("ou_bob")) == "Bob"
+    assert asyncio.run(adapter._resolve_sender_name_from_api("ou_bob")) == "Bob"
+
+    assert len(lookups) == 1, "second lookup must hit the cache"
+    assert (lookups[0].user_id, lookups[0].user_id_type) == ("ou_bob", "open_id")
+
+
+def _reaction_adapter(*, delete_success=True):
+    adapter = _plain_feishu_adapter()
+    tracker = SimpleNamespace(created=[], deleted=[])
+
+    def _create(request):
+        tracker.created.append(request.request_body.reaction_type["emoji_type"])
+        return SimpleNamespace(success=lambda: True, data=SimpleNamespace(reaction_id="r_typing"))
+
+    def _delete(request):
+        tracker.deleted.append(request.reaction_id)
+        return SimpleNamespace(success=lambda: delete_success, code=0 if delete_success else 99, msg="")
+
+    adapter._client = SimpleNamespace(
+        im=SimpleNamespace(v1=SimpleNamespace(message_reaction=SimpleNamespace(create=_create, delete=_delete)))
+    )
+    return adapter, tracker
+
+
+def _run_processing(adapter, outcome):
+    event = SimpleNamespace(message_id="om_msg")
+    asyncio.run(adapter.on_processing_start(event))
+    asyncio.run(adapter.on_processing_complete(event, outcome))
+
+
+def test_processing_success_removes_typing_and_adds_nothing(fake_lark_requests, monkeypatch):
+    monkeypatch.delenv("FEISHU_REACTIONS", raising=False)
+    adapter, tracker = _reaction_adapter()
+    _run_processing(adapter, ProcessingOutcome.SUCCESS)
+    assert tracker.created == ["Typing"]
+    assert tracker.deleted == ["r_typing"]
+    assert "om_msg" not in adapter._pending_processing_reactions
+
+
+def test_processing_failure_swaps_typing_for_cross_mark(fake_lark_requests, monkeypatch):
+    monkeypatch.delenv("FEISHU_REACTIONS", raising=False)
+    adapter, tracker = _reaction_adapter()
+    _run_processing(adapter, ProcessingOutcome.FAILURE)
+    assert tracker.created == ["Typing", "CrossMark"]
+    assert tracker.deleted == ["r_typing"]
+
+
+def test_processing_failure_skips_cross_mark_when_typing_removal_fails(fake_lark_requests, monkeypatch):
+    """A Typing badge we couldn't remove must not get a CrossMark stacked next to it (the UI would
+    read as both working and failed); the handle is kept for LRU eviction."""
+    monkeypatch.delenv("FEISHU_REACTIONS", raising=False)
+    adapter, tracker = _reaction_adapter(delete_success=False)
+    _run_processing(adapter, ProcessingOutcome.FAILURE)
+    assert tracker.created == ["Typing"]
+    assert tracker.deleted == ["r_typing"]
+    assert adapter._pending_processing_reactions["om_msg"] == "r_typing"

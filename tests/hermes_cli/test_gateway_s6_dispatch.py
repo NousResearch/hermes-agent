@@ -115,6 +115,10 @@ def _stub_s6(monkeypatch: pytest.MonkeyPatch, *, on_s6: bool) -> _CallRecorder:
 
 
 
+def _raise_missing_sleep(file: str, args: list[str]) -> None:
+    raise FileNotFoundError(2, "No such file or directory", file)
+
+
 def test_redirect_falls_back_when_sleep_missing(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -129,10 +133,7 @@ def test_redirect_falls_back_when_sleep_missing(
     rec = _stub_s6(monkeypatch, on_s6=True)
     monkeypatch.setattr("hermes_cli.gateway._profile_suffix", lambda: "")
 
-    def missing_sleep(file: str, args: list[str]) -> None:
-        raise FileNotFoundError(2, "No such file or directory", file)
-
-    monkeypatch.setattr("hermes_cli.gateway.os.execvp", missing_sleep)
+    monkeypatch.setattr("hermes_cli.gateway.os.execvp", _raise_missing_sleep)
     block_calls: list[bool] = []
     monkeypatch.setattr(
         "hermes_cli.gateway._block_until_terminated",
@@ -150,6 +151,62 @@ def test_redirect_falls_back_when_sleep_missing(
     assert block_calls == [True]
     err = capsys.readouterr().err
     assert "`sleep` is unavailable" in err
+
+
+def _armed_watchdog(monkeypatch: pytest.MonkeyPatch):
+    """Arm the real watchdog as hermes_cli.main's argv fast-path does; the long timeout keeps the
+    deadline out of the test, only the handle state at handoff is under test."""
+    import hermes_startup_watchdog as sw
+
+    monkeypatch.delenv(sw.ENV_STARTUP_WATCHDOG, raising=False)
+    monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
+    monkeypatch.delenv("HERMES_GATEWAY_NO_SUPERVISE", raising=False)
+    monkeypatch.setattr("hermes_cli.gateway._profile_suffix", lambda: "")
+    sw._reset_for_tests()
+    handle = sw.arm_startup_watchdog(timeout_s=3600)
+    assert handle is not None and handle.is_alive()
+    return sw, handle
+
+
+def test_redirect_disarms_startup_watchdog_before_parking(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Issue #102000: the CMD process never reaches a GatewayRunner, so the #36208 in-process
+    heartbeat must not park under an armed watchdog (it would os._exit(75) a healthy container)."""
+    from hermes_cli import gateway as gw
+
+    sw, handle = _armed_watchdog(monkeypatch)
+    try:
+        _stub_s6(monkeypatch, on_s6=True)
+        monkeypatch.setattr("hermes_cli.gateway.os.execvp", _raise_missing_sleep)
+        disarmed_at_park: list[bool] = []
+        monkeypatch.setattr(
+            "hermes_cli.gateway._block_until_terminated",
+            lambda: disarmed_at_park.append(handle.disarmed),
+        )
+
+        assert gw._maybe_redirect_run_to_s6_supervision(_Args()) is True
+
+        assert disarmed_at_park == [True]
+        assert sw._handle is None
+    finally:
+        sw._reset_for_tests()
+    capsys.readouterr()
+
+
+def test_redirect_not_taken_leaves_startup_watchdog_armed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Outside s6 the gateway still boots in-process, so GatewayRunner's own disarm must govern."""
+    from hermes_cli import gateway as gw
+
+    sw, handle = _armed_watchdog(monkeypatch)
+    try:
+        _stub_s6(monkeypatch, on_s6=False)
+
+        assert gw._maybe_redirect_run_to_s6_supervision(_Args()) is False
+
+        assert sw._handle is handle and handle.is_alive() and not handle.disarmed
+    finally:
+        sw._reset_for_tests()
 
 
 # ---------------------------------------------------------------------------

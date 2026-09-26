@@ -3,10 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { setApiRequestConnection, setApiRequestProfile } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { adoptNewSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { $confirmRequest, runConfirm, settleConfirm } from '@/store/confirm'
 import { $hubInstalledOverride } from '@/store/hub-actions'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
-import { $pluginInstallRequest } from '@/store/plugin-install-request'
+import { requestPluginCatalogInstallFromDeepLink } from '@/store/plugin-catalog-install'
+import { openPluginInstallRequest } from '@/store/plugin-install-request'
 import { _resetLegacyDiscardForTests } from '@/store/session'
 import { dropSessionState, publishSessionState } from '@/store/session-states'
 import type * as WindowsStore from '@/store/windows'
@@ -24,6 +26,14 @@ const { hudWindowMock } = vi.hoisted(() => ({ hudWindowMock: vi.fn(() => false) 
 
 vi.mock('@/store/mcp-deeplink-install', () => ({
   requestMcpInstallFromDeepLink: vi.fn()
+}))
+
+vi.mock('@/store/plugin-catalog-install', () => ({
+  requestPluginCatalogInstallFromDeepLink: vi.fn()
+}))
+
+vi.mock('@/store/plugin-install-request', () => ({
+  openPluginInstallRequest: vi.fn()
 }))
 
 vi.mock('@/store/windows', async importOriginal => {
@@ -54,6 +64,8 @@ describe('useDesktopIntegrations', () => {
     window.localStorage.clear()
     _resetLegacyDiscardForTests()
     vi.mocked(requestMcpInstallFromDeepLink).mockClear()
+    vi.mocked(requestPluginCatalogInstallFromDeepLink).mockClear()
+    vi.mocked(openPluginInstallRequest).mockClear()
     navigate = vi.fn()
     // Every test starts as a main window; only the HUD describe flips this.
     hudWindowMock.mockReturnValue(false)
@@ -70,7 +82,12 @@ describe('useDesktopIntegrations', () => {
       onDeepLink: vi.fn(),
       signalDeepLinkReady: vi.fn(),
       onClosePreviewRequested: vi.fn(),
-      onOpenFolderRequested: vi.fn()
+      onOpenFolderRequested: vi.fn(),
+      // getSession() rides hermesDesktop.api; tests that exercise the
+      // remembered-session resolution stub this per-test.
+      api: vi.fn(async () => {
+        throw new Error('no api stub for this test')
+      })
     } as unknown as Window['hermesDesktop']
   })
 
@@ -171,6 +188,19 @@ describe('useDesktopIntegrations', () => {
       expect(navigate).toHaveBeenCalledWith('/remembered-session', { replace: true })
     })
 
+    it('announces the restored session so the pre-session draft follows the cold-start navigation', () => {
+      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/remembered-session')
+      // Typed on the fresh chat while the backend was still coming up.
+      stashSessionDraft(null, 'typed while booting', [])
+
+      render({ profileReady: true, sessions: [session({ id: 'remembered-session', profile: 'default' })] })
+
+      expect(navigate).toHaveBeenCalledWith('/remembered-session', { replace: true })
+      // The composer's scope swap may only carry the draft when the restore announced this key.
+      expect(adoptNewSessionDraft('remembered-session')).toBe(true)
+      expect(takeSessionDraft('remembered-session').text).toBe('typed while booting')
+    })
+
     it('waits for sessions before validating a remembered session route', () => {
       window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/remembered-session')
 
@@ -237,6 +267,57 @@ describe('useDesktopIntegrations', () => {
       })
 
       expect(navigate).toHaveBeenCalledWith('/remembered-session', { replace: true })
+    })
+  })
+
+  describe('delegate subagent sessions', () => {
+    const stubGetSession = (row: Partial<SessionInfo>) => {
+      vi.mocked(desktopWindow.hermesDesktop!.api as ReturnType<typeof vi.fn>).mockImplementation(
+        async (request: { path?: string }) => {
+          if (request.path?.startsWith('/api/sessions/')) {
+            return session({ profile: 'default', ...row })
+          }
+
+          throw new Error(`unexpected api call: ${request.path}`)
+        }
+      )
+    }
+
+    it('repairs a remembered delegate child to its parent on restore', async () => {
+      // Written by an older build (or a list slice that served the child).
+      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'delegate-child')
+      stubGetSession({ id: 'delegate-child', parent_session_id: 'parent-session', source: 'subagent' })
+
+      const sessions = [session({ id: 'parent-session', profile: 'default' })]
+
+      render({ profileReady: true, sessions })
+
+      await waitFor(() => expect(navigate).toHaveBeenCalledWith('/parent-session', { replace: true }))
+      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('parent-session')
+    })
+
+    it('remembers the parent, never the delegate child, when routed to one', () => {
+      // A messaging slice can serve the child row, so list membership alone
+      // must not make it rememberable.
+      const sessions = [
+        session({ id: 'delegate-child', parent_session_id: 'parent-session', profile: 'default', source: 'subagent' })
+      ]
+
+      render({ locationPathname: '/delegate-child', profileReady: true, routedSessionId: 'delegate-child', sessions })
+
+      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('parent-session')
+      expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.default')).toBe('/parent-session')
+    })
+
+    it('keeps remembering a /branch child: source, not parenthood, is the discriminator', () => {
+      const sessions = [
+        session({ id: 'branch-child', parent_session_id: 'parent-session', profile: 'default', source: 'tui' })
+      ]
+
+      render({ locationPathname: '/branch-child', profileReady: true, routedSessionId: 'branch-child', sessions })
+
+      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('branch-child')
+      expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.default')).toBe('/branch-child')
     })
   })
 
@@ -422,15 +503,15 @@ describe('useDesktopIntegrations', () => {
   })
 
   describe('route-scoped restoration', () => {
-    it('restores a non-session route like /skills', () => {
-      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/skills')
+    it('restores a non-session route like /capabilities', () => {
+      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/capabilities')
 
       const sessions = [session({ id: 'some-session', profile: 'default' })]
 
       render({ profileReady: true, sessions })
 
-      // /skills is not a session route — no ownership validation needed.
-      expect(navigate).toHaveBeenCalledWith('/skills', { replace: true })
+      // /capabilities is not a session route — no ownership validation needed.
+      expect(navigate).toHaveBeenCalledWith('/capabilities', { replace: true })
     })
 
     it('does NOT restore overlay routes (settings/command-center)', () => {
@@ -573,6 +654,25 @@ describe('useDesktopIntegrations', () => {
       expect(requestMcpInstallFromDeepLink).toHaveBeenCalledWith({ name: 'context7' })
       expect(navigate).not.toHaveBeenCalled()
     })
+
+    it('routes hermes://plugin/install?catalog= to the catalog lookup, not the git-path modal', () => {
+      let deepLink: ((payload: { kind: string; name: string; params: Record<string, string> }) => void) | undefined
+      desktopWindow.hermesDesktop = {
+        ...desktopWindow.hermesDesktop,
+        onDeepLink: (cb: (payload: { kind: string; name: string; params: Record<string, string> }) => void) => {
+          deepLink = cb
+
+          return () => undefined
+        },
+        signalDeepLinkReady: vi.fn()
+      } as unknown as Window['hermesDesktop']
+
+      render({ profileReady: true, sessions: [] })
+      deepLink?.({ kind: 'plugin', name: 'install', params: { catalog: 'weather', repo: 'evil/repo' } })
+      expect(requestPluginCatalogInstallFromDeepLink).toHaveBeenCalledWith('weather')
+      expect(openPluginInstallRequest).not.toHaveBeenCalled()
+      expect(navigate).not.toHaveBeenCalled()
+    })
   })
 
   describe('catalog install deep links', () => {
@@ -584,20 +684,23 @@ describe('useDesktopIntegrations', () => {
 
     afterEach(() => {
       settleConfirm(false)
-      $pluginInstallRequest.set(null)
       $hubInstalledOverride.set({})
       setApiRequestConnection(null)
       setApiRequestProfile(null)
     })
 
-    it('opens the existing plugin confirmation with catalog metadata intact', () => {
+    it('opens repository confirmation without trusting catalog metadata from the link', () => {
       const deepLink = listen()
       const params = { repo: 'owner/repo#plugin', catalog_name: 'catalog-plugin', sha: 'display-pin' }
       deepLink({ kind: 'plugin', name: 'install', params })
 
-      expect($pluginInstallRequest.get()).toMatchObject({
-        repo: params.repo, catalogName: params.catalog_name, sha: params.sha, enable: true, force: false
+      expect(openPluginInstallRequest).toHaveBeenCalledExactlyOnceWith({
+        repo: params.repo,
+        enable: true,
+        force: false,
+        legacyHint: null
       })
+      expect(requestPluginCatalogInstallFromDeepLink).not.toHaveBeenCalled()
       expect(navigate).not.toHaveBeenCalled()
     })
 
@@ -620,7 +723,11 @@ describe('useDesktopIntegrations', () => {
       const identifier = 'skills-sh/owner/repo/skill'
       const payload = { kind: 'skill', name: 'install', params: { identifier } }
 
-      for (const [connection, profile] of [['server-a', 'research'], ['server-b', 'work'], ['server-a', 'research']]) {
+      for (const [connection, profile] of [
+        ['server-a', 'research'],
+        ['server-b', 'work'],
+        ['server-a', 'research']
+      ]) {
         setApiRequestConnection(connection)
         setApiRequestProfile(profile)
         api.mockClear()
@@ -640,11 +747,23 @@ describe('useDesktopIntegrations', () => {
         expect($confirmRequest.get()?.phase).toBe('done')
         settleConfirm(true)
         await waitFor(() => expect($hubInstalledOverride.get()[identifier]).toBe(true))
-        expect(installs()).toEqual([[{
-          connectionId: connection, profile, priority: 'foreground', path: '/api/skills/hub/install', method: 'POST', body: { identifier }
-        }]])
+        expect(installs()).toEqual([
+          [
+            {
+              connectionId: connection,
+              profile,
+              priority: 'foreground',
+              path: '/api/skills/hub/install',
+              method: 'POST',
+              body: { identifier }
+            }
+          ]
+        ])
         expect(api).toHaveBeenCalledWith({
-          connectionId: connection, profile, priority: 'foreground', path: '/api/actions/skill-link-test/status?lines=200'
+          connectionId: connection,
+          profile,
+          priority: 'foreground',
+          path: '/api/actions/skill-link-test/status?lines=200'
         })
       }
 

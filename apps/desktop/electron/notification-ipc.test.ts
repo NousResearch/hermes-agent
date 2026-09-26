@@ -40,13 +40,21 @@ beforeEach(() => {
   host.shown.length = 0
 })
 
-it('returns native clicks and approval actions to the emitting window, not the primary', () => {
+it('returns native clicks and approval actions to the emitting window, not the primary', async () => {
   const primary = windowStub()
   const source = windowStub()
   host.fromWebContents.mockReturnValue(source)
   const focusWindow = vi.fn()
-  registerNativeNotifications({ getMainWindow: () => primary as unknown as BrowserWindow, focusWindow })
-  const notify = host.handle.mock.calls[0][1] as (event: IpcMainInvokeEvent, payload: HermesNotification) => boolean
+  registerNativeNotifications({
+    getMainWindow: () => primary as unknown as BrowserWindow,
+    focusWindow,
+    platform: 'darwin'
+  })
+
+  const notify = host.handle.mock.calls[0][1] as (
+    event: IpcMainInvokeEvent,
+    payload: HermesNotification
+  ) => Promise<boolean>
 
   const payload = {
     kind: 'approval',
@@ -59,7 +67,7 @@ it('returns native clicks and approval actions to the emitting window, not the p
     ]
   }
 
-  expect(notify({ sender: source.webContents } as unknown as IpcMainInvokeEvent, payload)).toBe(true)
+  expect(await notify({ sender: source.webContents } as unknown as IpcMainInvokeEvent, payload)).toBe(true)
   expect(focusWindow).not.toHaveBeenCalled()
   expect(primary.webContents.send).not.toHaveBeenCalled()
   host.shown[0].emit('click')
@@ -80,14 +88,23 @@ it('returns native clicks and approval actions to the emitting window, not the p
   expect(primary.webContents.send).toHaveBeenCalledWith('hermes:focus-session', payload.focusSessionId)
 })
 
-it('delivers plugin callbacks to their source and falls back only for navigation after it closes', () => {
+it('delivers plugin callbacks to their source and falls back only for navigation after it closes', async () => {
   const primary = windowStub()
   const source = windowStub()
   host.fromWebContents.mockReturnValue(source)
   const focusWindow = vi.fn()
-  registerNativeNotifications({ getMainWindow: () => primary as unknown as BrowserWindow, focusWindow })
-  const notify = host.handle.mock.calls[0][1] as (event: IpcMainInvokeEvent, payload: HermesNotification) => boolean
-  notify({ sender: source.webContents } as unknown as IpcMainInvokeEvent, {
+  registerNativeNotifications({
+    getMainWindow: () => primary as unknown as BrowserWindow,
+    focusWindow,
+    platform: 'darwin'
+  })
+
+  const notify = host.handle.mock.calls[0][1] as (
+    event: IpcMainInvokeEvent,
+    payload: HermesNotification
+  ) => Promise<boolean>
+
+  await notify({ sender: source.webContents } as unknown as IpcMainInvokeEvent, {
     kind: 'plugin',
     notifyId: 'source-callback',
     activate: '/plugin',

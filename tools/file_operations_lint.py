@@ -68,18 +68,19 @@ def _lint_json_inproc(content: str) -> tuple[bool, str]:
 
 
 def _lint_yaml_inproc(content: str) -> tuple[bool, str]:
-    """In-process YAML syntax check; ``__SKIP__`` when PyYAML is missing. Syntax-only
-    (``yaml.parse``), NOT ``safe_load``: loading rejects valid multi-doc streams and
+    """In-process YAML syntax check; ``__SKIP__`` when ruamel.yaml is missing. Syntax-only
+    (``YAML.parse``), NOT ``safe_load``: loading rejects valid multi-doc streams and
     app tags (``!Sub``, ``!vault``), and this is a fail-closed WRITE gate."""
     try:
-        import yaml as _yaml
+        from ruamel.yaml import YAML
+        from ruamel.yaml.error import YAMLError
     except ImportError:
         return True, "__SKIP__"
     try:
-        for _event in _yaml.parse(content):
+        for _event in YAML(typ="safe").parse(content):
             pass
         return True, ""
-    except _yaml.YAMLError as e:
+    except YAMLError as e:
         return False, f"YAMLError: {e}"
     except Exception as e:  # noqa: BLE001
         return False, f"{type(e).__name__}: {e}"
@@ -95,9 +96,11 @@ def _lint_toml_inproc(content: str) -> tuple[bool, str]:
 
 
 def _lint_python_inproc(content: str) -> tuple[bool, str]:
-    """In-process Python syntax check via ast.parse (py_compile's scope, no subprocess)."""
+    """In-process Python syntax check via ast.parse (py_compile's scope, no subprocess). Parses the
+    bytes, as py_compile does, so a legacy ``coding:`` cookie is honoured for a file the edit paths
+    read with surrogateescape."""
     try:
-        ast.parse(content)
+        ast.parse(content.encode("utf-8", "surrogateescape"))
         return True, ""
     except SyntaxError as e:
         loc = f" (line {e.lineno}, column {e.offset})" if e.lineno else ""
@@ -216,12 +219,15 @@ class LintMixin:
             return None
 
     def _lsp_handles_extension(self, ext: str) -> bool:
-        """True iff some registered LSP server claims ``ext`` (static registry
-        only; safe on remote backends). Decides whether pre-write content is
-        worth capturing for the line-shift map."""
+        """True iff the active service (config-declared servers included) or, without one,
+        the static registry claims ``ext``. Decides whether pre-write content is worth
+        capturing for the line-shift map."""
         if not ext:
             return False
         try:
+            svc = self._lsp_service()
+            if svc is not None:
+                return svc.handles_extension(ext)
             from agent.lsp.servers import SERVERS
         except Exception:  # noqa: BLE001
             return False
@@ -272,7 +278,7 @@ class LintMixin:
         remaps baseline diagnostics into post-edit coordinates; otherwise every
         pre-existing diagnostic below an inserted line would look new."""
         svc = self._lsp_service()
-        if svc is None or not svc.enabled_for(path):
+        if svc is None or not self._lsp_will_handle(path):
             return ""
         line_shift = None
         if pre_content is not None and post_content is not None and pre_content != post_content:

@@ -469,7 +469,6 @@ export function PetOverlayApp() {
                 top: 0,
                 width: 24
               }}
-              title="Open in Hermes"
               type="button"
             >
               <Mail style={{ height: 13, width: 13 }} />

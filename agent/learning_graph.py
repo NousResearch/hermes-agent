@@ -8,6 +8,7 @@ memory→skill links are derived from lexical overlap.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections import Counter
@@ -57,7 +58,7 @@ def _load_usage() -> dict[str, dict[str, Any]]:
         return load_usage()
     except Exception:
         try:
-            return json.loads((get_hermes_home() / "skills" / ".usage.json").read_text(encoding="utf-8"))
+            return json.loads((get_hermes_home() / "skills" / ".usage.json").read_text(encoding="utf-8-sig"))
         except Exception:
             return {}
 
@@ -86,7 +87,7 @@ def build_skill_nodes(skill_roots: list[tuple[str, Path]]) -> dict[str, SkillNod
             if _SKIP_PARTS.intersection(skill_md.parts):
                 continue
             try:
-                text = skill_md.read_text(encoding="utf-8")[:4000]
+                text = skill_md.read_text(encoding="utf-8-sig")[:4000]
             except OSError:
                 continue
             try:
@@ -126,24 +127,48 @@ def density_stats(nodes: dict[str, SkillNode], edges: list[tuple[str, str]]) -> 
     }
 
 
+def memory_fingerprint(entry: str) -> str:
+    """Short stable digest of a memory entry's TEXT, carried in the node id.
+
+    A journey card is identified by what it says, not by where it sat: an earlier entry can be
+    removed (an agent ``memory_tool`` remove mid-turn, a Journey delete without a refetch)
+    between the graph being drawn and the user submitting an edit, and a bare index then names
+    somebody else's card (#119668).
+    Cards and the mutation path both read entries through ``MemoryStore._read_file``, so the
+    same entry digests the same on both sides (a BOM'd file included).
+    """
+    return hashlib.sha256(entry.strip().encode("utf-8")).hexdigest()[:12]
+
+
+def memory_node_id(card: dict[str, Any], index: int) -> str:
+    """``memory:<source>:<index>:<fingerprint>`` — position for the occurrence, text for identity."""
+    return f"memory:{card['source']}:{index}:{card['fingerprint']}"
+
+
 def _memory_cards() -> list[dict[str, Any]]:
-    """``MEMORY.md`` / ``USER.md`` prose split on bare ``§`` separators; every
-    non-empty chunk becomes one card (MEMORY.md cards first, then USER.md)."""
+    """``MEMORY.md`` / ``USER.md`` entries as the memory tool parses them; every
+    entry becomes one card (MEMORY.md cards first, then USER.md)."""
+    from tools.memory_tool import MemoryStore
+
     base = get_hermes_home() / "memories"
     cards: list[dict[str, Any]] = []
     for fname, source in (("MEMORY.md", "memory"), ("USER.md", "profile")):
         path = base / fname
         try:
-            text, file_ts = path.read_text(encoding="utf-8").strip(), _to_int_ts(path.stat().st_mtime)
+            file_ts = _to_int_ts(path.stat().st_mtime)
         except OSError:
             continue
-        for chunk_idx, chunk in enumerate(c.strip() for c in text.split("\n§\n")):
-            if chunk:
-                first = chunk.splitlines()[0].strip().lstrip("# ").strip()
-                cards.append({
-                    "source": source, "timestamp": file_ts + chunk_idx if file_ts is not None else None,
-                    "title": (first[:80] + "…") if len(first) > 80 else first, "body": chunk[:1200],
-                })
+        # The store's own parser (utf-8-sig, same delimiter): a hand-rolled split kept a Notepad
+        # BOM glued to the first entry, so its fingerprint never matched the store's and the card
+        # was "stale" forever.
+        for chunk_idx, chunk in enumerate(MemoryStore._read_file(path)):
+            first = chunk.splitlines()[0].strip().lstrip("# ").strip()
+            cards.append({
+                "source": source, "timestamp": file_ts + chunk_idx if file_ts is not None else None,
+                "title": (first[:80] + "…") if len(first) > 80 else first, "body": chunk[:1200],
+                # Digest the WHOLE chunk, not the truncated ``body`` a long memory renders with.
+                "fingerprint": memory_fingerprint(chunk),
+            })
     return cards
 
 
@@ -162,7 +187,7 @@ def _memory_skill_edges(memory_cards: list[dict[str, Any]], skills: list[SkillNo
             ((score, name) for name, tokens, name_lower in skill_meta if (score := (6 if name_lower in text else 0) + len(tokens & text_tokens)) > 0),
             key=lambda x: (-x[0], x[1]),
         )
-        edges.extend((f"memory:{card['source']}:{idx}", name) for _, name in scored[:4])
+        edges.extend((memory_node_id(card, idx), name) for _, name in scored[:4])
     return edges
 
 
@@ -197,7 +222,7 @@ def build_learning_graph() -> dict[str, Any]:
         for n in learned_skills.values()
     ] + [
         {
-            "id": f"memory:{card['source']}:{i}", "label": card["title"], "kind": "memory",
+            "id": memory_node_id(card, i), "label": card["title"], "kind": "memory",
             "memorySource": card["source"], "timestamp": card.get("timestamp"), "category": "memory",
             "useCount": 0, "state": "active", "createdBy": "memory", "pinned": False,
         }

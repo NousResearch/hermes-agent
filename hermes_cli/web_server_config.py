@@ -3,19 +3,19 @@
 
 import logging
 import os
+from dataclasses import replace
 from fastapi import HTTPException
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from agent.model_metadata import is_local_endpoint
 from hermes_cli.config import (
     DEFAULT_CONFIG,
-    build_cron_model_impact,
     cfg_get,
     clear_model_endpoint_credentials,
     find_provider_entry,
     read_raw_config,
-    resolve_cron_model_drift_defaults,
 )
 from hermes_cli.web_server_memory import _normalize_memory_provider_name
+from tools.wake_word import _PROVIDER_PREFERENCE
 
 if TYPE_CHECKING:
     from hermes_cli.model_switch import ModelSwitchResult
@@ -101,6 +101,18 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Refuse Docker sandboxes when egress is enabled but not configured/running",
         "category": "security",
     },
+    "auth.adopt_external_logins": {
+        "type": "boolean",
+        "description": (
+            "Borrow and refresh the Codex CLI / Claude Code logins when Hermes has no usable login of its own. "
+            "Off: Hermes uses only its own logins (`hermes auth add <provider>`)."
+        ),
+        "category": "security",
+    },
+    "wake_word.provider": _select(
+        "Wake engine. Auto selects a platform-supported engine; Porcupine requires PORCUPINE_ACCESS_KEY.",
+        "auto", *_PROVIDER_PREFERENCE,
+    ),
     "tts.provider": _select(
         "Text-to-speech provider",
         "edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts", "piper",
@@ -163,6 +175,14 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
             "subagent_stop are never moved onto a timeout worker."
         ),
     },
+    "plugins.load_timeout_seconds": {
+        "type": "number",
+        "description": (
+            "Deadline (seconds) for one plugin's import + register() at load. A plugin that "
+            "overruns it is skipped with the reason 'load timed out' and the rest keep loading. "
+            "0 disables the deadline; values above 600 are clamped."
+        ),
+    },
 }
 
 # Small categories fold into a bigger tab to avoid one-field orphan tabs. Several sources
@@ -197,6 +217,9 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "session": "general",
     "nous": "agent",
     "connections": "agent",
+    "auth": "security",
+    # `fallback.min_switch_reset_seconds` is the only schema-surfaced fallback field.
+    "fallback": "agent",
 }
 
 
@@ -467,6 +490,17 @@ def _validated_main_model_selection(
         custom_providers=get_compatible_custom_providers(cfg))
     if not result.success:
         raise HTTPException(status_code=400, detail=result.error_message or "model switch rejected")
+    if is_bare_custom and base_url.strip():
+        # The submitted endpoint IS the route this pick asked for; the credential step may have
+        # re-resolved the bare target onto an env/config endpoint (CUSTOM_BASE_URL, a stale
+        # model.base_url, the OPENROUTER_BASE_URL mirror). Restore the submitted endpoint AND the
+        # wire protocol it mandates: ``model.base_url`` and ``model.api_mode`` are persisted
+        # together, so a mode derived from the displaced host would route the submitted endpoint
+        # over the wrong wire.
+        from hermes_cli.providers import determine_api_mode
+        url = base_url.strip()
+        result = replace(result, base_url=url,
+                         api_mode=determine_api_mode(result.target_provider, url))
     return result
 
 
@@ -638,21 +672,6 @@ def _stale_aux_pins(cfg: dict, new_provider: str) -> list:
     return stale_aux
 
 
-def _cron_model_impact(cfg: dict, provider: str, model: str) -> Any:
-    from hermes_cli.config import load_config
-    try:
-        effective_config = load_config()
-        effective_provider, effective_model = resolve_cron_model_drift_defaults(effective_config)
-        return build_cron_model_impact(
-            current_provider=effective_provider or provider,
-            current_model=effective_model or model,
-            config=effective_config,
-        )
-    except Exception:
-        _log.debug("cron model impact inspection failed", exc_info=True)
-        return build_cron_model_impact(config=cfg, jobs={})
-
-
 def _provider_entry(cfg: dict, provider: str) -> Any:
     providers_cfg = cfg.get("providers")
     return providers_cfg.get(provider) if isinstance(providers_cfg, dict) else None
@@ -674,6 +693,7 @@ def _prepare_main_assignment(cfg: dict, provider: str, model: str, base_url: str
 def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: str, api_key: str,
                                 prepared: "Optional[tuple[str, ModelSwitchResult]]" = None) -> dict:
     from hermes_cli.config import save_config
+    from hermes_cli.free_tier_bootstrap import reconcile_record
     base_url, result = prepared or _prepare_main_assignment(cfg, provider, model, base_url, api_key)
     provider, model = result.target_provider, result.new_model
     provider_entry = _provider_entry(cfg, provider)
@@ -686,6 +706,8 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
     save_config(cfg)
     if new_provider in {"custom", "local"} and base_url:
         _register_custom_endpoint(base_url, api_key, model)
+    # The serve process's boot record may still say "nothing configured"; the chat gates on it.
+    reconcile_record()
 
     return {
         "ok": True,
@@ -695,7 +717,6 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
         "base_url": model_cfg.get("base_url", ""),
         "gateway_tools": gateway_tools,
         "stale_aux": _stale_aux_pins(cfg, new_provider),
-        "cron_model_impact": _cron_model_impact(cfg, provider, model),
     }
 
 

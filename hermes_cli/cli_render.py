@@ -377,10 +377,8 @@ def _rich_text_from_ansi(text: str) -> _RichText:
     return _RichText.from_ansi(text or "")
 
 
-def _strip_markdown_syntax(text: str) -> str:
-    """Best-effort markdown marker removal for plain-text display."""
-    from cli import _rich_text_from_ansi
-    plain = _rich_text_from_ansi(text or "").plain
+def _strip_markdown_markers(plain: str) -> str:
+    """Markdown-marker removal for text whose ANSI escapes are already gone."""
     # HR markers: "-"/"_" runs of 3+, but "*" only when exactly 3 (cron schedules "* * * * *").
     plain = re.sub(r"^\s{0,3}(?:[-_]\s*){3,}$", "", plain, flags=re.MULTILINE)
     plain = re.sub(r"^\s{0,3}(?:\*\s*){3}\s*$", "", plain, flags=re.MULTILINE)
@@ -400,6 +398,33 @@ def _strip_markdown_syntax(text: str) -> str:
     plain = re.sub(r"~~([^~]+)~~", r"\1", plain)
     plain = re.sub(r"\n{3,}", "\n\n", plain)
     return plain.strip("\n")
+
+
+def _strip_markdown_syntax(text: str) -> str:
+    """Best-effort markdown marker removal for plain-text display."""
+    from cli import _rich_text_from_ansi
+    return _strip_markdown_markers(_rich_text_from_ansi(text or "").plain)
+
+
+def _strip_markdown_syntax_keep_links(text: str) -> str:
+    """Strip markdown/ANSI but keep OSC 8 hyperlinks as raw escapes.
+
+    Hiding the whole escape run drops hyperlinks too, yet a link target is metadata, not
+    styling: the sequences are restored around the same visible text so a terminal that
+    supports OSC 8 still renders them clickable. Styled ANSI stays stripped.
+    """
+    from cli import _rich_text_from_ansi
+    source = _rich_text_from_ansi(text or "")
+    plain = source.plain
+    # Reverse order keeps the recorded offsets valid while earlier spans are rewritten.
+    for span in reversed(source.spans):
+        link = getattr(span.style, "link", None) if span.style is not None else None
+        if link:
+            plain = (
+                plain[:span.start] + f"\x1b]8;;{link}\x1b\\" + plain[span.start:span.end]
+                + "\x1b]8;;\x1b\\" + plain[span.end:]
+            )
+    return _strip_markdown_markers(plain)
 
 
 _WINDOWS_PATH_WITH_DOT_SEGMENT_RE = re.compile(r"(?i)(?:\b[a-z]:\\|\\\\)[^\s`]*\\\.[^\s`]*")
@@ -432,7 +457,7 @@ def _terminal_width_for_streaming() -> int:
 
 def _render_final_assistant_content(text: str, mode: str = "render"):
     """Render final assistant content as markdown, stripped text, or raw text."""
-    from cli import _preserve_windows_dot_segments_for_markdown, _rich_text_from_ansi, _strip_markdown_syntax, _terminal_columns, realign_markdown_tables
+    from cli import _preserve_windows_dot_segments_for_markdown, _rich_text_from_ansi, _strip_markdown_syntax, _strip_markdown_syntax_keep_links, _terminal_columns, realign_markdown_tables
     from rich.markdown import Markdown
 
     # 1 border cell each side + margin so resize races don't push a borderline table into soft-wrap.
@@ -440,8 +465,13 @@ def _render_final_assistant_content(text: str, mode: str = "render"):
 
     normalized_mode = str(mode or "render").strip().lower()
     if normalized_mode == "strip":
+        stripped = _strip_markdown_syntax_keep_links(text)
+        if "\x1b]8;;" in stripped:
+            # Hyperlinks survive: rich re-parses them into link spans, so cell widths stay
+            # correct (a raw escape counted as printable would break the panel).
+            return _rich_text_from_ansi(stripped)
         # Strip first (inline markdown changes cell width), then re-align padding.
-        return _RichText(realign_markdown_tables(_strip_markdown_syntax(text), panel_width))
+        return _RichText(realign_markdown_tables(stripped, panel_width))
     if normalized_mode == "raw":
         return _rich_text_from_ansi(text or "")
 

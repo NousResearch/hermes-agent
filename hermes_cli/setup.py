@@ -94,7 +94,7 @@ def print_noninteractive_setup_guidance(reason: str | None = None) -> None:
           "  hermes config set model.provider custom",
           "  hermes config set model.base_url http://localhost:8080/v1",
           "  hermes config set model.default your-model-name", None,
-          "Or set OPENROUTER_API_KEY / OPENAI_API_KEY in your environment.",
+          "Or set OPENROUTER_API_KEY (OpenRouter) / OPENAI_API_KEY (OpenAI) in your environment.",
           "Run 'hermes setup' in an interactive terminal to use the full wizard.", None)
 
 

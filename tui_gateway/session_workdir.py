@@ -41,6 +41,12 @@ def _completion_cwd(params: dict | None = None) -> str:
     if not params.get("cwd_explicit") and client_cwd:
         if profile_cwd := _profile_workspace_cwd(profile_home):
             return profile_cwd
+        # #79406: no ``terminal.cwd`` — resolve from the profile's OWN projects.db instead of keeping the
+        # cwd inherited across the switch (the desktop's app-global workspace still holds the PREVIOUS
+        # profile's active project, so Profile B ran inside Profile A's directory). A stored session's own
+        # cwd outranks the pointer: resume must not be re-homed by whichever project is active now.
+        if not session_cwd and (project_cwd := _profile_active_project_cwd(profile_home)):
+            return project_cwd
     # A session bound to another profile resolves its workspace from THAT profile's config before the launch profile's
     # env var; the dashboard's in-memory gateway does NOT inherit the PTY child's bridged TERMINAL_CWD, so a configured
     # terminal.cwd is read directly.
@@ -125,6 +131,35 @@ def _is_remote_cwd_shape(raw: str) -> bool:
 def _profile_workspace_cwd(profile_home) -> str | None:
     """A named profile's configured workspace: an ssh profile's remote dir, else a host dir."""
     return _declared_remote_profile_cwd(profile_home) or _profile_configured_cwd(profile_home)
+
+
+def _profile_active_project_cwd(profile_home) -> str | None:
+    """A named profile's active project directory (``projects.db`` ``active_id`` → ``primary_path``), when that
+    directory exists on this host.
+
+    The pointer is the profile's OWN durable record of where its new work happens, so it outranks a cwd the
+    desktop merely inherited (after a profile switch that is the previous profile's project). An ssh profile's
+    path lives on the remote host, where this ``isdir`` cannot vouch for it, so it is skipped. ``None`` for the
+    launch profile, a profile without a projects DB, no active pointer, or a pointer whose directory is gone.
+    """
+    if not profile_home or _cwd_is_remote(profile_home):
+        return None
+    from pathlib import Path
+
+    db_path = Path(str(profile_home)) / "projects.db"
+    if not db_path.is_file():
+        return None
+    with contextlib.suppress(Exception):
+        from hermes_cli import projects_db
+
+        with projects_db.connect_closing(db_path) as conn:
+            if not (active_id := projects_db.get_active_id(conn)):
+                return None
+            project = projects_db.get_project(conn, active_id)
+            raw = str(getattr(project, "primary_path", "") or "").strip()
+        resolved = os.path.abspath(os.path.expanduser(raw)) if raw else ""
+        return resolved if resolved and os.path.isdir(resolved) else None
+    return None
 
 
 def _workspace_cwd(profile_home, raw: str) -> str:

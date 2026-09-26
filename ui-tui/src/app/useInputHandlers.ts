@@ -784,7 +784,15 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return
     }
 
-    if (isAction(key, ch, 'k') && cRefs.queueRef.current.length && live.sid) {
+    // The same chord is the composer's kill-to-end, so it sends the next queued
+    // message only from an empty composer, and never while a queued item is edited.
+    if (
+      isAction(key, ch, 'k') &&
+      !composerHasDraft(cState) &&
+      cState.queueEditIdx === null &&
+      cRefs.queueRef.current.length &&
+      live.sid
+    ) {
       const next = cActions.dequeue()
 
       if (next) {

@@ -15,6 +15,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
+from agent.context_engine import update_context_engine_usage
 from agent.image_token_cost import calibrate_from_usage
 from agent.usage_anchor import capture_usage_anchor, set_usage_anchor
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
@@ -85,9 +86,9 @@ def record_response_usage(
     agent.session_api_calls += 1
     if not (hasattr(response, 'usage') and response.usage):
         if getattr(compressor, "awaiting_real_usage_after_compression", False):
-            # No usage -> cannot adjudicate the prior compaction; consume the
-            # pending verdict so later readings aren't charged to it and
-            # preflight deferral isn't latched indefinitely.
+            # No usage -> cannot adjudicate the prior compaction. Engines may
+            # consume their own verdict, but core keeps the generic wait latch
+            # until an actual prompt count arrives.
             compressor.update_from_response({})
         _note_usage_less = getattr(compressor, "note_usage_less_response", None)
         if callable(_note_usage_less):
@@ -117,12 +118,11 @@ def record_response_usage(
         "cache_write_tokens": canonical_usage.cache_write_tokens,
         "reasoning_tokens": canonical_usage.reasoning_tokens,
     }
-    # Capture the boundary latch before update_from_response() consumes it: only the real
-    # prompt count right after a compaction rearms the budget.
-    _completed_compaction_pending = bool(
-        getattr(compressor, "_verify_compaction_cleared_threshold", False)
+    # Capture and consume the boundary latch around the engine update: only the
+    # real prompt count right after a compaction rearms the budget.
+    _completed_compaction_pending = update_context_engine_usage(
+        compressor, usage_dict
     )
-    compressor.update_from_response(usage_dict)
     # Usage-anchored accounting: snapshot exact provider usage against the durable
     # transcript (main-loop ONLY; MoA uses pre-fold aggregator usage). The display meter
     # anchors on the turn's FIRST response: later same-turn responses inflate

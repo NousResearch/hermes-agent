@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from toolsets import get_toolset_names
+from hermes_cli import kanban_landing as _landing
 
 _log = logging.getLogger(__name__)
 
@@ -2687,6 +2688,19 @@ class EmptyCompletionError(ValueError):
         )
 
 
+class UnlandedCardError(ValueError):
+    """``complete_task`` refused: this card's deliverable is a landing and the
+    completion carries no landed evidence — it claims a landing that names no
+    merged commit, deploy stamp, or matching live hash, or it is a chain head
+    whose own landing leg has not landed yet. A ``ValueError`` so tool error
+    handlers treat it as recoverable."""
+
+    def __init__(self, task_id: str, gap: dict):
+        self.task_id = task_id
+        self.gap = dict(gap)
+        super().__init__(_landing_gap_message(task_id, gap))
+
+
 class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
@@ -2742,6 +2756,10 @@ def complete_task(
     or ``summary``, or a stripped result already stored on the card. Empty or
     whitespace-only evidence raises :class:`EmptyCompletionError` after an
     auditable event. Approving a card out of ``review`` stays exempt.
+    A landing card — one whose completion claims a landing, or whose own child
+    holds a landing contract and has not landed — needs the landed evidence and
+    otherwise raises :class:`UnlandedCardError` after an auditable event carrying
+    ``landing_evidence=false`` (see :mod:`hermes_cli.kanban_landing`).
     """
     now = int(time.time())
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
@@ -2750,6 +2768,10 @@ def complete_task(
     from hermes_cli.kanban_pr_acceptance_store import prepare_acceptance, record_acceptance
     verified_cards = _gate_created_cards(conn, task_id, created_cards, summary or result)
     _gate_empty_completion(conn, task_id, result=result, summary=summary)
+    _gate_landing_evidence(conn, task_id, metadata, force=force)
+    # What the gate accepted, recorded on the closing event: the commit a deploy
+    # stamp named and the hash an artifact actually hashed to, not the claim.
+    landing_record = _landing.landing_evidence_record(metadata)
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,
     )
@@ -2813,7 +2835,7 @@ def complete_task(
             event_summary = _REVIEW_APPROVED_NOTE
         _append_event(
             conn, task_id, "completed",
-            _completed_event_payload(result, event_summary, verified_cards, metadata),
+            _completed_event_payload(result, event_summary, verified_cards, metadata, landing_record),
             run_id=run_id,
         )
     _flag_phantom_prose_refs(conn, task_id, run_id, summary, result, verified_cards)
@@ -2891,6 +2913,51 @@ def _gate_empty_completion(
     raise EmptyCompletionError(task_id)
 
 
+def _landing_gap_message(task_id: str, gap: dict) -> str:
+    """The refusal text for :class:`UnlandedCardError`, built by kanban_landing."""
+    return _landing.gap_message(task_id, gap)
+
+
+def _gate_landing_evidence(
+    conn: sqlite3.Connection,
+    task_id: str,
+    metadata: Optional[dict],
+    *,
+    force: bool = False,
+) -> None:
+    """Refuse a completion that closes a landing card on unlanded evidence.
+
+    A card's deliverable is a landing when the completion *claims* one
+    (``metadata`` naming landed evidence) or when the card's own child holds a
+    landing contract and has not landed yet — the chain-head case, where a parent
+    otherwise reads ``done`` while the leg that lands its work is still queued.
+    Any other card completes unchanged: no prose is parsed and no card that
+    declares nothing is checked.
+
+    ``force`` is the operator's explicit override (``hermes kanban complete
+    --force``): a landing done out of band must still be closable. Runs before the
+    main write txn, like the other completion gates, and records its own
+    auditable event carrying ``landing_evidence=false``.
+    """
+    if force:
+        return
+    children = _landing.pending_landing_children(conn, task_id)
+    gap = _landing.landing_gap(metadata, children)
+    if gap is None:
+        return
+    with write_txn(conn):
+        _append_event(
+            conn, task_id, "completion_blocked_landing_evidence",
+            {
+                "landing_evidence": False,
+                "landing_source": gap["source"],
+                "missing_evidence": list(gap["missing"]),
+                "pending_landing_children": [c["id"] for c in gap["children"]],
+            },
+        )
+    raise UnlandedCardError(task_id, gap)
+
+
 def _stage_completion_artifacts(
     conn: sqlite3.Connection, task_id: str, metadata: dict, now: int, *,
     uploaded_by: str = "kanban_complete",
@@ -2920,11 +2987,13 @@ def _cleaned_artifact_paths(metadata: Any) -> list[str]:
 
 def _completed_event_payload(
     result: Optional[str], event_summary: Optional[str], verified_cards: list[str], metadata: Any,
+    landing_record: Optional[dict] = None,
 ) -> dict:
     """``completed`` event payload: first summary line (400 chars) so gateway
     notifiers / dashboard WS render without a second round-trip; verified
-    cards; and ``metadata["artifacts"]`` promoted so the notifier can upload
-    them as native attachments without fetching the run row."""
+    cards; the landed evidence a landing gate accepted; and
+    ``metadata["artifacts"]`` promoted so the notifier can upload them as native
+    attachments without fetching the run row."""
     # Mirror CLI's _show_voice_status: include STT/TTS provider availability so the user can tell at a
     # glance *why* voice mode isn't working ("STT provider: MISSING ..." is the common case). ``record_key``
     # mirrors the configured ``voice.record_key`` so the TUI can both bind it (frontend
@@ -2940,6 +3009,8 @@ def _completed_event_payload(
         cleaned = _cleaned_artifact_paths(metadata)
         if cleaned:
             payload["artifacts"] = cleaned
+    if landing_record:
+        payload["landing_evidence"] = landing_record["evidence"]
     return payload
 
 

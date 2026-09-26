@@ -710,7 +710,6 @@ def finalize_turn(
     if interrupted and agent._interrupt_message:
         result["interrupt_message"] = agent._interrupt_message
     agent.clear_interrupt()
-    agent._stream_callback = None  # don't leak into future calls
 
     # Skill trigger is checked NOW — based on how many tool iterations THIS turn used.
     _should_review_skills = (
@@ -727,21 +726,33 @@ def finalize_turn(
         interrupted=interrupted, messages=messages,
     )
 
-    # Background memory/skill review runs AFTER delivery so it never competes with the
-    # user's task. Suppressed by skip_background_review (e.g. cron): the fork costs
-    # ~30K tokens / event with no human-in-the-loop benefit. Best-effort; the review
-    # clones the snapshot structurally so its sanitizers can't reach the live transcript.
+    # Automatic review lifecycle is explicit. ``background`` preserves the historical
+    # daemon-thread behavior. ``before_final`` executes the same fork inline, after the
+    # foreground transcript is durable but before the terminal result becomes visible.
+    # In both modes the snapshot is structurally cloned before the fork can sanitize it.
+    _turn_review = getattr(agent, "_background_review_turn_settings", None) or {}
+    _review_timing = _turn_review.get("timing", "background")
     if (
         final_response
         and not interrupted
         and not getattr(agent, "skip_background_review", False)
+        and _turn_review.get("enabled", True)
         and (_should_review_memory or _should_review_skills)
     ):
-        with suppress(Exception):
-            agent._spawn_background_review(
-                messages_snapshot=list(messages), review_memory=_should_review_memory,
-                review_skills=_should_review_skills,
-            )
+        if _review_timing == "before_final":
+            try:
+                agent._run_background_review_before_final(
+                    messages_snapshot=list(messages), review_memory=_should_review_memory,
+                    review_skills=_should_review_skills, task_cfg=_turn_review.get("task_cfg") or {},
+                )
+            except Exception as exc:
+                logger.warning("Before-final memory/skill review failed: %s", exc, exc_info=True)
+        else:
+            with suppress(Exception):
+                agent._spawn_background_review(
+                    messages_snapshot=list(messages), review_memory=_should_review_memory,
+                    review_skills=_should_review_skills,
+                )
 
     # Memory provider on_session_end()/shutdown_all() are NOT called here:
     # run_conversation() runs once per message; CLI/gateway own session-end cleanup.
@@ -761,4 +772,14 @@ def finalize_turn(
 
     agent._turn_preflight_display_snapshot = None
     agent._turn_received_provider_response = False
+
+    # ``before_final`` keeps both token streaming and the completion banner behind this
+    # boundary. No review model/tool call or durable review write can occur after it.
+    _completion_banner = getattr(agent, "_deferred_completion_banner", None)
+    agent._deferred_completion_banner = None
+    if _completion_banner:
+        with suppress(Exception):
+            agent._safe_print(_completion_banner)
+    agent._stream_callback = None  # don't leak into future calls
+    agent._background_review_turn_settings = None
     return result

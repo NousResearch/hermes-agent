@@ -1482,6 +1482,8 @@ Some models cannot turn thinking off at all (`400 Reasoning is mandatory for thi
 
 **Background review is different:** a same-model review fork always inherits the parent's reasoning effort. `auxiliary.background_review.reasoning_effort` is ignored on that path, including when the parent provider/model is explicitly selected. This preserves byte-identical reasoning settings, system prompt, full conversation snapshot, and tool definitions for prompt-cache parity; there is no independent-effort switch for same-model reviews. See [background review reasoning](./features/memory.md#same-model-review-reasoning). When the review is routed to a different provider/model, `reasoning_effort` applies to that routed fork (unset = the routed provider's default). Hermes prints a one-time warning when the key is set but the review runs on the main model.
 
+Background review also accepts `timing: background | before_final` (default: `background`). `before_final` runs the review inline and withholds the terminal response until review model calls, tools, summaries, and durable memory/skill writes have finished. It intentionally withholds terminal assistant text for that turn; tool and reasoning progress may still be delivered before completion. See [choosing the completion boundary](./features/memory.md#choosing-the-completion-boundary-timing).
+
 **MoA also uses a different configuration:** reasoning depth for Mixture-of-Agents is configured **per slot** in the MoA preset (`moa.presets.<name>.reference_models[].reasoning_effort` / `aggregator.reasoning_effort`), not on the `moa_reference`/`moa_aggregator` auxiliary blocks — see [Mixture of Agents](./features/mixture-of-agents.md).
 
 ```yaml

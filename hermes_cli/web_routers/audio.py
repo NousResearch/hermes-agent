@@ -451,6 +451,43 @@ def _wav_s16le_mono(path: str) -> tuple:
         return b"", 0
 
 
+# --- DC-click suppression for streamed PCM ---------------------------------
+# The desktop socket plays each binary frame back-to-back into one continuous
+# AudioBuffer, so the discontinuity between two frames is audible as a click:
+# the waveform jumps from whatever value the previous frame ended on to
+# whatever the next one starts on. Providers do not guarantee a zero crossing
+# at a chunk boundary, so the step is frequently a full-scale DC jump.
+#
+# Ramping the boundary region to zero puts the discontinuity inside a
+# zero-amplitude region where it cannot be heard. Only the first and last
+# _FADE_SAMPLES of a frame are touched, so the audio body is untouched.
+_FADE_SAMPLES = 240  # 5ms at 48kHz — below the ~10ms pre-echo of any playback path
+
+
+def _apply_fades(pcm: bytes) -> bytes:
+    """Ramp the boundary regions of int16 mono PCM to zero at both edges.
+
+    Uses endpoint=True so the outermost sample reaches exactly 0, putting the
+    frame-to-frame step inside the zero-amplitude region rather than at its
+    edge. Frames too short to hold two full fade windows are passed through
+    byte-exact: a degenerate 2-sample frame is not real audio, and scaling it
+    would destroy it rather than fade it.
+    """
+    if not pcm:
+        return pcm
+    import numpy as np
+
+    arr = np.frombuffer(pcm, dtype="<i2")
+    n = arr.size
+    if n < 2 * _FADE_SAMPLES:
+        return pcm
+    out = arr.astype(np.float64, copy=True)
+    fs = _FADE_SAMPLES
+    out[:fs] *= np.linspace(0.0, 1.0, fs, endpoint=True)
+    out[n - fs:] *= np.linspace(1.0, 0.0, fs, endpoint=True)
+    return np.round(out).astype("<i2").tobytes()
+
+
 def _ffmpeg_s16le_mono(path: str) -> tuple:
     import shutil
 
@@ -632,7 +669,10 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
             if chunk is None:
                 break
             await _send_start()
-            await ws.send_bytes(chunk)
+            # Ramp each frame's edges to zero so the frame-to-frame step is
+            # inaudible; frame count and lengths are preserved exactly, so the
+            # client's one-frame-per-provider-request contract is unchanged.
+            await ws.send_bytes(_apply_fades(chunk))
         if not stop.is_set():
             # Fallback is the last resort: sentence synthesis was asked for and
             # produced nothing. A normal edge reply has already streamed PCM.

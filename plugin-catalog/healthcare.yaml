@@ -9,7 +9,10 @@ description: 'Local-first personal health records: encrypted on-device Vault (AE
   (healthcare-mcp==0.2.1) over uvx stdio; Portable Agent Plugins v1 package (mcp.json +
   skills/), macOS only, Python 3.11+. Zero network by default; the optional LLM report-import
   endpoint stays off unless the user configures it. Approval-gated deletes, tamper-evident
-  audit chain.'
+  audit chain. Disclosure — personal health record-keeping, not medical advice (the skill
+  forbids diagnoses and dosage changes); first run has uvx fetch healthcare-mcp==0.2.1 from PyPI;
+  the optional report-import path posts report images to Alibaba DashScope (qwen-vl-max) unless
+  HEALTHCARE_LLM_ENDPOINT points elsewhere, and only when HEALTHCARE_LLM_API_KEY is set.'
 maintainer: harrylabsj
 tier: community
 category: tools

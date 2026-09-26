@@ -339,6 +339,11 @@ def _install_plugin_core(
         _refuse_unavailable_portable_plugin(plugin_name, tmp_target)
         if before_swap is not None:
             before_swap(manifest, tmp_target)
+            # A callback may merge user-owned state into the candidate tree. Admit the final
+            # bytes through the same security and portable-package gates as the pristine clone.
+            _pc()._scan_plugin_tree(tmp_target, identifier, force=force, scan_decision_cb=scan_decision_cb,
+                                   reviewed_pin=at_reviewed_pin)
+            _refuse_unavailable_portable_plugin(plugin_name, tmp_target)
 
         if target.exists() and not force:
             raise _pc().PluginOperationError(

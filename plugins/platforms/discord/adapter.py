@@ -5828,6 +5828,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         media_types = []
         media_text_inlined: list = []
         pending_text_injection: Optional[str] = None
+        notices: list[str] = []
         for att in all_attachments:
             content_type = att.content_type or "unknown"
             if content_type.startswith("image/"):
@@ -5856,6 +5857,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                         "[Discord] Document too large (%s bytes > cap %s), skipping: %s",
                         att.size, max_doc_bytes, att.filename,
                     )
+                    # Say so, or the user's "see attached" reaches the agent with nothing attached
+                    # and nothing said.
+                    notices.append(
+                        f"Discord attachment {att.filename or 'this attachment'} was not downloaded: "
+                        f"{att.size / (1024 * 1024):.1f} MB is over the "
+                        f"{max_doc_bytes / (1024 * 1024):.0f} MB attachment limit.")
                     continue
                 try:
                     raw_bytes = await self._cache_discord_document(att, ext)
@@ -5893,6 +5900,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                             pass
                 except Exception as e:
                     logger.warning("[Discord] Failed to cache document %s: %s", att.filename, e, exc_info=True)
+        if notices:
+            notice_block = "[Discord attachment notice]\n" + "\n".join(f"- {n}" for n in notices)
+            pending_text_injection = (
+                f"{notice_block}\n\n{pending_text_injection}" if pending_text_injection else notice_block)
         return media_urls, media_types, media_text_inlined, pending_text_injection
 
     def _attachment_message_type(self, att: Any) -> MessageType:

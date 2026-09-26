@@ -70,6 +70,41 @@ _FALLBACK_EXHAUSTED_COOLDOWN_S = 5.0
 # double traffic every attempt, while later turns re-arm automatically.
 _STREAM_5XX_PROBE_WINDOW_S = 60.0
 
+# Max-iterations summary artifacts (#122607): some OpenAI-compatible models answer the
+# terminal summary request with a top-level <analysis>/<summary> envelope. Anchored at
+# a block boundary so inline HTML (<details><summary>) survives.
+_INTERNAL_SUMMARY_BLOCK_PATTERN = re.compile(
+    r"(?:^|\n)[ \t]*<(?:analysis|summary)\b[^>]*>.*?</(?:analysis|summary)>\s*",
+    re.DOTALL | re.IGNORECASE,
+)
+_INTERNAL_SUMMARY_UNTERMINATED_PATTERN = re.compile(
+    r"(?:^|\n)[ \t]*<(?:analysis|summary)\b[^>]*>.*$",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _strip_internal_summary_artifacts(agent, text: str) -> str:
+    """Strip think blocks plus top-level summary envelopes for the max-iterations path."""
+    if not text:
+        return ""
+    cleaned = text
+    try:
+        strip_fn = getattr(agent, "_strip_think_blocks", None)
+        if callable(strip_fn):
+            cleaned = strip_fn(text)
+        else:
+            from agent.agent_runtime_helpers import strip_think_blocks
+            cleaned = strip_think_blocks(agent, text)
+    except Exception:
+        cleaned = text
+    try:
+        cleaned = _INTERNAL_SUMMARY_BLOCK_PATTERN.sub("\n", cleaned or "")
+        cleaned = _INTERNAL_SUMMARY_UNTERMINATED_PATTERN.sub("\n", cleaned)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    except Exception:
+        pass
+    return (cleaned or "").strip()
+
 
 def _context_thread_target(callback):
     """Bind a no-argument thread target to the caller's ContextVars."""
@@ -2367,8 +2402,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             text = attempt(retry_count)
             if not text:
                 continue
-            if "<think>" in text:
-                text = re.sub(r'<think>.*?</think>\s*', '', text, flags=re.DOTALL).strip()
+            text = _strip_internal_summary_artifacts(agent, text)
             if text:
                 summary_call_outcome = "success"
                 append_message(messages, {"role": "assistant", "content": text})

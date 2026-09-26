@@ -2688,6 +2688,27 @@ class TestHandleMaxIterations:
         assert messages[1]["codex_reasoning_items"] == [{"id": "rs_1"}]
 
 
+    def test_summary_strips_internal_analysis_envelope(self, agent):
+        """Regression for #122607: raw <analysis>/<summary> envelopes must not leak."""
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="<analysis>\ninternal dump\n</analysis>\nDone work."
+        )
+        agent._cached_system_prompt = "You are helpful."
+
+        result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 60)
+
+        assert result == "Done work."
+
+    def test_summary_preserves_details_summary_html(self, agent):
+        """Inline <details><summary> HTML is user content, not a leaked envelope."""
+        body = "<details><summary>click</summary>body</details>"
+        agent.client.chat.completions.create.return_value = _mock_response(content=body)
+        agent._cached_system_prompt = "You are helpful."
+
+        result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 60)
+
+        assert result == body
+
     def test_codex_summary_uses_interruptible_request_path(self, agent):
         """Max-iteration Codex summaries must retain request watchdogs.
 

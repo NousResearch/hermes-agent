@@ -394,20 +394,37 @@ def _worker_alive(pid: Optional[int], started_at) -> bool:
 
 
 def _pid_recycled(pid: Optional[int], started_at) -> bool:
-    """True when a live ``pid`` is NOT the process fingerprinted at spawn (or the fingerprint can no
-    longer be read). Signalling it would hit a stranger. ``None`` fingerprint = legacy row, never
+    """True when a live ``pid`` is NOT the process fingerprinted at spawn (and the fingerprint could
+    be read to prove it). Signalling it would hit a stranger. ``None`` fingerprint = legacy row, never
     recycled; the UNVERIFIED marker is always foreign. An integer fingerprint (rows written before the
-    boot witness was added) compares the start time only."""
+    boot witness was added) compares the start time only. Unverifiable (fingerprint read failed) is
+    treated as NOT recycled: reclaiming a possibly-live worker on a transient read failure caused the
+    _pid_recycled false-positive crash misclassification, so inability to prove recycle means the
+    worker stays live until a retry or a definitive death probe."""
     if started_at is None or not pid:
         return False
     if started_at == UNVERIFIED_WORKER_FINGERPRINT:
         return True
     if isinstance(started_at, str) and "|" in started_at:
-        return _process_fingerprint(int(pid)) != started_at
+        fingerprint = _process_fingerprint(int(pid))
+        if fingerprint is None:
+            # Fingerprint unreadable (transient start-time read failure): we cannot prove the PID
+            # was recycled, so do NOT reclaim beside a possibly-live worker. The next tick (or the
+            # max-runtime / stale-claim path) retries; a genuinely dead worker fails ``_pid_alive``
+            # first and is still reclaimed immediately.
+            _kb._log.info(
+                "kanban: worker pid %s fingerprint unreadable; treating as live (not recycled)", pid
+            )
+            return False
+        return fingerprint != started_at
     from gateway.status import _start_times_agree, get_process_start_time
     current = get_process_start_time(int(pid))
     if current is None:
-        return True
+        # Same conservative failure side as the ``|`` branch above: unverifiable is NOT recycled.
+        _kb._log.info(
+            "kanban: worker pid %s start time unreadable; treating as live (not recycled)", pid
+        )
+        return False
     try:
         return not _start_times_agree(current, started_at)
     except (TypeError, ValueError):
@@ -1155,6 +1172,15 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 continue
             if _worker_alive(row["worker_pid"], _kb._row_get(row, "worker_started_at")):
                 continue
+
+            # Second confirmation before declaring a crash: a transient fingerprint read failure must
+            # not reclaim a live worker. ``_pid_alive`` true + fingerprint mismatch (or unreadable) is
+            # the race-y case: retry the fingerprint once after a short sleep. ``_pid_alive`` false is
+            # a definitive death and is reclaimed immediately (no delay for real crashes).
+            if _kb._pid_alive(row["worker_pid"]):
+                time.sleep(0.2)
+                if _worker_alive(row["worker_pid"], _kb._row_get(row, "worker_started_at")):
+                    continue
 
             pid = int(row["worker_pid"])
             dead = _classify_dead_worker(pid, row["claim_lock"], task_id=row["id"], board=board)

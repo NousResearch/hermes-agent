@@ -34,7 +34,7 @@ from hermes_cli import config as config_mod, web_deps
 from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, _config_profile_scope
 from hermes_cli.local_runtime import (
     binaries, bootstrap, catalog, context_policy, estimator, growth, hardware, hf_browse,
-    load_progress, presets, supervisor,
+    load_progress, presets, supervisor, telemetry,
 )
 from pm.downloader import Download, DownloadPaused, Source
 
@@ -476,6 +476,17 @@ def _staged_row(gguf: Path) -> Dict[str, Any]:
     return {"id": model_id, "size_bytes": size, "size_label": _human_gb(size)}
 
 
+def _runtime_stats(loaded: Dict[str, str]) -> Dict[str, Any]:
+    """Live engine stats per resident model (see ``local_runtime.telemetry``); skips models
+    with nothing to report (unloaded mid-poll, unreachable child)."""
+    out: Dict[str, Any] = {}
+    for model_id in loaded:
+        stats = _quiet(lambda m=model_id: telemetry.get_runtime_stats(m), None)
+        if stats is not None:
+            out[model_id] = stats
+    return out
+
+
 def _active_llamacpp_model_id() -> str | None:
     """The active main model when it is one of ours (config authority: the model.provider + model.default
     that /api/model/set writes)."""
@@ -508,6 +519,10 @@ def local_models_status():
     # silent: an empty dict here renders as 'Not in memory' on a machine whose VRAM is visibly full.
     loaded, placement = ({}, {}) if running is None else _quiet(
         lambda: _loaded_models(running), ({}, {}), warn="loaded-models read failed: %r")
+    # Live engine telemetry per resident model (last-turn tokens/s + context-window
+    # usage, issue #123678); garnish, never a 500.
+    runtime_stats = {} if running is None else _quiet(
+        lambda: _runtime_stats(loaded), {}, warn="runtime-stats read failed: %r")
     return {
         "enabled": bool(section.get("enabled")), "tag": tag, "configured_tag": configured_tag,
         "update_available": bool(section.get("enabled") and engine is not None and current is None),
@@ -518,6 +533,7 @@ def local_models_status():
         # The chat's loading bar and the picker rows poll this; garnish, never a 500.
         "loading": _quiet(load_progress.get_loading_progress, {}),
         "placement": placement,
+        "runtime_stats": runtime_stats,
         "models": [_staged_row(gguf) for gguf in bootstrap.staged_models()] if mdir.exists() else [],
         "models_dir": str(mdir),
     }

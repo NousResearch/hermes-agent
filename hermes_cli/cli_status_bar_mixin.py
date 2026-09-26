@@ -396,6 +396,14 @@ class CLIStatusBarMixin:
         snapshot["avg_latency_label"] = f"{avg_lat:.1f}s" if avg_lat is not None else ""
         snapshot["avg_velocity"] = float(avg_vel) if avg_vel is not None else None
         snapshot["avg_velocity_label"] = f"{avg_vel:.0f} t/s" if avg_vel is not None else ""
+        # Local llama-server engine telemetry (issue #123678): last-turn prompt/gen rates
+        # + context-window usage. TTL-cached inside telemetry (no HTTP per repaint); None
+        # off-device, so cloud sessions pay one state-file read per cache window at most.
+        try:
+            from hermes_cli.local_runtime.telemetry import get_runtime_stats
+            snapshot["local_stats"] = get_runtime_stats(model_name)
+        except Exception:
+            snapshot["local_stats"] = None
         return snapshot
 
     def _get_status_bar_session_title(self) -> str:
@@ -1072,6 +1080,11 @@ class CLIStatusBarMixin:
                     label = snapshot.get(key) or ""
                     if label:
                         add(name, _DIM, f"{glyph} {label}")
+                # Local engine truth (issue #123678): last-turn prompt/gen rates + engine-side
+                # context usage, shown only while the managed runtime serves this model.
+                local_stats = snapshot.get("local_stats") or {}
+                if local_stats.get("throughput_label") and _ok("tps"):
+                    add("tps", _DIM, f"⚡ {local_stats['throughput_label']}")
             add_count("compressions", "compressions", "🗜️", self._compression_count_style)
             add_count("bg_tasks", "active_background_tasks", "▶")
             add_count("bg_processes", "active_background_processes", "⚙")

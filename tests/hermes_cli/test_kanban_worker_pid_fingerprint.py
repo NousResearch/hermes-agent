@@ -110,6 +110,35 @@ def test_same_pid_and_start_tick_on_another_boot_is_foreign(board, monkeypatch):
     assert kbd._process_fingerprint(os.getpid()) == live_fingerprint
 
 
+def test_reboot_invalidates_the_epoch_witness_for_a_drift_ceiling_pid_reuser(board, monkeypatch):
+    """PR #118353 review (ottotheoperator): with the Darwin ``kern.boottime`` epoch witness the
+    "epoch half must still match" condition is no longer ``"" == ""`` there. After a reboot a
+    different process reusing the PID with a create time inside the 12 h sleep-drift ceiling is
+    NOT rescued — its claim is released beside it, never signalled, exactly as on Linux."""
+    from gateway import drain_control
+
+    live = kbd._process_fingerprint(os.getpid())
+    assert live is not None
+    _, _, start = live.partition("|")
+    # Spawn-time reading below the current one by 6 s (the drift rescue's forward half).
+    recorded = f"1727384428|{int(start) - 600}"
+
+    # Same instantiation epoch (same boot): the drift rescue keeps the live worker's claim.
+    monkeypatch.setattr(drain_control, "current_instantiation_epoch", lambda: "1727384428")
+    tid = _claimed_running(board, pid=os.getpid(), started_at=recorded, max_runtime=1)
+    assert kbd._worker_alive(os.getpid(), recorded) is True
+
+    # Reboot: the epoch witness changed; the PID now belongs to a post-reboot process whose start
+    # still reads inside the drift ceiling. Foreign: claim released, zero signals.
+    monkeypatch.setattr(drain_control, "current_instantiation_epoch", lambda: "1727470528")
+    killed = []
+    assert kbd._worker_alive(os.getpid(), recorded) is False
+    assert tid in kbd.enforce_max_runtime(board, signal_fn=lambda pid, sig: killed.append((pid, sig)))
+    assert killed == []
+    task = kb.get_task(board, tid)
+    assert task.status == "ready" and task.worker_pid is None
+
+
 def test_unverified_fingerprint_capture_never_authorizes_a_signal(board, monkeypatch):
     """Fingerprint capture fails for a new spawn: the row is NOT a legacy NULL row. A live PID under
     it is never SIGTERM/SIGKILLed by any reclaim/timeout path, and the claim is held (not released

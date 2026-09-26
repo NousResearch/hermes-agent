@@ -36,7 +36,7 @@ export function currentPickerSelection(
  * `xai-oauth` never reads as the plain `xai` key path, and internal route names
  * never reach user-facing copy. */
 export const PROVIDER_DISPLAY_NAMES: Readonly<Record<string, string>> = {
-  anthropic: 'Anthropic API Key',
+  anthropic: 'Anthropic Account',
   'claude-code': 'Anthropic OAuth: Required Extra Usage Credits to Use Subscription',
   'minimax-oauth': 'MiniMax',
   nous: 'Nous Portal',

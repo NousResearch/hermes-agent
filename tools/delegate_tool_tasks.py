@@ -100,6 +100,14 @@ def _normalize_task_list(
             return None, f"Task {i} must be an object, got {type(task).__name__}."
         if not task.get("goal", "").strip():
             return None, f"Task {i} is missing a 'goal'."
+        task_provider = task.get("provider")
+        task_model = task.get("model")
+        if task_provider is not None and (not isinstance(task_provider, str) or not task_provider.strip()):
+            return None, f"Task {i} 'provider' must be a non-empty string when provided."
+        if task_model is not None and (not isinstance(task_model, str) or not task_model.strip()):
+            return None, f"Task {i} 'model' must be a non-empty string when provided."
+        if (task_provider is None) != (task_model is None):
+            return None, f"Task {i} must provide both 'provider' and 'model' together."
     # The single-goal form is exempt from the batch gate (short goals are valid there).
     batch_error = _validate_batch_tasks(task_list) if isinstance(tasks, list) else None
     return (None, batch_error) if batch_error else (task_list, None)

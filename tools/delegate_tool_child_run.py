@@ -35,7 +35,10 @@ def _fabricated_entry(idx: int, status: str, error: str, child: Any, duration: f
     """Result entry for a child that raised, never finished, or was abandoned."""
     return {
         "task_index": idx, "status": status, "summary": None, "error": error, "api_calls": 0,
-        "duration_seconds": duration, "_child_role": getattr(child, "_delegate_role", None),
+        "duration_seconds": duration,
+        "provider": _str_or_none(getattr(child, "provider", None)),
+        "model": _str_or_none(getattr(child, "model", None)),
+        "_child_role": getattr(child, "_delegate_role", None),
     }
 
 def _append_missed_steer(entry: Dict[str, Any], late_steer: Optional[str]) -> None:
@@ -595,6 +598,10 @@ def _build_result_entry(
         "summary": summary,
         "api_calls": result.get("api_calls", 0),
         "duration_seconds": duration,
+        # Report the effective route, not only the requested model. This is the
+        # runtime evidence used to detect an unintended fallback to the parent
+        # provider (especially the local Bonsai route).
+        "provider": _str_or_none(getattr(child, "provider", None)),
         "model": _str_or_none(getattr(child, "model", None)),
         "exit_reason": exit_reason,
         # A budget-exhausted child still returns a summary (status stays

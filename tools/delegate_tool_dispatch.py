@@ -9,9 +9,11 @@ import contextvars
 import json
 import logging
 import time
+import threading
 from concurrent.futures import FIRST_COMPLETED, wait as _cf_wait
 from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 from tools.async_delegation import _new_delegation_id, record_unit_child
 from tools.delegate_tool_child_run import _attach_child, _detach_child, _fabricated_entry, _signal_child_stop
@@ -22,6 +24,53 @@ from tools.delegate_tool_registry import _capture_gateway_steer_authority
 from tools.delegate_tool_results import _finalize_child_results
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
+
+# Local OpenAI-compatible servers usually represent one model process. Keep
+# admission process-wide so separate delegate_task calls cannot overlap on the
+# same endpoint; remote providers retain the existing global child limit.
+_RESOURCE_GATES: dict[str, threading.BoundedSemaphore] = {}
+_RESOURCE_GATES_LOCK = threading.Lock()
+_LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def _resource_key(child: Any) -> Optional[str]:
+    raw_url = getattr(child, "base_url", None)
+    if not isinstance(raw_url, str) or not raw_url.strip():
+        return None
+    try:
+        parsed = urlsplit(raw_url.strip())
+        host = (parsed.hostname or "").lower()
+        if host not in _LOCAL_HOSTS:
+            return None
+        host = "127.0.0.1" if host == "localhost" else host
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        return f"{parsed.scheme.lower()}://{host}:{port}"
+    except ValueError:
+        return None
+
+
+def _acquire_resource_gate(child: Any) -> Optional[threading.BoundedSemaphore]:
+    # A child that is already running on this local endpoint may itself
+    # orchestrate descendants. Waiting for the same gate would deadlock the
+    # parent while its descendants wait for admission. The outer child owns
+    # the model slot for that tree; descendants inherit that ownership.
+    depth = getattr(child, "_delegate_depth", 0)
+    if isinstance(depth, bool) or not isinstance(depth, (int, float)):
+        depth = 0
+    if depth > 1:
+        return None
+    key = _resource_key(child)
+    if key is None:
+        return None
+    with _RESOURCE_GATES_LOCK:
+        gate = _RESOURCE_GATES.setdefault(key, threading.BoundedSemaphore(1))
+    gate.acquire()
+    return gate
+
+
+def _release_resource_gate(gate: Optional[threading.BoundedSemaphore]) -> None:
+    if gate is not None:
+        gate.release()
 
 
 @dataclass
@@ -140,6 +189,13 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
         except Exception as exc:
             return _fabricated_entry(idx, "error", str(exc), _child_by_index.get(idx))
 
+    def _run_gated(i, task, child):
+        gate = _acquire_resource_gate(child)
+        try:
+            return batch.run_child(i, task, child)
+        finally:
+            _release_resource_gate(gate)
+
     executor = DaemonThreadPoolExecutor(max_workers=batch.max_children)
     # ``with`` would join every worker on exit, so a child wedged in an
     # uninterruptible call defeats the interrupt fast-path: the poll loop marks
@@ -147,7 +203,7 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
     # waiting on the interrupt path instead (same shape as moa_loop).
     interrupted = False
     try:
-        futures = {executor.submit(contextvars.copy_context().run, batch.run_child, i, t, child): i for i, t, child in batch.children}
+        futures = {executor.submit(contextvars.copy_context().run, _run_gated, i, t, child): i for i, t, child in batch.children}
         pending = set(futures)
         while pending:
             if honor_parent_interrupt and getattr(parent_agent, "_interrupt_requested", False) is True:
@@ -185,7 +241,14 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     from tools.delegation_live_log import update_manifest_statuses
     results: list = []
     if len(batch.children) == 1:
-        results.append(batch.run_child(*batch.children[0]))
+        i, task, child = batch.children[0]
+        gate = _acquire_resource_gate(child)
+        try:
+            results.append(batch.run_child(i, task, child))
+        finally:
+            # The gate must be released for success, failure, timeout, and
+            # cancellation, including detached one-child units.
+            _release_resource_gate(gate)
         # A one-child unit has no join to wait on, but everything after the child returns — host-owned finalize,
         # transcript, manifest, then the durable write — is still owner-lifetime: record before any of it (#116000).
         _record_finished_child(batch, results[-1], honor_parent_interrupt)

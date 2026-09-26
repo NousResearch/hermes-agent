@@ -329,6 +329,57 @@ class TestDelegateTask(unittest.TestCase):
                     child_db.close()
                 parent_db.close()
 
+    @patch("run_agent.AIAgent")
+    def test_explicit_child_route_reaches_agent_runtime(self, MockAgent):
+        """Per-task route overrides are passed to the actual child constructor."""
+        parent = _make_mock_parent(depth=0)
+        child = MagicMock()
+        MockAgent.return_value = child
+
+        _build_child_agent(
+            task_index=0,
+            goal="Use the explicitly selected route",
+            context=None,
+            toolsets=None,
+            model="child-model",
+            max_iterations=10,
+            parent_agent=parent,
+            task_count=1,
+            override_provider="openrouter",
+            override_base_url="https://openrouter.ai/api/v1",
+            override_api_key="child-key",
+            override_api_mode="chat_completions",
+        )
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["provider"], "openrouter")
+        self.assertEqual(kwargs["model"], "child-model")
+        self.assertEqual(kwargs["base_url"], "https://openrouter.ai/api/v1")
+        self.assertEqual(kwargs["api_key"], "child-key")
+
+    @patch("run_agent.AIAgent")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_explicit_child_route_fails_before_spawn(self, resolve_credentials, MockAgent):
+        """An unavailable explicit route is rejected before constructing any child."""
+        parent = _make_mock_parent(depth=0)
+        resolve_credentials.side_effect = [
+            {"model": None, "provider": None, "base_url": None, "api_key": None, "api_mode": None},
+            ValueError("Cannot resolve delegation provider 'unavailable-provider'")
+        ]
+
+        result = json.loads(delegate_task(
+            tasks=[{
+                "goal": "Reject an unavailable route",
+                "provider": "unavailable-provider",
+                "model": "child-model",
+            }],
+            parent_agent=parent,
+        ))
+
+        self.assertIn("error", result)
+        self.assertIn("could not be resolved", result["error"])
+        MockAgent.assert_not_called()
+
     def test_nous_child_rederives_api_mode_from_model(self):
         """Portal is dual-wire — same provider + different model prefix must
         not inherit the parent's Messages/chat_completions mode verbatim.

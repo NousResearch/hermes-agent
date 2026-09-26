@@ -28,6 +28,25 @@ def test_group_schema_tracks_delivery_policy_without_mutating_previous_definitio
     assert json.dumps(DELEGATE_TASK_SCHEMA) == original
 
 
+def test_task_provider_and_model_route_are_advertised():
+    properties = DELEGATE_TASK_SCHEMA["parameters"]["properties"]["tasks"]["items"]["properties"]
+    assert properties["provider"]["type"] == "string"
+    assert properties["model"]["type"] == "string"
+    assert "together" in properties["provider"]["description"]
+
+
+def test_task_provider_and_model_must_be_paired():
+    incomplete = [{"goal": "Review first module", "provider": "openrouter"}]
+    normalized, error = _normalize_task_list(None, None, incomplete, None, "leaf", 3)
+    assert normalized is None
+    assert error == "Task 0 must provide both 'provider' and 'model' together."
+
+    valid = [{"goal": "Review first module", "provider": "openrouter", "model": "model-a"}]
+    normalized, error = _normalize_task_list(None, None, valid, None, "leaf", 3)
+    assert error is None
+    assert normalized == valid
+
+
 def test_legacy_group_replay_remains_accepted_and_delivery_policy_controls_units(monkeypatch):
     from tools import delegate_tool_config
 

@@ -363,7 +363,8 @@ def _run_single_child(
 
 
 def _build_children(
-    task_list: List[Dict[str, Any]], task_schemas: List[Optional[Dict[str, Any]]], creds: Dict[str, Any], *,
+    task_list: List[Dict[str, Any]], task_schemas: List[Optional[Dict[str, Any]]], creds: Dict[str, Any],
+    task_creds: List[Dict[str, Any]], *,
     top_role: str, max_iterations: int, parent_agent, routing_cfg: Dict[str, Any],
     live_deleg_id: Optional[str], live_writers: list, task_images: Optional[List[Optional[List[str]]]] = None,
 ) -> tuple[List[tuple], Optional[str]]:
@@ -371,16 +372,17 @@ def _build_children(
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
     from tools.delegation_live_log import wrap_progress_callback
     from tools.delegation_output_schema import append_output_contract
-    overrides = {
-        "override_provider": creds["provider"], "override_base_url": creds["base_url"],
-        "override_api_key": creds["api_key"], "override_api_mode": creds["api_mode"],
-        "override_request_overrides": creds.get("request_overrides"),
-        "override_acp_command": creds.get("command"),
-        "override_acp_args": creds.get("args"),
-        "routing_cfg": routing_cfg,
-    }
     children = []
     for i, t in enumerate(task_list):
+        child_creds = task_creds[i]
+        overrides = {
+            "override_provider": child_creds["provider"], "override_base_url": child_creds["base_url"],
+            "override_api_key": child_creds["api_key"], "override_api_mode": child_creds["api_mode"],
+            "override_request_overrides": child_creds.get("request_overrides"),
+            "override_acp_command": child_creds.get("command"),
+            "override_acp_args": child_creds.get("args"),
+            "routing_cfg": routing_cfg,
+        }
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
         _child_context = t.get("context")
         if _task_schema is not None:
@@ -389,7 +391,7 @@ def _build_children(
             child = _build_child_preserving_parent_tools(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets
-                model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
+                model=child_creds["model"], max_iterations=max_iterations, task_count=len(task_list),
                 parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
             )
         except ValueError as exc:
@@ -505,6 +507,29 @@ def delegate_task(
         task_images, err = _coerce_task_images(task_list, images)
     if err:
         return tool_error(err)
+
+    # Resolve each explicitly routed task before any child is constructed. Tasks
+    # without a route retain the legacy per-call bundle and therefore inherit the
+    # parent's provider/model exactly as before.
+    task_creds = []
+    for i, task in enumerate(task_list):
+        task_provider = task.get("provider")
+        task_model = task.get("model")
+        if task_provider is None and task_model is None:
+            task_creds.append(creds)
+            continue
+        task_cfg = dict(routing_cfg)
+        task_cfg["provider"] = task_provider
+        task_cfg["model"] = task_model
+        # An explicit provider/model pair must resolve through the provider
+        # registry, not accidentally take the call's direct-endpoint branch.
+        # Endpoint credentials are owned by the selected provider/runtime.
+        for key in ("base_url", "api_key", "api_mode", "command", "args"):
+            task_cfg.pop(key, None)
+        try:
+            task_creds.append(_resolve_delegation_credentials(task_cfg, parent_agent))
+        except ValueError as exc:
+            return tool_error(f"Task {i} provider/model route could not be resolved: {exc}")
     err = _oneshot_spawn_budget(parent_agent, len(task_list))
     if err:
         return tool_error(err)
@@ -520,7 +545,7 @@ def delegate_task(
     origin = _capture_origin()
 
     children, err = _build_children(
-        task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
+        task_list, task_schemas, creds, task_creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
         routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers, task_images=task_images,
     )
     if err:
@@ -590,7 +615,8 @@ _DESCRIPTION_HEAD = (
     "the parent applies the transition.\n"
 )
 _DESCRIPTION_TAIL = (
-    "- Children inherit the parent model unless pinned via delegation.provider / delegation.model in config.yaml."
+    "- Children inherit the parent model unless pinned via delegation.provider / delegation.model in config.yaml. "
+    "Individual entries in `tasks` may also set both `provider` and `model` to route that child independently."
 )
 
 def _build_tasks_param_description() -> str:
@@ -677,6 +703,16 @@ DELEGATE_TASK_SCHEMA = {
                             "pixels on their first turn; non-vision children get path hints for vision_analyze. Text "
                             "files do NOT belong here — put paths in 'context' instead.",
                             items={"type": "string"},
+                        ),
+                        "provider": _p(
+                            "string",
+                            "Optional provider override for this task. Must be supplied together with `model`; "
+                            "tasks without both fields inherit the call's configured provider.",
+                        ),
+                        "model": _p(
+                            "string",
+                            "Optional model override for this task. Must be supplied together with `provider`; "
+                            "different tasks may run on different providers/models in parallel.",
                         ),
                         "group": _p(
                             "string",

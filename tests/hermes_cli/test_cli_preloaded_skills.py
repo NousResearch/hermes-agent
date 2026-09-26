@@ -81,3 +81,28 @@ def test_main_raises_for_unknown_preloaded_skill(monkeypatch):
     # finalized (agent init), preserving the fail-loud contract.
     with pytest.raises(ValueError, match=r"Unknown skill\(s\): missing-skill"):
         _real_finalize(created["cli"])
+
+def test_main_raises_for_mixed_known_and_unknown_preloaded_skill(monkeypatch):
+    """Regression for #122423: a mixed --skills pin must fail closed, not warn-and-continue."""
+    import cli as cli_mod
+
+    created = {}
+
+    def fake_cli(**kwargs):
+        created["cli"] = _DummyCLI(**kwargs)
+        return created["cli"]
+
+    monkeypatch.setattr(cli_mod, "HermesCLI", fake_cli)
+    monkeypatch.setattr(
+        cli_mod,
+        "build_preloaded_skills_prompt",
+        lambda skills, task_id=None, excluded_loaded_names=None: ("skill prompt", ["known-skill"], ["typo-skill"]),
+    )
+
+    with pytest.raises(SystemExit):
+        cli_mod.main(skills="known-skill,typo-skill", list_tools=True)
+
+    # Mixed pins must fail like the all-unknown case: the worker must not run
+    # the job with the pinned enforcement silently dropped.
+    with pytest.raises(ValueError, match=r"Unknown skill\(s\): typo-skill"):
+        _real_finalize(created["cli"])

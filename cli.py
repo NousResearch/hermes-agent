@@ -1016,7 +1016,7 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
     def finalize_preloaded_skills(self) -> None:
         """Join the background --skills preload and fold it into the prompt (idempotent).
 
-        Raises ``ValueError`` only when EVERY requested skill was unknown.
+        Raises ``ValueError`` when ANY requested skill was unknown (#122423).
         """
         if getattr(self, "_preload_skills_finalized", False):
             return
@@ -1040,17 +1040,9 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         skills_prompt, loaded_skills, missing_skills = result
         if missing_skills:
             missing_display = ", ".join(missing_skills)
-            # A typo'd name must not crash a kanban worker; only a fully-missing set fails loudly.
-            if loaded_skills:
-                logger.warning(
-                    "Unknown skill(s) requested, skipping: %s. "
-                    "Continuing with: %s. "
-                    "List available skills with `hermes skills list`.",
-                    missing_display,
-                    ", ".join(loaded_skills),
-                )
-            else:
-                raise ValueError(f"Unknown skill(s): {missing_display}")
+            # ponytail: fail closed on ANY unknown pin. A partially-pinned run
+            # would silently drop enforcement, so refuse like the all-unknown case.
+            raise ValueError(f"Unknown skill(s): {missing_display}")
         if skills_prompt:
             self.system_prompt = "\n\n".join(p for p in (self.system_prompt, skills_prompt) if p).strip()
         self.preloaded_skills += [name for name in loaded_skills if name not in self.preloaded_skills]

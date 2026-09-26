@@ -5464,6 +5464,7 @@ export const deOverrides = {
       branchNewChat: 'In neuem Chat abzweigen',
       react: 'Reagieren',
       dismissError: 'Fehler schließen',
+      responseStopped: 'Antwort gestoppt',
       errorLayers: {
         auth: 'Authentifizierungsfehler',
         billing: 'Keine Credits mehr',

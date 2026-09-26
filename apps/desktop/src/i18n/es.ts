@@ -5460,6 +5460,7 @@ export const esOverrides = {
       branchNewChat: 'Ramificar en chat nuevo',
       react: 'Reaccionar',
       dismissError: 'Descartar error',
+      responseStopped: 'Respuesta detenida',
       errorLayers: {
         auth: 'Problema de inicio de sesión',
         billing: 'Créditos agotados',

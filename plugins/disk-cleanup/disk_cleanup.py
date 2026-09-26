@@ -196,7 +196,13 @@ def _live_items(tracked: List[Dict], now: datetime, *, log_stale: bool = False) 
             _log(f"STALE: {p} (removed from tracking)")
 
 
-def _is_auto_delete(cat: str, age: int) -> bool:
+def _is_auto_delete(item: Dict, age: int) -> bool:
+    """Category-and-age auto-delete rule. Files past ``_LARGE_FILE_BYTES`` are
+    prompt-only regardless of category: ``quick()`` must never remove them —
+    they surface in the deep ``large`` prompt group instead."""
+    if item["size"] > _LARGE_FILE_BYTES:
+        return False
+    cat = item["category"]
     return cat == "test" or (cat == "temp" and age > 7) or (cat == "cron-output" and age > 14)
 
 
@@ -238,7 +244,7 @@ def dry_run() -> Tuple[List[Dict], List[Dict]]:
         # Stale cron-output entries and protected dirs are skipped by quick(); omit them here too.
         if (cat == "cron-output" and guess_category(p) != "cron-output") or _is_protected_dir(p):
             continue
-        if _is_auto_delete(cat, age):
+        if _is_auto_delete(item, age):
             auto.append(item)
         elif _prompt_group(item, age):
             prompt.append(item)
@@ -263,7 +269,7 @@ def quick() -> Dict[str, Any]:
         if _is_protected_dir(p):
             _log(f"SKIPPED: {p} (protected top-level dir)")
             continue
-        if not _is_auto_delete(cat, age):
+        if not _is_auto_delete(item, age):
             new_tracked.append(item)
             continue
         err = _delete_item(item)

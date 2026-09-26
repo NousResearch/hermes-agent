@@ -230,6 +230,121 @@ def test_preset_restores_grown_window_midladder(hermes_home, tmp_path, monkeypat
     assert restored.window >= grown, "override must lift the launch window"
 
 
+def test_mtp_plan_matches_cost_at_initial_and_restored_windows(hermes_home, tmp_path, monkeypatch):
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from hermes_cli.local_runtime import presets
+    from hermes_cli.local_runtime.context_policy import FLOOR, RUNTIME_OVERHEAD_BYTES, ub_logits_bytes
+    from hermes_cli.local_runtime.estimator import HardwareBudget, LayerKind, ModelProfile, ctx_bytes
+    from hermes_cli.local_runtime.growth import save_window_override
+
+    gib = 1 << 30
+    profile = ModelProfile(name="mtp-fit", weights_bytes=16 * gib, embd_table_bytes=0,
+                           n_ctx_train=262144, layers=[(LayerKind.FULL, 4096)] * 32,
+                           moe=True, n_vocab=151936)
+    priced = replace(profile, kv_scale=1.2)
+    lean = RUNTIME_OVERHEAD_BYTES + ub_logits_bytes(profile.n_vocab, mtp_capable=True)
+    stacked = RUNTIME_OVERHEAD_BYTES + ub_logits_bytes(profile.n_vocab, mtp_capable=True, mtp_prefill=True)
+    mdir = tmp_path / "models"
+    _stage_fake_gguf(mdir, profile.name)
+    monkeypatch.setattr(presets, "read_gguf_header", lambda p: SimpleNamespace(sampling_defaults={}))
+    monkeypatch.setattr(presets, "profile_from_gguf", lambda h: profile)
+
+    def generate(device, ram, override=0):
+        save_window_override(profile.name, override)
+        budget = HardwareBudget(device, device, ram)
+        return presets.generate_presets(mdir, budget, tmp_path / "presets.ini", {profile.name})[0]
+
+    floor_need = profile.weights_bytes + ctx_bytes(priced, FLOOR)
+    initial = generate(floor_need + lean, 8 * gib)
+    assert initial.window == FLOOR
+    assert not initial.spilled
+    assert "ubatch-size" not in initial.keys
+    assert initial.keys["spec-type"] == "draft-mtp"
+    # Persisting a floor grant must not turn a lean spilled boot into stacked prefill.
+    for override in (0, FLOOR, 73728):
+        spilled_boot = generate(16 * gib, 64 * gib, override)
+        assert spilled_boot.spilled and "ubatch-size" not in spilled_boot.keys
+
+    device = floor_need + stacked
+    control = generate(device, 8 * gib)
+    assert control.keys["ubatch-size"] == "2048"
+    grown_window = 73728
+    for ram in (8 * gib, 0):
+        # Also preserve a grown window when stacked exceeds total memory, not just VRAM.
+        grown = generate(device, ram, grown_window)
+        assert grown.window == grown_window
+        assert not grown.spilled
+        assert "ubatch-size" not in grown.keys
+        assert "override-tensor" not in grown.keys
+        assert grown.keys["spec-type"] == "draft-mtp"
+        assert profile.weights_bytes + ctx_bytes(priced, grown.window) + lean <= device
+
+    both_spill = generate(device, 64 * gib, 147456)
+    assert both_spill.window == 147456 and both_spill.spilled
+    assert both_spill.keys["ubatch-size"] == "2048"
+    assert "override-tensor" in both_spill.keys
+    smaller_boot = generate(floor_need + lean, 0, grown_window)
+    assert smaller_boot.window == FLOOR and not smaller_boot.spilled
+    assert profile.weights_bytes + ctx_bytes(priced, control.window) + stacked <= device
+
+
+def test_growth_requires_an_admissible_materialized_preset(hermes_home, tmp_path, monkeypatch):
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from hermes_cli.local_runtime import bootstrap, catalog, growth, hardware, presets
+    from hermes_cli.local_runtime.context_policy import FLOOR, RUNTIME_OVERHEAD_BYTES, ub_logits_bytes
+    from hermes_cli.local_runtime.estimator import HardwareBudget, ctx_bytes
+
+    entry = next(e for e in catalog.CATALOG if e.mtp and e.mmproj)
+    model_id = entry.variants[-1].model_id
+    mdir = tmp_path / "models"
+    _stage_fake_gguf(mdir, model_id)
+    profile = replace(entry.profile(entry.variants[-1]), kv_scale=1.0)
+    monkeypatch.setattr(bootstrap, "staged_models", lambda: list(mdir.glob("*.gguf")))
+    monkeypatch.setattr(bootstrap, "get_supervisor", lambda: SimpleNamespace(is_idle=lambda m: True))
+    monkeypatch.setattr(growth, "is_managed_endpoint", lambda url: True)
+    from hermes_cli.local_runtime import gguf, estimator
+    monkeypatch.setattr(gguf, "read_gguf_header", lambda p: _header_stub())
+    monkeypatch.setattr(estimator, "profile_from_gguf", lambda h: profile)
+    monkeypatch.setattr(presets, "read_gguf_header", lambda p: _header_stub())
+    monkeypatch.setattr(presets, "profile_from_gguf", lambda h: profile)
+    asset = bootstrap.assets_dir() / entry.mmproj.local_name
+    asset.parent.mkdir(parents=True, exist_ok=True)
+    asset.touch()
+    overhead = RUNTIME_OVERHEAD_BYTES + entry.mmproj.size_bytes + ub_logits_bytes(profile.n_vocab, mtp_capable=True)
+    priced = replace(profile, kv_scale=1.2)
+    next_window = FLOOR * 3 // 2
+    floor_need = profile.weights_bytes + ctx_bytes(priced, FLOOR) + overhead
+    next_need = profile.weights_bytes + ctx_bytes(priced, next_window) + overhead
+    budget = HardwareBudget(floor_need, floor_need, 0, True)
+    monkeypatch.setattr(hardware, "probe_budget", lambda **kw: budget)
+    from hermes_cli.local_runtime.binaries import runtimes_root
+    preset_path = runtimes_root() / "presets.ini"
+    calls = []
+
+    def refresh():
+        calls.append(True)
+        presets.generate_presets(mdir, budget, preset_path)
+        return True
+
+    monkeypatch.setattr(bootstrap, "refresh_local_runtime", refresh)
+    args = dict(base_url="http://127.0.0.1:1/v1", session_tokens=FLOOR, current_window=FLOOR)
+    assert growth.maybe_grow_window(model_id, **args) is None
+    assert not calls and not growth.load_window_overrides()
+    budget = replace(budget, usable_vram_bytes=next_need, total_device_bytes=next_need)
+    assert growth.maybe_grow_window(model_id, **args) == next_window
+    assert presets.read_preset_decisions(preset_path)[model_id].window == next_window
+    assert growth.load_window_overrides()[model_id] == next_window
+
+    # A restart that claims success but does not materialize the grant must not tell the agent it grew.
+    monkeypatch.setattr(bootstrap, "refresh_local_runtime", lambda: True)
+    budget = replace(budget, usable_vram_bytes=64 << 30, total_device_bytes=64 << 30)
+    assert growth.maybe_grow_window(model_id, **{**args, "current_window": next_window}) is None
+
+
 def test_sampling_ladder_file_beats_catalog_beats_nothing(hermes_home, tmp_path, monkeypatch):
     """The sampling deference ladder: the GGUF's own general.sampling.*
     wins per key, catalog fills only what the file left silent, and a

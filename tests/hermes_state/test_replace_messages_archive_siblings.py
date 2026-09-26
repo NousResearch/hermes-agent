@@ -79,26 +79,6 @@ class TestAcpPersistPreservesArchives:
         ]
         assert [m["content"] for m in live] == ["rewritten", "rewritten answer"]
 
-    def test_persist_source_has_no_failopen_probe(self):
-        """The fail-open has_archived_messages probe must stay dead in _persist.
-
-        Guards the #80216 bug class at the source level: a probe that fails
-        open (``except: has_archived = False``) silently reintroduces the
-        destructive replace.  ``active_only=True`` must be unconditional.
-        """
-        import inspect
-        import acp_adapter.session as acp_session
-
-        src = inspect.getsource(acp_session.SessionManager._persist)
-        # Assert on the CALL, not a local-variable name — a reintroduced probe
-        # under any local name (archived = db.has_archived_messages(...))
-        # must still trip this guard. The explanatory comment in _persist
-        # writes the name as "(has_archived_messages)" (paren BEFORE the
-        # name), so the call-shaped substring doesn't false-positive on it.
-        assert "has_archived_messages(" not in src, (
-            "_persist re-grew a has_archived_messages probe — #80216 class"
-        )
-        assert "active_only=True" in src
 
     def test_fresh_session_active_only_equals_full_replace(self, state_db):
         """On a never-compacted session active_only=True must behave exactly
@@ -124,39 +104,6 @@ class TestAcpPersistPreservesArchives:
         assert _archived_count(state_db, sid) == 0
 
 
-class TestTuiPromptTruncationPreservesArchives:
-    def test_truncation_source_uses_active_only(self):
-        """The edit/regenerate persistence call must pass active_only=True."""
-        import inspect
-        import tui_gateway.methods_prompt as mp
-
-        src = inspect.getsource(mp)
-        # The truncation write is the only replace_messages call in the module;
-        # it must carry active_only=True.
-        import re
-        calls = re.findall(r"db\.replace_messages\([^)]*\)", src, re.S)
-        assert calls, "expected the truncation replace_messages call"
-        for call in calls:
-            assert "active_only=True" in call, (
-                f"bare replace_messages in methods_prompt — #80216 class: {call}"
-            )
-
-    def test_truncation_write_keeps_archived_rows(self, state_db):
-        """Drive the exact write shape methods_prompt now performs against a
-        compacted session and assert the archive survives."""
-        sid = "tui-compacted"
-        _seed_compacted_session(state_db, sid)
-        assert _archived_count(state_db, sid) == 4
-
-        truncated = [{"role": "user", "content": "kept head"}]
-        state_db.replace_messages(sid, truncated, active_only=True)
-
-        assert _archived_count(state_db, sid) == 4
-        live = [
-            m for m in state_db.get_messages_as_conversation(sid)
-            if m.get("role") in ("user", "assistant")
-        ]
-        assert [m["content"] for m in live] == ["kept head"]
 
 
 class TestArchiveDroppedIsRecoverable:

@@ -52,7 +52,6 @@ SECTIONS: list[tuple[str, list[tuple[str, str, str | None]]]] = [
         ("getting-started/quickstart", "Quickstart", None),
         ("getting-started/learning-path", "Learning Path", None),
         ("getting-started/updating", "Updating", None),
-        ("getting-started/termux", "Termux (Android)", None),
         ("getting-started/nix-setup", "Nix Setup", None),
     ]),
     ("Using Hermes", [
@@ -226,7 +225,7 @@ def slug_for(path: Path) -> str:
     rel = path.relative_to(DOCS).with_suffix("")
     if rel.name == "index":
         rel = rel.parent
-    return "" if str(rel) == "." else str(rel)
+    return "" if str(rel) == "." else rel.as_posix()
 
 
 def doc_path(slug: str) -> Path | None:
@@ -308,7 +307,7 @@ def emit_llms_index() -> str:
     lines.append(
         "Install: `curl -fsSL https://raw.githubusercontent.com/NousResearch/"
         "hermes-agent/main/scripts/install.sh | bash`  "
-        "(Linux, macOS, WSL2, Termux)"
+        "(Linux, macOS, WSL2)"
     )
     lines.append("")
     lines.append("Repo: https://github.com/NousResearch/hermes-agent")

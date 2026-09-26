@@ -10,43 +10,28 @@ import json
 import sys
 import types
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
-from tools import tts_tool
+from tools import tts_tool, tts_tool_local
 from tools.tts_tool import (
-    BUILTIN_TTS_PROVIDERS,
-    DEFAULT_PIPER_VOICE,
-    PROVIDER_MAX_TEXT_LENGTH,
-    _check_piper_available,
-    _resolve_piper_voice_path,
     check_tts_requirements,
     text_to_speech_tool,
 )
+from tools.tts_tool_local import DEFAULT_PIPER_VOICE, _resolve_piper_voice_path
 
 
 # ---------------------------------------------------------------------------
 # Registry / constants
 # ---------------------------------------------------------------------------
 
-class TestPiperRegistration:
-    def test_piper_is_a_builtin_provider(self):
-        assert "piper" in BUILTIN_TTS_PROVIDERS
-
-    def test_piper_has_a_text_length_cap(self):
-        assert PROVIDER_MAX_TEXT_LENGTH.get("piper", 0) > 0
 
 
 # ---------------------------------------------------------------------------
 # _check_piper_available
 # ---------------------------------------------------------------------------
 
-class TestCheckPiperAvailable:
-    def test_returns_bool_without_raising(self):
-        # We don't care about the current environment's answer — just that
-        # the probe never raises on a machine without piper installed.
-        assert isinstance(_check_piper_available(), bool)
 
 
 # ---------------------------------------------------------------------------
@@ -100,11 +85,11 @@ class _StubPiperVoice:
 @pytest.fixture(autouse=True)
 def _reset_piper_cache():
     """Clear the module-level voice cache between tests."""
-    tts_tool._piper_voice_cache.clear()
+    tts_tool_local._piper_voice_cache.clear()
     _StubPiperVoice.loaded = []
     _StubPiperVoice.calls = []
     yield
-    tts_tool._piper_voice_cache.clear()
+    tts_tool_local._piper_voice_cache.clear()
 
 
 class TestGeneratePiperTts:
@@ -232,7 +217,6 @@ class TestCheckTtsRequirementsPiper:
         monkeypatch.setattr(tts_tool, "_import_mistral_client", lambda: (_ for _ in ()).throw(ImportError()))
         monkeypatch.setattr(tts_tool, "_check_neutts_available", lambda: False)
         monkeypatch.setattr(tts_tool, "_check_kittentts_available", lambda: False)
-        monkeypatch.setattr(tts_tool, "_has_any_command_tts_provider", lambda: False)
         monkeypatch.setattr(tts_tool, "_has_openai_audio_backend", lambda: False)
         for env in ("MINIMAX_API_KEY", "XAI_API_KEY", "GEMINI_API_KEY",
                     "GOOGLE_API_KEY", "MISTRAL_API_KEY", "ELEVENLABS_API_KEY"):

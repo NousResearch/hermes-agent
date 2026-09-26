@@ -3,13 +3,61 @@ import { atom } from 'nanostores'
 import { deriveDraftTitle } from '@/lib/draft-title'
 import { triggerHaptic } from '@/lib/haptics'
 
+/** Release blob: chip previews created for OS image drops (see #63682). */
+export function revokeAttachmentPreviewUrl(url?: string | null) {
+  if (url?.startsWith('blob:')) {
+    try {
+      URL.revokeObjectURL(url)
+    } catch {
+      // Best-effort — a revoked/invalid URL must not break chip removal.
+    }
+  }
+}
+
+/** Revoke blob: previews for attachments whose consumer was discarded. */
+export function revokeAttachmentPreviewUrls(attachments: readonly ComposerAttachment[]) {
+  for (const attachment of attachments) {
+    revokeAttachmentPreviewUrl(attachment.previewUrl)
+  }
+}
+
+/**
+ * Revoke blob: previews from `previous` that are not retained by `next`.
+ * Used when a queued/optimistic snapshot is replaced or dropped.
+ */
+export function revokeDiscardedAttachmentPreviews(
+  previous: readonly ComposerAttachment[],
+  next: readonly ComposerAttachment[] = []
+) {
+  const retained = new Set(
+    next.map(attachment => attachment.previewUrl).filter((url): url is string => !!url?.startsWith('blob:'))
+  )
+
+  for (const attachment of previous) {
+    const url = attachment.previewUrl
+
+    if (url?.startsWith('blob:') && !retained.has(url)) {
+      revokeAttachmentPreviewUrl(url)
+    }
+  }
+}
+
+export interface ClearAttachmentsOptions {
+  /**
+   * When true, leave blob: preview URLs alive for a submitted/queued snapshot
+   * that still references them. Caller must revoke when that consumer is
+   * discarded or replaced (see #63682 / PR review on #66546).
+   */
+  retainPreviewUrls?: boolean
+}
+
 export interface ComposerAttachment {
   id: string
   /** Renderer-lifetime identity for one attachment occurrence. Unlike `id`,
    * which is content/path-derived, this survives draft cloning but changes
    * when the user removes and re-adds the same attachment. */
   occurrenceId?: string
-  kind: 'file' | 'folder' | 'image' | 'review' | 'terminal' | 'url'
+  kind: 'file' | 'folder' | 'image' | 'terminal' | 'url'
   label: string
   detail?: string
   refText?: string
@@ -19,6 +67,8 @@ export interface ComposerAttachment {
   /** Downscaled data URL for the attachment card and optimistic bubble only. */
   thumbnailUrl?: string
   path?: string
+  /** Bounded source text from a Hermes-generated large paste, sent only to the title path. */
+  titlePreview?: string
   attachedSessionId?: string
   /** Set while the file/image bytes are being staged into the session
    * workspace (remote upload or local stage), and 'error' if that failed.
@@ -62,7 +112,7 @@ export const takeVoiceConversationStart = (current: number): boolean => {
 export interface ComposerAttachmentScope {
   $attachments: ReturnType<typeof atom<ComposerAttachment[]>>
   add(attachment: ComposerAttachment): void
-  clear(): void
+  clear(options?: ClearAttachmentsOptions): void
   remove(id: string): ComposerAttachment | null
   removeOccurrences(attachments: readonly ComposerAttachment[]): void
   setUploadState(id: string, uploadState?: ComposerAttachment['uploadState']): void
@@ -90,13 +140,18 @@ export function createComposerAttachmentScope($attachments = atom<ComposerAttach
         triggerHaptic('selection')
       }
     },
-    clear() {
+    clear(options) {
+      if (!options?.retainPreviewUrls) {
+        revokeAttachmentPreviewUrls($attachments.get())
+      }
+
       $attachments.set([])
     },
     remove(id) {
       const current = $attachments.get()
       const removed = current.find(attachment => attachment.id === id) || null
       $attachments.set(current.filter(attachment => attachment.id !== id))
+      revokeAttachmentPreviewUrl(removed?.previewUrl)
 
       return removed
     },
@@ -142,9 +197,14 @@ export function createComposerAttachmentScope($attachments = atom<ComposerAttach
         return false
       }
 
+      const previous = current[index]
       const next = [...current]
       next[index] = attachment
       $attachments.set(next)
+
+      if (previous?.previewUrl && previous.previewUrl !== attachment.previewUrl) {
+        revokeAttachmentPreviewUrl(previous.previewUrl)
+      }
 
       return true
     },
@@ -174,7 +234,7 @@ export const mainComposerScope = createComposerAttachmentScope($composerAttachme
 // localStorage; attachments are memory-only (blobs, upload state).
 export const SESSION_DRAFTS_STORAGE_KEY = 'hermes:composer-drafts:v3'
 
-const NEW_SESSION_DRAFT_KEY = '__new__'
+export const NEW_SESSION_DRAFT_KEY = '__new__'
 const MAX_PERSISTED_DRAFTS = 50
 const EMPTY_SESSION_DRAFT: SessionDraft = { attachments: [], text: '' }
 
@@ -184,6 +244,17 @@ export interface SessionDraft {
 }
 
 const draftKey = (scope: string | null | undefined) => scope?.trim() || NEW_SESSION_DRAFT_KEY
+
+/** Inline "Restored your unsent message" notice for the fresh draft (see
+ *  `adoptGoneSessionDraft`). `null` = nothing to show. */
+export interface RestoredDraftNotice {
+  /** The dead stored-session key the text came from. */
+  fromKey: string
+  /** The text as restored — Undo only applies while the draft still equals it. */
+  text: string
+}
+
+export const $restoredDraftNotice = atom<RestoredDraftNotice | null>(null)
 
 const cloneDraft = (draft: SessionDraft): SessionDraft => ({
   attachments: draft.attachments.map(attachment => ({ ...attachment })),
@@ -387,6 +458,10 @@ export function stashSessionDraft(scope: string | null | undefined, text: string
 
   if (text.trim() || attachments.length > 0) {
     draftsBySession.set(key, cloneDraft({ attachments, text }))
+  } else if (key === NEW_SESSION_DRAFT_KEY) {
+    // The fresh draft was sent or emptied — a restore notice has nothing left
+    // to undo.
+    $restoredDraftNotice.set(null)
   }
 
   persistDraftTexts()
@@ -406,15 +481,16 @@ export const clearSessionDraft = (scope: string | null | undefined) => stashSess
  *
  * Auto-compression rotates the live stored tip id (root → continuation) while
  * the user may still be typing. Drafts keyed on the obsolete tip would otherwise
- * vanish from the composer when selection follows the new tip. No-op unless both
- * keys resolve, differ, and the source has content. Does not overwrite a
+ * vanish from the composer when selection follows the new tip. A new chat is
+ * stored under the pre-session key until its first session id arrives. No-op
+ * unless the destination resolves, the keys differ, and the source has content. Does not overwrite a
  * non-empty destination draft.
  */
 export function migrateSessionDraft(fromKey: string | null | undefined, toKey: string | null | undefined): boolean {
   const from = draftKey(fromKey)
   const to = draftKey(toKey)
 
-  if (!fromKey || !toKey || from === to) {
+  if (!toKey?.trim() || from === to) {
     return false
   }
 
@@ -432,6 +508,118 @@ export function migrateSessionDraft(fromKey: string | null | undefined, toKey: s
 
   stashSessionDraft(toKey, source.text, source.attachments)
   clearSessionDraft(fromKey)
+
+  return true
+}
+
+/**
+ * The stored id the pre-session chat is about to be re-homed onto, announced
+ * by the site that assigns it (first-send `session.create`, cold-start
+ * resume-last-session) and consumed by the composer's scope swap.
+ *
+ * The swap cannot tell an assignment apart from the user opening another
+ * session from a new chat — both flip the scope from the `__new__` bucket to
+ * a concrete id — and only the assignment may carry the draft along: a
+ * sidebar click keeps per-scope drafts where they were typed.
+ */
+let announcedNewSessionDraftKey: string | null = null
+
+export function announceNewSessionDraftKey(toKey: string | null | undefined): void {
+  announcedNewSessionDraftKey = toKey?.trim() || null
+}
+
+/** Consume the announcement; move the `__new__` draft when it names `toKey`. */
+export function adoptNewSessionDraft(toKey: string | null | undefined): boolean {
+  const announced = announcedNewSessionDraftKey
+  announcedNewSessionDraftKey = null
+
+  return !!announced && announced === toKey?.trim() && migrateSessionDraft(null, toKey)
+}
+
+/**
+ * Recovery for the unsent text of a session that turned out to be GONE
+ * (#111868): deleted, or a stale id from a wiped / renamed backend.
+ *
+ * The resume path already drops such a window to a fresh draft without
+ * toasting or looping (62af32efe7c, bounded by `goneSessionVerdict`). The
+ * composer's draft stash is keyed per stored session, so the text the user
+ * typed into the dead id is not lost — but nothing will ever open that key
+ * again, so it is invisible. The gone verdict announces the dead key here;
+ * the composer's scope swap (concrete id → the `__new__` bucket) consumes
+ * it AFTER the outgoing cleanup stashed the live editor text, so even
+ * keystrokes still inside the persist debounce ride along.
+ *
+ * Offer, don't hijack: the fresh draft is seeded and an inline notice with
+ * Undo is published — no navigation, no focus steal, no toast. Fires once:
+ * the source key is cleared by the move, so re-opening the dead id later
+ * finds nothing to restore.
+ */
+let announcedGoneSessionDraftKey: string | null = null
+
+export function announceGoneSessionDraft(fromKey: string | null | undefined): void {
+  announcedGoneSessionDraftKey = fromKey?.trim() || null
+}
+
+/**
+ * Consume the announcement when a composer enters the fresh-draft scope.
+ * Moves the dead key's draft into the `__new__` bucket and publishes the
+ * notice. Declines (no notice) when nothing was announced, the key holds no
+ * text, or the user is already composing a new chat — never clobber what
+ * they are typing. Keyed on the announcement, not on the composer observing
+ * an id → fresh transition: the composer can remount across the drop (a
+ * loading route mounts no composer), so the dead scope may never have been
+ * this instance's previous scope.
+ */
+export function adoptGoneSessionDraft(): boolean {
+  const announced = announcedGoneSessionDraftKey
+  announcedGoneSessionDraftKey = null
+
+  if (!announced) {
+    return false
+  }
+
+  const source = draftsBySession.get(draftKey(announced))
+
+  if (!source?.text.trim()) {
+    return false
+  }
+
+  const dest = draftsBySession.get(NEW_SESSION_DRAFT_KEY)
+
+  if (dest && (dest.text.trim() || dest.attachments.length > 0)) {
+    return false
+  }
+
+  const { attachments, text } = source
+  stashSessionDraft(null, text, attachments)
+  clearSessionDraft(announced)
+  $restoredDraftNotice.set({ fromKey: announced, text })
+
+  return true
+}
+
+export function dismissRestoredDraftNotice(): void {
+  $restoredDraftNotice.set(null)
+}
+
+/**
+ * Undo the restore: put the text back under the dead key (where it was,
+ * still recoverable by the same path) and empty the fresh draft. Only while
+ * the live text is still exactly what was restored — once the user has
+ * edited it, Undo would destroy their work, so it only dismisses the notice.
+ * Returns whether the fresh draft was emptied (the caller repaints).
+ */
+export function undoRestoredDraft(liveText: string): boolean {
+  const notice = $restoredDraftNotice.get()
+  $restoredDraftNotice.set(null)
+
+  if (!notice || liveText !== notice.text) {
+    return false
+  }
+
+  const current = draftsBySession.get(NEW_SESSION_DRAFT_KEY)
+  stashSessionDraft(notice.fromKey, notice.text, current?.attachments ?? [])
+  clearSessionDraft(null)
 
   return true
 }
@@ -591,8 +779,13 @@ function upsertAttachment(attachments: ComposerAttachment[], attachment: Compose
     return [...attachments, attachment]
   }
 
+  const previous = attachments[index]
   const next = [...attachments]
   next[index] = attachment
+
+  if (previous?.previewUrl && previous.previewUrl !== attachment.previewUrl) {
+    revokeAttachmentPreviewUrl(previous.previewUrl)
+  }
 
   return next
 }

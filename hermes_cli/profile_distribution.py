@@ -441,11 +441,15 @@ def _refuse_symlink(path: Path) -> None:
         )
 
 
-def _is_container(path: Path) -> bool:
-    """A shipped directory holding no files other than its DESCRIPTION.md and dotfiles
-    (``.DS_Store``, ``.gitkeep``) is a container of roots (a skills category), not a root
-    itself; a skill dir always holds SKILL.md."""
-    return path.is_dir() and not any(
+def _is_container(path: Path, rel: Tuple[str, ...]) -> bool:
+    """A container of roots, not a root itself. Under ``skills/`` that is any dir without
+    SKILL.md (a category, whatever metadata it ships: DESCRIPTION.md, README.md, LICENSE);
+    elsewhere, a dir holding no files other than DESCRIPTION.md and dotfiles."""
+    if not path.is_dir():
+        return False
+    if rel[0] == "skills":
+        return not (path / "SKILL.md").is_file()
+    return not any(
         p.is_file() and p.name != "DESCRIPTION.md" and not p.name.startswith(".") for p in path.iterdir()
     )
 
@@ -458,7 +462,7 @@ def _merge_dir(src: Path, dest: Path, rel: Tuple[str, ...]) -> None:
             continue
         if parts == _CRON_STORE_REL:
             continue  # merged up front by _copy_dist_payload
-        if _is_container(child):
+        if _is_container(child, parts):
             _merge_dir(child, _real_dir(dest, (child.name,)), parts)
         else:
             _replace_entry(child, dest / child.name)
@@ -469,7 +473,7 @@ def _refuse_symlinked_containers(src: Path, dest: Path, rel: Tuple[str, ...]) ->
         parts = (*rel, child.name)
         if _is_distribution_runtime_path(parts):
             continue
-        if _is_container(child):
+        if _is_container(child, parts):
             _refuse_symlink(dest / child.name)
             _refuse_symlinked_containers(child, dest / child.name, parts)
 
@@ -480,7 +484,7 @@ def _merges_per_root(src: Path, rel_parts: Tuple[str, ...]) -> bool:
     added to it (``hermes skills install`` and agent-created skills land in
     ``skills/<category>/``) survive. The pre-write symlink guard and the copy loop both
     use this, so the guard covers exactly what the copy merges."""
-    return src.is_dir() and (len(rel_parts) == 1 or _is_container(src))
+    return src.is_dir() and (len(rel_parts) == 1 or _is_container(src, rel_parts))
 
 
 def _refuse_symlinked_targets(target: Path, entries) -> None:

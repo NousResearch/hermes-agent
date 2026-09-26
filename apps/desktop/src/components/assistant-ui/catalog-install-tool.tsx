@@ -94,7 +94,7 @@ export function CatalogInstallCard({ request }: { request: ConnectionRequest }) 
   return (
     <div className="my-2 grid min-w-0 max-w-lg gap-4.5" data-catalog-card data-connector-offer ref={cardRef}>
       {rows.map(target => (
-        <CatalogRow key={target.name} request={request} target={target} />
+        <CatalogRow key={`${target.kind}:${target.name}`} request={request} target={target} />
       ))}
       <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1 px-3.5">
         {unresolved && !request.settled ? (
@@ -131,7 +131,9 @@ export function CatalogRow({ request, target }: CatalogRowProps) {
     setSentAtSeq(request.seq)
 
     try {
-      const sent = await respondToConnectionRequest(request, { targets: [{ env, name: target.name, status }] })
+      const sent = await respondToConnectionRequest(request, {
+        targets: [{ env, kind: target.kind, name: target.name, status }]
+      })
 
       if (!sent) {
         setSentAtSeq(null)
@@ -143,7 +145,12 @@ export function CatalogRow({ request, target }: CatalogRowProps) {
   }
 
   return (
-    <div className={cn(SHELL_CLASS, 'grid min-w-0 gap-1.5')} data-connector-row={target.name} tabIndex={-1}>
+    <div
+      className={cn(SHELL_CLASS, 'grid min-w-0 gap-1.5')}
+      data-connector-kind={target.kind}
+      data-connector-row={target.name}
+      tabIndex={-1}
+    >
       <div className="flex min-w-0 items-start gap-3">
         <span
           aria-hidden

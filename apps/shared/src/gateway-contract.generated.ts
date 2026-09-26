@@ -941,6 +941,7 @@ export interface ConnectionAnswer {
 /** One row's answer from the card. ``env`` carries the credential values an install asked for through ``required_env``. */
 export interface ConnectionAnswerTarget {
   name: string
+  kind?: ConnectionTargetKind | null
   status: ConnectionAnswerStatus
   detail?: string | null
   env?: Record<string, string> | null

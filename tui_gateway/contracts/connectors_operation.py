@@ -212,6 +212,7 @@ class ConnectionAnswerTarget(Params):
     through ``required_env``."""
 
     name: str
+    kind: ConnectionTargetKind | None = None
     status: ConnectionAnswerStatus
     detail: str | None = None
     env: dict[str, str] | None = None

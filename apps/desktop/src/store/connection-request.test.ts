@@ -152,6 +152,36 @@ describe('connection-request store', () => {
     expect(updated.targets[0].connectUrl).toBe('https://l/gmail')
   })
 
+  it('hydrates same-name catalog rows independently by kind', () => {
+    const req = normalizeConnectionRequest(
+      {
+        ...WIRE,
+        targets: [
+          { action: 'install', kind: 'plugin', name: 'shared', state: 'pending' },
+          { action: 'install', kind: 'skill', name: 'shared', state: 'pending' }
+        ]
+      },
+      'a'
+    )!
+
+    const next = applyOperationStatus(req, {
+      deadline_at: req.deadlineAt,
+      op_id: req.opId,
+      seq: nextSeq++,
+      settled: false,
+      settled_by: null,
+      targets: [
+        { action: 'install', kind: 'plugin', name: 'shared', state: 'connected' },
+        { action: 'install', detail: 'skill failed', kind: 'skill', name: 'shared', state: 'failed' }
+      ]
+    })
+
+    expect(next.targets.map(target => [target.kind, target.state, target.detail])).toEqual([
+      ['plugin', 'connected', ''],
+      ['skill', 'failed', 'skill failed']
+    ])
+  })
+
   it('ignores an update for another operation or after settlement', () => {
     const req = request('a')
     const foreign = applyConnectionUpdate(req, frame({ gmail: 'connected' }, { op_id: 'op-9' }))

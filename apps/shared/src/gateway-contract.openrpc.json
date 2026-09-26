@@ -8784,6 +8784,17 @@
             "title": "Name",
             "type": "string"
           },
+          "kind": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConnectionTargetKind"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "status": {
             "$ref": "#/components/schemas/ConnectionAnswerStatus"
           },

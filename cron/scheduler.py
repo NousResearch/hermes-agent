@@ -2405,9 +2405,22 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
     return setup
 
 
+def _cron_preview_callbacks() -> dict:
+    """Desktop preview bridge for cron agents (#120361): read/drive callbacks routed to the
+    most recently active live desktop window, or {} outside the desktop gateway (today's
+    behavior: the tools keep their 'desktop app only' error). Lazy + fail-closed so headless
+    cron, CLI runs, and unit tests never import the gateway or block on a bridge."""
+    try:
+        from tui_gateway.agent_callbacks import cron_preview_callbacks
+        return dict(cron_preview_callbacks())
+    except Exception:
+        return {}
+
+
 def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup, *, workdir, session_id, session_db):
     runtime = setup.runtime
     pr = _cfg.get("provider_routing") or {}
+    preview_cbs = _cron_preview_callbacks()
     return AIAgent(
         model=setup.model,
         api_key=runtime.get("api_key"),
@@ -2439,6 +2452,8 @@ def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup
         platform="cron",
         session_id=session_id,
         session_db=session_db,
+        read_preview_callback=preview_cbs.get("read_preview_callback"),
+        drive_preview_callback=preview_cbs.get("drive_preview_callback"),
     )
 
 

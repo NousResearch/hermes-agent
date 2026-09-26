@@ -163,6 +163,51 @@ def _agent_cbs(sid: str) -> dict:
     return callbacks
 
 
+def cron_preview_callbacks() -> dict:
+    """Preview-pane bridge for cron agents (#120361): the same ``preview.read`` / ``preview.act``
+    server requests desktop sessions use, routed per call to the most recently active live desktop
+    window (one with a live client transport, so a windowless run fails fast instead of stalling
+    the full 45s deadline).
+
+    ``{}`` outside the desktop gateway (no emitter installed) — the tools then keep their
+    'desktop app only' error. Public (no leading underscore) so ``register()`` rebinds it onto
+    the server namespace like ``_agent_cbs``; it only touches ``_sessions`` / ``_ask`` through
+    those rebound globals.
+    """
+    try:
+        from tools import desktop_ui
+        if not desktop_ui.available():
+            return {}
+    except Exception:
+        return {}
+
+    def _target_sid() -> str:
+        try:
+            with _sessions_lock:
+                live = [(sid, s) for sid, s in list(_sessions.items()) if not s.get("_finalized")]
+            cands = [(s.get("last_active") or s.get("created_at") or 0, sid)
+                     for sid, s in live if _session_transports._session_has_live_transport(s)]
+            return max(cands)[1] if cands else ""
+        except Exception:
+            return ""
+
+    def _read(start=None, count=None):
+        sid = _target_sid()
+        if not sid:
+            return ""
+        return _ask("preview.read", sid,
+                    {k: v for k, v in (("start", start), ("count", count)) if v is not None},
+                    timeout=45)
+
+    def _drive(payload):
+        sid = _target_sid()
+        if not sid:
+            return ""
+        return _ask("preview.act", sid, dict(payload), timeout=45)
+
+    return {"read_preview_callback": _read, "drive_preview_callback": _drive}
+
+
 def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
     """Intentional workspace move from the project_* tools: re-anchor the live session's cwd
     and push session.info. The ONLY auto-cwd path — an explicit tool call, never a `cd`."""

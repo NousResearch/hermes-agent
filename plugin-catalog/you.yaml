@@ -1,0 +1,20 @@
+name: you
+repo: https://github.com/youdotcom-oss/agent-skills
+sha: 08f3d80e7ca9518ccc64b38b365a78cc4a762691
+description: 'You.com skills for live web search, URL content extraction, cited research, finance
+  research, and integration discovery via the You.com MCP servers (api.you.com). Portable Agent
+  Plugins v1 package (mcp.json + skills/, five skills bundled); auth via YDC_API_KEY, OAuth, or
+  MPP/x402 — the free profile works keyless.'
+maintainer: youdotcom-oss
+tier: community
+category: web
+requires_hermes: ">=0.20"
+docs_url: https://github.com/youdotcom-oss/agent-skills#readme
+version: "0.6.0"
+image: https://raw.githubusercontent.com/youdotcom-oss/agent-skills/08f3d80e7ca9518ccc64b38b365a78cc4a762691/assets/logo.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

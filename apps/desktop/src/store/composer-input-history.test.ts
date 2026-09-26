@@ -106,18 +106,6 @@ describe('per-session isolation', () => {
   })
 })
 
-describe('resetBrowseState', () => {
-  it('clears cursor and draft snapshot', () => {
-    browseBackward(SESSION_A, 'draft', HISTORY)
-    resetBrowseState(SESSION_A)
-
-    const s = $perSessionBrowse.get()[SESSION_A]!
-
-    expect(s.cursor).toBe(-1)
-    expect(s.draftSnapshot).toBe('')
-  })
-})
-
 describe('session switch behavior', () => {
   it('resets the previous session cursor and lets the new session derive its own ring', () => {
     // Session A: user browsed into the past

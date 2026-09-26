@@ -3,26 +3,13 @@
 //! Driven when the installer is launched as `Hermes-Setup.exe --update` (see
 //! `AppMode` in lib.rs). The desktop app hands off to us — it exits, then we:
 //!
-//!   1. wait for the old Hermes desktop process to fully exit (so both the
-//!      venv shim and packaged app.asar are free; otherwise `hermes update`
-//!      or repair bootstrap can race locked files),
-//!   2. run `hermes update --yes --gateway` (Python/repo update; this does NOT
-//!      rebuild apps/desktop by design — see cmd_update in hermes_cli/main.py),
-//!   3. run `hermes desktop --build-only` (the rebuild step update skips),
-//!   4. launch the freshly-built desktop (reuses bootstrap::launch logic).
-//!
-//! We reuse the `BootstrapEvent` channel + the existing progress UI by
-//! emitting a synthetic multi-stage manifest (handoff → update → rebuild, plus
-//! an install stage on macOS). To the frontend an update looks like a short
-//! bootstrap, broken into the real operations run_update performs so the user
-//! sees discrete steps (with the live log underneath) instead of one bar.
-//!
-//! Cross-platform note: `hermes update` already handles macOS/Linux (git/pip).
-//! The only OS-specific bits here are the venv shim path (resolve_hermes) and
-//! the no-window creation flag — both already cfg-gated. Keep new logic
-//! OS-agnostic so the mac/linux port stays "fill in the paths".
+//! Application output locks protect replacement. Python owns dependency
+//! generations, product compilation, and gateway draining/restart. Only a
+//! pre-PM runtime gets the historical extra rebuild/retry. Published launchers
+//! bind every command to the installation; user-bin migration verifies identity
+//! through the existing `--version` surface before selecting an older launcher.
 
-use std::env;
+use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -42,7 +29,7 @@ use crate::powershell::{pump_child, DRAIN_GRACE};
 const UPDATE_EXIT_CONCURRENT: i32 = 2;
 
 /// How long to wait for the old desktop process to release files under the
-/// install tree before giving up and letting `hermes update`'s own guard decide.
+/// install tree before refusing the handoff.
 const DESKTOP_EXIT_WAIT: Duration = Duration::from_secs(20);
 const DESKTOP_EXIT_POLL: Duration = Duration::from_millis(500);
 
@@ -154,6 +141,38 @@ fn live_marker_owner(path: &Path) -> Option<MarkerOwner> {
         return None;
     }
     Some(MarkerOwner { pid, age_secs })
+}
+
+/// True when the on-disk marker names THIS process as its owner.
+///
+/// A raw read is used instead of `live_marker_owner` on purpose: that
+/// helper folds in age and liveness policy (and, since the #74761
+/// adoption work, self-ownership handling has changed shape more than
+/// once). The exit-2 self-heal below needs exactly one raw fact — does
+/// the marker name our PID — because a `hermes update` child that
+/// refuses over OUR marker is a handoff-recognition failure in a stale
+/// checkout, not a real concurrent update.
+fn marker_owned_by_self(path: &Path) -> bool {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| {
+            raw.lines()
+                .next()
+                .and_then(|line| line.trim().parse::<u32>().ok())
+        })
+        == Some(std::process::id())
+}
+
+/// The exit-2 heal decision (#75788), extracted so the contract is testable.
+///
+/// True only when BOTH hold: the child exited with the concurrent-update
+/// refusal code, AND the on-disk marker names THIS process. That combination
+/// means the child refused over its own parent's claim — a stale checkout
+/// without handoff recognition — so dropping the claim and retrying once is
+/// safe. Any other owner (live foreign updater, garbage, missing marker) or
+/// any other exit code must leave the refusal untouched.
+fn should_heal_self_marker_refusal(exit_code: Option<i32>, marker_path: &Path) -> bool {
+    exit_code == Some(UPDATE_EXIT_CONCURRENT) && marker_owned_by_self(marker_path)
 }
 
 /// True when a process with `pid` currently exists.
@@ -302,7 +321,8 @@ async fn run_update(app: AppHandle) -> Result<()> {
         None
     };
 
-    let hermes = resolve_hermes(&install_root).ok_or_else(|| {
+    let legacy_install = !install_root.join("pm").is_dir();
+    let hermes = resolve_hermes(&install_root).await.ok_or_else(|| {
         let msg = format!(
             "Could not find the hermes CLI under {}. Is Hermes installed? \
              Re-run the installer to repair the install.",
@@ -328,16 +348,11 @@ async fn run_update(app: AppHandle) -> Result<()> {
     );
 
     // ---- stage 1: wait for the old desktop to die ------------------------
-    // The desktop exec'd us then called app.exit(), but process teardown is
-    // async on Windows. If it still holds the venv shim, `hermes update`
-    // aborts with exit 2. If it still holds the packaged app.asar,
-    // install.ps1's repair/re-clone path cannot move/remove the install tree.
-    // Give both handles a bounded window to clear. Surfaced as its own stage
-    // (rather than a silent pre-step) so a slow close / force-kill reads as
-    // real progress instead of a frozen first bar.
+    // Windows process teardown is asynchronous; the old app must release the
+    // packaged payload before it can be replaced. Python readers are unrelated.
     let started = Instant::now();
     emit_stage(&app, "handoff", StageState::Running, None, None);
-    wait_for_install_locks_free(&install_root, &app, "handoff").await;
+    wait_for_install_locks_free(&install_root, &app, "handoff").await?;
     emit_stage(
         &app,
         "handoff",
@@ -364,21 +379,8 @@ async fn run_update(app: AppHandle) -> Result<()> {
     let child_env = update_child_env(&install_root);
     let mut update_args: Vec<String> =
         vec!["update".into(), "--yes".into(), "--gateway".into()];
-    // --force skips `hermes update`'s Windows running-exe guard (which would
-    // `sys.exit(2)` and dead-end the handoff). By contract the desktop has
-    // already exited and waited for the install locks to clear before launching
-    // us, and wait_for_install_locks_free below force-kills any straggler — so by the
-    // time `hermes update` runs there is no legitimate hermes.exe to protect,
-    // and the guard would only produce a false "Hermes is still running" stop.
-    //
-    // NOTE: --force does NOT bypass the venv-python holder guard (that needs
-    // an explicit `--force-venv`, which we deliberately do not pass). Our lock
-    // probe only checks the hermes.exe shim and app.asar, so an external venv
-    // python holding a native .pyd (a user terminal, an unmanaged gateway)
-    // could still be alive here — mutating the venv under it would strand the
-    // install half-updated. If that guard fires, it exits 2 and the match arm
-    // below surfaces the correct "close all Hermes windows" message.
-    update_args.push("--force".into());
+    // Only historical in-place updaters need the old shim bypass.
+    if legacy_install { update_args.push("--force".into()); }
     update_args.push("--branch".into());
     update_args.push(update_branch);
 
@@ -407,7 +409,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
     // stare at a scary crash first), retry once automatically. Skip the retry
     // for the concurrent-instance guard (exit 2) — that's a "close Hermes" state
     // a retry can't fix.
-    if !matches!(update.exit_code, Some(0) | Some(UPDATE_EXIT_CONCURRENT)) {
+    if legacy_install && !matches!(update.exit_code, Some(0) | Some(UPDATE_EXIT_CONCURRENT)) {
         emit_log(
             &app,
             Some("update"),
@@ -425,6 +427,41 @@ async fn run_update(app: AppHandle) -> Result<()> {
         )
         .await?;
     }
+
+    // Self-owned-marker heal (#75788). Exit 2 means the child refused over a
+    // live update marker with a foreign owner. When that "foreign" owner is
+    // THIS process, the child simply failed to recognize the handoff — a
+    // checkout predating the HERMES_UPDATE_HANDOFF_PID env fix (8c76fe19f)
+    // and the ancestor-pid fallback runs its pre-pull update_lock.py, reads
+    // our marker, and exits 2 every time. The refusal loop is unbreakable
+    // from the user's side because the update being refused is the one that
+    // ships the fix. The marker exists to serialize updates and this process
+    // IS the update: drop our claim and retry once with the marker absent.
+    // The guard re-removes on Drop (idempotent), and the desktop is already
+    // gone at this point, so nothing races the brief marker-free window.
+    if legacy_install && should_heal_self_marker_refusal(
+        update.exit_code,
+        &crate::paths::update_in_progress_marker(),
+    ) {
+        emit_log(
+            &app,
+            Some("update"),
+            LogStream::Stdout,
+            "[update] child refused over this updater's own marker (stale \
+             checkout without handoff recognition); clearing the claim and \
+             retrying once…",
+        );
+        _update_marker.complete();
+        update = run_streamed(
+            &app,
+            &hermes,
+            &update_args,
+            &install_root,
+            &child_env,
+            Some("update"),
+        )
+        .await?;
+    }
     let update_ms = started.elapsed().as_millis() as u64;
 
     match update.exit_code {
@@ -432,9 +469,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
             emit_stage(&app, "update", StageState::Succeeded, Some(update_ms), None);
         }
         Some(code) if code == UPDATE_EXIT_CONCURRENT => {
-            let msg = "Hermes is still running. Close all Hermes windows and try \
-                       the update again."
-                .to_string();
+            let msg = concurrent_update_message(&update.stdout_tail);
             emit_stage(
                 &app,
                 "update",
@@ -478,74 +513,69 @@ async fn run_update(app: AppHandle) -> Result<()> {
         }
     }
 
-    // ---- stage 3: hermes desktop --build-only ----------------------------
-    // `hermes update` deliberately does NOT build apps/desktop (it installs
-    // repo-root deps with --workspaces=false). This is the rebuild it skips.
-    emit_stage(&app, "rebuild", StageState::Running, None, None);
-    let started = Instant::now();
-    let rebuild_args: Vec<String> = vec!["desktop".into(), "--build-only".into()];
-    let mut rebuild = run_streamed(
-        &app,
-        &hermes,
-        &rebuild_args,
-        &install_root,
-        &child_env,
-        Some("rebuild"),
-    )
-    .await?;
+    // Older updaters did not own desktop compilation. Current PM update
+    // composes all products and propagates failures; never build them twice.
+    if legacy_install {
+        emit_stage(&app, "rebuild", StageState::Running, None, None);
+        let started = Instant::now();
+        let rebuild_args: Vec<String> = vec!["desktop".into(), "--build-only".into()];
+        let mut rebuild = run_streamed(&app, &hermes, &rebuild_args, &install_root, &child_env, Some("rebuild")).await?;
 
-    // Retry-once: the first `--build-only` can return nonzero on a still-settling
-    // post-update tree or a network-blocked Electron fetch that our self-heal
-    // repaired mid-run. A second attempt then builds clean off the healed dist
-    // (the content-hash stamp makes it a near-no-op when the first actually
-    // succeeded). Without this the updater bails here and never reaches the
-    // relaunch below — the app updates but doesn't restart. Matches the
-    // retry-once `hermes update` already does above, and `hermes update`'s own
-    // desktop rebuild in cmd_update.
-    if rebuild_needs_retry(rebuild.exit_code) {
-        emit_log(
-            &app,
-            Some("rebuild"),
-            LogStream::Stdout,
-            "[rebuild] first desktop rebuild failed; retrying once (a self-healed \
-             Electron download builds clean on the second run)…",
-        );
-        rebuild = run_streamed(
-            &app,
-            &hermes,
-            &rebuild_args,
-            &install_root,
-            &child_env,
-            Some("rebuild"),
-        )
-        .await?;
-    }
-    let rebuild_ms = started.elapsed().as_millis() as u64;
+        // Retry-once: the first `--build-only` can return nonzero on a still-settling
+        // post-update tree or a network-blocked Electron fetch that our self-heal
+        // repaired mid-run. A second attempt then builds clean off the healed dist
+        // (the content-hash stamp makes it a near-no-op when the first actually
+        // succeeded). Without this the updater bails here and never reaches the
+        // relaunch below — the app updates but doesn't restart. Matches the
+        // retry-once `hermes update` already does above, and `hermes update`'s own
+        // desktop rebuild in cmd_update.
+        if rebuild_needs_retry(rebuild.exit_code) {
+            emit_log(
+                &app,
+                Some("rebuild"),
+                LogStream::Stdout,
+                "[rebuild] first desktop rebuild failed; retrying once (a self-healed \
+                 Electron download builds clean on the second run)…",
+            );
+            rebuild = run_streamed(
+                &app,
+                &hermes,
+                &rebuild_args,
+                &install_root,
+                &child_env,
+                Some("rebuild"),
+            )
+            .await?;
+        }
+        let rebuild_ms = started.elapsed().as_millis() as u64;
 
-    if rebuild.exit_code != Some(0) {
-        let msg = format!(
-            "Rebuilding the desktop app failed (exit {:?}). The update was \
-             applied but the app could not be rebuilt; run `hermes desktop` \
-             from a terminal to see the error.",
-            rebuild.exit_code
-        );
-        emit_stage(
-            &app,
-            "rebuild",
-            StageState::Failed,
-            Some(rebuild_ms),
-            Some(msg.clone()),
-        );
-        emit(
-            &app,
-            BootstrapEvent::Failed {
-                stage: Some("rebuild".into()),
-                error: msg.clone(),
-            },
-        );
-        return Err(anyhow!(msg));
+        if rebuild.exit_code != Some(0) {
+            let msg = format!(
+                "Rebuilding the desktop app failed (exit {:?}). The update was \
+                 applied but the app could not be rebuilt; run `hermes desktop` \
+                 from a terminal to see the error.",
+                rebuild.exit_code
+            );
+            emit_stage(
+                &app,
+                "rebuild",
+                StageState::Failed,
+                Some(rebuild_ms),
+                Some(msg.clone()),
+            );
+            emit(
+                &app,
+                BootstrapEvent::Failed {
+                    stage: Some("rebuild".into()),
+                    error: msg.clone(),
+                },
+            );
+            return Err(anyhow!(msg));
+        }
+        emit_stage(&app, "rebuild", StageState::Succeeded, Some(rebuild_ms), None);
+    } else {
+        emit_stage(&app, "rebuild", StageState::Succeeded, Some(0), None);
     }
-    emit_stage(&app, "rebuild", StageState::Succeeded, Some(rebuild_ms), None);
 
     let launch_target = if let Some(target_app) = target_app {
         let started = Instant::now();
@@ -642,69 +672,25 @@ fn exit_after_success(app: &AppHandle) {
     app.exit(0);
 }
 
-/// Poll until the venv shim AND packaged desktop app bundle are no longer locked
-/// (Windows) or a bounded timeout elapses. On non-Windows this is a short fixed
-/// grace since file locking isn't the failure mode there.
-pub(crate) async fn wait_for_install_locks_free(install_root: &Path, app: &AppHandle, stage: &str) {
+/// Wait for the application payload being replaced, never PM dependency readers.
+pub(crate) async fn wait_for_install_locks_free(install_root: &Path, app: &AppHandle, stage: &str) -> Result<()> {
     let lock_targets = install_lock_probe_paths(install_root);
     let deadline = Instant::now() + DESKTOP_EXIT_WAIT;
-
     emit_log(app, Some(stage), LogStream::Stdout, "[handoff] waiting for Hermes to exit…");
-
     loop {
         let locked = locked_paths(&lock_targets);
         if locked.is_empty() {
-            return;
+            return Ok(());
         }
         if Instant::now() >= deadline {
-            // Last resort: a backend hermes.exe (or the desktop Hermes.exe
-            // itself) is still holding one of the update-sensitive files. The
-            // desktop should have reaped its tree before handing off, but
-            // SIGTERM races / detached grandchildren / AV handles can leave a
-            // straggler. Rather than "proceed anyway" straight into uv's
-            // "Access is denied" or install.ps1's locked app.asar failure,
-            // force-kill every Hermes.exe except ourselves, then give the OS a
-            // beat to unload the image.
-            emit_log(
-                app,
-                Some(stage),
-                LogStream::Stdout,
-                &format!(
-                    "[handoff] Hermes still holding install files ({}); force-killing stragglers…",
-                    format_locked_paths(&locked)
-                ),
-            );
-            force_kill_other_hermes();
-            tokio::time::sleep(Duration::from_millis(800)).await;
-            let locked_after_kill = locked_paths(&lock_targets);
-            if locked_after_kill.is_empty() {
-                emit_log(
-                    app,
-                    Some(stage),
-                    LogStream::Stdout,
-                    "[handoff] install files freed after force-kill",
-                );
-            } else {
-                emit_log(
-                    app,
-                    Some(stage),
-                    LogStream::Stdout,
-                    &format!(
-                        "[handoff] install files still locked ({}); proceeding (--force + quarantine will handle it)",
-                        format_locked_paths(&locked_after_kill)
-                    ),
-                );
-            }
-            return;
+            return Err(anyhow!("Desktop application files are still locked: {}. Close the other Hermes window and retry.", format_locked_paths(&locked)));
         }
         tokio::time::sleep(DESKTOP_EXIT_POLL).await;
     }
 }
 
 fn install_lock_probe_paths(install_root: &Path) -> Vec<PathBuf> {
-    let mut paths = vec![venv_hermes(install_root)];
-    paths.extend(desktop_app_payload_paths(install_root));
-    paths
+    desktop_app_payload_paths(install_root)
 }
 
 fn desktop_app_payload_paths(install_root: &Path) -> Vec<PathBuf> {
@@ -732,47 +718,11 @@ fn format_locked_paths(paths: &[PathBuf]) -> String {
     paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
 }
 
-/// Force-kill any `hermes.exe` other than this process. Windows-only; a no-op
-/// elsewhere (POSIX has no mandatory-lock contention). We can't selectively
-/// target "the backend" by PID here — the desktop already exited and we never
-/// knew its children — so we kill the whole `hermes.exe` image tree via
-/// taskkill, excluding our own PID.
-///
-/// Safe w.r.t. our own update child: this runs inside the install-lock wait,
-/// which completes BEFORE we spawn `venv\Scripts\hermes.exe update`. And a
-/// desktop the user relaunches mid-update will NOT have spawned a backend —
-/// `startHermes()` in the desktop gates local-backend startup on our
-/// update-in-progress marker and parks until we finish (#50238). So the only
-/// hermes.exe images here are stragglers from the old desktop — exactly what
-/// we want gone. (`/FI PID ne <self>` also spares this Tauri process, though it
-/// isn't named hermes.exe.)
-fn force_kill_other_hermes() {
-    if !cfg!(target_os = "windows") {
-        return;
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let my_pid = std::process::id();
-        // /FI excludes our own PID; /T kills the tree; /F forces.
-        let _ = std::process::Command::new("taskkill")
-            .args([
-                "/F",
-                "/T",
-                "/IM",
-                "hermes.exe",
-                "/FI",
-                &format!("PID ne {my_pid}"),
-            ])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-    }
-}
 
 /// Best-effort lock probe: try to open the file for read+write. On Windows an
 /// exclusively-held running .exe refuses the open with a sharing violation.
 /// On Unix this almost always succeeds (no mandatory locking), which is fine —
-/// the venv-shim contention is a Windows-only problem.
+/// application-output contention is a Windows-only problem.
 fn is_locked(path: &Path) -> bool {
     if !path.exists() {
         return false;
@@ -791,6 +741,27 @@ fn rebuild_needs_retry(exit_code: Option<i32>) -> bool {
     exit_code != Some(0)
 }
 
+/// Lines of child stdout kept for the exit-2 diagnosis. Every refusal block
+/// is a handful of lines printed right before `sys.exit(2)`.
+const STDOUT_TAIL_LINES: usize = 40;
+
+/// User-facing message for an exit-2 refusal from `hermes update`.
+///
+/// Exit 2 has several causes (another update holds the marker, a live
+/// hermes.exe or venv holder, a self-mapped `.pyd` after the code swap), and
+/// the child always prints the specific one as a block starting with `✗`
+/// just before exiting. Show that block — it names the real holder/PID — and
+/// fall back to the generic "still running" text only when none was captured
+/// (#78135).
+fn concurrent_update_message(stdout_tail: &[String]) -> String {
+    match stdout_tail.iter().rposition(|l| l.trim_start().starts_with('✗')) {
+        Some(start) => stdout_tail[start..].join("\n").trim().to_string(),
+        None => "Hermes is still running. Close all Hermes windows and try \
+                 the update again."
+            .to_string(),
+    }
+}
+
 /// Spawn `hermes <args>` from `cwd`, stream stdout/stderr as Log events on the
 /// bootstrap channel, and return the exit code. Mirrors powershell::run_script
 /// but for an arbitrary command (no install.ps1 -File wrapping).
@@ -802,8 +773,24 @@ async fn run_streamed(
     envs: &[(String, OsString)],
     stage: Option<&str>,
 ) -> Result<CmdResult> {
-    let mut cmd = Command::new(program);
-    cmd.args(args)
+    let mut stdout_tail: VecDeque<String> = VecDeque::with_capacity(STDOUT_TAIL_LINES);
+    let current = resolve_hermes(cwd).await.ok_or_else(|| anyhow!("Installation launcher missing under {}", cwd.display()))?;
+    let mut command: Vec<String> = vec![current.to_string_lossy().into_owned()];
+    if current.starts_with(cwd.join(".hermes").join("bin")) {
+        let mut query = Command::new(&current);
+        query.arg("--print-runtime-command").current_dir(cwd);
+        #[cfg(windows)]
+        query.creation_flags(0x0800_0000);
+        for (key, value) in envs { query.env(key, value); }
+        let output = query.output().await?;
+        if !output.status.success() { return Err(anyhow!("Installation launcher could not resolve its runtime: {}", current.display())); }
+        command = serde_json::from_slice(&output.stdout)?;
+        if command.len() < 2 || command.iter().any(|part| part.is_empty()) {
+            return Err(anyhow!("Installation launcher returned invalid runtime command"));
+        }
+    }
+    let mut cmd = Command::new(&command[0]);
+    cmd.args(&command[1..]).args(args)
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -830,7 +817,13 @@ async fn run_streamed(
     let stage_owned = stage.map(|s| s.to_string());
     let outcome = pump_child(
         &mut child,
-        |l| emit_log(app, stage_owned.as_deref(), LogStream::Stdout, l),
+        |l| {
+            emit_log(app, stage_owned.as_deref(), LogStream::Stdout, l);
+            if stdout_tail.len() == STDOUT_TAIL_LINES {
+                stdout_tail.pop_front();
+            }
+            stdout_tail.push_back(l.to_string());
+        },
         |l| emit_log(app, stage_owned.as_deref(), LogStream::Stderr, l),
         &mut None,
         DRAIN_GRACE,
@@ -851,41 +844,63 @@ async fn run_streamed(
 
     Ok(CmdResult {
         exit_code: outcome.exit_code,
+        stdout_tail: stdout_tail.into(),
     })
 }
 
 struct CmdResult {
     exit_code: Option<i32>,
+    /// Last [`STDOUT_TAIL_LINES`] stdout lines; see [`concurrent_update_message`].
+    stdout_tail: Vec<String>,
 }
 
-/// Path to the venv hermes shim under an install root, regardless of existence.
-fn venv_hermes(install_root: &Path) -> PathBuf {
-    if cfg!(target_os = "windows") {
-        install_root.join("venv").join("Scripts").join("hermes.exe")
-    } else {
-        install_root.join("venv").join("bin").join("hermes")
+/// Resolve only a launcher owned by this installation, never PATH.
+async fn resolve_hermes(install_root: &Path) -> Option<PathBuf> {
+    let names: &[&str] = if cfg!(target_os = "windows") { &["hermes.exe", "hermes.cmd"] } else { &["hermes"] };
+    for name in names {
+        let launcher = install_root.join(".hermes").join("bin").join(name);
+        if launcher.is_file() { return Some(launcher); }
     }
-}
-
-/// Resolve the hermes CLI to drive. Prefer the venv shim in the install we
-/// just updated; fall back to `hermes` on PATH.
-fn resolve_hermes(install_root: &Path) -> Option<PathBuf> {
-    let shim = venv_hermes(install_root);
-    if shim.exists() {
-        return Some(shim);
-    }
-    // PATH fallback. which-style probe via env, kept dependency-free.
-    let exe = if cfg!(target_os = "windows") { "hermes.exe" } else { "hermes" };
-    if let Ok(path) = std::env::var("PATH") {
-        let sep = if cfg!(target_os = "windows") { ';' } else { ':' };
-        for dir in path.split(sep) {
-            let cand = Path::new(dir).join(exe);
-            if cand.exists() {
-                return Some(cand);
+    // Earlier PM publication lived in user-bin only. The CLI's existing
+    // version surface proves which source tree that command belongs to.
+    if install_root.join("hermes_cli/_launchers.py").is_file() {
+        let mut directories = vec![crate::paths::hermes_home().join("bin")];
+        if let Some(home) = dirs::home_dir() { directories.push(home.join(".local/bin")); }
+        if let Some(parent) = install_root.parent() { directories.push(parent.join("bin")); }
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") { directories.push(PathBuf::from(local).join("hermes/bin")); }
+        for directory in directories {
+            for name in names {
+                let candidate = directory.join(name);
+                if candidate.is_file() && launcher_targets_installation(&candidate, install_root).await {
+                    return Some(candidate);
+                }
             }
         }
     }
+    // Required transition for pre-PM releases. A broken PM publication must
+    // fail closed rather than select an unrelated interpreter or checkout.
+    if !install_root.join("pm").is_dir() {
+        let legacy = install_root.join("venv")
+            .join(if cfg!(target_os = "windows") { "Scripts" } else { "bin" })
+            .join(names[0]);
+        if legacy.is_file() { return Some(legacy); }
+    }
     None
+}
+
+async fn launcher_targets_installation(launcher: &Path, root: &Path) -> bool {
+    let mut command = Command::new(launcher);
+    command.arg("--version").current_dir(root).kill_on_drop(true);
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000);
+    let Ok(Ok(output)) = tokio::time::timeout(Duration::from_secs(15), command.output()).await else { return false; };
+    if !output.status.success() { return false; }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let Some(reported) = stdout.lines().find_map(|line| line.strip_prefix("Install directory: ")) else { return false; };
+    match (std::fs::canonicalize(reported.trim()), std::fs::canonicalize(root)) {
+        (Ok(actual), Ok(expected)) => actual == expected,
+        _ => false,
+    }
 }
 
 fn update_child_env(install_root: &Path) -> Vec<(String, OsString)> {
@@ -912,29 +927,8 @@ fn update_child_env(install_root: &Path) -> Vec<(String, OsString)> {
         "HERMES_UPDATE_HANDOFF_PID".to_string(),
         OsString::from(std::process::id().to_string()),
     ));
-    if let Some(path) = path_with_prepended_entries(&[
-        hermes_home.join("node").join("bin"),
-        venv_bin_dir(install_root),
-    ]) {
-        envs.push(("PATH".to_string(), path));
-    }
+    envs.push(("HERMES_INSTALL_ROOT".to_string(), install_root.as_os_str().to_os_string()));
     envs
-}
-
-fn venv_bin_dir(install_root: &Path) -> PathBuf {
-    if cfg!(target_os = "windows") {
-        install_root.join("venv").join("Scripts")
-    } else {
-        install_root.join("venv").join("bin")
-    }
-}
-
-fn path_with_prepended_entries(entries: &[PathBuf]) -> Option<OsString> {
-    let mut parts: Vec<PathBuf> = entries.to_vec();
-    if let Some(existing) = env::var_os("PATH") {
-        parts.extend(env::split_paths(&existing));
-    }
-    env::join_paths(parts).ok()
 }
 
 fn update_branch_from_args<I, S>(args: I) -> Option<String>
@@ -1060,6 +1054,15 @@ async fn install_macos_app_update(
     Ok(target_app.to_path_buf())
 }
 
+#[cfg(not(target_os = "macos"))]
+async fn install_macos_app_update(
+    _app: &AppHandle,
+    _install_root: &Path,
+    target_app: &Path,
+) -> Result<PathBuf> {
+    Ok(target_app.to_path_buf())
+}
+
 /// Move a freshly-staged bundle (`tmp`) into place at `target`, parking any
 /// existing bundle at `old` so the move can succeed (macOS `rename` won't
 /// overwrite a non-empty directory).
@@ -1094,15 +1097,6 @@ async fn swap_in_new_bundle(tmp: &Path, target: &Path, old: &Path) -> Result<()>
     }
     remove_dir_if_exists(old).await;
     Ok(())
-}
-
-#[cfg(not(target_os = "macos"))]
-async fn install_macos_app_update(
-    _app: &AppHandle,
-    _install_root: &Path,
-    target_app: &Path,
-) -> Result<PathBuf> {
-    Ok(target_app.to_path_buf())
 }
 
 async fn remove_dir_if_exists(path: &Path) {
@@ -1168,6 +1162,9 @@ fn option_env_string(key: &str) -> Option<String> {
 }
 
 fn emit(app: &AppHandle, event: BootstrapEvent) {
+    // Same UI boundary as bootstrap.rs's emit_event: the update flow's log
+    // lines also reach the plain-text Live output pane (#112675).
+    let event = event.sanitized_for_ui();
     if let Err(e) = app.emit(BootstrapEvent::CHANNEL, &event) {
         tracing::warn!(?e, "failed to emit update event");
     }
@@ -1212,12 +1209,21 @@ fn emit_log(app: &AppHandle, stage: Option<&str>, stream: LogStream, line: &str)
 mod tests {
     use super::*;
 
-    #[test]
-    fn venv_hermes_is_under_install_root() {
-        let root = Path::new("/x/hermes-agent");
-        let shim = venv_hermes(root);
-        assert!(shim.starts_with(root));
-        assert!(shim.to_string_lossy().contains("venv"));
+    #[tokio::test]
+    async fn launcher_resolution_is_installation_bound() {
+        let root = unique_tmp_dir("launcher");
+        let legacy = root.join("venv").join(if cfg!(windows) { "Scripts" } else { "bin" })
+            .join(if cfg!(windows) { "hermes.exe" } else { "hermes" });
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        std::fs::write(&legacy, "old").unwrap();
+        assert_eq!(resolve_hermes(&root).await, Some(legacy));
+        std::fs::create_dir(root.join("pm")).unwrap();
+        assert_eq!(resolve_hermes(&root).await, None, "PM must never fall back to the old venv");
+        let launcher = root.join(".hermes/bin").join(if cfg!(windows) { "hermes.cmd" } else { "hermes" });
+        std::fs::create_dir_all(launcher.parent().unwrap()).unwrap();
+        std::fs::write(&launcher, "new").unwrap();
+        assert_eq!(resolve_hermes(&root).await, Some(launcher));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1251,10 +1257,8 @@ mod tests {
         let root = Path::new("/x/hermes-agent");
         let probes = install_lock_probe_paths(root);
 
-        assert!(
-            probes.iter().any(|p| p == &venv_hermes(root)),
-            "venv shim remains part of the update lock probe"
-        );
+        assert!(probes.iter().all(|p| p.starts_with(root.join("apps/desktop/release"))),
+                "only replaced application outputs belong to the update lock set");
         assert!(
             // Windows/Linux payloads live under `resources/`, the macOS bundle
             // under `Contents/Resources/` — Path::ends_with is case-sensitive.
@@ -1272,6 +1276,34 @@ mod tests {
         let probes = install_lock_probe_paths(root);
 
         assert!(locked_paths(&probes).is_empty());
+    }
+
+    fn lines(text: &str) -> Vec<String> {
+        text.lines().map(str::to_string).collect()
+    }
+
+    #[test]
+    fn concurrent_update_message_shows_the_childs_refusal_block() {
+        // Exit 2 after the code swap: fetch/pull noise precedes the refusal,
+        // and only the refusal (which names the real holder) is the message.
+        let tail = lines(
+            "→ Fetching updates...\n\
+             ✓ Updated to 6b2c23ae42\n\
+             ✗ Another Hermes update is already running (started 3m 42s ago, process 65285).\n\
+             \n  Wait for it to finish, then run `hermes update` again.\n",
+        );
+        assert_eq!(
+            concurrent_update_message(&tail),
+            "✗ Another Hermes update is already running (started 3m 42s ago, process 65285).\n\
+             \n  Wait for it to finish, then run `hermes update` again."
+        );
+    }
+
+    #[test]
+    fn concurrent_update_message_falls_back_without_a_refusal_block() {
+        let generic = "Hermes is still running. Close all Hermes windows and try the update again.";
+        assert_eq!(concurrent_update_message(&[]), generic);
+        assert_eq!(concurrent_update_message(&lines("→ Fetching updates...\n")), generic);
     }
 
     #[test]
@@ -1414,6 +1446,113 @@ mod tests {
             !marker.exists(),
             "Drop must still clear the marker we adopted"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- exit-2 self-marker heal (#75788) --------------------------------
+    // The deadlock: the updater holds the marker with its own PID; a stale
+    // checkout's `hermes update` reads it as a live foreign update and exits
+    // 2; the generic retry deliberately skips exit 2 — so the refusal loops
+    // forever. These tests pin the heal decision's full contract. On
+    // merge-base product code (no heal) the decision function does not exist
+    // and the refusal is terminal — the A/B run proves that.
+
+    #[test]
+    fn self_owned_marker_plus_exit_2_heals() {
+        let dir = unique_tmp_dir("heal-self-owned");
+        let marker = dir.join(".hermes-update-in-progress");
+        std::fs::write(&marker, format!("{}\n123\n", std::process::id())).unwrap();
+
+        assert!(
+            should_heal_self_marker_refusal(Some(UPDATE_EXIT_CONCURRENT), &marker),
+            "a child refusing over OUR marker is the #75788 deadlock — must heal"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn foreign_owned_marker_never_heals() {
+        let dir = unique_tmp_dir("heal-foreign");
+        let marker = dir.join(".hermes-update-in-progress");
+        // A live sibling process stands in for a genuinely concurrent updater.
+        let mut foreign = spawn_foreign_holder();
+        std::fs::write(&marker, format!("{}\n123\n", foreign.id())).unwrap();
+
+        assert!(
+            !should_heal_self_marker_refusal(Some(UPDATE_EXIT_CONCURRENT), &marker),
+            "a foreign owner is a REAL concurrent update — the refusal must stand"
+        );
+        let _ = foreign.kill();
+        let _ = foreign.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_or_garbage_marker_never_heals() {
+        let dir = unique_tmp_dir("heal-garbage");
+        let missing = dir.join("never-written");
+        assert!(
+            !should_heal_self_marker_refusal(Some(UPDATE_EXIT_CONCURRENT), &missing),
+            "no marker on disk = the child refused over something else entirely"
+        );
+
+        let garbage = dir.join(".hermes-update-in-progress");
+        std::fs::write(&garbage, "not-a-pid\n123\n").unwrap();
+        assert!(
+            !should_heal_self_marker_refusal(Some(UPDATE_EXIT_CONCURRENT), &garbage),
+            "an unparseable marker must not be treated as ours"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn non_exit_2_outcomes_never_heal() {
+        let dir = unique_tmp_dir("heal-wrong-exit");
+        let marker = dir.join(".hermes-update-in-progress");
+        std::fs::write(&marker, format!("{}\n123\n", std::process::id())).unwrap();
+
+        for code in [Some(0), Some(1), Some(3), None] {
+            assert!(
+                !should_heal_self_marker_refusal(code, &marker),
+                "heal is exit-2-only; exit {code:?} must keep its normal path"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn heal_end_to_end_marker_lifecycle() {
+        // The full deadlock-and-heal sequence with a REAL marker guard, as
+        // run_update executes it: acquire (marker written with our pid) →
+        // child exits 2 refusing our own claim → heal decision fires →
+        // complete() drops the claim → the retry's precondition (no marker,
+        // or a marker the child can now claim) holds.
+        let dir = unique_tmp_dir("heal-e2e");
+        let marker = dir.join(".hermes-update-in-progress");
+
+        let guard = UpdateMarkerGuard::acquire(marker.clone())
+            .unwrap_or_else(|_| panic!("no live owner => acquire must succeed"));
+        assert!(marker.exists(), "updater holds the marker during the child run");
+
+        // Stale child refused over our claim:
+        assert!(should_heal_self_marker_refusal(
+            Some(UPDATE_EXIT_CONCURRENT),
+            &marker
+        ));
+
+        // The heal drops the claim exactly as run_update does:
+        guard.complete();
+        assert!(
+            !marker.exists(),
+            "claim dropped — the one retry now runs with the marker absent"
+        );
+
+        // And with the marker gone the heal can never fire twice (the retry's
+        // own exit 2, e.g. a genuinely still-running Hermes, stays terminal).
+        assert!(!should_heal_self_marker_refusal(
+            Some(UPDATE_EXIT_CONCURRENT),
+            &marker
+        ));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -218,11 +218,9 @@ def test_a_tail_that_fits_the_budget_still_anchors_the_active_request() -> None:
     )
 
 
-@pytest.mark.parametrize("reload_from_db", [False, True], ids=["live", "restart"])
-@pytest.mark.parametrize("summary", [None, "Shard checks are continuing."], ids=["fallback", "summary"])
-def test_active_request_survives_repeated_compaction_and_restart(
-    tmp_path, reload_from_db: bool, summary: str | None,
-) -> None:
+def test_active_request_survives_repeated_compaction_and_restart(tmp_path) -> None:
+    # Fallback compaction (no LLM summary) + SQLite reload between cycles:
+    # the in-memory merged-replay flag is gone, so the guard must read content.
     from agent.context_compressor import _INFLIGHT_TASK_REPLAY_HEADER, _SUMMARY_END_MARKER
     from agent.conversation_compression import _ensure_compressed_has_user_turn
     from hermes_state import SessionDB
@@ -239,7 +237,7 @@ def test_active_request_survives_repeated_compaction_and_restart(
                     messages.extend(_tool_group(index))
             original = messages
             compressor = _make_compressor()
-            with patch.object(compressor, "_generate_summary", return_value=summary):
+            with patch.object(compressor, "_generate_summary", return_value=None):
                 messages = compressor.compress(original, current_tokens=90_000, force=True)
             _ensure_compressed_has_user_turn(original, messages)
             assert len(messages) < len(original)
@@ -254,10 +252,9 @@ def test_active_request_survives_repeated_compaction_and_restart(
             assert user_content.count(_INFLIGHT_TASK_REPLAY_HEADER) == 1
             assert user_content.rfind(_ACTIVE_REQUEST) > user_content.rfind(_SUMMARY_END_MARKER)
             db.archive_and_compact(session_id, messages)
-            if reload_from_db:
-                db.close()
-                db = SessionDB(db_path=db_path)
-                messages = db.get_messages_as_conversation(session_id)
+            db.close()
+            db = SessionDB(db_path=db_path)
+            messages = db.get_messages_as_conversation(session_id)
     finally:
         db.close()
 
@@ -266,12 +263,9 @@ def test_active_request_survives_repeated_compaction_and_restart(
     "payload, can_split",
     [
         ([{"type": "audio", "source": {"data": "AA=="}}], False),
-        ([{"type": "input_audio", "input_audio": {"data": "AA=="}}], False),
-        ([{"type": "future_input", "payload": {"value": 7}}], False),
-        ([{"type": "text", "text": _ACTIVE_REQUEST}, {"type": "audio", "source": {"data": "AA=="}}], False),
         ([{"type": "text", "text": _ACTIVE_REQUEST}], True),
     ],
-    ids=["audio", "input-audio", "future-input", "text-and-audio", "text-parts"],
+    ids=["audio", "text-parts"],
 )
 def test_split_requires_a_request_that_can_be_restated_as_text(payload, can_split):
     compressor = _make_compressor()

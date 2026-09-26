@@ -511,6 +511,7 @@ import {
 } from './updater'
 import {
   observeUpdaterHandoff,
+  resolveInstallationLauncher,
   resolveStagedUpdaterBinary,
   resolveVenvDir,
   spawnUpdaterProcess,
@@ -3529,8 +3530,26 @@ function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
         return
       }
 
+      // PM-managed checkouts carry no venv of their own: the installation
+      // launcher owns interpreter and generation selection there — same
+      // contract as readSourceUpdate and the hand-off script.
+      const managed: boolean = directoryExists(path.join(root, 'pm'))
+      const launcher: string | null = managed
+        ? resolveInstallationLauncher(root, IS_WINDOWS, HERMES_HOME)
+        : null
+
+      if (managed && !launcher) {
+        const message =
+          `state.db pre-flight failed: the installation launcher under ${root} is missing. ` +
+          'Update cancelled before backend shutdown. Repair this installation before retrying.'
+
+        log(`[updates] ${message}`)
+        throw new Error(message)
+      }
+
       preflightStateDb({
-        python: await findPythonForRoot(root),
+        python: managed ? null : await findPythonForRoot(root),
+        launcher,
         script: path.join(root, 'hermes_cli', 'backup_sqlite.py'),
         home,
         log

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import time
 
 import pytest
@@ -24,6 +25,16 @@ def _compression_parent(db: SessionDB, session_id: str = "parent") -> None:
     db.end_session(session_id, "compression")
 
 
+def _set_raw_model_config(db: SessionDB, session_id: str, value) -> None:
+    with db._lock:
+        assert db._conn is not None
+        db._conn.execute(
+            "UPDATE sessions SET model_config = ? WHERE id = ?",
+            (value, session_id),
+        )
+        db._conn.commit()
+
+
 def test_find_live_compression_child_returns_unique_direct_child(db: SessionDB) -> None:
     _compression_parent(db)
     db.create_session("child", source="webui", parent_session_id="parent")
@@ -34,6 +45,244 @@ def test_find_live_compression_child_returns_unique_direct_child(db: SessionDB) 
     assert child["id"] == "child"
     assert child["parent_session_id"] == "parent"
     assert child["ended_at"] is None
+
+
+def test_find_live_compression_child_follows_multi_hop_chain(db: SessionDB) -> None:
+    _compression_parent(db)
+    parent = "parent"
+    for child in ("child-1", "child-2"):
+        db.create_session(child, source="webui", parent_session_id=parent)
+        db.end_session(child, "compression")
+        parent = child
+    db.create_session("live-tip", source="webui", parent_session_id=parent)
+
+    child = db.find_live_compression_child("parent")
+
+    assert child is not None
+    assert child["id"] == "live-tip"
+    assert child["parent_session_id"] == "child-2"
+
+
+def test_find_live_compression_child_rejects_fork_at_any_hop(db: SessionDB) -> None:
+    _compression_parent(db)
+    db.create_session("rotated", source="webui", parent_session_id="parent")
+    db.end_session("rotated", "compression")
+    db.create_session("tip-a", source="webui", parent_session_id="rotated")
+    db.create_session("tip-b", source="webui", parent_session_id="rotated")
+
+    assert db.find_live_compression_child("parent") is None
+
+
+def test_find_live_compression_child_rejects_cycle(db: SessionDB) -> None:
+    _compression_parent(db)
+    db.create_session("child", source="webui", parent_session_id="parent")
+    db.end_session("child", "compression")
+
+    def _close_cycle(conn) -> None:
+        conn.execute(
+            "UPDATE sessions SET parent_session_id = ? WHERE id = ?",
+            ("child", "parent"),
+        )
+
+    db._execute_write(_close_cycle)
+
+    assert db.find_live_compression_child("parent") is None
+
+
+def test_find_live_compression_child_has_no_shallow_depth_cap(db: SessionDB) -> None:
+    _compression_parent(db)
+    parent = "parent"
+    for index in range(128):
+        child = f"compressed-{index}"
+        db.create_session(child, source="webui", parent_session_id=parent)
+        db.end_session(child, "compression")
+        parent = child
+    db.create_session("deep-live-tip", source="webui", parent_session_id=parent)
+
+    child = db.find_live_compression_child("parent")
+
+    assert child is not None
+    assert child["id"] == "deep-live-tip"
+
+
+def test_find_live_compression_child_counts_closed_canonical_sibling(
+    db: SessionDB,
+) -> None:
+    _compression_parent(db)
+    db.create_session("closed-sibling", source="webui", parent_session_id="parent")
+    db.end_session("closed-sibling", "agent_close")
+    db.create_session("live-child", source="webui", parent_session_id="parent")
+
+    assert db.find_live_compression_child("parent") is None
+
+
+def test_find_live_compression_child_rejects_live_intermediate(db: SessionDB) -> None:
+    _compression_parent(db)
+    db.create_session("live-intermediate", source="webui", parent_session_id="parent")
+    db.create_session(
+        "live-grandchild",
+        source="webui",
+        parent_session_id="live-intermediate",
+    )
+
+    assert db.find_live_compression_child("parent") is None
+
+
+@pytest.mark.parametrize(
+    ("ended_at", "end_reason"),
+    [
+        (None, "compression"),
+        (123.0, None),
+        (123.0, "agent_close"),
+    ],
+)
+def test_find_live_compression_child_rejects_incoherent_child_lifecycle(
+    db: SessionDB,
+    ended_at,
+    end_reason,
+) -> None:
+    _compression_parent(db)
+    db.create_session("incoherent", source="webui", parent_session_id="parent")
+    with db._lock:
+        assert db._conn is not None
+        db._conn.execute(
+            "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ?",
+            (ended_at, end_reason, "incoherent"),
+        )
+        db._conn.commit()
+
+    assert db.find_live_compression_child("parent") is None
+
+
+@pytest.mark.parametrize("raw_config", ["{not-json", "[]", "null"])
+def test_find_live_compression_child_rejects_malformed_metadata(
+    db: SessionDB,
+    raw_config: str,
+) -> None:
+    _compression_parent(db)
+    db.create_session("malformed", source="webui", parent_session_id="parent")
+    _set_raw_model_config(db, "malformed", raw_config)
+
+    assert db.find_live_compression_child("parent") is None
+
+
+def test_find_live_compression_child_rejects_nontext_metadata(db: SessionDB) -> None:
+    _compression_parent(db)
+    db.create_session("blob-config", source="webui", parent_session_id="parent")
+    _set_raw_model_config(db, "blob-config", b"{}")
+
+    assert db.find_live_compression_child("parent") is None
+
+
+@pytest.mark.parametrize("marker", ["_branched_from", "_delegate_from"])
+@pytest.mark.parametrize("value", [None, "", 7, "wrong-parent"])
+def test_find_live_compression_child_rejects_invalid_decoy_marker(
+    db: SessionDB,
+    marker: str,
+    value,
+) -> None:
+    _compression_parent(db)
+    db.create_session("canonical", source="webui", parent_session_id="parent")
+    db.create_session(
+        "invalid-decoy",
+        source="webui",
+        parent_session_id="parent",
+        model_config={marker: value},
+    )
+
+    assert db.find_live_compression_child("parent") is None
+
+
+def test_find_live_compression_child_rejects_duplicate_decoy_markers(
+    db: SessionDB,
+) -> None:
+    _compression_parent(db)
+    db.create_session("canonical", source="webui", parent_session_id="parent")
+    db.create_session(
+        "invalid-decoy",
+        source="webui",
+        parent_session_id="parent",
+        model_config={
+            "_branched_from": "parent",
+            "_delegate_from": "parent",
+        },
+    )
+
+    assert db.find_live_compression_child("parent") is None
+
+
+def test_find_live_compression_child_ignores_only_valid_leaf_decoys(
+    db: SessionDB,
+) -> None:
+    _compression_parent(db)
+    db.create_session("live-tip", source="webui", parent_session_id="parent")
+    db.create_session(
+        "branch",
+        source="webui",
+        parent_session_id="live-tip",
+        model_config={"_branched_from": "live-tip"},
+    )
+    db.create_session(
+        "delegate",
+        source="webui",
+        parent_session_id="live-tip",
+        model_config={"_delegate_from": "live-tip"},
+    )
+    db.create_session("tool-child", source="tool", parent_session_id="live-tip")
+    _set_raw_model_config(db, "tool-child", "{not-json")
+
+    child = db.find_live_compression_child("parent")
+
+    assert child is not None
+    assert child["id"] == "live-tip"
+
+
+def test_find_live_compression_child_holds_one_read_snapshot(
+    db: SessionDB,
+    monkeypatch,
+) -> None:
+    _compression_parent(db)
+    db.create_session("live-tip", source="webui", parent_session_id="parent")
+    assert db._conn is not None
+    with db._lock:
+        journal_mode = db._conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+    assert str(journal_mode).lower() == "wal"
+    writer = SessionDB(db_path=db.db_path)
+    inserted = False
+
+    def _insert_descendant_after_snapshot(sql: str) -> None:
+        nonlocal inserted
+        compact_sql = " ".join(sql.split())
+        if not inserted and "parent_session_id = 'parent'" in compact_sql:
+            inserted = True
+            writer.create_session(
+                "late-descendant",
+                source="webui",
+                parent_session_id="live-tip",
+            )
+
+    original_read_ctx = db._read_ctx
+
+    @contextmanager
+    def _traced_read_ctx():
+        with original_read_ctx() as conn:
+            assert conn is not None
+            conn.set_trace_callback(_insert_descendant_after_snapshot)
+            try:
+                yield conn
+            finally:
+                conn.set_trace_callback(None)
+
+    monkeypatch.setattr(db, "_read_ctx", _traced_read_ctx)
+    try:
+        child = db.find_live_compression_child("parent")
+    finally:
+        writer.close()
+
+    assert inserted is True
+    assert child is not None
+    assert child["id"] == "live-tip"
+    assert db.find_live_compression_child("parent") is None
 
 
 def test_find_live_compression_child_fails_closed_when_ambiguous(db: SessionDB) -> None:
@@ -118,22 +367,22 @@ def test_reopen_fails_closed_when_continuation_inherits_foreign_markers(
     assert parent["end_reason"] == "compression"
 
 
-def test_find_live_child_returns_continuation_with_foreign_markers(
+@pytest.mark.parametrize("marker", ["_branched_from", "_delegate_from"])
+def test_find_live_child_rejects_wrong_parent_marker(
     db: SessionDB,
+    marker: str,
 ) -> None:
-    """Adoption-side twin of the reopen test above: the continuation that
-    inherited a foreign ``_delegate_from`` must still be adoptable."""
+    """Conservative stale-writer adoption must not reinterpret a marker that
+    points elsewhere; only a marker bound to the direct parent is a decoy."""
     _compression_parent(db, "delegate-session-2")
     db.create_session(
-        "inherited-continuation",
+        "wrong-parent-marker",
         source="subagent",
         parent_session_id="delegate-session-2",
-        model_config={"_delegate_from": "some-original-parent"},
+        model_config={marker: "some-original-parent"},
     )
 
-    child = db.find_live_compression_child("delegate-session-2")
-    assert child is not None
-    assert child["id"] == "inherited-continuation"
+    assert db.find_live_compression_child("delegate-session-2") is None
 
 
 def test_compression_lineage_includes_continuation_with_foreign_markers(

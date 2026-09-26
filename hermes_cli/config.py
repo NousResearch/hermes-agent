@@ -2284,6 +2284,21 @@ def _load_config_cache_hit(path_key: str, cache_sig: Any) -> Optional[Dict[str, 
     return None
 
 
+_MEMORY_SCHEMA_KEYS = frozenset((DEFAULT_CONFIG.get("memory") or {}).keys())
+
+
+def _unsupported_memory_keys(user_config: Dict[str, Any]) -> List[str]:
+    """#124038: schema-undeclared ``memory.<key>`` segments (e.g. ``memory.hindsight``) are
+    ignored by Hermes — memory-provider plugins (catalog-installed ones like hindsight) read
+    their OWN configuration (e.g. ``$HERMES_HOME/hindsight/config.json``), never config.yaml.
+    Returns the offending dotted keys so the loader can warn once per load instead of leaving
+    the user's edit silently ineffective."""
+    mem = user_config.get("memory")
+    if not isinstance(mem, dict):
+        return []
+    return sorted(f"memory.{k}" for k in mem if k not in _MEMORY_SCHEMA_KEYS)
+
+
 def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
     # Lock-free fast path for cache hits — same publication contract as `_read_raw_config_impl`
     # above (whole-tuple replace, `_CONFIG_LOCK` only serializes rebuilds and writers). A hit costs
@@ -2327,6 +2342,17 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                         agent_user_config["max_turns"] = user_config["max_turns"]
                     user_config["agent"] = agent_user_config
                     user_config.pop("max_turns", None)
+
+                _unsupported = _unsupported_memory_keys(user_config)
+                if _unsupported:
+                    # #124038: warn once per (re)load — the merged config silently
+                    # drops these keys and provider plugins read their own config,
+                    # so the user's edit would otherwise be silently ineffective.
+                    logger.warning(
+                        "config.yaml keys are not Hermes memory settings and will be ignored: %s "
+                        "(memory-provider plugins like hindsight read their own configuration, e.g. "
+                        "$HERMES_HOME/hindsight/config.json, not config.yaml)",
+                        ", ".join(_unsupported))
 
                 config = _deep_merge(config, user_config)
                 # A copy of the file that just parsed is what a FRESH process falls back to when the

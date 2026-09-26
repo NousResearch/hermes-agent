@@ -168,16 +168,17 @@ def test_merge_does_not_mutate_caller_list(hermes_env):
 
 
 def test_corrupt_disk_file_does_not_break_save(hermes_env):
-    """A corrupt jobs.json under a save must not recurse or crash: the
-    non-repairing peek returns None and the save overwrites cleanly."""
+    """A corrupt jobs.json must stay intact for manual recovery, not be overwritten."""
     import cron.jobs as jobs
-    from cron.jobs import load_jobs, save_jobs
+    from cron.jobs import save_jobs
 
     jobs.ensure_dirs()
     jobs_file = jobs._current_cron_store().jobs_file
     jobs_file.write_text('{"jobs": [{"id": "ccc', encoding="utf-8")
-    save_jobs([{"id": "aaaaaaaaaaaa", "name": "a"}])
-    assert [j["id"] for j in load_jobs()] == ["aaaaaaaaaaaa"]
+    with pytest.raises(RuntimeError, match="corrupt"):
+        save_jobs([{"id": "aaaaaaaaaaaa", "name": "a"}])
+    assert jobs_file.read_text(encoding="utf-8") == '{"jobs": [{"id": "ccc'
+    assert jobs_file.with_name("jobs.json.corrupt").read_bytes() == jobs_file.read_bytes()
 
 
 def test_nested_create_survives_outer_stale_save(hermes_env):

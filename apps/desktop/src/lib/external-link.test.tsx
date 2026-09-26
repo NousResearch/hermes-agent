@@ -70,12 +70,15 @@ describe('external link helpers', () => {
     ).toBe('From Fajardo Icacos Island Full Day Catamaran Trip')
   })
 
-  // Regression for #121321: separator-less slug tokens are case-sensitive
-  // identifiers (release tags, filenames). Title-casing them invented a
-  // different identifier (`V1.0.1`, `README.Md`) than the one authored.
-  it('keeps the exact casing of separator-less slug tokens', () => {
+  // Regression for #121321: a separator-less slug token that looks like a
+  // case-sensitive identifier (a digit, a dot, or mixed case — release
+  // tags, filenames) must keep its exact casing; title-casing it invented a
+  // different identifier (`V1.0.1`, `README.Md`) than the one authored. A
+  // plain lowercase word token is not an identifier and still title-cases.
+  it('keeps identifier casing in separator-less slug tokens but still title-cases words', () => {
     expect(urlSlugTitleLabel('https://example.com/releases/tag/v1.0.1')).toBe('v1.0.1')
     expect(urlSlugTitleLabel('https://example.com/repository/blob/main/README.md')).toBe('README.md')
+    expect(urlSlugTitleLabel('https://example.com/p/quantumcomputing')).toBe('Quantumcomputing')
   })
 
   it('filters out local/non-http targets for title fetches', () => {

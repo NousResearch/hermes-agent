@@ -74,8 +74,8 @@ export function SearchField({
           ? 'w-full gap-2 rounded-full border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3.5 py-2 hover:border-(--ui-stroke-secondary) focus-within:border-(--ui-stroke-secondary)'
           : cn(
               'border-b border-transparent px-0.5',
-              // Recede until the user reaches for it.
-              !value && 'opacity-30 focus-within:opacity-100'
+              // Recede until the user reaches for it — but stay discoverable.
+              !value && 'opacity-40 focus-within:opacity-100'
             ),
         containerClassName
       )}

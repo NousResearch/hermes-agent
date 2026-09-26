@@ -79,6 +79,83 @@ def is_supported_host() -> bool:
     return sys.platform.startswith("linux")
 
 
+def remote_endpoint() -> Optional[tuple[str, int]]:
+    """Resolve this profile's Screen endpoint without including credentials in diagnostics."""
+    import ipaddress
+    from hermes_cli.config import load_config_readonly
+    cfg = load_config_readonly().get("bot_desktop") or {}
+    raw = cfg.get("remote_endpoint", "")
+    if not raw:
+        return None
+    if not isinstance(raw, str):
+        raise ValueError("bot_desktop.remote_endpoint must be host:port")
+    raw = raw.strip()
+    if raw.startswith("["):
+        host, sep, port = raw[1:].partition("]:")
+    else:
+        host, sep, port = raw.partition(":")
+    if (not sep or not host or any(c.isspace() for c in host)
+            or any(c in host for c in "/@[]") or len(port) > 5 or not port.isascii() or not port.isdecimal()
+            or not 1 <= int(port) <= 65535):
+        raise ValueError("bot_desktop.remote_endpoint must be host:port with port 1..65535")
+    # No DNS here: this runs on the bridge's event loop and on every status/idle tick. A name that
+    # resolves to loopback is caught on the dialed peer by validate_remote_peer().
+    try:
+        addresses = [ipaddress.ip_address(host.split("%")[0])]
+    except ValueError:
+        addresses = []
+    addresses = [getattr(a, "ipv4_mapped", None) or a for a in addresses]
+    loopback = host.rstrip(".").lower() == "localhost" or any(
+        a.is_loopback or a.is_unspecified for a in addresses)
+    if loopback and not cfg.get("remote_allow_loopback", False):
+        raise ValueError("loopback remote_endpoint requires bot_desktop.remote_allow_loopback")
+    return host, int(port)
+
+
+def remote_password() -> str:
+    from agent.secret_scope import get_secret
+    from hermes_cli.config import load_config_readonly
+    secret = get_secret("HERMES_BOT_DESKTOP_REMOTE_PASSWORD")
+    if secret is not None:
+        return secret
+    return str((load_config_readonly().get("bot_desktop") or {}).get("remote_password") or "")
+
+
+_warned_remote: set[tuple[str, str]] = set()
+
+
+def validate_remote_peer(address: str) -> None:
+    """Classify the actual dialed peer, including RFC 6598 tailnet addresses."""
+    import ipaddress
+    from hermes_cli.config import load_config_readonly
+    from hermes_constants import hermes_home_key
+    cfg = load_config_readonly().get("bot_desktop") or {}
+    ip = ipaddress.ip_address(address.split("%")[0])
+    ip = getattr(ip, "ipv4_mapped", None) or ip
+    if ip.is_loopback and not cfg.get("remote_allow_loopback", False):
+        raise ValueError("loopback remote_endpoint requires bot_desktop.remote_allow_loopback")
+    if not cfg.get("remote_warn_public", True):
+        return
+    if ip.is_private or ip.is_loopback or ip in ipaddress.ip_network("100.64.0.0/10"):
+        return
+    key = (hermes_home_key(), address)
+    if key not in _warned_remote:
+        _warned_remote.add(key)
+        logger.warning("Bot Desktop remote RFB is unencrypted on a public address; use a trusted VPN or tunnel")
+
+
+def _remote_configured() -> bool:
+    """A remote endpoint is set, valid or not: the local screen must neither auto-start nor idle-stop,
+    and a typo must not raise out of the idle ticker."""
+    from hermes_cli.config import load_config_readonly
+    return bool((load_config_readonly().get("bot_desktop") or {}).get("remote_endpoint"))
+
+
+def refuse_remote_management() -> None:
+    if remote_endpoint() is not None:
+        raise RuntimeError("a remote screen is attached; manage start, stop and installation on its host")
+
+
 def missing_binaries() -> list[str]:
     return [b for b in REQUIRED_BINARIES if shutil.which(b) is None]
 
@@ -144,6 +221,7 @@ class DesktopStatus:
     blocker: Optional[str] = None  # why start() would refuse right now (memory); None = may start
     memory_available_mb: Optional[int] = None
     memory_limit_mb: Optional[int] = None
+    remote: Optional[str] = None
 
     def as_dict(self) -> Dict[str, object]:
         return dict(self.__dict__)
@@ -370,6 +448,8 @@ def ensure_started_for_tool() -> None:
 
 
 def _should_auto_start(env: Dict[str, str]) -> bool:
+    if _remote_configured():
+        return False
     if not is_supported_host() or env.get("DISPLAY") or env.get("WAYLAND_DISPLAY"):
         return False
     if missing_binaries():
@@ -420,6 +500,8 @@ def idle_stop_seconds() -> float:
 def stop_if_idle() -> bool:
     """Stop this profile's screen when it has been idle past the limit and no human holds it. True when
     it was stopped."""
+    if _remote_configured():
+        return False
     limit = idle_stop_seconds()
     if limit <= 0 or _launcher_pid() is None:
         return False
@@ -462,6 +544,13 @@ def geometry() -> str:
 def status(profile: Optional[str] = None) -> DesktopStatus:
     from tools.bot_desktop import browser as _bd_browser
     from tools.bot_desktop import resources
+    endpoint = remote_endpoint()
+    if endpoint is not None:
+        host, port = endpoint
+        label = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+        return DesktopStatus(profile=profile or _profile_name(), supported=True, installed=True,
+                             missing=[], running=True, pid=None, display=None, socket=None,
+                             geometry=geometry(), install_command=None, browser=None, remote=label)
     missing: list[str] = missing_binaries() if is_supported_host() else list(REQUIRED_BINARIES)
     pid = _launcher_pid()
     env = published_env()
@@ -509,6 +598,7 @@ def start(*, wait_seconds: float = 15.0) -> DesktopStatus:
     display-allocation lock, held only until this Xvnc has written ``/tmp/.X<n>-lock`` (a second profile
     picking the same number before that would fail and its stale-lock cleanup could remove our socket).
     Holding it for the whole Xfce bring-up serialized every profile's start behind one desktop launch."""
+    refuse_remote_management()
     if not is_supported_host():
         raise RuntimeError("Bot Desktop runs on Linux gateway hosts only")
     missing = missing_binaries()

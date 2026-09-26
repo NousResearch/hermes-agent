@@ -12392,6 +12392,18 @@
             "default": null,
             "title": "Socket"
           },
+          "remote": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Remote"
+          },
           "geometry": {
             "title": "Geometry",
             "type": "string"
@@ -12555,6 +12567,18 @@
             "default": null,
             "title": "Socket"
           },
+          "remote": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Remote"
+          },
           "geometry": {
             "title": "Geometry",
             "type": "string"
@@ -12701,6 +12725,18 @@
             ],
             "default": null,
             "title": "Socket"
+          },
+          "remote": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Remote"
           },
           "geometry": {
             "title": "Geometry",
@@ -12879,6 +12915,18 @@
             ],
             "default": null,
             "title": "Socket"
+          },
+          "remote": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Remote"
           },
           "geometry": {
             "title": "Geometry",

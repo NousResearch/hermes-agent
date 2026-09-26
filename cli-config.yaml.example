@@ -2287,3 +2287,11 @@ updates:
 #   # This runs ONCE per process at startup, so it cannot replace a credential
 #   # that expires mid-session. For a single provider whose token needs
 #   # re-minting during a session, use `providers.<name>.key_cmd` instead.
+
+# Screen pane remote RFB (empty endpoint keeps the local Linux Xvnc screen).
+# This changes the viewer transport, not computer_use's driving transport.
+bot_desktop:
+  remote_endpoint: ""           # host:port, or [IPv6]:port
+  remote_password: ""           # HERMES_BOT_DESKTOP_REMOTE_PASSWORD in .env takes precedence
+  remote_allow_loopback: false   # Opt in for SSH-forwarded ports
+  remote_warn_public: true       # Unencrypted RFB: prefer a trusted VPN or tailnet

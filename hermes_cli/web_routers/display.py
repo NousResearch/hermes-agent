@@ -95,18 +95,37 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
     from hermes_constants import hermes_home_key
     from tools.bot_desktop import lease as _lease
     from tools.bot_desktop.rfb_filter import RfbClientFilter
+    from tools.bot_desktop import runtime
+    from tools.bot_desktop.rfb_auth import authenticate, ViewerHandshake
+    from tui_gateway.server import _launch_home, _session_profile_runtime_scope
     from pathlib import Path
 
     sock = Path(info["hermes_home"]) / "bot-desktop" / "rfb.sock"
     profile_home = str(info["hermes_home"])
     profile_key = hermes_home_key(profile_home)
+    # The launch profile's scope includes env-only secrets, including under multiplexing.
+    scope = {"profile_home": None if profile_key == hermes_home_key(_launch_home()) else profile_home}
     viewer_id = str(info.get("viewer_id") or info.get("user_id") or "viewer")
-    if not sock.exists():
+    try:
+        with _session_profile_runtime_scope(scope):
+            endpoint = runtime.remote_endpoint()
+            password = runtime.remote_password() if endpoint else ""
+    except (ValueError, RuntimeError):
+        await ws.close(code=_CLOSE_DESKTOP_GONE, reason="invalid remote screen configuration")
+        return
+    if endpoint is None and not sock.exists():
         await ws.close(code=_CLOSE_DESKTOP_GONE, reason="Bot Desktop is not running")
         return
     try:
-        reader, writer = await asyncio.open_unix_connection(str(sock))
-    except OSError as exc:
+        if endpoint is not None:
+            sock.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            reader, writer = await asyncio.wait_for(asyncio.open_connection(*endpoint), 10.0)
+        else:
+            reader, writer = await asyncio.open_unix_connection(str(sock))
+    except (OSError, TimeoutError) as exc:
+        if endpoint is not None:
+            await ws.close(code=_CLOSE_DESKTOP_GONE, reason="remote screen unreachable")
+            return
         _log.warning("display ws: cannot reach RFB socket %s: %s", sock, exc)
         await ws.close(code=_CLOSE_DESKTOP_GONE, reason="Bot Desktop socket unreachable")
         return
@@ -138,7 +157,10 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
             loop.call_soon_threadsafe(evicted.set)
     unsubscribe = _lease.on_change(_on_lease)
 
-    rfb_filter = RfbClientFilter(_may_send_input)
+    rfb_filter = (RfbClientFilter(_may_send_input, authenticated=True) if endpoint
+                  else RfbClientFilter(_may_send_input))
+    authenticated = asyncio.Event()
+    viewer_handshake = ViewerHandshake() if endpoint else None
 
     viewer_closed = asyncio.Event()
     activity_file = Path(profile_home) / "bot-desktop" / "activity"
@@ -155,6 +177,17 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
             pass
 
     async def rfb_to_ws() -> None:
+        if endpoint is not None:
+            try:
+                with _session_profile_runtime_scope(scope, hydrate_secrets=False):
+                    runtime.validate_remote_peer(writer.get_extra_info("peername")[0])
+                await authenticate(reader, writer, password)
+                _stamp_activity()
+                await ws.send_bytes(viewer_handshake.greeting)
+                authenticated.set()
+            except (OSError, ValueError, TimeoutError, asyncio.IncompleteReadError):
+                await ws.close(code=_CLOSE_DESKTOP_GONE, reason="remote screen authentication failed")
+                return
         while True:
             chunk = await reader.read(_READ_CHUNK)
             if not chunk:
@@ -175,6 +208,11 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
                 await ws.close(code=_CLOSE_PROTOCOL, reason="RFB is binary")
                 return
             try:
+                if viewer_handshake is not None:
+                    await authenticated.wait()
+                    reply, data = viewer_handshake.feed(data)
+                    if reply:
+                        await ws.send_bytes(reply)
                 allowed = rfb_filter.feed(data)
             except ValueError as exc:
                 await ws.close(code=_CLOSE_PROTOCOL, reason=str(exc)[:100])

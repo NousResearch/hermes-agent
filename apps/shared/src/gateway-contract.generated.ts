@@ -1140,6 +1140,7 @@ export interface DisplayStatus {
   pid?: number | null
   display?: string | null
   socket?: string | null
+  remote?: string | null
   geometry: string
   install_command?: string | null
   browser?: string | null
@@ -1177,6 +1178,7 @@ export interface DisplayStopResult {
   pid?: number | null
   display?: string | null
   socket?: string | null
+  remote?: string | null
   geometry: string
   install_command?: string | null
   browser?: string | null
@@ -1200,6 +1202,7 @@ export interface DisplayObserveResult {
   pid?: number | null
   display?: string | null
   socket?: string | null
+  remote?: string | null
   geometry: string
   install_command?: string | null
   browser?: string | null
@@ -4278,6 +4281,7 @@ export interface DisplayStatusPayload {
   pid?: number | null
   display?: string | null
   socket?: string | null
+  remote?: string | null
   geometry: string
   install_command?: string | null
   browser?: string | null

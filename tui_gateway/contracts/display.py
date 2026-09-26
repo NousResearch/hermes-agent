@@ -45,6 +45,7 @@ class DisplayStatus(Result):
     pid: int | None = None
     display: str | None = None
     socket: str | None = None
+    remote: str | None = None
     geometry: str
     install_command: str | None = None
     browser: str | None = None

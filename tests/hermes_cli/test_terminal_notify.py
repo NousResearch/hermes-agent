@@ -34,6 +34,20 @@ def test_osc9_body_emitted_and_sanitized_only_when_flag_on(monkeypatch):
     assert _ring(monkeypatch, flag_on=False, env={}, context="approval") == ""
 
 
+def test_ghostty_gets_the_titled_osc777_instead_of_osc9(monkeypatch):
+    """Ghostty's OSC 9 has no title field, so it gets rxvt OSC 777 — and NOT both (it would notify twice)."""
+    out = _ring(monkeypatch, flag_on=True, env={"TERM_PROGRAM": "ghostty"}, context="approval",
+                detail="rm -rf build")
+    assert out == "\a\x1b]777;notify;Hermes;Hermes: approval\x07"
+    assert "\x1b]9;" not in out
+    # TERM=xterm-ghostty is the same terminal (TERM_PROGRAM is masked under tmux/screen).
+    assert _ring(monkeypatch, flag_on=True, env={"TERM": "xterm-ghostty"},
+                 context="approval") == "\a\x1b]777;notify;Hermes;Hermes: approval\x07"
+    # Semicolons are the field separator: they must not shift the body into the title.
+    assert _ring(monkeypatch, flag_on=True, env={"TERM_PROGRAM": "ghostty"},
+                 context="a;b") == "\a\x1b]777;notify;Hermes;Hermes: a,b\x07"
+
+
 def test_warp_osc777_only_under_supported_warp_build(monkeypatch):
     out = _ring(monkeypatch, flag_on=True, env=_WARP_OK, context="approval", detail="rm -rf build")
     prefix = "\x1b]777;notify;warp://cli-agent;"

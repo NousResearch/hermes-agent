@@ -111,6 +111,12 @@ class CLIChatTurnMixin:
                 # Per-prompt elapsed timer — frozen when the agent thread finishes.
                 self._prompt_start_time = time.time()
                 self._prompt_duration = 0.0
+                # Tab indicators (title + progress bar): busy while the turn runs, reset to
+                # idle in the finally below. The agent-title hook relabels the tab once
+                # auto-titling lands (never steal another surface's hook).
+                if getattr(agent, "_on_session_title", None) is None:
+                    agent._on_session_title = self._on_session_title_changed
+                self._set_terminal_activity(True)
                 # Daemon: closing the terminal tab (SIGHUP) must not be kept alive by it.
                 agent_thread = threading.Thread(target=self._chat_run_agent, args=(turn, message), daemon=True)
                 agent_thread.start()
@@ -121,6 +127,7 @@ class CLIChatTurnMixin:
                 _cprint(f"Error: {e}")
                 return None
             finally:
+                self._set_terminal_activity(False)
                 self._chat_release_turn_audio(turn)
 
     def _chat_release_turn_audio(self, turn):

@@ -1511,14 +1511,28 @@ export function overlayConcurrentMessageChanges(
       const text = textWithoutReferenceLines(chatMessageText(current)).trim()
       const lastUser = overlaid.findLastIndex(message => message.role === 'user')
 
-      const committed = overlaid.some(
-        (message, index) =>
-          index > lastUser &&
-          message.role === 'assistant' &&
-          !baselineById.has(message.id) &&
-          !isLiveTailRow(message) &&
-          textWithoutReferenceLines(chatMessageText(message)).trim() === text
-      )
+      const committed = overlaid.some((message, index) => {
+        if (
+          !(index > lastUser) ||
+          message.role !== 'assistant' ||
+          baselineById.has(message.id) ||
+          isLiveTailRow(message)
+        ) {
+          return false
+        }
+
+        const candidate = textWithoutReferenceLines(chatMessageText(message)).trim()
+
+        // The committed row and the settled live row capture the same reply at
+        // two moments while it kept streaming, so neither side is guaranteed to
+        // be textually identical: accept either as a forward text-extension of
+        // the other, as removeRepresentedLocalLiveProjection does.
+        return (
+          candidate === text ||
+          isStrictAnswerTextExtension(candidate, text) ||
+          isStrictAnswerTextExtension(text, candidate)
+        )
+      })
 
       if (text && committed) {
         continue

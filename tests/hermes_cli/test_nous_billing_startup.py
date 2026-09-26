@@ -147,3 +147,67 @@ def test_interactive_cli_billing_startup(nous_login, monkeypatch, mode):
     if mode != "expired":
         assert load_pool("nous").entries()[0].last_status_at == stamp
 
+
+@pytest.mark.parametrize("mode", ["benched", "configured", "healthy", "expired", "no_fallback", "explicit_key", "explicit_endpoint", "explicit_both", "api_mode", "fallback_error"])
+def test_tui_billing_startup(nous_login, tmp_path, monkeypatch, mode):
+    from hermes_cli.auth import AuthError
+    from hermes_cli.config import atomic_config_write
+    from tui_gateway import server
+    import run_agent
+
+    pool, token = nous_login
+    if mode != "healthy":
+        pool.mark_exhausted_and_rotate(status_code=402, failure_reason="billing")
+    stamp = load_pool("nous").entries()[0].last_status_at
+    if mode == "expired":
+        now = time.time()
+        monkeypatch.setattr(time, "time", lambda: now + 3700)
+    config = {} if mode == "no_fallback" else fallback_config()
+    if mode == "fallback_error":
+        config = {"fallback_providers": [{"provider": "custom", "model": "fixture-model"}]}
+    config["model"] = {"provider": "nous", "default": "fixture-primary"}
+    atomic_config_write(tmp_path / "config.yaml", config)
+    monkeypatch.setenv("HERMES_IGNORE_RULES", "1")
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    class BuiltAgent:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(run_agent, "AIAgent", BuiltAgent)
+    overrides = {"model": "fixture-primary", "provider": "nous"}
+    if mode in {"explicit_key", "explicit_both"}:
+        overrides["api_key"] = "fixture-explicit-key"
+    if mode in {"explicit_endpoint", "explicit_both"}:
+        overrides["base_url"] = "http://127.0.0.1:9/explicit"
+    if mode == "api_mode":
+        overrides["api_mode"] = "fixture-explicit-mode"
+    def build():
+        return server._make_agent("fixture-sid", "fixture-key",
+                                  model_override=None if mode == "configured" else overrides,
+                                  context_cwd_is_launch_artifact=False)
+    if mode == "fallback_error":
+        with pytest.raises(AuthError) as exc:
+            build()
+        assert exc.value.code == "insufficient_credits"
+    else:
+        agent = build()
+        switched = mode in {"benched", "configured", "api_mode"}
+        expected = ("custom", "fixture-model") if switched else ("nous", "fixture-primary")
+        assert (agent.kwargs["provider"], agent.kwargs["model"]) == expected
+        assert "_fallback_notice" not in agent.kwargs
+        if switched:
+            assert agent.kwargs["api_key"] == "fixture-key"
+            assert agent.kwargs["base_url"] == "http://127.0.0.1:9/v1"
+            assert agent.kwargs["api_mode"] != "fixture-explicit-mode"
+            assert "nous/fixture-primary" in agent._pending_fallback_notice
+            assert "custom/fixture-model" in agent._pending_fallback_notice
+        else:
+            assert not hasattr(agent, "_pending_fallback_notice")
+            for key in ("api_key", "base_url"):
+                if key in overrides:
+                    assert agent.kwargs[key] == overrides[key]
+    if mode != "expired":
+        assert load_pool("nous").entries()[0].last_status_at == stamp
+

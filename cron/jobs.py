@@ -2496,16 +2496,19 @@ def mark_job_run(
                 return False
         now = _hermes_now().isoformat()
         extra = extra_fire.is_extra(job)  # read before the outcome clears the claim
-        held = extra_fire.held_markers(job) if extra else {}
+        # A run-now queued while this claimed fire ran is its own fire, not this one.
+        held = extra_fire.held_markers(job) if isinstance(job.get("fire_claim"), dict) else {}
         _record_run_outcome(job, success, error, delivery_error, status, now)
-        job.update(held)  # a run-now queued mid-run is its own fire, not this one
         if execution_id is not None:  # retire ids recovery can no longer replay; latest stays last
             from cron.scheduler_authority import replayable_completions as live
             job["canonical_completions"] = [*live(job_id, job.get("canonical_completions")), execution_id]
         if extra:  # a manual run: repeat budget and pending occurrence untouched
+            job.update(held)
             extra_fire.settle(job, now)
         else:
             _advance_after_run(job, now, ladder_rung=ladder_rung)
+            if held and not is_terminal_job(job):  # keep it queued; it saves the slot just computed
+                job.update(held, **{extra_fire.RESTORE_KEY: job["next_run_at"], "next_run_at": held["manual_run_at"]})
         from cron import quota_hold
         from cron.unreachable_retry import clear_state, plan_retry
 

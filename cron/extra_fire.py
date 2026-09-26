@@ -62,10 +62,11 @@ _MARKERS = ("manual_run_at", RESTORE_KEY, "manual_run_prompt")
 
 
 def held_markers(job: dict[str, Any]) -> dict[str, Any]:
-    """The run-now markers of a ``trigger_job`` that landed while this extra fire was in flight: the
-    claim popped RESTORE_KEY in its own save, so a ``queued`` job at completion was triggered
-    after the claim (``fire_claim.at`` cannot tell: the heartbeat refreshes it). That trigger is
-    its own run-now, so the caller puts these back after the outcome clears the markers."""
+    """The run-now markers of a ``trigger_job`` that landed while this fire was in flight: an extra
+    fire's claim popped RESTORE_KEY in its own save and a scheduled fire's claim never had it, so a
+    ``queued`` job at completion was triggered after the claim (``fire_claim.at`` cannot tell: the
+    heartbeat refreshes it). That trigger is its own run-now, so the caller puts these back after
+    the outcome clears the markers."""
     return {key: job[key] for key in _MARKERS if key in job} if queued(job) else {}
 
 

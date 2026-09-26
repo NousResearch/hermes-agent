@@ -59,9 +59,10 @@ _TELEGRAM_CONNECT_TIMEOUT_SECS_DEFAULT = 180.0
 _TELEGRAM_INITIAL_CONNECT_TIMEOUT_SECS_DEFAULT = 45.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 # Size of the pool that runs turn bodies (blocking agent work). ``None`` = unbounded: a turn body
-# holds its thread for the whole turn (every tool call blocks), so a finite pool silently queues
-# turns that were already accepted behind whichever bodies are running, with nothing in the logs.
-# Concurrency is bounded where turns are ADMITTED (``max_concurrent_sessions``), not here.
+# holds its thread for the whole turn (every tool call blocks), so a finite pool silently queued
+# already-accepted turns behind running ones. Actual bound: one live turn per session, plus turns
+# abandoned by the inactivity timeout (run_turn keeps no handle; their thread runs to completion).
+# ``max_concurrent_sessions`` is the only admission cap and is unset by default.
 _TURN_MAX_WORKERS = None
 # Size of the separate pool for best-effort session HOUSEKEEPING; why it is separate: _run_housekeeping_in_executor.
 _HOUSEKEEPING_MAX_WORKERS = 4

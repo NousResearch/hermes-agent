@@ -2115,7 +2115,8 @@ def _branch_live(rid, params: dict, session: dict, *, omit_messages: bool = Fals
                             profile_name=profile_name_for_home(home) or _current_profile_name(),
                             model=_session_default_model(session), copy_fields=_BRANCH_COPY_FIELDS,
                             title_source="user" if params.get("name") else "derived",
-                            user_id=_session_auth_user_id(session))
+                            user_id=_session_auth_user_id(session),
+                            compensate=True)
         except Exception as e:
             return _err(rid, 5008, f"branch failed: {e}")
     try:

@@ -12,7 +12,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agent.image_eviction_policy import outbound_image_retire_count
 from agent.anthropic_endpoints import (
-    _is_deepseek_anthropic_endpoint, _is_kimi_family_endpoint, _is_nous_portal_endpoint,
+    _is_deepseek_anthropic_endpoint, _is_github_copilot_anthropic_endpoint,
+    _is_kimi_family_endpoint, _is_nous_portal_endpoint,
     _is_third_party_anthropic_endpoint, _model_name_is_deepseek_thinking,
 )
 
@@ -571,10 +572,14 @@ def _manage_thinking_signatures(result: List[Dict[str, Any]], base_url: str | No
     (400 "Invalid signature in thinking block"), so on direct Anthropic only the LATEST assistant
     turn keeps signed blocks. Signatures are proprietary: third-party endpoints strip all thinking.
     Kimi replays as-is; DeepSeek needs unsigned blocks round-tripped but rejects signed ones. Nous
-    Portal proxies Claude with sticky sessions and validates the same signatures, so it takes the
+    Portal and GitHub Copilot proxy Claude and validate the same signatures, so both take the
     native path despite not being anthropic.com.
     """
-    is_third_party = _is_third_party_anthropic_endpoint(base_url) and not _is_nous_portal_endpoint(base_url)
+    is_third_party = (
+        _is_third_party_anthropic_endpoint(base_url)
+        and not _is_nous_portal_endpoint(base_url)
+        and not _is_github_copilot_anthropic_endpoint(base_url)
+    )
     is_kimi = _is_kimi_family_endpoint(base_url, model)
     is_deepseek = _is_deepseek_anthropic_endpoint(base_url) or (
         is_third_party and _model_name_is_deepseek_thinking(model)

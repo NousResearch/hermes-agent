@@ -1382,6 +1382,35 @@ class TestQuarantineBundleBinaryAssets:
             "assets/data/sample.wav", field_name="bundle file path", allow_nested=True
         ) == "assets/data/sample.wav"
 
+    @pytest.mark.parametrize("twin, original", [
+        ("skill.md", "SKILL.md"),                          # case twin of the bundle root
+        ("scripts/tidy.py", "scripts/Tidy.py"),            # case twin of a script
+        ("scripts/cafe\u0301.py", "scripts/caf\u00e9.py"),  # NFD twin of an NFC name
+        ("./SKILL.md", "SKILL.md"),                        # normalizes to the same path
+    ])
+    def test_quarantine_bundle_refuses_members_that_share_one_file(self, tmp_path, twin, original):
+        """Each quarantined file must hold the bytes of exactly one bundle member. Members that land
+        on one file on a case- or normalization-insensitive filesystem are refused on any OS."""
+        import tools.skills_hub as hub
+
+        hub_dir = tmp_path / "skills" / ".hub"
+        bundle = SkillBundle(
+            name="demo",
+            files={original: "---\nname: demo\n---\nshown\n", twin: "---\nname: demo\n---\nother\n"},
+            source="github", identifier="someone/skills/demo", trust_level="community",
+        )
+        with patch.object(hub, "SKILLS_DIR", tmp_path / "skills"), \
+             patch.object(hub, "HUB_DIR", hub_dir), \
+             patch.object(hub, "LOCK_FILE", hub_dir / "lock.json"), \
+             patch.object(hub, "QUARANTINE_DIR", hub_dir / "quarantine"), \
+             patch.object(hub, "AUDIT_LOG", hub_dir / "audit.log"), \
+             patch.object(hub, "TAPS_FILE", hub_dir / "taps.json"), \
+             patch.object(hub, "INDEX_CACHE_DIR", hub_dir / "index-cache"):
+            with pytest.raises(ValueError, match="Unsafe bundle file path"):
+                quarantine_bundle(bundle)
+
+        assert not (hub_dir / "quarantine" / "demo").exists()
+
 # ---------------------------------------------------------------------------
 # Install-path safety (lock-file → uninstall rmtree boundary)
 # ---------------------------------------------------------------------------

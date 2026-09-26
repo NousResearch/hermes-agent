@@ -612,7 +612,8 @@ def test_live_dm_runner_retry_never_reexecutes_failed_claim(tmp_path, monkeypatc
     monkeypatch.setenv("HERMES_HOME", str(home))
     owner = dict(profile_home=str(target), session_id="bot", lease_id="lease", live_session_id="live")
     monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: owner)
-    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0)
+    # The DM runner waits on _live_wait_budget(); _LOCAL_LIVE_WAIT_SECONDS is its test override.
+    monkeypatch.setattr(bot_mode_dm, "_LOCAL_LIVE_WAIT_SECONDS", 0)
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("must not launch a model turn"))
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("hello", encoding="utf-8")
@@ -1050,7 +1051,8 @@ def test_settled_live_wait_unlinks_the_intent_but_a_pending_one_keeps_it(tmp_pat
     dm_file.write_text("secret plaintext", encoding="utf-8")
     intent = tmp_path / "dm-x.txt.live.json"
     intent.write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0)
+    # The DM runner waits on _live_wait_budget(); _LOCAL_LIVE_WAIT_SECONDS is its test override.
+    monkeypatch.setattr(bot_mode_dm, "_LOCAL_LIVE_WAIT_SECONDS", 0)
 
     monkeypatch.setattr(live, "read_delivery_result", lambda home, did: {"status": "queued"})
     assert bot_mode_dm._wait_live_dm(str(tmp_path), "d1", dm_file=dm_file) == 0

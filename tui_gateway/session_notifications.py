@@ -601,7 +601,9 @@ def _notif_handle_ready(sid, session, events, emitted, registry, fmt, deferred, 
 
 def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
     """Run one durable envelope only after local FIFO/continuations yield the idle boundary."""
-    from tools.bot_live_delivery import claim_pending_delivery, complete_delivery, find_canonical_live_owner, has_mailbox
+    from tools.bot_live_delivery import (
+        adopt_orphaned_deliveries, claim_pending_delivery, complete_delivery, find_canonical_live_owner, has_mailbox,
+    )
 
     home = _session_home(session)
     # Most profiles never receive a delivery: without a mailbox there is nothing to claim, and the owner
@@ -621,6 +623,9 @@ def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
                 or owner.get("live_session_id") != sid
                 or owner.get("session_id") != session.get("session_key")):
             return False
+        # Envelopes a previous owner of this Bot Chat left queued when it closed are re-pinned to this
+        # owner (or retired), else they stay pinned to a dead lease forever.
+        adopt_orphaned_deliveries(home, owner, state=session)
         # The mailbox matches each envelope to this pinned lease/live id and compression lineage.
         claimed = claim_pending_delivery(home, owner)
         if claimed is None:

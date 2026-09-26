@@ -1940,6 +1940,11 @@ DEFAULT_CONFIG = {
         # before failing with a structured 'target_busy' error. Deliveries are serialized per
         # profile with a cross-process file lock.
         "turn_wait_seconds": 120,
+        # A local message_agent delivery runs in a detached runner that wakes the sender on exit,
+        # so it waits this long behind a busy recipient (and for a live Bot Chat owner's receipt)
+        # before failing 'target_busy'. Also the max age of a queued envelope that a new owner of
+        # the same Bot Chat may adopt after the previous owner closed.
+        "dm_queue_wait_seconds": 1800,
     },
     "code_execution": {  # execute_code settings (programmatic tool calls).
         # project = run in the session cwd with the active venv/conda python so project deps and

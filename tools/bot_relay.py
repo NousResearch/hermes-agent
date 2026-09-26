@@ -632,6 +632,32 @@ def turn_wait_seconds() -> float:
     return float(TURN_WAIT_SECONDS_FALLBACK) if val is None else max(0.0, float(val))
 
 
+DM_QUEUE_WAIT_SECONDS_FALLBACK = 1800
+
+
+def dm_queue_wait_seconds(profile_home: "str | Path | None" = None) -> float:
+    """How long a ``message_agent`` delivery waits behind a busy recipient (config
+    ``bot_mode.dm_queue_wait_seconds``). The delivery runner is a detached background process
+    that wakes its sender on exit, so it queues behind the recipient's running turn instead of
+    failing ``target_busy`` after the short relay budget (``turn_wait_seconds``), which stays
+    bounded by the Desktop relay deadline. The same budget caps how old a queued live-owner
+    envelope may be and still be adopted by a new owner of the same Bot Chat.
+
+    ``profile_home`` is the RECIPIENT's home: the queue belongs to it, and its live owner reads the
+    same value when it adopts, so the sender's runner must not answer with the sender's config."""
+    if profile_home:
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        token = set_hermes_home_override(profile_home)
+        try:
+            val = _bot_mode_cfg("dm_queue_wait_seconds", loader="load_config")
+        finally:
+            reset_hermes_home_override(token)
+    else:
+        val = _bot_mode_cfg("dm_queue_wait_seconds", loader="load_config")
+    return float(DM_QUEUE_WAIT_SECONDS_FALLBACK) if val is None else max(0.0, float(val))
+
+
 def turn_lock_path(root: Path | str, profile: str) -> Path:
     """Per-profile lockfile path (short — safe on macOS temp roots)."""
     safe = re.sub(r"[^a-zA-Z0-9_-]", "_", str(profile or ""))[:64] or "_"

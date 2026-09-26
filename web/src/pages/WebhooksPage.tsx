@@ -514,10 +514,7 @@ export default function WebhooksPage() {
               <div className="flex flex-col gap-1">
                 <span className="font-medium">{t.webhooks.receiverDisabled}</span>
                 <span className="text-muted-foreground">
-                  Webhooks are their own gateway platform. Enable them here to
-                  accept incoming HTTP events; chat channels are only needed
-                  when a subscription delivers to Telegram, Discord, Slack, or
-                  another channel.
+                  {t.webhooks.receiverDisabledHint}
                 </span>
               </div>
             </div>

@@ -139,7 +139,8 @@ class TestCommandHandler:
         assert res.agent_seed is None
         jobs = isolated_home.load_jobs()
         assert len(jobs) == 1
-        assert (jobs[0].get("schedule_display") or jobs[0].get("schedule")) == "30 7 * * *"
+        assert jobs[0]["schedule"]["expr"] == "30 7 * * *"
+        assert (jobs[0].get("schedule_display") or jobs[0].get("schedule")) == "At 7:30 AM, every day"
         assert jobs[0].get("deliver") == "telegram"
 
 

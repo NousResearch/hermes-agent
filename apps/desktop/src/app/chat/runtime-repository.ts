@@ -32,6 +32,15 @@ export function useRuntimeMessageRepository(messages: ChatMessage[]): ExportedMe
     const items: { message: ThreadMessage; parentId: string | null }[] = []
     const branchParentByGroup = new Map<string, string | null>()
     const seenIds = new Set<string>()
+    // Content-level dedup key for SETTLED messages only (#101938): after a
+    // context compression, the same logical message can reach this boundary
+    // twice with different ids (a streaming copy without a rowId and a
+    // rehydrated copy with one). The id-only gate above misses that collision
+    // and both render as visible duplicates. Keyed on role + normalized text
+    // + timestamp + first tool-call id — the same content identity the
+    // backend's get_messages dedup uses. Only timestamp-bearing rows
+    // participate, so an in-flight streaming message is never collapsed.
+    const seenContentKeys = new Set<string>()
     let visibleParentId: string | null = null
     let headId: string | null = null
 
@@ -43,6 +52,19 @@ export function useRuntimeMessageRepository(messages: ChatMessage[]): ExportedMe
       // later copy carries the same id, so it is the row we already rendered.
       if (seenIds.has(message.id)) {
         continue
+      }
+
+      if (message.timestamp !== undefined) {
+        const firstToolCallId = message.parts.find(p => p.type === 'tool-call')?.toolCallId ?? ''
+        const normalizedText = message.parts
+          .filter(p => p.type === 'text')
+          .map(p => p.text.trim())
+          .join(' ')
+        const contentKey = `${message.role}|${normalizedText}|${message.timestamp}|${firstToolCallId}`
+        if (seenContentKeys.has(contentKey)) {
+          continue
+        }
+        seenContentKeys.add(contentKey)
       }
 
       seenIds.add(message.id)

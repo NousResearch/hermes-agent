@@ -35,9 +35,12 @@ class AdmittingHandler(AsyncMock):
 class _FakeRegistry:
     """Return pre-canned sessions, then None once exhausted."""
 
-    def __init__(self, sessions, consumed=False):
+    def __init__(self, sessions, consumed=False, observed=None):
         self._sessions = list(sessions)
         self._consumed = consumed
+        # None -> mirror ``consumed`` so call sites that don't model the poll-observed
+        # distinction keep their previous behaviour.
+        self._observed = consumed if observed is None else observed
 
     def get(self, session_id):
         if self._sessions:
@@ -46,6 +49,9 @@ class _FakeRegistry:
 
     def is_completion_consumed(self, session_id):
         return self._consumed
+
+    def completion_already_observed(self, session_id):
+        return self._observed
 
 
 def _build_runner(monkeypatch, tmp_path, mode: str) -> GatewayRunner:
@@ -153,6 +159,69 @@ async def test_consumed_completion_skips_raw_notification(monkeypatch, tmp_path)
 
     adapter.send.assert_not_awaited()
     adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_poll_observed_completion_is_not_reinjected(monkeypatch, tmp_path):
+    """A poll() taken after the process exited already handed the agent the exit code and the
+    output tail, so the watcher must not inject a completion turn (or post a chat receipt) for
+    it. Before this the gateway watcher gated on ``is_completion_consumed`` alone, so a
+    supervised process always produced a stale completion notice right after the report the
+    agent had written about it."""
+    import tools.process_registry as pr_module
+
+    sessions = [SimpleNamespace(
+        output_buffer="done\n", exited=True, exit_code=0, command="echo done",
+    )]
+    monkeypatch.setattr(
+        pr_module, "process_registry", _FakeRegistry(sessions, consumed=False, observed=True)
+    )
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "concise")
+    runner._enqueue_process_completion_notification = AsyncMock(return_value=True)
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    watcher = _watcher_dict()
+    watcher["notify_on_complete"] = True
+    await runner._run_process_watcher(watcher)
+
+    # Neither the synthetic agent turn nor the raw chat notice.
+    runner._enqueue_process_completion_notification.assert_not_awaited()
+    adapter.send.assert_not_awaited()
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_failed_completion_delivery_is_retried_not_suppressed(monkeypatch, tmp_path):
+    """The observed-completion gate must not swallow a delivery that FAILED: the watcher keeps
+    retrying until the adapter admits the completion, so a retryable failure is never lost."""
+    import tools.process_registry as pr_module
+
+    sessions = [SimpleNamespace(
+        output_buffer="done\n", exited=True, exit_code=0, command="echo done",
+    ) for _ in range(3)]
+    # Nobody polled or waited on this process, so it is NOT already observed.
+    monkeypatch.setattr(
+        pr_module, "process_registry", _FakeRegistry(sessions, consumed=False, observed=False)
+    )
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "concise")
+    runner._enqueue_process_completion_notification = AsyncMock(
+        side_effect=[False, False, True])
+
+    watcher = _watcher_dict()
+    watcher["notify_on_complete"] = True
+    await runner._run_process_watcher(watcher)
+
+    assert runner._enqueue_process_completion_notification.await_count == 3
 
 
 @pytest.mark.asyncio

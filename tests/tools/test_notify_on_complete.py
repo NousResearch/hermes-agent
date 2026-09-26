@@ -240,23 +240,39 @@ class TestCompletionConsumed:
         assert registry.is_completion_consumed("proc_wait")
 
 
-    def test_poll_observed_does_not_suppress_gateway_watcher(self, registry):
-        """The gateway/tui watcher gate (is_completion_consumed) must stay False
-        after a read-only poll, so the autonomous delivery turn still fires
-        even though the CLI drain was deduped (#10156)."""
+    def test_poll_observed_completion_is_already_observed(self, registry):
+        """A poll() taken after the exit already returned the exit code and the output
+        tail, so every completion surface must treat that completion as known (#94455).
+        The gateway/TUI watchers used to gate on ``is_completion_consumed`` alone
+        (#10156), so a supervised process the agent had just polled — and already
+        reported in its turn — was announced again as a fresh completion turn.
+        ``_completion_consumed`` itself stays untouched: wait/log remain the only
+        "the output was read away" signal."""
         s = _make_session(sid="proc_gw", notify_on_complete=True, output="done")
         s.exited = True
         s.exit_code = 0
         registry._finished[s.id] = s
 
         registry.poll("proc_gw")
-        # The gateway watcher gate is untouched, so it still delivers.
+        assert "proc_gw" in registry._poll_observed
+        # Still not "consumed" (nothing read the output away this turn)…
         assert not registry.is_completion_consumed("proc_gw")
+        # …but every surface now agrees the agent already has this completion.
+        assert registry.completion_already_observed("proc_gw")
 
+    def test_running_poll_is_not_an_observed_completion(self, registry):
+        """A poll() on a still-running process defers to the exit: the completion is NOT
+        treated as observed, so the eventual exit is still announced."""
+        s = _make_session(sid="proc_run2", notify_on_complete=True, output="partial")
+        registry._running[s.id] = s
 
-    def test_wait_and_log_still_skip_cli_drain(self, registry):
-        """wait()/read_log() consume the output, so the CLI drain skips their
-        completions via _completion_consumed (the original #8228 contract)."""
+        registry.poll("proc_run2")
+        assert "proc_run2" not in registry._poll_observed
+        assert not registry.completion_already_observed("proc_run2")
+
+    def test_wait_and_log_are_observed_completions(self, registry):
+        """wait()/read_log() consume the output, so every surface — not just the CLI
+        drain — treats the completion as known (#8228)."""
         for sid, action in (("proc_w", "wait"), ("proc_l", "log")):
             s = _make_session(sid=sid, notify_on_complete=True, output="done")
             s.exited = True
@@ -268,7 +284,7 @@ class TestCompletionConsumed:
                 registry.wait(sid, timeout=1)
             else:
                 registry.read_log(sid)
-            assert registry.is_completion_consumed(sid)
+            assert registry.completion_already_observed(sid)
         assert registry.drain_notifications() == []
 
 

@@ -66,6 +66,7 @@ The install also ships `hermes-agent`, a minimal runner that sends one query and
 | `hermes migrate` | Diagnose and (optionally) rewrite `config.yaml` to replace references to retired models or deprecated settings (e.g. `migrate xai`). |
 | `hermes codex-runtime` | Noninteractive counterpart of `/codex-runtime`: `migrate [--dry-run] [--json]` regenerates the Hermes-managed block in `~/.codex/config.toml` for the selected profile. See [Codex app-server runtime](../user-guide/features/codex-app-server-runtime.md#running-the-migration-from-a-script). |
 | `hermes status` | Show agent, auth, and platform status. |
+| `hermes agents` | Monitor live delegated agents across all Hermes processes using the selected profile. |
 | `hermes usage` | Show the configured account's rate-limit windows (the `/usage` block) without a session; `--json` for scripts. |
 | `hermes cron` | Inspect and tick the cron scheduler. |
 | `hermes pause` / `hermes resume` | Global emergency stop: no new cron fires (built-in ticker, managed-cron webhook, misfire catch-up), kanban dispatch or gateway turns start until resumed; in-flight work is never killed. |
@@ -749,6 +750,26 @@ hermes status [--all] [--deep]
 |--------|-------------|
 | `--all` | Show all details in a shareable redacted format. |
 | `--deep` | Run deeper checks that may take longer. |
+
+## `hermes agents`
+
+```bash
+hermes agents [--once | --json] [--interval <seconds>]
+```
+
+Shows live delegated children owned by every Hermes process sharing the selected
+profile. On an interactive terminal the table refreshes until `Ctrl+C`; redirected
+output automatically behaves like `--once`.
+
+| Option | Description |
+|--------|-------------|
+| `--once` | Render one human-readable table and exit. |
+| `--json` | Emit one JSON snapshot and exit. |
+| `--interval <seconds>` | Set the live refresh interval (default `1.5`, minimum `0.2`). |
+
+The command verifies the owner PID and process-start fingerprint and omits stale
+or legacy manifests whose owner cannot be proven live. It is read-only: steer and
+stop controls remain on the owning runtime's `/agents` surface.
 
 ## `hermes cron`
 

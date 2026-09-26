@@ -345,8 +345,9 @@ def _start_heartbeat(child: Any, parent_agent: Any, task_index: int) -> _Heartbe
     return _Heartbeat(child, parent_agent, task_index)
 
 def _register_child(
-    child: Any, parent_agent: Any, goal: str, *, owner_session_id: Optional[str], owner_transport: Any,
-    owner_session_record: Any,
+    child: Any, parent_agent: Any, goal: str, *,
+    owner_session_id: Optional[str], owner_transport: Any,
+    owner_session_record: Any, task_index: int = -1,
 ) -> Optional[str]:
     """Register the live child in the module registry; return its subagent_id. Test doubles without a stable string
     ``_subagent_id`` are not registered (None) and the caller skips every registry interaction for them."""
@@ -380,6 +381,14 @@ def _register_child(
         "owner_transport": owner_transport,
         "owner_session_record": owner_session_record,
     })
+    from tools.delegation_live_log import update_manifest_task
+    update_manifest_task(
+        _str_or_none(getattr(child, "_delegation_id", None)), task_index,
+        status="running", subagent_id=_subagent_id,
+        parent_id=_str_or_none(getattr(child, "_parent_subagent_id", None)),
+        depth=max(0, _raw_depth - 1) if isinstance(_raw_depth, int) else 0,
+        tool_count=0,
+    )
     return _subagent_id
 
 def _create_isolated_worktree(parent_agent: Any, parent_task_id: Any, subagent_id: Optional[str]):

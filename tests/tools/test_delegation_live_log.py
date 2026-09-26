@@ -10,7 +10,7 @@ Covers:
 """
 
 import json
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -18,6 +18,10 @@ from tools.delegation_live_log import (
     LiveTranscriptWriter,
     create_live_transcripts,
     live_transcript_root,
+    scan_live_delegations,
+    terminalize_manifest,
+    update_manifest_task,
+    update_manifest_statuses,
     wrap_progress_callback,
 )
 
@@ -265,6 +269,216 @@ def test_manifest_includes_model_and_provider():
     assert manifest["provider"] == "openrouter"
     # tasks array should not be affected
     assert len(manifest["tasks"]) == 2
+
+
+def test_manifest_v2_records_owner_and_relative_transcripts():
+    delegation_id, _writers, _paths = create_live_transcripts(
+        [{"goal": "inspect the parser"}],
+        model="openai/gpt-5",
+        provider="openai",
+        owner_session_id="session-parent",
+    )
+
+    manifest = json.loads(
+        (live_transcript_root() / delegation_id / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert manifest["schema_version"] == 2
+    assert manifest["owner"]["pid"] > 0
+    assert manifest["owner"]["started_at"] > 0
+    assert manifest["owner"]["session_id"] == "session-parent"
+    assert manifest["started_at"] > 0
+    assert manifest["updated_at"] >= manifest["started_at"]
+    assert manifest["tasks"][0]["status"] == "queued"
+    assert manifest["tasks"][0]["log"] == "task-0.log"
+
+
+def test_scan_live_delegations_returns_pid_verified_children(monkeypatch):
+    delegation_id, _writers, _paths = create_live_transcripts(
+        [{"goal": "inspect the parser"}], owner_session_id="session-parent"
+    )
+    manifest_path = live_transcript_root() / delegation_id / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["tasks"][0].update({
+        "status": "running",
+        "subagent_id": "sa-0-abcd",
+        "updated_at": manifest["updated_at"] + 1,
+        "tool_count": 2,
+        "last_tool": "read_file",
+    })
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    monkeypatch.setattr("tools.delegation_live_log._owner_is_live", lambda owner: True)
+    children = scan_live_delegations()
+
+    assert len(children) == 1
+    child = children[0]
+    assert child["delegation_id"] == delegation_id
+    assert child["subagent_id"] == "sa-0-abcd"
+    assert child["owner_session_id"] == "session-parent"
+    assert child["last_tool"] == "read_file"
+    assert child["transcript"] == str(
+        live_transcript_root() / delegation_id / "task-0.log"
+    )
+
+
+def test_scan_live_delegations_omits_dead_and_legacy_owners(monkeypatch):
+    delegation_id, _writers, _paths = create_live_transcripts([{"goal": "live?"}])
+    root = live_transcript_root()
+    monkeypatch.setattr("tools.delegation_live_log._owner_is_live", lambda owner: False)
+    assert scan_live_delegations() == []
+
+    legacy = root / "deleg_legacy"
+    legacy.mkdir(parents=True)
+    (legacy / "manifest.json").write_text(json.dumps({
+        "delegation_id": "deleg_legacy",
+        "tasks": [{"index": 0, "goal": "old", "status": "running"}],
+    }), encoding="utf-8")
+    assert scan_live_delegations() == []
+
+
+def test_scan_skips_symlink_escape_and_malformed_manifests(monkeypatch, tmp_path):
+    monkeypatch.setattr("tools.delegation_live_log._owner_is_live", lambda owner: True)
+    root = tmp_path / "live"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "task-0.log").write_text("private", encoding="utf-8")
+    (outside / "manifest.json").write_text(json.dumps({
+        "schema_version": 2,
+        "delegation_id": "deleg_outside",
+        "owner": {"pid": 1, "started_at": 1},
+        "tasks": [{"index": 0, "status": "running", "log": "task-0.log"}],
+    }), encoding="utf-8")
+    root.mkdir()
+    (root / "deleg_escape").symlink_to(outside, target_is_directory=True)
+    malformed = root / "deleg_malformed"
+    malformed.mkdir()
+    (malformed / "manifest.json").write_text(json.dumps({
+        "schema_version": 2,
+        "owner": {"pid": 1, "started_at": 1},
+        "tasks": None,
+    }), encoding="utf-8")
+
+    linked = root / "deleg_linked_manifest"
+    linked.mkdir()
+    (linked / "manifest.json").symlink_to(outside / "manifest.json")
+
+    assert scan_live_delegations(root) == []
+
+
+def test_update_manifest_task_publishes_running_and_terminal_state():
+    delegation_id, _writers, _paths = create_live_transcripts([{"goal": "work"}])
+
+    update_manifest_task(
+        delegation_id, 0, status="running", subagent_id="sa-0-live",
+        parent_id="sa-parent", depth=1, tool_count=3, last_tool="terminal",
+    )
+    manifest_path = live_transcript_root() / delegation_id / "manifest.json"
+    running = json.loads(manifest_path.read_text(encoding="utf-8"))["tasks"][0]
+    assert running["status"] == "running"
+    assert running["subagent_id"] == "sa-0-live"
+    assert running["parent_id"] == "sa-parent"
+    assert running["depth"] == 1
+    assert running["tool_count"] == 3
+    assert running["last_tool"] == "terminal"
+    assert running["started_at"] is not None
+
+    update_manifest_task(delegation_id, 0, status="completed")
+    completed = json.loads(manifest_path.read_text(encoding="utf-8"))["tasks"][0]
+    assert completed["status"] == "completed"
+    assert completed["updated_at"] >= running["updated_at"]
+
+
+def test_tool_start_publishes_activity_to_manifest():
+    delegation_id, writers, _paths = create_live_transcripts([{"goal": "work"}])
+    writer = writers[0]
+    assert writer is not None
+
+    writer.tool_start("read_file", "src/parser.py")
+
+    manifest_path = live_transcript_root() / delegation_id / "manifest.json"
+    task = json.loads(manifest_path.read_text(encoding="utf-8"))["tasks"][0]
+    assert task["tool_count"] == 1
+    assert task["last_tool"] == "read_file"
+
+
+def test_register_child_publishes_identity_to_manifest(monkeypatch):
+    from tools.delegate_tool_child_run import _register_child
+
+    child = MagicMock()
+    child._subagent_id = "sa-0-live"
+    child._parent_subagent_id = "sa-parent"
+    child._delegate_depth = 2
+    child._delegation_id = "deleg_abcd1234"
+    child.model = "openai/gpt-5"
+    child._parent_session_id = "parent-session"
+    parent = MagicMock(session_id="parent-session")
+    published = MagicMock()
+    monkeypatch.setattr("tools.delegation_live_log.update_manifest_task", published)
+
+    assert _register_child(
+        child, parent, "work", task_index=0, owner_session_id=None,
+        owner_transport=None, owner_session_record=None,
+    ) == "sa-0-live"
+
+    published.assert_called_once_with(
+        "deleg_abcd1234", 0, status="running", subagent_id="sa-0-live",
+        parent_id="sa-parent", depth=1, tool_count=0,
+    )
+
+
+def test_finished_child_publishes_terminal_state_immediately(monkeypatch):
+    from tools.delegate_tool_dispatch import _record_finished_child
+
+    batch = MagicMock(live_deleg_id="deleg_abcd1234", unit_id=None)
+    published = MagicMock()
+    monkeypatch.setattr("tools.delegation_live_log.update_manifest_task", published)
+
+    _record_finished_child(
+        batch, {"task_index": 1, "status": "failed", "exit_reason": "error"},
+        honor_parent_interrupt=True,
+    )
+
+    published.assert_called_once_with(
+        "deleg_abcd1234", 1, status="failed", exit_reason="error"
+    )
+
+
+def test_terminal_state_is_monotonic_and_dispatch_failure_hides_tasks():
+    delegation_id, _writers, _paths = create_live_transcripts([{"goal": "work"}])
+    update_manifest_task(delegation_id, 0, status="completed")
+    update_manifest_statuses(delegation_id, [{"task_index": 0, "status": "running"}])
+    manifest_path = live_transcript_root() / delegation_id / "manifest.json"
+    task = json.loads(manifest_path.read_text(encoding="utf-8"))["tasks"][0]
+    assert task["status"] == "completed"
+
+    other_id, _writers, _paths = create_live_transcripts([{"goal": "never built"}])
+    terminalize_manifest(other_id, status="failed", exit_reason="child_construction")
+    other_path = live_transcript_root() / other_id / "manifest.json"
+    other = json.loads(other_path.read_text(encoding="utf-8"))["tasks"][0]
+    assert other["status"] == "failed"
+    assert other["exit_reason"] == "child_construction"
+
+
+def test_child_construction_exception_terminalizes_manifest():
+    from tools.delegate_tool import delegate_task
+
+    parent = _make_parent()
+    with (
+        patch("tools.delegate_tool._load_config", return_value={"max_iterations": 10}),
+        patch("tools.delegate_tool._resolve_delegation_credentials", return_value=_CREDS),
+        patch("tools.delegate_tool._build_children", side_effect=RuntimeError("boom")),
+        patch("tools.delegation_live_log.terminalize_manifest") as terminalize,
+    ):
+        with pytest.raises(RuntimeError, match="boom"):
+            delegate_task(goal="work", parent_agent=parent)
+
+    terminalize.assert_called_once()
+    assert terminalize.call_args.kwargs == {
+        "status": "failed", "exit_reason": "child_construction",
+    }
 
 
 

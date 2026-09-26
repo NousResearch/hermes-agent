@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import threading
 import time
@@ -19,6 +20,8 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +38,8 @@ _KICKOFF_MAX = 500
 # event type arrives (or on completion); capped so a huge reply can't hold memory.
 _STREAM_BUFFER_FLUSH_CHARS = 4000
 _TIME_FMT = "%Y-%m-%d %H:%M:%S"
+_MANIFEST_LOCK = threading.RLock()
+_TERMINAL_STATUSES = {"completed", "failed", "error", "interrupted", "timed_out", "timeout", "unknown"}
 
 
 def live_transcript_root() -> Path:
@@ -77,7 +82,7 @@ def _joined(*parts: str) -> str:
 
 
 def _dump_json(path: Path, payload: Dict[str, Any]) -> None:
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_json_write(path, payload, ensure_ascii=False)
 
 
 class LiveTranscriptWriter:
@@ -92,6 +97,7 @@ class LiveTranscriptWriter:
         self._lock = threading.Lock()
         self._stream_buf: List[str] = []
         self._stream_len = 0
+        self._tool_count = 0
         self.path: Optional[Path] = None
         with _best_effort(f"init ({delegation_id} task {task_index})"):
             goal_line = _one_line(goal, _KICKOFF_MAX)
@@ -135,6 +141,11 @@ class LiveTranscriptWriter:
     def tool_start(self, name: str, args_preview: Any = None) -> None:
         self.flush_stream()
         self.event("tool", f"-> {name or '?'}({_one_line(args_preview, _ARGS_MAX)})")
+        self._tool_count += 1
+        update_manifest_task(
+            self.delegation_id, self.task_index,
+            tool_count=self._tool_count, last_tool=str(name or "?"),
+        )
 
     def tool_result(self, name: str, result: Any = None,
                     duration: Any = None, is_error: bool = False) -> None:
@@ -228,6 +239,7 @@ def create_live_transcripts(
     task_list: List[Dict[str, Any]], context: Optional[str] = None,
     delegation_id: Optional[str] = None, model: Optional[str] = None,
     provider: Optional[str] = None,
+    owner_session_id: Optional[str] = None,
 ) -> tuple[Optional[str], List[Optional[LiveTranscriptWriter]], List[str]]:
     """One pre-headered writer per task + a manifest.json; prunes stale dirs.
     Returns ``(delegation_id, writers, paths)``; on any top-level failure
@@ -243,7 +255,10 @@ def create_live_transcripts(
         paths: List[str] = [str(w.path) for w in made if w.path is not None]
         if not paths:
             return None, [None] * n, []
-        _write_manifest(deleg_id, task_list, paths, model=model, provider=provider)
+        _write_manifest(
+            deleg_id, task_list, paths, model=model, provider=provider,
+            owner_session_id=owner_session_id,
+        )
         return deleg_id, writers, paths
     return None, [None] * n, []
 
@@ -254,36 +269,211 @@ def _manifest_path(delegation_id: str) -> Path:
 
 def _write_manifest(delegation_id: str, task_list: List[Dict[str, Any]],
                     paths: List[str], model: Optional[str] = None,
-                    provider: Optional[str] = None) -> None:
+                    provider: Optional[str] = None,
+                    owner_session_id: Optional[str] = None) -> None:
     with _best_effort("manifest write"):
+        from gateway.status import get_process_start_time
+
+        now = time.time()
+        owner_pid = os.getpid()
         _dump_json(_manifest_path(delegation_id), {
+            "schema_version": 2,
             "delegation_id": delegation_id, "started": time.strftime(_TIME_FMT),
+            "started_at": now, "updated_at": now,
+            "owner": {
+                "pid": owner_pid,
+                "started_at": get_process_start_time(owner_pid),
+                "session_id": owner_session_id,
+            },
             "task_count": len(task_list), "model": model, "provider": provider,
             "tasks": [{
                 "index": i,
                 # Same mounted dir as the .log files, so the goal needs the same redaction.
                 "goal": _redact(str(t.get("goal", ""))[:500]),
-                "log": paths[i] if i < len(paths) else None,
-                "status": "running"} for i, t in enumerate(task_list)]})
+                "log": Path(paths[i]).name if i < len(paths) else None,
+                "status": "queued", "started_at": None, "updated_at": now,
+                "subagent_id": None, "parent_id": None, "depth": None,
+                "tool_count": 0, "last_tool": None,
+            } for i, t in enumerate(task_list)]})
+
+
+def _owner_is_live(owner: Any) -> bool:
+    """Return whether a manifest owner still denotes the same process."""
+    if not isinstance(owner, dict):
+        return False
+    try:
+        pid = int(owner["pid"])
+        recorded_start = owner["started_at"]
+    except (KeyError, TypeError, ValueError):
+        return False
+    if pid <= 0 or recorded_start is None:
+        return False
+    from gateway.status import (
+        _pid_exists,
+        get_process_start_time,
+        start_time_fingerprints_match,
+    )
+    if not _pid_exists(pid):
+        return False
+    current_start = get_process_start_time(pid)
+    if current_start is None:
+        return False
+    try:
+        return start_time_fingerprints_match(recorded_start, current_start)
+    except (TypeError, ValueError):
+        return False
+
+
+def _resolved_transcript(manifest_dir: Path, relative: Any) -> Optional[str]:
+    """Resolve a v2 relative transcript path without allowing traversal."""
+    if not isinstance(relative, str) or not relative:
+        return None
+    try:
+        base = manifest_dir.resolve()
+        candidate = (base / relative).resolve()
+        candidate.relative_to(base)
+    except (OSError, ValueError):
+        return None
+    return str(candidate)
+
+
+def scan_live_delegations(root: Optional[Path] = None) -> List[Dict[str, Any]]:
+    """Project live children from all v2 manifests in the active profile.
+
+    The projection is deliberately read-only. Legacy manifests cannot prove
+    process identity and are omitted rather than reported as live.
+    """
+    live_root = root if root is not None else live_transcript_root()
+    if not live_root.is_dir():
+        return []
+    try:
+        resolved_root = live_root.resolve()
+    except OSError:
+        return []
+    children: List[Dict[str, Any]] = []
+    for manifest_path in sorted(live_root.glob("*/manifest.json")):
+        try:
+            if manifest_path.is_symlink():
+                continue
+            manifest_dir = manifest_path.parent.resolve()
+            manifest_dir.relative_to(resolved_root)
+            resolved_manifest = manifest_path.resolve()
+            resolved_manifest.relative_to(manifest_dir)
+            manifest = json.loads(resolved_manifest.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(manifest, dict):
+            continue
+        tasks = manifest.get("tasks")
+        if (manifest.get("schema_version") != 2 or not isinstance(tasks, list)
+                or not _owner_is_live(manifest.get("owner"))):
+            continue
+        owner = manifest["owner"]
+        for task in tasks:
+            index = task.get("index") if isinstance(task, dict) else None
+            if (not isinstance(task, dict) or not isinstance(index, int) or isinstance(index, bool)
+                    or task.get("status") not in {"queued", "running"}):
+                continue
+            transcript = _resolved_transcript(manifest_dir, task.get("log"))
+            if transcript is None:
+                continue
+            children.append({
+                "subagent_id": task.get("subagent_id"),
+                "parent_id": task.get("parent_id"),
+                "depth": task.get("depth"),
+                "delegation_id": manifest.get("delegation_id"),
+                "task_index": index,
+                "owner_session_id": owner.get("session_id"),
+                "owner_pid": owner.get("pid"),
+                "owner_started_at": owner.get("started_at"),
+                "goal": task.get("goal", ""),
+                "model": manifest.get("model"),
+                "provider": manifest.get("provider"),
+                "status": task.get("status"),
+                "started_at": task.get("started_at") or manifest.get("started_at"),
+                "updated_at": task.get("updated_at") or manifest.get("updated_at"),
+                "tool_count": task.get("tool_count", 0),
+                "last_tool": task.get("last_tool"),
+                "transcript": transcript,
+            })
+    return sorted(
+        children,
+        key=lambda child: (
+            str(child.get("owner_session_id") or ""),
+            str(child.get("delegation_id") or ""),
+            child["task_index"],
+        ),
+    )
+
+
+def update_manifest_task(
+    delegation_id: Optional[str], task_index: int, **fields: Any,
+) -> None:
+    """Atomically publish one child's lifecycle/activity fields, best-effort."""
+    if not delegation_id:
+        return
+    allowed = {
+        "status", "subagent_id", "parent_id", "depth", "tool_count",
+        "last_tool", "exit_reason",
+    }
+    updates = {key: value for key, value in fields.items() if key in allowed}
+    if not updates:
+        return
+    with _best_effort("manifest task update"), _MANIFEST_LOCK:
+        path = _manifest_path(delegation_id)
+        manifest = json.loads(path.read_text(encoding="utf-8-sig"))
+        if manifest.get("schema_version") != 2:
+            return
+        now = time.time()
+        for task in manifest.get("tasks", []):
+            if isinstance(task, dict) and task.get("index") == task_index:
+                if task.get("status") in _TERMINAL_STATUSES:
+                    return
+                if updates.get("status") == "running" and task.get("started_at") is None:
+                    task["started_at"] = now
+                task.update(updates)
+                task["updated_at"] = now
+                break
+        else:
+            return
+        manifest["updated_at"] = now
+        _dump_json(path, manifest)
 
 
 def update_manifest_statuses(delegation_id: Optional[str],
                              results: List[Dict[str, Any]]) -> None:
     """Best-effort per-task status update once the batch has aggregated."""
+    for result in results:
+        if not isinstance(result, dict) or not isinstance(result.get("task_index"), int):
+            continue
+        update_manifest_task(
+            delegation_id, result["task_index"],
+            status=result.get("status", "unknown"),
+            exit_reason=result.get("exit_reason"),
+        )
+
+
+def terminalize_manifest(
+    delegation_id: Optional[str], *, status: str, exit_reason: str,
+) -> None:
+    """Hide every still-queued/running child after a dispatch-level failure."""
     if not delegation_id:
         return
-    with _best_effort("manifest update"):
-        mp = _manifest_path(delegation_id)
-        manifest = json.loads(mp.read_text(encoding="utf-8-sig"))
-        by_index = {r.get("task_index"): r for r in results if isinstance(r, dict)}
-        for task in manifest.get("tasks", []):
-            r = by_index.get(task.get("index"))
-            if r is not None:
-                task["status"] = r.get("status", task.get("status"))
-                if r.get("exit_reason"):
-                    task["exit_reason"] = r["exit_reason"]
-        manifest["completed"] = time.strftime(_TIME_FMT)
-        _dump_json(mp, manifest)
+    with _best_effort("manifest terminalize"), _MANIFEST_LOCK:
+        path = _manifest_path(delegation_id)
+        manifest = json.loads(path.read_text(encoding="utf-8-sig"))
+        tasks = manifest.get("tasks") if isinstance(manifest, dict) else None
+        if not isinstance(tasks, list):
+            return
+        now = time.time()
+        changed = False
+        for task in tasks:
+            if isinstance(task, dict) and task.get("status") not in _TERMINAL_STATUSES:
+                task.update(status=status, exit_reason=exit_reason, updated_at=now)
+                changed = True
+        if changed:
+            manifest["updated_at"] = now
+            _dump_json(path, manifest)
 
 
 def prune_stale_live_dirs(max_age_days: int = LIVE_RETENTION_DAYS) -> int:

@@ -459,6 +459,30 @@ The live transcript tail is a bounded recent excerpt, not an unlimited conversat
 
 The classic CLI's `/agents` and `/tasks` commands still print a text summary; **Ctrl+T** (or **F6**) is the immediate interactive monitor, including while the parent is busy. See [TUI — Slash commands](../tui.md#slash-commands).
 
+### Monitoring multiple Hermes processes
+
+`/agents`, the composer dock, and the TUI overlay manage the current runtime.
+When several independent Hermes processes share one profile—for example, one
+process in each tmux pane—run the profile-scoped fleet monitor from another
+terminal:
+
+```bash
+hermes agents                 # live, refreshing table on a TTY
+hermes agents --once          # one table and exit
+hermes agents --json          # one machine-readable snapshot
+hermes -p research agents     # select a named profile
+```
+
+The fleet monitor verifies both the owner PID and its process-start fingerprint,
+so a crashed owner or recycled PID is not reported as live. It shows queued and
+running children, their owner session and PID, activity age, model, latest tool,
+and goal. `--json` also includes each child's redacted live-transcript path.
+
+This cross-process view is deliberately **read-only**. Steering and stopping a
+specific child require the owning runtime's live session authority; use that
+runtime's `/agents` surface for controls. Sending a signal to the displayed owner
+PID would stop the whole Hermes process, not only the selected child.
+
 On the classic CLI and every gateway platform (Telegram, Discord, Slack, ...),
 `/agents` also lists **background delegations with live per-child activity**,
 sampled directly from each running child:

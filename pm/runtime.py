@@ -47,6 +47,33 @@ def _inputs(project: Path, python: Path) -> str:
     return digest.hexdigest()
 
 
+def _ensure_runtime_lock(project: Path, uv: Path, python: Path, *, offline: bool) -> None:
+    """Regenerate a missing PM lock before the runtime identity is read (#122941).
+
+    A generation workspace built while ``uv.lock`` was excluded from the snapshot
+    carries ``pm/pyproject.toml`` but no ``pm/uv.lock``; without this the identity
+    read below crashes `hermes pm repair` with FileNotFoundError instead of repairing.
+    """
+    if (project / "uv.lock").is_file():
+        return
+    if not (project / "pyproject.toml").is_file():
+        raise InstallError("pm-runtime", f"PM project manifest is missing: {project / 'pyproject.toml'}")
+    print("Regenerating the missing PM dependency lock\u2026", file=sys.stderr, flush=True)
+    command = [str(uv), "lock", "--python", str(python)]
+    if offline:
+        command.append("--offline")
+    try:
+        completed = subprocess.run(
+            command, cwd=str(project), env=runtime_environment(),
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=1800,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise InstallError("pm-runtime", f"could not regenerate the PM dependency lock: {exc}") from exc
+    if completed.returncode or not (project / "uv.lock").is_file():
+        detail = (completed.stderr or completed.stdout or "").strip()[-600:]
+        raise InstallError("pm-runtime", f"could not regenerate the PM dependency lock: {detail}")
+
+
 def is_runtime() -> bool:
     if (Path(sys.prefix) / "pm-runtime.json").is_file():
         return True
@@ -132,6 +159,7 @@ def prepare_runtime(uv: Path, python: Path, root: Path, *, offline: bool = False
     from pm.runtime_stage import stage_runtime
 
     project = project or Path(__file__).resolve().parent
+    _ensure_runtime_lock(project, uv, python, offline=offline)
     identity = _inputs(project, python)
     env = runtime_environment()
     root.mkdir(parents=True, exist_ok=True)

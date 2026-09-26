@@ -573,6 +573,65 @@ def _codesign_verify(codesign: str, app: Path, **kwargs) -> subprocess.Completed
         [codesign, "--verify", "--deep", "--strict", str(app)], capture_output=True, **kwargs)
 
 
+def _macos_signature_summary(codesign: str, app: Path) -> Optional[dict]:
+    """Best-effort signing identity of a ``.app`` bundle: ``{team, identifier, verified}``.
+
+    ``None`` when the bundle has no readable signature (``codesign -dv`` fails — e.g. an
+    unsigned bundle). ``team``/``identifier`` are ``None`` when the signature lacks them
+    (ad-hoc signatures report ``TeamIdentifier=not set``); ``verified`` is the strict
+    ``--verify --deep --strict`` result. Never raises.
+    """
+    try:
+        info = subprocess.run(
+            [codesign, "-dv", str(app)], check=False, capture_output=True,
+            text=True, encoding="utf-8", errors="replace")
+    except Exception:
+        return None
+    output = f"{info.stdout}\n{info.stderr}"
+    if info.returncode != 0:
+        return None
+
+    def field(key: str) -> Optional[str]:
+        for line in output.splitlines():
+            if line.startswith(f"{key}="):
+                return line[len(key) + 1:].strip() or None
+        return None
+
+    team = field("TeamIdentifier")
+    return {
+        "team": None if team in (None, "not set") else team,
+        "identifier": field("Identifier"),
+        "verified": _codesign_verify(codesign, app, check=False).returncode == 0,
+    }
+
+
+def _macos_signing_downgrade_error(installed: dict, rebuilt: Optional[dict]) -> Optional[str]:
+    """Reason to refuse swapping a publisher-signed installed app for ``rebuilt``, or None.
+
+    #123748: replacing a Developer ID (Team ID) installation with a locally signed or
+    ad-hoc rebuild — or any bundle whose signing identity or bundle identifier differs —
+    invalidates the code-hash-bound keychain ACLs the app's safeStorage credentials are
+    encrypted under and resets TCC grants. Ad-hoc-to-ad-hoc replacement (the local
+    development flow) is untouched. ``installed`` is a ``_macos_signature_summary`` dict;
+    ``rebuilt`` is None when the rebuilt bundle has no readable signature.
+    """
+    if not installed["team"]:
+        return None
+    if rebuilt is None or not rebuilt["team"]:
+        return (f"publisher-signed app (Team ID {installed['team']}) would be replaced by a "
+                "locally signed or unreadable build; kept the existing app")
+    if rebuilt["team"] != installed["team"]:
+        return (f"publisher Team ID {installed['team']} does not match rebuilt "
+                f"{rebuilt['team']}; kept the existing app")
+    if (installed["identifier"] and rebuilt["identifier"]
+            and installed["identifier"] != rebuilt["identifier"]):
+        return (f"bundle identifier {installed['identifier']!r} does not match rebuilt "
+                f"{rebuilt['identifier']!r}; kept the existing app")
+    if not rebuilt["verified"]:
+        return "rebuilt bundle failed strict signature verification; kept the existing app"
+    return None
+
+
 def _desktop_macos_has_valid_real_signature(app: Path) -> bool:
     """True when the bundle has an intact Team-ID signature, so the fixup never clobbers a notarized
     build with ad-hoc (resets TCC). A STALE real signature fails --verify → False → repairable."""
@@ -693,10 +752,14 @@ def _desktop_macos_relaunchable_fixup(
     A rebuilt ad-hoc bundle (new cdhash, no stable Designated Requirement) reports
     "Hermes is damaged" and loses every grant. Clear quarantine xattrs, then sign
     with ``desktop.macos_signing_identity`` or identifier-pinned ad-hoc, keeping
-    entitlements; legacy deep ad-hoc as fallback. No-op with a publisher identity
-    (CSC_LINK / APPLE_SIGNING_IDENTITY; callers may pass the decision so a later
-    dotenv load can't reverse it) or an intact Developer ID signature.
-    ``release_dir`` signs the STAGED bundle before promotion. Never raises.
+    entitlements. When a configured identity fails (#121857): over a locally-signed
+    install, retry identifier-pinned ad-hoc before the cdhash-only legacy sign;
+    over a publisher-signed (Team ID) install, refuse — the weaker signature would
+    orphan the keychain ACLs and TCC grants the update was asked to preserve
+    (#123748). No-op with a publisher identity (CSC_LINK / APPLE_SIGNING_IDENTITY;
+    callers may pass the decision so a later dotenv load can't reverse it) or an
+    intact Developer ID signature. ``release_dir`` signs the STAGED bundle before
+    promotion. Never raises.
     """
     if sys.platform != "darwin":
         return True
@@ -720,20 +783,52 @@ def _desktop_macos_relaunchable_fixup(
     if _desktop_macos_has_valid_real_signature(app):
         return True
     subprocess.run(["xattr", "-cr", str(app)], check=False)
-    identity = _desktop_macos_local_signing_identity() or "-"
+    configured = _desktop_macos_local_signing_identity()
+    identity = configured or "-"
+    # The existing bundle this build's new signature replaces: the live release bundle the
+    # staged pack is promoted over (``_swap_staged_desktop_app`` swaps by the same root
+    # name), or the bundle being re-signed in place when no staging is involved. Its signing
+    # class decides the fallback policy below; None when this is the first build.
+    if release_dir is None:
+        replaces = app
+    else:
+        try:
+            replaces = desktop_dir / "release" / exe.relative_to(release_dir)
+        except ValueError:
+            replaces = None
+        if not str(replaces).endswith(".app") or not replaces.is_dir():
+            replaces = None
     try:
         if _desktop_macos_local_codesign(app, desktop_dir=desktop_dir, identity=identity):
-            label = "keychain identity" if identity != "-" else "stable ad-hoc identity"
+            label = "keychain identity" if configured else "stable ad-hoc identity"
             print(f"  → macOS desktop signed with {label}; TCC grants persist across rebuilds")
             return True
     except Exception as exc:
-        # A configured cert can fail while the login keychain is locked (an SSH
-        # update). Identifier-pinned ad-hoc still keeps the designated requirement
-        # and entitlements; cdhash-only ``--deep --sign -`` is the last resort.
-        if identity != "-":
+        if configured:
+            target_sig = _macos_signature_summary(codesign, replaces) if replaces else None
+            if target_sig and target_sig["team"]:
+                # #123748: a publisher-signed (Team ID) install must never be degraded to a
+                # locally signed or ad-hoc build — the weaker signature changes the anchor
+                # the keychain ACLs and TCC grants are bound against, orphaning safeStorage
+                # credentials. Keep the existing bundle and name the remedy.
+                print(
+                    f"  ✗ macOS signing identity {configured!r} did not produce a verified "
+                    f"signature, and the installed app is publisher-signed (Team ID "
+                    f"{target_sig['team']}); keeping it (no ad-hoc fallback). Fix the identity "
+                    "(e.g. `hermes desktop --setup-tcc-identity` or edit "
+                    "desktop.macos_signing_identity in config.yaml) and update again."
+                )
+                return False
+            # A configured cert can fail while the login keychain is locked (an SSH
+            # update, #121857). For a locally-signed install, identifier-pinned ad-hoc
+            # still keeps the designated requirement and entitlements — TCC re-prompts
+            # once — where the cdhash-only ``--deep --sign -`` would reset every grant
+            # on each rebuild.
             print(
-                f"  (warning: configured macOS signing identity failed: {identity!r}; "
-                "falling back to identifier-pinned ad-hoc)"
+                f"  (warning: configured macOS signing identity failed: {identity!r} ({exc}); "
+                "falling back to identifier-pinned ad-hoc — TCC grants may need one "
+                "re-prompt; run the update from the logged-in session to keep the "
+                "certificate anchor)"
             )
             try:
                 if _desktop_macos_local_codesign(app, desktop_dir=desktop_dir, identity="-"):
@@ -1097,10 +1192,14 @@ def _install_rebuilt_macos_bundles(
     """Stage-and-swap ``rebuilt_app`` into each bundle path in ``candidates`` that is missing or
     whose ``app.asar`` differs. The rebuilt bundle already carries the stable local signing identity and no
     quarantine xattr (``_desktop_macos_relaunchable_fixup``); ``ditto`` preserves both, so nothing
-    is re-signed here and TCC grants survive."""
+    is re-signed here and TCC grants survive. A publisher-signed (Team ID) installation is never
+    replaced by a locally signed build or a different signing/bundle identity — the swap is
+    refused and reported instead (#123748)."""
     rebuilt_hash = _app_asar_hash(rebuilt_app)
     if rebuilt_hash is None:
         return [], []
+    codesign = shutil.which("codesign")
+    rebuilt_sig = _macos_signature_summary(codesign, rebuilt_app) if codesign else None
     installed: list[Path] = []
     problems: list[str] = []
     for app in candidates:
@@ -1111,6 +1210,13 @@ def _install_rebuilt_macos_bundles(
                 f"{app} is running and was not refreshed; quit Hermes Desktop and run "
                 "`hermes update` again (or update from inside the app)")
             continue
+        if codesign:
+            installed_sig = _macos_signature_summary(codesign, app)
+            if installed_sig is not None:
+                downgrade = _macos_signing_downgrade_error(installed_sig, rebuilt_sig)
+                if downgrade:
+                    problems.append(f"{app} not refreshed: {downgrade}")
+                    continue
         tmp = app.parent / f"{app.name}.hermes-update-new"
         old = app.parent / f"{app.name}.hermes-update-old"
         shutil.rmtree(tmp, ignore_errors=True)

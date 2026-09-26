@@ -24,6 +24,12 @@ const RU_NOUN = (count: number | string, one: string, few: string, many: string)
 }
 
 export const ru = defineLocale({
+  externalOpenFailed: {
+    title: 'Не удалось открыть ссылку',
+    message: 'Для этого адреса не назначен браузер. Скопируйте ссылку и откройте её вручную.',
+    copyUrl: 'Копировать ссылку',
+    close: 'Закрыть'
+  },
   catalog: {
     add: 'Добавить',
     added: 'Добавлено',
@@ -177,7 +183,8 @@ export const ru = defineLocale({
     deleteTitle: name => `Удалить ${name}?`,
     deleteBody: 'Элемент будет перемещён в корзину — его можно восстановить оттуда.',
     pathCopied: 'Путь скопирован',
-    revealMissing: 'Этой папки нет на этом компьютере'
+    revealMissing: 'Этой папки нет на этом компьютере',
+    revealUnavailable: 'Этот путь находится на компьютере бэкенда, а не на этом устройстве. Найдите его в дереве файлов.'
   },
   boot: {
     ready: 'Hermes Desktop готов',
@@ -399,6 +406,7 @@ export const ru = defineLocale({
     rebind: 'Переназначить',
     reset: 'Сбросить по умолчанию',
     resetAll: 'Сбросить всё',
+    clear: 'Очистить',
     pressKey: 'Нажмите клавишу…',
     set: 'задано',
     conflictWith: label => `Также назначено на «${label}»`,
@@ -462,6 +470,7 @@ export const ru = defineLocale({
       'view.prevTerminal': 'Предыдущий терминал',
       'view.closeTerminal': 'Закрыть терминал',
       'view.selectionToComposer': 'Отправить выделенное из терминала в композер',
+      'view.cycleSidebarGrouping': 'Переключить группировку сеансов',
       'view.terminalCopy': 'Копировать выделенное из терминала',
       'view.terminalPaste': 'Вставить в терминал',
       'view.closeTab': 'Закрыть вкладку',
@@ -1175,6 +1184,280 @@ export const ru = defineLocale({
           'Локальный браузинг использует ваши настоящие логины. Hermes копирует профиль вашего браузера по умолчанию (куки, логины, настройки) в управляемый снимок и работает через свой Chromium — живой профиль напрямую не открывается, а копия обновляется из него при каждом запуске. Также позволяет агенту по запросу открыть локальный сеанс с настоящим профилем, даже если настроен облачный браузер. Поддерживаются только браузеры на Chromium (Chrome, Edge, Brave, Brave Origin, Chromium); браузер по умолчанию без Chromium даст понятную ошибку. По умолчанию выключено.',
       },
     }),
+    billing: {
+      perMonth: amount => `${amount}/мес.`,
+      creditsPerMonth: amount => `${amount} кредитов/мес.`,
+      usageLabel: label => `Расходы: ${label}`,
+      freeTier: {
+        signIn: 'Войти',
+        title: 'Вы используете бесплатный тариф Nous',
+        message: 'Войдите в аккаунт Nous, чтобы открыть больше моделей и инструментов.',
+        caption:
+          'Работает на nous/welcome; коннекторы уже доступны. После входа они сохранятся, а также откроются инструменты, для которых нужен аккаунт, и все остальные модели.',
+        name: 'Nous · бесплатный тариф',
+        footnote:
+          'На бесплатном тарифе нет баланса и ничего оплачивать не нужно. Данные об оплате и расходах появятся после входа в аккаунт Nous.',
+        plan: 'Бесплатный тариф',
+        model: 'Модель',
+        connectors: 'Коннекторы',
+        included: 'Включены'
+      },
+      amountValidation: {
+        reloadTo: 'Пополнить до',
+        greaterThanThreshold: 'Сумма, до которой пополняется баланс, должна быть больше порога.',
+        decimal: label => `${label}: укажите сумму в долларах не более чем с двумя знаками после запятой.`,
+        positive: label => `${label}: сумма должна быть больше $0.`,
+        minimum: (label, amount) => `${label}: минимум ${amount}.`,
+        maximum: (label, amount) => `${label}: максимум ${amount}.`
+      },
+      stepUp: {
+        openVerification: 'Открыть страницу подтверждения',
+        dismiss: 'Закрыть',
+        waiting: 'Ожидаем ссылку для подтверждения…',
+        verify: 'Подтвердить, чтобы продолжить',
+        deniedTitle: 'Подтверждение не одобрено',
+        deniedBody: 'Подтверждение завершилось без разрешения удалённых расходов для этого терминала.',
+        successTitle: 'Подтверждение завершено',
+        successBody: 'Удалённые расходы для этого терминала разрешены.'
+      },
+      charge: {
+        added: amount => (amount ? `На баланс добавлено $${amount}.` : 'Кредиты добавлены на баланс.'),
+        failedTitle: 'Не удалось провести платёж',
+        unconfirmedTitle: 'Результат платежа не подтверждён',
+        unconfirmedBody: message =>
+          `${message} Результат последнего платежа не подтверждён — проверьте баланс и историю операций, прежде чем повторять попытку.`,
+        checkTitle: 'Не удалось проверить платёж',
+        checkBody: 'Не удалось проверить платёж.',
+        untrackedTitle: 'Не удалось отследить платёж',
+        untrackedBody: 'Сервис оплаты принял запрос, но не вернул идентификатор платежа.',
+        timeoutTitle: 'Обработка длится больше 5 минут',
+        timeoutBody: 'Платёж ещё может завершиться. Проверьте его на портале, прежде чем повторять попытку.',
+        authenticationRequired:
+          'Банк запрашивает подтверждение (3DS). Завершите его на портале, чтобы оплатить покупку.',
+        expired: 'Срок действия карты истёк. Обновите её на портале.',
+        declined: 'Банк отклонил карту. Попробуйте другую карту на портале.',
+        failedBody: reason => `Платёж не прошёл (${reason}).`
+      },
+      title: 'Оплата',
+      preview: 'предпросмотр',
+      summary: {
+        balance: 'Баланс',
+        plan: 'Тариф',
+        autoRefill: 'Автопополнение'
+      },
+      sections: {
+        invoices: 'Счета',
+        plan: 'Тариф',
+        paymentAndCredits: 'Оплата и кредиты',
+        usage: 'Расходы'
+      },
+      usage: {
+        title: 'Расходы'
+      },
+      buyCredits: {
+        customAmount: 'Произвольная сумма пополнения',
+        title: 'Купить кредиты сейчас',
+        buyButton: 'Купить',
+        processing: 'Обработка… проверяем результат платежа',
+        added: amount => `На баланс добавлено ${amount}. Баланс обновляется.`,
+        retry: 'Повторить',
+        openPortal: 'Открыть портал'
+      },
+      plan: {
+        title: 'Тарифы',
+        changePlan: 'Сменить тариф',
+        viewPlans: 'Посмотреть тарифы',
+        backAria: 'Назад к оплате',
+        current: 'Текущий тариф',
+        scheduled: 'Запланировано',
+        empty: 'Сейчас нет тарифов, на которые можно перейти.',
+        undo: 'Отменить изменение',
+        undoing: 'Отменяем изменение…',
+        downgrade: 'Перейти на более дешёвый тариф',
+        confirmDowngrade: 'Подтвердить переход на более дешёвый тариф',
+        tryAgain: 'Повторить попытку',
+        checkingChange: 'Проверяем изменение…',
+        cannotChange: 'Это изменение нельзя выполнить здесь.',
+        alreadyOn: name => `Вы уже используете тариф «${name}» — менять ничего не нужно.`,
+        notScheduleable: 'Это изменение нельзя запланировать здесь.',
+        scheduling: 'Планируем изменение…',
+        cancel: 'Отмена',
+        effectScheduled: (targetName, effectiveAt, creditsDelta) =>
+          `Переход на тариф «${targetName}» вступит в силу ${effectiveAt}. Сейчас плата не взимается; до этого момента действует текущий тариф.${creditsDelta ? ` Изменение ежемесячных кредитов: ${creditsDelta}.` : ''}`
+      },
+      autoReload: {
+        threshold: 'Порог',
+        thresholdAria: 'Порог автопополнения',
+        reloadTo: 'Пополнить до',
+        reloadToAria: 'Сумма пополнения до при автопополнении',
+        turnOffConfirm: 'Отключить автопополнение?',
+        turnOff: 'Отключить',
+        disable: 'Отключить',
+        updated: 'Настройки автопополнения обновлены.',
+        turnedOff: 'Автопополнение отключено.',
+        manage: 'Настроить',
+        save: 'Сохранить',
+        saving: 'Сохранение…',
+        cancel: 'Отмена'
+      },
+      state: {
+        notice: {
+          loggedOut: {
+            title: 'Подключите аккаунт Nous',
+            message: 'Войдите в аккаунт Nous, чтобы увидеть здесь баланс, тариф и расходы.',
+            action: 'Войти'
+          },
+          openPortal: 'Открыть портал ↗',
+          noCard: {
+            title: 'Способ оплаты не добавлен',
+            message:
+              'Покупка дополнительных кредитов и автопополнение недоступны, пока не добавлена карта. Добавьте её на портале.',
+            action: 'Добавить карту ↗'
+          }
+        },
+        paymentMethod: {
+          title: 'Способ оплаты',
+          description: 'Управление картой для пополнения баланса и продления подписки.',
+          addAction: 'Добавить способ оплаты',
+          updateAction: 'Изменить',
+          provenance: {
+            autoRefill: 'карта для автопополнения',
+            customerDefault: 'карта по умолчанию',
+            subPin: 'карта для подписки',
+            suffix: label => ` — ${label}`
+          }
+        },
+        buyCredits: {
+          description: 'Разовый платёж с вашей карты; средства поступят на баланс сегодня.'
+        },
+        autoRefill: {
+          title: 'Пополнять при низком балансе',
+          genericDescription: 'Баланс пополняется, когда он опускается ниже заданного порога.',
+          offPill: 'Выкл.',
+          enabledPill: 'Включено',
+          notAvailablePill: '—',
+          manageCaption: 'Настройте автопополнение на портале.',
+          turnOnCaption: 'Включите автопополнение на портале',
+          chargesDescription: (reloadTo, threshold) =>
+            `Автоматически списывается ${reloadTo}, когда баланс опускается ниже ${threshold}.`,
+          distinctCardCaption: cardLabel => `Автопополнение списывается с ${cardLabel} — сверьте данные на портале`,
+          distinctCardFallback: 'другой карты',
+          reconcileAction: 'Сверить ↗'
+        },
+        usage: {
+          subscriptionCredits: {
+            title: 'Кредиты по подписке',
+            barLabel: 'Остаток кредитов по подписке',
+            captionResets: date => `Обновятся ${date}`,
+            valueOf: (remaining, monthly) => `Осталось ${remaining} из ${monthly}`,
+            valueOver: (remaining, monthly, over) => `Осталось ${remaining} из ${monthly} · сверх лимита: ${over}`
+          },
+          topupCredits: {
+            title: 'Дополнительные кредиты',
+            caption: 'Не сгорают'
+          },
+          monthlyCap: {
+            title: 'Месячный лимит расходов',
+            barLabel: 'Использовано из месячного лимита расходов',
+            captionDefault: 'Лимит по умолчанию',
+            captionSpending: 'Месячные удалённые расходы',
+            valueUsed: (spent, limit) => `Использовано ${spent} из ${limit}`
+          }
+        },
+        planCard: {
+          freeTier: 'Бесплатный',
+          chooseAction: 'Выбрать ↗',
+          adjustPlanAction: 'Изменить тариф ↗',
+          unavailableCaption: 'Данные о подписке недоступны, но портал можно открыть.',
+          downgradeCaption: (tierName, when) => `Переход на тариф «${tierName}» — ${when}.`,
+          cancellationCaption: when => `Подписка прекратится ${when}.`,
+          renewsCaption: date => `Продление ${date}`,
+          noSubscriptionCaption: 'Нет активной подписки — платные модели расходуют дополнительные кредиты.'
+        }
+      },
+      errors: {
+        consentRequired: {
+          title: 'Требуется подтверждение карты',
+          message: 'Подтвердите на портале эту карту для платежей из терминала'
+        },
+        insufficientScope: {
+          title: 'Нужно разрешить удалённые расходы',
+          message: 'Для этого нужны разрешённые удалённые расходы. Начните пополнение, чтобы разрешить их, затем повторите попытку.'
+        },
+        remoteSpendingRevoked: {
+          title: 'Удалённые расходы отключены',
+          messageByAdmin: 'Администратор отключил удалённые расходы для этого терминала.',
+          messageBySelf: 'Вы отключили удалённые расходы для этого терминала.'
+        },
+        remoteSpendingReconnect: who => `${who} Подключитесь снова через «Настройки → Шлюз», чтобы повторно авторизовать это устройство.`,
+        sessionRevoked: {
+          title: 'Сеанс завершён',
+          message: 'Ваш сеанс завершён. Войдите снова через «Настройки → Шлюз».'
+        },
+        cliBillingDisabled: {
+          title: 'Удалённые расходы отключены',
+          message:
+            'Удалённые расходы для этого аккаунта отключены. Администратор оплаты может включить их на странице Hermes Agent портала.'
+        },
+        roleRequired: {
+          title: 'Нужны права администратора',
+          message: 'Пополнять баланс может администратор или владелец организации. Обратитесь к администратору либо управляйте оплатой на портале.'
+        },
+        idempotencyConflict: {
+          title: 'Начните новое пополнение',
+          message: '🔴 Этот ключ платежа уже использовался для другой суммы. Начните новое пополнение.'
+        },
+        noPaymentMethod: {
+          title: 'Нет сохранённой карты',
+          message:
+            '💳 Для платежей из терминала пока нет сохранённой карты. Настройте её на портале ' +
+            '(при разовой покупке кредитов карта не сохраняется для повторного использования).'
+        },
+        orgAccessDenied: {
+          title: 'Нет доступа к организации',
+          message: 'Этот токен не привязан к организации, которой вы можете управлять'
+        },
+        monthlyCapExceeded: {
+          title: 'Достигнут месячный лимит расходов',
+          messageReached: '🔴 Достигнут месячный лимит расходов.',
+          messageHeadroom: remaining => `🔴 Достигнут месячный лимит расходов — доступный остаток: $${remaining}.`
+        },
+        rateLimited: {
+          title: 'Сейчас слишком много платежей',
+          message: mins =>
+            mins > 0
+              ? `🟡 Сейчас слишком много платежей (повторите примерно через ${mins} мин). Это не отказ в оплате.`
+              : '🟡 Сейчас слишком много платежей. Это не отказ в оплате.'
+        },
+        stripeUnavailable: {
+          title: 'Сбой в работе Stripe',
+          message: mins =>
+            mins > 0
+              ? `Сбой в работе Stripe — повторите примерно через ${mins} мин`
+              : 'Сбой в работе Stripe — повторите попытку чуть позже'
+        },
+        upgradeCapExceeded: {
+          title: 'Достигнут дневной лимит смены тарифа',
+          message: 'Достигнут дневной лимит смены тарифа — повторите попытку завтра'
+        },
+        endpointUnavailable: {
+          title: 'Сервис оплаты недоступен',
+          message: 'Сервис оплаты вернул ответ не в формате JSON (возможно, он недоступен в этой установке).'
+        },
+        timeout: {
+          title: 'Превышено время ожидания запроса на оплату',
+          message: 'Превышено время ожидания запроса на оплату.'
+        },
+        transport: {
+          title: 'Не удалось подключиться к сервису оплаты',
+          message: 'Запрос на оплату не дошёл до шлюза.'
+        },
+        default: {
+          title: 'Запрос на оплату не выполнен',
+          message: 'Запрос на оплату не выполнен.'
+        }
+      }
+    },
     uninstallSection: {
       dangerZone: 'Опасная зона',
       checkingInstalled: 'Проверяем, что установлено…',
@@ -1242,7 +1525,7 @@ export const ru = defineLocale({
       endpointReachable: 'Конечная точка доступна.',
       endpointReachableTransport: transport => `Конечная точка доступна (маршрут ${transport} отвечает).`,
       endpointReachableModels: (reachable, count) =>
-        `${reachable} Найдено ${count} ${RU_NOUN(count, 'модель', 'модели', 'моделей')}.`,
+        `${reachable} ${RU_PLURAL(count, 'Найдена', 'Найдено', 'Найдено')} ${count} ${RU_NOUN(count, 'модель', 'модели', 'моделей')}.`,
       endpointValidationFailed: 'Не удалось проверить конечную точку.',
       validationFailed: 'Проверка не удалась',
       activationFailed: 'Не удалось активировать',
@@ -2594,6 +2877,9 @@ export const ru = defineLocale({
     restartNow: 'Перезапустить',
     restarting: 'Перезапуск…',
     restartFailedManual: 'Не удалось перезапустить шлюз — перезапустите его вручную и проверьте журналы.',
+    restartFailedManualDetail: 'Попробуйте перезапустить шлюз снова. Если не поможет, откройте журналы и отправьте диагностику.',
+    restartAgain: 'Повторить перезапуск',
+    openLogs: 'Открыть журналы',
     telegramQr: {
       title: 'Выберите способ подключения Telegram-бота',
       subtitle:
@@ -2941,6 +3227,10 @@ export const ru = defineLocale({
     count: count => `${count} ${RU_PLURAL(count, 'задача', 'задачи', 'задач')}`,
     search: 'Поиск cron-задач...',
     loading: 'Загрузка cron-задач...',
+    lastRunFailed: 'Последний запуск завершился ошибкой:',
+    editJob: 'Изменить задачу',
+    runAgain: 'Запустить снова',
+    overdueSince: 'Просрочена с:',
     states: {
       enabled: 'включено',
       scheduled: 'запланировано',
@@ -3988,6 +4278,7 @@ export const ru = defineLocale({
     replaceCurrent: 'Заменить текущее значение',
     pasteApiKey: 'Вставьте API-ключ',
     localApiKeyPlaceholder: 'API-ключ (необязательно — только если ваш endpoint его требует)',
+    localModelNamePlaceholder: 'Название модели (например, command-a-plus-05-2026)',
     couldNotSave: 'Не удалось сохранить учётные данные.',
     connecting: 'Подключение',
     update: 'Обновить',
@@ -4001,6 +4292,11 @@ export const ru = defineLocale({
     connectedProvider: provider => `${provider} подключён`,
     connectedPicking: provider => `${provider} подключён. Выбираем модель по умолчанию...`,
     signInFailed: 'Вход не удался. Попробуйте снова.',
+    signInDidNotFinish: provider =>
+      `Не удалось завершить вход через ${provider}. Проверьте подключение к интернету и попробуйте снова или выберите другого провайдера.`,
+    tryAgain: 'Повторить',
+    useApiKeyInstead: 'Использовать API-ключ',
+    errorDetails: 'Подробности',
     pickDifferentProvider: 'Выбрать другого провайдера',
     signInWith: provider => `Войти через ${provider}`,
     openedBrowser: provider => `Мы открыли ${provider} в вашем браузере.`,
@@ -4029,7 +4325,7 @@ export const ru = defineLocale({
     localModelsTitle: 'Запускайте модели локально',
     localModelsPitch: 'Аккаунт не нужен — скачайте модель и запустите её на этой машине',
     signInExpired:
-      'Время входа истекло, не достигнув авторизации. Обычно это означает, что страница входа зависла в открытой вкладке (проблема на стороне сервера) — завершите вход там, затем попробуйте снова. Если ошибка повторяется, используйте API-ключ или запасной вариант через CLI.',
+      'Время ожидания страницы входа истекло. Повторите попытку и завершите вход в браузере за несколько минут или воспользуйтесь API-ключом.',
   },
   modelPicker: {
     title: 'Сменить модель',
@@ -4691,10 +4987,14 @@ export const ru = defineLocale({
       errorSendDiagnostics: 'Отправить диагностику',
     },
     approval: {
-      gatewayDisconnected: 'Шлюз Hermes не подключён',
+      gatewayDisconnected: 'Hermes сейчас не в сети. Команда ждёт вашего ответа до истечения времени ожидания. Переподключитесь и отправьте ответ снова.',
       sendFailed: 'Не удалось отправить ответ на подтверждение',
+      reconnect: 'Переподключиться',
+      timedOutSystemLine: 'Время ожидания подтверждения истекло — команда не выполнялась. Попросите Hermes повторить попытку или увеличьте лимит в разделе «Настройки → Безопасность → Время ожидания подтверждения».',
+      openSafetySettings: 'Открыть настройки безопасности',
       run: 'Выполнить',
       command: 'Команда',
+      commandDetails: 'Подробности команды',
       moreOptions: 'Больше опций подтверждения',
       allowSession: 'Разрешить в этом сеансе',
       alwaysAllowMenu: 'Всегда разрешать…',
@@ -4878,6 +5178,7 @@ export const ru = defineLocale({
   },
   prompts: {
     gatewayDisconnected: 'Шлюз Hermes не подключён',
+    reconnect: 'Переподключиться',
     sudoSendFailed: 'Не удалось отправить пароль sudo',
     secretSendFailed: 'Не удалось отправить секрет',
     sudoTitle: 'Пароль администратора',
@@ -4902,6 +5203,7 @@ export const ru = defineLocale({
     vaultSaveDesc:
       origin => `Hermes дошёл до страницы входа на ${origin}, а логина для неё нет. Введите его один раз здесь; он шифруется на этой машине и подставляется в страницу, а модель пароль не видит.`,
     vaultSaveIdentifierLabel: 'Email или имя пользователя',
+    vaultSaveIdentifierPlaceholder: 'you@example.com',
     vaultSavePasswordPlaceholder: 'Пароль',
     vaultSaveFootnote: 'Управлять сохранёнными логинами можно в разделе «Настройки → Пароли и входы».',
     vaultSaveDecline: 'Не сохранять',
@@ -4995,7 +5297,10 @@ export const ru = defineLocale({
     noClipboardImage: 'Изображение в буфере обмена не найдено',
     clipboardPasteFailed: 'Вставка из буфера обмена не удалась',
     dropFiles: 'Перетащите файлы',
+    pastedContent: 'Вставленный текст',
+    pasteAttachFailed: 'Не удалось прикрепить вставленный текст',
     handoff: {
+      startMessaging: 'Перейти к мессенджерам',
       pickPlatform: 'Выберите назначение',
       success: platform => `Передаём в ${platform}. Возобновите здесь в любой момент.`,
       systemNote: platform => `↻ Передано в ${platform} — возобновите здесь в любой момент.`,
@@ -5014,6 +5319,8 @@ export const ru = defineLocale({
     boundaryTitle: 'Что-то сломалось в интерфейсе',
     boundaryDesc: 'Вид столкнулся с неожиданной ошибкой. Ваши чаты и настройки в безопасности.',
     reloadWindow: 'Перезагрузить окно',
+    boundaryDetails: 'Подробности',
+    sendDiagnostics: 'Отправить диагностику',
     openLogs: 'Открыть журналы'
   },
 
@@ -5066,6 +5373,256 @@ export const ru = defineLocale({
     authorizedToolsUnavailable: 'Доступ разрешён, но инструменты недоступны.',
     required: 'Обязательно'
   },
+  connectorsPage: {
+    title: 'Коннекторы',
+    searchPlaceholder: (count: number) => `Поиск: ${count} ${RU_NOUN(count, 'приложение', 'приложения', 'приложений')}`,
+    filterCategory: 'Категория',
+    categoryAll: 'Все категории',
+    uncategorised: 'Без категории',
+
+    residencyLocal: 'На этом устройстве',
+
+    segment: {
+      all: 'Все',
+      available: 'Доступные',
+      connected: 'Подключённые',
+      off: 'Выключенные'
+    },
+
+    group: {
+      connected: 'Подключённые',
+      connectedNote: 'Подключения с ошибками — в начале списка.',
+      available: 'Доступные',
+      off: 'Выключенные',
+      offNote: 'Данные для входа сохраняются.'
+    },
+
+    card: {
+      kindManaged: 'Управляемое',
+      kindCatalog: 'MCP · Каталог',
+      kindCustom: 'MCP · Пользовательский',
+      kindPlugin: (plugin: string) => `MCP · Плагин ${plugin}`,
+      inCatalog: 'В каталоге Hermes',
+      hostedTwin: 'Доступна управляемая версия',
+      alsoLocal: 'Также работает на этом устройстве',
+      open: (name: string) => `Открыть ${name}`,
+      turnServerOn: (name: string) => `Включить ${name}`,
+      turnServerOff: (name: string) => `Выключить ${name}`,
+      state: {
+        accessExpired: 'Срок доступа истёк',
+        available: 'Доступно',
+        connected: 'Подключено',
+        connecting: 'Подключение',
+        connectionUnknown: 'Состояние неизвестно',
+        couldNotConnect: 'Не удалось подключиться',
+        offByYourOrganisation: 'Выключено вашей организацией',
+        offForYou: 'Выключено для вас',
+        serverConnecting: 'Подключение…',
+        serverError: 'Ошибка',
+        serverNeedsAuth: 'Требуется авторизация',
+        serverOff: 'Выключен',
+        serverOn: 'Включён',
+        serverOnUnused: 'Включён, но не используется'
+      },
+      fact: {
+        tools: (count: number) => `${count} ${RU_NOUN(count, 'инструмент', 'инструмента', 'инструментов')}`,
+        toolsOff: (count: number) =>
+          `${count} ${RU_NOUN(count, 'инструмент', 'инструмента', 'инструментов')} ${RU_PLURAL(count, 'выключен', 'выключены', 'выключено')}`,
+        toolsOn: (count: number) =>
+          `${count} ${RU_NOUN(count, 'инструмент', 'инструмента', 'инструментов')} ${RU_PLURAL(count, 'включён', 'включены', 'включено')}`,
+        toolsSomeOn: (total: number, on: number) =>
+          `${total} ${RU_NOUN(total, 'инструмент', 'инструмента', 'инструментов')}, включено ${on}`
+      },
+      verb: {
+        authenticate: 'Авторизоваться',
+        connect: 'Подключить',
+        install: 'Установить',
+        openLogs: 'Открыть журналы',
+        reconnect: 'Переподключить',
+        stopWaiting: 'Прекратить ожидание',
+        tryAgain: 'Повторить',
+        turnBackOn: 'Включить снова'
+      },
+      reason: {
+        finishSignIn: 'Завершите вход в браузере.',
+        reconnect: 'Переподключитесь, чтобы приложение продолжило работать.',
+        serverError: 'Сервер отказал в подключении.',
+        serverNeedsAuth: 'Войдите, чтобы сервер мог отвечать.'
+      }
+    },
+
+    page: {
+      loading: 'Загружаем каталог и серверы на этом компьютере',
+      emptyTitle: 'Здесь пока нет приложений. Чтобы начать, добавьте сервер на этом компьютере.',
+      noMatchTitle: 'Нет подходящих приложений',
+      noMatchBody: 'Ничего не найдено. Чтобы добавить приложение, укажите Hermes свой MCP-сервер.',
+      clearSearch: 'Очистить поиск',
+      hostedFailedTitle: 'Не удалось связаться с размещёнными приложениями.',
+      hostedFailedBody: 'Серверы на этом компьютере не затронуты и продолжают работать. Ничего не было выключено.',
+      retry: 'Повторить',
+      matchesElsewhere: (count: number) =>
+        `Ещё ${count} ${RU_NOUN(count, 'совпадение', 'совпадения', 'совпадений')} в других группах.`,
+      showAllMatches: 'Показать все совпадения',
+      segmentNoMatch: (segment: string) => `В группе «${segment}» совпадений нет, поэтому показаны все результаты.`,
+      freeTierNote: 'Пока вы не войдёте в аккаунт, подключения остаются на этом компьютере.',
+      signInLine: 'Войдите в Nous, чтобы использовать управляемые приложения.',
+      signIn: 'Войти',
+      managedUnavailable: 'Управляемые приложения пока недоступны для этого аккаунта.',
+      writeFailed: 'Изменение не сохранено.',
+      refreshFailed: 'Не удалось обновить список инструментов.',
+      disconnectNoAccount: 'Здесь у Hermes нет аккаунта для отключения. Обновите страницу и попробуйте снова.',
+      disconnectRefused:
+        'Nous сейчас не может удалить данные для входа. Вместо этого выключите приложение переключателем или повторите попытку позже.'
+    },
+
+    add: {
+      action: 'Добавить свой сервер',
+      title: 'Подключить свой MCP-сервер',
+      hint: 'новая запись в mcp.json на этом устройстве',
+      pasteLabel: 'Вставьте команду или фрагмент конфигурации',
+      pastePlaceholder: 'npx -y @modelcontextprotocol/server-filesystem /path/to/dir',
+      pasteNoMatch: 'Не удалось распознать сервер. Вместо этого заполните поля ниже.',
+      name: 'Название',
+      nameTaken: 'Это название уже используется.',
+      type: 'Тип',
+      typeStdio: 'STDIO',
+      typeHttp: 'Streamable HTTP',
+      command: 'Команда запуска',
+      args: 'Аргументы',
+      addArg: '+ Добавить аргумент',
+      envVars: 'Переменные окружения',
+      addEnvVar: '+ Добавить переменную окружения',
+      passthrough: 'Передача переменных окружения',
+      addPassthrough: '+ Добавить переменную',
+      cwd: 'Рабочий каталог',
+      url: 'URL',
+      headers: 'Заголовки',
+      addHeader: '+ Добавить заголовок',
+      auth: 'Авторизация',
+      authNone: 'Нет',
+      authOauth: 'OAuth',
+      authBearer: 'Токен Bearer',
+      keyPlaceholder: 'KEY',
+      valuePlaceholder: 'value',
+      removeRow: 'Удалить эту строку',
+      editJson: 'Изменить mcp.json',
+      saveFailed: 'Не удалось сохранить этот сервер.'
+    },
+
+    dialog: {
+      disconnect: 'Отключить',
+      disconnectTitle: (name: string) => `Отключить ${name}?`,
+      disconnectBody: 'Hermes перестанет действовать от имени этого аккаунта. Вы сможете подключиться снова в любое время.',
+      menuRefreshTools: 'Обновить список инструментов',
+      moreActions: 'Другие действия',
+      removeServerTitle: (name: string) => `Удалить ${name}?`,
+      removeServerBody: 'Запись будет удалена из mcp.json на этом компьютере. Больше ничего не удалится.',
+      appSwitch: (name: string) => `Разрешить Hermes использовать ${name}`,
+      waysTitle: (name: string) => `Где работает ${name}`,
+      wayNotConnected: (name: string) => `Ещё не подключено. Войдите в ${name} через браузер.`,
+      wayHosted: 'Управляемое',
+      bothOn: (name: string) => `Оба варианта включены, поэтому Hermes видит каждый инструмент ${name} дважды.`,
+      turnOffLocal: 'Выключить локальный сервер',
+      providedByPlugin: (plugin: string) => `Предоставлено плагином ${plugin}`,
+      openPlugins: 'Открыть вкладку «Плагины»',
+      nousLine: 'Приложения Nous привязаны к аккаунту, а не к профилю.',
+      rulesReadOnly: 'Сейчас нельзя изменить правила.',
+      rulesAppOff: (name: string) => `Включите ${name}, чтобы изменить доступ к его инструментам.`,
+      rulesSignIn: 'Войдите, чтобы изменить разрешения Hermes для этого приложения.',
+      orgNote: (count: number) =>
+        `Ваша организация выключила ${count} ${RU_NOUN(count, 'инструмент', 'инструмента', 'инструментов')}.`,
+      orgLink: 'Открыть панель управления коннекторами',
+      connectEnded: 'Не удалось завершить вход.',
+      connectOpenAgain: 'Открыть ссылку снова',
+      tokensPerCall: 'токенов за вызов',
+      usesPerMonth: 'использований за 30 дней',
+      advanced: 'Дополнительно',
+      advancedHint: 'запись в mcp.json и журналы'
+    },
+
+    tools: {
+      title: 'Инструменты',
+      notInstalledBody: 'Установите сервер на этом устройстве, чтобы увидеть его инструменты.',
+      summaryTitle: (name: string) => `Что Hermes может делать через ${name}`,
+      summaryPreviewTitle: (name: string) => `Что Hermes сможет делать через ${name} после подключения`,
+      summaryCount: (count: number) => `${count} ${RU_NOUN(count, 'инструмент', 'инструмента', 'инструментов')}`,
+      summaryAllTools: 'Все инструменты',
+      summaryOther: 'Прочее',
+      allToolsSwitch: 'Включить или выключить все инструменты',
+      summaryAllOn: 'все включены',
+      summarySomeOn: (on: number, total: number) => `включено ${on} из ${total}`,
+      summaryOff: 'выключены',
+      showAllTools: (count: number) => `Показать ${count} ${RU_NOUN(count, 'инструмент', 'инструмента', 'инструментов')}`,
+      showSummary: 'Показать сводку',
+      facetSwitch: (facet: string) => `Включить или выключить инструменты категории «${facet}»`,
+      moreHints: (count: number) => `+${count}`,
+      staleSignIn: 'Войдите, чтобы получить актуальный список инструментов.',
+      searchCountPlaceholder: (count: number) =>
+        `Поиск: ${count} ${RU_NOUN(count, 'инструмент', 'инструмента', 'инструментов')}`,
+      toolList: (name: string) => `Инструменты ${name}`,
+      categorySelect: (count: number) => `${count} ${RU_NOUN(count, 'категория', 'категории', 'категорий')}`,
+      showDeprecated: (count: number) =>
+        `Показать ${count} ${RU_NOUN(count, 'устаревший инструмент', 'устаревших инструмента', 'устаревших инструментов')}`,
+      hideDeprecated: (count: number) =>
+        `Скрыть ${count} ${RU_NOUN(count, 'устаревший инструмент', 'устаревших инструмента', 'устаревших инструментов')}`,
+      quickReadOnly: 'Только чтение',
+      quickNoDestructive: 'Выключить инструменты с необратимыми действиями',
+      quickEverythingOn: 'Включить всё',
+      lockedHint: 'выключено вашей организацией',
+      turnToolOn: (tool: string) => `Включить ${tool}`,
+      turnToolOff: (tool: string) => `Выключить ${tool}`,
+      showDetails: (tool: string) => `Показать, что делает ${tool}`,
+      hideDetails: (tool: string) => `Скрыть описание ${tool}`,
+      noMatch: 'По этим фильтрам инструменты не найдены.',
+      loading: 'Загружаем список инструментов',
+      unavailableLine: 'Список инструментов недоступен.',
+      needsAuthTitle: (name: string) => `Войдите в ${name}, чтобы получить список инструментов.`,
+      needsAuthBody: 'Данные для входа остаются на этом компьютере и никуда не передаются.',
+      retry: 'Повторить',
+      goneTitle: (name: string) => `${name} больше нет в каталоге.`,
+      goneBody: 'Hermes больше не может вызывать его инструменты. Запись останется, пока вы её не удалите.',
+      remove: 'Удалить',
+      offTitle: (name: string) => `${name} выключен.`,
+      offBody: 'Включите его переключателем выше, чтобы увидеть доступные инструменты.',
+      signedOutTitle: 'Войдите в Nous, чтобы получить список инструментов.',
+      signedOutBody: 'Серверы на этом компьютере не затронуты.',
+      conflictTitle: 'Пока вы редактировали правило, его изменил другой пользователь.',
+      conflictBody: (theyOff: number, theyOn: number) => {
+        const changes = [
+          theyOff > 0
+            ? `выключил ${theyOff} ${RU_NOUN(theyOff, 'инструмент', 'инструмента', 'инструментов')} из тех, что у вас включены`
+            : '',
+          theyOn > 0
+            ? `не выключил ${theyOn} ${RU_NOUN(theyOn, 'инструмент', 'инструмента', 'инструментов')} из тех, что вы выключили`
+            : ''
+        ].filter(Boolean)
+
+        return `${changes.length > 0 ? `Другой пользователь ${changes.join(' и ')}. ` : ''}Ваши правки остались на экране; ничего не сохранено.`
+      },
+      conflictReload: 'Загрузить версию другого пользователя',
+      conflictSave: 'Сохранить поверх версии другого пользователя',
+      saveFailed: 'Не удалось сохранить правила для инструментов.',
+      footerDirty: (off: number, backOn: number) =>
+        `${off} ${RU_NOUN(off, 'инструмент', 'инструмента', 'инструментов')} ${RU_PLURAL(off, 'выключен', 'выключены', 'выключено')}, ${backOn === 0 ? 'ни один не включён повторно' : `${backOn} ${RU_NOUN(backOn, 'инструмент', 'инструмента', 'инструментов')} ${RU_PLURAL(backOn, 'включён', 'включены', 'включено')} повторно`}`,
+      discard: 'Отменить изменения',
+      save: 'Сохранить изменения',
+      saving: 'Сохранение...'
+    },
+
+    vocabulary: {
+      facetRead: { label: 'Чтение', long: 'Читает данные из приложения. Ничего не изменяет.' },
+      facetWrite: { label: 'Запись', long: 'Создаёт или изменяет данные в приложении.' },
+      facetDestructive: { label: 'Необратимое действие', long: 'Может безвозвратно удалить данные в приложении.' },
+      facetUnclassified: { label: 'Неизвестное действие', long: 'Приложение не указало, что делает этот инструмент.' },
+      hintReadOnly: { label: 'Только чтение', long: 'Согласно описанию инструмента, он только читает данные.' },
+      hintCreate: { label: 'Создание', long: 'Создаёт что-то новое.' },
+      hintUpdate: { label: 'Изменение', long: 'Изменяет существующие данные.' },
+      hintDelete: { label: 'Удаление', long: 'Удаляет данные.' },
+      hintDestructive: { label: 'Необратимо', long: 'Здесь нельзя отменить внесённые изменения.' },
+      hintIdempotent: { label: 'Повторяемо', long: 'Повторный запуск даёт тот же результат, что и однократный.' },
+      hintOpenWorld: { label: 'Внешний доступ', long: 'Обращается к ресурсам вне этого приложения.' }
+    }
+  },
   tips: {
     close: 'Больше не показывать эту подсказку',
     items: {
@@ -5100,6 +5657,11 @@ export const ru = defineLocale({
       'composer-mentions': {
         title: 'Вложить и скомандовать',
         text: 'Введите @, чтобы добавить файл в разговор, / — чтобы выполнить команду.',
+      },
+      'local-runtime-update': {
+        title: 'Доступно обновление локального движка',
+        text: 'Обновите движок для локальных моделей. Активные запросы к ним могут прерваться.',
+        action: 'Обновить сейчас'
       },
       'local-setup': {
         title: 'Эта машина умеет запускать модели локально',

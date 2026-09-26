@@ -29,7 +29,13 @@ import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { CenteredThreadSpinner } from '@/components/assistant-ui/thread/status'
 import { findGroupOfPane } from '@/components/pane-shell/tree/model'
 import { $layoutTree, closeTreePane, moveTreePane, setTreeGroupTabStrip } from '@/components/pane-shell/tree/store'
-import { $workspaceOwnerLabels, workspaceOwnerTitle } from '@/components/pane-shell/workspace-scope'
+import {
+  $workspaceMode,
+  $workspaceOwnerLabels,
+  workspaceMainSessionRenamable,
+  workspaceOwnerTitle,
+  workspaceSessionRenamable
+} from '@/components/pane-shell/workspace-scope'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { transcribeAudio } from '@/hermes'
@@ -55,6 +61,7 @@ import {
 import { isSessionRemovalPending } from '@/store/session-removal'
 import { requestForSessionProfile } from '@/store/session-request-router'
 import {
+  $botChatScopes,
   $sessionStates,
   $sessionTileDelegateRevision,
   $sessionTiles,
@@ -792,6 +799,7 @@ export function SessionTabMenu({
   children,
   onClose,
   onHideTabBar,
+  renamable = true,
   storedSessionId,
   tabPaneId
 }: {
@@ -800,6 +808,8 @@ export function SessionTabMenu({
   onClose?: () => void
   /** Hide the zone's tab bar (main tab only — the sticky bar's off switch). */
   onHideTabBar?: () => void
+  /** Canonical Bot Chat main tabs expose an owner label, not a mutable session title. */
+  renamable?: boolean
   storedSessionId: string
   /** Layout-tree pane id — powers the Close-others/right/all verbs. */
   tabPaneId: string
@@ -819,6 +829,7 @@ export function SessionTabMenu({
         onPin={() => (pinned ? unpinSession(pinId) : pinSession(pinId))}
         pinned={pinned}
         profile={profile}
+        renamable={renamable}
         sessionId={storedSessionId}
         surface="tab"
         tabPaneId={tabPaneId}
@@ -837,6 +848,9 @@ export function SessionTabMenu({
  *  no session — no menu. */
 export function WorkspaceTabMenu({ children }: { children: React.ReactElement }) {
   const selected = useStore($selectedStoredSessionId)
+  const botChatScopes = useStore($botChatScopes)
+  const workspaceMode = useStore($workspaceMode)
+  const sessions = useStore($sessions)
 
   const hideTabBar = () => {
     const tree = $layoutTree.get()
@@ -855,6 +869,11 @@ export function WorkspaceTabMenu({ children }: { children: React.ReactElement })
     <SessionTabMenu
       onClose={() => closeTreePane('workspace')}
       onHideTabBar={hideTabBar}
+      renamable={workspaceMainSessionRenamable(
+        workspaceMode,
+        sessions.some(session => sessionMatchesStoredId(session, selected)),
+        botChatScopes[selected]
+      )}
       storedSessionId={selected}
       tabPaneId="workspace"
     >
@@ -896,6 +915,9 @@ export const watchSessionTiles = paneMirror<SessionTile>({
   tabWrap: (storedSessionId, tab) => (
     <SessionTabMenu
       onClose={() => requestCloseSessionTile(storedSessionId)}
+      renamable={workspaceSessionRenamable(
+        $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)
+      )}
       storedSessionId={storedSessionId}
       tabPaneId={`session-tile:${storedSessionId}`}
     >

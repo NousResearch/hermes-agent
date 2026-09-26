@@ -11,7 +11,12 @@ import {
   resolveRememberedActivePane,
   setWorkspaceOwnerLabel,
   setWorkspaceScope,
-  workspaceOwnerTitle
+  workspaceMainSessionRenamable,
+  workspaceMainSessionScope,
+  workspaceOwnerTitle,
+  workspaceSessionRenamable,
+  workspaceSessionTitle,
+  workspaceSessionUsesDraftTitle
 } from './workspace-scope'
 
 afterEach(() => {
@@ -66,6 +71,49 @@ describe('workspace owner title', () => {
     expect(workspaceOwnerTitle('Bot Chat', { workspaceMode: 'sessions' })).toBe('Bot Chat')
     // No label yet (roster not loaded): the stored title stands.
     expect(workspaceOwnerTitle('Bot Chat', { ...botChat, workspaceOwnerKey: 'bot:beta' })).toBe('Bot Chat')
+  })
+
+  it('uses the Bot Chat identity when its hidden row is absent from the visible session list', () => {
+    setWorkspaceOwnerLabel('bot:hermes', 'Hermes')
+
+    const botChat = {
+      workspaceMode: 'bots' as const,
+      workspaceOwnerKey: 'bot:hermes',
+      workspaceTabTitle: 'Bot Chat'
+    }
+
+    expect(workspaceSessionTitle(null, 'New session', botChat)).toBe('Hermes')
+    expect(workspaceSessionTitle(null, 'New session', undefined)).toBe('New session')
+    expect(workspaceSessionUsesDraftTitle(false, botChat)).toBe(false)
+    expect(workspaceSessionUsesDraftTitle(false, undefined)).toBe(true)
+    expect(workspaceSessionUsesDraftTitle(true, undefined)).toBe(false)
+    expect(workspaceSessionRenamable(botChat)).toBe(false)
+    expect(workspaceSessionRenamable(undefined)).toBe(true)
+  })
+
+  it('falls back to the active Bot owner when a hidden lineage tip misses the exact-id scope cache', () => {
+    setWorkspaceOwnerLabel('bot:wallstreetscout', 'Wallstreetscout')
+
+    const scope = workspaceMainSessionScope(undefined, 'bots', 'bot:wallstreetscout')
+
+    expect(scope).toEqual({
+      workspaceMode: 'bots',
+      workspaceOwnerKey: 'bot:wallstreetscout',
+      workspaceTabTitle: 'Bot Chat'
+    })
+    expect(workspaceSessionTitle(null, 'New session', scope)).toBe('Wallstreetscout')
+    expect(workspaceSessionUsesDraftTitle(false, scope)).toBe(false)
+    expect(workspaceMainSessionRenamable('bots', false, undefined)).toBe(false)
+  })
+
+  it('keeps an ordinary Sessions main draft titled and renamable as before', () => {
+    const scope = workspaceMainSessionScope(undefined, 'sessions', null)
+
+    expect(scope).toBeUndefined()
+    expect(workspaceSessionTitle(null, 'New session', scope)).toBe('New session')
+    expect(workspaceSessionUsesDraftTitle(false, scope)).toBe(true)
+    expect(workspaceMainSessionRenamable('sessions', false, scope)).toBe(true)
+    expect(workspaceMainSessionRenamable('bots', true, scope)).toBe(true)
   })
 })
 

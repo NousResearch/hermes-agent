@@ -100,6 +100,10 @@ export async function renameSessionPreferringRpc(
 interface SessionActions {
   sessionId: string
   title: string
+  /** Canonical Bot Chats use their exact `Bot Chat` title as registry identity.
+   *  Their workspace tab shows the bot owner label instead and must not offer
+   *  a rename action that would either 404 or break that registry contract. */
+  renamable?: boolean
   pinned?: boolean
   /** Backend-derived read state — drives the Mark as unread/read label. */
   unread?: boolean
@@ -189,6 +193,7 @@ function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; session
 function useSessionActions({
   sessionId,
   title,
+  renamable = true,
   pinned = false,
   unread = false,
   archived = false,
@@ -289,17 +294,21 @@ function useSessionActions({
 
   // IDENTITY — name/mark/reference the session.
   const identityItems: ActionItemSpec[] = [
-    spec({
-      disabled: !sessionId,
-      icon: 'edit',
-      label: r.rename,
-      onSelect: () => {
-        triggerHaptic('selection')
-        // Keep focus off the row trigger so it lands in the dialog input.
-        suppressCloseFocusRef.current = true
-        setRenameOpen(true)
-      }
-    }),
+    ...(renamable
+      ? [
+          spec({
+            disabled: !sessionId,
+            icon: 'edit',
+            label: r.rename,
+            onSelect: () => {
+              triggerHaptic('selection')
+              // Keep focus off the row trigger so it lands in the dialog input.
+              suppressCloseFocusRef.current = true
+              setRenameOpen(true)
+            }
+          })
+        ]
+      : []),
     spec({
       disabled: !onPin,
       icon: 'pin',

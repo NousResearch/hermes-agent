@@ -34,7 +34,14 @@ import {
   togglePaneVisible,
   toggleTargetZoneTabStrip
 } from '@/components/pane-shell/tree/store'
-import { $workspaceOwnerLabels, workspaceOwnerTitle } from '@/components/pane-shell/workspace-scope'
+import {
+  $workspaceMode,
+  $workspaceOwnerKey,
+  $workspaceOwnerLabels,
+  workspaceMainSessionScope,
+  workspaceSessionTitle,
+  workspaceSessionUsesDraftTitle
+} from '@/components/pane-shell/workspace-scope'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { discoverBundledPlugins } from '@/contrib/plugins'
 import { Slot } from '@/contrib/react/slot'
@@ -489,6 +496,12 @@ const syncWorkspaceTitle = () => {
   const selected = $selectedStoredSessionId.get()
   const stored = selected ? $sessions.get().find(s => sessionMatchesStoredId(s, selected)) : null
 
+  const botScope = workspaceMainSessionScope(
+    selected ? $botChatScopes.get()[selected] : undefined,
+    $workspaceMode.get(),
+    $workspaceOwnerKey.get()
+  )
+
   registry.register({
     id: 'workspace',
     area: 'panes',
@@ -496,10 +509,7 @@ const syncWorkspaceTitle = () => {
     // that. Keeping it here would re-register the pane on every keystroke.
     // A bot chat reads as its BOT: every canonical Bot Chat is stored under
     // the same name, which told two open bots apart by nothing (#99152).
-    title: workspaceOwnerTitle(
-      stored ? storedSessionTitle(stored) : NEW_SESSION_TITLE,
-      selected ? $botChatScopes.get()[selected] : undefined
-    ),
+    title: workspaceSessionTitle(stored ? storedSessionTitle(stored) : null, NEW_SESSION_TITLE, botScope),
     data: {
       // The tab's status dot — the SAME primitive the sidebar row and session
       // tiles render, so the main tab never disagrees with its sidebar row. A
@@ -509,7 +519,11 @@ const syncWorkspaceTitle = () => {
       // A draft's name lives in its composer, not in any session row, so the
       // label subscribes to it directly — typing renames the tab without
       // re-registering the pane.
-      tabTitle: stored ? undefined : () => <SessionDraftTitle scope={selected} />,
+      // Hidden canonical Bot Chats are absent from `$sessions`, but they are
+      // not drafts: their owner caption registered above must remain visible.
+      tabTitle: workspaceSessionUsesDraftTitle(Boolean(stored), botScope)
+        ? () => <SessionDraftTitle scope={selected} />
+        : undefined,
       // Pages aren't tab-able: the main zone's bar stands down while one shows.
       headerVeto: $workspaceIsPage.get(),
       // Page-owned controls take the vetoed tab row. Deliberately NOT the
@@ -532,6 +546,8 @@ const syncWorkspaceTitle = () => {
 $selectedStoredSessionId.listen(syncWorkspaceTitle)
 $sessions.listen(syncWorkspaceTitle)
 $botChatScopes.listen(syncWorkspaceTitle)
+$workspaceMode.listen(syncWorkspaceTitle)
+$workspaceOwnerKey.listen(syncWorkspaceTitle)
 $workspaceOwnerLabels.listen(syncWorkspaceTitle)
 $workspaceIsPage.listen(syncWorkspaceTitle)
 registry.subscribeArea(WORKSPACE_PAGE_HEADER_AREA, syncWorkspaceTitle)

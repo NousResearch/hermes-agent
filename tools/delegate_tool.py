@@ -709,7 +709,7 @@ DELEGATE_TASK_SCHEMA = {
                 "the child's next tool result mid-run. Be directive and specific.",
             ),
         },
-        "required": [],
+        "required": ["goal"],
     },
 }
 

@@ -1,4 +1,6 @@
 import asyncio
+from pathlib import Path
+from types import SimpleNamespace
 
 
 from gateway.config import Platform
@@ -10,6 +12,50 @@ from gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
+
+
+def test_public_assignee_metadata_controls_notification_and_wake_without_routing_changes(tmp_path, monkeypatch):
+    from gateway.kanban_watchers_notifier import _KanbanNotification
+    from hermes_cli.profiles import write_profile_meta
+    homes = [tmp_path / "a", tmp_path / "b"]
+    for home, name in zip(homes, ("Vera", "Another CTO")):
+        profile = home / ".hermes" / "profiles" / "rhea"
+        profile.mkdir(parents=True)
+        write_profile_meta(profile, display_name=name)
+    for home, expected in ((homes[0], "Vera"), (homes[1], "Another CTO"), (homes[0], "Vera")):
+        monkeypatch.setattr(Path, "home", lambda home=home: home)
+        monkeypatch.setenv("HERMES_HOME", str(home / ".hermes"))
+        task = SimpleNamespace(title="Repair", assignee="rhea", session_id="worker-session")
+        notification = _KanbanNotification(SimpleNamespace(), {"task": task,
+            "sub": {"platform": "whatsapp", "task_id": "t_existing", "chat_id": "chat",
+                    "delivery_mode": "notify+wake"}, "events": [SimpleNamespace(kind="completed")]},
+            platform_cls=Platform, sub_fail_counts={})
+        notification.build_wake_text()
+        assert f"@{expected}" in notification.head
+        assert expected in notification.synth
+        assert "rhea" not in notification.head + notification.synth
+        assert task.assignee == "rhea"
+
+
+def test_unknown_public_assignee_omits_internal_identifier(tmp_path, monkeypatch):
+    from gateway.kanban_watchers_notifier import _public_assignee_label
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    assert _public_assignee_label("rhea") == ""
+    assert _public_assignee_label("../private-profile") == ""
+    assert _public_assignee_label(None) == ""
+    from gateway.kanban_watchers_notifier import _KanbanNotification
+    for mode in ("notify+wake", "wake"):
+        task = SimpleNamespace(title="Repair", assignee="rhea", session_id="worker-session")
+        notification = _KanbanNotification(SimpleNamespace(), {"task": task,
+            "sub": {"platform": "whatsapp", "task_id": "t_existing", "chat_id": "chat",
+                    "delivery_mode": mode}, "events": [SimpleNamespace(kind="completed")]},
+            platform_cls=Platform, sub_fail_counts={})
+        notification.build_wake_text()
+        assert "Assignee:" not in notification.synth
+        assert "rhea" not in notification.head + notification.synth
+        assert "Title: Repair" in notification.synth
+        assert task.assignee == "rhea"
 
 
 class RecordingAdapter:

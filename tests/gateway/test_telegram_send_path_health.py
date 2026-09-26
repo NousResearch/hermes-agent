@@ -78,6 +78,49 @@ async def test_send_short_flood_still_retries_inline(monkeypatch):
     assert result.message_id == "7"
     sleep.assert_awaited_once_with(2.0)
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wait,expected_calls,expected_sleep", [
+    (35.0, 2, 35.0),
+    (60.0, 2, 60.0),
+    (60.1, 1, None),
+])
+async def test_wrapper_bounds_real_telegram_flood_retry(monkeypatch, wait, expected_calls, expected_sleep):
+    adapter = _make_adapter()
+    adapter._rich_send_disabled = True
+    adapter._bot.send_message = AsyncMock(side_effect=[_FloodError(wait), MagicMock(message_id=7)])
+    # Simulate the server cooldown expiring after the mocked sleep.
+    monkeypatch.setattr(adapter, "_send_flood_cooldown_remaining", lambda _chat: None)
+    sleep = AsyncMock()
+    monkeypatch.setattr("gateway.platforms.base.asyncio.sleep", sleep)
+    monkeypatch.setattr("gateway.platforms.base.random.uniform", lambda *_args: 0.7)
+
+    result = await adapter._send_with_retry("123", "hello")
+    assert result.success is (expected_sleep is not None)
+    assert adapter._bot.send_message.await_count == expected_calls
+    if expected_sleep is None:
+        sleep.assert_not_awaited()
+        assert result.retry_after == wait
+    else:
+        # The independent per-chat outbound slot may also sleep up to one second.
+        assert [call.args[0] for call in sleep.await_args_list if call.args[0] > 5.0] == [
+            expected_sleep if wait == 60.0 else wait + 0.7]
+
+@pytest.mark.asyncio
+async def test_consecutive_real_telegram_floods_return_for_redelivery(monkeypatch):
+    adapter = _make_adapter()
+    adapter._rich_send_disabled = True
+    adapter._bot.send_message = AsyncMock(side_effect=[_FloodError(35.0), _FloodError(35.0)])
+    monkeypatch.setattr(adapter, "_send_flood_cooldown_remaining", lambda _chat: None)
+    sleep = AsyncMock()
+    monkeypatch.setattr("gateway.platforms.base.asyncio.sleep", sleep)
+    monkeypatch.setattr("gateway.platforms.base.random.uniform", lambda *_args: 0.0)
+
+    result = await adapter._send_with_retry("123", "hello")
+    assert result.success is False
+    assert result.retry_after == 35.0
+    assert adapter._bot.send_message.await_count == 2
+    assert [call.args[0] for call in sleep.await_args_list if call.args[0] > 5.0] == [35.0]
+
 
 @pytest.mark.asyncio
 async def test_send_times_out_instead_of_hanging(monkeypatch):

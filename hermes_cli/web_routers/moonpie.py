@@ -14,6 +14,7 @@ import json
 import logging
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
@@ -23,6 +24,37 @@ from hermes_cli.web_routers._common import http_failure, require
 
 _log = logging.getLogger("hermes_cli.web_server")
 router = APIRouter(prefix="/api/moonpie")
+
+# ---------------------------------------------------------------------------
+# Agent integration
+# ---------------------------------------------------------------------------
+
+_agent_instance: Optional[Any] = None
+_agent_lock = asyncio.Lock()
+_agent_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="moonpie_agent")
+_device_histories: Dict[str, List[Dict[str, Any]]] = {}
+
+
+async def _get_agent() -> Optional[Any]:
+    """Lazily initialize a shared AIAgent for MoonPie clients."""
+    global _agent_instance
+    if _agent_instance is not None:
+        return _agent_instance
+    async with _agent_lock:
+        if _agent_instance is not None:
+            return _agent_instance
+        try:
+            from run_agent import AIAgent
+            _agent_instance = AIAgent(
+                platform="moonpie",
+                quiet_mode=True,
+                skip_memory=True,
+            )
+            _log.info("MoonPie agent initialized")
+        except Exception as exc:
+            _log.warning("MoonPie agent init failed: %s", exc)
+            _agent_instance = None
+    return _agent_instance
 
 # ---------------------------------------------------------------------------
 # Models
@@ -375,12 +407,63 @@ async def _moonpie_loop(conn: _MoonPieConnection):
         params = data.get("params", {})
 
         if method == "conversation.message":
-            # TODO: Route to the agent turn loop via the gateway
-            await conn.send_json({
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {"status": "queued"},
-            })
+            content = params.get("content", "")
+            agent = await _get_agent()
+
+            if agent is None:
+                # Agent not available — graceful fallback to echo
+                await conn.send_json({
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {"status": "complete", "content": f"Echo: {content}"},
+                })
+                continue
+
+            # Maintain per-device conversation history
+            history = _device_histories.get(conn.device_id, [])
+
+            loop = asyncio.get_event_loop()
+
+            def _run_agent():
+                return agent.run_conversation(
+                    user_message=content,
+                    conversation_history=history,
+                    task_id=f"moonpie-{conn.device_id}",
+                )
+
+            try:
+                result = await loop.run_in_executor(_agent_executor, _run_agent)
+                response = result.get("final_response", "") if result else ""
+
+                # Update history for next turn
+                _device_histories[conn.device_id] = result.get("messages", history)
+
+                # Stream-style delivery for real-time UI feel
+                if response:
+                    await conn.send_json({
+                        "jsonrpc": "2.0",
+                        "method": "conversation.delta",
+                        "params": {"content": response},
+                    })
+                await conn.send_json({
+                    "jsonrpc": "2.0",
+                    "method": "conversation.complete",
+                    "params": {},
+                })
+
+                # JSON-RPC request/response compatibility
+                await conn.send_json({
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {"status": "complete", "content": response},
+                })
+            except Exception as exc:
+                _log.error("MoonPie agent turn failed: %s", exc, exc_info=True)
+                await conn.send_json({
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "error": {"code": -32000, "message": str(exc)},
+                })
 
         elif method == "conversation.start":
             conv_id = f"conv-{uuid.uuid4().hex[:12]}"

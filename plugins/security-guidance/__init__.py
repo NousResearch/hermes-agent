@@ -13,7 +13,7 @@ import json
 import logging
 import os
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from . import patterns as _patterns
 
@@ -27,8 +27,10 @@ _TARGET_TOOLS: Dict[str, Tuple[str, Tuple[str, ...]]] = {
     "skill_manage": ("file_path", ("file_content", "new_string")),
 }
 
-# Above this we skip: matching a multi-MB blob has poor signal and slows the agent loop.
+# Bound each regex input without leaving larger writes uninspected. Adjacent
+# windows overlap so a short dangerous construct cannot hide at a boundary.
 _MAX_SCAN_BYTES = 256 * 1024
+_SCAN_OVERLAP_BYTES = 4 * 1024
 
 _TRUTHY = {"1", "true", "yes", "on"}
 
@@ -69,12 +71,37 @@ def _rule_matches(entry: Dict[str, Any], path: str, content: str) -> bool:
     return any(sub in content for sub in entry["substrings"]) or (entry["regex"] is not None and bool(entry["regex"].search(content)))
 
 
+def _scan_windows(content: str) -> Iterator[str]:
+    """Yield bounded, overlapping windows covering the complete write."""
+    encoded = content.encode("utf-8", errors="ignore")
+    if len(encoded) <= _MAX_SCAN_BYTES:
+        yield content
+        return
+
+    step = _MAX_SCAN_BYTES - _SCAN_OVERLAP_BYTES
+    for start in range(0, len(encoded), step):
+        yield encoded[start : start + _MAX_SCAN_BYTES].decode(
+            "utf-8", errors="ignore"
+        )
+
+
 def _scan_content(path: str, content: str) -> List[Tuple[str, str]]:
     """Return [(ruleName, reminder), ...]; each rule fires at most once per call."""
-    if not content or len(content.encode("utf-8", errors="ignore")) > _MAX_SCAN_BYTES:
+    if not content:
         return []
     path = path or ""
-    return [(e["ruleName"], e["reminder"]) for e in _COMPILED if _rule_matches(e, path, content)]
+    matched: set[int] = set()
+    for window in _scan_windows(content):
+        for index, entry in enumerate(_COMPILED):
+            if index not in matched and _rule_matches(entry, path, window):
+                matched.add(index)
+        if len(matched) == len(_COMPILED):
+            break
+    return [
+        (entry["ruleName"], entry["reminder"])
+        for index, entry in enumerate(_COMPILED)
+        if index in matched
+    ]
 
 
 def _scan_args(tool_name: str, args: Any) -> List[Tuple[str, str]]:

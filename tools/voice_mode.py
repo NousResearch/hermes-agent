@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 from hermes_constants import is_termux as _is_termux_environment
 from hermes_platform.host.runtime import is_wsl
+from tools.transcription_common import BUILTIN_STT_PROVIDERS
 from tools.voice_mode_transcript import _voice_config, is_voice_stop_phrase, is_whisper_hallucination
 
 # ── Recording parameters ──
@@ -1473,8 +1474,9 @@ def _check_plugin_stt_provider(provider: str) -> bool:
         return False
 
 
-# STT providers handled natively by tools.transcription_tools -> status label.
-_NATIVE_STT_LABELS = {
+# Display names for the STT providers handled natively by tools.transcription_tools,
+# keyed by the same ids as ``BUILTIN_STT_PROVIDERS`` (the single source of truth).
+_STT_PROVIDER_DISPLAY_NAMES = {
     "local": "local faster-whisper",
     "local_command": "local command",
     "groq": "Groq",
@@ -1482,6 +1484,16 @@ _NATIVE_STT_LABELS = {
     "mistral": "Mistral Voxtral",
     "xai": "xAI Grok STT",
     "elevenlabs": "ElevenLabs Scribe",
+    "deepinfra": "DeepInfra",
+}
+
+# STT providers handled natively by tools.transcription_tools -> status label.
+# The *key set* is derived from ``BUILTIN_STT_PROVIDERS`` so a built-in added there
+# can never be missing here and reported as MISSING by the CLI voice gate (#120118);
+# only the display names above are hand-maintained, unknown ids fall back to the id.
+_NATIVE_STT_LABELS = {
+    name: _STT_PROVIDER_DISPLAY_NAMES.get(name, name)
+    for name in BUILTIN_STT_PROVIDERS
 }
 
 

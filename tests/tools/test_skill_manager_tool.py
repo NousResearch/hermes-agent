@@ -29,6 +29,7 @@ from tools.skill_manager_tool import (
 from agent.skill_utils import (
     extract_skill_description,
     parse_frontmatter,
+    SKILL_PROMPT_DESC_LIMIT,
 )
 
 

@@ -1368,8 +1368,16 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
 
     def _add(text) -> None:
         text = flatten_message_text(text, sep="")
-        if text and text not in parts:
-            parts.append(text)
+        if not text:
+            return
+        # Containment on a whitespace-free key, not equality: a joined ``reasoning``/``reasoning_content``
+        # already holds the same thinking as the ``reasoning_details`` entries, and differs only in how
+        # the streamed deltas were rejoined -- so exact-match dedupe let every block through a second
+        # time. Reachable today for multi-block signed thinking (transports/anthropic.py sets both).
+        key = "".join(text.split())
+        if any(key in "".join(part.split()) for part in parts):
+            return
+        parts.append(text)
     _add(getattr(assistant_message, "reasoning", None))
     _add(getattr(assistant_message, "reasoning_content", None))
     # reasoning_details: [{"type": "reasoning.summary", "summary": "...", ...}, ...]

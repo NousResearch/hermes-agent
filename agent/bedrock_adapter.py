@@ -745,17 +745,38 @@ def _parse_tool_args(args) -> Any:
         return {}
 
 
+def _reasoning_blocks_from_details(reasoning_details) -> List[Dict]:
+    """``reasoning_details`` → Converse reasoning blocks, in the order they were recorded.
+
+    The ``bedrock_content_blocks`` sidecar is memory-only, so this is the only route a resumed session
+    has back to its reasoning: ``reasoning_details`` is a state.db column (``session_persistence.
+    _ROW_REASONING_KEYS``) and the sidecar is not (#121293). Only *signed* thinking is rebuilt: an
+    unsigned reasoning block replayed to a signing model is exactly what it rejects, and today nothing
+    is replayed at all, so emitting one would be new wire content with no evidence behind it."""
+    blocks: List[Dict] = []
+    for detail in reasoning_details or []:
+        if not isinstance(detail, dict):
+            continue
+        kind = str(detail.get("type") or "").strip().lower()
+        if kind == "thinking":
+            text, signature = detail.get("thinking") or detail.get("text"), detail.get("signature")
+            if isinstance(text, str) and text and isinstance(signature, str) and signature:
+                blocks.append({"reasoningContent": {"reasoningText": {"text": text, "signature": signature}}})
+        elif kind == "redacted_thinking":
+            redacted = _decode_redacted(detail.get("data") or detail.get("redactedContentBase64"))
+            if redacted is not None:
+                blocks.append({"reasoningContent": {"redactedContent": redacted}})
+    return blocks
+
+
 def _assistant_blocks(msg: Dict, content) -> List[Dict]:
     """Assistant message → Converse blocks. An ordered ``bedrock_content_blocks`` sidecar is authoritative;
-    otherwise redacted thinking from ``reasoning_details`` (byte-for-byte), then text, then tool calls."""
+    otherwise signed and redacted thinking from ``reasoning_details`` (byte-for-byte, in recorded order),
+    then text, then tool calls."""
     ordered_blocks = msg.get("bedrock_content_blocks")
     if isinstance(ordered_blocks, list) and (content_blocks := _replay_ordered_blocks(ordered_blocks)):
         return content_blocks
-    redacted = [
-        _decode_redacted(d.get("data") or d.get("redactedContentBase64"))
-        for d in (msg.get("reasoning_details") or []) if isinstance(d, dict) and d.get("type") == "redacted_thinking"
-    ]
-    content_blocks: List[Dict] = [{"reasoningContent": {"redactedContent": r}} for r in redacted if r is not None]
+    content_blocks: List[Dict] = _reasoning_blocks_from_details(msg.get("reasoning_details"))
     if isinstance(content, str) and content.strip():
         content_blocks.append({"text": content})
     elif isinstance(content, list):
@@ -821,13 +842,38 @@ def _tool_call_ns(tool_use_id: str, name: str, input_dict) -> SimpleNamespace:
     )
 
 
+def _reasoning_details_from_blocks(ordered_blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Ordered Converse blocks → the ``reasoning_details`` list that gets persisted.
+
+    Signed thinking has to be recorded here and not only on the ``bedrock_content_blocks`` sidecar: the
+    sidecar never reaches state.db, so after ``--resume`` the signature is the one thing the session
+    cannot rebuild (#121293). The entry shape is the Anthropic one (``{"type": "thinking", "thinking",
+    "signature"}``, see ``anthropic_message_convert._extract_preserved_thinking_blocks``) so a single
+    replay reader serves both providers, and it deliberately does not add a column: schema migration 08
+    added ``anthropic_content_blocks`` and 09 removed it again (``session_schema_history``).
+
+    Unsigned thinking is left out. It is already in ``reasoning_content`` for display, it is not
+    replayable, and recording it would double every block in ``extract_reasoning``."""
+    details: List[Dict[str, Any]] = []
+    for block in ordered_blocks or []:
+        reasoning = block.get("reasoningContent") if isinstance(block, dict) else None
+        if not isinstance(reasoning, dict):
+            continue
+        text, signature = reasoning.get("text"), reasoning.get("signature")
+        if isinstance(text, str) and text and isinstance(signature, str) and signature:
+            details.append({"type": "thinking", "thinking": text, "signature": signature})
+        encoded = reasoning.get("redactedContentBase64")
+        if isinstance(encoded, str) and encoded:
+            details.append({"type": "redacted_thinking", "data": encoded})
+    return details
+
+
 class _ResponseParts:
     """Accumulator shared by the sync and streaming normalizers."""
 
     def __init__(self) -> None:
         self.text_parts: List[str] = []
         self.reasoning_parts: List[str] = []
-        self.reasoning_details: List[Dict[str, Any]] = []
         self.tool_calls: List[SimpleNamespace] = []
 
     def absorb_reasoning(self, reasoning: Any, block: Dict[str, Any], on_text=None) -> None:
@@ -848,7 +894,6 @@ class _ResponseParts:
             block["signature"] = block.get("signature", "") + signature
         encoded = _encode_redacted(reasoning.get("redactedContent"))
         if encoded:
-            self.reasoning_details.append({"type": "redacted_thinking", "data": encoded})
             block["redactedContentBase64"] = encoded
 
     def build(self, ordered_blocks: List[Dict[str, Any]], usage_data: Dict[str, int], stop_reason: str, model: str) -> SimpleNamespace:
@@ -856,7 +901,7 @@ class _ResponseParts:
         (OpenAI's prompt_tokens includes them), so they are added back."""
         msg = SimpleNamespace(
             role="assistant", content="\n".join(self.text_parts) if self.text_parts else None,
-            tool_calls=self.tool_calls or None, reasoning_details=self.reasoning_details or None,
+            tool_calls=self.tool_calls or None, reasoning_details=_reasoning_details_from_blocks(ordered_blocks) or None,
             reasoning_content="\n\n".join(self.reasoning_parts) if self.reasoning_parts else None,
             bedrock_content_blocks=ordered_blocks or None,
         )

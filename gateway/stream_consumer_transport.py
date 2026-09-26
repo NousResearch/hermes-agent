@@ -199,10 +199,11 @@ class StreamTransportMixin:
         return False
 
     async def _abandon_native_stream(self) -> None:
-        """Seal an orphaned draft stream on turn death (stale exit / cancel): else the live
-        indicator stays forever and armed interception state leaks into the next turn.
-        Never sets delivery flags."""
+        """Seal an orphaned stream on turn death (stale exit / cancel): else the live
+        indicator (an open draft, or the edit transport's cursor) stays forever and armed
+        interception state leaks into the next turn. Never sets delivery flags."""
         if not self._use_draft_streaming:
+            await self._strip_abandoned_cursor()
             return
         if getattr(type(self.adapter), "abandon_open_draft", None) is None:
             return
@@ -212,6 +213,22 @@ class StreamTransportMixin:
                 metadata=self._draft_metadata())
         except Exception as e:
             logger.debug("abandon_open_draft failed (best-effort): %s", e)
+
+    async def _strip_abandoned_cursor(self) -> None:
+        """Edit transport: re-edit the frame already on screen without its cursor. Only what the
+        user already saw goes out — the dead turn's later deltas are stale."""
+        shown, cursor = self._last_sent_text, self.cfg.cursor
+        if self._use_native_streaming or not (cursor and shown and self._has_real_preview()):
+            return
+        at = shown.rfind(cursor)
+        # After the cursor come only the closers ensure_closed_code_fences appended.
+        if at < 0 or shown[at + len(cursor):].strip("\n`"):
+            return
+        try:
+            await self._edit_message(message_id=self._message_id,
+                                     content=shown[:at] + shown[at + len(cursor):], finalize=True)
+        except Exception as e:
+            logger.debug("abandoned cursor strip failed (best-effort): %s", e)
 
     def _has_real_preview(self) -> bool:
         """A real (editable, deletable) preview message id is on screen."""

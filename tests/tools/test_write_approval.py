@@ -318,37 +318,38 @@ def test_memory_inline_deny_blocks(hermes_home, approval_callback_cleanup):
     assert wa.pending_count("memory") == 0  # denied, not staged
 
 
-def test_single_query_probe_import_failure_preserves_interactive_callback(
-    approval_callback_cleanup, monkeypatch
+@pytest.mark.parametrize("failure, staged", [("import", False), ("runtime", True)])
+def test_memory_probe_failure_preserves_approval_contract(
+    failure, staged, hermes_home, approval_callback_cleanup, monkeypatch
 ):
-    """A broken headless-context probe must not disable a live CLI callback."""
     import sys
 
-    from tools import write_approval as wa
+    from tools import approval, write_approval as wa
+    from tools.memory_tool import memory_tool, MemoryStore
     from tools.terminal_tool import set_approval_callback
 
-    set_approval_callback(lambda *args, **kwargs: "once")
-    monkeypatch.setitem(sys.modules, "tools.approval", None)
+    _set_approval("memory", True)
+    if failure == "import":
+        monkeypatch.setitem(sys.modules, "tools.approval", None)
+    else:
+        def broken_probe():
+            raise RuntimeError("probe failed")
+        monkeypatch.setattr(approval, "_is_single_query_approval_context", broken_probe)
 
-    assert wa._interactive_approval_available() is True
+    calls = []
+    def approve(*args, **kwargs):
+        calls.append(args)
+        return "once"
+    set_approval_callback(approve)
+    store = MemoryStore()
+    store.load_from_disk()
+    result = json.loads(memory_tool("add", "memory", "probe fact", store=store))
 
-
-def test_single_query_probe_exception_fails_safe_to_staging(
-    approval_callback_cleanup, monkeypatch
-):
-    """A broken headless-context probe must not fall through to prompting."""
-    from tools import approval
-    from tools import write_approval as wa
-    from tools.terminal_tool import set_approval_callback
-
-    set_approval_callback(lambda *args, **kwargs: "once")
-    monkeypatch.setattr(
-        approval,
-        "_is_single_query_approval_context",
-        lambda: (_ for _ in ()).throw(RuntimeError("probe failed")),
-    )
-
-    assert wa._interactive_approval_available() is False
+    assert result["success"] is True
+    assert bool(result.get("staged")) is staged
+    assert bool(calls) is not staged
+    assert store.memory_entries == ([] if staged else ["probe fact"])
+    assert wa.pending_count("memory") == int(staged)
 
 
 def test_single_query_memory_stages_without_inline_prompt(

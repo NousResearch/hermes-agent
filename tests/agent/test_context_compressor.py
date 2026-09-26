@@ -1113,12 +1113,12 @@ class TestSustainedOverloadEscalation:
         with patch("agent.context_compressor.call_llm", side_effect=self._err()):
             third = second.compress(msgs, current_tokens=999999, force=True)
         # Third consecutive abort IN THE SESSION escalates even though this object saw one.
-        # (A fresh object's first overload may burn the aux→main one-shot retry first, which
-        # claims telemetry failure_class=aux_model_fallback; the escalation contract is the
-        # committed fallback + settled budget, not which telemetry label won the race.)
+        # A fresh object's first overload burns the aux→main one-shot retry, which labels the
+        # attempt aux_model_fallback first; the escalated commit must still say what happened.
         assert third != msgs
         assert second._last_summary_fallback_used is True
         assert second._last_summary_overload_degraded is True
+        assert second._last_compression_telemetry["failure_class"] == "summary_overload_degraded"
         # The committed degraded fallback settles the budget so recovery gets a fresh run
         # (the boundary caller records the completed compaction, as compress_context does).
         second.record_completed_compaction(used_fallback=True)

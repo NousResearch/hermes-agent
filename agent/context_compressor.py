@@ -5208,10 +5208,9 @@ Write only the summary body. Do not include any preamble or prefix."""
         self._last_summary_fallback_used = True
         telemetry["fallback_used"] = True
         # Feasibility skip is deliberate, not aux-model breakage — keep the telemetry class distinct.
-        telemetry["failure_class"] = telemetry.get("failure_class") or (
-            "feasibility_skip" if feasibility_skip
-            else "summary_overload_degraded" if getattr(self, "_last_summary_overload_degraded", False)
-            else "summary_generation_failed"
+        # An escalated overload outranks the aux->main retry's earlier aux_model_fallback label.
+        telemetry["failure_class"] = "summary_overload_degraded" if self._last_summary_overload_degraded else (
+            telemetry.get("failure_class") or ("feasibility_skip" if feasibility_skip else "summary_generation_failed")
         )
         return self._build_static_fallback_summary(
             turns_to_summarize,

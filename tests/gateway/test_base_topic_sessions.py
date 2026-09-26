@@ -136,6 +136,25 @@ class TestBasePlatformTopicSessions:
             ("complete", "1", ProcessingOutcome.SUCCESS),
         ]
 
+    @pytest.mark.asyncio
+    async def test_response_metadata_added_by_handler_reaches_final_send(self):
+        adapter = DummyTelegramAdapter()
+
+        async def handler(event):
+            event.metadata["telegram_continue_token"] = "abc123"
+            return "ack"
+
+        adapter.set_message_handler(handler)
+        event = _make_event("-1001", "17585")
+
+        await adapter._process_message_background(event, build_session_key(event.source))
+
+        assert adapter.sent[0]["metadata"] == {
+            "thread_id": "17585",
+            "telegram_continue_token": "abc123",
+            "notify": True,
+        }
+
 
 class TestTelegramAutoTtsCaptionDelivery:
     @staticmethod

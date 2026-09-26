@@ -102,10 +102,21 @@ vault:
   onepassword:
     enabled: false          # opt OUT of a detected manager (default: on when installed)
     account: ""             # `op --account` shorthand; empty = default
+    binary_path: ""         # absolute path to raw `op`; empty = PATH
+    authenticated_wrapper_path: ""  # absolute op-compatible wrapper that owns auth
     service_account_token_env: OP_SERVICE_ACCOUNT_TOKEN
   bitwarden:
     enabled: false
 ```
+
+For a host-owned wrapper that injects its own authentication only into the
+`op` child, set its absolute path as `authenticated_wrapper_path`. It takes
+precedence over `binary_path`, account, token and interactive-session auth.
+Hermes then treats the manager as available to headless sessions without ever
+loading the wrapper's service-account token. The wrapper must be a trusted,
+noninteractive executable protected by filesystem permissions. Its 1Password
+identity still defines which vaults and login metadata Hermes can enumerate,
+so keep it read-only and grant only what browser automation actually needs.
 
 ## What this does and does not guarantee
 

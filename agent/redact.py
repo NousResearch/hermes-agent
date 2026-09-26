@@ -542,8 +542,10 @@ _URL_BARE_TOKEN_RE = re.compile(
 # JWTs always start with "eyJ" (base64 "{"); 1-, 2- and 3-part forms.
 _JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_=-]{4,}){0,2}")
 
-# E.164 phone numbers, 7-15 digits; the lookahead rejects hex strings / identifiers.
-_SIGNAL_PHONE_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
+# E.164 phone numbers, 7-15 digits; the lookahead rejects hex strings / identifiers, and the
+# lookbehind rejects a ``+`` inside a word, e.g. version/build suffixes such as
+# ``python-3.14.7+20260901`` or ``pkg==1.2.3+20260901`` (a real number never follows ``[\w.-]``).
+_SIGNAL_PHONE_RE = re.compile(r"(?<![A-Za-z0-9._-])(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
 
 # CDP-URL path: web URLs with a query string / with ``user:password@`` userinfo
 # (DB protocols are covered by _DB_CONNSTR_RE).

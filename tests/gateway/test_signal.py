@@ -316,6 +316,29 @@ class TestSignalPhoneRedaction:
         assert "+155" in result  # Prefix preserved
         assert "4567" in result  # Suffix preserved
 
+    @pytest.mark.parametrize("text", [
+        "Call +15551234567 now",
+        "+15551234567",
+        "Tel:+819012345678",
+        "(+442071838750)",
+        "電話+819012345678",
+    ])
+    def test_real_numbers_still_masked(self, text):
+        from agent.redact import redact_sensitive_text
+        assert "****" in redact_sensitive_text(text)
+
+    @pytest.mark.parametrize("text", [
+        "/home/u/.hermes/tools/python-3.14.7+20260901-darwin-x64/bin/python3",
+        "pkg==1.2.3+20260901",
+        "build 1.0+1234567",
+        "ver_+1234567",
+    ])
+    def test_plus_inside_a_word_is_not_a_phone_number(self, text):
+        """Version/build suffixes like ``3.14.7+20260901`` must survive intact:
+        masking them breaks paths the agent copies from tool output."""
+        from agent.redact import redact_sensitive_text
+        assert redact_sensitive_text(text) == text
+
 
 # ---------------------------------------------------------------------------
 # Authorization in run.py

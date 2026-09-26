@@ -6,6 +6,7 @@ Exit code 2 blocks a ``pre_tool_call`` even without JSON (Claude-Code / Cursor).
 
 from __future__ import annotations
 
+import asyncio
 import difflib
 import json
 import logging
@@ -45,6 +46,10 @@ _BLOCKING_EVENTS = frozenset({"pre_tool_call"})
 _TOOL_EVENTS = frozenset({"pre_tool_call", "post_tool_call"})
 _STDERR_MESSAGE_LIMIT = 400
 _TRUTHY = {"1", "true", "yes", "on"}
+# Wall-clock ceiling for a consent prompt raised on the event loop thread (#120356). Long enough
+# for a human at a real terminal to answer, far below the ~120s the gateway loop-liveness
+# watchdog tolerates before it hard-exits the process.
+_CONSENT_TIMEOUT_S = 30.0
 # kwargs promoted to top-level payload keys; everything else lands under ``extra``.
 _TOP_LEVEL_PAYLOAD_KEYS = {"tool_name", "args", "session_id", "parent_session_id"}
 
@@ -544,6 +549,36 @@ def _flock_unlock(lock_fh: Any) -> None:
         fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
 
 
+def _on_event_loop_thread() -> bool:
+    """True when the caller runs on the thread that drives a live asyncio loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
+def _read_answer_off_loop(timeout: float) -> Optional[str]:
+    """Read the consent line on a worker thread so the caller's loop keeps running.
+
+    Returns ``None`` if nobody answers within ``timeout``. The worker is a daemon, so a
+    read nobody ever satisfies is reclaimed at process exit rather than pinning the thread.
+    """
+    answers: List[Optional[str]] = []
+    done = threading.Event()
+
+    def _read() -> None:
+        try:
+            answers.append(input("Allow this hook to run? [y/N]: "))
+        except (EOFError, KeyboardInterrupt, OSError):
+            answers.append(None)  # closed stdin / ^C: same as declining
+        finally:
+            done.set()
+
+    threading.Thread(target=_read, name="shell-hook-consent", daemon=True).start()
+    return answers[0] if done.wait(timeout) and answers else None
+
+
 def _prompt_and_record(event: str, command: str, *, accept_hooks: bool) -> bool:
     """Approve an unseen ``(event, command)`` pair; True iff granted and recorded."""
     if accept_hooks:
@@ -557,11 +592,27 @@ def _prompt_and_record(event: str, command: str, *, accept_hooks: bool) -> bool:
         f"    Event:   {event}\n    Command: {command}\n\n"
         f"  Commands run with your full user credentials.  Only approve\n  commands you trust."
     )
-    try:
-        answer = input("Allow this hook to run? [y/N]: ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        print()  # keep the terminal tidy after ^C
-        return False
+    # A launcher that hides a console still leaves stdin a TTY (Windows Startup-folder .vbs,
+    # #120356), so isatty() cannot prove anyone is watching. Prompts raised on the event loop
+    # thread freeze the gateway until the liveness watchdog hard-exits it, so bound the wait
+    # there and fail closed; an attended CLI blocks as it always has.
+    if _on_event_loop_thread():
+        answer = _read_answer_off_loop(_CONSENT_TIMEOUT_S)
+        if answer is None:
+            logger.warning(
+                "shell hook consent prompt unanswered after %.0fs on the event loop thread "
+                "— treating as declined. Set hooks_auto_accept: true, or pass --accept-hooks / "
+                "HERMES_ACCEPT_HOOKS=1, to approve without a prompt.",
+                _CONSENT_TIMEOUT_S,
+            )
+            return False
+    else:
+        try:
+            answer = input("Allow this hook to run? [y/N]: ")
+        except (EOFError, KeyboardInterrupt):
+            print()  # keep the terminal tidy after ^C
+            return False
+    answer = answer.strip().lower()
     if answer in {"y", "yes"}:
         _record_approval(event, command)
     return answer in {"y", "yes"}

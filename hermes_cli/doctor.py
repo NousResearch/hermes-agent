@@ -94,13 +94,20 @@ def _login_row(label: str, status: dict, ok_detail: str = "(logged in)", show_er
 def _check_api_connectivity(should_fix: bool, f: Finding) -> None:
     """Parallel HTTP/SDK probes for every configured provider; results printed in submission order."""
     probes = build_probes()
+    from hermes_cli.doctor_report import _json_mode, _record_check
     # Single status line so users see something happening; ``\r`` clears it once results land.
-    print(f"  {color(f'Running {len(probes)} connectivity checks in parallel…', Colors.DIM)}", end="", flush=True)
+    if not _json_mode:
+        print(f"  {color(f'Running {len(probes)} connectivity checks in parallel…', Colors.DIM)}", end="", flush=True)
     results = run_probes(probes)
-    print("\r" + " " * 70 + "\r", end="")
+    if not _json_mode:
+        print("\r" + " " * 70 + "\r", end="")
     for r in results:
         for glyph, label, detail in r.lines:
-            print(f"  {glyph} {label}" + (f" {detail}" if detail else ""))
+            if not _json_mode:
+                print(f"  {glyph} {label}" + (f" {detail}" if detail else ""))
+            glyph_text = str(glyph)
+            status = "fail" if "✗" in glyph_text else "warn" if "⚠" in glyph_text else "ok"
+            _record_check(status, label, str(detail))
         if r.issues and not _has_healthy_oauth_fallback_for_apikey_provider(r.label):
             f.issues.extend(r.issues)
 
@@ -162,18 +169,127 @@ def _print_summary(should_fix: bool, total: Finding) -> None:
     print()
 
 
+def _sanitize_url_for_display(url: str) -> str:
+    """Remove credentials, query parameters, and fragments from a URL."""
+    if not url:
+        return url
+    try:
+        from urllib.parse import urlparse, urlunparse
+
+        parsed = urlparse(url)
+        netloc = parsed.netloc.rsplit("@", 1)[-1]
+        return urlunparse(parsed._replace(netloc=netloc, query="", fragment=""))
+    except Exception:
+        return "<url-redacted>"
+
+
+def _show_verbose_route_details() -> None:
+    """Show resolved primary routing configuration for ``doctor --verbose``."""
+    _section("Route Configuration")
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        model_cfg = cfg.get("model") if isinstance(cfg, dict) else {}
+        model_cfg = model_cfg if isinstance(model_cfg, dict) else {}
+        provider = str(model_cfg.get("provider") or "auto")
+        model = str(model_cfg.get("default") or model_cfg.get("model") or "")
+        base_url = str(model_cfg.get("base_url") or "")
+        api_mode = str(model_cfg.get("api_mode") or "")
+
+        check_info(f"provider: {provider}")
+        if model:
+            check_info(f"model: {model}")
+        if base_url:
+            check_info(f"base_url: {_sanitize_url_for_display(base_url)}")
+        if api_mode:
+            check_info(f"api_mode: {api_mode}")
+
+        provider_routing = cfg.get("provider_routing") if isinstance(cfg, dict) else None
+        if isinstance(provider_routing, dict):
+            routing_parts = [
+                f"{key}={provider_routing[key]}"
+                for key in ("sort", "order", "only", "ignore")
+                if provider_routing.get(key)
+            ]
+            if routing_parts:
+                check_info(f"provider_routing: {', '.join(routing_parts)}")
+    except Exception as exc:
+        from hermes_cli.doctor_report import check_warn
+        check_warn("Could not read route configuration", f"({exc})")
+
+
+def _show_verbose_fallback_chain() -> None:
+    """Show the effective, deduplicated fallback provider chain."""
+    _section("Fallback Chain")
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.fallback_config import get_fallback_chain
+
+        chain = get_fallback_chain(load_config())
+        if not chain:
+            check_info("No fallback providers configured")
+            return
+        for index, fallback in enumerate(chain):
+            provider = fallback.get("provider", "?")
+            model = fallback.get("model", "default")
+            label = f"[{index}] {provider} ({model})"
+            if fallback.get("base_url"):
+                label += f" at {_sanitize_url_for_display(str(fallback['base_url']))}"
+            check_info(label)
+    except Exception as exc:
+        from hermes_cli.doctor_report import check_warn
+        check_warn("Could not read fallback chain", f"({exc})")
+
+
+def _show_verbose_auxiliary_config() -> None:
+    """Show every configured auxiliary-task override without hardcoding tasks."""
+    _section("Auxiliary Tasks")
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        auxiliary = cfg.get("auxiliary") if isinstance(cfg, dict) else {}
+        if not isinstance(auxiliary, dict) or not auxiliary:
+            check_info("No auxiliary task configuration found")
+            return
+        for task in sorted(auxiliary):
+            task_cfg = auxiliary[task]
+            if not isinstance(task_cfg, dict):
+                continue
+            parts = [f"provider={task_cfg.get('provider') or 'auto'}"]
+            if task_cfg.get("model"):
+                parts.append(f"model={task_cfg['model']}")
+            if task_cfg.get("timeout"):
+                parts.append(f"timeout={task_cfg['timeout']}s")
+            check_info(f"{task}: {', '.join(parts)}")
+    except Exception as exc:
+        from hermes_cli.doctor_report import check_warn
+        check_warn("Could not read auxiliary configuration", f"({exc})")
+
+
 def run_doctor(args):
     """Run diagnostic checks."""
     should_fix = getattr(args, 'fix', False)
+    ack_target = getattr(args, 'ack', None)
+    use_json = getattr(args, 'json', False)
+    use_verbose = getattr(args, 'verbose', False)
+
+    import hermes_cli.doctor_report as _dr
+    _dr._json_mode = use_json
+    _dr._json_results = []
+    _dr._json_current_section = ""
+
     # Doctor runs from the interactive CLI, so CLI-gated tool checks (e.g. cronjob) see the same context.
     os.environ.setdefault("HERMES_INTERACTIVE", "1")
-    if getattr(args, 'ack', None):
-        return _ack_advisory(args.ack)
-    print()
-    for line in ("┌─────────────────────────────────────────────────────────┐",
-                 "│                 🩺 Hermes Doctor                        │",
-                 "└─────────────────────────────────────────────────────────┘"):
-        print(color(line, Colors.CYAN))
+    if ack_target:
+        return _ack_advisory(ack_target)
+    if not use_json:
+        print()
+        for line in ("┌─────────────────────────────────────────────────────────┐",
+                     "│                 🩺 Hermes Doctor                        │",
+                     "└─────────────────────────────────────────────────────────┘"):
+            print(color(line, Colors.CYAN))
     total = Finding()
     for title, check in DOCTOR_CHECKS:
         if title:
@@ -183,7 +299,32 @@ def run_doctor(args):
     with warn_on_error(""):
         from hermes_cli.doctor_live import maybe_run_live_checks
         maybe_run_live_checks(args, total.manual_issues)
-    _print_summary(should_fix, total)
+
+    if use_verbose:
+        _show_verbose_route_details()
+        _show_verbose_fallback_chain()
+        _show_verbose_auxiliary_config()
+
+    if not use_json:
+        _print_summary(should_fix, total)
+    else:
+        import json as _json
+
+        remaining_issues = total.issues + total.manual_issues
+        output = {
+            "hermes_home": str(HERMES_HOME),
+            "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+            "checks": _dr._json_results,
+            "issues": total.issues,
+            "manual_issues": total.manual_issues,
+            "fixable_count": sum(
+                1 for issue in total.issues if "hermes doctor --fix" in issue or "doctor --fix" in issue
+            ),
+            "total_issues": len(remaining_issues),
+            "fixed_count": total.fixed,
+        }
+        print(_json.dumps(output, indent=2, ensure_ascii=False))
+
     return int(bool(total.issues or total.manual_issues))
 
 
@@ -195,16 +336,6 @@ from pathlib import Path  # noqa: F401,E402
 import importlib.util  # noqa: F401,E402
 import shutil  # noqa: F401,E402
 import subprocess  # noqa: F401,E402
-
-def check_fail(text: str, detail: str = ""):
-    print(f"  {color('✗', Colors.RED)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
-
-def check_ok(text: str, detail: str = ""):
-    print(f"  {color('✓', Colors.GREEN)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
-
-def check_warn(text: str, detail: str = ""):
-    print(f"  {color('⚠', Colors.YELLOW)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
-
 
 _PLUGIN_COMPAT_LAZY = {
     'FTS_STORAGE_VERSION': ('hermes_state_common', 'FTS_STORAGE_VERSION'),

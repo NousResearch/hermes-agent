@@ -755,6 +755,37 @@ def _bedrock_converse_call(api_kwargs: dict, *, stream: bool, on_stream_denied=N
     return finish(raw_response)
 
 
+def _create_with_data_envelope_unwrap(request_client, api_kwargs: dict):
+    """Some OpenAI-wire providers (e.g. clinepass) wrap NON-streaming
+    chat-completion responses in a top-level ``data`` envelope --
+    ``{"data": {"choices": [...]}, "success": true}``. The OpenAI SDK does NOT
+    reject this outright: it tolerates the wrapped body by returning a
+    ``ChatCompletion`` whose required ``id``/``choices`` fields are empty,
+    which the agent loop then treats as an invalid/"empty" response. Fetch the
+    raw JSON, unwrap ``data`` when present, and rebuild a normal
+    ``ChatCompletion`` so downstream validation sees real choices. Streaming
+    responses are unaffected (SSE chunks already use the standard shape); for
+    providers that do NOT use an envelope the raw body parses as-is, so this
+    is a safe no-op for them.
+    """
+    import json
+
+    raw_response = request_client.chat.completions.with_raw_response.create(**api_kwargs)
+    try:
+        body = json.loads(getattr(raw_response, "text", ""))
+    except Exception:
+        body = {}
+    if (
+        isinstance(body, dict)
+        and "choices" not in body
+        and isinstance(body.get("data"), dict)
+    ):
+        body = body["data"]
+    from openai.types.chat import ChatCompletion
+
+    return ChatCompletion.model_validate(body)
+
+
 def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
     """Run one non-streaming LLM request for the active api_mode and return it.
 
@@ -788,7 +819,12 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
     # request transform. No-op unless this really is the OpenAI SDK, so the
     # MoA facade above and the suite's stand-in clients are unaffected.
     api_kwargs = bypass_chat_sdk_request_transform(api_kwargs, request_client)
-    return request_client.chat.completions.create(**api_kwargs)
+    # Some OpenAI-wire providers wrap NON-streaming responses in a top-level
+    # `data` envelope ({'data': {...}, 'success': true}); the SDK then returns
+    # a ChatCompletion with empty id/choices, which the agent loop rejects as
+    # "Invalid API response". Unwrap whenever the envelope is present so every
+    # provider round-trips cleanly (no-op for standard-shaped responses).
+    return _create_with_data_envelope_unwrap(request_client, api_kwargs)
 
 
 def should_use_direct_api_call(agent) -> bool:

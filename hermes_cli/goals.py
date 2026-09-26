@@ -125,11 +125,13 @@ JUDGE_SYSTEM_PROMPT = (
     "- The response explains the goal is genuinely unachievable (impossible, "
     "out of scope, no valid path to the deliverable), or refuses to "
     "fabricate a deliverable that cannot exist, OR\n"
-    "- The response explains progress is blocked and the next step needs "
-    "user input to proceed.\n"
-    "Return BLOCKED with the reason describing what is blocking. BLOCKED is "
-    "a refusal, not a completion — never return BLOCKED for a goal that "
-    "was achieved.\n"
+    "- Progress needs user input or an external prerequisite to proceed, "
+    "and no authorized investigation or independent work remains right now. "
+    "This is a resolvable blocker, NOT proof the whole goal is unachievable.\n"
+    "Before choosing BLOCKED, prefer CONTINUE if the agent can investigate, "
+    "adapt its method, or do independent authorized work. Return BLOCKED "
+    "with the precise missing input or prerequisite in the reason; BLOCKED "
+    "pauses the goal rather than completing it.\n"
     "When the block is an error the agent hit (an HTTP status, an API, "
     "sign-in or token failure), quote the error text verbatim in the reason "
     "and attribute it only to a provider, service or credential the response "
@@ -1491,14 +1493,13 @@ class GoalManager:
             if parked is not None:
                 return parked
 
-        # BLOCKED is NOT done: pause so the user sees the judge's reason and can re-scope or override,
-        # instead of burning turns on an unachievable goal or waving it through as complete.
-        # BLOCKED verdict: the judge ruled the goal genuinely cannot be satisfied as stated (impossible, out
-        # of scope, needs user input). See #100954.
+        # BLOCKED is NOT done: pause for missing user input, an external prerequisite, or
+        # an impossible goal. A recoverable dependency must never be called unachievable.
         if verdict == "blocked":
             return self._pause_decision(
-                f"judged unachievable: {reason}", "blocked", reason,
-                f"🚫 Goal judged unachievable — paused: {reason} Re-scope with /goal set, or override with /goal resume.",
+                f"judge blocked: {reason}", "blocked", reason,
+                f"⏸ Goal blocked — paused: {reason} Resolve the blocker, then use "
+                "/goal resume to retry or /goal set to re-scope.",
             )
 
         if verdict == "done":

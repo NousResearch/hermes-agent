@@ -995,6 +995,98 @@ def test_flush_atomic_mixed_repair_and_append_rollback_on_failure(tmp_path, monk
     assert (durable[-1].get("content") or "") == ""
 
 
+def test_flush_stale_active_user_adopts_concurrent_winner(tmp_path):
+    """A stale non-assistant live dict must not replace a newer durable row."""
+    agent = _make_agent()
+    db_path = tmp_path / "state.db"
+    session_id = "sess-stale-active-user"
+    db = _attach_real_session_db(agent, db_path, session_id)
+    messages = [{"role": "user", "content": "initial"}]
+    agent._flush_messages_to_session_db(messages)
+    row_id = messages[0]["_row_id"]
+
+    db._execute_write(
+        lambda conn: conn.execute(
+            "UPDATE messages SET content = ? WHERE id = ?",
+            (db._encode_content("newer durable content"), row_id),
+        )
+    )
+    messages[0]["content"] = "stale sanitizer copy"
+    messages[0].pop("_db_persisted", None)
+    agent._db_flush_scan_prefix = None
+
+    assert agent._flush_messages_to_session_db(messages) is True
+
+    row = next(item for item in db.get_messages(session_id, include_inactive=True) if item["id"] == row_id)
+    assert row["content"] == "newer durable content"
+    assert messages[0]["content"] == "newer durable content"
+    assert messages[0]["_row_id"] == row_id
+    assert messages[0]["_db_persisted"] is True
+
+
+def test_flush_inactive_row_does_not_select_same_timestamp_collision(tmp_path):
+    """An unrelated active row with the same role/timestamp is not a compaction clone."""
+    agent = _make_agent()
+    db_path = tmp_path / "state.db"
+    session_id = "sess-inactive-timestamp-collision"
+    db = _attach_real_session_db(agent, db_path, session_id)
+    messages = [{"role": "user", "content": "original", "timestamp": 1_700_000_000.0}]
+    agent._flush_messages_to_session_db(messages)
+    original_id = messages[0]["_row_id"]
+
+    db._execute_write(
+        lambda conn: conn.execute(
+            "UPDATE messages SET active = 0, compacted = 0 WHERE id = ?",
+            (original_id,),
+        )
+    )
+    collision_id = db.append_message(
+        session_id, "user", "unrelated active row", timestamp=messages[0]["timestamp"]
+    )
+    messages[0]["content"] = "repaired original"
+    messages[0].pop("_db_persisted", None)
+    agent._db_flush_scan_prefix = None
+
+    assert agent._flush_messages_to_session_db(messages) is True
+
+    rows = {row["id"]: row for row in db.get_messages(session_id, include_inactive=True)}
+    assert rows[original_id]["content"] == "repaired original"
+    assert rows[original_id]["active"] in (0, False)
+    assert rows[collision_id]["content"] == "unrelated active row"
+    assert rows[collision_id]["active"] in (1, True)
+    assert messages[0]["_row_id"] == original_id
+
+
+def test_flush_ascii_repair_persists_structured_tool_fields(tmp_path):
+    """Repair writes every durable field changed by the sanitizer before marking the dict durable."""
+    from agent.message_sanitization import _sanitize_messages_non_ascii
+
+    agent = _make_agent()
+    db_path = tmp_path / "state.db"
+    session_id = "sess-structured-ascii-repair"
+    db = _attach_real_session_db(agent, db_path, session_id)
+    messages = [
+        {
+            "role": "tool",
+            "content": "résult",
+            "tool_call_id": "call-café",
+            "name": "términal",
+        }
+    ]
+    agent._flush_messages_to_session_db(messages)
+    row_id = messages[0]["_row_id"]
+
+    assert _sanitize_messages_non_ascii(messages) is True
+    agent._db_flush_scan_prefix = None
+    assert agent._flush_messages_to_session_db(messages) is True
+
+    row = next(item for item in db.get_messages(session_id, include_inactive=True) if item["id"] == row_id)
+    assert row["content"] == "rsult"
+    assert row["tool_call_id"] == "call-caf"
+    assert row["tool_name"] == "trminal"
+    assert messages[0]["_db_persisted"] is True
+
+
 def test_flush_concurrent_nonblank_winner_adopts_canonical_content(tmp_path):
     """A concurrent non-blank winner must be adopted without overwrite and synced to live dict."""
     agent = _make_agent()

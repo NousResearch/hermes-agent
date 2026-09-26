@@ -377,7 +377,7 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
     raw_cwd = _str_param(params, "cwd")  # unguarded, as on BASE: only the path check is best-effort
     # The BOUND profile's backend (multiplex hasn't rebound HERMES_HOME yet, so the process-global
     # _effective_terminal_backend() would read the launch profile - usually local).
-    session_backend = _profile_terminal_backend(profile_home) or _effective_terminal_backend()
+    session_backend = _bound_terminal_backend(profile_home)
     with contextlib.suppress(Exception):
         # A non-local backend's cwd lives inside the target environment, so a LOCAL isdir gate would
         # drop the remote project path and _terminal_task_cwd_with_source would fall to `~`. Mark it
@@ -437,12 +437,10 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
         _seed_branch_row(_sessions[sid], key, parent_session_id, history, source, profile_home)
     elif history:
         _seed_row(_sessions[sid])
-    elif _sessions[sid].get("explicit_cwd"):
-        # A session opened INTO a project (explicit cwd) is explicit intent, not an abandoned draft, so the
-        # "no eager row" rule above does not apply: persist the row now with its project cwd. Otherwise the
-        # per-profile gateway process that runs the first turn mints the row itself (AIAgent INSERT-OR-IGNORE)
-        # with cwd=None -- the sidebar then drops the session to Home and the terminal falls back to the
-        # profile's ~ dir. Gated on explicit_cwd so plain launches still stay row-less (no "Untitled" litter).
+    elif explicit_cwd and session_backend != "local":
+        # A remote project session persists its row now: the per-profile gateway that runs the first turn mints
+        # the row itself (AIAgent INSERT-OR-IGNORE) with cwd=None, and the sidebar then drops it to Home. Local
+        # project drafts stay lazy — their cwd reaches the row on the first prompt (no "Untitled" litter).
         _ensure_session_db_row(_sessions[sid])
     # Return immediately so Ink can paint; the AIAgent builds right after the flush.
     _schedule_agent_build(sid)
@@ -1019,9 +1017,7 @@ def _(rid, params: dict) -> dict:
     # A non-local (ssh/docker) profile's workspace lives inside the target environment: the local isdir
     # gate would reject a valid remote project dir. Read the BOUND profile's backend (not the launch
     # process env) and, when non-local, trust the path raw - mirroring _completion_cwd / _set_session_cwd.
-    is_local = _profile_terminal_backend(_profile_home(params.get("profile"))) or _effective_terminal_backend()
-    is_local = is_local == "local"
-    if is_local:
+    if _bound_terminal_backend(_profile_home(params.get("profile"))) == "local":
         if not os.path.isdir(resolved):
             return _err(rid, 4017, f"working directory does not exist: {raw}")
         target_cwd = resolved

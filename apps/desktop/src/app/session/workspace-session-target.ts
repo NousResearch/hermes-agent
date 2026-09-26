@@ -61,17 +61,19 @@ export function startWorkspaceSession({
   const workspaceGeneration = $newChatWorkspaceTargetGeneration.get()
 
   setCurrentCwd(target)
-  void requestGateway<{ branch?: string; cwd?: string }>('config.get', { key: 'project', cwd: target })
+  void requestGateway<{ branch?: string; cwd?: string }>('config.get', {
+    key: 'project',
+    cwd: target,
+    // The project's profile decides its terminal backend: an ssh project dir is not on this host, and
+    // resolving it under the launch profile would normalize it away to the launch cwd.
+    ...(profile ? { profile } : {})
+  })
     .then(info => {
       if ($newChatWorkspaceTargetGeneration.get() !== workspaceGeneration || activeSessionIdRef.current) {
         return
       }
 
-      // An explicitly chosen project path is authoritative (like the backend's explicit_cwd): a remote/ssh
-      // project dir does not exist on the gateway host, so config.get's host-side normalization drops it to
-      // the launch cwd (/opt/hermes). Keep the user's path; only adopt the server cwd for the path-less
-      // fallback. Branch still comes from the probe.
-      const resolved = explicitTarget || info.cwd || target
+      const resolved = info.cwd || target
 
       setCurrentCwd(resolved)
       setNewChatWorkspaceTarget(resolved)

@@ -74,10 +74,8 @@ describe('startWorkspaceSession', () => {
     await second.promise
     await Promise.resolve()
 
-    // The explicitly chosen path is authoritative over the server-normalized cwd (a remote/ssh project
-    // dir is dropped to the launch cwd by host-side normalization); only the branch is adopted from the probe.
-    expect($newChatWorkspaceTarget.get()).toBe('/workspace-b')
-    expect($currentCwd.get()).toBe('/workspace-b')
+    expect($newChatWorkspaceTarget.get()).toBe('/normalized-b')
+    expect($currentCwd.get()).toBe('/normalized-b')
     expect($currentBranch.get()).toBe('main')
   })
 

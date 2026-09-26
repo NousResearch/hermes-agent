@@ -8,7 +8,7 @@ import { errorCardText } from '@/lib/error-surface-copy'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { type AgentNoticePayload, clearAgentNotice, nativeNoticeInput, showAgentNotice } from '@/store/agent-notices'
 import { clearClarifyRequest } from '@/store/clarify'
-import { reconcileSessionCompacting, setSessionCompacting } from '@/store/compaction'
+import { reconcileSessionCompacting, setSessionCompacting, takeCompressDeferred } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { applyGoalStatusText } from '@/store/goals'
 import { dispatchNativeNotification } from '@/store/native-notifications'
@@ -20,6 +20,15 @@ import { setTurnStartedAt } from '@/store/session'
 import { clearActiveSessionTodos } from '@/store/todos'
 
 import type { GatewayEventContext } from './types'
+
+/** Lifecycle text that announces the session left its selected model for a fallback. */
+export function isFallbackSwitchStatus(kind: string | undefined, text: string): boolean {
+  if (kind === 'fallback') {
+    return Boolean(text.trim())
+  }
+
+  return /model fallback|provider fallback|switched to fallback|switching to fallback/i.test(text)
+}
 
 /** status.update / review.summary / notification.show / notification.clear /
  *  error — the status-and-notice tail of the dispatcher. */
@@ -49,15 +58,61 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
       reconcileSessionCompacting(sessionId, 'terminal')
       compactedTurnRef.current.delete(sessionId)
 
+      // That same `pending` reply returned before the compress handler could
+      // render the summary or flip its "still running in the background"
+      // toast, so this edge is the only completion the client ever sees.
+      // Without announcing it a deferred /compress finishes in silence: the
+      // corner toast merely expires and the transcript changes underneath the
+      // user with no acknowledgement it ever ran.
+      const deferredCompress = takeCompressDeferred(sessionId)
+
+      const completionText =
+        coerceGatewayText(payload?.text).trim() || translateNow('notifications.compressDeferredDone')
+
+      if (deferredCompress) {
+        // Reuse the id the compress handler notified under, so this replaces
+        // the pending toast in place instead of stacking a second one.
+        notify({
+          durationMs: 5_000,
+          id: `session-compress:${sessionId}`,
+          kind: 'success',
+          message: completionText
+        })
+      }
+
+      const announceDeferredCompress = () => {
+        if (!deferredCompress) {
+          return
+        }
+
+        flushQueuedDeltas(sessionId)
+        updateSessionState(sessionId, state => ({
+          ...state,
+          messages: [
+            ...state.messages,
+            {
+              id: `compress-complete-${occurredAt ?? Date.now()}`,
+              role: 'system',
+              parts: [textPart(completionText, occurredAt)],
+              timestamp: occurredAt
+            }
+          ]
+        }))
+      }
+
       // A compress that finished with no live turn (manual /compress whose
       // RPC answered `pending` because the compute host outlived the wait,
       // #97948) has no turn-end hydrate to refresh the transcript — the
       // summarized bubbles would stay on screen forever. Mid-turn compaction
-      // still defers to the turn's own settle path.
+      // still defers to the turn's own settle path. The notice is appended
+      // only after that hydrate resolves: it replaces the transcript wholesale
+      // and would otherwise drop the line we just added.
       const state = sessionStateByRuntimeIdRef.current.get(sessionId)
 
       if (isActiveEvent && state && !state.busy && !state.awaitingResponse && !state.streamId) {
-        void hydrateFromStoredSession(3, state.storedSessionId, sessionId)
+        void hydrateFromStoredSession(3, state.storedSessionId, sessionId).then(announceDeferredCompress)
+      } else {
+        announceDeferredCompress()
       }
     } else if (sessionId && payload?.kind === 'process') {
       // The gateway's notification poller announces background process
@@ -65,6 +120,25 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
       void refreshBackgroundProcesses(sessionId)
     } else if (sessionId && payload?.kind === 'goal') {
       applyGoalStatusText(sessionId, coerceGatewayText(payload?.text))
+    } else if (sessionId && isFallbackSwitchStatus(payload?.kind, coerceGatewayText(payload?.text))) {
+      // A provider/model switch is durable: the TUI paints it on the status rail, but Desktop
+      // used to swallow every non-compaction status.update, so the reply came from a different
+      // model with no indication.
+      const text = coerceGatewayText(payload?.text).trim()
+
+      flushQueuedDeltas(sessionId)
+      updateSessionState(sessionId, state => ({
+        ...state,
+        messages: [
+          ...state.messages,
+          {
+            id: `fallback-switch-${occurredAt}`,
+            role: 'system',
+            parts: [textPart(text, occurredAt)],
+            timestamp: occurredAt
+          }
+        ]
+      }))
     }
 
     return true
@@ -127,6 +201,36 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
             id: `review-summary-${Date.now()}`,
             role: 'system',
             parts: [textPart(`review:${text}`, occurredAt)],
+            timestamp: occurredAt
+          }
+        ]
+      }))
+    }
+
+    return true
+  }
+
+  if (event.type === 'background.complete') {
+    // prompt.background RPC (the TUI's /background path) reports the finished
+    // background turn here; the event carries the originating session id, so
+    // the result lands in the conversation that started the task. Persistent
+    // transcript line (not a toast), mirroring the TUI's `[bg <task_id>]`
+    // system line — without it the completion was indistinguishable from a
+    // lost task (#97635).
+    const text = coerceGatewayText(payload?.text).trim()
+
+    if (text && sessionId) {
+      const taskId = String(payload?.task_id ?? '').trim()
+
+      flushQueuedDeltas(sessionId)
+      updateSessionState(sessionId, state => ({
+        ...state,
+        messages: [
+          ...state.messages,
+          {
+            id: `background-complete-${taskId || Date.now()}`,
+            role: 'system',
+            parts: [textPart(taskId ? `[bg ${taskId}]\n${text}` : text, occurredAt)],
             timestamp: occurredAt
           }
         ]

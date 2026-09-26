@@ -26,12 +26,13 @@ import pytest
 
 import tools.bot_mode_dm as bot_mode_dm
 import tools.bot_relay as bot_relay
+import pytest
 
 
 ENV = {"id": "d" * 32, "target_handle": "researcher", "target_connection": "ssh-vps"}
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_waiter_argv_uses_forward_slashes_on_windows():
     """On native Windows the reply path rides as a forward-slash argv element, like the delivery
     runner's paths: Git Bash runs those, and parses a backslash path as a command name."""
@@ -42,6 +43,7 @@ def test_waiter_argv_uses_forward_slashes_on_windows():
     assert not any("\\" in part for part in parts)
 
 
+@pytest.mark.platforms("linux")
 def test_local_delivery_resolves_sibling_hermes(tmp_path, monkeypatch):
     bin_dir = tmp_path / "venv" / "bin"
     bin_dir.mkdir(parents=True)

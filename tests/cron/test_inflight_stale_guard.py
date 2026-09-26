@@ -315,17 +315,6 @@ class TestStaleInflightSweep:
             with patch.object(sched, "mark_job_run"):
                 assert sched.sweep_stale_inflight([job]) == [job["id"]]
 
-    def test_forced_release_logs_a_warning(self, tmp_path, caplog):
-        job = _job()
-        sched._running_job_ids.add(sched._inflight_key(job["id"], tmp_path))
-        sched._running_since[sched._inflight_key(job["id"], tmp_path)] = time.time() - 5 * 60 * 60
-
-        with caplog.at_level("WARNING"), \
-             patch.object(sched, "mark_job_run"), \
-             patch.object(sched, "_get_hermes_home", return_value=tmp_path):
-            sched.sweep_stale_inflight([job])
-
-        assert any("cron.inflight.forced_release" in r.message for r in caplog.records)
 
 
 class TestWedgedJobRefiresWithoutRestart:

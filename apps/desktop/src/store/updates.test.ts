@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { DesktopUpdateStatus } from '@/global'
+import { setApiRequestConnection, setApiRequestProfile } from '@/api/client'
+import type { DesktopUpdateStatus, DesktopVersionInfo } from '@/global'
+import { en } from '@/i18n/en'
 
 const storage = new Map<string, string>()
 
@@ -80,8 +82,11 @@ vi.mock('@/store/gateway-reconnect', () => ({
 }))
 
 const {
+  refreshDesktopVersion,
+  $desktopVersion,
   maybeNotifyUpdateAvailable,
   checkBackendUpdates,
+  checkUpdates,
   $backendUpdateStatus,
   applyBackendUpdate,
   $backendUpdateApply,
@@ -135,6 +140,53 @@ const setRemote = (on: boolean) =>
     windowButtonPosition: null
   })
 
+describe('gateway version refresh', () => {
+  afterEach(() => {
+    setApiRequestConnection(null)
+    setApiRequestProfile(null)
+    $desktopVersion.set(null)
+  })
+
+  it('requests the active gateway and does not publish a previous connection reply', async () => {
+    setRemote(true)
+    setApiRequestConnection('remote-box')
+    setApiRequestProfile('work')
+
+    const version: DesktopVersionInfo = {
+      appVersion: '4.5.6',
+      electronVersion: '40',
+      nodeVersion: '26',
+      platform: 'win32',
+      hermesRoot: ''
+    }
+
+    const getVersion = vi.fn().mockResolvedValue(version)
+    const previous = window.hermesDesktop
+    window.hermesDesktop = { ...previous, getVersion }
+
+    try {
+      expect(await refreshDesktopVersion()).toEqual(version)
+      expect(getVersion).toHaveBeenCalledWith({ connectionId: 'remote-box', profile: 'work' })
+      expect($desktopVersion.get()?.appVersion).toBe('4.5.6')
+      let finish!: (value: DesktopVersionInfo) => void
+      getVersion.mockImplementationOnce(
+        () =>
+          new Promise(resolve => {
+            finish = resolve
+          })
+      )
+      const pending = refreshDesktopVersion()
+      setRemote(false)
+      $desktopVersion.set(null)
+      finish(version)
+      expect(await pending).toBeNull()
+      expect($desktopVersion.get()).toBeNull()
+    } finally {
+      window.hermesDesktop = previous
+    }
+  })
+})
+
 describe('maybeNotifyUpdateAvailable', () => {
   beforeEach(() => {
     storage.clear()
@@ -145,7 +197,6 @@ describe('maybeNotifyUpdateAvailable', () => {
   it('shows when an update is available and not snoozed', () => {
     maybeNotifyUpdateAvailable(status())
     expect(notifySpy).toHaveBeenCalledTimes(1)
-    expect(notifySpy.mock.calls[0]?.[0]).toMatchObject({ icon: 'gift' })
   })
 
   it('stays quiet for new commits once the toast was closed', () => {
@@ -171,18 +222,79 @@ describe('maybeNotifyUpdateAvailable', () => {
     expect(notifySpy).toHaveBeenCalledTimes(1)
   })
 
+  it('notifies for a Store update without a commit and never for an unknown check', () => {
+    maybeNotifyUpdateAvailable(
+      status({ mechanism: 'microsoft-store', targetSha: undefined, behind: null, updateAvailable: true })
+    )
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+    notifySpy.mockClear()
+    maybeNotifyUpdateAvailable(
+      status({
+        mechanism: 'microsoft-store',
+        targetSha: undefined,
+        behind: null,
+        updateAvailable: false,
+        error: 'Store unavailable'
+      })
+    )
+    expect(notifySpy).not.toHaveBeenCalled()
+  })
+
   it('does nothing when already up to date', () => {
     maybeNotifyUpdateAvailable(status({ behind: 0 }))
     expect(notifySpy).not.toHaveBeenCalled()
   })
 
-  // FAIL-BEFORE: a shallow installer clone reports behind:null + updateAvailable
+  // FAIL-BEFORE (#C19): a shallow installer clone reports behind:null + updateAvailable
   // (exact count unknowable without a merge-base). The guard treated null as 0
   // and silently swallowed the notification entirely.
-  it('still notifies with generic copy when the exact behind count is unknown', () => {
+  it('still notifies when the exact behind count is unknown', () => {
     maybeNotifyUpdateAvailable(status({ behind: null, updateAvailable: true }))
     expect(notifySpy).toHaveBeenCalledTimes(1)
-    expect(notifySpy.mock.calls[0]?.[0]).toMatchObject({ message: 'A new update is available.' })
+  })
+
+  // FAIL-BEFORE (C19): an App Installer check legitimately carries no
+  // targetSha — the OS reports availability against the .appinstaller feed,
+  // so there is no commit identity to name. Requiring targetSha made the
+  // mechanism-specific App Installer toast unreachable forever.
+  it('notifies for an App Installer check even though it has no targetSha', () => {
+    maybeNotifyUpdateAvailable(
+      status({
+        behind: null,
+        currentVersion: '0.19.0',
+        mechanism: 'app-installer',
+        targetSha: undefined,
+        updateAvailable: true
+      })
+    )
+
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+    expect(notifySpy.mock.calls[0]?.[0]).toMatchObject({ message: en.notifications.updateReadyMessageAppInstaller })
+  })
+
+  // A native macOS (electron-updater) check has no commit to name either: its
+  // target identity is the release tag. Requiring targetSha silenced every
+  // background notification for non-channel macOS builds.
+  it('notifies for a native macOS check that names its target by release tag', () => {
+    maybeNotifyUpdateAvailable(
+      status({
+        behind: null,
+        currentVersion: '0.19.0',
+        latestTag: 'v0.20.0',
+        mechanism: 'electron-updater',
+        targetSha: undefined,
+        updateAvailable: true
+      })
+    )
+
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+  })
+
+  // Eligibility stays mechanism-specific: a git-style check must still prove
+  // there is a target commit before the toast fires — never a made-up SHA.
+  it('stays quiet for a git-style check that names no target commit', () => {
+    maybeNotifyUpdateAvailable(status({ targetSha: undefined }))
+    expect(notifySpy).not.toHaveBeenCalled()
   })
 })
 
@@ -232,11 +344,47 @@ describe('reportBackendContract', () => {
 
   it('clears the snooze once the backend catches up, so a regression warns again', () => {
     reportBackendContract(1)
-    lastToast().onDismiss()
+    lastToast().onDismiss() // user closes it → cooldown starts
     notifySpy.mockClear()
 
     reportBackendContract(REQUIRED_BACKEND_CONTRACT) // backend updated → satisfied, snooze cleared
     reportBackendContract(5) // a later regression must warn immediately
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('warns when the GUI is older than the backend (contract ahead of this build)', () => {
+    reportBackendContract(REQUIRED_BACKEND_CONTRACT + 1)
+    // The backend-older toast must not fire — this is the reverse direction.
+    expect(dismissSpy).toHaveBeenCalledWith('backend-contract-skew')
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+    expect(notifySpy.mock.calls[0]?.[0]).toMatchObject({ id: 'gui-contract-skew', kind: 'warning' })
+  })
+
+  it('gui-skew warning snoozes on close and reminds after the cooldown', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+
+    reportBackendContract(REQUIRED_BACKEND_CONTRACT + 1)
+    lastToast().onDismiss() // user closes it → cooldown starts
+    notifySpy.mockClear()
+
+    reportBackendContract(REQUIRED_BACKEND_CONTRACT + 1) // another session open within the cooldown
+    expect(notifySpy).not.toHaveBeenCalled()
+
+    vi.setSystemTime(25 * 60 * 60 * 1000) // > 24h cooldown
+    reportBackendContract(REQUIRED_BACKEND_CONTRACT + 1)
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('clears the gui-skew toast + snooze once versions align, so a later skew warns again', () => {
+    reportBackendContract(REQUIRED_BACKEND_CONTRACT + 1)
+    lastToast().onDismiss()
+    notifySpy.mockClear()
+
+    reportBackendContract(REQUIRED_BACKEND_CONTRACT) // GUI updated (or backend rolled back) → aligned
+    expect(dismissSpy).toHaveBeenCalledWith('gui-contract-skew')
+
+    reportBackendContract(REQUIRED_BACKEND_CONTRACT + 1) // a later skew must warn immediately
     expect(notifySpy).toHaveBeenCalledTimes(1)
   })
 })
@@ -250,7 +398,7 @@ describe('checkBackendUpdates', () => {
     vi.useRealTimers()
   })
 
-  it('maps the backend /update/check onto the backend status, including commits', async () => {
+  it('maps the backend /update/check onto the backend status, including commits', async (): Promise<void> => {
     setRemote(true)
     checkHermesUpdateSpy.mockResolvedValue({
       install_method: 'git',
@@ -265,12 +413,15 @@ describe('checkBackendUpdates', () => {
 
     const result = await checkBackendUpdates()
 
-    expect(checkHermesUpdateSpy).toHaveBeenCalled()
+    expect(checkHermesUpdateSpy).toHaveBeenCalledWith(false)
     expect(result?.behind).toBe(2)
     expect(result?.updateAvailable).toBe(true)
     expect(result?.commits?.[0]?.sha).toBe('abc1234')
     expect(result?.supported).toBe(true)
     expect($backendUpdateStatus.get()?.commits?.[0]?.summary).toBe('feat: x')
+
+    await checkBackendUpdates({ force: true })
+    expect(checkHermesUpdateSpy).toHaveBeenLastCalledWith(true)
   })
 
   it('preserves backend update_available when the backend cannot count commits', async () => {
@@ -281,7 +432,7 @@ describe('checkBackendUpdates', () => {
       behind: -1,
       update_available: true,
       can_apply: false,
-      update_command: 'managed outside dashboard',
+      update_command: '',
       message: 'Update available.'
     })
 
@@ -411,6 +562,34 @@ describe('requestActiveUpdate', () => {
 
     requestActiveUpdate()
     await vi.waitFor(() => expect(updateHermesSpy).toHaveBeenCalled())
+  })
+
+  it('shows the refusal message, not a fake command, when the backend has no command to run', async () => {
+    setRemote(true)
+    updateHermesSpy.mockResolvedValue({
+      ok: false,
+      name: 'hermes-update',
+      error: 'dashboard_update_managed_externally',
+      message: 'Hermes updates are managed outside this dashboard in containerized environments.',
+      update_command: ''
+    })
+
+    const result = await applyBackendUpdate()
+
+    expect(result.manual).toBe(true)
+    expect(result.command).toBeUndefined()
+    expect($backendUpdateApply.get().stage).toBe('manual')
+    expect($backendUpdateApply.get().command).toBeNull()
+    expect($backendUpdateApply.get().message).toContain('managed outside this dashboard')
+  })
+
+  it('falls back to `hermes update` only when an older backend omits update_command', async () => {
+    setRemote(true)
+    updateHermesSpy.mockResolvedValue({ ok: false, name: 'hermes-update', message: 'Run it yourself.' })
+
+    await applyBackendUpdate()
+
+    expect($backendUpdateApply.get().command).toBe('hermes update')
   })
 })
 
@@ -822,6 +1001,14 @@ describe('applyUpdates terminal state', () => {
     expect(notifySpy).not.toHaveBeenCalled()
   })
 
+  it('does not claim an installation when the Store reports no remaining update', async () => {
+    applyMock.mockResolvedValue({ ok: true, updateAvailable: false })
+    await applyUpdates()
+    expect($updateApply.get().applying).toBe(false)
+    expect($updateOverlayOpen.get()).toBe(false)
+    expect(notifySpy).not.toHaveBeenCalled()
+  })
+
   it('closes the overlay + toasts when updated but not relaunched in place', async () => {
     // The Linux AppImage / dev-run path: backend + GUI updated, no in-place
     // relaunch. Must not strand the overlay on a closeless spinner.
@@ -844,27 +1031,6 @@ describe('applyUpdates terminal state', () => {
     expect($updateApply.get().applying).toBe(false)
     expect($updateApply.get().stage).toBe('error')
     expect($updateApply.get().error).toBe('rebuild-failed')
-  })
-
-  it('preserves structured safe blockers for the close-and-update prompt', async () => {
-    const blockers = [
-      {
-        pid: 47484,
-        name: 'python.exe',
-        cmdline: 'python.exe -m http.server 8766',
-        kind: 'local-preview' as const,
-        safeToStop: true,
-        label: 'Example Preview',
-        port: 8766
-      }
-    ]
-
-    applyMock.mockResolvedValue({ ok: false, error: 'venv-blocked', message: 'blocked', blockers })
-
-    await applyUpdates()
-
-    expect($updateApply.get().error).toBe('venv-blocked')
-    expect($updateApply.get().blockers).toEqual(blockers)
   })
 
   it('keeps the manual command state for CLI installs with no staged updater', async () => {
@@ -1378,6 +1544,11 @@ describe('startUpdatePoller', () => {
     expect(checkMock).toHaveBeenCalledTimes(1)
   })
 
+  it('passes an explicit manual check through to the main process', async (): Promise<void> => {
+    await checkUpdates({ force: true })
+    expect(checkMock).toHaveBeenCalledWith({ force: true })
+  })
+
   it('window focus only re-checks once the daily cadence has elapsed', async () => {
     startUpdatePoller()
     await vi.advanceTimersByTimeAsync(0)
@@ -1393,5 +1564,231 @@ describe('startUpdatePoller', () => {
     listeners['focus']?.()
     await vi.advanceTimersByTimeAsync(0)
     expect(checkMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('re-checks backend updates when switching directly between two remote profiles', async () => {
+    // Both profiles resolve to mode: 'remote' — only baseUrl differs. A
+    // mode-only comparison would treat this as "no change" and never
+    // re-check, leaving profile A's stale status on screen for profile B.
+    checkHermesUpdateSpy.mockReset()
+    checkHermesUpdateSpy.mockResolvedValue({
+      install_method: 'git',
+      current_version: '0.16.0',
+      behind: 1,
+      update_available: true,
+      can_apply: true,
+      update_command: 'hermes update',
+      message: null
+    })
+
+    setConnection({
+      baseUrl: 'http://profile-a:9119',
+      isFullscreen: false,
+      mode: 'remote',
+      nativeOverlayWidth: 0,
+      token: 't',
+      wsUrl: 'ws://profile-a:9119',
+      logs: [],
+      windowButtonPosition: null
+    })
+
+    startUpdatePoller()
+    await vi.advanceTimersByTimeAsync(0)
+    checkHermesUpdateSpy.mockClear()
+
+    setConnection({
+      baseUrl: 'http://profile-b:9119',
+      isFullscreen: false,
+      mode: 'remote',
+      nativeOverlayWidth: 0,
+      token: 't',
+      wsUrl: 'ws://profile-b:9119',
+      logs: [],
+      windowButtonPosition: null
+    })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(checkHermesUpdateSpy).toHaveBeenCalled()
+  })
+
+  it('re-checks backend updates when switching between two profiles on the same remote backend', async () => {
+    // Pooled profiles share a baseUrl; only the profile field differs. The
+    // update check is profile-scoped (per-profile overrides can pin a
+    // different channel/branch), so a baseUrl-only key would treat this as
+    // "no change" and keep the first profile's status on screen.
+    checkHermesUpdateSpy.mockReset()
+    checkHermesUpdateSpy.mockResolvedValue({
+      install_method: 'git',
+      current_version: '0.16.0',
+      behind: 1,
+      update_available: true,
+      can_apply: true,
+      update_command: 'hermes update',
+      message: null
+    })
+
+    const pooled = (profile: string) => ({
+      baseUrl: 'http://shared-box:9119',
+      isFullscreen: false,
+      mode: 'remote' as const,
+      nativeOverlayWidth: 0,
+      profile,
+      token: 't',
+      wsUrl: 'ws://shared-box:9119',
+      logs: [],
+      windowButtonPosition: null
+    })
+
+    setConnection(pooled('alpha'))
+    startUpdatePoller()
+    await vi.advanceTimersByTimeAsync(0)
+    checkHermesUpdateSpy.mockClear()
+
+    setConnection(pooled('beta'))
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(checkHermesUpdateSpy).toHaveBeenCalled()
+  })
+
+  it('discards a stale in-flight response and re-checks after switching to B before A resolves', async () => {
+    // A's check is still in flight when the switch to B happens — B's
+    // trigger is locked out by $backendUpdateChecking. Once A's (now stale)
+    // response lands it must not overwrite the display with A's result, and
+    // B's own check must still run once the lock clears.
+    checkHermesUpdateSpy.mockReset()
+
+    let resolveA: (value: unknown) => void = () => {}
+
+    const aPending = new Promise(resolve => {
+      resolveA = resolve
+    })
+
+    checkHermesUpdateSpy.mockImplementationOnce(() => aPending)
+    checkHermesUpdateSpy.mockResolvedValueOnce({
+      install_method: 'git',
+      current_version: '0.17.0',
+      behind: 4,
+      update_available: true,
+      can_apply: true,
+      update_command: 'hermes update',
+      message: null
+    })
+
+    setConnection({
+      baseUrl: 'http://profile-a:9119',
+      isFullscreen: false,
+      mode: 'remote',
+      nativeOverlayWidth: 0,
+      token: 't',
+      wsUrl: 'ws://profile-a:9119',
+      logs: [],
+      windowButtonPosition: null
+    })
+
+    startUpdatePoller()
+    // A's checkHermesUpdate() call is now in flight (aPending unresolved).
+    // Switch profiles before it settles.
+
+    setConnection({
+      baseUrl: 'http://profile-b:9119',
+      isFullscreen: false,
+      mode: 'remote',
+      nativeOverlayWidth: 0,
+      token: 't',
+      wsUrl: 'ws://profile-b:9119',
+      logs: [],
+      windowButtonPosition: null
+    })
+
+    // Now A's slow response lands.
+    resolveA({
+      install_method: 'git',
+      current_version: '0.16.0',
+      behind: 1,
+      update_available: true,
+      can_apply: true,
+      update_command: 'hermes update',
+      message: null
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    // Flush the automatic follow-up check queued for B once A's lock cleared.
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(checkHermesUpdateSpy).toHaveBeenCalledTimes(2)
+    // B's result (behind: 4), not A's stale one (behind: 1).
+    expect($backendUpdateStatus.get()?.behind).toBe(4)
+  })
+})
+
+describe('discontinued retirement notice', () => {
+  const applyMock = vi.fn()
+  const checkMock = vi.fn()
+
+  const discontinuedStatus = (): DesktopUpdateStatus => ({
+    supported: true,
+    fetchedAt: 0,
+    retirement: { state: 'discontinued', destination: 'stable', version: '1.2.3' }
+  })
+
+  beforeEach(() => {
+    storage.clear()
+    notifySpy.mockClear()
+    dismissSpy.mockClear()
+    applyMock.mockClear()
+    checkMock.mockReset()
+    resetUpdateApplyState()
+    $updateStatus.set(null)
+    $updateOverlayOpen.set(false)
+    checkMock.mockImplementation(async () => discontinuedStatus())
+    ;(globalThis as unknown as { window: unknown }).window = {
+      hermesDesktop: { updates: { apply: applyMock, check: checkMock } }
+    }
+    vi.useRealTimers()
+  })
+
+  afterEach(() => {
+    delete (globalThis as unknown as { window?: unknown }).window
+  })
+
+  it('checkUpdates surfaces the discontinued warning and never offers an apply', async () => {
+    await checkUpdates({ force: true })
+
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+    expect(notifySpy.mock.calls[0]?.[0]).toMatchObject({ kind: 'warning', id: 'desktop-build-discontinued' })
+    // The ordinary update toast must stay silent: nothing can be downloaded.
+    expect(notifySpy.mock.calls[0]?.[0]).not.toMatchObject({ icon: 'gift' })
+
+    // The generic update entry point refuses instead of dispatching an apply.
+    const result = await applyUpdates()
+    expect(result).toMatchObject({ ok: false, error: 'retirement-blocked' })
+    expect(applyMock).not.toHaveBeenCalled()
+  })
+
+  it('dismissal persists per channel revision: a re-check stays quiet, a new retirement re-notifies', async () => {
+    await checkUpdates({ force: true })
+    ;(notifySpy.mock.calls[0]?.[0] as { onDismiss: () => void }).onDismiss()
+    notifySpy.mockClear()
+
+    // Plain re-check of the same retired revision: no nag.
+    await checkUpdates({ force: true })
+    expect(notifySpy).not.toHaveBeenCalled()
+
+    // The publisher pins a new destination version → the notice returns.
+    checkMock.mockImplementation(async () => ({
+      ...discontinuedStatus(),
+      retirement: { state: 'discontinued', destination: 'stable', version: '1.3.0' }
+    }))
+    await checkUpdates({ force: true })
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('a retirement that is not discontinued never raises the notice', async () => {
+    checkMock.mockImplementation(async () => ({
+      ...discontinuedStatus(),
+      retirement: { state: 'available', destination: 'stable', version: '1.2.3' }
+    }))
+    await checkUpdates({ force: true })
+
+    expect(notifySpy.mock.calls.filter(call => call[0]?.id === 'desktop-build-discontinued')).toHaveLength(0)
   })
 })

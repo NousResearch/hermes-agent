@@ -207,6 +207,13 @@ export interface BotRequestOptions {
   timeoutMs?: number
 }
 
+/** Writes to a bot's own profile only ever come from a user action (a save,
+ *  a section move, an avatar change, a duplicate). The pool reserves a slot
+ *  for foreground dials only, so a write left at the background default
+ *  queues behind warm bot backends, times out after 30 s, then backs off —
+ *  the write is lost. They dial foreground unless the caller says otherwise. */
+const PROFILE_WRITE_METHODS = new Set(['profiles.configure', 'profiles.create', 'profiles.set_asset'])
+
 export async function requestForBot<T = unknown>(
   bot: Partial<RosterRow> | null | undefined,
   method: string,
@@ -223,10 +230,13 @@ export async function requestForBot<T = unknown>(
     try {
       const routedParams = scopedBotParams(route, method, params)
 
+      const spawnPriority =
+        options?.spawnPriority ?? (PROFILE_WRITE_METHODS.has(method) ? ('foreground' as const) : undefined)
+
       // Keep the three-argument shape when no options were given so older
       // desktop shells (and the arity-pinning tests) see the same call.
-      return await (options?.spawnPriority
-        ? host.requestProfile(route, method, routedParams, options.timeoutMs, { spawnPriority: options.spawnPriority })
+      return await (spawnPriority
+        ? host.requestProfile(route, method, routedParams, options?.timeoutMs, { spawnPriority })
         : options?.timeoutMs === undefined
           ? host.requestProfile(route, method, routedParams)
           : host.requestProfile(route, method, routedParams, options.timeoutMs))

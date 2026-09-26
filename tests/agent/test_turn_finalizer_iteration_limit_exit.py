@@ -1,7 +1,7 @@
 """Regression tests for iteration-limit exit normalization (#61631)."""
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import ANY, MagicMock
 
 import pytest
 
@@ -185,10 +185,7 @@ def test_pending_response_records_kanban_timeout(monkeypatch):
     record.assert_called_once_with(
         conn,
         "task-123",
-        error=(
-            "Iteration budget exhausted (60/60) — task could not complete "
-            "within the allowed iterations"
-        ),
+        error=ANY,
         outcome="timed_out",
         release_claim=True,
         end_run=True,

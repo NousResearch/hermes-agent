@@ -288,6 +288,27 @@ With `gateway.multiplex_profiles: true` one process serves the default profile p
 
 Secret reads fail closed (`agent.secret_scope.get_secret` raises `UnscopedSecretError`) only after `set_multiplex_active(True)`, which the gateway, cron, `gateway migrate` and the Desktop/dashboard `serve` backend set. Adapter YAML never reaches `os.environ` under multiplex: `gateway/platforms/_shared.py::apply_yaml_bridge` seeds `PlatformConfig.extra` and skips the environ write under a secondary's scope; gates read through `platform_gate_env`. Shared-ingress platforms (WhatsApp bridge, Relay) run on the default profile only; a secondary that enables one is logged once and stamped into runtime status (`run_adapters.py::_note_unserved_secondary_platform`). Per-profile isolation as the user sees it: [Multi-profile gateways § What is isolated per profile](../user-guide/multi-profile-gateways.md#what-is-isolated-per-profile).
 
+## Mid-run plugin loading
+
+Plugins that load after the adapters connected (install/enable from the CLI, Desktop, dashboard or
+`plugins.manage`; a tool-triggered force re-discovery) re-wire their platform handlers without a restart
+(#87770). The pieces, all in `gateway/run_plugin_rewire.py`:
+
+- **Discovery listener** — `_start_recover_previous_run` subscribes `PluginManager.on_plugin_loaded` for the
+  launch profile and `_load_secondary_profile_config` does so per served profile. The event fires from inside
+  `discover_and_load` (never from an RPC) for the newly loaded plugins; the callback hops onto the gateway
+  loop with `call_soon_threadsafe`.
+- **Idempotent re-wire** — `BasePlatformAdapter.rewire_plugin_handlers()` re-reads
+  `get_platform_handler_factories(platform)` and runs only factories not yet wired on the live native
+  client (keyed `(plugin, qualname)` because a force reload hands back new function objects). Telegram
+  hoists the added handlers ahead of core's catch-alls; Slack also re-registers missing
+  `register_slack_action_handler` callbacks once per `AsyncApp`.
+- **`reload-plugins` control verb** — other processes (`hermes plugins install`, `hermes serve`) ask the
+  running gateway to force-rescan the requested (served) home; the answer carries `plugins`, per-plugin
+  `activations` and `adapters_rewired`, so the caller can say "active now" truthfully.
+- **Scope limit** — handlers only. Tools and system-prompt sections of a late plugin wait for the next
+  session (prompt-cache invariant); portable MCP servers wait for `mcp.reload`. Nothing un-wires on disable.
+
 ## Related Docs
 
 - [Session Storage](./session-storage.md)

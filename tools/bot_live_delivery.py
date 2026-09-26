@@ -240,7 +240,7 @@ def _read(path: Path) -> dict[str, Any] | None:
     Directory sweeps call :func:`_scan_read`, which quarantines such a ticket instead of raising.
     """
     try:
-        record = json.loads(path.read_text(encoding="utf-8"))
+        record = json.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
         return None
     if not isinstance(record, dict):
@@ -332,7 +332,7 @@ def _next_sequence(root: Path) -> int:
     """
     counter = root / _SEQUENCE_FILE
     try:
-        persisted = int(counter.read_text(encoding="utf-8"))
+        persisted = int(counter.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         persisted = 0
     scanned = max((record.get("sequence") or record.get("created_at") or 0

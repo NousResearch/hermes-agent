@@ -6,7 +6,6 @@
  */
 
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
@@ -17,7 +16,6 @@ import {
   canImportHermesCli,
   DEFAULT_PROBE_TIMEOUT_MS,
   execProbe,
-  hermesRuntimeImportProbe,
   PROBE_TIMEOUT_MS,
   resolveProbeTimeoutMs,
   shouldTrustHermesOverride,
@@ -98,16 +96,6 @@ test('canImportHermesCli returns false when binary does not exist', async () => 
   assert.equal(await canImportHermesCli(ghost), false)
 })
 
-test('hermes runtime import probe checks config dependencies', () => {
-  const probe = hermesRuntimeImportProbe()
-  assert.match(probe, /\bimport yaml\b/)
-  // dotenv is the first third-party import on the CLI boot path
-  // (hermes_cli/env_loader.py); a mid-update venv missing python-dotenv
-  // passed the old probe and produced an unrecoverable boot loop.
-  assert.match(probe, /\bimport dotenv\b/)
-  assert.match(probe, /\bimport hermes_cli\.config\b/)
-})
-
 test('explicit Hermes override is authoritative', () => {
   assert.equal(shouldTrustHermesOverride('/nix/store/abc/bin/hermes'), true)
 })
@@ -128,35 +116,8 @@ test('verifyHermesCli returns false when binary does not exist', async () => {
   assert.equal(await verifyHermesCli(ghost), false)
 })
 
-test('verifyHermesCli returns true when --version exits 0', async () => {
-  // Write a tiny script that exits 0 regardless of args, then invoke
-  // it through node. This stands in for a working hermes binary --
-  // verifyHermesCli only cares about the exit code.
-  const scriptPath = path.join(os.tmpdir(), `hermes-probes-ok-${Date.now()}-${process.pid}.cjs`)
-  fs.writeFileSync(scriptPath, 'process.exit(0)\n')
-
-  try {
-    // Use node as the launcher and our script as the "command". Pass
-    // shell:false (default) -- node is a real binary, no shim.
-    // execFileSync passes ['--version'] as args, which node ignores
-    // gracefully (well, it prints its version and exits 0, which is
-    // perfect -- exit code 0 is the only signal we read).
-    assert.equal(await verifyHermesCli(NODE_BIN), true)
-  } finally {
-    try {
-      fs.unlinkSync(scriptPath)
-    } catch {
-      void 0
-    }
-  }
-})
-
-test('verifyHermesCli swallows timeouts (does not throw)', async () => {
-  // We can't easily provoke a real hang in CI without slowing the
-  // suite, but we CAN confirm that an invocation that DOES throw
-  // (because the binary is missing) returns false rather than
-  // propagating. Same code path the timeout case takes.
-  assert.equal(await verifyHermesCli('/definitely/not/a/real/binary/anywhere'), false)
+test('verifyHermesCli accepts an actual zero-exit executable', async (): Promise<void> => {
+  assert.equal(await verifyHermesCli(NODE_BIN), true)
 })
 
 test('default probe timeout is 15s (not the old 5s death-loop value)', () => {

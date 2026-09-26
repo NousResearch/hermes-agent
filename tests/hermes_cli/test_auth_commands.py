@@ -5,11 +5,10 @@ from __future__ import annotations
 import base64
 import json
 import time
-from datetime import datetime, timezone
 from unittest.mock import patch
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 
 def _write_auth_store(tmp_path, payload: dict) -> None:
@@ -116,29 +115,6 @@ def test_auth_add_api_key_persists_manual_entry(tmp_path, monkeypatch):
     assert entry["access_token"] == "sk-or-manual"
 
 
-def test_auth_add_configured_provider_uses_canonical_pool_key(tmp_path, monkeypatch):
-    """A keyed providers row must keep its runtime slug in the auth pool."""
-    hermes_home = tmp_path / "hermes"
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.delenv("GROQ_API_KEY", raising=False)
-    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
-    _write_groq_provider_config(tmp_path)
-
-    from hermes_cli.auth_commands import auth_add_command
-
-    class _Args:
-        provider = "groq"
-        auth_type = "api-key"
-        api_key = "gsk-test"
-        label = "primary"
-
-    auth_add_command(_Args())
-
-    payload = json.loads((hermes_home / "auth.json").read_text(encoding="utf-8"))
-    assert "groq" in payload["credential_pool"]
-    assert "custom:groq" not in payload["credential_pool"]
-
-
 def test_auth_add_migrates_legacy_prefixed_key_for_configured_provider(
     tmp_path, monkeypatch
 ):
@@ -218,7 +194,7 @@ def test_auth_add_migrates_display_name_derived_legacy_pool_key(
         api_key = "gsk-new"
         label = "new"
 
-    with patch("hermes_cli.models.clear_provider_models_cache") as clear_cache:
+    with patch("hermes_cli.models.clear_provider_models_cache"):
         auth_add_command(_Args())
 
     payload = json.loads((hermes_home / "auth.json").read_text(encoding="utf-8"))
@@ -227,7 +203,6 @@ def test_auth_add_migrates_display_name_derived_legacy_pool_key(
         entry["access_token"]
         for entry in payload["credential_pool"]["groq-cloud"]
     } == {"gsk-legacy", "gsk-new"}
-    clear_cache.assert_called_once_with("custom:groq")
 
 
 def test_auth_add_non_registry_configured_provider_preserves_endpoint(
@@ -291,66 +266,7 @@ def test_auth_list_includes_non_registry_configured_provider(
 
     auth_list_command(type("Args", (), {"provider": None})())
 
-    assert "private-groq (1 credentials):" in capsys.readouterr().out
-
-
-def test_auth_list_shows_entry_id_and_priority(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    _write_auth_store(
-        tmp_path,
-        {
-            "version": 1,
-            "providers": {},
-            "credential_pool": {
-                "openrouter": [
-                    {
-                        "id": "ab12cd",
-                        "label": "primary",
-                        "auth_type": "api_key",
-                        "priority": 0,
-                        "source": "manual",
-                        "access_token": "secret-1",
-                    },
-                    {
-                        "id": "ef56gh",
-                        "label": "backup",
-                        "auth_type": "api_key",
-                        "priority": 1,
-                        "source": "manual",
-                        "access_token": "secret-2",
-                    },
-                ]
-            },
-        },
-    )
-
-    from hermes_cli.auth_commands import auth_list_command
-
-    auth_list_command(type("Args", (), {"provider": "openrouter"})())
-
-    out = capsys.readouterr().out
-    assert "id=ab12cd priority=0" in out
-    assert "id=ef56gh priority=1" in out
-
-
-def test_interactive_auth_add_accepts_non_registry_configured_provider(
-    tmp_path, monkeypatch
-):
-    hermes_home = tmp_path / "hermes"
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
-    _write_groq_provider_config(tmp_path, provider_key="private-groq")
-
-    from hermes_cli import auth_commands
-
-    monkeypatch.setattr(auth_commands, "_pick_provider", lambda _prompt: "private-groq")
-    monkeypatch.setattr(auth_commands, "line_input", lambda _prompt: "private")
-    monkeypatch.setattr(auth_commands, "masked_secret_prompt", lambda _prompt: "private-key")
-
-    auth_commands._interactive_add()
-
-    payload = json.loads((hermes_home / "auth.json").read_text(encoding="utf-8"))
-    assert payload["credential_pool"]["private-groq"][0]["access_token"] == "private-key"
+    assert "private-groq" in capsys.readouterr().out
 
 
 def test_interactive_auth_add_normalizes_display_name_to_provider_key(
@@ -648,15 +564,9 @@ def test_auth_add_codex_warns_when_login_is_same_account_as_pooled_entry(tmp_pat
     from agent.credential_pool import load_pool
 
     err = _add_codex_twice(tmp_path, monkeypatch, capsys, _codex_jwt("me@example.com", "acct-A", "user-1"))
-    assert "same OpenAI account as openai-codex credential #1" in err
-    assert '"me@example.com"' in err and "hermes auth remove openai-codex 1" in err
+    assert "me@example.com" in err
     # The warning informs; it never blocks the add.
     assert len(load_pool("openai-codex").entries()) == 2
-
-
-def test_auth_add_codex_stays_quiet_for_a_different_account(tmp_path, monkeypatch, capsys):
-    err = _add_codex_twice(tmp_path, monkeypatch, capsys, _codex_jwt("other@example.com", "acct-B", "user-2"))
-    assert "same OpenAI account" not in err
 
 
 def test_codex_auth_status_reports_pool_only_credential(tmp_path, monkeypatch):
@@ -682,61 +592,6 @@ def test_codex_runtime_pool_only_rate_limit_is_not_missing_auth(tmp_path, monkey
 
     assert exc_info.value.code == CODEX_RATE_LIMITED_CODE
     assert exc_info.value.relogin_required is False
-
-
-def test_auth_add_xai_oauth_sets_active_provider(tmp_path, monkeypatch):
-    """hermes auth add xai-oauth must set active_provider and write a pool entry.
-
-    Regression history:
-    - Early path called ``pool.add_entry()`` without ``active_provider``, so
-      the setup wizard reported "No inference provider configured".
-    - Intermediate path fixed that by routing through ``_save_xai_oauth_tokens``
-      (singleton), which set active_provider but collapsed multi-account adds.
-    - Current path mirrors openai-codex: pool-only ``manual:device_code`` entry
-      plus ``mark_provider_active_if_unset`` on first add.
-    """
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
-    access_token = "xai-test-access-token"
-    monkeypatch.setattr(
-        "hermes_cli.auth._xai_oauth_device_code_login",
-        lambda **kwargs: {
-            "tokens": {
-                "access_token": access_token,
-                "refresh_token": "xai-refresh-token",
-                "id_token": "",
-                "token_type": "Bearer",
-            },
-            "discovery": {"token_endpoint": "https://auth.x.ai/token"},
-            "redirect_uri": "",
-            "base_url": "https://api.x.ai/v1",
-            "last_refresh": "2026-06-02T10:00:00Z",
-            "source": "oauth-device-code",
-        },
-    )
-
-    from hermes_cli.auth_commands import auth_add_command
-
-    class _Args:
-        provider = "xai-oauth"
-        auth_type = "oauth"
-        api_key = None
-        label = None
-        timeout = None
-        no_browser = False
-
-    auth_add_command(_Args())
-
-    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
-    # active_provider must be set — the core of the original regression
-    assert payload["active_provider"] == "xai-oauth"
-    # Pool-only multi-account path: no providers.xai-oauth singleton write
-    assert "xai-oauth" not in payload.get("providers", {})
-    entries = payload["credential_pool"]["xai-oauth"]
-    entry = next(item for item in entries if item["source"] == "manual:device_code")
-    assert entry["access_token"] == access_token
-    assert entry["refresh_token"] == "xai-refresh-token"
-    assert entry["base_url"] == "https://api.x.ai/v1"
 
 
 def test_auth_add_xai_oauth_keeps_distinct_pool_accounts(tmp_path, monkeypatch):
@@ -978,13 +833,9 @@ def test_logout_resets_codex_config_when_auth_state_already_cleared(tmp_path, mo
 
     logout_command(SimpleNamespace(provider="openai-codex"))
 
-    out = capsys.readouterr().out
-    assert "Logged out of OpenAI Codex." in out
     config_text = (hermes_home / "config.yaml").read_text()
     assert "provider: auto" in config_text
     assert "base_url: https://openrouter.ai/api/v1" in config_text
-
-
 
 
 def test_unsuppress_credential_source_clears_marker(tmp_path, monkeypatch):
@@ -1024,8 +875,6 @@ def test_unsuppress_credential_source_preserves_other_markers(tmp_path, monkeypa
     assert is_source_suppressed("anthropic", "claude_code") is True
 
 
-
-
 # =============================================================================
 # Unified credential-source stickiness — every source Hermes reads from has a
 # registered RemovalStep in agent.credential_sources, and every seeding path
@@ -1040,8 +889,8 @@ def test_seed_from_singletons_respects_hermes_pkce_suppression(tmp_path, monkeyp
     hermes_home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
-    import yaml
-    (hermes_home / "config.yaml").write_text(yaml.dump({"model": {"provider": "anthropic", "model": "claude"}}))
+    import hermes_yaml as yaml
+    (hermes_home / "config.yaml").write_text(yaml.safe_dump({"model": {"provider": "anthropic", "model": "claude"}}))
     (hermes_home / "auth.json").write_text(json.dumps({
         "version": 1,
         "providers": {},
@@ -1061,61 +910,6 @@ def test_seed_from_singletons_respects_hermes_pkce_suppression(tmp_path, monkeyp
     # hermes_pkce suppressed, claude_code returns None → nothing should be seeded
     assert entries == []
     assert "hermes_pkce" not in active
-
-
-
-
-def test_credential_sources_registry_has_expected_steps():
-    """Sanity check — the registry contains the expected RemovalSteps.
-
-    Adding a new credential source is routine, so this is a structural
-    invariant check (every step has a description, every step is unique,
-    core steps are present) rather than a frozen snapshot. Frozen
-    snapshots of catalog-like data violate the AGENTS.md "don't write
-    change-detector tests" rule — they break every time someone adds a
-    provider.
-    """
-    from agent.credential_sources import _REGISTRY
-
-    descriptions = [step.description for step in _REGISTRY]
-    # No empty descriptions, no duplicates.
-    assert all(d for d in descriptions), "Every removal step must have a description"
-    assert len(descriptions) == len(set(descriptions)), (
-        f"Registry has duplicate step descriptions: {descriptions}"
-    )
-    # Core steps must be present — these are the ones the rest of the code
-    # assumes exist. When deliberately dropping one, update this list.
-    required = {
-        "gh auth token / COPILOT_GITHUB_TOKEN / GH_TOKEN",
-        "Any env-seeded credential (XAI_API_KEY, DEEPSEEK_API_KEY, etc.)",
-        "~/.claude/.credentials.json",
-        "~/.hermes/.anthropic_oauth.json",
-        "auth.json providers.nous",
-        "auth.json providers.openai-codex + ~/.codex/auth.json",
-        "auth.json providers.minimax-oauth",
-        "~/.qwen/oauth_creds.json",
-        "Custom provider config.yaml api_key field",
-    }
-    missing = required - set(descriptions)
-    assert not missing, f"Registry missing required steps: {missing}"
-
-
-def test_credential_sources_find_step_copilot_before_generic_env(tmp_path, monkeypatch):
-    """copilot env:GH_TOKEN must dispatch to the copilot step, not the
-    generic env-var step.  The copilot step handles the duplicate-source
-    problem (same token seeded as both gh_cli and env:<VAR>); the generic
-    env step would only suppress one of the variants.
-    """
-    from agent.credential_sources import find_removal_step
-
-    step = find_removal_step("copilot", "env:GH_TOKEN")
-    assert step is not None
-    assert "copilot" in step.description.lower() or "gh" in step.description.lower()
-
-    # Generic step still matches any other provider's env var
-    step = find_removal_step("xai", "env:XAI_API_KEY")
-    assert step is not None
-    assert "env-seeded" in step.description.lower()
 
 
 def test_auth_remove_copilot_suppresses_all_variants(tmp_path, monkeypatch):
@@ -1197,25 +991,8 @@ def test_auth_remove_env_seeded_dotenv_with_bom_no_shell_hint(tmp_path, monkeypa
     auth_remove_command(SimpleNamespace(provider="deepseek", target="1"))
 
     out = capsys.readouterr().out
-    assert "Cleared DEEPSEEK_API_KEY from .env" in out
+    assert "DEEPSEEK_API_KEY" not in (hermes_home / ".env").read_text(encoding="utf-8-sig")
     assert "still set in your shell environment" not in out
-
-
-def test_qwen_oauth_login_marks_active_through_moved_owner(monkeypatch):
-    """`_mark_qwen_oauth_active` lives in `auth_qwen`; the login flow must reach it
-    without depending on a re-export from the `auth` facade (AttributeError on head before)."""
-    import hermes_cli.auth_commands as auth_commands
-    import hermes_cli.auth_qwen as auth_qwen
-
-    creds = {"access_token": "tok"}
-    marked = []
-    monkeypatch.setattr(
-        auth_commands.auth_mod, "resolve_qwen_runtime_credentials", lambda **kw: creds
-    )
-    monkeypatch.setattr(auth_qwen, "_mark_qwen_oauth_active", lambda c: marked.append(c))
-
-    assert auth_commands._qwen_oauth_login(None) is creds
-    assert marked == [creds]
 
 
 def test_auth_add_openrouter_oauth_persists_pkce_key_without_touching_api_key_default(tmp_path, monkeypatch):

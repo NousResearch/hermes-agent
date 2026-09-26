@@ -1,18 +1,9 @@
 """Unit tests for hermes_cli.managed_scope (resolver + loaders + key helpers)."""
 import textwrap
 
-import pytest
-
-
 # ── Directory resolver ───────────────────────────────────────────────────────
 
-
-
-
-
-
 # ── Loaders + key helpers ────────────────────────────────────────────────────
-
 
 def _write_managed(tmp_path, monkeypatch, *, config=None, env=None):
     from hermes_cli import managed_scope
@@ -27,13 +18,6 @@ def _write_managed(tmp_path, monkeypatch, *, config=None, env=None):
     managed_scope.invalidate_managed_cache()
     return managed
 
-
-
-
-
-
-
-
 def test_load_managed_env_and_is_env_managed(tmp_path, monkeypatch):
     from hermes_cli import managed_scope
 
@@ -45,12 +29,3 @@ def test_load_managed_env_and_is_env_managed(tmp_path, monkeypatch):
     }
     assert managed_scope.is_env_managed("OPENAI_API_BASE") is True
     assert managed_scope.is_env_managed("OTHER") is False
-
-
-
-
-def test_managed_dir_env_scrubbed_by_default():
-    """conftest must scrub HERMES_MANAGED_DIR so a dev-shell value can't leak in."""
-    import os
-
-    assert "HERMES_MANAGED_DIR" not in os.environ

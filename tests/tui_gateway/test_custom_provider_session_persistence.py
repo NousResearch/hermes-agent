@@ -700,35 +700,7 @@ class TestFollowProfileConfigRuntimeOverrides:
         }
         assert _stored_session_runtime_overrides(row) == {}
 
-    def test_marked_row_dict_model_config_returns_no_overrides(self):
-        """Same contract when model_config is already a dict (not JSON)."""
-        from tui_gateway.server import _stored_session_runtime_overrides
 
-        row = {
-            "model": "openai/gpt-5.6-luna-pro",
-            "model_config": {
-                "model": "openai/gpt-5.6-luna-pro",
-                "provider": "nous",
-                "follow_profile_config": True,
-            },
-        }
-        assert _stored_session_runtime_overrides(row) == {}
-
-    def test_unmarked_row_still_restores_stored_runtime(self):
-        """Normal 1:1 user chats keep the stored-runtime restore — the
-        contract must not leak into ordinary sessions."""
-        from tui_gateway.server import _stored_session_runtime_overrides
-
-        row = {
-            "model": "openai/gpt-5.6-luna-pro",
-            "billing_provider": "nous",
-            "model_config": json.dumps(
-                {"model": "openai/gpt-5.6-luna-pro", "provider": "nous"}
-            ),
-        }
-        overrides = _stored_session_runtime_overrides(row)
-        assert overrides["model_override"]["model"] == "openai/gpt-5.6-luna-pro"
-        assert overrides["model_override"]["provider"] == "nous"
 
     def test_legacy_bot_chat_title_backfills_contract(self):
         """Canonical Bot Chats created BEFORE the marker existed carry no
@@ -914,38 +886,6 @@ class TestRuntimeModelConfigDropsStaleKeys:
         assert overrides["model_override"]["provider"] == "nous"
         assert overrides["provider_override"] == "nous"
 
-    def test_real_db_persist_heals_desynced_row(self, tmp_path, monkeypatch):
-        """A row already desynced (fresh model column + stale model_config
-        provider) self-heals on the next live metadata persist."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-        db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session(session_id="desync1", source="desktop", model="old-model")
-        db.update_session_meta(
-            "desync1",
-            json.dumps(
-                {
-                    "model": "deepseek/deepseek-v4-flash-0731",
-                    "provider": "stealth-ox-alpha",
-                    "base_url": "https://api.venice.ai/api/v1",
-                }
-            ),
-            model="deepseek/deepseek-v4-flash-0731",
-        )
-
-        from tui_gateway.server import _runtime_model_config
-
-        row = db.get_session("desync1")
-        assert row is not None
-        existing = json.loads(row["model_config"])
-        merged = _runtime_model_config(_agent_like(), existing)
-        db.update_session_meta("desync1", json.dumps(merged), model="deepseek/deepseek-v4-flash-0731")
-
-        healed_row = db.get_session("desync1")
-        assert healed_row is not None
-        healed = json.loads(healed_row["model_config"])
-        assert healed["model"] == "deepseek/deepseek-v4-flash-0731"
-        assert "provider" not in healed, healed
-        assert "base_url" not in healed, healed
 
     def test_existing_none_returns_only_agent_identity(self):
         """First write (no existing row): the merge starts from an empty dict

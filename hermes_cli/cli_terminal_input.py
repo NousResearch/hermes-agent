@@ -451,7 +451,7 @@ def _preserve_ctrl_enter_newline() -> bool:
     # WSL env vars can be scrubbed under sudo; also peek /proc.
     for p in ("/proc/version", "/proc/sys/kernel/osrelease"):
         try:
-            with open(p, "r", encoding="utf-8", errors="ignore") as f:
+            with open(p, "r", encoding="utf-8-sig", errors="ignore") as f:
                 if "microsoft" in f.read().lower():
                     return True
         except OSError:

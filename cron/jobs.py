@@ -1391,14 +1391,16 @@ def load_jobs() -> List[Dict[str, Any]]:
         jobs = [j for j in jobs if isinstance(j, dict)]
         repair = repair or "non-object entries dropped"
     for job in jobs:
-        # A hand-edited "completed" that is not an int (null, "2", 1.0) would crash every counter
-        # reader (None += 1, "2" + 1) or render as "None/3" / "2.0/3"; normalize it once here so
-        # readers can trust an int.
+        # A hand-edited "completed" that is not a non-negative int (null, "2", 1.0, -5, Infinity)
+        # would crash every counter reader (None += 1, "2" + 1), render as "None/3" / "2.0/3", or
+        # grant extra runs; normalize it once here so readers can trust a non-negative int.
+        # OverflowError: json.loads turns Infinity / 1e999 into float inf, and int(inf) raises.
         rep = job.get("repeat")
-        if isinstance(rep, dict) and "completed" in rep and type(rep["completed"]) is not int:
+        if isinstance(rep, dict) and "completed" in rep and (
+                type(rep["completed"]) is not int or rep["completed"] < 0):
             try:
-                rep["completed"] = max(int(rep["completed"] or 0), 0)
-            except (TypeError, ValueError):
+                rep["completed"] = max(int(rep["completed"]), 0)
+            except (TypeError, ValueError, OverflowError):
                 rep["completed"] = 0
             repair = repair or "invalid repeat.completed normalized"
     # Persist even an empty result, or an all-junk store repeats the repair on every tick.

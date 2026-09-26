@@ -438,9 +438,9 @@ class TestJobCRUD:
         with pytest.raises(ValueError, match="Invalid repeat"):
             update_job(job["id"], {"repeat": "banana"})
 
-    def test_null_repeat_completed_counts_as_zero(self, tmp_cron_dir):
-        """A hand-edited "completed": null must not kill mark_job_run (None += 1) or be
-        carried forward by update_job."""
+    def test_invalid_repeat_completed_is_normalized(self, tmp_cron_dir):
+        """A hand-edited "completed" (null, string, float, negative, Infinity) must not kill
+        mark_job_run or the whole store, and must not be carried forward by update_job."""
         import json
         from cron.jobs import JOBS_FILE, get_job, mark_job_run, update_job
 
@@ -456,8 +456,10 @@ class TestJobCRUD:
         assert get_job(job["id"])["repeat"]["completed"] == 1
         set_completed(None)
         assert update_job(job["id"], {"repeat": {"times": 5}})["repeat"]["completed"] == 0
-        # Other hand-edited shapes: a string would crash ("2" + 1), a float would render "2.0/5".
-        for value, expected in (("2", 3), (1.0, 2), ("junk", 1)):
+        # Other hand-edited shapes: a string would crash ("2" + 1), a float would render "2.0/5",
+        # a negative count grants extra runs, and Infinity (json.dumps writes it) raised
+        # OverflowError out of load_jobs, freezing every job.
+        for value, expected in (("2", 3), (1.0, 2), ("junk", 1), (-2, 1), (float("inf"), 1)):
             set_completed(value)
             mark_job_run(job["id"], success=True)
             completed = get_job(job["id"])["repeat"]["completed"]

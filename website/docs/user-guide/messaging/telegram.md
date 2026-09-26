@@ -388,6 +388,31 @@ fly deploy
 
 The gateway log should show: `[telegram] Connected to Telegram (webhook mode)`.
 
+### Cloud deployment example (Railway)
+
+Railway services run continuously, so the default polling mode works with no extra configuration.
+
+1. Deploy the [Hermes Agent template](https://railway.com/deploy/kit-hermes-build-0920). It runs the official image on a persistent volume, generates the dashboard password and `API_SERVER_KEY`, and needs no input.
+
+2. In the service's **Variables** tab, set your provider key and the Telegram values, then redeploy:
+
+```bash
+OPENROUTER_API_KEY=sk-or-...        # or ANTHROPIC_API_KEY / OPENAI_API_KEY
+TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
+TELEGRAM_ALLOWED_USERS=123456789
+```
+
+   Or leave these unset and add them from the dashboard's **Messaging → Telegram** page instead (log in as `admin` with the generated `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD`).
+
+3. Optional — webhook mode. In **Settings → Networking**, add a second public domain that targets port `8443`, then set:
+
+```bash
+TELEGRAM_WEBHOOK_URL=https://<second-domain>.up.railway.app/telegram
+TELEGRAM_WEBHOOK_SECRET=<openssl rand -hex 32>
+```
+
+The gateway log should show `[telegram] Connected to Telegram (webhook mode)`; without the two webhook variables it shows `(polling mode)`.
+
 ## Proxy Support
 
 If Telegram's API is blocked or you need to route traffic through a proxy, set a Telegram-specific proxy URL. This takes priority over the generic `HTTPS_PROXY` / `HTTP_PROXY` env vars.

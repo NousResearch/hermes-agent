@@ -1566,14 +1566,21 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         raw_content = data.decode("utf-8", "surrogateescape")
         content, _ = _strip_bom(raw_content)
 
+        # Models send bare-LF old/new strings, so match a CRLF file on its LF view: against
+        # the raw text a multi-line old_string never matches exactly, and the line-based
+        # fuzzy strategies read its trailing "\n" as an extra blank line, so they refuse the
+        # edit, apply replace_all to only some copies, or pick one of several copies.
+        file_ending = _detect_line_ending(content)
+        match_content = content
+        if file_ending == "\r\n":
+            match_content = content.replace("\r\n", "\n")
+            old_string = old_string.replace("\r\n", "\n")
         from tools.fuzzy_match import fuzzy_find_and_replace
         new_content, match_count, _strategy, error = fuzzy_find_and_replace(
-            content, old_string, new_string, replace_all)
+            match_content, old_string, new_string, replace_all)
         if error or match_count == 0:
-            return self._no_match_result(path, content, old_string, new_string, match_count, error)
-        # Models send bare-LF old/new strings; normalize the substituted region to
-        # the file's ending so CRLF files stay consistent.
-        file_ending = _detect_line_ending(content)
+            return self._no_match_result(path, match_content, old_string, new_string, match_count, error)
+        # Normalize the substituted region to the file's ending so CRLF files stay consistent.
         if file_ending:
             new_content = _normalize_line_endings(new_content, file_ending)
         write_result = self.write_file(path, new_content, pre_content=raw_content)

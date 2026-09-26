@@ -151,6 +151,11 @@ def run_tool_round(
         with suppress(Exception):
             agent.stream_delta_callback(None)
 
+    # Opt-in (compression.prepare_ahead): when this response put the session near the trigger,
+    # write the next compaction summary while the tools run. No-op otherwise; never raises.
+    from agent.prepared_compaction import maybe_prepare
+    maybe_prepare(agent, messages, origin="tool-batch")
+
     agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
 
     if getattr(agent, "_incremental_persistence_failed", False):

@@ -126,8 +126,12 @@ shared compiler helpers. Tests, workspace documentation, dependency-provider
 recipes, and other products' compiler recipes do not invalidate the TUI.
 It records product/host identity, content hashes of workspace/shared sources and
 build inputs, and the exact supplied icon directory, desktop install stamp, and
-native-dependency tree. Inputs are checked again before publication: a concurrent
-input change fails the build and preserves the previous output. Output validation
+native-dependency tree. The desktop stamp is hashed as its provenance identity
+rather than its raw bytes: `write-build-stamp.mjs` rewrites the `builtAt` clock on
+every build, so hashing it byte-for-byte let the build's own first step invalidate
+the receipt it was about to write (#123308). Inputs are checked again before
+publication: a concurrent input change fails the build and preserves the previous
+output. Output validation
 checks renderer/main/preload/public bytes and the native file inventory; native
 bytes may change through signing after compilation. Native ABI verification remains
 with the native provider and desktop compiler.

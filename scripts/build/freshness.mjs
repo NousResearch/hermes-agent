@@ -64,11 +64,33 @@ function outputHash(out) {
     name => !name.split('/').includes('node_modules') && !name.startsWith('native/'))
 }
 
+// The desktop install stamp is a real prepared input — buildDesktop bakes its bytes
+// into electron-main.mjs — but write-build-stamp.mjs rewrites `builtAt` on every build
+// (#123308). Hashing the whole file made the build's own first step invalidate the
+// receipt it was about to write, so a second build racing the first killed it on
+// "inputs changed". Hash the identity the output actually depends on instead:
+// the baked bytes change only when provenance does, never when the clock moves.
+const stampClockFields = new Set(['builtAt'])
+
+// An unreadable/non-JSON stamp is not an identity loss: its bytes still feed the hash,
+// so the file's content keeps deciding freshness and only the clock is ignored.
+function stampContentHash(path) {
+  let raw = readFileSync(path)
+  let identity
+  try {
+    identity = JSON.parse(raw)
+  } catch { return treeHash(resolve(path), ['.'], () => false) }
+  if (!identity || typeof identity !== 'object' || Array.isArray(identity)) return treeHash(resolve(path), ['.'], () => false)
+  return createHash('sha256').update(JSON.stringify(
+    Object.fromEntries(Object.entries(identity).filter(([key]) => !stampClockFields.has(key))),
+  )).digest('hex')
+}
+
 export function buildInputs(source, product, prepared = {}) {
   return {
     sourceHash: sourceHash(source, product),
     prepared: Object.entries(prepared).sort().map(([name, path]) => ({
-      name, path: resolve(path), hash: treeHash(resolve(path), ['.'], () => false),
+      name, path: resolve(path), hash: name === 'stamp' ? stampContentHash(resolve(path)) : treeHash(resolve(path), ['.'], () => false),
     })),
   }
 }

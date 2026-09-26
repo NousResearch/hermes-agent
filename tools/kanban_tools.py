@@ -458,6 +458,23 @@ _GOAL_GATE_MESSAGES = {
             "matching the card before requesting review.")}}
 
 
+# Appended to the judge's goal text only for a review handoff. A goal-mode
+# card whose own acceptance criteria require same-card review can never
+# satisfy the full-goal judge from an implementer's summary alone — that
+# reviewer step hasn't happened yet, and can't until review is requested.
+# This note keeps the judge gate (vague/absent evidence is still rejected)
+# while scoping it to "is the implementation ready for review", not "has the
+# whole card (including review) been achieved" (#98160).
+_REVIEW_READINESS_NOTE = (
+    "\n\nJudging note: this checks whether the implementation work described "
+    "above is finished and ready to hand off to a reviewer — it does not "
+    "check whether the card as a whole is done. If the card's own criteria "
+    "call for a reviewer to approve or close out the work, treat that as a "
+    "later step outside this check: do not withhold DONE merely because "
+    "reviewer/approval evidence is absent."
+)
+
+
 def _goal_gate(tool_name: str, task, tid: str, evidence: str) -> None:
     """Goal-mode pre-handoff judge gate: a worker must not complete / request
     review before acceptance criteria are met. ``blocked`` gets its own
@@ -471,8 +488,17 @@ def _goal_gate(tool_name: str, task, tid: str, evidence: str) -> None:
         from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
         affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{tid}")
         try:
+            goal = f"{task.title}\n\n{task.body or ''}".strip()
+            if tool_name == "kanban_request_review":
+                # judge_goal truncates its goal argument to 2000 chars before sending
+                # it to the judge; reserve room here so a long title/body can't push
+                # the note itself past that limit and silently drop it (#98160).
+                budget = 2000 - len(_REVIEW_READINESS_NOTE)
+                if len(goal) > budget:
+                    goal = goal[:budget]
+                goal = f"{goal}{_REVIEW_READINESS_NOTE}"
             verdict, reason, _, _, transport_failed = judge_goal(
-                goal=f"{task.title}\n\n{task.body or ''}".strip(), last_response=evidence.strip())
+                goal=goal, last_response=evidence.strip())
         finally:
             if affinity_token is not None:
                 reset_affinity_scope(affinity_token)

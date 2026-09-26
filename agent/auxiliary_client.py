@@ -7268,18 +7268,65 @@ def _resolve_call_client(
             # raising (fallback entries may use OAuth / credential-pool auth).
             _explicit = (resolved_provider or "").strip().lower()
             if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
+                # PATCH 2026-09-26 (v2): full bypass of credential-pool for smart-approval
+                # when MINIMAX_API_KEY is set in env. The pool machinery returns empty for
+                # `task="approval"` even though `auth.json` has entries with `last_status:
+                # "ok"`. Building a provider client directly with the env-var key skips
+                # both _get_cached_client and the pool layer. The env var is the same key
+                # that the pool holds (verified SHA match across .env / auth.json / disk
+                # at 17:55). Provider profile is registered with `api_mode="anthropic_messages"`,
+                # so explicit_api_key path in resolve_provider_client constructs the
+                # client correctly. (Verified HTTP 200 against
+                # https://api.minimax.io/anthropic/v1/messages at 17:55.)
+                if task == "approval" and _explicit == "minimax-oauth":
+                    _env_key = os.environ.get("MINIMAX_API_KEY") or os.environ.get("MINIMAX-OAUTH_API_KEY")
+                    if _env_key:
+                        # Use the sibling 'minimax' provider profile (api_key auth_type)
+                        # because 'minimax-oauth' is registered with auth_type='oauth_external'
+                        # and rejects plain string keys at client construction time (verified
+                        # live 2026-09-26 19:09:24: v2 fired, resolve_provider_client still
+                        # returned (None, None) because OAuth ctor ignores explicit_api_key).
+                        # Both profiles hit https://api.minimax.io/anthropic — only auth
+                        # schema differs. Same key works either way; we use the api_key
+                        # profile because the env key is a static OAuth access_token, not a
+                        # refreshable OAuth pair.
+                        logger.info(
+                            "Auxiliary approval v3: routing to 'minimax' (api_key) profile "
+                            "with MINIMAX_API_KEY env (sibling of 'minimax-oauth', same endpoint)")
+                        try:
+                            _direct_client, _direct_model = resolve_provider_client(
+                                "minimax",
+                                model=resolved_model or _get_aux_model_for_provider("minimax-oauth") or _read_main_model_for_aux(),
+                                async_mode=async_mode,
+                                explicit_api_key=_env_key,
+                                api_mode="anthropic_messages",
+                                main_runtime=main_runtime,
+                                task=task,
+                            )
+                            if _direct_client is not None:
+                                client = _direct_client
+                                final_model = _direct_model or final_model
+                                resolved_api_key = _env_key
+                                effective_provider = "minimax"
+                                logger.info(
+                                    "Auxiliary approval v3: built provider client successfully "
+                                    "(provider=%s, model=%s)", effective_provider, final_model)
+                        except Exception as _exc:
+                            logger.warning(
+                                "Auxiliary approval v3: direct provider client build failed: %s", _exc)
                 fb_client, fb_model, fb_label = _try_configured_fallback_for_unavailable_client(
                     task, _explicit)
-                if fb_client is None:
+                if client is None and fb_client is None:
                     nous_detail = nous_credential_failure_detail() if _explicit == "nous" else None
                     raise AuxiliaryClientUnavailable(
                         nous_detail or missing_provider_credentials_message(_explicit))
-                client, final_model = fb_client, fb_model
-                if async_mode:
-                    client, final_model = _to_async_client(
-                        fb_client, fb_model or "", is_vision=(task == "vision"))
-                resolved_provider = fb_label or resolved_provider
-                effective_provider = resolved_provider
+                if client is None:
+                    client, final_model = fb_client, fb_model
+                    if async_mode:
+                        client, final_model = _to_async_client(
+                            fb_client, fb_model or "", is_vision=(task == "vision"))
+                    resolved_provider = fb_label or resolved_provider
+                    effective_provider = resolved_provider
             # Auto/custom with no credentials: walk the full auto chain (not just OpenRouter).
             # model=None so each provider uses its own default.
             if client is None and not resolved_base_url:

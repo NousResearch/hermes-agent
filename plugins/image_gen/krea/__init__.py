@@ -58,6 +58,8 @@ DEFAULT_RESOLUTION = "1K"  # only resolution Krea currently supports
 _DEFAULT_STYLE_REFERENCE_STRENGTH = 0.6
 _MAX_STYLE_REFERENCES = 10
 _VALID_CREATIVITY = {"raw", "low", "medium", "high"}
+# Krea 2 generative sliders: integers from -100 to 100, 0 means the slider is off.
+_K2_SLIDERS = ("intensity", "complexity", "movement")
 
 # Polling: Krea recommends 2-5s; 2s backing off to 5s (Large ~1min); ceiling = Krea's 3 min tool timeout.
 _POLL_INITIAL_INTERVAL = 2.0
@@ -314,6 +316,10 @@ def _build_payload(
     }
     if isinstance(kwargs.get("seed"), int):
         payload["seed"] = kwargs["seed"]
+    for slider in _K2_SLIDERS:
+        value = kwargs.get(slider)
+        if isinstance(value, int) and not isinstance(value, bool) and -100 <= value <= 100:
+            payload[slider] = value
     styles, moodboards = kwargs.get("styles"), kwargs.get("moodboards")
     if isinstance(styles, list) and styles:
         payload["styles"] = styles
@@ -409,7 +415,7 @@ class KreaImageGenProvider(StaticImageGenProvider):
     def capabilities(self) -> Dict[str, Any]:
         return {
             "modalities": ["text", "image"], "max_reference_images": _MAX_STYLE_REFERENCES,
-            "supports_upscale": True,
+            "supports_upscale": True, "creative_controls": ["creativity", *_K2_SLIDERS],
         }
 
     def generate(

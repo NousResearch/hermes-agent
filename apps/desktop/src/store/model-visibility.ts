@@ -2,6 +2,7 @@ import type { ModelOptionProvider } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import { persistString, storedString } from '@/lib/storage'
+import { $gateway, activeGateway } from '@/store/gateway'
 
 const STORAGE_KEY = 'hermes.desktop.visible-models'
 
@@ -113,11 +114,79 @@ function allFamilyKeys(providers: readonly ModelOptionProvider[]): Set<string> {
   return keys
 }
 
+/** Push the roster to the gateway so OTHER surfaces (phone, a second client,
+ *  a TUI on the same backend) show the models this operator actually chose.
+ *  Kept local-first: localStorage stays the instant read so the picker never
+ *  waits on a round-trip, and a disconnected gateway is not an error — the next
+ *  edit and the next connect both retry. */
+function pushVisibleModels(keys: null | Set<string> | readonly string[]): void {
+  void activeGateway()
+    ?.request('config.set', { key: 'visible_models', value: keys === null ? null : [...keys] })
+    .catch(() => {
+      // Not connected, or a gateway too old to know the key.
+    })
+}
+
+/** Adopt the roster the backend holds. Called on connect: a gateway that already
+ *  has an answer wins over this renderer's cache, otherwise two surfaces on one
+ *  backend drift apart and the phone keeps showing models hidden on the Mac. */
+export function adoptVisibleModels(keys: null | readonly string[]): void {
+  if (keys === null) {
+    $visibleModels.set(null)
+    persistString(STORAGE_KEY, null)
+
+    return
+  }
+
+  $visibleModels.set(new Set(keys))
+  persistString(STORAGE_KEY, JSON.stringify([...keys]))
+}
+
+/** Listen for the gateway pushing an updated roster (from another surface
+ *  editing its choices) and on initial connect so a multi-client setup
+ *  converges on the backend's source of truth. */
+export function initVisibleModelsGatewaySync(): () => void {
+  return $gateway.subscribe(gateway => {
+    if (!gateway) {
+      return
+    }
+
+    void gateway
+      .request('config.get', { key: 'visible_models' })
+      .then(result => {
+        const value = (result as { value?: null | readonly string[] } | undefined)?.value
+
+        if (value === undefined) {
+          return
+        }
+
+        if (value === null) {
+          // The backend has no roster yet. A renderer that already has one is
+          // the only answer available, so seed the backend instead of wiping
+          // the operator's list.
+          const local = $visibleModels.get()
+
+          if (local !== null) {
+            pushVisibleModels(local)
+          }
+
+          return
+        }
+
+        adoptVisibleModels(value)
+      })
+      .catch(() => {
+        // Older gateway: keep the renderer-local list.
+      })
+  })
+}
+
 /** Persist the visible set and, when the current catalog is supplied, mark every
  *  model in it as judged so only models that appear later count as new. */
 export function setVisibleModels(keys: Set<string>, providers: readonly ModelOptionProvider[] = []): void {
   $visibleModels.set(new Set(keys))
   persistString(STORAGE_KEY, JSON.stringify([...keys]))
+  pushVisibleModels(keys)
 
   if (providers.length === 0) {
     return

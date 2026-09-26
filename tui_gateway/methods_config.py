@@ -9,6 +9,10 @@ import threading
 from .method_ctx import HandlerRegistry, bind_module
 from ._env import env_int
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 from hermes_constants import DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES
 from hermes_constants import display_hermes_home as _display_hermes_home
 
@@ -255,6 +259,35 @@ def _cfg_get_mtime(params):
 
 
 # key -> getter(params); bind_module rebinds the table's functions onto server.py's globals.
+def _cfg_get_visible_models(params: dict) -> dict:
+    """``display.visible_models``: the ``provider::model`` keys a picker may show.
+
+    Model visibility used to live only in the Desktop renderer's localStorage, which
+    no other surface can read: a phone or a second client showed a roster the operator
+    never chose, and a model hidden on the Mac reappeared everywhere else. Keeping the
+    list in config lets one curated choice serve every client.
+
+    ``None`` (key absent) means "never customised" — a client applies its own curated
+    default. An empty list means the operator hid everything, which is NOT the same
+    thing and must not be re-seeded with defaults.
+    """
+    raw = _display_raw().get("visible_models")
+    # A hand-edited scalar would otherwise read back as a roster of characters.
+    if not isinstance(raw, list):
+        return {"value": None}
+    seen: set[str] = set()
+    keys: list[str] = []
+    for entry in raw:
+        if not isinstance(entry, str):
+            logger.debug("display.visible_models contains non-string entry %r; dropping", entry)
+            continue
+        item = entry.strip()
+        if item and item not in seen:
+            seen.add(item)
+            keys.append(item)
+    return {"value": keys}
+
+
 _CONFIG_GETTERS = {
     "provider": _cfg_get_provider,
     "profile": lambda params: {"home": str(_hermes_home), "display": _display_hermes_home()},
@@ -279,7 +312,8 @@ _CONFIG_GETTERS = {
     "focus": lambda params: {"value": "on" if bool(_display_cfg().get("focus_view", False)) else "off",
                              "tool_progress": _load_tool_progress_mode()},
     "mouse": lambda params: {"value": _display_mouse_tracking(_load_cfg().get("display"))},
-    "mtime": _cfg_get_mtime}
+    "mtime": _cfg_get_mtime,
+    "visible_models": _cfg_get_visible_models}
 # Getters whose failure is a JSON-RPC error of this code (others propagate to dispatch).
 _CONFIG_GET_ERR = {"provider": 5013, "approval_mode": 5001, "approvals.mode": 5001}
 

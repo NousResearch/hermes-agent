@@ -168,7 +168,8 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
                     with _quiet("task failure notice failed", exc_info=True):
                         from tools.async_delegation import push_task_failure_notice
                         _i = entry.get("task_index", -1)
-                        _live = batch.live_paths[_i] if isinstance(_i, int) and 0 <= _i < len(batch.live_paths) else None
+                        _w = batch.live_writers[_i] if isinstance(_i, int) and 0 <= _i < len(batch.live_writers) else None
+                        _live = str(_w.path) if _w is not None and _w.path is not None else None
                         push_task_failure_notice(
                             batch.unit_id, {**entry, **({"live_transcript": _live} if _live else {})}, n_tasks=n_tasks)
     finally:
@@ -199,8 +200,8 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
         if isinstance(_idx, int) and 0 <= _idx < len(batch.live_writers) and batch.live_writers[_idx] is not None:
             with _quiet("Live transcript finalize failed", exc_info=True):
                 batch.live_writers[_idx].finalize(entry)
-            if _idx < len(batch.live_paths):
-                entry["live_transcript"] = batch.live_paths[_idx]
+            # Label from the index-aligned writer, not live_paths (compressed when a sibling's writer init failed).
+            entry["live_transcript"] = str(batch.live_writers[_idx].path)
     update_manifest_statuses(batch.live_deleg_id, results)
 
     combined: Dict[str, Any] = {"results": results, "total_duration_seconds": total_duration}
@@ -209,7 +210,10 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     process_notes = [line for entry in results for line in _process_accounting_lines(entry)]
     if process_notes:
         combined["process_notes"] = process_notes
-    unit_paths = [batch.live_paths[i] for (i, _, _) in batch.children if i < len(batch.live_paths)]
+    # Same index-alignment rule as above: derive from live_writers; live_paths is compressed
+    # whenever any task's writer init failed and would shift/drop these locators.
+    unit_paths = [str(batch.live_writers[i].path) for (i, _, _) in batch.children
+                  if i < len(batch.live_writers) and batch.live_writers[i] is not None]
     if unit_paths:
         combined["live_transcripts"] = unit_paths
     if batch.group is not None:

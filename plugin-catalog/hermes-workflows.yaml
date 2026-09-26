@@ -1,0 +1,27 @@
+name: hermes-workflows
+repo: https://github.com/jacobhausler/hermes-workflows
+sha: e33c2504e036e963144848b06a7e77f0004a650f
+description: Agent-owned workflow graphs for Hermes — a background runner executes a JSON DAG of agent
+  nodes, fan-outs (quorum) and human/machine gates with fingerprint replay-skip resume, cooperative steer,
+  typed failure events and compact status payloads; ships a desktop DAG view, an inline transcript card
+  and the authoring skill with measured budget recipes. Stock Hermes; no patched core required.
+maintainer: jacobhausler
+tier: community
+category: automation
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/jacobhausler/hermes-workflows#readme
+version: "0.9.0"
+image: https://raw.githubusercontent.com/jacobhausler/hermes-workflows/e33c2504e036e963144848b06a7e77f0004a650f/assets/dag-review.png
+screenshots:
+  - https://raw.githubusercontent.com/jacobhausler/hermes-workflows/e33c2504e036e963144848b06a7e77f0004a650f/assets/dag-review.png
+  - https://raw.githubusercontent.com/jacobhausler/hermes-workflows/e33c2504e036e963144848b06a7e77f0004a650f/assets/branch-gate.png
+  - https://raw.githubusercontent.com/jacobhausler/hermes-workflows/e33c2504e036e963144848b06a7e77f0004a650f/assets/fanout.png
+platforms: []
+capabilities:
+  provides_tools:
+    - workflow
+  provides_hooks:
+    - transform_llm_output
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

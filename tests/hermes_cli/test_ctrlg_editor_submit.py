@@ -63,3 +63,39 @@ def test_slash_command_dispatched_not_queued():
 
     assert seen.get("cmd") == "/status"
     assert c._pending_input.empty()
+
+
+def test_busy_slash_command_queued_not_dispatched():
+    """A non-inline slash command submitted while the agent runs queues, like Enter.
+
+    Dispatching it here runs on the prompt_toolkit thread while ``chat()`` owns the
+    turn: ``/compress`` would compact the live conversation and rotate
+    ``agent.session_id`` underneath the running turn, and ``_chat_settle_turn`` then
+    overwrites the compacted history with the turn's own messages. Enter routes the
+    same command to ``_pending_input`` (``cli_tui_mixin._tui_handle_enter``), where
+    the process loop — blocked inside ``chat()`` for the whole turn — picks it up at
+    the turn boundary.
+    """
+    c = _make(agent_running=True)
+    called = []
+    c.process_command = lambda command: called.append(command) or True
+    buf = _FakeBuf("/compress")
+
+    c._submit_editor_buffer(buf)
+
+    assert called == []
+    assert c._pending_input.get_nowait() == "/compress"
+    assert buf.reset_called
+
+
+def test_busy_inline_slash_command_still_dispatched():
+    """The mid-run dispatch set (/model, /steer, /queue, /bg, /btw) is unchanged."""
+    c = _make(agent_running=True)
+    called = []
+    c.process_command = lambda command: called.append(command) or True
+
+    c._submit_editor_buffer(_FakeBuf("/steer keep going"))
+
+    assert called == ["/steer keep going"]
+    assert c._pending_input.empty()
+

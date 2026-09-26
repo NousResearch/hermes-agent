@@ -121,8 +121,8 @@ class CLIModalMixin:
 
     def _submit_editor_buffer(self, buffer) -> None:
         """Submit the draft an external editor left in ``buffer`` (Ctrl+G done-callback), mirroring
-        the `enter` keybinding: empty save ignored, bang/slash dispatched, else queued. Runs on the
-        prompt_toolkit loop, so it must stay cheap/non-blocking."""
+        the `enter` keybinding: empty save ignored, bang/slash routed like Enter, else queued. Runs
+        on the prompt_toolkit loop, so it must stay cheap/non-blocking."""
         from cli import _DIM, _RST, _cprint, _looks_like_slash_command
         try:
             text = (getattr(buffer, "text", "") or "").strip()
@@ -149,6 +149,21 @@ class CLIModalMixin:
             return
 
         if _looks_like_slash_command(text):
+            # Busy routing parity with Enter: the process loop is blocked inside chat() for the
+            # whole turn, so dispatching here runs the command mid-turn on the prompt_toolkit
+            # thread — /compress would compact the live conversation and rotate agent.session_id
+            # underneath the running turn. Queue it for the turn boundary instead, except for the
+            # commands Enter also dispatches mid-run (see _tui_enter_inline_command).
+            _busy_inline = (
+                self._should_handle_model_command_inline(text)
+                or self._should_handle_steer_command_inline(text)
+                or self._should_handle_background_command_inline(text))
+            if self._agent_running and not _busy_inline:
+                self._pending_input.put(text)
+                preview = text[:80] + ("..." if len(text) > 80 else "")
+                _cprint(f"  Queued for the next turn: {preview}")
+                _done()
+                return
             try:
                 if not self.process_command(text):
                     self._should_exit = True

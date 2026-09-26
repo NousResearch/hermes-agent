@@ -130,11 +130,18 @@ export function modelDisplayParts(model: string): { name: string; tag: string } 
 
   // Anthropic's `[1m]` route suffix selects the 1M-context window. It is a
   // variant of the same model, so it renders as a tag ("Sonnet 5 · 1M") rather
-  // than raw brackets that read like an ANSI escape ("Sonnet 5[1m]").
-  const contextWindow = base.match(/\[(\d+[mk])\]$/i)
+  // than raw brackets that read like an ANSI escape ("Sonnet 5[1m]"). Copilot's
+  // own model catalog reports the same variant with a plain dash suffix instead
+  // (e.g. `claude-opus-4.7-1m-internal` for entitled accounts — confirmed via
+  // Copilot's live /models catalog and github.com/anomalyco/models.dev#2021),
+  // optionally followed by its own `-internal`/`-preview` qualifier — recognize
+  // both forms so a Copilot-routed 1M model gets the same clean tag instead of
+  // a mangled literal name ("Opus 4.7 1m internal").
+  const contextWindow = base.match(/(?:\[(\d+[mk])\]|-(\d+[mk])(?:-(?:internal|preview))?)$/i)
 
   if (contextWindow) {
-    tag = tag ? `${tag} ${contextWindow[1].toUpperCase()}` : contextWindow[1].toUpperCase()
+    const suffix = (contextWindow[1] ?? contextWindow[2]).toUpperCase()
+    tag = tag ? `${tag} ${suffix}` : suffix
     base = base.slice(0, -contextWindow[0].length)
   }
 

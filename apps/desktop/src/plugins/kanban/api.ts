@@ -227,49 +227,72 @@ export function bindApi(
   let close: (() => void) | null = null
   let socketGeneration = 0
 
-  const dial = (scope: string, slug: string, since: number | undefined) =>
-    socket(eventsUrl(slug, since), data => onEventsFrame(scope, slug, data))
+  const dial = (scope: string, slug: string, since: number | undefined) => {
+    const generation = socketGeneration
 
-  const open = (slug: string) => {
+    return socket(eventsUrl(slug, since), data => {
+      if (generation === socketGeneration) onEventsFrame(scope, slug, data)
+    })
+  }
+
+  const open = (selectedSlug: string) => {
     const generation = ++socketGeneration
     const scope = kanbanConnectionScope()
 
     close?.()
     close = null
 
-    const since = eventsSince(scope, slug)
+    const openResolved = (slug: string) => {
+      if (generation !== socketGeneration) {
+        return
+      }
 
-    if (since !== undefined) {
-      close = dial(scope, slug, since)
+      const since = eventsSince(scope, slug)
 
+      if (since !== undefined) {
+        close = dial(scope, slug, since)
+
+        return
+      }
+
+      // No cached tail yet. Wait for the snapshot and open at its
+      // latest_event_id. A board switch or unload bumps the generation so a
+      // late snapshot cannot open a stale socket. A failed fetch still opens
+      // with no since — the server starts at the tail rather than replaying.
+      void queryClient
+        .fetchQuery({
+          queryFn: () => r<KanbanBoard>(boardSnapshotPath(slug)),
+          queryKey: boardKey(scope, slug, false)
+        })
+        .then(board => {
+          if (generation !== socketGeneration) {
+            return
+          }
+
+          const tail = typeof board?.latest_event_id === 'number' ? board.latest_event_id : undefined
+
+          close = dial(scope, slug, tail)
+        })
+        .catch(() => {
+          if (generation !== socketGeneration) {
+            return
+          }
+
+          close = dial(scope, slug, undefined)
+        })
+    }
+
+    if (selectedSlug) {
+      openResolved(selectedSlug)
       return
     }
 
-    // No cached tail yet. Wait for the snapshot and open at its
-    // latest_event_id. A board switch or unload bumps the generation so a
-    // late snapshot cannot open a stale socket. A failed fetch still opens
-    // with no since — the server starts at the tail rather than replaying.
-    void queryClient
-      .fetchQuery({
-        queryFn: () => r<KanbanBoard>(boardSnapshotPath(slug)),
-        queryKey: boardKey(scope, slug, false)
-      })
-      .then(board => {
-        if (generation !== socketGeneration) {
-          return
-        }
-
-        const tail = typeof board?.latest_event_id === 'number' ? board.latest_event_id : undefined
-
-        close = dial(scope, slug, tail)
-      })
-      .catch(() => {
-        if (generation !== socketGeneration) {
-          return
-        }
-
-        close = dial(scope, slug, undefined)
-      })
+    // Resolve the alias BEFORE the handshake: /events is pinned to its board
+    // when opened. Resolving on each frame could classify an old socket's
+    // events against a different server-current board's cursor.
+    void r<BoardsResponse>('/boards')
+      .then(boards => openResolved(typeof boards.current === 'string' ? boards.current : ''))
+      .catch(() => openResolved('')) // Keep live cache invalidation; notifications fail closed.
   }
 
   // The local connection keeps the BARE key (the bare-local rule of

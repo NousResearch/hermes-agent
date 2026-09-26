@@ -354,6 +354,29 @@ class StartupModelRoute(NamedTuple):
     api_key: str = ""
 
 
+# A ``providers.<key>`` block is not automatically a route: the same namespace also carries
+# settings-only tuning (timeouts, context length, rate-limit caps, capabilities). Only these
+# routing/identity fields make a key a routing choice for the ``provider/model`` parse (#118153).
+_ROUTING_PROVIDER_KEYS = frozenset({
+    "provider", "name", "api", "url", "base_url", "baseUrl", "api_key", "apiKey", "api_key_env",
+    "apiKeyEnv", "key_env", "keyEnv", "key_cmd", "keyCmd", "model", "default_model", "defaultModel",
+    "api_mode", "apiMode", "transport",
+})
+
+
+def _is_routing_provider_entry(entry: object) -> bool:
+    """True when a ``providers.<key>`` block declares routing/identity fields.
+
+    A tuning-only block (``stale_timeout_seconds``, ``request_timeout_seconds``,
+    ``context_length``, ``rate_limit_delay``, capabilities...) adjusts an EXISTING provider.
+    Counting its key as a route made a vendor-prefixed ``model.default`` on another provider
+    (``deepseek/deepseek-v4-flash-0731`` on ``nous``) re-parse as ``provider=deepseek``, so the
+    CLI/TUI called the vendor endpoint with the bare id, got an HTTP 400 and stuck to the
+    vendor's fallback model for the whole session (#118153).
+    """
+    return isinstance(entry, dict) and any(key in entry for key in _ROUTING_PROVIDER_KEYS)
+
+
 def resolve_startup_model_route(
     raw_model: str, *, explicit_provider: str = "", current_provider: str = "",
     user_providers: Optional[dict] = None,
@@ -395,7 +418,7 @@ def resolve_startup_model_route(
     from hermes_cli.models import parse_model_input
     from hermes_cli.providers import custom_provider_slug
     custom_ids = {custom_provider_slug(str(entry.get("name") or key), str(key))
-                  for key, entry in (user_providers or {}).items() if isinstance(entry, dict)}
+                  for key, entry in (user_providers or {}).items() if _is_routing_provider_entry(entry)}
     custom_ids.update(custom_provider_slug(str(entry.get("name") or ""))
                       for entry in (custom_providers or []) if isinstance(entry, dict) and _clean(entry.get("name")))
     qualified_provider, qualified_model = parse_model_input(raw, "", custom_ids=custom_ids)
@@ -417,7 +440,8 @@ def resolve_startup_model_route(
         except Exception:
             pass
 
-    configured = {str(name).strip().lower() for name in (user_providers or {}) if str(name).strip()}
+    configured = {str(name).strip().lower() for name, entry in (user_providers or {}).items()
+                  if str(name).strip() and _is_routing_provider_entry(entry)}
     configured.update(
         f"custom:{entry.get('name', '').strip().lower()}"
         for entry in (custom_providers or [])

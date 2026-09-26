@@ -3282,7 +3282,16 @@ def _is_timeout_error(exc: Exception) -> bool:
         from openai import APITimeoutError
         if isinstance(exc, APITimeoutError):
             return True
-    return "Timeout" in type(exc).__name__ or "timed out" in str(exc).lower()
+    status = _exc_http_status(exc)
+    # HTTP 408/504 consume the request's full critical-path budget just like
+    # SDK timeout exceptions. Treat them as timeouts so compression does not
+    # retry the same origin before fallback.
+    if status in {408, 504}:
+        return True
+    if "Timeout" in type(exc).__name__:
+        return True
+    err_text = str(exc).lower()
+    return "timed out" in err_text or "time-out" in err_text
 
 
 def _is_connection_error(exc: Exception) -> bool:

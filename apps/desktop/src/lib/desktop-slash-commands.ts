@@ -56,6 +56,7 @@ export interface DesktopThemeCommandOption {
  * keyed by the id.
  */
 export type DesktopActionId =
+  | 'background'
   | 'branch'
   | 'browser'
   | 'btw'
@@ -264,6 +265,18 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     name: '/btw',
     description: 'Ask a side question about this conversation without interrupting it',
     surface: action('btw'),
+    argumentMode: 'text'
+  },
+  // /bg (alias /background) must be an action (prompt.background RPC — the
+  // TUI's path), not exec: the slash worker's HermesCLI prints the completion
+  // from a fire-and-forget thread after process_command already returned,
+  // past the worker's stdout capture window, so the result never reached the
+  // desktop conversation that started the task (#97635, #57444).
+  {
+    name: '/bg',
+    description: 'Run a prompt in a background session',
+    aliases: ['/background'],
+    surface: action('background'),
     argumentMode: 'text'
   },
   {
@@ -566,10 +579,7 @@ export function isDesktopSlashSuggestion(command: string): boolean {
  * executes it (#57641). Gated on `isDesktopSlashCommand` so aliases whose
  * canonical has no desktop surface (e.g. `/reload_mcp`) stay hidden.
  */
-export function isDesktopSlashSuggestionWithOptions(
-  command: string,
-  options: { exactAlias?: string } = {}
-): boolean {
+export function isDesktopSlashSuggestionWithOptions(command: string, options: { exactAlias?: string } = {}): boolean {
   const normalized = normalizeCommand(command)
 
   // Aliases stay hidden so the popover isn't cluttered with duplicates.

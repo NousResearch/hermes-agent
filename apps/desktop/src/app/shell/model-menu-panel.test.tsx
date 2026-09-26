@@ -164,9 +164,14 @@ describe('ModelMenuPanel search', () => {
   // "type grok, get fable" bug). Every surveyed picker (VS Code, Zed, Open
   // WebUI, Cherry Studio) drops the pin while filtering.
   // Highlighted labels are split across <mark> nodes, so single-text-node
-  // queries miss them — match on the row span's composed textContent.
+  // queries miss them — match on the row span's composed textContent. Badge
+  // chips (#51833) live in a wrapper span around the name, so require a leaf
+  // span: the wrapper's composed textContent matches too.
   const rowWithText = (content: ReturnType<typeof renderPanel>['content'], pattern: RegExp) =>
-    content.queryByText((_, element) => element?.tagName === 'SPAN' && pattern.test(element.textContent ?? ''))
+    content.queryByText(
+      (_, element) =>
+        element?.tagName === 'SPAN' && !element.querySelector('span') && pattern.test(element.textContent ?? '')
+    )
 
   it('hides the non-matching current model while a query is active', async () => {
     $currentProvider.set('deepseek')
@@ -382,11 +387,16 @@ describe('ModelMenuPanel provider collapse', () => {
 
     // Should show models — search bypasses collapse. The matched letters render
     // inside a <mark>, splitting the label across nodes, so match on the row
-    // span's composed textContent instead of a single text node.
+    // span's composed textContent instead of a single text node. Badge chips
+    // (#51833) add a wrapper span whose composed textContent matches too, so
+    // require a leaf span.
     await vi.waitFor(() => {
       expect(
         content.queryByText(
-          (_, element) => element?.tagName === 'SPAN' && (element.textContent ?? '').startsWith('Deepseek V4 Pro')
+          (_, element) =>
+            element?.tagName === 'SPAN' &&
+            !element.querySelector('span') &&
+            (element.textContent ?? '').startsWith('Deepseek V4 Pro')
         )
       ).not.toBeNull()
     })

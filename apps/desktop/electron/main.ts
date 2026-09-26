@@ -260,6 +260,7 @@ import { downloadViaOauthSessionToFile, downloadViaTokenToFile } from './gateway
 import { stopGatewayBeforeUpdate } from './gateway-stop-before-update'
 import { resolveGatewayVersion } from './gateway-version'
 import { probeGatewayWebSocket, spawnedBackendProbeOptions } from './gateway-ws-probe'
+import { windowsGitCandidates } from './git-binary-candidates'
 import { registerGitIpc } from './git-ipc'
 import { desktopBackendSpawnEnv, guestOnboardingEnabled, skipIntroEnabled } from './guest-onboarding'
 import { readAndConsumeHandoffResult } from './handoff-result'
@@ -396,10 +397,7 @@ import { createPortalSession } from './portal-session'
 import { createKeepAwake } from './power-save'
 import { readPreUpdateBackupEnabled } from './pre-update-backup-config'
 import { capturePreviewContents } from './preview-capture'
-import {
-  onPreviewWatchOwnerDestroyed,
-  sendPreviewFileChangedToOwner
-} from './preview-file-watch'
+import { onPreviewWatchOwnerDestroyed, sendPreviewFileChangedToOwner } from './preview-file-watch'
 import { PreviewReachRegistry } from './preview-reach'
 import {
   createPrimaryRemoteConnection,
@@ -491,6 +489,7 @@ import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection }
 import { createSshIsolatedKeepaliveRegistry } from './ssh-isolated-keepalive'
 import { createSshTeardownTracker } from './ssh-teardown'
 import { createStreamThrottle } from './stream-throttle'
+import { installSystemCaTrust } from './system-ca'
 import { registerTerminalIpc } from './terminal-ipc'
 import { nativeOverlayWidth as computeNativeOverlayWidth, titleBarOverlayOptions } from './titlebar-overlay-width'
 import {
@@ -601,7 +600,6 @@ import {
   shouldSurfaceErrorForRendererStackCookieCrashLoop,
   writeGpuStackCookieMarker
 } from './windows-stack-cookie-fallback'
-import { installWindowsSystemCaTrust } from './windows-system-ca'
 import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
@@ -3002,8 +3000,9 @@ function makeDashboardReadyFile() {
 // resolveGitBinary — locate git.exe on Windows. A fresh installer-driven
 // install only has PortableGit under %LOCALAPPDATA%\hermes\git (never on
 // PATH), so a bare spawn('git') ENOENTs and self-update checks fail with
-// "Couldn't check for updates". PortableGit first, then standard
-// Git-for-Windows locations, then PATH. Cached after first probe.
+// "Couldn't check for updates". PortableGit first, then UGit's bundled copy
+// (see ./git-binary-candidates), then standard Git-for-Windows locations,
+// then PATH. Cached after first probe.
 let _gitBinaryCache = null
 
 // A binary can exist on disk and still be unlaunchable — on macOS an
@@ -3064,19 +3063,19 @@ function resolveGitBinary() {
   }
 
   const localAppData = process.env.LOCALAPPDATA || ''
-  const candidates = []
 
-  if (localAppData) {
-    candidates.push(path.join(localAppData, 'hermes', 'git', 'cmd', 'git.exe'))
-    candidates.push(path.join(localAppData, 'hermes', 'git', 'bin', 'git.exe'))
-  }
-
-  candidates.push(path.join(process.env['ProgramFiles'] || 'C:\\Program Files', 'Git', 'cmd', 'git.exe'))
-  candidates.push(path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Git', 'cmd', 'git.exe'))
-
-  if (localAppData) {
-    candidates.push(path.join(localAppData, 'Programs', 'Git', 'cmd', 'git.exe'))
-  }
+  // Fixed candidates + the UGit-bundled glob (a UGit install moves with every
+  // app-* version, so it can only be found by enumerating the dir). UGit's
+  // git.exe is usually on PATH, but an Explorer-launched Electron inherits the
+  // login-time environment block and can miss it (#61494).
+  const candidates = windowsGitCandidates(
+    {
+      localAppData,
+      programFiles: process.env['ProgramFiles'] || 'C:\\Program Files',
+      programFilesX86: process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)'
+    },
+    { existsSync: fileExists, readdirSync: dir => fs.readdirSync(dir) }
+  )
 
   _gitBinaryCache = candidates.find(fileExists) || findOnPath('git') || 'git'
 
@@ -6077,10 +6076,7 @@ async function watchPreviewFile(owner, rawUrl) {
 
   // Proactive teardown: the watch must not outlive the window that asked for
   // it by whole quit-cycles waiting on a change event that never comes.
-  const offOwnerDestroyed = onPreviewWatchOwnerDestroyed(
-    owner,
-    () => stopPreviewFileWatch(id)
-  )
+  const offOwnerDestroyed = onPreviewWatchOwnerDestroyed(owner, () => stopPreviewFileWatch(id))
 
   const watcher = fs.watch(watchDir, (_eventType, filename) => {
     const changedName = filename ? path.basename(String(filename)) : ''
@@ -6100,10 +6096,8 @@ async function watchPreviewFile(owner, rawUrl) {
         return
       }
 
-      sendPreviewFileChangedToOwner(
-        owner,
-        { id, path: filePath, url: pathToFileURL(filePath).toString() },
-        () => stopPreviewFileWatch(id)
+      sendPreviewFileChangedToOwner(owner, { id, path: filePath, url: pathToFileURL(filePath).toString() }, () =>
+        stopPreviewFileWatch(id)
       )
     }, PREVIEW_WATCH_DEBOUNCE_MS)
   })
@@ -6170,10 +6164,7 @@ function watchDirectory(owner, rawDir) {
 
   // Same proactive teardown as a file watch: a closed window's directory
   // watch must not keep polling the disk-plugin door until quit.
-  const offOwnerDestroyed = onPreviewWatchOwnerDestroyed(
-    owner,
-    () => stopPreviewFileWatch(id)
-  )
+  const offOwnerDestroyed = onPreviewWatchOwnerDestroyed(owner, () => stopPreviewFileWatch(id))
 
   const watcher = fs.watch(watchDir, () => {
     if (timer) {
@@ -6182,10 +6173,8 @@ function watchDirectory(owner, rawDir) {
 
     timer = setTimeout(() => {
       timer = null
-      sendPreviewFileChangedToOwner(
-        owner,
-        { id, path: watchDir, url: pathToFileURL(watchDir).toString() },
-        () => stopPreviewFileWatch(id)
+      sendPreviewFileChangedToOwner(owner, { id, path: watchDir, url: pathToFileURL(watchDir).toString() }, () =>
+        stopPreviewFileWatch(id)
       )
     }, PREVIEW_WATCH_DEBOUNCE_MS)
   })
@@ -10200,7 +10189,10 @@ function persistSshConnectionToken(profile, source, token, registryConnectionId 
 //   3. global remote (connection.json `mode: 'remote'`)
 // A null/empty profile resolves the env/global remote, so legacy callers and
 // the connection test (which pass no profile) are unchanged.
-async function resolveRemoteBackend(profile, options: { forceRegistryPrimary?: boolean; poolKey?: string; primary?: boolean } = {}) {
+async function resolveRemoteBackend(
+  profile,
+  options: { forceRegistryPrimary?: boolean; poolKey?: string; primary?: boolean } = {}
+) {
   const profileKey = String(profile || '').trim() || 'default'
 
   const managedPrimary = options.primary
@@ -12730,9 +12722,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
   // preference instead of splitting routing identity from the launch
   // argument. (The pin below still honors a live primary — but a primary
   // being live means startHermes never got here.)
-  const { argvProfile: activeProfile, routingProfile: primaryProfile } = resolveLaunchProfile(
-    readActiveDesktopProfile
-  )
+  const { argvProfile: activeProfile, routingProfile: primaryProfile } = resolveLaunchProfile(readActiveDesktopProfile)
 
   // Pin the routing table to the profile this primary actually boots as; a
   // later hermes:profile:remember must not retarget requests mid-life.
@@ -16736,7 +16726,10 @@ async function remoteSessionList(profile, searchParams) {
     remoteProfileAlias: sshOverride?.remoteProfile
   })
 
-  const rows = tagRemoteSessionRows(rowsOf(data), remoteProfileQueryScope(profile, sshOverride?.remoteProfile) || profile)
+  const rows = tagRemoteSessionRows(
+    rowsOf(data),
+    remoteProfileQueryScope(profile, sshOverride?.remoteProfile) || profile
+  )
 
   return { ...(data as any), sessions: rows }
 }
@@ -17416,13 +17409,9 @@ ipcMain.handle('hermes:normalizePreviewTarget', (_event, target, baseDir) =>
   normalizePreviewTarget(String(target || ''), baseDir ? String(baseDir) : '')
 )
 
-ipcMain.handle('hermes:watchPreviewFile', (event, url) =>
-  watchPreviewFile(event.sender, String(url || ''))
-)
+ipcMain.handle('hermes:watchPreviewFile', (event, url) => watchPreviewFile(event.sender, String(url || '')))
 
-ipcMain.handle('hermes:watchDirectory', (event, dir) =>
-  watchDirectory(event.sender, String(dir || ''))
-)
+ipcMain.handle('hermes:watchDirectory', (event, dir) => watchDirectory(event.sender, String(dir || '')))
 
 ipcMain.handle('hermes:stopPreviewFileWatch', (_event, id) => stopPreviewFileWatch(String(id || '')))
 
@@ -18550,14 +18539,12 @@ app.whenReady().then(() => {
     startChromiumLogWatcher(CHROMIUM_LOG_PATH)
   }
 
-  const systemCa = installWindowsSystemCaTrust(tls)
+  const systemCa = installSystemCaTrust(tls)
 
   if (systemCa.applied) {
-    rememberLog(
-      `[tls] trusting ${systemCa.systemCertificateCount} Windows system CA certificate(s) for backend connections`
-    )
+    rememberLog(`[tls] trusting ${systemCa.systemCertificateCount} OS CA certificate(s) for backend connections`)
   } else if (systemCa.error) {
-    rememberLog(`[tls] could not load Windows system CA certificates: ${systemCa.error}`)
+    rememberLog(`[tls] could not load OS system CA certificates: ${systemCa.error}`)
   }
 
   // Keyring-less Linux `--password-store=basic` support. This must run before

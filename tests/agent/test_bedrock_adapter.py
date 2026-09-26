@@ -1082,6 +1082,51 @@ class TestBedrockContextLength:
             assert get_bedrock_context_length("anthropic.claude-opus-4-6") == 1_000_000
             mock_probe.assert_not_called()
 
+    def test_static_catalog_claude_ids_match_their_anthropic_window(self):
+        """Every Claude id in the Bedrock static fallback gets the same offline window as its bare
+        Anthropic id, so a model added to the picker can't silently land on the 128K default."""
+        from agent.bedrock_adapter import get_bedrock_context_length
+        from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS, _longest_key_match
+        from hermes_cli.models_catalog_static import _PROVIDER_MODELS
+
+        mismatched = []
+        for model_id in _PROVIDER_MODELS["bedrock"]:
+            _, sep, bare = model_id.partition("anthropic.")
+            if not sep:
+                continue
+            hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, bare)
+            expected = hit[1] if hit else None
+            actual = get_bedrock_context_length(model_id, probe=False)
+            if actual != expected:
+                mismatched.append((model_id, expected, actual))
+
+        assert not mismatched, f"Bedrock static Claude ids drift from DEFAULT_CONTEXT_LENGTHS: {mismatched}"
+
+    def test_million_token_claude_entries_match_model_metadata(self):
+        """BEDROCK_CONTEXT_LENGTHS must not drift from DEFAULT_CONTEXT_LENGTHS.
+
+        The table's own comment requires the pairing, but nothing enforced it, so
+        ``claude-opus-5`` reached one table and not the other and silently fell through to
+        BEDROCK_DEFAULT_CONTEXT_LENGTH (#74263). Assert the relationship, not a snapshot of
+        today's catalog. DEFAULT_CONTEXT_LENGTHS spells revisions with dots
+        (``claude-opus-4.8``) while Bedrock IDs use hyphens — normalize rather than skip, so a
+        future 1M model that only ever gets a dotted alias cannot escape the check.
+        """
+        from agent.bedrock_adapter import get_bedrock_context_length
+        from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
+
+        mismatched = []
+        with patch("agent.bedrock_adapter.probe_bedrock_context_length") as mock_probe:
+            for name, expected in DEFAULT_CONTEXT_LENGTHS.items():
+                if not name.startswith("claude-") or expected < 1_000_000:
+                    continue
+                actual = get_bedrock_context_length(f"anthropic.{name.replace('.', '-')}", probe=False)
+                if actual != expected:
+                    mismatched.append((name, expected, actual))
+            mock_probe.assert_not_called()
+
+        assert not mismatched, f"1M Claude entries missing from BEDROCK_CONTEXT_LENGTHS: {mismatched}"
+
 
 class TestInferenceProfileContextLength:
     """Application-inference-profile ARNs name no model, so the window must come from the model the

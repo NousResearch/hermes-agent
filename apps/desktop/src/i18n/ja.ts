@@ -869,7 +869,7 @@ export const ja = defineLocale({
       },
       voice: {
         maxRecordingSeconds: '最大録音時間',
-        autoTts: '応答を読み上げる'
+        autoTts: '応答を読み上げる（メッセージングと CLI）'
       },
       stt: {
         enabled: '音声認識',
@@ -1029,7 +1029,8 @@ export const ja = defineLocale({
         }
       },
       voice: {
-        autoTts: 'アシスタントの応答を自動で読み上げます。'
+        autoTts:
+          'メッセージングチャンネルと CLI の音声モードでアシスタントの応答を自動で読み上げます。デスクトップのチャットには別の切り替えがあります：コンポーザーの音声メニューで「返信を読み上げる」を使用してください。'
       },
       stt: {
         enabled: 'ローカルまたはプロバイダーによる音声文字起こしを有効にします。',

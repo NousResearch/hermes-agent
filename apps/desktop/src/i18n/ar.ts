@@ -837,7 +837,7 @@ export const ar = defineLocale({
       'checkpoints.enabled': 'نقاط حفظ الملفات',
       'checkpoints.maxSnapshots': 'حد نقاط الحفظ',
       'voice.maxRecordingSeconds': 'أقصى مدة للتسجيل',
-      'voice.autoTts': 'قراءة الردود صوتياً',
+      'voice.autoTts': 'قراءة الردود صوتياً (المراسلة وCLI)',
       'stt.enabled': 'تحويل الكلام إلى نص',
       'stt.provider': 'مزود تحويل الكلام إلى نص',
       'stt.local.model': 'نموذج التفريغ المحلي',
@@ -917,7 +917,8 @@ export const ar = defineLocale({
       'compression.codexGpt55Autoraise': 'يرفع عتبة الضغط إلى 85٪ لنماذج ChatGPT Codex OAuth المدعومة.',
       'auxiliary.compression.timeout':
         'عدد الثواني لانتظار نموذج الضغط المساعد في كل استدعاء (الافتراضي 120). ارفعه للنماذج المحلية البطيئة.',
-      'voice.autoTts': 'ينطق ردود المساعد تلقائياً.',
+      'voice.autoTts':
+        'ينطق ردود المساعد تلقائياً في قنوات المراسلة وفي وضع الصوت في CLI. لواجهة سطح المكتب مفتاحها الخاص: استخدم «Read replies aloud» في قائمة الصوت في صندوق الكتابة.',
       'tts.xai.voiceId': 'معرف صوت xAI مثل eve أو معرف صوت مخصص.',
       'tts.xai.language': 'رمز لغة النطق، مثل en.',
       'tts.neutts.device': 'جهاز الاستدلال المحلي لـ NeuTTS.',

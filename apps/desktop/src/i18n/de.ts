@@ -1309,7 +1309,7 @@ export const deOverrides = {
       },
       voice: {
         maxRecordingSeconds: 'Maximale Aufnahmelänge',
-        autoTts: 'Antworten vorlesen',
+        autoTts: 'Antworten vorlesen (Messaging & CLI)',
         voiceChatMode: 'Sprachchat-Modus',
         gptLive: {
           voice: 'GPT-Live-Stimme',
@@ -1487,7 +1487,8 @@ export const deOverrides = {
         }
       },
       voice: {
-        autoTts: 'Assistentenantworten automatisch vorlesen.',
+        autoTts:
+          'Assistentenantworten automatisch auf Messaging-Kanälen und im CLI-Sprachmodus vorlesen. Der Desktop-Chat hat einen eigenen Schalter: verwenden Sie „Antworten vorlesen“ im Sprachmenü des Composers.',
         voiceChatMode:
           'chained: Sprache zu Text → Hermes → Text zu Sprache mit den Anbietern unten. gpt-live: Ein Vollduplex-Sprachmodell von OpenAI (gpt-live-1) hört zu und spricht und übergibt jede echte Anfrage an Hermes – das von Ihnen gewählte Modell antwortet mit allen Tools. Erfordert einen OpenAI-API-Schlüssel; die Sprachschicht kostet 0,05 $ pro Minute.',
         gptLive: {

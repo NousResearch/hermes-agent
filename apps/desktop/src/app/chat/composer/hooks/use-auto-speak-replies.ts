@@ -30,8 +30,10 @@ interface UseAutoSpeakReplies {
 }
 
 /**
- * Pure-TTS auto-speak: when `voice.auto_tts` is on, read each completed assistant
- * turn aloud — no dictation, no conversation loop. Stays off while a full voice
+ * Pure-TTS auto-speak: when the local read-aloud preference is on (the composer
+ * voice menu's "Read replies aloud" toggle, `$autoSpeakReplies` — not the
+ * `voice.auto_tts` config, which only drives messaging/CLI), read each completed
+ * assistant turn aloud — no dictation, no conversation loop. Stays off while a full voice
  * conversation runs (it speaks replies itself) and never overlaps clips: a reply
  * landing mid-playback is held and spoken on the playback-idle edge. Always reads
  * the latest reply, so a backlog collapses to the newest.

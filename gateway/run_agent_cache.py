@@ -641,7 +641,9 @@ class GatewayAgentCacheMixin:
             self._session_state(session_key).conversation.ephemeral_pin = (_eph_key, text)
         return text
 
-    def _pinned_channel_inputs(self, session_key, event, source):
+    def _pinned_channel_inputs(
+        self, session_key: Optional[str], channel_prompt: Optional[str], source: SessionSource, *, internal: bool,
+    ):
         """``(channel_prompt, source)`` for this turn's agent run.
 
         The ephemeral system prompt also appends ``channel_prompt`` and the ``channel_overrides``
@@ -649,20 +651,17 @@ class GatewayAgentCacheMixin:
         ``channel_prompt=None`` and a source without ``parent_chat_id``, so they dropped both and
         toggled the system prompt like the context pin did. Human turns record their inputs;
         internal turns reuse them."""
-        channel_prompt = getattr(event, "channel_prompt", None)
         if not session_key:
             return channel_prompt, source
-        if not getattr(event, "internal", False):
-            self._session_state(session_key).conversation.channel_pin = (
-                channel_prompt, getattr(source, "parent_chat_id", None),
-            )
+        if not internal:
+            self._session_state(session_key).conversation.channel_pin = (channel_prompt, source.parent_chat_id)
             return channel_prompt, source
         state = self._peek_session_state(session_key)
         pin = state.conversation.channel_pin if state else None
         if pin is None:
             return channel_prompt, source
         pinned_prompt, pinned_parent = pin
-        if pinned_parent and not getattr(source, "parent_chat_id", None):
+        if pinned_parent and not source.parent_chat_id:
             from gateway.session_identity import replace_source
             source = replace_source(source, parent_chat_id=pinned_parent)
         return pinned_prompt, source

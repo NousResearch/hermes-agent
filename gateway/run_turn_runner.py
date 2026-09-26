@@ -1466,6 +1466,14 @@ class TurnRunner:
         # in approve/deny.
         adapter.pause_typing_for_chat(ctx._status_chat_id)
         self._close_native_stream_boundary("Approval")
+        # Same ordering barrier as clarify: pending prose must not land below and bury the card.
+        holder = getattr(ctx, "stream_consumer_holder", None)
+        flush = getattr(holder[0] if holder else None, "flush_pending_sync", None)
+        if callable(flush):
+            try:
+                flush(timeout=3.0)
+            except Exception:
+                logger.debug("Stream-consumer flush before approval prompt failed", exc_info=True)
         # Redact credentials before display: Tirith's findings are already redacted, but the raw
         # command string still leaks secrets. Both the button and plain-text paths use this value.
         cmd = _redact_approval_command(approval_data.get("command", ""))
@@ -1539,17 +1547,20 @@ class TurnRunner:
         msg = _format_exec_approval_fallback(cmd, desc, getattr(adapter, "typed_command_prefix", "/"), **flags)
         try:
             # Mark as approval prompt so WeCom routes through the control lane.
-            metadata = {**(ctx._status_thread_metadata or {}), "is_approval_prompt": True}
+            metadata = {**(ctx._status_thread_metadata or {}), "is_approval_prompt": True, "notify": True}
             fut = self._schedule(
                 adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",
             )
-            if fut is not None:
-                fut.result(timeout=15)
-                # No card to edit on the text path: the prompt has no buttons to drop and carries
-                # the /approve instructions, so the timeout notice is posted as a new message.
+            outcome = _approval_send_outcome(fut, timeout=15)
+            if outcome not in {"sent", "ambiguous"}:
+                raise RuntimeError("approval prompt undeliverable: text fallback failed")
+            if outcome == "sent":
                 register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
+            logger.info("Approval text delivery outcome=%s request_id=%s", outcome, approval_data.get("request_id"))
         except Exception as e:
             logger.error("Failed to send approval request: %s", e)
+            # Propagate to _await_gateway_decision: notification failure is NOT user silence.
+            raise RuntimeError("approval prompt undeliverable") from e
 
     # ── run_sync phases ─────────────────────────────────────────────────────────────────────
 

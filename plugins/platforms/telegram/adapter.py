@@ -4212,6 +4212,17 @@ class TelegramAdapter(BasePlatformAdapter):
             msg = await self._send_control_message(
                 chat_id, text, parse_mode=parse_mode if parse_mode is not None else ParseMode.MARKDOWN_V2,
                 reply_markup=keyboard, thread_id=thread_id, metadata=metadata, reply_to_mode=reply_to_mode)
+            if what == "send_exec_approval" and not getattr(getattr(msg, "reply_markup", None), "inline_keyboard", None):
+                # A text-only receipt is not a delivered approval UI. Repair the SAME card;
+                # if Telegram still refuses the keyboard, let the runner send its text fallback.
+                logger.warning("Telegram approval keyboard missing: message_id=%s; repairing", msg.message_id)
+                repaired = await _await_with_thread_deadline(
+                    self._bot.edit_message_reply_markup(
+                        chat_id=normalize_telegram_chat_id(chat_id), message_id=msg.message_id,
+                        reply_markup=keyboard),
+                    timeout=_TEXT_SEND_DEADLINE, label="telegram-approval-keyboard", dump_on_blocked_loop=False)
+                if not getattr(getattr(repaired, "reply_markup", None), "inline_keyboard", None):
+                    raise RuntimeError("Telegram did not retain approval buttons")
             if on_sent is not None:
                 on_sent(msg)
             return SendResult(success=True, message_id=str(msg.message_id))
@@ -4238,7 +4249,9 @@ class TelegramAdapter(BasePlatformAdapter):
             "send_update_prompt", chat_id, metadata, build, thread_id=self._metadata_thread_id(metadata), reply_to_mode=self._reply_to_mode)
 
     # Template attrs for the shared _format_exec_approval core (HTML mode).
-    _EA_HEADER = f"⚠️ <b>{EA_HEADER_TEXT}</b>\n\n"
+    _EA_HEADER = (f"⚠️ <b>{EA_HEADER_TEXT}</b>\n\n"
+                  "If buttons are missing, send <code>/approve</code> to allow once "
+                  "or <code>/deny</code> to cancel.\n\n")
     _EA_CODE_OPEN = "<pre>"
     _EA_CODE_CLOSE = "</pre>\n\n"
     _EA_SMART_DENY_LINE = "\n\n<b>Smart DENY:</b> owner override applies to this one operation only."
@@ -4259,21 +4272,44 @@ class TelegramAdapter(BasePlatformAdapter):
     _EA_ACTION_LABELS = {"once": "✅ Allow Once", "session": "✅ Session", "always": "✅ Always", "deny": "❌ Deny"}
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
-        """Inline-keyboard approval prompt; buttons call ``resolve_gateway_approval()`` like the
-        text ``/approve`` flow."""
+        """Register before sending: a user can tap before sendMessage's ACK returns."""
+        import itertools
+        if not hasattr(self, "_approval_counter"):
+            self._approval_counter = itertools.count(1)
+        approval_id = next(self._approval_counter)
+        self._approval_state[approval_id] = prompt.session_key
+        logger.info("Telegram approval card send_started: card_id=%s", approval_id)
+
+        def remember_message(msg):
+            # An early callback may already have consumed the state; never resurrect it.
+            if approval_id in self._approval_state:
+                self.__dict__.setdefault("_approval_message_ids", {})[str(msg.message_id)] = approval_id
+
         def build():
-            # Short monotonic ids in callback_data map back to session_key.
-            import itertools
-            if not hasattr(self, "_approval_counter"):
-                self._approval_counter = itertools.count(1)
-            approval_id = next(self._approval_counter)
             buttons = [InlineKeyboardButton(label, callback_data=f"ea:{choice}:{approval_id}")
                        for label, choice, _ in prompt.actions]
-            return prompt.text, InlineKeyboardMarkup(self._rows_of_two(buttons)), (
-                lambda msg: self._approval_state.__setitem__(approval_id, prompt.session_key))
-        return await self._send_prompt(
-            "send_exec_approval", prompt.chat_id, prompt.metadata, build, parse_mode=ParseMode.HTML,
-            thread_id=self._metadata_thread_id(prompt.metadata), reply_to_mode=self._reply_to_mode)
+            return prompt.text, InlineKeyboardMarkup(self._rows_of_two(buttons)), remember_message
+
+        try:
+            result = await self._send_prompt(
+                "send_exec_approval", prompt.chat_id, prompt.metadata, build, parse_mode=ParseMode.HTML,
+                thread_id=self._metadata_thread_id(prompt.metadata), reply_to_mode=self._reply_to_mode)
+        except BaseException:
+            self._approval_state.pop(approval_id, None)
+            raise
+        if not result.success:
+            self._approval_state.pop(approval_id, None)
+        logger.info("Telegram approval card receipt: card_id=%s message_id=%s success=%s",
+                    approval_id, result.message_id, result.success)
+        return result
+
+    async def retire_exec_approval_card(self, chat_id: str, message_id: str) -> None:
+        """Remove expired buttons without erasing the original request from chat history."""
+        approval_id = self.__dict__.get("_approval_message_ids", {}).pop(str(message_id), None)
+        if approval_id is not None:
+            self._approval_state.pop(approval_id, None)
+        await self._bot.edit_message_reply_markup(
+            chat_id=normalize_telegram_chat_id(chat_id), message_id=int(message_id), reply_markup=None)
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str,
@@ -4748,11 +4784,14 @@ class TelegramAdapter(BasePlatformAdapter):
         except (ValueError, IndexError):
             await query.answer(text="Invalid approval data.")
             return
+        logger.info("Telegram approval callback: card_id=%s state_present=%s",
+                    approval_id, approval_id in self._approval_state)
         session_key = await self._claim_callback_state(
             query, cb, self._approval_state, approval_id, _UNAUTHORIZED,
             "This approval has already been resolved.")
         if not session_key:
             return
+        self.__dict__.get("_approval_message_ids", {}).pop(str(getattr(query.message, "message_id", "")), None)
         user_display = getattr(query.from_user, "first_name", "User")
         # Resolve FIRST (unblocks the agent thread), render after: a tap landing after the wait timed out
         # (count == 0) must NOT claim "Approved" — the command was already denied.

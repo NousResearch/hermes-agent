@@ -163,6 +163,15 @@ def _stamp_version_info() -> VersionInfo | None:
         live_commit = _run_git(stamp_file.parent, "rev-parse", "HEAD")
         if live_commit and live_commit != commit:
             return None
+        # A stamp written when this checkout's only reachable tags were CalVer
+        # (no semver major) recorded ``baseVersion: unknown`` while naming the
+        # live commit. That is not a fact about the install — it is a gap in the
+        # walk that wrote it, and the same walk resolves a version as soon as a
+        # semver release tag becomes reachable (or a CalVer tag's pyproject
+        # carries one). Deferring to git recovers the fact; honouring the
+        # placeholder pins the checkout at "unknown" forever.
+        if live_commit == commit and data.get("baseVersion") in (None, "", "unknown"):
+            return None
 
     base_version = data.get("baseVersion") or "unknown"
     display_version = data.get("displayVersion") or base_version

@@ -1262,6 +1262,8 @@ export interface Translations {
 
   // ── Channels page ──
   channels: {
+    gatewayNotRunning: string;
+    channelsConfigured: string;
     catalog: {
       telegram: {
         name: string;

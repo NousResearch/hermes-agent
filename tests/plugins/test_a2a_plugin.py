@@ -854,6 +854,84 @@ def _send_body(text, ctx="", extra_params=None):
 
 @pytest.mark.integration
 class TestInboundRoundTrip:
+    def test_authenticated_peer_owns_task_queries_and_controls_over_http(self, monkeypatch, tmp_path):
+        """The bearer identity, not a body field or task ID, controls every task RPC."""
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+
+        monkeypatch.setenv("A2A_PEER_TOKENS", "alice:token-alice,bob:token-bob")
+        monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+        token = set_hermes_home_override(tmp_path)
+        try:
+            adapter, base = _make_live_adapter(monkeypatch, reply_fn=lambda event: "private-" + event.source.user_id)
+
+            def rpc(method, params, who):
+                body = {"jsonrpc": "2.0", "id": "query", "method": method, "params": params}
+                return _post_json(base + "/", body, {"Authorization": "Bearer token-" + who})
+
+            def subscribe(task_id, who):
+                body = {"jsonrpc": "2.0", "id": "sub", "method": "tasks/subscribe", "params": {"id": task_id}}
+                req = urllib.request.Request(base + "/", data=json.dumps(body).encode(),
+                                             headers={"Authorization": "Bearer token-" + who,
+                                                      "Content-Type": "application/json"}, method="POST")
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    return response.headers.get("Content-Type"), response.read().decode()
+
+            async def run():
+                assert await adapter.connect()
+                try:
+                    alice = await asyncio.to_thread(rpc, "message/send", _send_body("hello", "shared")["params"], "alice")
+                    bob = await asyncio.to_thread(rpc, "message/send", _send_body("hello", "shared")["params"], "bob")
+                    aid, bid = alice["result"]["id"], bob["result"]["id"]
+                    for who, own, foreign in (("alice", aid, bid), ("bob", bid, aid)):
+                        result = await asyncio.to_thread(rpc, "tasks/list", {"includeArtifacts": True, "contextId": "shared", "peer": "alice"}, who)
+                        assert result["result"]["totalSize"] == 1
+                        assert [t["id"] for t in result["result"]["tasks"]] == [own]
+                        own_result = await asyncio.to_thread(rpc, "tasks/get", {"id": own}, who)
+                        assert "private-" + who in json.dumps(own_result)
+                        for method, params in (
+                            ("tasks/get", {"id": foreign}),
+                            ("tasks/cancel", {"id": foreign}),
+                            ("tasks/pushNotificationConfig/create", {"taskId": foreign, "pushNotificationConfig": {"url": "https://example.com/hook"}}),
+                            ("tasks/pushNotificationConfig/get", {"taskId": foreign}),
+                            ("tasks/pushNotificationConfig/list", {"taskId": foreign}),
+                            ("tasks/pushNotificationConfig/delete", {"taskId": foreign}),
+                        ):
+                            hidden = await asyncio.to_thread(rpc, method, params, who)
+                            assert hidden["error"]["code"] == protocol.ERR_TASK_NOT_FOUND, method
+                            assert "private-" not in json.dumps(hidden)
+                        content_type, hidden = await asyncio.to_thread(subscribe, foreign, who)
+                        assert "application/json" in content_type
+                        assert json.loads(hidden)["error"]["code"] == protocol.ERR_TASK_NOT_FOUND
+                        content_type, visible = await asyncio.to_thread(subscribe, own, who)
+                        assert "text/event-stream" in content_type
+                        assert "private-" + who in visible
+                    created = await asyncio.to_thread(rpc, "tasks/pushNotificationConfig/create",
+                                                      {"taskId": aid, "pushNotificationConfig": {"url": "https://example.com/hook"}}, "alice")
+                    cfg = created["result"]["configId"]
+                    for method in ("get", "list"):
+                        params = {"taskId": aid, "id": cfg}
+                        own_cfg = await asyncio.to_thread(rpc, "tasks/pushNotificationConfig/" + method, params, "alice")
+                        assert cfg in json.dumps(own_cfg)
+                        foreign_cfg = await asyncio.to_thread(rpc, "tasks/pushNotificationConfig/" + method, params, "bob")
+                        assert foreign_cfg["error"]["code"] == protocol.ERR_TASK_NOT_FOUND
+                        assert cfg not in json.dumps(foreign_cfg)
+                    assert (await asyncio.to_thread(rpc, "tasks/pushNotificationConfig/delete",
+                                                    {"taskId": aid, "id": cfg}, "bob"))["error"]["code"] == protocol.ERR_TASK_NOT_FOUND
+                    assert (await asyncio.to_thread(rpc, "tasks/pushNotificationConfig/delete",
+                                                    {"taskId": aid, "id": cfg}, "alice"))["result"]["deleted"]
+                    # A nonterminal task allows positive cancellation and negative cross-peer cancellation.
+                    adapter.tasks.create("pending-alice", "shared", "alice")
+                    hidden = await asyncio.to_thread(rpc, "tasks/cancel", {"id": "pending-alice"}, "bob")
+                    assert hidden["error"]["code"] == protocol.ERR_TASK_NOT_FOUND
+                    canceled = await asyncio.to_thread(rpc, "tasks/cancel", {"id": "pending-alice"}, "alice")
+                    assert canceled["result"]["status"]["state"] == protocol.STATE_CANCELED
+                finally:
+                    await adapter.disconnect()
+
+            asyncio.run(run())
+        finally:
+            reset_hermes_home_override(token)
+
     def test_authenticated_peers_same_context_concurrent_http_replies_isolated(self, monkeypatch, tmp_path):
         """Two authenticated peers sharing a wire context cannot share a gateway turn or reply."""
         from hermes_constants import set_hermes_home_override, reset_hermes_home_override

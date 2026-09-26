@@ -72,6 +72,12 @@ via `tasks/get`.
   routed agent, authenticated peer, and exact A2A context ID. Peers reusing a
   wire context cannot enter one another's model session or receive one another's
   final reply. Repeated turns by the same peer/context continue that session.
+- Task retrieval/listing, subscribe, cancellation and push-config operations
+  require the same authenticated peer that created the task (in addition to
+  the served agent/tenant route). Foreign task IDs return not-found, and list
+  totals/artifacts are filtered. A claimed `peer` in JSON-RPC params is ignored.
+  Task ownership is process-local, like task state; restarting the listener
+  does not restore tasks or push registrations.
 - Conversations persist under the executing profile's `a2a_conversations/` —
   they survive context compaction and restarts (`a2a_history` recalls them
   from that profile). A configured route to another profile stores the inbound

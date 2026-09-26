@@ -76,6 +76,7 @@ class _ModelSwitchContext:
     current_provider: str = "openrouter"
     current_base_url: str = ""
     current_api_key: str = ""
+    list_cap: int = 50  # per-provider cap for the text /model list (config/per-user tunable)
     user_provs: Any = None
     custom_provs: Any = None
     excluded_provs: list = dataclasses.field(default_factory=list)
@@ -92,6 +93,9 @@ class _ModelSwitchContext:
                 self.current_model = model_cfg.get("default", "")
                 self.current_provider = model_cfg.get("provider", self.current_provider)
                 self.current_base_url = model_cfg.get("base_url", "")
+                _cap_raw = model_cfg.get("max_models_per_provider")
+                if isinstance(_cap_raw, int) and not isinstance(_cap_raw, bool) and _cap_raw >= 1:
+                    self.list_cap = _cap_raw
             self.user_provs = cfg.get("providers")
             try:
                 from hermes_cli.config import get_compatible_custom_providers
@@ -111,6 +115,12 @@ class _ModelSwitchContext:
             self.current_provider = override.get("provider", self.current_provider)
             self.current_base_url = override.get("base_url", self.current_base_url)
             self.current_api_key = override.get("api_key", self.current_api_key)
+            _cap_ov = override.get("list_by_provider")
+            if _cap_ov:
+                try:
+                    self.list_cap = int(_cap_ov)
+                except (TypeError, ValueError):
+                    pass
 
 
 
@@ -449,7 +459,7 @@ class GatewayModelCommandsMixin:
 
         lines = [t("gateway.model.current_label", model=ctx.current_model or "unknown", provider=get_label(ctx.current_provider)), ""]
         try:  # off-loop: listing still reads config/disk cache synchronously (#41289)
-            providers = await asyncio.to_thread(list_authenticated_providers, max_models=5, **listing_kwargs)
+            providers = await asyncio.to_thread(list_authenticated_providers, max_models=ctx.list_cap, **listing_kwargs)
             lines.extend(_model_provider_listing_lines(providers))
         except Exception:
             pass
@@ -547,6 +557,19 @@ class GatewayModelCommandsMixin:
         )
         ctx.read_config()
         ctx.apply_override(self._session_model_overrides.get(session_key, {}))
+        # Per-user /model --list-by-provider cap. Precedence: this call's flag > this
+        # session's stored value > global config > 50. The stored value lives in the
+        # per-session override store (keyed by user+channel) and is never written to
+        # config.yaml, so one user's choice cannot change another user's list.
+        if request.list_by_provider is not None:
+            ctx.list_cap = request.list_by_provider
+            _new_override = dict(self._session_model_overrides.get(session_key, {}))
+            _new_override["list_by_provider"] = str(request.list_by_provider)
+            self._session_model_overrides[session_key] = _new_override
+            try:
+                await self.async_session_store.set_model_override(session_key, _new_override)
+            except Exception:
+                pass
         if not request.target and not request.explicit_provider:
             return await self._model_listing_reply(event, ctx, profile_home)
         result, error = await self._perform_model_switch(ctx, request.target, request.explicit_provider, source)

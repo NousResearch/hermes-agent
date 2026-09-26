@@ -2,7 +2,7 @@ import type { SessionInfo } from '@/hermes'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { $messages, setMessages } from '@/store/session'
 import type { SessionProfileRoute } from '@/store/session-request-router'
-import { loadTranscriptTail, type TranscriptTailScope } from '@/store/transcript-tail-cache'
+import { dropTranscriptTail, loadTranscriptTail, type TranscriptTailScope } from '@/store/transcript-tail-cache'
 
 export function transcriptRestScope(
   owner: SessionProfileRoute | undefined,
@@ -50,6 +50,27 @@ export function provisionalTranscriptPaint(storedSessionId: string, isCurrent: (
 
       if (messages) {
         setMessages(messages)
+      }
+    },
+    /** Roll back an unreconciled paint (#120215): when every authoritative
+     *  source failed (resume RPC + REST fallback) and the untouched
+     *  provisional paint is still all that's showing, it is unproven stale —
+     *  not transcript. Clear it and evict the entry so the retry / next wake
+     *  re-fetches instead of re-painting the same frozen tail forever
+     *  (detached websocket). A no-op when nothing painted, or when an
+     *  authoritative transcript already replaced the paint (reference check:
+     *  the success path overwrote the entry with fresh truth — keep it). */
+    rollback(scope: TranscriptTailScope | undefined) {
+      if (messages === null) {
+        return
+      }
+
+      const painted = messages
+      messages = null
+
+      if ($messages.get() === painted) {
+        setMessages([])
+        dropTranscriptTail(storedSessionId, scope)
       }
     }
   }

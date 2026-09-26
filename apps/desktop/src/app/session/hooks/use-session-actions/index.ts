@@ -2320,6 +2320,18 @@ export function useSessionActions({
           }
         }
 
+        // #120215: the resume RPC and the REST fallback both failed, and the
+        // read-only probe above painted nothing (it returns early when it
+        // does). When the untouched provisional cached-tail paint is still
+        // all that's showing, it is unproven stale — not transcript. Roll it
+        // back and evict the entry so the retry / next wake re-fetches
+        // instead of re-painting the same frozen tail forever (a detached
+        // websocket's reconcile never lands). A replaced paint (prefetch or
+        // fallback truth) is left alone by the reference check in rollback.
+        if (fallbackError) {
+          provisional.rollback(sessionRestScope)
+        }
+
         // The session is genuinely gone (deleted, or a stale id from a wiped /
         // rotated backend): the resume RPC and the authoritative REST transcript
         // both 404. There's nothing to recover — silently drop to a fresh draft

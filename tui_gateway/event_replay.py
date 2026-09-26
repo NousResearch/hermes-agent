@@ -109,10 +109,13 @@ def events_since(sid: str, last_seen: int) -> list[dict]:
 
 
 def is_truncated(sid: str, last_seen: int) -> bool:
-    """True when events between *last_seen* and the ring's oldest retained seq were
-    evicted — the client must refetch history instead of trusting the replay."""
+    """True when the client must refetch history instead of trusting the replay: events between
+    *last_seen* and the ring's oldest retained seq were evicted, or *last_seen* is ahead of the
+    ring (it came from an older ring — e.g. a reaped session resumed under a new runtime id)."""
+    sid = sid or ""
     with _replay_lock:
-        return last_seen < _replay_evicted_through.get(sid or "", 0)
+        return (last_seen < _replay_evicted_through.get(sid, 0)
+                or last_seen > _replay_next_seq.get(sid, 0))
 
 
 def latest_seq(sid: str) -> int:

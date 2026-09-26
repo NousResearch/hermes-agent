@@ -450,8 +450,18 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                             {status.gateway_running ? cc.gatewayRunning : cc.gatewayStopped}
                           </span>
                         </div>
-                        <div className="mt-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                          {cc.hermesActiveSessions(status.version, status.active_sessions)}
+                        <div className="mt-1 flex flex-wrap items-center gap-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                          <span>{cc.hermesActiveSessions(status.version, status.active_sessions)}</span>
+                          {Number.isFinite(status.config_version) &&
+                            Number.isFinite(status.latest_config_version) &&
+                            status.latest_config_version > status.config_version && (
+                              <span
+                                className="rounded-full border border-amber-500/40 px-1.5 py-0.5 text-[0.62rem] text-amber-600 dark:text-amber-400"
+                                title={`Config schema ${status.config_version} is ${status.latest_config_version - status.config_version} migration(s) behind ${status.latest_config_version}. Run hermes setup to migrate.`}
+                              >
+                                config schema {status.latest_config_version - status.config_version} behind
+                              </span>
+                            )}
                         </div>
                       </div>
                       <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 whitespace-nowrap max-[47.5rem]:whitespace-normal">

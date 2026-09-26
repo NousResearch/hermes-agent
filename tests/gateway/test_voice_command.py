@@ -350,6 +350,58 @@ class TestSendVoiceReply:
             "notify": True,
         }
 
+    # -- Self-injected turns (no raw message) in a voice-linked chat --------
+
+    def _vc_adapter(self, in_vc=True, links=None):
+        adapter = MagicMock()
+        adapter._voice_text_channels = {111: 123} if links is None else links
+        adapter.is_in_voice_channel = MagicMock(return_value=in_vc)
+        adapter.play_in_voice_channel = AsyncMock()
+        adapter.send_voice = AsyncMock()
+        return adapter
+
+    def _internal_discord_event(self, chat_id="123"):
+        from gateway.config import Platform
+        event = _make_event()
+        event.source.platform = Platform.DISCORD
+        event.source.chat_id = chat_id
+        event.raw_message = None  # background results / wake-ups carry no raw message
+        return event
+
+    @pytest.mark.asyncio
+    async def test_internal_turn_in_linked_chat_plays_in_voice_channel(self, runner):
+        event = self._internal_discord_event()
+        adapter = self._vc_adapter()
+        runner.adapters[event.source.platform] = adapter
+        await runner._deliver_voice_reply(event, ["/tmp/a.ogg"])
+        adapter.play_in_voice_channel.assert_awaited_once_with(111, "/tmp/a.ogg")
+        adapter.send_voice.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_internal_turn_linked_chat_bot_not_in_vc_falls_back(self, runner):
+        event = self._internal_discord_event()
+        adapter = self._vc_adapter(in_vc=False)
+        runner.adapters[event.source.platform] = adapter
+        await runner._deliver_voice_reply(event, ["/tmp/a.ogg"])
+        adapter.play_in_voice_channel.assert_not_called()
+        adapter.send_voice.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_internal_turn_in_unlinked_chat_never_plays(self, runner):
+        event = self._internal_discord_event(chat_id="999")
+        adapter = self._vc_adapter()
+        runner.adapters[event.source.platform] = adapter
+        await runner._deliver_voice_reply(event, ["/tmp/a.ogg"])
+        adapter.play_in_voice_channel.assert_not_called()
+        adapter.send_voice.assert_awaited_once()
+
+    def test_voice_guild_for_chat_lookup(self, runner):
+        assert runner._voice_guild_for_chat(self._vc_adapter(), "123") == 111
+        assert runner._voice_guild_for_chat(self._vc_adapter(links={"222": "456"}), 456) == 222
+        assert runner._voice_guild_for_chat(self._vc_adapter(), "999") is None
+        assert runner._voice_guild_for_chat(self._vc_adapter(), None) is None
+        assert runner._voice_guild_for_chat(object(), "123") is None
+
 
 # =====================================================================
 # VoiceReceiver unit tests

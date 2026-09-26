@@ -361,10 +361,29 @@ class GatewayVoiceMixin:
                 with suppress(OSError):
                     os.unlink(p)
 
+    @staticmethod
+    def _voice_guild_for_chat(adapter, chat_id) -> Optional[int]:
+        """Guild whose voice session is linked to *chat_id* (the text channel voice input posts to).
+
+        Self-injected turns (background delegation results, wake-ups) carry no raw platform
+        message, so ``_get_guild_id`` finds no guild and their replies degraded to a file
+        attachment even while the bot sat in the voice channel. The adapter already records the
+        guild -> linked text channel pairing for voice input; reverse it here."""
+        links = getattr(adapter, "_voice_text_channels", None)
+        if not isinstance(links, dict) or chat_id is None:
+            return None
+        target = str(chat_id)
+        for gid, channel_id in list(links.items()):
+            if channel_id is not None and str(channel_id) == target:
+                with suppress(TypeError, ValueError):
+                    return int(gid)
+        return None
+
     async def _deliver_voice_reply(self, event: MessageEvent, audio_paths: List[str]) -> None:
         """Play the files in the connected voice channel, else send them as voice messages."""
         adapter = self._delivery_adapter_for(event.source)
-        guild_id = self._get_guild_id(event)
+        guild_id = self._get_guild_id(event) or self._voice_guild_for_chat(
+            adapter, event.source.chat_id)
         play = getattr(adapter, "play_in_voice_channel", None)
         is_in_vc = getattr(adapter, "is_in_voice_channel", None)
         if guild_id and callable(play) and callable(is_in_vc) and is_in_vc(guild_id):

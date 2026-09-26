@@ -1,7 +1,7 @@
 ---
 name: llm-wiki
 description: "Karpathy's LLM Wiki: build/query interlinked markdown KB."
-version: 2.1.0
+version: 2.2.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -40,8 +40,59 @@ Use this skill when the user:
 If unset, defaults to `~/wiki`.
 
 ```bash
-WIKI="${WIKI_PATH:-$HOME/wiki}"
+WIKI="${WIKI:-${WIKI_PATH:-$HOME/wiki}}"
 ```
+
+### Optional language-addressed roots
+
+An embedding product may configure both `WIKI_PATH_EN` and `WIKI_PATH_ES`. When both are
+nonempty, treat them as two independent Wikis. Every operation that reads or writes
+content MUST select `en`, `es`, or (for a read-only cross-Wiki query) `both`; never use
+`WIKI_PATH` or the parent directory as an implicit fallback in this mode.
+
+```bash
+case "$WIKI_LANGUAGE" in
+  en) WIKI="$WIKI_PATH_EN" ;;
+  es) WIKI="$WIKI_PATH_ES" ;;
+  *)  echo "A Wiki language (en or es) is required" >&2; exit 2 ;;
+esac
+```
+
+For ingestion, select the language in this order:
+
+1. An explicit request such as “save it in Spanish” or “summarize this in English”.
+2. Otherwise, the predominant language of the source prose itself. Ignore request,
+   interface and metadata language, plus code, URLs, proper names and identifiers.
+3. Ask before writing when one source is substantially bilingual. For another source
+   language, ask the user to choose English or Spanish; do not translate silently.
+
+When one request contains separable English and Spanish sources, operate on each selected
+Wiki independently. A general query about “my Wiki” reads both roots, labels the Wiki used
+for each citation, and does not file the synthesis unless the user selects one language.
+
+Language-addressed Wikis are self-contained: each has its own `SCHEMA.md`, `index.md`,
+`log.md`, `raw/`, pages and archive. Initialize only the selected root. A translated page
+stores an unchanged copy of its original Raw Source in the destination Wiki and is checked
+against that source rather than only against an earlier summary.
+
+Every language-addressed page records these frontmatter fields in addition to the normal
+schema. Preserve each Raw Source byte-for-byte and put the same fields in a companion
+`<raw-source-path>.metadata.md` sidecar instead of altering the source:
+
+```yaml
+wiki_language: en | es
+source_language: en | es | other | mixed
+source_id: <stable canonical-URL or content identity>
+source_revision: <hash of the original source body>
+```
+
+English and Spanish treatments of the same source may also declare
+`counterpart_path`, `counterpart_revision`, and `counterpart_stale`. Those fields relate
+versions without creating cross-Wiki wikilinks. A changed source revision marks the other
+treatment stale; never update, archive or delete the counterpart automatically.
+
+If neither pair of language roots is configured, the original single-Wiki `WIKI_PATH`
+behavior in this Skill remains authoritative.
 
 The wiki is just a directory of markdown files — open it in Obsidian, VS Code, or
 any editor. No database, no special tooling required.
@@ -78,7 +129,7 @@ When the user has an existing wiki, **always orient yourself before doing anythi
 ③ **Scan recent `log.md`** — read the last 20-30 entries to understand recent activity.
 
 ```bash
-WIKI="${WIKI_PATH:-$HOME/wiki}"
+WIKI="${WIKI:-${WIKI_PATH:-$HOME/wiki}}"
 # Orientation reads at session start
 read_file "$WIKI/SCHEMA.md"
 read_file "$WIKI/index.md"
@@ -98,7 +149,8 @@ at hand before creating anything new.
 
 When the user asks to create or start a wiki:
 
-1. Determine the wiki path (from `$WIKI_PATH` env var, or ask the user; default `~/wiki`)
+1. Determine the selected `WIKI` path from the language-addressed rule above, or from
+   `$WIKI_PATH` in generic single-Wiki mode (ask the user if needed; default `~/wiki`)
 2. Create the directory structure above
 3. Ask the user what domain the wiki covers — be specific
 4. Write `SCHEMA.md` customized to the domain (see template below)

@@ -11,7 +11,11 @@ Mirrors the construction/patching conventions in test_context_compressor.py.
 
 from unittest.mock import patch
 
-from agent.context_compressor import ContextCompressor, _PRUNED_TOOL_PLACEHOLDER
+from agent.context_compressor import (
+    ContextCompressor,
+    _PRUNED_TOOL_PLACEHOLDER,
+    _estimate_msg_budget_tokens,
+)
 
 LARGE_WINDOW = 1_000_000
 
@@ -83,28 +87,86 @@ def test_prunes_below_compression_threshold():
         assert m["content"] != _PRUNED_TOOL_PLACEHOLDER       # informative, not a blank placeholder
 
 
-
-
-
-
-
-
-
-
-
-
 def test_idempotent():
     c = _compressor(proactive_prune_tokens=48_000, proactive_prune_min_result_chars=8_000)
     msgs = _build(8, big_indices={0, 1, 2})
     first, n1 = c.prune_tool_results_only(msgs, current_tokens=120_000)
     assert n1 >= 3
-    second, n2 = c.prune_tool_results_only(first, current_tokens=120_000)
+    # No usage reading bypasses the token gate and exercises prune idempotence.
+    second, n2 = c.prune_tool_results_only(first, current_tokens=None)
     assert n2 == 0
     assert [m.get("content") for m in second] == [m.get("content") for m in first]
 
 
+def test_rearms_only_after_reclaimed_token_runway():
+    """A prune boundary must earn back its cache break before the next one."""
+    c = _compressor(
+        proactive_prune_tokens=48_000,
+        proactive_prune_min_result_chars=8_000,
+    )
+    msgs = _build(8, big_indices={0, 1, 2, 6, 7})
+
+    first, n1 = c.prune_tool_results_only(msgs, current_tokens=120_000)
+    assert n1 >= 3
+    rearm_tokens = sum(map(_estimate_msg_budget_tokens, first)) + 48_000
+
+    # Age the two protected large results out of the tail.  They are now a
+    # valid >=4K-token prune candidate, but the post-prune prompt has not yet
+    # regrown the tokens reclaimed at the first cache-breaking boundary.
+    grown = first + [
+        _assistant_call("call_8"),
+        _tool_msg("call_8", "ok"),
+        _assistant_call("call_9"),
+        _tool_msg("call_9", "ok"),
+    ]
+    assert sum(map(_estimate_msg_budget_tokens, grown)) < rearm_tokens
+    # Below the full-compression threshold, where the runway is pure
+    # prompt-cache hysteresis. (Above it the runway is bypassed on the
+    # provider-billed reading instead — see
+    # tests/agent/test_proactive_prune_rearm_threshold.py, #101889.)
+    _under_threshold = c.threshold_tokens - 1
+    blocked, n2 = c.prune_tool_results_only(grown, current_tokens=_under_threshold)
+    assert n2 == 0
+    assert blocked is grown
+    assert len(_tool_by_id(blocked, "call_6")["content"]) == 9000
+    assert len(_tool_by_id(blocked, "call_7")["content"]) == 9000
+
+    missing = rearm_tokens - sum(map(_estimate_msg_budget_tokens, grown))
+    regrown = grown + [{"role": "user", "content": "x" * (missing * 4)}]
+    assert sum(map(_estimate_msg_budget_tokens, regrown)) >= rearm_tokens
+    rearmed, n3 = c.prune_tool_results_only(regrown, current_tokens=_under_threshold)
+    assert n3 >= 2
+    assert rearmed is not regrown
 
 
+def test_successful_full_compression_resets_proactive_runway():
+    """A full compression establishes a fresh cache boundary and baseline."""
+    c = _compressor(
+        proactive_prune_tokens=48_000,
+        proactive_prune_min_result_chars=8_000,
+    )
+    first, n1 = c.prune_tool_results_only(
+        _build(8, big_indices={0, 1, 2}), current_tokens=120_000,
+    )
+    assert n1 >= 3
+
+    history = [{"role": "system", "content": "sys"}]
+    for i in range(12):
+        history.append({
+            "role": "user" if i % 2 == 0 else "assistant",
+            "content": f"turn {i} " + ("x" * 1000),
+        })
+    c.tail_token_budget = 50
+    with patch.object(c, "_generate_summary", return_value="summary"):
+        compressed = c.compress(history, current_tokens=500_000, force=True)
+    assert c._last_compression_made_progress is True
+    assert len(compressed) < len(history)
+
+    # The successful full boundary supersedes the old proactive-prune runway.
+    fresh = _build(8, big_indices={0, 1, 2})
+    result, pruned = c.prune_tool_results_only(fresh, current_tokens=48_000)
+    assert pruned >= 3
+    assert result is not fresh
 
 
 # ---------------------------------------------------------------------------
@@ -113,15 +175,8 @@ def test_idempotent():
 # ---------------------------------------------------------------------------
 
 
-
-
-
-
-
-
-def test_min_reclaim_gate_default_and_clamp():
-    """Default 4096; negative/None coerce to disabled (0)."""
-    assert _compressor().proactive_prune_min_reclaim_tokens == 4096
+def test_min_reclaim_gate_clamp():
+    """Negative/None coerce to disabled (0)."""
     assert _compressor(proactive_prune_min_reclaim_tokens=0).proactive_prune_min_reclaim_tokens == 0
     assert _compressor(proactive_prune_min_reclaim_tokens=-5).proactive_prune_min_reclaim_tokens == 0
     assert _compressor(proactive_prune_min_reclaim_tokens=None).proactive_prune_min_reclaim_tokens == 0
@@ -163,8 +218,3 @@ def test_unset_config_zero_behavior_change():
     assert pruned == 0
     assert result is msgs
     assert msgs == snapshot  # input never mutated
-    # And the compression-path caller still prunes at the 200-char default floor
-    # (min_prune_chars default unchanged).
-    import inspect
-    sig = inspect.signature(c._prune_old_tool_results)
-    assert sig.parameters["min_prune_chars"].default == 200

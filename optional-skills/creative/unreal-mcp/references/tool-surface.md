@@ -167,7 +167,7 @@ yes; author new geometry, no. The supported route to parametric geometry is
 a custom Python toolset wrapping **Geometry Script** (`UDynamicMesh`:
 append box/cylinder/sphere, booleans, then `Create New Static Mesh Asset
 from Mesh` to bake an `SM_` asset). For organic/sculpted meshes, model in
-Blender (`blender-mcp` skill) and import.
+Blender and import.
 
 First-session move: `list_toolsets`, then `describe_toolset` each group you
 plan to use, and keep those schemas in working memory for the session.

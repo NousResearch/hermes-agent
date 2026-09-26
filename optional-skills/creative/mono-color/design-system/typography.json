@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "selection_rule": "Choose the role from content and verbal tone, not from a house-style default. Across a multi-image set, vary the display skeleton when the subjects differ; preserve one coherent hierarchy inside each image.",
+  "roles": [
+    {
+      "id": "type_literary",
+      "name": "Literary",
+      "display": "characterful old-style, transitional, or soft editorial serif; roman or italic",
+      "support": "small neutral grotesk or mono",
+      "scale_ratio": "6:1 to 12:1",
+      "behavior": ["sentence-like lowercase", "asymmetric natural line breaks", "tight leading", "may enter the image field"],
+      "use_for": ["reflection", "food", "tea", "books", "quiet lifestyle", "intimate observation"]
+    },
+    {
+      "id": "type_cultural_grotesk",
+      "name": "Cultural Grotesk",
+      "display": "wide geometric or neo-grotesk with assertive custom spacing",
+      "support": "compact grotesk or mono",
+      "scale_ratio": "8:1 to 16:1",
+      "behavior": ["letters may touch or optically interlock", "one word may span the page", "headline may overlay the image"],
+      "use_for": ["music", "youth culture", "fashion", "movement", "contemporary exhibitions"]
+    },
+    {
+      "id": "type_condensed_civic",
+      "name": "Condensed Civic",
+      "display": "heavy condensed or compressed grotesk",
+      "support": "plain grotesk or monospaced facts",
+      "scale_ratio": "8:1 to 14:1",
+      "behavior": ["stacked public headline", "date remains subordinate", "facts align to one strong edge"],
+      "use_for": ["event", "announcement", "public culture", "schedule"]
+    },
+    {
+      "id": "type_programmatic",
+      "name": "Programmatic",
+      "display": "medium grotesk or engineered modular sans",
+      "support": "tabular numerals, mono, or narrow information face",
+      "scale_ratio": "4:1 to 9:1",
+      "behavior": ["dates and numerals may become the anchor", "ruled clusters", "unequal information blocks", "bilingual-safe spacing"],
+      "use_for": ["festival program", "calendar", "research", "architecture", "multi-event information"]
+    },
+    {
+      "id": "type_rotated_display",
+      "name": "Rotated Display",
+      "display": "serif or grotesk selected for strong letter silhouettes",
+      "support": "small upright grotesk",
+      "scale_ratio": "10:1 to 20:1",
+      "behavior": ["one title rotates 90 degrees or runs vertically", "cropped words remain inferable", "orientation is the single disruption"],
+      "use_for": ["cover", "animal or object portrait", "fashion", "bold concept"]
+    },
+    {
+      "id": "type_handwritten_interjection",
+      "name": "Handwritten Interjection",
+      "display": "human handwritten phrase, quick script, or dry marker note used as a secondary voice",
+      "support": "clean sans or serif carries all factual information",
+      "scale_ratio": "2:1 to 6:1 relative to support type",
+      "behavior": ["one circled note or crossing phrase", "slight baseline irregularity", "never used for dates or essential facts"],
+      "use_for": ["invitation", "pool", "travel note", "social post", "personal aside"]
+    },
+    {
+      "id": "type_typographic_object",
+      "name": "Typographic Object",
+      "display": "oversized serif, grotesk, or abstracted letterforms chosen for the word shape",
+      "support": "minimal mono or plain grotesk",
+      "scale_ratio": "12:1 to 20:1",
+      "behavior": ["phrase is the dominant object", "one word may leave the page", "letters may split around or overprint the subject"],
+      "use_for": ["declaration", "poetry", "text-led cover", "single-word title"]
+    }
+  ],
+  "secondary_voice_rules": [
+    "Use one primary display skeleton per image; do not combine multiple novelty display faces.",
+    "A handwritten voice is optional and secondary, limited to one short phrase or annotation.",
+    "Choose at most one orientation event: rotated title, vertical stack, interlocked word, or handwritten interruption.",
+    "Within a multi-image series, consistency comes from ink, spacing, plate logic, and microtype discipline; display fonts may change with the content.",
+    "Never reproduce distinctive lettering, wording, or exact line breaks from a reference image."
+  ]
+}

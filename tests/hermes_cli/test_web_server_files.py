@@ -1,11 +1,13 @@
 """Tests for the dashboard-managed file browser API."""
 
+import base64
 from types import SimpleNamespace
 
 import pytest
 from starlette.testclient import TestClient
 
 from hermes_cli import web_server
+import hermes_cli.web_routers.files as _rt_files
 
 
 def _client_with_app_state():
@@ -90,9 +92,29 @@ def _seed_file(client, root, name="out/hello.txt"):
 
 
 
+@pytest.mark.parametrize("client_fixture", ["local_files_client", "forced_files_client"])
+def test_mkdir_creates_a_folder_the_picker_can_list_and_enter(client_fixture, request):
+    """The desktop remote folder picker's New folder: mkdir an absolute child of
+    the folder it is browsing, then list the parent and navigate into the result."""
+    client, root = request.getfixturevalue(client_fixture)
+    root.mkdir(exist_ok=True)
+    listed = client.get("/api/fs/list", params={"path": str(root)}).json()
+    assert "error" not in listed
+
+    created = client.post("/api/files/mkdir", json={"path": str(root / "fresh project")})
+
+    assert created.status_code == 200
+    new_dir = created.json()["path"]
+    assert (root / "fresh project").is_dir()
+    after = client.get("/api/fs/list", params={"path": str(root)}).json()["entries"]
+    assert {"name": "fresh project", "path": new_dir, "isDirectory": True} in after
+    assert client.get("/api/fs/list", params={"path": new_dir}).json() == {"entries": []}
+
+
 def test_download_authenticates_via_query_token(forced_files_client):
     client, root = forced_files_client
-    file_path = _seed_file(client, root)
+    file_path = _seed_file(client, root, name="out/demo.mp4")
+    active_content = _seed_file(client, root, name="out/page.html")
 
     # Drop the session header so only the ?token= query param authenticates —
     # mirrors a browser/shell-opened download that can't set the session header.
@@ -104,6 +126,24 @@ def test_download_authenticates_via_query_token(forced_files_client):
     )
     assert ok.status_code == 200
     assert ok.content == b"hello"
+    assert ok.headers["content-disposition"].startswith("attachment;")
+
+    playback = client.get(
+        "/api/files/download",
+        params={"path": str(file_path), "token": web_server._SESSION_TOKEN},
+        headers={"Sec-Fetch-Dest": "video", "Range": "bytes=1-3"},
+    )
+    assert playback.status_code == 206
+    assert playback.content == b"ell"
+    assert playback.headers["content-disposition"].startswith("inline;")
+    assert playback.headers["x-content-type-options"] == "nosniff"
+
+    rejected = client.get(
+        "/api/files/download",
+        params={"path": str(active_content), "token": web_server._SESSION_TOKEN},
+        headers={"Sec-Fetch-Dest": "video"},
+    )
+    assert rejected.status_code == 415
 
     assert client.get(
         "/api/files/download", params={"path": str(file_path), "token": "nope"}
@@ -113,14 +153,108 @@ def test_download_authenticates_via_query_token(forced_files_client):
     ).status_code == 401
 
 
+def test_download_resolves_paths_in_the_originating_profile_session(local_files_client, monkeypatch):
+    from pathlib import Path
+    from hermes_state import SessionDB
+
+    client, home = local_files_client
+    monkeypatch.setattr(Path, "home", lambda: home)
+    hermes_home = home / "isolated-hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    session_cwd = home / "project"
+    session_cwd.mkdir()
+    gateway_cwd = home / "gateway"
+    gateway_cwd.mkdir()
+    monkeypatch.chdir(gateway_cwd)
+    artifact = session_cwd / "report.txt"
+    artifact.write_bytes(b"session artifact")
+    (gateway_cwd / artifact.name).write_bytes(b"wrong gateway artifact")
+    for profile, sid, cwd in [("default", "origin-session", str(session_cwd)),
+                              ("other", "other-session", str(gateway_cwd))]:
+        db_home = hermes_home if profile == "default" else hermes_home / "profiles" / profile
+        db_home.mkdir(parents=True, exist_ok=True)
+        (db_home / "config.yaml").write_text("{}", encoding="utf-8")
+        db = SessionDB(db_path=db_home / "state.db")
+        try:
+            db.create_session(sid, source="gui", cwd=cwd)
+        finally:
+            db.close()
+    for route in ("/api/fs/download", "/api/fs/read-data-url"):
+        for path in ("./report.txt", "../project/report.txt", str(artifact), artifact.as_uri()):
+            response = client.get(route, params={
+                "path": path, "profile": "default", "session_id": "origin-session",
+            })
+            assert response.status_code == 200, response.text
+            data = (base64.b64decode(response.json()["dataUrl"].split(",", 1)[1])
+                    if route.endswith("read-data-url") else response.content)
+            assert data == artifact.read_bytes()
+        for profile, session_id in (("other", "origin-session"), ("missing", "origin-session"),
+                                    ("default", "missing-session"), ("default", "")):
+            response = client.get(route, params={
+                "path": str(artifact), "profile": profile, "session_id": session_id,
+            })
+            assert response.status_code == 404, response.text
+
+
+def test_stream_requires_header_auth_and_supports_ranges(forced_files_client):
+    client, root = forced_files_client
+    file_path = _seed_file(client, root, name="out/demo.mp4")
+
+    # Electron's main-process proxy supplies the connection credential as a
+    # header. Unlike browser-visible download links, the stream endpoint must
+    # not accept credentials in its URL.
+    params = {"path": str(file_path)}
+
+    full = client.get("/api/files/stream", params=params)
+    assert full.status_code == 200
+    assert full.content == b"hello"
+    assert full.headers["content-type"] == "video/mp4"
+    assert full.headers["content-disposition"].startswith("inline;")
+    assert full.headers["accept-ranges"] == "bytes"
+    assert full.headers["x-content-type-options"] == "nosniff"
+
+    partial = client.get(
+        "/api/files/stream",
+        params=params,
+        headers={"Range": "bytes=1-3"},
+    )
+    assert partial.status_code == 206
+    assert partial.content == b"ell"
+    assert partial.headers["content-range"] == "bytes 1-3/5"
+    assert partial.headers["content-disposition"].startswith("inline;")
+    assert partial.headers["x-content-type-options"] == "nosniff"
+
+    head = client.head("/api/files/stream", params=params)
+    assert head.status_code == 200
+    assert head.content == b""
+    assert head.headers["content-length"] == "5"
+    assert head.headers["x-content-type-options"] == "nosniff"
+
+    del client.headers[web_server._SESSION_HEADER_NAME]
+    assert client.get(
+        "/api/files/stream",
+        params={"path": str(file_path), "token": web_server._SESSION_TOKEN},
+    ).status_code == 401
+    assert client.get("/api/files/stream", params=params).status_code == 401
+
+
+def test_stream_rejects_non_media_active_content(forced_files_client):
+    client, root = forced_files_client
+
+    for name in ("out/page.html", "out/image.svg"):
+        file_path = _seed_file(client, root, name=name)
+        response = client.get("/api/files/stream", params={"path": str(file_path)})
+        assert response.status_code == 415
+
+
 def test_query_token_does_not_authenticate_other_endpoints(forced_files_client):
     client, root = forced_files_client
     file_path = _seed_file(client, root)
 
     del client.headers[web_server._SESSION_HEADER_NAME]
 
-    # The query-token escape hatch is scoped to /api/files/download only; it must
-    # not unlock the rest of the API surface.
+    # The query-token escape hatch is scoped to downloads only; it must not
+    # unlock the rest of the API surface.
     leaked = client.get(
         "/api/files/read",
         params={"path": str(file_path), "token": web_server._SESSION_TOKEN},
@@ -178,7 +312,7 @@ def test_stream_upload_cleans_temp_on_cancellation(forced_files_client):
 
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(
-            web_server.upload_managed_file_stream(
+            _rt_files.upload_managed_file_stream(
                 request=request,
                 file=_AbortingUpload(),
                 path=str(target),
@@ -253,6 +387,7 @@ def test_other_credential_store_basenames_blocked(forced_files_client):
         p.write_text("SECRET=abc123")
         assert client.get("/api/files/read", params={"path": str(p)}).status_code == 403, name
         assert client.get("/api/files/download", params={"path": str(p)}).status_code == 403, name
+        assert client.get("/api/files/stream", params={"path": str(p)}).status_code == 403, name
 
     listing = client.get("/api/files", params={"path": str(root)})
     names = [e["name"] for e in listing.json()["entries"]]
@@ -295,6 +430,7 @@ def test_credential_dir_trees_blocked_on_subdir_descent(forced_files_client):
     for p in (mcp_file, pairing_file):
         assert client.get("/api/files/read", params={"path": str(p)}).status_code == 403, str(p)
         assert client.get("/api/files/download", params={"path": str(p)}).status_code == 403, str(p)
+        assert client.get("/api/files/stream", params={"path": str(p)}).status_code == 403, str(p)
 
     # Listing the credential dir itself yields nothing exploitable: every child
     # is filtered because the parent component is a credential dir.
@@ -302,3 +438,23 @@ def test_credential_dir_trees_blocked_on_subdir_descent(forced_files_client):
     assert [e["name"] for e in mcp_listing.json()["entries"]] == []
 
 
+
+
+def test_git_branch_decodes_utf8_under_a_gbk_default_codec(tmp_path, monkeypatch):
+    """#83851: the Desktop polls ``/api/fs/default-cwd``; on zh-CN Windows the serve process's default
+    subprocess codec is cp936, and git's UTF-8 output (branch names, localized stderr) raised
+    UnicodeDecodeError in communicate()'s reader threads on every poll. The branch must round-trip."""
+    import shutil
+    import subprocess
+
+    git = shutil.which("git")
+    if git is None:
+        pytest.skip("git not installed")
+    branch = "功能/✅-修复"  # UTF-8 bytes that are illegal multibyte sequences in GBK
+    subprocess.run([git, "init", "-q", str(tmp_path)], check=True)
+    subprocess.run([git, "-C", str(tmp_path), "symbolic-ref", "HEAD", f"refs/heads/{branch}"], check=True)
+    # subprocess resolves an unspecified text-mode codec through _text_encoding() → locale.getencoding()
+    # (cp936 on zh-CN Windows); patch that seam since run_tests.sh's PYTHONUTF8=1 short-circuits locale.
+    monkeypatch.setattr(subprocess, "_text_encoding", lambda: "gbk")
+
+    assert _rt_files._fs_git_branch(str(tmp_path)) == branch

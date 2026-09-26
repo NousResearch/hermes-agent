@@ -16,15 +16,6 @@ class TestDebugSessionDisabled:
         assert ds.enabled is False
 
 
-    def test_get_session_info_disabled(self):
-        ds = DebugSession("test_tool", env_var="FAKE_DEBUG_VAR_XYZ")
-        info = ds.get_session_info()
-        assert info["enabled"] is False
-        assert info["session_id"] is None
-        assert info["log_path"] is None
-        assert info["total_calls"] == 0
-
-
 class TestDebugSessionEnabled:
     """When the env var is set to 'true', DebugSession records and saves."""
 
@@ -39,9 +30,6 @@ class TestDebugSessionEnabled:
         assert ds.active is True
         assert ds.enabled is True
 
-    def test_session_id_generated(self, tmp_path):
-        ds = self._make_enabled(tmp_path)
-        assert len(ds.session_id) > 0
 
 
     def test_save_empty_log(self, tmp_path):

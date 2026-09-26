@@ -1,11 +1,88 @@
 import codecs
-import importlib
 import os
-import sys
 
 from hermes_cli.env_loader import load_hermes_dotenv
 
 
+def test_recovered_update_retry_skips_external_secret_sources(tmp_path, monkeypatch):
+    """The post-recovery updater must not remap native vault dependencies."""
+    import hermes_cli.env_loader as env_loader
+    from hermes_cli import _early_recovery
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    env_file.write_text("UPDATE_RETRY_DOTENV=loaded\n", encoding="utf-8")
+    monkeypatch.delenv("UPDATE_RETRY_DOTENV", raising=False)
+    monkeypatch.setattr(_early_recovery, "_UPDATE_RETRY_RECOVERED", True)
+    external_calls = []
+    monkeypatch.setattr(
+        env_loader,
+        "_apply_external_secret_sources",
+        lambda path: external_calls.append(path),
+    )
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [env_file]
+    assert os.environ["UPDATE_RETRY_DOTENV"] == "loaded"
+    assert external_calls == []
+
+
+def test_utf8_bom_does_not_mangle_first_key(tmp_path, monkeypatch):
+    """A leading UTF-8 BOM must not prefix the first key name in os.environ.
+
+    PowerShell 5.1 ``Set-Content -Encoding UTF8`` and Windows Notepad write
+    a BOM (EF BB BF). With encoding=utf-8, python-dotenv keeps U+FEFF on the
+    first key so the canonical name is absent and callers see "not configured".
+    """
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    env_file.write_bytes(
+        b"\xef\xbb\xbfFIRST_KEY=first-value\nSECOND_KEY=second-value\n"
+    )
+
+    monkeypatch.delenv("FIRST_KEY", raising=False)
+    monkeypatch.delenv("SECOND_KEY", raising=False)
+    monkeypatch.delenv("\ufeffFIRST_KEY", raising=False)
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [env_file]
+    assert os.getenv("FIRST_KEY") == "first-value"
+    assert os.getenv("SECOND_KEY") == "second-value"
+    assert os.environ.get("\ufeffFIRST_KEY") is None
+
+
+def test_bom_first_key_is_seen_by_installer_and_scrub_alike(tmp_path, monkeypatch):
+    """Invariant: the key set the dashboard/profile scrub computes (``_env_keys_defined_in_dotenv``) equals
+    the key set the installers define (``load_hermes_dotenv`` into os.environ, ``load_env_file`` into a
+    profile scope). A BOM'd first line, ``export``, quotes and inline comments must not split them —
+    a key one side sees and the other doesn't is a scrub miss."""
+    from hermes_cli.env_loader import _env_keys_defined_in_dotenv
+    from agent.secret_scope import load_env_file
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    env_file.write_bytes(
+        b"\xef\xbb\xbfFIRST_KEY=first-value\n"
+        b"export EXPORTED_KEY='quoted # not a comment'\n"
+        b"COMMENTED_KEY=value # trailing comment\n"
+        b"EMPTY_KEY=\n"
+    )
+    for key in ("FIRST_KEY", "EXPORTED_KEY", "COMMENTED_KEY", "EMPTY_KEY", "\ufeffFIRST_KEY"):
+        monkeypatch.delenv(key, raising=False)
+
+    load_hermes_dotenv(hermes_home=home)
+    installed = {k for k in ("FIRST_KEY", "EXPORTED_KEY", "COMMENTED_KEY", "EMPTY_KEY") if k in os.environ}
+    scoped = load_env_file(env_file)
+
+    assert _env_keys_defined_in_dotenv(env_file) == installed == set(scoped)
+    assert "\ufeffFIRST_KEY" not in _env_keys_defined_in_dotenv(env_file)
+    assert scoped["EXPORTED_KEY"] == os.environ["EXPORTED_KEY"] == "quoted # not a comment"
+    assert scoped["COMMENTED_KEY"] == os.environ["COMMENTED_KEY"] == "value"
 
 
 
@@ -13,14 +90,82 @@ from hermes_cli.env_loader import load_hermes_dotenv
 
 
 
+
+def test_utf8_bom_plus_invalid_utf8_preserves_first_key(tmp_path, monkeypatch):
+    """BOM + non-UTF-8 body must load via latin-1 without mangling the first key.
+
+    utf-8-sig only applies on the primary path. When invalid UTF-8 forces the
+    latin-1 fallback, a leading EF BB BF would otherwise become part of the
+    first key name under latin-1 and drop the canonical name.
+    """
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    # BOM + valid first key + latin-1 é (0xE9) in a later value.
+    env_file.write_bytes(
+        b"\xef\xbb\xbfANTHROPIC_API_KEY=sk-test-123\nBAD=caf\xe9\n"
+    )
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("BAD", raising=False)
+    monkeypatch.delenv("\ufeffANTHROPIC_API_KEY", raising=False)
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [env_file]
+    assert os.getenv("ANTHROPIC_API_KEY") == "sk-test-123"
+    assert os.getenv("BAD") == "café"
+    assert os.environ.get("\ufeffANTHROPIC_API_KEY") is None
+
+
+def test_latin1_fallback_stream_honors_override(tmp_path, monkeypatch):
+    """Stream-based latin-1 fallback must honor override= identically to dotenv_path."""
+    from hermes_cli.env_loader import _load_dotenv_with_fallback
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    # Invalid UTF-8 forces the stream/latin-1 path.
+    env_file.write_bytes(b"OVERRIDE_PROBE=from-file\nLATIN1_VALUE=caf\xe9\n")
+
+    monkeypatch.setenv("OVERRIDE_PROBE", "from-shell")
+    monkeypatch.delenv("LATIN1_VALUE", raising=False)
+
+    # override=False: shell value must win (same as dotenv_path form).
+    _load_dotenv_with_fallback(env_file, override=False)
+    assert os.getenv("OVERRIDE_PROBE") == "from-shell"
+    assert os.getenv("LATIN1_VALUE") == "café"
+
+    # override=True: file value must win (user-env path).
+    _load_dotenv_with_fallback(env_file, override=True)
+    assert os.getenv("OVERRIDE_PROBE") == "from-file"
+    assert os.getenv("LATIN1_VALUE") == "café"
+
+def test_latin1_fallback_stream_preserves_interpolation(tmp_path, monkeypatch):
+    """Stream/latin-1 path must still expand ${VAR} like the dotenv_path form."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    # 0xE9 forces latin-1 fallback; ${FOO} must still expand.
+    env_file.write_bytes(b"FOO=bar\nBAR=${FOO}\nLATIN1_VALUE=caf\xe9\n")
+
+    monkeypatch.delenv("FOO", raising=False)
+    monkeypatch.delenv("BAR", raising=False)
+    monkeypatch.delenv("LATIN1_VALUE", raising=False)
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [env_file]
+    assert os.getenv("FOO") == "bar"
+    assert os.getenv("BAR") == "bar"
+    assert os.getenv("LATIN1_VALUE") == "café"
 
 # ---------------------------------------------------------------------------
 # UTF-16 / UTF-32 .env sanitizer coverage
 #
-# Scope note: intentionally NO UTF-8-BOM assertions here. UTF-8 BOM handling
-# for _load_dotenv_with_fallback is #65124's un-merged fix; a test here would
-# couple the PRs. This suite covers only the sanitizer rewrite path for
-# UTF-16/32 (and UTF-8 / cp1252 regression guards for that path).
+# UTF-8 BOM handling for _load_dotenv_with_fallback is covered above (#65124).
+# This section covers the sanitizer rewrite path for UTF-16/32 (and UTF-8 /
+# cp1252 regression guards for that path).
 # ---------------------------------------------------------------------------
 
 
@@ -325,3 +470,155 @@ def test_cleanup_scope_is_the_profile_managed_set():
             f"{key} looks credential-shaped; startup scrub must not "
             "cover credentials — read-time secret scoping owns those"
         )
+
+
+# ---------------------------------------------------------------------------
+# config.yaml terminal.* re-apply after dotenv loads (#29186 / #67323)
+#
+# load_hermes_dotenv loads .env with override=True, so a stale
+# TERMINAL_ENV=docker in .env used to silently beat config.yaml's
+# terminal.backend on every reload (gateway per-turn reload, cron standalone
+# runs). The bridge re-applies config.yaml's EXPLICIT terminal keys last via
+# the shared hermes_cli.config.apply_terminal_config_to_env helper.
+# ---------------------------------------------------------------------------
+
+
+def _seed_terminal_home(tmp_path, monkeypatch, *, config_yaml=None, env_text=None):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    if config_yaml is not None:
+        (home / "config.yaml").write_text(config_yaml, encoding="utf-8")
+    if env_text is not None:
+        (home / ".env").write_text(env_text, encoding="utf-8")
+    # The bridge is scoped to the process HERMES_HOME (a different profile's
+    # load must not bridge this process's config), so point the process at
+    # the seeded home like a real gateway/cron process would be.
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    return home
+
+
+def test_config_yaml_terminal_backend_overrides_stale_env(tmp_path, monkeypatch):
+    """Regression for #29186: a leftover TERMINAL_ENV=docker in ~/.hermes/.env
+    must not silently override the user's choice in config.yaml. config.yaml
+    is the documented source of truth, so its value must win after load."""
+    home = _seed_terminal_home(
+        tmp_path, monkeypatch,
+        config_yaml="terminal:\n  backend: local\n",
+        env_text="TERMINAL_ENV=docker\n",
+    )
+
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("TERMINAL_ENV") == "local"
+
+
+def test_config_yaml_terminal_backend_overrides_stale_shell(tmp_path, monkeypatch):
+    """config.yaml must also beat a stale TERMINAL_ENV exported in the shell
+    (e.g. set in ~/.zshrc when the user was experimenting with docker)."""
+    home = _seed_terminal_home(
+        tmp_path, monkeypatch,
+        config_yaml="terminal:\n  backend: local\n",
+    )
+
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("TERMINAL_ENV") == "local"
+
+
+def test_no_terminal_section_leaves_env_value_alone(tmp_path, monkeypatch):
+    """When config.yaml has no terminal section, the .env value is still the
+    user's active setting — the bridge must NOT clobber it with merged
+    defaults."""
+    home = _seed_terminal_home(
+        tmp_path, monkeypatch,
+        config_yaml="display:\n  streaming: true\n",
+        env_text="TERMINAL_ENV=docker\n",
+    )
+
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("TERMINAL_ENV") == "docker"
+
+
+def test_config_yaml_terminal_omitted_key_does_not_clear_env(tmp_path, monkeypatch):
+    """If config.yaml has a terminal block but no `backend`, the .env value
+    must survive (only explicit config keys override env)."""
+    home = _seed_terminal_home(
+        tmp_path, monkeypatch,
+        config_yaml="terminal:\n  timeout: 600\n",
+        env_text="TERMINAL_ENV=docker\n",
+    )
+
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("TERMINAL_ENV") == "docker"
+    assert os.getenv("TERMINAL_TIMEOUT") == "600"
+
+
+def test_other_profile_home_does_not_bridge_process_config(tmp_path, monkeypatch):
+    """Loading a DIFFERENT profile's .env must not re-bridge this process's
+    config.yaml — the shared bridge reads the process-global config, so
+    applying it for another home would stamp the wrong profile's terminal
+    settings into the env."""
+    process_home = tmp_path / "process-home"
+    process_home.mkdir()
+    (process_home / "config.yaml").write_text(
+        "terminal:\n  backend: local\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(process_home))
+
+    other_home = tmp_path / "other-profile"
+    other_home.mkdir()
+    (other_home / ".env").write_text("TERMINAL_ENV=docker\n", encoding="utf-8")
+
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+
+    load_hermes_dotenv(hermes_home=other_home)
+
+    # The other profile's .env value stands; the process config was not applied.
+    assert os.getenv("TERMINAL_ENV") == "docker"
+
+
+def test_parent_injected_dashboard_session_token_survives_dotenv(tmp_path, monkeypatch):
+    """A parent that spawns `hermes dashboard` mints HERMES_DASHBOARD_SESSION_TOKEN and keeps it for
+    its own /api probes; a persisted token in ~/.hermes/.env must not replace it, or the parent gets
+    HTTP 401 from its own child (#115955). Ordinary keys keep the documented .env-wins precedence."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text(
+        "HERMES_DASHBOARD_SESSION_TOKEN=persisted-token\nHERMES_DASHBOARD_PUBLIC_URL=http://127.0.0.1:1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "link-token")
+    monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", "http://127.0.0.1:43123")
+
+    load_hermes_dotenv(hermes_home=home)
+    assert os.environ["HERMES_DASHBOARD_SESSION_TOKEN"] == "link-token"
+    assert os.environ["HERMES_DASHBOARD_PUBLIC_URL"] == "http://127.0.0.1:1"  # control: .env still wins
+
+    # Reload with the same injection: the injected value still holds.
+    load_hermes_dotenv(hermes_home=home)
+    assert os.environ["HERMES_DASHBOARD_SESSION_TOKEN"] == "link-token"
+
+
+def test_dotenv_published_dashboard_session_token_still_reloads(tmp_path, monkeypatch):
+    """No injection: the .env token is published, and a later edit + reload replaces the value the
+    earlier pass published (the guard only protects values dotenv did not put there)."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+    (home / ".env").write_text("HERMES_DASHBOARD_SESSION_TOKEN=first\n", encoding="utf-8")
+    load_hermes_dotenv(hermes_home=home)
+    assert os.environ["HERMES_DASHBOARD_SESSION_TOKEN"] == "first"
+
+    (home / ".env").write_text("HERMES_DASHBOARD_SESSION_TOKEN=second\n", encoding="utf-8")
+    load_hermes_dotenv(hermes_home=home)
+    assert os.environ["HERMES_DASHBOARD_SESSION_TOKEN"] == "second"

@@ -20,7 +20,7 @@ High-throughput LLM inference on NVIDIA GPUs.
 | Author | Orchestra Research |
 | License | MIT |
 | Dependencies | `tensorrt-llm`, `torch` |
-| Platforms | linux, macos |
+| Platforms | linux |
 | Tags | `Inference Serving`, `TensorRT-LLM`, `NVIDIA`, `Inference Optimization`, `High Throughput`, `Low Latency`, `Production`, `FP8`, `INT4`, `In-Flight Batching`, `Multi-GPU` |
 
 ## Reference: full SKILL.md
@@ -31,7 +31,7 @@ The following is the complete skill definition that Hermes loads when this skill
 
 # TensorRT-LLM
 
-NVIDIA's open-source library for optimizing LLM inference with state-of-the-art performance on NVIDIA GPUs.
+NVIDIA's open-source library for optimizing LLM inference with high performance on NVIDIA GPUs.
 
 ## When to use TensorRT-LLM
 
@@ -95,8 +95,9 @@ for output in outputs:
 
 ```bash
 # Start server (automatic model download and compilation)
+# Tensor parallelism across 4 GPUs
 trtllm-serve meta-llama/Meta-Llama-3-8B \
-    --tp_size 4 \              # Tensor parallelism (4 GPUs)
+    --tp_size 4 \
     --max_batch_size 256 \
     --max_num_tokens 4096
 

@@ -99,6 +99,7 @@ These have sensible defaults in the ABC. Override as needed:
 | `get_status()` | Standard token/threshold dict | You have custom metrics to expose |
 | `select_context(request_messages, *, conversation_messages, incoming_message, budget_tokens)` | Returns `None` (no-op) | You select/route which context enters **this** request (retrieval, topic routing) — see below |
 | `on_turn_complete(messages, usage=None, **kwargs)` | No-op | You ingest/index/observe the finished turn — see below |
+| `clone_for_agent()` | `copy.deepcopy(self)` | Your engine holds uncopyable state (locks, SQLite/DB connections) — see [Via general plugin system](#via-general-plugin-system) |
 
 ## Per-turn context selection and observation
 
@@ -190,7 +191,7 @@ Engine tools are injected into the agent's tool list at startup and dispatched a
 
 ### Via directory (recommended)
 
-Place your engine in `plugins/context_engine/<name>/`. The `__init__.py` must export a `ContextEngine` subclass. The discovery system finds and instantiates it automatically.
+Place your engine in `plugins/context_engine/<name>/` (bundled) or `~/.hermes/plugins/<name>/` (user-installed; `$HERMES_HOME/plugins/<name>/`). The `__init__.py` must export a `ContextEngine` subclass or a `register(ctx)` that calls `ctx.register_context_engine(...)`. Setting `context.engine: <name>` is the activation — a user-installed engine does not need a `plugins.enabled` entry. Bundled names win on collision.
 
 ### Via general plugin system
 
@@ -204,6 +205,21 @@ def register(ctx):
 
 Only one engine can be registered. A second plugin attempting to register is rejected with a warning.
 
+The registered instance is shared process-wide, but every `AIAgent` (parent, subagents, gateway
+sessions) needs its own engine so a child's `update_model()` cannot mutate the parent's budget.
+Hermes therefore calls `engine.clone_for_agent()` on the registered instance at each agent init.
+The default is `copy.deepcopy(self)`; override it when the engine holds state that cannot be
+deep-copied (locks, SQLite or HTTP connections) and return a fresh engine sharing the durable
+backend while copying only the mutable budget fields. If the clone raises, the agent falls back to
+the built-in compressor and logs `Context engine 'X' could not be safely copied for this agent`.
+
+```python
+def clone_for_agent(self):
+    clone = LCMEngine(db_path=self.db_path)  # reopens its own connection
+    clone.threshold_percent = self.threshold_percent
+    return clone
+```
+
 ## Lifecycle
 
 ```
@@ -212,7 +228,7 @@ Only one engine can be registered. A second plugin attempting to register is rej
 3. update_from_response() — after each API call
 4. should_compress() — checked each turn
 5. compress() — called when should_compress() returns True
-6. on_session_end() — session boundary (CLI exit, /reset, gateway expiry)
+6. on_session_end() — session boundary (CLI exit, /reset, gateway shutdown)
 ```
 
 `on_session_reset()` is called on `/new` or `/reset` to clear per-session state without a full shutdown.
@@ -248,8 +264,25 @@ def test_compress_returns_valid_messages():
 
 See `tests/agent/test_context_engine.py` for the full ABC contract test suite.
 
+## Thread safety
+
+When `compression.context_timeout_seconds > 0` (the default), Hermes runs the
+whole compression pass — including your engine's `compress()` and boundary
+callbacks, and any memory provider's `on_pre_compress` /
+`on_session_switch` — on a pooled daemon thread with a host-side timeout.
+Your engine must therefore assume:
+
+- Calls may arrive on an arbitrary pooled thread. Do not rely on thread
+  affinity or `threading.local` state shared with the conversation thread.
+- The message list you receive is a private deep snapshot; mutating it in
+  place is allowed (legacy contract), but the mutation only becomes visible
+  if the pass commits. After a host timeout your still-running work is
+  discarded — never publish to external/durable state outside the commit.
+- Passes for *different* sessions can run concurrently on pool siblings; a
+  single engine/provider instance shared across sessions must be thread-safe.
+
 ## See also
 
-- [Context Compression and Caching](/developer-guide/context-compression-and-caching) — how the built-in compressor works
-- [Memory Provider Plugins](/developer-guide/memory-provider-plugin) — analogous single-select plugin system for memory
-- [Plugins](/user-guide/features/plugins) — general plugin system overview
+- [Context Compression and Caching](./context-compression-and-caching.md) — how the built-in compressor works
+- [Memory Provider Plugins](./memory-provider-plugin.md) — analogous single-select plugin system for memory
+- [Plugins](../user-guide/features/plugins.md) — general plugin system overview

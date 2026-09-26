@@ -81,7 +81,13 @@ describe('ModelEditSubmenu reports edits without performing them', () => {
 
   it('thinking: toggling back on restores the row level, not the hardcoded default', () => {
     const onSetOptions = vi.fn()
-    renderSubmenu({ defaultEffort: 'high', effort: 'none', fastControl: { kind: 'none' }, onSetOptions, reasoning: true })
+    renderSubmenu({
+      defaultEffort: 'high',
+      effort: 'none',
+      fastControl: { kind: 'none' },
+      onSetOptions,
+      reasoning: true
+    })
 
     fireEvent.click(screen.getByRole('switch'))
 

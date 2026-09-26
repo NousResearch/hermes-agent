@@ -73,6 +73,40 @@ _CODING_TOOLS = _core_without("image_generate", "text_to_speech", "cronjob_manag
 # config: another surface lacking them made no configuration choice.
 CLIENT_SURFACE_TOOLSETS = frozenset({"project", "desktop_ui"})
 
+
+def session_surface_toolsets(platform: Optional[str]) -> Set[str]:
+    """Toolsets that exist because of the CLIENT (both off ``_HERMES_CORE_TOOLS``; this is the one gate).
+    ``platform`` is the SESSION's source, never a process env var: the desktop may drive a URL/cloud
+    backend where ``HERMES_DESKTOP`` is unset (AGENTS.md surface rule)."""
+    return set(CLIENT_SURFACE_TOOLSETS) if platform == "desktop" else {"project"}
+
+
+def with_session_toolsets(
+    selection, platform: Optional[str], *, disabled: Optional[List[str]] = None
+) -> List[str]:
+    """*selection* plus what the session carries whatever its config says (the client surface's
+    toolsets when *platform* is given; the ones its PROFILE's role reserves, from the backend-written
+    profile.yaml under the session's home override), minus toolsets reserved for another role.
+
+    The fold-in happens after ``_get_platform_tools`` already subtracted ``agent.disabled_toolsets``,
+    so the same subtraction is applied to the fold-in itself — otherwise ``disabled_toolsets:
+    [project]`` is a no-op on desktop/TUI, the only surfaces where the client toolsets exist
+    (#54433). ``desktop_ui`` is kept regardless: it is the client's own control surface, not a
+    model toolset.
+
+    THE selection policy for a session's surface. The desktop/TUI builder and the Bot Chat capability
+    refresh both go through here so a refresh adopts the selection the session was BUILT with rather
+    than re-deriving the policy from a different platform key (#124211).
+    """
+    granted, denied = profile_role_toolsets()
+    surface = session_surface_toolsets(platform) if platform is not None else set()
+    kept = [name for name in selection if name not in denied]
+    fold_in = (surface | granted) - set(kept)
+    blocked = set(disabled or [])
+    if blocked:
+        fold_in -= blocked - {"desktop_ui"}
+    return [*kept, *sorted(fold_in)]
+
 # Core toolset definitions: individual tools or references to other toolsets.
 TOOLSETS = {
     # Basic toolsets - individual tool categories

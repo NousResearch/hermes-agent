@@ -355,6 +355,19 @@ def _model_prompt_capability_surface(model_cfg: object) -> dict:
     }
 
 
+def _normalized_disabled_toolsets(cfg: dict) -> list:
+    """Global toolset suppression as the runtime reads it (``hermes config set
+    agent.disabled_toolsets`` may store a JSON-array string; see #97015). Falls back
+    to the raw value so the epoch still flips when the parser is unavailable."""
+    raw = (cfg.get("agent") or {}).get("disabled_toolsets") if isinstance(cfg.get("agent"), dict) else None
+    try:
+        from agent.skill_utils import parse_config_string_list
+
+        return sorted(s for s in parse_config_string_list(raw) if str(s).strip())
+    except Exception:
+        return sorted(raw) if isinstance(raw, list) else ([str(raw)] if raw else [])
+
+
 def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
     """12-hex digest of the capability surface for ``home``'s profile: disabled skills +
     enabled toolsets + MCP config, model capability overrides that change the prompt
@@ -380,11 +393,18 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
         finally:
             reset_hermes_home_override(token)
         skills_cfg = cfg.get("skills") if isinstance(cfg.get("skills"), dict) else {}
-        tools_cfg = cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}
         model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
         surface["model_capabilities"] = _model_prompt_capability_surface(model_cfg)
         surface["disabled_skills"] = sorted(str(s).lower() for s in (skills_cfg.get("disabled") or []))
-        surface["enabled_toolsets"] = sorted(str(t) for t in (tools_cfg.get("enabled_toolsets") or []))
+        # The live selection is platform_toolsets.<platform> (+ the global
+        # agent.disabled_toolsets suppression); tools.enabled_toolsets is not
+        # written by any surface, so watching it left Bot Chats blind to real
+        # `hermes tools enable/disable` edits (#124211). Raw slices: any edit
+        # flips the epoch even when the effective selection is unchanged (one
+        # spurious rebuild at most).
+        surface["platform_toolsets"] = json.dumps(
+            cfg.get("platform_toolsets") or {}, sort_keys=True, default=str)
+        surface["disabled_toolsets"] = _normalized_disabled_toolsets(cfg)
         mcp = cfg.get("mcp_servers")
         surface["mcp"] = json.dumps(mcp, sort_keys=True, default=str) if isinstance(mcp, dict) else ""
     except Exception:

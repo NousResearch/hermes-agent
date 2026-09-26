@@ -40,6 +40,11 @@ def propagate_context_to_thread(target: Callable) -> Callable:
     Fail-closed: if callback installation raises they stay ``None`` — dangerous commands are then
     denied by ``prompt_dangerous_approval`` and the gateway approval queue blocks.
     """
+    # skill_view mutates this session's allowlist from a tool worker. Seed its
+    # mutable set in the parent BEFORE copying the context, or the first worker
+    # creates a private ContextVar binding that the next tool never sees.
+    from tools.env_passthrough import get_all_passthrough
+    get_all_passthrough()
     ctx = contextvars.copy_context()
     # (setter, parent callback) pairs; None when the callback API could not be captured.
     installs = None

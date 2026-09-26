@@ -589,20 +589,49 @@ export function useMessageStream({
               : m
           )
         } else {
-          // No streaming bubble — create a standalone interim message
-          nextMessages = [
-            ...nextMessages,
-            {
-              id: nextStreamMessageId('assistant-interim'),
-              role: 'assistant' as const,
-              parts: [{ ...assistantTextPart(authoritativeText, occurredAt), completedAt: occurredAt }],
-              timestamp: occurredAt,
-              completedAt: occurredAt,
-              pending: false,
-              interim: true,
-              branchGroupId: state.pendingBranchGroup ?? undefined
-            }
-          ]
+          // No streaming bubble. Usually a duplicate delivery of the interim
+          // that just sealed the stream (two sockets, one backend — #120005
+          // family): the first copy sealed the bubble and cleared streamId,
+          // so the second copy lands here. Appending would paint the same
+          // reply twice (#120104). When this occurrence's newest visible
+          // assistant row already carries the same text — including a skewed
+          // duplicate landing after the turn settled — refresh it in place.
+          const lastUserIndex = nextMessages.findLastIndex(message => message.role === 'user')
+          const prevSameText = nextMessages.findLast(
+            (message, index) =>
+              index > lastUserIndex &&
+              message.role === 'assistant' &&
+              !message.hidden &&
+              chatMessageText(message).trim() === authoritativeText
+          )
+          if (prevSameText) {
+            nextMessages = nextMessages.map(m =>
+              m.id === prevSameText.id
+                ? {
+                    ...m,
+                    parts: completeOpenTimelineParts(replaceTextPart(m.parts), occurredAt),
+                    completedAt: occurredAt,
+                    pending: false,
+                    interim: true
+                  }
+                : m
+            )
+          } else {
+            // No streaming bubble — create a standalone interim message
+            nextMessages = [
+              ...nextMessages,
+              {
+                id: nextStreamMessageId('assistant-interim'),
+                role: 'assistant' as const,
+                parts: [{ ...assistantTextPart(authoritativeText, occurredAt), completedAt: occurredAt }],
+                timestamp: occurredAt,
+                completedAt: occurredAt,
+                pending: false,
+                interim: true,
+                branchGroupId: state.pendingBranchGroup ?? undefined
+              }
+            ]
+          }
         }
 
         return {

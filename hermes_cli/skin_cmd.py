@@ -52,9 +52,17 @@ def _skin_set(key: str, value: str, skin: str | None) -> int:
         resolved = load_skin(name)
         target = f"{name}-custom"
         path = _skins_dir() / f"{target}.yaml"
+        # The whole look, not just `colors`: anything left out falls back to `default` on the fork.
+        # The paired palettes overlay `colors` per key, so the tweaked key stays out of them or it
+        # would be masked on that terminal polarity.
+        look = {"light_colors": {k: v for k, v in resolved.light_colors.items() if k != key},
+                "dark_colors": {k: v for k, v in resolved.dark_colors.items() if k != key},
+                "spinner": dict(resolved.spinner), "tool_emojis": dict(resolved.tool_emojis),
+                "banner_logo": resolved.banner_logo, "banner_hero": resolved.banner_hero,
+                "customCSS": resolved.custom_css}
         data = {"name": target, "description": f"{name} + custom {key}",
                 "colors": dict(resolved.colors), "branding": dict(resolved.branding),
-                "tool_prefix": resolved.tool_prefix}
+                "tool_prefix": resolved.tool_prefix, **{k: v for k, v in look.items() if v}}
     if not isinstance(data.get("colors"), dict):
         data["colors"] = {}
     data["colors"][key] = value

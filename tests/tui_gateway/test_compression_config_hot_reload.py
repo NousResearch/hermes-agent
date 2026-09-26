@@ -170,7 +170,28 @@ def test_absent_threshold_tokens_keeps_default_cap_on_1m_window(monkeypatch):
     assert compressor.threshold_tokens == 256_000
 
 
+def test_live_summary_instructions_applies_on_next_turn_without_rebuild(monkeypatch):
+    session, compressor = _session_with_compressor()
+    custom = "Preserve ticket IDs. Omit {prices}."
+    assert compressor.summary_instructions == ""
 
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"compression": {"summary_instructions": custom}},
+    )
+
+    server._sync_agent_compression_with_config("sid-95151", session)
+
+    assert compressor.summary_instructions == custom
+
+
+def test_removing_summary_instructions_restores_empty_default(monkeypatch):
+    session, compressor = _session_with_compressor(
+        summary_instructions="Preserve ticket IDs."
+    )
+    _sync_with_cfg(monkeypatch, session, {"compression": {}})
+    assert compressor.summary_instructions == ""
 
 
 # ── Unset semantics (#94724 review finding on #95980) ────────────────────

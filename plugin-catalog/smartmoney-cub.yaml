@@ -6,6 +6,7 @@ maintainer: myc0576
 tier: community
 category: tools
 docs_url: https://github.com/myc0576/hermes-smartmoney-cub#readme
+requires_hermes: ">=0.19"
 version: "0.1.0"
 capabilities:
   provides_tools:

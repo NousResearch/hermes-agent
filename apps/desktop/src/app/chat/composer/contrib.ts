@@ -62,6 +62,12 @@ export interface ComposerAtCompletionItem {
   meta?: string
   /** Icon slug understood by the completion popover; defaults to 'simple'. */
   icon?: string
+  /** Other `@handle` texts that resolve to the SAME target as `insert` —
+   *  e.g. a bot's raw profile name alongside the title slug it is listed
+   *  under. The `@` popover drops a gateway row whose handle is claimed
+   *  here, so one routable identity is never offered twice under two
+   *  labels. Only claim handles this row really owns. */
+  handles?: string[]
 }
 
 /** Payload of a `composer.atCompletions` data contribution — an extra source

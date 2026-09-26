@@ -303,6 +303,10 @@ DEFAULT_CONFIG = {
         # Bounded linger (seconds) for one-shot CLI runs (-q/-Q/-z) that exit while background processes
         # spawned with notify_on_complete=true are still running. See #90879.
         "oneshot_completion_wait_seconds": 600.0,
+        # false = the terminal tool never starts a tracked background process: background=true is
+        # refused, an over-cap foreground timeout is refused instead of promoted, and a foreground
+        # command is not yielded to the background mid-run.
+        "allow_background": True,
         # Env vars passed into sandboxed terminal/execute_code (skill-declared
         # required_environment_variables pass through automatically).
         "env_passthrough": [],

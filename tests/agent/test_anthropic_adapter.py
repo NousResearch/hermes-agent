@@ -179,7 +179,7 @@ class TestReadClaudeCodeCredentials:
 
     def test_ignores_primary_api_key_for_native_anthropic_resolution(self, tmp_path, monkeypatch):
         claude_json = tmp_path / ".claude.json"
-        claude_json.write_text(json.dumps({"primaryApiKey": "sk-ant-api03-primary"}))
+        claude_json.write_text(json.dumps({"primaryApiKey": "sk-ant-api03-primary"}), encoding="utf-8")
         monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
 
         creds = read_claude_code_credentials()
@@ -215,7 +215,7 @@ class TestResolveAnthropicToken:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-        (tmp_path / ".claude.json").write_text(json.dumps({"primaryApiKey": "sk-ant-api03-primary"}))
+        (tmp_path / ".claude.json").write_text(json.dumps({"primaryApiKey": "sk-ant-api03-primary"}), encoding="utf-8")
         monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
 
         assert resolve_anthropic_token() is None
@@ -439,7 +439,7 @@ class TestRefreshOauthToken:
         # Verify credentials were written back
         cred_file = tmp_path / ".claude" / ".credentials.json"
         assert cred_file.exists()
-        written = json.loads(cred_file.read_text())
+        written = json.loads(cred_file.read_text(encoding="utf-8"))
         assert written["claudeAiOauth"]["accessToken"] == "new-token-abc"
         assert written["claudeAiOauth"]["refreshToken"] == "new-refresh-456"
 
@@ -464,7 +464,7 @@ class TestWriteClaudeCodeCredentials:
         _write_claude_code_credentials("tok", "ref", 12345)
         cred_file = tmp_path / ".claude" / ".credentials.json"
         assert cred_file.exists()
-        data = json.loads(cred_file.read_text())
+        data = json.loads(cred_file.read_text(encoding="utf-8"))
         assert data["claudeAiOauth"]["accessToken"] == "tok"
         assert data["claudeAiOauth"]["refreshToken"] == "ref"
         assert data["claudeAiOauth"]["expiresAt"] == 12345
@@ -474,9 +474,9 @@ class TestWriteClaudeCodeCredentials:
         cred_dir = tmp_path / ".claude"
         cred_dir.mkdir()
         cred_file = cred_dir / ".credentials.json"
-        cred_file.write_text(json.dumps({"otherField": "keep-me"}))
+        cred_file.write_text(json.dumps({"otherField": "keep-me"}), encoding="utf-8")
         _write_claude_code_credentials("new-tok", "new-ref", 99999)
-        data = json.loads(cred_file.read_text())
+        data = json.loads(cred_file.read_text(encoding="utf-8"))
         assert data["otherField"] == "keep-me"
         assert data["claudeAiOauth"]["accessToken"] == "new-tok"
 
@@ -1854,3 +1854,28 @@ def test_unsupported_inline_image_subtype_downgrades_to_text_for_anthropic(monke
     assert blocks[0]["source"] == {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}
     assert "image/svg+xml" in blocks[1]["text"]
     assert blocks[2]["source"]["media_type"] == "image/jpeg"
+
+
+class TestClaudeCodeVersionFloor:
+    """OAuth identity version floor (port of PrimeIntellect-ai/prime-agent#1993): Anthropic
+    gates the newest model families on a minimum Claude Code version; a detected CLI older
+    than the floor must not undercut the fallback identity."""
+
+    def _detect_with_stdout(self, monkeypatch, stdout):
+        import agent.anthropic_adapter as aa
+        result = MagicMock(returncode=0, stdout=stdout)
+        monkeypatch.setattr(aa, "_claude_code_candidates", lambda: ["claude"])
+        monkeypatch.setattr(aa.subprocess, "run", lambda *a, **k: result)
+        return aa._detect_claude_code_version()
+
+    def test_stale_installed_version_clamps_to_fallback(self, monkeypatch):
+        import agent.anthropic_adapter as aa
+        # 2.1.278 clears the Fable 5.x gate but Opus 5.5 rejects it (claude_code_version_too_old).
+        assert self._detect_with_stdout(monkeypatch, "2.1.278 (Claude Code)") == aa._CLAUDE_CODE_VERSION_FALLBACK
+
+    def test_recent_installed_version_wins(self, monkeypatch):
+        assert self._detect_with_stdout(monkeypatch, "2.1.290 (Claude Code)") == "2.1.290"
+
+    def test_fallback_is_at_or_above_floor(self):
+        import agent.anthropic_adapter as aa
+        assert aa._version_tuple(aa._CLAUDE_CODE_VERSION_FALLBACK) >= aa._CLAUDE_CODE_VERSION_FLOOR

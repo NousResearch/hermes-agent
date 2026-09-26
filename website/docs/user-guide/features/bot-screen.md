@@ -118,7 +118,7 @@ screen is started.
 
 ## Using it
 
-Every bot's computer is one click away in three places of Hermes Desktop:
+Every bot's computer is one click away in four places of Hermes Desktop:
 
 - **Bots → a bot → Scheduled Jobs**: the bot's screen is the hero at the very
   top of the pane, above the title and the routines: a live preview of the
@@ -135,6 +135,11 @@ Every bot's computer is one click away in three places of Hermes Desktop:
 - **Sessions sidebar**, grouped by gateway / profile: the same **Screen** box
   sits under each profile's header, so a profile's machine is reachable from
   its conversations too.
+- **The titlebar monitor button**, in any chat: the display glyph in the
+  window's titlebar opens the screen of the bot whose chat you are looking
+  at — Bot Mode surface or not — and follows the chat you switch to; with no
+  bot chat focused it falls back to the window's own profile. Click again to
+  collapse the pane.
 
 1. Open the Screen with any of the entries above.
    The screen is **off by default** and nothing starts it for you: click

@@ -1085,6 +1085,10 @@ export interface Translations {
       backendIdleTimeoutAria: string
       backendIdleTimeoutTitle: string
     }
+    remoteLivenessTimeout: {
+      aria: string
+      title: string
+    }
     customEndpoints: {
       active: string
       apiKeySet: string

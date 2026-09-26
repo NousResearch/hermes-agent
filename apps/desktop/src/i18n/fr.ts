@@ -1567,6 +1567,10 @@ export const frOverrides = {
       backendIdleTimeoutAria: "Délai d'inactivité du backend en millisecondes",
       backendIdleTimeoutTitle: "Délai d'inactivité du backend"
     },
+    remoteLivenessTimeout: {
+      aria: "Délai d'activité distante en millisecondes",
+      title: "Délai d'activité distante"
+    },
     customEndpoints: {
       active: 'Actif',
       apiKeySet: 'Clé API définie',

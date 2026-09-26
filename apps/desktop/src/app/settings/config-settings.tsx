@@ -52,6 +52,7 @@ import { PoolLimitsSetting } from './pool-limits-setting'
 import { EmptyState, ListRow, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
 import { SettingsProfileScope } from './profile-scope'
 import { QuickEntrySettings } from './quick-entry-settings'
+import { RemoteLivenessTimeoutSetting } from './remote-liveness-timeout-setting'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { useSettingDeepLink } from './use-setting-deep-link'
 
@@ -462,6 +463,7 @@ function ConfigSettingsInner({
             onChange={setAlwaysExternalLinks}
           />
           <PoolLimitsSetting />
+          <RemoteLivenessTimeoutSetting />
           <QuickEntrySettings />
         </>
       )}

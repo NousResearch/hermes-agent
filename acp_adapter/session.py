@@ -151,6 +151,10 @@ class SessionState:
     # Per-session allocator for ACP assistant messageIds (lazily created by
     # the server so streamed chunks group into distinct assistant replies).
     message_ids: Any = None
+    # Every messages.id this state's history has held. A non-owning rewrite may archive only these:
+    # any other live row was appended by another writer this state never saw (#122699). Kept on the
+    # state, not derived from history, so /reset (history cleared) still drops the rows it held.
+    held_row_ids: set = field(default_factory=set)
 
 
 class SessionManager:
@@ -359,15 +363,22 @@ class SessionManager:
             # create/fork whose copied history the agent has not flushed yet). That path still rolls back on
             # a mid-rewrite failure so the previously persisted conversation survives (salvaged from
             # #13675).
+            from agent.conversation_compression_archive import held_archive_coverage
+            state.held_row_ids.update(held_archive_coverage(state.history)[0])
             agent = state.agent
             if getattr(agent, "_session_db", None) is db and getattr(agent, "_session_db_created", False):
                 return
             # A non-owning agent (model switch, /restore: fresh agent, _session_db_created=False)
-            # may still sit on archived rows, so replace ONLY the active=1 set: on a fresh
-            # create/fork every row is active (== full replace), and archived rows survive.
-            # Unconditional because an existence probe would fail OPEN on DB error and can
-            # race a concurrent archive_and_compact. Still rolls back on mid-rewrite failure.
-            db.replace_messages(state.session_id, state.history, active_only=True)
+            # rewrites the live set from its own view, which can be stale: another writer may have
+            # appended to this session since (a second editor on the same session). So the rewrite
+            # archives only rows this state HELD and has since dropped (/reset, /compress), and never
+            # DELETEs: archived rows survive, and a foreign row stays live where it is (#122699). On a
+            # fresh create/fork there are no live rows and this is a plain insert. Unconditional
+            # because an existence probe would fail OPEN on DB error and can race a concurrent
+            # archive_and_compact. Still rolls back on mid-rewrite failure.
+            db.replace_messages(state.session_id, state.history, archive_dropped=True,
+                                held_row_ids=state.held_row_ids or None)
+            state.held_row_ids.update(held_archive_coverage(state.history)[0])  # rows it kept or inserted
         except Exception:
             logger.warning("Failed to persist ACP session %s", state.session_id, exc_info=True)
 
@@ -434,7 +445,8 @@ class SessionManager:
         # repair_alternation: this list becomes the resumed agent's LIVE conversation; a durable
         # ``user;user`` violation in state.db would otherwise re-fire the pre-request repair every request.
         try:
-            history = db.get_messages_as_conversation(session_id, repair_alternation=True)
+            # Row ids: a later non-owning rewrite must tell this state's rows from another writer's.
+            history = db.get_messages_as_conversation(session_id, repair_alternation=True, include_row_ids=True)
         except Exception:
             logger.warning("Failed to load messages for ACP session %s", session_id, exc_info=True)
             history = []

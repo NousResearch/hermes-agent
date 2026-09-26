@@ -426,6 +426,62 @@ class TestPersistence:
 
 
 
+    # -- #122699: a non-owning rewrite never drops another writer's turn -----------------------
+
+    @staticmethod
+    def _non_owning(tmp_path):
+        agent = SimpleNamespace(model="test-model")  # no _session_db => non-owning => rewrite branch
+        db = SessionDB(tmp_path / "state.db")
+        return db, SessionManager(agent_factory=lambda: agent, db=db)
+
+    def test_a_non_owning_save_never_drops_a_row_it_never_held(self, tmp_path):
+        """A model switch, or a mode/config/cwd change on a restored session, rewrites the live set
+        from this state's view, which can be stale: a second editor on the same session keeps
+        writing. Its turns must stay live and searchable wherever they sit (between this state's
+        rows, or after a restore), and this state's own rows keep their ids."""
+        db, manager = self._non_owning(tmp_path)
+        state = manager.create_session(cwd="/work")
+        state.history += [{"role": "user", "content": "ask one"}, {"role": "assistant", "content": "answer one"}]
+        manager.save_session(state.session_id)
+        own_ids = [m["id"] for m in db.get_messages(state.session_id)]
+        db.append_message(state.session_id, "user", content="editorb asks")
+        db.append_message(state.session_id, "assistant", content="editorb answer")
+        state.history.append({"role": "user", "content": "ask two"})
+        manager.save_session(state.session_id)  # this state's new row lands after editor B's turn
+        with manager._lock:
+            del manager._sessions[state.session_id]
+        restored = manager.get_session(state.session_id)  # a resume loads the current transcript
+        db.append_message(state.session_id, "user", content="editorb later")
+
+        manager.save_session(restored.session_id)
+
+        live = db.get_messages(state.session_id)
+        assert [m["content"] for m in live] == [
+            "ask one", "answer one", "editorb asks", "editorb answer", "ask two", "editorb later"]
+        assert [m["id"] for m in live[:2]] == own_ids
+        assert len(db.get_messages(state.session_id, include_inactive=True)) == 6  # nothing archived or deleted
+        # Editor B's rows stay in the live FTS view (the case #122704 pins for an archived row).
+        assert len(db.search_messages("editorb")) == 3
+
+    def test_a_non_owning_rewrite_drops_only_the_rows_it_held(self, tmp_path):
+        """A rewrite (/compress, /reset) still drops this state's own rows, soft-archived and
+        recoverable, never DELETEd. Another writer's turn is not this state's to drop, and it stays
+        after the rewritten rows instead of jumping ahead of them."""
+        db, manager = self._non_owning(tmp_path)
+        state = manager.create_session(cwd="/work")
+        state.history += [{"role": "user", "content": "ask one"}, {"role": "assistant", "content": "answer one"},
+                          {"role": "user", "content": "ask two"}]
+        manager.save_session(state.session_id)
+        db.append_message(state.session_id, "assistant", content="editorb answer")
+
+        state.history[:] = [{"role": "user", "content": "[summary of ask one]"}, state.history[-1]]  # /compress
+        manager.save_session(state.session_id)
+
+        assert [m["content"] for m in db.get_messages(state.session_id)] == [
+            "[summary of ask one]", "ask two", "editorb answer"]
+        archived = {m["content"] for m in db.get_messages(state.session_id, include_inactive=True)}
+        assert {"ask one", "answer one"} <= archived
+
     def test_only_restores_acp_sessions(self, manager):
         """get_session should not restore non-ACP sessions from DB."""
         db = manager._get_db()
@@ -474,6 +530,8 @@ class TestPersistence:
         # Load-time durability stamp (#92231): rows materialized from the DB
         # are marked persisted so a later flush can't re-append them.
         assert msg.pop("_db_persisted", None) is True
+        # Restore loads row ids so a later non-owning rewrite can tell its rows from another writer's.
+        assert isinstance(msg.pop("_row_id", None), int)
         assert restored.history == [{
             "role": "assistant",
             "content": "hello",

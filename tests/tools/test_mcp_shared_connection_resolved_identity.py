@@ -7,14 +7,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 import sys
 import textwrap
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 _MODEL = {"default": "x", "provider": "custom", "base_url": "http://127.0.0.1:9/v1"}
 
@@ -55,7 +57,7 @@ def recording(app):
                 method = json.loads(body).get("method")
             except Exception:
                 method = None
-            with open(log_path, "a") as fh:
+            with open(log_path, "a", encoding="utf-8") as fh:
                 fh.write(json.dumps([method, headers.get("x-hermes-profile")]) + "\\n")
             replayed = False
 
@@ -77,7 +79,7 @@ async def main():
     task = asyncio.create_task(uv.serve(sockets=[sock]))
     while not uv.started:
         await asyncio.sleep(0.01)
-    open(port_path, "w").write(str(sock.getsockname()[1]))
+    open(port_path, "w", encoding="utf-8").write(str(sock.getsockname()[1]))
     await task
 
 asyncio.run(main())
@@ -114,13 +116,13 @@ def _discover_and_call(homes: dict, tool: str, args: dict) -> dict:
 
 def test_profile_with_other_secret_source_value_gets_its_own_stdio_connection(two_profile_homes, tmp_path):
     server = tmp_path / "gh_server.py"
-    server.write_text(textwrap.dedent(_STDIO_SERVER))
+    server.write_text(textwrap.dedent(_STDIO_SERVER), encoding="utf-8")
     for name, home in two_profile_homes.items():
-        (home / "secrets.env").write_text(f"GH_TOKEN=fake-token-{name}\n")
+        (home / "secrets.env").write_text(f"GH_TOKEN=fake-token-{name}\n", encoding="utf-8")
         (home / "config.yaml").write_text(yaml.safe_dump({
             "model": _MODEL,
             "secrets": {"command": {"enabled": True, "command": f"cat {home / 'secrets.env'}"}},
-            "mcp_servers": {"gh": {"command": sys.executable, "args": [str(server)]}}}))
+            "mcp_servers": {"gh": {"command": sys.executable, "args": [str(server)]}}}), encoding="utf-8")
 
     results = _discover_and_call(two_profile_homes, "mcp__gh__whoami", {})
 
@@ -130,21 +132,73 @@ def test_profile_with_other_secret_source_value_gets_its_own_stdio_connection(tw
 def test_profile_with_other_profile_identity_header_gets_its_own_http_connection(two_profile_homes, tmp_path):
     log, port_file = tmp_path / "calls.log", tmp_path / "port"
     script = tmp_path / "team_server.py"
-    script.write_text(_HTTP_SERVER)
+    script.write_text(_HTTP_SERVER, encoding="utf-8")
     proc = subprocess.Popen([sys.executable, str(script), str(log), str(port_file)])
     try:
         deadline = time.monotonic() + 30
-        while not (port_file.exists() and port_file.read_text()) and time.monotonic() < deadline:
+        while not (port_file.exists() and port_file.read_text(encoding="utf-8-sig")) and time.monotonic() < deadline:
             time.sleep(0.05)
-        team = {"url": f"http://127.0.0.1:{port_file.read_text()}/mcp",
+        port = port_file.read_text(encoding="utf-8-sig")
+        team = {"url": f"http://127.0.0.1:{port}/mcp",
                 "identity_header": {"name": "X-Hermes-Profile", "value_from": "profile"}}
         for home in two_profile_homes.values():
-            (home / "config.yaml").write_text(yaml.safe_dump({"model": _MODEL, "mcp_servers": {"team": team}}))
+            (home / "config.yaml").write_text(yaml.safe_dump({"model": _MODEL, "mcp_servers": {"team": team}}), encoding="utf-8")
 
         _discover_and_call(two_profile_homes, "mcp__team__save_note", {"text": "hi"})
 
-        calls = [json.loads(line) for line in log.read_text().splitlines()]
+        calls = [json.loads(line) for line in log.read_text(encoding="utf-8-sig").splitlines()]
         assert [profile for method, profile in calls if method == "tools/call"] == ["default", "worker"]
     finally:
         proc.terminate()
         proc.wait(10)
+
+
+def _adoptable_by_each_profile(homes: dict, name: str, config: dict) -> dict:
+    """Record the owner's identity in the default profile's scope, as the connecting task does,
+    then ask each profile whether it may adopt that live connection."""
+    import gateway.run as gateway_run
+    from tools.mcp_tool_registration import _resolved_identity, _same_server_route
+
+    with gateway_run._profile_runtime_scope(homes["default"]):
+        owner = SimpleNamespace(name=name, _config=config, _resolved_identity=_resolved_identity(name, config))
+    adoptable = {}
+    for profile, home in homes.items():
+        with gateway_run._profile_runtime_scope(home):
+            adoptable[profile] = _same_server_route(owner, config, cross_profile=True)
+    return adoptable
+
+
+def test_profile_whose_bare_npx_resolves_under_its_own_home_does_not_adopt(two_profile_homes, tmp_path):
+    empty_path = tmp_path / "empty-path"
+    empty_path.mkdir()
+    for home in two_profile_homes.values():
+        npx = home / "node" / "bin" / "npx"
+        npx.parent.mkdir(parents=True)
+        npx.write_text("#!/bin/sh\n", encoding="utf-8")
+        npx.chmod(0o755)
+    config = {"command": "npx", "args": ["-y", "some-server"], "env": {"PATH": str(empty_path)}, "cwd": str(tmp_path)}
+
+    assert _adoptable_by_each_profile(two_profile_homes, "svc", config) == {"default": True, "worker": False}
+
+
+def test_profile_whose_runtime_file_names_another_endpoint_does_not_adopt(two_profile_homes, tmp_path, monkeypatch):
+    import hermes_cli.agent_plugins as agent_plugins
+    from hermes_constants import get_hermes_home
+    from hermes_platform import declaration
+
+    executable = tmp_path / "example-app"
+    executable.write_text("fixture", encoding="utf-8")
+    declaration.register("svc", declaration.parse_declaration(
+        "Example App", {sys.platform: {"presence": "executable", "location": str(executable)}}, {"app": True},
+        where="test"))
+    monkeypatch.setattr(agent_plugins, "liveness_for", lambda name: {
+        "kind": "server_json", "path": str(get_hermes_home() / "server.json")}, raising=False)
+    for port, home in enumerate(two_profile_homes.values(), start=4101):
+        (home / "server.json").write_text(json.dumps(
+            {"http": f"http://127.0.0.1:{port}", "token": f"token-{home.name}", "pid": os.getpid()}), encoding="utf-8")
+    try:
+        adoptable = _adoptable_by_each_profile(two_profile_homes, "svc", {"url": "http://127.0.0.1:9/mcp"})
+    finally:
+        declaration.unregister("svc")
+
+    assert adoptable == {"default": True, "worker": False}

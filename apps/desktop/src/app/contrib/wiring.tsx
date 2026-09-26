@@ -23,6 +23,7 @@ import { FreeTierSignInDialog } from '@/components/free-tier/sign-in-dialog'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
 import { IntroRevealGate } from '@/components/intro-reveal'
 import { NotificationStack } from '@/components/notifications'
+import { NvidiaEglFallbackBanner } from '@/components/nvidia-egl-fallback-banner'
 import { DesktopOnboardingOverlay } from '@/components/onboarding'
 import { OnboardingChatGate } from '@/components/onboarding-chat/gate'
 import { $newSessionTabAction, registerPaneCloser } from '@/components/pane-shell/tree/store'
@@ -1324,6 +1325,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
       {/* The full real overlay set (mirrors DesktopController's `overlays`). */}
       <RemoteDisplayBanner />
+      <NvidiaEglFallbackBanner />
       {!isAuxiliaryWindow() && <DesktopInstallOverlay />}
       {!isAuxiliaryWindow() && <IntroRevealGate enabled={gatewayState === 'open'} />}
       {!isAuxiliaryWindow() && (

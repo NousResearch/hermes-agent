@@ -627,6 +627,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   relaunchApp: () => ipcRenderer.invoke('hermes:app:relaunch'),
   getMachineProfile: () => ipcRenderer.invoke('hermes:machine:profile'),
   getRemoteDisplayReason: () => ipcRenderer.invoke('hermes:get-remote-display-reason'),
+  getNvidiaEglFallbackReason: () => ipcRenderer.invoke('hermes:get-nvidia-egl-fallback-reason'),
   uninstall: {
     summary: () => ipcRenderer.invoke('hermes:uninstall:summary'),
     run: mode => ipcRenderer.invoke('hermes:uninstall:run', { mode })

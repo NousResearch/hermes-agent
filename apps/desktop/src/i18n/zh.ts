@@ -349,6 +349,11 @@ export const zh = defineLocale({
     message: reason => `软件渲染已启用 — 检测到远程显示（${reason}）。为防止画面闪烁，已禁用 GPU 加速。`
   },
 
+  nvidiaEglFallbackBanner: {
+    message: reason =>
+      `软件渲染已启用 — 已触发 NVIDIA EGL 回退（${reason}）。为稳定性已禁用 GPU 加速；设置 HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0 可取消。`
+  },
+
   billingBlock: {
     titleNous: 'Nous 额度已用尽',
     titleProvider: provider => `额度已用尽 — ${provider}`,

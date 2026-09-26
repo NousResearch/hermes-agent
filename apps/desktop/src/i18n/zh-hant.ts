@@ -309,6 +309,11 @@ export const zhHant = defineLocale({
     message: reason => `軟體繪圖已啟用 — 偵測到遠端顯示（${reason}）。為防止畫面閃爍，已停用 GPU 加速。`
   },
 
+  nvidiaEglFallbackBanner: {
+    message: reason =>
+      `軟體繪圖已啟用 — 已觸發 NVIDIA EGL 後援方案（${reason}）。為求穩定已停用 GPU 加速；設定 HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0 可取消。`
+  },
+
   billingBlock: {
     titleNous: 'Nous 額度已用盡',
     titleProvider: provider => `額度已用盡 — ${provider}`,

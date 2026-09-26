@@ -634,6 +634,11 @@ export const en: Translations = {
       `Software rendering active — remote display detected (${reason}). GPU acceleration is disabled to prevent flickering.`
   },
 
+  nvidiaEglFallbackBanner: {
+    message: reason =>
+      `Software rendering active — NVIDIA EGL fallback engaged (${reason}). GPU acceleration is disabled for stability; set HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0 to opt out.`
+  },
+
   billingBlock: {
     titleNous: 'Out of Nous credits',
     titleProvider: provider => `Out of credits — ${provider}`,

@@ -207,20 +207,36 @@ def gateway_lifecycle_block(
         HOST_INTERPRETER_KILL_REJECTION,
         contains_host_interpreter_kill,
         contains_launchctl_submit_command,
+        describe_self_gateway_identity,
         lifecycle_scan_root_within_budget,
         scan_gateway_lifecycle,
+    )
+    # Block messages NAME this process's own service identity so the model can
+    # tell a self-targeting command (blocked) from a sibling one (allowed).
+    _self_identity = describe_self_gateway_identity()
+    _identity_clause = (
+        f"{_self_identity}; stopping/restarting it from inside itself is "
+        "blocked \u2014 SIBLING gateway labels are allowed. "
+        if _self_identity
+        else (
+            "This gateway's own service identity could not be determined, "
+            "so every gateway lifecycle command is blocked (fail-closed). "
+        )
     )
     # Keep the specific launchctl diagnostic when this optional pre-scan fits the
     # budget. The full fail-closed guard below still runs when it does not, so
     # oversized roots never reach shlex here.
     if lifecycle_scan_root_within_budget(command) and contains_launchctl_submit_command(command):
         return _blocked_json(
-            "Blocked: launchctl submit/bootstrap is restricted inside a supervised "
+            "Blocked: launchctl submit is restricted inside a supervised "
             "gateway regardless of the job label, to prevent indirect gateway "
-            "restart loops. This guard does not inspect the job's KeepAlive settings "
+            "restart loops. A NEW job's label is chosen by whoever writes the "
+            "command, so the text proves nothing about what the job will do. "
+            "This guard does not inspect the job's KeepAlive settings "
             "or determine whether it is independent of Hermes. Perform authorized "
             "LaunchAgent maintenance from a separate shell outside the gateway, "
-            "not by switching launchctl verbs to bypass this rejection.",
+            "not by switching launchctl verbs to bypass this rejection. "
+            "(launchctl bootstrap of a SIBLING gateway's plist is allowed.)",
             "error",
         )
     guard_cwd_base = get_session_cwd(session_key)
@@ -252,10 +268,11 @@ def gateway_lifecycle_block(
             return _blocked_json(HOST_INTERPRETER_KILL_REJECTION, "error")
         return _blocked_json(
             "Blocked: command or referenced script cannot restart, stop, or "
-            "uninstall the gateway from inside the gateway process. The gateway would "
-            "kill this command before it could complete (SIGTERM propagates "
-            "to child processes). Run `hermes gateway restart` from a "
-            "separate shell outside the running gateway.",
+            "uninstall THIS gateway from inside the gateway process. "
+            + _identity_clause +
+            "The gateway would kill this command before it could complete "
+            "(SIGTERM propagates to child processes). Run `hermes gateway "
+            "restart` from a separate shell outside the running gateway.",
             "error",
         )
     return None

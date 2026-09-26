@@ -388,6 +388,234 @@ def _contains_launchctl_gateway_lifecycle(normalized_text: str) -> bool:
     )
 
 
+
+
+# ---------------------------------------------------------------------------
+# Self-awareness for the launchd/systemd branches (2026-09-19)
+# ---------------------------------------------------------------------------
+#
+# `_HERMES_GATEWAY_LABEL_RE` above is LABEL-BLIND: it matches *any* hermes
+# gateway label, so a supervised gateway was blocked from running
+# `launchctl bootout gui/501/ai.hermes.gateway` even when that label belongs
+# to a DIFFERENT profile's gateway. The #30719 respawn loop this guard exists
+# to prevent needs the command to kill THIS process — a sibling profile's
+# launchd job cannot do that, and recovering a wedged sibling is precisely the
+# break-glass job of a dedicated recovery profile (the 2026-09-19 state.db
+# corruption recovery had to be laundered through `ssh localhost 'nohup bash
+# script &'` because of this).
+#
+# The discrimination mirrors `_named_profile_is_current` (#78028), which
+# already does exactly this for Branch A's `hermes -p <profile> gateway
+# restart` form: block only when the named target IS us.
+#
+# Anchored, FULL-label patterns — deliberately stricter than
+# `_HERMES_GATEWAY_LABEL_RE`, which matches the bare substring `hermes.gateway`
+# anywhere. Sibling discrimination requires an explicit, complete service
+# identifier; anything less stays blocked by the label-blind path.
+_LAUNCHD_GATEWAY_LABEL_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_.\-])ai\.hermes\.gateway(?:-[A-Za-z0-9_-]+)?"
+)
+# systemd units are named by `hermes_cli.gateway.get_service_name()`:
+# `hermes-gateway` for the default root, `hermes-gateway-<profile>` for
+# `<root>/profiles/<profile>` (plus a short-hash suffix for arbitrary homes).
+_SYSTEMD_GATEWAY_UNIT_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_.\-])hermes-gateway(?:-[A-Za-z0-9_-]+)?(?:\.service)?"
+)
+
+# An unexpanded shell variable / command substitution can expand to OUR OWN
+# label at runtime, so a sibling-only verdict is unsound whenever one sits in
+# the same command segment as a lifecycle verb.
+_UNEXPANDED_SHELL_VALUE_RE = re.compile(r"\$\{?\w|\$\(|`|\$\{")
+_LIFECYCLE_TOOL_RE = re.compile(r"(?i)\b(?:launchctl|systemctl)\b")
+_SIBLING_SEGMENT_SPLIT_RE = re.compile(r"\|\||&&|;|\||&|\n")
+_LAUNCHCTL_SUBMIT_MATCH_RE = re.compile(r"(?i)^\s*launchctl\s+submit\b")
+
+
+def _normalize_service_name(token: str) -> str:
+    """Canonicalize a launchd label / systemd unit token for comparison."""
+    name = token.strip().strip("\"'").casefold()
+    if name.endswith(".plist"):
+        name = name[: -len(".plist")]
+    if name.endswith(".service"):
+        name = name[: -len(".service")]
+    return name
+
+
+def _systemd_self_unit() -> Optional[str]:
+    """Return this process's own hermes-gateway systemd unit, if any.
+
+    ``INVOCATION_ID`` is set by systemd for every service it starts, but it
+    does not carry the unit NAME, so the name is read from the process's own
+    cgroup path. Returns ``None`` off systemd (e.g. macOS/launchd) or when the
+    owning unit is not a hermes gateway.
+    """
+    if not (os.environ.get("INVOCATION_ID") or "").strip():
+        return None
+    try:
+        with open("/proc/self/cgroup", "r", encoding="utf-8", errors="replace") as fh:
+            cgroup = fh.read()
+    except (OSError, ValueError):
+        return None
+    match = _SYSTEMD_GATEWAY_UNIT_RE.search(cgroup)
+    if match is None:
+        return None
+    return _normalize_service_name(match.group(0))
+
+
+def _profile_derived_self_names() -> set[str]:
+    """Self service names derived from this process's HERMES_HOME.
+
+    Only trusted when HERMES_HOME is the default root or a named profile under
+    it. An arbitrary HERMES_HOME (test sandbox, ad-hoc path) makes
+    ``get_service_name()`` fall back to a short *hash* suffix, which is a
+    fabricated identity rather than a real installed service — returning it
+    would make the genuinely-installed ``ai.hermes.gateway`` look like a
+    sibling. Fail closed (empty set) in that case.
+    """
+    try:
+        from hermes_cli.gateway import (
+            get_hermes_home,
+            get_launchd_label,
+            get_service_name,
+        )
+        from hermes_constants import get_default_hermes_root
+
+        home = Path(str(get_hermes_home())).resolve()
+        default = Path(str(get_default_hermes_root())).resolve()
+        if home != default and home.parent != (default / "profiles").resolve():
+            return set()
+        names: set[str] = set()
+        label = get_launchd_label()
+        if label:
+            names.add(_normalize_service_name(label))
+        unit = get_service_name()
+        if unit:
+            names.add(_normalize_service_name(unit))
+        return names
+    except Exception:
+        return set()
+
+
+def _self_gateway_service_names() -> set[str]:
+    """Return the launchd labels / systemd units that mean THIS gateway.
+
+    Sources, most authoritative first:
+
+    * ``XPC_SERVICE_NAME`` — launchd tells a supervised job its own label
+      verbatim, so when it names a hermes gateway it is definitive and the
+      profile-derived launchd label is not consulted.
+    * the systemd unit owning this process (``INVOCATION_ID`` + cgroup).
+    * the profile-derived names for the current ``HERMES_HOME``.
+
+    An EMPTY set means "identity undeterminable" and every caller must then
+    fail closed (keep blocking) — a sibling verdict we cannot justify is worse
+    than a false block.
+
+    Note the self *watchdog* job (``ai.hermes.gateway-watchdog`` and profile
+    equivalents) is deliberately NOT self: stopping the watchdog does not kill
+    the gateway, so it is a legitimate sibling target.
+    """
+    names: set[str] = set()
+
+    launchd_from_env: Optional[str] = None
+    xpc = (os.environ.get("XPC_SERVICE_NAME") or "").strip()
+    if xpc:
+        candidate = _normalize_service_name(xpc)
+        if _LAUNCHD_GATEWAY_LABEL_RE.fullmatch(candidate):
+            launchd_from_env = candidate
+            names.add(candidate)
+
+    systemd_from_env = _systemd_self_unit()
+    if systemd_from_env:
+        names.add(systemd_from_env)
+
+    for derived in _profile_derived_self_names():
+        is_launchd = derived.startswith("ai.hermes.gateway")
+        if is_launchd and launchd_from_env is not None:
+            continue
+        if not is_launchd and systemd_from_env is not None:
+            continue
+        names.add(derived)
+    return names
+
+
+def describe_self_gateway_identity() -> str:
+    """Human-readable description of this gateway's own service identity."""
+    names = sorted(_self_gateway_service_names())
+    if not names:
+        return ""
+    launchd = [n for n in names if n.startswith("ai.hermes.gateway")]
+    systemd = [n for n in names if not n.startswith("ai.hermes.gateway")]
+    parts: list[str] = []
+    if launchd:
+        parts.append("launchd job " + ", ".join(launchd))
+    if systemd:
+        parts.append("systemd unit " + ", ".join(f"{n}.service" for n in systemd))
+    return "this gateway runs as " + " / ".join(parts)
+
+
+def _explicit_gateway_service_names(text: str) -> set[str]:
+    """Every FULL gateway label / unit name written literally in *text*."""
+    found: set[str] = set()
+    for pattern in (_LAUNCHD_GATEWAY_LABEL_RE, _SYSTEMD_GATEWAY_UNIT_RE):
+        for match in pattern.finditer(text):
+            found.add(_normalize_service_name(match.group(0)))
+    return found
+
+
+def _lifecycle_verb_segment_has_unexpanded_value(text: str) -> bool:
+    """True when a shell variable/substitution shares a segment with a verb."""
+    for line in text.splitlines() or [text]:
+        for segment in _SIBLING_SEGMENT_SPLIT_RE.split(line):
+            if not _LIFECYCLE_TOOL_RE.search(segment):
+                continue
+            if _UNEXPANDED_SHELL_VALUE_RE.search(segment):
+                return True
+    return False
+
+
+def _lifecycle_targets_only_sibling_gateways(text: str) -> bool:
+    """True when every explicit lifecycle target is a SIBLING gateway.
+
+    All four conditions must hold, otherwise the caller keeps blocking:
+
+    1. this process's own service identity is determinable;
+    2. *text* names at least one full gateway label / unit explicitly;
+    3. none of those names is one of ours;
+    4. no unexpanded shell value sits in the same segment as a lifecycle
+       tool (it could expand to our own label).
+    """
+    self_names = _self_gateway_service_names()
+    if not self_names:
+        return False
+    targets = _explicit_gateway_service_names(text)
+    if not targets:
+        return False
+    if targets & self_names:
+        return False
+    if _lifecycle_verb_segment_has_unexpanded_value(text):
+        return False
+    return True
+
+
+def _match_is_sibling_exemptable(matched: str) -> bool:
+    """True for launchd/systemd branch matches eligible for sibling exemption.
+
+    ``launchctl submit`` never qualifies: it registers a BRAND NEW KeepAlive
+    job whose label is chosen by whoever writes the command, so the label text
+    proves nothing about what the job will do (#62891). Branch A
+    (``hermes gateway restart``) is excluded too — it has its own
+    profile-aware discrimination (#78028) — as is Branch D (``pkill``), which
+    targets by process pattern rather than by service label.
+    """
+    head = matched.lstrip().lower()
+    if not (head.startswith("launchctl") or head.startswith("systemctl")):
+        return False
+    if _LAUNCHCTL_SUBMIT_MATCH_RE.match(matched):
+        return False
+    return True
+
+
 def contains_gateway_lifecycle_command(text: str) -> bool:
     """Return True if *text* contains a gateway lifecycle command pattern.
 
@@ -419,7 +647,14 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
 
     text = strip_inert_heredoc_bodies(text)
     normalized = _SHELL_LINE_CONTINUATION.sub(" ", text)
-    if _GATEWAY_LIFECYCLE_PATTERN.search(normalized):
+    for _match in _GATEWAY_LIFECYCLE_PATTERN.finditer(normalized):
+        # Self-aware launchd/systemd exemption: a command whose only explicit
+        # lifecycle targets are SIBLING gateway services cannot kill this
+        # process, so the respawn-loop rationale does not apply.
+        if _match_is_sibling_exemptable(
+            _match.group(0)
+        ) and _lifecycle_targets_only_sibling_gateways(normalized):
+            continue
         return True
     # Profile-flag form: blocked only when the named profile IS the one running the guard.
     # Profile-flag form (#78028): `hermes -p <profile> gateway restart|stop` bypasses Branch A because the
@@ -440,10 +675,18 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
     # passes apply independently.
     for segment in _iter_command_segments(normalized):
         joined = " ".join(segment)
-        if joined and _GATEWAY_LIFECYCLE_PATTERN.search(joined):
-            return True
-        stripped = _ARGV_LIST_PUNCTUATION.sub(" ", joined)
-        if stripped != joined and _GATEWAY_LIFECYCLE_PATTERN.search(stripped):
+        if not joined:
+            continue
+        _seg_match = _GATEWAY_LIFECYCLE_PATTERN.search(joined)
+        if _seg_match is None:
+            stripped = _ARGV_LIST_PUNCTUATION.sub(" ", joined)
+            if stripped != joined:
+                _seg_match = _GATEWAY_LIFECYCLE_PATTERN.search(stripped)
+        if _seg_match is not None:
+            if _match_is_sibling_exemptable(
+                _seg_match.group(0)
+            ) and _lifecycle_targets_only_sibling_gateways(joined):
+                continue
             return True
     # The label may be built in an earlier `;`-segment, so no pass above sees verb + label together.
     # Order-independent launchctl pass (#77083): a shell loop can build the gateway label from a variable
@@ -451,7 +694,18 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
     # "gui/$uid/$label"`), so neither the same-span regex nor same-segment tokenization sees verb and label
     # together. Check "verb anywhere AND label anywhere" instead.
     # Branch E (#113667): killers aimed at the interpreter image itself carry no hermes/gateway token.
-    return _contains_launchctl_gateway_lifecycle(normalized) or contains_host_interpreter_kill(normalized)
+    if _contains_launchctl_gateway_lifecycle(normalized):
+        # This pass is deliberately label-BLIND, so it also caught sibling-only
+        # lines. Explicit sibling-only targets are exempt; a variable-built
+        # label in a lifecycle segment is not (it could expand to our label).
+        # Per line, so a later self-targeting segment is still caught by its own.
+        for _line in normalized.splitlines() or [normalized]:
+            if not _contains_launchctl_gateway_lifecycle(_line):
+                continue
+            if _lifecycle_targets_only_sibling_gateways(_line):
+                continue
+            return True
+    return contains_host_interpreter_kill(normalized)
 
 
 # Whole-walk work limits. The per-file cap and depth bound above limit one read, not the walk: a
@@ -706,8 +960,43 @@ def contains_launchctl_submit_command(command: str) -> bool:
         if index is not None and _executable_name(segment[index]) == "launchctl":
             arguments = segment[index + 1 :]
             if arguments and arguments[0].lower() in {"submit", "bootstrap"}:
+                if arguments[0].lower() == "bootstrap" and _bootstrap_targets_sibling_plist(
+                    arguments[1:]
+                ):
+                    # `launchctl bootstrap gui/<uid> <sibling>.plist` loads a
+                    # DIFFERENT gateway's job. It cannot restart-loop this
+                    # process, and it is exactly how a break-glass profile
+                    # brings a wedged sibling back up. `submit` stays blocked
+                    # unconditionally (its label is chosen by whoever writes
+                    # the command, so the text proves nothing about the job).
+                    continue
                 return True
     return False
+
+
+def _bootstrap_targets_sibling_plist(arguments: list[str]) -> bool:
+    """True when every plist argument names a SIBLING gateway service.
+
+    Deliberately strict: the arguments must contain at least one ``.plist``
+    path, every such path's basename must be a full gateway label that is not
+    ours, and no argument may carry an unexpanded shell value.
+    """
+    self_names = _self_gateway_service_names()
+    if not self_names:
+        return False
+    plists = [argument for argument in arguments if argument.lower().endswith(".plist")]
+    if not plists:
+        return False
+    for argument in arguments:
+        if _UNEXPANDED_SHELL_VALUE_RE.search(argument):
+            return False
+    for plist in plists:
+        name = _normalize_service_name(Path(plist).name)
+        if not _LAUNCHD_GATEWAY_LABEL_RE.fullmatch(name):
+            return False
+        if name in self_names:
+            return False
+    return True
 
 
 def _mask_data_sink_arguments(text: str) -> str:

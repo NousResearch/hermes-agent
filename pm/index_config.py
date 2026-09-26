@@ -28,6 +28,13 @@ FORWARDED_UV_SETTINGS = frozenset({
 })
 
 _UV_INDEX_KNOBS = ("UV_INDEX_URL", "UV_DEFAULT_INDEX", "UV_INDEX")
+_LOCK_INDEX_SETTINGS = frozenset({
+    "UV_INDEX_URL", "UV_EXTRA_INDEX_URL", "UV_DEFAULT_INDEX", "UV_INDEX",
+    "UV_FIND_LINKS", "UV_INDEX_STRATEGY",
+})
+_PIP_INDEX_SETTINGS = frozenset({
+    "PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "PIP_TRUSTED_HOST", "PIP_FIND_LINKS", "PIP_CONFIG_FILE",
+})
 
 # pip knob → uv knob, applied only when uv has no value of its own.
 _PIP_TO_UV = (
@@ -42,6 +49,15 @@ TIMEOUT_HINT = ("uv timed out. If your network needs a package mirror, set index
 
 def is_forwarded(key: str) -> bool:
     return key in FORWARDED_UV_SETTINGS or key.startswith("UV_INDEX_")
+
+
+def has_lock_index_override(env: Mapping[str, str]) -> bool:
+    return any(env.get(key) for key in _LOCK_INDEX_SETTINGS)
+
+
+def without_lock_index_overrides(env: Mapping[str, str]) -> dict[str, str]:
+    settings = _LOCK_INDEX_SETTINGS | _PIP_INDEX_SETTINGS
+    return {key: value for key, value in env.items() if key not in settings}
 
 
 def pip_config_candidates(env: Mapping[str, str]) -> list[Path]:

@@ -11,13 +11,15 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import ssl
 import threading
+import urllib.error
 from pathlib import Path
 
 import pytest
 
 from pm.downloader import (Download, DownloadError, DownloadPaused,
-                           HashError, Source, replace_when_released)
+                           DownloadTransportError, HashError, Source, replace_when_released)
 
 from tests.pm._range_server import RangeHandler as _Handler, url as _url
 from tests.pm._range_server import dl_server as dl_server
@@ -127,10 +129,37 @@ def test_no_hash_accepts_any_bytes_of_right_size(dl_server, tmp_path):
     assert dest.read_bytes() == payload
 
 
+def test_tls_failure_uses_hash_pinned_fallback(dl_server, tmp_path, monkeypatch):
+    payload = _payload(1 << 20, b"mirror")
+    _Handler.payloads["/mirror"] = payload
+    upstream = "https://registry.npmjs.org/npm/-/npm-1.0.0.tgz"
+    mirror = _url(dl_server, "/mirror")
+    dest = tmp_path / "npm.tgz"
+    download = Download(
+        [Source(upstream, dest, _sha(payload), fallbacks=(mirror,))],
+        partials_dir=tmp_path / "partials",
+    )
+    original_probe = download._probe
+    tried = []
+
+    def probe(url):
+        tried.append(url)
+        if url == upstream:
+            raise DownloadTransportError(
+                url, urllib.error.URLError(ssl.SSLError("TLS handshake failure"))
+            )
+        return original_probe(url)
+
+    monkeypatch.setattr(download, "_probe", probe)
+    download.run()
+
+    assert tried[0] == upstream
+    assert mirror in tried
+    assert tried.count(upstream) == 1
+    assert dest.read_bytes() == payload
+
+
 # ── resume ────────────────────────────────────────────────────
-
-
-
 
 def test_partials_never_in_scratch_or_dest(dl_server, tmp_path):
     payload = _payload(1 << 20)

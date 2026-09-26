@@ -28,6 +28,7 @@ import os
 import re
 import shutil
 import logging
+import ssl
 import threading
 import time
 import urllib.error
@@ -119,10 +120,18 @@ class DownloadTransportError(DownloadError):
         self.url = url
         self.status = cause.code if isinstance(cause, urllib.error.HTTPError) else None
         self.fallback_allowed = (
-            self.status in (401, 403, 404, 410) or is_transient(cause)
+            self.status in (401, 403, 404, 410) or is_transient(cause) or _is_tls_failure(cause)
         )
         reason = f"{cause}; the host refused access" if self.status in (401, 403) else str(cause)
         super().__init__(f"download failed from {url}: {reason}")
+
+
+def _is_tls_failure(exc: Exception) -> bool:
+    while isinstance(exc, urllib.error.URLError):
+        if not isinstance(exc.reason, Exception):
+            return False
+        exc = exc.reason
+    return isinstance(exc, ssl.SSLError)
 
 
 @dataclass(frozen=True)

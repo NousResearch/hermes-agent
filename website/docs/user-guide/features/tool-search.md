@@ -25,6 +25,9 @@ curated list covers tools such as `computer_use`, `session_search`, and selected
 desktop helpers. MCP and non-core plugin tools remain eligible automatically.
 An explicit `defer` list replaces the curated list, and `defer: []` keeps every
 tool eager.
+Tools added by memory providers and context engines (for example `honcho_*` or
+`lcm_*`) load directly unless they are named in `tools.tool_search.defer`.
+When named, they are deferred like other tools and still run through their provider.
 :::
 
 ## How it works

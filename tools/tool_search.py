@@ -540,6 +540,31 @@ def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
                      if n and is_deferrable_tool_name(n, defer_tools))
 
 
+def defer_post_build_tools(tool_defs: List[Dict[str, Any]], *,
+                           enabled_toolsets: Optional[List[str]] = None,
+                           disabled_toolsets: Optional[List[str]] = None) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Fold non-registry tools named in ``defer`` into the Tool Search bridge (#110341)."""
+    config = load_config()
+    if config.enabled == "off":
+        return tool_defs, []
+    deferred = [td for td in tool_defs
+                if (name := _fn(td).get("name", "")) not in BRIDGE_TOOL_NAMES
+                and _registry_entry(name) is None
+                and is_deferrable_tool_name(name, config.effective_defer_tools)]
+    if not deferred:
+        return tool_defs, []
+    kept = [td for td in tool_defs if td not in deferred and _fn(td).get("name", "") not in BRIDGE_TOOL_NAMES]
+    import model_tools
+    raw = model_tools.get_tool_definitions(
+        enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
+        quiet_mode=True, skip_tool_search_assembly=True) or []
+    registry_deferred = classify_tools(raw, config.effective_defer_tools)[1]
+    assembly = assemble_tool_defs(
+        kept + registry_deferred + deferred,
+        context_length=model_tools._resolve_active_context_length(), config=config)
+    return assembly.tool_defs, deferred
+
+
 def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
     """Parse a ``tool_call`` invocation into (underlying_name, args, error_msg).
 
@@ -579,6 +604,7 @@ __all__ = [
     "build_catalog_listing_with_form", "listing_token_budget", "search_catalog",
     "bridge_tool_schemas", "assemble_tool_defs", "is_bridge_tool", "dispatch_tool_search",
     "dispatch_tool_describe", "resolve_underlying_call", "scoped_deferrable_names",
+    "defer_post_build_tools",
     "validate_deferred_call_args", "normalize_tool_call_entries",
     "CONNECTOR_BATCH_SENTINEL", "is_connector_name"]
 

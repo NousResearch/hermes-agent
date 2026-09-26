@@ -62,7 +62,8 @@ def _drop_side_agent_tools(agent, new_defs: list, new_names: set) -> tuple:
 
 def _publish_tool_snapshot(
     agent, new_defs: list, new_names: set, *, snapshot_generation: int,
-    staged_engine_names: set, content_aware: bool, prefix_registered: Optional[set]) -> Optional[set]:
+    staged_engine_names: set, content_aware: bool, prefix_registered: Optional[set],
+    deferred_defs: Optional[list] = None) -> Optional[set]:
     """Single atomic read-diff-publish under ``_agent_tools_lock`` so ``added`` matches what
     was published and a stale (older-generation) rebuild can't overwrite a newer one. Returns
     the added names, or None when nothing was published (unchanged, or a newer snapshot won)."""
@@ -72,6 +73,13 @@ def _publish_tool_snapshot(
         published_gen = published_gen if isinstance(published_gen, int) else -1
         if snapshot_generation < published_gen:
             return None  # a newer snapshot already won
+        agent._deferred_post_build_tools = list(deferred_defs or [])
+        # Routing names are not request bytes: publish them with the deferred catalog, before the
+        # unchanged-names return, or a deferred engine tool admitted by the catalog is unroutable.
+        engine_names = getattr(agent, "_context_engine_tool_names", None)
+        if isinstance(engine_names, set):
+            engine_names.clear()
+            engine_names.update(staged_engine_names)
         current_defs = _agent_tool_defs(agent)
         current = {_def_name(t) for t in current_defs}
         if prefix_registered is not None:
@@ -85,11 +93,6 @@ def _publish_tool_snapshot(
             return None
         agent.tools = new_defs
         agent.valid_tool_names = new_names
-        # Publish context-engine routing names atomically with the snapshot.
-        engine_names = getattr(agent, "_context_engine_tool_names", None)
-        if isinstance(engine_names, set):
-            engine_names.clear()
-            engine_names.update(staged_engine_names)
         return new_names - current
 
 
@@ -121,6 +124,9 @@ def refresh_agent_mcp_tools(
     # Post-build families re-appended on LOCALS only; live attributes untouched until publish.
     staged_engine_names = _reinject_post_build_tools(agent, new_defs, new_names)
     _reinject_authorized_dynamic_tools(agent, new_defs, new_names)
+    from tools.tool_search import defer_post_build_tools
+    new_defs, deferred_defs = defer_post_build_tools(new_defs, enabled_toolsets=enabled, disabled_toolsets=disabled)
+    new_names = {_def_name(t) for t in new_defs}
     # Registry membership is read OUTSIDE ``_agent_tools_lock``: taking ``registry._lock``
     # under the tools lock would be the first nesting of the two.
     prefix_registered: Optional[set] = None
@@ -131,7 +137,8 @@ def refresh_agent_mcp_tools(
             pass  # fail open to the plain rebuild
     added = _publish_tool_snapshot(
         agent, new_defs, new_names, snapshot_generation=snapshot_generation,
-        staged_engine_names=staged_engine_names, content_aware=content_aware, prefix_registered=prefix_registered)
+        staged_engine_names=staged_engine_names, content_aware=content_aware, prefix_registered=prefix_registered,
+        deferred_defs=deferred_defs)
     if added is None:
         return set()
     persist_agent_tool_names(agent)  # re-pin so a rebuild after agent-cache eviction restores this order

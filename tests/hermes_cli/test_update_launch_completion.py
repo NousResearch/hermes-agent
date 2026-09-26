@@ -331,3 +331,21 @@ def test_relaunch_without_committed_generation_keeps_the_prefix_root_only(tmp_pa
         f"sys.argv = ['-c', 'pass']; exec('pass')",
     ]
 
+
+def test_relaunch_with_unreadable_dependency_facts_keeps_the_prefix_root_only(tmp_path):
+    """Corrupt dependency facts must not become a new launch blocker: the relaunch
+    keeps the pre-fix prefix shape and leaves the runtime complaint to the child."""
+    root = tmp_path / "source"
+    root.mkdir()
+    fact = runtime_facts_path(root)
+    fact.parent.mkdir(parents=True, exist_ok=True)
+    fact.write_text("{not json")
+    command = venv_sync.relaunch_command(
+        Path(sys.executable), root, ["-c", "pass"], [sys.executable, "-c", "pass"], None,
+    )
+    assert command == [
+        str(sys.executable), "-I", "-c",
+        f"import sys, runpy; sys.path.insert(0, {str(root)!r}); "
+        f"sys.argv = ['-c', 'pass']; exec('pass')",
+    ]
+

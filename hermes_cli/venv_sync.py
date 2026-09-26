@@ -380,7 +380,14 @@ def relaunch_command(
     from pm.environments import committed_venv, site_packages
 
     prefix = f"import sys, runpy; sys.path.insert(0, {str(root)!r}); sys.argv = {argv!r}; "
-    environment = committed_venv(root)
+    try:
+        environment = committed_venv(root)
+    except Exception:
+        # Corrupt or inconsistent dependency facts (unreadable facts.json, a
+        # deleted generation) must not become a launch blocker here: keep the
+        # pre-fix root-only prefix and let the child's own bootstrap report the
+        # runtime it cannot resolve.
+        environment = None
     if environment is not None:
         # Append, not insert: the checkout stays ahead of its installed
         # dependencies, as activation_environment's PYTHONPATH pairing keeps it.

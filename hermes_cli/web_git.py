@@ -638,6 +638,12 @@ def worktree_add(cwd: str, options: dict) -> dict:
 
 
 def worktree_remove(cwd: str, worktree_path: str, force: bool) -> dict:
+    # Release the tree's language servers while the path still exists — this runs in-process in
+    # the dashboard/gateway server, which outlives the worktree (same reasoning as cli.py's
+    # _cleanup_worktree and kanban_db_workspace.py's cleanup paths).
+    from hermes_cli.worktree_ops import release_lsp_clients
+
+    release_lsp_clients(worktree_path)
     _git_ok(_main_root(cwd), ["worktree", "remove", *(["--force"] if force else []), worktree_path])
     return {"removed": worktree_path}
 

@@ -296,6 +296,12 @@ def reclaim_worktrees(
                 continue
             actions.append(f"archived {len(record.untracked)} untracked file(s) → {archive}")
 
+        # Release the tree's language servers while the path still exists — /worktree prune runs
+        # in-process in the same long-lived TUI/CLI session (same reasoning as cli.py's
+        # _cleanup_worktree). Fail-soft, like the lock/remove steps below.
+        from hermes_cli.worktree_ops import release_lsp_clients
+        release_lsp_clients(record.path)
+
         # Dead-pid locks must be unlocked or `remove --force` refuses.
         with contextlib.suppress(Exception):
             _git(["worktree", "unlock", record.path], cwd=repo_root, timeout=10)

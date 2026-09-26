@@ -26,7 +26,7 @@ def _pc():
 
 
 def _install_plugin_python_deps(
-    manifest: dict, target: Path, console
+    manifest: dict, target: Path, console, *, assume_yes: bool = False
 ) -> tuple[bool, Optional[str]]:
     """Consent gate for plugin python deps (settled 2026-09-02; C13 rework).
 
@@ -39,6 +39,8 @@ def _install_plugin_python_deps(
     reason): consented=True when the user accepted (or no prompt was
     needed); a decline/skip returns False and NOTHING is installed.
     Never raises — the caller keeps the plugin installed-but-disabled.
+    *assume_yes* is ``--yes-deps``: the user's own non-interactive answer
+    to the Python question, so a headless install is not refused (#122134).
     """
     from pm.plugin_declarations import read_python_declaration
 
@@ -78,13 +80,17 @@ def _install_plugin_python_deps(
 
     if not has_python:
         return True, None
-    return _consent_python_deps(manifest.get("name", "this plugin"), deps, console)
+    return _consent_python_deps(manifest.get("name", "this plugin"), deps, console, assume_yes=assume_yes)
 
 
-def _consent_python_deps(plugin_name: str, deps: tuple[str, ...], console) -> tuple[bool, Optional[str]]:
+def _consent_python_deps(
+    plugin_name: str, deps: tuple[str, ...], console, *, assume_yes: bool = False
+) -> tuple[bool, Optional[str]]:
     """The y/N gate for Python deps entering the shared environment — install,
     reinstall AND an update that declares new ones all pass through here.
-    Returns (consented, reason); never raises."""
+    Returns (consented, reason); never raises. *assume_yes* (``--yes-deps``)
+    answers the question on the user's behalf ONLY because the user passed the
+    flag; the non-interactive default below stays a refusal."""
     console.print(
         f"\n[bold]{plugin_name}[/bold] declares Python dependencies:"
     )
@@ -93,6 +99,13 @@ def _consent_python_deps(plugin_name: str, deps: tuple[str, ...], console) -> tu
             console.print(f"  - {dep}")
     else:
         console.print("  - (declared in its pyproject.toml)")
+
+    # An explicit --yes-deps is the user's own answer, TTY or not.
+    if assume_yes:
+        console.print(
+            "[dim]--yes-deps: preparing the declared dependencies without prompting.[/dim]\n"
+        )
+        return True, None
 
     # A decline or non-interactive invocation leaves the new plugin disabled.
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
@@ -277,6 +290,7 @@ def _install_plugin_core(
     scan_decision_cb=None,
     reviewed_pin: Optional[str] = None,
     python_deps: bool = True,
+    assume_deps_consent: bool = False,
     catalog: Optional[dict] = None,
     allow_removed: bool = False,
     before_swap=None,
@@ -286,7 +300,9 @@ def _install_plugin_core(
     *reviewed_pin* is the curated-catalog sha for this install; the scan trusts the tree
     only when the checked-out revision is exactly that sha (an annotated-tag pin is peeled to
     its commit first — HEAD can only ever be the commit). *python_deps* False refuses active
-    replacements; it never bypasses PM dependency admission. *catalog*
+    replacements; it never bypasses PM dependency admission. *assume_deps_consent* is the
+    caller's ``--yes-deps`` answer carried into the publication consent gate, so a headless
+    install of an active replacement is not refused non-interactively (#122134). *catalog*
     (``{"name", "repo", "tier", "pin"}``) is recorded on the install-metadata record with the
     checked-out sha — provenance lives OUTSIDE the plugin tree, so a repo cannot forge it;
     its ``pin`` is kept only when the checkout satisfies it (a ``--ref`` install is off-pin).
@@ -381,7 +397,8 @@ def _install_plugin_core(
         from hermes_cli.plugins_transaction import publish_plugin
 
         try:
-            publish_plugin(tmp_target, target, old_metadata, new_metadata, require_consent=True)
+            publish_plugin(tmp_target, target, old_metadata, new_metadata, require_consent=True,
+                           assume_consent=assume_deps_consent)
         except Exception as exc:
             raise _pc().PluginOperationError(f"Plugin '{plugin_name}' was not published: {exc}") from exc
 
@@ -399,6 +416,7 @@ def cmd_install(
     ref: Optional[str] = None,
     allow_removed: bool = False,
     no_deps: bool = False,
+    yes_deps: bool = False,
 ) -> None:
     """Install a plugin from the curated catalog (bare name), a Git URL, or owner/repo shorthand.
 
@@ -406,6 +424,11 @@ def cmd_install(
     metadata. An explicit different ``--ref`` is a custom pin. URLs/shorthand are custom sources. Every
     install is checked against the catalog kill list unless *allow_removed*.
     *enable* None prompts "Enable now? [y/N]"; True/False skip the prompt.
+    *yes_deps* is ``--yes-deps``: the explicit answer to the Python-deps consent
+    question, so non-interactive installs (SSH automation, CI, Docker entrypoints)
+    finish in one run instead of being refused and left for an ``enable`` that
+    cannot recover a refused publication (#122134). The default without it stays
+    fail-closed in non-interactive sessions.
     """
     from hermes_cli import plugins_cmd_catalog as catalog
     console = _pc()._console()
@@ -447,11 +470,11 @@ def cmd_install(
         if entry is not None:
             target, installed_manifest, installed_name = catalog.install_catalog_entry(
                 entry, force=force, ref=ref, allow_removed=allow_removed, scan_decision_cb=_interactive_scan_decision,
-                python_deps=not no_deps)
+                python_deps=not no_deps, assume_deps_consent=yes_deps)
         else:
             target, installed_manifest, installed_name = _pc()._install_plugin_core(
                 identifier, force=force, ref=ref, scan_decision_cb=_interactive_scan_decision,
-                python_deps=not no_deps, allow_removed=allow_removed)
+                python_deps=not no_deps, allow_removed=allow_removed, assume_deps_consent=yes_deps)
     except _pc().PluginOperationError as e:
         _pc()._fail(console, f"[red]{'Blocked' if isinstance(e, _pc().PluginScanBlocked) else 'Error'}:[/red] {e}")
     if not _pc()._looks_like_plugin_dir(target):
@@ -472,7 +495,8 @@ def cmd_install(
         should_enable = _pc()._is_tty() and _pc()._ask_yes(f"  Enable '{installed_name}' now? [y/N]: ")
     deps_ok, deps_reason = (True, None)
     if should_enable and not already_active:
-        deps_ok, deps_reason = _install_plugin_python_deps(installed_manifest, target, console)
+        deps_ok, deps_reason = _install_plugin_python_deps(installed_manifest, target, console,
+                                                           assume_yes=yes_deps)
 
     _pc()._display_after_install(target, identifier)
 

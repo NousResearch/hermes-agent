@@ -622,6 +622,7 @@ def _stage_turn_user_message(
     persist_user_timestamp: Optional[float], persist_user_platform_id: Optional[str],
     persist_user_display_kind: Optional[str],
     persist_user_display_metadata: Optional[Dict[str, Any]],
+    *, reuse_current_user_message: bool = False,
 ) -> Tuple[Dict[str, Any], Any]:
     """Build this turn's user dict, reusing CLI-staged input only when its clean text
     matches this turn (a stale handoff must not replace later input; voice turns
@@ -648,9 +649,9 @@ def _stage_turn_user_message(
 
     # Synthesized turns stamp their transcript type so the crash persist writes a typed
     # row; the model still receives role/content unchanged (api_messages strips both).
-    if persist_user_display_kind:
+    if persist_user_display_kind and not reuse_current_user_message:
         user_msg["display_kind"] = persist_user_display_kind
-    if persist_user_display_metadata:
+    if persist_user_display_metadata and not reuse_current_user_message:
         user_msg["display_metadata"] = persist_user_display_metadata
     # The platform message id survives the turn-start flush; restart drain-window
     # recovery dedups via ``has_platform_message_id`` against this row.
@@ -985,7 +986,7 @@ def build_turn_context(
     persist_user_display_metadata: Optional[Dict[str, Any]]=None, turn_author: Optional[Dict[str, Any]]=None,
     restore_or_build_system_prompt,
     install_safe_stdio, sanitize_surrogates, summarize_user_message_for_log, set_session_context,
-    set_current_write_origin, ra, moa_active: bool=False,
+    set_current_write_origin, ra, moa_active: bool=False, reuse_current_user_message: bool=False,
 ) -> TurnContext:
     """Run the once-per-turn setup and return the loop's input context.
 
@@ -1056,14 +1057,23 @@ def build_turn_context(
     user_msg, pending_cli_message = _stage_turn_user_message(
         agent, user_message, persist_user_message, persist_user_timestamp,
         persist_user_platform_id, persist_user_display_kind, persist_user_display_metadata,
+        reuse_current_user_message=reuse_current_user_message,
     )
     _hydrate_from_history(agent, conversation_history)
     # Every estimator this turn prices images at the cost learned from this model's real usage.
     bind_image_token_cost(agent)
     # Append the user message now that close persistence is safe.
-    append_message(messages, user_msg)
-    current_turn_user_idx = len(messages) - 1
-    agent._persist_user_message_idx = current_turn_user_idx
+    # reuse_current_user_message: the caller persisted this turn's user row already and passed
+    # it as the tail of conversation_history, so it is neither re-appended nor re-stamped.
+    if reuse_current_user_message:
+        current_turn_user_idx = next(
+            (i for i in range(len(messages) - 1, -1, -1) if messages[i].get("role") == "user"), -1)
+        if current_turn_user_idx < 0:
+            raise ValueError("reuse_current_user_message requires a user row in conversation_history")
+    else:
+        append_message(messages, user_msg)
+        current_turn_user_idx = len(messages) - 1
+        agent._persist_user_message_idx = current_turn_user_idx
 
     agent._user_turn_count += 1
     # Copilot x-initiator: the first API call of this user turn is user-initiated;

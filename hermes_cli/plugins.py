@@ -145,6 +145,12 @@ VALID_HOOKS: Set[str] = {
     # surface: "cli"|"gateway"|"smart"; post_approval_response adds choice ("once"|"session"|
     # "always"|"deny"|"timeout"|"smart_approve"|"smart_deny") and decided_by.
     "pre_approval_request", "post_approval_response",
+    # Embedder transforms; return a replacement dict (first dict wins) or None. Callbacks get copies.
+    # transform_persisted_row: once per session-db row at flush. Kwargs: agent, message, row, msg_idx.
+    # transform_mcp_servers: once per mcp_servers load, BEFORE the suspicious-server filter; may add,
+    #   drop or rewrite servers. Kwargs: servers. transform_mcp_child_env: once per stdio child spawn,
+    #   after the server's own env, before delegated-child scrubbing. Kwargs: server_name, env.
+    "transform_persisted_row", "transform_mcp_servers", "transform_mcp_child_env",
     # on_room_member_activity: a hosted Group Chat member's live runtime events (tool.started/completed,
     # request.opened, message.delta, reasoning.delta, turn.error, ...) stamped with room_id, thread_id,
     # member_id, turn_id, task_id, execution_generation. Observer, queued per consumer off the token

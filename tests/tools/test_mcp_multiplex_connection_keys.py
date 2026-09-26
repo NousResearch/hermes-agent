@@ -126,7 +126,10 @@ def test_same_named_server_with_other_credentials_is_a_separate_connection(two_p
     monkeypatch.setattr(env_loader, "_SECRET_SOURCES", {"FIXTURE_TOKEN": "op"})
     for profile in ("a", "b"):
         (tmp_path / "profiles" / profile / ".env").write_text("FIXTURE_TOKEN=tok\n", encoding="utf-8")
-    cfg_s = {"command": sys.executable, "args": ["-c", "pass"]}
+    # The child env carries the spawning profile's HERMES_HOME, so two profiles share one stdio
+    # child only when the server pins it; pin it here so the inputs are equal by construction.
+    cfg_s = {"command": sys.executable, "args": ["-c", "pass"],
+             "env": {"HERMES_HOME": str(tmp_path / "shared-home")}}
     two_profiles("a")
     with disc._owner_secret_scope():  # the connecting task records its digest in the owner's scope
         srv_s = _server("s", cfg_s)

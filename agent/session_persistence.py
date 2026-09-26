@@ -188,7 +188,7 @@ def _db_flush_scan_start(agent, messages: List[Dict]) -> int:
     return scan_start
 
 
-def _db_flush_row(agent, msg: Dict, is_current_turn_user: bool) -> Dict[str, Any]:
+def _db_flush_row(agent, msg: Dict, is_current_turn_user: bool, msg_idx: int = 0) -> Dict[str, Any]:
     """Build the session-db row for ``msg``, applying the persist override to THIS row only."""
     role = msg.get("role", "unknown")
     content = msg.get("content")
@@ -221,6 +221,10 @@ def _db_flush_row(agent, msg: Dict, is_current_turn_user: bool) -> Dict[str, Any
     }
     if isinstance(msg.get("_row_id"), int):
         row["_row_id"] = msg["_row_id"]
+    from hermes_cli.lifecycle import has_hook, invoke_hook
+    if has_hook("transform_persisted_row"):
+        results = invoke_hook("transform_persisted_row", agent=agent, message=msg, row=dict(row), msg_idx=msg_idx)
+        row = next((r for r in results if isinstance(r, dict)), row)
     return row
 
 
@@ -254,7 +258,7 @@ def _db_flush_collect(agent, messages: List[Dict], conversation_history: Optiona
             # context intact while transcript pollers omit unsolicited presentation.
             msg["display_kind"] = "hidden"
             msg["display_metadata"] = {**(msg.get("display_metadata") or {}), "notification_category": "diagnostic"}
-        batch_rows.append(_db_flush_row(agent, msg, ov_idx == msg_idx or msg is pending_cli_message))
+        batch_rows.append(_db_flush_row(agent, msg, ov_idx == msg_idx or msg is pending_cli_message, msg_idx))
         batch_msgs.append(msg)
     return batch_rows, batch_msgs
 

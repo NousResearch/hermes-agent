@@ -108,7 +108,18 @@ _CONTEXT_VAR_RESOLVERS = {
     "workspaceFolderBasename": _workspace_basename, "pathSeparator": lambda: os.sep, "/": lambda: os.sep}
 
 
-def _build_safe_env(user_env: Optional[dict]) -> dict:
+def _transform_hook(hook_name: str, field: str, value: dict, **kwargs: Any) -> dict:
+    """Fail-open plugin transform: the first dict a callback returns replaces ``value``."""
+    try:
+        from hermes_cli.lifecycle import invoke_hook
+        results = invoke_hook(hook_name, **{field: dict(value)}, **kwargs)
+    except Exception:
+        logger.debug("%s hook failed; keeping the untransformed value", hook_name, exc_info=True)
+        return value
+    return next((r for r in results if isinstance(r, dict)), value)
+
+
+def _build_safe_env(user_env: Optional[dict], *, server_name: Optional[str] = None) -> dict:
     """Filtered env for stdio subprocesses so API keys/tokens don't leak: the safe baseline
     keys, ``XDG_*``, vars injected by an external secret source (users configured that backend
     precisely so subprocesses can consume them), plus the server config's own ``env``."""
@@ -127,8 +138,16 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
     for key in ("HERMES_KANBAN_DB", "HERMES_KANBAN_BOARD"):
         if key in os.environ:
             env[key] = os.environ[key]
+    # HOME passes through but HERMES_HOME did not, so a child under a redirected HOME (or of a
+    # context-local home override) resolved a different Hermes home than the process that spawned it.
+    from hermes_constants import get_hermes_home
+    try:
+        env["HERMES_HOME"] = str(get_hermes_home())
+    except RuntimeError:  # no resolvable home directory: the child resolves its own, as before
+        pass
     if user_env:
         env.update(user_env)
+    env = _transform_hook("transform_mcp_child_env", "env", env, server_name=server_name)
     from agent.delegation_context import delegated_child_subprocess_env
     return delegated_child_subprocess_env(env)
 
@@ -389,6 +408,7 @@ def _load_mcp_config() -> Dict[str, dict]:
         if _env_enabled("HERMES_SAFE_MODE"):
             return {}
         servers = load_config().get("mcp_servers")
+        servers = _transform_hook("transform_mcp_servers", "servers", servers if isinstance(servers, dict) else {})
         try:  # ensure .env vars are available for interpolation
             from hermes_cli.env_loader import load_hermes_dotenv
             load_hermes_dotenv()

@@ -121,9 +121,9 @@ def _http_endpoint(server_name: str, config: dict) -> tuple[str, dict]:
     return url, headers
 
 
-def _stdio_launch(config: dict) -> tuple:
+def _stdio_launch(server_name: str, config: dict) -> tuple:
     """(command, env, cwd) a stdio child is spawned with, resolved in the current profile's scope."""
-    command, env = _config._resolve_stdio_command(config["command"], _config._build_safe_env(config.get("env")))
+    command, env = _config._resolve_stdio_command(config["command"], _config._build_safe_env(config.get("env"), server_name=server_name))
     # A stdio child inherits this process's cwd when none is configured. Hosted sessions (ACP,
     # gateway) pin a logical cwd via agent.runtime_cwd; without it the child resolves relative
     # paths against the daemon's launch dir, not the session workspace. Explicit config always
@@ -145,7 +145,7 @@ def _connect_inputs(server_name: str, config: dict) -> tuple[list, set]:
         url, headers = _http_endpoint(server_name, config)
         configured_header_names = {key.lower() for key in headers}
         return [url, _apply_identity_header(server_name, config, headers)], configured_header_names
-    return list(_stdio_launch(config)), set()
+    return list(_stdio_launch(server_name, config)), set()
 
 
 class MCPServerTransportMixin:

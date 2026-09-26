@@ -931,11 +931,12 @@ def _is_exact_package_pin(package: str) -> bool:
 
 
 def _launcher_package_args(command: str, args: list[str]) -> list[str]:
-    if command != "npx":
+    if command not in {"npx", "bunx", "pnpx"}:
         return [arg for arg in args if not arg.startswith("-")][:1]
 
-    # npx accepts repeated package options before the command. Once the
-    # command starts, its arguments must not be interpreted as npx options.
+    # npm-family launchers accept explicit package selectors. Check every
+    # selector conservatively, including repeated bunx selectors, without
+    # interpreting the launched command's own arguments as launcher options.
     packages = []
     remaining = iter(args)
     for arg in remaining:
@@ -979,39 +980,65 @@ class TestShippedCatalog:
     def test_exact_package_pins_reject_floating_or_untrusted_sources(self, package):
         assert not _is_exact_package_pin(package)
 
+    @pytest.mark.parametrize("command", ["npx", "bunx", "pnpx"])
     @pytest.mark.parametrize("extra", [
         ["--package", "floating@latest"],
         ["--package=floating@latest"],
         ["-p", "floating@latest"],
         ["-pfloating@latest"],
     ])
-    def test_version_contract_rejects_floating_additional_npx_packages(
-        self, tmp_path, monkeypatch, extra,
+    def test_version_contract_rejects_floating_additional_npm_packages(
+        self, tmp_path, monkeypatch, command, extra,
     ):
         archive = "https://codeload.github.com/example/demo/tar.gz/" + "a" * 40
         _write_manifest(tmp_path, "demo", _basic_manifest(transport={
-            "type": "stdio", "command": "npx",
-            "args": ["--yes", "--package", archive, *extra, "demo"],
+            "type": "stdio", "command": command,
+            "args": ["--package", archive, *extra, "demo"],
         }))
         monkeypatch.setattr("hermes_cli.mcp_catalog._catalog_root", lambda: tmp_path)
         with pytest.raises(AssertionError, match="floating@latest"):
             self.test_all_shipped_manifests_are_version_locked(monkeypatch)
 
+    @pytest.mark.parametrize("command", ["npx", "bunx", "pnpx"])
     @pytest.mark.parametrize("args", [
-        ["--yes", "--package", "demo@1.2.3", "--package=other@2.3.4", "demo"],
+        ["--package", "demo@1.2.3", "--package=other@2.3.4", "demo"],
         ["-p", "demo@1.2.3", "-pother@2.3.4", "--", "demo"],
         ["--package=demo@1.2.3", "demo", "--package", "command-argument@latest"],
         ["--", "demo@1.2.3", "--package", "command-argument@latest"],
         ["demo@1.2.3", "--package=command-argument@latest"],
     ])
     def test_version_contract_accepts_pinned_packages_and_ignores_command_args(
-        self, tmp_path, monkeypatch, args,
+        self, tmp_path, monkeypatch, command, args,
     ):
         _write_manifest(tmp_path, "demo", _basic_manifest(transport={
-            "type": "stdio", "command": "npx", "args": args,
+            "type": "stdio", "command": command, "args": args,
         }))
         monkeypatch.setattr("hermes_cli.mcp_catalog._catalog_root", lambda: tmp_path)
         self.test_all_shipped_manifests_are_version_locked(monkeypatch)
+
+    @pytest.mark.parametrize("command,args,valid", [
+        ("uvx", ["--from", "ruff==0.6.0", "ruff", "check"], True),
+        ("uvx", ["--from", "ruff==0.6.0", "different-binary"], True),
+        ("uvx", ["--from", "ruff", "ruff"], False),
+        ("npx", ["--package", "demo@1.2.3", "-c", "demo --help"], True),
+        ("npx", ["-c", "npx unpinned@latest"], False),
+        ("npx", ["--package", "demo@latest", "-c", "demo"], False),
+    ])
+    def test_version_contract_package_selectors_and_call_boundary(
+        self, tmp_path, monkeypatch, command, args, valid,
+    ):
+        # --from identifies the distribution, not its executable name.
+        # Shell text is outside this pin check; call-only npx has no pinned
+        # distribution and must fail. This is not a shell safety validator.
+        _write_manifest(tmp_path, "demo", _basic_manifest(transport={
+            "type": "stdio", "command": command, "args": args,
+        }))
+        monkeypatch.setattr("hermes_cli.mcp_catalog._catalog_root", lambda: tmp_path)
+        if valid:
+            self.test_all_shipped_manifests_are_version_locked(monkeypatch)
+        else:
+            with pytest.raises(AssertionError, match="unpinned catalog entries"):
+                self.test_all_shipped_manifests_are_version_locked(monkeypatch)
 
     def test_manifest_connector_slugs_are_valid_and_unique(self, monkeypatch):
         from hermes_cli.mcp_catalog import catalog_diagnostics, list_catalog

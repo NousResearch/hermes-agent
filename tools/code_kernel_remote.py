@@ -321,7 +321,13 @@ def _run_remote_cell(kernel: RemoteKernel, code: str, timeout: int) -> Tuple[str
                 status = payload.get("status", "error")
             except ValueError:
                 payload, status = {}, "protocol-error"
-            kernel.sh(f"rm -f {q_cells}/{q_res}", timeout=10)
+            try:
+                kernel.sh(f"rm -f {q_cells}/{q_res}", timeout=10)
+            except Exception:
+                # Best-effort: the cell already ran, so raising here would send
+                # the caller to its per-call fallback and run the code twice.
+                # A leftover result file is harmless (seq is monotonic).
+                logger.debug("remote kernel: cell result cleanup failed", exc_info=True)
             return status, payload
         time.sleep(_CELL_POLL_INTERVAL)
     return "timeout", {}
@@ -381,7 +387,8 @@ def _run_attached_cell(kernel: RemoteKernel, key: Tuple, code: str, *, env, task
     try:
         cell_status, cell_payload = _run_remote_cell(kernel, code, timeout)
     except Exception:
-        # The request never reached the runner (the atomic ship failed), so the
+        # The atomic ship is the only remote call here that can raise (the poll
+        # and result cleanup are best-effort), so the request never reached the runner and the
         # caller's per-call fallback runs the code exactly once. Kill the
         # kernel as the timeout path does: leaving it registered would let the
         # next call reuse a kernel whose state silently missed this cell.

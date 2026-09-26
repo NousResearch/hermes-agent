@@ -764,19 +764,20 @@ def _apply_request_middleware(
 
 def _pre_dispatch_guards(function_name: str, function_args: Dict[str, Any], skip_pre_tool_call_hook: bool,
                          ids: _CallIds, middleware_trace: List[Dict[str, Any]],
-                         ) -> Tuple[Dict[str, Any], Optional[Tuple[Any, str, Optional[str]]]]:
+                         ) -> Tuple[Dict[str, Any], Optional[Tuple[Any, str, Optional[str]]], Any]:
     """Plugin pre_tool_call hook, then ACP edit approval.
 
-    ``(args, None)`` to proceed (args possibly plugin-modified), or
-    ``(args, (result, error_type, error_message))`` when blocked.
+    ``(args, None, pending_approval)`` to proceed (args possibly plugin-modified), or
+    ``(args, (result, error_type, error_message), None)`` when blocked.
     """
     # pre_tool_call fires exactly once per execution: one invoke_hook pass yields
     # both the block message and modified args. skip=True: caller already fired it.
+    pending_approval = None
     if not skip_pre_tool_call_hook:
         block_message: Optional[str] = None
         try:
-            from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
-            block_message, modified_args = _dispatch_pre_tool_call_hooks(
+            from hermes_cli.plugins import _prepare_pre_tool_call_hooks_for_dispatch
+            block_message, modified_args, pending_approval = _prepare_pre_tool_call_hooks_for_dispatch(
                 function_name, function_args, middleware_trace=list(middleware_trace), **ids.hook_kwargs(),
             )
             if modified_args is not None:
@@ -784,7 +785,7 @@ def _pre_dispatch_guards(function_name: str, function_args: Dict[str, Any], skip
         except Exception as _hook_err:
             logger.debug("pre_tool_call hook error: %s", _hook_err)
         if block_message is not None:
-            return function_args, (tool_error(block_message), "plugin_block", block_message)
+            return function_args, (tool_error(block_message), "plugin_block", block_message), None
 
     # ACP/Zed edit approval before any file mutation. The requester is bound
     # via ContextVar only for ACP sessions, so CLI/gateway paths are unaffected.
@@ -792,12 +793,18 @@ def _pre_dispatch_guards(function_name: str, function_args: Dict[str, Any], skip
         from acp_adapter.edit_approval import maybe_require_edit_approval
         edit_block_message = maybe_require_edit_approval(function_name, function_args)
         if edit_block_message is not None:
-            return function_args, (edit_block_message, "edit_approval_denied", None)
+            return function_args, (edit_block_message, "edit_approval_denied", None), None
     except Exception as _edit_approval_err:
         logger.debug("ACP edit approval guard error: %s", _edit_approval_err)
         if function_name in {"write_file", "patch"}:
-            return function_args, (tool_error("Edit approval denied: approval guard failed"), "edit_approval_error", None)
-    return function_args, None
+            return function_args, (tool_error("Edit approval denied: approval guard failed"), "edit_approval_error", None), None
+    return function_args, None, pending_approval
+
+
+class _PluginApprovalBlocked(Exception):
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
 
 
 @contextmanager
@@ -820,7 +827,8 @@ def _approval_observability(ids: _CallIds):
 
 
 def _execute_tool(function_name: str, function_args: Dict[str, Any], original_args: Dict[str, Any], ids: _CallIds,
-                  *, user_task: Optional[str], enabled_tools: Optional[List[str]], skip_tool_execution_middleware: bool) -> Any:
+                  *, user_task: Optional[str], enabled_tools: Optional[List[str]], skip_tool_execution_middleware: bool,
+                  pending_approval: Any = None) -> Any:
     """Run the registry handler (through tool-execution middleware unless skipped)
     with the approval observability context bound for the duration."""
     dispatch_kwargs: Dict[str, Any] = {"task_id": ids.task_id, "session_id": ids.session_id}
@@ -832,6 +840,14 @@ def _execute_tool(function_name: str, function_args: Dict[str, Any], original_ar
         dispatch_kwargs["user_task"] = user_task
 
     def _dispatch(next_args: Dict[str, Any]) -> Any:
+        if pending_approval is not None:
+            from hermes_cli.plugins import _resolve_pending_pre_tool_approval
+            block_message = _resolve_pending_pre_tool_approval(
+                pending_approval, function_name, next_args if isinstance(next_args, dict) else function_args,
+                **ids.hook_kwargs(),
+            )
+            if block_message is not None:
+                raise _PluginApprovalBlocked(block_message)
         from tools.connectors import dispatch_connector_call, is_connector_name
         if is_connector_name(function_name):
             return dispatch_connector_call(function_name, next_args, ids.tool_call_id)
@@ -937,7 +953,7 @@ def handle_function_call(
         if function_name in _AGENT_LOOP_TOOLS:
             return tool_error(f"{function_name} must be handled by the agent loop")
 
-        function_args, blocked = _pre_dispatch_guards(function_name, function_args, skip_pre_tool_call_hook, ids, trace)
+        function_args, blocked, pending_approval = _pre_dispatch_guards(function_name, function_args, skip_pre_tool_call_hook, ids, trace)
         if blocked is not None:
             result, error_type, error_message = blocked
             return _emit(result, status="blocked", error_type=error_type, error_message=error_message)
@@ -953,10 +969,21 @@ def handle_function_call(
         # duration_ms (monotonic) is exposed to post_tool_call / transform_tool_result.
         start = time.monotonic()
         result = _execute_tool(function_name, function_args, original_args, ids, user_task=user_task,
-                               enabled_tools=enabled_tools, skip_tool_execution_middleware=skip_tool_execution_middleware)
+                               enabled_tools=enabled_tools, skip_tool_execution_middleware=skip_tool_execution_middleware,
+                               pending_approval=pending_approval)
         duration_ms = _elapsed_ms(start)
         _emit(result, duration_ms=duration_ms)
         return _apply_transform_tool_result_hook(function_name, function_args, result, duration_ms, ids)
+
+    except _PluginApprovalBlocked as approval_block:
+        result = tool_error(approval_block.message)
+        return _emit(
+            result,
+            duration_ms=_elapsed_ms(start),
+            status="blocked",
+            error_type="plugin_block",
+            error_message=approval_block.message,
+        )
 
     except Exception as e:
         error_msg = f"Error executing {function_name}: {str(e)}"

@@ -62,7 +62,7 @@ class _RecordingHonchoSession:
         return _FakeContext(self.content)
 
 
-def _manager_with_summary(content: str):
+def _manager_with_summary(monkeypatch, content: str):
     cfg = SimpleNamespace(
         write_frequency="turn",
         dialectic_reasoning_level="low",
@@ -76,7 +76,9 @@ def _manager_with_summary(content: str):
         message_max_chars=25000,
         dialectic_max_input_chars=10000,
     )
-    mgr = HonchoSessionManager(honcho=SimpleNamespace(), config=cfg)
+    sdk_client = SimpleNamespace()
+    monkeypatch.setattr("plugins.memory.honcho.session.get_honcho_client", lambda config: sdk_client)
+    mgr = HonchoSessionManager(honcho=sdk_client, config=cfg)
     session = HonchoSession(
         key="test-session",
         user_peer_id="chris",
@@ -89,8 +91,8 @@ def _manager_with_summary(content: str):
     return mgr
 
 
-def test_prefetch_omits_planning_only_summary() -> None:
-    mgr = _manager_with_summary(PLANNING_ONLY)
+def test_prefetch_omits_planning_only_summary(monkeypatch) -> None:
+    mgr = _manager_with_summary(monkeypatch, PLANNING_ONLY)
     mgr._fetch_peer_context = lambda *a, **k: {
         "representation": "representation",
         "card": ["fact"],
@@ -101,8 +103,8 @@ def test_prefetch_omits_planning_only_summary() -> None:
     assert result.get("representation") == "representation"
 
 
-def test_prefetch_keeps_body_after_think_close() -> None:
-    mgr = _manager_with_summary(CONTAMINATED)
+def test_prefetch_keeps_body_after_think_close(monkeypatch) -> None:
+    mgr = _manager_with_summary(monkeypatch, CONTAMINATED)
     mgr._fetch_peer_context = lambda *a, **k: {
         "representation": "representation",
         "card": ["fact"],
@@ -112,8 +114,8 @@ def test_prefetch_keeps_body_after_think_close() -> None:
     assert result["summary"] == "Alice prefers dark roast coffee."
 
 
-def test_session_context_omits_planning_only_summary() -> None:
-    mgr = _manager_with_summary(PLANNING_ONLY)
+def test_session_context_omits_planning_only_summary(monkeypatch) -> None:
+    mgr = _manager_with_summary(monkeypatch, PLANNING_ONLY)
     result = mgr.get_session_context("test-session")
     assert "summary" not in result
     assert result.get("representation") == "representation"

@@ -25,7 +25,7 @@ class _RecordingHonchoSession:
         return _FakeContext()
 
 
-def _manager_with_cached_session(*, ai_observe_others=True):
+def _manager_with_cached_session(monkeypatch, *, ai_observe_others=True):
     cfg = SimpleNamespace(
         write_frequency="turn",
         dialectic_reasoning_level="low",
@@ -39,7 +39,9 @@ def _manager_with_cached_session(*, ai_observe_others=True):
         message_max_chars=25000,
         dialectic_max_input_chars=10000,
     )
-    mgr = HonchoSessionManager(honcho=SimpleNamespace(), config=cfg)
+    sdk_client = SimpleNamespace()
+    monkeypatch.setattr("plugins.memory.honcho.session.get_honcho_client", lambda config: sdk_client)
+    mgr = HonchoSessionManager(honcho=sdk_client, config=cfg)
     session = HonchoSession(
         key="test-session",
         user_peer_id="chris",
@@ -52,8 +54,8 @@ def _manager_with_cached_session(*, ai_observe_others=True):
     return mgr, fake_honcho_session
 
 
-def test_session_context_user_alias_uses_assistant_observer_when_ai_can_observe_others():
-    mgr, fake = _manager_with_cached_session(ai_observe_others=True)
+def test_session_context_user_alias_uses_assistant_observer_when_ai_can_observe_others(monkeypatch):
+    mgr, fake = _manager_with_cached_session(monkeypatch, ai_observe_others=True)
 
     result = mgr.get_session_context("test-session", peer="user")
 
@@ -68,8 +70,8 @@ def test_session_context_user_alias_uses_assistant_observer_when_ai_can_observe_
     ]
 
 
-def test_session_context_explicit_user_peer_matches_user_alias():
-    mgr, fake = _manager_with_cached_session(ai_observe_others=True)
+def test_session_context_explicit_user_peer_matches_user_alias(monkeypatch):
+    mgr, fake = _manager_with_cached_session(monkeypatch, ai_observe_others=True)
 
     mgr.get_session_context("test-session", peer="chris")
 
@@ -83,8 +85,8 @@ def test_session_context_explicit_user_peer_matches_user_alias():
     ]
 
 
-def test_session_context_user_alias_uses_user_self_observer_when_ai_cannot_observe_others():
-    mgr, fake = _manager_with_cached_session(ai_observe_others=False)
+def test_session_context_user_alias_uses_user_self_observer_when_ai_cannot_observe_others(monkeypatch):
+    mgr, fake = _manager_with_cached_session(monkeypatch, ai_observe_others=False)
 
     mgr.get_session_context("test-session", peer="user")
 

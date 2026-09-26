@@ -1026,14 +1026,14 @@ class TestSetPeerCardNoneGuard:
 
 
 # ---------------------------------------------------------------------------
-# get_session_context cache-miss fallback respects peer param
+# get_session_context peer-only fallback respects peer param
 # ---------------------------------------------------------------------------
 
 
 class TestGetSessionContextFallback:
     """get_session_context fallback must honour the peer param when honcho_session is absent."""
 
-    def _make_manager_with_session(self, user_peer_id="user-peer", assistant_peer_id="ai-peer"):
+    def _make_manager_with_session(self, user_peer_id="user-peer", assistant_peer_id="ai-peer", session_id=""):
         from plugins.memory.honcho.client import HonchoClientConfig
         from plugins.memory.honcho.session import HonchoSessionManager
 
@@ -1051,17 +1051,18 @@ class TestGetSessionContextFallback:
 
         session = HonchoSession(
             key="test",
-            honcho_session_id="sid-missing-from-sessions-cache",
+            honcho_session_id=session_id,
             user_peer_id=user_peer_id,
             assistant_peer_id=assistant_peer_id,
         )
         mgr._cache["test"] = session
-        # Deliberately NOT adding to _sessions_cache to trigger fallback path
+        # No remote session ID: only peer-level context is available.
         return mgr
 
-    def test_fallback_uses_user_peer_for_user(self):
-        """On cache miss, peer='user' fetches user peer context."""
-        mgr = self._make_manager_with_session()
+    @pytest.mark.parametrize("session_id", [None, ""])
+    def test_fallback_uses_user_peer_for_user(self, session_id):
+        """Without a remote session ID, peer='user' fetches user peer context."""
+        mgr = self._make_manager_with_session(session_id=session_id)
         fetch_calls = []
 
         def _fake_fetch(peer_id, search_query=None, *, target=None):
@@ -1088,8 +1089,10 @@ class TestContextTokensForwarded:
     get_session_context called context(summary=True) without it, so a configured contextTokens
     cap was ignored and every turn got the long summary."""
 
-    def _manager(self, context_tokens=4000):
-        mgr = HonchoSessionManager(context_tokens=context_tokens)
+    def _manager(self, monkeypatch, context_tokens=4000):
+        sdk_client = MagicMock()
+        monkeypatch.setattr("plugins.memory.honcho.session.get_honcho_client", lambda config: sdk_client)
+        mgr = HonchoSessionManager(honcho=sdk_client, context_tokens=context_tokens)
         session = HonchoSession(key="cli:test", user_peer_id="robert", assistant_peer_id="hermes",
                                 honcho_session_id="sess-1")
         mgr._cache[session.key] = session
@@ -1101,14 +1104,14 @@ class TestContextTokensForwarded:
         mgr._fetch_peer_context = MagicMock(return_value={"representation": "", "card": []})
         return mgr, session, honcho_session
 
-    def test_get_prefetch_context_passes_context_tokens_to_summary_call(self):
-        mgr, session, honcho_session = self._manager()
+    def test_get_prefetch_context_passes_context_tokens_to_summary_call(self, monkeypatch):
+        mgr, session, honcho_session = self._manager(monkeypatch)
         result = mgr.get_prefetch_context(session.key)
         assert result["summary"] == "short summary"
         honcho_session.context.assert_called_once_with(summary=True, tokens=4000)
 
-    def test_get_session_context_passes_context_tokens_to_cached_session_call(self):
-        mgr, session, honcho_session = self._manager()
+    def test_get_session_context_passes_context_tokens_to_cached_session_call(self, monkeypatch):
+        mgr, session, honcho_session = self._manager(monkeypatch)
         result = mgr.get_session_context(session.key, peer="user")
         assert result["summary"] == "short summary"
         honcho_session.context.assert_called_once_with(

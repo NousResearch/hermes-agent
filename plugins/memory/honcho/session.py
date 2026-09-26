@@ -81,7 +81,7 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         self._joined_author_peers: dict[str, set[str]] = {}
         self._sessions_cache: dict[str, Any] = {}
         self._last_idle_sweep_ts: float = 0.0
-        # Bumped (under _cache_lock) whenever _force_reauth rebuilds the client, so an
+        # Bumped (under _cache_lock) whenever the client is replaced, so an
         # in-flight resolver never stores an object bound to the discarded client.
         self._client_generation = 0
 
@@ -126,14 +126,30 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
 
         See #69123, #74065.
         """
-        self._honcho = get_honcho_client(self._config)
-        return self._honcho
+        while True:
+            with self._cache_lock:
+                previous = self._honcho
+                generation = self._client_generation
+            # Refresh/build can block on network I/O. Do not hold the cache lock,
+            # and do not let a late acquisition undo a replacement published meanwhile.
+            current = get_honcho_client(self._config)
+            with self._cache_lock:
+                if self._honcho is not previous or self._client_generation != generation:
+                    continue
+                if previous is not None and current is not previous:
+                    self._client_generation += 1
+                    self._peers_cache.clear()
+                    self._sessions_cache.clear()
+                self._honcho = current
+                return current
 
     # ----- SDK object caches (generation-guarded against client rebuilds) -----
 
     def _cached_sdk_object(self, cache: dict[str, Any], key: str, fetch: Any) -> Any:
         """Get-or-fetch from ``cache``; a fetch that straddles a client rebuild is not cached."""
         while True:
+            # Cache hits also need to observe resets/rotations from other sessions.
+            self.honcho
             with self._cache_lock:
                 if key in cache:
                     cache[key] = cache.pop(key)  # dict order is the LRU order the caps evict from

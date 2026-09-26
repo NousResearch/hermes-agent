@@ -13,6 +13,7 @@ import path from 'node:path'
 import { test } from 'vitest'
 
 import {
+  buildCommandScriptProbeInvocation,
   canImportHermesCli,
   DEFAULT_PROBE_TIMEOUT_MS,
   execProbe,
@@ -28,6 +29,28 @@ import {
 // non-zero) and as a way to script verifyHermesCli's success path
 // (a tiny script we write to disk that exits 0 on --version).
 const NODE_BIN = process.execPath
+
+test('command-script probe keeps a space-containing executable path as one cmd argument', () => {
+  assert.deepEqual(
+    buildCommandScriptProbeInvocation('C:\\Users\\John Pip\\AppData\\Local\\hermes\\bin\\hermes.CMD', {
+      ComSpec: 'C:\\Windows\\System32\\cmd.exe'
+    }),
+    {
+      command: 'C:\\Windows\\System32\\cmd.exe',
+      args: [
+        '/d',
+        '/s',
+        '/c',
+        '""C:\\Users\\John Pip\\AppData\\Local\\hermes\\bin\\hermes.CMD" --version"'
+      ],
+      windowsVerbatimArguments: true
+    }
+  )
+})
+
+test('command-script probe rejects paths that cmd.exe would re-parse', () => {
+  assert.equal(buildCommandScriptProbeInvocation('C:\\Users\\John & Jane\\hermes.cmd'), null)
+})
 
 test('execProbe keeps the parent event loop available to the child', async () => {
   let unexpectedSocketError: Error | undefined

@@ -113,7 +113,9 @@ def _cmd_list(args) -> None:
     """Local items always; external managers only for the lifetime of this CLI process (a
     `hermes vault list` unlock does not carry into a chat session — unlock there when asked)."""
     from agent.vault_backends import enabled_backends
+    from hermes_cli.plugins import discover_plugins
 
+    discover_plugins()
     c = _console()
     rows, locked = [], []
     for backend in enabled_backends():
@@ -139,11 +141,13 @@ def _cmd_list(args) -> None:
 
 
 def _cmd_sources(args) -> None:
-    """Show the detected password managers; `--disable`/`--enable` flip the opt-out (`vault.<name>.enabled`)."""
+    """Show password managers and set their profile's explicit activation choice."""
     from agent.vault_backends import enabled_backends
     from agent.vault_backends.base import external_backend_classes, is_installed
     from hermes_cli.config import _ensure_dict, load_config, save_config
+    from hermes_cli.plugins import discover_plugins
 
+    discover_plugins()
     c = _console()
     classes = {cls.name: cls for cls in external_backend_classes()}
     if args.enable or args.disable:
@@ -154,7 +158,7 @@ def _cmd_sources(args) -> None:
         cfg = load_config()
         section = _ensure_dict(_ensure_dict(cfg, "vault"), name)
         if args.enable:
-            section.pop("enabled", None)  # detected managers are on by default; drop the opt-out
+            section["enabled"] = True
         else:
             section["enabled"] = False
         save_config(cfg)
@@ -163,13 +167,15 @@ def _cmd_sources(args) -> None:
     enabled = {b.name for b in enabled_backends()}
     for name, cls in classes.items():
         if name in enabled:
-            status = "[green]detected[/] · the agent asks you to unlock it when it needs a login"
+            unlock_hint = " · the agent asks you to unlock it when it needs a login" if cls.needs_unlock else ""
+            status = f"[green]detected[/]{unlock_hint}"
         elif is_installed(name):
             status = "[dim]turned off[/] (`hermes vault sources --enable {name}` to use it)".format(name=name)
         else:
             status = "[dim]not installed[/]"
         c.print(f"  {cls.display_name:<10} {status}")
-    c.print("[dim]Managers are picked up automatically when their CLI is installed and signed in.[/]")
+    c.print("[dim]Built-in managers are detected automatically. Third-party plugins also require "
+            "`hermes vault sources --enable NAME`.[/]")
 
 
 def _cmd_rm(args) -> None:
@@ -203,10 +209,10 @@ def register_cli(subparser) -> None:
     p_rm.add_argument("handle", help="Item handle (see `hermes vault list`)")
     p_rm.set_defaults(_vault_handler=_cmd_rm)
 
-    p_src = subs.add_parser("sources", help="Show detected password managers (1Password, Bitwarden); they are on automatically")
+    p_src = subs.add_parser("sources", help="Show password managers; third-party sources require explicit enablement")
     group = p_src.add_mutually_exclusive_group()
-    group.add_argument("--disable", metavar="NAME", help="Stop using a detected manager: onepassword | bitwarden")
-    group.add_argument("--enable", metavar="NAME", help="Undo --disable")
+    group.add_argument("--disable", metavar="NAME", help="Stop using a detected manager")
+    group.add_argument("--enable", metavar="NAME", help="Enable a password manager for this profile")
     p_src.set_defaults(_vault_handler=_cmd_sources)
 
 

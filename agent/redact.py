@@ -951,10 +951,10 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         text = _PREFIX_RE.sub(lambda m: _prefix_sub(m.group(1)), text)
 
     if "." in text:
-        _zhipu_sub = _mask_token_nonreusable if file_read else _mask_token
-        text = _ZHIPU_API_KEY_RE.sub(lambda m: _zhipu_sub(m.group(1)), text)
+        _mask = _mask_token_nonreusable if file_read else _mask_token
+        text = _ZHIPU_API_KEY_RE.sub(lambda m: _mask(m.group(1)), text)
         text = _DISCORD_TOKEN_RE.sub(
-            lambda m: _zhipu_sub(m.group(1)) if _is_discord_token(m.group(1)) else m.group(1), text)
+            lambda m: _mask(m.group(1)) if _is_discord_token(m.group(1)) else m.group(1), text)
 
     if not code_file:
         text = _redact_assignments(text, mask_nonreusable=file_read)

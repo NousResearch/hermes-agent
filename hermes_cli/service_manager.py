@@ -55,8 +55,10 @@ class ServiceManager(Protocol):
 def detect_service_manager() -> ServiceManagerKind:
     """Return "s6" (s6-svscan is PID 1), "windows", "launchd", "systemd" (working bus) or "none".
 
-    Does NOT replace ``supports_systemd_services()`` for host call sites; it exists for
-    backend-agnostic code (profile hooks, the s6 dispatch in ``hermes gateway``).
+    This function does NOT replace ``supports_systemd_services()`` —
+    host call sites continue to use that. It exists for new backend-
+    agnostic code (profile create/delete hooks, the s6 dispatch path
+    in ``hermes gateway start/stop/restart``).
     """
     # Deferred so importing this module (Protocol type, validate_profile_name) doesn't drag in
     # the whole gateway dependency graph.
@@ -256,7 +258,7 @@ def _write_gateway_desired_state(name: str, desired_state: str) -> None:
         if not profile_dir.exists():
             return
         try:
-            data = json.loads(state_file.read_text(encoding="utf-8")) if state_file.exists() else {}
+            data = json.loads(state_file.read_text(encoding="utf-8-sig")) if state_file.exists() else {}
             if not isinstance(data, dict):
                 data = {}
         except (OSError, json.JSONDecodeError):
@@ -268,6 +270,24 @@ def _write_gateway_desired_state(name: str, desired_state: str) -> None:
         tmp.replace(state_file)
     except OSError:
         return
+
+
+def register_unregistered_profile_gateway(mgr: ServiceManager, profile: str) -> bool:
+    """Register a ``down`` s6 slot for a profile whose directory exists but was never registered.
+
+    `hermes profile create` can only register a slot when it runs inside the container; created
+    from the host against a bind-mounted home, the directory lands where the container reads it
+    but no ``/run/service/gateway-<name>`` exists, and the boot reconciler only notices on the
+    next container restart. Returns False without touching anything unless the directory carries
+    ``SOUL.md`` — the reconciler's own "real profile" marker — so a mistyped ``-p`` name cannot
+    mint a phantom slot. ``start_now=False``: the caller's ordinary ``start`` stays the single
+    owner of the ``desired_state`` write.
+    """
+    profile_dir = _profile_dir_for_gateway_service(f"{S6_SERVICE_PREFIX}{profile}")
+    if not (profile_dir / "SOUL.md").exists():
+        return False
+    mgr.register_profile_gateway(profile, start_now=False)
+    return True
 
 
 # s6-overlay installs its binaries under /command/ and only adds it to PATH inside the supervision
@@ -426,7 +446,6 @@ class S6ServiceManager:
             "set -e",
             "export HOME=/opt/data",
             "cd /opt/data",
-            ". /opt/hermes/.venv/bin/activate",
         ]
         for k, v in sorted(extra_env.items()):
             lines.append(f"export {k}={shlex.quote(v)}")

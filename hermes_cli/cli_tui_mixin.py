@@ -23,7 +23,6 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import (
     ConditionalContainer,
     FormattedTextControl,
-    HSplit,
     Layout,
     Window,
     WindowAlign)
@@ -37,6 +36,8 @@ from prompt_toolkit.layout.processors import (
 from prompt_toolkit.styles import Style as PTStyle
 from prompt_toolkit.widgets import TextArea
 from typing import Optional
+
+from hermes_cli.cli_footer_split import FooterSplit
 
 # Rows below an overlay panel taken by spinner/tool-progress, status bar, input, separators and
 # prompt symbol (measured ~6 during live PTY approval prompts) — shared by every panel budget.
@@ -91,6 +92,20 @@ class _Panel:
 def _wrap_rows(wrap, items, width, indent) -> list[tuple[int, str]]:
     """``(index, wrapped_line)`` pairs so selected styling can be re-applied per row."""
     return [(i, w) for i, label in enumerate(items) for w in wrap(label, width, subsequent_indent=indent)]
+
+
+def _prefix_wrapped_rows(wrap, label, width, first_prefix, indent) -> list[str]:
+    """Wrap ``label``, then prefix the rows with ``first_prefix`` / ``indent``.
+
+    The prefix is applied *after* wrapping on purpose. Folding it into the
+    string handed to the wrapper charges those columns against the label's own
+    width budget — so a selected row wraps one line early and strands the ``❯``
+    cursor on a row of its own — and whitespace-trimming wrappers drop the
+    leading indent entirely, leaving long unselected labels flush against the
+    panel border, out of alignment with every other row.
+    """
+    rows = wrap(label, width)
+    return [(first_prefix if i == 0 else indent) + row for i, row in enumerate(rows)]
 
 
 class CLITuiMixin:
@@ -292,6 +307,8 @@ class CLITuiMixin:
             return _state_fragment("class:sudo-prompt", "🔐")
         if self._secret_state:
             return _state_fragment("class:sudo-prompt", "🔑")
+        if self._connection_state:
+            return _state_fragment("class:prompt-working", "⚙")
         if self._approval_state or getattr(self, "_slash_confirm_state", None):
             return _state_fragment("class:prompt-working", "⚠")
         if self._clarify_freetext:
@@ -359,6 +376,7 @@ class CLITuiMixin:
         *,
         sudo_widget,
         secret_widget,
+        connection_widget=None,
         approval_widget,
         slash_confirm_widget=None,
         clarify_widget,
@@ -379,6 +397,7 @@ class CLITuiMixin:
             Window(height=0),
             sudo_widget,
             secret_widget,
+            connection_widget,
             approval_widget,
             slash_confirm_widget,
             clarify_widget,
@@ -595,7 +614,12 @@ class CLITuiMixin:
         """
         from cli import HermesCLI, _panel_box_width, _wrap_panel_text
         box_width = _panel_box_width(title, [hint] + labels, min_width=min_width, max_width=max_width)
-        inner_text_width = max(8, box_width - 6)
+        # ``_Panel.row`` pads every row to ``box_width - 2``, so that is the real
+        # body width. Keep the wrap budget in sync with it and reserve the
+        # leading cell for the cursor/indent applied below, rather than the old
+        # blanket ``- 6`` which wrapped long labels two columns early.
+        inner_text_width = max(8, box_width - 2)
+        label_width = max(8, inner_text_width - max(2, len(indent)))
         selected = state.get("selected", 0)
         try:
             from prompt_toolkit.application import get_app
@@ -612,8 +636,13 @@ class CLITuiMixin:
         panel.blank()
         for idx in range(scroll_offset, min(scroll_offset + visible, len(labels))):
             style = 'class:clarify-selected' if idx == selected else 'class:clarify-choice'
-            prefix = '❯ ' if idx == selected else '  '
-            for wrapped in _wrap_panel_text(prefix + labels[idx], inner_text_width, subsequent_indent=indent):
+            # The cursor cell is always two columns wide, so unselected rows get two spaces
+            # regardless of ``indent`` (the palette's continuation indent is four) — otherwise
+            # the selected label starts two columns left of its neighbours.
+            lead = '❯ ' if idx == selected else '  '
+            for wrapped in _prefix_wrapped_rows(
+                _wrap_panel_text, labels[idx], label_width, lead, indent
+            ):
                 panel.row(style, wrapped)
         panel.blank()
         return panel.close()
@@ -686,7 +715,9 @@ class CLITuiMixin:
         return self._render_scroll_list_panel(
             state, "⚙ Command Palette", hint, labels, min_width=50, max_width=90, indent='    ')
 
-    def _render_sudo_style_panel(self, title: str, body_lines: list[str]):
+    def _render_sudo_style_panel(
+        self, title: str, body_lines: list[str], row_styles: list[str] | None = None
+    ):
         """Bordered ``sudo-*`` panel: blank, each body line, blank, body-final line, blank."""
         from cli import _panel_box_width
         box_width = _panel_box_width(title, body_lines)
@@ -695,7 +726,8 @@ class CLITuiMixin:
         for i, text in enumerate(body_lines):
             if i == len(body_lines) - 1 and i > 0:
                 panel.blank()
-            panel.row('class:sudo-text', text)
+            style = row_styles[i] if row_styles and i < len(row_styles) else 'class:sudo-text'
+            panel.row(style, text)
         panel.blank()
         return panel.close()
 
@@ -740,6 +772,34 @@ class CLITuiMixin:
             content_lines.insert(1, str(help_text))
         return self._render_sudo_style_panel('🔑 Skill Setup Required', content_lines)
 
+    def _get_connection_display_fragments(self):
+        state = self._connection_state
+        lines = self._connection_render_lines()
+        if not state or not lines:
+            return []
+        body_lines = lines[1:]
+        styles = ['class:sudo-text'] * len(body_lines)
+        phase = state.get("phase")
+        fields = state.get("fields") or []
+        instructions_offset = 1 if state.get("target", {}).get("instructions") else 0
+        if phase in {"form", "failed"}:
+            field_offset = instructions_offset + (1 if phase == "failed" else 0)
+            field_index = state.get("field_index", 0)
+            if 0 <= field_index < len(fields):
+                styles[field_offset + field_index] = 'class:clarify-selected'
+            elif body_lines:
+                action_index = len(body_lines) - 1
+                styles[action_index] = 'class:clarify-selected'
+                choices = ["Connect", "Cancel"]
+                selected = min(1, max(0, state.get("selected", 0)))
+                body_lines[action_index] = "    ".join(
+                    f"▸ {choice}" if i == selected else choice for i, choice in enumerate(choices)
+                )
+        elif phase == "authorized" and body_lines:
+            styles[-1] = 'class:clarify-selected'
+            body_lines[-1] = "▸ Continue"
+        return self._render_sudo_style_panel(lines[0], body_lines, styles)
+
     # (state attr, deadline attr, hint) for the modal prompts with a countdown hint row.
     _TUI_MODAL_HINTS = (
         ("_sudo_state", "_sudo_deadline", '  password hidden · Enter to skip'),
@@ -749,6 +809,19 @@ class CLITuiMixin:
     )
 
     def _tui_hint_text(self):
+        if self._connection_state:
+            phase = self._connection_state.get("phase")
+            hints = {
+                "form": "  type the value, Enter for next field · ↑/↓ move · ESC cancel",
+                "failed": "  type the value, Enter for next field · ↑/↓ move · ESC cancel",
+                "url": "  Enter to open in browser · ESC cancel",
+                "authorized": "  ↑/↓ select, Enter to confirm",
+                "waiting": "  waiting for the backend… · Ctrl+C interrupt",
+            }
+            hint = hints.get(phase, "  connection setup")
+            deadline = float(self._connection_state.get("payload", {}).get("deadline_at") or 0)
+            countdown = f"  ({max(0, int(deadline - time.time()))}s)" if deadline else ""
+            return [('class:hint', hint), ('class:clarify-countdown', countdown)]
         for state_attr, deadline_attr, hint in self._TUI_MODAL_HINTS:
             if getattr(self, state_attr):
                 if state_attr == "_sudo_state" and ((self._sudo_state.get("vault_save") or {}).get("step") == "identifier"
@@ -849,7 +922,8 @@ class CLITuiMixin:
             event.app.invalidate()
             return
         # Don't START recording during interactive prompts.
-        if self._clarify_state or self._sudo_state or self._approval_state or self._slash_confirm_state:
+        if (self._clarify_state or self._sudo_state or self._approval_state
+                or self._slash_confirm_state or self._connection_state):
             return
         # Cut TTS so the user can start talking: stop_playback() just terminates a subprocess;
         # the stop event drains the streaming pipeline if one is live.
@@ -914,7 +988,8 @@ class CLITuiMixin:
         (left by an earlier interrupt) can't swallow the press before the agent-interrupt
         branch, leaving the chat frozen (#14026).
         """
-        if not (self._sudo_state or self._secret_state or self._approval_state or self._clarify_state):
+        if not (self._sudo_state or self._secret_state or self._approval_state
+                or self._clarify_state or self._connection_state):
             return False
         self._clear_active_overlays_for_interrupt()
         event.app.current_buffer.reset()
@@ -1089,8 +1164,12 @@ class CLITuiMixin:
         return None
 
     def _tui_handle_escape_modal(self, event):
-        """ESC cancels active secret/sudo/slash-confirm prompts."""
-        if self._secret_state:
+        """ESC cancels active secret/sudo/connection/slash-confirm prompts."""
+        if self._connection_state:
+            self._connection_cancel()
+            event.app.current_buffer.reset()
+            event.app.invalidate()
+        elif self._secret_state:
             self._cancel_secret_capture()
             event.app.current_buffer.reset()
             event.app.invalidate()
@@ -1171,6 +1250,48 @@ class CLITuiMixin:
     def _tui_handle_open_in_editor(self, event):
         """Ctrl+G (or Alt+G in VSCode/Cursor) opens the draft in an external editor."""
         self._open_external_editor(event.current_buffer)
+
+    def _tui_connection_move(self, event, delta: int) -> None:
+        state = self._connection_state
+        if not state:
+            return
+        phase = state.get("phase")
+        if phase in {"form", "failed"}:
+            fields = state.get("fields") or []
+            current = state.get("field_index", 0)
+            if current < len(fields):
+                field = fields[current]
+                target_name = state.get("target", {}).get("name", "")
+                state["drafts"][target_name][field.get("name")] = event.app.current_buffer.text
+                state["field_index"] = min(len(fields), max(0, current + delta))
+            elif delta < 0 and fields:
+                state["field_index"] = len(fields) - 1
+            else:
+                state["selected"] = (state.get("selected", 0) + delta) % 2
+            self._connection_sync_input_buffer()
+        elif phase == "authorized":
+            state["selected"] = (state.get("selected", 0) + delta) % 2
+        self._paint_now()
+        event.app.invalidate()
+
+    def _tui_connection_up(self, event):
+        self._tui_connection_move(event, -1)
+
+    def _tui_connection_down(self, event):
+        self._tui_connection_move(event, 1)
+
+    def _tui_connection_side(self, event):
+        state = self._connection_state
+        if not state:
+            return
+        fields = state.get("fields") or []
+        if state.get("phase") == "authorized" or (
+            state.get("phase") in {"form", "failed"}
+            and state.get("field_index", 0) >= len(fields)
+        ):
+            state["selected"] = 1 - min(1, max(0, state.get("selected", 0)))
+            self._paint_now()
+            event.app.invalidate()
 
     def _tui_model_picker_down(self, event):
         state = self._model_picker_state
@@ -1511,6 +1632,17 @@ class CLITuiMixin:
         """Enter while a modal overlay is up: submit it. True when handled."""
         from cli import _cprint
         buf = event.app.current_buffer
+        if self._connection_state:
+            state = self._connection_state
+            fields = state.get("fields") or []
+            if state.get("phase") in {"form", "failed"} and state.get("field_index", 0) < len(fields):
+                value = buf.text
+                buf.reset()
+                self._connection_set_field(value)
+            else:
+                self._connection_submit()
+            event.app.invalidate()
+            return True
         if self._sudo_state:
             self._sudo_state["response_queue"].put(buf.text)
             self._sudo_state = None
@@ -1790,7 +1922,7 @@ class CLITuiMixin:
 
     def _tui_hint_height(self):
         if (
-            self._sudo_state or self._secret_state or self._approval_state
+            self._sudo_state or self._secret_state or self._approval_state or self._connection_state
             or self._slash_confirm_state or self._clarify_state or self._command_running):
             return 1
         # Keep a spacer while the agent runs on roomy terminals; reclaim the row on narrow screens.
@@ -1818,8 +1950,9 @@ class CLITuiMixin:
 
         # Config file watcher — detect mcp_servers changes and auto-reload.
         from hermes_cli.config import get_config_path as _get_config_path
+        from utils import file_signature
         _cfg_path = _get_config_path()
-        self._config_mtime: float = _cfg_path.stat().st_mtime if _cfg_path.exists() else 0.0
+        self._config_sig: tuple | None = file_signature(_cfg_path.stat()) if _cfg_path.exists() else None
         self._config_mcp_servers: dict = self.config.get("mcp_servers") or {}
         self._last_config_check: float = 0.0  # monotonic time of last check
 
@@ -1843,6 +1976,7 @@ class CLITuiMixin:
         self._command_status = ""
         self._secret_state = None       # skill-setup secret capture
         self._secret_deadline = 0
+        self._connection_state = None
 
         self._attached_images: list[Path] = []  # clipboard image attachments
         self._image_counter = 0
@@ -1900,8 +2034,8 @@ class CLITuiMixin:
         # Buffer.auto_up/auto_down browse history when on the first/last line.
         _normal_input = Condition(
             lambda: not self._clarify_state and not self._approval_state and not self._slash_confirm_state
-            and not self._sudo_state and not self._secret_state and not self._model_picker_state
-            and not self._command_palette_state)
+            and not self._sudo_state and not self._secret_state and not self._connection_state
+            and not self._model_picker_state and not self._command_palette_state)
         kb.add('up', filter=_normal_input)(self._tui_history_up)
         kb.add('down', filter=_normal_input)(self._tui_history_down)
         kb.add('c-l')(self._tui_handle_ctrl_l)
@@ -1911,7 +2045,8 @@ class CLITuiMixin:
         kb.add('c-q')(self._tui_handle_ctrl_q)
         kb.add('c-d')(self._tui_handle_ctrl_d)
         _modal_prompt_active = Condition(
-            lambda: bool(self._secret_state or self._sudo_state or self._slash_confirm_state))
+            lambda: bool(self._secret_state or self._sudo_state or self._slash_confirm_state
+                         or self._connection_state))
         kb.add('escape', filter=_modal_prompt_active, eager=True)(self._tui_handle_escape_modal)
         kb.add('escape', 'escape', filter=~_modal_prompt_active)(self._tui_handle_double_escape)
         kb.add('c-z')(self._tui_handle_ctrl_z)
@@ -1924,6 +2059,11 @@ class CLITuiMixin:
         for key in ('c-t', 'f6'):
             kb.add(key, filter=Condition(lambda: not modal_prompt_active(self)))(
                 lambda event: open_monitor(self))
+        # F7 is retained for terminals that forward the function-key sequence;
+        # Ctrl+R is the portable fallback because macOS often reserves F7 for
+        # a hardware control unless Fn/globe is held.
+        kb.add('c-r', filter=Condition(lambda: not modal_prompt_active(self)))(
+            lambda event: toggle_dock(self))
         kb.add('f7', filter=Condition(lambda: not modal_prompt_active(self)))(
             lambda event: toggle_dock(self))
         return kb
@@ -1933,14 +2073,15 @@ class CLITuiMixin:
         # unbound there and arrives as ('escape', 'g') — register it as a fallback.
         _editor_filter = Condition(
             lambda: not self._clarify_state and not self._approval_state
-            and not self._sudo_state and not self._secret_state)
+            and not self._sudo_state and not self._secret_state and not self._connection_state)
         kb.add('c-g', filter=_editor_filter)(
             kb.add('escape', 'g', filter=_editor_filter)(self._tui_handle_open_in_editor))
         # Ctrl+S prompt stash: park a draft, send something else, bring it back. Suppressed while
         # a modal prompt owns the composer so Ctrl+S can't stash a password.
         _stash_filter = Condition(
             lambda: not self._clarify_state and not self._approval_state and not self._sudo_state
-            and not self._secret_state and not self._slash_confirm_state and not self._model_picker_state
+            and not self._secret_state and not self._connection_state and not self._slash_confirm_state
+            and not self._model_picker_state
         )
         _stash_panel_filter = Condition(lambda: self._prompt_stash.panel_open and bool(len(self._prompt_stash)))
         kb.add('c-s', filter=_stash_filter)(self._tui_handle_prompt_stash)
@@ -1961,6 +2102,11 @@ class CLITuiMixin:
             and not self._clarify_freetext)
         kb.add('up', filter=_clarify_nav)(self._tui_clarify_up)
         kb.add('down', filter=_clarify_nav)(self._tui_clarify_down)
+        _connection_nav = Condition(lambda: bool(self._connection_state))
+        kb.add('up', filter=_connection_nav)(self._tui_connection_up)
+        kb.add('down', filter=_connection_nav)(self._tui_connection_down)
+        kb.add('left', filter=_connection_nav)(self._tui_connection_side)
+        kb.add('right', filter=_connection_nav)(self._tui_connection_side)
         # Multi-select: Space toggles the checkbox under the cursor.
         kb.add('space', filter=Condition(
             lambda: bool(self._clarify_state) and not self._clarify_freetext
@@ -2001,7 +2147,7 @@ class CLITuiMixin:
         kb.add('c-p', filter=Condition(
             lambda: not self._command_palette_state and not self._model_picker_state and not self._clarify_state
             and not self._approval_state and not self._slash_confirm_state and not self._sudo_state
-            and not self._secret_state
+            and not self._secret_state and not self._connection_state
         ))(self._tui_open_command_palette)
         kb.add('up', filter=_palette)(self._tui_command_palette_up)
         kb.add('down', filter=_palette)(self._tui_command_palette_down)
@@ -2093,6 +2239,8 @@ class CLITuiMixin:
         clarify_widget = self._tui_overlay_widget(self._get_clarify_display_fragments, "_clarify_state")
         sudo_widget = self._tui_overlay_widget(self._get_sudo_display_fragments, "_sudo_state")
         secret_widget = self._tui_overlay_widget(self._get_secret_display_fragments, "_secret_state")
+        connection_widget = self._tui_overlay_widget(
+            self._get_connection_display_fragments, "_connection_state")
         approval_widget = self._tui_overlay_widget(self._get_approval_display_fragments, "_approval_state")
         slash_confirm_widget = self._tui_overlay_widget(
             self._get_slash_confirm_display_fragments, "_slash_confirm_state")
@@ -2131,9 +2279,10 @@ class CLITuiMixin:
             filter=Condition(lambda: cli_ref._prompt_stash.panel_open and bool(len(cli_ref._prompt_stash))),
         )
         self._register_extra_tui_keybindings(kb, input_area=input_area)
-        layout = Layout(HSplit(self._build_tui_layout_children(
+        layout = Layout(FooterSplit(self._build_tui_layout_children(
             sudo_widget=sudo_widget,
             secret_widget=secret_widget,
+            connection_widget=connection_widget,
             approval_widget=approval_widget,
             slash_confirm_widget=slash_confirm_widget,
             clarify_widget=clarify_widget,
@@ -2213,7 +2362,9 @@ class CLITuiMixin:
             filter=Condition(lambda: (bool(cli_ref._sudo_state)
                                       and (cli_ref._sudo_state.get("vault_save") or {}).get("step") != "identifier"
                                       and not cli_ref._sudo_state.get("vault_code"))
-                             or bool(cli_ref._secret_state))))
+                             or bool(cli_ref._secret_state)
+                             or (bool(cli_ref._connection_state)
+                                 and cli_ref._connection_active_field_is_secret()))))
 
         class _PlaceholderProcessor(Processor):
             """Render grayed-out placeholder text inside the input when empty."""

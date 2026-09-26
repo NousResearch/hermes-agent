@@ -65,6 +65,94 @@ def test_no_platform_is_true():
     assert messaging_is_relay_only_or_absent([]) is True
 
 
+def test_scale_to_zero_gate_accounts_for_secondary_profile_direct_adapter(monkeypatch):
+    # A direct adapter in a served profile owns an inbound socket too; the process
+    # must stay awake even when the launch profile itself is relay-only.
+    from gateway.config import GatewayConfig, Platform, PlatformConfig
+    from gateway.run_shutdown import GatewayShutdownMixin
+
+    monkeypatch.setenv("HERMES_SCALE_TO_ZERO", "1")
+    monkeypatch.setenv("GATEWAY_RELAY_WAKE_URL", "https://wake.example.test/instance")
+    runner = object.__new__(GatewayShutdownMixin)
+    runner.config = GatewayConfig(platforms={Platform.RELAY: PlatformConfig(enabled=True)})
+    runner.adapters = {Platform.RELAY: object()}
+    runner._profile_adapters = {"imessage": {Platform("photon"): object()}}
+
+    assert runner._scale_to_zero_should_arm() is False
+
+    # Mid-reconnect the adapter is popped from _profile_adapters and parked in
+    # _profile_failed_platforms (retryable fatal); it is still served and must
+    # keep the process awake or the reconnect can never complete.
+    runner._profile_adapters = {}
+    runner._profile_failed_platforms = {"imessage": {Platform("photon"): object()}}
+
+    assert runner._scale_to_zero_should_arm() is False
+
+
+def test_watcher_reasks_gate_before_dormant_sequence(monkeypatch):
+    # Arming is a boot-time snapshot. A direct adapter hot-added afterwards (profile reconcile)
+    # must stop the dormant sequence; with relay only, the same tick still reaches go_dormant.
+    import asyncio
+    import time
+
+    from gateway.config import GatewayConfig, Platform, PlatformConfig
+    from gateway.run_shutdown import GatewayShutdownMixin
+
+    monkeypatch.setenv("GATEWAY_RELAY_SLEEP_URL", "https://sleep.example.test/instance")
+
+    class Relay:
+        def __init__(self):
+            self.calls = []
+
+        def hold_redial(self):
+            return True
+
+        def release_redial(self):
+            return True
+
+        async def go_dormant(self):
+            self.calls.append("go_dormant")
+            return False  # refuse the ack: the tick must abandon before any suspend call
+
+    class Runner(GatewayShutdownMixin):
+        def __init__(self):
+            self.config = GatewayConfig(platforms={Platform.RELAY: PlatformConfig(enabled=True)})
+            self.adapters = {Platform.RELAY: Relay()}
+            self._profile_adapters = {}
+            self._running = True
+            self._running_agents = {}
+            self._background_tasks = set()
+            self._last_inbound_at = time.time() - 3600
+            self._scale_to_zero_cooldown_until = 0.0
+            self._scale_to_zero_no_suspend_logged = False
+            self._scale_to_zero_direct_platform_logged = False
+
+        def _running_agent_count(self):
+            return 0
+
+        def _update_runtime_status(self, state):
+            pass
+
+    async def one_tick(runner):
+        task = asyncio.ensure_future(runner._scale_to_zero_watcher(interval=0.0))
+        await asyncio.sleep(0.05)
+        runner._running = False
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    hot_added = Runner()
+    hot_added._profile_adapters = {"imessage": {Platform("photon"): object()}}
+    asyncio.run(one_tick(hot_added))
+    assert hot_added.adapters[Platform.RELAY].calls == []
+
+    relay_only = Runner()
+    asyncio.run(one_tick(relay_only))
+    assert relay_only.adapters[Platform.RELAY].calls == ["go_dormant"]
+
+
 # ── should_arm (D1/D11/§3.4(1)) ──────────────────────────────────────────────
 
 
@@ -182,6 +270,7 @@ def _fake_flaps(sock_dir, status_line, capture):
     return sock_path, t
 
 
+@pytest.mark.platforms("linux")
 def test_suspend_self_posts_suspend_for_this_machine(short_sock_dir):
     captured: list[bytes] = []
     sock_path, t = _fake_flaps(short_sock_dir, "200 OK", captured)
@@ -196,6 +285,7 @@ def test_suspend_self_posts_suspend_for_this_machine(short_sock_dir):
     assert "Host: flaps\r\n" in request
 
 
+@pytest.mark.platforms("linux")
 def test_suspend_self_non_2xx_is_false_not_raise(short_sock_dir):
     captured: list[bytes] = []
     sock_path, t = _fake_flaps(short_sock_dir, "412 Precondition Failed", captured)
@@ -203,6 +293,7 @@ def test_suspend_self_non_2xx_is_false_not_raise(short_sock_dir):
     t.join(timeout=5)
 
 
+@pytest.mark.platforms("linux")
 def test_suspend_self_missing_socket_is_false_not_raise(tmp_path):
     # Fail-awake: a dead/absent flaps socket must never raise out of the watcher.
     assert suspend_self(_FLY_ENV, socket_path=str(tmp_path / "nope.sock")) is False

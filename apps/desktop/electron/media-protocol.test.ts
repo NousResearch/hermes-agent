@@ -164,6 +164,44 @@ describe('createMediaProtocolHandler', () => {
     expect(headers.get('range')).toBe('bytes=0-1023')
   })
 
+  it('sends the connection extra gateway headers on remote media without clobbering range negotiation', async () => {
+    const deps = dependencies({
+      resolveRemoteConnection: vi.fn(async () => ({
+        authMode: 'token' as const,
+        baseUrl: 'https://gateway.test',
+        headers: { 'CF-Access-Client-Id': 'client-id', Range: 'bytes=9-9' },
+        mode: 'remote' as const,
+        token: 'secret'
+      }))
+    })
+
+    await createMediaProtocolHandler(deps)(
+      request('hermes-media://remote/%2Ftmp%2Fclip.mp4', { Range: 'bytes=0-1023' })
+    )
+
+    const [, headers] = vi.mocked(deps.fetchRemote).mock.calls[0]
+    expect(headers.get('cf-access-client-id')).toBe('client-id')
+    expect(headers.get('range')).toBe('bytes=0-1023')
+    expect(headers.get('x-hermes-session-token')).toBe('secret')
+  })
+
+  it('sends the connection extra gateway headers on OAuth cookie-session remote media', async () => {
+    const deps = dependencies({
+      resolveRemoteConnection: vi.fn(async () => ({
+        authMode: 'oauth' as const,
+        baseUrl: 'https://gateway.test',
+        headers: { 'CF-Access-Client-Id': 'client-id' },
+        mode: 'remote' as const,
+        token: null
+      }))
+    })
+
+    await createMediaProtocolHandler(deps)(request('hermes-media://remote/%2Ftmp%2Fclip.mp4'))
+
+    const [, headers] = vi.mocked(deps.fetchRemoteWithCookies).mock.calls[0]
+    expect(headers.get('cf-access-client-id')).toBe('client-id')
+  })
+
   it('adds profile scope when one registry backend serves multiple profiles', async () => {
     const deps = dependencies({
       resolveRemoteConnection: vi.fn(async () => ({

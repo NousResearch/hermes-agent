@@ -4,6 +4,7 @@ sha: 43658bf3c883178bf035d2163f7f541500d17407
 description: Run the Hermes terminal interface in a Hermes Desktop workspace tab.
 maintainer: Adolanium
 tier: community
+category: desktop
 docs_url: https://github.com/Adolanium/hermes-terminal#readme
 capabilities:
   provides_tools: []

@@ -22,8 +22,9 @@ import pytest
 @pytest.fixture
 def served_root(tmp_path, monkeypatch):
     root = tmp_path / "hermes"
-    (root / "profiles" / "coder").mkdir(parents=True)
-    (root / "profiles" / "other").mkdir(parents=True)
+    for name in ("coder", "other"):
+        (root / "profiles" / name).mkdir(parents=True)
+        (root / "profiles" / name / "config.yaml").write_text("{}\n")  # identity marker
     (root / "config.yaml").write_text("model: {default: x}\n")  # NO multiplex flag: env-only opt-in
     (root / "gateway.pid").write_text(json.dumps({"pid": os.getpid(), "hermes_home": str(root)}))
     (root / "gateway_state.json").write_text(json.dumps(
@@ -31,6 +32,10 @@ def served_root(tmp_path, monkeypatch):
          "served_profiles": ["default", "coder"]}))
     monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "coder"))
     monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+    # Never read the developer's / CI's REAL host rendezvous record (superseded by the
+    # tests/conftest.py hook in #118097 once that lands).
+    (tmp_path / "locks").mkdir()
+    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
     import hermes_constants
     import gateway.status as status
     monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
@@ -72,6 +77,56 @@ def test_probe_survives_a_missing_default_pid_file(served_root):
     assert named_profile_served_by_running_multiplexer("coder") is True
 
 
+def test_setup_wizard_skips_service_install_for_profile_served_by_multiplexer(
+    served_root, monkeypatch, capsys,
+):
+    """Gateway setup must not create a standalone service for an already served profile."""
+    import hermes_cli.gateway as gw
+
+    calls: list[str] = []
+    monkeypatch.setattr(gw, "_is_service_installed", lambda: False)
+    monkeypatch.setattr(gw, "_is_service_running", lambda: False)
+    monkeypatch.setattr(gw, "_service_backend", lambda: "systemd")
+    monkeypatch.setattr(gw, "prompt_yes_no", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        gw, "install_linux_gateway_from_setup", lambda **kwargs: calls.append("install"),
+    )
+    monkeypatch.setattr(
+        gw, "_setup_service_action", lambda *args, **kwargs: calls.append("start"),
+    )
+
+    gw._wizard_post_setup()
+
+    assert calls == []
+    assert "already served by the default multiplexer" in capsys.readouterr().out
+
+
+def test_setup_gateway_service_step_skips_install_for_served_profile(served_root, monkeypatch, capsys):
+    """``hermes -p <profile> setup gateway`` (and ``hermes setup`` / ``hermes import``) reach the service
+    step through ``ensure_gateway_service``: a served profile gets the multiplexer note and no unit/plist
+    (#111958), and a named profile the live record does not list gets no unit/plist either — one host
+    gateway serves every profile, so setup must not grow a standalone fleet member that
+    ``gateway install`` refuses (#109417)."""
+    import hermes_cli.gateway as gw
+
+    calls: list[str] = []
+    monkeypatch.setattr(gw, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(gw, "_is_service_running", lambda: False)
+    monkeypatch.setattr(gw, "_is_service_installed", lambda: False)
+    monkeypatch.setattr(gw, "has_conflicting_systemd_units", lambda: False)
+    monkeypatch.setattr(gw, "systemd_install", lambda **kwargs: calls.append("install"))
+    monkeypatch.setattr(gw, "systemd_start", lambda *args, **kwargs: calls.append("start"))
+
+    assert gw.ensure_gateway_service(context="setup") is True
+    assert calls == []
+    assert "already served by the default multiplexer" in capsys.readouterr().out
+
+    monkeypatch.setenv("HERMES_HOME", str(served_root / "profiles" / "other"))  # not in the live record
+    assert gw.ensure_gateway_service(context="setup") is True
+    assert calls == []
+    assert "Profile 'other' does not get a gateway of its own" in capsys.readouterr().out
+
+
 def test_recycled_pid_does_not_lend_a_stale_record_its_served_profiles(served_root):
     """A stale default record whose PID now belongs to an unrelated process (start time differs, command
     line is not a gateway's) must not make its ``served_profiles`` authoritative: bare PID existence
@@ -96,7 +151,7 @@ def test_recycled_pid_does_not_lend_a_stale_record_its_served_profiles(served_ro
 
 
 @pytest.mark.parametrize("verb", ["start", "install", "restart"])
-def test_service_verbs_refuse_served_profile_with_exit_78(served_root, monkeypatch, verb):
+def test_service_verbs_do_not_start_a_second_gateway(served_root, monkeypatch, verb):
     import hermes_cli.gateway as gw
     calls: list = []
     monkeypatch.setattr(gw, "_service_backend", lambda: "systemd")
@@ -108,9 +163,19 @@ def test_service_verbs_refuse_served_profile_with_exit_78(served_root, monkeypat
     monkeypatch.setattr(gw, "is_termux", lambda: False)
     fn = getattr(gw, f"_cmd_{verb}")
     ns = argparse.Namespace(system=False, all=False, force=False, run_as_user=None)
-    with contextlib.redirect_stdout(io.StringIO()), pytest.raises(SystemExit) as exc:
+    if verb == "restart":
+        from gateway import control_socket
+        lifecycle = []
+        monkeypatch.setattr(control_socket, "request_unserve_profile",
+                            lambda home, name: lifecycle.append("unserve") or {"unserved": name})
+        monkeypatch.setattr(control_socket, "request_serve_profile_hot",
+                            lambda home, name: lifecycle.append("serve") or {"served": name})
         fn(ns)
-    assert exc.value.code == gw.GATEWAY_FATAL_CONFIG_EXIT_CODE and calls == []
+        assert lifecycle == ["unserve", "serve"] and calls == []
+    else:
+        with contextlib.redirect_stdout(io.StringIO()), pytest.raises(SystemExit) as exc:
+            fn(ns)
+        assert exc.value.code == gw.GATEWAY_FATAL_CONFIG_EXIT_CODE and calls == []
 
     ns.force = True
     with contextlib.redirect_stdout(io.StringIO()):
@@ -118,7 +183,7 @@ def test_service_verbs_refuse_served_profile_with_exit_78(served_root, monkeypat
     assert calls, f"--force must let `gateway {verb}` reach the service manager"
 
 
-def test_status_surfaces_agree_for_a_satellite_profile(served_root, monkeypatch):
+def test_satellite_gateway_identity_does_not_imply_cron_health(served_root, monkeypatch):
     import hermes_cli.gateway as gw
     import hermes_cli.status as st
     import hermes_cli.cron as cr
@@ -136,7 +201,16 @@ def test_status_surfaces_agree_for_a_satellite_profile(served_root, monkeypatch)
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         cr.cron_status()
-    assert "NOT fire" not in buf.getvalue() and "multiplexer" in buf.getvalue()
+    # Multiplex-only: the ONE host gateway is named as the ticker, with the profiles it serves —
+    # the FULL line, so this cannot pass on the sibling "(multiplexing this profile)" rung.
+    assert f"Scheduler host: the host gateway (PID {os.getpid()}) serving profiles default, coder" \
+        in buf.getvalue()
+    # The remediation this rung prints must run for a served NAMED profile (`hermes gateway
+    # restart` exits 78 there).
+    assert "restart: hermes --profile default gateway restart" in buf.getvalue()
+    # A live scheduler host alone does not prove this satellite's ticker is healthy.
+    assert "has not reported a heartbeat" in buf.getvalue()
+    assert "will fire automatically" not in buf.getvalue()
 
 
 def test_dashboard_liveness_ladder_reports_served_profile_running(served_root):
@@ -162,28 +236,71 @@ def test_dashboard_liveness_ladder_reports_served_profile_running(served_root):
 
 def test_dashboard_lifecycle_verbs_target_the_multiplexer(served_root, monkeypatch):
     """`gateway restart` for a served profile restarts the multiplexer (a `-p X` child only exits 78 into
-    the action log); `start`/`stop` refuse; a profile with its own gateway is managed normally."""
-    from hermes_cli import profiles as profiles_mod
+    the action log); `stop` parks, `start` refuses while unparked; a profile with its own gateway is
+    managed normally."""
+    from hermes_cli import web_server_gateway
     from hermes_cli.web_server_gateway import _gateway_subcommand, _profile_action_environment, multiplexed_profile_refusal
-    monkeypatch.setattr(profiles_mod, "_check_gateway_running", lambda home: False)
+    # No stub: a served profile's liveness answers "running" on the MULTIPLEXER's pid, and that must
+    # not read as a gateway of its own (stubbing it False hid exactly that).
     # This process's own HERMES_HOME is coder's; the restart child must still run under the DEFAULT
     # home (the multiplexer's) — a bare `gateway restart` here would inherit coder's home and exit 78.
     restart = _gateway_subcommand("coder", "restart")
     assert restart[-2:] == ["gateway", "restart"] and "coder" not in restart
     assert _profile_action_environment(restart)["HERMES_HOME"] == str(served_root)
-    assert multiplexed_profile_refusal("coder", "stop") and multiplexed_profile_refusal("coder", "start")
+    assert multiplexed_profile_refusal("coder", "stop") is None  # parks via `hermes -p coder gateway stop`
+    assert multiplexed_profile_refusal("coder", "start")
+    assert _gateway_subcommand("coder", "stop") == ["-p", "coder", "gateway", "stop"]
     assert _gateway_subcommand("other", "restart") == ["-p", "other", "gateway", "restart"]
     assert multiplexed_profile_refusal("other", "stop") is None
     # coder started its own gateway with --force: it is that gateway the verbs address.
-    monkeypatch.setattr(profiles_mod, "_check_gateway_running", lambda home: True)
+    monkeypatch.setattr(web_server_gateway, "_has_own_gateway", lambda profile_dir: True)
     assert _gateway_subcommand("coder", "restart") == ["-p", "coder", "gateway", "restart"]
     assert multiplexed_profile_refusal("coder", "stop") is None
 
 
-def test_cli_stop_refuses_for_a_served_profile_without_its_own_gateway(served_root, monkeypatch):
+def test_cli_stop_parks_when_host_control_socket_is_unavailable(served_root, monkeypatch):
     import hermes_cli.gateway as gw
+    from gateway import control_socket
     monkeypatch.setattr(gw, "find_gateway_pids", lambda *a, **k: [])
     monkeypatch.setattr(gw, "_refuse_from_inside_gateway", lambda *a, **k: None)
-    with contextlib.redirect_stdout(io.StringIO()), pytest.raises(SystemExit) as exc:
+    monkeypatch.setattr(control_socket, "request_unserve_profile", lambda home, name: None)
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
         gw._cmd_stop(argparse.Namespace(system=False, all=False))
-    assert exc.value.code == gw.GATEWAY_FATAL_CONFIG_EXIT_CODE
+    assert (served_root / "profiles" / "coder" / "gateway.parked").exists()
+    assert "immediate stop was not confirmed" in output.getvalue()
+    assert "next rescan (within 30s)" in output.getvalue()
+
+
+def test_the_multiplexer_restart_names_the_root_even_under_a_sticky_active_profile(served_root, monkeypatch):
+    """From a dashboard whose own home is the DEFAULT one, restarting a served profile must still address
+    the multiplexer. A bare `gateway restart` child re-reads the sticky active_profile (the root home is
+    not trusted as-is, #22502) and restarts that profile instead, which the multiplexer serves: the
+    action log says restarted and the multiplexer never was."""
+    from pathlib import Path
+
+    from hermes_cli.main import _apply_profile_override
+    from hermes_cli.web_server_gateway import _gateway_subcommand, _profile_action_environment
+    monkeypatch.setenv("HERMES_HOME", str(served_root))  # the dashboard runs as the default profile
+    (served_root / "active_profile").write_text("coder")
+    monkeypatch.setattr(Path, "home", lambda: served_root.parent)
+    restart = _gateway_subcommand("coder", "restart")
+    for var, value in _profile_action_environment(restart).items():
+        if var == "HERMES_HOME":
+            monkeypatch.setenv(var, value)
+    for var in ("HERMES_SUPERVISED_CHILD", "HERMES_S6_SUPERVISED_CHILD", "INVOCATION_ID",
+                "HERMES_GATEWAY_EXTERNAL_SUPERVISOR"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr("sys.argv", ["hermes", *restart])
+    _apply_profile_override()  # what the spawned child does first
+    assert os.environ["HERMES_HOME"] == str(served_root)
+
+
+def test_the_topology_lists_a_served_profile_under_the_multiplexer_not_as_its_own_gateway(served_root, monkeypatch):
+    """`/api/status` topology: a served profile's liveness is the multiplexer's, so it is one gateway
+    serving both, not a second gateway entry for `coder` beside it."""
+    from hermes_cli.web_server_gateway import _collect_profile_gateway_topology
+    monkeypatch.setenv("HERMES_HOME", str(served_root))
+    topology = _collect_profile_gateway_topology()
+    assert [g["profile"] for g in topology["gateways"]] == ["default"]
+    assert "coder" in topology["gateways"][0]["served_profiles"]

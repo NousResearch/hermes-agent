@@ -102,7 +102,13 @@ class EmptyRequestParams(ServerRequestParams):
     pass
 
 
-server_request("sudo", params=EmptyRequestParams, result=ValueResult,
+class SudoRequestParams(ServerRequestParams):
+    """Original command, redacted server-side before any password-injection rewrite."""
+
+    command: str = ""
+
+
+server_request("sudo", params=SudoRequestParams, result=ValueResult,
                doc="Masked sudo password for the terminal tool.")
 
 
@@ -172,6 +178,7 @@ class PreviewActRequestParams(ServerRequestParams):
     to: str | None = None
     amount: int | None = None
     max: int | None = None
+    allow_shortcut: bool | None = None
 
 
 server_request("preview.act", params=PreviewActRequestParams, result=ValueResult,

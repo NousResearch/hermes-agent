@@ -2,9 +2,8 @@
 // main process. Extracted from main.ts so the streaming, data-URL decoding, and
 // filename derivation are unit-testable without spinning up Electron.
 //
-// The transport wrappers (token / OAuth) live in main.ts because they need
-// main-process singletons (https/http, electronNet, the OAuth session). They
-// delegate the byte-moving to `pumpStreamToFile` here, which streams the
+// The token / OAuth transports delegate to the shared finalizer here. It
+// waits for the save dialog before `pumpStreamToFile` streams the
 // response into a sibling temp file with backpressure and renames it onto the
 // user-selected destination only once the body has landed in full — so a large
 // download never has to be buffered whole in the native process, and a failed
@@ -334,6 +333,144 @@ export function filenameFromContentDisposition(value: unknown): string {
 // Preserve file URIs: only the gateway knows its native drive/UNC semantics.
 export function gatewayFilePath(rawPath: unknown): string {
   return String(rawPath || '').trim()
+}
+
+export interface GatewayFileSaveContext {
+  fallbackName: string
+  suggested: string
+}
+
+export interface GatewaySaveDialogResult {
+  canceled: boolean
+  filePath?: string
+}
+
+export interface GatewayFileSaveResult {
+  canceled?: boolean
+  path?: string
+  saved: boolean
+}
+
+export interface GatewaySaveDialogOptions {
+  defaultPath: string
+  title: string
+}
+
+export interface GatewayFileSaveDeps {
+  showSaveDialog: (options: GatewaySaveDialogOptions) => Promise<GatewaySaveDialogResult>
+  pump?: PumpDeps
+}
+
+export interface GatewayDownloadResponse extends ReadableLike {
+  statusCode?: number
+  headers: { [name: string]: string | string[] | undefined }
+}
+
+/** Keep the body unread until the user selects a destination. */
+export async function finalizeGatewayDownload(
+  response: GatewayDownloadResponse,
+  context: GatewayFileSaveContext,
+  abort: () => void,
+  deps: GatewayFileSaveDeps
+): Promise<GatewayFileSaveResult> {
+  const statusCode: number = response.statusCode || 500
+
+  if (statusCode >= 400) {
+    const message: string = await readGatewayErrorText(response)
+    throw Object.assign(new Error(`${statusCode}: ${message}`), { statusCode })
+  }
+
+  // A socket can fail while the native dialog is open, before the pump listens.
+  let responseError: Error | null = null
+  response.on('error', (error: Error): void => {
+    responseError = error
+  })
+
+  const disposition: string | string[] | undefined =
+    response.headers['content-disposition'] || response.headers['Content-Disposition']
+
+  const filename: string = filenameFromContentDisposition(disposition) || context.suggested || context.fallbackName
+
+  try {
+    const result: GatewaySaveDialogResult = await deps.showSaveDialog({ defaultPath: filename, title: 'Save File' })
+
+    if (result.canceled || !result.filePath) {
+      abort()
+
+      return { canceled: true, saved: false }
+    }
+
+    if (responseError) {
+      throw responseError
+    }
+
+    await pumpStreamToFile(response, result.filePath, deps.pump ?? fsPumpDeps())
+
+    return { path: result.filePath, saved: true }
+  } catch (error) {
+    abort()
+    throw error
+  }
+}
+
+function readGatewayErrorText(response: ReadableLike): Promise<string> {
+  return new Promise((resolve: (message: string) => void): void => {
+    const chunks: Buffer[] = []
+    let total: number = 0
+    response.on('data', (chunk: Buffer | Uint8Array | string): void => {
+      if (total >= 500) {
+        return
+      }
+
+      // Normalize text and binary stream chunks before retaining the bounded error prefix.
+      const bytes: Uint8Array = chunk instanceof Uint8Array ? chunk : Buffer.from(chunk, 'utf8')
+      const buffer: Buffer = Buffer.from(bytes.subarray(0, 500 - total))
+      total += buffer.length
+      chunks.push(buffer)
+    })
+
+    const finish: () => void = (): void => {
+      resolve(Buffer.concat(chunks).toString('utf8'))
+    }
+
+    response.on('end', finish)
+    response.on('error', finish)
+  })
+}
+
+export interface GatewayFileDownloadDeps extends GatewayFileSaveDeps {
+  download: (requestPath: string, context: GatewayFileSaveContext) => Promise<GatewayFileSaveResult>
+  readDataUrl: (requestPath: string) => Promise<string>
+}
+
+/** Only a missing streaming endpoint permits the older, capped data-URL route. */
+export async function saveGatewayDownload(
+  requestPaths: GatewayFileRequestPaths,
+  context: GatewayFileSaveContext,
+  deps: GatewayFileDownloadDeps
+): Promise<GatewayFileSaveResult> {
+  try {
+    return await deps.download(requestPaths.download, context)
+  } catch (error) {
+    if (!isNotFoundError(error)) {
+      throw error
+    }
+  }
+
+  const buffer: Buffer = parseDataUrlToBuffer(await deps.readDataUrl(requestPaths.dataUrl))
+
+  const result: GatewaySaveDialogResult = await deps.showSaveDialog({
+    defaultPath: context.suggested || context.fallbackName,
+    title: 'Save File'
+  })
+
+  if (result.canceled || !result.filePath) {
+    return { canceled: true, saved: false }
+  }
+
+  await writeBufferToFile(buffer, result.filePath, deps.pump ?? fsPumpDeps())
+
+  return { path: result.filePath, saved: true }
 }
 
 // True when an error thrown by a transport wrapper represents an HTTP 404, used

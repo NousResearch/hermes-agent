@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
 from hermes_startup_watchdog import report_startup_progress
+from hermes_state_holders import read_only_db_uri
 from hermes_state_common import (
     _acquire_db_flock, _clear_lock_holder_record, _describe_lock_holder, _read_lock_holder_record,
     is_advisory_lock_contention,
@@ -579,8 +580,16 @@ def _connect_repair_durable(db_path: Path, *, timeout: float = 5.0) -> sqlite3.C
     no ``checkpoint_fullfsync`` — on Darwin an interrupted ``REINDEX``/``VACUUM``/``writable_schema`` rewrite leaves
     half-written b-tree pages. Autocommit (``isolation_level=None``): DDL and ``VACUUM`` are illegal inside an
     implicit transaction. Barriers are best-effort: on a malformed schema even ``PRAGMA synchronous=FULL`` raises,
-    so whole-file rewrites call :func:`_reapply_durability_barriers` once the schema parses again."""
-    conn = sqlite3.connect(str(db_path), timeout=timeout, isolation_level=None)
+    so whole-file rewrites call :func:`_reapply_durability_barriers` once the schema parses again.
+
+    Tracked (:func:`hermes_cli.sqlite_safe_read.connect_tracked`) because repair connections hold the
+    strongest locks in the process (``locking_mode=EXCLUSIVE``, ``BEGIN IMMEDIATE``); an untracked fd let
+    the byte-level probes ``open()``/``close()`` the live file, which cancels every POSIX advisory lock this
+    process holds on it (sqlite.org/howtocorrupt §2.2) and lets an external writer commit mid-repair (#63386).
+    """
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
+    conn = connect_tracked(db_path, tracking_path=db_path, timeout=timeout, isolation_level=None)
     _reapply_durability_barriers(conn)
     return conn
 
@@ -727,7 +736,7 @@ def state_db_has_structural_damage(db_path: Path) -> bool:
     while ``messages``/``sessions`` read cleanly, and the FTS rebuild ladder cannot help.
     Cannot-open / locked stays False so the caller keeps the FTS path."""
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1.0)
+        conn = sqlite3.connect(read_only_db_uri(db_path), uri=True, timeout=1.0)
     except sqlite3.Error:
         return False
     try:

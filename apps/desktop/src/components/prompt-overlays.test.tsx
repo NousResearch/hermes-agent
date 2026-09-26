@@ -1,7 +1,12 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import {
+  handleServerRequest,
+  type ServerRequestContext
+} from '@/app/session/hooks/use-message-stream/gateway-event/server-requests'
 import { I18nProvider } from '@/i18n'
+import { createClientSessionState } from '@/lib/chat-runtime'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import { $secretRequest, $sudoRequest, clearAllPrompts, setSecretRequest, setSudoRequest } from '@/store/prompts'
@@ -35,6 +40,44 @@ afterEach(() => {
 })
 
 describe('PromptOverlays', () => {
+  it('shows the full command from the sudo request before accepting a password', () => {
+    const command = `sudo install -m 755 '${'/tmp/path segment/'.repeat(24)}helper' /usr/local/bin/helper\n&& sudo /usr/local/bin/helper --version`
+    const respond = vi.fn()
+
+    const deps: ServerRequestContext['deps'] = {
+      activeSessionIdRef: { current: 's1' },
+      sessionInterrupted: () => false,
+      updateSessionState: (_sid, update) => update(createClientSessionState('s1')),
+      upsertToolCall: () => undefined
+    }
+
+    $activeSessionId.set('s1')
+    $gateway.set({ request: vi.fn() } as never)
+    handleServerRequest(
+      {
+        fail: vi.fn(),
+        id: 'sudo-command',
+        method: 'sudo',
+        params: { command, session_id: 's1' },
+        profile: 'default',
+        respond
+      },
+      deps,
+      's1'
+    )
+    renderPrompts()
+
+    const preview = screen.getByRole('region', { name: 'Command' })
+    const password = screen.getByPlaceholderText('sudo password')
+
+    expect(preview.textContent).toBe(command)
+    expect(preview.compareDocumentPosition(password) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(respond).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    expect(respond).toHaveBeenCalledExactlyOnceWith({ value: '' })
+  })
+
   it('answers the live sudo request with an empty value on Cancel and clears the dialog', async () => {
     const respond = vi.fn()
     const request = vi.fn()

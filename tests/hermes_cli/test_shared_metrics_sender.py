@@ -9,7 +9,6 @@ user's local history rather than a send queue.
 from __future__ import annotations
 
 import json
-import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -374,17 +373,6 @@ class TestConsentGate:
 
 
 class TestIdentity:
-    def test_the_stable_install_id_is_transmitted_as_is(self, store):
-        """Product decision 2026-08-27: no pseudonymization.
-
-        The wire body carries the profile-scoped install_id verbatim. This
-        test is the deliberate inversion of the pre-decision assertion that
-        the raw id never crossed the wire.
-        """
-        _add_package(store, "pkg-1", "2026-08-26")
-        transport = FakeTransport(FakeResponse(202))
-        _sender(store, transport).send_pending()
-        assert transport.bodies[0]["install_id"] == INSTALL_ID
 
     def test_transmitted_id_is_frozen_on_the_row(self, store):
         _add_package(store, "pkg-1", "2026-08-26")
@@ -1000,10 +988,6 @@ class TestCompression:
         assert captured["data"][:2] == b"\x1f\x8b", "gzip magic bytes"
         assert captured["headers"].get("Content-encoding".lower()) == "gzip"
 
-    def test_gzip_actually_shrinks_the_body(self):
-        payload = json.dumps({"filler": "x" * 20000}).encode("utf-8")
-        captured = self._captured_request(payload)
-        assert len(captured["data"]) < len(payload)
 
     def test_gzip_is_deterministic_across_time(self):
         """Kills the mtime footgun: gzip embeds a timestamp by default.

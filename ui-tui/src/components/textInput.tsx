@@ -783,6 +783,7 @@ export function TextInput({
   mask,
   mouseApiRef,
   cursorSnapshotRef,
+  ignoreVerticalArrows = false,
   voiceRecordKey = DEFAULT_VOICE_RECORD_KEY,
   placeholder = '',
   placeholderColor,
@@ -804,6 +805,10 @@ export function TextInput({
   const selRef = useRef<null | { end: number; start: number }>(null)
   const vRef = useRef(value)
   const self = useRef(false)
+  // The last value handed to onChange. While a deferred key-burst flush is in
+  // flight the user can type past it, so the parent's echo comes back older
+  // than vRef; matching against this keeps such echoes on the own-change path.
+  const emittedValueRef = useRef<string | null>(null)
   const keyBurstTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const editVersionRef = useRef(0)
   const parentChangeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -923,13 +928,28 @@ export function TextInput({
   }, [accentOpen, cur, display, focus, highlights, nativeCursor, placeholder, placeholderColor, selected])
 
   useEffect(() => {
-    const ownEcho = self.current && value === vRef.current
+    // `value === vRef.current` misses a deferred flush still in flight: the
+    // user typed past the emitted value, so the echo comes back older than
+    // vRef. Treating it as external rewound local keystrokes (cursor jumped
+    // backward, letters vanished — #111934). An echo matching the last value
+    // we emitted is still our own; the pending flush for the newer local
+    // value converges the parent on its next timer.
+    const ownEcho = self.current && (value === vRef.current || value === emittedValueRef.current)
     self.current = false
 
     if (ownEcho || value === vRef.current) {
       return
     }
 
+    // An external value replaced the draft. A key burst still waiting on its
+    // 16ms flush is now stale; letting it fire would hand the parent the old
+    // draft on top of the value it just set.
+    if (parentChangeTimer.current) {
+      clearTimeout(parentChangeTimer.current)
+      parentChangeTimer.current = null
+    }
+
+    pendingParentValue.current = null
     setCur(value.length)
     setSel(null)
     curRef.current = value.length
@@ -1045,6 +1065,7 @@ export function TextInput({
 
     if (next !== null) {
       self.current = true
+      emittedValueRef.current = next
       cbChange.current(next)
     }
   }
@@ -1138,6 +1159,7 @@ export function TextInput({
       if (syncParent) {
         flushParentChange()
         self.current = true
+        emittedValueRef.current = next
         cbChange.current(next)
         // A full Ink repaint just happened. Mark it so any fast-echo backspace
         // later in this IME recompose burst is suppressed (it would write
@@ -1408,7 +1430,7 @@ export function TextInput({
         return
       }
 
-      if (k.upArrow || k.downArrow) {
+      if ((k.upArrow || k.downArrow) && !ignoreVerticalArrows) {
         flushKeyBurst()
 
         const next = lineNav(vRef.current, curRef.current, k.upArrow ? -1 : 1)
@@ -1452,7 +1474,9 @@ export function TextInput({
       const delFwd = k.delete || fwdDel.current
 
       const isPrintableInput =
-        (event.keypress.isPasted || inp.length > 0) && PRINTABLE.test(inp.replace(BRACKET_PASTE, ''))
+        !event.isControlChord &&
+        (event.keypress.isPasted || inp.length > 0) &&
+        PRINTABLE.test(inp.replace(BRACKET_PASTE, ''))
 
       if (!isPrintableInput) {
         flushKeyBurst()
@@ -1592,7 +1616,7 @@ export function TextInput({
         } else {
           ;({ cursor: c, value: v } = killToLineEnd(v, c))
         }
-      } else if (event.keypress.isPasted || inp.length > 0) {
+      } else if (event.keypress.isPasted || (inp.length > 0 && !event.isControlChord)) {
         const bracketed = event.keypress.isPasted || inp.includes('[200~')
         const text = inp.replace(BRACKET_PASTE, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
 
@@ -1805,6 +1829,8 @@ interface TextInputProps {
   columns?: number
   cursorSnapshotRef?: MutableRefObject<InputCursorSnapshot | null>
   focus?: boolean
+  /** Leave ↑/↓ to the owner: a form that moves field focus with them owns the key, not the field. */
+  ignoreVerticalArrows?: boolean
   mask?: string
   mouseApiRef?: MutableRefObject<null | TextInputMouseApi>
   onChange: (v: string) => void
@@ -1855,7 +1881,7 @@ export const shouldPassThroughToGlobalHandler = (
   (key.ctrl && input === 'c') ||
   (key.ctrl && input === 'x') ||
   (key.ctrl && input === 'o') ||
-  (key.ctrl && input === 't') ||
+  (key.ctrl && (input === 'r' || input === 't')) ||
   key.tab ||
   (key.shift && key.tab) ||
   key.pageUp ||

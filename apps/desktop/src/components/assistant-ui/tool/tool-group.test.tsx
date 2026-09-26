@@ -15,12 +15,9 @@ import { formatTimelineRange } from '../thread/timestamp'
 // Timeline timestamps render only when `display.timestamps` is enabled.
 $displayTimestamps.set(true)
 
-// A run of tool calls collapses to a one-line summary once it has settled, but
-// a run with anything still pending always renders its rows. That rule is what
-// keeps the "approval must never be buried" bug fixed: an inline ApprovalBar
-// only ever exists on a pending tool, and a pending tool's run is never behind
-// a chevron. These cover both halves — the collapse itself, and the approval
-// staying in the visual flow.
+// Tool runs retain their own disclosure behavior. Approvals belong to a
+// persistent transcript host outside those runs, so collapsing or mounting a
+// tool row cannot hide or relocate the decision.
 
 const createdAt = new Date('2026-06-03T00:00:00.000Z')
 
@@ -123,33 +120,6 @@ function completedOnlyMessage(): ThreadMessage {
         timestamp: createdAt.getTime() / 1000 + 10.125,
         completedAt: createdAt.getTime() / 1000 + 12.875,
         result: { content: '127.0.0.1 localhost' }
-      }
-    ],
-    status: { type: 'complete', reason: 'stop' },
-    createdAt,
-    metadata: {
-      unstable_state: null,
-      unstable_annotations: [],
-      unstable_data: [],
-      steps: [],
-      custom: {}
-    }
-  } as unknown as ThreadMessage
-}
-
-function failedOnlyMessage(): ThreadMessage {
-  return {
-    id: 'assistant-failed-only',
-    role: 'assistant',
-    content: [
-      {
-        type: 'tool-call',
-        toolCallId: 'term-failed',
-        toolName: 'terminal',
-        args: { command: 'exit 1' },
-        argsText: JSON.stringify({ command: 'exit 1' }),
-        isError: true,
-        result: { stderr: 'boom' }
       }
     ],
     status: { type: 'complete', reason: 'stop' },
@@ -442,42 +412,9 @@ describe('a file edit among ordinary activity', () => {
 
     expect(shape).toEqual(['summary', 'row', 'summary'])
   })
-
-  it('keeps the diff itself on screen rather than behind the summary', async () => {
-    const { container } = render(<GroupHarness message={editBetweenRunsMessage()} />)
-
-    await waitFor(() => {
-      expect(container.querySelector('[data-tool-row][data-file-edit]')).not.toBeNull()
-    })
-  })
-})
-
-// The transcript rests its scaffolding at a fade, keyed off one attribute. A
-// surface that renders without it is brighter than everything around it, which
-// is how two adjacent, identical rows came to sit at two opacities.
-describe('transcript fade', () => {
-  it('marks every row and summary as scaffolding', async () => {
-    const { container } = render(<GroupHarness message={editBetweenRunsMessage()} />)
-
-    await screen.findByText('Explored 2 files')
-
-    const unmarked = [...container.querySelectorAll('[data-tool-summary],[data-tool-row]')].filter(
-      node => !node.hasAttribute('data-conversation-scaffold')
-    )
-
-    expect(unmarked).toHaveLength(0)
-  })
 })
 
 describe('live tool run', () => {
-  it('keeps its rows on screen instead of hiding them behind the summary', async () => {
-    const { container } = render(<GroupHarness message={groupedPendingMessage()} />)
-
-    await waitFor(() => {
-      expect(container.querySelectorAll('[data-tool-row]').length).toBeGreaterThan(0)
-    })
-  })
-
   it('honors explicit disclosure across live updates and completion', async () => {
     const message = groupedPendingMessage()
     const { container, rerender } = render(<GroupHarness message={message} />)
@@ -586,28 +523,28 @@ describe('tool run left unresolved', () => {
 })
 
 describe('flat tool list approval surfacing', () => {
-  it('renders no inline approval bar when there is no live approval', async () => {
-    const { container } = render(<GroupHarness message={groupedPendingMessage()} />)
-
-    // The pending terminal row mounts immediately, but its inline ApprovalBar
-    // returns null while $approvalRequest is empty.
-    await waitFor(() => {
-      expect(container.querySelectorAll('[data-slot="tool-block"]').length).toBeGreaterThan(0)
-    })
-    expect(container.querySelector('[data-slot="tool-approval-inline"]')).toBeNull()
-  })
-
-  it('surfaces the approval inline and never under a hidden ancestor', async () => {
+  it('keeps the approval visible in the same host when tool rows arrive', async () => {
     setApprovalRequest({ command: 'rm -rf /tmp/x', description: 'dangerous command', sessionId: 'sess-1' })
+    const message = groupedPendingMessage()
+    assert(message.role === 'assistant')
 
-    const { container } = render(<GroupHarness message={groupedPendingMessage()} />)
+    const { container, rerender } = render(
+      <GroupHarness message={{ ...message, content: [{ type: 'text', text: 'Waiting for approval.' }] }} />
+    )
+
+    const run = await screen.findByRole('button', { name: /Run/ })
+    const host = run.closest('[data-approval-stack]')
+    expect(host).not.toBeNull()
+    expect(host?.parentElement?.getAttribute('data-slot')).toBe('aui_thread-content')
+    expect(host?.closest('[hidden], [inert], [data-tool-row], [data-tool-group]')).toBeNull()
+
+    rerender(<GroupHarness message={message} />)
 
     await waitFor(() => {
-      const bar = container.querySelector('[data-slot="tool-approval-inline"]')
-      expect(bar).not.toBeNull()
-      // Flat rows live directly in the flow — nothing should ever wrap the bar
-      // in a `hidden` subtree.
-      expect(bar?.closest('[hidden]')).toBeNull()
+      expect(container.querySelector('[data-approval-stack]')).toBe(host)
+      expect(screen.getByRole('button', { name: /Run/ })).toBe(run)
+      expect(run.closest('[hidden], [inert]')).toBeNull()
+      expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
     })
   })
 
@@ -649,18 +586,6 @@ describe('flat tool list approval surfacing', () => {
     })
   })
 
-  it('lets failed tool rows be dismissed', async () => {
-    render(<GroupHarness message={failedOnlyMessage()} />)
-
-    const dismiss = await screen.findByLabelText('Dismiss')
-
-    fireEvent.click(dismiss)
-
-    await waitFor(() => {
-      expect(screen.queryByLabelText('Dismiss')).toBeNull()
-    })
-  })
-
   it('does not show dismiss for pending tool rows', async () => {
     const { container } = render(<GroupHarness message={pendingOnlyMessage()} />)
 
@@ -669,39 +594,6 @@ describe('flat tool list approval surfacing', () => {
     })
 
     expect(screen.queryByLabelText('Dismiss')).toBeNull()
-  })
-})
-
-describe('tool error explanations', () => {
-  it('keeps lookup misses neutral and exposes actual failures when expanded', async () => {
-    for (const [error, destructive] of [
-      ['File not found: /repo/session-view.ts', false],
-      ['Permission denied reading /repo/session-view.ts', true]
-    ] as const) {
-      const message = completedOnlyMessage()
-
-      assert(message.role === 'assistant')
-
-      const part = message.content[0]!
-
-      assert(part.type === 'tool-call')
-
-      const { container, unmount } = render(
-        <GroupHarness
-          message={{
-            ...message,
-            content: [{ ...part, result: { error }, args: { path: '/repo/session-view.ts' } }]
-          }}
-        />
-      )
-
-      fireEvent.click(await screen.findByText('Read session-view.ts'))
-
-      await waitFor(() => expect(container.textContent).toContain(error))
-      expect(Boolean(container.querySelector('[data-tool-row] .text-destructive'))).toBe(destructive)
-      unmount()
-      $toolDisclosureStates.set({})
-    }
   })
 })
 

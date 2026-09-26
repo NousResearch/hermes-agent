@@ -17,12 +17,11 @@ description: "通过 WebSocket gateway 将 Hermes Agent 连接到元宝企业消
 - 拥有机器人创建权限的元宝账号
 - 元宝 APP_ID 和 APP_SECRET（由平台管理员提供）
 - Python 包：`websockets` 和 `httpx`
-- 媒体支持需要：`aiofiles`
 
 安装所需依赖：
 
 ```bash
-pip install websockets httpx aiofiles
+hermes pm repair
 ```
 
 ## 配置
@@ -336,6 +335,6 @@ hermes chat -q "Send 'Hello from CLI' to yuanbao:group:group_code"
 ## 相关文档
 
 - [消息 Gateway 概览](./index.md)
-- [斜杠命令参考](/reference/slash-commands)
-- [Cron Job](/user-guide/features/cron)
-- [后台会话](/user-guide/cli#background-sessions)
+- [斜杠命令参考](../../reference/slash-commands.md)
+- [Cron Job](../features/cron.md)
+- [后台会话](../cli.md#background-sessions)

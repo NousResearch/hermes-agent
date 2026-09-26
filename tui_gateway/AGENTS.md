@@ -26,7 +26,10 @@ is the facade with the method/event catalog; methods live in `methods_*.py` sibl
 `event_publisher.py` / `event_replay.py`, server→client requests in `server_requests.py` (`send()` blocks
 the agent thread until the response frame with the same `srq-<n>` id arrives; `cancel*` withdraws with a
 `request.cancel` event; `open_requests(sid)` is what `session.resume` / `session.events.since` replay so a
-reconnecting client re-renders the still-open questions). Desktop reaches the same server over WebSocket
+reconnecting client re-renders the still-open questions). A client says once per connection that it
+answers them (`client.capabilities {server_requests: true}`, sent by the shared channel on `gateway.ready`);
+a WebSocket client that never did is an app build older than server→client requests, and `send()` fails
+fast for it instead of stalling the agent for the deadline. Desktop reaches the same server over WebSocket
 via `apps/shared` (`JsonRpcGatewayClient`, `onRequest`). New RPC = a new `methods_<topic>.py` or an entry
 in an existing topical sibling, registered in the table — no `if method == ...` chain (root shape rules).
 
@@ -46,6 +49,30 @@ New question for the user = `_ask("<method>", sid, params, timeout)` in the emit
 and a `server_request(...)` in `contracts/server_requests.py`.
 New event = `event("<type>", Payload)` in `contracts/events.py`; the emitter is checked against it.
 
+## Profile scope in RPC methods
+
+One `serve` process may host sessions from several profile homes (Desktop pooled backends launch
+under a profile; the dashboard serves several). The launch profile is a profile: "default" means
+the launch home, never `~/.hermes`. The first non-launch home hosted flips
+`launch_profile_policy.py` → `set_multiplex_active(True)`; without it every fail-closed guard is
+silently off. Every method that reads or writes home-, config- or `.env`-derived state runs under
+`server.py::@_profile_scoped` (resolved from the live session's `profile_home`, or the explicit
+`profile` argument for sessionless calls) and, for tool/agent construction,
+`methods_tools.py::_profile_scoped_rpc`; the tokens come from `model_switch.py::
+_profile_runtime_scope_tokens(profile_home)` — home + secret scope + terminal scope together.
+**A method that sets only `get_hermes_home_override()` is half-bound**: config paths resolve to the
+right profile while credentials and `TERMINAL_*` policy still come from the launch profile.
+Off-turn paths bind the same way: `session_lifecycle.py::_finalize_session` / `_teardown_session`
+enter `_session_profile_runtime_scope(session)` around `on_session_end`, the memory commit and
+`agent.close()` (their callers are unscoped reapers, Timers, atexit and pool threads); background
+threads start via `agent.memory_provider.spawn_context_thread`, never bare `threading.Thread`;
+children act for the served profile through `tools/environments/local.py::served_profile_child_env`
+(`hermes -p X` workers, `key_cmd` helpers, browser drivers), never `dict(os.environ)`. Grep for
+unscoped handlers before adding one: `rg -n "^(async )?def " tui_gateway/methods_*.py | rg -v
+_profile_scoped`. Probe with two on-disk homes and a `.env` name present only in the secondary:
+call the method for that session and assert the secondary's value resolves and the launch
+profile's does not, and that `os.environ` is unchanged afterwards.
+
 ## Key surfaces
 
 | Surface | Ink component | Gateway method / event |
@@ -56,7 +83,7 @@ New event = `event("<type>", Payload)` in `contracts/events.py`; the emitter is 
 | Clarify / sudo / secret | `prompts.tsx`, `maskedPrompt.tsx` | server→client requests `clarify` / `sudo` / `secret` (`server_requests.py`) |
 | Session picker | `sessionPicker.tsx` | `session.list` / `session.resume` |
 | Slash commands | local handler + fallthrough | `slash.exec` → `_SlashWorker`; `command.dispatch` |
-| Completions | `useCompletion` hook | `complete.slash`, `complete.path` |
+| Completions | `useCompletion` hook | `complete.slash`, `complete.path` (under a non-local `terminal.backend`, `complete.path` lists the directory through the session's terminal backend — never the gateway host, whose same-named tree would look right and be wrong) |
 | Theming | `theme.ts` + `branding.tsx` | `gateway.ready` carries skin data |
 | Plugin compat notice | — | `plugins.compat_report` (see `plugins/AGENTS.md`) |
 | Connection operations (desktop card) | desktop `store/connection-request.ts` | `connection.request` → `connection.update`* → `connection.respond {op_id}`; `connectors.operation.status`. The op lives in `tools/connectors/live.py`; the card never parks the tool thread (`methods_connectors.py`). |
@@ -64,11 +91,15 @@ New event = `event("<type>", Payload)` in `contracts/events.py`; the emitter is 
 ## Shared subagent snapshots
 
 `subagent.list({session_id})` returns `{subagents, delegations}` for the calling
-transport's live session. Live child records are pinned to the exact session
-record and transport. Child authority is resolved at RPC time against the owning session's
+transport's live session. The roster is read-only and follows the CONVERSATION: exact-owner
+records plus children whose durable lineage (`owner_agent_session_id` → compression tip, the
+same spine as in-process `delegate_task(action="list")`) is the session's agent, because a
+Desktop reconnect / resume remints the UI session id and compression rotates the key while the
+children keep running (#114909). Control (`steer` / `interrupt` / `tail`) stays pinned to the
+exact session record and transport. Child authority is resolved at RPC time against the owning session's
 LIVE transport slot, so every authenticated reattach path (prompt.submit, queued drain,
 resume, activate, viewer failover) carries it with no registry bookkeeping — never add a
-per-record transport sync at an attach site; foreign or retired generations remain inaccessible. `last_tool` is the last started tool, not an in-flight
+per-record transport sync at an attach site; foreign or retired generations remain uncontrollable. `last_tool` is the last started tool, not an in-flight
 indicator. Async completion units are not agents and lack exact generation authority;
 `delegations` remains an empty array for wire compatibility. No dispatch context,
 results, callbacks, or routing keys are sent. Clients hydrate from this snapshot

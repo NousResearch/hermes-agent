@@ -1291,13 +1291,18 @@ def _finalize_picker_rows(results: list, user_providers, current_model: str) -> 
     return results
 
 
-def _prepend_moa_picker_provider(providers: List[dict], current_provider: str = "") -> List[dict]:
+def _prepend_moa_picker_provider(providers: List[dict], current_provider: str = "",
+                                 excluded_providers: list | None = None) -> List[dict]:
     """Add the virtual MoA provider row used by interactive model pickers.
 
     ``list_authenticated_providers()`` only returns real/auth-backed providers; the CLI inventory
     adds MoA separately, so gateway pickers need the same virtual row here. Reuses the
-    inventory's single row builder so the row shape stays defined in one place."""
+    inventory's single row builder so the row shape stays defined in one place. An
+    explicitly excluded MoA stays hidden like every other provider."""
     try:
+        excluded = {str(p).strip().lower() for p in (excluded_providers or []) if p}
+        if "moa" in excluded:
+            return [p for p in providers if str(p.get("slug", "")).lower() != "moa"]
         from hermes_cli.inventory import _moa_provider_row
         moa_row = _moa_provider_row(current_provider)
         if moa_row is None:
@@ -1329,7 +1334,8 @@ def list_picker_providers(
         non_blocking_catalogs=non_blocking_catalogs, probe_custom_providers=probe_custom_providers,
         probe_current_custom_provider=probe_current_custom_provider)
     if include_moa:
-        providers = _prepend_moa_picker_provider(providers, current_provider=current_provider)
+        providers = _prepend_moa_picker_provider(
+            providers, current_provider=current_provider, excluded_providers=excluded_providers)
 
     filtered: List[dict] = []
     for p in providers:

@@ -272,3 +272,44 @@ def test_non_blocking_listing_opens_no_socket(monkeypatch, tmp_path):
 
     assert live == [], f"cache-only listing ran live probes in the request path: {live}"
     assert any(r.get("slug") == "openrouter" and r.get("models") for r in rows), "OpenRouter row lost its curated snapshot"
+
+
+def test_explicit_only_drops_ambient_rows_but_keeps_current_and_custom(monkeypatch):
+    """``explicit_only`` reuses the Desktop explicit-provider filter: an ambient gh CLI Copilot row
+    goes, the current provider and a user-defined endpoint stay."""
+    providers = [
+        _make_provider("openai-codex", models=["gpt-5.4"], is_current=True),
+        _make_provider("copilot", models=["gpt-5.4"]),
+        _make_provider("custom:lab", models=["lab-1"], is_user_defined=True,
+                       source="user-config", api_url="http://lab/v1"),
+    ]
+    monkeypatch.setattr(model_switch, "list_authenticated_providers",
+                        lambda **kw: [dict(p) for p in providers])
+    monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda slug: False)
+    monkeypatch.setattr("hermes_cli.inventory._external_process_signed_in", lambda slug: False)
+
+    kept = model_switch_providers.list_picker_providers(current_provider="openai-codex", explicit_only=True)
+    assert [p["slug"] for p in kept] == ["openai-codex", "custom:lab"]
+
+    everything = model_switch_providers.list_picker_providers(current_provider="openai-codex")
+    assert [p["slug"] for p in everything] == ["openai-codex", "copilot", "custom:lab"]
+
+
+def test_explicit_only_hides_default_config_moa_row(monkeypatch):
+    """The DEFAULT_CONFIG MoA preset is not user configuration; explicit_only hides the virtual row
+    unless the raw config enables a preset (same rule as the Desktop picker, #61889)."""
+    monkeypatch.setattr(model_switch, "list_authenticated_providers",
+                        lambda **kw: [_make_provider("openai-codex", models=["gpt-5.4"], is_current=True)])
+    monkeypatch.setattr(hermes_cli_model_switch_providers, "_prepend_moa_picker_provider",
+                        lambda providers, current_provider="": [_make_provider("moa", models=["default"],
+                                                                               source="virtual")] + providers)
+    monkeypatch.setattr("hermes_cli.inventory._raw_config_has_enabled_moa_preset", lambda: False)
+
+    kept = model_switch_providers.list_picker_providers(
+        current_provider="openai-codex", include_moa=True, explicit_only=True)
+    assert [p["slug"] for p in kept] == ["openai-codex"]
+
+    monkeypatch.setattr("hermes_cli.inventory._raw_config_has_enabled_moa_preset", lambda: True)
+    kept = model_switch_providers.list_picker_providers(
+        current_provider="openai-codex", include_moa=True, explicit_only=True)
+    assert [p["slug"] for p in kept] == ["moa", "openai-codex"]

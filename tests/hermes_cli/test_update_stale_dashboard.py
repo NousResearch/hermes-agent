@@ -13,9 +13,11 @@ History:
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import sys
+import types
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -25,6 +27,22 @@ from hermes_cli.dashboard_procs import _kill_stale_dashboard_processes
 from hermes_cli import dashboard_procs
 from hermes_cli import main_dashboard
 from hermes_cli import update_cmd_maint
+
+
+def test_dashboard_import_tolerates_stale_cli_output_without_line_input(monkeypatch):
+    """Post-update imports must not bind a helper absent from a cached old module."""
+    import hermes_cli
+
+    original_dashboard = sys.modules["hermes_cli.main_dashboard"]
+    stale_cli_output = types.ModuleType("hermes_cli.cli_output")
+    with monkeypatch.context() as isolated:
+        isolated.setitem(sys.modules, "hermes_cli.cli_output", stale_cli_output)
+        isolated.delitem(sys.modules, "hermes_cli.main_dashboard")
+        isolated.delattr(hermes_cli, "main_dashboard", raising=False)
+        imported = importlib.import_module("hermes_cli.main_dashboard")
+        assert callable(imported._line_input)
+    sys.modules["hermes_cli.main_dashboard"] = original_dashboard
+    hermes_cli.main_dashboard = original_dashboard
 
 
 @pytest.fixture(autouse=True)

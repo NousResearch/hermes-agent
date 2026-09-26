@@ -235,7 +235,28 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
   }
 
   if (prefixIsEarlier) {
-    return [...previous.slice(0, anchor), ...refreshedTail]
+    const prefix = previous.slice(0, anchor)
+    // A latest page that opens on an orphan tool row renders that fold with
+    // no rowId. Comparing the page with itself anchors on the next durable
+    // row, so this prefix is the fold the refreshed page already starts with.
+    // Prepending it makes the page longer than itself and the stale-transcript
+    // guard refuses every send (#124311). Drop only a leading run the
+    // refreshed page already has; an earlier durable prefix still stays.
+    let alreadyOnPage = 0
+
+    while (
+      alreadyOnPage < prefix.length &&
+      alreadyOnPage < refreshedTail.length &&
+      prefix[alreadyOnPage].id === refreshedTail[alreadyOnPage].id
+    ) {
+      alreadyOnPage += 1
+    }
+
+    if (alreadyOnPage === prefix.length) {
+      return refreshedTail
+    }
+
+    return [...prefix.slice(alreadyOnPage), ...refreshedTail]
   }
 
   const refreshedIds = new Set(refreshedTail.map(message => message.id))

@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import secrets
+import threading
 import time
 from typing import Optional
 
@@ -191,7 +192,16 @@ def _load_config_basic_auth_section() -> dict:
 def _resolve_secret(cfg_section: dict) -> bytes:
     """Resolve the token-signing secret (base64, hex, or raw text). When unset, generates
     a random per-process secret (sessions then don't survive a restart or span multiple
-    workers — logged at INFO)."""
+    workers — logged at INFO).
+
+    The fallback key is derived once per process, not from fresh entropy on every call:
+    registering the provider twice in one process (a forced plugin re-discovery, a second
+    per-home manager, an operator password change) upserts a NEW provider under the same
+    name, and fresh entropy would give it a different key — so every session minted before
+    the re-registration would stop verifying, which is exactly the "login returns 200, every
+    API call 401s" symptom (#117314). One key per process keeps a re-registration
+    transparent; it still does NOT survive a restart, which is what the INFO log warns
+    about."""
     raw = resolve_env_or_cfg("HERMES_DASHBOARD_BASIC_AUTH_SECRET", cfg_section.get("secret"))
     if not raw:
         logger.info(
@@ -199,7 +209,7 @@ def _resolve_secret(cfg_section: dict) -> bytes:
             "per-process signing key. Sessions will not survive a restart or span "
             "multiple workers. Set dashboard.basic_auth.secret (or "
             "HERMES_DASHBOARD_BASIC_AUTH_SECRET) for stable sessions.")
-        return secrets.token_bytes(32)
+        return _process_scoped_secret()
     for decoder in (base64.b64decode, bytes.fromhex):
         try:
             decoded = decoder(raw)
@@ -208,6 +218,20 @@ def _resolve_secret(cfg_section: dict) -> bytes:
         except (ValueError, TypeError):
             pass
     return raw.encode("utf-8")
+
+
+# One fallback signing key per process, shared by every provider instance built without an
+# explicit secret (see ``_resolve_secret``).
+_PROCESS_SECRET: Optional[bytes] = None
+_PROCESS_SECRET_LOCK = threading.Lock()
+
+
+def _process_scoped_secret() -> bytes:
+    global _PROCESS_SECRET
+    with _PROCESS_SECRET_LOCK:
+        if _PROCESS_SECRET is None:
+            _PROCESS_SECRET = secrets.token_bytes(32)
+        return _PROCESS_SECRET
 
 
 def _settings() -> dict:

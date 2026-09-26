@@ -211,6 +211,20 @@ def refuse_foreign_owned_venv(project_root: Path) -> None:
             )
 
 
+def _supervised_child() -> bool:
+    """A launcher-marked child: booted by a manager, not a user's shell.
+
+    Launcher markers only — not INVOCATION_ID, which systemd exports to every
+    descendant: an ordinary hermes command inside a CI runner still owes its repair.
+    Same truthy set as the neighbouring ``HERMES_DISABLE_LAZY_INSTALLS`` read, so
+    an explicit ``0``/``false`` does not suppress the completion tail.
+    """
+    return any(
+        os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+        for name in ("HERMES_SUPERVISED_CHILD", "HERMES_S6_SUPERVISED_CHILD")
+    )
+
+
 def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     """Finish a self-managed source update before importing app dependencies.
 
@@ -219,6 +233,13 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     so a tail that failed is retried on the next launch WITHOUT rebuilding
     dependencies that are already current. Old updaters need not write a
     marker (and cannot accidentally clear this obligation).
+    A supervised child never retries that tail: its manager restarts it on
+    every start, so a sticky marker would re-run the tail (and its
+    environment builds) on each boot until the disk fills. The tail stays
+    the CLI's to finish, via ``hermes update`` / ``hermes pm install``.
+    Stale dependencies stay a supervised child's one-shot duty, though: it
+    still syncs those and relaunches instead of booting on an out-of-date
+    tree (or crash-looping under its manager's restart policy).
     Return the store interpreter when this process must restart cleanly.
     """
     import os
@@ -248,7 +269,7 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
 
     current = pm.venv_is_current(project_root=root)
     pending = completion_pending_path(root)
-    if not current or pending.is_file():
+    if not current or (pending.is_file() and not _supervised_child()):
         lock = UpdateLock()
         if not lock.acquire():
             raise RuntimeError("an update is still running; wait for it to exit, then relaunch Hermes")

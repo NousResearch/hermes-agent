@@ -291,3 +291,73 @@ def test_launch_under_the_owning_update_does_not_run_the_tail_again(tmp_path, mo
     assert completion_tail == []
     assert pending.is_file(), "the owning update's obligation was discharged by its own tail"
 
+
+@pytest.mark.parametrize("marker", ["HERMES_SUPERVISED_CHILD", "HERMES_S6_SUPERVISED_CHILD"])
+def test_supervised_launch_does_not_repay_a_pending_tail(
+    tmp_path, monkeypatch, completion_tail, marker
+):
+    """A supervised start retries the tail on every manager restart (#123340).
+
+    systemd/launchd/s6 launchers export a supervised-child marker and restart the
+    gateway under a policy (the Windows Scheduled-Task launcher sets the marker
+    without a restart policy, #113670); with a marker that never clears, each boot
+    would rebuild the completion environment until the disk fills. The obligation
+    must stay with the CLI (`hermes update` / `hermes pm install`), not the
+    supervised process.
+    """
+    import pm
+    from hermes_cli import _launchers
+
+    root = _self_checkout(tmp_path, monkeypatch)
+    pending = venv_sync.completion_pending_path(root)
+    pending.parent.mkdir(parents=True)
+    pending.write_text("owed\n")
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+    monkeypatch.setenv(marker, "1")
+
+    assert venv_sync.prepare_launch(root, ["gateway", "run"]) is None
+    assert completion_tail == []
+    assert pending.is_file(), (
+        "a supervised child discharged an obligation the CLI still owes"
+    )
+
+
+def test_supervised_launch_with_stale_dependencies_still_syncs(
+    tmp_path, monkeypatch, completion_tail
+):
+    """Stale dependencies stay one-shot for a supervised child (#123340 review).
+
+    A hand-run ``git pull`` leaves the tree's lockfile ahead of the installed
+    tools with no pending marker; a manager restart must still sync and finish
+    (pre-image behavior) instead of booting on the stale dependency graph — or
+    crash-looping under ``Restart=always`` with no sync at all. The sticky-tail
+    exemption above must not swallow this one-shot condition.
+    """
+    import pm
+    from hermes_cli import _launchers
+
+    root = _self_checkout(tmp_path, monkeypatch)
+    syncs = []
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: False)
+    monkeypatch.setattr(pm, "sync_venv", lambda *a, **kw: syncs.append(a))
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+    monkeypatch.setenv("HERMES_SUPERVISED_CHILD", "1")
+
+    venv_sync.prepare_launch(root, ["gateway", "run"])
+    assert syncs, "a supervised child booted on a stale dependency graph without syncing"
+    assert completion_tail, "the tail armed by that sync was never finished"
+    assert not venv_sync.completion_pending_path(root).is_file()
+
+
+@pytest.mark.parametrize(
+    "value,supervised",
+    [("1", True), ("true", True), ("on", True), ("0", False), ("false", False)],
+)
+def test_supervised_marker_off_values_do_not_suppress_the_tail(monkeypatch, value, supervised):
+    """The marker parses like every other launcher env flag: `0`/`false` means off."""
+    monkeypatch.delenv("HERMES_SUPERVISED_CHILD", raising=False)
+    monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
+    monkeypatch.setenv("HERMES_SUPERVISED_CHILD", value)
+    assert venv_sync._supervised_child() is supervised
+

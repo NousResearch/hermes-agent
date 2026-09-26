@@ -512,6 +512,29 @@ class TestSendMethods(unittest.TestCase):
             os.unlink(tmp_path)
 
 
+    def test_send_document_attachment_name_survives_a_standard_parser(self):
+        """The name given to send_document is the name a recipient's RFC parser (and our own inbound
+        extractor) reads back, including names that are not a bare MIME token."""
+        import asyncio
+        import email
+        import tempfile
+        from email import policy
+        from pathlib import Path
+        from plugins.platforms.email.adapter import _extract_attachments
+        adapter = self._make_adapter()
+        for name in ("Quarterly Report.pdf", "notes;v2.txt", "報告書.pdf"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / name
+                path.write_bytes(b"%PDF-1.4 content")
+                with patch("smtplib.SMTP") as mock_smtp:
+                    mock_server = MagicMock()
+                    mock_smtp.return_value = mock_server
+                    self.assertTrue(asyncio.run(adapter.send_document("user@test.com", str(path))).success)
+                raw = mock_server.send_message.call_args[0][0].as_bytes()
+                part = next(p for p in email.message_from_bytes(raw, policy=policy.default).iter_attachments())
+                self.assertEqual(part.get_filename(), name)
+                self.assertEqual([a["filename"] for a in _extract_attachments(email.message_from_bytes(raw))], [name])
+
     def test_send_document_threads_on_explicit_reply_to(self):
         """An explicit reply_to wins over the cached thread context for attachment sends (#10131)."""
         import asyncio

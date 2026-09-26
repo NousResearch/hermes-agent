@@ -254,8 +254,8 @@ def _readiness_check(rid, params, probe):
     profile = str(params.get("profile") or "").strip() if isinstance(params, dict) else ""
     home = None
     if profile:
-        from hermes_cli import profiles as profiles_mod
-        if not profiles_mod.profile_exists(profile):
+        from profiles.registry import profile_exists
+        if not profile_exists(profile):
             return _ok(rid, {"ok": False, "profile": params.get("profile"),
                              "error": f"Profile '{profile}' does not exist on this backend."})
         home = _profile_home(profile)

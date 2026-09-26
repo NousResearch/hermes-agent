@@ -83,7 +83,7 @@ def test_supervised_child_marker_is_a_launch_not_a_restart_route():
     the gateway a supervised LAUNCH (self-kill guards active, #113667) without selecting the exit-75
     restart route, which the task cannot honour (#113670)."""
     from gateway.restart import is_gateway_supervisor_process, is_supervised_gateway_launch
-    from hermes_cli.gateway_windows import _GATEWAY_ENV
+    from gateway.windows_service import _GATEWAY_ENV
 
     task_env = dict(_GATEWAY_ENV)
     assert task_env["HERMES_SUPERVISED_CHILD"] == "1"

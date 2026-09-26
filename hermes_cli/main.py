@@ -30,7 +30,7 @@ if _early_recovery_mod.restore_interrupted_pull():
 # Windows: neutralize CPython's ``platform._syscmd_ver`` before anything else
 # imports — it shells out ``cmd /c ver`` and flashes a console when this
 # process is windowless (pythonw gateway, kanban workers). No-op on POSIX.
-from hermes_cli._subprocess_compat import suppress_platform_ver_console
+from runtime.subprocess_compat import suppress_platform_ver_console
 
 suppress_platform_ver_console()
 
@@ -44,6 +44,7 @@ _bootstrap_root = os.path.realpath(os.path.join(os.path.dirname(__file__), os.pa
 if _bootstrap_root not in sys.path:
     sys.path.insert(0, _bootstrap_root)
 from hermes_cli import _startup_fast  # noqa: E402
+from runtime.desktop_identity import is_desktop_ssh_backend_argv  # noqa: E402
 
 # A literal ``~``/``$VAR`` in HERMES_HOME (fish, or any quoted value) must become absolute
 # before the first reader — otherwise it resolves against cwd and scaffolds <cwd>/~/.hermes.
@@ -468,7 +469,7 @@ def _looks_like_hermes_invocation() -> bool:
 
 
 def _exit_invalid_profile_name(value: str) -> None:
-    from hermes_cli.profiles import _invalid_profile_name_error
+    from profiles.names import _invalid_profile_name_error
 
     print(f"Error: {_invalid_profile_name_error(value)}", file=sys.stderr)
     print("Run `hermes profile list` to see your profiles.", file=sys.stderr)
@@ -586,7 +587,7 @@ def _s6_supervised_gateway_run(argv: list) -> bool:
         return False
     if os.environ.get("HERMES_GATEWAY_NO_SUPERVISE", "").lower() in ("1", "true", "yes"):
         return False
-    from hermes_cli.service_manager import _s6_running
+    from gateway.service_manager import _s6_running
     return _s6_running()
 
 
@@ -610,7 +611,7 @@ def _apply_profile_override() -> None:
         return
 
     if (profile_name is None and not _under_gateway_supervisor(argv)
-            and not _startup_fast.is_desktop_ssh_backend_argv(argv)
+            and not is_desktop_ssh_backend_argv(argv)
             and not _s6_supervised_gateway_run(argv)):
         try:
             from hermes_constants import get_default_hermes_root
@@ -626,7 +627,7 @@ def _apply_profile_override() -> None:
     if profile_name is None:
         return
     try:
-        from hermes_cli.profiles import resolve_profile_env
+        from profiles.paths import resolve_profile_env
 
         hermes_home = resolve_profile_env(profile_name)
     except FileNotFoundError as exc:
@@ -788,7 +789,7 @@ from hermes_cli.main_platform_setup import (
     cmd_whatsapp,
     cmd_whatsapp_cloud,
 )
-from hermes_cli.process_identity import is_desktop_owned_backend as _is_desktop_owned_backend
+from runtime.desktop_identity import is_desktop_owned_backend as _is_desktop_owned_backend
 from hermes_cli.main_dashboard import (
     _attach_to_host_backend,
     _finalize_update_output,
@@ -2730,9 +2731,13 @@ def cmd_dashboard(args):
     # named-profile re-exec could leak that profile's higher limit into the
     # machine/default dashboard, whose lower policy intentionally cannot undo it.
     # This also covers Desktop SSH's isolated `serve` child, which does not route.
-    from hermes_cli.resource_limits import apply_nofile_soft_limit
+    try:
+        from hermes_cli.config import load_config_readonly
+        from runtime.resource_limits import apply_nofile_soft_limit
 
-    apply_nofile_soft_limit()
+        apply_nofile_soft_limit(load_config_readonly())
+    except Exception:
+        logger.debug("Could not apply RLIMIT_NOFILE startup policy", exc_info=True)
 
     _ssh_session_token = _read_ssh_session_token_file(_token_file) if _token_file else None
     _mcp_discovery_after_bind = _dashboard_prepare_runtime(args, _headless_backend)
@@ -3534,7 +3539,7 @@ def main():
 
     # Force UTF-8 stdio on Windows before anything prints.  No-op elsewhere.
     try:
-        from hermes_cli.stdio import configure_windows_stdio
+        from runtime.stdio import configure_windows_stdio
         configure_windows_stdio()
     except Exception:
         pass

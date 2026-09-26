@@ -75,10 +75,13 @@ def test_cancelled_queued_admission_is_a_terminal_cancelled_receipt_not_ambiguou
         epoch = begin_runtime_epoch(db, instance_id='restart')
         recover_session_inputs(db, epoch=epoch)
         authority = SimpleNamespace(db=db, waiters={})
+        with _locked(tmp_path) as root:
+            (root / 'unreadable.json').write_text('{not-json', encoding='utf-8')
         asyncio.run(recover_bot_deliveries(authority))
         with _locked(tmp_path) as root:
             recovered = {key: _read(root / f'{key}.json')['status'] for key in records}
         assert recovered == {'a' * 32: 'failed', 'b' * 32: 'cancelled'}
+        assert (tmp_path / 'runtime' / 'bot_live_delivery' / 'unreadable.json').exists()
         # The exact retry reads the same classification from the durable admission row.
         assert _result(authority, records['b' * 32])['status'] == 'cancelled'
         assert _result(authority, records['a' * 32])['status'] == 'failed'

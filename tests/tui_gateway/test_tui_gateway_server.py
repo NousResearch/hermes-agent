@@ -9147,7 +9147,7 @@ def test_setup_readiness_scopes_to_requested_profile(monkeypatch, tmp_path):
     bot_home = tmp_path / "profiles" / "bot"
     bot_home.mkdir(parents=True)
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-launch-profile-secret-0000")
-    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda name: name == "bot")
+    monkeypatch.setattr("profiles.registry.profile_exists", lambda name: name == "bot")
     monkeypatch.setattr(server, "_profile_home", lambda profile: bot_home if profile == "bot" else None)
     seen = {}
 
@@ -9188,7 +9188,7 @@ def test_setup_readiness_unknown_profile_never_answers_for_launch_profile(monkey
         "hermes_cli.runtime_provider.resolve_runtime_provider",
         lambda requested=None, **kw: {"provider": "openrouter", "api_key": "sk-or-launch-0000000000", "source": "env"},
     )
-    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda name: False)
+    monkeypatch.setattr("profiles.registry.profile_exists", lambda name: False)
 
     for method in ("setup.status", "setup.runtime_check"):
         resp = server.handle_request({"id": "1", "method": method, "params": {"profile": "ghost"}})

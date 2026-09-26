@@ -36,7 +36,7 @@ def _live_record(hermes_home):
 
 def _alive(monkeypatch, cmdline="python -m hermes_cli.main -p eagle gateway run"):
     monkeypatch.setattr(status, "_pid_exists", lambda pid: pid == _LIVE_PID)
-    monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 1000)
+    monkeypatch.setattr(status._process_identity, "get_process_start_time", lambda pid: 1000)
     monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: cmdline)
 
 

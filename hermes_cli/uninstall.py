@@ -192,25 +192,26 @@ def uninstall_gateway_service():
 
 def _remove_systemd_gateway() -> bool:
     """Linux: uninstall systemd services (both user and system scopes)."""
-    from hermes_cli.gateway import (
-        _systemctl_cmd, _systemd_unit_belongs_to_current_home, get_service_name, get_systemd_unit_path,
-    )
-    svc_name = get_service_name()
+    from gateway.service_identity import service_name
+    from gateway.systemd_identity import unit_path
+    from gateway.systemd_lifecycle import unit_belongs_to_current_home
+    from gateway.systemd_runtime import systemctl_cmd
+    svc_name = service_name()
     removed_any = False
     for is_system, scope in ((False, "user"), (True, "system")):
-        unit_path = get_systemd_unit_path(system=is_system)
-        if not unit_path.exists() or not _systemd_unit_belongs_to_current_home(is_system):
+        path = unit_path(system=is_system)
+        if not path.exists() or not unit_belongs_to_current_home(is_system):
             continue
         try:
             if is_system and os.geteuid() != 0:  # windows-footgun: ok — Linux-only systemd path
-                log_warn(f"System gateway service exists at {unit_path} but needs sudo to remove")
+                log_warn(f"System gateway service exists at {path} but needs sudo to remove")
                 continue
-            cmd = _systemctl_cmd(is_system)
+            cmd = systemctl_cmd(is_system)
             for verb in ("stop", "disable"):
                 subprocess.run(cmd + [verb, svc_name], capture_output=True, check=False)
-            unit_path.unlink()
+            path.unlink()
             subprocess.run(cmd + ["daemon-reload"], capture_output=True, check=False)
-            log_success(f"Removed {scope} gateway service ({unit_path})")
+            log_success(f"Removed {scope} gateway service ({path})")
             removed_any = True
         except Exception as e:
             log_warn(f"Could not remove {scope} gateway service: {e}")
@@ -219,7 +220,7 @@ def _remove_systemd_gateway() -> bool:
 
 def _remove_launchd_gateway() -> bool:
     """macOS: uninstall launchd plist."""
-    from hermes_cli.gateway import get_launchd_plist_path
+    from gateway.launchd_service import get_launchd_plist_path
     plist_path = get_launchd_plist_path()
     if not plist_path.exists():
         return False
@@ -232,7 +233,7 @@ def _remove_launchd_gateway() -> bool:
 def _remove_windows_gateway() -> bool:
     """Windows: uninstall Scheduled Task + Startup-folder entry via ``gateway_windows`` (it owns
     schtasks /Delete, the .cmd unlink and stopping the detached pythonw gateway)."""
-    from hermes_cli import gateway_windows as gw
+    from gateway import windows_service as gw
     if not any(probe() for probe in (gw.is_installed, gw.is_task_registered, gw.is_startup_entry_installed)):
         return False
     try:

@@ -369,7 +369,7 @@ class TestDurability:
         import time
         import weakref
 
-        from hermes_cli.sqlite_safe_read import has_live_connection
+        from storage.sqlite_safe_read import has_live_connection
 
         db_path = tmp_path / "abandoned.db"
         monkeypatch.setattr(SessionDB, "_TOKEN_WRITER_IDLE_SECONDS", 0.01, raising=False)

@@ -334,7 +334,7 @@ class TestUpdaterOwnedBackendDeferral:
                       spawner_create: float | None) -> None:
         import psutil
 
-        from hermes_cli.process_identity import (
+        from runtime.process_identity import (
             LedgerEntry,
             _append_entry,
             install_id,
@@ -455,7 +455,7 @@ class TestUpdaterOwnedBackendDeferral:
             "import json, os, subprocess, sys, time\n"
             f"sys.path.insert(0, {str(PROJECT_ROOT)!r})\n"
             "import psutil\n"
-            "from hermes_cli.process_identity import LedgerEntry, _append_entry, install_id\n"
+            "from runtime.process_identity import LedgerEntry, _append_entry, install_id\n"
             "backend_pid = int(sys.argv[1])\n"
             "entry = LedgerEntry(pid=backend_pid,\n"
             "    create_time=float(psutil.Process(backend_pid).create_time()),\n"

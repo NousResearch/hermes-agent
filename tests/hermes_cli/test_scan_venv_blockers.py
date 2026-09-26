@@ -327,7 +327,7 @@ def test_main_exempts_gateway_chain_but_keeps_other_holders(monkeypatch, capsys)
 def test_main_desktop_serve_backend_still_blocks(monkeypatch, capsys):
     """A `serve` backend with NO ledger identity must keep blocking —
     the updater's stop/relaunch rungs only own ledger-verified backends."""
-    import hermes_cli.process_identity as pi
+    import runtime.process_identity as pi
 
     monkeypatch.setattr(pi, "ledger_entries", lambda **kw: [])
     serve = (
@@ -352,7 +352,7 @@ _SERVE_CMD = r"C:\x\venv\Scripts\python.exe -m hermes_cli.main serve --host 127.
 
 
 def _patch_ledger(monkeypatch, entries, dead):
-    import hermes_cli.process_identity as pi
+    import runtime.process_identity as pi
 
     monkeypatch.setattr(pi, "ledger_entries", lambda **kw: entries)
     monkeypatch.setattr(pi, "spawner_is_dead", lambda entry: dead)
@@ -449,7 +449,7 @@ def test_updater_owned_backend_non_backend_argv_never_deferred(monkeypatch, caps
 
 def test_updater_owned_backend_ledger_failure_blocks(monkeypatch, capsys):
     """Ledger unreadable → unprovable → fail closed (pre-exemption behavior)."""
-    import hermes_cli.process_identity as pi
+    import runtime.process_identity as pi
 
     def _boom(**kw):
         raise RuntimeError("ledger unavailable")

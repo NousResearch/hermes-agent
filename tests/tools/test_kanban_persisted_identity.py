@@ -3,7 +3,7 @@
 ``kanban_comment`` / ``kanban_create`` used to read ``os.environ["HERMES_PROFILE"]`` and fall back to
 ``"worker"``. A multiplexed per-profile cron tick binds the profile as a ``HERMES_HOME`` override and
 never mirrors it into ``os.environ``, so every card comment a served profile's turn wrote was
-authored ``"worker"`` (#119859). ``hermes_cli.profiles.current_profile_name`` is the one resolver:
+authored ``"worker"`` (#119859). ``profiles.current.current_profile_name`` is the one resolver:
 the bound override first, the dispatcher's ``HERMES_PROFILE`` pin only outside an override, the
 process home last. Identity never comes from tool args (#19713).
 """
@@ -95,7 +95,7 @@ def test_a_dispatched_worker_keeps_its_pinned_identity_and_an_unnamed_caller_sta
     assert _last_comment_author(tid) == "pinned-bot"
 
     monkeypatch.delenv("HERMES_PROFILE")
-    import hermes_cli.profiles as profiles
-    monkeypatch.setattr(profiles, "get_active_profile_name", lambda: "")
+    from profiles import current as profile_current
+    monkeypatch.setattr(profile_current, "get_active_profile_name", lambda: "")
     assert json.loads(kt._handle_comment({"task_id": tid, "body": "anon"}))["ok"]
     assert _last_comment_author(tid) == "worker"

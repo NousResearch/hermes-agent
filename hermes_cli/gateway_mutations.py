@@ -1,7 +1,7 @@
 """Prepared native controls retain their identity across ambiguous RPC replies."""
 import json
 import uuid
-from hermes_cli.gateway_client import GatewayClientError
+from gateway.client import GatewayClientError
 
 
 class PreparedMutations:

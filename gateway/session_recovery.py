@@ -46,7 +46,7 @@ class SessionRecoveryMixin:
         if source is not None and source.profile:
             return source.profile
         try:
-            from hermes_cli.profiles import get_active_profile_name
+            from profiles.current import get_active_profile_name
             return get_active_profile_name() or "default"
         except Exception:
             return None
@@ -65,7 +65,7 @@ class SessionRecoveryMixin:
     @staticmethod
     def _active_profile_name() -> str:
         try:
-            from hermes_cli.profiles import get_active_profile_name
+            from profiles.current import get_active_profile_name
             return get_active_profile_name() or "default"
         except Exception:
             return "default"

@@ -6,6 +6,7 @@ the in-container S6ServiceManager instead of falling through to the
 host systemd/launchd/windows code path.
 """
 from __future__ import annotations
+from gateway import service_identity
 
 
 import pytest
@@ -62,10 +63,10 @@ def test_dispatch_all_handles_partial_failure(
 
     rec = _FailOnWriter(["coder", "writer", "assistant"])
     monkeypatch.setattr(
-        "hermes_cli.service_manager.detect_service_manager", lambda: "s6",
+        "gateway.service_manager.detect_service_manager", lambda: "s6",
     )
     monkeypatch.setattr(
-        "hermes_cli.service_manager.get_service_manager", lambda: rec,
+        "gateway.service_manager.get_service_manager", lambda: rec,
     )
     assert gw._dispatch_all_via_service_manager_if_s6("stop") is True
     # The two successful ones were called; writer raised before recording.
@@ -104,11 +105,11 @@ def _stub_s6(monkeypatch: pytest.MonkeyPatch, *, on_s6: bool) -> _CallRecorder:
     fire (on_s6=True) or return False (on_s6=False)."""
     rec = _CallRecorder()
     monkeypatch.setattr(
-        "hermes_cli.service_manager.detect_service_manager",
+        "gateway.service_manager.detect_service_manager",
         lambda: "s6" if on_s6 else "systemd",
     )
     monkeypatch.setattr(
-        "hermes_cli.service_manager.get_service_manager", lambda: rec,
+        "gateway.service_manager.get_service_manager", lambda: rec,
     )
     return rec
 
@@ -131,7 +132,7 @@ def test_redirect_falls_back_when_sleep_missing(
     from hermes_cli import gateway as gw
 
     rec = _stub_s6(monkeypatch, on_s6=True)
-    monkeypatch.setattr("hermes_cli.gateway._profile_suffix", lambda: "")
+    monkeypatch.setattr("gateway.service_identity.service_suffix", lambda: "")
 
     monkeypatch.setattr("hermes_cli.gateway.os.execvp", _raise_missing_sleep)
     block_calls: list[bool] = []
@@ -161,7 +162,7 @@ def _armed_watchdog(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv(sw.ENV_STARTUP_WATCHDOG, raising=False)
     monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
     monkeypatch.delenv("HERMES_GATEWAY_NO_SUPERVISE", raising=False)
-    monkeypatch.setattr("hermes_cli.gateway._profile_suffix", lambda: "")
+    monkeypatch.setattr("gateway.service_identity.service_suffix", lambda: "")
     sw._reset_for_tests()
     handle = sw.arm_startup_watchdog(timeout_s=3600)
     assert handle is not None and handle.is_alive()
@@ -223,7 +224,7 @@ class _UnregisteredRecorder(_CallRecorder):
         self._slots: set[str] = set()
 
     def _svc(self, action: str, name: str) -> None:
-        from hermes_cli.service_manager import GatewayNotRegisteredError
+        from gateway.s6_manager import GatewayNotRegisteredError
         if name not in self._slots:
             raise GatewayNotRegisteredError(name.removeprefix("gateway-"))
         self.calls.append((action, name))
@@ -242,7 +243,7 @@ class _UnregisteredRecorder(_CallRecorder):
 def _arrange(monkeypatch, tmp_path, mgr, *, profile: str, seed_soul: bool):
     """Force the s6 branch and make ``tmp_path`` the shared HERMES_HOME the slot maps back to."""
     from hermes_cli import gateway as gw
-    from hermes_cli import service_manager as sm
+    from gateway import service_manager as sm
 
     monkeypatch.setattr(sm, "detect_service_manager", lambda: "s6")
     monkeypatch.setattr(sm, "get_service_manager", lambda: mgr)

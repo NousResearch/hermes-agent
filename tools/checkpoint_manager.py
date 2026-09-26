@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Dict, Iterator, List, NamedTuple, Optional, Set, Tuple
 
 from hermes_constants import get_hermes_home
-from hermes_cli._subprocess_compat import windows_hide_flags
+from runtime.subprocess_compat import windows_hide_flags
 from hermes_cli.gitlock import clear_stale_tmp_packs
 from utils import env_int, rmtree_readonly
 

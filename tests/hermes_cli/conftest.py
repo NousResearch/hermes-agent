@@ -1,6 +1,7 @@
 """Fixtures shared across hermes_cli tests."""
 
 from __future__ import annotations
+from gateway import systemd_runtime
 
 import pytest
 
@@ -124,7 +125,7 @@ def isolated_update_runtime(monkeypatch, tmp_path, request):
     monkeypatch.setattr(gateway, "find_gateway_pids", lambda *a, **k: [])
     monkeypatch.setattr(gateway, "find_profile_gateway_processes", lambda *a, **k: [])
     monkeypatch.setattr(gateway, "_get_service_pids", lambda *a, **k: set())
-    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(systemd_runtime, "supports_services", lambda: False)
     monkeypatch.setattr(main, "_pause_windows_gateways_for_update", lambda: None)
     monkeypatch.setattr(main, "_resume_windows_gateways_after_update", lambda *a, **k: None)
     monkeypatch.setattr(main, "_detect_venv_python_processes", lambda: [])

@@ -7,6 +7,9 @@ SCROLL (``session_id`` + ``around_message_id``; ±window around the anchor),
 READ (``session_id`` alone; whole session or head/tail), BROWSE (no args).
 No LLM calls — every shape returns actual DB messages.
 """
+from profiles import names as profile_names
+from profiles import paths as profile_paths
+from profiles import registry as profile_registry
 
 import json
 import logging
@@ -256,7 +259,7 @@ def _session_link(session_id: str, profile: str = None) -> str:
     emits, so it renders as a titled link. The profile segment is omitted when it
     can't be named confidently (a bare id still resolves, just not across profiles)."""
     def _active():
-        from hermes_cli.profiles import get_active_profile_name
+        from profiles.current import get_active_profile_name
         resolved = get_active_profile_name()
         return "" if resolved == "custom" else resolved
     name = (profile or "").strip() or _quiet(_active, "", "get_active_profile_name failed for session link")
@@ -433,15 +436,15 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
 
 def _resolve_profile_db(profile: str):
     """Another profile's ``state.db`` opened read-only (safe on a live DB); None = current."""
+    from hermes_state import SessionDB
+
     if profile is None or not str(profile).strip():
         return None
-    from hermes_cli import profiles as profiles_mod
-    from hermes_state import SessionDB
-    canon = profiles_mod.normalize_profile_name(profile)
-    profiles_mod.validate_profile_name(canon)
-    if not profiles_mod.profile_exists(canon):
+    canon = profile_names.normalize_profile_name(profile)
+    profile_names.validate_profile_name(canon)
+    if not profile_registry.profile_exists(canon):
         raise ValueError(f"profile '{canon}' does not exist")
-    return SessionDB(db_path=profiles_mod.get_profile_dir(canon) / "state.db", read_only=True)
+    return SessionDB(db_path=profile_paths.get_profile_dir(canon) / "state.db", read_only=True)
 
 
 def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_profile: str = None) -> str:

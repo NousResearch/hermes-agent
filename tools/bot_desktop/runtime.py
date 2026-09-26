@@ -488,7 +488,7 @@ def status(profile: Optional[str] = None) -> DesktopStatus:
 
 def _profile_name() -> str:
     try:
-        from hermes_cli.profiles import get_active_profile_name
+        from profiles.current import get_active_profile_name
         return get_active_profile_name() or "default"
     except Exception:
         return "default"

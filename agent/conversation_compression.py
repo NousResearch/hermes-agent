@@ -3322,7 +3322,7 @@ def _publish_rotated_compaction(
     # publish also COALESCEs from the parent row for threads lacking HERMES_HOME.
     _profile_for_child = None
     with contextlib.suppress(Exception):
-        from hermes_cli.profiles import get_active_profile_name
+        from profiles.current import get_active_profile_name
         _profile_for_child = get_active_profile_name()
     if _profile_for_child == "default":
         _profile_for_child = None

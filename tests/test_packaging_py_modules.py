@@ -17,7 +17,21 @@ import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-PACKAGES = ("agent", "tools", "hermes_cli", "gateway", "tui_gateway", "cron", "acp_adapter", "plugins", "providers")
+PACKAGES = (
+    "agent",
+    "tools",
+    "hermes_cli",
+    "nous_cli",
+    "profiles",
+    "runtime",
+    "storage",
+    "gateway",
+    "tui_gateway",
+    "cron",
+    "acp_adapter",
+    "plugins",
+    "providers",
+)
 
 
 def _root_py_modules() -> set[str]:
@@ -55,12 +69,30 @@ def _imported_root_names(paths) -> dict[str, set[str]]:
     return hits
 
 
+def _package_find_includes() -> set[str]:
+    cfg = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    return set(cfg["tool"]["setuptools"]["packages"]["find"]["include"])
+
+
 def test_pyproject_has_no_static_py_modules_list():
     cfg = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert "py-modules" not in cfg["tool"]["setuptools"], (
         "root modules are derived in setup.py::_root_py_modules(); a static py-modules list drifts "
         "from the tree and breaks installed wheels. Do not add it back."
     )
+
+
+def test_hermes_console_script_stays_on_legacy_cli_until_phase11():
+    cfg = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert cfg["project"]["scripts"]["hermes"] == "hermes_cli.main:main"
+
+
+def test_extracted_packages_are_in_wheel_discovery():
+    includes = _package_find_includes()
+    for package in ("profiles", "runtime", "storage"):
+        assert {package, f"{package}.*"} <= includes, (
+            f"{package} must be included in setuptools package discovery so installed wheels ship it"
+        )
 
 
 def test_every_root_module_imported_by_packaged_code_is_shipped():

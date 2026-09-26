@@ -222,7 +222,7 @@ def test_sentinel_carries_process_birth_through_exit(tmp_path: Path, monkeypatch
     """The running sentinel stamps the process ``create_time`` (psutil birth, not the later ledger
     claim) and the exited sentinel keeps it, so the Windows start attestation can match a clean
     exit by incarnation, not by reusable PID (#110020)."""
-    monkeypatch.setattr("hermes_cli.process_identity._process_create_time", lambda pid=None: 1234.5)
+    monkeypatch.setattr("runtime.process_identity._process_create_time", lambda pid=None: 1234.5)
     record_startup(home=tmp_path)
     running = json.loads(get_lifecycle_sentinel_path(tmp_path).read_text(encoding="utf-8"))
     assert running["create_time"] == 1234.5
@@ -238,7 +238,7 @@ def test_replace_handover_is_not_a_death_and_pid_reuse_is(tmp_path: Path, monkey
     with ``get_process_start_time`` (proc ticks / centiseconds): that comparison could not match,
     so a ``--replace`` handover was reported as an unclean death."""
     monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
-    monkeypatch.setattr("hermes_cli.process_identity._process_create_time", lambda pid=None: 5000.0)
+    monkeypatch.setattr("runtime.process_identity._process_create_time", lambda pid=None: 5000.0)
     live = {"phase": "running", "pid": 4242, "start_time": 5003.7, "started_at": "x"}
 
     _write_sentinel(tmp_path, {**live, "create_time": 5000.0})

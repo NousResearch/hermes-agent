@@ -95,7 +95,7 @@ def _plugin_session_info(agent: Any) -> Dict[str, str]:
 
 
 def _ambient_plugin_profile_name() -> str:
-    from hermes_cli.profiles import get_active_profile_name
+    from profiles.current import get_active_profile_name
     return str(get_active_profile_name() or "default")
 
 

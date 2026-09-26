@@ -208,7 +208,7 @@ def write_tenant_home(t: Tenant, extra_config: dict[str, Any] | None = None,
 def assert_profiles_root_under(root: Path, home: Path) -> None:
     """The profile root is HOME-anchored: prove it resolves inside ``root`` before any write."""
     probe = subprocess.run(
-        [sys.executable, "-c", "from hermes_cli.profiles import _get_profiles_root as r; print(r())"],
+        [sys.executable, "-c", "from profiles.paths import _get_profiles_root as r; print(r())"],
         env=hermetic_env(home), cwd=str(home), capture_output=True, text=True, timeout=120,
         stdin=subprocess.DEVNULL,
     )

@@ -76,7 +76,7 @@ def _post_setup_no_window_flags(*, streams_to_console: bool = False) -> int:
     CREATE_NO_WINDOW hides console grandchildren (npm, pip, powershell) while keeping stdio
     inheritable (unlike DETACHED_PROCESS). ``streams_to_console`` children are only hidden when our
     own stdout is not a console, so live installer output is never swallowed."""
-    from hermes_cli._subprocess_compat import windows_hide_flags
+    from runtime.subprocess_compat import windows_hide_flags
     flags = windows_hide_flags()
     try:
         if flags and streams_to_console and sys.stdout is not None and sys.stdout.isatty():

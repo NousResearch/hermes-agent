@@ -228,7 +228,7 @@ def wake_surface_enabled(surface: str, cfg: Optional[Dict[str, Any]] = None) -> 
 
 def _active_profile_name() -> str:
     with suppress(Exception):
-        from hermes_cli.profiles import get_active_profile_name
+        from profiles.current import get_active_profile_name
         return get_active_profile_name() or "default"
     return "default"
 
@@ -240,7 +240,8 @@ def enrolled_profile_phrases() -> Dict[str, str]:
     phrases: Dict[str, str] = {}
     with suppress(Exception):
         from hermes_cli.config import read_user_config_raw
-        from hermes_cli.profiles import get_profile_dir, list_profiles
+        from profiles.paths import get_profile_dir
+        from hermes_cli.profiles import list_profiles
         for info in list_profiles():
             name = getattr(info, "name", None) or str(info)
             with suppress(Exception):

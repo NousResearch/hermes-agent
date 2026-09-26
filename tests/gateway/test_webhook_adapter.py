@@ -849,7 +849,7 @@ class TestCrossPlatformDeliveryMirror:
     def homes(self, tmp_path, monkeypatch):
         from pathlib import Path
         import hermes_state
-        from hermes_cli.profiles import get_profile_dir
+        from profiles.paths import get_profile_dir
         default_home = tmp_path / ".hermes"
         default_home.mkdir()
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -1039,7 +1039,7 @@ class TestMultiplexProfileWebhookAuthentication:
         runner._profile_name_for_source.return_value = None
         adapter.gateway_runner = runner
         monkeypatch.setattr(
-            "hermes_cli.profiles.profiles_to_serve",
+            "gateway.profile_serving.profiles_to_serve",
             lambda multiplex: [
                 ("default", tmp_path),
                 ("worker", tmp_path / "profiles" / "worker"),
@@ -1128,7 +1128,7 @@ class TestMultiplexProfileWebhookAuthentication:
         (worker / "config.yaml").write_text("{}\n")
         (worker / ".env").write_text("")
         monkeypatch.setattr(
-            "hermes_cli.profiles.get_profile_dir", lambda name: tmp_path / "profiles" / name
+            "profiles.paths.get_profile_dir", lambda name: tmp_path / "profiles" / name
         )
         route_secret = "worker-route-secret-abc123"
         adapter = _make_adapter(

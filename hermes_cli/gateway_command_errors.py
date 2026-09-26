@@ -9,12 +9,7 @@ from __future__ import annotations
 
 import subprocess
 
-
-class SystemctlUnavailableError(RuntimeError):
-    """``systemctl`` is not installed (Alpine, minimal containers, some WSL setups)."""
-
-    def __init__(self) -> None:
-        super().__init__("systemctl is not available on this system")
+from gateway.systemd_runtime import SystemctlUnavailableError
 
 
 _JOURNAL_HINT = 'journalctl --user -u hermes-gateway --since "5 min ago"'

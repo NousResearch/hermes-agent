@@ -117,8 +117,8 @@ def test_collect_fleet_versions_classifies_separate_checkout_gateway(tmp_path, m
         "hermes_cli.build_info.get_code_identity",
         lambda refresh=False: {"sha": "a" * 40, "short_sha": "a" * 8, "version": "1.0", "source": "git"},
     )
-    monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: home)
-    monkeypatch.setattr("hermes_cli.profiles._get_profiles_root", lambda: tmp_path / "no_profiles")
+    monkeypatch.setattr("profiles.paths._get_default_hermes_home", lambda: home)
+    monkeypatch.setattr("profiles.paths._get_profiles_root", lambda: tmp_path / "no_profiles")
     monkeypatch.setattr(update_receipt, "_socket_identity", lambda _home: None)
     monkeypatch.setattr("gateway.status.live_gateway_pid_for_home", lambda _home: 4242)
 

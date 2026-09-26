@@ -169,7 +169,7 @@ def restore_identity(
     existing = identity_of(source)
     if existing is not None:
         return existing
-    from hermes_cli.profiles import get_profile_dir
+    from profiles.paths import get_profile_dir
     from hermes_constants import get_process_hermes_home
 
     primary_profile = _name(getattr(runner, "_primary_profile_name", None)) or "default"
@@ -241,7 +241,7 @@ def resolve_identity(
     if transport_name == primary_profile:
         authorization_home = Path(primary_home) if primary_home is not None else Path(get_process_hermes_home())
     else:
-        from hermes_cli.profiles import get_profile_dir
+        from profiles.paths import get_profile_dir
         authorization_home = get_profile_dir(transport_name)
     source._authorization_profile_home = authorization_home
 

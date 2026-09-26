@@ -15,6 +15,8 @@ the gateway burns the full 1800s force-drain cap.
 The fix: when the target gateway PID is an ancestor of this process,
 fire-and-forget (SIGUSR1 + return) instead of drain-waiting.
 """
+from gateway import process_liveness
+from gateway import signal_restart
 
 from unittest.mock import patch
 
@@ -99,7 +101,7 @@ class TestSelfRestartFireAndForget:
             gw, "_wait_for_pid_exit",
             side_effect=lambda pid, t, **_: waited.append((pid, t)) or True,
         ):
-            ok = gw._graceful_restart_via_sigusr1(4242, drain_timeout=7.0)
+            ok = signal_restart._graceful_restart_via_sigusr1(4242, drain_timeout=7.0)
 
         assert ok is True
         assert waited == [(4242, 7.0)], "drain path must still wait for exit"
@@ -116,9 +118,9 @@ class TestDrainOrSignalTriage:
             gw, "_is_pid_ancestor_of_current_process", lambda pid: ancestor
         )
         monkeypatch.setattr(
-            gw,
+            process_liveness,
             "probe_gateway_loop_liveness",
-            lambda pid: gw.GATEWAY_LOOP_WEDGED if wedged else "alive",
+            lambda pid: process_liveness.GATEWAY_LOOP_WEDGED if wedged else "alive",
         )
         monkeypatch.setattr(
             gw,
@@ -126,10 +128,10 @@ class TestDrainOrSignalTriage:
             lambda pid: calls["self_restart"].append(pid) or True,
         )
         monkeypatch.setattr(
-            gw, "_escalate_wedged_gateway", lambda pid: calls["escalate"].append(pid)
+            process_liveness, "_escalate_wedged_gateway", lambda pid: calls["escalate"].append(pid)
         )
         monkeypatch.setattr(
-            gw,
+            signal_restart,
             "_graceful_restart_via_sigusr1",
             lambda pid, drain_timeout, **_: calls["drain"].append((pid, drain_timeout))
             or True,

@@ -39,7 +39,8 @@ def _migrate_sibling_profile_configs() -> list[tuple[str, int, int]]:
     with _best_effort('Sibling profile enumeration failed: %s'):
         from hermes_constants import (
             get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override)
-        from hermes_cli.profiles import _get_profiles_root, _PROFILE_ID_RE
+        from profiles.names import _PROFILE_ID_RE
+        from profiles.paths import _get_profiles_root
         active_home = get_process_hermes_home()
         root = _get_profiles_root()
         if not root.is_dir():

@@ -78,7 +78,7 @@ _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _ENV_VAR_NAME_DENY_PREFIXES: tuple[str, ...] = (
     "LD_", "DYLD_",
     # PARAMETERS/COUNT/KEY_*/VALUE_* inject config pairs; GLOBAL/SYSTEM/NOSYSTEM redirect the
-    # config sources _subprocess_compat already nulls for the same reason.
+    # config sources runtime.git_subprocess already nulls for the same reason.
     "GIT_CONFIG_",
 )
 

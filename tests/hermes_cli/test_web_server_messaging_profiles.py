@@ -20,7 +20,7 @@ _VALID_BODY_BOT_TOKEN = "987654321:ZYXWVUTSRQPONMLKJIHGFEDCBA_4321"
 def isolated_profiles(tmp_path, monkeypatch, _isolate_hermes_home):
     """Isolated default home + one named profile, each with its own .env."""
     from hermes_constants import get_hermes_home
-    from hermes_cli import profiles
+    from profiles import paths as profile_paths, registry as profile_registry
 
     default_home = get_hermes_home()
     profiles_root = default_home / "profiles"
@@ -34,8 +34,9 @@ def isolated_profiles(tmp_path, monkeypatch, _isolate_hermes_home):
     )
     (worker_home / ".env").write_text("", encoding="utf-8")
 
-    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
-    monkeypatch.setattr(profiles, "_get_profiles_root", lambda: profiles_root)
+    monkeypatch.setattr(profile_paths, "_get_default_hermes_home", lambda: default_home)
+    monkeypatch.setattr(profile_paths, "_get_profiles_root", lambda: profiles_root)
+    monkeypatch.setattr(profile_registry, "_get_profiles_root", lambda: profiles_root)
     return {"default": default_home, "worker_alpha": worker_home}
 
 
@@ -312,9 +313,9 @@ def test_credential_write_hot_serves_a_multiplexed_profile(client, isolated_prof
     away (``hot_served``), so the UI skips its restart banner. Both Desktop topologies: the dashboard's
     ``?profile=`` and a pooled ``hermes --profile X serve`` that receives the PUT unscoped (#109088)."""
     import hermes_cli.gateway as gateway_cli
-    import hermes_cli.gateway_multiplex_served as served_mod
+    import gateway.served_profiles as served_mod
     notified = []
-    monkeypatch.setattr(gateway_cli, "named_profile_served_by_running_multiplexer", lambda name=None: name == "worker_alpha")
+    monkeypatch.setattr("gateway.host_topology.named_profile_served_by_running_multiplexer", lambda name=None: name == "worker_alpha")
     monkeypatch.setattr(served_mod, "notify_multiplexer_profiles_changed", lambda name, **kw: notified.append(name) or ["default", name])
     if topology == "pooled_unscoped":
         monkeypatch.setattr(gateway_cli, "_current_profile_name", lambda: "worker_alpha")
@@ -331,7 +332,7 @@ def test_credential_write_hot_serves_a_multiplexed_profile(client, isolated_prof
 def test_credential_write_on_default_profile_is_not_hot_served(client, isolated_profiles, monkeypatch):
     """The default profile is the multiplexer itself (its own adapters are restart-managed): never
     claim a hot serve for it."""
-    import hermes_cli.gateway_multiplex_served as served_mod
+    import gateway.served_profiles as served_mod
     monkeypatch.setattr(served_mod, "notify_multiplexer_profiles_changed",
                         lambda name, **kw: pytest.fail("default profile must not ping the multiplexer"))
     resp = client.put("/api/messaging/platforms/telegram",

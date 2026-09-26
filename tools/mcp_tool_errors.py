@@ -238,7 +238,7 @@ def _resolve_identity_header(server_name: str, config: dict):
         return _ignore("requires a non-empty 'name'")
     value_from = (raw.get("value_from") or "static").strip().lower()
     if value_from == "profile":
-        from hermes_cli.profiles import get_active_profile_name
+        from profiles.current import get_active_profile_name
         return (name.strip(), get_active_profile_name())
     if value_from != "static":
         return _ignore("value_from must be 'static' or 'profile' (got %r)", value_from)

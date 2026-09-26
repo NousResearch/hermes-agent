@@ -199,7 +199,7 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
         "find_profile_gateway_processes",
         lambda **_k: [profile_proc],
     )
-    monkeypatch.setattr(gateway_mod, "_get_restart_drain_timeout", lambda: 0.1)
+    monkeypatch.setattr("gateway.restart.get_restart_drain_timeout", lambda: 0.1)
     waited_for = []
 
     def fake_wait(pids, *, timeout):
@@ -282,7 +282,7 @@ def test_pause_and_resume_windows_gateway_service(
     monkeypatch.setattr(
         gateway_mod, "find_windows_gateway_services", lambda **_k: [service]
     )
-    monkeypatch.setattr(gateway_mod, "_get_restart_drain_timeout", lambda: 0.1)
+    monkeypatch.setattr("gateway.restart.get_restart_drain_timeout", lambda: 0.1)
 
     stopped = []
     started = []
@@ -622,7 +622,7 @@ def test_pause_kill_set_covers_venv_guard_abort_set(
     monkeypatch.setattr(
         gateway_mod, "find_profile_gateway_processes", lambda **_k: [profile_proc]
     )
-    monkeypatch.setattr(gateway_mod, "_get_restart_drain_timeout", lambda: 0.1)
+    monkeypatch.setattr("gateway.restart.get_restart_drain_timeout", lambda: 0.1)
     drained_dead: set[int] = set()
 
     def _drain_marks_workers_dead(pids, *, timeout):

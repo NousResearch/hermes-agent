@@ -252,7 +252,7 @@ def _serialize_payload(event: str, kwargs: Dict[str, Any], delivery_id: str) -> 
     body, so they double as replay protection."""
     # Profile resolved at fire time so a multiplexed gateway's receivers can tell which profile emitted.
     # See #92674.
-    from hermes_cli.profiles import get_active_profile_name
+    from profiles.current import get_active_profile_name
     payload = {
         "hook_event_name": event, "profile": get_active_profile_name(), **_payload_fields(kwargs),
         "delivery_id": delivery_id, "timestamp": _utc_now_iso(),

@@ -879,7 +879,8 @@ class CLICommandsMixin:
     # ---- /export, /import -----------------------------------------------------------------
     def _handle_export_command(self, command: str):
         """Handle /export [profile] [-o path] — export a profile to a shareable .tar.gz archive."""
-        from hermes_cli.profiles import export_profile, get_active_profile_name, get_profile_export_path
+        from profiles.current import get_active_profile_name
+        from hermes_cli.profiles import export_profile, get_profile_export_path
         parts, output, ok = _take_flag(command.split()[1:], "-o")
         if not ok:
             return print("  Usage: /export [profile] [-o output.tar.gz]")

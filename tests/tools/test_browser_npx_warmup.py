@@ -20,7 +20,6 @@ from unittest.mock import MagicMock, patch
 
 from tools.browser_tool import AGENT_BROWSER_NPX_SPEC
 from tools.browser_tool_install import warm_agent_browser_npx_cache
-from tools.browser_tool_lifecycle import _legacy_kill_process_tree
 
 
 def _mock_proc(returncode=0, communicate_side_effect=None, pid=4242):
@@ -198,61 +197,44 @@ def test_returns_false_instead_of_raising_on_unexpected_communicate_exception():
     mock_kill.assert_called_once_with(proc)
 
 
-class TestLegacyKillProcessTree:
-    """Contract of the pre-#85125 local fallback (used when agent.deadline
-    delegation fails); the delegating wrapper is covered in
-    tests/agent/test_treekill_consolidation.py."""
+class TestRuntimeKillPopenProcessTree:
+    """Retained-Popen cleanup delegates to the runtime process owner and never raises."""
 
-    def test_posix_kills_process_group_term_then_kill(self, monkeypatch):
-        import signal
+    def test_delegates_pid_then_updates_popen(self, monkeypatch):
+        from runtime import processes
 
         proc = MagicMock()
         proc.pid = 999
-        monkeypatch.setattr("os.name", "posix")
-        monkeypatch.setattr("os.getpgid", lambda pid: 999)
-        killpg_calls = []
+        calls = []
         monkeypatch.setattr(
-            "os.killpg", lambda pgid, sig: killpg_calls.append((pgid, sig))
+            processes, "kill_process_tree", lambda pid, sig=None: calls.append((pid, sig)) or True,
         )
 
-        _legacy_kill_process_tree(proc)
+        processes.kill_popen_process_tree(proc)
 
-        assert killpg_calls == [(999, signal.SIGTERM), (999, signal.SIGKILL)]
+        assert calls == [(999, None)]
+        proc.kill.assert_called_once_with()
 
-    def test_posix_missing_process_returns_silently(self, monkeypatch):
-        proc = MagicMock()
-        proc.pid = 999
-        monkeypatch.setattr("os.name", "posix")
-
-        def _raise(pid):
-            raise ProcessLookupError()
-
-        monkeypatch.setattr("os.getpgid", _raise)
-
-        _legacy_kill_process_tree(proc)  # must not raise
-
-
-
-    def test_posix_sigterm_permission_denied_does_not_attempt_sigkill(self, monkeypatch):
-        """If SIGTERM itself is rejected (e.g. a stale pgid reused by an
-        unrelated, unkillable process), the loop must bail out rather than
-        plow ahead into a second signal against the wrong target."""
-        import signal
+    def test_tree_failure_falls_back_to_direct_kill(self, monkeypatch):
+        from runtime import processes
 
         proc = MagicMock()
         proc.pid = 999
-        monkeypatch.setattr("os.name", "posix")
-        monkeypatch.setattr("os.getpgid", lambda pid: 999)
-        killpg_calls = []
+        monkeypatch.setattr(
+            processes, "kill_process_tree", lambda pid, sig=None: (_ for _ in ()).throw(PermissionError()),
+        )
 
-        def fake_killpg(pgid, sig):
-            killpg_calls.append((pgid, sig))
-            raise PermissionError()
+        processes.kill_popen_process_tree(proc)
 
-        monkeypatch.setattr("os.killpg", fake_killpg)
+        proc.kill.assert_called_once_with()
 
-        _legacy_kill_process_tree(proc)  # must not raise
+    def test_direct_kill_failure_is_swallowed(self, monkeypatch):
+        from runtime import processes
 
-        assert killpg_calls == [(999, signal.SIGTERM)]
+        proc = MagicMock()
+        proc.pid = 999
+        proc.kill.side_effect = OSError("already reaped")
+        monkeypatch.setattr(processes, "kill_process_tree", lambda pid, sig=None: False)
 
+        processes.kill_popen_process_tree(proc)
 

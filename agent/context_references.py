@@ -16,7 +16,8 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from agent.model_metadata import CHARS_PER_TOKEN, estimate_tokens_rough
-from hermes_cli._subprocess_compat import IS_WINDOWS, harden_git_argv, noninteractive_git_env, windows_hide_flags
+from runtime.git_subprocess import harden_git_argv, noninteractive_git_env
+from runtime.subprocess_compat import IS_WINDOWS, windows_hide_flags
 from hermes_cli.sizefmt import format_bytes
 
 # ── Plugin context-reference provider API ────────────────────────────────────

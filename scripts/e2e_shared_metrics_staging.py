@@ -77,7 +77,7 @@ def main() -> int:
     from hermes_cli.observability.shared_metrics_sender import (
         reconcile_send_consent,
     )
-    from hermes_cli.sqlite_util import write_txn
+    from storage.sqlite_util import write_txn
 
     with store._connection() as connection:
         with write_txn(connection):

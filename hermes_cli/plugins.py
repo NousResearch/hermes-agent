@@ -401,7 +401,7 @@ class PluginContext:
         derived from ``HERMES_HOME`` — not ``_cli_ref``, which is None outside the interactive CLI —
         so gateway and kanban workers get it too."""
         try:
-            from hermes_cli.profiles import get_active_profile_name
+            from profiles.current import get_active_profile_name
             return get_active_profile_name()
         except Exception:
             return "default"

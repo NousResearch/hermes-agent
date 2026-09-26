@@ -147,7 +147,7 @@ class TestJobObjectMechanismLive:
         return (
             "import subprocess, sys, pathlib\n"
             "sys.path.insert(0, r'%s')\n"
-            "from hermes_cli._subprocess_compat import (\n"
+            "from runtime.subprocess_compat import (\n"
             "    windows_detach_flags, windows_detach_flags_without_breakaway)\n"
             "flags = %s()\n"
             "p = subprocess.Popen([sys.executable, '-c', %r],\n"

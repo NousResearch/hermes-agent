@@ -35,7 +35,7 @@ def _fake_multiplexer(monkeypatch, tmp_path, *, multiplex: bool, pid_file: bool 
         (tmp_path / "gateway.pid").write_text(str(os.getpid()))
     (tmp_path / "gateway_state.json").write_text(json.dumps({
         "pid": os.getpid(), "kind": "hermes-gateway", "gateway_state": "running",
-        "start_time": status._get_process_start_time(os.getpid()), "hermes_home": str(tmp_path),
+        "start_time": status._process_identity.get_process_start_time(os.getpid()), "hermes_home": str(tmp_path),
     }))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profiles" / "beta"))
     monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
@@ -100,5 +100,3 @@ def test_standalone_profile_status_reports_standalone_by_config(monkeypatch, tmp
     out = buf.getvalue()
     assert "standalone by config (gateway.standalone: true)" in out
     assert "via the default-profile multiplexer" not in out
-
-

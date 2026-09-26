@@ -1,0 +1,475 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "nous-cli-legacy-seam-required",
+      "type": "require_path",
+      "path": "nous_cli/legacy.py"
+    },
+    {
+      "id": "nous-cli-must-use-only-the-legacy-seam",
+      "type": "forbid_content",
+      "regex": "^[ \\t]*(from|import)[ \\t]+hermes_cli([. \\t]|$)",
+      "include_paths": [
+        "nous_cli/*.py",
+        "nous_cli/**/*.py"
+      ],
+      "exclude_paths": [
+        "nous_cli/legacy.py"
+      ]
+    },
+    {
+      "id": "runtime-must-not-depend-on-nous-cli",
+      "type": "forbid_content",
+      "regex": "^[ \\t]*(from|import)[ \\t]+nous_cli([. \\t]|$)",
+      "include_paths": [
+        "agent/*.py",
+        "agent/**/*.py",
+        "gateway/*.py",
+        "gateway/**/*.py",
+        "providers/*.py",
+        "providers/**/*.py",
+        "tools/*.py",
+        "tools/**/*.py",
+        "profiles/*.py",
+        "profiles/**/*.py",
+        "runtime/*.py",
+        "runtime/**/*.py",
+        "storage/*.py",
+        "storage/**/*.py",
+        "auth/*.py",
+        "auth/**/*.py",
+        "kanban/*.py",
+        "kanban/**/*.py",
+        "automation/*.py",
+        "automation/**/*.py"
+      ]
+    },
+    {
+      "id": "migrated-runtime-must-not-depend-on-hermes-cli",
+      "type": "forbid_content",
+      "regex": "^[ \\t]*(from|import)[ \\t]+hermes_cli([. \\t]|$)",
+      "include_paths": [
+        "profiles/*.py",
+        "profiles/**/*.py",
+        "runtime/*.py",
+        "runtime/**/*.py",
+        "storage/*.py",
+        "storage/**/*.py",
+        "auth/*.py",
+        "auth/**/*.py",
+        "kanban/*.py",
+        "kanban/**/*.py",
+        "automation/*.py",
+        "automation/**/*.py"
+      ]
+    },
+    {
+      "id": "gateway-must-not-depend-on-cli-profile-lifecycle",
+      "type": "forbid_content",
+      "regex": "^[ \\\\t]*(?:import[ \\\\t]+hermes_cli[.]profiles(?:[ \\\\t]|$)|from[ \\\\t]+hermes_cli[ \\\\t]+import[ \\\\t]+profiles(?:[ \\\\t,]|$)|from[ \\\\t]+hermes_cli[.]profiles[ \\\\t]+import[ \\\\t]+.*(_check_gateway_running|_maybe_register_gateway_service|_maybe_unregister_gateway_service|_cleanup_gateway_service|_stop_profile_backends|_stop_gateway_process))",
+      "include_paths": [
+        "gateway/*.py",
+        "gateway/**/*.py"
+      ]
+    },
+    {
+      "id": "gateway-must-not-depend-on-cli-gateway-control",
+      "type": "forbid_content",
+      "regex": "^[ \\t]*(from[ \\t]+hermes_cli[ \\t]+import[ \\t]+gateway|(?:from|import)[ \\t]+hermes_cli[.]gateway)",
+      "include_paths": [
+        "gateway/*.py",
+        "gateway/**/*.py"
+      ]
+    },
+    {
+      "id": "gateway-must-not-depend-on-cli-service-manager",
+      "type": "forbid_content",
+      "regex": "^[ \\t]*(from[ \\t]+hermes_cli[ \\t]+import[ \\t]+service_manager|(?:from|import)[ \\t]+hermes_cli[.]service_manager)",
+      "include_paths": [
+        "gateway/*.py",
+        "gateway/**/*.py"
+      ]
+    },
+    {
+      "id": "retired-cli-process-identity-must-not-be-imported",
+      "type": "forbid_content",
+      "regex": "^[ \\t]*(?:import[ \\t]+hermes_cli[.]process_identity(?:[ \\t]|$)|from[ \\t]+hermes_cli[.]process_identity[ \\t]+import|from[ \\t]+hermes_cli[ \\t]+import[ \\t]+process_identity(?:[ \\t,]|$))",
+      "include_paths": [
+        "agent/*.py",
+        "agent/**/*.py",
+        "cron/*.py",
+        "cron/**/*.py",
+        "gateway/*.py",
+        "gateway/**/*.py",
+        "hermes_cli/*.py",
+        "hermes_cli/**/*.py",
+        "plugins/*.py",
+        "plugins/**/*.py",
+        "profiles/*.py",
+        "profiles/**/*.py",
+        "providers/*.py",
+        "providers/**/*.py",
+        "runtime/*.py",
+        "runtime/**/*.py",
+        "storage/*.py",
+        "storage/**/*.py",
+        "auth/*.py",
+        "auth/**/*.py",
+        "kanban/*.py",
+        "kanban/**/*.py",
+        "automation/*.py",
+        "automation/**/*.py",
+        "tools/*.py",
+        "tools/**/*.py"
+      ]
+    },
+    {
+      "id": "runtime-processes-owner-must-exist",
+      "type": "require_path",
+      "path": "runtime/processes.py"
+    },
+    {
+      "id": "retired-cli-local-runtime-processes-path",
+      "type": "forbid_path",
+      "path": "hermes_cli/local_runtime/processes.py"
+    },
+    {
+      "id": "retired-cli-local-runtime-processes-must-not-be-imported",
+      "type": "forbid_content",
+      "regex": "^[ \\t]*(?:import[ \\t]+hermes_cli[.]local_runtime[.]processes(?:[ \\t]|$)|from[ \\t]+hermes_cli[.]local_runtime[.]processes[ \\t]+import|from[ \\t]+hermes_cli[.]local_runtime[ \\t]+import[ \\t]+processes(?:[ \\t,]|$))",
+      "include_paths": [
+        "agent/*.py",
+        "agent/**/*.py",
+        "cron/*.py",
+        "cron/**/*.py",
+        "gateway/*.py",
+        "gateway/**/*.py",
+        "hermes_cli/*.py",
+        "hermes_cli/**/*.py",
+        "plugins/*.py",
+        "plugins/**/*.py",
+        "profiles/*.py",
+        "profiles/**/*.py",
+        "providers/*.py",
+        "providers/**/*.py",
+        "runtime/*.py",
+        "runtime/**/*.py",
+        "storage/*.py",
+        "storage/**/*.py",
+        "auth/*.py",
+        "auth/**/*.py",
+        "kanban/*.py",
+        "kanban/**/*.py",
+        "automation/*.py",
+        "automation/**/*.py",
+        "tools/*.py",
+        "tools/**/*.py",
+        "tests/*.py",
+        "tests/**/*.py"
+      ]
+    },
+    {
+      "id": "runtime-subprocess-compat-owner-must-exist",
+      "type": "require_path",
+      "path": "runtime/subprocess_compat.py"
+    },
+    {
+      "id": "runtime-git-subprocess-owner-must-exist",
+      "type": "require_path",
+      "path": "runtime/git_subprocess.py"
+    },
+    {
+      "id": "gateway-windows-launch-owner-must-exist",
+      "type": "require_path",
+      "path": "gateway/windows_launch.py"
+    },
+    {
+      "id": "retired-cli-subprocess-compat-path",
+      "type": "forbid_path",
+      "path": "hermes_cli/_subprocess_compat.py"
+    },
+    {
+      "id": "retired-cli-subprocess-compat-must-not-be-referenced",
+      "type": "forbid_content",
+      "regex": "hermes_cli[.]_subprocess_compat",
+      "include_paths": [
+        "agent/*.py",
+        "agent/**/*.py",
+        "cron/*.py",
+        "cron/**/*.py",
+        "gateway/*.py",
+        "gateway/**/*.py",
+        "hermes_cli/*.py",
+        "hermes_cli/**/*.py",
+        "plugins/*.py",
+        "plugins/**/*.py",
+        "profiles/*.py",
+        "profiles/**/*.py",
+        "providers/*.py",
+        "providers/**/*.py",
+        "runtime/*.py",
+        "runtime/**/*.py",
+        "storage/*.py",
+        "storage/**/*.py",
+        "auth/*.py",
+        "auth/**/*.py",
+        "kanban/*.py",
+        "kanban/**/*.py",
+        "automation/*.py",
+        "automation/**/*.py",
+        "tools/*.py",
+        "tools/**/*.py",
+        "tui_gateway/*.py",
+        "tui_gateway/**/*.py",
+        "tests/*.py",
+        "tests/**/*.py"
+      ]
+    },
+    {
+      "id": "runtime-stdio-owner-must-exist",
+      "type": "require_path",
+      "path": "runtime/stdio.py"
+    },
+    {
+      "id": "runtime-resource-limits-owner-must-exist",
+      "type": "require_path",
+      "path": "runtime/resource_limits.py"
+    },
+    {
+      "id": "retired-cli-stdio-path",
+      "type": "forbid_path",
+      "path": "hermes_cli/stdio.py"
+    },
+    {
+      "id": "retired-cli-resource-limits-path",
+      "type": "forbid_path",
+      "path": "hermes_cli/resource_limits.py"
+    },
+    {
+      "id": "retired-cli-stdio-must-not-be-referenced",
+      "type": "forbid_content",
+      "regex": "hermes_cli(?:[.]|/)stdio(?:[.]py)?",
+      "include_paths": [
+        "agent/*.py",
+        "agent/**/*.py",
+        "cron/*.py",
+        "cron/**/*.py",
+        "gateway/*.py",
+        "gateway/**/*.py",
+        "hermes_cli/*.py",
+        "hermes_cli/**/*.py",
+        "plugins/*.py",
+        "plugins/**/*.py",
+        "profiles/*.py",
+        "profiles/**/*.py",
+        "providers/*.py",
+        "providers/**/*.py",
+        "runtime/*.py",
+        "runtime/**/*.py",
+        "storage/*.py",
+        "storage/**/*.py",
+        "auth/*.py",
+        "auth/**/*.py",
+        "kanban/*.py",
+        "kanban/**/*.py",
+        "automation/*.py",
+        "automation/**/*.py",
+        "tools/*.py",
+        "tools/**/*.py",
+        "tui_gateway/*.py",
+        "tui_gateway/**/*.py",
+        "tests/*.py",
+        "tests/**/*.py"
+      ]
+    },
+    {
+      "id": "retired-cli-resource-limits-must-not-be-referenced",
+      "type": "forbid_content",
+      "regex": "hermes_cli(?:[.]|/)resource_limits(?:[.]py)?",
+      "include_paths": [
+        "agent/*.py",
+        "agent/**/*.py",
+        "cron/*.py",
+        "cron/**/*.py",
+        "gateway/*.py",
+        "gateway/**/*.py",
+        "hermes_cli/*.py",
+        "hermes_cli/**/*.py",
+        "plugins/*.py",
+        "plugins/**/*.py",
+        "profiles/*.py",
+        "profiles/**/*.py",
+        "providers/*.py",
+        "providers/**/*.py",
+        "runtime/*.py",
+        "runtime/**/*.py",
+        "storage/*.py",
+        "storage/**/*.py",
+        "auth/*.py",
+        "auth/**/*.py",
+        "kanban/*.py",
+        "kanban/**/*.py",
+        "automation/*.py",
+        "automation/**/*.py",
+        "tools/*.py",
+        "tools/**/*.py",
+        "tui_gateway/*.py",
+        "tui_gateway/**/*.py",
+        "tests/*.py",
+        "tests/**/*.py"
+      ]
+    },
+    {
+      "id": "runtime-sqlite-runtime-owner-must-exist",
+      "type": "require_path",
+      "path": "runtime/sqlite_runtime.py"
+    },
+    {
+      "id": "storage-sqlite-util-owner-must-exist",
+      "type": "require_path",
+      "path": "storage/sqlite_util.py"
+    },
+    {
+      "id": "storage-sqlite-safe-read-owner-must-exist",
+      "type": "require_path",
+      "path": "storage/sqlite_safe_read.py"
+    },
+    {
+      "id": "retired-cli-sqlite-runtime-path",
+      "type": "forbid_path",
+      "path": "hermes_cli/sqlite_runtime.py"
+    },
+    {
+      "id": "retired-cli-sqlite-util-path",
+      "type": "forbid_path",
+      "path": "hermes_cli/sqlite_util.py"
+    },
+    {
+      "id": "retired-cli-sqlite-runtime-must-not-be-referenced",
+      "type": "forbid_content",
+      "regex": "hermes_cli(?:[.]|/)sqlite_runtime(?:[.]py)?",
+      "include_paths": [
+        "agent/*.py",
+        "agent/**/*.py",
+        "cron/*.py",
+        "cron/**/*.py",
+        "gateway/*.py",
+        "gateway/**/*.py",
+        "hermes_cli/*.py",
+        "hermes_cli/**/*.py",
+        "plugins/*.py",
+        "plugins/**/*.py",
+        "profiles/*.py",
+        "profiles/**/*.py",
+        "providers/*.py",
+        "providers/**/*.py",
+        "runtime/*.py",
+        "runtime/**/*.py",
+        "storage/*.py",
+        "storage/**/*.py",
+        "auth/*.py",
+        "auth/**/*.py",
+        "kanban/*.py",
+        "kanban/**/*.py",
+        "automation/*.py",
+        "automation/**/*.py",
+        "tools/*.py",
+        "tools/**/*.py",
+        "tui_gateway/*.py",
+        "tui_gateway/**/*.py",
+        "tests/*.py",
+        "tests/**/*.py"
+      ]
+    },
+    {
+      "id": "retired-cli-sqlite-util-must-not-be-referenced",
+      "type": "forbid_content",
+      "regex": "hermes_cli(?:[.]|/)sqlite_util(?:[.]py)?",
+      "include_paths": [
+        "agent/*.py",
+        "agent/**/*.py",
+        "cron/*.py",
+        "cron/**/*.py",
+        "gateway/*.py",
+        "gateway/**/*.py",
+        "hermes_cli/*.py",
+        "hermes_cli/**/*.py",
+        "plugins/*.py",
+        "plugins/**/*.py",
+        "profiles/*.py",
+        "profiles/**/*.py",
+        "providers/*.py",
+        "providers/**/*.py",
+        "runtime/*.py",
+        "runtime/**/*.py",
+        "storage/*.py",
+        "storage/**/*.py",
+        "auth/*.py",
+        "auth/**/*.py",
+        "kanban/*.py",
+        "kanban/**/*.py",
+        "automation/*.py",
+        "automation/**/*.py",
+        "tools/*.py",
+        "tools/**/*.py",
+        "tui_gateway/*.py",
+        "tui_gateway/**/*.py",
+        "tests/*.py",
+        "tests/**/*.py"
+      ],
+      "exclude_paths": [
+        "tests/cron/test_upgrade_module_skew.py"
+      ]
+    },
+    {
+      "id": "retired-cli-sqlite-safe-read-must-not-be-referenced",
+      "type": "forbid_content",
+      "regex": "hermes_cli(?:[.]|/)sqlite_safe_read(?:[.]py)?",
+      "include_paths": [
+        "agent/*.py",
+        "agent/**/*.py",
+        "cron/*.py",
+        "cron/**/*.py",
+        "gateway/*.py",
+        "gateway/**/*.py",
+        "hermes_cli/*.py",
+        "hermes_cli/**/*.py",
+        "plugins/*.py",
+        "plugins/**/*.py",
+        "profiles/*.py",
+        "profiles/**/*.py",
+        "providers/*.py",
+        "providers/**/*.py",
+        "runtime/*.py",
+        "runtime/**/*.py",
+        "storage/*.py",
+        "storage/**/*.py",
+        "auth/*.py",
+        "auth/**/*.py",
+        "kanban/*.py",
+        "kanban/**/*.py",
+        "automation/*.py",
+        "automation/**/*.py",
+        "tools/*.py",
+        "tools/**/*.py",
+        "tui_gateway/*.py",
+        "tui_gateway/**/*.py",
+        "tests/*.py",
+        "tests/**/*.py"
+      ],
+      "exclude_paths": [
+        "hermes_cli/sqlite_safe_read.py",
+        "tests/hermes_cli/test_compat_manifest_targets.py"
+      ]
+    },
+    {
+      "id": "retired-cli-sqlite-safe-read-must-stay-compat-only",
+      "type": "forbid_content",
+      "regex": "^[ ]*(?:def|class)[ ]+(?:connect_tracked|offline_file_access|read_header_bytes_preopen|file_length_matches_header|TrackedConnection|LiveConnectionError)(?:[ (:]|$)",
+      "include_paths": [
+        "hermes_cli/sqlite_safe_read.py"
+      ]
+    }
+  ]
+}

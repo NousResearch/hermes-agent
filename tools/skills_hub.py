@@ -472,7 +472,7 @@ _PLUGIN_COMPAT_LAZY = {
     'source_url_for_bundle': ('tools.skills_hub_models', 'source_url_for_bundle'),
     'unified_search': ('tools.skills_hub_search', 'unified_search'),
     'uninstall_skill': ('tools.skills_hub_install', 'uninstall_skill'),
-    'windows_hide_flags': ('hermes_cli._subprocess_compat', 'windows_hide_flags'),
+    'windows_hide_flags': ('runtime.subprocess_compat', 'windows_hide_flags'),
 }
 
 _plugin_compat_prev_getattr = __getattr__

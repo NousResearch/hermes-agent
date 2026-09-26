@@ -40,10 +40,9 @@ def _spawns(captured, *needles):
 def _is_git_spawn(cmd) -> bool:
     """True only for a ``git -C <cwd> ...`` spawn.
 
-    ``bounded_git_probe`` lives in ``hermes_cli._subprocess_compat`` and both
-    probe call sites delegate to it, so these tests patch
-    ``_subprocess_compat.subprocess.Popen`` — which is the shared ``subprocess``
-    module singleton, i.e. a process-wide patch. Any unrelated daemon spawn
+    ``bounded_git_probe`` lives in ``runtime.git_subprocess`` and delegates capture to
+    ``runtime.subprocess_compat``. These tests patch the runtime process-container seam directly.
+    Any unrelated daemon spawn
     (e.g. an import-time update-check thread) must stay benign and out of the
     recorded spawns, mirroring the ``_spawns`` scoping the other tests use.
     """
@@ -79,20 +78,23 @@ def test_bounded_git_probe_fast_path_spawn_contract_windows(monkeypatch):
     still stubbed so the expected value is a fixed constant rather than
     whatever bundle the helper currently returns.
 
-    The seam is the Job-Object container (``local_runtime.processes.spawn_server``),
+    The seam is the Job-Object container (``runtime.processes.spawn_contained_process``),
     which is what the probe hands its spawn contract to on Windows; the container
     itself adds CREATE_SUSPENDED and assigns the real process handle, which a fake
     Popen cannot provide.
     """
-    from hermes_cli import _subprocess_compat
-    from hermes_cli.local_runtime import processes
+    from runtime import git_subprocess, processes, subprocess_compat
 
     spawns = []
     fake_popen = _make_fake_popen(spawns, stdout="main\n")
-    monkeypatch.setattr(_subprocess_compat, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
-    monkeypatch.setattr(processes, "spawn_server", lambda cmd, **kw: (fake_popen(cmd, **kw), None))
+    monkeypatch.setattr(subprocess_compat, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(
+        processes,
+        "spawn_contained_process",
+        lambda cmd, **kw: (fake_popen(cmd, **kw), None),
+    )
 
-    out = _subprocess_compat.bounded_git_probe(
+    out = git_subprocess.bounded_git_probe(
         ["git", "-C", "C:/repo", "branch", "--show-current"], timeout=1.5
     )
     assert out == "main"
@@ -111,16 +113,17 @@ def test_bounded_git_probe_fast_path_spawn_contract_windows(monkeypatch):
 
 
 def test_bounded_git_probe_nonzero_returncode_returns_empty(monkeypatch):
-    from hermes_cli import _subprocess_compat
+    from runtime import git_subprocess, processes
 
     spawns = []
+    fake_popen = _make_fake_popen(spawns, stdout="garbage-should-not-leak\n", returncode=1)
     monkeypatch.setattr(
-        _subprocess_compat.subprocess,
-        "Popen",
-        _make_fake_popen(spawns, stdout="garbage-should-not-leak\n", returncode=1),
+        processes,
+        "spawn_contained_process",
+        lambda cmd, **kw: (fake_popen(cmd, **kw), None),
     )
 
-    assert _subprocess_compat.bounded_git_probe(["git", "-C", "/repo", "status"], timeout=1.5) == ""
+    assert git_subprocess.bounded_git_probe(["git", "-C", "/repo", "status"], timeout=1.5) == ""
 
 
 
@@ -135,14 +138,14 @@ def test_bounded_git_probe_nonzero_returncode_returns_empty(monkeypatch):
 
 def test_bounded_git_probe_spawn_failure_returns_empty(monkeypatch):
     """A spawn failure (git not on PATH) fails open to ""."""
-    from hermes_cli import _subprocess_compat
+    from runtime import git_subprocess, processes
 
     def boom(cmd, **kwargs):
         raise FileNotFoundError("git not found")
 
-    monkeypatch.setattr(_subprocess_compat.subprocess, "Popen", boom)
+    monkeypatch.setattr(processes, "spawn_contained_process", boom)
 
-    assert _subprocess_compat.bounded_git_probe(["git", "-C", "/repo", "status"], timeout=1.5) == ""
+    assert git_subprocess.bounded_git_probe(["git", "-C", "/repo", "status"], timeout=1.5) == ""
 
 
 
@@ -250,7 +253,7 @@ def _patch_hide_flags(monkeypatch):
     ``creationflags`` — not the platform. Stubbing only the helper keeps that
     coverage on the Linux lane; no ``IS_WINDOWS`` fake is needed or wanted.
     """
-    import hermes_cli._subprocess_compat as subprocess_compat
+    import runtime.subprocess_compat as subprocess_compat
 
     monkeypatch.setattr(subprocess_compat, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
 
@@ -422,17 +425,17 @@ def test_suppress_platform_ver_console_stubs_syscmd_ver(monkeypatch):
     """
     import platform
 
-    from hermes_cli import _subprocess_compat
+    from runtime import subprocess_compat
 
     # Register the original with monkeypatch so it gets restored after.
     monkeypatch.setattr(platform, "_syscmd_ver", platform._syscmd_ver)
 
-    _subprocess_compat.suppress_platform_ver_console()
+    subprocess_compat.suppress_platform_ver_console()
 
     # The stub echoes its inputs — win32_ver() treats the unparseable value
     # as the documented ValueError path and falls back to
     # sys.getwindowsversion().platform_version (no subprocess, no window).
     assert platform._syscmd_ver("s", "r", "v") == ("s", "r", "v")
     # Idempotent + never raises on repeat calls.
-    _subprocess_compat.suppress_platform_ver_console()
+    subprocess_compat.suppress_platform_ver_console()
     assert platform._syscmd_ver() == ("", "", "")

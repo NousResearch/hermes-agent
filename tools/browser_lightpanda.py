@@ -291,7 +291,7 @@ def _is_lightpanda_process(pid: int, port, start_time) -> bool:
         if "serve" not in cmdline or str(port) not in cmdline:
             return False
         if start_time:
-            from gateway.status import get_process_start_time
+            from runtime.process_identity import get_process_start_time
             return get_process_start_time(pid) == start_time
     except Exception:
         return False

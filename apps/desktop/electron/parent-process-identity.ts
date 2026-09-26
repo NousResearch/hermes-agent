@@ -2,7 +2,7 @@ export type ParentWatchdogEnv = {
   HERMES_PARENT_PID: string
   HERMES_PARENT_START_MARKER?: string
   HERMES_PARENT_NONCE?: string
-  /** Spawn tag consumed by hermes_cli.process_identity (`v1:<install>:<purpose>:<spawner_pid>:<spawner_create_s>`).
+  /** Spawn tag consumed by runtime.process_identity (`v1:<install>:<purpose>:<spawner_pid>:<spawner_create_s>`).
    *  Install is `-` (unknown) from the Desktop — the Python side scopes by
    *  venv membership, so the tag only needs lineage, not install identity. */
   HERMES_SPAWN?: string

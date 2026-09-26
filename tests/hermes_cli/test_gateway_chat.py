@@ -87,7 +87,7 @@ async def test_rpc_preserves_notifications_and_errors():
     import json
     from websockets.asyncio.server import serve
     from websockets.asyncio.client import connect
-    from hermes_cli.gateway_client import GatewayClient, GatewayClientError
+    from gateway.client import GatewayClient, GatewayClientError
 
     async def peer(ws):
         async for raw in ws:

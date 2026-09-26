@@ -200,7 +200,7 @@ def kanban_command(args: argparse.Namespace) -> int:
 
 def _profile_author() -> str:
     """Best-effort author name for an interactive CLI call."""
-    from hermes_cli.profiles import current_profile_name
+    from profiles.current import current_profile_name
     return current_profile_name("user") or "user"
 
 

@@ -143,7 +143,7 @@ def test_a_record_whose_owner_does_not_answer_falls_through_to_the_bind(host_dir
 def test_unprovable_liveness_still_has_to_answer(host_dir, monkeypatch):
     """Without psutil the liveness answer is ``None`` (unprovable). Treating that as "alive" made
     a record for a long-dead PID a permanent silent outage — every launch exited 0 forever."""
-    monkeypatch.setattr("hermes_cli.process_identity._pid_alive_matches", lambda *_a, **_k: None)
+    monkeypatch.setattr("runtime.process_identity._pid_alive_matches", lambda *_a, **_k: None)
     _publish(None, pid=2**22 - 1, port=_dead_port())
 
     assert _attach_to_host_backend(_args(), headless_backend=True) is None

@@ -7,7 +7,7 @@ prompt is an indefinite hang (or a dead wait until the timeout).
 
 Two layers of coverage:
 
-1. Unit contract on :func:`hermes_cli._subprocess_compat.noninteractive_git_env`.
+1. Unit contract on :func:`runtime.git_subprocess.noninteractive_git_env`.
 2. A real-git E2E proving the env actually disables the prompt: a local HTTP
    server answers 401 with a Basic challenge; ``git clone`` against it with
    the hardened env fails *fast* with "terminal prompts disabled" instead of
@@ -28,7 +28,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli._subprocess_compat import noninteractive_git_env
+from runtime.git_subprocess import noninteractive_git_env
 
 
 # ---------------------------------------------------------------------------

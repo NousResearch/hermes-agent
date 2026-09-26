@@ -139,13 +139,13 @@ _UNDECLARED_ARGS: dict[str, frozenset[str]] = {
 def _persisted_identity() -> str:
     """Profile name persisted into board records (comment author, task creator).
 
-    ``hermes_cli.profiles.current_profile_name`` resolves the profile this call runs FOR — the bound
+    ``profiles.current.current_profile_name`` resolves the profile this call runs FOR — the bound
     home override under a multiplexed tick or turn, else the dispatcher's ``HERMES_PROFILE`` pin,
     else the process home; the generic ``"worker"`` only when nothing names a profile. Never taken
     from tool args: board records are injected into future workers' prompts, so a caller-supplied
     identity could forge an authoritative-looking author (see #19713).
     """
-    from hermes_cli.profiles import current_profile_name
+    from profiles.current import current_profile_name
 
     return current_profile_name("worker") or "worker"
 
@@ -814,7 +814,7 @@ def _handle_request_review(args: dict, **kw) -> str:
     # Reviewer is model-supplied free text stored durably on the event payload.
     reviewer = _redact_opt(args.get("reviewer") or None)
     if reviewer:
-        from hermes_cli.profiles import list_profile_names, profile_exists
+        from profiles.registry import list_profile_names, profile_exists
 
         # A non-profile reviewer would park the card in `review` on an assignee
         # the dispatcher can never spawn (#106163).
@@ -1092,7 +1092,7 @@ def _resolve_notify_target() -> Optional[dict[str, Any]]:
     message_id = env("HERMES_SESSION_MESSAGE_ID", "") or ""
     notifier_profile = env("HERMES_SESSION_PROFILE", "")
     if not notifier_profile:
-        from hermes_cli.profiles import current_profile_name
+        from profiles.current import current_profile_name
         notifier_profile = current_profile_name("default")
     delivery_metadata: dict[str, Any] = {
         k: v for k, v in (

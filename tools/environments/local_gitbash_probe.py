@@ -8,7 +8,7 @@ import platform
 import shutil
 import subprocess
 
-from hermes_cli._subprocess_compat import bounded_probe_run, windows_hide_flags
+from runtime.subprocess_compat import bounded_probe_run, windows_hide_flags
 
 _IS_WINDOWS = platform.system() == "Windows"
 

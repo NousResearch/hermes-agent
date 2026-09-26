@@ -24,7 +24,7 @@ from fastapi import APIRouter, HTTPException
 from gateway.status import (
     multiplexer_liveness_for_profile, profile_platforms_from_multiplexer, resolve_gateway_liveness,
     retained_gateway_state)
-from hermes_cli._subprocess_compat import windows_hide_flags
+from runtime.subprocess_compat import windows_hide_flags
 from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path
 from hermes_constants import get_process_hermes_home
 from hermes_cli.web_deps import LateState, late
@@ -826,7 +826,7 @@ def _multiplex_port_binding_conflict(platform_id: str, requested_profile: Option
 
     requested = (requested_profile or "").strip()
     if not requested or requested.lower() == "current":
-        from hermes_cli.profiles import get_active_profile_name
+        from profiles.current import get_active_profile_name
 
         # The dashboard's own profile. "custom" (unrecognized HERMES_HOME) is outside
         # the profiles tree, so a multiplexed gateway never serves it.
@@ -840,7 +840,7 @@ def _multiplex_port_binding_conflict(platform_id: str, requested_profile: Option
     # The flag that matters is the one the shared gateway settled at startup: its served record when
     # it runs, else the DEFAULT profile's explicit config (plus the process-wide
     # GATEWAY_MULTIPLEX_PROFILES override). An unset flag is decided by the gateway, not guessed here.
-    from hermes_cli.gateway_multiplex_mode import default_gateway_multiplexes
+    from gateway.multiplex_mode import default_gateway_multiplexes
     if not default_gateway_multiplexes():
         return None
 
@@ -917,8 +917,9 @@ def _notify_multiplexer_hot_serve(profile: Optional[str]) -> bool:
     """True when a live multiplexer serves the written profile and was told to rebuild its adapters.
     Unscoped (no ``?profile=``) means THIS process's profile: Desktop routes a pooled
     ``hermes --profile X serve`` without the query (#109088), so X must resolve here too."""
-    from hermes_cli.gateway import _current_profile_name, named_profile_served_by_running_multiplexer
-    from hermes_cli.gateway_multiplex_served import notify_multiplexer_profiles_changed
+    from hermes_cli.gateway import _current_profile_name
+    from gateway.host_topology import named_profile_served_by_running_multiplexer
+    from gateway.served_profiles import notify_multiplexer_profiles_changed
     name = (profile or "").strip() or _current_profile_name()
     if not name or name == "default" or not named_profile_served_by_running_multiplexer(name):
         return False

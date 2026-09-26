@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Sequence
 
-from hermes_cli.gateway_multiplex_s6 import AUTOSTART_STATES as _AUTOSTART_STATES, fold_named_slot_intent
+from gateway.s6_service import AUTOSTART_STATES as _AUTOSTART_STATES, fold_named_slot_intent
 
 log = logging.getLogger(__name__)
 
@@ -283,7 +283,7 @@ def _register_service(scandir: Path, profile: str, *, start: bool) -> None:
     """
     import shutil
 
-    from hermes_cli.service_manager import (
+    from gateway.s6_manager import (
         S6ServiceManager, _seed_supervise_skeleton, validate_profile_name)
 
     validate_profile_name(profile)

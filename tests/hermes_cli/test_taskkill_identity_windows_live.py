@@ -10,7 +10,7 @@ Class under test (#98814 / #89614):
 - ``gateway.status.terminate_pid(force=True)`` requires a matching
   ``expected_start_time`` and must refuse (never taskkill) on a missing or
   mismatched identity.
-- ``hermes_cli._subprocess_compat.pid_is_hermes`` fails closed on foreign
+- ``runtime.process_identity.pid_is_hermes`` fails closed on foreign
   processes and identity mismatches.
 - ``hermes_cli.update_cmd._refuse_gateway_ancestor_tree_kill`` refuses to
   nominate any ancestor of the current process for a tree-kill.
@@ -49,7 +49,8 @@ def _cleanup(proc: subprocess.Popen) -> None:
 
 class TestTerminatePidIdentityLive:
     def test_matching_identity_kills_real_process(self):
-        from gateway.status import get_process_start_time, terminate_pid
+        from gateway.status import terminate_pid
+        from runtime.process_identity import get_process_start_time
 
         proc = _spawn_sleeper()
         try:
@@ -73,7 +74,8 @@ class TestTerminatePidIdentityLive:
 
     def test_mismatched_identity_refuses_and_process_survives(self):
         """The recycled-PID scenario: recorded identity != live identity."""
-        from gateway.status import get_process_start_time, terminate_pid
+        from gateway.status import terminate_pid
+        from runtime.process_identity import get_process_start_time
 
         # Simulate recycling: capture the identity of a process that then
         # dies, and respawn a DIFFERENT process. We can't force Windows to
@@ -98,7 +100,8 @@ class TestTerminatePidIdentityLive:
             _cleanup(impostor)
 
     def test_dead_pid_identity_unavailable_refuses(self):
-        from gateway.status import get_process_start_time, terminate_pid
+        from gateway.status import terminate_pid
+        from runtime.process_identity import get_process_start_time
 
         proc = _spawn_sleeper(1)
         pid = proc.pid
@@ -116,7 +119,7 @@ class TestPidIsHermesLive:
     def test_foreign_real_process_is_refused(self):
         """A live non-Hermes process (bare python sleeper in a temp-ish argv)
         must never be judged safe for taskkill."""
-        from hermes_cli._subprocess_compat import pid_is_hermes
+        from runtime.process_identity import pid_is_hermes
 
         proc = _spawn_sleeper()
         try:
@@ -130,8 +133,8 @@ class TestPidIsHermesLive:
             _cleanup(proc)
 
     def test_stale_fingerprint_is_refused_even_for_hermes_argv(self):
-        from gateway.status import get_process_start_time
-        from hermes_cli._subprocess_compat import pid_is_hermes
+        from runtime.process_identity import get_process_start_time
+        from runtime.process_identity import pid_is_hermes
 
         proc = _spawn_sleeper()
         try:
@@ -144,7 +147,7 @@ class TestPidIsHermesLive:
             _cleanup(proc)
 
     def test_nonexistent_pid_is_refused(self):
-        from hermes_cli._subprocess_compat import pid_is_hermes
+        from runtime.process_identity import pid_is_hermes
 
         assert pid_is_hermes(2**24) is False
 

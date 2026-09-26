@@ -15,7 +15,7 @@ import tomllib
 from pathlib import Path
 from typing import Optional
 from hermes_constants import project_venv_dir, venv_python_path
-from hermes_cli._subprocess_compat import bounded_probe_run
+from runtime.subprocess_compat import bounded_probe_run
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.update_cmd")

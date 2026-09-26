@@ -31,8 +31,8 @@ def _fleet_homes(monkeypatch, tmp_path, records: dict[str, dict]) -> None:
         (home / "gateway_state.json").write_text(json.dumps(record), encoding="utf-8")
     by_home = {str(home): rec["pid"] for profile, home in homes.items() for rec in [records[profile]]}
     monkeypatch.setattr("hermes_cli.build_info.get_code_identity", lambda refresh=False: {"sha": HEAD, "version": "1.0"})
-    monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: root)
-    monkeypatch.setattr("hermes_cli.profiles._get_profiles_root", lambda: root / "profiles")
+    monkeypatch.setattr("profiles.paths._get_default_hermes_home", lambda: root)
+    monkeypatch.setattr("profiles.paths._get_profiles_root", lambda: root / "profiles")
     monkeypatch.setattr("gateway.control_socket.identify_gateway", lambda h, **k: None)
     monkeypatch.setattr("gateway.status.live_gateway_pid_for_home", lambda h: by_home.get(str(h)))
     monkeypatch.setattr(ur, "_gateway_code_root", lambda pid, home: None)
@@ -83,7 +83,7 @@ def test_restart_phase_records_accepted_self_restart_and_verify_exits_clean(monk
     monkeypatch.setattr(fleet_mod._time, "sleep", lambda s: None)
     cleared = []
     monkeypatch.setattr(fleet_mod, "_clear_fleet_restart_pending_marker", lambda: cleared.append(True))
-    monkeypatch.setattr("hermes_cli.gateway_migrate.maybe_auto_migrate_after_update", lambda: None)
+    monkeypatch.setattr("nous_cli.gateway_migrate.maybe_auto_migrate_after_update", lambda: None)
     restart = fleet_mod._GatewayRestartOutcome(
         incomplete=False, phase_errors=[], pre_restart_gateway_pids=[ancestor], restarted_services=["hermes-gateway"],
         failed_or_stale_units=[], relaunched_profiles=[], externally_supervised_profiles=[], killed_pids=set(),

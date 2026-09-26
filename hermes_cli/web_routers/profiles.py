@@ -8,6 +8,11 @@ preserved rather than relying on Starlette's literal-before-param matching.
 Shared helpers are reached via the late-binding seam in :mod:`hermes_cli.web_deps`
 so a test's ``monkeypatch.setattr(<owning module>, "_helper", ...)`` keeps working.
 """
+from profiles import current as profile_current
+from profiles import metadata as profile_metadata
+from profiles import names as profile_names
+from profiles import paths as profile_paths
+from gateway import profile_serving
 
 import contextlib
 import copy
@@ -215,12 +220,12 @@ def _profile_targets(log_label: str) -> List[Tuple[str, Path]]:
     fan-out that only needs name/path (#114041)."""
     from hermes_cli import profiles as profiles_mod
     try:
-        targets = list(profiles_mod.profiles_to_serve(multiplex=True, include_standalone=True, include_parked=True))
+        targets = list(profile_serving.profiles_to_serve(multiplex=True, include_standalone=True, include_parked=True))
     except Exception:
         _log.exception("%s: profile enumeration failed", log_label)
         targets = []
     if not targets:
-        targets.append(("default", profiles_mod.get_profile_dir("default")))
+        targets.append(("default", profile_paths.get_profile_dir("default")))
     return targets
 
 
@@ -787,8 +792,8 @@ async def get_active_profile_endpoint():
                 return fn() or "default"
             except Exception:
                 return "default"
-        return {"active": _or_default(profiles_mod.get_active_profile),
-                "current": _or_default(profiles_mod.get_active_profile_name)}
+        return {"active": _or_default(profile_current.get_active_profile),
+                "current": _or_default(profile_current.get_active_profile_name)}
 
     return await run_in_threadpool(_run)
 
@@ -800,8 +805,8 @@ async def set_active_profile_endpoint(body: ProfileActiveUpdate):
     from hermes_cli import profiles as profiles_mod
     with _profile_errors("POST /api/profiles/active failed"):
         # Stats the target, creates the state directory, writes via temp file + replace.
-        await run_in_threadpool(profiles_mod.set_active_profile, body.name)
-    return {"ok": True, "active": profiles_mod.normalize_profile_name(body.name)}
+        await run_in_threadpool(profile_current.set_active_profile, body.name)
+    return {"ok": True, "active": profile_names.normalize_profile_name(body.name)}
 
 
 @router.get("/api/profiles/{name}/setup-command")
@@ -858,12 +863,12 @@ async def rename_profile_endpoint(name: str, body: ProfileRename):
     # For the default profile the rename lands as a presentation-only display_name; the
     # canonical id ("default") is always returned so callers keying on `name` stay correct.
     try:
-        is_default = profiles_mod.normalize_profile_name(name) == "default"
+        is_default = profile_names.normalize_profile_name(name) == "default"
     except ValueError:
         is_default = False
     if is_default:
         return {"ok": True, "name": "default", "display_name": body.new_name.strip(), "path": str(path)}
-    return {"ok": True, "name": profiles_mod.normalize_profile_name(body.new_name), "path": str(path)}
+    return {"ok": True, "name": profile_names.normalize_profile_name(body.new_name), "path": str(path)}
 
 
 @router.delete("/api/profiles/{name}")
@@ -935,7 +940,7 @@ async def update_profile_description_endpoint(name: str, body: ProfileDescriptio
     with _profile_errors("PUT /api/profiles/%s/description failed", name,
                          not_found=(), bad_request=()):
         await run_in_threadpool(
-            profiles_mod.write_profile_meta, profile_dir, description=text, description_auto=False)
+            profile_metadata.write_profile_meta, profile_dir, description=text, description_auto=False)
     return {"ok": True, "description": text, "description_auto": False}
 
 

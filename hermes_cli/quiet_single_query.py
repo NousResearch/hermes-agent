@@ -112,7 +112,7 @@ def run_reported_turn(argv: list, *, env: MutableMapping[str, str], report_path:
     locale default mangled or lost accented replies (#115894); on POSIX the child keeps the
     locale codec, so the locale default stays correct there (#66566).
     """
-    from hermes_cli._subprocess_compat import windows_hide_flags
+    from runtime.subprocess_compat import windows_hide_flags
 
     if encoding is None and sys.platform == "win32":
         encoding = "utf-8"

@@ -1,4 +1,5 @@
 """#104893: a gateway started by a system-level systemd unit adopts its own user bus at boot."""
+from gateway import systemd_runtime
 
 import os
 
@@ -45,7 +46,7 @@ def test_service_gateway_boot_adopts_its_user_bus(monkeypatch):
         raise _BootReached
 
     # First boot step after the adoption — stop there instead of starting a gateway.
-    monkeypatch.setattr(gw, "supports_systemd_services", _stop_here)
+    monkeypatch.setattr(systemd_runtime, "supports_services", _stop_here)
 
     with pytest.raises(_BootReached):
         gw.run_gateway()
@@ -70,7 +71,7 @@ def test_absent_user_bus_is_never_fabricated(monkeypatch):
     _fake_user_bus(monkeypatch, present=False)
     _service_manager_env(monkeypatch)
 
-    gw._ensure_user_systemd_env()
+    systemd_runtime.ensure_user_env()
 
     assert "XDG_RUNTIME_DIR" not in os.environ
     assert "DBUS_SESSION_BUS_ADDRESS" not in os.environ

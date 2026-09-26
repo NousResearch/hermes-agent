@@ -20,54 +20,6 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
-# configure_windows_stdio
-# ---------------------------------------------------------------------------
-
-
-class TestConfigureWindowsStdio:
-    """``hermes_cli.stdio.configure_windows_stdio`` wiring.
-
-    The function must:
-    - be a no-op on non-Windows
-    - only configure once per process (idempotent)
-    - set PYTHONIOENCODING / PYTHONUTF8 without overriding explicit user settings
-    - reconfigure sys.stdout/stderr/stdin to UTF-8 on Windows
-    - flip the console code page to CP_UTF8 (65001) via ctypes
-    - respect HERMES_DISABLE_WINDOWS_UTF8 opt-out
-    """
-
-    @pytest.fixture(autouse=True)
-    def _reset_configured(self, monkeypatch):
-        """Reload the module before each test so the _CONFIGURED flag resets."""
-        # Remove from sys.modules so import triggers a fresh load
-        sys.modules.pop("hermes_cli.stdio", None)
-        # Fresh import now; tests import from hermes_cli.stdio themselves,
-        # but this guarantees the module they get is a brand-new copy.
-        import hermes_cli.stdio as _s
-        _s._CONFIGURED = False
-        yield
-        sys.modules.pop("hermes_cli.stdio", None)
-
-    def test_no_op_on_posix(self, monkeypatch):
-        from hermes_cli import stdio
-
-        monkeypatch.setattr(stdio, "is_windows", lambda: False)
-        result = stdio.configure_windows_stdio()
-        assert result is False
-
-
-
-    def test_reconfigure_stream_handles_missing_method(self, monkeypatch):
-        """StringIO-like objects without .reconfigure() must not blow up."""
-        from hermes_cli import stdio
-        import io
-
-        buf = io.StringIO()
-        # Must not raise
-        stdio._reconfigure_stream(buf)
-
-
-# ---------------------------------------------------------------------------
 # terminate_pid — the centralized kill primitive
 # ---------------------------------------------------------------------------
 
@@ -97,7 +49,7 @@ class TestTerminatePidRoutingOnWindows:
             return result
 
         monkeypatch.setattr(status.subprocess, "run", fake_run)
-        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123456)
+        monkeypatch.setattr(status._process_identity, "get_process_start_time", lambda pid: 123456)
         status.terminate_pid(12345, force=True, expected_start_time=123456)
 
         assert captured["args"][0] == "taskkill"
@@ -117,7 +69,7 @@ class TestTerminatePidRoutingOnWindows:
             return result
 
         monkeypatch.setattr(status.subprocess, "run", fake_run)
-        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123456)
+        monkeypatch.setattr(status._process_identity, "get_process_start_time", lambda pid: 123456)
         with pytest.raises(OSError, match="cannot be terminated"):
             status.terminate_pid(12345, force=True, expected_start_time=123456)
 
@@ -157,7 +109,7 @@ class TestTerminatePidRoutingOnWindows:
 
         monkeypatch.setattr(status.subprocess, "run", fake_run)
         monkeypatch.setattr(status.os, "kill", fake_kill)
-        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123456)
+        monkeypatch.setattr(status._process_identity, "get_process_start_time", lambda pid: 123456)
         status.terminate_pid(42, force=True, expected_start_time=123456)
 
         assert captured["pid"] == 42
@@ -255,17 +207,17 @@ class TestTzdataDependencyDeclared:
 
 
 # ---------------------------------------------------------------------------
-# _subprocess_compat shared helpers
+# runtime.subprocess_compat shared helpers
 # ---------------------------------------------------------------------------
 
 
 class TestSubprocessCompatHelpers:
-    """hermes_cli/_subprocess_compat.py POSIX + Windows behaviour."""
+    """runtime/subprocess_compat.py POSIX + Windows behaviour."""
 
 
     def test_resolve_node_command_returns_absolute_on_posix(self):
         """On Linux, resolve_node_command('sh', ['-c','echo hi']) picks up /bin/sh."""
-        from hermes_cli._subprocess_compat import resolve_node_command
+        from runtime.subprocess_compat import resolve_node_command
         # We can't assert "npm is on PATH" portably; use `sh` which is
         # guaranteed on POSIX.  On Windows the test only confirms the
         # no-crash fallback path.
@@ -293,7 +245,7 @@ class TestSubprocessCompatHelpers:
            all descendants inherit (parent-console root cause isolated by
            the desktop backend fix, commit aa2ae36c3f).
         """
-        from hermes_cli import _subprocess_compat as sc
+        from runtime import subprocess_compat as sc
         assert not sc.windows_detach_flags() & 0x00000008, (
             "DETACHED_PROCESS must not be in windows_detach_flags(): it makes "
             "CREATE_NO_WINDOW a no-op and re-creates the per-descendant "
@@ -318,7 +270,7 @@ class TestSubprocessCompatHelpers:
         ``fix/windows-gateway-reliability`` (PR #40909) and the bit must
         stay in the default bundle going forward.
         """
-        from hermes_cli import _subprocess_compat as sc
+        from runtime import subprocess_compat as sc
         assert sc.windows_detach_flags() & 0x01000000, (
             "CREATE_BREAKAWAY_FROM_JOB (0x01000000) must remain in the "
             "default detach flag bundle so the Desktop GUI update flow "
@@ -336,7 +288,7 @@ class TestSubprocessCompatHelpers:
         It must drop ONLY the breakaway bit — DETACHED_PROCESS et al.
         are still required for the child to survive the parent's exit.
         """
-        from hermes_cli import _subprocess_compat as sc
+        from runtime import subprocess_compat as sc
         full = sc.windows_detach_flags()
         fallback = sc.windows_detach_flags_without_breakaway()
         # Fallback equals full minus the breakaway bit, nothing else changed.
@@ -441,7 +393,7 @@ class TestWindowlessGatewayRestartSpec:
     overlay)."""
 
     def test_noop_on_non_windows(self):
-        import hermes_cli.gateway_windows as gw
+        import gateway.windows_service as gw
 
         argv = ["/path/venv/bin/python", "-m", "hermes_cli.main", "gateway", "run"]
         new_argv, cwd, env = gw.windowless_gateway_restart_spec(list(argv))
@@ -450,7 +402,7 @@ class TestWindowlessGatewayRestartSpec:
         assert env == {}
 
     def test_empty_argv_is_safe(self):
-        import hermes_cli.gateway_windows as gw
+        import gateway.windows_service as gw
 
         new_argv, cwd, env = gw.windowless_gateway_restart_spec([])
         assert new_argv == []
@@ -471,7 +423,7 @@ class TestWindowlessGatewayRestartSpec:
         symptoms of testing Windows on a host that isn't Windows; on the
         Windows runner neither is needed.
         """
-        import hermes_cli.gateway_windows as gw
+        import gateway.windows_service as gw
 
         argv = [
             "C:/venv/Scripts/python.exe",
@@ -525,7 +477,7 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
 
     ``windows_only``: this used to run on Linux behind a ``sys.platform``
     patch, and the breakaway-bit assertions had to be skipped there anyway
-    (``_subprocess_compat`` caches ``IS_WINDOWS`` at import, so the flags
+    (``runtime.subprocess_compat`` caches ``IS_WINDOWS`` at import, so the flags
     were all 0) — i.e. the most important assertions in the class never
     executed. On the Windows runner they do.
     """
@@ -547,7 +499,7 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
 
     def test_outer_watcher_retries_without_breakaway_on_oserror(self, monkeypatch):
         import gateway.run as gr
-        from hermes_cli._subprocess_compat import (
+        from runtime.subprocess_compat import (
             windows_detach_flags_without_breakaway,
             windows_detach_popen_kwargs,
         )

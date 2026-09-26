@@ -41,8 +41,8 @@ class WorkerRPC:
         self.lock = threading.Lock()
 
     def __call__(self, method, **params):
-        from hermes_cli.gateway_client import _session_ticket
-        from hermes_cli.gateway_runtime_discovery import query_identify
+        from gateway.client import _session_ticket
+        from gateway.runtime_discovery import query_identify
         from websockets.sync.client import connect
         try:
             asyncio.get_running_loop()
@@ -52,11 +52,11 @@ class WorkerRPC:
             raise WorkerPersistenceError('synchronous_rpc_on_event_loop')
         with self.lock:
             # A served secondary has no socket; its multiplexer's descriptor names it.
-            from hermes_cli.gateway_runtime import discover_gateway_endpoint
+            from gateway.runtime import discover_gateway_endpoint
             discovery = discover_gateway_endpoint(self.home, timeout=5)
             if discovery.state != 'ready' or discovery.endpoint is None:
                 raise WorkerPersistenceError('owner_unavailable')
-            from hermes_cli.gateway_runtime import control_home_for
+            from gateway.runtime import control_home_for
             descriptor = query_identify(control_home_for(self.home, discovery.endpoint), timeout=5)
             if descriptor.get('pid') == os.getpid():
                 raise WorkerPersistenceError('synchronous_self_rpc')

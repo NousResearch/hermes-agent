@@ -7146,13 +7146,13 @@
    "facade": "hermes_cli.web_server",
    "name": "windows_detach_flags",
    "kind": "moved-lazy",
-   "target": "hermes_cli._subprocess_compat"
+   "target": "runtime.subprocess_compat"
   },
   {
    "facade": "hermes_cli.web_server",
    "name": "windows_hide_flags",
    "kind": "moved-lazy",
-   "target": "hermes_cli._subprocess_compat"
+   "target": "runtime.subprocess_compat"
   },
   {
    "facade": "hermes_cli.web_server",
@@ -9426,7 +9426,7 @@
    "facade": "tools.browser_tool",
    "name": "windows_hide_flags",
    "kind": "moved-lazy",
-   "target": "hermes_cli._subprocess_compat"
+   "target": "runtime.subprocess_compat"
   },
   {
    "facade": "tools.clarify_gateway",
@@ -9864,7 +9864,7 @@
    "facade": "tools.environments.base",
    "name": "windows_hide_flags",
    "kind": "moved-lazy",
-   "target": "hermes_cli._subprocess_compat"
+   "target": "runtime.subprocess_compat"
   },
   {
    "facade": "tools.environments.managed_modal",
@@ -11058,7 +11058,7 @@
    "facade": "tools.skills_hub",
    "name": "windows_hide_flags",
    "kind": "moved-lazy",
-   "target": "hermes_cli._subprocess_compat"
+   "target": "runtime.subprocess_compat"
   },
   {
    "facade": "tools.skills_hub",
@@ -11676,7 +11676,7 @@
    "facade": "tools.transcription_tools",
    "name": "windows_hide_flags",
    "kind": "moved-lazy",
-   "target": "hermes_cli._subprocess_compat"
+   "target": "runtime.subprocess_compat"
   },
   {
    "facade": "tools.tts_tool",
@@ -12162,7 +12162,7 @@
    "facade": "tools.tts_tool",
    "name": "windows_hide_flags",
    "kind": "moved-lazy",
-   "target": "hermes_cli._subprocess_compat"
+   "target": "runtime.subprocess_compat"
   },
   {
    "facade": "tools.url_safety",

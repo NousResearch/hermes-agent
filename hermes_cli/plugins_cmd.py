@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Callable, NoReturn, Optional
 
 from hermes_constants import get_hermes_home
-from hermes_cli._subprocess_compat import noninteractive_git_env
+from runtime.git_subprocess import noninteractive_git_env
 from hermes_cli.cli_output import line_input
 from hermes_cli.config import cfg_get
 from hermes_cli.plugin_capabilities import _child_dict

@@ -34,9 +34,9 @@ def test_cron_manage_profile_reads_that_profiles_store(tmp_path, monkeypatch):
     )
 
     # Route the profile name the handler resolves to our temp home.
-    import hermes_cli.profiles as profiles
+    from profiles import paths as profile_paths
 
-    monkeypatch.setattr(profiles, "get_profile_dir", lambda name: profile_home)
+    monkeypatch.setattr(profile_paths, "get_profile_dir", lambda name: profile_home)
 
     resp = server.handle_request(
         {
@@ -59,10 +59,10 @@ def test_cron_manage_profile_reads_that_profiles_store(tmp_path, monkeypatch):
 
 
 def test_cron_manage_unknown_profile_errors(tmp_path, monkeypatch):
-    import hermes_cli.profiles as profiles
+    from profiles import paths as profile_paths
 
     missing = tmp_path / "profiles" / "ghost"
-    monkeypatch.setattr(profiles, "get_profile_dir", lambda name: missing)
+    monkeypatch.setattr(profile_paths, "get_profile_dir", lambda name: missing)
 
     resp = server.handle_request(
         {

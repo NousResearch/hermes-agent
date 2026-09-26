@@ -24,9 +24,9 @@ pytestmark = pytest.mark.skipif(
 
 
 def _patch_named_profile(monkeypatch, profiles_root, profile_dir):
-    monkeypatch.setattr("hermes_cli.profiles._get_profiles_root", lambda: profiles_root)
-    monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda n: profile_dir)
-    monkeypatch.setattr("hermes_cli.profiles.validate_profile_name", lambda n: None)
+    monkeypatch.setattr("profiles.paths._get_profiles_root", lambda: profiles_root)
+    monkeypatch.setattr("profiles.paths.get_profile_dir", lambda n: profile_dir)
+    monkeypatch.setattr("profiles.names.validate_profile_name", lambda n: None)
 
 
 def _bind_unix_socket(monkeypatch, path):

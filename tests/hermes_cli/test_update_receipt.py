@@ -265,10 +265,10 @@ class TestFleetClassification:
                                    "version": "1.0", "source": "git"},
         )
         monkeypatch.setattr(
-            "hermes_cli.profiles._get_default_hermes_home", lambda: home
+            "profiles.paths._get_default_hermes_home", lambda: home
         )
         monkeypatch.setattr(
-            "hermes_cli.profiles._get_profiles_root",
+            "profiles.paths._get_profiles_root",
             lambda: tmp_path / "nonexistent_profiles_root",
         )
         monkeypatch.setattr(ur, "_socket_identity", lambda home: None)
@@ -291,10 +291,10 @@ class TestFleetClassification:
                                    "version": "1.0", "source": "git"},
         )
         monkeypatch.setattr(
-            "hermes_cli.profiles._get_default_hermes_home", lambda: home
+            "profiles.paths._get_default_hermes_home", lambda: home
         )
         monkeypatch.setattr(
-            "hermes_cli.profiles._get_profiles_root",
+            "profiles.paths._get_profiles_root",
             lambda: tmp_path / "nonexistent_profiles_root",
         )
 
@@ -358,10 +358,10 @@ class TestFleetClassification:
             json.dumps({"pid": 999999, "code_sha": "a" * 40}), encoding="utf-8"
         )
         monkeypatch.setattr(
-            "hermes_cli.profiles._get_default_hermes_home", lambda: home
+            "profiles.paths._get_default_hermes_home", lambda: home
         )
         monkeypatch.setattr(
-            "hermes_cli.profiles._get_profiles_root",
+            "profiles.paths._get_profiles_root",
             lambda: tmp_path / "nope",
         )
         monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)

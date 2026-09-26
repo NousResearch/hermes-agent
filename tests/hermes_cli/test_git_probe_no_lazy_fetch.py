@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import banner
-from hermes_cli._subprocess_compat import bounded_git_probe
+from runtime.git_subprocess import bounded_git_probe
 
 _ENV = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
 

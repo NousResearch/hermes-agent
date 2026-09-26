@@ -471,7 +471,7 @@ def _run_version_probe(argv: list[str], **kwargs):
     """Run a hidden ``--version`` probe; ``None`` when it cannot run."""
     import subprocess
     try:
-        from hermes_cli._subprocess_compat import windows_hide_flags
+        from runtime.subprocess_compat import windows_hide_flags
         return subprocess.run(
             argv, capture_output=True, timeout=10, creationflags=windows_hide_flags(), **kwargs
         )

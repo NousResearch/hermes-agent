@@ -194,7 +194,7 @@ def _updater_owned_backend_entry(pid: int, cmdline: str) -> dict | None:
     if purpose not in _UPDATER_STOPPABLE_PURPOSES:
         return None
     try:
-        from hermes_cli.process_identity import ledger_entries, spawner_is_dead  # noqa: PLC0415
+        from runtime.process_identity import ledger_entries, spawner_is_dead  # noqa: PLC0415
 
         entries = ledger_entries()
     except Exception:

@@ -1,3 +1,5 @@
+from profiles import names as profile_names
+from profiles import paths as profile_paths
 import atexit
 import concurrent.futures
 import contextlib
@@ -234,7 +236,7 @@ class _SlashWorker:
         self.stdout_queue: queue.Queue[dict | None] = queue.Queue()
         argv = [sys.executable, "-m", "tui_gateway.slash_worker", "--session-key", session_key] + (["--model", model] if model else [])
         self._closed = False
-        from hermes_cli._subprocess_compat import windows_hide_flags
+        from runtime.subprocess_compat import windows_hide_flags
         # slash_worker runs the Hermes agent → needs provider credentials. Tier-1 secrets
         # (gateway/GitHub/infra) are still stripped (#29157). Global-remote / multi-profile sessions: the
         # worker must resolve config/skills/state against the session's profile home, not the gateway's
@@ -497,10 +499,9 @@ def _canonical_profile_request(name: str) -> str:
     id), in which case it wins; other unknown names keep failing closed in ``_profile_home``.
     """
     if name.casefold() in {".hermes", "hermes"}:
-        from hermes_cli import profiles as profiles_mod
         # Check the profiles root directly: get_profile_dir rejects "hermes" as a
         # reserved name, but a pre-reserved-list install may still carry that dir.
-        if not (profiles_mod._get_profiles_root() / profiles_mod.normalize_profile_name(name)).is_dir():
+        if not (profile_paths._get_profiles_root() / profile_names.normalize_profile_name(name)).is_dir():
             return "default"
     return name
 
@@ -538,9 +539,8 @@ def _profile_home(profile: str | None) -> Path | None:
     """Resolve a named profile's home on THIS host, or None for the launch profile."""
     if not (name := _canonical_profile_request((profile or "").strip())):
         return None
-    from hermes_cli import profiles as profiles_mod
     try:
-        home = Path(profiles_mod.get_profile_dir(name))
+        home = Path(profile_paths.get_profile_dir(name))
     except ValueError:
         home = None
     if home is None or not home.is_dir():
@@ -1341,7 +1341,7 @@ def _probe_config_health(cfg: dict) -> str:
 
 def _current_profile_name() -> str:
     with contextlib.suppress(Exception):
-        from hermes_cli.profiles import get_active_profile_name
+        from profiles.current import get_active_profile_name
         return get_active_profile_name() or "default"
     return "default"
 

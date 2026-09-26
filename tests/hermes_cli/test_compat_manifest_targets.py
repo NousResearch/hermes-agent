@@ -101,3 +101,12 @@ def test_kanban_db_connect_opens_a_kanban_board(tmp_path, monkeypatch):
         conn.close()
     assert "tasks" in tables, tables
     assert not (tmp_path / "projects.db").exists()
+
+def test_sqlite_safe_read_retains_only_its_scheduled_compat_constant():
+    """The retired CLI owner keeps the existing restored-def and no runtime implementation."""
+    from storage import sqlite_safe_read as storage_safe_read
+
+    compat = importlib.import_module("hermes_cli.sqlite_safe_read")
+
+    assert compat.SQLITE_HEADER_MAGIC == storage_safe_read.SQLITE_HEADER_MAGIC
+    assert not hasattr(compat, "connect_tracked")

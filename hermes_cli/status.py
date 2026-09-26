@@ -219,9 +219,9 @@ def _render_platforms(ctx):
 def _render_gateway(ctx):
     _section("Gateway Service")
     try:
-        from hermes_cli.gateway import (
-            get_gateway_runtime_snapshot, _format_gateway_pids, named_profile_served_by_running_multiplexer)
-        from hermes_cli.gateway_multiplex_served import multiplexer_served_secondaries
+        from hermes_cli.gateway import get_gateway_runtime_snapshot, _format_gateway_pids
+        from gateway.host_topology import named_profile_served_by_running_multiplexer
+        from gateway.served_profiles import multiplexer_served_secondaries
         snapshot = get_gateway_runtime_snapshot()
         # A satellite profile has no gateway.pid of its own; the default multiplexer is its live process.
         if not snapshot.running and named_profile_served_by_running_multiplexer():
@@ -234,7 +234,7 @@ def _render_gateway(ctx):
             _kv("PID(s):", _format_gateway_pids(snapshot.gateway_pids))
         if snapshot.running and (served := multiplexer_served_secondaries()):
             _kv("Serves:", ", ".join(served))
-            from hermes_cli.gateway_multiplex_served import served_profile_ingress_urls
+            from gateway.served_profiles import served_profile_ingress_urls
             for name, per_platform in sorted(served_profile_ingress_urls().items()):
                 for platform, url in sorted(per_platform.items()):
                     _kv(f"  {name}/{platform}:", url)

@@ -1,4 +1,5 @@
 """Tests for WSL detection and WSL-aware gateway behavior."""
+from gateway import systemd_runtime
 
 from types import SimpleNamespace
 from unittest.mock import patch, mock_open
@@ -55,7 +56,7 @@ class TestSupportsSystemdServicesWSL:
         )
         monkeypatch.setattr(gateway, "is_wsl", lambda: True)
         monkeypatch.setattr(gateway, "_wsl_systemd_operational", lambda: True)
-        assert gateway.supports_systemd_services() is True
+        assert systemd_runtime.supports_services() is True
 
     @pytest.mark.linux_only
     def test_termux_still_excluded(self, monkeypatch):
@@ -65,7 +66,7 @@ class TestSupportsSystemdServicesWSL:
         so the Termux exclusion itself would never be exercised.
         """
         monkeypatch.setattr(gateway, "is_termux", lambda: True)
-        assert gateway.supports_systemd_services() is False
+        assert systemd_runtime.supports_services() is False
 
 
 # =============================================================================
@@ -87,7 +88,7 @@ class TestGatewayCommandWSLMessages:
         """
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr(gateway, "is_wsl", lambda: True)
-        monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(systemd_runtime, "supports_services", lambda: False)
         monkeypatch.setattr(gateway, "is_managed", lambda: False)
 
         args = SimpleNamespace(

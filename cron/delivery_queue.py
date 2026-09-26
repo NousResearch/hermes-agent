@@ -85,7 +85,7 @@ def _path() -> Path:
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
-    from hermes_cli.sqlite_util import add_column_if_missing
+    from storage.sqlite_util import add_column_if_missing
 
     # SQLite cannot widen a CHECK in place. Preserve all old rows atomically,
     # including claimed sends, while admitting a distinct never-sent disposition.
@@ -136,9 +136,9 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
 
 def _connect() -> sqlite3.Connection:
     # Late imports: a scheduler daemon that outlives an on-disk upgrade already has the OLD
-    # ``hermes_cli.sqlite_util`` / ``cron.jobs`` cached, so new names must be resolved at call time,
-    # not at import time (the guarantee cron/ledger.py used to carry, see e24c8499).
-    from hermes_cli.sqlite_util import open_db
+    # the pre-move CLI SQLite utility / ``cron.jobs`` cached; resolve the new ``storage.sqlite_util``
+    # owner at call time (the guarantee cron/ledger.py used to carry, see e24c8499).
+    from storage.sqlite_util import open_db
 
     path = _path()
     conn = open_db(path, db_label="cron/deliveries.db", synchronous_full=True, initialize=_initialize_schema)
@@ -154,7 +154,7 @@ def _transaction() -> Iterator[sqlite3.Connection]:
     # Pruning is done explicitly by the paths that create terminal
     # rows (_finish / recover_abandoned / _terminalize_wait_timeout);
     # read-only polls must not pay for a full-table UPDATE + COUNT.
-    from hermes_cli.sqlite_util import transaction
+    from storage.sqlite_util import transaction
 
     with _lock, transaction(_connect()) as conn:
         yield conn

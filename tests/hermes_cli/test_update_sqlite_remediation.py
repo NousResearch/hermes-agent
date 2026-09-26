@@ -14,7 +14,7 @@ def test_runtime_status_probes_running_venv_outside_checkout(tmp_path, monkeypat
     monkeypatch.setattr("hermes_constants.project_venv_dir", lambda _root: None)
     monkeypatch.setattr(update_cmd.sys, "executable", str(running_python))
     monkeypatch.setattr(
-        "hermes_cli.sqlite_runtime.probe_sqlite_runtime",
+        "runtime.sqlite_runtime.probe_sqlite_runtime",
         lambda python: observed.append(Path(python)) or vulnerable,
     )
 

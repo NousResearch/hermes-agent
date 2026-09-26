@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from hermes_constants import get_hermes_home
-from hermes_cli.sqlite_runtime import (
+from runtime.sqlite_runtime import (
     SQLiteRuntimeInfo, isolated_interpreter_env, probe_sqlite_runtime)
 
 logger = logging.getLogger(__name__)

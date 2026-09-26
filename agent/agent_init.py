@@ -1279,7 +1279,7 @@ def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
         kwargs["cwd"] = agent.session_cwd
     # Profile identity for per-profile provider scoping
     with suppress(Exception):
-        from hermes_cli.profiles import get_active_profile_name
+        from profiles.current import get_active_profile_name
         kwargs["agent_identity"] = get_active_profile_name()
         kwargs["agent_workspace"] = "hermes"
     return kwargs

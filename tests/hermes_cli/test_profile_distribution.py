@@ -669,7 +669,7 @@ class TestSecurity:
         with pytest.raises(DistributionError, match="symlink"):
             install_distribution(str(staged), name="clean")
 
-        from hermes_cli.profiles import get_profile_dir
+        from profiles.paths import get_profile_dir
         target = get_profile_dir("clean")
         assert not (target / "skills" / "demo" / "leak.txt").exists()
 
@@ -742,7 +742,7 @@ class TestInstalledAtStamp:
     def test_update_refreshes_installed_at(self, profile_env, monkeypatch):
         staged = _make_staging_dir(profile_env, "src")
         install_distribution(str(staged), name="demo")
-        from hermes_cli.profiles import get_profile_dir
+        from profiles.paths import get_profile_dir
         first = read_manifest(get_profile_dir("demo")).installed_at
 
         # Freeze `datetime.now()` to a fixed future time so we can observe that
@@ -788,7 +788,8 @@ class TestProfileInfoDistribution:
 
 
     def test_malformed_manifest_does_not_break_list(self, profile_env):
-        from hermes_cli.profiles import create_profile, list_profiles, get_profile_dir
+        from hermes_cli.profiles import create_profile, list_profiles
+        from profiles.paths import get_profile_dir
         create_profile(name="brokenmeta", no_alias=True)
         # Write a distribution.yaml that isn't a valid mapping
         (get_profile_dir("brokenmeta") / "distribution.yaml").write_text(

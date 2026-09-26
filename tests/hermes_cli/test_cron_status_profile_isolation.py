@@ -20,6 +20,8 @@ ticked» unless the gateway process itself started less than STALE_AFTER ago
 """
 
 from __future__ import annotations
+from gateway import service_identity
+from gateway import systemd_runtime
 
 import time
 from unittest.mock import MagicMock, patch
@@ -43,7 +45,7 @@ class TestGetServicePidsProfileScope:
     """systemd branch must honor ``all_profiles`` and filter by profile."""
 
     def test_default_scope_filters_current_profile_systemd_unit(self, monkeypatch):
-        from hermes_cli import gateway as gateway_mod
+        from gateway import process_discovery as gateway_mod
 
         def _run_side_effect(args, **kwargs):
             cmd_str = " ".join(str(a) for a in args)
@@ -69,9 +71,9 @@ class TestGetServicePidsProfileScope:
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with (
-            patch("hermes_cli.gateway.is_macos", return_value=False),
-            patch("hermes_cli.gateway.supports_systemd_services", return_value=True),
-            patch("hermes_cli.gateway.get_service_name", return_value="hermes-gateway-jarvis"),
+            patch("gateway.process_discovery.is_macos", return_value=False),
+            patch("gateway.process_discovery._systemd_runtime.supports_services", return_value=True),
+            patch("gateway.process_discovery._service_identity.service_name", return_value="hermes-gateway-jarvis"),
             patch("subprocess.run", side_effect=_run_side_effect),
         ):
             pids = gateway_mod._get_service_pids()
@@ -79,7 +81,7 @@ class TestGetServicePidsProfileScope:
         assert pids == {123}, "default scope must filter to current profile's unit"
 
     def test_all_profiles_true_enumerates_fleet(self, monkeypatch):
-        from hermes_cli import gateway as gateway_mod
+        from gateway import process_discovery as gateway_mod
 
         def _run_side_effect(args, **kwargs):
             cmd_str = " ".join(str(a) for a in (args[:4] if args else []))
@@ -100,9 +102,9 @@ class TestGetServicePidsProfileScope:
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with (
-            patch("hermes_cli.gateway.is_macos", return_value=False),
-            patch("hermes_cli.gateway.supports_systemd_services", return_value=True),
-            patch("hermes_cli.gateway.get_service_name", return_value="hermes-gateway"),
+            patch("gateway.process_discovery.is_macos", return_value=False),
+            patch("gateway.process_discovery._systemd_runtime.supports_services", return_value=True),
+            patch("gateway.process_discovery._service_identity.service_name", return_value="hermes-gateway"),
             patch("subprocess.run", side_effect=_run_side_effect),
         ):
             pids = gateway_mod._get_service_pids(all_profiles=True)
@@ -134,7 +136,7 @@ class TestCronStatusMissingHeartbeat:
             patch("cron.jobs.TICKER_INTERVAL_SECONDS", 60),
             # Gateway started a few seconds ago, ticker hasn't had its first tick yet
             patch("gateway.status._read_pid_record", return_value={"pid": 4242, "start_time": int(now)}),
-            patch("gateway.status._get_process_start_time", return_value=int(now)),
+            patch("runtime.process_identity.get_process_start_time", return_value=int(now)),
             patch("time.time", return_value=now + 5),
             redirect_stdout(out),
         ):

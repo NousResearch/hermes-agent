@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
-from hermes_cli._subprocess_compat import noninteractive_git_env
+from runtime.git_subprocess import noninteractive_git_env
 from utils import rmtree_readonly
 
 
@@ -323,7 +323,8 @@ def _has_cron_jobs(staged: Path) -> bool:
 
 def plan_install(source: str, workdir: Path, override_name: Optional[str] = None) -> InstallPlan:
     """Stage *source* and produce a plan describing what install would do."""
-    from hermes_cli.profiles import _canon_valid, get_profile_dir
+    from profiles.names import _canon_valid
+    from profiles.paths import get_profile_dir
     from hermes_cli import __version__ as hermes_version
     staged, provenance = _stage_source(source, workdir)
     _reject_distribution_symlinks(staged)
@@ -547,7 +548,7 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
     write_manifest(target, manifest)
     # A shipped profile.yaml must not carry a backend-assigned role.
     if any(rel_parts == ("profile.yaml",) for _, rel_parts in entries):
-        from hermes_cli.profiles import drop_profile_role
+        from profiles.metadata import drop_profile_role
         drop_profile_role(target)
 
 
@@ -583,7 +584,7 @@ def install_distribution(
 
 def _existing_profile(profile_name: str) -> Tuple[str, Path]:
     """Return ``(canonical_name, profile_dir)`` or raise if the profile doesn't exist."""
-    from hermes_cli.profiles import _existing_profile_dir
+    from profiles.registry import _existing_profile_dir
 
     try:
         return _existing_profile_dir(profile_name)

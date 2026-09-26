@@ -227,11 +227,11 @@ class TestSetupWizardSkipsConfiguredSections:
         reloaded_config = {"model": "openai/gpt-4"}
 
         # _platform_status (called by the gateway summary path) reads env
-        # vars via hermes_cli.gateway.get_env_value, NOT setup_mod's. Patch
+        # vars via hermes_cli.config.get_env_value. Patch
         # both so xdist sibling tests can't leak a TELEGRAM_BOT_TOKEN /
         # WHATSAPP_* / etc. through and trick the wizard into thinking the
         # gateway section is already configured (which would skip it).
-        import hermes_cli.gateway as gateway_mod
+        import hermes_cli.config as config_mod
 
         with (
             patch.object(setup_mod, "ensure_hermes_home"),
@@ -241,7 +241,7 @@ class TestSetupWizardSkipsConfiguredSections:
             ),
             patch.object(setup_mod, "get_hermes_home", return_value=tmp_path),
             patch.object(setup_mod, "get_env_value", side_effect=env_side),
-            patch.object(gateway_mod, "get_env_value", side_effect=env_side),
+            patch.object(config_mod, "get_env_value", side_effect=env_side),
             patch.object(setup_mod, "is_interactive_stdin", return_value=True),
             patch("hermes_cli.auth.get_active_provider", return_value=None),
             patch("builtins.input", return_value=""),

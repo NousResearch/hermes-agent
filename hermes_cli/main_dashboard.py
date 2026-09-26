@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 from typing import NoReturn
 from hermes_cli.cli_output import line_input
-from hermes_cli.process_identity import is_desktop_owned_backend as _is_desktop_owned_backend
+from runtime.desktop_identity import is_desktop_owned_backend as _is_desktop_owned_backend
 
 _PRE_BUILD_HINT = "  Pre-build first:  npm install --workspace web && npm run build -w web"
 
@@ -253,7 +253,7 @@ def _loaded_launchd_backend_jobs(
     import plistlib
     from xml.parsers.expat import ExpatError
 
-    from hermes_cli.gateway import _launchd_print_service_pid
+    from gateway.launchd_service import _launchd_print_service_pid
     uid = os.getuid()  # windows-footgun: ok — darwin-only branch
     jobs: list[tuple[str, str, list[str], int | None]] = []
     for kind, plist_dir in (plist_dirs if plist_dirs is not None else _launchd_plist_dirs()):
@@ -320,7 +320,7 @@ def _restart_launchd_job(domain: str, label: str, old_pid: int | None, *, timeou
     take that fresh process down), then require launchd to report a live PID other than *old_pid*
     within *timeout*. A kickstart that returns 0 only means "restart requested"; a job that is loaded
     but never comes back on a fresh PID is a failure the operator must hear about."""
-    from hermes_cli.gateway import _wait_for_launchd_service_pid
+    from gateway.launchd_service import _wait_for_launchd_service_pid
     try:
         if _run_probe(["launchctl", "kickstart", f"{domain}/{label}"], timeout=30).returncode != 0:
             return False
@@ -859,7 +859,7 @@ def _attach_to_host_backend(args, headless_backend: bool) -> None:
         sys.exit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
 
     try:
-        from hermes_cli.profiles import get_active_profile_name
+        from profiles.current import get_active_profile_name
         profile = get_active_profile_name()
     except Exception:
         profile = "default"
@@ -888,7 +888,7 @@ def _route_named_profile_dashboard(
     routing applies.
     """
     try:
-        from hermes_cli.profiles import get_active_profile_name
+        from profiles.current import get_active_profile_name
         _launch_profile = get_active_profile_name()
     except Exception:
         _launch_profile = "default"

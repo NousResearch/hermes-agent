@@ -191,6 +191,11 @@ jobs:
     needs: detect
     uses: ./.github/workflows/case-collision-check.yml
 
+  pitlord-policy:
+    name: Enforce architecture policy
+    needs: detect
+    uses: ./.github/workflows/pitlord-policy.yml
+
   lockfile-diff:
     name: package-lock.json diff
     needs: detect
@@ -251,6 +256,7 @@ jobs:
       - contributor-check
       - uv-lockfile
       - case-collision-check
+      - pitlord-policy
       - lockfile-diff
       - docker-lint
       - profile-artifact-check

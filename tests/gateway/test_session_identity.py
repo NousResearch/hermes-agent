@@ -68,9 +68,9 @@ def mux(tmp_path, monkeypatch):
         {"name": "admin-dm", "platform": "telegram", "profile": "ops", "chat_id": "72719239"},
         {"name": "ghost", "platform": "telegram", "profile": "ghost", "chat_id": "4040"},
     ])
-    with patch("hermes_cli.profiles.profiles_to_serve", return_value=served), \
-            patch("hermes_cli.profiles.get_profile_dir", side_effect=lambda n: home if n == "default" else home / "profiles" / n), \
-            patch("hermes_cli.profiles.profile_exists", return_value=True):
+    with patch("gateway.profile_serving.profiles_to_serve", return_value=served), \
+            patch("profiles.paths.get_profile_dir", side_effect=lambda n: home if n == "default" else home / "profiles" / n), \
+            patch("profiles.registry.profile_exists", return_value=True):
         yield rig
 
 

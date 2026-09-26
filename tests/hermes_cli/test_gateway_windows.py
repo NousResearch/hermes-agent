@@ -1,4 +1,6 @@
-"""Tests for hermes_cli.gateway_windows."""
+"""Tests for gateway.windows_service."""
+from gateway import service_identity
+from gateway import service_process
 
 import logging
 import os
@@ -9,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 import hermes_cli.gateway as gateway
-import hermes_cli.gateway_windows as gateway_windows
+import gateway.windows_service as gateway_windows
 import hermes_cli.setup as setup
 
 
@@ -136,9 +138,9 @@ def test_build_gateway_argv_keeps_venv_console_python_for_uv_venv(monkeypatch, t
 
     import hermes_cli.gateway as gateway
 
-    monkeypatch.setattr(gateway, "PROJECT_ROOT", project)
-    monkeypatch.setattr(gateway, "get_python_path", lambda: str(venv_python))
-    monkeypatch.setattr(gateway, "_profile_arg", lambda hermes_home: "")
+    monkeypatch.setattr(service_process, "PROJECT_ROOT", project)
+    monkeypatch.setattr(service_process, "python_path", lambda: str(venv_python))
+    monkeypatch.setattr(service_identity, "profile_arg", lambda hermes_home: "")
     monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(hermes_home))
 
     argv, cwd, env_overlay = gateway_windows._build_gateway_argv()

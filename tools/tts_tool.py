@@ -692,7 +692,7 @@ _PLUGIN_COMPAT_LAZY = {
     'stream_tts_to_speaker': ('tools.tts_tool_speaker', 'stream_tts_to_speaker'),
     'tts_lease_holders': ('tools.tts_tool_lifecycle', 'tts_lease_holders'),
     'warm_tts_provider': ('tools.tts_tool_lifecycle', 'warm_tts_provider'),
-    'windows_hide_flags': ('hermes_cli._subprocess_compat', 'windows_hide_flags'),
+    'windows_hide_flags': ('runtime.subprocess_compat', 'windows_hide_flags'),
 }
 
 

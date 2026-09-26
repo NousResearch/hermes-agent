@@ -7,6 +7,8 @@ and every KeepAlive respawn of ``gateway run --external-supervisor`` then refuse
 "Gateway already running (PID <restart>)" — the gateway stays down until the restart process is
 killed (#110637).
 """
+from gateway import signal_restart
+from gateway import systemd_restart
 from types import SimpleNamespace
 
 import pytest
@@ -40,12 +42,12 @@ def restart_calls(monkeypatch):
     monkeypatch.setattr(gw, "_guard_named_profile_under_multiplexer", lambda **k: None)
     monkeypatch.setattr(gw, "_dispatch_via_service_manager_if_s6", lambda *a, **k: False)
     monkeypatch.setattr(gw, "_installed_service_kind_for", lambda windows: None)
-    monkeypatch.setattr(gw, "_get_restart_exit_wait_budget", lambda: 7.0)
+    monkeypatch.setattr("gateway.restart.get_restart_exit_wait_budget", lambda: 7.0)
     monkeypatch.setattr(gateway_status, "get_running_pid", _running_pid)
     monkeypatch.setattr(gw, "_capture_gateway_argv", lambda pid: SUPERVISED_ARGV if pid == 4321 else None)
     monkeypatch.setattr("gateway.control_socket.identify_gateway", lambda home, **k: None)
     monkeypatch.setattr(supervised, "SUPERVISED_REPLACEMENT_VERIFY_TIMEOUT", 0.5)
-    monkeypatch.setattr(gw, "_graceful_restart_via_sigusr1", _sigusr1)
+    monkeypatch.setattr(signal_restart, "_graceful_restart_via_sigusr1", _sigusr1)
     monkeypatch.setattr(gw, "stop_profile_gateway", lambda: calls.__setitem__("stopped", True) or True)
     monkeypatch.setattr(gw, "_wait_for_gateway_exit", lambda **k: None)
     monkeypatch.setattr(gw, "run_gateway", lambda **k: calls.__setitem__("started", True))

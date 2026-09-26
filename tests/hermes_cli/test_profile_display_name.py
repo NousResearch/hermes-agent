@@ -11,17 +11,14 @@ from pathlib import Path
 import pytest
 import yaml
 
+from profiles.metadata import format_profile_label, read_profile_meta, write_profile_meta
+from profiles.paths import get_profile_dir, resolve_profile_env
+from profiles.registry import profile_exists
 from hermes_cli.profiles import (
     create_profile,
-    format_profile_label,
-    get_profile_dir,
     list_profiles,
-    profile_exists,
-    read_profile_meta,
     rename_profile,
-    resolve_profile_env,
     set_profile_display_name,
-    write_profile_meta,
 )
 
 

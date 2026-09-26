@@ -10,7 +10,7 @@ from hermes_state_runtime import RuntimeStoreError
 
 def build_kanban_policy(connection, params, config):
     from hermes_cli import kanban_db as kb
-    from hermes_cli.profiles import resolve_profile_env
+    from profiles.paths import resolve_profile_env
     from gateway.session_policy import build_policy
     authority, actor = connection.authority, connection.actor
     if not connection.native_owner or 'session:create' not in actor.capabilities:

@@ -66,10 +66,10 @@ def _read_journal_mode(db_path: Path) -> tuple[str | None, str | None]:
 
     Opening through SQLite — even read-only — creates -wal/-shm sidecars, which a diagnostic must not do.
     ``read_header_bytes_preopen`` rather than a bare ``open()``: closing *any* descriptor cancels this
-    process's POSIX advisory locks (see ``hermes_cli.sqlite_safe_read``), and the dashboard console runs
+    process's POSIX advisory locks (see ``storage.sqlite_safe_read``), and the dashboard console runs
     ``run_doctor`` in-process with live ``SessionDB`` connections — the helper refuses then (unreadable).
     """
-    from hermes_cli.sqlite_safe_read import has_live_connection, read_header_bytes_preopen
+    from storage.sqlite_safe_read import has_live_connection, read_header_bytes_preopen
     header = read_header_bytes_preopen(db_path, length=20)
     if header is None:
         return None, "database is open in this process" if has_live_connection(db_path) else _unreadable_reason(db_path)
@@ -206,7 +206,8 @@ def _check_s6_supervision(issues: list[str]) -> None:
     """Under our s6 /init, report static services and the ONE host gateway slot; no-op elsewhere.
     Counterpart to :func:`_check_gateway_service_linger` (systemd-on-host)."""
     try:
-        from hermes_cli.service_manager import S6ServiceManager, detect_service_manager
+        from gateway.service_manager import detect_service_manager
+        from gateway.s6_manager import S6ServiceManager
     except Exception:
         return
     if detect_service_manager() != "s6":
@@ -299,19 +300,19 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
     the check for every profile that does not own a service of its own.
     """
     try:
-        from hermes_cli.gateway import (
-            _SERVICE_BASE, get_systemd_linger_status, get_systemd_unit_path, is_linux,
-            user_systemd_unit_dir)
-        from hermes_cli.service_manager import detect_service_manager
+        from gateway.service_identity import SERVICE_BASE
+        from gateway.systemd_identity import unit_path, user_unit_dir
+        from gateway.systemd_runtime import is_linux, linger_status
+        from gateway.service_manager import detect_service_manager
     except Exception as e:
         return check_warn("Gateway service linger", f"(could not import gateway helpers: {e})")
     if not is_linux() or detect_service_manager() == "s6":
         return
-    host_unit = user_systemd_unit_dir() / f"{_SERVICE_BASE}.service"
-    if not (get_systemd_unit_path().exists() or host_unit.exists()):
+    host_unit = user_unit_dir() / f"{SERVICE_BASE}.service"
+    if not (unit_path().exists() or host_unit.exists()):
         return
     _section("Gateway Service")
-    linger_enabled, linger_detail = get_systemd_linger_status()
+    linger_enabled, linger_detail = linger_status()
     if linger_enabled is None:
         return check_warn("Could not verify systemd linger", f"({linger_detail})")
     if not check_bool(linger_enabled, ("Systemd linger enabled", "(gateway service survives logout)"),

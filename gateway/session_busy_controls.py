@@ -17,7 +17,7 @@ def handlers(connection):
 def authorize(connection, ref, params, capability):
     connection.authority.authorize(connection.actor, ref, capability)
     if 'profile' in params:
-        from hermes_cli.profiles import profile_matches_home
+        from profiles.registry import profile_matches_home
         profile = params['profile']
         if not isinstance(profile, str):
             raise RuntimeStoreError('invalid_params')

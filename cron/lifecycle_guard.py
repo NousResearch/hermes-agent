@@ -366,8 +366,8 @@ _BINARY_MAGICS = (
 # --- profile identity -------------------------------------------------------------------------
 
 def _current_profile_name() -> Optional[str]:
-    """Profile running the guard (``hermes_cli.profiles.current_profile_name``); ``None`` if none."""
-    from hermes_cli.profiles import current_profile_name
+    """Profile running the guard (``profiles.current.current_profile_name``); ``None`` if none."""
+    from profiles.current import current_profile_name
 
     return current_profile_name()
 
@@ -555,7 +555,7 @@ def _budget_exhausted(budget: _LifecycleScanBudget, what: str, depth: int) -> bo
 def _unreadable_reason(path: Path) -> str:
     """Name why an *executed* script failed closed without being scanned (live SQLite, device,
     oversized). Message-only: the fail-closed verdict itself came from the bounded reader."""
-    from hermes_cli.sqlite_safe_read import has_live_connection
+    from storage.sqlite_safe_read import has_live_connection
 
     if has_live_connection(path):
         return f"`{path}` is a SQLite database open in this gateway process"
@@ -966,7 +966,7 @@ def _read_referenced_script(
     which another thread opens SQLite after the check but before this function
     closes its descriptor, cancelling that connection's POSIX locks.
     """
-    from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
+    from storage.sqlite_safe_read import LiveConnectionError, offline_file_access
 
     try:
         with offline_file_access(path, what="read referenced script"):

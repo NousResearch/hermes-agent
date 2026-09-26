@@ -6,6 +6,7 @@ never work on a systemd *system* install — the refusal only reached the action
 endpoint reported a started action.
 """
 from __future__ import annotations
+from gateway import systemd_identity
 
 import subprocess
 from unittest.mock import MagicMock, patch
@@ -27,7 +28,7 @@ def system_scope_install(monkeypatch, tmp_path):
     system_unit.write_text("[Service]\n", encoding="utf-8")
     user_unit = tmp_path / "user" / "hermes-gateway.service"
     monkeypatch.setattr(
-        "hermes_cli.gateway.get_systemd_unit_path",
+        "hermes_cli.systemd_identity.unit_path",
         lambda system=False: system_unit if system else user_unit,
     )
     return system_unit, user_unit

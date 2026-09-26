@@ -25,7 +25,7 @@ async def control_peer(home: Path, payload: dict):
 
 @pytest.mark.linux_only
 def test_live_discovery_does_not_treat_an_unusable_owner_as_absent(tmp_path):
-    from hermes_cli.gateway_runtime import discover_gateway_endpoint
+    from gateway.runtime import discover_gateway_endpoint
 
     async def probe():
         home = tmp_path / "profile"
@@ -86,7 +86,7 @@ def test_fifo_control_pointer_is_rejected_without_a_writer(tmp_path):
     os.mkfifo(home / 'gateway.sock.path', 0o600)
     code = (
         'import sys; from pathlib import Path; '
-        'from hermes_cli.gateway_runtime import discover_gateway_endpoint; '
+        'from gateway.runtime import discover_gateway_endpoint; '
         'r = discover_gateway_endpoint(Path(sys.argv[1]), timeout=0.1); '
         'print(r.state, r.reason_code)'
     )

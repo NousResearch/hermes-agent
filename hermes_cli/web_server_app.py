@@ -89,7 +89,7 @@ async def standalone_lifespan(app: "FastAPI"):
     # Desktop-spawned backends fire cron jobs themselves, since the app has no
     # gateway running the scheduler. Server `hermes dashboard` is unaffected —
     # it relies on its own gateway.
-    from hermes_cli.process_identity import is_desktop_owned_backend
+    from runtime.desktop_identity import is_desktop_owned_backend
     cron_stop: "threading.Event | None" = None
     cron_thread: "threading.Thread | None" = None
     desktop_owned = is_desktop_owned_backend()

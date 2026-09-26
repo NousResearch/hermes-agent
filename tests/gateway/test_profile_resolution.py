@@ -66,9 +66,9 @@ class TestResolutionOrder:
         """source.profile should be used even if routing would match."""
         discord_source.profile = "from-source"
         
-        with patch("hermes_cli.profiles.get_active_profile_name", return_value="active"):
-            with patch("hermes_cli.profiles.get_profile_dir") as mock_get_dir:
-                with patch("hermes_cli.profiles.profile_exists", return_value=True):
+        with patch("profiles.current.get_active_profile_name", return_value="active"):
+            with patch("profiles.paths.get_profile_dir") as mock_get_dir:
+                with patch("profiles.registry.profile_exists", return_value=True):
                     mock_get_dir.return_value = Path("/hermes/profiles/from-source")
                     result = mock_runner._resolve_profile_home_for_source(discord_source)
                     
@@ -86,10 +86,10 @@ class TestMissingProfileWarning:
         """When source.profile points to a nonexistent profile, log a WARNING."""
         discord_source.profile = "nonexistent"
         
-        with patch("hermes_cli.profiles.get_active_profile_name", return_value="active"):
-            with patch("hermes_cli.profiles.get_profile_dir") as mock_get_dir:
+        with patch("profiles.current.get_active_profile_name", return_value="active"):
+            with patch("profiles.paths.get_profile_dir") as mock_get_dir:
                 mock_get_dir.return_value = Path("/hermes/profiles/nonexistent")
-                with patch("hermes_cli.profiles.profile_exists", return_value=False):
+                with patch("profiles.registry.profile_exists", return_value=False):
                     with patch("hermes_constants.get_hermes_home", return_value=Path("/hermes")):
                         with caplog.at_level(logging.WARNING):
                             result = mock_runner._resolve_profile_home_for_source(discord_source)
@@ -115,8 +115,8 @@ class TestExceptionHandling:
         """When get_profile_dir raises an exception, log a WARNING with context."""
         discord_source.profile = "bad-profile"
         
-        with patch("hermes_cli.profiles.get_active_profile_name", return_value="active"):
-            with patch("hermes_cli.profiles.get_profile_dir", side_effect=ValueError("Invalid profile name")):
+        with patch("profiles.current.get_active_profile_name", return_value="active"):
+            with patch("profiles.paths.get_profile_dir", side_effect=ValueError("Invalid profile name")):
                 with patch("hermes_constants.get_hermes_home", return_value=Path("/hermes")):
                     with caplog.at_level(logging.WARNING):
                         result = mock_runner._resolve_profile_home_for_source(discord_source)
@@ -154,7 +154,7 @@ class TestNonDiscordProfileRouting:
         telegram_source.profile = None
 
         with patch(
-            "hermes_cli.profiles.profiles_to_serve",
+            "gateway.profile_serving.profiles_to_serve",
             return_value=[("default", Path("/profiles/default")),
                           ("tg-profile", Path("/profiles/tg-profile"))],
         ):
@@ -172,7 +172,7 @@ class TestNonDiscordProfileRouting:
         telegram_source.chat_id = "route-chat"
 
         with patch(
-            "hermes_cli.profiles.profiles_to_serve",
+            "gateway.profile_serving.profiles_to_serve",
             return_value=[("default", Path("/profiles/default")),
                           ("worker", Path("/profiles/worker"))],
         ) as enumerate_profiles:
@@ -192,7 +192,7 @@ class TestNonDiscordProfileRouting:
         telegram_source.chat_id = "route-chat"
 
         with patch(
-            "hermes_cli.profiles.profiles_to_serve",
+            "gateway.profile_serving.profiles_to_serve",
             return_value=[("default", Path("/profiles/default")),
                           ("worker", Path("/profiles/worker"))],
         ), caplog.at_level(logging.WARNING, logger="gateway.run"):
@@ -270,7 +270,7 @@ class TestGatewayRunnerInjection:
 
         adapter.handle_message = capture_event
         with patch(
-            "hermes_cli.profiles.profiles_to_serve",
+            "gateway.profile_serving.profiles_to_serve",
             return_value=[("default", Path("/profiles/default")), ("ops", Path("/profiles/ops"))],
         ):
             await adapter._handle_envelope({
@@ -334,7 +334,7 @@ class TestAdapterToSessionKeyIntegration:
         adapter = _stub_adapter(Platform.DISCORD, mock_runner)
 
         with patch(
-            "hermes_cli.profiles.profiles_to_serve",
+            "gateway.profile_serving.profiles_to_serve",
             return_value=[("default", Path("/profiles/default")),
                           ("coder", Path("/profiles/coder"))],
         ):
@@ -355,7 +355,7 @@ class TestAdapterToSessionKeyIntegration:
         adapter = _stub_adapter(Platform.DISCORD, mock_runner)
 
         with patch(
-            "hermes_cli.profiles.profiles_to_serve",
+            "gateway.profile_serving.profiles_to_serve",
             return_value=[("default", Path("/profiles/default")), ("zero", Path("/profiles/zero"))],
         ):
             source = adapter.build_source(chat_id="channel", user_id=0)
@@ -375,7 +375,7 @@ class TestAdapterToSessionKeyIntegration:
         adapter = _stub_adapter(Platform.TELEGRAM, mock_runner)
 
         with patch(
-            "hermes_cli.profiles.profiles_to_serve",
+            "gateway.profile_serving.profiles_to_serve",
             return_value=[("default", Path("/profiles/default"))],
         ):
             source = adapter.build_source(chat_id="route-chat", chat_type="group")
@@ -426,7 +426,7 @@ class TestAdapterToSessionKeyIntegration:
         source = SessionSource(platform=Platform.TELEGRAM, chat_id="route-chat")
 
         with patch(
-            "hermes_cli.profiles.profiles_to_serve",
+            "gateway.profile_serving.profiles_to_serve",
             return_value=[("default", Path("/profiles/default"))],
         ):
             result = await GatewayRunner._handle_message(

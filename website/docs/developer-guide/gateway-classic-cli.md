@@ -60,7 +60,7 @@ hermetic environment deliberately removes arbitrary environment overrides):
 
 ```sh
 scripts/run_tests.sh -j 1 --file-retries 0 tests/hermes_cli/test_gateway_chat_native.py \
-  -p tests.hermes_cli.gateway_client_options --client-test-runtime-root=/path/to/runtime-checkout
+  -p tests.gateway.client_options --client-test-runtime-root=/path/to/runtime-checkout
 ```
 
 The receipt explicitly reports `caller_cwd_effect_verified`. On a cwd-capable

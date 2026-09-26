@@ -212,7 +212,8 @@ def migrate_profile_relay_env(home: Path, *, validate: bool = True) -> RelayMigr
 
 def migrate_all_profile_relay_envs(*, validate: bool = True) -> list[RelayMigrationResult]:
     """Default home + every live named profile (multiplex: each profile keeps its own TOML)."""
-    from hermes_cli.profiles import _get_default_hermes_home, _iter_named_profile_dirs
+    from profiles.paths import _get_default_hermes_home
+    from profiles.registry import _iter_named_profile_dirs
     homes = [_get_default_hermes_home(), *_iter_named_profile_dirs()]
     return [migrate_profile_relay_env(home, validate=validate) for home in homes]
 

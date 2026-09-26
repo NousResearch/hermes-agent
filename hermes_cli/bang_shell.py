@@ -107,7 +107,7 @@ def run_bang_command(command: str, *, cwd: Optional[str] = None, timeout: int = 
     if run_cwd and not os.path.isdir(run_cwd):
         run_cwd = None
     try:
-        from hermes_cli._subprocess_compat import windows_hide_flags
+        from runtime.subprocess_compat import windows_hide_flags
         creationflags = windows_hide_flags()
     except Exception:
         creationflags = 0

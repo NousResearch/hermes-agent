@@ -329,7 +329,7 @@ def _live_adapter(platform, *, lookup_failed_warning=None):
         resolve = getattr(runner, "_authorization_adapter", None)
         if not callable(resolve):  # bare runner stubs without the authz mixin
             return runner, runner.adapters.get(platform)
-        from hermes_cli.profiles import get_active_profile_name
+        from profiles.current import get_active_profile_name
         return runner, resolve(platform, get_active_profile_name())
     except Exception:
         if lookup_failed_warning:

@@ -228,7 +228,7 @@ def _warn_if_secondary_multiplex_profile() -> bool:
         # wins, then a RAW read of the DEFAULT root's config.yaml — the active profile's
         # load_gateway_config() is the wrong owner and runs the full enablement pass, whose log output
         # has no place in enroll output). An unset flag is settled by the gateway at boot, not here.
-        from hermes_cli.gateway_multiplex_mode import default_gateway_multiplexes
+        from gateway.multiplex_mode import default_gateway_multiplexes
         if not default_gateway_multiplexes(default_root):
             return False
 

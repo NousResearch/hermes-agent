@@ -211,7 +211,7 @@ def make_sandbox(root: Path, names: tuple[str, ...] = ("default",),
 def _assert_profiles_root_under(sb: Sandbox) -> None:
     """The profile root is HOME-anchored: prove it resolves inside the sandbox before any write."""
     probe = subprocess.run(
-        [sys.executable, "-c", "from hermes_cli.profiles import _get_profiles_root as r; print(r())"],
+        [sys.executable, "-c", "from profiles.paths import _get_profiles_root as r; print(r())"],
         env=sb.env(), cwd=str(sb.home), capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
     )
     assert probe.returncode == 0, probe.stderr[-2000:]

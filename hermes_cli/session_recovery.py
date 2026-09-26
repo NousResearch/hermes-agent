@@ -194,10 +194,10 @@ def _copy_source_bundle(source: Path, snapshot_dir: Path) -> tuple[Path, list[st
 
     Checking for a live connection and *then* copying would be a check/use race: a connection could open in
     that window, and the copy's ``close()`` would cancel its POSIX advisory locks -- the failure class
-    ``hermes_cli.sqlite_safe_read`` exists to prevent (see #71724). Holding the lock means no connection can
+    ``storage.sqlite_safe_read`` exists to prevent (see #71724). Holding the lock means no connection can
     appear mid-copy, across the main file and every sidecar.
     """
-    from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
+    from storage.sqlite_safe_read import LiveConnectionError, offline_file_access
     snapshot_source = snapshot_dir / source.name
     copied: list[str] = []
     try:

@@ -11,6 +11,9 @@ from both the installed and expected text before comparison.
 """
 
 from __future__ import annotations
+from gateway import systemd_identity
+from gateway import systemd_unit_render
+from gateway import systemd_unit_state
 
 
 
@@ -21,7 +24,7 @@ from __future__ import annotations
 
 class TestStripOptionalSystemdDirectives:
     def test_removes_restart_max_delay_sec(self):
-        from hermes_cli.gateway import _strip_optional_systemd_directives
+        from gateway.systemd_unit_render import strip_optional_systemd_directives as _strip_optional_systemd_directives
         text = """[Service]
 Restart=always
 RestartSec=5
@@ -60,14 +63,14 @@ RestartPreventExitStatus=78
         unit_file = tmp_path / "hermes-gateway.service"
         unit_file.write_text(installed)
 
-        monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: unit_file)
+        monkeypatch.setattr(systemd_identity, "unit_path", lambda system=False: unit_file)
         monkeypatch.setattr(
-            gw,
+            systemd_unit_render,
             "generate_systemd_unit",
             lambda system=False, run_as_user=None: expected,
         )
 
-        assert gw.systemd_unit_is_current(system=False) is False
+        assert systemd_unit_state.unit_is_current(system=False) is False
 
     def test_unit_without_optional_directives_is_current(self, tmp_path, monkeypatch):
         """Installed unit missing RestartMaxDelaySec/RestartSteps should be
@@ -89,18 +92,18 @@ WantedBy=default.target
         unit_file = tmp_path / "hermes-gateway.service"
         unit_file.write_text(installed)
 
-        monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: unit_file)
+        monkeypatch.setattr(systemd_identity, "unit_path", lambda system=False: unit_file)
         monkeypatch.setattr(
-            gw,
+            systemd_unit_render,
             "generate_systemd_unit",
             lambda system=False, run_as_user=None: installed + "\nRestartMaxDelaySec=300\nRestartSteps=5\n",
         )
 
-        assert gw.systemd_unit_is_current(system=False) is True
+        assert systemd_unit_state.unit_is_current(system=False) is True
 
 
     def test_nonexistent_unit_is_not_current(self, tmp_path, monkeypatch):
         from hermes_cli import gateway as gw
         unit_file = tmp_path / "nonexistent.service"
-        monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: unit_file)
-        assert gw.systemd_unit_is_current(system=False) is False
+        monkeypatch.setattr(systemd_identity, "unit_path", lambda system=False: unit_file)
+        assert systemd_unit_state.unit_is_current(system=False) is False

@@ -102,7 +102,7 @@ def _ready(instance_id):
 
 def test_canonical_owner_is_the_authority_and_follows_compression(tmp_path, monkeypatch):
     from hermes_state import SessionDB
-    import hermes_cli.gateway_runtime as runtime
+    import gateway.runtime as runtime
 
     from types import SimpleNamespace
 

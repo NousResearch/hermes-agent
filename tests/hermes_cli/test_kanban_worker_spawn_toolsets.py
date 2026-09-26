@@ -180,7 +180,7 @@ def test_worker_toolsets_come_from_the_assignee_profile_not_the_parent_config(tm
     monkeypatch.setenv("HERMES_HOME", str(profile))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
-    monkeypatch.setattr("hermes_cli.profiles.resolve_profile_env", lambda name: str(profile))
+    monkeypatch.setattr("profiles.paths.resolve_profile_env", lambda name: str(profile))
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     with closing(connect(board="owned")) as conn:

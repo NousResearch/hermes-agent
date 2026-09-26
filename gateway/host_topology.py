@@ -15,14 +15,16 @@ record. ``default`` is just another served profile here, never a special owner.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 def _normalized(name: Optional[str]) -> str:
     if not name:
         return ""
-    # Late import: ``hermes_cli.profiles`` imports gateway modules back.
-    from hermes_cli.profiles import normalize_profile_name
+    from profiles.names import normalize_profile_name
 
     return normalize_profile_name(name)
 
@@ -70,7 +72,7 @@ def _from_host_record() -> Optional[HostGatewayTopology]:
 def _from_served_record() -> Optional[HostGatewayTopology]:
     """A gateway started before the host record existed still publishes ``served_profiles`` into
     the default home's ``gateway_state.json``; that plus a proven-live PID is the same fact."""
-    from hermes_cli.gateway_multiplex_served import live_default_gateway_pid, recorded_served_profiles
+    from gateway.served_profiles import live_default_gateway_pid, recorded_served_profiles
 
     pid = live_default_gateway_pid()
     if pid is None:
@@ -95,7 +97,79 @@ def host_gateway_serving(profile_name: Optional[str] = None) -> Optional[HostGat
     if topology is None:
         return None
     if profile_name is None:
-        from hermes_cli.profiles import get_active_profile_name
+        from profiles.current import get_active_profile_name
 
         profile_name = get_active_profile_name()
     return topology if topology.serves(profile_name) else None
+
+
+def _current_profile_name() -> str | None:
+    from hermes_constants import get_hermes_home, profile_name_for_home
+
+    return profile_name_for_home(get_hermes_home())
+
+
+def host_multiplexer_serving(profile_name: str | None = None):
+    """The live host owner when it serves ``profile_name`` using the control-channel roster."""
+    try:
+        from gateway.host_attach import host_gateway_serving as live_host_gateway_serving
+
+        name = profile_name if profile_name is not None else _current_profile_name()
+        return live_host_gateway_serving(name) if name else None
+    except Exception:
+        logger.debug("Host multiplexer probe failed", exc_info=True)
+        return None
+
+
+def served_by_another_host_gateway(profile_name: str | None = None):
+    """The host gateway serving ``profile_name`` when it is not this home\'s own process."""
+    gateway = host_multiplexer_serving(profile_name)
+    if gateway is None:
+        return None
+    try:
+        from gateway.status import _get_process_hermes_home, _same_hermes_home
+
+        if _same_hermes_home(gateway.home, _get_process_hermes_home()):
+            return None
+    except Exception:
+        logger.debug("Host multiplexer home comparison failed", exc_info=True)
+    return gateway
+
+
+def named_profile_served_by_running_multiplexer(profile_name: str | None = None) -> bool:
+    """True when the live host multiplexer serves the requested named profile."""
+    try:
+        suffix = profile_name if profile_name is not None else _current_profile_name()
+    except Exception:
+        return False
+    if not suffix or suffix == "default":
+        return False
+
+    if host_multiplexer_serving(suffix) is not None:
+        return True
+
+    try:
+        from hermes_constants import get_default_hermes_root
+
+        default_root = get_default_hermes_root()
+    except Exception:
+        return False
+
+    try:
+        from gateway.served_profiles import live_default_gateway_pid, recorded_served_profiles
+        from profiles.names import normalize_profile_name
+
+        if live_default_gateway_pid() is None:
+            return False
+        recorded = recorded_served_profiles(default_root)
+        if recorded is not None:
+            return normalize_profile_name(suffix) in {
+                normalize_profile_name(profile) for profile in recorded
+            }
+
+        from gateway.multiplex_mode import explicit_multiplex_flag
+
+        return explicit_multiplex_flag(default_root) is True
+    except Exception:
+        logger.debug("Multiplexer-serving probe failed", exc_info=True)
+        return False

@@ -25,7 +25,8 @@ import urllib.request
 from pathlib import Path
 
 from hermes_cli.local_runtime.binaries import server_binary, runtimes_root
-from hermes_cli.local_runtime.processes import server_child_env, spawn_server
+from hermes_cli.local_runtime.child_env import server_child_env
+from runtime.processes import spawn_contained_process
 
 logger = logging.getLogger(__name__)
 
@@ -198,8 +199,10 @@ class LlamaServerSupervisor:
         self._log_handle.write(f"\n# spawn: {cmd}\n")
         self._log_handle.flush()
         # list-args, never a shell: spaced paths (user homes) must survive.
-        self.proc, self._job = spawn_server(cmd, stdout=self._log_handle, stderr=subprocess.STDOUT,
-                                             cwd=str(exe.parent), env=server_child_env(os.environ))
+        self.proc, self._job = spawn_contained_process(
+            cmd, stdout=self._log_handle, stderr=subprocess.STDOUT,
+            cwd=str(exe.parent), env=server_child_env(os.environ),
+        )
         logger.info("llama-server router spawned pid=%s port=%s", self.proc.pid, self.port)
         # State goes down at SPAWN, not after health: endpoint resolution treats a
         # live-pid-but-not-yet-healthy server as "starting" rather than "unconfigured", so a

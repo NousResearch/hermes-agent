@@ -53,7 +53,7 @@ async def dispatch_group_control(connection, method, params):
     home = Path(authority.profile_id)
     if Path(authority.db.db_path).resolve().parent != home.resolve():
         raise RuntimeStoreError('profile_mismatch')
-    from hermes_cli.profiles import profile_matches_home
+    from profiles.registry import profile_matches_home
     profile = params.get('profile')
     if profile is not None and not isinstance(profile, str):
         raise RuntimeStoreError('invalid_params')
@@ -229,21 +229,33 @@ def _execution_control(service, method, params):
 
 
 def _profiles(authority, actor, home, params):
-    from hermes_cli.profiles import _profile_info, read_profile_meta
     import yaml
     include_sessions = params.get('include_sessions', True)
     if type(include_sessions) is not bool:
         raise RuntimeStoreError('invalid_params')
     from gateway.session_authorities import served_profile_name
     name = served_profile_name(home)
-    profile = _profile_info(name, home, is_default=name == 'default')
-    row = {'name': name, 'path': str(home), 'is_default': profile.is_default,
-           'model': profile.model, 'provider': profile.provider,
-           'description': profile.description or '', 'display_name': profile.display_name or '',
-           'skill_count': profile.skill_count or 0}
+    config_path = home / 'config.yaml'
+    model = provider = None
+    if config_path.is_file():
+        try:
+            config = yaml.safe_load(config_path.read_text(encoding='utf-8')) or {}
+            model_cfg = config.get('model', {}) if isinstance(config, dict) else {}
+            if isinstance(model_cfg, str):
+                model = model_cfg
+            elif isinstance(model_cfg, dict):
+                model = model_cfg.get('default') or model_cfg.get('model')
+                provider = model_cfg.get('provider')
+        except (OSError, yaml.YAMLError):
+            pass
+    row = {'name': name, 'path': str(home), 'is_default': name == 'default',
+           'model': model, 'provider': provider, 'description': '', 'display_name': '',
+           'skill_count': 0}
     path = home / 'profile.yaml'
     meta = yaml.safe_load(path.read_text(encoding='utf-8')) if path.is_file() else {}
     meta = meta if isinstance(meta, dict) else {}
+    row['description'] = str(meta.get('description') or '')
+    row['display_name'] = str(meta.get('display_name') or '')
     revisions = meta.get('_ui_meta_revisions')
     row['ui_meta_revisions'] = {str(k): max(0, v) for k, v in revisions.items()
                               if type(v) is int} if isinstance(revisions, dict) else {}

@@ -45,7 +45,7 @@ def _surviving_pre_update_serve_runtimes(plan) -> list[dict]:
     if not planned:
         return []
     try:
-        from hermes_cli.process_identity import ledger_entries
+        from runtime.process_identity import ledger_entries
         live: dict[int, float | None] = {
             entry["pid"]: _numeric(entry.get("create_time"))
             for entry in ledger_entries()

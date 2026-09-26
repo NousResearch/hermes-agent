@@ -293,7 +293,7 @@ class TestGeneralizedSupervisorMarkers:
         are protected without relying on the INVOCATION_ID heuristic."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
         (tmp_path / "home").mkdir()
-        from hermes_cli.gateway import generate_systemd_unit
+        from gateway.systemd_unit_render import generate_systemd_unit
 
         unit = generate_systemd_unit()
         assert 'Environment="HERMES_SUPERVISED_CHILD=1"' in unit
@@ -317,7 +317,7 @@ class TestS6ContainerGatewayRun:
     def test_the_redirected_run_keeps_the_root_home_despite_the_active_profile(
         self, tmp_path, monkeypatch
     ):
-        monkeypatch.setattr("hermes_cli.service_manager._s6_running", lambda: True)
+        monkeypatch.setattr("gateway.service_manager._s6_running", lambda: True)
         root = tmp_path / ".hermes"
         result = _run_apply_profile_override(
             tmp_path, monkeypatch, hermes_home=str(root), active_profile="coder",
@@ -328,7 +328,7 @@ class TestS6ContainerGatewayRun:
     def test_a_foreground_run_and_other_verbs_still_follow_the_active_profile(
         self, tmp_path, monkeypatch
     ):
-        monkeypatch.setattr("hermes_cli.service_manager._s6_running", lambda: True)
+        monkeypatch.setattr("gateway.service_manager._s6_running", lambda: True)
         root = tmp_path / ".hermes"
         for argv in (["hermes", "gateway", "run", "--no-supervise"], ["hermes", "chat"]):
             result = _run_apply_profile_override(

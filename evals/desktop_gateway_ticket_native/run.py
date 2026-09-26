@@ -15,7 +15,7 @@ import psutil
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
-from hermes_cli.gateway_runtime_discovery import query_identify  # noqa: E402
+from gateway.runtime_discovery import query_identify  # noqa: E402
 
 
 def stop_owned(process):

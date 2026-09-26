@@ -120,7 +120,7 @@ worker's own `failure_reason` classification via `cli._TERMINAL_PROVIDER_REASONS
 the first attempt, sticky, because no retry can heal it (#114587).
 Process-identity note: `kanban --preserve-cache` contains "serve" — never classify processes by argv
 substring (root). Worker liveness is `(worker_pid, worker_started_at)` — the start-time fingerprint
-(`gateway.status.get_process_start_time`) recorded at claim time — never bare PID existence, or a
+(`runtime.process_identity.get_process_start_time`) recorded at claim time — never bare PID existence, or a
 recycled PID gets killed on reclaim.
 
 - **Notifications leave through the task's owning profile.** `hermes_cli/kanban_db_notify.py`

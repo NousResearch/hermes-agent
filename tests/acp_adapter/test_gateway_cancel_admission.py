@@ -6,7 +6,7 @@ import pytest
 from acp.schema import TextContentBlock
 
 from acp_adapter.gateway_server import GatewayACPAgent
-from hermes_cli.gateway_client import GatewayClientError
+from gateway.client import GatewayClientError
 
 
 def agent_with_queued_prompt():
@@ -60,6 +60,38 @@ async def test_cancel_interrupts_only_when_our_admission_is_the_one_running():
     await agent.cancel('s')
     calls = {call.args[0]: call.kwargs for call in agent._gateway.rpc.await_args_list}
     assert calls['session.interrupt'] == {'session_id': 's', 'execution_generation': 8}
+    assert (await settle(agent, task, 'cancelled')).stop_reason == 'cancelled'
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_submit_is_applied_when_admission_id_arrives():
+    agent = agent_with_queued_prompt()
+    submit_started = asyncio.Event()
+    release_submit = asyncio.Event()
+    calls = []
+
+    async def rpc(method, **params):
+        calls.append((method, params))
+        if method == 'prompt.submit':
+            submit_started.set()
+            await release_submit.wait()
+            return {'admission_id': 'ours'}
+        if method == 'prompt.cancel':
+            return {'admission_id': 'ours', 'status': 'terminal', 'outcome': 'cancelled'}
+        return {}
+
+    agent._gateway.rpc.side_effect = rpc
+    task = asyncio.create_task(agent.prompt([TextContentBlock(type='text', text='hello')], 's'))
+    await asyncio.wait_for(submit_started.wait(), 2)
+    await agent.cancel('s')
+    assert [method for method, _ in calls] == ['prompt.submit']
+
+    release_submit.set()
+    for _ in range(20):
+        if any(method == 'prompt.cancel' for method, _ in calls):
+            break
+        await asyncio.sleep(0)
+    assert ('prompt.cancel', {'session_id': 's', 'admission_id': 'ours'}) in calls
     assert (await settle(agent, task, 'cancelled')).stop_reason == 'cancelled'
 
 

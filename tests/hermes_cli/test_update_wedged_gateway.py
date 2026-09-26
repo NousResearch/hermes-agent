@@ -8,6 +8,9 @@ only when the loop is provably dead, escalates SIGTERM → SIGKILL bounded to
 seconds. A busy-but-alive gateway (fresh heartbeat) must keep the full drain
 path — including the in-flight cron drain floor from #86684.
 """
+from gateway import process_liveness
+from gateway import signal_restart
+from gateway import systemd_restart
 
 import asyncio
 import json
@@ -200,20 +203,20 @@ def _launchd_harness(monkeypatch, tmp_path, pid):
     events = []
     monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
     monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
-    monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 180.0)
+    monkeypatch.setattr("gateway.restart.get_restart_drain_timeout", lambda: 180.0)
     monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: pid)
     monkeypatch.setattr(
         gateway_cli, "_request_gateway_self_restart", lambda pid: False
     )
-    real_probe = gateway_cli.probe_gateway_loop_liveness
+    real_probe = process_liveness.probe_gateway_loop_liveness
 
     def recording_probe(pid, **kw):
         events.append("probe")
         return real_probe(pid, **kw)
 
-    monkeypatch.setattr(gateway_cli, "probe_gateway_loop_liveness", recording_probe)
+    monkeypatch.setattr(process_liveness, "probe_gateway_loop_liveness", recording_probe)
     monkeypatch.setattr(
-        gateway_cli,
+        process_liveness,
         "_escalate_wedged_gateway",
         lambda pid, **kw: events.append("escalate") or True,
     )
@@ -226,7 +229,7 @@ def _launchd_harness(monkeypatch, tmp_path, pid):
     # goes through _graceful_restart_via_sigusr1 (in-place restart) before
     # any exit-wait, and these tests feed launchd_restart os.getpid().
     monkeypatch.setattr(
-        gateway_cli,
+        signal_restart,
         "_graceful_restart_via_sigusr1",
         lambda pid, timeout, **_: events.append(("drain", pid, timeout)) or True,
     )
@@ -259,41 +262,41 @@ class TestProbeGatewayLoopLiveness:
         """A gateway that refreshed its heartbeat recently is busy, not wedged."""
         _write_heartbeat(tmp_path, pid=4242, age_s=5.0)
         assert (
-            gateway_cli.probe_gateway_loop_liveness(4242, home=tmp_path)
-            == gateway_cli.GATEWAY_LOOP_ALIVE
+            process_liveness.probe_gateway_loop_liveness(4242, home=tmp_path)
+            == process_liveness.GATEWAY_LOOP_ALIVE
         )
 
     def test_stale_heartbeat_is_wedged(self, tmp_path):
         """A heartbeat several missed beats old proves the loop is dead."""
         _write_heartbeat(tmp_path, pid=4242, age_s=600.0)
         assert (
-            gateway_cli.probe_gateway_loop_liveness(4242, home=tmp_path)
-            == gateway_cli.GATEWAY_LOOP_WEDGED
+            process_liveness.probe_gateway_loop_liveness(4242, home=tmp_path)
+            == process_liveness.GATEWAY_LOOP_WEDGED
         )
 
     def test_heartbeat_just_inside_budget_is_alive(self, tmp_path):
         """Boundary: age below the stale budget must NOT classify as wedged."""
         _write_heartbeat(tmp_path, pid=4242, age_s=60.0)
         assert (
-            gateway_cli.probe_gateway_loop_liveness(
+            process_liveness.probe_gateway_loop_liveness(
                 4242, stale_after=90.0, home=tmp_path
             )
-            == gateway_cli.GATEWAY_LOOP_ALIVE
+            == process_liveness.GATEWAY_LOOP_ALIVE
         )
 
     def test_missing_heartbeat_is_unknown(self, tmp_path):
         """No heartbeat file (older gateway, fresh start) is not evidence."""
         assert (
-            gateway_cli.probe_gateway_loop_liveness(4242, home=tmp_path)
-            == gateway_cli.GATEWAY_LOOP_UNKNOWN
+            process_liveness.probe_gateway_loop_liveness(4242, home=tmp_path)
+            == process_liveness.GATEWAY_LOOP_UNKNOWN
         )
 
     def test_pid_mismatch_is_unknown_even_when_stale(self, tmp_path):
         """A stale file from a PREVIOUS process must not condemn the new PID."""
         _write_heartbeat(tmp_path, pid=1111, age_s=600.0)
         assert (
-            gateway_cli.probe_gateway_loop_liveness(4242, home=tmp_path)
-            == gateway_cli.GATEWAY_LOOP_UNKNOWN
+            process_liveness.probe_gateway_loop_liveness(4242, home=tmp_path)
+            == process_liveness.GATEWAY_LOOP_UNKNOWN
         )
 
     def test_corrupt_heartbeat_is_unknown(self, tmp_path):
@@ -303,15 +306,15 @@ class TestProbeGatewayLoopLiveness:
         stamp = time.time() - 600.0
         os.utime(path, (stamp, stamp))
         assert (
-            gateway_cli.probe_gateway_loop_liveness(4242, home=tmp_path)
-            == gateway_cli.GATEWAY_LOOP_UNKNOWN
+            process_liveness.probe_gateway_loop_liveness(4242, home=tmp_path)
+            == process_liveness.GATEWAY_LOOP_UNKNOWN
         )
 
     def test_nonpositive_pid_is_unknown(self, tmp_path):
         _write_heartbeat(tmp_path, pid=4242, age_s=600.0)
         assert (
-            gateway_cli.probe_gateway_loop_liveness(0, home=tmp_path)
-            == gateway_cli.GATEWAY_LOOP_UNKNOWN
+            process_liveness.probe_gateway_loop_liveness(0, home=tmp_path)
+            == process_liveness.GATEWAY_LOOP_UNKNOWN
         )
 
 
@@ -321,8 +324,8 @@ class TestProbeGatewayLoopLiveness:
             lambda home=None: (_ for _ in ()).throw(OSError("boom")),
         )
         assert (
-            gateway_cli.probe_gateway_loop_liveness(4242)
-            == gateway_cli.GATEWAY_LOOP_UNKNOWN
+            process_liveness.probe_gateway_loop_liveness(4242)
+            == process_liveness.GATEWAY_LOOP_UNKNOWN
         )
 
 
@@ -331,15 +334,15 @@ class TestEscalateWedgedGateway:
         """If SIGTERM lands (signal-handler thread alive), no SIGKILL is sent."""
         signals = []
         monkeypatch.setattr(
-            gateway_cli,
+            process_liveness,
             "terminate_pid",
             lambda pid, force=False, **kwargs: signals.append(("kill" if force else "term", pid)),
         )
         monkeypatch.setattr(
-            gateway_cli, "_wait_for_pid_exit", lambda pid, timeout, **_: True
+            process_liveness, "_wait_for_pid_exit", lambda pid, timeout, **_: True
         )
 
-        assert gateway_cli._escalate_wedged_gateway(4242) is True
+        assert process_liveness._escalate_wedged_gateway(4242) is True
         assert signals == [("term", 4242)]
 
     def test_escalates_to_sigkill_when_sigterm_ignored(self, monkeypatch):
@@ -352,38 +355,38 @@ class TestEscalateWedgedGateway:
             return len(waits) > 1
 
         monkeypatch.setattr(
-            gateway_cli,
+            process_liveness,
             "terminate_pid",
             lambda pid, force=False, **kwargs: signals.append(("kill" if force else "term", pid)),
         )
-        monkeypatch.setattr(gateway_cli, "_wait_for_pid_exit", fake_wait)
+        monkeypatch.setattr(process_liveness, "_wait_for_pid_exit", fake_wait)
 
-        assert gateway_cli._escalate_wedged_gateway(4242) is True
+        assert process_liveness._escalate_wedged_gateway(4242) is True
         assert signals == [("term", 4242), ("kill", 4242)]
 
     def test_total_wait_budget_is_bounded_well_under_drain(self, monkeypatch):
         """Worst case must be seconds, never the 180s drain budget."""
         waits = []
-        monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False, **kwargs: None)
+        monkeypatch.setattr(process_liveness, "terminate_pid", lambda pid, force=False, **kwargs: None)
         monkeypatch.setattr(
-            gateway_cli,
+            process_liveness,
             "_wait_for_pid_exit",
             lambda pid, timeout, **_: waits.append(timeout) or False,
         )
 
-        assert gateway_cli._escalate_wedged_gateway(4242) is False
+        assert process_liveness._escalate_wedged_gateway(4242) is False
         assert sum(waits) < 30.0
 
     def test_process_already_gone_is_success(self, monkeypatch):
         def raise_gone(pid, force=False, **kwargs):
             raise ProcessLookupError
 
-        monkeypatch.setattr(gateway_cli, "terminate_pid", raise_gone)
+        monkeypatch.setattr(process_liveness, "terminate_pid", raise_gone)
         monkeypatch.setattr(
-            gateway_cli, "_wait_for_pid_exit", lambda pid, timeout, **_: True
+            process_liveness, "_wait_for_pid_exit", lambda pid, timeout, **_: True
         )
 
-        assert gateway_cli._escalate_wedged_gateway(4242) is True
+        assert process_liveness._escalate_wedged_gateway(4242) is True
 
     def test_sigkill_permission_error_does_not_raise(self, monkeypatch):
         calls = []
@@ -393,12 +396,12 @@ class TestEscalateWedgedGateway:
             if force:
                 raise PermissionError
 
-        monkeypatch.setattr(gateway_cli, "terminate_pid", term)
+        monkeypatch.setattr(process_liveness, "terminate_pid", term)
         monkeypatch.setattr(
-            gateway_cli, "_wait_for_pid_exit", lambda pid, timeout, **_: False
+            process_liveness, "_wait_for_pid_exit", lambda pid, timeout, **_: False
         )
 
-        assert gateway_cli._escalate_wedged_gateway(4242) is False
+        assert process_liveness._escalate_wedged_gateway(4242) is False
         assert calls == [False, True]
 
 
@@ -409,20 +412,20 @@ class TestLaunchdRestartWedgedIntegration:
         events = []
         monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
         monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
-        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 180.0)
+        monkeypatch.setattr("gateway.restart.get_restart_drain_timeout", lambda: 180.0)
         # Wait budget covers after-turn deferral + drain + headroom (#77184).
-        monkeypatch.setattr(gateway_cli, "_get_restart_exit_wait_budget", lambda: 195.0)
+        monkeypatch.setattr("gateway.restart.get_restart_exit_wait_budget", lambda: 195.0)
         monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: 4242)
         monkeypatch.setattr(
             gateway_cli, "_request_gateway_self_restart", lambda pid: False
         )
         monkeypatch.setattr(
-            gateway_cli,
+            process_liveness,
             "probe_gateway_loop_liveness",
             lambda pid, **kw: events.append("probe") or liveness,
         )
         monkeypatch.setattr(
-            gateway_cli,
+            process_liveness,
             "_escalate_wedged_gateway",
             lambda pid, **kw: events.append("escalate") or True,
         )
@@ -433,7 +436,7 @@ class TestLaunchdRestartWedgedIntegration:
         )
         # Never let a real SIGUSR1 escape to PID 4242 during tests.
         monkeypatch.setattr(
-            gateway_cli,
+            signal_restart,
             "_graceful_restart_via_sigusr1",
             lambda pid, timeout, **_: events.append(("drain", pid, timeout)) or True,
         )
@@ -458,7 +461,7 @@ class TestLaunchdRestartWedgedIntegration:
         return events
 
     def test_wedged_gateway_skips_drain_and_escalates(self, monkeypatch):
-        events = self._setup(monkeypatch, gateway_cli.GATEWAY_LOOP_WEDGED)
+        events = self._setup(monkeypatch, process_liveness.GATEWAY_LOOP_WEDGED)
         gateway_cli.launchd_restart()
         assert "escalate" in events
         # The 180s drain wait must never run for a wedged loop.
@@ -467,14 +470,14 @@ class TestLaunchdRestartWedgedIntegration:
     def test_busy_gateway_keeps_full_drain_budget(self, monkeypatch):
         """A busy-but-alive gateway (fresh heartbeat) must NOT be escalated —
         that would bypass the in-flight cron drain floor (#86684)."""
-        events = self._setup(monkeypatch, gateway_cli.GATEWAY_LOOP_ALIVE)
+        events = self._setup(monkeypatch, process_liveness.GATEWAY_LOOP_ALIVE)
         gateway_cli.launchd_restart()
         assert "escalate" not in events
         assert ("drain", 4242, 195.0) in events
 
     def test_unknown_liveness_keeps_full_drain_budget(self, monkeypatch):
         """Ambiguity (no heartbeat) must never trigger escalation."""
-        events = self._setup(monkeypatch, gateway_cli.GATEWAY_LOOP_UNKNOWN)
+        events = self._setup(monkeypatch, process_liveness.GATEWAY_LOOP_UNKNOWN)
         gateway_cli.launchd_restart()
         assert "escalate" not in events
         assert ("drain", 4242, 195.0) in events
@@ -504,10 +507,10 @@ class TestLoopTickWitness:
         _write_heartbeat(tmp_path, pid, age_s=5.0)
         _mark_witness_flag(tmp_path, armed=True)
         assert (
-            gateway_cli.probe_gateway_loop_liveness(
+            process_liveness.probe_gateway_loop_liveness(
                 pid, home=tmp_path, tick_timeout=0.2
             )
-            == gateway_cli.GATEWAY_LOOP_UNKNOWN
+            == process_liveness.GATEWAY_LOOP_UNKNOWN
         )
 
     @_NEEDS_UNIX_SOCKETS
@@ -525,14 +528,14 @@ class TestLoopTickWitness:
         _write_heartbeat(tmp_path, pid, age_s=600.0)
         _mark_witness_flag(tmp_path, armed=True, age_s=600.0)
         assert (
-            gateway_cli.probe_gateway_loop_liveness(
+            process_liveness.probe_gateway_loop_liveness(
                 pid,
                 home=tmp_path,
                 tick_timeout=0.2,
                 tick_strikes=3,
                 tick_gap_s=0.0,
             )
-            == gateway_cli.GATEWAY_LOOP_WEDGED
+            == process_liveness.GATEWAY_LOOP_WEDGED
         )
 
     def test_single_silent_probe_is_not_destructive(self, tmp_path, monkeypatch):
@@ -553,18 +556,18 @@ class TestLoopTickWitness:
             # answers on the next attempt.
             return len(calls) > 1
 
-        monkeypatch.setattr(gateway_cli, "_probe_loop_tick_socket", flaky_probe)
+        monkeypatch.setattr(process_liveness, "_probe_loop_tick_socket", flaky_probe)
         _write_heartbeat(tmp_path, pid, age_s=600.0)
         _mark_witness_flag(tmp_path, armed=True, age_s=600.0)
         assert (
-            gateway_cli.probe_gateway_loop_liveness(
+            process_liveness.probe_gateway_loop_liveness(
                 pid,
                 home=tmp_path,
                 tick_timeout=0.2,
                 tick_strikes=2,
                 tick_gap_s=0.0,
             )
-            == gateway_cli.GATEWAY_LOOP_ALIVE
+            == process_liveness.GATEWAY_LOOP_ALIVE
         )
 
 
@@ -578,7 +581,7 @@ class TestLoopTickWitness:
         pid = 4242
         calls = []
         monkeypatch.setattr(
-            gateway_cli,
+            process_liveness,
             "_probe_loop_tick_socket",
             lambda _pid, _home, timeout=1.0: (calls.append(timeout), False, None)[
                 len(calls)
@@ -587,14 +590,14 @@ class TestLoopTickWitness:
         _write_heartbeat(tmp_path, pid, age_s=600.0)
         _mark_witness_flag(tmp_path, armed=True, age_s=600.0)
         assert (
-            gateway_cli.probe_gateway_loop_liveness(
+            process_liveness.probe_gateway_loop_liveness(
                 pid,
                 home=tmp_path,
                 tick_timeout=0.2,
                 tick_strikes=2,
                 tick_gap_s=0.0,
             )
-            == gateway_cli.GATEWAY_LOOP_UNKNOWN
+            == process_liveness.GATEWAY_LOOP_UNKNOWN
         )
 
     def test_armed_witness_unreachable_is_unknown(self, tmp_path):
@@ -606,10 +609,10 @@ class TestLoopTickWitness:
         _write_heartbeat(tmp_path, pid, age_s=600.0)
         _mark_witness_flag(tmp_path, armed=True, age_s=600.0)
         assert (
-            gateway_cli.probe_gateway_loop_liveness(
+            process_liveness.probe_gateway_loop_liveness(
                 pid, home=tmp_path, tick_timeout=0.2
             )
-            == gateway_cli.GATEWAY_LOOP_UNKNOWN
+            == process_liveness.GATEWAY_LOOP_UNKNOWN
         )
 
     def test_unarmed_witness_disables_stale_escalation(self, tmp_path):
@@ -622,10 +625,10 @@ class TestLoopTickWitness:
         _write_heartbeat(tmp_path, pid, age_s=600.0)
         _mark_witness_flag(tmp_path, armed=False, age_s=600.0)
         assert (
-            gateway_cli.probe_gateway_loop_liveness(
+            process_liveness.probe_gateway_loop_liveness(
                 pid, home=tmp_path, tick_timeout=0.2
             )
-            == gateway_cli.GATEWAY_LOOP_UNKNOWN
+            == process_liveness.GATEWAY_LOOP_UNKNOWN
         )
 
     def test_legacy_payload_keeps_single_witness_contract(self, tmp_path):
@@ -637,8 +640,8 @@ class TestLoopTickWitness:
         pid = 4242
         _write_heartbeat(tmp_path, pid, age_s=600.0)
         assert (
-            gateway_cli.probe_gateway_loop_liveness(pid, home=tmp_path)
-            == gateway_cli.GATEWAY_LOOP_WEDGED
+            process_liveness.probe_gateway_loop_liveness(pid, home=tmp_path)
+            == process_liveness.GATEWAY_LOOP_WEDGED
         )
 
     @_NEEDS_UNIX_SOCKETS
@@ -653,10 +656,10 @@ class TestLoopTickWitness:
         _write_heartbeat(tmp_path, pid, age_s=5.0)
         _silent_socket_node(get_loop_tick_socket_path(tmp_path, pid))
         assert (
-            gateway_cli.probe_gateway_loop_liveness(
+            process_liveness.probe_gateway_loop_liveness(
                 pid, home=tmp_path, tick_timeout=0.2
             )
-            == gateway_cli.GATEWAY_LOOP_UNKNOWN
+            == process_liveness.GATEWAY_LOOP_UNKNOWN
         )
 
     @_NEEDS_UNIX_SOCKETS
@@ -735,7 +738,7 @@ class TestLoopTickWitness:
             _wait_heartbeat_stale(tmp_path, stale_after)
 
             state["trigger"]()  # freeze the loop for block_s
-            verdict = gateway_cli.probe_gateway_loop_liveness(
+            verdict = process_liveness.probe_gateway_loop_liveness(
                 pid,
                 home=tmp_path,
                 stale_after=stale_after,
@@ -743,7 +746,7 @@ class TestLoopTickWitness:
                 tick_strikes=tick_strikes,
                 tick_gap_s=tick_gap_s,
             )
-            assert verdict == gateway_cli.GATEWAY_LOOP_ALIVE, verdict
+            assert verdict == process_liveness.GATEWAY_LOOP_ALIVE, verdict
 
             events = _launchd_harness(monkeypatch, tmp_path, pid)
             gateway_cli.launchd_restart()
@@ -788,7 +791,7 @@ class TestLoopTickWitness:
             _wait_heartbeat_stale(tmp_path, stale_after)
 
             state["trigger"]()  # freeze the loop for block_s
-            verdict = gateway_cli.probe_gateway_loop_liveness(
+            verdict = process_liveness.probe_gateway_loop_liveness(
                 pid,
                 home=tmp_path,
                 stale_after=stale_after,
@@ -796,7 +799,7 @@ class TestLoopTickWitness:
                 tick_strikes=tick_strikes,
                 tick_gap_s=tick_gap_s,
             )
-            assert verdict == gateway_cli.GATEWAY_LOOP_WEDGED, verdict
+            assert verdict == process_liveness.GATEWAY_LOOP_WEDGED, verdict
         finally:
             state["stop"]()
             state["thread"].join(timeout=5.0)
@@ -850,8 +853,8 @@ class TestLoopTickTcpWitness:
         try:
             self._write_tcp_heartbeat(tmp_path, 4343, port, age_s=600.0)
             assert (
-                gateway_cli.probe_gateway_loop_liveness(4343, home=tmp_path)
-                == gateway_cli.GATEWAY_LOOP_ALIVE
+                process_liveness.probe_gateway_loop_liveness(4343, home=tmp_path)
+                == process_liveness.GATEWAY_LOOP_ALIVE
             )
         finally:
             stop.set()
@@ -866,10 +869,10 @@ class TestLoopTickTcpWitness:
             port = silent.getsockname()[1]
             self._write_tcp_heartbeat(tmp_path, 4344, port, age_s=600.0)
             assert (
-                gateway_cli.probe_gateway_loop_liveness(
+                process_liveness.probe_gateway_loop_liveness(
                     4344, home=tmp_path, tick_timeout=0.2, tick_gap_s=0.05
                 )
-                == gateway_cli.GATEWAY_LOOP_WEDGED
+                == process_liveness.GATEWAY_LOOP_WEDGED
             )
         finally:
             silent.close()
@@ -884,10 +887,10 @@ class TestLoopTickTcpWitness:
             port = silent.getsockname()[1]
             self._write_tcp_heartbeat(tmp_path, 4345, port)
             assert (
-                gateway_cli.probe_gateway_loop_liveness(
+                process_liveness.probe_gateway_loop_liveness(
                     4345, home=tmp_path, tick_timeout=0.2
                 )
-                == gateway_cli.GATEWAY_LOOP_UNKNOWN
+                == process_liveness.GATEWAY_LOOP_UNKNOWN
             )
         finally:
             silent.close()
@@ -905,8 +908,8 @@ class TestLoopTickTcpWitness:
         # loop_tick_socket=False + no usable TCP port: witness could not be
         # armed, staleness is not proof -> UNKNOWN, never WEDGED.
         assert (
-            gateway_cli.probe_gateway_loop_liveness(4346, home=tmp_path)
-            == gateway_cli.GATEWAY_LOOP_UNKNOWN
+            process_liveness.probe_gateway_loop_liveness(4346, home=tmp_path)
+            == process_liveness.GATEWAY_LOOP_UNKNOWN
         )
 
 

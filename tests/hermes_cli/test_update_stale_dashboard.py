@@ -267,8 +267,8 @@ class TestKillStaleDashboardWindows:
 
         with patch("hermes_cli.main_dashboard._find_stale_dashboard_pids",
                    return_value=[12345, 12346]), \
-             patch("gateway.status.get_process_start_time", return_value=123), \
-             patch("hermes_cli._subprocess_compat.pid_is_hermes", return_value=True), \
+             patch("runtime.process_identity.get_process_start_time", return_value=123), \
+             patch("runtime.process_identity.pid_is_hermes", return_value=True), \
              patch("subprocess.run", side_effect=fake_run) as mock_run:
             _kill_stale_dashboard_processes()
 

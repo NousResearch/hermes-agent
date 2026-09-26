@@ -90,7 +90,7 @@ def desktop_ensure(env, root, profile):
 
 
 def native_headers(endpoint):
-    from hermes_cli.gateway_client import _session_ticket
+    from gateway.client import _session_ticket
     ticket = _session_ticket(Path(endpoint['profile_id']), SimpleNamespace(**endpoint), purpose='native-http')
     return {'X-Hermes-Gateway-Ticket': ticket}
 
@@ -98,7 +98,7 @@ def native_headers(endpoint):
 async def create_via_ws(endpoint, request_id, hold=None):
     """Create a GUI session on *endpoint* over the canonical WS; ``hold`` keeps the attachment
     open while awaiting it (the "other profile is active" arm)."""
-    from hermes_cli.gateway_client import _session_ticket
+    from gateway.client import _session_ticket
     ticket = _session_ticket(Path(endpoint['profile_id']), SimpleNamespace(**endpoint), purpose='interactive')
     async with connect(endpoint['api_origin'].replace('http:', 'ws:') + '/api/ws',
                        subprotocols=['hermes-gateway-v1', 'hermes-gateway-ticket.' + ticket]) as ws:

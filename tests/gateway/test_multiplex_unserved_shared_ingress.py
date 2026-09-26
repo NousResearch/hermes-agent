@@ -76,7 +76,7 @@ async def test_secondary_whatsapp_without_primary_is_reported_unserved(monkeypat
     }) in stamps
     # ...and the CLI reader turns that stamp into the status line.
     from gateway.status import write_runtime_status
-    from hermes_cli import gateway_multiplex_served as served
+    from gateway import served_profiles as served
     key, kw = next(s for s in stamps if s[0] == "work:whatsapp")
     write_runtime_status(platform=key, **kw)
     monkeypatch.setattr(served, "live_default_gateway_pid", lambda: 4242)

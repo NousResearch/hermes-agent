@@ -131,7 +131,7 @@ def launchd_label_foreign_home(label: str, scope: set[Path] | None = None) -> st
     decides whether a job exists; only a proven foreign home is refused)."""
     import plistlib
     with suppress(Exception):
-        from hermes_cli.gateway import get_launchd_plist_path
+        from gateway.launchd_service import get_launchd_plist_path
         plist_path = get_launchd_plist_path().with_name(f"{label}.plist")
         if not plist_path.exists():
             return None

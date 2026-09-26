@@ -15,7 +15,7 @@ import sys
 
 import pytest
 
-from hermes_cli.sqlite_safe_read import (
+from storage.sqlite_safe_read import (
     connect_tracked,
     has_live_connection,
 )
@@ -53,7 +53,7 @@ def clean_registry():
     fixture) would otherwise leave the registry dirty and make the *next*
     test's refusal assertion pass for the wrong reason.
     """
-    import hermes_cli.sqlite_safe_read as mod
+    import storage.sqlite_safe_read as mod
 
     def _clear():
         with mod._live_lock:

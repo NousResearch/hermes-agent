@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict
 
-from hermes_cli.sqlite_util import add_column_if_missing
+from storage.sqlite_util import add_column_if_missing
 
 
 # Keep the extracted store's log records on the API server logger.

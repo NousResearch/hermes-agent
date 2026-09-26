@@ -2163,8 +2163,8 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `upsert_custom_endpoint` | moved-lazy | `hermes_cli.web_routers.config_env` |
 | `validate_custom_endpoint` | moved-lazy | `hermes_cli.web_routers.config_env` |
 | `validate_provider_credential` | moved-lazy | `hermes_cli.web_routers.config_env` |
-| `windows_detach_flags` | moved-lazy | `hermes_cli._subprocess_compat` |
-| `windows_hide_flags` | moved-lazy | `hermes_cli._subprocess_compat` |
+| `windows_detach_flags` | moved-lazy | `runtime.subprocess_compat` |
+| `windows_hide_flags` | moved-lazy | `runtime.subprocess_compat` |
 | `write_platform_config_field` | moved-lazy | `hermes_cli.config` |
 | `yaml` | import | `yaml` |
 | `zipfile` | import | `zipfile` |
@@ -2954,7 +2954,7 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `signal` | import | `signal` |
 | `timezone` | import | `datetime` |
 | `warm_agent_browser_npx_cache` | moved-lazy | `tools.browser_tool_install` |
-| `windows_hide_flags` | moved-lazy | `hermes_cli._subprocess_compat` |
+| `windows_hide_flags` | moved-lazy | `runtime.subprocess_compat` |
 
 ### `tools.clarify_gateway`
 
@@ -3113,7 +3113,7 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `sanitize_task_id_for_path` | moved-lazy | `tools.environments.path_utils` |
 | `select` | import | `select` |
 | `subprocess` | import | `subprocess` |
-| `windows_hide_flags` | moved-lazy | `hermes_cli._subprocess_compat` |
+| `windows_hide_flags` | moved-lazy | `runtime.subprocess_compat` |
 
 ### `tools.environments.managed_modal`
 
@@ -3491,7 +3491,7 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `urlparse` | import | `urllib.parse` |
 | `urlsplit` | import | `urllib.parse` |
 | `urlunparse` | import | `urllib.parse` |
-| `windows_hide_flags` | moved-lazy | `hermes_cli._subprocess_compat` |
+| `windows_hide_flags` | moved-lazy | `runtime.subprocess_compat` |
 | `yaml` | import | `yaml` |
 
 ### `tools.skills_sync`
@@ -3639,7 +3639,7 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `subprocess` | import | `subprocess` |
 | `tempfile` | import | `tempfile` |
 | `urljoin` | import | `urllib.parse` |
-| `windows_hide_flags` | moved-lazy | `hermes_cli._subprocess_compat` |
+| `windows_hide_flags` | moved-lazy | `runtime.subprocess_compat` |
 
 ### `tools.tts_tool`
 
@@ -3725,7 +3725,7 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `urlparse` | import | `urllib.parse` |
 | `uuid` | import | `uuid` |
 | `warm_tts_provider` | moved-lazy | `tools.tts_tool_lifecycle` |
-| `windows_hide_flags` | moved-lazy | `hermes_cli._subprocess_compat` |
+| `windows_hide_flags` | moved-lazy | `runtime.subprocess_compat` |
 
 ### `tools.url_safety`
 

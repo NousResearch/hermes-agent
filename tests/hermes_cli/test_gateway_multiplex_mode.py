@@ -1,5 +1,5 @@
 """``gateway.multiplex_profiles`` defaults to ON, but an UNSET flag is settled at boot by
-``hermes_cli.gateway_multiplex_mode.resolve_multiplex_mode`` — the same preflight
+``gateway.multiplex_mode.resolve_multiplex_mode`` — the same preflight
 ``hermes gateway migrate --multiplex`` runs — so flipping the default can never make a default
 gateway double-bind a fleet that still runs per-profile gateways.
 
@@ -18,8 +18,8 @@ import pytest
 
 import hermes_constants
 from gateway.config import GatewayConfig, load_gateway_config
-from hermes_cli import gateway_migrate as gm
-from hermes_cli import gateway_multiplex_mode as mode
+from gateway import migration as gm
+from gateway import multiplex_mode as mode
 
 
 @pytest.fixture
@@ -70,7 +70,7 @@ def test_unset_flag_multiplexes_a_quiet_fleet_and_stays_standalone_beside_a_live
     assert "'coder'" in decision.reason and gm.MIGRATE_COMMAND in decision.reason
     assert cfg.multiplex_profiles is False
     # The CLI side agrees: no live multiplexer record and no explicit opt-in means coder is NOT served.
-    from hermes_cli.gateway import named_profile_served_by_running_multiplexer
+    from gateway.host_topology import named_profile_served_by_running_multiplexer
     assert named_profile_served_by_running_multiplexer("coder") is False
     assert mode.default_gateway_multiplexes(root) is False
 
@@ -179,7 +179,7 @@ def test_guard_refusal_is_recorded_in_runtime_status_and_cleared_on_default(tmp_
     """A guard refusal must be visible to `hermes gateway status`, not only in the boot log; a later
     boot that multiplexes clears it (a stale reason would misdescribe the live gateway)."""
     from gateway import status as gw_status
-    from hermes_cli.gateway_multiplex_mode import MultiplexDecision, record_multiplex_decision
+    from gateway.multiplex_mode import MultiplexDecision, record_multiplex_decision
     monkeypatch.setattr(gw_status, "_get_runtime_status_path", lambda: tmp_path / "gateway_state.json")
     record_multiplex_decision(MultiplexDecision(False, "guard", "profile(s) 'coder' still run their own gateway"))
     assert "coder" in gw_status.read_runtime_status(tmp_path / "gateway_state.json")["multiplex_standalone_reason"]

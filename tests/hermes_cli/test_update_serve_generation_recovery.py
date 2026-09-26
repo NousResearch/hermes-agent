@@ -59,7 +59,7 @@ def _serve_runtime(pid, *, create_time=None, kind="serve", profile="default"):
 
 
 def _identity_module():
-    return __import__("hermes_cli.process_identity", fromlist=["ledger_entries"])
+    return __import__("runtime.process_identity", fromlist=["ledger_entries"])
 
 
 # ---------------------------------------------------------------------------

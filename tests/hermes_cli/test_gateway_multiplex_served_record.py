@@ -9,6 +9,8 @@
 """
 
 from __future__ import annotations
+from gateway import systemd_lifecycle
+from gateway import systemd_runtime
 
 import argparse
 import contextlib
@@ -48,7 +50,7 @@ def served_root(tmp_path, monkeypatch):
 
 
 def test_probe_trusts_live_record_over_cli_side_config(served_root):
-    from hermes_cli.gateway import named_profile_served_by_running_multiplexer
+    from gateway.host_topology import named_profile_served_by_running_multiplexer
     assert named_profile_served_by_running_multiplexer("coder") is True
     assert named_profile_served_by_running_multiplexer("other") is False
     # Config says multiplex on, but the running gateway did not pick up 'other': the record wins.
@@ -57,7 +59,7 @@ def test_probe_trusts_live_record_over_cli_side_config(served_root):
 
 
 def test_probe_falls_back_to_config_only_without_recorded_key(served_root):
-    from hermes_cli.gateway import named_profile_served_by_running_multiplexer
+    from gateway.host_topology import named_profile_served_by_running_multiplexer
     (served_root / "gateway_state.json").write_text(json.dumps(
         {"pid": os.getpid(), "hermes_home": str(served_root), "gateway_state": "running"}))
     assert named_profile_served_by_running_multiplexer("coder") is False
@@ -70,8 +72,8 @@ def test_probe_survives_a_missing_default_pid_file(served_root):
     unlinks it while the process keeps serving. Keying liveness off that file alone made every surface
     (``hermes -p X status``, ``cron list``, the dashboard ladder) say "not running" about the gateway
     that was in fact serving the profile."""
-    from hermes_cli.gateway import named_profile_served_by_running_multiplexer
-    from hermes_cli.gateway_multiplex_served import live_default_gateway_pid
+    from gateway.host_topology import named_profile_served_by_running_multiplexer
+    from gateway.served_profiles import live_default_gateway_pid
     (served_root / "gateway.pid").unlink()
     assert live_default_gateway_pid() == os.getpid()
     assert named_profile_served_by_running_multiplexer("coder") is True
@@ -112,12 +114,12 @@ def test_setup_gateway_service_step_skips_install_for_served_profile(served_root
 
     calls: list[str] = []
     # The orchestrator reads every service primitive through ``hermes_cli.gateway``; patch that binding.
-    monkeypatch.setattr(gw, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(systemd_runtime, "supports_services", lambda: True)
     monkeypatch.setattr(gw, "_is_service_running", lambda: False)
     monkeypatch.setattr(gw, "_is_service_installed", lambda: "install" in calls)
     monkeypatch.setattr(gw, "has_conflicting_systemd_units", lambda: False)
-    monkeypatch.setattr(gw, "systemd_install", lambda **kwargs: calls.append("install"))
-    monkeypatch.setattr(gw, "systemd_start", lambda *args, **kwargs: calls.append("start"))
+    monkeypatch.setattr(systemd_lifecycle, "install", lambda **kwargs: calls.append("install"))
+    monkeypatch.setattr(systemd_lifecycle, "start", lambda *args, **kwargs: calls.append("start"))
 
     # Consent is explicit here; the served-profile early return must win before it matters.
     assert ensure_gateway_service(context="setup", install=True) is True
@@ -136,11 +138,11 @@ def test_recycled_pid_does_not_lend_a_stale_record_its_served_profiles(served_ro
     once did, so `hermes -p coder gateway start` exited 78 for a multiplexer that was long gone."""
     import subprocess
     import gateway.status as status
-    from hermes_cli.gateway import named_profile_served_by_running_multiplexer
-    from hermes_cli.gateway_multiplex_served import live_default_gateway_pid, recorded_served_profiles
+    from gateway.host_topology import named_profile_served_by_running_multiplexer
+    from gateway.served_profiles import live_default_gateway_pid, recorded_served_profiles
     child = subprocess.Popen(["sleep", "60"])
     try:
-        stale_start = (status._get_process_start_time(child.pid) or 10**9) - 4242
+        stale_start = (status._process_identity.get_process_start_time(child.pid) or 10**9) - 4242
         for name in ("gateway.pid", "gateway_state.json"):
             (served_root / name).write_text(json.dumps({
                 "pid": child.pid, "hermes_home": str(served_root), "gateway_state": "running",

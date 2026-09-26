@@ -25,7 +25,7 @@ def test_spawn_selects_supported_direct_io_option(tmp_path, monkeypatch, help_te
 
     monkeypatch.setattr(supervisor.subprocess, "run", run)
     commands = []
-    monkeypatch.setattr(supervisor, "spawn_server", lambda argv, **kwargs: (
+    monkeypatch.setattr(supervisor, "spawn_contained_process", lambda argv, **kwargs: (
         commands.append(argv) or SimpleNamespace(pid=123, poll=lambda: 0), None,
     ))
     sup = supervisor.LlamaServerSupervisor(tmp_path / "engine", tmp_path / "models", port=19001)

@@ -5,6 +5,10 @@ with ``gateway run --replace``. Combined with the cross-profile ownership guard,
 a per-profile fleet's unit into one that can never start (#119467). Refresh retires the Hermes file,
 and only that file: a drop-in the operator wrote is theirs.
 """
+from gateway import systemd_identity
+from gateway import systemd_runtime
+from gateway import systemd_unit_render
+from gateway import systemd_unit_state
 
 import hermes_cli.gateway as gateway_cli
 
@@ -22,11 +26,11 @@ HERMES_DROPIN = (
 def _current_unit_with_dropin(tmp_path, monkeypatch, dropin_text: str):
     unit = tmp_path / "hermes-gateway.service"
     unit.write_text("[Unit]\nDescription=current\n", encoding="utf-8")
-    monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit)
-    monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda **_: "[Unit]\nDescription=current\n")
-    monkeypatch.setattr(gateway_cli, "_sync_hermes_home_from_systemd_unit", lambda **_: None)
+    monkeypatch.setattr(systemd_identity, "unit_path", lambda system=False: unit)
+    monkeypatch.setattr(systemd_unit_render, "generate_systemd_unit", lambda **_: "[Unit]\nDescription=current\n")
+    monkeypatch.setattr(systemd_runtime, "sync_home_from_unit", lambda *_, **__: None)
     calls = []
-    monkeypatch.setattr(gateway_cli, "_run_systemctl", lambda args, **kwargs: calls.append((args, kwargs)))
+    monkeypatch.setattr(systemd_runtime, "run_systemctl", lambda args, **kwargs: calls.append((args, kwargs)))
     dropin = unit.parent / f"{unit.name}.d" / "20-replace.conf"
     dropin.parent.mkdir()
     dropin.write_text(dropin_text, encoding="utf-8")
@@ -39,7 +43,7 @@ def test_refresh_retires_the_hermes_replace_dropin_even_when_the_unit_text_is_cu
     unit, dropin, calls = _current_unit_with_dropin(tmp_path, monkeypatch, HERMES_DROPIN)
     before = unit.read_bytes()
 
-    assert gateway_cli.refresh_systemd_unit_if_needed(system=True) is True
+    assert systemd_unit_state.refresh_if_needed(system=True) is True
 
     assert not dropin.exists()
     assert unit.read_bytes() == before, "the current unit itself is left alone"
@@ -52,6 +56,6 @@ def test_refresh_keeps_an_operator_written_dropin_of_the_same_name(tmp_path, mon
     unit, dropin, calls = _current_unit_with_dropin(
         tmp_path, monkeypatch, "[Service]\nExecStart=\nExecStart=/opt/hermes gateway run --replace\n")
 
-    assert gateway_cli.refresh_systemd_unit_if_needed() is False
+    assert systemd_unit_state.refresh_if_needed() is False
 
     assert dropin.exists() and calls == []

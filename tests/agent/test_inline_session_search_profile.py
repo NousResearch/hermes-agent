@@ -36,10 +36,14 @@ def test_session_search_honours_requested_profile_db(tmp_path, monkeypatch):
     try:
         routed = json.loads(INLINE_TOOL_EXECUTORS["session_search"](
             agent, {"query": "weekly report", "profile": "llm-wiki"}, ctx))
+        read = json.loads(INLINE_TOOL_EXECUTORS["session_search"](
+            agent, {"session_id": "profile-session", "profile": "llm-wiki"}, ctx))
         missing = json.loads(INLINE_TOOL_EXECUTORS["session_search"](
             agent, {"query": "weekly report", "profile": "missing-profile"}, ctx))
     finally:
         current_db.close()
 
     assert [r["session_id"] for r in routed["results"]] == ["profile-session"]
+    assert read["mode"] == "read" and read["session_id"] == "profile-session"
+    assert [message["content"] for message in read["messages"]] == ["weekly report llm wiki"]
     assert missing["success"] is False and "default-session" not in json.dumps(missing)

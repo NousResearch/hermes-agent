@@ -115,7 +115,7 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/_subprocess_compat.py",
+    "path": "runtime/subprocess_compat.py",
     "symbol": "resolve_node_command",
     "kind": "bare_which"
   },
@@ -220,7 +220,7 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/gateway_windows.py",
+    "path": "gateway/windows_service.py",
     "symbol": "_exec_schtasks",
     "kind": "bare_which"
   },
@@ -365,7 +365,7 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/stdio.py",
+    "path": "runtime/stdio.py",
     "symbol": "_default_windows_editor",
     "kind": "bare_which"
   },

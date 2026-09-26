@@ -478,7 +478,8 @@ def _run_logged_subprocess(cmd, *, cwd=None, env=None):
     """Stream combined build output to update.log, retaining it for failure reporting."""
     import codecs
     import io
-    from hermes_cli._subprocess_compat import kill_process_tree, windows_hide_flags
+    from runtime.processes import kill_popen_process_tree
+    from runtime.subprocess_compat import windows_hide_flags
 
     child_env = dict(os.environ if env is None else env)
     child_env.setdefault("PYTHONUNBUFFERED", "1")
@@ -501,7 +502,7 @@ def _run_logged_subprocess(cmd, *, cwd=None, env=None):
         return subprocess.CompletedProcess(cmd, proc.wait(), stdout="".join(output))
     except BaseException:
         # Unlike Popen.__exit__, do not wait for a cancelled build to finish.
-        kill_process_tree(proc)
+        kill_popen_process_tree(proc)
         with suppress(subprocess.TimeoutExpired):
             proc.wait(timeout=5)
         raise

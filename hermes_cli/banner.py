@@ -182,7 +182,8 @@ def _git_run(args: list[str], *, cwd: Optional[Path] = None, timeout: int = 5, t
     passive update check can never hang on a ``Username for 'https://github.com':`` prompt. No probe
     here may lazy-fetch from a partial clone's promisor remote (see ``NO_LAZY_FETCH_ENV``).
     """
-    from hermes_cli._subprocess_compat import NO_LAZY_FETCH_ENV, noninteractive_git_env, windows_hide_flags
+    from runtime.git_subprocess import NO_LAZY_FETCH_ENV, noninteractive_git_env
+    from runtime.subprocess_compat import windows_hide_flags
 
     # The banner/update probes run from GUI-hosted backends too (desktop-spawned
     # ``hermes serve``), where a bare git child flashes a console window.
@@ -847,7 +848,7 @@ def _codex_runtime_active() -> bool:
 
 
 def _active_profile_name() -> Optional[str]:
-    from hermes_cli.profiles import get_active_profile_name
+    from profiles.current import get_active_profile_name
     return get_active_profile_name()
 
 

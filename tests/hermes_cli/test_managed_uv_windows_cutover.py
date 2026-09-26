@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli.sqlite_runtime import SQLiteRuntimeInfo
+from runtime.sqlite_runtime import SQLiteRuntimeInfo
 
 
 def _python(venv_dir: Path) -> Path:

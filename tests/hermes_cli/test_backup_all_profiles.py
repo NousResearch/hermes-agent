@@ -27,13 +27,13 @@ def profiles(monkeypatch, tmp_path):
     work = _mk_profile(tmp_path / "home" / "profiles" / "work", jobs=5)
     sparks = _mk_profile(tmp_path / "home" / "profiles" / "sparks", jobs=0)
     monkeypatch.setattr(
-        "hermes_cli.profiles._get_default_hermes_home", lambda: default_home
+        "profiles.paths._get_default_hermes_home", lambda: default_home
     )
     monkeypatch.setattr(
-        "hermes_cli.profiles._get_profiles_root", lambda: tmp_path / "home" / "profiles"
+        "profiles.paths._get_profiles_root", lambda: tmp_path / "home" / "profiles"
     )
     monkeypatch.setattr(
-        "hermes_cli.profiles._PROFILE_ID_RE",
+        "profiles.names._PROFILE_ID_RE",
         re.compile(r"^[a-z0-9][a-z0-9_-]*$"),
         raising=False,
     )
@@ -53,7 +53,7 @@ class TestSiblingEnumeration:
         def _boom():
             raise RuntimeError("no profiles module")
 
-        monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", _boom)
+        monkeypatch.setattr("profiles.paths._get_default_hermes_home", _boom)
         assert backup._sibling_profile_homes(tmp_path) == []
 
 

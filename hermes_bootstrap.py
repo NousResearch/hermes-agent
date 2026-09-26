@@ -262,7 +262,7 @@ def suppress_platform_ver_console() -> None:
     and Python 3.11.0/3.11.1 (no ``encoding="locale"`` fix) strict-utf-8-decodes the OEM
     code page output under PEP 540 mode and raises (#69413). Returning the inputs makes
     ``win32_ver()`` fall back to ``sys.getwindowsversion()`` — same data, no subprocess.
-    Mirrors ``hermes_cli._subprocess_compat.suppress_platform_ver_console`` for callers
+    Mirrors ``runtime.subprocess_compat.suppress_platform_ver_console`` for callers
     that never import ``hermes_cli.main``; double application is harmless.
     """
     if not _IS_WINDOWS:

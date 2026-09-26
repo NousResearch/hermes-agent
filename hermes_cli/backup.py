@@ -407,7 +407,7 @@ def is_zeroed_sqlite_file(path: Path, *, probe_bytes: int = 100, force: bool = F
             return False
     except OSError:
         return False
-    from hermes_cli.sqlite_safe_read import has_live_connection, read_header_bytes_preopen
+    from storage.sqlite_safe_read import has_live_connection, read_header_bytes_preopen
     if not force and has_live_connection(path):
         return False
 
@@ -447,7 +447,7 @@ def verify_sqlite_integrity(
     if check_header:
         # Refused when a live connection exists (close() would cancel this process's POSIX locks
         # — see sqlite_safe_read); verification targets offline snapshots/backup artifacts anyway.
-        from hermes_cli.sqlite_safe_read import read_header_bytes_preopen
+        from storage.sqlite_safe_read import read_header_bytes_preopen
         head = read_header_bytes_preopen(path, length=len(_SQLITE_HEADER))
         if head is None:
             return _done("cannot read header", size=size)
@@ -619,7 +619,7 @@ def _unlink_move_restore_db(src: Path, dst: Path) -> bool:
     scan excludes THIS process, so ``offline_file_access`` also fails CLOSED on any live
     in-process connection to *dst* and holds the connection-lifecycle lock across the swap.
     """
-    from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
+    from storage.sqlite_safe_read import LiveConnectionError, offline_file_access
     try:
         holders = _foreign_db_holder_pids(dst)
         if holders:
@@ -1636,7 +1636,8 @@ def _sibling_profile_homes(invoking_home: Path) -> list[tuple[str, Path]]:
     Never raises."""
     homes: list[tuple[str, Path]] = []
     try:
-        from hermes_cli.profiles import _get_default_hermes_home, _get_profiles_root, _PROFILE_ID_RE
+        from profiles.names import _PROFILE_ID_RE
+        from profiles.paths import _get_default_hermes_home, _get_profiles_root
         invoking = invoking_home.resolve()
         default_home = _get_default_hermes_home()
         if default_home.is_dir() and default_home.resolve() != invoking:

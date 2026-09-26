@@ -19,6 +19,9 @@ in a domain it does not live in.
 """
 
 from __future__ import annotations
+from gateway import launchd_service
+from gateway import signal_restart
+from gateway import systemd_runtime
 
 import subprocess
 from pathlib import Path
@@ -27,7 +30,7 @@ import pytest
 
 import hermes_cli.gateway as gw
 import hermes_cli.profiles
-from hermes_cli.gateway import (
+from gateway.launchd_service import (
     _locate_launchd_gateway_service,
     _probe_launchd_domain_for_label,
     launchd_gateway_labels_for_install,
@@ -61,7 +64,7 @@ PRINT_LOADED_NOT_RUNNING = (
 
 @pytest.fixture(autouse=True)
 def _fixed_uid(monkeypatch):
-    monkeypatch.setattr(gw.os, "getuid", lambda: UID)
+    monkeypatch.setattr(launchd_service.os, "getuid", lambda: UID)
 
 
 def _completed(returncode: int = 0, stdout: str = "") -> subprocess.CompletedProcess:
@@ -120,10 +123,10 @@ class TestLocateLaunchdGatewayService:
                 return _completed(0, PRINT_RUNNING)
             return _completed(113)
 
-        monkeypatch.setattr(gw.subprocess, "run", fake_run)
+        monkeypatch.setattr(launchd_service.subprocess, "run", fake_run)
         # Simulate a prior current-profile resolution having populated the
         # process-wide cache — per-label lookups must not consult it.
-        monkeypatch.setattr(gw, "_resolved_launchd_domain", f"gui/{UID}")
+        monkeypatch.setattr(launchd_service, "_resolved_launchd_domain", f"gui/{UID}")
 
         assert _locate_launchd_gateway_service("ai.hermes.gateway-a") == (
             f"gui/{UID}",
@@ -136,7 +139,7 @@ class TestLocateLaunchdGatewayService:
 
     def test_loaded_without_live_process(self, monkeypatch):
         monkeypatch.setattr(
-            gw.subprocess,
+            launchd_service.subprocess,
             "run",
             lambda *a, **k: _completed(0, PRINT_LOADED_NOT_RUNNING),
         )
@@ -146,7 +149,7 @@ class TestLocateLaunchdGatewayService:
         )
 
     def test_not_loaded_in_either_domain(self, monkeypatch):
-        monkeypatch.setattr(gw.subprocess, "run", lambda *a, **k: _completed(113))
+        monkeypatch.setattr(launchd_service.subprocess, "run", lambda *a, **k: _completed(113))
         assert _locate_launchd_gateway_service("ai.hermes.gateway-x") == (None, None)
 
     def test_timeout_propagates_to_caller(self, monkeypatch):
@@ -156,7 +159,7 @@ class TestLocateLaunchdGatewayService:
         def fake_run(cmd, **kwargs):
             raise subprocess.TimeoutExpired(cmd=cmd, timeout=5)
 
-        monkeypatch.setattr(gw.subprocess, "run", fake_run)
+        monkeypatch.setattr(launchd_service.subprocess, "run", fake_run)
         with pytest.raises(subprocess.TimeoutExpired):
             _locate_launchd_gateway_service("ai.hermes.gateway-x")
 
@@ -170,7 +173,7 @@ class TestProbeLaunchdDomainForLabel:
                 return _completed(0, "Aqua\n")
             raise AssertionError(f"unexpected command {cmd}")
 
-        monkeypatch.setattr(gw.subprocess, "run", fake_run)
+        monkeypatch.setattr(launchd_service.subprocess, "run", fake_run)
         assert _probe_launchd_domain_for_label("ai.hermes.gateway-x") == f"gui/{UID}"
 
     def test_unloaded_label_defaults_to_user_domain(self, monkeypatch):
@@ -181,13 +184,13 @@ class TestProbeLaunchdDomainForLabel:
                 return _completed(0, "Background\n")
             raise AssertionError(f"unexpected command {cmd}")
 
-        monkeypatch.setattr(gw.subprocess, "run", fake_run)
+        monkeypatch.setattr(launchd_service.subprocess, "run", fake_run)
         assert _probe_launchd_domain_for_label("ai.hermes.gateway-x") == f"user/{UID}"
 
 
 class TestGetServicePidsScoping:
     def _wire(self, monkeypatch):
-        monkeypatch.setattr(gw, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(systemd_runtime, "supports_services", lambda: False)
         # The all_profiles branch also runs a real ``launchctl list`` prefix scan; a developer
         # box with a live ai.hermes.gateway* fleet would leak its PIDs into the assertion.
         monkeypatch.setattr(gw.subprocess, "run", lambda *a, **k: _completed(0, ""))
@@ -264,16 +267,16 @@ def _fleet(monkeypatch, tmp_path, *, current, labels, located,
             and value[0] is not None
         )
 
-    monkeypatch.setattr(gw, "get_launchd_label", lambda: current)
-    monkeypatch.setattr(gw, "get_launchd_plist_path", lambda: plist)
-    monkeypatch.setattr(gw, "launchd_gateway_labels_for_install", lambda: list(labels))
+    monkeypatch.setattr(launchd_service, "get_launchd_label", lambda: current)
+    monkeypatch.setattr(launchd_service, "get_launchd_plist_path", lambda: plist)
+    monkeypatch.setattr(launchd_service, "launchd_gateway_labels_for_install", lambda: list(labels))
     monkeypatch.setattr(
-        gw, "legacy_launchd_labels_for_install", lambda exclude=(): list(legacy_labels)
+        launchd_service, "legacy_launchd_labels_for_install", lambda exclude=(): list(legacy_labels)
     )
-    monkeypatch.setattr(gw, "_locate_launchd_gateway_service", fake_locate)
-    monkeypatch.setattr(gw, "_launchd_service_registered", fake_registered)
+    monkeypatch.setattr(launchd_service, "_locate_launchd_gateway_service", fake_locate)
+    monkeypatch.setattr(launchd_service, "_launchd_service_registered", fake_registered)
     monkeypatch.setattr(
-        gw,
+        signal_restart,
         "_graceful_restart_via_sigusr1",
         lambda pid, drain_timeout, **_: (rec.drains.append(pid), (drain_results or {}).get(pid, False))[1],
     )
@@ -284,15 +287,15 @@ def _fleet(monkeypatch, tmp_path, *, current, labels, located,
             raise err
         rec.kickstarts.append(f"{domain}/{label}")
 
-    monkeypatch.setattr(gw, "_launchd_kickstart", fake_kickstart)
+    monkeypatch.setattr(launchd_service, "_launchd_kickstart", fake_kickstart)
 
     def fake_wait(label, old_pid, timeout, domain):
         rec.waits.append(f"{domain}/{label}")
         return (wait_results or {}).get(label, True)
 
-    monkeypatch.setattr(gw, "_wait_for_launchd_service_pid", fake_wait)
+    monkeypatch.setattr(launchd_service, "_wait_for_launchd_service_pid", fake_wait)
     monkeypatch.setattr(
-        gw, "launchd_restart", lambda: rec.current_restarts.append(current)
+        launchd_service, "launchd_restart", lambda: rec.current_restarts.append(current)
     )
 
     # The current profile is now verified the same way siblings are: a
@@ -641,7 +644,7 @@ class TestLegacyLaunchdLabelsForInstall:
         _write_launchd_plist(agents, "ai.hermes.gateway-5db8084b", argv=[venv_python], hermes_home=tmp_path / "other-root" / "profiles" / "gopod")
         _write_launchd_plist(agents, "ai.hermes.gateway-nohome", argv=[venv_python])  # no pinned home: unattributable
         _write_launchd_plist(agents, "ai.hermes.gateway-broken", raw="not a plist at all")
-        assert gw.legacy_launchd_labels_for_install(exclude={"ai.hermes.gateway-gopod", "ai.hermes.gateway"}) == [
+        assert launchd_service.legacy_launchd_labels_for_install(exclude={"ai.hermes.gateway-gopod", "ai.hermes.gateway"}) == [
             "ai.hermes.gateway-1a2b3c4d", "ai.hermes.gateway-398559f7",
         ]
 
@@ -685,25 +688,25 @@ class TestWaitForLaunchdServicePid:
     def test_returns_true_once_pid_changes(self, monkeypatch):
         pids = iter([200, 200, 4242])
         monkeypatch.setattr(
-            gw,
+            launchd_service,
             "_launchd_print_service_pid",
             lambda domain, label: (True, next(pids)),
         )
-        monkeypatch.setattr(gw.time, "sleep", lambda _s: None)
-        assert gw._wait_for_launchd_service_pid(
+        monkeypatch.setattr(launchd_service.time, "sleep", lambda _s: None)
+        assert launchd_service._wait_for_launchd_service_pid(
             "ai.hermes.gateway-x", old_pid=200, timeout=5.0, domain=f"gui/{UID}"
         )
 
     def test_returns_false_when_pid_never_changes(self, monkeypatch):
         clock = iter(float(i) for i in range(100))
-        monkeypatch.setattr(gw.time, "monotonic", lambda: next(clock))
-        monkeypatch.setattr(gw.time, "sleep", lambda _s: None)
+        monkeypatch.setattr(launchd_service.time, "monotonic", lambda: next(clock))
+        monkeypatch.setattr(launchd_service.time, "sleep", lambda _s: None)
         monkeypatch.setattr(
-            gw,
+            launchd_service,
             "_launchd_print_service_pid",
             lambda domain, label: (True, 200),
         )
-        assert not gw._wait_for_launchd_service_pid(
+        assert not launchd_service._wait_for_launchd_service_pid(
             "ai.hermes.gateway-x", old_pid=200, timeout=3.0, domain=f"gui/{UID}"
         )
 

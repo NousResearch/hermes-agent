@@ -1,4 +1,5 @@
 """Installed identity proofs at inert native supervisor executable boundaries."""
+from gateway import service_identity, systemd_runtime
 import json
 import os
 from pathlib import Path
@@ -21,8 +22,7 @@ import pytest
     ("dropin_home", "profile_mismatch"), ("manager_home", "profile_mismatch"),
 ])
 def test_ensure_checks_effective_service_binding_before_start(tmp_path, monkeypatch, case, reason):
-    from hermes_cli import gateway_runtime as runtime
-    from hermes_cli.gateway_runtime_service import service_suffix
+    from gateway import runtime
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     home = tmp_path / (".hermes" if case == "default" else "custom root")
@@ -30,7 +30,7 @@ def test_ensure_checks_effective_service_binding_before_start(tmp_path, monkeypa
         home = home / "profiles" / "worker"
     home.mkdir(mode=0o700, parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
-    suffix = service_suffix(home)
+    suffix = service_identity.service_suffix_for_home(home)
     unit = tmp_path / ".config/systemd/user" / f"hermes-gateway{'-' + suffix if suffix else ''}.service"
     unit.parent.mkdir(parents=True)
     unit.write_text(f'[Service]\nExecStart={sys.executable} -m hermes_cli.main gateway run\nEnvironment="HERMES_HOME={home}"\n', encoding="utf-8")
@@ -99,7 +99,7 @@ def test_ensure_checks_effective_service_binding_before_start(tmp_path, monkeypa
     executable.chmod(0o700)
     monkeypatch.setenv('PATH', str(tmp_path) + os.pathsep + os.environ['PATH'])
     from hermes_cli import gateway as gw
-    monkeypatch.setattr(gw, "_systemctl_cmd", lambda system=False: [str(executable)] + ([] if system else ["--user"]))
+    monkeypatch.setattr(systemd_runtime, "systemctl_cmd", lambda system=False: [str(executable)] + ([] if system else ["--user"]))
     result = runtime.ensure_gateway_runtime(home, timeout=3.0)
     assert result.reason_code == reason
     commands = [json.loads(line) for line in calls.read_text().splitlines()]
@@ -118,7 +118,7 @@ def test_ensure_checks_effective_service_binding_before_start(tmp_path, monkeypa
     ("requested", "wrong_account", "service_account_mismatch"),
 ])
 def test_loaded_launchd_identity_is_independent_of_disk(configured, command, reason, tmp_path):
-    from hermes_cli.gateway_runtime_service_identity import verify_launchd_loaded
+    from gateway.runtime_service_identity import verify_launchd_loaded
     home = tmp_path / "requested"
     argv = [sys.executable, "-m", "hermes_cli.main", "gateway", "run"]
     if command == "echo":
@@ -143,8 +143,8 @@ def test_loaded_launchd_identity_is_independent_of_disk(configured, command, rea
     ("unknown_script", "service_identity_unverified"), ("malformed_xml", "service_identity_unverified"),
 ])
 def test_task_xml_binds_actual_action_and_principal(case, reason, tmp_path):
-    from hermes_cli.gateway_runtime_service_identity import verify_windows_task
-    from hermes_cli.gateway_windows import _build_scheduled_task_xml
+    from gateway.runtime_service_identity import verify_windows_task
+    from gateway.windows_service import _build_scheduled_task_xml
     home = tmp_path / 'requested'
     home.mkdir()
     script = home / 'gateway.vbs'
@@ -191,12 +191,12 @@ def test_native_launchd_checks_loaded_job_before_disk(case, reason, tmp_path, mo
     import plistlib
     import pwd
     from types import SimpleNamespace
-    from hermes_cli import gateway_runtime_service as service
+    from gateway import runtime_service as service
     home = tmp_path / 'profile'
     home.mkdir(mode=0o700)
     monkeypatch.setenv('HERMES_HOME', str(home))
     monkeypatch.setattr(pwd, 'getpwuid', lambda uid: SimpleNamespace(pw_dir=str(tmp_path), pw_name="owner"))
-    label = 'ai.hermes.gateway' + ('-' + service.service_suffix(home) if service.service_suffix(home) else '')
+    label = 'ai.hermes.gateway' + ('-' + service_identity.service_suffix_for_home(home) if service_identity.service_suffix_for_home(home) else '')
     plist = tmp_path / 'Library/LaunchAgents' / (label + '.plist')
     plist.parent.mkdir(parents=True)
     argv = [sys.executable, '-m', 'hermes_cli.main', 'gateway', 'run']
@@ -231,8 +231,8 @@ def test_native_launchd_checks_loaded_job_before_disk(case, reason, tmp_path, mo
 @pytest.mark.windows_only
 @pytest.mark.parametrize("wrong", [False, True])
 def test_native_task_query_uses_installed_xml_and_vendor_launcher(wrong, tmp_path, monkeypatch):
-    from hermes_cli import gateway_runtime_service as service
-    from hermes_cli.gateway_windows import _build_gateway_vbs_script, _build_scheduled_task_xml
+    from gateway import runtime_service as service
+    from gateway.windows_service import _build_gateway_vbs_script, _build_scheduled_task_xml
     home = tmp_path / 'profile'
     home.mkdir()
     monkeypatch.setenv('HERMES_HOME', str(home))
@@ -243,10 +243,10 @@ def test_native_task_query_uses_installed_xml_and_vendor_launcher(wrong, tmp_pat
     original = script.read_bytes()
     # whoami is read-only native account evidence; no task-manager mutation.
     identity = subprocess.run(['whoami.exe', '/USER', '/FO', 'CSV', '/NH'], stdin=subprocess.DEVNULL, capture_output=True, timeout=5)
-    from hermes_cli.gateway_windows import _schtasks_encoding
+    from gateway.windows_service import _schtasks_encoding
     import csv
     account, sid = next(csv.reader(identity.stdout.decode(_schtasks_encoding()).splitlines()))
-    suffix = service.service_suffix(home)
+    suffix = service_identity.service_suffix_for_home(home)
     name = 'Hermes_Gateway' + ('_' + suffix if suffix else '')
     xml = _build_scheduled_task_xml(name, script, 'S-1-5-18' if wrong else sid)
     peer = tmp_path / 'supervisor.py'
@@ -277,7 +277,7 @@ def test_native_task_query_uses_installed_xml_and_vendor_launcher(wrong, tmp_pat
 
 @pytest.mark.linux_only
 def test_service_definition_reads_reject_fifo_without_waiting(tmp_path):
-    from hermes_cli.gateway_runtime_service_identity import read_definition
+    from gateway.runtime_service_identity import read_definition
     regular = tmp_path / 'regular'
     regular.write_bytes(b'installed definition')
     assert read_definition(regular) == regular.read_bytes()
@@ -289,7 +289,7 @@ def test_service_definition_reads_reject_fifo_without_waiting(tmp_path):
 
 @pytest.mark.parametrize("outer", ["python", "echo"])
 def test_gateway_wrapper_requires_actual_python_entrypoint(outer, tmp_path):
-    from hermes_cli.gateway_runtime_service_identity import verify_gateway_argv
+    from gateway.runtime_service_identity import verify_gateway_argv
     argv = [sys.executable if outer == 'python' else '/bin/echo', '-m', 'hermes_cli.stderr_timestamp', '--error-log', str(tmp_path / 'error.log'), '--', sys.executable, '-m', 'hermes_cli.main', 'gateway', 'run']
     if outer == 'echo':
         with pytest.raises(ValueError, match='service_identity_unverified'):

@@ -23,7 +23,7 @@ def _authorize(connection, ref, params):
         if name in params and not isinstance(params[name], str):
             raise RuntimeStoreError('invalid_params')
     if params.get('profile'):
-        from hermes_cli.profiles import profile_matches_home
+        from profiles.registry import profile_matches_home
         if not profile_matches_home(params['profile'], Path(authority.profile_id)):
             raise RuntimeStoreError('profile_mismatch')
     if ref.session_id:

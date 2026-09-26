@@ -23,9 +23,9 @@ import json
 import pytest
 
 from hermes_cli import gateway as hermes_gateway
-from hermes_cli import gateway_windows
+from gateway import windows_service as gateway_windows
 from hermes_cli import main as cli_main
-from hermes_cli import process_identity
+from runtime import process_identity
 from hermes_cli import update_cmd
 import hermes_cli.update_cmd_windows as update_cmd_windows
 

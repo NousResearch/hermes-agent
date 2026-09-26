@@ -169,7 +169,7 @@ def _fire_task_hook(event: str, task: Optional["Task"], task_id: str, run_id: Op
 
 def _hook_profile_name() -> str:
     """Active profile for hook payloads; ``"default"`` when it cannot be resolved."""
-    from hermes_cli.profiles import get_active_profile_name
+    from profiles.current import get_active_profile_name
 
     try:
         return get_active_profile_name()
@@ -1115,7 +1115,7 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     """Lowercase-assignee normalization for Kanban rows (dashboard/CLI parity)."""
     if assignee is None:
         return None
-    from hermes_cli.profiles import normalize_profile_name
+    from profiles.names import normalize_profile_name
 
     return normalize_profile_name(assignee)
 

@@ -427,7 +427,7 @@ def test_reap_kills_descendants_of_killed_roots_but_spares_a_failed_roots_subtre
         patch("hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=scanned),
         patch("hermes_cli.dashboard_procs._process_ppid", return_value=1),
         patch("hermes_cli.dashboard_procs._posix_descendants", return_value=descendants) as snap,
-        patch("gateway.status.get_process_start_time", side_effect=start_times.get),
+        patch("runtime.process_identity.get_process_start_time", side_effect=start_times.get),
         patch("psutil.pid_exists", return_value=True),
         patch("os.kill", side_effect=fake_kill),
     ):

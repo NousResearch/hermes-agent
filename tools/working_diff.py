@@ -15,7 +15,7 @@ import subprocess
 from contextlib import suppress
 from typing import Dict, List
 
-from hermes_cli._subprocess_compat import harden_git_argv, noninteractive_git_env
+from runtime.git_subprocess import harden_git_argv, noninteractive_git_env
 
 _GIT_TIMEOUT = 15
 _MAX_UNTRACKED_FILES = 50  # sanity cap so a node_modules explosion can't hang us

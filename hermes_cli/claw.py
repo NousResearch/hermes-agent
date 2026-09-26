@@ -106,7 +106,7 @@ def _detect_openclaw_processes() -> list[str]:
         # bounded_probe_run: plain subprocess.run(timeout=...) can hang forever on Windows when a
         # conhost.exe descendant holds duplicated pipe handles — a hang is not an exception.
         # See #87134.
-        from hermes_cli._subprocess_compat import bounded_probe_run
+        from runtime.subprocess_compat import bounded_probe_run
         try:
             for exe in ("openclaw.exe", "clawd.exe"):
                 result = bounded_probe_run(["tasklist", "/FI", f"IMAGENAME eq {exe}"], timeout=5)
@@ -181,7 +181,7 @@ def _warn_if_gateway_running(auto_yes: bool) -> None:
     if liveness.running:
         profile = None
         with contextlib.suppress(Exception):
-            from hermes_cli.profiles import get_active_profile_name
+            from profiles.current import get_active_profile_name
             profile = get_active_profile_name()
         if liveness.source == "multiplexer" and profile and profile != "default":
             # Served profile: its platforms live under `<profile>:<platform>` in the host record.

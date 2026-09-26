@@ -71,7 +71,7 @@ def test_insights_get_reads_the_requested_profile_store_not_the_launch_handle(la
     profiles_root = tmp_path / "profiles"
     work = profiles_root / "work"
     work.mkdir(parents=True)
-    monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda name: profiles_root / name)
+    monkeypatch.setattr("profiles.paths.get_profile_dir", lambda name: profiles_root / name)
     monkeypatch.setattr(server, "_canonical_profile_request", lambda name: name or None)
 
     seeded = registry.acquire(work / "state.db")

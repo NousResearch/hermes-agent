@@ -3,8 +3,12 @@
 import math
 import os
 import re
+import shutil
+import signal
+import socket
 import subprocess
 import sys
+import time
 from collections.abc import Callable, Mapping
 
 from hermes_cli.config import DEFAULT_CONFIG
@@ -301,6 +305,55 @@ def parse_restart_drain_timeout(raw: object) -> float:
     return _parse_timeout_keeping_zero(raw or None, DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT)
 
 
+def get_restart_drain_timeout() -> float:
+    """Return the configured gateway restart drain timeout in seconds."""
+    raw = os.getenv("HERMES_RESTART_DRAIN_TIMEOUT", "").strip()
+    if not raw:
+        from hermes_cli.config import read_raw_config
+
+        cfg = read_raw_config()
+        agent_cfg = cfg.get("agent", {}) if isinstance(cfg, dict) else {}
+        raw = str(agent_cfg.get("restart_drain_timeout", DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT))
+    return parse_restart_drain_timeout(raw)
+
+
+def get_cron_drain_timeout() -> float:
+    """Return the configured cron-only drain floor in seconds."""
+    raw = os.getenv("HERMES_CRON_DRAIN_TIMEOUT", "").strip()
+    if not raw:
+        from hermes_cli.config import read_raw_config
+
+        cfg = read_raw_config()
+        agent_cfg = cfg.get("agent", {}) if isinstance(cfg, dict) else {}
+        raw = str(agent_cfg.get("cron_drain_timeout", DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT))
+    return parse_cron_drain_timeout(raw)
+
+
+def get_restart_after_turn_timeout() -> float:
+    """Return the configured in-band restart after-turn timeout."""
+    raw = os.getenv("HERMES_RESTART_AFTER_TURN_TIMEOUT", "").strip()
+    if not raw:
+        from hermes_cli.config import read_raw_config
+
+        cfg = read_raw_config()
+        agent_cfg = cfg.get("agent", {}) if isinstance(cfg, dict) else {}
+        raw = str(
+            agent_cfg.get(
+                "restart_after_turn_timeout",
+                DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT,
+            )
+        )
+    return parse_restart_after_turn_timeout(raw)
+
+
+def get_restart_exit_wait_budget() -> float:
+    """CLI wait budget for a SIGUSR1 handoff: turn wait + drain + headroom."""
+    return resolve_restart_exit_wait_budget(
+        get_restart_drain_timeout(),
+        get_restart_after_turn_timeout(),
+    )
+
+
 def parse_restart_after_turn_timeout(raw: object) -> float:
     """Parse the after-turn wait cap for in-band restart (``0`` = legacy immediate drain)."""
     return _parse_timeout_keeping_zero(raw, DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT)
@@ -359,3 +412,139 @@ def resolve_restart_exit_wait_budget(drain_timeout: float, after_turn_timeout: f
     """Seconds a CLI should wait for the gateway PID to exit after SIGUSR1: in-band restart may
     defer ``stop()`` until turns finish, then spend ``drain_timeout`` inside it — cover both."""
     return _seconds(drain_timeout) + _seconds(after_turn_timeout) + _seconds(headroom)
+
+_CAPTURE_TEXT = dict(capture_output=True, text=True, encoding="utf-8", errors="replace")
+
+
+def _get_parent_pid(pid: int) -> int | None:
+    """Parent PID for ``pid``, or None."""
+    if pid <= 1:
+        return None
+    try:
+        import psutil  # type: ignore
+
+        return psutil.Process(pid).ppid() or None
+    except ImportError:
+        pass
+    except Exception:
+        return None
+    if sys.platform == "win32" or not shutil.which("ps"):
+        return None
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "ppid=", "-p", str(pid)],
+            timeout=5,
+            **_CAPTURE_TEXT,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    raw = result.stdout.strip()
+    if result.returncode != 0 or not raw:
+        return None
+    try:
+        parent_pid = int(raw.splitlines()[-1].strip())
+    except ValueError:
+        return None
+    return parent_pid if parent_pid > 0 else None
+
+
+def _is_pid_ancestor_of_current_process(target_pid: int) -> bool:
+    """Return True when ``target_pid`` is this process or one of its ancestors."""
+    if target_pid <= 0:
+        return False
+
+    pid = os.getpid()
+    seen: set[int] = set()
+    while pid and pid not in seen:
+        if pid == target_pid:
+            return True
+        seen.add(pid)
+        pid = _get_parent_pid(pid) or 0
+    return False
+
+
+def _request_gateway_self_restart(pid: int) -> bool:
+    """Ask a running gateway ancestor to restart itself asynchronously."""
+    if not hasattr(signal, "SIGUSR1") or not _is_pid_ancestor_of_current_process(pid):
+        return False
+    try:
+        os.kill(pid, signal.SIGUSR1)
+    except (ProcessLookupError, PermissionError, OSError):
+        return False
+    return True
+
+
+def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.0) -> bool:
+    """Wait for the active gateway PID to exit, forcing it after the grace period."""
+    from gateway.status import get_running_pid, terminate_pid
+    from runtime.process_identity import get_process_start_time
+
+    deadline = time.monotonic() + timeout
+    force_deadline = (time.monotonic() + force_after) if force_after is not None else None
+    force_sent = False
+
+    while time.monotonic() < deadline:
+        pid = get_running_pid()
+        if pid is None:
+            return True
+        if (
+            force_after is not None
+            and not force_sent
+            and force_deadline is not None
+            and time.monotonic() >= force_deadline
+        ):
+            try:
+                terminate_pid(
+                    pid,
+                    force=True,
+                    expected_start_time=get_process_start_time(pid),
+                )
+                print(f"⚠ Gateway PID {pid} did not exit gracefully; sent SIGKILL")
+            except (ProcessLookupError, PermissionError, OSError):
+                return True
+            force_sent = True
+        time.sleep(0.3)
+
+    remaining_pid = get_running_pid()
+    if remaining_pid is not None:
+        print(
+            f"⚠ Gateway PID {remaining_pid} still running after {timeout}s "
+            "— restart may fail"
+        )
+        return False
+    return True
+
+
+def _wait_for_tcp_port_free(host: str, port: int, *, timeout: float = 10.0) -> bool:
+    """Wait until nothing accepts TCP connections on ``host:port``."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection((host, port), timeout=0.2):
+                pass
+        except ConnectionRefusedError:
+            return True
+        except TimeoutError:
+            pass
+        except OSError:
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def _wait_for_api_server_port_free(*, timeout: float = 10.0) -> bool:
+    """Wait for the configured api_server listener to release its port."""
+    from gateway.config import Platform, load_gateway_config
+    from gateway.platforms.api_server import listen_address
+
+    pconfig = load_gateway_config().platforms.get(Platform.API_SERVER)
+    if pconfig is None or not pconfig.enabled:
+        return True
+    host, port = listen_address(pconfig.extra or {})
+    freed = _wait_for_tcp_port_free(host, port, timeout=timeout)
+    if not freed:
+        print(
+            f"⚠ {host}:{port} still accepting connections — "
+            "new api_server may fail to bind"
+        )
+    return freed

@@ -89,7 +89,7 @@ def build_gateway_parser(
     add_accept_hooks_flag(gateway_run)
     add_accept_hooks_flag(gateway_parser)
 
-    from hermes_cli.gateway_runtime_cli import cmd_gateway_ensure
+    from gateway.runtime_cli import cmd_gateway_ensure
     gateway_ensure = gateway_subparsers.add_parser(
         "ensure", ensure_json=True,
         help="Ensure a local runtime without installing or replacing a service",

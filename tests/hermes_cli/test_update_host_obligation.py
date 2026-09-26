@@ -13,6 +13,7 @@ again. These tests pin the host-scoped contract:
 """
 
 from __future__ import annotations
+from gateway import systemd_runtime
 
 import json
 import os
@@ -82,7 +83,7 @@ def test_host_gateway_restarts_once_when_two_profiles_run_the_catch_up(
 ):
     """``hermes -p coder update`` then ``hermes -p writer update`` stops the host gateway ONCE."""
     monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda **k: [4242])
-    monkeypatch.setattr("hermes_cli.gateway.supports_systemd_services", lambda: False)
+    monkeypatch.setattr("hermes_cli.systemd_runtime.supports_services", lambda: False)
     monkeypatch.setattr("hermes_cli.gateway.is_macos", lambda: False)
     monkeypatch.setattr("hermes_cli.gateway.is_windows", lambda: False)
     monkeypatch.setattr("hermes_cli.gateway._wait_for_gateway_exit", lambda **k: True)
@@ -252,7 +253,7 @@ def test_restart_runs_once_per_host_on_a_non_git_install(two_profiles, monkeypat
     monkeypatch.setattr(fleet, "_current_checkout_sha", lambda: None)
     monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", lambda: [])
     monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda **k: [4242])
-    monkeypatch.setattr("hermes_cli.gateway.supports_systemd_services", lambda: False)
+    monkeypatch.setattr("hermes_cli.systemd_runtime.supports_services", lambda: False)
     monkeypatch.setattr("hermes_cli.gateway.is_macos", lambda: False)
     monkeypatch.setattr("hermes_cli.gateway.is_windows", lambda: False)
     monkeypatch.setattr("hermes_cli.gateway._wait_for_gateway_exit", lambda **k: True)

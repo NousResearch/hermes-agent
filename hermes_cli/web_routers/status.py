@@ -210,7 +210,7 @@ def _merge_profile_gateway_platforms(gateway_platforms: dict, profile_platforms:
     reads unless folded in under the validated ``<profile>:<platform>`` grammar. The active
     profile's own map is skipped (already present); existing keys are never overwritten."""
     try:
-        from hermes_cli.profiles import get_active_profile_name
+        from profiles.current import get_active_profile_name
         active = get_active_profile_name()
     except Exception:
         active = "default"

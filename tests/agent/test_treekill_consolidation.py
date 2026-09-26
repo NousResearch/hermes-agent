@@ -1,18 +1,17 @@
-"""#85125 Phase 4d — site-local tree-kills delegate to agent.deadline.
+"""#85125 Phase 4d — site-local tree-kills share runtime process ownership.
 
 Each migrated wrapper keeps its caller-facing contract (signature, all
 failures swallowed, ``None`` return) while routing the actual tree
-termination through :func:`agent.deadline.kill_process_tree`:
+termination through the shared runtime process owner:
 
-* ``hermes_cli._subprocess_compat.kill_process_tree(proc)`` — also consumed
-  by ``agent.shell_hooks`` by name; falls back to
-  ``_legacy_kill_process_tree`` when delegation fails.
-* ``tools.browser_tool_lifecycle._kill_process_tree(proc)`` — same pattern.
+* ``runtime.processes.kill_popen_process_tree(proc)`` — shared retained-Popen cleanup
+  used by subprocess compatibility and shell-hook callers.
+* ``tools.browser_tool_lifecycle._kill_process_tree(proc)`` — delegates to the same runtime owner.
 * ``tools.code_execution_tool._kill_process_group(proc, escalate=...)`` —
   SIGTERM tree first, then (escalate) bounded wait + SIGKILL tree.
 
 Plus one real end-to-end probe: a setsid'd grandchild must die through the
-compat wrapper (i.e. the psutil descendant sweep in agent.deadline is
+runtime retained-Popen wrapper (i.e. the shared psutil descendant sweep is
 actually reached from the delegating call site).
 """
 
@@ -38,7 +37,7 @@ class _FakeProc:
 
 
 # ---------------------------------------------------------------------------
-# (1) hermes_cli._subprocess_compat.kill_process_tree
+# (1) runtime.processes.kill_popen_process_tree
 # ---------------------------------------------------------------------------
 
 
@@ -98,7 +97,7 @@ class TestCodeExecutionDelegation:
 
 
 # ---------------------------------------------------------------------------
-# End-to-end: setsid grandchild dies through the compat wrapper
+# End-to-end: setsid grandchild dies through the runtime Popen wrapper
 # ---------------------------------------------------------------------------
 
 @pytest.mark.live_system_guard_bypass
@@ -112,7 +111,7 @@ def test_e2e_setsid_grandchild_killed_via_compat_wrapper(tmp_path):
     pytest.importorskip("psutil")
     import psutil
 
-    from hermes_cli._subprocess_compat import kill_process_tree
+    from runtime.processes import kill_popen_process_tree
 
     started = tmp_path / "grandchild_started"
     marker = tmp_path / "grandchild_survived"
@@ -138,7 +137,7 @@ def test_e2e_setsid_grandchild_killed_via_compat_wrapper(tmp_path):
         # Snapshot the tree BEFORE the kill so we can assert zero survivors.
         descendants = psutil.Process(proc.pid).children(recursive=True)
 
-        kill_process_tree(proc)
+        kill_popen_process_tree(proc)
 
         proc.wait(timeout=5)
         gone, alive = psutil.wait_procs(descendants, timeout=5)

@@ -979,7 +979,7 @@ def _docker_sandbox_dir_candidates(session_key: str = "") -> List[str]:
     except Exception:
         return ["default"]
     try:
-        from hermes_cli.profiles import get_active_profile_name
+        from profiles.current import get_active_profile_name
         profile = get_active_profile_name() or "default"
     except Exception:
         profile = "default"

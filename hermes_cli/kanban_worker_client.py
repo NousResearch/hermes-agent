@@ -6,7 +6,7 @@ import sys
 
 
 async def run(params, board_db):
-    from hermes_cli.gateway_client import connect_gateway, GatewayClientError
+    from gateway.client import connect_gateway, GatewayClientError
     if os.environ.get('HERMES_TUI_GATEWAY_URL'):
         raise GatewayClientError('Kanban requires the assigned local profile owner')
     async with connect_gateway() as client:

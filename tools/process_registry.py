@@ -26,7 +26,7 @@ _IS_WINDOWS = platform.system() == "Windows"
 # See #70716.
 _IS_LINUX = platform.system() == "Linux"
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
-from hermes_cli._subprocess_compat import windows_hide_flags
+from runtime.subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, NamedTuple, Optional
 
@@ -883,7 +883,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
     def _safe_host_start_time(pid: Optional[int]) -> Optional[int]:
         """Kernel start ticks for a host PID, or None when unavailable."""
         try:
-            from gateway.status import get_process_start_time
+            from runtime.process_identity import get_process_start_time
             return get_process_start_time(pid) if pid else None
         except Exception:
             return None

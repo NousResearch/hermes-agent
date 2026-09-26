@@ -240,7 +240,7 @@ def run_dump(args):
         config = {}
     model, provider = _get_model_and_provider(config)
     try:
-        from hermes_cli.profiles import get_active_profile_name
+        from profiles.current import get_active_profile_name
         profile = get_active_profile_name() or "(default)"
     except Exception:
         profile = "(default)"

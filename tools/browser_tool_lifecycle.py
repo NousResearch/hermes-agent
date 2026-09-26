@@ -6,7 +6,6 @@ Split out of ``tools/browser_tool.py``. Facade-owned state is read through ``_bt
 import contextlib
 import os
 import shutil
-import signal
 import subprocess
 import threading
 import time
@@ -308,7 +307,7 @@ def _terminate_verified_daemon(daemon_pid: int, session_name: str, log) -> bool:
     """Tree-kill ``daemon_pid`` if it has a start-time fingerprint (so a PID swapped
     between check and kill is refused); False (logged via ``log``) when no fingerprint.
     Raises on OS errors."""
-    from gateway.status import get_process_start_time
+    from runtime.process_identity import get_process_start_time
     from tools.process_registry import ProcessRegistry
     daemon_start = get_process_start_time(daemon_pid)
     if daemon_start is None:
@@ -478,61 +477,10 @@ def _update_session_activity(task_id: str):
 
 
 def _kill_process_tree(proc: "subprocess.Popen") -> None:
-    """Best-effort kill of *proc* and every descendant; never raises.
+    """Best-effort kill of *proc* and every descendant; never raises."""
+    from runtime.processes import kill_popen_process_tree
 
-    ``Popen.kill()`` only signals the direct child; npm/npx helpers and the detached
-    daemon grandchild keep a capture pipe open so ``communicate()`` never sees EOF, so
-    the whole tree must go (no grace: the caller already burned its timeout). Delegates
-    to :func:`agent.deadline.kill_process_tree`, falling back to the legacy kill.
-
-    ``Popen.kill()`` only signals the direct child PID. npm/npx routinely fork further processes
-    (registry-fetch helpers, npm's own lifecycle runner, agent-browser's own detached daemon grandchild)
-    that can survive a plain ``kill()`` of the top-level PID and keep a ``capture_output``-style pipe open,
-    hanging the caller's ``communicate()`` past the nominal timeout — the same orphaned-pipe hazard already
-    hit in production on POSIX (see ``tools/process_registry.py``'s ``_reader_loop``, issue 68915: a
-    backgrounded grandchild inheriting a pipe's write end kept it from ever reaching EOF). That hazard is
-    cross-platform, not Windows-specific; what *is* Windows-specific is the lack of a remedy other than
-    killing the tree — anonymous pipes there don't support overlapped I/O, so there's no ``select()``-style
-    non-blocking read to poll around a stuck grandchild the way POSIX can. Killing the whole process
-    group/tree the child was launched into reaches those descendants on both platforms. See #68915.
-    """
-    try:
-        from agent.deadline import kill_process_tree as _deadline_kill_tree
-
-        _deadline_kill_tree(proc.pid)
-    except Exception:
-        _legacy_kill_process_tree(proc)
-
-
-def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
-    """Local tree-kill (SIGTERM then SIGKILL to the process group) — fallback when
-    agent.deadline is unavailable; tests pin this signal sequence."""
-    if os.name == "nt":
-        try:
-            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                           check=False, capture_output=True, stdin=subprocess.DEVNULL)
-        except Exception:
-            pass
-        return
-    # POSIX-only below (the nt guard returned), but resolve killpg/SIGKILL via
-    # getattr so a future refactor dropping that guard degrades to plain kill().
-    killpg = getattr(os, "killpg", None)
-    if killpg is None:  # windows-footgun: ok - non-POSIX fallback
-        try:
-            proc.kill()
-        except Exception:
-            pass
-        return
-    try:
-        pgid = os.getpgid(proc.pid)
-    except (ProcessLookupError, OSError):
-        return
-    for sig in (signal.SIGTERM, getattr(signal, "SIGKILL", signal.SIGTERM)):
-        try:
-            killpg(pgid, sig)
-        except (ProcessLookupError, PermissionError, OSError):
-            return
-
+    kill_popen_process_tree(proc)
 
 def _pid_exists(pid: int) -> bool:
     """Best-effort 'is this PID alive' (cross-platform via gateway.status; zombies count as dead)."""

@@ -729,7 +729,7 @@ import subprocess  # noqa: F401,E402
 
 _PLUGIN_COMPAT_LAZY = {
     'sanitize_task_id_for_path': ('tools.environments.path_utils', 'sanitize_task_id_for_path'),
-    'windows_hide_flags': ('hermes_cli._subprocess_compat', 'windows_hide_flags'),
+    'windows_hide_flags': ('runtime.subprocess_compat', 'windows_hide_flags'),
 }
 
 

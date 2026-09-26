@@ -768,7 +768,7 @@ class TestOwnerAlivePidProbe:
     def _no_start_time(self, monkeypatch):
         from gateway import status
 
-        monkeypatch.setattr(status, "get_process_start_time", lambda pid: None)
+        monkeypatch.setattr(status._process_identity, "get_process_start_time", lambda pid: None)
 
     def test_alive_when_pid_exists(self, monkeypatch):
         from gateway import status

@@ -15,6 +15,7 @@ No live gateway, no network. Git and restart are mocked.
 """
 
 from __future__ import annotations
+from gateway import systemd_runtime
 
 import json
 from types import SimpleNamespace
@@ -135,7 +136,7 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     monkeypatch.setattr(
         hermes_gateway, "find_gateway_pids", lambda **_kwargs: []
     )
-    monkeypatch.setattr(hermes_gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(systemd_runtime, "supports_services", lambda: False)
     monkeypatch.setattr(
         hermes_gateway, "find_profile_gateway_processes", lambda *a, **k: []
     )
@@ -359,7 +360,7 @@ def test_run_pending_restart_true_when_no_gateways(monkeypatch, capsys):
         update_cmd_fleet, "_restart_macos_launchd_gateways", lambda *a, **k: None
     )
     # And the Windows scope: an installed Windows gateway service would be restarted for real.
-    monkeypatch.setattr("hermes_cli.gateway_windows.is_installed", lambda: False)
+    monkeypatch.setattr("gateway.windows_service.is_installed", lambda: False)
     assert update_cmd._run_pending_fleet_restart() is True
     assert "Pending fleet restart completed" in capsys.readouterr().out
 
@@ -377,8 +378,8 @@ def test_run_pending_restart_skips_gateways_already_on_checkout_code(monkeypatch
     )
     stopped = []
     monkeypatch.setattr("hermes_cli.gateway.kill_gateway_processes", lambda **k: stopped.append(k))
-    monkeypatch.setattr("hermes_cli.gateway_windows.restart", lambda: stopped.append("windows-restart"))
-    monkeypatch.setattr("hermes_cli.gateway_windows.is_installed", lambda: True)
+    monkeypatch.setattr("gateway.windows_service.restart", lambda: stopped.append("windows-restart"))
+    monkeypatch.setattr("gateway.windows_service.is_installed", lambda: True)
     monkeypatch.setattr(update_cmd_fleet, "_restart_macos_launchd_gateways", lambda *a, **k: None)
     monkeypatch.setattr(update_cmd_fleet, "_systemd_gateway_unit_listings", lambda: [])
 
@@ -490,7 +491,7 @@ def test_clean_update_escalates_surviving_serve_as_unaccounted(
     )
     # Real survivor probe semantics against a fake ledger: pid 5555 is still
     # the same incarnation the plan recorded.
-    import hermes_cli.process_identity as pi
+    import runtime.process_identity as pi
 
     monkeypatch.setattr(
         pi, "ledger_entries",
@@ -526,7 +527,7 @@ def test_clean_update_defers_desktop_owned_serve_and_clears_marker(
         RuntimeRecord, UpdatePlan, _restart_mechanism,
     )
     import hermes_cli.update_inventory as ui
-    import hermes_cli.process_identity as pi
+    import runtime.process_identity as pi
 
     args = _update_args()
     _patch_update_deps(monkeypatch, tmp_path, _make_head_moved_side_effect())

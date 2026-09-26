@@ -122,7 +122,7 @@ class TestScopedLockTakeoverReapsChildren:
         record = self._owner_record(target_home)
         alive = iter(alive_polls)
         monkeypatch.setattr(status, "_pid_exists", lambda _pid: next(alive))
-        monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 123)
+        monkeypatch.setattr(status._process_identity, "get_process_start_time", lambda _pid: 123)
         monkeypatch.setattr(
             status,
             "_read_process_cmdline",
@@ -220,7 +220,7 @@ async def test_start_gateway_replace_reaps_old_gateway_children_posix(
         },
     )
     monkeypatch.setattr(
-        "gateway.status._get_process_start_time", lambda pid: 0 if pid == 42 else None
+        "runtime.process_identity.get_process_start_time", lambda pid: 0 if pid == 42 else None
     )
     monkeypatch.setattr(
         "gateway.status.release_all_scoped_locks", lambda **kwargs: 0
@@ -267,5 +267,3 @@ async def test_start_gateway_replace_reaps_old_gateway_children_posix(
         ("terminate", 42, False),
         ("reap", 42, kids),
     ]
-
-

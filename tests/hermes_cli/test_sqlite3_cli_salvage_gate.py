@@ -32,7 +32,7 @@ from hermes_cli.session_lost_and_found import (
     find_sqlite3_cli,
     find_sqlite3_cli_refusal,
 )
-from hermes_cli.sqlite_runtime import is_sqlite_wal_reset_vulnerable
+from runtime.sqlite_runtime import is_sqlite_wal_reset_vulnerable
 
 
 LIVE_DB_SALVAGE_COMMAND = 'sqlite3 ~/.hermes/state.db ".recover"'

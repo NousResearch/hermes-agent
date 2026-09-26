@@ -536,7 +536,7 @@ def _bind_profiles(monkeypatch, tmp_path: Path, homes: dict[str, Path]) -> None:
     gateway detects "not a real profile on this host" and stays on launch.
     """
     monkeypatch.setattr(
-        "hermes_cli.profiles.get_profile_dir",
+        "profiles.paths.get_profile_dir",
         lambda name: homes.get(name, tmp_path / "homes" / "missing" / name),
     )
 

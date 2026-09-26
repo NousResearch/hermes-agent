@@ -9,6 +9,12 @@ dispatcher's write txns); it carries its credential in the query string (browser
 
 from __future__ import annotations
 
+from profiles import current as profile_current
+from profiles import metadata as profile_metadata
+from profiles import names as profile_names
+from profiles import paths as profile_paths
+from profiles import registry as profile_registry
+
 import asyncio
 import importlib
 import json
@@ -1154,7 +1160,7 @@ def _configured_home_channels() -> list[dict]:
 def _active_profile_name() -> str:
     """Current Hermes profile name for notify-sub ownership."""
     try:
-        from hermes_cli.profiles import get_active_profile_name
+        from profiles.current import get_active_profile_name
         return get_active_profile_name() or "default"
     except Exception:
         return "default"
@@ -1544,16 +1550,16 @@ def update_profile_description(profile_name: str, payload: DescribeBody):
     without ``--overwrite``) or clear (empty string) a profile's description."""
     with _errors_to_500("failed to update profile"):
         from hermes_cli import profiles as profiles_mod
-        canon = profiles_mod.normalize_profile_name(profile_name)
+        canon = profile_names.normalize_profile_name(profile_name)
         if canon == "default":
             from hermes_constants import get_hermes_home  # type: ignore
             profile_dir = Path(get_hermes_home())
         else:
-            profile_dir = profiles_mod.get_profile_dir(canon)
+            profile_dir = profile_paths.get_profile_dir(canon)
         if not profile_dir.is_dir():
             raise HTTPException(status_code=404, detail=f"profile '{profile_name}' not found")
         text = (payload.description or "").strip()
-        profiles_mod.write_profile_meta(profile_dir, description=text, description_auto=False)
+        profile_metadata.write_profile_meta(profile_dir, description=text, description_auto=False)
     return {"ok": True, "profile": canon, "description": text}
 
 
@@ -1608,9 +1614,9 @@ def get_orchestration_settings():
     resolved = dict(explicit)
     try:
         from hermes_cli import profiles as profiles_mod
-        active_default = profiles_mod.get_active_profile_name() or "default"
+        active_default = profile_current.get_active_profile_name() or "default"
         for k, v in explicit.items():
-            if not v or not profiles_mod.profile_exists(v):
+            if not v or not profile_registry.profile_exists(v):
                 resolved[k] = active_default
     except Exception:
         active_default = "default"
@@ -1630,7 +1636,7 @@ def _validated_profile_name(raw: Optional[str], profiles_mod) -> str:
     name = (raw or "").strip()
     if name and profiles_mod is not None:
         try:
-            exists = profiles_mod.profile_exists(name)
+            exists = profile_registry.profile_exists(name)
         except Exception:
             exists = True
         if not exists:

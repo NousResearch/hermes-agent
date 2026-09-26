@@ -10,7 +10,8 @@ async def _start_gateway_replace_existing_instance(existing_pid: int, replace: b
     """Handle a live gateway PID under this HERMES_HOME: replace it (``--replace``) or refuse.
     Returns False when startup must abort (refused, permission denied, target still alive)."""
     from gateway.run import (_clear_takeover_marker_quiet, _replace_target_belongs_to_other_profile, _wait_for_pid_exit, get_hermes_home, logger, suppress)
-    from gateway.status import get_process_start_time, remove_pid_file, terminate_pid
+    from gateway.status import remove_pid_file, terminate_pid
+    from runtime.process_identity import get_process_start_time
     if not replace:
         hermes_home = str(get_hermes_home())
         logger.error(
@@ -269,8 +270,8 @@ async def _start_gateway_start_control_socket(runner):
 
         def _pause_for_update_handler() -> dict:
             try:
-                from hermes_cli.gateway import _get_restart_drain_timeout
-                _drain = float(_get_restart_drain_timeout())
+                from gateway.restart import get_restart_drain_timeout
+                _drain = float(get_restart_drain_timeout())
             except Exception:
                 _drain = 30.0
             accepted_box: list[bool] = []
@@ -475,9 +476,9 @@ def _launch_home_may_multiplex(config=None) -> bool:
     name = profile_name_for_home(get_hermes_home())
     if name in (None, "default"):
         return True
-    from hermes_cli.gateway_multiplex_mode import explicit_multiplex_flag
+    from gateway.multiplex_mode import explicit_multiplex_flag
     if config is not None and not explicit_multiplex_flag(get_hermes_home()):
-        from hermes_cli.gateway_multiplex_mode import MultiplexDecision, log_multiplex_decision
+        from gateway.multiplex_mode import MultiplexDecision, log_multiplex_decision
         decision = MultiplexDecision(
             False, "guard",
             f"profile {name!r} launched the gateway, and only the default profile runs the multiplexer "
@@ -528,8 +529,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # Set here (not at import) so incidental gateway.run imports from CLI code don't poison it.
     os.environ["HERMES_EXEC_ASK"] = "1"
 
-    from hermes_cli.resource_limits import apply_nofile_soft_limit
-    apply_nofile_soft_limit()
+    from hermes_cli.config import load_config_readonly
+    from runtime.resource_limits import apply_nofile_soft_limit
+
+    _best_effort(lambda: apply_nofile_soft_limit(load_config_readonly()))
 
     # Snapshot the revision while sys.modules matches disk so a later `git pull` is detected safely.
     from gateway.code_skew import record_boot_fingerprint
@@ -568,7 +571,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         # verdict (gateway.multiplex_profiles), not a transient fault: exit EX_CONFIG so systemd's
         # RestartPreventExitStatus=78 parks the unit instead of restart-looping (#51228, #97120).
         # Any other same-user contender keeps the ordinary "already running" exit 1.
-        from hermes_cli.gateway import named_profile_served_by_running_multiplexer
+        from gateway.host_topology import named_profile_served_by_running_multiplexer
         if named_profile_served_by_running_multiplexer():
             from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
             from gateway.run import _write_runtime_status_quiet

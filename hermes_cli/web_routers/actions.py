@@ -147,7 +147,7 @@ async def restart_gateway(profile: Optional[str] = None):
 @router.get("/api/gateway/migrate/plan")
 async def gateway_migrate_plan():
     """Preflight for folding per-profile gateways into one multiplexer (same JSON as the CLI plan)."""
-    from hermes_cli.gateway_migrate import build_migration_plan
+    from gateway.migration import build_migration_plan
     plan = await asyncio.to_thread(build_migration_plan)
     return plan.to_dict()
 

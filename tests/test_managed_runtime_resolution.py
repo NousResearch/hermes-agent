@@ -92,8 +92,8 @@ _ALLOWED: dict[tuple[str, str], str] = {
         "uv on PATH is a legitimate last rung before giving up with install "
         "guidance."
     ),
-    ("hermes_cli/gateway_service_unit.py", "node"): (
-        "Fallback rung of _append_node_dir_for_service(), after the managed "
+    ("gateway/service_process.py", "node"): (
+        "Fallback rung of append_node_dir(), after the managed "
         "dirs from iter_hermes_node_dirs() are already appended."
     ),
     ("hermes_cli/main_tui_launch.py", "node"): (

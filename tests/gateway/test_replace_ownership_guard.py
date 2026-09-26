@@ -63,7 +63,7 @@ class TestRecordAuthority:
                 return_value=profile_env / ".hermes" / "gateway.pid",
             ),
             patch(
-                "gateway.status._get_process_start_time",
+                "runtime.process_identity.get_process_start_time",
                 return_value=111222333,
             ),
             patch("gateway.status._read_process_cmdline", return_value=None),
@@ -91,7 +91,7 @@ class TestRecordAuthority:
                 return_value=profile_env / ".hermes" / "gateway.pid",
             ),
             patch(
-                "gateway.status._get_process_start_time",
+                "runtime.process_identity.get_process_start_time",
                 return_value=111222333,
             ),
             patch("gateway.status._read_process_cmdline", return_value=None),
@@ -136,7 +136,7 @@ class TestRecordAuthority:
                 return_value=profile_env / ".hermes" / "gateway.pid",
             ),
             patch(
-                "gateway.status._get_process_start_time",
+                "runtime.process_identity.get_process_start_time",
                 return_value=111222333,
             ),
             patch(
@@ -160,7 +160,7 @@ class TestRecordAuthority:
                 return_value=profile_env / ".hermes" / "gateway.pid",
             ),
             patch(
-                "gateway.status._get_process_start_time",
+                "runtime.process_identity.get_process_start_time",
                 return_value=111222333,
             ),
             patch(
@@ -185,7 +185,7 @@ class TestRecordAuthority:
                 return_value=profile_env / ".hermes" / "gateway.pid",
             ),
             patch(
-                "gateway.status._get_process_start_time",
+                "runtime.process_identity.get_process_start_time",
                 return_value=42,
             ),
             patch(
@@ -280,7 +280,7 @@ class TestArgvConsistencyCheck:
                 return_value=profile_env / ".hermes" / "gateway.pid",
             ),
             patch(
-                "gateway.status._get_process_start_time",
+                "runtime.process_identity.get_process_start_time",
                 return_value=111222333,
             ),
             patch(
@@ -365,7 +365,7 @@ class TestSignalBoundary:
             )
             stack.enter_context(
                 patch(
-                    "gateway.status.get_process_start_time",
+                    "runtime.process_identity.get_process_start_time",
                     return_value=111222333,
                 )
             )

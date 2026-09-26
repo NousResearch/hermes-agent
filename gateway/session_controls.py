@@ -48,7 +48,7 @@ class AuthorityConnection:
         """Connection bound to the sibling authority a ``profile`` param names, or None for our own
         home. One native socket serves every profile this process multiplexes (the Desktop's
         shared-primary route); a profile nobody here serves is a mismatch, never a fallback."""
-        from hermes_cli.profiles import profile_matches_home
+        from profiles.registry import profile_matches_home
         if profile_matches_home(profile, Path(self.authority.profile_id)):
             return None
         registry = getattr(getattr(self.authority, 'runner', None), 'session_authorities', None)

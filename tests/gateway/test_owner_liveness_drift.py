@@ -4,7 +4,7 @@
 a fresh ``get_process_start_time`` reading: the delivery ledger, API-server durable runs and the
 async-delegation ledger did the same exact-equality test and reconciled a live owner to
 dead/unknown under the same ~1 s same-host drift. All of them now share
-``gateway.status.start_time_fingerprints_match``.
+``runtime.process_identity.start_time_fingerprints_match``.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ RECORDED = 178864182760
 @pytest.fixture(autouse=True)
 def _live_pid_with_drift(monkeypatch):
     monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
-    monkeypatch.setattr(status, "get_process_start_time", lambda pid: RECORDED + 100)
+    monkeypatch.setattr(status._process_identity, "get_process_start_time", lambda pid: RECORDED + 100)
 
 
 def _delivery_ledger_alive() -> bool:
@@ -59,6 +59,6 @@ def test_one_second_drift_keeps_owner_live(site, monkeypatch, tmp_path):
 
 
 def test_far_fingerprint_is_still_a_recycled_pid(monkeypatch):
-    monkeypatch.setattr(status, "get_process_start_time", lambda pid: RECORDED + 3600)
+    monkeypatch.setattr(status._process_identity, "get_process_start_time", lambda pid: RECORDED + 3600)
     assert _delivery_ledger_alive() is False
     assert _api_server_run_alive() is False

@@ -17,7 +17,7 @@ from typing import Dict, Optional, Any
 from gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret, get_scoped_secret, send_error
 )
-from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
+from runtime.subprocess_compat import windows_detach_popen_kwargs
 from hermes_constants import (find_node_executable, get_hermes_dir, with_hermes_node_path)
 
 _IS_WINDOWS = platform.system() == "Windows"
@@ -59,7 +59,7 @@ def _safe_ints(tokens) -> list:
 
 def _windows_listener_pids(port: int) -> list:
     """PIDs in LISTENING state on ``port`` via netstat (Windows)."""
-    from hermes_cli._subprocess_compat import windows_hide_flags
+    from runtime.subprocess_compat import windows_hide_flags
     result = subprocess.run(["netstat", "-ano", "-p", "TCP"], timeout=5, creationflags=windows_hide_flags(), **_RUN_TEXT)
     rows = (line.split() for line in result.stdout.splitlines())
     return _safe_ints(p[4] for p in rows if len(p) >= 5 and p[3] == "LISTENING" and p[1].endswith(f":{port}"))
@@ -91,7 +91,7 @@ def _kill_port_process(port: int) -> None:
                 logger.warning("[whatsapp] Not killing PID %s on port %d: process is not a node bridge (or identity unverifiable)", pid, port)
                 continue
             if _IS_WINDOWS:
-                from hermes_cli._subprocess_compat import windows_hide_flags
+                from runtime.subprocess_compat import windows_hide_flags
                 # Only SubprocessError is swallowed per-PID; an OSError (e.g. taskkill missing) aborts the scan.
                 with suppress(subprocess.SubprocessError):
                     subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, stdin=subprocess.DEVNULL, timeout=5, creationflags=windows_hide_flags())
@@ -113,7 +113,8 @@ def _bridge_pid_is_ours(pid: int, expected_start) -> bool:
         return False
     if expected_start is None:
         return False
-    return status.get_process_start_time(pid) == expected_start
+    from runtime.process_identity import get_process_start_time
+    return get_process_start_time(pid) == expected_start
 
 
 def _unlink_quietly(path: Path) -> None:
@@ -149,7 +150,7 @@ def _kill_stale_bridge_by_pidfile(session_path: Path) -> None:
 def _write_bridge_pidfile(session_path: Path, pid: int) -> None:
     """Write the bridge PID plus its kernel start time (line 2) for identity-checked cleanup."""
     with suppress(OSError):
-        from gateway.status import get_process_start_time
+        from runtime.process_identity import get_process_start_time
         start = get_process_start_time(pid)
         (session_path / "bridge.pid").write_text(str(pid) if start is None else f"{pid}\n{start}", encoding="utf-8")
 

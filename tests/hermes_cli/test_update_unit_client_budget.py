@@ -1,4 +1,6 @@
 """Update clients cover unit transactions without hiding manager failures."""
+from gateway import service_identity
+from gateway import systemd_unit_state
 import subprocess
 
 import pytest
@@ -91,11 +93,11 @@ def test_fleet_restart_repairs_a_system_unit_that_cannot_park_on_exit_78(monkeyp
     stale.write_text("[Service]\nRestart=on-failure\nRestartSec=10\n", encoding="utf-8")
     current = unit_dir / "hermes-gateway-ops.service"
     current.write_text(f"[Service]\nRestart=always\nRestartPreventExitStatus={gateway_cli.GATEWAY_FATAL_CONFIG_EXIT_CODE}\n", encoding="utf-8")
-    monkeypatch.setattr(gateway_cli, "_SYSTEM_UNIT_DIR", unit_dir)
-    monkeypatch.setattr(gateway_cli, "get_service_name", lambda: "hermes-gateway")
+    monkeypatch.setattr(service_identity, "SYSTEM_UNIT_DIR", unit_dir)
+    monkeypatch.setattr(service_identity, "service_name", lambda: "hermes-gateway")
     monkeypatch.setattr(fleet, "_needs_sudo", lambda scope: not root)
     refreshed = []
-    monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: refreshed.append(system))
+    monkeypatch.setattr(systemd_unit_state, "refresh_if_needed", lambda system=False: refreshed.append(system))
     monkeypatch.setattr(fleet, "_systemctl", lambda cmd, *, timeout: subprocess.CompletedProcess(cmd, 0, "active", ""))
     monkeypatch.setattr(fleet, "_drain_or_signal_gateway_for_update", lambda *a, **kw: True)
     monkeypatch.setattr(fleet, "_wait_for_service_active", lambda *a, **kw: True)

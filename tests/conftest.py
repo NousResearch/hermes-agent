@@ -693,10 +693,10 @@ def _neutralize_git_safe_directory_read(request, monkeypatch):
     if request.node.get_closest_marker("real_safe_directory"):
         return
     try:
-        from hermes_cli import _subprocess_compat
+        from runtime import git_subprocess
     except Exception:
         return
-    monkeypatch.setattr(_subprocess_compat, "_user_safe_directories", lambda base_env: [], raising=False)
+    monkeypatch.setattr(git_subprocess, "_user_safe_directories", lambda base_env: [], raising=False)
 
 
 @pytest.fixture(autouse=True)

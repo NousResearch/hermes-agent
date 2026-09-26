@@ -70,11 +70,12 @@ def _detect_supervisor_for_pid(pid: int, service_pids: set, windows_service_pids
     if pid not in service_pids:
         return "manual"
     with suppress(Exception):
-        from hermes_cli.gateway import is_macos, supports_systemd_services
+        import sys
+        from gateway.systemd_runtime import supports_services
 
-        if supports_systemd_services():
+        if supports_services():
             return "systemd"
-        if is_macos():
+        if sys.platform == "darwin":
             return "launchd"
     return "service"
 
@@ -164,7 +165,7 @@ def _supervisor_classifier() -> Callable[[int], str]:
     """``pid -> supervisor`` over the service-PID sets; each probe degrades to an empty set."""
     service_pids: set = set()
     with _probe("Service-PID probe"):
-        from hermes_cli.gateway import _get_service_pids
+        from gateway.process_discovery import _get_service_pids
 
         service_pids = _get_service_pids(all_profiles=True) or set()
     # Windows SCM services (no-op off Windows): the update's pause phase stops these via `sc.exe
@@ -174,7 +175,7 @@ def _supervisor_classifier() -> Callable[[int], str]:
     # service PIDs (no-op off Windows). See #91277.
     windows_service_pids: set = set()
     with _probe("Windows SCM service-ownership probe"):
-        from hermes_cli.gateway import find_windows_gateway_services
+        from gateway.process_discovery import find_windows_gateway_services
 
         windows_service_pids = {int(service.gateway_pid) for service in find_windows_gateway_services()}
     return lambda pid: _detect_supervisor_for_pid(pid, service_pids, windows_service_pids)
@@ -210,7 +211,7 @@ def _collect_gateway_runtimes(plan: UpdatePlan, profile_homes: list, seen: set[i
                 sup = supervisor(pid)
             plan.runtimes.append(_runtime("gateway", profile, pid, sup, record.get("code_sha"), record.get("code_version")))
     with _probe("PID-file gateway inventory"):
-        from hermes_cli.gateway import find_profile_gateway_processes
+        from gateway.process_discovery import find_profile_gateway_processes
 
         for proc in find_profile_gateway_processes():
             if proc.pid not in seen:
@@ -258,7 +259,7 @@ def _collect_ledger_runtimes(plan: UpdatePlan, seen: set[int]) -> None:
     A backend owned by a loaded launchd job is classified ``launchd`` (kickstart restart, never a
     detached argv respawn) — the spawner probe cannot see that (#116503)."""
     with _probe("Serve/dashboard ledger inventory"):
-        from hermes_cli.process_identity import ledger_entries, spawner_is_dead
+        from runtime.process_identity import ledger_entries, spawner_is_dead
 
         launchd_jobs = _loaded_backend_launchd_jobs()
         for entry in ledger_entries():

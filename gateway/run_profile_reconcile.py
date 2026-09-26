@@ -99,7 +99,7 @@ class GatewayProfileReconcileMixin:
         whose store is unusable is parked (logged, not served) and left for an explicit rescan.
         Returns ``{"added", "removed", "rescanned", "parked", "served_profiles"}``."""
         from gateway.run import MultiplexConfigError
-        from hermes_cli.profiles import profiles_to_serve
+        from gateway.profile_serving import profiles_to_serve
         result: Dict[str, Any] = {"added": [], "removed": [], "rescanned": [], "parked": [], "reason": reason}
         if not self._multiplex_on():
             return {**result, "multiplex": False, "served_profiles": self.served_profile_names()}
@@ -146,7 +146,7 @@ class GatewayProfileReconcileMixin:
         whose home another gateway owns or whose store is unusable is parked, not served."""
         from gateway.run import MultiplexConfigError
         from gateway.run_runtime import park_profile, unpark_profile
-        from hermes_cli.profiles import profiles_to_serve
+        from gateway.profile_serving import profiles_to_serve
         active = getattr(self, "_primary_profile_name", None) or "default"
         result = dict(result or {"added": [], "removed": [], "rescanned": [], "parked": [], "reason": reason})
         result.setdefault("parked", [])
@@ -336,7 +336,7 @@ def _profile_lifecycle_verb(runner, *, serve: bool):
     loop = asyncio.get_running_loop()
 
     async def apply(name):
-        from hermes_cli.profiles import profiles_to_serve, profile_is_parked
+        from gateway.profile_serving import profiles_to_serve, profile_is_parked
         if not runner._multiplex_on() or not runner._running or runner._served_profile_homes is None:
             return {"error": "host multiplexer is not ready"}
         async with runner._reconcile_lock():

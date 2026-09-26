@@ -97,7 +97,7 @@ class TestReapOrphanedBrowserSessions:
             terminate_calls.append(pid)
 
         with patch("gateway.status._pid_exists", return_value=True), \
-             patch("gateway.status.get_process_start_time", return_value=777), \
+             patch("runtime.process_identity.get_process_start_time", return_value=777), \
              patch("tools.browser_tool_lifecycle._verify_reapable_browser_daemon", return_value=True), \
              patch("tools.process_registry.ProcessRegistry._terminate_host_pid", side_effect=mock_terminate):
             _reap_orphaned_browser_sessions()
@@ -119,7 +119,7 @@ class TestReapOrphanedBrowserSessions:
             return pid == 4242  # daemon alive, owning hermes gone
 
         with patch("gateway.status._pid_exists", side_effect=_pid_exists), \
-             patch("gateway.status.get_process_start_time", return_value=777), \
+             patch("runtime.process_identity.get_process_start_time", return_value=777), \
              patch("tools.browser_tool_lifecycle._verify_reapable_browser_daemon", return_value=True), \
              patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
                    side_effect=lambda pid, expected_start=None: terminate_calls.append(pid)):
@@ -142,7 +142,7 @@ class TestReapOrphanedBrowserSessions:
         terminate_calls = []
 
         with patch("gateway.status._pid_exists", return_value=True), \
-             patch("gateway.status.get_process_start_time", return_value=None), \
+             patch("runtime.process_identity.get_process_start_time", return_value=None), \
              patch("tools.browser_tool_lifecycle._verify_reapable_browser_daemon", return_value=True), \
              patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
                    side_effect=lambda pid, expected_start=None: terminate_calls.append(pid)):
@@ -411,7 +411,7 @@ class TestLeakedDaemonWithLiveOwner:
         kill_calls = []
 
         with patch("gateway.status._pid_exists", return_value=True), \
-             patch("gateway.status.get_process_start_time", return_value=777), \
+             patch("runtime.process_identity.get_process_start_time", return_value=777), \
              patch("tools.browser_tool_lifecycle._verify_reapable_browser_daemon", return_value=True), \
              patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
                    side_effect=lambda pid, expected_start=None: kill_calls.append(pid)):

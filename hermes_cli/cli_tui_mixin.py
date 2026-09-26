@@ -260,7 +260,7 @@ class CLITuiMixin:
             symbol = "❯ "
         symbol = (symbol or "❯ ").rstrip() + " "
         try:
-            from hermes_cli.profiles import get_active_profile_name
+            from profiles.current import get_active_profile_name
             profile = get_active_profile_name()
             if profile not in {"default", "custom"}:
                 symbol = f"{profile} {symbol}"

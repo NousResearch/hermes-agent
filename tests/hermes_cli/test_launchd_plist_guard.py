@@ -44,7 +44,7 @@ def test_malformed_plist_is_skipped_not_fatal(tmp_path):
     p = tmp_path / "com.example.bad.plist"
     p.write_text(MALFORMED_PLIST, encoding="utf-8")
     with mock.patch(
-        "hermes_cli.gateway._launchd_print_service_pid", return_value=(False, None)
+        "gateway.launchd_service._launchd_print_service_pid", return_value=(False, None)
     ) as probe:
         assert main_dashboard._loaded_launchd_backend_jobs([("agent", tmp_path)]) == []
     probe.assert_not_called()  # the malformed job never reaches the launchctl probe
@@ -54,7 +54,7 @@ def test_malformed_sibling_does_not_hide_the_good_job(tmp_path):
     (tmp_path / "com.example.bad.plist").write_text(MALFORMED_PLIST, encoding="utf-8")
     (tmp_path / "ai.hermes.dashboard.test.plist").write_text(GOOD_PLIST, encoding="utf-8")
     with mock.patch(
-        "hermes_cli.gateway._launchd_print_service_pid", return_value=(True, 4321)
+        "gateway.launchd_service._launchd_print_service_pid", return_value=(True, 4321)
     ) as probe:
         jobs = main_dashboard._loaded_launchd_backend_jobs([("agent", tmp_path)])
     assert jobs == [

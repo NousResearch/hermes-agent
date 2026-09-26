@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli._subprocess_compat import split_command_line
+from runtime.subprocess_compat import split_command_line
 
 
 class TestSplitCommandLine:

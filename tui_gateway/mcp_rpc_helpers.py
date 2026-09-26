@@ -72,7 +72,7 @@ def resolve_profile(rid, params, err_fn) -> Tuple[Optional[Any], Optional[dict]]
     profile = str(params.get("profile") or "").strip()
     if not profile:
         return None, None
-    from hermes_cli.profiles import get_profile_dir
+    from profiles.paths import get_profile_dir
     from hermes_constants import set_hermes_home_override
 
     try:

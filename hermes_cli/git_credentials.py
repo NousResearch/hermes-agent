@@ -36,7 +36,8 @@ import subprocess
 import urllib.parse
 from typing import Iterator, Mapping, Optional
 
-from hermes_cli._subprocess_compat import noninteractive_git_env, windows_hide_flags
+from runtime.git_subprocess import noninteractive_git_env
+from runtime.subprocess_compat import windows_hide_flags
 
 logger = logging.getLogger(__name__)
 

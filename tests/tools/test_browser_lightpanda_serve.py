@@ -348,10 +348,10 @@ class TestProcessIdentity:
     def test_matches_name_port_and_start_time(self):
         proc = self._P("lightpanda", ["/opt/lightpanda", "serve", "--host", "127.0.0.1", "--port", "43111"])
         with patch("psutil.Process", return_value=proc), \
-             patch("gateway.status.get_process_start_time", return_value=111):
+             patch("runtime.process_identity.get_process_start_time", return_value=111):
             assert lp._is_lightpanda_process(999, 43111, 111) is True
         with patch("psutil.Process", return_value=proc), \
-             patch("gateway.status.get_process_start_time", return_value=222):
+             patch("runtime.process_identity.get_process_start_time", return_value=222):
             assert lp._is_lightpanda_process(999, 43111, 111) is False
 
     def test_rejects_other_process_on_recycled_pid(self):

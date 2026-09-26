@@ -371,7 +371,7 @@ def _process_fingerprint(pid: int) -> Optional[str]:
     ``gateway.drain_control.current_instantiation_epoch`` (``boot_id`` + PID-1 start) changes on every
     reboot / container recreate, so the composed value never survives one. ``None`` when unreadable."""
     from gateway.drain_control import current_instantiation_epoch
-    from gateway.status import get_process_start_time
+    from runtime.process_identity import get_process_start_time
     start = get_process_start_time(int(pid))
     if start is None:
         return None
@@ -404,7 +404,8 @@ def _pid_recycled(pid: Optional[int], started_at) -> bool:
         return True
     if isinstance(started_at, str) and "|" in started_at:
         return _process_fingerprint(int(pid)) != started_at
-    from gateway.status import _start_times_agree, get_process_start_time
+    from gateway.status import _start_times_agree
+    from runtime.process_identity import get_process_start_time
     current = get_process_start_time(int(pid))
     if current is None:
         return True
@@ -1671,7 +1672,8 @@ def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
     Foreign assignees land in the existing ``skipped_nonspawnable`` bucket.
     """
     try:
-        from hermes_cli.profiles import normalize_profile_name, profile_exists
+        from profiles.names import normalize_profile_name
+        from profiles.registry import profile_exists
     except Exception:
         return None
     allowlist = _dispatch_profile_allowlist(normalize_profile_name)
@@ -1745,7 +1747,7 @@ def dispatch_profile_allowlist_summary() -> str:
     the sorted allowed names, or ``none (fail-closed: ...)``.
     """
     try:
-        from hermes_cli.profiles import normalize_profile_name
+        from profiles.names import normalize_profile_name
     except Exception as exc:
         return f"none (fail-closed: profiles unavailable: {exc})"
     allowlist = _dispatch_profile_allowlist(normalize_profile_name)
@@ -2771,7 +2773,8 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     if not task.assignee:
         raise ValueError(f"task {task.id} has no assignee")
 
-    from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+    from profiles.names import normalize_profile_name
+    from profiles.paths import resolve_profile_env
 
     profile_arg = normalize_profile_name(task.assignee)
 

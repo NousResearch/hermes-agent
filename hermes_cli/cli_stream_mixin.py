@@ -411,6 +411,23 @@ class CLIStreamMixin:
         for ln in block.split("\n"):
             self._emit_stream_line(ln)
 
+    def _emit_stream_code_line(self, line: str) -> bool:
+        """Emit a fence line or a line inside a fenced block (False for prose, left to the caller).
+        Code reaches the screen verbatim: per-line marker stripping ate ``__init__``/``**kwargs``
+        and table re-padding re-spaced ``|`` lines (#84377); strip mode drops only the fence marker."""
+        from cli import _rich_text_from_ansi, _strip_markdown_syntax
+        from hermes_cli.cli_render import _code_fence_step
+        was_open = getattr(self, "_stream_code_fence", None)
+        is_fence, self._stream_code_fence = _code_fence_step(was_open, line)
+        if was_open is None and not is_fence:
+            return False
+        if self._in_stream_table:
+            self._flush_stream_table_buf()
+        if self.final_response_markdown == "strip":
+            line = _strip_markdown_syntax(line) if is_fence else _rich_text_from_ansi(line).plain
+        self._emit_stream_line(line)
+        return True
+
     def _emit_stream_text(self, text: str) -> None:
         """Emit filtered text to the streaming display."""
         from agent.markdown_tables import is_table_divider, looks_like_table_row
@@ -454,6 +471,8 @@ class CLIStreamMixin:
         self._stream_buf += text
         while "\n" in self._stream_buf:
             line, self._stream_buf = self._stream_buf.split("\n", 1)
+            if self._emit_stream_code_line(line):
+                continue
             # Table rows are held and re-padded as a block once it ends (already-printed rows
             # can't be re-aligned), so a table appears in one batch when the block closes.
             if self._in_stream_table:
@@ -498,6 +517,8 @@ class CLIStreamMixin:
             self._emit_stream_text(self._stream_prefilt)
             self._stream_prefilt = ""
         self._close_reasoning_box()  # in case no content tokens arrived
+        if self._stream_buf and self._emit_stream_code_line(self._stream_buf):
+            self._stream_buf = ""
         # A trailing partial table row joins the table buffer so the whole block is re-aligned
         # together (else the final row prints under-padded).
         if (
@@ -534,6 +555,7 @@ class CLIStreamMixin:
         self.__dict__.pop("_tool_gen_announced", None)
         self._stream_table_buf = []
         self._in_stream_table = False
+        self._stream_code_fence = None
         self._stream_box_live = False
 
     def _slow_command_status(self, command: str) -> str:

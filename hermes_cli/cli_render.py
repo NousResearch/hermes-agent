@@ -377,17 +377,62 @@ def _rich_text_from_ansi(text: str) -> _RichText:
     return _RichText.from_ansi(text or "")
 
 
+_CODE_FENCE_RE = re.compile(r"^(\s*(?:>\s*)*)(`{3,}|~{3,})(.*)$")
+
+
+def _code_fence_step(open_fence: str | None, line: str) -> tuple[bool, str | None]:
+    """``(is_fence_line, open_fence_after)`` for one line, CommonMark style: a closer repeats the
+    opener's character at least as many times with nothing after it; a backtick opener's info
+    string holds no backtick (so an inline ```x``` span is not a fence)."""
+    match = _CODE_FENCE_RE.match(line)
+    if match is None:
+        return False, open_fence
+    marker, rest = match.group(2), match.group(3)
+    if open_fence is None:
+        if marker[0] == "`" and "`" in rest:
+            return False, None
+        return True, marker
+    if marker[0] == open_fence[0] and len(marker) >= len(open_fence) and not rest.strip():
+        return True, None
+    return False, open_fence
+
+
 def _strip_markdown_syntax(text: str) -> str:
     """Best-effort markdown marker removal for plain-text display."""
     from cli import _rich_text_from_ansi
-    plain = _rich_text_from_ansi(text or "").plain
+    # NUL is invisible on a terminal and delimits the shelf placeholders below.
+    plain = _rich_text_from_ansi(text or "").plain.replace("\x00", "")
+    # Code shares its characters with the markers below (``__init__``, ``**kwargs``, ``# comment``),
+    # so fenced bodies and inline spans are shelved first and restored verbatim at the end (#84377).
+    shelved: list[str] = []
+
+    def _shelve(code: str) -> str:
+        shelved.append(code)
+        return f"\x00{len(shelved) - 1}\x00"
+
+    lines: list[str] = []
+    body: list[str] = []
+    fence = None
+    for line in plain.split("\n"):
+        was_open = fence
+        is_fence, fence = _code_fence_step(fence, line)
+        if was_open is not None and not is_fence:
+            body.append(line)
+            continue
+        if was_open is not None:
+            lines.append(_shelve("\n".join(body)))
+            body = []
+        lines.append(line)
+    if fence is not None:
+        lines.append(_shelve("\n".join(body)))
+    plain = "\n".join(lines)
     # HR markers: "-"/"_" runs of 3+, but "*" only when exactly 3 (cron schedules "* * * * *").
     plain = re.sub(r"^\s{0,3}(?:[-_]\s*){3,}$", "", plain, flags=re.MULTILINE)
     plain = re.sub(r"^\s{0,3}(?:\*\s*){3}\s*$", "", plain, flags=re.MULTILINE)
     plain = re.sub(r"^\s{0,3}#{1,6}\s+", "", plain, flags=re.MULTILINE)
     # Blockquotes, lists, and checkboxes are preserved because they carry structure.
     plain = re.sub(r"(```+|~~~+)", "", plain)
-    plain = re.sub(r"`([^`]*)`", r"\1", plain)
+    plain = re.sub(r"`([^`]*)`", lambda m: _shelve(m.group(1)), plain)
     plain = re.sub(r"!\[([^\]]*)\]\([^\)]*\)", r"\1", plain)
     plain = re.sub(r"\[([^\]]+)\]\([^\)]*\)", r"\1", plain)
     plain = re.sub(r"\*\*\*([^*]+)\*\*\*", r"\1", plain)
@@ -399,6 +444,7 @@ def _strip_markdown_syntax(text: str) -> str:
     plain = re.sub(r"(?<!\w)_([^_]+)_(?!\w)", r"\1", plain)
     plain = re.sub(r"~~([^~]+)~~", r"\1", plain)
     plain = re.sub(r"\n{3,}", "\n\n", plain)
+    plain = re.sub(r"\x00(\d+)\x00", lambda m: shelved[int(m.group(1))], plain)
     return plain.strip("\n")
 
 

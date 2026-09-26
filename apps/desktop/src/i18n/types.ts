@@ -653,6 +653,10 @@ export interface Translations {
     message: (reason: string) => string
   }
 
+  nvidiaEglFallbackBanner: {
+    message: (reason: string) => string
+  }
+
   billingBlock: {
     titleNous: string
     titleProvider: (provider: string) => string

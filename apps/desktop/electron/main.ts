@@ -877,6 +877,9 @@ if (IS_WINDOWS) {
 }
 
 ipcMain.handle('hermes:get-remote-display-reason', () => REMOTE_DISPLAY_REASON)
+ipcMain.handle('hermes:get-nvidia-egl-fallback-reason', () =>
+  NVIDIA_EGL_FALLBACK.enable ? NVIDIA_EGL_FALLBACK.reason : null
+)
 
 // Keep the renderer's PROCESS priority normal while its windows are hidden —
 // a deprioritized renderer streams a live answer visibly slower once the

@@ -585,6 +585,11 @@ export const deOverrides = {
     message: reason =>
       `Software-Rendering aktiv — Remote-Display erkannt (${reason}). GPU-Beschleunigung ist deaktiviert, um Flackern zu verhindern.`
   },
+
+  nvidiaEglFallbackBanner: {
+    message: reason =>
+      `Software-Rendering aktiv — NVIDIA-EGL-Fallback aktiviert (${reason}). GPU-Beschleunigung ist zur Stabilität deaktiviert; mit HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0 abwählen.`
+  },
   billingBlock: {
     titleNous: 'Keine Nous-Credits mehr',
     titleProvider: provider => `Keine Credits mehr — ${provider}`,

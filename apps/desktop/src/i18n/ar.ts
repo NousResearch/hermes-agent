@@ -314,6 +314,11 @@ export const ar = defineLocale({
   remoteDisplayBanner: {
     message: reason => `العرض البرمجي نشط — تم اكتشاف شاشة بعيدة (${reason}). تم تعطيل تسريع GPU لمنع الوميض.`
   },
+
+  nvidiaEglFallbackBanner: {
+    message: reason =>
+      `العرض البرمجي نشط — تم تفعيل الحل البديل لـ NVIDIA EGL (${reason}). تم تعطيل تسريع GPU من أجل الاستقرار؛ لإلغاء ذلك اضبط HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0.`
+  },
   titlebar: {
     hideSidebar: 'إخفاء الشريط الجانبي',
     showSidebar: 'إظهار الشريط الجانبي',

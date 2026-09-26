@@ -319,6 +319,11 @@ export const ru = defineLocale({
       `Включён программный рендеринг — обнаружен удалённый дисплей (${reason}). GPU-ускорение отключено, чтобы избежать мерцания.`
   },
 
+  nvidiaEglFallbackBanner: {
+    message: reason =>
+      `Включён программный рендеринг — сработал откат NVIDIA EGL (${reason}). GPU-ускорение отключено для стабильности; чтобы отказаться, установите HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0.`
+  },
+
   billingBlock: {
     titleNous: 'Кредиты Nous закончились',
     titleProvider: provider => `Кредиты закончились — ${provider}`,

@@ -320,6 +320,11 @@ export const ja = defineLocale({
       `ソフトウェアレンダリングが有効です — リモートディスプレイを検出しました（${reason}）。ちらつきを防ぐため GPU アクセラレーションは無効化されています。`
   },
 
+  nvidiaEglFallbackBanner: {
+    message: reason =>
+      `ソフトウェアレンダリングが有効です — NVIDIA EGL フォールバックが作動しました（${reason}）。安定性のため GPU アクセラレーションは無効化されています。無効にするには HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0 を設定してください。`
+  },
+
   billingBlock: {
     titleNous: 'Nous クレジットが不足しています',
     titleProvider: provider => `クレジット不足 — ${provider}`,

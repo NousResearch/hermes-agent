@@ -284,6 +284,29 @@ async def run_codex_hygiene_compaction(
     # No boundary: internal skip or compaction error; the codex route already persisted its own cooldown.
     return "failed:no-boundary"
 
+def hygiene_warn_token_threshold(
+    context_length: int, compress_token_threshold: int
+) -> int:
+    """Token count above which a *post-compression* session is worth warning about.
+
+    Pre-agent session hygiene compresses at its own fixed trigger (``threshold_pct``,
+    0.85 — independent of ``compression.threshold``), then warns if the result is
+    still large. Pinning that warning at 0.95 of the window made it unreachable: on
+    a 500K window hygiene fires at ~425K but the warning still needed ~475K.
+
+    The reachable, actionable condition is "compression did not clear the trigger
+    point": the session re-compresses on the next turn, paying LLM summarisation
+    repeatedly for no lasting reduction. Cap the warning at the compression trigger
+    so it fires on that treadmill, while keeping the original 0.95 ceiling for the
+    (rarer) case of a trigger set above it.
+    """
+    ceiling = int(max(0, context_length) * 0.95)
+    trigger = max(0, compress_token_threshold)
+    if not trigger:
+        return ceiling
+    return min(ceiling, trigger) if ceiling else trigger
+
+
 def hygiene_wait_should_extend(
     *, idle: float, timeout: float, waited: float, ceiling: float, fence_cancelled: bool = False
 ) -> bool:

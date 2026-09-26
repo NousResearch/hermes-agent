@@ -748,7 +748,10 @@ class GatewayTurnMixin:
             config_context_length=hs.config_context_length, provider=hs.provider or "",
         )
         _compress_token_threshold = int(_hyg_context_length * hs.threshold_pct)
-        _warn_token_threshold = int(_hyg_context_length * 0.95)
+        from gateway.run import hygiene_warn_token_threshold
+        _warn_token_threshold = hygiene_warn_token_threshold(
+            _hyg_context_length, _compress_token_threshold
+        )
         _msg_count = len(history)
 
         # Real usage decides: the API-reported prompt count, else the anchor persisted on the session

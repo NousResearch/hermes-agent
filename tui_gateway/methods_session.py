@@ -1833,6 +1833,7 @@ def _(rid, params: dict, session: dict) -> dict:
         model=mirror.get("model") or getattr(live_agent, "model", None),
         provider=mirror.get("provider") or getattr(live_agent, "provider", None),
         tokens=_session_usage_snapshot(session).get("total"), agent_running=bool(session.get("running")),
+        home=session.get("profile_home"),
     )
     project = _project_info_for_cwd(_display_session_cwd(session))
     lines = [

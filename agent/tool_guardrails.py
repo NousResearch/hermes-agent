@@ -335,10 +335,39 @@ class ToolCallGuardrailController:
         self._persisted_result_paths: dict[str, str] = {}
         self._turn_web_search_count = 0
         self._turn_subagent_count = 0
+        # Failure counters already bumped in the current tool-call batch: key -> count it was bumped to.
+        # None = the runtime never declared a batch (begin_tool_batch), so every failing call is counted.
+        self._batch_failures_seen: dict[Any, int] | None = None
 
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
         return self._halt_decision
+
+    def begin_tool_batch(self) -> None:
+        """Open a new tool-call batch (one assistant message's tool calls).
+
+        The failure counters treat a batch as a single observation: the model emits every call in a
+        batch *before* any of their results exist, so N failures inside one batch are not N retries —
+        it never saw the first failure. Counted individually, one bad prerequisite fanned out over a
+        parallel batch reaches a halt threshold meant for a model repeating a call it knows failed.
+        """
+        self._batch_failures_seen = {}
+
+    def _count_failure_once_per_batch(self, counts: dict, key: Any) -> int:
+        """Bump ``counts[key]`` at most once per declared batch; return the resulting count.
+
+        A counter reset mid-batch (success, progress) no longer matches what was recorded, so the next
+        failure is counted afresh. Without a declared batch every call counts: a dispatch path that never
+        calls ``begin_tool_batch`` keeps per-call counting instead of silently capping every counter at 1.
+        """
+        count = counts.get(key, 0)
+        seen = self._batch_failures_seen
+        if seen is not None and seen.get(key) == count:
+            return count
+        counts[key] = count = count + 1
+        if seen is not None:
+            seen[key] = count
+        return count
 
     def _decide(
         self, action: str, code: str, tool_name: str, count: int, signature: ToolCallSignature,
@@ -385,8 +414,8 @@ class ToolCallGuardrailController:
             # a mutation since the last identical failure restarts the exact-args streak.
             if self._progress_since_failure.pop(signature, False):
                 self._exact_failure_counts.pop(signature, None)
-            exact_count = self._exact_failure_counts[signature] = self._exact_failure_counts.get(signature, 0) + 1
-            same_count = self._same_tool_failure_counts[tool_name] = self._same_tool_failure_counts.get(tool_name, 0) + 1
+            exact_count = self._count_failure_once_per_batch(self._exact_failure_counts, signature)
+            same_count = self._count_failure_once_per_batch(self._same_tool_failure_counts, tool_name)
             self._no_progress.pop(signature, None)
             # same_tool_failure counts DIFFERENT args on one tool; for failure-tolerant
             # tools a run of distinct red commands is diagnosis, not a loop — warn, never halt.

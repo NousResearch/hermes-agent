@@ -2079,6 +2079,7 @@ Hard stops are designed to catch **replays** — the same call, unchanged, with 
 
 - **Edit → re-run is never a loop.** Any successful mutating call (`write_file`, `patch`, a green `terminal`/`execute_code`, a browser action, a job/message/cron mutation) marks progress for every failing call still being counted. The next identical retry (re-running a red test after a fix, re-snapshotting after a click) starts a fresh streak instead of accumulating toward a block.
 - **Distinct red commands are diagnosis, not a loop.** For tools whose non-zero exit is ordinary output (`terminal`, `execute_code`, process pollers, `browser_navigate`, `web_extract`) the `same_tool_failure` threshold only warns and never halts. Only an exact-args replay with no intervening change, or an identical-result streak, can stop them.
+- **A parallel batch is one observation.** Every tool call in one assistant message is emitted before any of its results exist, so failures inside the same batch move the `exact_failure` and `same_tool_failure` counters by at most one. Eight parallel calls failing on the same prerequisite are one failure the model has yet to see, not eight retries; retrying after seeing it counts as the second.
 - **A halt ends the turn, not the session.** The agent replies with which guardrail fired and why; replying "continue" resumes with fresh per-turn counters.
 
 ### Per-turn runaway-loop caps

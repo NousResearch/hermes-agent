@@ -75,8 +75,13 @@ def _skin_sig() -> tuple[str, float | None]:
 
 
 def _note_skin_broadcast() -> None:
-    """Sync the baseline after the /skin RPC emits so the watcher doesn't re-broadcast it."""
+    """Sync the baseline after the /skin RPC emits so the watcher doesn't re-broadcast it. The baseline is
+    the home the watcher thread polls (the launch home): a /skin scoped to another profile this process
+    serves must leave it alone, or the next tick re-announces the launch profile's unchanged skin as a
+    change — which a client on the launch profile applies over its own pick."""
     global _last_skin_sig
+    if _watcher_home() != Path(_hermes_home):
+        return
     with contextlib.suppress(Exception):
         _last_skin_sig = _skin_sig()
 

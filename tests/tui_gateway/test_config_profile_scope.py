@@ -204,8 +204,8 @@ def test_launch_profile_cwd_write_updates_non_local_terminal_task(tmp_path, monk
 
 def test_skin_changed_names_the_profile_whose_config_moved(tmp_path, monkeypatch):
     """``skin.changed`` fans out to every transport of a process serving several profiles, and Desktop
-    persists an applied skin into that client's profile. The payload must name whose ``display.skin``
-    moved so a client on another profile leaves its appearance alone."""
+    persists an applied skin into that client's profile. Each change is announced once, naming whose
+    ``display.skin`` moved, so a client on another profile leaves its appearance alone."""
     import hermes_cli.skin_engine as skin_engine
 
     launch, worker = _homes(tmp_path)
@@ -218,7 +218,10 @@ def test_skin_changed_names_the_profile_whose_config_moved(tmp_path, monkeypatch
         server, "_broadcast_global_event", lambda event, payload=None: broadcasts.append((event, payload))
     )
 
+    server._note_skin_broadcast()  # the watcher's baseline, as _ensure_skin_watcher seeds it
+
     _set({"key": "skin", "value": "mono", "profile": "code"})
+    server._broadcast_skin_if_changed()  # a watcher tick: the launch profile's skin did not move
     _set({"key": "skin", "value": "slate"})
 
     assert [(event, payload["name"], payload["profile"]) for event, payload in broadcasts] == [

@@ -95,7 +95,14 @@ def _rpc_url(base_url: str, card: Optional[dict]) -> str:
 
 def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> tuple[str, str, str]:
     """One SendMessage to a peer -> (reply_text, context_id, state). Raises urllib errors /
-    ValueError for the caller to format; handles redaction, audit, persistence, metrics."""
+    ValueError for the caller to format; handles redaction, audit, persistence, metrics.
+
+    ``context_id`` semantics: empty (first contact) omits the ``contextId`` field so the
+    peer issues one. A2A v1.0 makes contextId optional on outbound messages, and peers
+    that only accept ids they minted (e.g. DSH's a2a server: an unknown id answers
+    -32602) reject a client-invented id outright. The peer-issued id is adopted for local
+    persistence and returned for the next turn. Persistence runs after the reply, so a
+    failed send cannot leave a record for an exchange the peer never saw."""
     base_url = peer.get("url", "")
     headers = _auth_header(peer.get("auth", {}) or {})
     timeout = int(peer.get("timeout", _DEFAULT_TIMEOUT))
@@ -103,7 +110,7 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
         card = _fetch_card(base_url, headers, min(timeout, 30))  # best-effort, to learn the rpc URL
     except Exception:
         card = None
-    ctx = context_id or protocol.new_context_id()
+    ctx = context_id or ""  # empty => omit contextId; the peer issues one on first contact
     safe_message = security.redact_outbound(message)
     # v1.0: contextId lives inside the Message, not at the params top level.
     rpc_body = {"jsonrpc": "2.0", "id": protocol.new_task_id(), "method": "SendMessage",
@@ -113,7 +120,6 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
     if tenant:
         rpc_body["params"]["tenant"] = tenant
     security.audit("outbound", agent_label, rpc_body["id"], safe_message)
-    protocol.persist_message(ctx, "user", safe_message, rpc_body["id"])
     protocol.metrics.outbound_total += 1
     resp = _http_post_json(_rpc_url(base_url, card), rpc_body, headers, timeout)
     if "error" in resp:
@@ -122,8 +128,12 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
     reply = _reply_text_from_result(payload)
     reply_ctx, state = ctx, ""
     if isinstance(payload, dict):
-        reply_ctx = payload.get("contextId", ctx)
+        reply_ctx = payload.get("contextId") or ctx
         state = (payload.get("status") or {}).get("state", "")
+    if not reply_ctx:
+        # Legacy peer that echoed no contextId: still give the local record an address.
+        reply_ctx = protocol.new_context_id()
+    protocol.persist_message(reply_ctx, "user", safe_message, rpc_body["id"])
     protocol.persist_message(reply_ctx, "agent", reply, rpc_body["id"])
     protocol.metrics.inbound_total += 1
     return reply, reply_ctx, state

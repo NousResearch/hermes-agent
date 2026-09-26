@@ -4,6 +4,7 @@
  */
 
 import {
+  Badge,
   Button,
   Codicon,
   ConfirmDialog,
@@ -46,6 +47,7 @@ import {
   updateBoard,
   useKanbanScope
 } from './api'
+import { $unseenByBoard, cursorKey } from './completion-notify'
 import { runExportBoardFlow, runImportBoardFlow } from './transfer'
 import type { BoardMeta } from './types'
 import { errText, FIELD_LABEL, useKanban } from './ui'
@@ -288,6 +290,8 @@ export function BoardSwitcher() {
   const qc = useQueryClient()
   const scope = useKanbanScope()
   const slug = useValue($boardSlug)
+  const unseen = useValue($unseenByBoard)
+  const unseenOf = (boardSlug: string) => unseen[cursorKey(scope, boardSlug)] ?? 0
   const { data: boards } = useQuery({ queryFn: fetchBoards, queryKey: boardsKey(scope), staleTime: 30_000 })
   const [adding, setAdding] = useState(false)
   const [settingsFor, setSettingsFor] = useState<BoardMeta | null>(null)
@@ -367,6 +371,11 @@ export function BoardSwitcher() {
               {meta.name || meta.slug}
               {typeof meta.total === 'number' && (
                 <span className="text-[0.625rem] tabular-nums text-(--ui-text-quaternary)">{meta.total}</span>
+              )}
+              {unseenOf(meta.slug) > 0 && (
+                <Badge size="xs" variant="solid">
+                  {unseenOf(meta.slug)}
+                </Badge>
               )}
               {meta.slug === currentSlug && <Codicon className="ml-auto" name="check" size="0.8rem" />}
             </DropdownMenuItem>

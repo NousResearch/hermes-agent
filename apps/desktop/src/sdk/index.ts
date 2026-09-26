@@ -1682,6 +1682,10 @@ export {
  *  look) — use it for colour picking instead of driving app widgets through
  *  React internals; pair it with `host.sessions.setColor` for session colours. */
 export { APPEARANCE_AREAS } from '@/app/settings/appearance-contrib'
+/** Notifications settings' plugin seam: register a render contribution at
+ *  `NOTIFICATIONS_AREAS.extra` to add a preference row at the end of
+ *  Settings → Notifications → Alerts (e.g. a plugin's own alert style). */
+export { NOTIFICATIONS_AREAS } from '@/app/settings/notifications-contrib'
 
 /** THE settings rows: `ListRow` is label + description with the control beside
  *  it (wide) or under it (narrow); `ToggleRow` is the one on/off row — a Switch,
@@ -1851,6 +1855,10 @@ export { type BudgetedLoop, type BudgetedLoopOptions, createBudgetedLoop } from 
 /** The blank transcript as a contribution area: claim the sessions you own and
  *  render what stands in the gap. Core's own splash keeps a fresh draft. */
 export { CHAT_EMPTY_AREA, type ChatEmptyContribution, type ChatEmptyProps } from '@/lib/chat-empty'
+/** The turn-end completion cue in the user's chosen sound variant (Settings →
+ *  Notifications → Sounds). Silent while haptics/sounds are muted. Pass a
+ *  dedupe key so only one open window plays a given cue. */
+export { playCompletionSound } from '@/lib/completion-sound'
 /** THE confirm flow for guarded model switches — when a gateway model-switch
  *  RPC answers `confirm_required` (data-policy / expensive-model guard),
  *  route it through this shared applier instead of forking a per-surface

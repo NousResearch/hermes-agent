@@ -127,4 +127,28 @@ describe('kanban connection scope', () => {
     unsubscribe()
     dispose()
   })
+
+  it('a socket frame on a remote connection counts under that connection (#123596)', async () => {
+    const { $kanbanUnseen, $unseenByBoard, cursorKey } = await import('./completion-notify')
+    const frames: Array<(data: unknown) => void> = []
+    setConnection({ connectionId: 'spark', mode: 'remote' } as never)
+
+    const dispose = bindApi(
+      async <T>() => ({ latest_event_id: 4 }) as T,
+      { ...noopStorage, get: <T>(key: string, fallback: T) => (key === 'boardSlug.spark' ? ('ship' as T) : fallback) },
+      vi.fn((_path: string, onFrame: (data: unknown) => void) => {
+        frames.push(onFrame)
+
+        return vi.fn()
+      })
+    )
+
+    await vi.waitFor(() => expect(frames).toHaveLength(1))
+    frames[0]({ cursor: 5, events: [{ id: 5, kind: 'completed', task_id: 't5' }] })
+
+    await vi.waitFor(() => expect($kanbanUnseen.get()).toBe(1))
+    expect($unseenByBoard.get()).toEqual({ [cursorKey('spark', 'ship')]: 1 })
+
+    dispose()
+  })
 })

@@ -1,3 +1,4 @@
+import type { ReadableAtom } from 'nanostores'
 import type * as React from 'react'
 
 import type { ChatMessage } from '@/lib/chat-messages'
@@ -135,6 +136,9 @@ export interface SidebarNavItem extends Tiered {
   action?: 'new-session'
   /** Keybind action id — when set, the tooltip shows the keybind hint. */
   keybindActionId?: string
+  /** Live trailing count (contributed rows — see `SidebarNavContribution`). */
+  count?: ReadableAtom<number>
+  countLabel?: (count: number) => string
 }
 
 export interface PersistedDisplayTranscriptProvenance {

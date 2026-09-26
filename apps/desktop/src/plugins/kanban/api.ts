@@ -27,8 +27,15 @@ import {
   useValue
 } from '@hermes/plugin-sdk'
 
+import { $alertsMode, ALERTS_MODE_KEY, parseAlertsMode } from './alerts-mode'
 // Native completion notification.
-import { bindCompletionNotify, type CompletionEvent, onKanbanEventsFrame } from './completion-notify'
+import {
+  bindCompletionNotify,
+  type CompletionEvent,
+  cursorKey,
+  onKanbanEventsFrame,
+  resetCompletionNotify
+} from './completion-notify'
 import type {
   BoardExportResult,
   BoardImportResult,
@@ -80,10 +87,6 @@ const COLLAPSED_KEY = 'collapsedLanes'
 // cursor cannot resume another's stream. Cleared on bind/unbind — events that
 // land while the plugin is unloaded are not replayed.
 const eventCursorByBoard = new Map<string, number>()
-
-function cursorKey(scope: string, slug: string): string {
-  return `${scope}\0${slug}`
-}
 
 function snapshotCursor(scope: string, slug: string): number | undefined {
   for (const archived of [false, true]) {
@@ -183,7 +186,7 @@ function onEventsFrame(scope: string, slug: string, data: unknown): void {
 
   // Completion notification (after invalidation so notify failure
   // never interferes with cache invalidation).
-  void onKanbanEventsFrame(slug, events).catch(() => undefined)
+  void onKanbanEventsFrame(slug, events, scope).catch(() => undefined)
 }
 
 // A persisted, subscribable atom (the structural slice we need — avoids
@@ -221,6 +224,11 @@ export function bindApi(
   persist($introDismissed, INTRO_KEY, false)
   persist($lanesByProfile, LANES_KEY, false)
   persist($collapsedLanes, COLLAPSED_KEY, {})
+
+  // Validated on read: a corrupt or future value falls back to `toast`.
+  // Hydrated before the socket dials below, so no frame sees the default.
+  $alertsMode.set(parseAlertsMode(storage.get<unknown>(ALERTS_MODE_KEY, 'toast')))
+  unsubs.push($alertsMode.listen(mode => storage.set(ALERTS_MODE_KEY, mode)))
 
   eventCursorByBoard.clear()
 
@@ -309,6 +317,7 @@ export function bindApi(
   return () => {
     socketGeneration += 1
     eventCursorByBoard.clear()
+    resetCompletionNotify()
     unsubs.forEach(unsub => unsub())
     close?.()
     rest = null

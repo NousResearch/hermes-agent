@@ -82,6 +82,7 @@ import {
   useKanbanScope
 } from './api'
 import { BoardSwitcher } from './board-switcher'
+import { markBoardViewing } from './completion-notify'
 import { TaskDrawer } from './drawer'
 import { EMPTY_OVERRIDE, ModelOverrideField, overrideCreateFields, type TaskModelOverride } from './model-override'
 import { OrchestrationPanel } from './orchestration'
@@ -1118,6 +1119,10 @@ export function KanbanBoardPage() {
     setAddStatus(requestedLane)
     $newTaskLane.set(null)
   }, [requestedLane])
+
+  // Opening a board clears its unseen alerts count, and it stays clear while
+  // the page is mounted and the window visible (#123596).
+  useEffect(() => markBoardViewing(scope, slug), [scope, slug])
 
   const toggleSelect = (id: string) => {
     setSelected(prev => {

@@ -39,6 +39,7 @@ def ledger_env(tmp_path, monkeypatch):
     skills_dir.mkdir(parents=True)
 
     monkeypatch.setattr(skill_ledger, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(skill_ledger, "_skills_dir", lambda: skills_dir)
     monkeypatch.setattr(skill_usage, "get_hermes_home", lambda: home)
     monkeypatch.setattr(skill_manager_tool, "SKILLS_DIR", skills_dir)
     monkeypatch.setattr(skill_utils, "get_all_skills_dirs", lambda: [skills_dir])
@@ -779,4 +780,222 @@ def test_concurrent_appends_never_lose_a_middle_row(ledger_env, monkeypatch):
         survivors = [i for i in seq if i in set(present)]
         assert survivors == seq[len(seq) - len(survivors):], (
             f"writer {k}: rows missing from the middle — a concurrent sweep dropped an append"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Curator-backup completeness fill
+# ---------------------------------------------------------------------------
+
+
+def _categorized_skill(ledger_env, category="software-development", name="plan"):
+    """Create ``skills/<category>/<name>/`` with a second file, as a real package."""
+    pkg = ledger_env["skills"] / category / name
+    pkg.mkdir(parents=True)
+    (pkg / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: test skill\n---\n\n# Plan\n", encoding="utf-8"
+    )
+    (pkg / "reference.md").write_text("reference body\n", encoding="utf-8")
+    return pkg
+
+
+def test_curator_backup_fill_does_not_nest_categorized_prefix(ledger_env, monkeypatch):
+    """A member found under the categorized prefix must map to its real path.
+
+    The backup stores the package as ``<category>/<name>/...`` while the live
+    root already is ``skills/<category>/<name>``. Stripping only the bare name
+    left the category in place and produced
+    ``software-development/plan/software-development/plan/SKILL.md`` — a path
+    that never existed, which ``rollback_entry`` would then write on restore.
+    """
+    from tools import skill_ledger
+
+    pkg = _categorized_skill(ledger_env)
+    category, name = "software-development", "plan"
+    monkeypatch.setattr(skill_ledger, "_read_package_files_from_latest_backup", lambda prefixes: {
+        f"{category}/{name}/SKILL.md": b"---\nname: plan\n---\n",
+        f"{category}/{name}/reference.md": b"reference body\n",
+    })
+
+    out = skill_ledger.fill_snapshot_from_curator_backup(str(pkg), [])
+    rels = sorted(Path(i["path"]).relative_to(ledger_env["skills"]).as_posix() for i in out)
+
+    assert rels == [f"{category}/{name}/SKILL.md", f"{category}/{name}/reference.md"]
+    assert not any(r.count(f"{name}/") > 1 for r in rels), (
+        f"fabricated nested path in ledger before-state: {rels}"
+    )
+
+
+def test_curator_backup_fill_still_strips_bare_name_prefix(ledger_env, monkeypatch):
+    """A backup that stores the package under its bare name keeps working."""
+    from tools import skill_ledger
+
+    pkg = _categorized_skill(ledger_env)
+    monkeypatch.setattr(skill_ledger, "_read_package_files_from_latest_backup", lambda prefixes: {
+        "plan/SKILL.md": b"---\nname: plan\n---\n",
+        "plan/reference.md": b"reference body\n",
+    })
+
+    out = skill_ledger.fill_snapshot_from_curator_backup(str(pkg), [])
+    rels = sorted(Path(i["path"]).relative_to(ledger_env["skills"]).as_posix() for i in out)
+
+    assert rels == ["software-development/plan/SKILL.md", "software-development/plan/reference.md"]
+
+
+def test_curator_backup_fill_dedupes_against_existing_before_state(ledger_env, monkeypatch):
+    """A file already present in ``before`` is not added a second time."""
+    from tools import skill_ledger
+
+    pkg = _categorized_skill(ledger_env)
+    existing = str(pkg / "SKILL.md")
+    monkeypatch.setattr(skill_ledger, "_read_package_files_from_latest_backup", lambda prefixes: {
+        "software-development/plan/SKILL.md": b"---\nname: plan\n---\n",
+        "software-development/plan/reference.md": b"reference body\n",
+    })
+
+    out = skill_ledger.fill_snapshot_from_curator_backup(
+        str(pkg), [{"path": existing, "sha256": "0" * 64}],
+    )
+    paths = [i["path"] for i in out]
+
+    assert paths.count(existing) == 1
+    assert str(pkg / "reference.md") in paths
+
+
+def test_curator_backup_fill_without_root_keeps_categorized_paths(ledger_env, monkeypatch):
+    """With no live root, members land under ``skills/`` at their stored path."""
+    from tools import skill_ledger
+
+    _categorized_skill(ledger_env)
+    monkeypatch.setattr(skill_ledger, "_read_package_files_from_latest_backup", lambda prefixes: {
+        "software-development/plan/SKILL.md": b"---\nname: plan\n---\n",
+    })
+
+    out = skill_ledger.fill_snapshot_from_curator_backup(None, [], skill="software-development/plan")
+    rels = sorted(Path(i["path"]).relative_to(ledger_env["skills"]).as_posix() for i in out)
+
+    assert rels == ["software-development/plan/SKILL.md"]
+
+
+def test_curator_backup_fill_handles_archived_timestamped_dir(ledger_env, monkeypatch):
+    """An archived package keeps its ``-<timestamp>`` suffix and strips correctly.
+
+    ``_ARCHIVE_TS_SUFFIX_RE`` is ``^(.+)-\\d{14}$``, so a purge/rollback of a
+    timestamped directory must still recognise the bare name underneath it.
+
+    The tar member is stored under the CATEGORIZED form (``devops/plan/...``) so
+    the assertion can only pass via the archive-stripped canonical prefix. With a
+    bare ``plan/SKILL.md`` member the bare-name candidate matches first and the
+    archive-suffix branch is never exercised, so the test would pass even if
+    ``_strip_archive_timestamp`` were deleted outright.
+    """
+    from tools import skill_ledger
+
+    pkg = ledger_env["skills"] / "devops" / "plan-20260909120000"
+    pkg.mkdir(parents=True)
+    (pkg / "SKILL.md").write_text("---\nname: plan\n---\n", encoding="utf-8")
+
+    # The reader only ever sees members that fall under a probed prefix, so the
+    # mock has to honour *prefixes* too. Returning the member unconditionally
+    # would let this test pass even with the archive-stripped prefix missing.
+    monkeypatch.setattr(skill_ledger, "_read_package_files_from_latest_backup", lambda prefixes: {
+        "devops/plan/SKILL.md": b"---\nname: plan\n---\n",
+    } if any("devops/plan/SKILL.md".startswith(p + "/") for p in prefixes) else {})
+
+    out = skill_ledger.fill_snapshot_from_curator_backup(str(pkg), [])
+    rels = sorted(Path(i["path"]).relative_to(ledger_env["skills"]).as_posix() for i in out)
+
+    assert rels == ["devops/plan-20260909120000/SKILL.md"]
+
+
+def test_curator_backup_fill_handles_multi_level_category(ledger_env, monkeypatch):
+    """A category nested more than one level deep is stripped whole."""
+    from tools import skill_ledger
+
+    pkg = ledger_env["skills"] / "devops" / "ci" / "plan"
+    pkg.mkdir(parents=True)
+    (pkg / "SKILL.md").write_text("---\nname: plan\n---\n", encoding="utf-8")
+
+    monkeypatch.setattr(skill_ledger, "_read_package_files_from_latest_backup", lambda prefixes: {
+        "devops/ci/plan/SKILL.md": b"---\nname: plan\n---\n",
+    })
+
+    out = skill_ledger.fill_snapshot_from_curator_backup(str(pkg), [])
+    rels = sorted(Path(i["path"]).relative_to(ledger_env["skills"]).as_posix() for i in out)
+
+    assert rels == ["devops/ci/plan/SKILL.md"]
+
+
+def test_nested_before_state_prefix_does_not_steal_outer_member(ledger_env, monkeypatch):
+    """A nested support-dir prefix must not win the strip match.
+
+    ``package_prefixes`` adds a prefix for every SKILL.md parent found in the
+    before-state, and a support dir carrying its own SKILL.md yields a NESTED
+    entry such as ``software-development/plan/references``. Matching the whole
+    prefix set longest-first let that nested entry pull a member out of the
+    package it belongs to — in either direction — so an outer file lost its
+    before-state (never restored) or a nested file was written onto the outer
+    package. Only the canonical prefix of *root* may be stripped whole.
+    """
+    from tools import skill_ledger
+
+    pkg = _categorized_skill(ledger_env)
+    nested = pkg / "references"
+    nested.mkdir()
+    (nested / "SKILL.md").write_text("---\nname: refs\n---\n", encoding="utf-8")
+
+    before = [
+        {"path": str(pkg / "SKILL.md"), "sha256": "0" * 64},
+        {"path": str(nested / "SKILL.md"), "sha256": "1" * 64},
+    ]
+    monkeypatch.setattr(skill_ledger, "_read_package_files_from_latest_backup", lambda prefixes: {
+        "software-development/plan/notes.md": b"outer notes\n",
+        "software-development/plan/references/inner.md": b"inner\n",
+    })
+
+    out = skill_ledger.fill_snapshot_from_curator_backup(str(pkg), before)
+    rels = sorted(Path(i["path"]).relative_to(ledger_env["skills"]).as_posix() for i in out)
+
+    assert "software-development/plan/notes.md" in rels, (
+        f"outer member lost its before-state and would never be restored: {rels}"
+    )
+    assert "software-development/plan/references/inner.md" in rels, (
+        f"nested member was hoisted out of its own package: {rels}"
+    )
+    assert "software-development/plan/inner.md" not in rels, (
+        f"nested member was written onto the outer package: {rels}"
+    )
+
+
+def test_flat_and_categorized_members_do_not_collide(ledger_env, monkeypatch):
+    """A same-named flat skill and a categorized one must not share a target.
+
+    Both ``plan/SKILL.md`` and ``software-development/plan/SKILL.md`` reduce to
+    ``SKILL.md`` under a categorized root. Whichever member is seen first used
+    to win, so the surviving CONTENT depended on tar member order — and the
+    flat skill's body could be written over the categorized one on restore.
+    The canonical member must always win.
+    """
+    from tools import skill_ledger
+
+    pkg = _categorized_skill(ledger_env)
+    canonical_body = b"---\nname: plan\ndescription: canonical\n---\n"
+    flat_body = b"---\nname: plan\ndescription: flat\n---\n"
+
+    def _fill(contents):
+        monkeypatch.setattr(
+            skill_ledger, "_read_package_files_from_latest_backup",
+            lambda prefixes: dict(contents),
+        )
+        out = skill_ledger.fill_snapshot_from_curator_backup(str(pkg), [])
+        rels = [Path(i["path"]).relative_to(ledger_env["skills"]).as_posix() for i in out]
+        assert rels == ["software-development/plan/SKILL.md"], (
+            f"ambiguous members must not both land, nor fabricate a nested copy: {rels}"
+        )
+        return (skill_ledger.blobs_dir() / out[0]["sha256"]).read_bytes()
+
+    for order in ({"plan/SKILL.md": flat_body, "software-development/plan/SKILL.md": canonical_body},
+                  {"software-development/plan/SKILL.md": canonical_body, "plan/SKILL.md": flat_body}):
+        assert _fill(order) == canonical_body, (
+            "the categorized member must win regardless of tar member order"
         )

@@ -700,13 +700,18 @@ def _windows_process_listing() -> str | None:
         powershell = shutil.which("powershell") or shutil.which("pwsh")
         if powershell is None:
             return None
+        # Single line, no backtick escapes (#121719): the previous multi-line
+        # pipeline with `` `r`n ``/`` `n `` literals trips heuristic AV
+        # (obfuscated-PowerShell signatures) on Win11 24H2+ where wmic is gone
+        # and this fallback runs on every scan. ``[Environment]::NewLine``
+        # (CRLF) + ``[char]10`` (lone LF) flatten embedded newlines exactly
+        # like the old replaces; output shape (CommandLine=/ProcessId= LIST)
+        # is unchanged.
         ps_cmd = (
-            "Get-CimInstance Win32_Process | "
-            "ForEach-Object { "
-            "  'CommandLine=' + ($_.CommandLine -replace \"`r`n\",' ' -replace \"`n\",' '); "
-            "  'ProcessId=' + $_.ProcessId; "
-            "  '' "
-            "}"
+            "Get-CimInstance Win32_Process | ForEach-Object { "
+            "'CommandLine=' + ($_.CommandLine "
+            "-replace [Environment]::NewLine,' ' -replace [char]10,' '); "
+            "'ProcessId=' + $_.ProcessId; '' }"
         )
         result = bounded_probe_run([powershell, "-NoProfile", "-Command", ps_cmd], timeout=15, errors="ignore")
         if result is None:

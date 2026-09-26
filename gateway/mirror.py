@@ -123,6 +123,14 @@ def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = Non
             return None
     elif len(candidates) > 1 and len({u.strip() for u in map(_origin_user_id, candidates) if u.strip()}) > 1:
         return None
+    if thread_id is None:
+        # Prefer the flat session (#121721): newest-wins otherwise lands the
+        # mirror in a later-started thread sibling the reply can never reach.
+        # Applied after user matching so contamination rules are unchanged.
+        flat = [e for e in candidates
+                if not str((e.get("origin") or {}).get("thread_id") or "").strip()]
+        if flat:
+            candidates = flat
     return max(candidates, key=lambda entry: entry.get("updated_at", "")).get("session_id")
 
 

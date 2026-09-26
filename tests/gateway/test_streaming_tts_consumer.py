@@ -197,7 +197,8 @@ def gateway_tts_turn(monkeypatch, tmp_path):
             _delivery_adapter_for=lambda source: adapter,
             _build_stream_consumer_config=lambda *args, **kwargs: (StreamConsumerConfig(), None),
         )
-        _, delta, interim, _ = TurnRunner(runner, ctx)._setup_stream_consumer("realtime")
+        # 5th return: opt-in reasoning callback (None here — reasoning not enabled).
+        _, delta, interim, _, _ = TurnRunner(runner, ctx)._setup_stream_consumer("realtime")
         agent = Agent()
         agent.stream_delta_callback, agent._stream_callback, agent.interim_assistant_callback = delta, None, interim
         return agent, tts, adapter, streamer

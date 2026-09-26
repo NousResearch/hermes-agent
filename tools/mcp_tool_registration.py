@@ -411,17 +411,19 @@ def _register_server_tools(name: str, server: "MCPServerTask", config: dict) -> 
 
 def _connection_identity(config: dict) -> tuple:
     """What makes one live connection reusable for another profile: the route fingerprint PLUS
-    everything that authenticates it (``config_fingerprint`` deliberately excludes credentials so
-    the schema cache survives a token rotation). Two profiles pointing at the same URL with different
-    headers/env/auth/client certificates are two identities; borrowing across them would call tools
-    as the other user."""
+    everything that authenticates or secures it (``config_fingerprint`` deliberately excludes
+    credentials so the schema cache survives a token rotation). Two profiles pointing at the same URL
+    with different headers/env/auth/client certificates/TLS policy are two identities; borrowing
+    across them would call tools as the other user, or under the other profile's ``ssl_verify`` /
+    ``strict_redirect_headers``."""
     from tools.mcp_schema_cache import config_fingerprint
 
     def _frozen(value):
         return json.dumps(value or {}, sort_keys=True, default=str)
 
     return (config_fingerprint(config), _frozen(config.get("env")), _frozen(config.get("headers")),
-            _auth_type(config), _frozen(config.get("client_cert")), _frozen(config.get("client_key")))
+            _auth_type(config), _frozen(config.get("client_cert")), _frozen(config.get("client_key")),
+            config.get("ssl_verify", True), bool(config.get("strict_redirect_headers")))
 
 
 def _auth_type(config: dict) -> str:

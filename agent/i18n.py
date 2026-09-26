@@ -1,7 +1,9 @@
-"""Lightweight i18n for Hermes' static user-facing strings (approval prompts, a few gateway replies).
+"""Lightweight i18n for Hermes' static user-facing strings and gateway command descriptions.
 
 Catalogs are ``locales/<lang>.yaml`` flattened to dotted keys. Missing keys
 fall back to English, then to the key itself, so a broken catalog never crashes.
+Command descriptions may be overridden per language; the live command registry
+remains their English source and the fallback for other languages.
 Language resolution: explicit ``lang=`` > ``HERMES_LANGUAGE`` > ``display.language`` > ``en``.
 """
 

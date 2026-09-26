@@ -504,6 +504,14 @@ def parse_model_flags_detailed(raw_args: str) -> ModelFlagParseResult:
             values[_VALUE_FLAGS[tok]] = value
         else:
             filtered.append(tok)  # a trailing bare ``--provider`` stays part of the model text
+    # Discord's native /model renders its option as ``name:<value>``; pasted into any other surface
+    # the label became part of the model id under the CURRENT provider. Strip a leading
+    # ``name:``/``name=``/``model:``/``model=`` label once, here, for every surface.
+    if filtered and (label := re.match(r"(?i)^(?:name|model)[:=](.*)$", filtered[0])) is not None:
+        if label.group(1):
+            filtered[0] = label.group(1)
+        else:  # ``name: <value>`` — the label is a token of its own
+            filtered.pop(0)
     return ModelFlagParseResult(model_input=" ".join(filtered).strip(), **values, **flags)
 
 
@@ -1399,14 +1407,47 @@ def _route_from_model_input(st: _Switch) -> Optional[ModelSwitchResult]:
     config_routed = _route_configured_provider(st)  # d.5 — deliberately NOT gated on ``not is_custom``
     if isinstance(config_routed, ModelSwitchResult):
         return config_routed
-    is_custom = (
-        current_provider in {"custom", "local"} or current_provider.startswith("custom:")
-        or base_url_hostname(st.current_base_url or "") in ("localhost", "127.0.0.1"))
-    if not config_routed and not is_custom:  # e
+    if not config_routed and not _is_custom_current(st):  # e
         detected = detect_provider_for_model(st.new_model, current_provider)
         if detected:
             st.target_provider, st.new_model = detected
     return None
+
+
+def _is_custom_current(st: _Switch) -> bool:
+    """Whether the CURRENT route is a custom/local endpoint (its ids are the server's own)."""
+    current_provider = st.current_provider
+    return (
+        current_provider in {"custom", "local"} or current_provider.startswith("custom:")
+        or base_url_hostname(st.current_base_url or "") in ("localhost", "127.0.0.1"))
+
+
+def _refuse_unknown_slash_prefix(st: _Switch) -> Optional[ModelSwitchResult]:
+    """COMMON PATH part 2b: refuse ``X/model`` that stayed on the current (non-aggregator,
+    non-custom) provider when ``X`` is neither a provider nor a vendor namespace and the endpoint
+    did not recognise the full id — otherwise ``<current>/X/model`` is persisted and every turn
+    fails. A slug the endpoint lists or config declares is a real model id and passes."""
+    raw = st.raw_input.strip()
+    head = raw.split("/", 1)[0].strip()
+    if (
+        st.explicit_provider or st.resolved_alias or not head or "/" not in raw or "://" in raw
+        or st.target_provider != st.current_provider
+        or is_aggregator(st.current_provider) or _is_custom_current(st)
+        or st.new_model.strip().split("/", 1)[0].strip() != head
+        or st.validation.get("recognized")
+    ):
+        return None
+    from hermes_cli.model_normalize import _VENDOR_PREFIXES
+    if head.lower() in _VENDOR_PREFIXES or head.lower() in set(_VENDOR_PREFIXES.values()):
+        return None
+    if _names_known_provider(head, st) or _config_declares_model(
+            st.new_model, st.target_provider, st.base_url, st.user_providers, st.custom_providers):
+        return None
+    return st.fail(
+        f"Unknown provider '{head}' in '{st.new_model}'. No model switch was made. Use "
+        f"<provider>/<model> with a configured provider id (see 'hermes model'), or force the "
+        f"full id on the current provider with --provider {st.current_provider}.",
+        new_model=st.new_model, target_provider=st.target_provider, provider_label=st.provider_label)
 
 
 def _switch_provider_label(st: _Switch) -> str:
@@ -1757,7 +1798,7 @@ def switch_model(
         explicit_provider=explicit_provider, user_providers=user_providers, custom_providers=custom_providers,
         new_model=raw_input.strip(), target_provider=current_provider)
     route = _route_explicit_provider if explicit_provider else _route_from_model_input
-    for step in (route, _resolve_switch_credentials, _validate_switch):
+    for step in (route, _resolve_switch_credentials, _validate_switch, _refuse_unknown_slash_prefix):
         fail = step(st)
         if fail is not None:
             return fail

@@ -35,6 +35,14 @@ _FAST_SELECTIONS = {
 _REASONING_DISPLAY_TOGGLES = {"show": True, "on": True, "hide": False, "off": False}
 
 
+def _with_resolved_route(label: str, result: Any) -> str:
+    """Append the resolved ``provider/model`` pair to a /model confirmation: the display label
+    alone hides a mis-split (``my-apr`` + ``name:my-bpx/x``); the literal pair shows it."""
+    provider = str(getattr(result, "target_provider", "") or "").strip()
+    model = str(getattr(result, "new_model", "") or "").strip()
+    return f"{label} · `{provider}/{model}`" if provider and model else label
+
+
 def _model_switch_skew_guard() -> Optional[str]:
     """Refuse a model switch when the gateway is running stale code: a first-time lazy import on
     a new code path can crash on a stale cached dependency. Scoped to the highest-risk trigger."""
@@ -293,7 +301,8 @@ class GatewayModelCommandsMixin:
 
         lines = [
             t("gateway.model.switched", model=format_model_for_display(result.new_model)),
-            t("gateway.model.provider_label", provider=result.provider_label or result.target_provider),
+            t("gateway.model.provider_label",
+              provider=_with_resolved_route(result.provider_label or result.target_provider, result)),
         ]
         # Provider-aware chain: Codex OAuth, Copilot and Nous caps win over the raw models.dev entry.
         mi = result.model_info

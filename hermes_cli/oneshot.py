@@ -246,13 +246,18 @@ def run_oneshot(
     usage_file: Optional[str] = None,
     resume: Optional[str] = None,
     reasoning: object = None,
+    worktree: bool = False,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
     Model/provider fall back to ``HERMES_INFERENCE_MODEL`` and config.yaml. ``usage_file`` gets a
     JSON usage report even when the run fails. ``resume`` is a session id (already normalized by
     the CLI layer: latest/title/--continue resolution) whose transcript is loaded and continued
-    by this turn. Returns the exit code; the caller owns process termination.
+    by this turn. ``worktree`` runs the turn in a disposable git worktree on a dedicated branch
+    (same isolation as ``-w`` in interactive chat); setup failure is a hard error, and the
+    ``worktree: true`` config default is NOT honored here (one-shot is script-facing, so
+    isolation is opt-in per invocation). Returns the exit code; the caller owns process
+    termination.
     """
     # Silence every stdlib logger: AIAgent, tools and provider adapters log to stderr through the
     # root logger. File handlers from setup_logging() keep working (level-independent).
@@ -274,6 +279,61 @@ def run_oneshot(
         return 2
     use_config_toolsets = _normalize_toolsets(toolsets) is None
 
+    # ── Git worktree isolation (#67458) ──
+    # Mirrors interactive chat (cli.main): prune stale worktrees, create a
+    # fresh one, and point TERMINAL_CWD at it so the terminal/file tools
+    # operate inside the isolated checkout. Runs BEFORE the stdout/stderr
+    # redirect so setup errors reach the terminal. When the flag was given
+    # but setup fails, refuse to run — silently falling back to the live
+    # branch is the exact failure mode this flag exists to prevent.
+    wt_info = None
+    _cleanup_worktree = None
+    if worktree:
+        # Capture BEFORE importing cli: the import bridges config → env and
+        # force-exports TERMINAL_CWD (cli.py's config bridge), which would
+        # clobber the in-process caller's original value we mean to restore.
+        _prev_terminal_cwd = os.environ.get("TERMINAL_CWD")
+
+        def _restore_terminal_cwd() -> None:
+            # Every exit path after the cli import must run this: the import
+            # already force-exported TERMINAL_CWD even when setup then fails.
+            if _prev_terminal_cwd is None:
+                os.environ.pop("TERMINAL_CWD", None)
+            else:
+                os.environ["TERMINAL_CWD"] = _prev_terminal_cwd
+
+        try:
+            from cli import (
+                CLI_CONFIG,
+                _cleanup_worktree,
+                _git_repo_root,
+                _prune_stale_worktrees,
+                _setup_worktree,
+            )
+
+            # The helpers print() their setup progress ("✓ Worktree
+            # created: ..."); one-shot's stdout must carry ONLY the final
+            # response, so route helper output to stderr — same contract as
+            # the cleanup path in the finally below.
+            with redirect_stdout(sys.stderr):
+                repo = _git_repo_root()
+                if repo:
+                    _prune_stale_worktrees(repo)
+                wt_info = _setup_worktree(sync_base=CLI_CONFIG.get("worktree_sync", True))
+        except Exception as exc:
+            _restore_terminal_cwd()
+            sys.stderr.write(f"hermes -z: failed to create worktree: {exc}\n")
+            return 2
+        if not wt_info:
+            _restore_terminal_cwd()
+            sys.stderr.write(
+                "hermes -z: -w/--worktree was requested but worktree setup "
+                "failed (not a git repository?). Refusing to run without "
+                "isolation.\n"
+            )
+            return 2
+        os.environ["TERMINAL_CWD"] = wt_info["path"]
+
     # Non-interactive by definition — an approval prompt would hang forever.
     os.environ["HERMES_YOLO_MODE"] = "1"
     os.environ["HERMES_ACCEPT_HOOKS"] = "1"
@@ -294,24 +354,42 @@ def run_oneshot(
     response: Optional[str] = None
     result: dict = {}
     failure: BaseException | None = None
-    with open(os.devnull, "w", encoding="utf-8") as devnull, redirect_stdout(devnull), redirect_stderr(devnull):
-        try:
-            response, result = _run_agent(
-                prompt,
-                model=model,
-                provider=provider,
-                toolsets=explicit_toolsets,
-                use_config_toolsets=use_config_toolsets,
-                skills=skills,
-                resume=resume,
-                reasoning=reasoning,
-                ledger=bool(usage_file),
-            )
-        except BaseException as exc:  # noqa: BLE001
-            # Capture anything escaping the agent (OSError from prompt_toolkit on a non-TTY pipe,
-            # KeyboardInterrupt, SystemExit, ...) so it reaches the real stderr instead of dying
-            # silently past the redirect — the worst failure mode in cron / SSH / subprocess use.
-            failure = exc
+    try:
+        with open(os.devnull, "w", encoding="utf-8") as devnull, redirect_stdout(devnull), redirect_stderr(devnull):
+            try:
+                response, result = _run_agent(
+                    prompt,
+                    model=model,
+                    provider=provider,
+                    toolsets=explicit_toolsets,
+                    use_config_toolsets=use_config_toolsets,
+                    skills=skills,
+                    resume=resume,
+                    reasoning=reasoning,
+                    ledger=bool(usage_file),
+                )
+            except BaseException as exc:  # noqa: BLE001
+                # Capture anything escaping the agent (OSError from prompt_toolkit on a non-TTY pipe,
+                # KeyboardInterrupt, SystemExit, ...) so it reaches the real stderr instead of dying
+                # silently past the redirect — the worst failure mode in cron / SSH / subprocess use.
+                failure = exc
+    finally:
+        # Cleanup runs however the redirect scope ends (including an OSError from closing the
+        # devnull handle): the worktree is disposable and TERMINAL_CWD must be restored.
+        if wt_info is not None and _cleanup_worktree is not None:
+            # Same lifecycle as interactive chat's atexit hook: remove the disposable worktree,
+            # keeping the branch with any commits. The helper print()s its outcome ("cleaned up" /
+            # "has unpushed commits, keeping"); route that to stderr because one-shot's contract is
+            # that stdout carries ONLY the final response, and the unpushed-commits notice fires
+            # precisely in -w's main use case (the agent committed something).
+            try:
+                with redirect_stdout(real_stderr):
+                    _cleanup_worktree(wt_info)
+            except Exception:
+                pass
+            # Restore the caller's terminal cwd: the worktree path is gone now, and in-process
+            # callers (tests, embedding) must not keep inheriting a dangling TERMINAL_CWD.
+            _restore_terminal_cwd()
 
     if failure is not None:
         # Control-flow exceptions (Ctrl-C / sys.exit inside the agent) re-raise to the parent.

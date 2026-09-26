@@ -19,7 +19,7 @@ from hermes_cli.web_server_gateway import _display_system_platform
 from starlette.concurrency import run_in_threadpool
 from fastapi import HTTPException, Request
 from gateway.status import (
-    _get_process_start_time, _pid_from_record, _start_times_conflict,
+    _pid_from_record, _start_times_conflict,
     derive_gateway_busy, derive_gateway_drainable, normalize_updated_at, parse_active_agents,
     profile_platforms_from_multiplexer, resolve_gateway_liveness, retained_gateway_state,
     runtime_status_heartbeat_age_s, runtime_status_is_stale)
@@ -57,6 +57,7 @@ get_running_pid_cached = late("get_running_pid_cached", "gateway.status")
 get_runtime_status_running_pid = late("get_runtime_status_running_pid", "gateway.status")
 load_config = late("load_config", "hermes_cli.config")
 read_runtime_status = late("read_runtime_status", "gateway.status")
+_get_process_start_time = late("_get_process_start_time", "gateway.status")
 _open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.web_server_sessions")
 
 

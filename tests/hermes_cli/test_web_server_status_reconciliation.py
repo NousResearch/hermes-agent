@@ -24,9 +24,7 @@ def test_snapshot_identity_survives_http_projection_and_startup_cleanup(
     monkeypatch.setattr(status, "get_running_pid_cached", lambda *a, **k: live["pid"])
     monkeypatch.setattr(status, "read_runtime_status", lambda *a, **k: snapshot)
     monkeypatch.setattr(status, "get_runtime_status_running_pid", lambda *a, **k: None)
-    monkeypatch.setattr(
-        route, "_get_process_start_time", lambda pid: live["start"], raising=False
-    )
+    monkeypatch.setattr(status, "_get_process_start_time", lambda pid: live["start"])
     monkeypatch.setattr(
         gateway_web, "_load_configured_gateway_platforms", lambda: {"discord"}
     )

@@ -528,15 +528,131 @@ def _real_profile_autoclose() -> bool:
     return bool(_browser_setting("real_profile_autoclose") or False)
 
 
+def _pid_is_alive(pid: int) -> bool:
+    """True when ``pid`` still exists. Uses ``psutil.pid_exists`` — never ``os.kill(pid, 0)``,
+    which on Windows maps to TerminateProcess and would kill the target."""
+    if pid <= 0:
+        return False
+    try:
+        import psutil
+    except ImportError:
+        return False
+    return bool(psutil.pid_exists(pid))
+
+
+def _read_singleton_lock(src: str) -> tuple[str | None, int | None]:
+    """Parse Chromium ``SingletonLock`` symlink ``hostname-pid``. Returns ``(host, pid)`` or
+    ``(None, None)`` when absent/malformed. Does not check liveness or hostname match."""
+    try:
+        target = os.readlink(os.path.join(src, "SingletonLock"))
+    except OSError:
+        return None, None
+    host, sep, pid_text = target.rpartition("-")
+    if not sep or not host or not pid_text.isdecimal():
+        return None, None
+    return host, int(pid_text)
+
+
+def _singleton_owner_pid(src: str) -> int | None:
+    """Linux Chromium main-process PID from ``SingletonLock`` when the lock is local.
+
+    Returns the PID even if it is already dead (stale lock after SIGKILL) so callers can
+    treat a dead owner as gone and optionally clear the leftover lock files. Returns
+    ``None`` when the lock is absent, malformed, or owned by a different hostname
+    (shared-volume / NFS case — never treat a remote PID as local).
+    """
+    if platform.system() != "Linux":
+        return None
+    host, pid = _read_singleton_lock(src)
+    if host is None or pid is None:
+        return None
+    if host != socket.gethostname():
+        return None
+    return pid
+
+
+def _clear_stale_singleton_files(src: str) -> tuple[bool, str | None]:
+    """Remove stale ``SingletonLock`` / ``SingletonSocket`` / ``SingletonCookie`` only when
+    the lock names THIS host and its PID is dead. Never deletes blindly.
+
+    Returns ``(cleared_or_absent, error_message)``. On a foreign-hostname lock (shared
+    volume), touches nothing and returns an explanatory error. If the PID is still alive,
+    touches nothing and returns an error. Re-reads the lock immediately before unlink so a
+    TOCTOU swap to a new hostname-pid target cannot delete a live owner's files.
+    """
+    lock_path = os.path.join(src, "SingletonLock")
+    if not os.path.lexists(lock_path):
+        return True, None
+    try:
+        expected_target = os.readlink(lock_path)
+    except OSError:
+        return False, "SingletonLock is present but unreadable; refusing to remove it."
+    host, pid = _read_singleton_lock(src)
+    if host is None or pid is None:
+        return False, "SingletonLock is present but malformed; refusing to remove it."
+    if host != socket.gethostname():
+        return False, (
+            f"SingletonLock is owned by host {host!r} (this host is "
+            f"{socket.gethostname()!r}) — likely a shared-volume profile; "
+            "refusing to remove another host's lock.")
+    if _pid_is_alive(pid):
+        return False, (
+            f"process {pid} named by SingletonLock is still alive; "
+            "refusing to clear the profile lock.")
+    # TOCTOU: another Chrome may have rewritten the lock between the dead-PID check
+    # and unlink. Only remove files if the symlink still points at the same target.
+    try:
+        current_target = os.readlink(lock_path)
+    except OSError:
+        # Lock vanished — nothing to clear.
+        return True, None
+    if current_target != expected_target:
+        return False, (
+            f"SingletonLock changed during clear "
+            f"(was {expected_target!r}, now {current_target!r}); refusing to unlink.")
+    for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        with contextlib.suppress(OSError):
+            # Re-check lock target once more immediately before removing SingletonLock.
+            if name == "SingletonLock":
+                try:
+                    if os.readlink(lock_path) != expected_target:
+                        return False, (
+                            "SingletonLock changed during clear; refusing to unlink.")
+                except OSError:
+                    return True, None
+            os.unlink(os.path.join(src, name))
+    return True, None
+
+
+def _wait_pids_exit(pids: list[int], timeout: float) -> list[int]:
+    """Poll until every pid in ``pids`` is gone or ``timeout`` elapses.
+
+    Returns the list of PIDs still alive at the end (empty on full success).
+    """
+    tracked = list(dict.fromkeys(pid for pid in pids if pid > 0))
+    deadline = time.monotonic() + max(timeout, 0.0)
+    while time.monotonic() < deadline:
+        still_alive = [pid for pid in tracked if _pid_is_alive(pid)]
+        if not still_alive:
+            return []
+        time.sleep(0.1)
+    return [pid for pid in tracked if _pid_is_alive(pid)]
+
+
 def _processes_holding_profile(src: str):
-    """Yield psutil.Process instances holding ``src`` open: Chromium-family binaries whose
-    cmdline references THIS user-data-dir — never an unrelated same-PID process. An unreadable
-    cmdline is skipped."""
+    """Yield Chromium-family processes bound to ``src`` by argv or Linux SingletonLock PID.
+
+    Default-dir Chrome omits ``--user-data-dir`` from argv; the SingletonLock PID identifies
+    that main process. Crashpad helpers whose argv mentions the dir (via ``--database=``)
+    still match. An explicitly different ``--user-data-dir`` is never matched. Unreadable
+    cmdlines are skipped.
+    """
     try:
         import psutil
     except ImportError:  # hard dep; defensive
         return
     norm = os.path.normcase(os.path.normpath(src))
+    singleton_pid = _singleton_owner_pid(src)
     browser_bins = (
         "chrome", "chrome.exe", "chromium", "chromium.exe", "chrome_crashpad",
         "brave", "brave.exe", "msedge", "msedge.exe", "google chrome")
@@ -550,29 +666,82 @@ def _processes_holding_profile(src: str):
         argv0 = cmd[0].lower() if cmd else ""  # some platforms report a generic name
         if not any(b in name or b in argv0 for b in browser_bins):
             continue
-        # Binding: the exact user-data-dir must appear in the cmdline, normalized.
-        if (norm in os.path.normcase(os.path.normpath(joined))
-                or f"--user-data-dir={src}".lower() in joined.lower()):
+        # Binding: exact user-data-dir in argv, OR the local SingletonLock main PID
+        # (default-dir Chrome has no --user-data-dir; crashpad must not be treated as owner).
+        argv_bound = (norm in os.path.normcase(os.path.normpath(joined))
+                      or f"--user-data-dir={src}".lower() in joined.lower())
+        # --type= is matched case-sensitively on purpose: Chromium always emits lowercase
+        # --type=...; lowering would risk false negatives on unusual argv spellings we do
+        # not want to treat as the main process. name/argv0 are already lowercased above.
+        implicit_owner = (
+            singleton_pid is not None
+            and getattr(proc, "pid", None) == singleton_pid
+            and bool(cmd)
+            and "crashpad" not in name and "crashpad" not in argv0
+            and not any(arg.startswith(("--user-data-dir", "--type=")) for arg in cmd[1:]))
+        if argv_bound or implicit_owner:
             yield proc
 
 
 def close_browser_holding_profile(src: str, timeout: float = 15.0) -> tuple[bool, str]:
-    """Terminate the browser process tree holding ``src`` and wait for release. CONSENTED,
-    DESTRUCTIVE (unsaved tab/form state is lost): only call after the user agreed."""
+    """Terminate the browser process tree holding ``src`` and wait for real exit.
+
+    CONSENTED, DESTRUCTIVE (unsaved tab/form state is lost): only call after the user agreed.
+
+    Holders come only from ``_processes_holding_profile`` (argv bind and/or Linux
+    SingletonLock PID that already passed the Chromium-family binary filter). There is
+    intentionally **no** fallback that kills a raw SingletonLock PID — a recycled PID
+    belonging to an unrelated process must never be terminated.
+
+    After matched PIDs exit:
+    - **Windows:** the profile lock is released slightly after process exit; poll
+      ``_profile_is_locked`` (cookie-DB deny-all) as the success criterion.
+    - **POSIX:** cookie-DB readability is not a lock probe. Clear stale
+      ``SingletonLock`` / ``SingletonSocket`` / ``SingletonCookie`` only when the lock
+      names this host and its PID is dead — never deleted blindly, never touched on a
+      foreign-hostname (shared-volume) lock. Owner *discovery* via SingletonLock is
+      Linux-only; stale-lock clearing is hostname+pid gated on all POSIX (including
+      macOS when no holders remain).
+    """
     try:
         import psutil
     except ImportError:
         return False, "psutil unavailable — cannot close the browser automatically."
+
+    foreign_host, foreign_pid = _read_singleton_lock(src)
+    if (foreign_host is not None and foreign_pid is not None
+            and foreign_host != socket.gethostname()):
+        return False, (
+            f"SingletonLock is owned by host {foreign_host!r} (this host is "
+            f"{socket.gethostname()!r}) — likely a shared-volume profile; "
+            "refusing to kill or clear another host's lock.")
+
     procs = list(_processes_holding_profile(src))
     if not procs:
-        # Already closed, or the holder is a different user / unreadable — caller re-probes.
+        # No browser-filtered holder. A stale same-host lock can still block relaunch —
+        # clear carefully (refuses if the lock PID is still alive, e.g. PID reuse).
+        cleared, clear_err = _clear_stale_singleton_files(src)
+        if cleared:
+            return True, "no live browser held the profile; stale profile lock cleared."
+        if clear_err:
+            return False, clear_err
         return False, "no matching browser process found holding the profile."
-    # Include child processes (renderers, GPU, crashpad) for a full tree kill.
+
     gone_errs = (psutil.NoSuchProcess, psutil.AccessDenied)
     targets = list(procs)
     for p in procs:
         with contextlib.suppress(*gone_errs):
             targets.extend(p.children(recursive=True))
+    # Deduplicate by PID while preserving order.
+    seen: set[int] = set()
+    uniq: list = []
+    for p in targets:
+        with contextlib.suppress(*gone_errs):
+            if p.pid not in seen:
+                seen.add(p.pid)
+                uniq.append(p)
+    targets = uniq
+
     for p in targets:
         with contextlib.suppress(*gone_errs):
             p.terminate()
@@ -581,16 +750,37 @@ def close_browser_holding_profile(src: str, timeout: float = 15.0) -> tuple[bool
         with contextlib.suppress(*gone_errs):
             p.kill()
     psutil.wait_procs(alive, timeout=3.0)
-    # The lock releases slightly after the process exits on Windows; poll.
-    source_profile = _resolve_source_profile(src)[0] or _last_used_profile(src)
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if not _profile_is_locked(src, source_profile):
-            return True, "closed the browser and the profile lock released."
-        time.sleep(0.5)
-    return False, (
-        "closed the browser processes but the profile is still locked — "
-        "another instance may have relaunched (background/tray mode).")
+
+    # Wait for every matched holder (browser-filtered only) to actually exit.
+    still_alive = _wait_pids_exit(list(seen), timeout)
+    if still_alive:
+        return False, (
+            f"browser process(es) {still_alive} still present after terminate/kill — "
+            "profile lock not released.")
+
+    if platform.system() == "Windows":
+        # The lock releases slightly after the process exits on Windows; poll.
+        source_profile = _resolve_source_profile(src)[0] or _last_used_profile(src)
+        win_deadline = time.monotonic() + timeout
+        while time.monotonic() < win_deadline:
+            if not _profile_is_locked(src, source_profile):
+                return True, "closed the browser and the profile lock released."
+            time.sleep(0.5)
+        return False, (
+            "closed the browser processes but the profile is still locked — "
+            "another instance may have relaunched (background/tray mode).")
+
+    # POSIX: after SIGKILL Chromium does not unlink SingletonLock — clear only when
+    # hostname matches and the PID is dead (never blindly; never on foreign host).
+    cleared, clear_err = _clear_stale_singleton_files(src)
+    if not cleared:
+        return False, clear_err or (
+            "browser exited but the profile lock could not be cleared.")
+    if list(_processes_holding_profile(src)):
+        return False, (
+            "browser processes still present after close — profile lock not released.")
+    return True, "closed the browser and the profile lock released."
+
 
 
 def _sync_local_state(src: str, dst: str, source_profile: str) -> None:

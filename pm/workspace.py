@@ -104,6 +104,76 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
         shutil.copy2(entry, target)
 
 
+# A real-time scanner (AV/EDR/indexer) can hold a short exclusive handle on the files a
+# bulk copy just created — _copy_core_inputs drops 2000+ fresh files into a new generation
+# and the pyproject write that immediately follows then fails with [Errno 13] while reads
+# still succeed, discarding the whole dependency sync and leaving the source-completion
+# marker behind (#122800). Only PermissionError is retried: other write failures are
+# permanent. Every pyproject write of one generation — the root plus one per plugin
+# member — draws from one shared budget, so the bound on total retry time holds at any
+# member count instead of multiplying per call site.
+_PYPROJECT_WRITE_RETRY_DELAYS_S = (0.5, 1.0, 2.0, 2.0, 4.0, 4.0, 8.0, 8.0, 15.0, 15.0)
+# A single call's delays sum to 59.5 s; the shared cap keeps root + all members inside
+# the desktop's 90 s startup wait with headroom for the sync's real work.
+_PYPROJECT_RETRY_BUDGET_S = 60.0
+
+
+class _PyprojectRetryBudget:
+    """Caps the total retry sleep one generation's pyproject writes may spend together."""
+
+    def __init__(self, total: float) -> None:
+        self.remaining = total
+
+    def withdraw(self, delay: float) -> bool:
+        """Reserve one sleep slot; False once the shared window is spent."""
+        if delay > self.remaining:
+            return False
+        self.remaining -= delay
+        return True
+
+
+def _write_pyproject_riding_out_file_lock(
+    target: Path, text: str, budget: Optional[_PyprojectRetryBudget] = None
+) -> None:
+    """``write_text`` that retries a transient PermissionError with bounded backoff; re-raises the last one."""
+    import logging
+    import time
+
+    if budget is None:
+        budget = _PyprojectRetryBudget(_PYPROJECT_RETRY_BUDGET_S)
+    logger = logging.getLogger(__name__)
+    for attempt, delay in enumerate(_PYPROJECT_WRITE_RETRY_DELAYS_S, start=1):
+        try:
+            target.write_text(text, encoding="utf-8")
+            return
+        except PermissionError as exc:
+            if not budget.withdraw(delay):
+                logger.warning(
+                    "workspace pyproject write %s still locked; shared retry budget spent, re-raising: %s",
+                    target,
+                    exc,
+                )
+                raise
+            logger.warning(
+                "workspace pyproject write %s hit a file lock (attempt %d/%d), retrying in %.1fs: %s",
+                target,
+                attempt,
+                len(_PYPROJECT_WRITE_RETRY_DELAYS_S) + 1,
+                delay,
+                exc,
+            )
+            time.sleep(delay)
+    try:
+        target.write_text(text, encoding="utf-8")
+    except PermissionError as exc:
+        logger.warning(
+            "workspace pyproject write %s still locked after the last retry, re-raising: %s",
+            target,
+            exc,
+        )
+        raise
+
+
 def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Path, *, source: Path) -> None:
     """Snapshot core and plugin build inputs into a fresh generation."""
     source = source.resolve()
@@ -114,9 +184,14 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
     core_pyproject = source / "pyproject.toml"
     core_text = core_pyproject.read_text(encoding="utf-8-sig")
 
-    members = [_workspace_member(source, root, identity=identity).relative_to(root).as_posix()
-               for identity, source in member_sources(plugin_dirs).items()
-               if _is_member_candidate(source)]
+    retry_budget = _PyprojectRetryBudget(_PYPROJECT_RETRY_BUDGET_S)
+    members = [
+        _workspace_member(source, root, identity=identity, budget=retry_budget)
+        .relative_to(root)
+        .as_posix()
+        for identity, source in member_sources(plugin_dirs).items()
+        if _is_member_candidate(source)
+    ]
 
     if members:
         import tomllib
@@ -132,7 +207,7 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
         text = core_text.rstrip("\n") + "\n"
     target = root / "pyproject.toml"
     _copy_core_inputs(source, root)
-    target.write_text(text, encoding="utf-8")
+    _write_pyproject_riding_out_file_lock(target, text, budget=retry_budget)
 
 
 def _core_release_quarantine(document: dict, core_lock: Path) -> None:
@@ -240,7 +315,9 @@ def _member_key(identity: Path) -> str:
     return f"{name}-{digest}"
 
 
-def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
+def _workspace_member(
+    plugin_dir: Path, root: Path, *, identity: Path, budget: _PyprojectRetryBudget
+) -> Path:
     """Keep workspace members with their generation, not a temporary install clone."""
     import json
     import tomllib
@@ -281,16 +358,17 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
         if virtual or changed:
             import tomli_w
 
-            (member / "pyproject.toml").write_text(tomli_w.dumps(document), encoding="utf-8")
+            _write_pyproject_riding_out_file_lock(member / "pyproject.toml", tomli_w.dumps(document), budget=budget)
         return member
     specs = declaration.install_requirements
     member = root / "plugin-deps" / key
     member.mkdir(parents=True)
-    (member / "pyproject.toml").write_text(
+    _write_pyproject_riding_out_file_lock(
+        member / "pyproject.toml",
         f'[project]\nname = "hermes-plugin-{key}"\nversion = "0.0.0"\n'
         'requires-python = ">=3.11"\n'
         f'dependencies = {json.dumps(specs)}\n[tool.uv]\npackage = false\n',
-        encoding="utf-8",
+        budget=budget,
     )
     return member
 

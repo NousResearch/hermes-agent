@@ -1573,6 +1573,22 @@ def _strip_dotted_keys(cfg: dict, dotted_keys: set) -> Tuple[dict, set]:
 _ENV_REF_RE = re.compile(r"\${([^}]+)}")
 
 
+def _dotenv_pending() -> bool:
+    """True when a ``.env`` exists that this process has not loaded yet.
+
+    Thin lazy-import wrapper over ``hermes_cli.env_loader.dotenv_pending``
+    so config-ref expansion (which runs at import time on several
+    entrypoints) never hard-depends on the env loader being importable.
+    Fails toward the historical behavior — warn — if anything goes wrong.
+    """
+    try:
+        from hermes_cli.env_loader import dotenv_pending
+
+        return dotenv_pending()
+    except Exception:  # noqa: BLE001 — never let a diagnostic break expansion
+        return False
+
+
 def _env_ref_lookup(name: str) -> Optional[str]:
     """Resolve the env var behind a ``${VAR}`` / ``${env:VAR}`` ref — plain ``os.environ`` outside
     a profile secret scope (legacy behavior for the default profile).
@@ -1613,9 +1629,17 @@ def _env_expand_match(m: re.Match) -> str:
     if val is not None:
         return val
     if inner.startswith("env:"):
-        logger.warning(
-            "Config ref %r: %s is not set (check ~/.hermes/.env); "
-            "keeping the literal placeholder", raw, name)
+        # Suppress the warning (NOT the placeholder) while a .env this process has not read yet
+        # exists on disk. Several entrypoints import this module — expanding config refs as an
+        # import side effect — before calling load_hermes_dotenv(), so a var that lives only in
+        # .env looks unset here and printed a false "is not set" line on every CLI invocation.
+        # The returned value is unchanged: load_config()'s env-ref snapshot re-expands once the
+        # environment actually changes (#58514). A genuinely-missing var still warns, because by
+        # then the .env has been loaded.
+        if not _dotenv_pending():
+            logger.warning(
+                "Config ref %r: %s is not set (check ~/.hermes/.env); "
+                "keeping the literal placeholder", raw, name)
     return raw
 
 

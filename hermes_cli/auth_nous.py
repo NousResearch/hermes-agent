@@ -1398,7 +1398,8 @@ def _nous_device_code_login(
     now = datetime.now(timezone.utc)
     token_expires_in = _coerce_ttl_seconds(token_data.get("expires_in", 0))
     resolved_inference_url = (
-        _optional_base_url(token_data.get("inference_base_url")) or requested_inference_url)
+        _validate_nous_inference_url_from_network(_optional_base_url(token_data.get("inference_base_url")))
+        or requested_inference_url)
     if resolved_inference_url != requested_inference_url:
         print(f"Using portal-provided inference URL: {resolved_inference_url}")
     auth_state = {

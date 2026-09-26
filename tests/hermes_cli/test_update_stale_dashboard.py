@@ -837,3 +837,27 @@ class TestLaunchdSupervisedBackends:
         assert owning(9999, serve_argv[:-1] + ["8643"], jobs) is None
         assert owning(9999, None, jobs) is None
         assert owning(4242, None, []) is None
+
+    def test_launchd_job_attribution_ignores_launcher_spelling(self):
+        """#121596 (same-home variant): the plist spells the interpreter ``python`` while the live
+        process argv carries the absolute venv path (or the ``hermes`` shim). Exact-argv comparison
+        then misclassifies the previous update's detached respawn as manual, so every update kills
+        and re-orphans it onto the launchd job's fixed port. Attribution must compare the backend
+        shape (profile + serve tail), not the launcher prefix."""
+        uid = 501
+        plist_argv = ["python", "-m", "hermes_cli.main", "-p", "default", "serve",
+                      "--host", "127.0.0.1", "--port", "9119", "--skip-build"]
+        jobs: list[tuple[str, str, list[str], int | None]] = [
+            (f"gui/{uid}", "ai.hermes.serve", plist_argv, 80668)]
+        owning = main_dashboard._launchd_job_owning_backend
+        # Previous update's respawn as seen via ps: absolute interpreter, fresh launchd child elsewhere.
+        orphan = ["/Users/me/.venv/bin/python", "-m", "hermes_cli.main", "-p", "default",
+                  "serve", "--host", "127.0.0.1", "--port", "9119", "--skip-build"]
+        assert owning(76554, orphan, jobs) == (f"gui/{uid}", "ai.hermes.serve", 80668)
+        # Same backend launched through the entry-point shim: still the job's shape.
+        shim = ["hermes", "-p", "default", "serve",
+                "--host", "127.0.0.1", "--port", "9119", "--skip-build"]
+        assert owning(76554, shim, jobs) == (f"gui/{uid}", "ai.hermes.serve", 80668)
+        # A genuinely different endpoint must NOT be claimed by the job.
+        other_port = [x if x != "9119" else "9220" for x in orphan]
+        assert owning(76554, other_port, jobs) is None

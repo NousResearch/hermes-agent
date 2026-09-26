@@ -686,7 +686,7 @@ def reset_shadow_state_for_tests() -> None:  # pragma: no cover - test seam
 
 
 def _shadow_state_observe(cap: CaptureResult, session_id: Optional[str]) -> None:
-    if not cap.elements:
+    if not session_id or not cap.elements:
         return
     try:
         import time as _time

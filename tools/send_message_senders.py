@@ -641,15 +641,26 @@ async def _send_qqbot(pconfig, chat_id, message):
             if not access_token:
                 return _error("QQBot: no access_token in response")
 
+            # Body shape differs per endpoint. C2C and group render Markdown — and inline
+            # ``$...$`` math — only for msg_type=2 carrying a "markdown" object
+            # (gateway/platforms/qqbot/constants.py); msg_type=0 is raw text, so a formula
+            # delivered through this fallback reached the user as bare LaTeX while the live
+            # adapter rendered it. The guild channel endpoint takes a bare "content" body
+            # (QQAdapter._send_guild_text), so it stays plain text. Same gate as the adapter.
+            rich = bool(extra.get("markdown_support", True))
+            text = message[:4000]
+            plain = {"content": text, "msg_type": 0}
+            rich_body = {"markdown": {"content": text}, "msg_type": 2}
             # Separate endpoints for guild channels, C2C (private) and groups; first 2xx wins.
+            endpoints = (("channel", f"https://api.sgroup.qq.com/channels/{chat_id}/messages", plain),
+                         ("c2c", f"https://api.sgroup.qq.com/v2/users/{chat_id}/messages",
+                          rich_body if rich else plain),
+                         ("group", f"https://api.sgroup.qq.com/v2/groups/{chat_id}/messages",
+                          rich_body if rich else plain))
             headers = {"Authorization": f"QQBot {access_token}", "Content-Type": "application/json"}
-            payload = {"content": message[:4000], "msg_type": 0}
-            endpoints = (("channel", f"https://api.sgroup.qq.com/channels/{chat_id}/messages"),
-                         ("c2c", f"https://api.sgroup.qq.com/v2/users/{chat_id}/messages"),
-                         ("group", f"https://api.sgroup.qq.com/v2/groups/{chat_id}/messages"))
             statuses = []
-            for kind, url in endpoints:
-                resp = await client.post(url, json=payload, headers=headers)
+            for kind, url, body in endpoints:
+                resp = await client.post(url, json=body, headers=headers)
                 if resp.status_code in {200, 201}:
                     return _success("qqbot", chat_id, message_id=resp.json().get("id"))
                 statuses.append(f"{kind}={resp.status_code}")

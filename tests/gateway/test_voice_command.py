@@ -402,6 +402,95 @@ class TestSendVoiceReply:
         assert runner._voice_guild_for_chat(self._vc_adapter(), None) is None
         assert runner._voice_guild_for_chat(object(), "123") is None
 
+    # -- Privacy boundary: only the voice-linked chat may play into the voice channel ----------
+
+    @pytest.mark.asyncio
+    async def test_other_thread_in_same_guild_never_plays_in_voice(self, runner):
+        """A reply in a different (possibly private) thread of the same server carries a raw
+        message with the guild, but must NOT reach the shared voice channel."""
+        event = self._internal_discord_event(chat_id="999")
+        event.raw_message = SimpleNamespace(guild=SimpleNamespace(id=111))
+        adapter = self._vc_adapter()
+        runner.adapters[event.source.platform] = adapter
+        await runner._deliver_voice_reply(event, ["/tmp/a.ogg"])
+        adapter.play_in_voice_channel.assert_not_called()
+        adapter.send_voice.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_linked_chat_with_raw_message_plays_in_voice(self, runner):
+        event = self._internal_discord_event(chat_id="123")
+        event.raw_message = SimpleNamespace(guild=SimpleNamespace(id=111))
+        adapter = self._vc_adapter()
+        runner.adapters[event.source.platform] = adapter
+        await runner._deliver_voice_reply(event, ["/tmp/a.ogg"])
+        adapter.play_in_voice_channel.assert_awaited_once_with(111, "/tmp/a.ogg")
+
+    # -- Spoken interim commentary ---------------------------------------------------------------
+
+    def _set_mode(self, runner, source, mode):
+        runner._voice_mode[runner._voice_key_for_source(source)] = mode
+
+    @pytest.mark.parametrize("mode,chat_id,in_vc,expected", [
+        ("all", "123", True, 111),
+        ("voice_only", "123", True, 111),
+        ("off", "123", True, None),
+        (None, "123", True, None),
+        ("all", "999", True, None),     # not the voice-linked chat
+        ("all", "123", False, None),    # bot not in the voice channel
+    ])
+    def test_commentary_voice_guild_gate(self, runner, mode, chat_id, in_vc, expected):
+        event = self._internal_discord_event(chat_id=chat_id)
+        runner.adapters[event.source.platform] = self._vc_adapter(in_vc=in_vc)
+        if mode is not None:
+            self._set_mode(runner, event.source, mode)
+        assert runner._commentary_voice_guild(event.source) == expected
+
+    @pytest.mark.asyncio
+    async def test_speak_commentary_plays_clip_in_linked_voice_channel(self, runner, tmp_path):
+        event = self._internal_discord_event()
+        adapter = self._vc_adapter()
+        runner.adapters[event.source.platform] = adapter
+        self._set_mode(runner, event.source, "all")
+        clip = tmp_path / "c.ogg"
+
+        def fake_tts(text, output_path):
+            clip.write_bytes(b"x")
+            return json.dumps({"success": True, "file_path": str(clip)})
+
+        with patch("tools.tts_tool.text_to_speech_tool", side_effect=fake_tts) as tts:
+            await runner._speak_commentary(event.source, "Checking the **logs** now.")
+        tts.assert_called_once()
+        assert "**" not in tts.call_args.kwargs["text"]
+        adapter.play_in_voice_channel.assert_awaited_once_with(111, str(clip))
+        assert not clip.exists()  # temp clip cleaned up
+
+    @pytest.mark.asyncio
+    async def test_speak_commentary_skips_unlinked_chat(self, runner):
+        event = self._internal_discord_event(chat_id="999")
+        adapter = self._vc_adapter()
+        runner.adapters[event.source.platform] = adapter
+        self._set_mode(runner, event.source, "all")
+        with patch("tools.tts_tool.text_to_speech_tool") as tts:
+            await runner._speak_commentary(event.source, "Working on it.")
+        tts.assert_not_called()
+        adapter.play_in_voice_channel.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_commentary_and_reply_share_one_lock_per_guild(self, runner):
+        assert runner._voice_play_lock(111) is runner._voice_play_lock(111)
+        assert runner._voice_play_lock(111) is not runner._voice_play_lock(222)
+
+    def test_stts_audible(self):
+        from gateway.run_turn_runner import _stts_audible
+        assert _stts_audible(None) is False
+        silent = SimpleNamespace(_adapter=SimpleNamespace(supports_streaming_tts=lambda c, f: False),
+                                 _chat_id="1", _audio_format=None)
+        live = SimpleNamespace(_adapter=SimpleNamespace(supports_streaming_tts=lambda c, f: True),
+                               _chat_id="1", _audio_format=None)
+        assert _stts_audible(silent) is False
+        assert _stts_audible(live) is True
+        assert _stts_audible(SimpleNamespace()) is False
+
 
 # =====================================================================
 # VoiceReceiver unit tests

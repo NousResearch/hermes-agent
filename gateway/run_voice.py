@@ -379,16 +379,82 @@ class GatewayVoiceMixin:
                     return int(gid)
         return None
 
-    async def _deliver_voice_reply(self, event: MessageEvent, audio_paths: List[str]) -> None:
-        """Play the files in the connected voice channel, else send them as voice messages."""
-        adapter = self._delivery_adapter_for(event.source)
-        guild_id = self._get_guild_id(event) or self._voice_guild_for_chat(
-            adapter, event.source.chat_id)
+    def _linked_voice_guild_in_vc(self, adapter, chat_id) -> Optional[int]:
+        """Guild to play audio in for *chat_id*, or None.
+
+        Privacy boundary: audio reaches a voice channel ONLY from the text channel linked to that
+        voice session (the one ``/voice join`` bound). Any other thread or channel in the same
+        server — including private ones with voice mode on — never plays into the shared voice
+        channel; it falls back to a voice-message attachment in its own chat. Mirrors
+        ``DiscordAdapter.play_tts`` and the voice-ack guild lookup."""
+        guild_id = self._voice_guild_for_chat(adapter, chat_id)
         play = getattr(adapter, "play_in_voice_channel", None)
         is_in_vc = getattr(adapter, "is_in_voice_channel", None)
         if guild_id and callable(play) and callable(is_in_vc) and is_in_vc(guild_id):
-            for path in audio_paths:
-                await play(guild_id, path)
+            return guild_id
+        return None
+
+    def _voice_play_lock(self, guild_id: int) -> asyncio.Lock:
+        """One lock per guild so spoken commentary and the final reply play in order, never overlap."""
+        locks = self.__dict__.setdefault("_voice_play_locks", {})
+        lock = locks.get(guild_id)
+        if lock is None:
+            lock = locks[guild_id] = asyncio.Lock()
+        return lock
+
+    def _commentary_voice_guild(self, source: SessionSource) -> Optional[int]:
+        """Guild to speak interim commentary in: the chat is the voice-linked text channel, the bot
+        is in that voice channel, and the chat's voice mode is on (``all`` or ``voice_only``)."""
+        with suppress(Exception):
+            mode = self._voice_mode.get(self._voice_key_for_source(source))
+            if mode not in ("all", "voice_only"):
+                return None
+            return self._linked_voice_guild_in_vc(
+                self._delivery_adapter_for(source), source.chat_id)
+        return None
+
+    async def _speak_commentary(self, source: SessionSource, text: str) -> None:
+        """Speak one interim commentary message (text the agent writes between tool calls) in the
+        linked voice channel, so a listener hears progress instead of silence until the final
+        reply. Adapters without streaming TTS (Discord) otherwise speak only the final reply."""
+        guild_id = self._commentary_voice_guild(source)
+        if not guild_id:
+            return
+        audio_path, actual_paths = None, []
+        try:
+            from tools.tts_text_normalize import _strip_markdown_for_tts
+            from tools.tts_tool import text_to_speech_tool
+            tts_text = _strip_markdown_for_tts(text or "")
+            if not tts_text or not tts_text.strip():
+                return
+            adapter = self._delivery_adapter_for(source)
+            async with self._voice_play_lock(guild_id):
+                audio_path = build_auto_tts_output_path(source.platform)
+                raw = await asyncio.to_thread(text_to_speech_tool, text=tts_text,
+                                              output_path=audio_path)
+                result = json.loads(raw) if raw else {}
+                candidates = result.get("file_paths") or [result.get("file_path", audio_path)]
+                actual_paths = [str(p) for p in candidates if p and os.path.isfile(p)]
+                if not result.get("success") or not actual_paths:
+                    logger.warning("Voice commentary TTS failed: %s", result.get("error"))
+                    return
+                for path in actual_paths:
+                    await adapter.play_in_voice_channel(guild_id, path)
+        except Exception as e:
+            logger.warning("Voice commentary failed: %s", e)
+        finally:
+            for p in ({audio_path, *actual_paths} - {None}):
+                with suppress(OSError):
+                    os.unlink(p)
+
+    async def _deliver_voice_reply(self, event: MessageEvent, audio_paths: List[str]) -> None:
+        """Play the files in the linked voice channel, else send them as voice messages."""
+        adapter = self._delivery_adapter_for(event.source)
+        guild_id = self._linked_voice_guild_in_vc(adapter, event.source.chat_id)
+        if guild_id:
+            async with self._voice_play_lock(guild_id):
+                for path in audio_paths:
+                    await adapter.play_in_voice_channel(guild_id, path)
             return
         if not callable(send_voice := getattr(adapter, "send_voice", None)):
             return

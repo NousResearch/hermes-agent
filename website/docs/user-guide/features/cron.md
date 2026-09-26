@@ -1134,6 +1134,8 @@ Times accept `9am`, `9:30pm`, `14:00`, bare 24-hour hours (`at 7`), `noon`, and 
 0 0 * * 0       → Every Sunday at midnight
 ```
 
+Expressions take exactly five fields: minute, hour, day of month, month, day of week. A seconds or year field is rejected, because the scheduler checks jobs once a minute. For a seconds-first expression from Quartz, Spring or node-cron, drop the first field: `0 0 9 * * *` becomes `0 9 * * *`.
+
 ### ISO timestamps
 
 ```text

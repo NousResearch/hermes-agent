@@ -419,6 +419,38 @@ _ENDPOINT_UNREACHABLE_MARKERS = (
 _GATEWAY_ENDPOINT_UNREACHABLE_RE = re.compile(
     "(" + "|".join(_ENDPOINT_UNREACHABLE_MARKERS) + ")", re.IGNORECASE)
 
+def _venv_matches_running_python(venv_dir: Path) -> bool:
+    """True when ``venv_dir`` was built for the CPython minor now running.
+
+    Windows venvs carry compiled extension modules tagged with the interpreter ABI
+    (``_pydantic_core.cp311-win_amd64.pyd``). Overlaying a 3.11 venv's site-packages onto a 3.14
+    interpreter lets pure-Python packages import while their compiled submodules vanish, which
+    surfaces far from the cause as ``No module named 'pydantic_core._pydantic_core'``. Read the
+    declared version from ``pyvenv.cfg``; an unreadable/absent config is treated as matching so a
+    parse failure can never strip a venv the install depends on.
+    """
+    cfg = venv_dir / "pyvenv.cfg"
+    try:
+        text = cfg.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return True
+    declared = ""
+    for line in text.splitlines():
+        key, _, value = line.partition("=")
+        if key.strip().lower() in ("version_info", "version"):
+            declared = value.strip()
+            break
+    if not declared:
+        return True
+    parts = declared.split(".")
+    if len(parts) < 2:
+        return True
+    try:
+        return (int(parts[0]), int(parts[1])) == sys.version_info[:2]
+    except ValueError:
+        return True
+
+
 def _ensure_windows_gateway_venv_imports() -> None:
     """Make detached Windows gateway runs see the Hermes venv packages.
 
@@ -445,6 +477,13 @@ def _ensure_windows_gateway_venv_imports() -> None:
 
         site_packages = resolved_venv / "Lib" / "site-packages"
         if not site_packages.exists():
+            continue
+        # A venv built for another CPython minor is ABI-incompatible: its extension modules are
+        # named ``*.cp<XY>-win_amd64.pyd`` and this interpreter will not import them, so overlaying
+        # its site-packages turns a working install into ``ModuleNotFoundError:
+        # pydantic_core._pydantic_core`` (pure-Python ``pydantic_core/__init__.py`` resolves, the
+        # compiled submodule does not). Skip mismatched venvs instead of shadowing the good one.
+        if not _venv_matches_running_python(resolved_venv):
             continue
 
         project_entry = str(project_root)

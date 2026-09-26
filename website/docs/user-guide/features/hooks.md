@@ -480,6 +480,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `pre_command` | Observer | Recognized slash command about to be dispatched, before the handler runs, on CLI and gateway cold-path dispatch; return ignored in v1 (directive-shaped dicts are logged at debug). Gateway running-agent intercept commands (`/stop`, `/approve` during an active run) are deliberately excluded — control-plane escape hatches must stay outside plugin reach. | `surface` (`"cli"` \| `"gateway"`), `command` (canonical name), `alias_used`, `args_raw`, `session_key`, `platform` | `args_raw` may contain user content or secrets typed after the command. |
 | `pre_approval_request` | Observer | Before prompted or smart approval; return ignored. | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id` | Command may contain secrets; smart observer preparation force-redacts, but surfaces do not all have identical redaction. |
 | `post_approval_response` | Observer | After a decision, timeout, or gateway notification failure; return ignored. | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id`, `choice`; smart path may add `decided_by` | Same command sensitivity plus decision metadata. |
+| `command_guard` | Directive/control | Every terminal command, inside `check_all_command_guards` — model tool calls and direct `terminal_tool()` callers alike — with the floors, before yolo, `approvals.mode=off`, the allowlist and the container fast path; the first `{"action": "block", "message"}` refuses the command. | `command`, `env_type`, `session_key` | The full command string, which may contain secrets. |
 | `on_room_member_activity` | Observer | While a hosted Group Chat member turn runs on the Bot Mode gateway, once per runtime event the member session emits (tool start/complete, approval request, message/reasoning deltas, errors); queued per consumer off the token path; return ignored. | `room_id`, `thread_id`, `member_id`, `turn_id`, `task_id`, `execution_generation`, `kind`, `seq`, `payload` | `payload` is the client-safe session event body: tool args and results, redacted approval commands, streamed member text. |
 | `kanban_task_claimed` | Observer | After claim commit, in dispatcher process before worker spawn; return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id` | Board/task/profile/assignee identifiers. |
 | `kanban_task_completed` | Observer | After completion and cleanup, usually in worker process; return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `summary` | Summary may contain project/user content. |
@@ -1401,6 +1402,30 @@ def log_decision(command, choice, session_key, **kwargs):
 
 def register(ctx):
     ctx.register_hook("post_approval_response", log_decision)
+```
+
+---
+
+### `command_guard`
+
+Consulted for every terminal command before it runs, from `tools/approval.py::check_all_command_guards`. Unlike `pre_tool_call`, which only sees tool calls the model issued, it also covers code that calls `terminal_tool()` directly (TUI completions, bot-mode DMs, evals), and it sits with the non-bypassable floors: yolo, `approvals.mode=off`, the permanent allowlist and an isolated container backend do not skip it.
+
+**Callback signature:**
+
+```python
+def my_callback(command: str, env_type: str, session_key: str, **kwargs):
+```
+
+**Return value:** `None` or `{"action": "allow"}` lets the command through; `{"action": "block", "message": "<reason>"}` refuses it. The first valid block wins. The terminal result carries `status: "blocked"` and the reason, and the model is told not to retry. A callback that raises counts as no opinion. Shell hooks cannot answer this hook.
+
+```python
+def no_prod_deploys(command, **kwargs):
+    if "kubectl" in command and "--context=prod" in command:
+        return {"action": "block", "message": "prod deploys go through CI"}
+    return None
+
+def register(ctx):
+    ctx.register_hook("command_guard", no_prod_deploys)
 ```
 
 ---

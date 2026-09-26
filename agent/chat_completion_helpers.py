@@ -1985,6 +1985,13 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
     current_ident = BackendIdentity.build(provider=getattr(agent, "provider", ""),
         model=getattr(agent, "model", ""), base_url=str(getattr(agent, "base_url", "") or ""))
     fb_ident = BackendIdentity.build(provider=fb_provider, model=fb_model, base_url=(fb.get("base_url") or ""))
+    primary = getattr(agent, "_primary_runtime", None) or {}
+    if getattr(agent, "_fallback_activated", False) and isinstance(primary, dict):
+        primary_ident = BackendIdentity.build(provider=primary.get("provider"),
+            model=primary.get("model"), base_url=primary.get("base_url"))
+        if should_skip_candidate(fb_ident, primary_ident):
+            logger.debug("Fallback skip: candidate repeats the failed session primary")
+            return True
     if should_skip_candidate(fb_ident, current_ident):
         logger.warning(
             "Fallback skip: chain entry %s/%s resolves to the same backend as the current one (%s)",

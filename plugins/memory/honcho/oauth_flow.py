@@ -45,10 +45,15 @@ _LOCAL_TOKEN_URL = "http://localhost:8000/oauth/token"
 _DEFAULT_CLIENT_ID = "hermes-agent"
 
 def _display_config_path(path: object) -> str:
-    """Home-relative display string for the consent screen (never the write path); outside ``$HOME``, the bare name."""
+    """Home-relative display string for the consent screen (never the write path); outside ``$HOME``, the bare name.
+
+    Path separators in the displayed string are always forward slashes so the URL the
+    user opens in a browser matches what the OS-native path would render. The actual write
+    path is unchanged — only the rendered text goes through here.
+    """
     p = Path(str(path))
     try:
-        return "~/" + str(p.relative_to(Path.home()))
+        return "~/" + p.relative_to(Path.home()).as_posix()
     except ValueError:
         return p.name
 

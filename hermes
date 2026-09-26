@@ -6,6 +6,32 @@ This wrapper should behave like the installed `hermes` command, including
 subcommands such as `gateway`, `cron`, and `doctor`.
 """
 
+import os
+import sys
+from pathlib import Path
+
+# Re-exec under the venv interpreter when invoked directly (not via the
+# installer's `venv/bin/python <repo>/hermes` wrapper). `#!/usr/bin/env
+# python3` — required for this script to be portable across installs — picks
+# up whatever `python3` is first on PATH, which usually lacks Hermes' venv
+# deps. That mismatch is invisible on a normal terminal launch (the installer
+# wrapper always runs this under the venv), but a regenerated `.desktop`
+# entry can point straight at this file (see linux_desktop_entry.py's
+# `resolve_hermes_bin()` / `sys.argv[0]` preference), which then dies on the
+# first third-party import (#90292) — silently, since `Terminal=false`
+# swallows the traceback.
+#
+# Resolved at runtime relative to this file's own real location, so it works
+# for any checkout path / any user, not just the one that first hit the bug.
+_venv_python = Path(__file__).resolve().parent / "venv" / "bin" / "python"
+if _venv_python.is_file():
+    try:
+        _running_under_venv = Path(sys.executable).resolve() == _venv_python.resolve()
+    except OSError:
+        _running_under_venv = False
+    if not _running_under_venv:
+        os.execv(str(_venv_python), [str(_venv_python), str(Path(__file__).resolve())] + sys.argv[1:])
+
 if __name__ == "__main__":
     from hermes_cli.main import main
     main()

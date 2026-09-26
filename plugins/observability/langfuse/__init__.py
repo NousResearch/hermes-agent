@@ -578,9 +578,16 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
     trace_ctx: Dict[str, Any] = {"trace_id": trace_id, **({"session_id": session_id} if session_id else {})}
 
     def open_root():
-        ctx = client.start_as_current_observation(trace_context=trace_ctx, name="Hermes turn", as_type="chain",
-                                                  input=trace_input, metadata=metadata, end_on_exit=False)
-        return ctx, ctx.__enter__()
+        # Manual observation, NOT start_as_current_observation: the root is opened in one
+        # hook call and ended in another (post_llm_call / api_request_error / atexit),
+        # which on the gateway run on different threads / asyncio contexts. Exiting an
+        # OTel context-manager token in a different Context raises
+        # "ValueError: <Token ...> was created in a different Context" on every turn
+        # (opentelemetry.context: Failed to detach context). Children are attached
+        # explicitly via root_span.start_observation(), so no active context is needed.
+        span = client.start_observation(trace_context=trace_ctx, name="Hermes turn", as_type="chain",
+                                        input=trace_input, metadata=metadata)
+        return None, span
 
     root_ctx = root_span = None
     if propagate_attributes is not None:
@@ -589,8 +596,8 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
                                       tags=["hermes", "langfuse"]):
                 root_ctx, root_span = open_root()
         except Exception:
-            root_ctx = None
-    if root_ctx is None:
+            root_span = None
+    if root_span is None:
         root_ctx, root_span = open_root()
 
     with _failsafe("update_trace(input)"):  # SDK v3 uses update_trace()
@@ -631,9 +638,8 @@ def _end_root(state: TraceState, label: str) -> None:
     """End the root span then unwind its context; never raises."""
     with _failsafe(label):
         state.root_span.end()
-        # Unwind the root context manager now, while opentelemetry.trace.Span is
-        # still a real type; GC-driven close at interpreter teardown raises
-        # TypeError inside use_span's isinstance check.
+        # root_ctx is always None for manually-started roots (see open_root); kept for
+        # older TraceState producers that still hand us a context manager.
         if state.root_ctx is not None:
             state.root_ctx.__exit__(None, None, None)
 

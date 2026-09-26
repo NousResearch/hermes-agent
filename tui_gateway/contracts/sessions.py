@@ -133,6 +133,7 @@ class SessionCreateParams(ProfileParams):
     hidden: bool = False
     room_plumbing: bool = False
     follow_profile_config: bool = False
+    defer_agent_build: bool = False  # skip the pre-warm; the agent builds on the first use
 
 
 class SessionCreateResult(Result):

@@ -28777,6 +28777,11 @@
             "default": false,
             "title": "Follow Profile Config",
             "type": "boolean"
+          },
+          "defer_agent_build": {
+            "default": false,
+            "title": "Defer Agent Build",
+            "type": "boolean"
           }
         },
         "title": "SessionCreateParams",

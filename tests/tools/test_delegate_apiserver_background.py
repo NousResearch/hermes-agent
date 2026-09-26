@@ -147,6 +147,32 @@ def test_apiserver_session_with_id_dispatches_background(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def test_apiserver_probe_failure_stays_synchronous(monkeypatch):
+    """async_delivery_supported raising must degrade the background call to a
+    synchronous run: a failed capability read cannot authorize detaching onto
+    a lane whose deliverability is unproven."""
+    dt = _patch_delegate(monkeypatch)
+    set_session_vars(
+        platform="api_server",
+        chat_id="raw-sid-7",
+        session_key="raw-sid-7",
+        session_id="raw-sid-7",
+        session_history_delivery="1",
+    )
+    monkeypatch.setattr(
+        "gateway.session_context.async_delivery_supported",
+        lambda: (_ for _ in ()).throw(RuntimeError("broken binding")))
+
+    out = dt.delegate_task(
+        goal="bg", context="ctx",
+        background=True, parent_agent=_fake_parent(),
+    )
+    parsed = json.loads(out)
+    assert parsed.get("status") != "dispatched", parsed
+    assert "SYNCHRONOUSLY" in parsed.get("note", "")
+    assert process_registry.completion_queue.empty()
+
+
 def test_apiserver_session_without_id_stays_synchronous(monkeypatch):
     """No session id to wake → keep the sync fallback (a detached result
     would never re-enter any conversation)."""

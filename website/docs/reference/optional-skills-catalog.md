@@ -51,6 +51,7 @@ hermes skills uninstall <skill-name>
 
 | Skill | Description |
 |-------|-------------|
+| [**acp-delegate**](../user-guide/skills/optional/communication/communication-acp-delegate.md) | Delegate a prompt to another Hermes ACP session. |
 | [**one-three-one-rule**](../user-guide/skills/optional/communication/communication-one-three-one-rule.md) | 1-3-1 decision briefs: problem, three options, one pick. |
 
 ## creative

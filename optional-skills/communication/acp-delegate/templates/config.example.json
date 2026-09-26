@@ -1,0 +1,7 @@
+{
+  "profile": "REPLACE_WITH_SECONDARY_PROFILE",
+  "cwd": "/path/to/a/dedicated/workspace",
+  "timeout_seconds": 300,
+  "command": "hermes",
+  "args": ["-p", "REPLACE_WITH_SECONDARY_PROFILE", "acp"]
+}

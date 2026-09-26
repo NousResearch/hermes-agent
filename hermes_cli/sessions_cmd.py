@@ -558,10 +558,18 @@ def _export_markdown_single(db, args, export_one, output_dir, lineage_is_logical
             print(f"Export verification failed; not deleting session '{data.get('id')}': {reason}")
             return
         expected_messages.update(snapshots)
-    if not db.delete_session(
-        resolved_session_id, sessions_dir=_sessions_dir(), expected_delete_ids=delete_target_ids,
-        expected_display_messages=expected_messages,
-    ):
+    try:
+        deleted = db.delete_session(
+            resolved_session_id, sessions_dir=_sessions_dir(), expected_delete_ids=delete_target_ids,
+            expected_display_messages=expected_messages, reject_active_write_guards=True,
+        )
+    except Exception as exc:
+        from hermes_state import SessionCompressionInProgressError, SessionTurnLeaseLostError
+        if isinstance(exc, (SessionCompressionInProgressError, SessionTurnLeaseLostError)):
+            print(f"Exported, but session '{resolved_session_id}' is active and was not deleted: {exc}")
+            return
+        raise
+    if not deleted:
         print(f"Exported, but session '{resolved_session_id}' was not deleted because its history or delegate set "
               "changed after export.")
         return
@@ -584,7 +592,16 @@ def _cmd_delete(db, args):
             return
     elif _pinned_note:
         print(f"Warning: deleting a pinned session '{resolved_session_id}'.")
-    if not db.delete_session(resolved_session_id, sessions_dir=_sessions_dir()):
+    try:
+        deleted = db.delete_session(
+            resolved_session_id, sessions_dir=_sessions_dir(), reject_active_write_guards=True)
+    except Exception as exc:
+        from hermes_state import SessionCompressionInProgressError, SessionTurnLeaseLostError
+        if isinstance(exc, (SessionCompressionInProgressError, SessionTurnLeaseLostError)):
+            print(f"Session '{resolved_session_id}' is active and was not deleted: {exc}")
+            return 1
+        raise
+    if not deleted:
         return _not_found(args.session_id)
     print(f"Deleted session '{resolved_session_id}'.")
 
@@ -718,7 +735,7 @@ def _cmd_prune_or_archive(db, args, action):
         print("Cancelled.")
         return
     if prune:
-        print(f"Pruned {db.prune_sessions(sessions_dir=_sessions_dir(), **filters)} session(s).")
+        print(f"Pruned {db.prune_sessions(sessions_dir=_sessions_dir(), exclude_active_write_guards=True, **filters)} session(s).")
     else:
         print(f"Archived {db.archive_sessions(**filters)} session(s). They're hidden from listings "
               "but fully recoverable (nothing was deleted).")

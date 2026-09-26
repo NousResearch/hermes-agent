@@ -1546,19 +1546,28 @@ class SessionSessionsMixin:
         self, session_id: str, sessions_dir: Optional[Path] = None,
         expected_delete_ids: Optional[List[str]] = None,
         expected_display_messages: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+        reject_active_write_guards: bool = False,
     ) -> bool:
         """Delete a session and its messages; delegate children cascade, branch/compression children
         are orphaned. Optional expected ids fence delegate drift; expected display snapshots fence
-        transcript drift. Both checks run inside the same write transaction as deletion."""
+        transcript drift. With ``reject_active_write_guards``, the target and cascaded delegate children
+        are refused while a live turn lease or compression lock protects them. All checks run inside the
+        same write transaction as deletion."""
         removed_ids: List[str] = []
         expected_ids = set(expected_delete_ids) if expected_delete_ids is not None else None
         def _do(conn):
             if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone() is None:
                 return False
-            if expected_ids is not None and expected_ids != {
-                session_id, *_collect_delegate_child_ids(conn, [session_id])
-            }:
+            delegate_ids = _collect_delegate_child_ids(conn, [session_id])
+            if expected_ids is not None and expected_ids != {session_id, *delegate_ids}:
                 return False
+            if reject_active_write_guards:
+                for guarded_id in (session_id, *delegate_ids):
+                    self._check_transcript_write_guards(
+                        conn, guarded_id, compression_lock_holder=None, turn_lease_holder=None,
+                        reject_active_turn_lease=True, reject_active_compression_lock=True,
+                        allow_closed_compression_parent=True,
+                    )
             if expected_display_messages is not None and any(
                 self._display_messages_from_conn(conn, covered_id) != expected
                 for covered_id, expected in expected_display_messages.items()
@@ -1605,9 +1614,13 @@ class SessionSessionsMixin:
             self._remove_session_files(sessions_dir, session_id)
         return deleted
 
-    def delete_sessions(self, session_ids: List[str], sessions_dir: Optional[Path] = None) -> int:
+    def delete_sessions(
+        self, session_ids: List[str], sessions_dir: Optional[Path] = None,
+        reject_active_write_guards: bool = False,
+    ) -> int:
         """Bulk delete with :meth:`delete_session` semantics per row, in ONE transaction. Unknown ids
-        are skipped (UI selection can race another tab's delete). Returns the number deleted."""
+        are skipped (UI selection can race another tab's delete). With ``reject_active_write_guards``,
+        the whole batch is refused if any selected row or cascaded delegate child is protected."""
         unique_ids = list({sid for sid in session_ids or () if isinstance(sid, str) and sid})
         if not unique_ids:
             return 0
@@ -1618,6 +1631,15 @@ class SessionSessionsMixin:
             ).fetchall()]
             if not existing:
                 return 0
+            if reject_active_write_guards:
+                guarded_ids = set(existing)
+                guarded_ids.update(_collect_delegate_child_ids(conn, existing))
+                for guarded_id in guarded_ids:
+                    self._check_transcript_write_guards(
+                        conn, guarded_id, compression_lock_holder=None, turn_lease_holder=None,
+                        reject_active_turn_lease=True, reject_active_compression_lock=True,
+                        allow_closed_compression_parent=True,
+                    )
             removed_ids.extend(_delete_delegate_children(conn, existing))
             for chunk in _id_chunks(existing):
                 ph = _session_ids_placeholders(chunk)

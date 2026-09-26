@@ -17,6 +17,7 @@ import json
 import logging
 import math
 import os
+import random
 import re
 import struct
 import subprocess
@@ -86,6 +87,26 @@ _DISCORD_NONCONVERSATIONAL_STATE_FILENAME = "discord_nonconversational_messages.
 
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
+# Self-healing retry after Discord rate-limits a slash-command sync.
+#
+# Before this existed, a 429 aborted the sync, persisted ``retry_after_until``
+# and then waited for the NEXT RECONNECT to try again. Measured 2026-09-20 on a
+# live app: 8 rate-limited attempts in one day, zero successes, and two
+# commands (``/stop``, ``/restart``) missing from Discord's registry the whole
+# time — every attempt was reconnect-driven, and each reconnect restarted the
+# full diff and re-burned Discord's small per-app command-management bucket.
+#
+# We now schedule an in-process asyncio timer at ``retry_after_until`` (+
+# jitter) so recovery does not depend on a reconnect, bounded by an attempt
+# cap with exponential backoff persisted in the sync-state file.
+_DISCORD_COMMAND_SYNC_RETRY_MAX_ATTEMPTS = 5
+_DISCORD_COMMAND_SYNC_RETRY_BASE_BACKOFF_SECONDS = 300.0
+_DISCORD_COMMAND_SYNC_RETRY_MAX_BACKOFF_SECONDS = 3600.0
+_DISCORD_COMMAND_SYNC_RETRY_JITTER_SECONDS = 15.0
+# How often the drift detector re-compares the tree's desired command names
+# against Discord's live global registry (a cheap GET), so a user never
+# discovers a missing command by typing it.
+_DISCORD_COMMAND_DRIFT_CHECK_INTERVAL_SECONDS = 3600.0
 # Discord caps global slash commands at 100/app; exceeding it fails the ENTIRE sync (error 30032).
 _DISCORD_MAX_APP_COMMANDS = 100
 # Native slash commands (registered before COMMAND_REGISTRY/plugins so they survive the 100 cap):
@@ -1099,6 +1120,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         )
         self._liveness_task: Optional[asyncio.Task] = None
         self._liveness_notification_task: Optional[asyncio.Task] = None
+        # In-process timer that re-runs a rate-limited slash-command sync at
+        # retry_after_until, so recovery never depends on a reconnect.
+        self._command_sync_retry_task: Optional[asyncio.Task] = None
+        self._last_command_drift_check_at: float = 0.0
         # True while disconnect() intentionally closes discord.py (done callback: shutdown vs crash).
         self._disconnecting = False
         # Last DISPATCH frame's monotonic stamp, ticked by ``on_socket_event_type`` (see its
@@ -1784,6 +1809,15 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                         self.name, failures,
                     )
                 failures = 0
+                # Piggyback the hourly slash-command registry drift check on
+                # the existing healthy-sample tick — no extra task, and it only
+                # runs when the Gateway is actually up. Fail-soft.
+                try:
+                    await self._maybe_check_command_registry_drift()
+                except Exception:  # pragma: no cover - defensive
+                    logger.debug(
+                        "[%s] Periodic command drift check failed", self.name, exc_info=True
+                    )
                 continue
             failures += 1
             logger.warning(
@@ -1855,7 +1889,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     async def _cancel_liveness_task(self) -> None:
         """Cancel and await liveness tasks without awaiting the current task."""
         current = asyncio.current_task()
-        for task_name in ("_liveness_task", "_liveness_notification_task"):
+        for task_name in ("_liveness_task", "_liveness_notification_task", "_command_sync_retry_task"):
             task = getattr(self, task_name, None)
             if task is None:
                 continue
@@ -1989,15 +2023,48 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         payload = json.dumps(desired, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
-    def _command_sync_skip_reason(self, app_id: Any, fingerprint: str) -> Optional[str]:
+    def _command_sync_skip_reason(
+        self, app_id: Any, fingerprint: str, *, bypass_rate_limit_wait: bool = False
+    ) -> Optional[str]:
+        """Why this sync should stand down, or None to proceed.
+
+        ``bypass_rate_limit_wait`` is set by the scheduled self-healing retry:
+        that task has already served the wait the state file describes, so the
+        timers it armed must not then block it. Fingerprint-based skipping
+        still applies.
+        """
         entry = self._read_command_sync_state().get(self._command_sync_state_key(app_id))
         if not isinstance(entry, dict):
             return None
         now = time.time()
-        retry_after_until = float(entry.get("retry_after_until") or 0)
-        if retry_after_until > now:
-            remaining = max(1, int(retry_after_until - now))
-            return f"Discord asked us to wait before syncing slash commands; retry in {remaining}s"
+        if not bypass_rate_limit_wait:
+            retry_after_until = float(entry.get("retry_after_until") or 0)
+            if retry_after_until > now:
+                remaining = max(1, int(retry_after_until - now))
+                return f"Discord asked us to wait before syncing slash commands; retry in {remaining}s"
+            # Discord's retry-after has elapsed, but we are still inside the
+            # escalating backoff window for this fingerprint. A reconnect here
+            # must NOT restart the whole diff — Apollo reconnected 5+ times in
+            # one day (latency_exceeded) and each reconnect re-burned Discord's
+            # small per-app command-management bucket, guaranteeing the next
+            # 429. The scheduled in-process retry owns recovery; this reconnect
+            # stands down.
+            backoff_until = float(entry.get("backoff_until") or 0)
+            # Scoped to the fingerprint for the same reason
+            # _record_command_sync_rate_limit resets retry_attempts on a changed
+            # one: a different desired command set is fresh intent, not continued
+            # refusal. Without this, a job that exhausted its budget leaves a
+            # newly-registered command missing from the picker for up to
+            # _DISCORD_COMMAND_SYNC_RETRY_MAX_BACKOFF_SECONDS after the restart
+            # that introduced it.
+            if backoff_until > now and entry.get("fingerprint") == fingerprint:
+                remaining = max(1, int(backoff_until - now))
+                attempts = int(entry.get("retry_attempts") or 0)
+                return (
+                    f"inside the rate-limit backoff window after {attempts} refused "
+                    f"attempt(s); a scheduled retry owns recovery in {remaining}s "
+                    f"(syncing now would re-burn Discord's command bucket)"
+                )
         last_success_at = float(entry.get("last_success_at") or 0)
         last_attempt_at = float(entry.get("last_attempt_at") or 0)
         if (
@@ -2025,10 +2092,157 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
     def _record_command_sync_rate_limit(self, app_id: Any, fingerprint: str, retry_after: float) -> None:
         retry_after = max(1.0, float(retry_after))
+        # Escalate the backoff only while we keep getting refused for the SAME
+        # desired command set; a changed fingerprint is a fresh intent.
+        previous = self._read_command_sync_state().get(self._command_sync_state_key(app_id))
+        previous = previous if isinstance(previous, dict) else {}
+        attempts = (
+            int(previous.get("retry_attempts") or 0) + 1
+            if previous.get("fingerprint") == fingerprint
+            else 1
+        )
+        backoff = min(
+            _DISCORD_COMMAND_SYNC_RETRY_MAX_BACKOFF_SECONDS,
+            _DISCORD_COMMAND_SYNC_RETRY_BASE_BACKOFF_SECONDS * (2 ** (attempts - 1)),
+        )
         self._update_command_sync_entry(
             app_id, fingerprint, keep_existing=True,
-            fields=lambda now: {"retry_after_until": time.time() + retry_after, "retry_after": retry_after},
+            fields=lambda now: {
+                "retry_after_until": now + retry_after,
+                "retry_after": retry_after,
+                "retry_attempts": attempts,
+                "retry_backoff_seconds": backoff,
+                # A reconnect landing inside this window must NOT restart the
+                # diff and re-burn Discord's per-app command-management bucket.
+                "backoff_until": now + max(retry_after, backoff),
+            },
         )
+
+    def _command_sync_retry_delay(self, app_id: Any) -> Optional[float]:
+        """Seconds until the next self-healing sync retry, or None if capped."""
+        entry = self._read_command_sync_state().get(self._command_sync_state_key(app_id))
+        if not isinstance(entry, dict):
+            return None
+        attempts = int(entry.get("retry_attempts") or 0)
+        if attempts >= _DISCORD_COMMAND_SYNC_RETRY_MAX_ATTEMPTS:
+            return None
+        retry_after_until = float(entry.get("retry_after_until") or 0)
+        # The escalating backoff must gate the in-process retry too, not just
+        # reconnects. Deriving the delay from retry_after alone burns the whole
+        # 5-attempt budget inside the FIRST backoff window (measured: 5 attempts
+        # in 25s against a 300s window with a 5s retry_after), which is the same
+        # bucket-burning this change exists to stop, and contradicts the
+        # "bounded retries with exponential backoff" contract in
+        # website/docs/user-guide/messaging/discord.md.
+        backoff_until = float(entry.get("backoff_until") or 0)
+        delay = max(0.0, max(retry_after_until, backoff_until) - time.time())
+        # Jitter so a fleet of adapters recovering from the same outage does
+        # not stampede Discord's bucket at the identical instant.
+        return delay + random.uniform(0.0, _DISCORD_COMMAND_SYNC_RETRY_JITTER_SECONDS)
+
+    def _schedule_command_sync_retry(self, app_id: Any) -> None:
+        """Re-run the sync when Discord's retry-after elapses.
+
+        Recovery must not depend on a reconnect: before this existed, a
+        rate-limited sync simply waited for the next ``on_ready``, and an app
+        that never cleanly reconnected stayed missing commands indefinitely.
+        """
+        delay = self._command_sync_retry_delay(app_id)
+        if delay is None:
+            logger.warning(
+                "[%s] Slash command sync retry budget exhausted (%d attempts); "
+                "will retry on the next reconnect",
+                self.name,
+                _DISCORD_COMMAND_SYNC_RETRY_MAX_ATTEMPTS,
+            )
+            self._command_sync_retry_task = None
+            return
+
+        existing = getattr(self, "_command_sync_retry_task", None)
+        if existing is not None and not existing.done():
+            return
+
+        async def _retry_after_delay() -> None:
+            try:
+                await asyncio.sleep(delay)
+                logger.info(
+                    "[%s] Retrying rate-limited slash command sync (no reconnect needed)",
+                    self.name,
+                )
+                self._command_sync_retry_task = None
+                await self._run_post_connect_initialization(is_rate_limit_retry=True)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # pragma: no cover - defensive
+                logger.debug("[%s] Scheduled command-sync retry failed", self.name, exc_info=True)
+                self._command_sync_retry_task = None
+
+        try:
+            self._command_sync_retry_task = asyncio.create_task(_retry_after_delay())
+        except RuntimeError:  # pragma: no cover - no running loop
+            self._command_sync_retry_task = None
+            return
+        logger.info(
+            "[%s] Scheduled slash command sync retry in %.0fs", self.name, delay
+        )
+
+    async def _check_command_registry_drift(self) -> Optional[Dict[str, List[str]]]:
+        """Compare the desired command names against Discord's live registry.
+
+        A desired command missing from Discord is user-visible breakage (it
+        simply is not in the slash picker) that produced NO log line before
+        this existed — the 2026-09-20 incident was discovered by a human
+        typing ``/stop`` and getting nothing. One cheap GET turns that into a
+        greppable WARNING.
+        """
+        client = self._client
+        tree = getattr(client, "tree", None) if client else None
+        if tree is None:
+            return None
+        try:
+            desired = {
+                str(command.to_dict(tree).get("name", "") or "").lower()
+                for command in tree.get_commands()
+            }
+            live = {
+                str(getattr(command, "name", "") or "").lower()
+                for command in await tree.fetch_commands()
+            }
+        except Exception:
+            # Stamp the ATTEMPT, not just the success: the caller is the liveness
+            # probe (default 15s) and returning unstamped makes a persistently
+            # failing check — HTTPException / RateLimited while the app's command
+            # bucket is saturated, i.e. exactly the incident's state — issue a GET
+            # every tick instead of once per interval.
+            self._last_command_drift_check_at = time.time()
+            logger.debug("[%s] Command registry drift check failed", self.name, exc_info=True)
+            return None
+
+        desired.discard("")
+        live.discard("")
+        missing = sorted(desired - live)
+        extra = sorted(live - desired)
+        self._last_command_drift_check_at = time.time()
+        if missing:
+            logger.warning(
+                "[%s] PHASE=discord_command_registry_drift missing=%s extra=%s",
+                self.name,
+                missing,
+                extra,
+            )
+        return {"missing": missing, "extra": extra}
+
+    async def _maybe_check_command_registry_drift(self) -> None:
+        """Run the drift check at most once per interval (fail-soft)."""
+        # An operator who turned syncing off (or delegated it to a bulk sync) did
+        # not ask us to police Discord's registry: skip the GET and the drift
+        # WARNINGs rather than reporting drift nobody intends to close.
+        if self._get_discord_command_sync_policy() != "safe":
+            return
+        last = getattr(self, "_last_command_drift_check_at", 0.0) or 0.0
+        if time.time() - last < _DISCORD_COMMAND_DRIFT_CHECK_INTERVAL_SECONDS:
+            return
+        await self._check_command_registry_drift()
 
     def _record_command_sync_success(self, app_id: Any, fingerprint: str, summary: dict) -> None:
         self._update_command_sync_entry(
@@ -2111,8 +2325,25 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if interval > 0:
             await asyncio.sleep(interval)
 
-    async def _run_post_connect_initialization(self) -> None:
+    async def _run_post_connect_initialization(self, *, is_rate_limit_retry: bool = False) -> None:
         """Finish non-critical startup work after Discord is connected."""
+        if not self._client:
+            return
+        # A scheduled retry and a reconnect can arrive together — the retry fires
+        # AT backoff_until, the instant the backoff gate stops skipping
+        # reconnects — and two concurrent syncs would double-burn the very
+        # command-management bucket this path exists to protect. Serialize them;
+        # the loser re-evaluates the skip reasons and normally stands down.
+        lock = getattr(self, "_post_connect_sync_lock", None)
+        if lock is None:
+            lock = self._post_connect_sync_lock = asyncio.Lock()
+        async with lock:
+            await self._run_post_connect_initialization_locked(
+                is_rate_limit_retry=is_rate_limit_retry
+            )
+
+    async def _run_post_connect_initialization_locked(self, *, is_rate_limit_retry: bool = False) -> None:
+        # Re-checked under the lock: the client can be torn down while waiting.
         if not self._client:
             return
         try:
@@ -2126,7 +2357,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 return
             app_id = getattr(self._client, "application_id", None) or getattr(getattr(self._client, "user", None), "id", None)
             fingerprint = self._desired_command_sync_fingerprint()
-            skip_reason = self._command_sync_skip_reason(app_id, fingerprint)
+            skip_reason = self._command_sync_skip_reason(
+                app_id, fingerprint, bypass_rate_limit_wait=is_rate_limit_retry
+            )
             if skip_reason:
                 logger.info("[%s] Skipping Discord slash command sync: %s", self.name, skip_reason)
                 return
@@ -2151,6 +2384,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     "[%s] Discord rate-limited slash command sync; retrying after %.0fs", self.name,
                     retry_after,
                 )
+                # Self-healing: re-run the sync when the retry-after elapses
+                # instead of waiting for the next reconnect. Without this, an
+                # app that is rate-limited on every reconnect never recovers
+                # and simply stays missing commands (2026-09-20 incident).
+                self._schedule_command_sync_retry(app_id)
                 return
             finally:
                 if has_ratelimit_timeout:
@@ -2161,6 +2399,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 self.name, summary["total"], summary["unchanged"], summary["updated"],
                 summary["recreated"], summary["created"], summary["deleted"],
             )
+            # Verify Discord actually holds what we asked for. A "successful"
+            # sync is not proof the registry matches the tree.
+            await self._check_command_registry_drift()
         except asyncio.TimeoutError:
             logger.warning(
                 "[%s] Slash command sync timed out — Discord rate-limit bucket "
@@ -2883,18 +3124,15 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             result = await call(*args)
             mutation_count += 1
             return result
-        # Delete obsolete commands FIRST: an upsert pushing the live total over 100 fails with
-        # 30032 (breaks ALL slash commands), so an app at the cap must shrink before creating.
+        # Classify the diff BEFORE mutating anything.
         obsolete_keys = set(existing_by_key.keys()) - set(desired_by_key.keys())
-        for key in obsolete_keys:
-            current = existing_by_key.pop(key)
-            await mutate(http.delete_global_command, app_id, current.id)
-            summary["deleted"] += 1
+        to_create: List[Dict[str, Any]] = []
+        to_recreate: List[Dict[str, Any]] = []
+        to_edit: List[tuple] = []
         for key, desired in desired_by_key.items():
-            current = existing_by_key.pop(key, None)
+            current = existing_by_key.get(key)
             if current is None:
-                await mutate(http.upsert_global_command, app_id, desired)
-                summary["created"] += 1
+                to_create.append(desired)
                 continue
             current_existing_payload = self._existing_command_to_payload(current)
             current_payload = self._canonicalize_app_command_payload(current_existing_payload)
@@ -2903,11 +3141,54 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 summary["unchanged"] += 1
                 continue
             if self._patchable_app_command_payload(current_existing_payload) == self._patchable_app_command_payload(desired):
-                await mutate(http.delete_global_command, app_id, current.id)
-                await mutate(http.upsert_global_command, app_id, desired)
-                summary["recreated"] += 1
+                # Metadata-only change that edit_global_command cannot express.
+                # Historically this did delete_global_command THEN
+                # upsert_global_command — a window where a 429 (or any failure)
+                # between the two removes the command from Discord with nothing
+                # left to restore it.
+                to_recreate.append(desired)
                 continue
-            await mutate(http.edit_global_command, app_id, current.id, desired)
+            to_edit.append((current.id, desired))
+
+        # A single atomic PUT bulk-overwrite (tree.sync()) replaces the whole
+        # registry in ONE request: it can never leave a command deleted, it
+        # costs one bucket token instead of N, and a 429 leaves Discord
+        # untouched. Use it whenever the sync needs at least one create or
+        # recreate and the desired set fits under Discord's hard cap. Pure
+        # description/option patches stay on per-command edits (cheaper, and
+        # they carry no vacate risk).
+        if (to_create or to_recreate) and len(desired_payloads) <= _DISCORD_MAX_APP_COMMANDS:
+            bulk_sync = getattr(tree, "sync", None)
+            if bulk_sync is not None:
+                await bulk_sync()
+                summary.update(
+                    total=len(desired_payloads), updated=len(to_edit),
+                    recreated=len(to_recreate), created=len(to_create),
+                    deleted=len(obsolete_keys),
+                )
+                summary["bulk"] = True
+                return summary
+
+        # Fallback (bulk unavailable, or the desired set exceeds the cap):
+        # ordered per-command mutations. Delete obsolete commands FIRST: an
+        # upsert pushing the live total over 100 fails with 30032 (breaks ALL
+        # slash commands), so an app at the cap must shrink before creating.
+        # Then UPSERT BEFORE DELETE for anything being replaced, so the command
+        # never vanishes even if a later mutation is rejected.
+        for key in obsolete_keys:
+            current = existing_by_key.pop(key)
+            await mutate(http.delete_global_command, app_id, current.id)
+            summary["deleted"] += 1
+        for desired in to_create:
+            await mutate(http.upsert_global_command, app_id, desired)
+            summary["created"] += 1
+        for desired in to_recreate:
+            # Upsert first: Discord's upsert is an idempotent create-or-replace
+            # keyed on name, so the command is continuously present.
+            await mutate(http.upsert_global_command, app_id, desired)
+            summary["recreated"] += 1
+        for command_id, desired in to_edit:
+            await mutate(http.edit_global_command, app_id, command_id, desired)
             summary["updated"] += 1
         summary["total"] = len(desired_payloads)
         return summary

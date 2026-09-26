@@ -572,6 +572,10 @@ _PER_TURN_RESET_STATE: Tuple[Tuple[str, Any], ...] = (
     ("_iteration_budget_warning_injected", False),
     ("_run_budget_wrapup_injected", False), ("_verification_stop_nudges", 0),
     ("_pre_verify_nudges", 0),
+    # Per-turn model/tool time split for display.turn_timing (issue #109569).
+    # None means unavailable (e.g. Codex turns report no api_duration) so the
+    # renderer omits the segment rather than fabricating "0.0s model".
+    ("_turn_model_seconds", None), ("_turn_first_token_at", None),
 )
 
 
@@ -588,7 +592,8 @@ def _reset_per_turn_agent_state(agent: Any) -> None:
     # Expiry clock for build_api_messages: admission time (not the input's platform-event
     # stamp, which can predate admission by minutes), frozen so every request this turn
     # sends identical bytes. Distinct from note_turn_start's _inflight_turn_started, a
-    # tripwire slot cleared at persist.
+    # tripwire slot cleared at persist. The timing line reads this same stamp rather than
+    # taking a second one for display.
     agent._current_turn_timestamp = time.time()
 
     # Pre-turn connection health check: clean up dead TCP connections.
@@ -615,6 +620,29 @@ def _reset_per_turn_agent_state(agent: Any) -> None:
         scrubber = getattr(agent, name, None)
         if scrubber is not None:
             scrubber.reset()
+
+
+def note_completed_api_call(agent: Any, api_duration: Any) -> None:
+    """Add one completed provider call to the per-turn model-time accumulator.
+
+    Called at the single choke point where ``api_duration`` is computed
+    (``turn_response_check``), so every completed call counts exactly once —
+    retries and tool-loop iterations included. Nonsense timings are ignored
+    so a clock adjustment never corrupts the turn split. Also captures the
+    turn's first streamed chunk for time-to-first-token display.
+    """
+    try:
+        seconds = float(api_duration)
+    except (TypeError, ValueError):
+        return
+    if seconds != seconds or seconds < 0:
+        return
+    agent._turn_model_seconds = float(getattr(agent, "_turn_model_seconds", 0.0) or 0.0) + seconds
+    if getattr(agent, "_turn_first_token_at", None) is None:
+        first_chunk = getattr(agent, "_last_api_first_chunk_at", None)
+        if first_chunk is not None:
+            with suppress(Exception):
+                agent._turn_first_token_at = float(first_chunk)
 
 
 def _stage_turn_user_message(

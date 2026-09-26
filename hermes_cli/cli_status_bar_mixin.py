@@ -636,8 +636,31 @@ class CLIStatusBarMixin:
         if collector is None or not self._turn_summary_is_active():
             return
         try:
+            from agent.turn_summary import format_turn_stamps
             started = getattr(self, "_turn_summary_start", 0.0) or 0.0
-            line = collector.render(max(0.0, time.monotonic() - started) if started else 0.0)
+            elapsed = max(0.0, time.monotonic() - started) if started else 0.0
+            mode = getattr(self, "_turn_timing_mode", "total")
+            if mode == "off":
+                return
+            agent = getattr(self, "agent", None)
+            model_seconds = None
+            stamps = ""
+            force = False
+            if agent is not None and mode in ("split", "verbose"):
+                raw = getattr(agent, "_turn_model_seconds", None)
+                try:
+                    model_seconds = float(raw) if raw is not None else None
+                except (TypeError, ValueError):
+                    model_seconds = None
+                if model_seconds is not None and (model_seconds != model_seconds or model_seconds < 0):
+                    model_seconds = None
+                # Opted into timing: show even fast tool-less turns.
+                force = True
+            if agent is not None and mode == "verbose":
+                stamps = format_turn_stamps(getattr(agent, "_current_turn_timestamp", None),
+                                            getattr(agent, "_turn_first_token_at", None))
+            line = collector.render(elapsed, model_seconds=model_seconds,
+                                    timing_stamps=stamps, force=force)
             if line:
                 _cprint(f"  {_D}{line}{_RST}")
         except Exception:

@@ -228,3 +228,102 @@ def test_content_free_diff_reports_unknown_not_zero_zero():
         result={"success": True, "diff": "--- a/x\n+++ b/x\n@@ -1 +1,2 @@\n-old\n+new\n+extra\n"},
     )
     assert "+2 -1" in real.render(1.0)
+
+
+def _read_collector():
+    from agent.turn_summary import TurnSummaryCollector
+
+    c = TurnSummaryCollector()
+    c.begin()
+    c.record_tool("read_file", result="contents", is_error=False)
+    return c
+
+
+def test_split_mode_renders_model_segment_after_total():
+    line = _read_collector().render(18.4, model_seconds=6.2)
+    assert line.startswith("⋯ 18.4s · 6.2s model · ")
+    assert "read 1 file" in line
+
+
+def test_model_none_renders_no_segment():
+    line = _read_collector().render(18.4)
+    assert "model" not in line
+
+
+def test_model_zero_is_truthful_not_hidden():
+    line = _read_collector().render(5.0, model_seconds=0.0)
+    assert "0.0s model" in line
+
+
+def test_unavailable_model_never_fabricates():
+    for bad in ("bogus", -3.0, float("nan")):
+        assert "model" not in _read_collector().render(5.0, model_seconds=bad)
+
+
+def test_force_shows_fast_toolless_turn():
+    from agent.turn_summary import TurnSummaryCollector
+
+    c = TurnSummaryCollector()
+    c.begin()
+    assert c.render(0.5) == ""
+    assert c.render(0.5, force=True) == "⋯ 0.5s"
+
+
+def test_stamps_need_second_resolution():
+    import re
+
+    from agent.turn_summary import format_turn_stamps
+
+    line = format_turn_stamps(1700000000.0, 1700000003.0)
+    assert re.fullmatch(r"start \d{2}:\d{2}:\d{2} → first-token \d{2}:\d{2}:\d{2}", line)
+    assert format_turn_stamps(None, None) == ""
+    assert format_turn_stamps(0, "bogus") == ""
+    start_only = format_turn_stamps(1700000000.0, None)
+    assert start_only.startswith("start ") and "first-token" not in start_only
+
+
+def test_verbose_line_orders_stamps_last():
+    line = _read_collector().render(18.4, model_seconds=6.2,
+                                    timing_stamps="start 14:03:02 → first-token 14:03:05")
+    assert line == ("⋯ 18.4s · 6.2s model · read 1 file · "
+                    "start 14:03:02 → first-token 14:03:05")
+
+
+def test_emit_split_mode_reads_agent_timing(monkeypatch):
+    agent = _StubAgent()
+    agent._turn_model_seconds = 6.2
+    stub = _make_cli(_turn_timing_mode="split", agent=agent)
+    printed = _emit_and_capture(stub, monkeypatch)
+    assert len(printed) == 1
+    assert "6.2s model" in printed[0]
+
+
+def test_emit_off_suppresses_line(monkeypatch):
+    stub = _make_cli(_turn_timing_mode="off")
+    assert _emit_and_capture(stub, monkeypatch) == []
+
+
+def test_emit_total_matches_today(monkeypatch):
+    stub = _make_cli()
+    printed = _emit_and_capture(stub, monkeypatch)
+    assert len(printed) == 1
+    assert "model" not in printed[0]
+    assert "read 1 file" in printed[0]
+
+
+def test_turn_timing_config_key_resolves_to_the_mode(monkeypatch):
+    """display.turn_timing must have a live reader: an unknown value falls back
+    to today's "total" instead of silently disabling the line."""
+    import cli as cli_module
+    from hermes_cli.cli_init_mixin import CLIInitMixin
+
+    class _Stub:
+        _init_display_options = CLIInitMixin._init_display_options
+
+    for configured, expected in (("split", "split"), ("VERBOSE", "verbose"),
+                                 ("off", "off"), ("bogus", "total"), (None, "total")):
+        display = {} if configured is None else {"turn_timing": configured}
+        monkeypatch.setattr(cli_module, "CLI_CONFIG", {"display": display})
+        stub = _Stub()
+        stub._init_display_options(None, None)
+        assert stub._turn_timing_mode == expected, configured

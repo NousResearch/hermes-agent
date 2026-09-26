@@ -137,7 +137,7 @@ import { useSessionActions } from '../session/hooks/use-session-actions'
 import { useSessionListActions } from '../session/hooks/use-session-list-actions'
 import { useSessionStateCache } from '../session/hooks/use-session-state-cache'
 import { useTranscriptPeerSync } from '../session/hooks/use-transcript-peer-sync'
-import { startWorkspaceSession } from '../session/workspace-session-target'
+import { startSessionInWorkspace as startSessionInWorkspaceVia } from '../session/workspace-session-target'
 import { PluginInstallModal } from '../settings/plugin-install-modal'
 import { useOverlayRouting } from '../shell/hooks/use-overlay-routing'
 import { useWindowControlsOverlayWidth } from '../shell/hooks/use-window-controls-overlay-width'
@@ -636,22 +636,20 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // prefills the MAIN composer right after, so it has to own that surface.
   const startSessionInWorkspace = useCallback(
     (path: null | string, options?: { openTab?: boolean }) => {
-      setWorkspaceScope('sessions')
-
-      if (options?.openTab && mainChatOccupied(activeSessionIdRef.current, $selectedStoredSessionId.get())) {
-        void openNewSessionTile('center', { cwd: path, listed: false })
-
-        return
-      }
-
-      startWorkspaceSession({
-        activeSessionIdRef,
-        followActiveSessionCwd,
-        onExplicitWorkspace: restoreWorktree,
+      startSessionInWorkspaceVia(
+        {
+          activeSessionIdRef,
+          chatOccupied: mainChatOccupied(activeSessionIdRef.current, $selectedStoredSessionId.get()),
+          followActiveSessionCwd,
+          onExplicitWorkspace: restoreWorktree,
+          openNewSessionTile: tileOptions => openNewSessionTile('center', tileOptions),
+          requestGateway,
+          setWorkspaceScope,
+          startFreshSessionDraft
+        },
         path,
-        requestGateway,
-        startFreshSessionDraft
-      })
+        options
+      )
     },
     [activeSessionIdRef, openNewSessionTile, requestGateway, startFreshSessionDraft]
   )

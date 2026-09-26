@@ -87,3 +87,31 @@ def test_buildable_pyproject_member_keeps_its_declared_name(tmp_path):
     member = _workspace_member(plugin, root, identity=plugin)
     assert (member / "pyproject.toml").read_text(encoding="utf-8") == (
         plugin / "pyproject.toml").read_text(encoding="utf-8")
+
+
+def test_virtual_member_strips_optional_dependencies_and_dependency_groups(tmp_path):
+    """Virtual workspace members are metadata-only dependency bridges; their test extras
+    and dependency groups must not survive into the workspace where uv lock would resolve them
+    against core dependency groups."""
+    import tomllib
+    from pm.workspace import _workspace_member
+
+    plugin = tmp_path / "home" / "plugins" / "my-plugin"
+    plugin.mkdir(parents=True)
+    (plugin / "pyproject.toml").write_text(
+        '[project]\nname = "my-plugin"\nversion = "0.1.0"\n'
+        'dependencies = ["requests>=2.0"]\n'
+        '[project.optional-dependencies]\n'
+        'dev = ["pytest>=8,<9"]\n'
+        '[dependency-groups]\n'
+        'test = ["coverage"]\n',
+        encoding="utf-8",
+    )
+    root = tmp_path / "gen"
+    root.mkdir()
+    member = _workspace_member(plugin, root, identity=plugin)
+    doc = tomllib.loads((member / "pyproject.toml").read_text(encoding="utf-8"))
+    assert doc["project"]["dependencies"] == ["requests>=2.0"]
+    assert "optional-dependencies" not in doc["project"]
+    assert "dependency-groups" not in doc
+

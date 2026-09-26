@@ -329,8 +329,9 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
                               force_jpeg: bool = False) -> str:
     """Base64 data URL, progressively downscaled with Pillow while over budget.
 
-    Halves dimensions (aspect-preserving, 64px floor) up to 4 times; JPEG also walks a
-    quality ladder (85/70/50) per step. Without Pillow, or if it still doesn't fit, returns
+    Fits the long edge to ``max_dimension`` first, then halves dimensions (aspect-preserving,
+    64px floor) up to 4 times for the byte budget; JPEG also walks a quality ladder (85/70/50)
+    per step. Without Pillow, or if it still doesn't fit, returns
     the best attempt (or raw bytes) and lets the caller apply the size check.
     ``max_dimension``: force a downscale above this long edge even when bytes fit
     (Anthropic's 8000px cap is independent of bytes). ``force_jpeg``: re-encode PNG as JPEG
@@ -374,7 +375,14 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
     if not is_png and img.mode not in {"RGB", "L"}:
         img = img.convert("RGB")
     quality_steps = (None,) if is_png else (85, 70, 50)
-    orig_dims = prev_dims = (img.width, img.height)
+    orig_dims = (img.width, img.height)
+    # A dimension-only overflow should use the available resolution, not the next
+    # power-of-two step below it. Keep the independent byte/quality ladder below.
+    if max_dimension is not None and 0 < max_dimension < max(orig_dims):
+        ratio = max_dimension / max(orig_dims)
+        fitted = tuple(max(1, int(axis * ratio)) for axis in orig_dims)
+        img = img.resize(fitted, Image.LANCZOS)
+
     candidate = None
 
     def _record_scale(w: int, h: int) -> None:
@@ -388,10 +396,10 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
                 new_h = max(int(img.height * (64 / img.width)), 64)
             elif new_h == 64 and img.height > 0:
                 new_w = max(int(img.width * (64 / img.height)), 64)
-            if (new_w, new_h) == prev_dims:
+            if new_w >= img.width or new_h >= img.height:
                 break
             img = img.resize((new_w, new_h), Image.LANCZOS)
-            prev_dims = (new_w, new_h)
+
             logger.info("Resized to %dx%d (attempt %d)", new_w, new_h, attempt)
         dims_ok = max_dimension is None or max(img.width, img.height) <= max_dimension
         for q in quality_steps:

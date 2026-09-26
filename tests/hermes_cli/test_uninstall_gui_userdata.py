@@ -6,43 +6,60 @@ because ``_perform_uninstall`` never forwarded ``remove_userdata``.
 """
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
 
+import hermes_cli.gui_uninstall as gui_uninstall
 import hermes_cli.uninstall as uninstall
 
 
 @pytest.fixture
 def homes(tmp_path, monkeypatch):
-    """Temp home + checkout with sentinel data; uninstall side effects are stubbed."""
+    """Temp home/checkout/userData; every step that reaches outside tmp_path is stubbed.
+
+    The full wipe otherwise boots out real launchd jobs, rmtrees real
+    ~/Library/Caches dirs and /Applications/Hermes.app, and (on Windows) edits
+    the registry — so stub those helpers and fail loudly on any stray rmtree or
+    subprocess instead of silently touching the developer's machine.
+    """
     home = tmp_path / "hermes-home"
     home.mkdir()
-    (home / "config.yaml").write_text("{}", encoding="utf-8")
     project_root = tmp_path / "checkout"
     project_root.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(uninstall, "get_project_root", lambda: project_root)
-    monkeypatch.setattr(uninstall, "get_hermes_home", lambda: home)
+    userdata = tmp_path / "userdata"
+    userdata.mkdir()
+    (userdata / "connections.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(uninstall, "_is_windows", lambda: False)
     monkeypatch.setattr(uninstall, "uninstall_gateway_service", lambda: True)
     for name in ("remove_path_from_shell_configs", "remove_wrapper_script",
-                 "remove_node_symlinks", "remove_legacy_runtime_trees"):
+                 "remove_node_symlinks", "remove_legacy_runtime_trees",
+                 "remove_dashboard_launchd_jobs", "_macos_cache_leftover_dirs"):
         monkeypatch.setattr(uninstall, name, lambda *a, **k: [])
-    return home, project_root
+    monkeypatch.setattr(gui_uninstall, "packaged_gui_app_paths", lambda: [])
+    monkeypatch.setattr(gui_uninstall, "desktop_userdata_dir", lambda: userdata)
+
+    real_rmtree = shutil.rmtree
+
+    def confined_rmtree(path, *args, **kwargs):
+        assert Path(path).is_relative_to(tmp_path), f"rmtree outside tmp: {path}"
+        return real_rmtree(path, *args, **kwargs)
+
+    def no_subprocess(*args, **kwargs):
+        raise AssertionError(f"unexpected subprocess: {args}")
+
+    monkeypatch.setattr(shutil, "rmtree", confined_rmtree)
+    monkeypatch.setattr(uninstall.subprocess, "run", no_subprocess)
+    return home, project_root, userdata
 
 
 @pytest.mark.parametrize("full_uninstall", [False, True])
-def test_uninstall_forwards_desktop_userdata_policy(homes, monkeypatch, full_uninstall):
+def test_uninstall_desktop_userdata_kept_unless_full(homes, full_uninstall):
     """Keep-data preserves Electron userData; only the full wipe removes it."""
-    home, project_root = homes
-    calls: list = []
-
-    def spy(*args, **kwargs):
-        calls.append(kwargs.get("remove_userdata", "absent"))
-        return [Path("sentinel")]
-
-    monkeypatch.setattr("hermes_cli.gui_uninstall.uninstall_gui", spy)
+    home, project_root, userdata = homes
     uninstall._perform_uninstall(
         project_root=project_root, hermes_home=home, full_uninstall=full_uninstall,
         remove_profiles=False, named_profiles=[])
-    assert calls == [full_uninstall]
+    assert (userdata / "connections.json").exists() is not full_uninstall

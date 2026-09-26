@@ -276,8 +276,12 @@ export function useComposerSubmit({
         // finish. All three queue on rejection, so nothing is ever lost.
         if (busyInputMode === 'queue') {
           queueCurrentDraft()
-        } else if (busyInputMode === 'steer' && onSteerHidden) {
-          steerAtToolBoundary(text)
+        } else if (busyInputMode === 'steer') {
+          if (onSteerHidden) {
+            steerAtToolBoundary(text)
+          } else {
+            queueCurrentDraft()
+          }
         } else {
           redirectDraft(text)
         }

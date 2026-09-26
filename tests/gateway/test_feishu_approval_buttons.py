@@ -660,3 +660,46 @@ class TestResolveUpdatePrompt:
         assert 3 in adapter._update_prompt_state
 
 
+class TestNamespaceActionValue:
+    """Regression for #122649: lark-oapi delivers action.value as namespace, not dict."""
+
+    def test_normalize_namespace_to_dict(self):
+        ns = SimpleNamespace(approval_id=1, hermes_action="approve_once")
+        assert feishu_module._normalize_card_action_value(ns) == {
+            "approval_id": 1, "hermes_action": "approve_once",
+        }
+
+    def test_normalize_dict_passthrough(self):
+        payload = {"hermes_action": "deny", "approval_id": 2}
+        assert feishu_module._normalize_card_action_value(payload) == payload
+
+    def test_normalize_json_string(self):
+        payload = '{"hermes_action": "approve_once", "approval_id": 3}'
+        assert feishu_module._normalize_card_action_value(payload) == {
+            "hermes_action": "approve_once", "approval_id": 3,
+        }
+
+    def test_namespace_approval_click_resolves_inline(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_bob"}
+        adapter._approval_state[11] = {
+            "session_key": "sess-11",
+            "message_id": "msg-11",
+            "chat_id": "oc_12345",
+        }
+        data = _make_card_action_data(
+            SimpleNamespace(hermes_action="approve_once", approval_id=11),
+            open_id="ou_bob",
+        )
+        adapter._sender_name_cache["ou_bob"] = ("Bob", 9999999999)
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is not None
+        assert "Approved once" in response.card.data["header"]["title"]["content"]
+
+

@@ -172,6 +172,43 @@ _APPROVAL_LABEL_MAP: Dict[str, str] = {
 }
 
 
+def _normalize_card_action_value(value: Any) -> Dict[str, Any]:
+    """Coerce a card-action ``value`` payload to a plain dict.
+
+    The ``lark-oapi`` SDK delivers ``event.action.value`` as a ``namespace``
+    object (e.g. ``namespace(approval_id=1, hermes_action='approve_once')``),
+    not a ``dict`` — so a bare ``isinstance(value, dict)`` check drops every
+    approval-button click into the generic ``/card`` fallback (fixes #122649).
+    """
+    if not value:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    namespace_dict = getattr(value, "__dict__", None)
+    if isinstance(namespace_dict, dict) and namespace_dict:
+        return {k: v for k, v in namespace_dict.items() if not k.startswith("_")}
+    try:
+        attrs = vars(value)
+    except TypeError:
+        attrs = None
+    if isinstance(attrs, dict) and attrs:
+        return {k: v for k, v in attrs.items() if not k.startswith("_")}
+    try:
+        return {
+            k: getattr(value, k)
+            for k in ("hermes_action", "approval_id", "hermes_update_prompt_action", "update_prompt_id")
+            if getattr(value, k, None) is not None
+        }
+    except Exception:
+        return {}
+
+
 async def _read_limited_feishu_webhook_body(request: Any, max_bytes: int) -> bytes:
     """Read at most ``max_bytes`` from an aiohttp request body."""
     try:
@@ -2180,12 +2217,11 @@ class FeishuAdapter(BasePlatformAdapter):
             return self._card_response()
         event = getattr(data, "event", None)
         action = getattr(event, "action", None)
-        action_value = getattr(action, "value", {}) or {}
-        if isinstance(action_value, dict):
-            if action_value.get("hermes_action"):
-                return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
-            if action_value.get("hermes_update_prompt_action"):
-                return self._handle_update_prompt_card_action(event=event, action_value=action_value, loop=loop)
+        action_value = _normalize_card_action_value(getattr(action, "value", {}) or {})
+        if action_value.get("hermes_action"):
+            return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
+        if action_value.get("hermes_update_prompt_action"):
+            return self._handle_update_prompt_card_action(event=event, action_value=action_value, loop=loop)
         self._submit_on_loop(loop, self._handle_card_action_event(data))
         return self._card_response()
 
@@ -2441,7 +2477,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return
         action = getattr(event, "action", None)
         action_tag = str(getattr(action, "tag", "") or "button")
-        action_value = getattr(action, "value", {}) or {}
+        action_value = _normalize_card_action_value(getattr(action, "value", {}) or {})
         synthetic_text = f"/card {action_tag}"
         if action_value:
             try:

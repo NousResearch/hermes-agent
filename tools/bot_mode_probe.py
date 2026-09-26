@@ -215,6 +215,29 @@ def _peers(root: Path) -> list[str]:
     return _swallow(_names, [])
 
 
+def _delivery_homes(root: Path) -> list[tuple[str, Path]]:
+    """(name, dir) for the default profile + EVERY profile dir, live or not.
+
+    A delivery record is admitted into the home of the lane it targets, so the drain and the
+    sweep must reach a lane whose profile has lost its identity marker or been tombstoned --
+    that is exactly when a stranded record needs a terminal state. ``_roster`` answers the Bot
+    Mode *teammate* question instead (#99392) and is deliberately narrower: the delivery paths
+    must not inherit that liveness predicate, or a named lane's backlog goes invisible.
+    """
+    profiles = root / "profiles"
+    named = _swallow(
+        lambda: [
+            (c.name, c)
+            for c in sorted(profiles.iterdir())
+            if c.is_dir() and c.name != "default"
+        ]
+        if profiles.is_dir()
+        else [],
+        [],
+    )
+    return [("default", root), *named]
+
+
 def _remote_roster(root: Path) -> list[dict]:
     """Desktop relay roster (``tools/bot_relay.py``); [] on any failure."""
     def _read():

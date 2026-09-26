@@ -27,7 +27,8 @@ from fastapi.responses import FileResponse
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_files import (
-    _fs_path, _managed_file_entry, _managed_response_meta, _resolve_managed_path,
+    _fs_path, _managed_file_entry, _managed_response_meta, _path_is_under,
+    _resolve_managed_path,
 )
 from hermes_cli.web_models import (
     ChatImageUpload, FsWriteText, ManagedDirectoryCreate, ManagedFileDelete, ManagedFileUpload,
@@ -142,6 +143,97 @@ def _fs_looks_binary(data: bytes) -> bool:
         return True
     suspicious = sum(1 for byte in data if byte < 32 and byte not in {9, 10, 13})
     return suspicious / len(data) > 0.12
+
+
+# ---------------------------------------------------------------------------
+# Dashboard write sandbox (#95306). The HTTP write mirrors (/api/fs/write-text,
+# /api/files/upload, /api/files/upload-stream, /api/files/mkdir) serve remote
+# dashboard sessions too - the local Electron shell saves through its own
+# hardened IPC - so an authenticated remote session must not be able to
+# overwrite arbitrary files as the gateway user: cron scripts,
+# ~/.hermes/config.yaml, .ssh/authorized_keys and friends are all
+# text-writable RCE primitives. Writes are confined to the workspace roots
+# below and credential/shell-startup targets are denied outright.
+# ---------------------------------------------------------------------------
+
+_FS_WRITE_ROOTS_ENV = "HERMES_DASHBOARD_WRITE_ROOTS"
+
+# Basenames that turn a text write into code execution or credential
+# substitution. Denied even inside an allowed write root (case-insensitive).
+_FS_WRITE_DENIED_BASENAMES = frozenset({
+    ".bashrc",
+    ".bash_profile",
+    ".bash_login",
+    ".zshenv",
+    ".zprofile",
+    ".zshrc",
+    ".profile",
+    "authorized_keys",
+})
+
+# Directory trees whose contents are live keys/credentials. Component match,
+# so they're denied wherever they appear under an allowed write root.
+_FS_WRITE_DENIED_DIR_NAMES = frozenset({
+    ".ssh",
+    ".gnupg",
+})
+
+
+def _fs_write_roots() -> list[Path]:
+    """Writable roots for the spot-editor save endpoint.
+
+    ``HERMES_DASHBOARD_WRITE_ROOTS`` - an ``os.pathsep``-separated list of
+    absolute directories - replaces the default when set; without it the
+    sandbox is the gateway's editor anchor directory (:func:`_fs_default_cwd`),
+    i.e. the tree the remote Files/editor view opens in.
+    """
+    raw = os.environ.get(_FS_WRITE_ROOTS_ENV, "").strip()
+    if raw:
+        roots: list[Path] = []
+        for part in raw.split(os.pathsep):
+            candidate = part.strip()
+            if not candidate:
+                continue
+            try:
+                roots.append(Path(candidate).expanduser().resolve(strict=False))
+            except (OSError, RuntimeError):
+                continue
+        if roots:
+            return roots
+    try:
+        return [Path(_fs_default_cwd()).resolve(strict=False)]
+    except (OSError, RuntimeError):
+        return [Path.cwd().resolve(strict=False)]
+
+
+def _fs_write_guard(target: Path, *, extra_roots: list[Path] | None = None) -> None:
+    """Reject dashboard writes that escape the sandbox or hit live secrets.
+
+    Shared by every HTTP write mirror (#95306): ``/api/fs/write-text`` and the
+    managed-file write surfaces (``/api/files/upload``, ``/api/files/upload-stream``,
+    ``/api/files/mkdir``). Two layers, mirroring the guards the other ``/api/fs``
+    surfaces carry: credential stores are denied outright (same denial surface as
+    ``/api/fs/download`` via :func:`_is_sensitive_path`, plus the write-only
+    shell-startup/key-tree denylists), and the resolved target must sit under
+    one of :func:`_fs_write_roots` - anything else escapes the sandbox.
+    Deployments that pin a managed-files root (:func:`_resolve_managed_path`)
+    pass it via ``extra_roots`` so an explicitly configured files root stays
+    writable alongside the default workspace roots.
+    """
+    if (
+        _is_sensitive_path(target)
+        or any(part.lower() in _FS_WRITE_DENIED_DIR_NAMES for part in target.parts)
+        or target.name.lower() in _FS_WRITE_DENIED_BASENAMES
+    ):
+        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
+    roots = _fs_write_roots()
+    if extra_roots:
+        roots = roots + [root for root in extra_roots if root not in roots]
+    if not any(_path_is_under(root, target) for root in roots):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Path is outside the dashboard write roots (set {_FS_WRITE_ROOTS_ENV} to add more)",
+        )
 
 
 @contextlib.contextmanager
@@ -482,6 +574,12 @@ async def stream_managed_file(request: Request, path: str):
 
 def _managed_write_target(path: str, request: Request, overwrite: bool):
     policy, target, display_path = _resolve_managed_path(path, request, for_write=True)
+    # Same dashboard write sandbox as /api/fs/write-text (#95306): remote
+    # sessions must not drop files outside the write roots or onto credential
+    # targets. A pinned managed-files root stays writable via extra_roots.
+    _fs_write_guard(
+        target, extra_roots=[policy.locked_root] if policy.locked_root is not None else None
+    )
     if target.exists() and target.is_dir():
         raise HTTPException(status_code=409, detail="A directory already exists at that path")
     if target.exists() and not overwrite:
@@ -576,6 +674,12 @@ async def upload_managed_file_stream(
 @router.post("/api/files/mkdir")
 async def create_managed_directory(payload: ManagedDirectoryCreate, request: Request):
     policy, target, display_path = _resolve_managed_path(payload.path, request, for_write=True)
+    # Same dashboard write sandbox as /api/fs/write-text (#95306): remote
+    # sessions must not drop files outside the write roots or onto credential
+    # targets. A pinned managed-files root stays writable via extra_roots.
+    _fs_write_guard(
+        target, extra_roots=[policy.locked_root] if policy.locked_root is not None else None
+    )
     if target.exists() and not target.is_dir():
         raise HTTPException(status_code=409, detail="A file already exists at that path")
     with _io_errors("Directory is not writable", "Could not create directory"):
@@ -667,6 +771,7 @@ async def fs_write_text(payload: FsWriteText):
     Stale-on-disk detection is the client's job (re-read before save).
     """
     target = _fs_path(payload.path)
+    _fs_write_guard(target)
     text = payload.content or ""
     if len(text.encode("utf-8")) > _FS_TEXT_WRITE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Content too large")

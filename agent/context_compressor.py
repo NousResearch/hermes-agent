@@ -1985,6 +1985,14 @@ def _today_for_prompt() -> str:
 # Per-section summarizer instructions, keyed by "the transcript has a real user turn". Wording
 # is deliberately plain: Azure/OpenAI content filters have flagged stronger "injection" /
 # "do not respond" framing. Prompt text is byte-pinned — restructure code around it only.
+_SUMMARY_SOURCE_COPY_LIMIT_RULE = (
+    "\n\nSOURCE COPY LIMIT: Never reproduce a source passage longer than 200 characters verbatim. "
+    "If source text is longer, quote only a short key fragment and paraphrase the rest. "
+    "This rule overrides any earlier instruction to quote, copy, or preserve source text exactly. "
+    "Exact identifiers, commands, paths, short error fragments, and [SKILL_PRUNED: ...] markers may remain exact."
+)
+
+
 _SECTION_INSTRUCTIONS: Dict[bool, Dict[str, str]] = {
     True: {
         "language": (
@@ -4073,6 +4081,7 @@ Use this exact structure:
 
 FOCUS TOPIC: "{focus_topic}"
 This compaction should PRIORITISE preserving all information related to the focus topic above. For content related to "{focus_topic}", include full detail — exact values, file paths, command outputs, error messages, and decisions. For content NOT related to the focus topic, summarise more aggressively (brief one-liners or omit if truly irrelevant). The focus topic sections should receive roughly 60-70% of the summary token budget. Even for the focus topic, NEVER preserve API keys, tokens, passwords, or credentials — use [REDACTED]."""
+        prompt += _SUMMARY_SOURCE_COPY_LIMIT_RULE
         return prompt
 
     @staticmethod

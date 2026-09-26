@@ -55,6 +55,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from hermes_constants import get_hermes_home
@@ -154,6 +155,14 @@ DEFAULT_EXCLUDES = [
     "Thumbs.db",
     # Logs
     "*.log",
+    # Root-owned system scratch the agent user cannot read (systemd/snap private dirs,
+    # Chromium singleton locks, gdm error files).  When a workdir contains one, `git add -A`
+    # aborts with "fatal: adding files failed" (exit 128) and that turn's snapshot is lost —
+    # for a directory the agent writes to repeatedly, forever.
+    "snap-private-tmp/",
+    "systemd-private-*/",
+    ".org.chromium.Chromium.*/",
+    "gdm3-config-err-*",
 ]
 
 # Git subprocess timeout (seconds).
@@ -211,6 +220,13 @@ def _validate_file_path(file_path: str, working_dir: str) -> Optional[str]:
 def _normalize_path(path_value: str) -> Path:
     """Return a canonical absolute path for checkpoint operations."""
     return Path(path_value).expanduser().resolve()
+
+
+# Temp roots themselves are never snapshot targets: they are throwaway scratch whose payload is
+# browser caches and root-owned residue whose unreadable entries make `git add -A` exit 128.
+# Paths *below* a temp root stay eligible — a pytest tmp_path project must still checkpoint.
+_TEMP_ROOTS: frozenset = frozenset(
+    {str(_normalize_path(p)) for p in (tempfile.gettempdir(), "/var/tmp", "/dev/shm")})
 
 
 def _project_hash(working_dir: str) -> str:
@@ -908,7 +924,7 @@ class CheckpointManager:
         abs_dir = str(_normalize_path(working_dir))
 
         # Skip root, home, and other overly broad directories
-        if abs_dir in {"/", str(Path.home())}:
+        if abs_dir in {"/", str(Path.home())} or abs_dir in _TEMP_ROOTS:  # never snapshot root/home/temp roots
             logger.debug("Checkpoint skipped: directory too broad (%s)", abs_dir)
             return False
 

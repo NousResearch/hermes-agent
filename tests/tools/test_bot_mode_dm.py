@@ -1210,3 +1210,57 @@ def test_local_turn_relays_utf8_reply_under_a_gbk_default_codec(tmp_path, monkey
 
     assert bot_mode_dm._run_local_turn(argv, str(dm_file)) == 0
     assert reply in capsys.readouterr().out
+
+
+def test_delivery_runner_activates_committed_dependencies_before_first_hermes_import(tmp_path, monkeypatch):
+    """The runner is spawned as a bare script, so it must activate the committed PM environment itself.
+
+    Regression: without ``_activate_committed_dependencies()`` the first lazy Hermes import
+    (``agent.turn_author`` → … → ``ruamel``) raised ``ModuleNotFoundError`` and every DM failed
+    with "Live admission outcome unknown". The command line itself must stay byte-identical —
+    this asserts the argv contract the delivery tests already pin, so a future fix that restructures
+    it (e.g. a ``-I -c <bootstrap>`` prefix) is caught here too.
+    """
+    calls = []
+
+    def _fake_activate(root):
+        calls.append(Path(root))
+
+    import pm.environments as envs
+
+    seen = []
+
+    def _fake_activate(root):
+        seen.append(Path(root))
+
+    monkeypatch.setattr(envs, "activate_dependencies", _fake_activate, raising=False)
+
+    # The real seam: the runner must call activate_dependencies BEFORE its first Hermes import
+    # (agent.turn_author). Record the order so removing the call is observable, not silent.
+    order = []
+    monkeypatch.setattr(
+        envs, "activate_dependencies",
+        lambda root: (order.append("activate"), seen.append(Path(root))),
+        raising=False,
+    )
+
+    dm_file = tmp_path / "dm.txt"
+    dm_file.write_text("hi", encoding="utf-8")
+
+    command = bot_mode_dm._delivery_command(
+        [sys.executable, "-c", "pass"], str(dm_file), stdin_file=False,
+    )
+    parts = shlex.split(command)
+    # win32 rewrites backslashes to forward slashes so Git Bash can execute the paths (exit 127).
+    def _norm(value: str) -> str:
+        return value.replace("\\", "/") if sys.platform == "win32" else value
+
+    assert _norm(parts[0]) == _norm(sys.executable)
+    assert _norm(parts[1]) == _norm(str(Path(bot_mode_dm.__file__).resolve()))
+
+    # Activation must actually reach pm.environments.activate_dependencies with the repo root.
+    bot_mode_dm._activate_committed_dependencies()
+    assert order == ["activate"], "runner did not activate the committed environment"
+    assert seen and seen[0] == Path(bot_mode_dm.__file__).resolve().parents[1]
+    # Idempotent: a second entry (--wait-reply after a delivery) must not raise.
+    bot_mode_dm._activate_committed_dependencies()

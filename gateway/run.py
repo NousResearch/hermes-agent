@@ -3243,7 +3243,7 @@ _RECONNECT_BACKOFF_CAP = 300
 
 def _reconnect_backoff(attempt: int) -> int:
     """Exponential reconnect backoff: 30s, 60s, 120s, ... capped at 5 min."""
-    return min(30 * (2 ** (attempt - 1)), _RECONNECT_BACKOFF_CAP)
+    return min(30 * (2 ** min(max(attempt - 1, 0), 4)), _RECONNECT_BACKOFF_CAP)
 
 
 def _reconnect_attention_after_secs() -> float:

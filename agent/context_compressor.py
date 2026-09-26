@@ -2809,6 +2809,9 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self.last_prompt_tokens = self.last_completion_tokens = 0
         self._reset_real_usage_pairing()
         self.summary_model = summary_model_override or ""
+        # The operator-configured aux route, kept so a main-model fallback can re-arm it after
+        # recovery; ``summary_model`` itself is cleared by the fallback (#123362).
+        self._configured_summary_model = summary_model_override or ""
         self._session_db: Any = None
         self._session_id: str = ""
         # Per-session state (also reset by /new, /reset and session end).
@@ -3957,6 +3960,11 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             self._previous_summary = summary
             self._clear_compression_failure_cooldown()
             self._summary_model_fallen_back = False
+            # A successful summary ends the main-model fallback: re-arm the configured auxiliary
+            # route so the next compression attempt returns to it once it is usable again, instead
+            # of staying permanently pinned to the main model (#123362).
+            if not self.summary_model and self._configured_summary_model:
+                self.summary_model = self._configured_summary_model
             self._last_summary_error = None
             self._clear_terminal_summary_failures()
             # The provider answered a summary again: the sustained-overload budget restarts (#123167).

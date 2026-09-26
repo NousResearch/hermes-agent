@@ -290,7 +290,15 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
     try:
         with os.fdopen(fd, "wb" if binary else "w", encoding=None if binary else encoding) as f:
             if mode is not None and hasattr(os, "fchmod"):
-                os.fchmod(f.fileno(), mode)
+                # Best-effort, like the post-replace chmod in _restore_file_metadata: some
+                # filesystems refuse mode changes even on a file the caller just created —
+                # object-storage NFS exports and squashed/NAS mounts pin every file to a fixed
+                # owner and mode and answer fchmod with EPERM. The write itself must still land;
+                # the temp file merely keeps mkstemp's 0600 until the replace.
+                try:
+                    os.fchmod(f.fileno(), mode)
+                except OSError:
+                    pass
             write(f)
             f.flush()
             os.fsync(f.fileno())

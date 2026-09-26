@@ -12,7 +12,14 @@ import os
 import sys
 import subprocess
 import argparse
-import winreg
+
+# winreg is Windows-only. Guard the import so this module can be imported (and
+# smoke-tested) on any platform without crashing; the registry calls below are
+# only ever reached on Windows at toast-show time.
+try:
+    import winreg
+except ImportError:
+    winreg = None
 
 # --- Debug logging (this script may run hidden; log to a file for diagnosis) --
 
@@ -60,6 +67,8 @@ HERMES_TOAST_GROUP = "default"
 
 def _ensure_aumid():
     """Register Hermes AUMID under HKCU so the toast shows 'Hermes' as app name."""
+    if winreg is None:
+        return
     try:
         key_path = rf"Software\Classes\AppUserModelId\{HERMES_AUMID}"
         try:
@@ -74,10 +83,12 @@ def _ensure_aumid():
 
 def _ensure_protocol_registered():
     """Register the ``hermes://`` URL protocol (HKCU) so clicking a toast
-    launches ``hermes_focus.py`` with the activation URL.
+    launches ``windows_focus.py`` (this package's focus helper) with the activation URL.
     """
+    if winreg is None:
+        return
     try:
-        focus_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hermes_focus.py")
+        focus_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "windows_focus.py")
         if not os.path.exists(focus_script):
             return
         pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
@@ -101,9 +112,9 @@ def _ensure_protocol_registered():
 # ---------------------------------------------------------------------------
 
 def bring_hermes_to_front(pid=None):
-    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hermes_focus.py")
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "windows_focus.py")
     if not os.path.exists(script):
-        print("hermes_focus.py not found at: {}".format(script), file=sys.stderr)
+        print("windows_focus.py not found at: {}".format(script), file=sys.stderr)
         return False
     try:
         cmd = [sys.executable, script]

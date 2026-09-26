@@ -22,14 +22,19 @@ import argparse
 import ctypes
 from ctypes import wintypes
 
+# pywin32 is Windows-only. Importing this module on a non-Windows host (or any
+# machine without pywin32 installed) MUST degrade gracefully — it must never
+# abort the parent process. The CLI imports this module to decide whether a
+# toast should be suppressed, so a hard crash here would kill Hermes on launch
+# or on every single notification event.
 try:
     import win32gui
     import win32con
     import win32process
     import win32api
+    _HAS_WIN32_GUI = True
 except ImportError:
-    print("ERROR: pywin32 is not installed. Run: pip install pywin32", file=sys.stderr)
-    sys.exit(1)
+    _HAS_WIN32_GUI = False
 
 try:
     import psutil
@@ -55,15 +60,21 @@ def _log(msg):
 
 # --- Console window resolution (conhost / powershell.exe) -----------------
 
-kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-
-user32 = ctypes.WinDLL("user32", use_last_error=True)
-user32.GetForegroundWindow.argtypes = []
-user32.GetForegroundWindow.restype = wintypes.HWND
-user32.SetForegroundWindow.argtypes = [wintypes.HWND]
-user32.SetForegroundWindow.restype = wintypes.BOOL
-user32.SetFocus.argtypes = [wintypes.HWND]
-user32.SetFocus.restype = wintypes.HWND
+# Only bind the Win32 APIs when we are actually on Windows with pywin32. On
+# every other platform these calls raise at import time and would break the
+# import (and therefore the whole Hermes process that imported us).
+if _HAS_WIN32_GUI:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.GetForegroundWindow.argtypes = []
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+    user32.SetForegroundWindow.restype = wintypes.BOOL
+    user32.SetFocus.argtypes = [wintypes.HWND]
+    user32.SetFocus.restype = wintypes.HWND
+else:
+    kernel32 = None
+    user32 = None
 
 
 def _force_foreground(hwnd):
@@ -82,8 +93,8 @@ def _force_foreground(hwnd):
       3. If denied (returns 0), FlashWindow so the taskbar entry blinks and
          the user can click it manually.
     """
-    if not hwnd:
-        _log("_force_foreground: no hwnd, abort")
+    if not _HAS_WIN32_GUI or not hwnd:
+        _log("_force_foreground: unavailable or no hwnd, abort")
         return False
 
     _log("_force_foreground: hwnd={}".format(hwnd))
@@ -135,6 +146,8 @@ def _console_window_for_pid(pid):
 # --- Process / window helpers --------------------------------------------
 
 def _window_pid(hwnd):
+    if not _HAS_WIN32_GUI:
+        return None
     try:
         _, pid = win32process.GetWindowThreadProcessId(hwnd)
         return pid
@@ -144,6 +157,8 @@ def _window_pid(hwnd):
 
 def _main_window_for_pid(pid):
     """Return the first visible top-level window owned by *pid*."""
+    if not _HAS_WIN32_GUI:
+        return None
     result = []
 
     def cb(hwnd, _):
@@ -165,7 +180,7 @@ _TERMINAL_NAMES = {
 
 def _ancestor_terminal_window(pid):
     """Walk up from *pid* to a terminal host and focus its main window."""
-    if psutil is None:
+    if not _HAS_WIN32_GUI or psutil is None:
         return None
     try:
         proc = psutil.Process(pid)
@@ -191,6 +206,8 @@ def _ancestor_terminal_window(pid):
 
 
 def _window_by_title(substr):
+    if not _HAS_WIN32_GUI:
+        return None
     result = []
 
     def cb(hwnd, _):
@@ -250,8 +267,12 @@ def is_hermes_foreground(target_pid=None):
     already looking at the terminal.
 
     Fails *open* (returns False) on any error so a focus-check failure never
-    silently suppresses a notification that should have been shown.
+    silently suppresses a notification that should have been shown. On a
+    non-Windows host (where the Win32 APIs are unavailable) it simply returns
+    False — the toast is shown unconditionally, which is the safe default.
     """
+    if not _HAS_WIN32_GUI:
+        return False
     try:
         fg = win32gui.GetForegroundWindow()
         if not fg:
@@ -280,6 +301,9 @@ def bring_to_front(target_pid=None):
     # Support being launched directly from toast activation:
     #   pythonw.exe hermes_focus.py "hermes://focus?pid=12345"
     _log("bring_to_front target_pid={}".format(target_pid))
+    if not _HAS_WIN32_GUI:
+        print("hermes_focus: window focusing is only supported on Windows.", file=sys.stderr)
+        return
     if target_pid is None and len(sys.argv) > 1:
         arg = sys.argv[1]
         if isinstance(arg, str) and arg.startswith("hermes://"):

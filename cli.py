@@ -17289,31 +17289,30 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if sys.platform != "win32":
             return
         try:
-            if not force:
-                try:
-                    _notify_script = os.path.join(
-                        os.path.dirname(os.path.abspath(__file__)),
-                        ".hermes", "scripts", "hermes_focus.py",
-                    )
-                    if os.path.exists(_notify_script):
-                        from .windows_focus import is_hermes_foreground
-                        if is_hermes_foreground(os.getpid()):
-                            return
-                except Exception:
-                    pass
-            _notify_script = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)),
-                ".hermes", "scripts", "hermes_notify.py",
-            )
+            # Dispatch to the bundled helper module inside the hermes_cli
+            # package. The original code pointed at a user-level
+            # ``.hermes/scripts/hermes_notify.py`` path that this PR never
+            # creates, so the toast silently never fired on a clean checkout.
+            import hermes_cli
+
+            _cli_pkg_dir = os.path.dirname(os.path.abspath(hermes_cli.__file__))
+            _notify_script = os.path.join(_cli_pkg_dir, "windows_notify.py")
             if not os.path.exists(_notify_script):
                 return
+            if not force:
+                try:
+                    from hermes_cli.windows_focus import is_hermes_foreground
+
+                    if is_hermes_foreground(os.getpid()):
+                        return
+                except Exception:
+                    pass
             cmd = [
                 sys.executable, _notify_script,
                 "--title", title,
                 "--body", body,
+                "--pid", str(os.getpid()),
             ]
-            if os.getpid():
-                cmd.extend(["--pid", str(os.getpid())])
             subprocess.run(cmd, check=False)
         except Exception:
             pass

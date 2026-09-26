@@ -1,0 +1,611 @@
+{
+  "graze_description": {
+    "message": "คือ 1-คลิกติดตาม, รายการโปรด, เพิ่ม, และบุ๊กมาร์กสำหรับ Mastodon, ไม่ว่าคุณจะเรียกโฮมอินสแตนซ์ใดก็ตาม",
+    "description": "Graze main home description"
+  },
+  "mastodon_instance_name_description": {
+    "message": "ชื่ออินสแตนซ์ Mastodon ของคุณ",
+    "description": "Instance Name description."
+  },
+  "need_help": {
+    "message": "ต้องการความช่วยเหลือหรือไม่?",
+    "description": "Need help anchor link"
+  },
+  "connect_account_btn": {
+    "message": "เชื่อมต่อแอคเคาต์",
+    "description": "Submit button that connects to the new account."
+  },
+  "back_to_account_btn": {
+    "message": "กลับไปยังแอคเคาต์",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "not_yet_on_mastodon": {
+    "message": "ยังไม่ถึงเมโทดอนเหรอ?",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "instance_error": {
+    "message": "ไม่พบอินสแตนซ์นี้โปรดตรวจสอบแอดเดรสและลองอีกครั้ง",
+    "description": "Error message that gets displayed when trying to connect to invalid instance name."
+  },
+  "accounts_container_title": {
+    "message": "บัญชีผู้ใช้"
+  },
+  "add_account": {
+    "message": "+ เพิ่มบัญชีผู้ใช้",
+    "description": "Link to add account."
+  },
+  "show_notifications": {
+    "message": "แสดงการแจ้งเตือน",
+    "description": "Toggle button for notifications."
+  },
+  "nevermind": {
+    "message": "เนเวอร์จิต",
+    "description": "Nevermind button when logging out a user."
+  },
+  "remove_account": {
+    "message": "ลบแอคเคาต์",
+    "description": "Remove account button when logging out a user."
+  },
+  "by": {
+    "message": "โดย"
+  },
+  "or": {
+    "message": "หรือ"
+  },
+  "send_feedback": {
+    "message": "ส่งความคิดเห็น",
+    "description": "Send feedback anchor link."
+  },
+  "report_bug": {
+    "message": "บั๊ครายงาน",
+    "description": "Report bug anchor link."
+  },
+  "get_support": {
+    "message": "ขอรับการสนับสนุน",
+    "description": "Get support anchor link."
+  },
+  "donate": {
+    "message": "บริจาค",
+    "description": "Donate anchor link."
+  },
+  "graze_on_connect_success_1": {
+    "message": "Graze สำหรับ Mastodon พร้อมที่จะใช้!",
+    "description": "Success message when successfully connected to the server. -P1"
+  },
+  "graze_on_connect_success_2": {
+    "message": "แท็บนี้จะปิดใน",
+    "description": "Success message when successfully connected to the server. -P2"
+  },
+  "graze_on_connect_success_3": {
+    "message": "วินาที",
+    "description": "Success message when successfully connected to the server. -P3"
+  },
+  "example": {
+    "message": "ex.",
+    "description": "For example (e.g.) placeholder in input field."
+  },
+  "follow": {
+    "message": "การติดตาม",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "follows_you": {
+    "message": "ทำตามที่คุณ",
+    "description": "Follows you overlay"
+  },
+  "unfollow": {
+    "message": "ยกเลิกการติดตาม",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "mention": {
+    "message": "กล่าวถึง",
+    "description": "Mention menu item on Mastodon webpage."
+  },
+  "direct_message": {
+    "message": "ข้อความโดยตรง",
+    "description": "Direct message menu item on Mastodon webpage."
+  },
+  "share": {
+    "message": "แบ่งใช้",
+    "description": "Share menu item on Mastodon webpage."
+  },
+  "mute": {
+    "message": "ปิดเสียง",
+    "description": "Mute menu item on Mastodon webpage."
+  },
+  "block": {
+    "message": "บล็อก",
+    "description": "Block menu item on Mastodon webpage."
+  },
+  "report": {
+    "message": "รายงาน",
+    "description": "Report menu item on Mastodon webpage."
+  },
+  "block_domain": {
+    "message": "บล็อกโดเมน",
+    "description": "Block domain menu item on Mastodon webpage."
+  },
+  "open_original_page": {
+    "message": "เปิดหน้าต้นฉบับ",
+    "description": "Open original page menu item on Mastodon webpage."
+  },
+  "copy_link": {
+    "message": "คัดลอกลิงก์ไปยังการติดประกาศ",
+    "description": "Copy link to post menu item on Mastodon webpage."
+  },
+  "embed": {
+    "message": "ฝัง",
+    "description": "Embed menu item on Mastodon webpage."
+  },
+  "feature_on_profile": {
+    "message": "คุณลักษณะบนโปรไฟล์",
+    "description": "Feature on profile menu item on Mastodon webpage."
+  },
+  "change_subscribed_languages": {
+    "message": "เปลี่ยนภาษาที่สมัครสมาชิก",
+    "description": "Change subscribed languages menu item on Mastodon webpage."
+  },
+  "hide_boosts_from": {
+    "message": "ซ่อนการบูรจาก",
+    "description": "Hide boosts from menu item on Mastodon webpage."
+  },
+  "add_or_remove_from_lists": {
+    "message": "เพิ่มหรือลบออกจากรายการ",
+    "description": "Add or Remove from lists menu item on Mastodon webpage."
+  },
+  "hour": {
+    "message": "ชั่วโมง",
+    "description": "hour in time."
+  },
+  "under": {
+    "message": "ภายใต้",
+    "description": "context: less than"
+  },
+  "user_voted": {
+    "message": "คุณลงคะแนนสำหรับคำตอบนี้",
+    "description": "Title of the icon of the voted poll answer."
+  },
+  "settings": {
+    "message": "การตั้งค่า",
+    "description": "settings title."
+  },
+  "theme": {
+    "message": "ธีม"
+  },
+  "graze_theme_p": {
+    "message": "Graze จะจับคู่กับธีมของคุณโดยอัตโนมัติคุณสามารถลบล้างได้ถ้าคุณต้องการ",
+    "description": "options theme section paragraph"
+  },
+  "mastodon_dark": {
+    "message": "มาสตอดอนมืด",
+    "description": "Dropdown menu theme options"
+  },
+  "mastodon_light": {
+    "message": "มอสโตดอนไลท์",
+    "description": "Dropdown menu theme options"
+  },
+  "graze_color_p": {
+    "message": "แทนที่ Mastodon Theme Accent Color",
+    "description": "options color section paragraph"
+  },
+  "home_instance_color_p": {
+    "message": "Override your home instance color.",
+    "description": "options home instance color paragraph"
+  },
+  "language": {
+    "message": "ภาษา"
+  },
+  "Afrikaans": {
+    "message": "ภาษาแอฟริกา (Thai Kaans)"
+  },
+  "Arabic": {
+    "message": "อาหรับ"
+  },
+  "Bengali": {
+    "message": "เบงกาลี"
+  },
+  "Bulgarian": {
+    "message": "บัลกาเรียน"
+  },
+  "Chinese_Simplified": {
+    "message": "จีนแผ่นดินใหญ่"
+  },
+  "Chinese_Traditional": {
+    "message": "จีนดั้งเดิม"
+  },
+  "Czech": {
+    "message": "เช็ก"
+  },
+  "Danish": {
+    "message": "ภาษาเดนมาร์ก"
+  },
+  "Dutch": {
+    "message": "ดัทช์"
+  },
+  "English": {
+    "message": "อังกฤษ"
+  },
+  "Finnish": {
+    "message": "ภาษาฟินแลนด์"
+  },
+  "French": {
+    "message": "ภาษาฝรั่งเศส"
+  },
+  "German": {
+    "message": "เยอรมัน"
+  },
+  "Greek": {
+    "message": "กรีก"
+  },
+  "Hawaiian": {
+    "message": "ฮาวายเอี้ยน"
+  },
+  "Hebrew": {
+    "message": "ฮิบรูว์"
+  },
+  "Hindi": {
+    "message": "ภาษาฮินดี"
+  },
+  "Hungarian": {
+    "message": "ฮังการี"
+  },
+  "Icelandic": {
+    "message": "ภาษาไอซ์แลนด์"
+  },
+  "Indonesian": {
+    "message": "ภาษาอินโดนีเซีย"
+  },
+  "Italian": {
+    "message": "ภาษาอิตาลี"
+  },
+  "Japanese": {
+    "message": "ภาษาญี่ปุ่น"
+  },
+  "Korean": {
+    "message": "เกาหลี"
+  },
+  "Malay": {
+    "message": "ภาษามาเลย์"
+  },
+  "Maori": {
+    "message": "เมารี"
+  },
+  "Norwegian": {
+    "message": "ภาษานอร์เวีย"
+  },
+  "Polish": {
+    "message": "ภาษาโปแลนด์"
+  },
+  "Portuguese": {
+    "message": "ภาษาโปรตุเกส"
+  },
+  "Portuguese_Brazilian": {
+    "message": "ภาษาโปรตุเกส, บราซิล"
+  },
+  "Romanian": {
+    "message": "ภาษาโรมาเนีย"
+  },
+  "Russian": {
+    "message": "รัสเซีย"
+  },
+  "Serbian_Cyrillic": {
+    "message": "ภาษาเซอร์เบีย (ซีริลลิก)"
+  },
+  "Spanish_Modern": {
+    "message": "ภาษาสเปน (สมัยใหม่)"
+  },
+  "Swedish": {
+    "message": "สวีดิช"
+  },
+  "Tamil": {
+    "message": "ทมิฬ"
+  },
+  "Thai": {
+    "message": "ภาษาไทย"
+  },
+  "Turkish": {
+    "message": "ตุรกี"
+  },
+  "Ukrainian": {
+    "message": "ยูเครเนียน"
+  },
+  "Urdu_India": {
+    "message": "อูรดู (อินเดีย)"
+  },
+  "Vietnamese": {
+    "message": "ภาษาเวียดนาม"
+  },
+  "Welsh": {
+    "message": "เวลช์"
+  },
+  "convenience": {
+    "message": "ความสะดวกสบาย"
+  },
+  "graze_convenience_p": {
+    "message": "Graze สามารถทำให้ mastodon ชื่อผู้ใช้เป็นลิงก์ไปรอบๆเว็บ",
+    "description": "options theme section paragraph"
+  },
+  "linkify_user_label": {
+    "message": "ชื่อผู้ใช้ Linkify Mastodon",
+    "description": "Checkbox label for linkify "
+  },
+  "linkify_user": {
+    "message": "Graze สามารถทำให้ mastodon ชื่อผู้ใช้เป็นลิงก์ไปรอบๆเว็บ",
+    "description": "Checkbox description for linkify "
+  },
+  "display_hovercards_label": {
+    "message": "แสดงโฮเวอร์การ์ด",
+    "description": "Checkbox label for display hovercards"
+  },
+  "display_hovercards": {
+    "message": "โฮเวอร์การ์ดสามารถแสดงข้อมูลแบบด่วนเกี่ยวกับผู้ใช้เมื่อคุณวางเมาส์เหนือชื่อของผู้ใช้",
+    "description": "Checkbox description for hovercards"
+  },
+  "show_federated_notification": {
+    "message": "แสดงป็อปอัพสำหรับอินสแตนซ์ที่คุณไม่ถูกรวม",
+    "description": "Checkbox description for federated peers notification"
+  },
+  "show_federated_notification_label": {
+    "message": "แนะนำให้ใช้อินสแตนซ์เพื่อรวมเมื่อเยี่ยมชม",
+    "description": "Checkbox label for federated peers notification"
+  },
+  "show_missing_account_notification": {
+    "message": "แสดงป็อปอัพเมื่อบันทึกลงในแอคเคาต์ที่ไม่ได้เพิ่มให้กับเกรซี",
+    "description": "Checkbox description for missing account notification"
+  },
+  "show_missing_account_notification_label": {
+    "message": "แสดงป็อปอัพล็อกอินแบบด่วนของแอคเคาต์",
+    "description": "Checkbox label for missing account peers notification"
+  },
+  "graze_language_p": {
+    "message": "แทนที่ภาษาอัตโนมัติใน Graze",
+    "description": "options language section paragraph"
+  },
+  "reply_from": {
+    "message": "เมื่อคุณคลิกตอบกลับบนรีโมตเซิร์ฟเวอร์หรือ \"toot this page\" Graze สามารถเปิดการตอบกลับด่วนหรือนำคุณไปยังอินสแตนซ์โฮมของคุณ",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_graze": {
+    "message": "ตอบกลับจากเกรเซ่",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_home": {
+    "message": "ตอบกลับจากอินสแตนซ์โฮม",
+    "description": "Reply from toggle button description"
+  },
+  "redirect_explore_description": {
+    "message": "บนอินสแตนซ์แบบรีโมตไทม์ไลน์โลคัลจะแสดงให้เห็นถึงผู้ใช้และเนื้อหาของอินสแตนซ์นั้นมากขึ้น",
+    "description": "Redirect to explore checkbox description"
+  },
+  "redirect_explore_label": {
+    "message": "เปลี่ยนเส้นทาง <strong>สำรวจ</strong> ไปยังไทม์ไลน์ <strong>ในเครื่อง</strong>",
+    "description": "Redirect explore checkbox description"
+  },
+  "content": {
+    "message": "เนื้อหา",
+    "description": "Content title"
+  },
+  "graze_content_p": {
+    "message": "ทำให้การแสดงผลเนื้อหาอินสแตนซ์แบบรีโมตสอดคล้องกับเนื้อหาของคุณเองหรือผสมขึ้น",
+    "description": "options language section paragraph"
+  },
+  "content_writing_label": {
+    "message": "แสดงเนื้อหาเบื้องหลัง Content Warnings (CW)",
+    "description": "Content writing label"
+  },
+  "play_gifs": {
+    "message": "เล่น GIFs โดยอัตโนมัติ",
+    "description": "Play GIFS label"
+  },
+  "display_NSFW": {
+    "message": "แสดงรูปภาพ NSFW/Sensitive",
+    "description": "Display NSFW label"
+  },
+  "set_active": {
+    "message": "ตั้งค่าแอคเคาต์แอ็คทีฟ",
+    "description": "Active account message"
+  },
+  "drag_title": {
+    "message": "ลากเพื่อจัดลำดับใหม่",
+    "description": "Drag title"
+  },
+  "messages_title": {
+    "message": "ข้อความสำหรับ {username}",
+    "description": "Messages title"
+  },
+  "notifications_title": {
+    "message": "การแจ้งเตือนสำหรับ {username}",
+    "description": "Notifications title"
+  },
+  "take_actions": {
+    "message": "ใช้แอ็คชันจากแอคเคาต์นี้",
+    "description": "Notifications title"
+  },
+  "taking_actions": {
+    "message": "การดำเนินการเป็น {username}",
+    "description": "Notifications title"
+  },
+  "show_rounded_avatars_label": {
+    "message": "แสดงรูป avatar รอบ",
+    "description": "Checkbox label for showing rounded avatars"
+  },
+  "show_graze_context_menu_p": {
+    "message": "แสดงลิงก์, อิมเมจ, และการแบ่งใช้ snippet ข้อความจากเมนูคอนเท็กซ์ระหว่างเว็บ",
+    "description": "Checkbox paragraph for show graze context menu"
+  },
+  "show_graze_context_menu_label": {
+    "message": "แสดงเมนูบริบทเกรเซ่",
+    "description": "Checkbox label for show graze context menu"
+  },
+  "redirect_automatically_p": {
+    "message": "เปลี่ยนทิศทางโปรไฟล์ว่างเปล่า (ไม่รวม) กับอินสแตนซ์โฮมเพื่อความปลอดภัยให้คุณคลิก",
+    "description": "Checkbox paragraph for redirect automatically to unfederated profiles"
+  },
+  "redirect_automatically_label": {
+    "message": "เปลี่ยนทิศทางแบบอัตโนมัติ",
+    "description": "Checkbox label for redirect automatically to unfederated profiles"
+  },
+  "expand_mastodon_links_p": {
+    "message": "ขยายลิงก์ไปยังการโพสต์ Mastodon ในไทม์ไลน์ของคุณ",
+    "description": "Checkbox paragraph for expanded mastodon link previews"
+  },
+  "expand_mastodon_links_label": {
+    "message": "แสดงการโพสต์ในบรรทัดที่ขยาย",
+    "description": "Checkbox label for expanded link mastodon previews"
+  },
+  "dedupe_label": {
+    "message": "ตัวอย่างอิมเมจ Dedupe และการแสดงตัวอย่างลิงก์",
+    "description": "Checkbox label for deduping post images and link mastodon previews"
+  },
+  "expand_link_preview_p": {
+    "message": "แทนที่การแสดงตัวอย่างลิงก์ดีฟอลต์ด้วยรูปภาพขนาดใหญ่และข้อความ snippet แบบเต็ม",
+    "description": "Checkbox paragraph for expand link previews"
+  },
+  "expand_link_preview_label": {
+    "message": "แสดงตัวอย่างริชลิงก์",
+    "description": "Checkbox label for expand link previews"
+  },
+  "show_alt_text_p": {
+    "message": "Graze สามารถแสดงคำอธิบายอิมเมจ \"Alt Text\" ด้านล่างภาพราสามกว่าเพียงแค่ในคำแนะนำเครื่องมือสำหรับการอ่านที่ง่ายกว่า",
+    "description": "Checkbox label for show alt text"
+  },
+  "show_alt_text_label": {
+    "message": "แสดงคำอธิบายรูปภาพด้านล่างรูปภาพ",
+    "description": "Checkbox label for show alt text"
+  },
+  "invalid_version_number_error": {
+    "message": "Graze จะเข้ากันได้กับอินสแตนซ์ที่รัน Mastodon เวอร์ชัน 4. 0. 0 หรือสูงกว่าเท่านั้น",
+    "description": "Error message for incompatible Mastodon version"
+  },
+  "no_instance_found_error": {
+    "message": "ไม่พบอินสแตนซ์นี้โปรดตรวจสอบแอดเดรสและลองอีกครั้ง",
+    "description": "Error message for unfound instance"
+  },
+  "general_error": {
+    "message": "เกิดข้อผิดพลาดขึ้น โปรดลองอีกครั้งในภายหลัง",
+    "description": "General error message"
+  },
+  "posts": {
+    "message": "โพสต์",
+    "description": "Posts title"
+  },
+  "followers": {
+    "message": "ผู้ติดตาม",
+    "description": "Followers title"
+  },
+  "following": {
+    "message": "ผู้คนที่ติดตาม",
+    "description": "Following title"
+  },
+  "no_thanks": {
+    "message": "ไม่ล่ะ ขอบคุณนะ",
+    "description": "No thanks button"
+  },
+  "go_to_profile_directory": {
+    "message": "ไปยังไดเร็กทอรีโปรไฟล์",
+    "description": "Go to profile directory button"
+  },
+  "go_to_local_timeline": {
+    "message": "ไปที่เส้นเวลาโลคัล",
+    "description": "Go to local timeline button"
+  },
+  "follow_account_local_feed": {
+    "message": "ติดตามแอคเคาต์จากฟีดโลคัลเพื่อเริ่มเห็นเนื้อหาใน Home Feedของคุณ",
+    "description": "Federated popup description"
+  },
+  "not_federated": {
+    "message": "คุณยังไม่รวม $username$",
+    "description": "Not federated popup title",
+    "placeholders": {
+      "username": {
+        "content": "$1"
+      }
+    }
+  },
+  "add_account_to_graze_description": {
+    "message": "คุณจะสามารถใช้แอ็คชันจากแอคเคาต์นี้บนอินสแตนซ์ใดๆ",
+    "description": "Add account to graze description"
+  },
+  "add_account_to_graze_title": {
+    "message": "เพิ่ม $display_name$ ให้เกรซ?",
+    "description": "Add account to graze title. Expects <span>display name</span> as a placeholder",
+    "placeholders": {
+      "display_name": {
+        "content": "$1",
+        "example": "<span>Mastodon</span>"
+      }
+    }
+  },
+  "add_to_graze": {
+    "message": "เพิ่มลงในเกรเซ่",
+    "description": "Add to graze button"
+  },
+  "account_switching_non_supported": {
+    "message": "Account switching is disabled on non supported instances",
+    "description": "Account switching disabled on unsupported instances"
+  },
+  "account_switching_logged_in": {
+    "message": "Account switching is disabled on logged in instances",
+    "description": "Account switching disabled when user is logged in"
+  },
+  "file_not_image_error": {
+    "message": "File is not an image",
+    "description": "File upload error message"
+  },
+  "upload_aborted_error": {
+    "message": "The upload was aborted.",
+    "description": "File upload aborted message"
+  },
+  "file_read_error": {
+    "message": "An error occurred while reading the file.",
+    "description": "File reading error message"
+  },
+  "image_empty_error": {
+    "message": "Image is empty",
+    "description": "Image empty error message"
+  },
+  "image_load_aborted_error": {
+    "message": "Image load was aborted.",
+    "description": "Image load aborted message"
+  },
+  "image_load_error": {
+    "message": "An error occurred while loading image.",
+    "description": "Image load error message"
+  },
+  "participants": {
+    "message": "Participants",
+    "description": "Participants title"
+  },
+  "posts_today": {
+    "message": "Posts today",
+    "description": "Posts today title"
+  },
+  "learn_more_about_hashtag": {
+    "message": "Learn more about #$hashtag$ hashtag across the",
+    "description": "Hashtag hovercard description",
+    "placeholders": {
+      "hashtag": {
+        "content": "$1"
+      }
+    }
+  },
+  "show_more": {
+    "message": "...more",
+    "description": "Truncated bio more text"
+  },
+  "mirror_content_settings_p": {
+    "message": "",
+    "description": "Intro text for mirroring content settings"
+  },
+  "mirror_sensitive_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring sensitive media display"
+  },
+  "mirror_cw_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring CW expansion"
+  },
+  "mirror_gif_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring GIF autoplay"
+  }
+}

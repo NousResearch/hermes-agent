@@ -1,0 +1,611 @@
+{
+  "graze_description": {
+    "message": "adalah 1-klik ikut, kegemaran, boost, dan tanda buku untuk Mastodon, tidak peduli apa yang jelas anda hubungi rumah.",
+    "description": "Graze main home description"
+  },
+  "mastodon_instance_name_description": {
+    "message": "Nama kejadian Mastodon anda",
+    "description": "Instance Name description."
+  },
+  "need_help": {
+    "message": "Perlukan Bantuan?",
+    "description": "Need help anchor link"
+  },
+  "connect_account_btn": {
+    "message": "Sambung Akaun",
+    "description": "Submit button that connects to the new account."
+  },
+  "back_to_account_btn": {
+    "message": "Kembali ke Akaun",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "not_yet_on_mastodon": {
+    "message": "Belum lagi di Mastodon?",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "instance_error": {
+    "message": "Tidak dapat mencari contoh ini, sila semak alamat dan cuba lagi.",
+    "description": "Error message that gets displayed when trying to connect to invalid instance name."
+  },
+  "accounts_container_title": {
+    "message": "Akaun"
+  },
+  "add_account": {
+    "message": "+ TAMBAH AKAUN",
+    "description": "Link to add account."
+  },
+  "show_notifications": {
+    "message": "Papar pemberitahuan",
+    "description": "Toggle button for notifications."
+  },
+  "nevermind": {
+    "message": "Nevermind",
+    "description": "Nevermind button when logging out a user."
+  },
+  "remove_account": {
+    "message": "Buang Akaun",
+    "description": "Remove account button when logging out a user."
+  },
+  "by": {
+    "message": "oleh"
+  },
+  "or": {
+    "message": "atau"
+  },
+  "send_feedback": {
+    "message": "Hantar Maklum Balas",
+    "description": "Send feedback anchor link."
+  },
+  "report_bug": {
+    "message": "Lapor Pepijat",
+    "description": "Report bug anchor link."
+  },
+  "get_support": {
+    "message": "Dapatkan Sokongan",
+    "description": "Get support anchor link."
+  },
+  "donate": {
+    "message": "Menderma",
+    "description": "Donate anchor link."
+  },
+  "graze_on_connect_success_1": {
+    "message": "Graze untuk Mastodon sudah sedia untuk digunakan!",
+    "description": "Success message when successfully connected to the server. -P1"
+  },
+  "graze_on_connect_success_2": {
+    "message": "Tab ini akan ditutup",
+    "description": "Success message when successfully connected to the server. -P2"
+  },
+  "graze_on_connect_success_3": {
+    "message": "saat",
+    "description": "Success message when successfully connected to the server. -P3"
+  },
+  "example": {
+    "message": "e.g.",
+    "description": "For example (e.g.) placeholder in input field."
+  },
+  "follow": {
+    "message": "Ikut",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "follows_you": {
+    "message": "Ikut awak",
+    "description": "Follows you overlay"
+  },
+  "unfollow": {
+    "message": "Tidak ikuti",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "mention": {
+    "message": "Sebutkan",
+    "description": "Mention menu item on Mastodon webpage."
+  },
+  "direct_message": {
+    "message": "Mesej langsung",
+    "description": "Direct message menu item on Mastodon webpage."
+  },
+  "share": {
+    "message": "Kongsi",
+    "description": "Share menu item on Mastodon webpage."
+  },
+  "mute": {
+    "message": "Bisu",
+    "description": "Mute menu item on Mastodon webpage."
+  },
+  "block": {
+    "message": "Blok",
+    "description": "Block menu item on Mastodon webpage."
+  },
+  "report": {
+    "message": "Laporan",
+    "description": "Report menu item on Mastodon webpage."
+  },
+  "block_domain": {
+    "message": "Domain blok",
+    "description": "Block domain menu item on Mastodon webpage."
+  },
+  "open_original_page": {
+    "message": "Buka halaman asal",
+    "description": "Open original page menu item on Mastodon webpage."
+  },
+  "copy_link": {
+    "message": "Salin pautan ke pos",
+    "description": "Copy link to post menu item on Mastodon webpage."
+  },
+  "embed": {
+    "message": "Terbenam",
+    "description": "Embed menu item on Mastodon webpage."
+  },
+  "feature_on_profile": {
+    "message": "Fitur pada profil",
+    "description": "Feature on profile menu item on Mastodon webpage."
+  },
+  "change_subscribed_languages": {
+    "message": "Ubah bahasa yang tidak sah",
+    "description": "Change subscribed languages menu item on Mastodon webpage."
+  },
+  "hide_boosts_from": {
+    "message": "Sembunyi boosts dari",
+    "description": "Hide boosts from menu item on Mastodon webpage."
+  },
+  "add_or_remove_from_lists": {
+    "message": "Tambah atau Buang dari senarai",
+    "description": "Add or Remove from lists menu item on Mastodon webpage."
+  },
+  "hour": {
+    "message": "jam",
+    "description": "hour in time."
+  },
+  "under": {
+    "message": "di bawah",
+    "description": "context: less than"
+  },
+  "user_voted": {
+    "message": "Anda mengundi untuk jawapan ini",
+    "description": "Title of the icon of the voted poll answer."
+  },
+  "settings": {
+    "message": "Tetapan",
+    "description": "settings title."
+  },
+  "theme": {
+    "message": "tema"
+  },
+  "graze_theme_p": {
+    "message": "Graze secara automatik sepadan dengan tema anda, anda boleh membatalkannya jika anda suka.",
+    "description": "options theme section paragraph"
+  },
+  "mastodon_dark": {
+    "message": "Mastodon Gelap",
+    "description": "Dropdown menu theme options"
+  },
+  "mastodon_light": {
+    "message": "Cahaya Mastodon",
+    "description": "Dropdown menu theme options"
+  },
+  "graze_color_p": {
+    "message": "Batalkan Warna Loghat Tema Mastodon",
+    "description": "options color section paragraph"
+  },
+  "home_instance_color_p": {
+    "message": "Override your home instance color.",
+    "description": "options home instance color paragraph"
+  },
+  "language": {
+    "message": "bahasa"
+  },
+  "Afrikaans": {
+    "message": "Afrikadian"
+  },
+  "Arabic": {
+    "message": "Bahasa Arab"
+  },
+  "Bengali": {
+    "message": "Bengali."
+  },
+  "Bulgarian": {
+    "message": "Bulgaria"
+  },
+  "Chinese_Simplified": {
+    "message": "China Simplified"
+  },
+  "Chinese_Traditional": {
+    "message": "Cina Tradisional"
+  },
+  "Czech": {
+    "message": "Czea"
+  },
+  "Danish": {
+    "message": "Danish"
+  },
+  "Dutch": {
+    "message": "Belanda"
+  },
+  "English": {
+    "message": "Bahasa Inggeris"
+  },
+  "Finnish": {
+    "message": "Finland"
+  },
+  "French": {
+    "message": "Perancis"
+  },
+  "German": {
+    "message": "Jerman"
+  },
+  "Greek": {
+    "message": "Yunani"
+  },
+  "Hawaiian": {
+    "message": "Bandar nama"
+  },
+  "Hebrew": {
+    "message": "Bahasa Ibrani"
+  },
+  "Hindi": {
+    "message": "Hindi"
+  },
+  "Hungarian": {
+    "message": "Hungary"
+  },
+  "Icelandic": {
+    "message": "Icelandic"
+  },
+  "Indonesian": {
+    "message": "Bahasa Indonesia"
+  },
+  "Italian": {
+    "message": "Itali"
+  },
+  "Japanese": {
+    "message": "Jepun"
+  },
+  "Korean": {
+    "message": "Korea"
+  },
+  "Malay": {
+    "message": "Malay"
+  },
+  "Maori": {
+    "message": "Maori"
+  },
+  "Norwegian": {
+    "message": "Norwegian"
+  },
+  "Polish": {
+    "message": "Poland"
+  },
+  "Portuguese": {
+    "message": "Portugis"
+  },
+  "Portuguese_Brazilian": {
+    "message": "Portugis, Brazil"
+  },
+  "Romanian": {
+    "message": "Romania"
+  },
+  "Russian": {
+    "message": "Bahasa Rusia"
+  },
+  "Serbian_Cyrillic": {
+    "message": "Serbia (Cyrillic)"
+  },
+  "Spanish_Modern": {
+    "message": "Sepanyol (Modern)"
+  },
+  "Swedish": {
+    "message": "Sweden"
+  },
+  "Tamil": {
+    "message": "Tamil"
+  },
+  "Thai": {
+    "message": "Thai"
+  },
+  "Turkish": {
+    "message": "Turki"
+  },
+  "Ukrainian": {
+    "message": "Ukraindcolor"
+  },
+  "Urdu_India": {
+    "message": "Urdu (India)"
+  },
+  "Vietnamese": {
+    "message": "Vietnam"
+  },
+  "Welsh": {
+    "message": "Welsh."
+  },
+  "convenience": {
+    "message": "Keselesaan"
+  },
+  "graze_convenience_p": {
+    "message": "Graze boleh membuat nama pengguna mastodon ke dalam pautan di sekitar laman web.",
+    "description": "options theme section paragraph"
+  },
+  "linkify_user_label": {
+    "message": "Nama pengguna pemakify Mastodon",
+    "description": "Checkbox label for linkify "
+  },
+  "linkify_user": {
+    "message": "Graze boleh membuat nama pengguna mastodon ke dalam pautan di sekitar laman web.",
+    "description": "Checkbox description for linkify "
+  },
+  "display_hovercards_label": {
+    "message": "Papar Kad Hovercard",
+    "description": "Checkbox label for display hovercards"
+  },
+  "display_hovercards": {
+    "message": "Hovercard boleh memaparkan maklumat pantas mengenai pengguna apabila anda hover atas nama mereka.",
+    "description": "Checkbox description for hovercards"
+  },
+  "show_federated_notification": {
+    "message": "Papar timbul untuk kejadian yang anda tidak federasi ke",
+    "description": "Checkbox description for federated peers notification"
+  },
+  "show_federated_notification_label": {
+    "message": "Mencadangkan jarak untuk federate bila melawat",
+    "description": "Checkbox label for federated peers notification"
+  },
+  "show_missing_account_notification": {
+    "message": "Papar popup bila mendaftar masuk ke akaun tidak ditambah ke Graze",
+    "description": "Checkbox description for missing account notification"
+  },
+  "show_missing_account_notification_label": {
+    "message": "Papar popup daftar masuk akaun pantas",
+    "description": "Checkbox label for missing account peers notification"
+  },
+  "graze_language_p": {
+    "message": "Batalkan bahasa automatik dalam Graze",
+    "description": "options language section paragraph"
+  },
+  "reply_from": {
+    "message": "Apabila anda klik balasan pada pelayan jauh atau \"toot halaman ini\" Graze boleh membuka balasan cepat atau membawa anda kepada kejadian rumah anda.",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_graze": {
+    "message": "Balasan dari Graze",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_home": {
+    "message": "Balasan dari kejadian rumah",
+    "description": "Reply from toggle button description"
+  },
+  "redirect_explore_description": {
+    "message": "Pada kejadian jauh garis masa tempatan adalah lebih teliti mencerminkan maklumat pengguna dan kandungan yang sebenar.",
+    "description": "Redirect to explore checkbox description"
+  },
+  "redirect_explore_label": {
+    "message": "Redirect <strong>Rec10-</strong> ke <strong>tempatan</strong> garis masa",
+    "description": "Redirect explore checkbox description"
+  },
+  "content": {
+    "message": "kandungan",
+    "description": "Content title"
+  },
+  "graze_content_p": {
+    "message": "Buat paparan kandungan jarak jauh sepadan dengan sendiri, atau campurkan sehingga.",
+    "description": "options language section paragraph"
+  },
+  "content_writing_label": {
+    "message": "Papar kandungan di belakang satu Content Warnings Kandungan (CW)",
+    "description": "Content writing label"
+  },
+  "play_gifs": {
+    "message": "Main GIFs secara automatik",
+    "description": "Play GIFS label"
+  },
+  "display_NSFW": {
+    "message": "Papar Imej NSFW/Sensitif",
+    "description": "Display NSFW label"
+  },
+  "set_active": {
+    "message": "tetapkan akaun aktif",
+    "description": "Active account message"
+  },
+  "drag_title": {
+    "message": "Seret untuk tertib semula",
+    "description": "Drag title"
+  },
+  "messages_title": {
+    "message": "Mesej untuk {username}",
+    "description": "Messages title"
+  },
+  "notifications_title": {
+    "message": "Pemberitahuan untuk {username}",
+    "description": "Notifications title"
+  },
+  "take_actions": {
+    "message": "AMBIL TINDAKAN DARI AKAUN INI",
+    "description": "Notifications title"
+  },
+  "taking_actions": {
+    "message": "Mengambil tindakan sebagai {username}",
+    "description": "Notifications title"
+  },
+  "show_rounded_avatars_label": {
+    "message": "Tunjukkan imej avatar bulat",
+    "description": "Checkbox label for showing rounded avatars"
+  },
+  "show_graze_context_menu_p": {
+    "message": "Papar pautan, imej, dan teks snippet berkongsi dari menu konteks di seluruh laman sesawang",
+    "description": "Checkbox paragraph for show graze context menu"
+  },
+  "show_graze_context_menu_label": {
+    "message": "Papar menu konteks Graze",
+    "description": "Checkbox label for show graze context menu"
+  },
+  "redirect_automatically_p": {
+    "message": "Redirect kosongkan (nyahfederasi) profiles ke rumah selamat untuk selamat anda klik",
+    "description": "Checkbox paragraph for redirect automatically to unfederated profiles"
+  },
+  "redirect_automatically_label": {
+    "message": "Terus Semula Secara Automatik",
+    "description": "Checkbox label for redirect automatically to unfederated profiles"
+  },
+  "expand_mastodon_links_p": {
+    "message": "Kembang pautan ke Mastodon posts dalam baris masa anda",
+    "description": "Checkbox paragraph for expanded mastodon link previews"
+  },
+  "expand_mastodon_links_label": {
+    "message": "Papar posts dalam baris yang dikembangkan",
+    "description": "Checkbox label for expanded link mastodon previews"
+  },
+  "dedupe_label": {
+    "message": "Dedupe imej pos dan prapapar pautan",
+    "description": "Checkbox label for deduping post images and link mastodon previews"
+  },
+  "expand_link_preview_p": {
+    "message": "Ganti pratonton pautan lalai dengan imej yang lebih besar dan teks snippet penuh.",
+    "description": "Checkbox paragraph for expand link previews"
+  },
+  "expand_link_preview_label": {
+    "message": "Papar pratonton pautan kaya",
+    "description": "Checkbox label for expand link previews"
+  },
+  "show_alt_text_p": {
+    "message": "Graze boleh memaparkan penerang imej \"Alt Text\" dibawah imej rathrer daripada hanya dalam tip alat untuk pembacaan yang lebih mudah",
+    "description": "Checkbox label for show alt text"
+  },
+  "show_alt_text_label": {
+    "message": "Papar keterangan imej dibawah imej",
+    "description": "Checkbox label for show alt text"
+  },
+  "invalid_version_number_error": {
+    "message": "Graze hanya serasi dengan jarak yang berjalan Mastodon versi 4.0.0 atau diatas",
+    "description": "Error message for incompatible Mastodon version"
+  },
+  "no_instance_found_error": {
+    "message": "Tidak dapat mencari contoh ini, sila semak alamat dan cuba lagi.",
+    "description": "Error message for unfound instance"
+  },
+  "general_error": {
+    "message": "Ralat berlaku. Sila cuba lagi kemudian.",
+    "description": "General error message"
+  },
+  "posts": {
+    "message": "Siaran",
+    "description": "Posts title"
+  },
+  "followers": {
+    "message": "Pengikut",
+    "description": "Followers title"
+  },
+  "following": {
+    "message": "Mengikuti",
+    "description": "Following title"
+  },
+  "no_thanks": {
+    "message": "Terima Kasih Saja",
+    "description": "No thanks button"
+  },
+  "go_to_profile_directory": {
+    "message": "Pergi ke Direktori Profil",
+    "description": "Go to profile directory button"
+  },
+  "go_to_local_timeline": {
+    "message": "Pergi ke Garis Masa Setempat",
+    "description": "Go to local timeline button"
+  },
+  "follow_account_local_feed": {
+    "message": "Ikut akaun dari suapan setempat untuk mula melihat kandungan dalam Suapan Rumah Anda.",
+    "description": "Federated popup description"
+  },
+  "not_federated": {
+    "message": "Anda tidak federasi ke $username$",
+    "description": "Not federated popup title",
+    "placeholders": {
+      "username": {
+        "content": "$1"
+      }
+    }
+  },
+  "add_account_to_graze_description": {
+    "message": "Anda akan dapat mengambil tindakan dari akaun ini pada mana-mana Instance.",
+    "description": "Add account to graze description"
+  },
+  "add_account_to_graze_title": {
+    "message": "Tambah $display_name$ ke Graze?",
+    "description": "Add account to graze title. Expects <span>display name</span> as a placeholder",
+    "placeholders": {
+      "display_name": {
+        "content": "$1",
+        "example": "<span>Mastodon</span>"
+      }
+    }
+  },
+  "add_to_graze": {
+    "message": "Tambah ke Graze",
+    "description": "Add to graze button"
+  },
+  "account_switching_non_supported": {
+    "message": "Account switching is disabled on non supported instances",
+    "description": "Account switching disabled on unsupported instances"
+  },
+  "account_switching_logged_in": {
+    "message": "Account switching is disabled on logged in instances",
+    "description": "Account switching disabled when user is logged in"
+  },
+  "file_not_image_error": {
+    "message": "File is not an image",
+    "description": "File upload error message"
+  },
+  "upload_aborted_error": {
+    "message": "The upload was aborted.",
+    "description": "File upload aborted message"
+  },
+  "file_read_error": {
+    "message": "An error occurred while reading the file.",
+    "description": "File reading error message"
+  },
+  "image_empty_error": {
+    "message": "Image is empty",
+    "description": "Image empty error message"
+  },
+  "image_load_aborted_error": {
+    "message": "Image load was aborted.",
+    "description": "Image load aborted message"
+  },
+  "image_load_error": {
+    "message": "An error occurred while loading image.",
+    "description": "Image load error message"
+  },
+  "participants": {
+    "message": "Participants",
+    "description": "Participants title"
+  },
+  "posts_today": {
+    "message": "Posts today",
+    "description": "Posts today title"
+  },
+  "learn_more_about_hashtag": {
+    "message": "Learn more about #$hashtag$ hashtag across the",
+    "description": "Hashtag hovercard description",
+    "placeholders": {
+      "hashtag": {
+        "content": "$1"
+      }
+    }
+  },
+  "show_more": {
+    "message": "...more",
+    "description": "Truncated bio more text"
+  },
+  "mirror_content_settings_p": {
+    "message": "",
+    "description": "Intro text for mirroring content settings"
+  },
+  "mirror_sensitive_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring sensitive media display"
+  },
+  "mirror_cw_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring CW expansion"
+  },
+  "mirror_gif_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring GIF autoplay"
+  }
+}

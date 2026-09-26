@@ -173,6 +173,9 @@ VALID_HOOKS: Set[str] = {
     # dispatch_tick (once per dispatch_once, strictly AFTER the dispatch lock is released): board,
     #   profile_name, dry_run, outcome ("ok"|"skipped_locked"|"idle"), result: DispatchResult
     #   (privacy: task ids, assignees, workspace paths).
+    #   A board refused the shared spawn budget reports it on the result, not in outcome:
+    #   result.budget_blocked ("max_in_progress" | "max_spawn") plus the cap and the
+    #   unclaimed count. outcome describes activity only, so a refused board is "idle".
     "on_kanban_worker_spawned", "on_kanban_worker_exited", "on_kanban_worker_stale_claim",
     "on_kanban_task_updated", "on_kanban_dispatch_tick",
     # gateway_platform_event: normalized envelopes only, never raw SDK objects or adapter handles.

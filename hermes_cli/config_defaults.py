@@ -1998,6 +1998,9 @@ DEFAULT_CONFIG = {
                 "show_tip", "desktop_project", "close_terminal",
                 "apply_layout", "read_terminal", "read_window_below", "focus_pane",
             ],
+            # Tools that never defer, whatever their toolset — including plugin and MCP tools,
+            # which otherwise always defer. Use for a tool the model must see every turn.
+            "never_defer": [],
         },
         # Remote connector discovery/lifecycle through the Nous tool gateway.
         # The flag is the user's off switch; availability additionally requires

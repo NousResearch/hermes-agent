@@ -965,6 +965,13 @@ def recover_with_credential_pool(
                 "credential rotation, deferring to fallback chain"
             )
         return False, has_retried_429
+    if effective_reason in (FailoverReason.overloaded, FailoverReason.server_error):
+        # ponytail: one shared branch; per-key cooldown tuning if 5xx bench windows need it.
+        # 5xx (500/502/503/529) is often key-scoped on aggregators (per-key upstream
+        # routes/quotas), so rotate to the next healthy pool key before giving up on the
+        # provider. Exhaustion returns False so the fallback chain still fires. No revert
+        # arming (gated to rate_limit/billing): a transient 5xx must not pull the key back.
+        return (True, False) if _rotate_and_swap(503, "overloaded/server_error") else (False, has_retried_429)
     if effective_reason == FailoverReason.billing:
         # A separate pool instance may have resolved runtime credentials, leaving no ``current_id``;
         # match the key that failed, not a different account.

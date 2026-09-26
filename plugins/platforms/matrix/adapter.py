@@ -403,7 +403,25 @@ _STARTUP_GRACE_SECONDS = 5  # ignore messages older than this many seconds befor
 
 _OUTBOUND_MENTION_RE = re.compile(r"(?<![\w/])(@[0-9A-Za-z._=/-]+:[0-9A-Za-z.-]+(?::\d+)?)")
 
-_E2EE_INSTALL_HINT = "Install with: pip install 'mautrix[encryption]' asyncpg aiosqlite  (requires libolm C library)"
+_E2EE_UNSUPPORTED = "E2EE needs python-olm, which installs on Linux only"
+
+
+def _e2ee_installable() -> bool:
+    """Can pm install python-olm (the ``matrix-e2ee`` part) on this host? The gate alone decides, as in
+    pm's own install policy: an olm hand-installed into this environment is gone after the next sync."""
+    from pm.extras import extra_supported
+
+    return extra_supported("matrix-e2ee", importable=lambda _anchor: False)
+
+
+def _e2ee_install_hint(installable: Optional[bool] = None) -> str:
+    """How to fix missing E2EE dependencies on this host: install them where pm can, else turn E2EE off."""
+    if _e2ee_installable() if installable is None else installable:
+        from pm.extras import install_hint
+
+        return f"Install them with `{install_hint('matrix')}`, or set MATRIX_E2EE_MODE=off"
+    return f"{_E2EE_UNSUPPORTED}; set MATRIX_E2EE_MODE=off to run Matrix unencrypted here, or use Proxy Mode"
+
 
 _MATRIX_IMAGE_FILENAME_EXTS = frozenset({
     ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg", ".heic", ".heif", ".avif"})
@@ -757,18 +775,17 @@ def ensure_matrix_deps() -> bool:
     if extras.missing("matrix") and not extras.ensure_and_bind("matrix", _import, globals()):
         logger.warning(
             "Matrix: required packages not installed or need a restart. "
-            "Run `hermes pm install`, then restart Hermes."
+            "Run `%s`, then restart Hermes.", extras.install_hint("matrix")
         )
         return False
     e2ee_mode = _resolve_e2ee_mode()
     if e2ee_mode == "required" and not _check_e2ee_deps():
         logger.error(
-            "Matrix: E2EE is required but dependencies are missing. %s. Without this, encrypted "
-            "rooms will not work. Set MATRIX_E2EE_MODE=off to disable E2EE.",
-            _E2EE_INSTALL_HINT)
+            "Matrix: E2EE is required but dependencies are missing. %s. Without them, encrypted "
+            "rooms will not work.", _e2ee_install_hint())
         return False
     if e2ee_mode == "optional" and not _check_e2ee_deps():
-        logger.warning("Matrix: E2EE optional but dependencies are missing. %s", _E2EE_INSTALL_HINT)
+        logger.warning("Matrix: E2EE optional but dependencies are missing. %s", _e2ee_install_hint())
     return True
 
 
@@ -1191,15 +1208,22 @@ class MatrixAdapter(BasePlatformAdapter):
     async def _connect_setup_e2ee(self, client: Any, api: Any, state_store: Any) -> bool:
         """Set up the Olm machine + crypto store. Returns False when connect must abort."""
         if not _check_e2ee_deps():
+            installable = _e2ee_installable()
+            hint = _e2ee_install_hint(installable)
             if self._e2ee_mode == "optional":
                 logger.warning(
                     "Matrix: E2EE optional but dependencies are missing. Continuing without "
-                    "encrypted-room support. %s", _E2EE_INSTALL_HINT)
+                    "encrypted-room support. %s", hint)
                 self._encryption = False
             else:
                 logger.error(
                     "Matrix: E2EE is required but dependencies are missing. %s. Refusing to connect — "
-                    "encrypted rooms would silently fail.", _E2EE_INSTALL_HINT)
+                    "encrypted rooms would silently fail.", hint)
+                if not installable:
+                    # No reconnect can install python-olm here: park Matrix with the remedy instead of
+                    # re-authenticating against the homeserver forever.
+                    self._set_fatal_error(
+                        "matrix_e2ee_unavailable", f"Matrix E2EE is required. {hint}.", retryable=False)
                 return await self._abort_connect(api)
         if not self._encryption:
             return True
@@ -1258,14 +1282,15 @@ class MatrixAdapter(BasePlatformAdapter):
         return True
 
     async def _e2ee_setup_failed(self, what: str, exc: Exception, api: Any) -> bool:
-        """Optional mode: log + disable E2EE and return True; required mode: close + return False."""
+        """Optional mode: log + disable E2EE and return True; required mode: close + return False.
+        The E2EE deps already imported here, so the failure is not an install problem: no install hint."""
         if self._e2ee_mode == "optional":
             logger.warning(
                 "Matrix: failed to %s optional E2EE client; continuing without encrypted-room "
-                "support: %s. %s", what, exc, _E2EE_INSTALL_HINT)
+                "support: %s", what, exc)
             self._encryption = False
             return True
-        logger.error("Matrix: failed to %s E2EE client: %s. %s", what, exc, _E2EE_INSTALL_HINT)
+        logger.error("Matrix: failed to %s E2EE client: %s", what, exc)
         return await self._abort_connect(api)
 
     async def _verify_or_bootstrap_cross_signing(self, olm: Any, client: Any) -> None:
@@ -3089,10 +3114,41 @@ def interactive_setup() -> None:
         if _ask("MATRIX_PASSWORD", "Password", password=True):
             print_success("Matrix credentials saved")
     if token or get_env_value("MATRIX_PASSWORD"):
-        want_e2ee = prompt_yes_no("Enable end-to-end encryption (E2EE)?", False)
-        if want_e2ee:
-            save_env_value("MATRIX_ENCRYPTION", "true")
-            print_success("E2EE enabled")
+        # The mode the saved .env already asks for (MATRIX_E2EE_MODE wins; legacy MATRIX_ENCRYPTION=true
+        # means required), so the answer below replaces it instead of being overridden by it.
+        saved_mode = _normalize_e2ee_mode(get_env_value("MATRIX_E2EE_MODE") or (
+            "required" if str(get_env_value("MATRIX_ENCRYPTION") or "").lower() in ("true", "1", "yes") else "off"))
+
+        def _turn_e2ee_off() -> None:
+            for key in ("MATRIX_ENCRYPTION", "MATRIX_E2EE_MODE"):
+                remove_env_value(key)
+
+        # E2EE needs python-olm, which installs only where [matrix-e2ee] is supported (Linux).
+        # Elsewhere a yes would store MATRIX_ENCRYPTION=true, and the adapter would then refuse
+        # to start with its E2EE dependencies missing.
+        if _e2ee_installable():
+            if prompt_yes_no("Enable end-to-end encryption (E2EE)?", saved_mode != "off"):
+                if saved_mode == "off":
+                    if get_env_value("MATRIX_E2EE_MODE"):
+                        remove_env_value("MATRIX_E2EE_MODE")  # an explicit off outranks the flag below
+                    save_env_value("MATRIX_ENCRYPTION", "true")
+                print_success("E2EE enabled")
+            elif saved_mode != "off":
+                _turn_e2ee_off()
+                print_info("E2EE disabled")
+        else:
+            # A required mode saved before this check existed (#62401) would still make the adapter
+            # refuse to connect, so offer to clear it rather than claim Matrix runs unencrypted.
+            if saved_mode == "required" and prompt_yes_no(
+                    "E2EE is set to required, but it cannot run on this platform, so Matrix would "
+                    "refuse to connect. Turn E2EE off?", True):
+                _turn_e2ee_off()
+                saved_mode = "off"
+            if saved_mode == "required":
+                print_warning("Matrix will refuse to connect until E2EE is off (MATRIX_E2EE_MODE=off). "
+                              "For encrypted rooms, use Proxy Mode.")
+            else:
+                print_info(f"{_E2EE_UNSUPPORTED}; Matrix runs unencrypted here.")
         try:
             from pm import sync_venv
 
@@ -3100,8 +3156,10 @@ def interactive_setup() -> None:
             sync_venv(["matrix"], explicit=True)
             print_success("Matrix dependencies prepared. Restart Hermes to use them.")
         except Exception as exc:
+            from pm.extras import install_hint
+
             print_warning(f"Matrix dependencies could not be prepared: {exc}")
-            print_info("Run `hermes pm install`, then restart Hermes.")
+            print_info(f"Run `{install_hint('matrix')}`, then restart Hermes.")
         print_info("🔒 Security: Restrict who can use your bot")
         print_info("   Matrix user IDs look like @username:server")
         allowed_users = prompt("Allowed user IDs (comma-separated, leave empty for open access)")
@@ -3152,10 +3210,14 @@ def _is_connected(config) -> bool:
 
 
 def register(ctx) -> None:
+    # The explicit pm command: `hermes setup` installs nothing for an already-configured Matrix.
+    from pm.extras import install_hint as pm_install_hint
+
     ctx.register_platform(
         name="matrix", label="Matrix", adapter_factory=MatrixAdapter, check_fn=matrix_deps_present,
         ensure_deps_fn=ensure_matrix_deps, is_connected=_is_connected,
-        required_env=["MATRIX_HOMESERVER", "MATRIX_ACCESS_TOKEN"], install_hint="pip install 'mautrix[encryption]'",
+        required_env=["MATRIX_HOMESERVER", "MATRIX_ACCESS_TOKEN"],
+        install_hint=f"Run `{pm_install_hint('matrix')}`, then restart Hermes.",
         setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config, allowed_users_env="MATRIX_ALLOWED_USERS",
         allow_all_env="MATRIX_ALLOW_ALL_USERS", cron_deliver_env_var="MATRIX_HOME_ROOM",
         standalone_sender_fn=_standalone_send, max_message_length=DEFAULT_MAX_MESSAGE_LENGTH, emoji="🔐",

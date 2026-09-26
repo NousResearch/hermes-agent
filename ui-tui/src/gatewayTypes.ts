@@ -82,6 +82,10 @@ export interface ConfigDisplayConfig {
   focus_view?: boolean
   inline_diffs?: boolean
   mouse_tracking?: boolean | null | number | string
+  /** Draw the transcript scrollbar column. It is rendered as real cells, so
+   *  terminal text selections pick it up; only an explicit `false` hides it.
+   *  Default true. */
+  scrollbar?: boolean
   sections?: Record<string, string>
   show_cost?: boolean
   show_reasoning?: boolean

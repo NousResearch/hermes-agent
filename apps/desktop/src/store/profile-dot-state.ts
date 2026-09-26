@@ -86,7 +86,8 @@ function internSummary(needsInputCount: number, workingCount: number, unreadCoun
 
   if (!summary) {
     summary = Object.freeze({
-      state: needsInputCount > 0 ? ('needs-input' as const) : workingCount > 0 ? ('working' as const) : ('unread' as const),
+      state:
+        needsInputCount > 0 ? ('needs-input' as const) : workingCount > 0 ? ('working' as const) : ('unread' as const),
       needsInputCount,
       workingCount,
       unreadCount
@@ -233,9 +234,7 @@ export const $profileDotStateByScope = computed(
       }
 
       if (profiles.some(entry => normalizeProfileKey(entry.name) === profile)) {
-        connections.add(
-          activeConnectionId && activeConnectionId !== LOCAL_CONNECTION_ID ? activeConnectionId : null
-        )
+        connections.add(activeConnectionId && activeConnectionId !== LOCAL_CONNECTION_ID ? activeConnectionId : null)
       }
 
       for (const agent of roster?.agents ?? []) {

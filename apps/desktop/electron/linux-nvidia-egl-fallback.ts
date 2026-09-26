@@ -1,7 +1,7 @@
 /**
- * Linux NVIDIA 580+ EGL fallback for #40077.
+ * Linux NVIDIA 580-series EGL fallback for #40077.
  *
- * NVIDIA driver 580+ breaks ANGLE's EGL probing on X11/Wayland: the bundled
+ * NVIDIA driver 580.x breaks ANGLE's EGL probing on X11/Wayland: the bundled
  * ANGLE `libEGL.so` probes the driver's EGL implementation, hits the 580
  * EGL/X11 bug ("Invalid visual ID requested"), and the GPU process dies —
  * taking the app with it. Rendering through ANGLE's SwiftShader backend
@@ -24,8 +24,14 @@
 const OVERRIDE_ON = new Set(['1', 'true', 'yes', 'on'])
 const OVERRIDE_OFF = new Set(['0', 'false', 'no', 'off'])
 
-/** First driver major with the broken EGL/X11 probing (580.x and newer). */
-export const NVIDIA_BROKEN_EGL_MAJOR = 580
+/**
+ * Driver major series known to carry the broken EGL/X11 probing (#40077).
+ * Only series with confirmed reports belong here: 580.159.03 and 580.173.02
+ * are the affected reports, 570.x is the recommended downgrade, and newer
+ * series (e.g. 615.x, #123203) probe fine — an open-ended `>= 580` wrongly
+ * forced them onto CPU SwiftShader rendering.
+ */
+export const NVIDIA_BROKEN_EGL_MAJORS: ReadonlySet<number> = new Set([580])
 
 export interface NvidiaEglFallbackDecision {
   enable: boolean
@@ -95,14 +101,14 @@ export function decideNvidiaEglFallback(options: {
   }
 
   const detected =
-    driverMajor !== null && driverMajor >= NVIDIA_BROKEN_EGL_MAJOR
+    driverMajor !== null && NVIDIA_BROKEN_EGL_MAJORS.has(driverMajor)
 
   if (!detected && !OVERRIDE_ON.has(nvidiaOverride)) {
     return { enable: false, reason: null }
   }
 
   const reason = detected
-    ? `NVIDIA driver ${driverMajor} (>= ${NVIDIA_BROKEN_EGL_MAJOR})`
+    ? `NVIDIA driver ${driverMajor} (known-broken EGL series)`
     : 'override (HERMES_DESKTOP_NVIDIA_SWIFTSHADER)'
 
   return { enable: true, reason }

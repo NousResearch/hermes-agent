@@ -188,6 +188,83 @@ class TestProfileUserTreesNeverCleaned:
         assert not sweepable.exists(), "unprotected empty dirs are still swept"
 
 
+class TestProfileModeHomesNeverCleaned:
+    """Regression tests for #123632 — when the process runs bound to a profile,
+    HERMES_HOME is ``<root>/profiles/<name>``, so top-level guards keyed on the
+    ACTIVE home never see the ``profiles`` segment. Profile-internal trees are
+    user trees: no tracking, no rmtree, no empty-dir sweep, and stale pre-fix
+    tracked entries are dropped instead of deleted."""
+
+    @staticmethod
+    def _bind_profile_home(_isolate_env, monkeypatch) -> Path:
+        """Re-bind HERMES_HOME to a profile home under the isolated root (what a
+        ``hermes --profile <name>`` gateway process actually runs with)."""
+        profile_home = _isolate_env / "profiles" / "link"
+        profile_home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        return profile_home
+
+    def test_profile_home_test_files_never_tracked_or_deleted(
+        self, _isolate_env, monkeypatch
+    ):
+        pi = _load_plugin_init()
+        dg = _load_lib()
+        home = self._bind_profile_home(_isolate_env, monkeypatch)
+        keep = home / "scripts" / "test_x.py"
+        keep.parent.mkdir(parents=True)
+        keep.write_text("x")
+        assert dg.guess_category(keep) is None
+        # A stale pre-fix entry (tracked while running as the profile) must be dropped
+        # by quick()'s re-validation, not unlinked.
+        dg.save_tracked([{"path": str(keep), "category": "test",
+                          "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
+        pi._on_post_tool_call(tool_name="write_file", args={"path": str(keep), "content": "x"},
+                              result="OK", task_id="t_p", session_id="s_p")
+        assert len(dg.load_tracked()) == 1, "the hook must not add a second entry for a profile file"
+        pi._on_session_end(session_id="s_p", completed=True, interrupted=False)
+        result = dg.quick()  # session end skips quick() when nothing was tracked this turn
+
+        assert keep.exists(), "profile-home files are user files, never auto-deleted"
+        assert result["deleted"] == 0
+        assert dg.load_tracked() == [], "stale entry is dropped from tracking, not retried"
+
+    def test_empty_dir_sweep_skips_the_whole_profile_home(
+        self, _isolate_env, monkeypatch
+    ):
+        dg = _load_lib()
+        home = self._bind_profile_home(_isolate_env, monkeypatch)
+        for name in ("hooks", "image_cache", "pairing"):  # the dirs lost in the report
+            (home / name).mkdir()
+
+        summary = dg.quick()
+
+        for name in ("hooks", "image_cache", "pairing"):
+            assert (home / name).is_dir(), f"profile-home dirs must survive the empty-dir sweep ({name})"
+        assert summary["empty_dirs"] == 0
+
+    def test_tracked_profile_dirs_are_protected_from_rmtree(
+        self, _isolate_env, monkeypatch
+    ):
+        dg = _load_lib()
+        home = self._bind_profile_home(_isolate_env, monkeypatch)
+        nested = home / "image_cache" / "thumbs"
+        nested.mkdir(parents=True)
+        assert dg._is_protected_dir(nested) is True
+
+    def test_root_mode_still_tracks_scratch_after_profile_protection(
+        self, _isolate_env, monkeypatch
+    ):
+        """Control: anchoring profile protection to the profiles root must not over-protect
+        the plain (non-profile) home."""
+        dg = _load_lib()
+        self._bind_profile_home(_isolate_env, monkeypatch)
+        monkeypatch.setenv("HERMES_HOME", str(_isolate_env))  # back to the plain home
+        scratch = _isolate_env / "test_scratch.py"
+        scratch.write_text("x")
+        assert dg._under_profiles_root(scratch) is False
+        assert dg.guess_category(scratch) == "test"
+
+
 class TestProtectedDirsNeverRmtreed:
     """A tracked DIRECTORY under a protected top level (``cache/`` holds terminal snapshots)
     must never be rmtree'd by the tracked-item path, only by-file aging; ``kanban/`` is never

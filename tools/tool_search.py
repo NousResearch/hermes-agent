@@ -488,7 +488,8 @@ def dispatch_tool_search(args: Dict[str, Any], *, current_tool_defs: List[Dict[s
 
 def dispatch_tool_describe(args: Dict[str, Any], *, current_tool_defs: List[Dict[str, Any]],
                            config: Optional[ToolSearchConfig] = None,
-                           connector_describe: Optional[Any] = None) -> str:
+                           connector_describe: Optional[Any] = None,
+                           direct_tool_names: Optional[set] = None) -> str:
     config = config or load_config_readonly()
     names, err = _string_list_arg(
         args, "names", dedupe=True, max_items=_MAX_DESCRIBE_NAMES_PER_CALL,
@@ -514,10 +515,14 @@ def dispatch_tool_describe(args: Dict[str, Any], *, current_tool_defs: List[Dict
                            "parameters": remote_fn.get("parameters", {})}
         elif is_connector_name(name):
             (undescribed if hosted_failure else not_found).append(name)
+        elif direct_tool_names and name in direct_tool_names:
+            # A directly-listed tool (a memory-provider tool is not core and not registered):
+            # a real name, wrong door -- unlike the unknown-name case below.
+            errors[name] = not_deferrable_error(name, direct_tool_names)
         elif _registry_entry(name) is not None and not is_deferrable_tool_name(
             name, load_config_readonly().effective_defer_tools):
             # Registered but bridge/core/GUI-surface: a real name, wrong door.
-            errors[name] = not_deferrable_error(name)
+            errors[name] = not_deferrable_error(name, direct_tool_names)
         else:
             not_found.append(name)
     result: Dict[str, Any] = {"tools": tools}
@@ -540,7 +545,8 @@ def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
                      if n and is_deferrable_tool_name(n, defer_tools))
 
 
-def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
+def resolve_underlying_call(args: Dict[str, Any],
+                            direct_names: Optional[set] = None) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
     """Parse a ``tool_call`` invocation into (underlying_name, args, error_msg).
 
     Used by:
@@ -568,7 +574,7 @@ def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[s
     name = entries[0]["name"]
     raw_args = entries[0]["arguments"]
     if not is_deferrable_tool_name(name, load_config_readonly().effective_defer_tools):
-        return None, {}, not_deferrable_error(name)
+        return None, {}, not_deferrable_error(name, direct_names)
     return name, raw_args, None
 
 

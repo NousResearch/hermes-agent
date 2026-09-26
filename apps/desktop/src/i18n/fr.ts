@@ -3165,7 +3165,9 @@ export const frOverrides = {
     actions: count => `${count} actions`,
     logFile: 'Fichier journal',
     logLevel: 'Niveau',
-    logSearchPlaceholder: 'Filtrer les lignes du journal...',
+    logSearchPlaceholder: 'Rechercher dans les journaux…',
+    logTop: 'Aller au début',
+    logBottom: 'Aller à la fin',
     maintenance: {
       runOps: 'Diagnostiques',
       doctor: 'Exécuter le diagnostic',

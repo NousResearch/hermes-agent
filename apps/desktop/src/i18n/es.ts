@@ -3148,7 +3148,9 @@ export const esOverrides = {
     actions: count => `${count} acciones`,
     logFile: 'Archivo de registro',
     logLevel: 'Nivel',
-    logSearchPlaceholder: 'Filtrar líneas de registro…',
+    logSearchPlaceholder: 'Buscar en los registros…',
+    logTop: 'Ir al inicio',
+    logBottom: 'Ir al final',
     maintenance: {
       runOps: 'Diagnóstico',
       doctor: 'Ejecutar diagnóstico',

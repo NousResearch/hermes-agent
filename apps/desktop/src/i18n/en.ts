@@ -2801,6 +2801,8 @@ export const en: Translations = {
     actionStartedWaiting: 'Action started, waiting for status...',
     loadingStatus: 'Loading status...',
     recentLogs: 'Recent logs',
+    logTop: 'Top of log',
+    logBottom: 'Bottom of log',
     noLogs: 'No logs loaded yet.',
     days: count => `${count}d`,
     statSessions: 'Sessions',
@@ -2822,7 +2824,7 @@ export const en: Translations = {
     actions: count => `${count} actions`,
     logFile: 'Log file',
     logLevel: 'Level',
-    logSearchPlaceholder: 'Filter log lines...',
+    logSearchPlaceholder: 'Search log lines...',
     maintenance: {
       runOps: 'Diagnostics',
       doctor: 'Run doctor',

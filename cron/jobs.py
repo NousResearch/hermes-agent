@@ -2020,6 +2020,10 @@ def _rederive_repeat_for_schedule_change(
     times = repeat.get("times")
     if new_kind == "once" and times is None:
         repeat["times"] = 1
+        # ``completed`` counted the recurring runs, so it would spend the new budget up front: the
+        # due scan retires a one-shot at completed >= times without firing it. The one-shot is a
+        # new occurrence, as in rearm_oneshot.
+        repeat["completed"] = 0
     elif new_kind != "once" and old_kind == "once" and times == 1:
         repeat["times"] = None
     else:

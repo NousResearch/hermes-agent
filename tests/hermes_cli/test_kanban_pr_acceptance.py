@@ -1,9 +1,13 @@
-"""Two lifecycle invariants, using real SQLite and a local GitHub HTTP contract."""
+"""Lifecycle invariants using real SQLite and a local GitHub HTTP contract.
+
+Parked-card acceptance regressions cover #116170.
+"""
 import json
 import os
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
@@ -129,3 +133,83 @@ def test_acceptance_receipts_and_terminal_write_share_run_ownership(github):
             assert kb.get_task(conn, tid).status != "done"
             assert conn.execute("SELECT count(*) FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0] == 0
             github.pop("race")
+
+
+@pytest.mark.parametrize("status", ["triage", "blocked"])
+def test_parked_completion_keeps_acceptance_gates_and_audit(github, status):
+    from hermes_cli import kanban as cli
+    from hermes_cli.profiles import get_active_profile_name
+
+    actor = get_active_profile_name()
+    with connect() as conn:
+        parent = kb.create_task(conn, title="Required dependency")
+        tid = kb.create_task(
+            conn, title="Accepted work", assignee="builder", parents=[parent],
+            triage=status == "triage", initial_status="blocked" if status == "blocked" else "running",
+            completion_contract="https://github.com/acme/repo/pull/7",
+        )
+        command = f'complete {tid} --result "Human accepted the work"'
+        assert "unsatisfied parent dependencies" in cli.run_slash(command)
+        assert kb.get_task(conn, tid).status == status
+        assert kb.complete_task(conn, parent, result="Dependency accepted")
+
+        github["conclusion"] = "failure"
+        assert "Completed" not in cli.run_slash(command)
+        assert kb.get_task(conn, tid).status == status
+        receipts = [e for e in kb.list_events(conn, tid) if e.kind == "pr_acceptance"]
+        assert receipts and receipts[-1].payload["ok"] is False
+
+        github["conclusion"] = "success"
+        assert f"Completed {tid}" in cli.run_slash(command)
+        task = kb.get_task(conn, tid)
+        assert task.status == "done" and task.completed_at is not None
+        events = kb.list_events(conn, tid)
+        completed = [e for e in events if e.kind == "completed"]
+        assert len(completed) == 1
+        assert completed[0].payload["source_status"] == status
+        assert completed[0].payload["accepted_by"] == actor
+        assert completed[0].payload["summary"] == task.result
+        assert not any(e.kind in {"specified", "promoted", "claimed"} for e in events)
+        receipt = [e for e in events if e.kind == "pr_acceptance"][-1]
+        assert receipt.payload["ok"] is True
+        run = kb.latest_run(conn, tid)
+        assert run.outcome == "completed" and run.summary == task.result
+
+
+@pytest.mark.parametrize("status", ["triage", "blocked"])
+def test_parked_completion_requires_independent_profile(github, tmp_path, monkeypatch, status):
+    from hermes_cli import kanban as cli
+    from tools import kanban_tools as kt
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(kb.kanban_db_path()))
+    homes = {name: tmp_path / ".hermes" / "profiles" / name for name in ("builder", "reviewer")}
+    for home in homes.values():
+        home.mkdir(parents=True)
+
+    with connect() as conn:
+        tid = kb.create_task(conn, title="Parked work", assignee="builder",
+                             triage=status == "triage", initial_status="blocked" if status == "blocked" else "running")
+        monkeypatch.setenv("HERMES_HOME", str(homes["builder"]))
+        before = kb.list_events(conn, tid)
+        message = "acceptance requires a profile other than the implementer"
+        assert message in cli.run_slash(f"complete {tid} --force --result accepted")
+        assert message in kt._handle_complete({"task_id": tid, "result": "accepted"})
+        assert kb.get_task(conn, tid).status == status
+        assert kb.list_events(conn, tid) == before
+
+        monkeypatch.setenv("HERMES_HOME", str(homes["reviewer"]))
+        assert "error" not in json.loads(kt._handle_complete({"task_id": tid, "result": "accepted"}))
+        assert kb.get_task(conn, tid).status == "done"
+        assert kb.list_events(conn, tid)[-1].payload["accepted_by"] == "reviewer"
+
+        # Review handoffs reassign the card, but must not erase its implementer.
+        reviewed = kb.create_task(conn, title="Review handoff", assignee="builder")
+        assert kb.request_review(conn, reviewed, summary="Ready", reviewer="reviewer")
+        assert kb.claim_review_task(conn, reviewed) is not None
+        assert kb.block_task(conn, reviewed, reason="Waiting for acceptance", kind="needs_input")
+        monkeypatch.setenv("HERMES_HOME", str(homes["builder"]))
+        assert message in cli.run_slash(f"complete {reviewed} --result accepted")
+        assert kb.get_task(conn, reviewed).status == "blocked"
+        monkeypatch.setenv("HERMES_HOME", str(homes["reviewer"]))
+        assert f"Completed {reviewed}" in cli.run_slash(f"complete {reviewed} --result accepted")

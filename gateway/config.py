@@ -412,6 +412,21 @@ PLATFORM_TOKEN_ENV_NAMES: dict["Platform", str] = {
 }
 
 
+def _coerce_reply_to_mode(value: Any) -> str:
+    """Normalize ``reply_to_mode``: a legacy/hand-written YAML bool (``reply_to_mode: false``,
+    or YAML 1.1's ``off``/``no`` boolean words) must not silently become Python's ``False``
+    and get discarded by every adapter's own ``getattr(config, 'reply_to_mode', 'first') or
+    'first'`` fallback -- ``False`` is falsy, so an explicit "never thread" setting was lost
+    and the bot replied to every message instead (#121430). ``False`` maps to the mode it was
+    written to mean; ``True`` maps to this field's own default, matching what a bare
+    ``reply_to_mode: true`` already implied before this normalization existed. A non-bool
+    value (the intended string, or absent) passes through unchanged.
+    """
+    if isinstance(value, bool):
+        return "off" if value is False else "first"
+    return value if value is not None else "first"
+
+
 @dataclass
 class PlatformConfig:
     """Configuration for a single messaging platform."""
@@ -474,7 +489,7 @@ class PlatformConfig:
             token=data.get("token"),
             api_key=data.get("api_key"),
             home_channel=HomeChannel.from_dict(home) if isinstance(home, dict) else None,
-            reply_to_mode=data.get("reply_to_mode", "first"),
+            reply_to_mode=_coerce_reply_to_mode(data.get("reply_to_mode")),
             gateway_restart_notification=_coerce_bool(toplevel_or_extra("gateway_restart_notification"), True),
             typing_indicator=_coerce_bool(toplevel_or_extra("typing_indicator"), True),
             typing_status_text=toplevel_or_extra("typing_status_text"),  # string passthrough, no coercion

@@ -517,10 +517,10 @@ def _register_connected_into_current_scope(servers: dict) -> int:
             if scope not in scopes:
                 continue
             name = _key_name(key)
-            if name not in servers and name not in omitted:
+            if name not in judged:
                 continue  # attached after the config read; the next pass judges it
             server = _core._servers.get(key)
-            config = servers[name] if name in servers else profile_servers.get(name)
+            config = judged[name]
             cross_profile = _key_scope(key) != scope
             if (config is None or not mcp_server_enabled(config) or server is None
                     or getattr(server, "session", None) is None

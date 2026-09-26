@@ -281,8 +281,9 @@ const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }
   // on otherwise. Show the description whenever the command is missing or one
   // of these synthetic labels; a real command keeps rendering as the command.
   const SYNTHETIC_COMMAND_RE = /^<[^>]+> \(/
-  const showsDescription =
-    !hasCommand || SYNTHETIC_COMMAND_RE.test(request.command.trim())
+
+  const showsDescription = !hasCommand || SYNTHETIC_COMMAND_RE.test(request.command.trim())
+
   const details = showsDescription ? request.description.trim() : request.command.trim()
 
   const respond = useCallback(

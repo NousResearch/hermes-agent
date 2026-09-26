@@ -101,10 +101,25 @@ class TestHandleUpdateCommand:
 
         fake_spec = MagicMock()
         with patch("shutil.which", return_value="/tmp/attacker/hermes"), \
-             patch("importlib.util.find_spec", return_value=fake_spec):
+             patch("importlib.util.find_spec", return_value=fake_spec), \
+             patch("hermes_cli._launchers.source_install_launcher", return_value=None):
             result = _resolve_hermes_bin()
 
         assert result == [sys.executable, "-m", "hermes_cli.main"]
+
+    def test_resolve_hermes_bin_uses_source_launcher(self, tmp_path, monkeypatch):
+        from gateway import run
+
+        module = tmp_path / "gateway" / "run.py"
+        module.parent.mkdir()
+        module.touch()
+        launcher = tmp_path / ".hermes" / "bin" / "hermes"
+        launcher.parent.mkdir(parents=True)
+        launcher.write_text("#!/bin/sh\nexit 0\n")
+        launcher.chmod(0o755)
+        monkeypatch.setattr(run, "__file__", str(module))
+
+        assert run._resolve_hermes_bin() == [str(launcher)]
 
     @pytest.mark.asyncio
     async def test_resolve_hermes_bin_falls_back_to_path_then_none(self):
@@ -113,11 +128,13 @@ class TestHandleUpdateCommand:
         from gateway.run import _resolve_hermes_bin
 
         with patch("shutil.which", return_value="/usr/local/bin/hermes"), \
-             patch("importlib.util.find_spec", return_value=None):
+             patch("importlib.util.find_spec", return_value=None), \
+             patch("hermes_cli._launchers.source_install_launcher", return_value=None):
             assert _resolve_hermes_bin() == ["/usr/local/bin/hermes"]
 
         with patch("shutil.which", return_value=None), \
-             patch("importlib.util.find_spec", side_effect=ImportError):
+             patch("importlib.util.find_spec", side_effect=ImportError), \
+             patch("hermes_cli._launchers.source_install_launcher", return_value=None):
             assert _resolve_hermes_bin() is None
 
 

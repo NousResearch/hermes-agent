@@ -76,6 +76,17 @@ def installation_command(repo_root: Path, args=(), *, module: str = "hermes_cli.
     prefix = [] if module == "hermes_cli.main" else ["--run-module", module]
     return [str(root / ".hermes" / "bin" / "hermes"), *prefix, *args]
 
+
+def source_install_launcher(repo_root: Path) -> Path | None:
+    """Return this source install's published launcher when it is available.
+
+    A bootstrapped parent can import ``hermes_cli`` after adding the source tree
+    to ``sys.path`` even when a fresh ``sys.executable -m`` child cannot. The
+    published launcher restores that install's bootstrap for detached children.
+    """
+    launcher = repo_root / ".hermes" / "bin" / "hermes"
+    return launcher if launcher.is_file() and os.access(launcher, os.X_OK) else None
+
 #: Launcher command names — keep in lockstep with scripts/install.ps1
 #: Publish-UserCommand and hermes_cli/_install_repair.py.
 WINDOWS_BIN_LAUNCHERS = ("hermes", "hermes-acp")

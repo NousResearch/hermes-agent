@@ -22,12 +22,14 @@ def _client(monkeypatch, persistent=True):
 @pytest.mark.parametrize("partial", [False, True], ids=["no-response", "partial-response"])
 def test_timeout_does_not_replay_and_next_call_uses_fresh_connection(monkeypatch, partial):
     release = threading.Event()
+    received = threading.Event()
     requests = []
 
     class Handler(socketserver.StreamRequestHandler):
         def handle(self):
             request = json.loads(self.rfile.readline())
             requests.append(request)
+            received.set()
             if request["args"]["command"] == "slow-effect":
                 if partial:
                     self.wfile.write(b'{"output":')
@@ -47,7 +49,15 @@ def test_timeout_does_not_replay_and_next_call_uses_fresh_connection(monkeypatch
         def connect():
             connection = original_connect()
             connection.settimeout(2)
-            return connection
+
+            def sendall(data):
+                received.clear()
+                connection.sendall(data)
+                assert received.wait(10), "fixture did not receive the request"
+
+            # Start the read deadline only after the fixture has admitted the
+            # request, including any erroneous retry by the generated client.
+            return SimpleNamespace(sendall=sendall, recv=connection.recv)
 
         client["_connect"] = connect
         try:

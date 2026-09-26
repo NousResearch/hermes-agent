@@ -57,6 +57,7 @@ from tools.tool_result_storage import (
     extract_persisted_path,
 )
 from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
+from tools.tool_result_compaction import compact_tool_result
 
 # A tool result this large (raw stdout, file dumps) is the biggest allocation a turn ever drops.
 # The commit only flags it: the string is still referenced by the publish frames here, so the
@@ -1110,6 +1111,7 @@ def _commit_tool_result(
             env=get_active_env(effective_task_id),
             config=budget,
         )
+        persisted_result = compact_tool_result(persisted_result, function_name)
     _record_persisted_path_for_stub(agent, tool_call_id, persisted_result)
 
     subdir_hints = agent._subdirectory_hints.check_tool_call(function_name, function_args)

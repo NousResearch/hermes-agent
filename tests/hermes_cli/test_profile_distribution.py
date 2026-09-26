@@ -464,6 +464,69 @@ class TestUpdate:
         assert (custom / "SKILL.md").read_text(encoding="utf-8") == "custom skill\n"
         assert (plan.target_dir / "cron" / "mine.json").exists()
 
+    @staticmethod
+    def _owned_category(profile_env, name):
+        """A distribution owning only ``skills/research/`` (the docs' own example) plus SOUL.md."""
+        mf = DistributionManifest(name=name, version="0.1.0", distribution_owned=["SOUL.md", "skills/research/"])
+        staged = _make_staging_dir(profile_env, name, manifest=mf)
+        (staged / "skills" / "research" / "web-search").mkdir(parents=True)
+        (staged / "skills" / "research" / "web-search" / "SKILL.md").write_text("author skill\n", encoding="utf-8")
+        return staged, install_distribution(str(staged), name=name)
+
+    def test_an_owned_category_keeps_skills_the_installer_added_to_it(self, profile_env):
+        """``distribution_owned: [skills/research/]`` owns the author's research skills, not the
+        category: ``hermes skills install`` and agent-created skills land in ``skills/<category>/``
+        too. The category was replaced wholesale, deleting them (the #25120 loss, still live for
+        the explicit form the docs show)."""
+        staged, plan = self._owned_category(profile_env, "rb")
+        research = plan.target_dir / "skills" / "research"
+        mine = research / "my-notes"
+        mine.mkdir()
+        (mine / "SKILL.md").write_text("my own skill\n", encoding="utf-8")
+        (research / "web-search" / "stale.txt").write_text("old\n", encoding="utf-8")
+        (staged / "skills" / "research" / "web-search" / "SKILL.md").write_text("author v2\n", encoding="utf-8")
+        (staged / "skills" / "research" / "arxiv").mkdir()
+        (staged / "skills" / "research" / "arxiv" / "SKILL.md").write_text("new author skill\n", encoding="utf-8")
+
+        update_distribution("rb")
+
+        assert (mine / "SKILL.md").read_text(encoding="utf-8") == "my own skill\n"
+        assert (research / "web-search" / "SKILL.md").read_text(encoding="utf-8") == "author v2\n"
+        assert not (research / "web-search" / "stale.txt").exists()  # an owned root is still replaced whole
+        assert (research / "arxiv" / "SKILL.md").exists()
+
+    def test_an_owned_skill_root_is_still_replaced_whole(self, profile_env):
+        """A listed skill dir holds SKILL.md: it is a root, so files retired upstream disappear."""
+        mf = DistributionManifest(name="one", version="0.1.0",
+                                  distribution_owned=["SOUL.md", "skills/research/web-search/"])
+        staged = _make_staging_dir(profile_env, "one", manifest=mf)
+        (staged / "skills" / "research" / "web-search").mkdir(parents=True)
+        (staged / "skills" / "research" / "web-search" / "SKILL.md").write_text("author\n", encoding="utf-8")
+        plan = install_distribution(str(staged), name="one")
+        stale = plan.target_dir / "skills" / "research" / "web-search" / "stale.txt"
+        stale.write_text("old\n", encoding="utf-8")
+
+        update_distribution("one")
+
+        assert not stale.exists()
+
+    def test_an_owned_category_refuses_a_symlinked_subcategory_before_writing(self, profile_env, tmp_path):
+        staged, plan = self._owned_category(profile_env, "rb")
+        (staged / "skills" / "research" / "papers" / "summarize").mkdir(parents=True)
+        (staged / "skills" / "research" / "papers" / "summarize" / "SKILL.md").write_text("s\n", encoding="utf-8")
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (plan.target_dir / "skills" / "research" / "papers").symlink_to(outside, target_is_directory=True)
+        soul = plan.target_dir / "SOUL.md"
+        before = soul.read_text(encoding="utf-8")
+        (staged / "SOUL.md").write_text("changed\n", encoding="utf-8")
+
+        with pytest.raises(DistributionError, match="symlink"):
+            update_distribution("rb")
+
+        assert not any(outside.iterdir())
+        assert soul.read_text(encoding="utf-8") == before  # refused before the first write
+
     def test_update_merges_cron_jobs_without_losing_local_state(self, profile_env):
         """Updating one shipped definition cannot replace the profile's whole cron store."""
         from cron.jobs import create_job, list_jobs, pause_job, resume_job, update_job, use_cron_store

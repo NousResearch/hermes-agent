@@ -483,7 +483,7 @@ def _refuse_symlinked_targets(target: Path, entries) -> None:
         for part in rel_parts[:depth]:
             path = path / part
             _refuse_symlink(path)
-        if src.is_dir() and len(rel_parts) == 1:
+        if src.is_dir() and (len(rel_parts) == 1 or _is_container(src)):
             _refuse_symlinked_containers(src, path, rel_parts)
 
 
@@ -494,7 +494,8 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
     ``preserve_config`` is False (fresh install / ``--force-config``). ``.env.template`` lands
     as ``.env.EXAMPLE`` so it never shadows a real ``.env``.
 
-    A top-level owned directory is merged per authored root. ``cron/jobs.json`` is
+    A top-level owned directory, and an owned category holding only roots, is merged per
+    authored root. ``cron/jobs.json`` is
     special: it is one multi-record runtime store, so shipped definitions merge by job id
     instead of replacing the file."""
     target.mkdir(parents=True, exist_ok=True)
@@ -522,6 +523,12 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
             if src.is_dir():
                 _merge_dir(src, _real_dir(target, rel_parts), rel_parts)
                 continue
+        elif _is_container(src):
+            # An owned category (``skills/research/``) holds skill roots, not files: merge it per
+            # root like a top-level dir, so skills the installer added to it (``hermes skills
+            # install`` and agent-created skills land in ``skills/<category>/``) survive.
+            _merge_dir(src, _real_dir(target, rel_parts), rel_parts)
+            continue
         _replace_entry(src, _real_dir(target, rel_parts[:-1]) / rel_parts[-1])
 
     # Emit .env.EXAMPLE from manifest if the staged tree didn't ship one

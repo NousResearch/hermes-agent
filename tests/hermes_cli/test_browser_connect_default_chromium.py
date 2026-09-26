@@ -109,6 +109,7 @@ class TestDetectDefaultDarwin:
             ("com.operasoftware.OperaGX", "opera-gx"),
             ("ru.yandex.desktop.yandex-browser", "yandex"),
             ("com.browseros.BrowserClaw", "browseros-neo"),
+            ("ai.perplexity.Comet", "comet"),
         ],
     )
     def test_bundle_map(self, bundle, expected):
@@ -138,9 +139,13 @@ class TestDetectDefaultLinux:
             ("microsoft-edge.desktop", "edge"),
             ("com.microsoft.Edge.desktop", "edge"),
             ("vivaldi-stable.desktop", "vivaldi"),
+            ("vivaldi-snapshot.desktop", bc.UNSUPPORTED_CHANNEL),
             ("opera-gx.desktop", "opera-gx"),
             ("opera.desktop", "opera"),
+            ("opera-beta.desktop", bc.UNSUPPORTED_CHANNEL),
+            ("opera-developer.desktop", bc.UNSUPPORTED_CHANNEL),
             ("yandex-browser.desktop", "yandex"),
+            ("yandex-browser-beta.desktop", bc.UNSUPPORTED_CHANNEL),
             ("firefox.desktop", None),
             ("org.mozilla.firefox.desktop", None),
             ("", None),

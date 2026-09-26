@@ -8,7 +8,7 @@ conservative: originals are kept whenever a repair is not unambiguous.
 
 import json
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from tools.registry import registry
 
@@ -78,6 +78,39 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
                 args[key] = _normalize_json_strings_for_schema(coerced, prop_schema)
 
     return args
+
+
+def unknown_argument_error(tool_name: str, args: Dict[str, Any]) -> Optional[str]:
+    """Message naming the top-level keys *args* carries that *tool_name*'s schema does not declare,
+    or None when every key is declared or the schema leaves the object open.
+
+    Only a schema that closes the object (``additionalProperties: false``, no
+    ``patternProperties``) can judge a key unknown: JSON Schema admits extra keys otherwise, and
+    hermes' own tools rely on that for internal/legacy keys (``cross_profile``, ``delegate_task.goal``).
+    zod/pydantic-backed MCP servers emit the closed form yet strip undeclared keys at parse time, so a
+    model that wraps the real arguments in an ``arguments`` field (the ``tool_call`` bridge shape) got a
+    successful default result and repeated the shape for the rest of the session. Ported from
+    RooCodeInc/Roomote#2695.
+    """
+    if not isinstance(args, dict) or not args:
+        return None
+    params = ((registry.get_schema(tool_name) or {}).get("parameters"))
+    if not isinstance(params, dict) or params.get("type", "object") != "object":
+        return None
+    properties = params.get("properties")
+    if not isinstance(properties, dict) or params.get("additionalProperties") is not False:
+        return None
+    if isinstance(params.get("patternProperties"), dict) and params["patternProperties"]:
+        return None
+    unknown = [key for key in args if key not in properties]
+    if not unknown:
+        return None
+    accepted = f"This tool accepts: {', '.join(properties)}." if properties else "This tool takes no arguments."
+    wrapper_hint = (
+        " Do not wrap the arguments in an \"arguments\" field; that shape is only for tool_call."
+        " Pass each argument at the top level." if "arguments" in unknown else "")
+    plural = "keys" if len(unknown) > 1 else "key"
+    return f"Unknown argument {plural} {', '.join(repr(k) for k in unknown)} for {tool_name}. {accepted}{wrapper_hint}"
 
 
 def _schema_accepts_kind(schema: Any, kind: str) -> bool:

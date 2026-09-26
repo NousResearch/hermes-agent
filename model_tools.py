@@ -21,7 +21,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from tools.registry import CHECK_FN_CACHE_BYPASS, check_fn_cache_scope, discover_builtin_tools, registry, tool_error
 from tools.registry import _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN
 from toolsets import resolve_toolset, validate_toolset
-from tools.arg_coercion import coerce_tool_args
+from tools.arg_coercion import coerce_tool_args, unknown_argument_error
 from utils import file_signature
 
 logger = logging.getLogger(__name__)
@@ -898,6 +898,13 @@ def handle_function_call(
         _emit_post_tool_call_hook(function_name=function_name, function_args=function_args, result=result,
                                   **asdict(ids), middleware_trace=list(trace), **extra)
         return result
+
+    # A closed schema (additionalProperties: false) whose server would strip undeclared keys turns a
+    # malformed call into a silent default success; name the keys so the model corrects the shape.
+    unknown_args = unknown_argument_error(function_name, function_args)
+    if unknown_args is not None:
+        return _emit(tool_error(unknown_args), status="error", error_type="unknown_tool_arguments",
+                     error_message=unknown_args)
 
     # Tool Search bridge: tool_search / tool_describe are catalog reads handled
     # inline; tool_call is unwrapped so every downstream hook (pre/post, edit

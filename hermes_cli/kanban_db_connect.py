@@ -837,6 +837,10 @@ _LATER_TASK_COLUMNS = (
     ("block_recurrences", "block_recurrences INTEGER NOT NULL DEFAULT 0"),
     # Spawn-time start fingerprint of worker_pid (PID-reuse guard; NULL = legacy row).
     ("worker_started_at", "worker_started_at INTEGER"),
+    # Time-gated cards: absolute wake time + the execution-band policy for a
+    # wake whose due time lands inside a reserved band (see kanban_due).
+    ("due_at", "due_at INTEGER"),
+    ("due_window_policy", "due_window_policy TEXT"),
 )
 
 _NOTIFY_SUB_COLUMNS = (
@@ -902,6 +906,12 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_tenant ON tasks(tenant)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)")
+    # The waker's query: status='scheduled' AND due_at <= now. Partial index so
+    # parked cards without a wake time never enter it.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(due_at) "
+        "WHERE due_at IS NOT NULL"
+    )
 
     # task_events.run_id back-fills as NULL for historical events (they predate
     # runs and can't be attributed).

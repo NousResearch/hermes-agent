@@ -37,6 +37,7 @@ if _repo not in sys.path:
 
 
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+import plugins.platforms.telegram.adapter as _tg_adapter_mod  # noqa: E402
 from gateway.run import GatewayRunner  # noqa: E402
 from gateway.profile_routing import ProfileRoute  # noqa: E402
 from hermes_cli.plugins import (  # noqa: E402
@@ -607,6 +608,35 @@ class TestRegisterHandlers:
     #64176 review asked to share registration between the initial path and any
     rebuild; these tests pin that the observer (group 99) is included alongside
     the core handlers."""
+
+    def test_guest_handler_registered_first_in_default_group(self):
+        """The guest_message handler must be the FIRST default-group handler:
+        MessageFilter.check_update passes handlers Update.effective_message,
+        which also surfaces update.guest_message (a guest chat has no
+        update.message), so filters.TEXT/.COMMAND/etc. would otherwise ALSO
+        match a guest update. PTB tries handlers within one group in
+        registration order and stops at the first match — first position is
+        what makes the guest handler take priority instead of running
+        alongside the normal pipeline against a chat the bot isn't in."""
+        # The shared telegram mock (conftest.py) makes TelegramMessageHandler(...)
+        # return a generic auto-mock whose .callback doesn't reflect what it was
+        # constructed with — patch in a real, inspectable stand-in instead.
+        class _FakeMessageHandler:
+            def __init__(self, filters, callback, block=True):
+                self.filters = filters
+                self.callback = callback
+
+        a = _adapter()
+        for name in ("_handle_text_message", "_handle_command", "_handle_location_message",
+                     "_handle_media_message", "_handle_callback_query", "_on_platform_update"):
+            setattr(a, name, object())
+        app = MagicMock()
+        with patch.object(_tg_adapter_mod, "TelegramMessageHandler", _FakeMessageHandler):
+            a._register_handlers(app)
+
+        default_group_calls = [c for c in app.add_handler.call_args_list if not c.kwargs]
+        first_handler = default_group_calls[0].args[0]
+        assert first_handler.callback == a._handle_guest_message_update
 
     def test_transient_init_rebuild_uses_shared_registration(self, monkeypatch):
         """The real connect retry path must call the shared registration method

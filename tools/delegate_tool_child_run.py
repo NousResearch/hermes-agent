@@ -48,6 +48,51 @@ def _child_api_calls(child: Any) -> int:
         return _num((child.get_activity_summary() or {}).get("api_call_count", 0))
     return 0
 
+_DEFERRED_CHILD_COST_LOCK = threading.Lock()
+
+def _defer_child_cost_rollup(child: Any, future: Any, parent_agent: Any, accounted_cost: float) -> None:
+    """Roll up spend that appears only after an abandoned child's result snapshot.
+
+    A parent interrupt can abandon the outer child future while the child's own timeout layer is still running, so
+    more than one future may watch the same child. Their callbacks share the earliest snapshot and the amount already
+    settled, making the late delta idempotent instead of double-billing it.
+    """
+    baseline = float(accounted_cost or 0.0) if isinstance(accounted_cost, (int, float)) else 0.0
+    baseline = max(0.0, baseline)
+    parent_session_id = getattr(parent_agent, "session_id", None)
+    with _DEFERRED_CHILD_COST_LOCK:
+        state = getattr(child, "_delegate_deferred_cost_rollup", None)
+        if not isinstance(state, dict):
+            state = {"baseline": baseline, "settled_extra": 0.0}
+            try:
+                setattr(child, "_delegate_deferred_cost_rollup", state)
+            except Exception:
+                logger.debug("Could not register deferred subagent cost rollup", exc_info=True)
+                return
+        else:
+            state["baseline"] = min(float(state.get("baseline", baseline) or 0.0), baseline)
+
+    def _settle(_done: Any) -> None:
+        current = _child_spend(child)["_child_cost_usd"]
+        if parent_session_id is not None and getattr(parent_agent, "session_id", None) != parent_session_id:
+            logger.debug("Skipping deferred subagent cost rollup after parent session changed")
+            return
+        with _DEFERRED_CHILD_COST_LOCK:
+            state = getattr(child, "_delegate_deferred_cost_rollup", None)
+            if not isinstance(state, dict):
+                return
+            desired_extra = max(0.0, current - float(state.get("baseline", 0.0) or 0.0))
+            settled_extra = max(0.0, float(state.get("settled_extra", 0.0) or 0.0))
+            delta = max(0.0, desired_extra - settled_extra)
+            if delta <= 0.0:
+                return
+            state["settled_extra"] = settled_extra + delta
+        from tools.delegate_tool_results import _parent_finalization_lock, _rollup_children_cost
+        with _parent_finalization_lock(parent_agent):
+            _rollup_children_cost(parent_agent, delta)
+
+    future.add_done_callback(_settle)
+
 def _fabricated_entry(idx: int, status: str, error: str, child: Any, duration: float = 0) -> Dict[str, Any]:
     """Result entry for a child that raised, never finished, or was abandoned."""
     return {
@@ -949,6 +994,7 @@ class _ChildRun:
         self.finish_failed(_error_entry, _late_pending_steer, preview=f"Timed out after {duration}s" if is_timeout else str(exc))
         close_deferred = is_timeout and not future.done()
         if close_deferred:
+            _defer_child_cost_rollup(child, future, self.parent_agent, _error_entry.get("_child_cost_usd", 0.0))
             _defer_close_after_timeout(child, future)
         return None, _error_entry, close_deferred
 

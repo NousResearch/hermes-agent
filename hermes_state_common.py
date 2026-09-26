@@ -438,7 +438,8 @@ CREATE TABLE IF NOT EXISTS messages (
     display_kind TEXT,
     display_metadata TEXT,
     display_identity BLOB,
-    display_order INTEGER
+    display_order INTEGER,
+    duration_ms INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS session_model_usage (

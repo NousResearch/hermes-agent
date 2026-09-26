@@ -11,7 +11,9 @@ from typing import Any, MutableMapping, Optional, TypeVar
 # outgoing copy and the token estimator ignores them: one set, so an estimate
 # never prices bytes the provider never receives (an edit's inline_diff in
 # display_metadata is ~9KB and would trigger premature compaction).
-PERSISTENCE_ONLY_MESSAGE_FIELDS = frozenset({"timestamp", "display_kind", "display_metadata", "_row_id"})
+# ``duration_ms`` (tool rows) is rendered into the wire copy as a ``Wall time`` header by the request
+# builder and the estimator shadow; the number itself never ships.
+PERSISTENCE_ONLY_MESSAGE_FIELDS = frozenset({"timestamp", "display_kind", "display_metadata", "_row_id", "duration_ms"})
 
 _Message = TypeVar("_Message", bound=MutableMapping[str, Any])
 

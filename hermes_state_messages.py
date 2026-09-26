@@ -27,8 +27,8 @@ _INSERT_MESSAGE_SQL = """INSERT INTO messages (session_id, role, content, tool_c
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed, _compressed_summary, active, api_content, display_kind,
-                   display_metadata, display_identity)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+                   display_metadata, display_identity, duration_ms)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
 # Every column this module knows how to read: the ones it writes plus the three SQLite/compaction
 # owns. `_row_to_message_dict` drops raw bytes ONLY outside this set — a schema column keeps its
 # key (and its typed decoder) even when a row holds a BLOB, so no reader ever loses msg["content"].
@@ -111,6 +111,13 @@ def _tool_calls_len(raw: Any, scalar: int = 0) -> int:
 def _scrub_surrogates(value: Any) -> Any:
     """Lone surrogates make sqlite3 raise UnicodeEncodeError and abort the whole write."""
     return _sanitize_surrogates(value) if isinstance(value, str) else value
+
+
+def _int_or_none(value: Any) -> Optional[int]:
+    """Non-negative integer column value (``duration_ms``) or NULL; bools/junk never reach SQLite."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return max(int(value), 0)
 
 
 def _stale_holder(row, now: float) -> bool:
@@ -283,7 +290,8 @@ class SessionMessagesMixin:
             msg.get("platform_message_id") or msg.get("message_id"),
             1 if msg.get("observed") else 0, 1 if msg.get("_compressed_summary") else 0, 1,
             _str_or_none(msg.get("api_content")), _str_or_none(msg.get("display_kind")),
-            display_metadata, self._display_identity(self._display_dedupe_key(identity_row)))
+            display_metadata, self._display_identity(self._display_dedupe_key(identity_row)),
+            _int_or_none(msg.get("duration_ms")))
 
     @staticmethod
     def _bump_session_counters(conn, session_id: str, inserted: int, tool_calls: int, *, unit: bool) -> None:
@@ -1347,6 +1355,8 @@ class SessionMessagesMixin:
                 msg["message_id"] = row["platform_message_id"]
             if row["observed"]:
                 msg["observed"] = True
+            if "duration_ms" in row.keys() and row["duration_ms"] is not None:
+                msg["duration_ms"] = row["duration_ms"]
             if row["role"] == "assistant":
                 msg.update((col, row[col]) for col in ("finish_reason", "reasoning") if row[col])
                 if row["reasoning_content"] is not None:

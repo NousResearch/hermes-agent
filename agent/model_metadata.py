@@ -23,6 +23,7 @@ from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, b
 
 from hermes_constants import OPENROUTER_MODELS_URL, openrouter_variant_base
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS
+from agent.tool_result_wall_time import prepend_wall_time
 
 logger = logging.getLogger(__name__)
 
@@ -2528,6 +2529,9 @@ def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
             shadow[k] = ""
         else:
             shadow[k] = v
+    if msg.get("role") == "tool":
+        # The request builder prepends the ``Wall time`` header to tool rows; price those bytes too.
+        prepend_wall_time(shadow, msg.get("duration_ms"))
     return shadow
 
 

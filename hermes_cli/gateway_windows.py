@@ -932,18 +932,46 @@ def install(
     raise RuntimeError(f"Windows gateway install failed: {detail}")
 
 
+def _socket_confirmed_pids(homes: list[Path]) -> list[int]:
+    """PIDs the gateway's own control socket vouches for (#92091): a well-formed ``identify``
+    answer is liveness with no argv inference, so it recognizes an incarnation the process-table
+    scan's strict argv matcher cannot — e.g. the PM relaunch wrapper embeds the true argv in
+    ``sys.argv`` inside a ``python -c`` payload, which never appears in the OS command line the
+    scan reads (#123490)."""
+    from gateway.control_socket import identify_gateway
+
+    pids: list[int] = []
+    for home in homes:
+        identity = identify_gateway(home)
+        pid = identity.get("pid") if identity else None
+        if isinstance(pid, int) and pid > 0:
+            pids.append(pid)
+    return pids
+
+
+def _gateway_probe_homes(all_profiles: bool) -> list[Path]:
+    """Homes whose control socket the readiness poll should consult."""
+    if not all_profiles:
+        return [_hermes_home()]
+    from hermes_cli.update_receipt import _profile_homes
+
+    return [home for _name, home in _profile_homes()]
+
+
 def _live_gateway_pids(all_profiles: bool = False, home: Path | None = None) -> list[int]:
     """Live gateway PIDs for the readiness poll. ``home`` scopes the probe to ONE profile's identity
     files (a still-running sibling must not vouch for a per-profile spawn, #110959); otherwise the
-    process-table discovery for the active profile or the whole fleet."""
+    process-table discovery for the active profile or the whole fleet. Either path falls back to
+    the gateway's own control socket when the scan sees nothing (#123490)."""
     if home is not None:
         from gateway.status import get_running_pid
 
         pid = get_running_pid(home / "gateway.pid", cleanup_stale=False)
-        return [pid] if pid else []
+        return [pid] if pid else _socket_confirmed_pids([home])
     from hermes_cli.gateway import find_gateway_pids
 
-    return list(find_gateway_pids(all_profiles=all_profiles))
+    pids = list(find_gateway_pids(all_profiles=all_profiles))
+    return pids or _socket_confirmed_pids(_gateway_probe_homes(all_profiles))
 
 
 def _confirm_gateway_stable(

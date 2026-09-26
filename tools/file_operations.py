@@ -1252,12 +1252,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         so one code path works on local/docker/ssh AND Windows shells (no ``rm``)."""
         path = self._expand_path(path)
         # Delete removes the directory entry (a symlink itself, not its target), so
-        # the guards also run on the entry's directory; realpath(path) alone would
-        # clear a link outside the safe root that points inside it.
-        for p in (path, os.path.dirname(path) or "."):
-            denied = get_write_denied_error(p, verb="Delete")
-            if denied:
-                return WriteResult(error=denied)
+        # the guards vet the entry as well as the target it resolves to.
+        denied = get_write_denied_error(path, verb="Delete", entry=True)
+        if denied:
+            return WriteResult(error=denied)
         # Path baked in via repr() for shell-independent quoting; no
         # ``unlink(missing_ok=True)`` (a 3.7 remote interpreter lacks it).
         snippet = (
@@ -1292,9 +1290,9 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
     def move_file(self, src: str, dst: str) -> WriteResult:
         src = self._expand_path(src)
         dst = self._expand_path(dst)
-        # Entry-level op like delete_file: guard both entries' directories too.
-        for p in (src, dst, os.path.dirname(src) or ".", os.path.dirname(dst) or "."):
-            denied = get_write_denied_error(p, verb="Move")
+        # Entry-level op like delete_file: vet both entries, not just their targets.
+        for p in (src, dst):
+            denied = get_write_denied_error(p, verb="Move", entry=True)
             if denied:
                 return WriteResult(error=denied)
         result = self._exec(f"mv {self._escape_shell_arg(src)} {self._escape_shell_arg(dst)}")

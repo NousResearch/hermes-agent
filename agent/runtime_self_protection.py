@@ -151,9 +151,14 @@ def _overlaps(a: str, b: str) -> bool:
     return a == b or a.startswith(b + sep) or b.startswith(a + sep)
 
 
-def is_protected_path(path: str) -> Optional[str]:
-    """Description of the protected runtime path ``path`` touches, else ``None``."""
-    resolved = _normalize_path(path)
+def is_protected_path(path: str, *, follow: bool = True) -> Optional[str]:
+    """Description of the protected runtime path ``path`` touches, else ``None``.
+
+    ``follow=False`` keeps the final component unresolved (the entry itself, for
+    ops that unlink/rename a symlink rather than its target)."""
+    resolved = _normalize_path(path) if follow else _normalize_path(os.path.dirname(path) or ".")
+    if resolved and not follow:
+        resolved = os.path.join(resolved, os.path.basename(path))
     if not resolved:
         return None
     for protected, description in _protected():

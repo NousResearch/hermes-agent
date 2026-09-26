@@ -326,6 +326,9 @@ export function useGatewayBoot({
     // Bounded automatic boot retry for transient REMOTE failures (#82679).
     let bootRetryAttempt = 0
     let bootRetryTimer: ReturnType<typeof setTimeout> | null = null
+    let bootGeneration = 0
+
+    const bootIsStale = (gen: number) => cancelled || gen !== bootGeneration
 
     const clearBootRetryTimer = () => {
       if (bootRetryTimer !== null) {
@@ -709,6 +712,12 @@ export function useGatewayBoot({
       if (cancelled) {
         return
       }
+
+      // Invalidate any in-flight boot() — including a queued retry timer — so
+      // a switch that lands mid-boot can never let a stale attempt finish and
+      // clobber the connection this switch is about to establish. Counterpart
+      // to bootIsStale(gen) in boot() itself.
+      bootGeneration += 1
 
       let switchToken: null | ReturnType<typeof beginGatewaySwitch> = null
 
@@ -1298,7 +1307,7 @@ export function useGatewayBoot({
       })
     })
 
-    async function boot() {
+    async function boot(gen: number) {
       // Where this boot attempt got to — a historical fact, not a late read of
       // gateway.connectionState. A socket can close after a successful dial;
       // later initialization errors must not be reclassified as boot dials.
@@ -1318,7 +1327,7 @@ export function useGatewayBoot({
           'Timed out connecting to Hermes backend'
         )
 
-        if (cancelled) {
+        if (bootIsStale(gen)) {
           return
         }
 
@@ -1329,6 +1338,11 @@ export function useGatewayBoot({
           message: translateNow('boot.steps.connectingGateway'),
           progress: 95
         })
+
+        if (bootIsStale(gen)) {
+          return
+        }
+
         publish(conn)
         setPrimaryGatewayConnection(conn)
 
@@ -1341,8 +1355,16 @@ export function useGatewayBoot({
         // post-connect pass retries the sync.
         try {
           await ensureDefaultWorkspaceCwd()
+
+          if (bootIsStale(gen)) {
+            return
+          }
         } catch (err) {
           console.warn('Failed to seed default workspace cwd pre-connect', err)
+        }
+
+        if (bootIsStale(gen)) {
+          return
         }
 
         // Mint a fresh WS URL right before connecting. For OAuth gateways the
@@ -1357,6 +1379,10 @@ export function useGatewayBoot({
           'Timed out minting the gateway WebSocket URL'
         )
 
+        if (bootIsStale(gen)) {
+          return
+        }
+
         // Only a valid WebSocket dial against a remote descriptor counts as a
         // transient renderer-side failure; URL and capability failures stay
         // terminal at their own boundaries.
@@ -1367,7 +1393,7 @@ export function useGatewayBoot({
         await gateway.connect(wsUrl)
         stage = 'connected'
 
-        if (cancelled) {
+        if (bootIsStale(gen)) {
           return
         }
 
@@ -1376,7 +1402,11 @@ export function useGatewayBoot({
         // (cwd seed, config, sessions) are independent REST calls — running
         // them serially added their sum to time-to-populated-sidebar when only
         // the max is needed.
-        await adoptPrimaryProfile(conn)
+        await adoptPrimaryProfile(conn, () => !bootIsStale(gen))
+
+        if (bootIsStale(gen)) {
+          return
+        }
 
         setDesktopBootStep({
           phase: 'renderer.config',
@@ -1384,11 +1414,17 @@ export function useGatewayBoot({
           progress: 97
         })
 
+        if (bootIsStale(gen)) {
+          return
+        }
+
         await Promise.all([
           // The pre-connect seed already applied the configured default; this
           // post-connect pass covers the remote backend default. Non-fatal: a
           // failed sync must not abort boot (the remembered cwd remains).
-          seedDefaultCwd().catch(err => console.warn('Failed to sync default workspace cwd post-connect', err)),
+          seedDefaultCwd(() => !bootIsStale(gen)).catch(err =>
+            console.warn('Failed to sync default workspace cwd post-connect', err)
+          ),
           callbacksRef.current.refreshHermesConfig(),
           // Session-list population is never boot-fatal. The gateway WS is
           // already open by this point — a failed sidebar fetch (transient
@@ -1401,7 +1437,7 @@ export function useGatewayBoot({
           })
         ])
 
-        if (cancelled) {
+        if (bootIsStale(gen)) {
           return
         }
 
@@ -1413,19 +1449,31 @@ export function useGatewayBoot({
         // launch is the common path, so it must warn too, not only softSwitch.
         void warnIfTerminalBackendUnavailable()
       } catch (err) {
-        if (!cancelled) {
-          const message = err instanceof Error ? err.message : String(err)
+        if (bootIsStale(gen)) {
+          return
+        }
 
-          // Main's classification (#82679) still decides every failure it can
-          // see. The one it cannot see is the renderer-owned WebSocket dial:
-          // after a renderer reload main serves its cached descriptor with a
-          // stale `backend.ready / retryable:false` snapshot, so a remote dial
-          // that never became usable is retryable on its own. Anything after a
-          // successful dial keeps the terminal recovery surface.
-          const canRetry = bootRetryAttempt < BOOT_RETRY_MAX_ATTEMPTS
-          const retryable = canRetry && (stage === 'dialing' || (await bootFailureIsRetryable()))
+        const message = err instanceof Error ? err.message : String(err)
+        const wsCloseCode = (err as { wsCloseCode?: number }).wsCloseCode
+        const explicitRefusal = isGatewayReauthRequired(err) || wsCloseCode === 4400 || wsCloseCode === 4403
+        const canRetry = bootRetryAttempt < BOOT_RETRY_MAX_ATTEMPTS
+        let retryable = false
 
-          if (retryable && !cancelled) {
+        // Main's classification (#82679) still decides every failure it can
+        // see. The one it cannot see is the renderer-owned WebSocket dial:
+        // after a renderer reload main serves its cached descriptor with a
+        // stale `backend.ready / retryable:false` snapshot, so a remote dial
+        // that never became usable is retryable on its own. Explicit auth and
+        // policy refusals are terminal even though they occur during the dial.
+        if (!explicitRefusal && canRetry) {
+          retryable = stage === 'dialing' || (await bootFailureIsRetryable())
+        }
+
+        if (bootIsStale(gen)) {
+          return
+        }
+
+        if (retryable) {
             const delay = reconnectBackoffDelayMs(bootRetryAttempt, { baseDelayMs: BOOT_RETRY_BASE_DELAY_MS })
             bootRetryAttempt += 1
             bootFailed = false
@@ -1433,17 +1481,28 @@ export function useGatewayBoot({
             clearBootRetryTimer()
             bootRetryTimer = setTimeout(() => {
               bootRetryTimer = null
-              void boot()
+
+              if (gen !== bootGeneration || cancelled) {
+                return
+              }
+
+              void boot(gen)
             }, delay)
 
             return
           }
 
+        if (!retryable) {
           bootFailed = true
-          failDesktopBoot(message)
-          notifyError(err, translateNow('boot.errors.desktopBootFailed'))
-          setSessionsLoading(false)
         }
+
+        if (bootIsStale(gen)) {
+          return
+        }
+
+        failDesktopBoot(message)
+        notifyError(err, translateNow('boot.errors.desktopBootFailed'))
+        setSessionsLoading(false)
       }
     }
 
@@ -1488,7 +1547,7 @@ export function useGatewayBoot({
     if (adoptedFromHmr) {
       void adoptBoot()
     } else {
-      void boot()
+      void boot(++bootGeneration)
     }
 
     return () => {

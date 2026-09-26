@@ -29,6 +29,8 @@ export class EventsFeedClient extends JsonRpcGatewayClient {
       closedErrorMessage: 'events feed closed',
       connectErrorMessage: 'events feed connection failed',
       connectTimeoutMs: EVENTS_CONNECT_TIMEOUT_MS,
+      // /api/events never sends gateway.ready.
+      handshake: 'open',
       heartbeatDeadlineMs: 0,
       heartbeatIntervalMs: 0,
       onSocketClose: event => {

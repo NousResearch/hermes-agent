@@ -93,6 +93,7 @@ export {
 export {
   type ConnectionState,
   type GatewayClientOptions,
+  GatewayConnectError,
   GatewayEventHub,
   isGatewayWebSocketUrl,
   JsonRpcGatewayClient,

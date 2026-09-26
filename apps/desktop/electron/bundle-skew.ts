@@ -54,9 +54,19 @@ export interface BundleSkewResult {
   outOfSync: boolean
 }
 
+export interface RunGitOptions {
+  cwd: string
+  /**
+   * Aborting kills the git child. The probe aborts it when its timeout fires,
+   * so one hung git cannot outlive the probe (a treeless partial clone can
+   * lazy-fetch trees for minutes).
+   */
+  signal?: AbortSignal
+}
+
 export type RunGit = (
   args: string[],
-  options: { cwd: string }
+  options: RunGitOptions
 ) => Promise<{ code: number; stderr: string; stdout: string }>
 
 /**
@@ -129,5 +139,104 @@ export async function detectBundleSkew(
     return { desktopCommitsBehind: count, outOfSync: true }
   } catch {
     return NOT_STALE
+  }
+}
+
+/** Bound on ONE probe; on expiry it resolves not-stale and aborts git. */
+export const BUNDLE_SKEW_TIMEOUT_MS = 10_000
+
+export interface BundleSkewProbeOptions {
+  stamp: BundleSkewStamp | null
+  runGit: RunGit
+  /** Resolved per call: dev can retarget the source tree at runtime. */
+  repoRoot: string | (() => string)
+  timeoutMs?: number
+}
+
+export type BundleSkewProbe = () => Promise<BundleSkewResult>
+
+/**
+ * Wrap detectBundleSkew in the two things an IPC caller needs and it does not
+ * have: single-flight and a HEAD-keyed cache.
+ *
+ * Every caller (window focus, the update poller, checkUpdates, About) used to
+ * spawn its own merge-base/rev-list pair, so eight copies could run at once
+ * and one treeless-clone lazy fetch held a core for minutes. Concurrent
+ * callers now share one run, and a result is reused for as long as HEAD is
+ * unchanged — proven with a cheap `git rev-parse HEAD`, the only spawn on a
+ * hit. A moved HEAD reruns the probe; a HEAD git cannot resolve is the same
+ * "unknowable" the fail-quiet paths answer, and caches nothing so the next
+ * call can read it.
+ */
+export function createBundleSkewProbe({
+  stamp,
+  runGit,
+  repoRoot,
+  timeoutMs = BUNDLE_SKEW_TIMEOUT_MS
+}: BundleSkewProbeOptions): BundleSkewProbe {
+  let cachedKey: string | null = null
+  let cachedResult: BundleSkewResult = NOT_STALE
+  let inFlight: Promise<BundleSkewResult> | null = null
+
+  const run = async (): Promise<BundleSkewResult> => {
+    if (!stamp?.commit || stamp.source === 'fallback' || isFallbackCommit(stamp.commit)) {
+      return NOT_STALE
+    }
+
+    const cwd = typeof repoRoot === 'function' ? repoRoot() : repoRoot
+    const controller = new AbortController()
+    const signaled: RunGit = (args, options) => runGit(args, { ...options, signal: controller.signal })
+
+    let timer: ReturnType<typeof setTimeout> | null = null
+
+    const expired = new Promise<BundleSkewResult>(resolve => {
+      timer = setTimeout(() => {
+        controller.abort()
+        resolve(NOT_STALE)
+      }, timeoutMs)
+    })
+
+    const work = (async (): Promise<BundleSkewResult> => {
+      const head = await signaled(['rev-parse', 'HEAD'], { cwd })
+
+      if (head.code !== 0 || !head.stdout.trim()) {
+        return NOT_STALE
+      }
+
+      const key = `${stamp.commit}:${head.stdout.trim()}`
+
+      if (key === cachedKey) {
+        return cachedResult
+      }
+
+      const result = await detectBundleSkew(stamp, signaled, cwd)
+
+      cachedKey = key
+      cachedResult = result
+
+      return result
+    })()
+
+    try {
+      return await Promise.race([work, expired])
+    } catch {
+      // A throwing runGit (git missing, spawn refused) is one of the same
+      // fail-quiet cases detectBundleSkew already answers.
+      return NOT_STALE
+    } finally {
+      if (timer) {
+        clearTimeout(timer)
+      }
+    }
+  }
+
+  return () => {
+    if (!inFlight) {
+      inFlight = run().finally(() => {
+        inFlight = null
+      })
+    }
+
+    return inFlight
   }
 }

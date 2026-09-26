@@ -259,14 +259,25 @@ class GatewayTurnMixin:
                 parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
             )
             if ch:
-                if ch.model:
-                    model = ch.model
+                channel_model = ch.model or model
                 if ch.provider:
-                    runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(ch.provider, target_model=model or None)
-                    ch_runtime_model = runtime_kwargs.pop("model", None)
-                    # Adopt the provider's bundled model only when the override named none.
-                    if ch_runtime_model and not ch.model:
-                        model = ch_runtime_model
+                    try:
+                        channel_runtime = _resolve_runtime_agent_kwargs_for_provider(
+                            ch.provider, target_model=channel_model or None)
+                    except Exception as exc:
+                        # Keep the whole default route, not the channel model on another provider.
+                        # The static override stays configured so the next turn can retry it.
+                        logger.warning("Channel override provider %s unavailable: %s", ch.provider, exc)
+                        if not self._pre_agent_fallback_notice:
+                            from hermes_cli.fallback_config import pre_agent_fallback_notice
+                            self._pre_agent_fallback_notice = pre_agent_fallback_notice(
+                                ch.provider, channel_model, runtime_kwargs.get("provider"), model)
+                    else:
+                        runtime_kwargs = channel_runtime
+                        ch_runtime_model = runtime_kwargs.pop("model", None)
+                        model = ch.model or ch_runtime_model or channel_model
+                else:
+                    model = channel_model
 
         if override and skey:
             model, runtime_kwargs = self._apply_session_model_override(skey, model, runtime_kwargs)

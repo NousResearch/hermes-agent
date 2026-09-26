@@ -2754,13 +2754,19 @@ class _BedrockStream:
         return _with_stream_emitters(self.agent, self._poll)
 
 
+# A streaming tool call's arguments are checked for a repetition loop once they pass
+# this size, and again after every further step of growth.
+_TOOL_ARG_RUNAWAY_MIN_CHARS = 32_000
+_TOOL_ARG_RUNAWAY_STEP_CHARS = 16_000
+
+
 class _ToolCallAccumulator:
     """Assemble streamed tool-call deltas into complete ``tool_calls`` entries
     (``acc``: slot index -> entry dict). Ollama-compatible endpoints reuse index 0
     for every call in a parallel batch, distinguishing them only by id, so a new
     id at an already-seen raw index is redirected to a fresh slot."""
 
-    def __init__(self):
+    def __init__(self, *, watch_arguments: bool = False):
         self.acc: dict = {}
         self._notified: set = set()
         self._last_id_at_idx: dict = {}      # raw_index -> last seen non-empty id
@@ -2768,6 +2774,39 @@ class _ToolCallAccumulator:
         # Argument deltas are collected per slot and joined once in ``materialize`` —
         # ``+=`` per chunk rebuilds the whole string every delta (quadratic on big args).
         self._argument_parts: dict[int, list[str]] = {}
+        # Live watch for the stream monitor (see ``_StreamingCall._tool_argument_problem``):
+        # when an open tool call last grew, and the first call whose arguments turned into
+        # a repetition loop. Cleared by ``close_watch`` once the stream reports a finish.
+        self._watch_arguments = watch_arguments
+        self._argument_chars: dict[int, int] = {}
+        self._checked_chars: dict[int, int] = {}
+        self.last_growth_at: Optional[float] = None
+        self.runaway: Optional[tuple[str, int]] = None
+
+    def close_watch(self) -> None:
+        """The stream reported a finish: its tool calls are complete, stop watching them."""
+        self._watch_arguments = False
+        self.last_growth_at = None
+        self.runaway = None
+
+    def _note_growth(self, idx: int, arguments: str) -> None:
+        """Stamp tool-call growth and, past each size step, check the arguments for a
+        repetition loop. Degenerate loops run until the output cap cuts them off mid-JSON,
+        so the only useful reaction is to reconnect as soon as the loop is recognisable."""
+        if not self._watch_arguments:
+            return
+        self.last_growth_at = time.time()
+        if not arguments:
+            return
+        size = self._argument_chars.get(idx, 0) + len(arguments)
+        self._argument_chars[idx] = size
+        if size < _TOOL_ARG_RUNAWAY_MIN_CHARS or self.runaway is not None:
+            return
+        if size - self._checked_chars.get(idx, 0) < _TOOL_ARG_RUNAWAY_STEP_CHARS:
+            return
+        self._checked_chars[idx] = size
+        if is_repetition_dominated("".join(self._argument_parts.get(idx, ()))):
+            self.runaway = (self.acc[idx]["function"]["name"] or "?", size)
 
     def materialize(self) -> dict:
         """Join buffered argument deltas into each entry's ``arguments``; idempotent. Returns ``acc``."""
@@ -2804,8 +2843,10 @@ class _ToolCallAccumulator:
                 # Assignment, not +=: names arrive complete and some providers (MiniMax via
                 # NVIDIA NIM) resend the full name every chunk — += gives "read_fileread_file".
                 entry["function"]["name"] = tc_function.name
+                self._note_growth(idx, "")
             if getattr(tc_function, "arguments", None):
                 parts.append(tc_function.arguments)
+                self._note_growth(idx, tc_function.arguments)
         extra = getattr(tc_delta, "extra_content", None)
         if extra is None and hasattr(tc_delta, "model_extra"):
             extra = (tc_delta.model_extra if isinstance(tc_delta.model_extra, dict) else {}).get("extra_content")
@@ -2841,6 +2882,11 @@ class _StreamingCall(StreamingWaitMonitor):
         # Shared by the socket read timeout (``_stream_timeouts``) and the stale
         # detector (``_resolve_stale_timeout``); None until resolved.
         self._stream_stale_timeout = None
+        # Patience for an open tool call whose arguments stopped growing while other
+        # chunks keep the stream alive (``_resolve_stale_timeout``); the chat attempt's
+        # tool-call accumulator, which the monitor watches for that and for runaways.
+        self._tool_arg_stall_timeout = float("inf")
+        self._attempt_tool_calls = None
         self.stream_attempt_lock = threading.Lock()
         self.stream_attempt_state = {"current": 0, "cancelled": set(), "discarded_chunks": 0, "discarded_bytes": 0}
         self._stale_counted_attempts: set[int] = set()  # breaker counts each attempt once
@@ -3126,7 +3172,7 @@ class _StreamingCall(StreamingWaitMonitor):
         refusal_parts: list[str] = []
         reasoning_details: list = []  # OpenRouter replay data (signatures, encrypted blocks)
         pending_text_parts: list[str] = []
-        tool_calls = _ToolCallAccumulator()
+        tool_calls = self._attempt_tool_calls = _ToolCallAccumulator(watch_arguments=True)
         tool_calls_acc = tool_calls.acc
         finish_reason = model_name = usage_obj = None
         response_id = upstream_provider = None  # the provider's own id / serving upstream, from the chunks
@@ -3184,6 +3230,8 @@ class _StreamingCall(StreamingWaitMonitor):
                 usage, finish_reason = self._choiceless_chunk(chunk, finish_reason)
                 usage_obj = usage or usage_obj
                 self._mark_finish_seen(_diag, finish_reason)
+                if finish_reason:
+                    tool_calls.close_watch()
                 continue
 
             choice = chunk.choices[0]
@@ -3192,6 +3240,8 @@ class _StreamingCall(StreamingWaitMonitor):
             # guard can swallow a merged finish chunk (vLLM standalone ':' tokens).
             finish_reason = _normalize_finish_reason(getattr(choice, "finish_reason", None)) or finish_reason
             self._mark_finish_seen(_diag, finish_reason)
+            if finish_reason:
+                tool_calls.close_watch()
             if hasattr(chunk, "usage") and chunk.usage:
                 usage_obj = chunk.usage
 
@@ -3841,19 +3891,42 @@ class _StreamingCall(StreamingWaitMonitor):
             self._stale_counted_attempts.add(attempt)
             _bump_stale_streak(self.agent)
 
-    def _kill_stale_stream(self, elapsed: float) -> None:
-        """SSE pings but no chunks: cancel the attempt and abort the request-local
-        client so the retry loop opens a fresh one. The shared client is never
-        closed from this (stranger) thread — earlier stale-killed workers may
-        still be unwinding SSL BIOs (FD-recycle corruption); the OpenAI primary
-        is replaced lazily."""
+    def _tool_argument_problem(self) -> Optional[str]:
+        """Why the open tool call should be reconnected, else None. Chunks keep arriving in
+        both cases, so the chunk-based stale detector sees a healthy stream: the arguments
+        either loop until the output cap cuts them off mid-JSON (the truncated call is then
+        refused and retried anyway, minutes later), or stop growing while the connection
+        stays alive."""
+        tool_calls = getattr(self, "_attempt_tool_calls", None)
+        if tool_calls is None:
+            return None
+        if tool_calls.runaway is not None:
+            name, size = tool_calls.runaway
+            return f"Tool call '{name}' arguments degenerated into repetition ({size:,} chars) while streaming"
+        grew_at = tool_calls.last_growth_at
+        if grew_at is not None and time.time() - grew_at > self._tool_arg_stall_timeout:
+            return (f"Tool call arguments stalled for {time.time() - grew_at:.0f}s "
+                    f"(threshold {self._tool_arg_stall_timeout:.0f}s) while the stream stayed open")
+        return None
+
+    def _kill_stale_stream(self, elapsed: float, reason: Optional[str] = None) -> None:
+        """SSE pings but no chunks (or a looping/stalled tool call, ``reason``): cancel
+        the attempt and abort the request-local client so the retry loop opens a fresh
+        one. The shared client is never closed from this (stranger) thread — earlier
+        stale-killed workers may still be unwinding SSL BIOs (FD-recycle corruption);
+        the OpenAI primary is replaced lazily."""
         _est_ctx = estimate_request_context_tokens(self.api_kwargs)
-        logger.warning(
-            "Stream stale for %.0fs (threshold %.0fs) — no chunks received. model=%s context=~%s tokens. Killing connection.",
-            elapsed, self._stream_stale_timeout, self.api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
-        )
+        if reason is not None:
+            logger.warning("%s. model=%s context=~%s tokens. Killing connection.",
+                reason, self.api_kwargs.get("model", "unknown"), f"{_est_ctx:,}")
+        else:
+            logger.warning(
+                "Stream stale for %.0fs (threshold %.0fs) — no chunks received. model=%s context=~%s tokens. Killing connection.",
+                elapsed, self._stream_stale_timeout, self.api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
+            )
+        _what = reason or f"No response from provider for {int(elapsed)}s"
         self.agent._buffer_diagnostic_status(
-            f"⚠️ No response from provider for {int(elapsed)}s (model: {self.api_kwargs.get('model', 'unknown')}, "
+            f"⚠️ {_what} (model: {self.api_kwargs.get('model', 'unknown')}, "
             f"context: ~{_est_ctx:,} tokens). Reconnecting...")
         # Captured BEFORE the cancel/abort: the pool sweep can miss a checked-out
         # connection, so shut down the killed attempt's own socket too — still
@@ -3863,11 +3936,20 @@ class _StreamingCall(StreamingWaitMonitor):
             self._cancel_current_stream_attempt("stale_stream_kill")
             self.clients.close_once("stale_stream_kill")
         self._shutdown_stale_attempt_socket(_killed_response)
-        self._count_stale_attempt()
-        # Reset the timer so we don't kill repeatedly while the worker unwinds.
+        if reason is None:
+            # The breaker counts unresponsive providers; a looping or stalled tool call
+            # came from one that was still streaming.
+            self._count_stale_attempt()
+        # Reset the timer so we don't kill repeatedly while the worker unwinds; the
+        # killed attempt's tool calls are no longer watched (the retry installs its own).
         self.last_chunk_time["t"] = time.time()
-        self.agent._emit_diagnostic_wait(f"⚠ no output from provider for {int(elapsed)}s — reconnecting...")
-        self.agent._touch_activity(f"stale stream detected after {int(elapsed)}s, reconnecting")
+        self._attempt_tool_calls = None
+        if reason is not None:
+            self.agent._emit_diagnostic_wait(f"⚠ {reason} — reconnecting...")
+            self.agent._touch_activity("tool call arguments looped or stalled, reconnecting")
+        else:
+            self.agent._emit_diagnostic_wait(f"⚠ no output from provider for {int(elapsed)}s — reconnecting...")
+            self.agent._touch_activity(f"stale stream detected after {int(elapsed)}s, reconnecting")
 
     def _abort_for_interrupt(self, stale_elapsed: float) -> None:
         """/stop seen by the monitor: mark cancelled, abort the request-local
@@ -3908,8 +3990,15 @@ class _StreamingCall(StreamingWaitMonitor):
             self._stream_stale_timeout = _local_stream_stale_timeout_default()
             logger.debug("Local provider detected (%s) — stale stream timeout set to %.0fs",
                 self.agent.base_url, self._stream_stale_timeout)
+            # A local server decoding slowly can pause mid-arguments; only an explicit
+            # HERMES_TOOL_ARG_STALL_TIMEOUT arms the argument-stall watch there.
+            if "HERMES_TOOL_ARG_STALL_TIMEOUT" in os.environ:
+                self._tool_arg_stall_timeout = env_float("HERMES_TOOL_ARG_STALL_TIMEOUT", float("inf"))
             return
         self._stream_stale_timeout = _cloud_stale_timeout_for(self.agent, self.api_kwargs)
+        # Arguments stream token by token, so a tool call that stops growing this long
+        # has stalled even when other chunks keep the connection alive.
+        self._tool_arg_stall_timeout = env_float("HERMES_TOOL_ARG_STALL_TIMEOUT", 120.0)
 
     def _partial_stream_stub(self):
         """Tokens already reached the platform: a finish_reason="length" stub fires the

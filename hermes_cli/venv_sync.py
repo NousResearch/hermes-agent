@@ -376,6 +376,22 @@ def relaunch_command(
     elif module and module != "__main__":
         body = f"runpy.run_module({module!r}, run_name='__main__', alter_sys=True)"
     else:
+        # `python <script>` puts the script's own directory on sys.path; -I drops
+        # it, so a launcher whose module sits beside its entry script must still
+        # import. A foreign entry script is no entry point of ours and does not
+        # import hermes_bootstrap itself, so activate the environment for it.
+        resolved: Path | None = None
+        try:
+            resolved = Path(argv[0]).resolve()
+            inside = resolved.is_relative_to(root)
+        except (OSError, ValueError):
+            inside = True  # Unresolvable entry: keep today's behavior.
+        if resolved is not None and resolved.is_file():
+            if not inside:
+                prefix += "import hermes_bootstrap; "
+            # Last: PM's activation prepends the root, and the script's directory
+            # must still win, exactly as in a plain `python <script>` run.
+            prefix += f"sys.path.insert(0, {str(resolved.parent)!r}); "
         # distlib .exe launchers are executable zip files with __main__, not
         # importable modules named '__main__'. run_path handles both shapes.
         body = f"runpy.run_path({str(Path(argv[0]).absolute())!r}, run_name='__main__')"

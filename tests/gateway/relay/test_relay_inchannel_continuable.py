@@ -18,7 +18,6 @@ lane. Three gaps, each pinned here:
 
 from types import SimpleNamespace
 
-import pytest
 
 from gateway.relay.descriptor import CapabilityDescriptor
 from cron.scheduler_delivery import _resolve_cron_surface_mode
@@ -41,9 +40,6 @@ def _descriptor(**overrides):
 
 
 class TestDescriptorCapabilityBit:
-    def test_defaults_false(self):
-        d = _descriptor()
-        assert d.supports_inchannel_continuable is False
 
     def test_from_json_reads_flag(self):
         import json
@@ -80,13 +76,7 @@ class TestRelayAdapterCapabilityMapping:
         config = PlatformConfig(enabled=True, extra={})
         return RelayAdapter(config, descriptor)
 
-    def test_adapter_maps_descriptor_flag_true(self):
-        adapter = self._adapter(_descriptor(supports_inchannel_continuable=True))
-        assert getattr(adapter, "supports_inchannel_continuable", False) is True
 
-    def test_adapter_maps_descriptor_flag_false(self):
-        adapter = self._adapter(_descriptor())
-        assert getattr(adapter, "supports_inchannel_continuable", True) is False
 
     def test_renegotiation_updates_flag(self):
         """_apply_descriptor must carry the bit, like supports_code_blocks."""

@@ -204,6 +204,7 @@ SCHEMA_HISTORY: dict[str, _TableHistory] = {
         )),
         ('26 2026-09-02T14:22Z 8e4366d358', (('+', 'tool_names', 'last_read_at'),)),
         ('27 2026-09-19T00:10Z 922a0c3c87', (('+', 'transport_profile', 'profile_name'),)),
+        ('28 2026-09-25T23:25Z 2941aadffa', (('+', 'compression_overload_streak', 'compression_recovery_deadline'),)),
         ),
     ),
     "messages": _TableHistory(

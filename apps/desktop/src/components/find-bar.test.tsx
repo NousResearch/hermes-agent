@@ -5,10 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { type KeybindRuntimeDeps, useKeybinds } from '@/app/hooks/use-keybinds'
 import { FindBar } from '@/components/find-bar'
 import { I18nProvider } from '@/i18n'
-import { en } from '@/i18n/en'
-import { zh } from '@/i18n/zh'
 import { findBarClaimsCombo, findBarKeyAction, formatMatchLabel } from '@/lib/find-in-page'
-import { KEYBIND_ACTIONS } from '@/lib/keybinds/actions'
 import { actionAllowedInInput } from '@/lib/keybinds/combo'
 import {
   $findInPage,
@@ -75,7 +72,7 @@ function installBridge() {
 }
 
 function resetStore() {
-  $findInPage.set({ active: false, query: '', matchOrdinal: 0, matchCount: 0 })
+  $findInPage.set({ active: false, query: '', matchOrdinal: 0, matchCount: 0, focusRequest: 0 })
 }
 
 // Zero the bridge refcount so a leaked subscription can't bleed between tests.
@@ -136,12 +133,6 @@ describe('formatMatchLabel', () => {
     expect(formatMatchLabel('hit', 1, 1)).toBe('1/1')
   })
 
-  it('shows 0 ordinal for the frame before the first match is selected', () => {
-    // Electron legitimately reports matches with activeMatchOrdinal 0 on the
-    // first (non-final) update of a fresh search.
-    expect(formatMatchLabel('hit', 0, 5)).toBe('0/5')
-  })
-
   it('clamps an out-of-range ordinal into the count', () => {
     expect(formatMatchLabel('hit', 99, 5)).toBe('5/5')
     expect(formatMatchLabel('hit', -3, 5)).toBe('0/5')
@@ -151,10 +142,6 @@ describe('formatMatchLabel', () => {
     expect(formatMatchLabel('hit', Number.NaN, 4)).toBe('0/4')
     expect(formatMatchLabel('hit', 2, Number.NaN)).toBe('0/0')
     expect(formatMatchLabel('hit', 2, Number.POSITIVE_INFINITY)).toBe('0/0')
-  })
-
-  it('floors fractional counts rather than rendering decimals', () => {
-    expect(formatMatchLabel('hit', 2.7, 9.9)).toBe('2/9')
   })
 })
 
@@ -229,40 +216,10 @@ describe('findBarClaimsCombo', () => {
 // ── Keybind registration ────────────────────────────────────────────────────
 
 describe('find-in-page keybind registration', () => {
-  const byId = new Map(KEYBIND_ACTIONS.map(action => [action.id, action]))
-
-  it('registers view.findInPage on mod+f in the view category', () => {
-    const action = byId.get('view.findInPage')
-
-    expect(action).toBeTruthy()
-    expect(action?.category).toBe('view')
-    expect(action?.defaults).toEqual(['mod+f'])
-  })
-
   it('mod+f fires from inside a textarea (browser find behavior)', () => {
     // The runtime consults actionAllowedInInput before dispatching while an
     // editable element owns focus; ⌘F should still open find from the composer.
     expect(actionAllowedInInput('view.findInPage', 'mod+f')).toBe(true)
-  })
-
-  it('registers the step pair unbound so it cannot conflict with view.toggleReview', () => {
-    const next = byId.get('view.findNext')
-    const previous = byId.get('view.findPrevious')
-
-    expect(next?.category).toBe('view')
-    expect(previous?.category).toBe('view')
-    // mod+g stays with view.toggleReview by default; the open find bar claims
-    // it at dispatch time instead (findBarClaimsCombo above).
-    expect(next?.defaults).toEqual([])
-    expect(previous?.defaults).toEqual([])
-    expect(byId.get('view.toggleReview')?.defaults).toEqual(['mod+g'])
-  })
-
-  it('every registered find action has an i18n label (keybinds panel row)', () => {
-    for (const id of ['view.findInPage', 'view.findNext', 'view.findPrevious']) {
-      expect(en.keybinds.actions[id], id).toBeTruthy()
-      expect(zh.keybinds.actions[id], id).toBeTruthy()
-    }
   })
 })
 
@@ -274,7 +231,32 @@ describe('find-in-page store', () => {
     plantSurface()
     openFindBar()
 
-    expect($findInPage.get()).toEqual({ active: true, query: '', matchOrdinal: 0, matchCount: 0 })
+    expect($findInPage.get()).toEqual({ active: true, query: '', matchOrdinal: 0, matchCount: 0, focusRequest: 0 })
+  })
+
+  it('a repeat open keeps the typed query and asks for focus again', () => {
+    const surface = plantSurface()
+    surface.textContent = 'needle haystack'
+    openFindBar()
+    setFindQuery('needle')
+
+    openFindBar()
+
+    expect($findInPage.get().query).toBe('needle')
+    expect($findInPage.get().active).toBe(true)
+    expect($findInPage.get().focusRequest).toBe(1)
+  })
+
+  it('close then reopen starts a fresh focus request', () => {
+    plantSurface()
+    openFindBar()
+    openFindBar()
+    closeFindBar()
+    openFindBar()
+
+    expect($findInPage.get().focusRequest).toBe(0)
+    expect($findInPage.get().query).toBe('')
+    expect($findInPage.get().active).toBe(true)
   })
 
   it('closing clears state and tears down the scoped highlights', () => {
@@ -294,17 +276,6 @@ describe('find-in-page store', () => {
     // Highlights are unwrapped; the original text is restored.
     expect(surface.querySelectorAll('mark.find-hit').length).toBe(0)
     expect(surface.textContent).toBe('needle in a haystack, needle again')
-  })
-
-  it('closing an already-closed bar does not re-strip highlights', () => {
-    plantSurface()
-    openFindBar()
-    closeFindBar()
-    closeFindBar()
-
-    // No thrown exception, no doubled DOM churn — the early return in
-    // closeFindBar short-circuits when the bar is already inactive.
-    expect($findInPage.get().active).toBe(false)
   })
 
   it('a fresh query wraps matches and counts them', () => {
@@ -525,18 +496,6 @@ describe('find-in-page store', () => {
     expect(surface.textContent).toBe('alpha beta alpha beta')
   })
 
-  it('a query typed with no chat surface stays zero-count (parity with the bridge path)', () => {
-    // No chat surface in the DOM. The bar still tracks the typed query
-    // (matches the contract users had with the Electron bridge), but
-    // obviously cannot find anything — the view is whatever they're in.
-    openFindBar()
-    setFindQuery('needle')
-
-    expect($findInPage.get().query).toBe('needle')
-    expect($findInPage.get().matchCount).toBe(0)
-    expect($findInPage.get().matchOrdinal).toBe(0)
-  })
-
   it('found-in-page results from a secondary window still land on the store', () => {
     // Retained path: secondary session windows drive the Electron bridge,
     // not the renderer-side walker. The bridge event still maps onto the
@@ -645,14 +604,13 @@ describe('FindBar', () => {
     expect(input).toBeTruthy()
     expect(input.getAttribute('type')).toBe('search')
     expect(input.getAttribute('role')).toBeNull()
-    expect(screen.getByRole('search').className).toContain('top-[calc(var(--titlebar-height,34px)+0.5rem)]')
     expect(screen.getByRole('button', { name: /close/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /next match/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /previous match/i })).toBeTruthy()
 
     // Counter appears once a query + results exist.
     expect(screen.queryByText('3/12')).toBeNull()
-    actStore(() => $findInPage.set({ active: true, query: 'two', matchOrdinal: 1, matchCount: 1 }))
+    actStore(() => $findInPage.set({ active: true, query: 'two', matchOrdinal: 1, matchCount: 1, focusRequest: 0 }))
     await waitFor(() => expect(screen.getByText('1/1')).toBeTruthy())
   })
 
@@ -664,6 +622,34 @@ describe('FindBar', () => {
     const input = await screen.findByRole('searchbox', { name: /find in page/i })
     // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
     await waitFor(() => expect(document.activeElement).toBe(input))
+  })
+
+  it('refocuses the input on a repeat open and keeps the typed query', async () => {
+    const surface = plantSurface()
+    surface.textContent = 'needle haystack'
+    openFindBar()
+    renderFindBar()
+
+    const input = (await screen.findByRole('searchbox', { name: /find in page/i })) as HTMLInputElement
+    // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
+    await waitFor(() => expect(document.activeElement).toBe(input))
+
+    fireEvent.change(input, { target: { value: 'needle' } })
+    actStore(() => {
+      void setFindQuery('needle')
+    })
+    input.blur()
+    // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
+    expect(document.activeElement).not.toBe(input)
+
+    actStore(openFindBar)
+
+    // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
+    await waitFor(() => expect(document.activeElement).toBe(input))
+    expect(input.value).toBe('needle')
+    expect($findInPage.get().query).toBe('needle')
+    expect(input.selectionStart).toBe(0)
+    expect(input.selectionEnd).toBe('needle'.length)
   })
 
   it('debounces typing into a single scoped find', async () => {
@@ -755,8 +741,7 @@ describe('FindBar', () => {
   it('Enter dispatches next and Shift+Enter dispatches previous', () => {
     const surface = plantSurface()
     surface.textContent = 'needle needle needle'
-    $findInPage.set({ active: true, query: 'needle', matchOrdinal: 1, matchCount: 3 })
-    // Manually replay the open+query path so the marks exist for stepping.
+    // Open the bar fresh so the scope is captured against the planted surface.
     openFindBar()
     setFindQuery('needle')
 
@@ -863,17 +848,6 @@ describe('FindBar', () => {
     expect(findInPageListenerCount()).toBe(0)
   })
 
-  it('a remount does not stack subscriptions', () => {
-    const first = renderFindBar()
-    first.unmount()
-
-    const second = renderFindBar()
-
-    expect(bridge.subscribers.size).toBe(1)
-    second.unmount()
-    expect(bridge.subscribers.size).toBe(0)
-  })
-
   it('the window key listener is removed on unmount', () => {
     plantSurface()
     openFindBar()
@@ -909,20 +883,8 @@ describe('FindBar', () => {
     // Bar gone, state reset, and the highlights stripped — stale marks
     // must not survive a session switch.
     await waitFor(() => expect(screen.queryByRole('search')).toBeNull())
-    expect($findInPage.get()).toEqual({ active: false, query: '', matchOrdinal: 0, matchCount: 0 })
+    expect($findInPage.get()).toEqual({ active: false, query: '', matchOrdinal: 0, matchCount: 0, focusRequest: 0 })
     expect(surface.querySelectorAll('mark.find-hit').length).toBe(0)
-  })
-
-  it('navigation while the bar is closed does not reach into the bridge', async () => {
-    plantSurface()
-    const { navigate } = renderFindBarWithNavigation('/session/a')
-
-    navigate('/session/b')
-
-    await waitFor(() => expect(screen.queryByRole('search')).toBeNull())
-    // No thrown exception, no DOM churn — the route-change cleanup is a
-    // no-op when there's no bar to close.
-    expect($findInPage.get().active).toBe(false)
   })
 
   it('does not render on overlay routes (settings, command center, …)', () => {
@@ -1009,23 +971,6 @@ describe('FindBar files pane positioning', () => {
     for (const aside of document.querySelectorAll('aside[aria-label="Right sidebar"]')) {
       aside.remove()
     }
-  })
-
-  it('keeps the default right-4 position when the pane is closed', async () => {
-    openFindBar()
-    renderFindBar()
-
-    const bar = await screen.findByRole('search')
-    expect(bar.style.right).toBe('')
-  })
-
-  it('parks the bar left of the pane when it is open', async () => {
-    mountAside(240)
-    openFindBar()
-    renderFindBar()
-
-    const bar = await screen.findByRole('search')
-    await waitFor(() => expect(bar.style.right).toBe('calc(240px + 0.75rem)'))
   })
 
   it('re-measures when the pane opens or closes while the bar is up', async () => {

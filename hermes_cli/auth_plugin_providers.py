@@ -60,16 +60,42 @@ def register_plugin_provider(pp: Any) -> None:
         pconfig = ProviderConfig(pp.name, pp.display_name or pp.name, pp.auth_type, inference_base_url=pp.base_url)
     PROVIDER_REGISTRY[pp.name] = pconfig
     PLUGIN_MIRRORED_PROVIDERS.add(pp.name)
-    for alias in pp.aliases:  # so resolve_provider() resolves them too
-        PROVIDER_REGISTRY.setdefault(alias, pconfig)
+    mirror_aliases(pconfig, pp)
+
+
+def _user_owns_alias(pp: Any, alias: str) -> bool:
+    """True when *alias* resolves to the ``$HERMES_HOME`` plugin *pp* in the ``providers`` layer."""
+    try:
+        from providers import get_provider_profile, provider_source
+    except Exception:
+        return False
+    owner = get_provider_profile(alias)
+    return owner is not None and owner.name == pp.name and provider_source(pp.name) == "user"
+
+
+def mirror_aliases(pconfig: Any, pp: Any) -> None:
+    """Point ``pp.aliases`` at *pconfig* so ``resolve_provider()`` resolves them too.
+
+    A bundled plugin never steals an alias another row already holds; a ``$HERMES_HOME`` plugin
+    whose alias the ``providers`` layer already resolves to it does — the same ownership rule as
+    :func:`override_registry_row`, otherwise the alias kept resolving to the built-in row while
+    ``providers.get_provider_profile`` followed the user's profile (#116668).
+    """
+    from hermes_cli.auth import PROVIDER_REGISTRY
+
+    for alias in pp.aliases:
+        if alias not in PROVIDER_REGISTRY or _user_owns_alias(pp, alias):
+            PROVIDER_REGISTRY[alias] = pconfig
 
 
 def override_registry_row(pconfig: Any, pp: Any) -> None:
     """A ``$HERMES_HOME`` plugin re-registering a name that already has a row wins for the fields
-    it declares — ``base_url`` and, on api-key rows, ``env_vars`` (#48450). ``register_provider()``
+    it declares — ``display_name``, ``base_url`` and, on api-key rows, ``env_vars`` (#48450, #116668). ``register_provider()``
     is last-writer-wins for the profile; without this the runtime kept reading the built-in
     endpoint. In place, so alias rows sharing the object follow; idempotent, so re-sync is free.
     """
+    if pp.display_name:
+        pconfig.name = pp.display_name
     if pp.base_url:
         pconfig.inference_base_url = pp.base_url
     if pp.auth_type == "api_key" == pconfig.auth_type and pp.env_vars:
@@ -104,6 +130,7 @@ def sync_plugin_provider_registry() -> int:
             core_row = pp.name in BUILTIN_PROVIDER_IDS or pp.name in PLUGIN_MIRRORED_PROVIDERS
             if core_row and pp.name not in _REGISTRY_PLUGIN_SKIP and provider_source(pp.name) == "user":
                 override_registry_row(PROVIDER_REGISTRY[pp.name], pp)
+                mirror_aliases(PROVIDER_REGISTRY[pp.name], pp)
             continue
         register_plugin_provider(pp)
         added += pp.name in PROVIDER_REGISTRY

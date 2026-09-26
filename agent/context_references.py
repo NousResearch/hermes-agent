@@ -347,7 +347,7 @@ def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Pa
         size = path.stat().st_size
         if max_inline_tokens is not None and size > max_inline_tokens * CHARS_PER_TOKEN:
             return None, _oversized_text_reference_block(ref, path, size // CHARS_PER_TOKEN)
-        text = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8-sig")
     lang = _FENCE_LANGUAGES.get(path.suffix.lower(), "")
     text_tokens = estimate_tokens_rough(text)
     # Check BEFORE building the fenced block: an oversized file is not going to be
@@ -447,12 +447,28 @@ def _is_under(path: Path, root: Path) -> bool:
     return True
 
 
+# Desktop persists a large plain-text paste as a `.txt` under this Hermes-managed
+# directory (apps/desktop/electron/composer-paste.ts) and attaches it as `@file:`.
+# The chat's cwd is rarely an ancestor of it, so it is the one anchored root the
+# workspace guard admits besides `allowed_root` itself.
+COMPOSER_PASTES_DIRNAME = "composer-pastes"
+
+
+def _composer_paste_roots() -> list[Path]:
+    from agent.file_safety import _hermes_dirs
+    return [hermes_dir / COMPOSER_PASTES_DIRNAME for hermes_dir in _hermes_dirs()]
+
+
 def _resolve_path(cwd: Path, target: str, *, allowed_root: Path | None = None) -> Path:
     from agent.file_safety import is_nt_namespace_path
     if is_nt_namespace_path(target):  # raw-string check: resolving such a path is the NTLM-leak trigger
         raise ValueError("path uses a Windows NT/device namespace prefix and cannot be attached")
     resolved = (cwd / Path(os.path.expanduser(target))).resolve()  # `/` keeps an absolute target as-is
-    if allowed_root is not None and not _is_under(resolved, allowed_root):
+    if (
+        allowed_root is not None
+        and not _is_under(resolved, allowed_root)
+        and not any(_is_under(resolved, root) for root in _composer_paste_roots())
+    ):
         raise ValueError("path is outside the allowed workspace")
     return resolved
 

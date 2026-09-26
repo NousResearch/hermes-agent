@@ -14,6 +14,7 @@ This module verifies:
 """
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -35,7 +36,7 @@ def _make_git_workspace(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / ".git").mkdir()
-    (repo / "pyproject.toml").write_text("[project]\nname='t'\n")
+    (repo / "pyproject.toml").write_text("[project]\nname='t'\n", encoding="utf-8")
     return repo
 
 
@@ -51,11 +52,11 @@ def test_unrelated_project_not_affected_by_broken(tmp_path, monkeypatch):
     repo_b = tmp_path / "repo-b"
     repo_b.mkdir()
     (repo_b / ".git").mkdir()
-    (repo_b / "pyproject.toml").write_text("[project]\nname='b'\n")
+    (repo_b / "pyproject.toml").write_text("[project]\nname='b'\n", encoding="utf-8")
     a_src = repo_a / "x.py"
-    a_src.write_text("")
+    a_src.write_text("", encoding="utf-8")
     b_src = repo_b / "x.py"
-    b_src.write_text("")
+    b_src.write_text("", encoding="utf-8")
 
     monkeypatch.chdir(str(repo_a))
     svc = LSPService(
@@ -80,7 +81,7 @@ def test_unrelated_project_not_affected_by_broken(tmp_path, monkeypatch):
 def test_mark_broken_handles_no_workspace_silently(tmp_path):
     """File outside any git worktree → no workspace → no key to add."""
     src = tmp_path / "orphan.py"
-    src.write_text("")
+    src.write_text("", encoding="utf-8")
     svc = LSPService(
         enabled=True,
         wait_mode="document",
@@ -101,7 +102,7 @@ def test_snapshot_failure_marks_broken_via_outer_timeout(tmp_path, monkeypatch):
     repo = _make_git_workspace(tmp_path)
     monkeypatch.chdir(str(repo))
     src = repo / "x.py"
-    src.write_text("")
+    src.write_text("", encoding="utf-8")
 
     svc = LSPService(
         enabled=True,
@@ -133,7 +134,7 @@ def test_skipped_request_on_broken_root_is_logged_at_info(tmp_path, monkeypatch,
 
     repo = _make_git_workspace(tmp_path)
     src = repo / "x.py"
-    src.write_text("")
+    src.write_text("", encoding="utf-8")
     monkeypatch.chdir(str(repo))
     eventlog.reset_announce_caches()
     svc = LSPService(enabled=True, wait_mode="document", wait_timeout=2.0, install_strategy="manual")
@@ -147,3 +148,30 @@ def test_skipped_request_on_broken_root_is_logged_at_info(tmp_path, monkeypatch,
     skipped = [r for r in caplog.records if "marked broken" in r.getMessage()]
     assert [r.levelname for r in skipped] == ["INFO"]  # once per root; the repeat is DEBUG
     assert str(repo) in skipped[0].getMessage() and "x.py" in skipped[0].getMessage()
+
+
+def test_broken_root_is_retried_after_broken_retry_seconds(tmp_path, monkeypatch):
+    """With ``lsp.broken_retry_seconds`` set, a root poisoned by one outer-timeout failure on the pre-write
+    path is re-tried once the window passes instead of staying dark for the process lifetime (#116446).
+    The default (0) keeps the lifetime behaviour."""
+    repo = _make_git_workspace(tmp_path)
+    monkeypatch.chdir(str(repo))
+    src = repo / "x.py"
+    src.write_text("", encoding="utf-8")
+    cfg = {"lsp": {"wait_timeout": 1.0, "install_strategy": "manual", "broken_retry_seconds": 0.2}}
+    with patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+        svc = LSPService.create_from_config()
+    assert svc is not None
+    try:
+        async def boom(*_a, **_k):
+            raise RuntimeError("outer-timeout simulated")
+
+        with patch.object(svc, "_snapshot_async", boom):
+            svc.snapshot_baseline(str(src))
+        assert svc.enabled_for(str(src)) is False
+        assert ("pyright", str(repo)) in svc.get_status()["broken"]
+        time.sleep(0.3)
+        assert svc.enabled_for(str(src)) is True
+        assert svc.get_status()["broken"] == []
+    finally:
+        svc.shutdown()

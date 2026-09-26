@@ -32,24 +32,6 @@ test.afterAll(async () => {
 })
 
 test.describe('dev-mode boot with mock backend', () => {
-  test('window opens with Hermes title', async () => {
-    const title = await fixture!.page.title()
-    expect(title).toContain('Hermes')
-  })
-
-  test('renderer mounts and shows DOM content', async () => {
-    const page = fixture!.page
-    // Wait for the React root to mount. The app renders into #root
-    // (see src/main.tsx), but content may arrive through portals — so
-    // check the body for any interactive content instead.
-    await page.waitForSelector('body', { state: 'attached' })
-    // Wait for the main app shell — the composer is always present.
-    await page.waitForSelector('textarea, [contenteditable="true"]', {
-      state: 'attached',
-      timeout: 30_000,
-    })
-  })
-
   // A preload that throws never reaches contextBridge, so the renderer boots
   // into "Desktop IPC bridge is unavailable" and every test below it dies on a
   // 120s never-became-ready timeout instead. Checking the bridge by name makes

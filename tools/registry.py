@@ -8,6 +8,7 @@ model_tools."""
 import ast
 import functools
 import importlib
+import inspect
 import json
 import logging
 import sys
@@ -17,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
 
-from hermes_constants import hermes_home_key
+from hermes_constants import hermes_home_key, normalize_scope
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +71,7 @@ def _module_registers_tools(module_path: Path) -> bool:
     Only module-body statements count, so helpers registering inside a function are skipped;
     a text prefilter avoids ``ast.parse`` for files lacking both words."""
     try:
-        source = module_path.read_text(encoding="utf-8")
+        source = module_path.read_text(encoding="utf-8-sig")
         if "registry" not in source or "register" not in source:
             return False
         tree = ast.parse(source, filename=str(module_path))
@@ -156,7 +157,7 @@ def _load_discovery_cache() -> Dict[str, list]:
     if path is None:
         return {}
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, "r", encoding="utf-8-sig") as fh:
             data = json.load(fh)
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
@@ -456,6 +457,7 @@ class ToolRegistry:
 
     def _slot(self, scope: Optional[str], *, create: bool = False) -> Dict[str, ToolEntry]:
         """The registration map for *scope*: global when None, else that profile's overlay."""
+        scope = normalize_scope(scope)
         if scope is None:
             return self._tools
         if create:
@@ -468,7 +470,7 @@ class ToolRegistry:
 
     def _merged_tools(self, scope: Optional[str] = None) -> Dict[str, ToolEntry]:
         """Return global tools overlaid with one profile's plugin tools."""
-        return {**self._tools, **self._scoped_tools.get(scope or self.current_scope_key(), {})}
+        return {**self._tools, **self._scoped_tools.get(hermes_home_key(scope), {})}
 
     def _toolset_entries(self, toolset: str, scope: Optional[str]) -> List[ToolEntry]:
         return self._grouped(self._merged_tools(scope).values()).get(toolset, [])
@@ -497,7 +499,14 @@ class ToolRegistry:
     def get_entry(self, name: str, *, scope: Optional[str] = None) -> Optional[ToolEntry]:
         """Active profile's entry by name, falling back to global."""
         with self._lock:
-            return self._merged_tools(scope).get(name)
+            return self._lookup(name, scope or self.current_scope_key())
+
+    def _lookup(self, name: str, scope_key: Optional[str]) -> Optional[ToolEntry]:
+        """``_merged_tools(scope_key).get(name)`` without building the merged dict."""
+        scoped = self._scoped_tools.get(scope_key)
+        if scoped is not None and name in scoped:
+            return scoped[name]
+        return self._tools.get(name)
 
     def snapshot_registration(
         self, name: str, *, scope: Optional[str] = None) -> Optional[ToolEntry]:
@@ -540,6 +549,7 @@ class ToolRegistry:
     ) -> _PluginOverridePolicy:
         """Bind a plugin module namespace to its current operator opt-in. The identity-bearing
         result lets unload/reload revoke a stale authorization without losing attribution."""
+        scope = normalize_scope(scope)
         with self._lock:
             policy = _PluginOverridePolicy(allowed)
             self._plugin_override_policy[(scope, module_namespace)] = policy
@@ -550,6 +560,7 @@ class ToolRegistry:
         self, module_namespace: str, *, scope: Optional[str] = None,
     ) -> Optional[_PluginOverridePolicy]:
         """Return one local authorization generation without fallback."""
+        scope = normalize_scope(scope)
         with self._lock:
             return self._plugin_override_policy.get((scope, module_namespace))
 
@@ -557,6 +568,7 @@ class ToolRegistry:
         self, module_namespace: str, current: _PluginOverridePolicy,
         previous: Optional[_PluginOverridePolicy], *, scope: Optional[str] = None) -> bool:
         """CAS-restore policy state while retaining durable scope attribution."""
+        scope = normalize_scope(scope)
         with self._lock:
             key = (scope, module_namespace)
             if self._plugin_override_policy.get(key) is not current:
@@ -676,9 +688,10 @@ class ToolRegistry:
         owner = caller_owner or handler_owner
         if scope is None and owner is not None:
             scope = self._plugin_scope_of(owner)
+        scope = normalize_scope(scope)
         with self._lock:
             target = self._slot(scope, create=True)
-            existing = (self._tools if scope is None else self._merged_tools(scope)).get(name)
+            existing = self._lookup(name, scope)
             plugin_override_denied = (
                 owner is not None and not self._plugin_override_allowed(scope, owner))
             shadows_global = (
@@ -738,6 +751,7 @@ class ToolRegistry:
         ``register(override=True)``, else a plugin could deregister a tool it doesn't own
         and re-register over the empty slot (the override check only runs when an entry
         exists). ``mcp-*`` toolsets are exempt — discovery repaves its own tools per refresh."""
+        scope = normalize_scope(scope)
         with self._lock:
             caller_mod = self._caller_module()
             caller_owner = self._plugin_namespace_of_module(caller_mod)
@@ -884,6 +898,10 @@ class ToolRegistry:
         if not entry:
             return tool_error(f"Unknown tool: {name}")
         try:
+            # Plugin contract (plugins/AGENTS.md): optional context kwargs (task_id, session_id, user_task,
+            # parent_agent, ...) are signature-inspected like hook payloads, so a narrow ``handle(args)``
+            # plugin handler is not broken by every field the dispatcher injects (#68318).
+            kwargs = _kwargs_accepted_by(entry.handler, kwargs)
             if entry.is_async:
                 from model_tools import _run_async
                 result = _run_async(entry.handler(args, **kwargs))
@@ -1010,3 +1028,16 @@ def tool_error(message, **extra) -> str:
 def tool_result(data=None, **kwargs) -> str:
     """JSON-encode a dict positional arg *or* keyword arguments (not both)."""
     return json.dumps(data if data is not None else kwargs, ensure_ascii=False)
+
+
+def _kwargs_accepted_by(handler: Callable, kwargs: dict) -> dict:
+    """*kwargs* narrowed to what *handler*'s signature declares; everything when it takes ``**kwargs`` or
+    cannot be introspected (builtins, some C callables)."""
+    try:
+        parameters = inspect.signature(handler).parameters
+    except (TypeError, ValueError):
+        return kwargs
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+        return kwargs
+    keyword_kinds = {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
+    return {k: v for k, v in kwargs.items() if k in parameters and parameters[k].kind in keyword_kinds}

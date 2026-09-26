@@ -39,6 +39,7 @@ from hermes_cli.web_server_profiles import (
     _fallback_profile_dicts, _hub_action_name, _write_profile_mcp_servers,
 )
 from hermes_cli.web_server_sessions import _open_session_db_at_path
+from hermes_state_health import STORAGE_CORRUPT, note_storage_error, storage_state
 from starlette.concurrency import run_in_threadpool
 from hermes_cli.web_models import (
     ProfileCreate, ProfileActiveUpdate, ProfileExport, ProfileImport, ProfileRename,
@@ -49,9 +50,11 @@ from hermes_cli.web_server_profiles import _config_profile_scope, _hermes_home_s
 # Same logger the handlers used before extraction (identical logger object).
 _log = logging.getLogger("hermes_cli.web_server")
 
-# Per-profile session reads report failures only in the response's ``errors`` array, which
-# the desktop sidebar does not surface. Warn once per (profile, message) per process so a
-# persistent failure is loud in errors.log without turning every sidebar poll into spam.
+# A per-profile read failure is not an empty session list. The sidebar slice for
+# that profile is a failed load (``failed`` + ``retry``) so Desktop can offer Retry
+# instead of "No sessions yet". A successful read of zero rows still returns
+# ``sessions: []``. Warn once per (profile, message) per process so a persistent
+# failure is loud in errors.log without turning every sidebar poll into spam.
 _profile_read_warned: set = set()
 
 
@@ -92,7 +95,7 @@ def _profile_to_dict(info) -> Dict[str, Any]:
         "distribution_name": attr("distribution_name", None),
         "distribution_version": attr("distribution_version", None),
         "distribution_source": attr("distribution_source", None),
-        "has_alias": attr("alias_path", None) is not None}
+        "has_alias": attr("alias_path", None) is not None, "role": attr("role", None)}
 
 
 def _profile_setup_command(name: str) -> str:
@@ -214,7 +217,7 @@ def _profile_targets(log_label: str) -> List[Tuple[str, Path]]:
     fan-out that only needs name/path (#114041)."""
     from hermes_cli import profiles as profiles_mod
     try:
-        targets = list(profiles_mod.profiles_to_serve(multiplex=True))
+        targets = list(profiles_mod.profiles_to_serve(multiplex=True, include_standalone=True, include_parked=True))
     except Exception:
         _log.exception("%s: profile enumeration failed", log_label)
         targets = []
@@ -268,6 +271,8 @@ def _read_profile_db(name: str, home, errors: Optional[List[Dict[str, str]]],
         db = _open_session_db_at_path(db_path, read_only=True)
         return fn(db)
     except Exception as exc:
+        # An open that dies on a damaged file never reaches SessionDB's read helpers.
+        note_storage_error(db_path, exc)
         _warn_profile_read_error(name, exc)
         if errors is not None:
             errors.append({"profile": name, "error": str(exc)})
@@ -275,6 +280,14 @@ def _read_profile_db(name: str, home, errors: Optional[List[Dict[str, str]]],
     finally:
         if db is not None:
             db.close()
+
+
+def _corrupt_profile_stores(targets) -> Dict[str, str]:
+    """``{profile: "corrupt"}`` for every scanned profile whose state.db this process has latched
+    as structurally corrupt (``hermes_state_health``). Lets Desktop tell an empty or partial list
+    from a damaged store, including when some reads still succeed (#72046)."""
+    return {name: STORAGE_CORRUPT for name, home in targets
+            if storage_state(Path(home) / "state.db") == STORAGE_CORRUPT}
 
 
 # Sidebar scan cache TTL: short enough that the UI never shows meaningfully stale data, long
@@ -327,6 +340,44 @@ def _sidebar_profile_cache_put(key, value):
 def _sidebar_profile_cache_clear():
     with _SIDEBAR_PROFILE_CACHE_LOCK:
         _SIDEBAR_PROFILE_CACHE.clear()
+
+
+def _sidebar_profile_cache_drop(key) -> None:
+    with _SIDEBAR_PROFILE_CACHE_LOCK:
+        _SIDEBAR_PROFILE_CACHE.pop(key, None)
+
+
+def _profile_state_db(home) -> Path:
+    return Path(home) / "state.db"
+
+
+def _profile_heal_exhausted(home) -> bool:
+    """True when the one-shot writable heal already gave up on this store."""
+    from hermes_cli.web_server_sessions import _session_db_heal_exhausted
+
+    return str(_profile_state_db(home)) in _session_db_heal_exhausted
+
+
+def _slice_has_rows(slices: Dict[str, Any]) -> bool:
+    return any(slices.get(key) for key in ("recents", "cron", "messaging"))
+
+
+def _retryable_profile_errors(errors: List[Dict[str, str]], scanned) -> List[Dict[str, str]]:
+    """Scan failures Retry can re-attempt. A latched corrupt store has its own notice."""
+    corrupt = set(_corrupt_profile_stores(scanned))
+    return [dict(err) for err in errors if err.get("profile") not in corrupt]
+
+
+def _failed_load_slice(errors: List[Dict[str, str]], **extra) -> Dict[str, Any]:
+    """Failed load: no ``sessions`` key. An empty list would read as data loss."""
+    return {"failed": True, "retry": True, "errors": [dict(err) for err in errors], **extra}
+
+
+def _profiles_failed(errors: List[Dict[str, str]]) -> Dict[str, Dict[str, Any]]:
+    return {
+        err["profile"]: {"failed": True, "retry": True, "error": err.get("error", "")}
+        for err in errors if err.get("profile")
+    }
 
 
 def _sidebar_singleflight_cache(func):
@@ -447,7 +498,8 @@ def get_profiles_sessions(
     if not full:
         _strip_session_list_rows(window)
     return {"sessions": window, "total": sum(totals.values()), "profile_totals": totals,
-            "limit": limit, "offset": offset, "errors": errors}
+            "limit": limit, "offset": offset, "errors": errors,
+            "storage": _corrupt_profile_stores(targets)}
 
 
 @sessions_router.get("/api/profiles/sessions/sidebar")
@@ -499,10 +551,13 @@ def get_profiles_sessions_sidebar(
         _sidebar_profile_cache_put(cache_key, slices)
         return slices
 
+    scanned = []
+    contributed: set = set()
     for name, home in targets:
         if recents_scope != "all" and name != recents_scope:
             continue
-        db_path = Path(home) / "state.db"
+        scanned.append((name, home))
+        db_path = _profile_state_db(home)
         if not db_path.exists():
             continue
         profile_cache_key = (str(db_path), _sidebar_db_fingerprint(db_path), cap["recents"],
@@ -514,6 +569,19 @@ def get_profiles_sessions_sidebar(
                                       lambda db: _build_slices(db, profile_cache_key))
             if slices is None:
                 continue
+        # Heal already gave up and this read found no rows. That is not "no
+        # sessions" — the probe-less open can miss the schema the list needs.
+        # Drop the cached empty page so the next poll does not reuse the lie.
+        if _profile_heal_exhausted(home) and not _slice_has_rows(slices):
+            _sidebar_profile_cache_drop(profile_cache_key)
+            if not any(err.get("profile") == name for err in errors):
+                errors.append({
+                    "profile": name,
+                    "error": "schema heal exhausted; session list unavailable",
+                })
+            continue
+        if _slice_has_rows(slices):
+            contributed.add(name)
         # A full window means more rows remain on disk — all "load more" needs, at no cost
         # beyond the rows already read. Pinned rows count: they occupy LIMIT slots, and a
         # short list has nothing past the page for the pin back-fill to add, so pins cannot
@@ -529,12 +597,47 @@ def get_profiles_sessions_sidebar(
         _strip_session_list_rows(win)
         return win
 
-    return {
+    storage = _corrupt_profile_stores(scanned)
+    retryable = _retryable_profile_errors(errors, scanned)
+    failed_names = {err["profile"] for err in retryable if err.get("profile")}
+    corrupt = set(storage)
+    live = [name for name, _home in scanned if name not in corrupt]
+    scoped_failed = (
+        recents_scope != "all"
+        and recents_scope in failed_names
+        and recents_scope not in contributed
+    )
+    all_failed = (
+        recents_scope == "all"
+        and bool(live)
+        and not contributed
+        and all(name in failed_names for name in live)
+    )
+    if scoped_failed or all_failed:
+        # The whole answer is this profile's (or every profile's) failed scan.
+        # Do not include ``sessions``: an empty list is a successful read.
+        return {
+            "recents": _failed_load_slice(
+                retryable, profiles_truncated={}, profiles_usage={}),
+            "cron": _failed_load_slice(retryable),
+            "messaging": _failed_load_slice(retryable, total=0),
+            "errors": errors, "storage": storage}
+
+    body = {
         "recents": {"sessions": _window("recents"), "profiles_truncated": recents_truncated,
                     "profiles_usage": profile_totals},
         "cron": {"sessions": _window("cron")},
         "messaging": {"sessions": _window("messaging"), "total": len(rows["messaging"])},
-        "errors": errors}
+        "errors": errors, "storage": storage}
+    # A sibling profile still listed does not make the failed profile's absence
+    # a successful empty slice. Stamp that profile as a failed load with Retry.
+    failed = _profiles_failed(retryable)
+    if failed:
+        body["profiles_failed"] = failed
+        for key in ("recents", "cron", "messaging"):
+            body[key]["profiles_failed"] = failed
+            body[key]["errors"] = [dict(err) for err in retryable]
+    return body
 
 
 def _merge_by_id(into: Dict[str, Dict[str, Any]], entries: List[Dict[str, Any]], child_key: str) -> None:
@@ -876,12 +979,11 @@ async def delete_profile_endpoint(name: str):
 @router.get("/api/profiles/{name}/soul")
 async def get_profile_soul(name: str):
     soul_path = _resolve_profile_dir(name) / "SOUL.md"
-
     def _run():
         # Probe and read in one hop (two round-trips would widen the check/read window).
         if not soul_path.exists():
             return _MISSING
-        return soul_path.read_text(encoding="utf-8")
+        return soul_path.read_text(encoding="utf-8-sig")
 
     content = await _read_off_loop(_run, "SOUL.md", OSError)
     if content is _MISSING:
@@ -968,7 +1070,7 @@ async def describe_profile_auto_endpoint(name: str, body: ProfileDescribeAuto):
 def _read_desktop_overlay(profile_dir: Path) -> Any:
     """The desktop appearance overlay bundled with an imported profile
     (``desktop.json`` at the profile root); raises when unreadable."""
-    return json.loads((profile_dir / "desktop.json").read_text(encoding="utf-8"))
+    return json.loads((profile_dir / "desktop.json").read_text(encoding="utf-8-sig"))
 
 
 @router.post("/api/profiles/{name}/export")
@@ -1010,7 +1112,8 @@ async def import_profile_endpoint(body: ProfileImport):
 
     # Bundled desktop appearance overlay, so the desktop needn't make another round-trip.
     desktop_overlay = None
-    if (profile_dir / "desktop.json").is_file():
+    overlay_path = profile_dir / "desktop.json"
+    if overlay_path.is_file():
         desktop_overlay = _best_effort(
             "Reading desktop.json from imported profile %s failed", imported,
             fn=lambda: _read_desktop_overlay(profile_dir))

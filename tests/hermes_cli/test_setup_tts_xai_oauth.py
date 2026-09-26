@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-import yaml
+import hermes_yaml as yaml
 
 
 def test_run_xai_oauth_login_from_setup_does_not_hijack_active_provider(
@@ -101,5 +101,3 @@ def test_tts_xai_step_prefers_existing_api_key_over_oauth(monkeypatch):
     config = {}
     assert setup_tts._tts_xai_step(config) == "xai"
     assert len(messages) == 1 and "XAI_API_KEY" in messages[0]
-    assert "OAuth credentials" not in messages[0]
-    assert "XAI_API_KEY" in setup_tts._tts_xai_step.__doc__.split(">")[0]

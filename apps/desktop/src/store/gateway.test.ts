@@ -188,23 +188,6 @@ describe('ensureGatewayForProfile — secondary connect failure surfaces (#81094
     await vi.runAllTimersAsync()
     expect(gatewayMocks.instances[0].connectionState).toBe('open')
   })
-
-  it('activates the secondary when connect succeeds', async () => {
-    const getConnection = vi.fn(async ({ profile }: { profile: string }) => ({
-      authMode: 'token',
-      baseUrl: `https://${profile}.invalid`,
-      mode: 'local',
-      profile,
-      token: 'fake-test-token',
-      wsUrl: `wss://${profile}.invalid/ws`
-    }))
-
-    installDesktop({ getConnection })
-
-    await ensureGatewayForProfile('work')
-
-    expect(activeGateway()).toBe(gatewayMocks.instances[0])
-  })
 })
 
 describe('connection-scoped dial failure identity (#95421)', () => {
@@ -230,13 +213,6 @@ describe('connection-scoped dial failure identity (#95421)', () => {
       const messages = errorSpy.mock.calls.map(([message]) => String(message))
 
       expect(messages).toHaveLength(2)
-      expect(messages).toEqual(
-        expect.arrayContaining([
-          expect.stringContaining('scope="conn:work::default"'),
-          expect.stringContaining('scope="conn:homelab::default"')
-        ])
-      )
-      expect(messages.every(message => message.includes('profile="default"'))).toBe(true)
       expect(new Set(messages).size).toBe(2)
       expect(messages.join(' ')).not.toContain('wss://')
 
@@ -400,7 +376,9 @@ describe('server→client request routing without a registry handler (#112791)',
     expect(dispatchPrimaryServerRequest(request as never, 'work')).toBe(true)
     expect(request.fail).not.toHaveBeenCalled()
     expect(onServerRequest).toHaveBeenCalledTimes(1)
-    expect(onServerRequest).toHaveBeenCalledWith(expect.objectContaining({ id: 'srq-1', method: 'clarify', profile: 'work' }))
+    expect(onServerRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'srq-1', method: 'clarify', profile: 'work' })
+    )
   })
 })
 

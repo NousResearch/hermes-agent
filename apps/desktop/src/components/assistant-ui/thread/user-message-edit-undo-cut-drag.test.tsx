@@ -6,7 +6,12 @@
 // insertFromDrop input types at all — so handleBeforeInput cannot bank the
 // pre-edit snapshot for them. Undo then skips the cut entirely or steps a
 // paste back only to the post-cut state, the two gaps reported in #115462.
-import { type AppendMessage, AssistantRuntimeProvider, ExportedMessageRepository, type ThreadMessage } from '@assistant-ui/react'
+import {
+  type AppendMessage,
+  AssistantRuntimeProvider,
+  ExportedMessageRepository,
+  type ThreadMessage
+} from '@assistant-ui/react'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 

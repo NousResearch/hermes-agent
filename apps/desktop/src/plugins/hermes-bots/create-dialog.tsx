@@ -111,11 +111,13 @@ interface CapabilityCatalog {
 }
 interface CreateAgentDialogProps {
   onClose: () => void
+  /** Opens the editor for a just-created local bot whose model is not ready. */
+  onConfigureModel?: (bot: RosterRow) => void
   open: boolean
   roster: RosterRow[]
 }
 
-export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogProps) {
+export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: CreateAgentDialogProps) {
   const { t } = useI18n()
   const b = useBots()
   const [name, setName] = useState('')
@@ -141,7 +143,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
   const [provider, setProvider] = useState('')
   const [soul, setSoul] = useState('')
   const [noSkills, setNoSkills] = useState(false)
-  const [mirrorCredentials, setMirrorCredentials] = useState(true)
+  const [shareAuth, setShareAuth] = useState(true)
   const [advTab, setAdvTab] = useState('general')
   // Where the profile is created: '' = the active gateway (unchanged default),
   // else a registry connection id — the profiles.create lands on THAT
@@ -211,6 +213,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<null | string>(null)
   const { slug, title: botTitle } = botProfileIdentity(name, title)
+  const descriptionText = [botTitle, description].filter(Boolean).join(' — ')
   const valid = slug.length > 0 && NAME_RE.test(slug)
 
   // Once the draft profile is materialized (Capabilities tab / MCP setup) it
@@ -274,7 +277,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
     setProvider('')
     setSoul('')
     setNoSkills(false)
-    setMirrorCredentials(true)
+    setShareAuth(true)
     setAdvTab('general')
     setCreatedForCaps(null)
     setCaps(null)
@@ -382,7 +385,6 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
         return null
       }
 
-      const descriptionText = [botTitle, description].filter(Boolean).join(' — ')
       await requestForTarget('profiles.create', {
         name: slug,
         description: descriptionText,
@@ -392,10 +394,10 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
         // the remote box doesn't have.
         clone_from: cloneFrom === '__none__' ? null : remoteTarget ? 'default' : cloneFrom,
         no_skills: noSkills,
-        // Copies the main profile's API keys (.env + auth.json) into the new profile. OAuth
-        // logins are never copied (single-use refresh tokens fork) and never inherited: a
-        // profile only reads its own auth.json, so sign the bot in itself for those.
-        mirror_credentials: mirrorCredentials,
+        // Shared (not copied) auth keeps ONE OAuth/token pool with the main
+        // profile, so refreshes can't invalidate each other. Older gateways
+        // ignore the param and copy — still functional, just forked.
+        share_auth: shareAuth,
         soul: composeSoul({
           name: slug,
           title: botTitle,
@@ -509,23 +511,43 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
 
       if (!slugCreated) {
         setBusy(false)
-        setError('Could not create the bot.')
+        setError(b.bot.createFailed)
 
         return
       }
 
-      host.notify({
-        kind: 'success',
-        message: remoteTarget
-          ? `Bot "${displayName({
-              name: slug,
-              title: botTitle
-            })}" created on ${targetLabel}`
-          : `Bot "${displayName({
-              name: slug,
-              title: botTitle
-            })}" created`
-      })
+      // The intro turn is a real model call. Probe the new profile's route
+      // first so a bot whose machine has no usable credential lands as
+      // "created, needs a model" instead of a doomed "No LLM provider" turn.
+      // Only an explicit `ok: false` counts; older gateways proceed as before.
+      const readiness = await requestForTarget<{ error?: string; ok?: boolean }>('setup.runtime_check', {
+        profile: slugCreated
+      }).catch(() => null)
+
+      const needsModel = readiness?.ok === false
+      const who = displayName({ name: slug, title: botTitle })
+      const createdMessage = remoteTarget ? b.editor.createdOn(who, targetLabel) : b.editor.created(who)
+
+      const bot: RosterRow = {
+        name: slugCreated,
+        description: descriptionText,
+        title: botTitle,
+        ...(remoteTarget ? { connectionId: targetConnection, remoteSource: true } : {})
+      }
+
+      host.notify(
+        needsModel
+          ? {
+              kind: 'warning',
+              title: createdMessage,
+              message: b.editor.needsModel,
+              detail: readiness?.error,
+              ...(!remoteTarget && onConfigureModel
+                ? { action: { label: b.editor.configureModel, onClick: () => onConfigureModel(bot) } }
+                : {})
+            }
+          : { kind: 'success', message: createdMessage }
+      )
       const wasRemote = remoteTarget
       reset()
       onClose()
@@ -551,7 +573,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
         // Agent creation. Click-path resolution (openBotCanonicalChat) mints
         // silently so a resolution miss never burns a turn (ScottFive).
         const sid = await createCanonicalChat(slug, {
-          kickoff: true
+          kickoff: !needsModel
         })
 
         if (!sid && typeof host.newChat === 'function') {
@@ -600,9 +622,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
       >
         <DialogHeader>
           <DialogTitle>{b.bot.newTitle}</DialogTitle>
-          <DialogDescription>
-            A named teammate with its own memory, skills, and chat. It can message your other agents.
-          </DialogDescription>
+          <DialogDescription>{b.editor.newDescription}</DialogDescription>
         </DialogHeader>
         <div className="grid gap-3.5">
           <div className="flex justify-center py-1">
@@ -628,14 +648,12 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
             shape={shape}
           />
           {labeled(
-            'Name',
+            b.editor.name,
             <Input autoFocus onChange={event => setName(event.target.value)} placeholder="inbox-triage" value={name} />
           )}
           {taken ? (
             <div className="text-xs text-(--ui-accent)">
-              {remoteTarget
-                ? `An agent named "${slug}" already exists on ${targetLabel}.`
-                : `An agent named "${slug}" already exists.`}
+              {remoteTarget ? b.editor.nameTakenOn(slug, targetLabel) : b.editor.nameTaken(slug)}
             </div>
           ) : null}
           {/* Multi-connection desktops choose WHERE the agent lives. Hidden */
@@ -643,7 +661,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
           /* possible home, exactly the old behavior. */}
           {Array.isArray(connections) && connections.length > 1
             ? labeled(
-                'Create on',
+                b.editor.createOn,
                 <Select
                   onValueChange={value => {
                     setTargetConnection(value === (activeConnectionId || 'local') ? '' : value)
@@ -664,7 +682,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                     {connections.map(connection => (
                       <SelectItem key={connection.id} value={connection.id}>
                         {connection.id === (activeConnectionId || 'local')
-                          ? `${connection.label || connection.id} (current)`
+                          ? b.editor.currentConnection(connection.label || connection.id)
                           : connection.label || connection.id}
                       </SelectItem>
                     ))}
@@ -673,14 +691,14 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
               )
             : null}
           {remoteTarget ? (
-            <div className="text-[0.7rem] leading-5 text-(--ui-text-tertiary)">{`The agent is created on ${targetLabel} and appears in the roster as a Connections bot. Chat routes to that machine.`}</div>
+            <div className="text-[0.7rem] leading-5 text-(--ui-text-tertiary)">{b.editor.remoteHint(targetLabel)}</div>
           ) : null}
           {labeled(
-            'Title',
+            b.editor.title,
             <Input onChange={event => setTitle(event.target.value)} placeholder="Inbox Triage" value={title} />
           )}
           {labeled(
-            'Description',
+            b.editor.description,
             <Textarea
               className="min-h-16"
               onChange={event => setDescription(event.target.value)}
@@ -726,13 +744,13 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                 options={
                   CapabilitiesView && (!remoteTarget || capabilitiesViewRoutesConnections)
                     ? [
-                        { id: 'general', label: 'General' },
-                        { id: 'capabilities', label: 'Capabilities' }
+                        { id: 'general', label: b.editor.general },
+                        { id: 'capabilities', label: b.editor.capabilities }
                       ]
                     : [
-                        { id: 'general', label: 'General' },
-                        { id: 'skills', label: 'Skills' },
-                        { id: 'toolsets', label: 'Tools' },
+                        { id: 'general', label: b.editor.general },
+                        { id: 'skills', label: b.editor.skills },
+                        { id: 'toolsets', label: b.editor.tools },
                         { id: 'mcp', label: 'MCP' }
                       ]
                 }
@@ -741,7 +759,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
               {advTab === 'general' ? (
                 <div className="grid gap-3.5">
                   {labeled(
-                    remoteTarget ? `Clone from profile (on ${targetLabel})` : 'Clone from profile',
+                    remoteTarget ? b.editor.cloneFromOn(targetLabel) : b.editor.cloneFrom,
                     <Select
                       onValueChange={value => {
                         setCloneFrom(value)
@@ -754,7 +772,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="__none__">Fresh profile (bundled skills)</SelectItem>
+                        <SelectItem value="__none__">{b.editor.freshProfile}</SelectItem>
                         {/* The roster lists THIS window's profiles; the only clone
                             source guaranteed to exist on another machine is its
                             own default, so a remote target offers that or fresh. */}
@@ -776,14 +794,14 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                         setModel(patch.model)
                       }
                     }}
-                    placeholderModel="inherited from launch profile"
+                    placeholderModel={b.editor.inheritedModel}
                     value={{
                       provider,
                       model
                     }}
                   />
                   {labeled(
-                    'SOUL.md (optional — replaces the generated persona)',
+                    b.editor.soul,
                     <Textarea
                       className="min-h-24 font-mono text-xs leading-5"
                       onChange={event => setSoul(event.target.value)}
@@ -792,28 +810,21 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                     />
                   )}
                   <label className="flex items-center gap-2 text-xs text-(--ui-text-secondary)">
-                    <Checkbox
-                      checked={mirrorCredentials}
-                      onCheckedChange={value => setMirrorCredentials(Boolean(value))}
-                    />
-                    Copy API keys from the main profile
+                    <Checkbox checked={shareAuth} onCheckedChange={value => setShareAuth(Boolean(value))} />
+                    {remoteTarget ? b.editor.shareKeysOn(targetLabel) : b.editor.shareKeys}
                   </label>
                   <div className="pl-6 pt-0.5 text-[0.7rem] leading-5 text-(--ui-text-tertiary)">
-                    Each profile owns its credentials. API keys are copied; OAuth logins (Claude, Codex, xAI, Nous)
-                    are not — sign the bot in with <code>hermes -p &lt;name&gt; model</code>. Uncheck to start with
-                    no credentials.
+                    {b.editor.shareKeysHint}
                   </div>
                   <label className="flex items-center gap-2 text-xs text-(--ui-text-secondary)">
                     <Checkbox checked={noSkills} onCheckedChange={value => setNoSkills(Boolean(value))} />
-                    Create empty (skip bundled skills)
+                    {b.editor.createEmpty}
                   </label>
                 </div>
               ) : advTab === 'capabilities' ? (
                 !valid || taken ? (
                   <div className="px-2 py-3 text-center text-xs text-(--ui-text-tertiary)">
-                    {taken
-                      ? 'That name is taken — pick another before configuring capabilities.'
-                      : 'Name the bot first — a draft profile is created when you open this tab (discarded if you cancel).'}
+                    {taken ? b.editor.nameTakenHint : b.editor.nameFirstHint}
                   </div>
                 ) : !createdForCaps ? (
                   <div className="flex justify-center py-4">
@@ -836,14 +847,10 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                   // reachable via persisted tab state on a build that lacks it
                   // — a message rather than rendering `undefined` as a
                   // component, which throws.
-                  <div className="px-2 py-3 text-center text-xs text-(--ui-text-tertiary)">
-                    Skills need a newer Hermes Desktop.
-                  </div>
+                  <div className="px-2 py-3 text-center text-xs text-(--ui-text-tertiary)">{b.editor.newerDesktop}</div>
                 )
               ) : capsFailed ? (
-                <div className="px-2 py-3 text-center text-xs text-(--ui-text-tertiary)">
-                  Capability catalog needs a newer gateway (restart it after updating Hermes).
-                </div>
+                <div className="px-2 py-3 text-center text-xs text-(--ui-text-tertiary)">{b.editor.newerGateway}</div>
               ) : !caps ? (
                 <div className="flex justify-center py-4">
                   <GlyphSpinner className="text-(--ui-text-tertiary)" spinner="breathe" />
@@ -851,7 +858,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
               ) : advTab === 'skills' ? (
                 noSkills ? (
                   <div className="px-2 py-3 text-center text-xs text-(--ui-text-tertiary)">
-                    “Create empty” is checked — no bundled skills will be installed.
+                    {b.editor.emptySkillsHint}
                   </div>
                 ) : (
                   <div className="grid gap-1.5">
@@ -877,7 +884,9 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                         onToggle={(name, enabled) => toggleCap('skills', name, enabled)}
                       />
                     </div>
-                    <div className="text-[0.65rem] leading-4 text-(--ui-text-quaternary)">{`Catalog from ${caps.source} — unchecked skills are disabled after creation.`}</div>
+                    <div className="text-[0.65rem] leading-4 text-(--ui-text-quaternary)">
+                      {b.editor.catalogHint(caps.source)}
+                    </div>
                     <HubSkillsSection
                       onInstalled={name =>
                         setCaps(prev =>
@@ -913,7 +922,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                     />
                   </div>
                   <div className="text-[0.65rem] leading-4 text-(--ui-text-quaternary)">
-                    Leaving all (or none) checked keeps the default toolset behavior.
+                    {b.editor.defaultToolsHint}
                   </div>
                 </div>
               ) : caps.mcp.length === 0 ? (
@@ -944,7 +953,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                               <span>{m.name}</span>
                               {m.fromCatalog && !needsSetup ? (
                                 <span className="ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)">
-                                  {m.installed ? 'catalog · installed' : 'catalog'}
+                                  {m.installed ? b.editor.catalogInstalled : b.editor.catalog}
                                 </span>
                               ) : null}
                               {needsSetup ? (
@@ -989,10 +998,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                       })}
                     </div>
                   </div>
-                  <div className="text-[0.65rem] leading-4 text-(--ui-text-quaternary)">
-                    Configured servers copy from the main profile; catalog entries are the bundled MCP menu. Entries
-                    needing API keys route through setup first (credentials follow the shared keys setting).
-                  </div>
+                  <div className="text-[0.65rem] leading-4 text-(--ui-text-quaternary)">{b.editor.mcpHint}</div>
                 </div>
               )}
             </div>
@@ -1016,7 +1022,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
             {t.common.cancel}
           </Button>
           <Button disabled={busy || !valid || taken} onClick={submit}>
-            {busy ? 'Creating…' : 'Create Bot'}
+            {busy ? b.editor.creating : b.editor.createBot}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -1351,7 +1357,10 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
           <Button onClick={onClose} variant="secondary">
             {t.common.cancel}
           </Button>
-          <Button disabled={!canCreate} onClick={create}>{`Create Group${selected.length ? ` (${selected.length})` : ''}`}</Button>
+          <Button
+            disabled={!canCreate}
+            onClick={create}
+          >{`Create Group${selected.length ? ` (${selected.length})` : ''}`}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

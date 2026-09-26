@@ -324,7 +324,11 @@ function maskQuotedAndCodeSpans(value: string): string {
  *  halt" = 2, "@x go, das ist halt ein Test" = 4); widen only with measured
  *  cases, never by guessing. */
 function stopWordPlacement(value: string): 'adjacent' | 'distant' | null {
-  const tokens = maskQuotedAndCodeSpans(value).toLowerCase().match(/@[\p{L}\p{N}._-]+|[\p{L}\p{N}_-]+/gu) || []
+  const tokens =
+    maskQuotedAndCodeSpans(value)
+      .toLowerCase()
+      .match(/@[\p{L}\p{N}._-]+|[\p{L}\p{N}_-]+/gu) || []
+
   const mentionAt: number[] = []
   const stopAt: number[] = []
 
@@ -481,9 +485,10 @@ export function unaddressedGroupMentions(group: string, members: GroupMember[], 
  *
  *  1. Bumps the room epoch — the driving loop bails at its next boundary and
  *     never selects another member (`isCurrent()` in runGroupChatRounds).
- *  2. Sets a #93129 hold for EVERY member — future turns stay skipped until
- *     the user explicitly releases (resume / @all resume / direct mention),
- *     the exact contract user-typed "@all stop" already has.
+ *  2. When hold detection is enabled, sets a #93129 hold for EVERY member —
+ *     future turns stay skipped until the user explicitly releases (resume /
+ *     @all resume / direct mention). Rooms that disable automatic holds still
+ *     stop the active run through the epoch and interrupt legs.
  *  3. Sends session.interrupt to the member currently ON TURN (room.turn,
  *     runtime-only) via its own route, so the in-flight model call actually
  *     dies instead of grinding to completion in the background. Best-effort:
@@ -506,17 +511,15 @@ export async function stopGroupThread(group: string, thread: null | string, memb
 
   updateGroupChat(group, (r: GroupChatRoom) => {
     r.epoch = (r.epoch || 0) + 1
+    r.stoppedEpoch = r.epoch
     r.running = false
     r.turn = null
 
-    // Same hold shape applyGroupHoldDirective mints for "@all stop" — the
-    // held-skip path (watermark consume + 'held' activity note) and every
-    // release gesture apply unchanged. An existing hold keeps its stamp.
-    const holds: Record<string, GroupHoldStamp> = {
-      ...(r.holds || {})
-    }
+    // Same hold shape applyGroupHoldDirective mints for "@all stop" — unless
+    // this room disabled hold detection. An existing hold keeps its stamp.
+    const holds: Record<string, GroupHoldStamp> = r.holdDetection === false ? {} : { ...(r.holds || {}) }
 
-    for (const member of roster) {
+    for (const member of r.holdDetection === false ? [] : roster) {
       const key = groupMemberKey(member)
 
       if (key && !holds[key]) {
@@ -568,7 +571,12 @@ export async function stopGroupThread(group: string, thread: null | string, memb
  *  epoch and discards queued continuations.
  *  Watermarks are per thread+member (`${thread}::${memberKey}`), so parallel
  *  topics never eat each other's deltas. */
-export async function runGroupChatRounds(group: string, members: GroupMember[], thread: string, failedMembers = new Set<string>()) {
+export async function runGroupChatRounds(
+  group: string,
+  members: GroupMember[],
+  thread: string,
+  failedMembers = new Set<string>()
+) {
   const binding = followGroupChat(group, name => {
     group = name
   })
@@ -868,17 +876,20 @@ export function sendToGroupChat(
     // explicit "stop @member" sets a sticky hold; "@member resume" (or
     // @all resume, or any direct non-stop mention of the held member)
     // releases it. Bot replies never flow through this function.
-    room.holds = applyGroupHoldDirective(
-      room.holds,
-      parseGroupChatMentions(trimmed, members),
-      trimmed,
-      {
-        at: sent?.at,
-        byMessageId: sent?.id,
-        thread: target
-      },
-      members.map((member: GroupMember) => groupMemberKey(member))
-    )
+    room.holds =
+      room.holdDetection === false
+        ? {}
+        : applyGroupHoldDirective(
+            room.holds,
+            parseGroupChatMentions(trimmed, members),
+            trimmed,
+            {
+              at: sent?.at,
+              byMessageId: sent?.id,
+              thread: target
+            },
+            members.map((member: GroupMember) => groupMemberKey(member))
+          )
 
     return room
   })
@@ -942,7 +953,12 @@ function queueGroupChatDrive(group: string, members: GroupMember[], thread: stri
     } catch (error) {
       if (binding.isLive()) {
         const reason = groupFailureReason(error)
-        recordGroupActivity(group, { kind: 'failed', member: null, thread: currentThread, ...(reason ? { reason } : {}) })
+        recordGroupActivity(group, {
+          kind: 'failed',
+          member: null,
+          thread: currentThread,
+          ...(reason ? { reason } : {})
+        })
         updateGroupChat(group, room => ({ ...room, running: false, turn: null }))
       }
     } finally {

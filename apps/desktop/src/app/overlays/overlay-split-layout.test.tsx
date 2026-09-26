@@ -11,9 +11,17 @@ it('expands independently of navigation and reveals a newly selected child', () 
   const select = vi.fn()
 
   const group = (active: boolean, child: string): OverlayNavGroup => ({
-    active, id: 'appearance', label: 'Appearance', icon: Settings2, onSelect: select,
+    active,
+    id: 'appearance',
+    label: 'Appearance',
+    icon: Settings2,
+    onSelect: select,
     children: ['General', 'Theme'].map(label => ({
-      active: active && child === label, id: label, label, icon: Settings2, onSelect: select
+      active: active && child === label,
+      id: label,
+      label,
+      icon: Settings2,
+      onSelect: select
     }))
   })
 

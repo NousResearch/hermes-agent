@@ -1,0 +1,18 @@
+name: pricewin
+repo: https://github.com/PriceDotWin/pricewin-hermes-plugin
+sha: f02f90c7e57b18aeda0d6e479a942647f58acade
+description: Inline hotel and flight result cards for PriceWin searches in the Desktop transcript — price per night, site and a link to the booking page.
+maintainer: PriceDotWin
+tier: community
+category: desktop
+version: "0.1.1"
+requires_hermes: ">=0.20.4"
+docs_url: https://github.com/PriceDotWin/pricewin-hermes-plugin#readme
+screenshots:
+  - https://raw.githubusercontent.com/PriceDotWin/pricewin-hermes-plugin/24dfbc8e06ad8e08ebbfa8b735a5b1a60ed894a8/docs/hotel-cards.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

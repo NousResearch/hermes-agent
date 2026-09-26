@@ -87,9 +87,7 @@ def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None) -> List[st
     """
     if not old_value:
         return []
-    from utils import atomic_yaml_write
-
-    from hermes_cli.config import get_config_path, read_user_config_raw, require_readable_config_before_write
+    from hermes_cli.config import atomic_config_write, get_config_path, read_user_config_raw
 
     config_path = get_config_path()
     if not config_path.exists():
@@ -137,8 +135,7 @@ def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None) -> List[st
         _fix(entry, f"providers.{provider_id}", fields=("api_key",))
 
     if touched:
-        require_readable_config_before_write(config_path)
-        atomic_yaml_write(config_path, user_config, sort_keys=False)
+        atomic_config_write(config_path, user_config)
     return touched
 
 

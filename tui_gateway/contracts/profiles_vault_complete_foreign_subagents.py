@@ -9,6 +9,7 @@ histories on the serving backend; ``subagent.*`` is the session-scoped roster of
 
 from __future__ import annotations
 
+from typing import Literal
 
 from pydantic import Field
 
@@ -154,6 +155,8 @@ class ProfileRow(Result):
     description: str = ""
     display_name: str = ""
     skill_count: int = 0
+    previous_names: list[str] = Field(default_factory=list)
+    role: Literal["setup"] | None = None
     last_session: ProfileSessionPreview | None = None
     worker_session: ProfileWorkerSession | None = None
     canonical_session: ProfileCanonicalSession | None = None
@@ -191,15 +194,15 @@ class ProfilesCreateParams(ProfileParams):
     soul: str | None = None
     model: str | None = None
     provider: str | None = None
-    share_auth: bool | str | None = None  # accepted from older clients; ignored (#111724)
+    share_auth: bool | str | None = None
     mirror_credentials: bool | str | None = None
 
 
 class ProfileMirrored(Result):
-    """What was copied from the launch profile."""
+    """What was copied from the launch profile; ``auth`` is ``"shared"`` under ``share_auth``."""
 
     env: bool = False
-    auth: bool = False
+    auth: bool | Literal["shared"] = False
     model_inherited: bool = False
     voice: bool = False
 
@@ -354,6 +357,7 @@ class OnboardingAnswers(Params):
     layout: str | None = None
     focus: list[str] | None = None
     connectors: list[str] | None = None
+    plugins: list[str] | None = None
     # The onboarding store may carry extra UI-only keys; the writer ignores unknown ones.
     model_config = Params.model_config | {"extra": "allow"}
 
@@ -371,6 +375,32 @@ class ProfilesRememberOnboardingResult(Result):
 method("profiles.remember_onboarding", params=ProfilesRememberOnboardingParams,
        result=ProfilesRememberOnboardingResult,
        doc="Write the onboarding facts into the default profile's user memory and confirm they landed.")
+
+
+# ── onboarding (methods_onboarding) ───────────────────────────────────────────────────────────
+
+
+class OnboardingEnsureSetupProfileResult(Result):
+    """``created`` is false when an existing setup profile was found (and returned untouched)."""
+
+    name: str
+    path: str
+    created: bool
+    role: Literal["setup"] = "setup"
+
+
+method("onboarding.ensure_setup_profile", params=Params, result=OnboardingEnsureSetupProfileResult,
+       doc="Create-or-read the backend-owned setup profile; the backend picks the name and finds it by role.")
+
+
+class OnboardingResetSetupProfileResult(Result):
+    name: str
+    path: str
+    reset: bool = True
+
+
+method("onboarding.reset_setup_profile", params=Params, result=OnboardingResetSetupProfileResult,
+       doc="Restore the setup profile to its created state in place (soul, memories, skills, sessions).")
 
 
 # ── vault (methods_vault) ─────────────────────────────────────────────────────────────────────

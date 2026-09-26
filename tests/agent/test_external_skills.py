@@ -117,7 +117,7 @@ class TestExternalSkillView:
         assert "external things" in result["content"]
 
 
-@pytest.mark.parametrize("unsupported", [False, True])
+@pytest.mark.parametrize("unsupported", [False, "platform", "app"])
 def test_preferred_reads_are_profile_scoped(tmp_path, monkeypatch, unsupported):
     """A preferred bundle owns read metadata even when it cannot be offered."""
     from pathlib import Path
@@ -136,9 +136,14 @@ def test_preferred_reads_are_profile_scoped(tmp_path, monkeypatch, unsupported):
         for root, label in ((home / "skills", "local"), (home / "shared", "preferred")):
             bundle = root / "shared-example"
             bundle.mkdir(parents=True)
-            platforms = "platforms: [unsupported-test-platform]\n" if unsupported and label == "preferred" else ""
+            metadata = ""
+            if label == "preferred":
+                if unsupported == "platform":
+                    metadata = "platforms: [unsupported-test-platform]\n"
+                elif unsupported == "app":
+                    metadata = "requires_apps: [unregistered-test-app]\n"
             (bundle / "SKILL.md").write_text(
-                f"---\nname: shared-example\ndescription: {label} guidance\n{platforms}---\n{label} body\n"
+                f"---\nname: shared-example\ndescription: {label} guidance\n{metadata}---\n{label} body\n"
             )
             (bundle / "guide.txt").write_text(label)
         preferred = "[shared]" if home == homes[0] else "[undiscovered]"
@@ -155,7 +160,7 @@ def test_preferred_reads_are_profile_scoped(tmp_path, monkeypatch, unsupported):
                 result = json.loads(skill_view("shared-example", preprocess=False))
                 if not preferred:
                     assert "Ambiguous" in result["error"]
-                elif unsupported:
+                elif unsupported == "platform":
                     assert not result["success"] and "platform" in result["error"].lower()
                 else:
                     assert Path(result["skill_dir"]) == home / "shared/shared-example"

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import sys
 import threading
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from contextvars import copy_context
-from typing import Dict, Optional, Set
+from typing import Dict, Iterator, Optional, Set
 
 from hermes_constants import hermes_home_key
 
@@ -82,11 +83,21 @@ def _any_mcp_connected() -> bool:
     return _discovery_registered_servers(get_mcp_status() or [])
 
 
+def _servers_awaiting_connect() -> list[str]:
+    from tools.mcp_tool_discovery import mcp_servers_awaiting_connect
+
+    pending = mcp_servers_awaiting_connect()
+    return pending if _mcp_server_filter is None else [n for n in pending if n in _mcp_server_filter]
+
+
 def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
     """Spawn one background MCP discovery thread per profile home.
 
     If the first run exits without connecting any server (e.g. startup cancellation / OOM restart),
     later calls may retry instead of pinning the profile in "already started" with zero MCP tools.
+    Likewise a server added to ``mcp_servers`` after that run (``hermes mcp add`` against a running
+    Desktop backend) is connected by the next call, which every agent build makes, so a new session
+    gets its tools without a reload (#76954). Discovery is additive: live servers are untouched.
     """
     home_key = hermes_home_key()
     with _mcp_discovery_lock:
@@ -95,14 +106,19 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
             if thread is not None and thread.is_alive():
                 return
             try:
-                if _any_mcp_connected():
-                    return
+                connected = _any_mcp_connected()
+                pending = _servers_awaiting_connect() if connected else []
             except Exception:
                 return
-            logger.warning(
-                "Background MCP discovery previously exited with no connected "
-                "servers; retrying discovery thread"
-            )
+            if connected and not pending:
+                return
+            if connected:
+                logger.info("MCP server(s) %s not connected yet; running discovery", ", ".join(pending))
+            else:
+                logger.warning(
+                    "Background MCP discovery previously exited with no connected "
+                    "servers; retrying discovery thread"
+                )
             _mcp_discovery_started.discard(home_key)
             _mcp_discovery_thread.pop(home_key, None)
 
@@ -158,6 +174,27 @@ def _resolve_discovery_timeout(explicit: "float | None", *, single_query: bool =
         return default
 
 
+# GIL budget for discovery: the discovery thread does bursty CPU work (mcp/pydantic imports,
+# JSON-RPC schema parsing, tool registration) that, at the default 5 ms switch interval, rides
+# the GIL convoy effect and can starve concurrent threads — the agent-build thread and the main
+# event loop — for tens of seconds (#60371: "agent initialization timed out" after a serve
+# restart, _wait_agent(30s) error 5032). While discovery runs we drop the switch interval so its
+# CPU bursts are sliced finely enough that waiters stay responsive, then restore it.
+_DISCOVERY_SWITCH_INTERVAL_S = 0.0005
+
+
+@contextmanager
+def _discovery_gil_budget() -> Iterator[None]:
+    """Temporarily lower the interpreter switch interval so discovery's CPU work can't
+    monopolize the GIL against concurrent threads (see _DISCOVERY_SWITCH_INTERVAL_S)."""
+    prev = sys.getswitchinterval()
+    sys.setswitchinterval(_DISCOVERY_SWITCH_INTERVAL_S)
+    try:
+        yield
+    finally:
+        sys.setswitchinterval(prev)
+
+
 def _discover_mcp_tools_without_interactive_oauth() -> None:
     """Run MCP discovery without letting OAuth read from the user's stdin."""
     try:
@@ -165,7 +202,7 @@ def _discover_mcp_tools_without_interactive_oauth() -> None:
     except Exception:
         suppress_interactive_oauth = nullcontext
 
-    with suppress_interactive_oauth():
+    with _discovery_gil_budget(), suppress_interactive_oauth():
         from tools.mcp_tool_discovery import discover_mcp_tools
 
         # Only pass the kwarg when a filter is set: many tests (and any

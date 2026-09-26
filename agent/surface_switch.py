@@ -36,12 +36,28 @@ def split_runtime_boundary(prompt: str) -> tuple:
     return (identity, runtime_marker, runtime) if prompt.endswith(RUNTIME_ENVIRONMENT_END) else (prompt, "", "")
 
 
-def identity_line_value(prompt: str, label: str) -> str:
-    """Last ``Label: value`` line in the identity portion (the final runtime block is embedder
-    prose, never identity).  Last match wins — safe only for the volatile-tier trailer fields."""
+def runtime_host_value(prompt: str, label: str) -> str:
+    """``Label: value`` from the host lines of a persisted prompt (``Current working directory``);
+    new prompts delimit runtime hints, legacy prompts put them before context.  "" when absent."""
+    _identity, runtime_marker, runtime = split_runtime_boundary(prompt)
     prefix = f"{label}:"
-    matches = [line[len(prefix):].strip() for line in split_runtime_boundary(prompt)[0].splitlines()
-               if line.startswith(prefix)]
+    host_lines = (runtime.split("\n\n", 1)[0] if runtime_marker else prompt).splitlines()
+    for idx, line in enumerate(host_lines):
+        if line.startswith("User home directory:"):
+            for candidate in host_lines[idx + 1: idx + 4]:
+                if candidate.startswith(prefix):
+                    return candidate[len(prefix):].strip()
+    return ""
+
+
+def identity_line_value(prompt: str, label: str) -> str:
+    """``Label: value`` from the trailer paragraph that ends the identity portion (the final
+    runtime block is embedder prose, never identity).  Memory, context files and plugin prose
+    come earlier and may hold ``Label:`` lines of their own; they are never read as identity,
+    even when the trailer omits the label because its value is empty."""
+    prefix = f"{label}:"
+    trailer = split_runtime_boundary(prompt)[0].rsplit("\n\n", 1)[-1]
+    matches = [line[len(prefix):].strip() for line in trailer.splitlines() if line.startswith(prefix)]
     return matches[-1] if matches else ""
 
 

@@ -5,11 +5,11 @@ import {
   isStableOpen,
   JSON_RPC_METHOD_NOT_FOUND,
   JsonRpcGatewayError,
-  reconnectBackoffDelayMs,
-  resolveGatewayWsUrl
+  reconnectBackoffDelayMs
 } from '@hermes/shared'
 import { useEffect, useRef } from 'react'
 
+import { createGatewayEventDedupe } from '@/app/gateway/gateway-event-dedupe'
 import { shouldApplyPostBootProgressError } from '@/components/boot-failure-reauth'
 import type { DesktopBootProgress, HermesConnection, HermesWindowState } from '@/global'
 import { HermesGateway } from '@/hermes'
@@ -20,6 +20,7 @@ import {
   LIVENESS_PROBE_TIMEOUT_MS,
   LIVENESS_REPROBE_DELAY_MS
 } from '@/lib/gateway-liveness-policy'
+import { resolveDesktopGatewayWsUrl } from '@/lib/gateway-ws-url'
 import { BACKEND_BOOT_WAIT_TIMEOUT_MS, RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import {
   $desktopBoot,
@@ -85,6 +86,7 @@ import {
   setCurrentCwd,
   setSessionsLoading
 } from '@/store/session'
+import { stampSecondaryProfileOwner } from '@/store/session-event-provenance'
 import {
   $attentionSessionIds,
   $sessionOwnerHoldRevision,
@@ -102,6 +104,7 @@ import { warnIfTerminalBackendUnavailable } from '@/store/terminal-backend-warni
 import { isPeerInstanceWindow, windowProfileOverride } from '@/store/windows'
 
 import { stashGatewaySurvivor, survivorIsStale, takeGatewaySurvivor } from './gateway-hmr-survivor'
+import { useConnectionsRegistry } from './use-connections-registry'
 import { useDefaultProfilePreference } from './use-default-profile-preference'
 
 // After the reconnect loop has been failing for this long, raise a NON-blocking
@@ -161,6 +164,54 @@ export function primaryRuntimeConnectionId(connection: Pick<HermesConnection, 'c
   return connection.mode === 'local' ? 'local' : null
 }
 
+// A freshly spawned backend can block its event loop for 15-30s while it
+// connects MCP servers and discovers plugins, so a single initial connect
+// attempt races backend cold-start and loses intermittently — the renderer
+// surfaced "Could not connect to Hermes gateway" even though the backend
+// became healthy moments later (#49645). Retry the initial dial, re-minting
+// the WS URL on every attempt (OAuth tickets are single-use), instead of
+// failing the whole boot on the first transport error. Reauth failures
+// propagate immediately: more attempts with a dead ticket can never
+// succeed. Exported for tests.
+export async function connectInitialGateway({
+  attempts = 8,
+  connect,
+  delayMs = 3_000,
+  initialUrl,
+  isCancelled
+}: {
+  attempts?: number
+  connect: (wsUrl?: string) => Promise<void>
+  delayMs?: number
+  /** URL already minted at the boot boundary; used for the first attempt so the mint count stays observable. */
+  initialUrl?: string
+  isCancelled: () => boolean
+}): Promise<void> {
+  let lastConnectError: unknown = null
+
+  for (let attempt = 0; attempt < attempts && !isCancelled(); attempt += 1) {
+    try {
+      await connect(attempt === 0 ? initialUrl : undefined)
+      lastConnectError = null
+
+      break
+    } catch (err) {
+      if (isGatewayReauthRequired(err)) {
+        throw err
+      }
+      lastConnectError = err
+
+      if (attempt < attempts - 1) {
+        await new Promise(resolve => setTimeout(resolve, delayMs))
+      }
+    }
+  }
+
+  if (lastConnectError) {
+    throw lastConnectError
+  }
+}
+
 interface GatewayBootOptions {
   beforeConnectionSwitch: () => void
   handleGatewayEvent: (event: GatewayEvent) => void
@@ -184,6 +235,7 @@ export function useGatewayBoot({
   refreshSessions
 }: GatewayBootOptions) {
   useDefaultProfilePreference()
+  useConnectionsRegistry()
 
   const callbacksRef = useRef({
     beforeConnectionSwitch,
@@ -431,7 +483,7 @@ export function useGatewayBoot({
         // this reconnect loop. For local/token gateways the URL carries a
         // long-lived token and the re-mint is a cheap no-op.
         const wsUrl = await withTimeout(
-          resolveGatewayWsUrl(desktop, conn),
+          resolveDesktopGatewayWsUrl(desktop, conn),
           RECONNECT_ATTEMPT_TIMEOUT_MS,
           'Timed out re-minting the gateway WebSocket URL'
         )
@@ -529,7 +581,14 @@ export function useGatewayBoot({
     }
 
     function scheduleReconnect(manual?: { profile: string; activationEpoch: number }) {
-      if (cancelled || primaryReauthError || reconnecting || reconnectTimer !== null || gatewayOpen() || $gatewaySwitching.get()) {
+      if (
+        cancelled ||
+        primaryReauthError ||
+        reconnecting ||
+        reconnectTimer !== null ||
+        gatewayOpen() ||
+        $gatewaySwitching.get()
+      ) {
         return
       }
 
@@ -629,6 +688,7 @@ export function useGatewayBoot({
     async function getWindowBackend(startup = false): Promise<HermesConnection> {
       const profile = windowProfileOverride()
       const peer = isPeerInstanceWindow()
+
       const route = profile
         ? { profile, connectionId: peer ? new URLSearchParams(window.location.search).get('connectionId') : null }
         : startup && !peer
@@ -747,7 +807,7 @@ export function useGatewayBoot({
         // Bounded for the same reason as attemptReconnect() (#93454): a wedged
         // ticket mint would otherwise hang the gateway switch forever.
         const wsUrl = await withTimeout(
-          resolveGatewayWsUrl(desktop, conn),
+          resolveDesktopGatewayWsUrl(desktop, conn),
           RECONNECT_ATTEMPT_TIMEOUT_MS,
           'Timed out re-minting the gateway WebSocket URL'
         )
@@ -894,6 +954,22 @@ export function useGatewayBoot({
 
     const gateway = adoptedFromHmr ? survivor!.gateway : new HermesGateway()
 
+    // Every socket this window owns (the primary below, every registry
+    // secondary via onEvent) funnels through this one gate before any store
+    // sees the event: two sockets to ONE backend both receive each frame of a
+    // chat they joined, and handled twice a delta doubles the streaming text
+    // (#120005). Keyed by the backend's own (epoch, session, seq) stamp.
+    const eventDedupe = createGatewayEventDedupe()
+
+    const deliverGatewayEvent = (event: GatewayEvent) => {
+      if (!eventDedupe.admit(event)) {
+        return
+      }
+
+      recordSessionEventScope(event)
+      callbacksRef.current.handleGatewayEvent(event)
+    }
+
     callbacksRef.current.onGatewayReady(gateway)
     setPrimaryGateway(gateway, survivor?.profile ?? normalizeProfileKey($activeGatewayProfile.get()))
     // Secondary (background-profile) sockets funnel into the same handler.
@@ -936,10 +1012,7 @@ export function useGatewayBoot({
           $activeGatewayProfile.set(key)
         }
       },
-      onEvent: event => {
-        recordSessionEventScope(event)
-        callbacksRef.current.handleGatewayEvent(event)
-      },
+      onEvent: deliverGatewayEvent,
       onActiveConnectionInvalidated: (fallbackProfile, invalidationEpoch) => {
         $activeGatewayProfile.set(fallbackProfile)
         // Bounded like every other getConnection() call in this file (#93454):
@@ -1004,10 +1077,15 @@ export function useGatewayBoot({
       }
     })
 
-    const sourceProfile = normalizeProfileKey($activeGatewayProfile.get())
+    // Read PER EVENT, never once at boot: under multiplex-only this one socket
+    // serves every local profile, and the profile moves under it while the
+    // socket stays open. A boot-time capture stamps every later profile's
+    // events with whatever was active when the gateway booted.
+    const sourceProfileNow = () => normalizeProfileKey($activeGatewayProfile.get())
 
     const offEvent = gateway.onEvent(event => {
       const connectionId = activeGatewayConnectionId()
+      const sourceProfile = sourceProfileNow()
 
       const scopedEvent = {
         ...event,
@@ -1015,12 +1093,22 @@ export function useGatewayBoot({
         ...(connectionId ? { connectionId } : {})
       }
 
-      recordSessionEventScope(scopedEvent)
-      callbacksRef.current.handleGatewayEvent(scopedEvent)
+      // On a shared host backend the socket no longer PROVES the profile the
+      // way a pooled secondary's closure did, so nothing stamps ownership and
+      // runtimeSessionOwner() stays blank for every non-primary local profile
+      // — the live sessions/cron sync dies and falls back to slow polling.
+      // The shared-primary descriptor is exactly the topology where the active
+      // profile is the authority for this socket's traffic. (The marker is the
+      // LAST rung of knownOwnerForSession, so durable stored identity still
+      // outranks it — #97511.)
+      const ownedEvent =
+        $connection.get()?.sharedPrimary === true ? stampSecondaryProfileOwner(scopedEvent, sourceProfile) : scopedEvent
+
+      deliverGatewayEvent(ownedEvent)
     })
 
     // Secondary sockets reach the same handler through the registry's onServerRequest.
-    const offRequest = gateway.onRequest(request => dispatchPrimaryServerRequest(request, sourceProfile))
+    const offRequest = gateway.onRequest(request => dispatchPrimaryServerRequest(request, sourceProfileNow()))
 
     // Wake signals: power resume (macOS/Windows), network coming back, and the
     // window regaining focus/visibility. Each nudges an immediate reconnect.
@@ -1103,8 +1191,7 @@ export function useGatewayBoot({
 
       // 'saved' is a pure registry-refresh push (new connection or label
       // rename — #95393): no endpoint moved, so there is nothing to dispose,
-      // redial, or forget. The switcher's own onChanged listener re-pulls the
-      // registry snapshot for it.
+      // redial, or forget. useConnectionsRegistry re-pulls the snapshot.
       if (payload.reason === 'saved') {
         return
       }
@@ -1313,7 +1400,7 @@ export function useGatewayBoot({
         // await is bounded like the reconnect path (#93454) so a wedged mint
         // reaches the recovery affordance instead of hanging "Starting Hermes…".
         const wsUrl = await withTimeout(
-          resolveGatewayWsUrl(desktop, conn),
+          resolveDesktopGatewayWsUrl(desktop, conn),
           RECONNECT_ATTEMPT_TIMEOUT_MS,
           'Timed out minting the gateway WebSocket URL'
         )
@@ -1325,7 +1412,37 @@ export function useGatewayBoot({
           stage = 'dialing'
         }
 
-        await gateway.connect(wsUrl)
+        if (conn.mode === 'remote') {
+          // REMOTE keeps the single dial: a remote dial failure must stay a
+          // retryable boot failure (stage 'dialing') so the bounded boot-retry
+          // loop below re-runs the whole handshake — including a fresh
+          // getConnection() against a possibly-rebuilt tunnel.
+          await gateway.connect(wsUrl)
+        } else {
+          // LOCAL retries the dial across backend cold-start (#49645): main's
+          // readiness probe already passed, but a freshly spawned backend can
+          // still stall its event loop for seconds on the first WS handshake —
+          // a local boot failure is latched non-retryable, so without this
+          // retry the one lost race ended the boot in "Could not connect to
+          // Hermes gateway". The first attempt reuses the URL minted at the
+          // boot boundary above — the mint count stays observable (#93454) —
+          // while later attempts re-mint; local token URLs are long-lived, so
+          // the re-mint is a cheap no-op.
+          await connectInitialGateway({
+            connect: async (attemptWsUrl?: string) => {
+              const url =
+                attemptWsUrl ??
+                (await withTimeout(
+                  resolveDesktopGatewayWsUrl(desktop, conn),
+                  RECONNECT_ATTEMPT_TIMEOUT_MS,
+                  'Timed out minting the gateway WebSocket URL'
+                ))
+              await gateway.connect(url)
+            },
+            isCancelled: () => cancelled,
+            initialUrl: wsUrl
+          })
+        }
         stage = 'connected'
 
         if (cancelled) {

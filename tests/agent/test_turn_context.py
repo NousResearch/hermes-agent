@@ -14,13 +14,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.context_compressor import ContextCompressor
 from agent.turn_context import (
     PreflightCompressionTimedOut,
     TurnContext,
     build_turn_context,
 )
-from hermes_state import SessionDB
 
 
 class _FakeTodoStore:
@@ -90,7 +88,6 @@ class _FakeAgent:
         self._stream_think_scrubber = None
         # Attributes the prologue assigns; recorded for assertions.
         self._invalid_tool_retries = -1
-        self._vision_supported = None
         self._persist_calls = 0
         self._session_messages = []
         self._pending_cli_user_message = None
@@ -138,33 +135,6 @@ class _FakeAgent:
 
     def _persist_session(self, *_a, **_k):
         self._persist_calls += 1
-
-
-def _make_agent_with_cooldown(db_path, session_id, *, cooldown_until=None):
-    agent = _FakeAgent()
-    agent.compression_enabled = True
-    agent._emit_status = MagicMock()
-    agent._compress_context = MagicMock(
-        side_effect=lambda messages, *_a, **_k: (messages, "SYSTEM")
-    )
-
-    db = SessionDB(db_path=db_path)
-    db.create_session(session_id, source="cli")
-    if cooldown_until is not None:
-        db.record_compression_failure_cooldown(session_id, cooldown_until, "timeout")
-
-    with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-        compressor = ContextCompressor(
-            model="test/model",
-            threshold_percent=0.85,
-            protect_first_n=2,
-            protect_last_n=2,
-            quiet_mode=True,
-        )
-    compressor.bind_session_state(db, session_id)
-    agent.context_compressor = compressor
-    agent._session_db = db
-    return agent
 
 
 @pytest.fixture(autouse=True)
@@ -383,10 +353,9 @@ def test_turn_start_replaces_stale_parent_history_with_compression_child():
 def test_applies_agent_side_effects():
     agent = _FakeAgent()
     _build(agent)
-    # Retry counters reset, guardrails reset, vision re-armed, turn counted.
+    # Retry counters reset, guardrails reset, turn counted.
     assert agent._invalid_tool_retries == 0
     assert agent._tool_guardrails.reset_called is True
-    assert agent._vision_supported is True
     assert agent._user_turn_count == 1
     # Crash-resilience persistence fired once.
     assert agent._persist_calls == 1

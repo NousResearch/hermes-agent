@@ -28,13 +28,15 @@ from tools.file_operations_common import DEFAULT_READ_LIMIT, count_conflict_bloc
 from tools import file_state
 from agent.redact import _is_secret_file_arg, redact_sensitive_text
 from tools.file_tools_paths import (
-    _expand_tilde, _path_resolution_warning, _resolve_base_dir, _resolve_path_for_task)
+    _expand_tilde, _path_resolution_warning, _resolve_base_dir, _resolve_entry_for_task,
+    _resolve_path_for_task)
 from tools.file_tools_write_guards import (
     _READ_DEDUP_STATUS_MESSAGE, _check_approval_required_write, _check_binary_document_write,
     _check_cross_profile_path, _check_protected_instruction_write, _check_sensitive_path,
     _is_internal_file_tool_content, _stale_overwrite_blocker, _stale_write_refusal)
 from tools.file_tools_read_tracking import (
     _bump_consecutive, _cap_read_tracker_data, _check_file_staleness, _check_not_found_cache,
+    _file_metadata, _file_version,
     _mark_full_write_baseline, _mark_verification_stale, _note_read_coverage, _patch_failure_lock,
     _patch_failure_tracker, _read_tracker, _read_tracker_lock, _record_not_found,
     _record_patch_failure, _reset_patch_failures, _task_data, _update_read_timestamp)
@@ -104,6 +106,7 @@ def _apply_char_budget(result_dict: dict, content: str, offset: int, total_lines
         f"{lines_kept} line(s) (showing lines {offset}-{next_offset - 1} of "
         f"{total_lines}). Use offset={next_offset} to continue.")
     if len(trimmed.split("\n", 1)[0]) >= max_chars:
+        result_dict["truncated_lines"] = True
         result_dict["hint"] += (
             " Note: the first line alone exceeded the budget and was "
             "clamped mid-line; its remainder is not retrievable via offset.")
@@ -148,22 +151,26 @@ _V4A_SINGLE_HEADER_RE = re.compile(r'^(\*\*\*\s*(Update|Add|Delete)\s+File:\s*)(
 _V4A_MOVE_HEADER_RE = re.compile(r'^(\*\*\*\s*Move\s+File:\s*)(.+?)\s*->\s*(.+)$', re.MULTILINE)
 
 
-def _rewrite_v4a_patch_paths_for_host(patch: str, path_to_resolved: dict, file_ops) -> str:
+def _rewrite_v4a_patch_paths_for_host(patch: str, path_to_resolved: dict, path_to_entry: dict,
+                                      file_ops) -> str:
     """Rewrite V4A file headers to the resolved host paths (host backends only).
 
     The shell layer must patch the SAME files ``patch_tool`` resolved for
     locking/staleness, not re-resolve a relative header against its own cwd
-    (which can differ — the git-worktree cwd bug).
+    (which can differ — the git-worktree cwd bug). Delete and Move headers take
+    ``path_to_entry``: they act on a symlink itself, never on its target.
     """
     if not _file_ops_uses_host_paths(file_ops):
         return patch
 
-    def _res(raw: str) -> str:
+    def _res(raw: str, entry: bool = False) -> str:
         raw = raw.strip()
-        return path_to_resolved.get(raw) or raw
+        return (path_to_entry if entry else path_to_resolved).get(raw) or raw
 
-    patch = _V4A_SINGLE_HEADER_RE.sub(lambda m: f"{m.group(1)}{_res(m.group(3))}", patch)
-    return _V4A_MOVE_HEADER_RE.sub(lambda m: f"{m.group(1)}{_res(m.group(2))} -> {_res(m.group(3))}", patch)
+    patch = _V4A_SINGLE_HEADER_RE.sub(
+        lambda m: f"{m.group(1)}{_res(m.group(3), entry=m.group(2) == 'Delete')}", patch)
+    return _V4A_MOVE_HEADER_RE.sub(
+        lambda m: f"{m.group(1)}{_res(m.group(2), entry=True)} -> {_res(m.group(3), entry=True)}", patch)
 
 
 def _is_blocked_device_path(path: str) -> bool:
@@ -262,7 +269,7 @@ _file_ops_cache: dict = {}
 def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
     """Build the terminal environment for *task_id* via the shared ``_create_configured_env``,
     so a file tool that runs before any terminal command still gets the configured backend."""
-    from tools.terminal_tool_config import _is_container_backend
+    from tools.terminal_tool_config import _is_container_backend, coerce_ssh_remote_cwd
     from tools.terminal_tool import (
         _create_configured_env, _get_env_config, _is_unusable_container_cwd,
         _resolve_task_host_cwd, _select_image, get_session_cwd, resolve_task_overrides)
@@ -274,7 +281,7 @@ def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
         recorded_cwd = get_session_cwd(raw_task_id)
     except Exception:
         recorded_cwd = None
-    cwd = overrides.get("cwd") or recorded_cwd or config["cwd"]
+    cwd = coerce_ssh_remote_cwd(overrides.get("cwd") or recorded_cwd or config["cwd"], env_type)
     # Re-apply the container cwd guard: a gateway/TUI/ACP override is a raw HOST
     # path and ``docker run -w <host-path>`` makes search_files & co silently
     # return nothing. Valid in-container overrides (/workspace, /root) pass.
@@ -455,6 +462,9 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
     total_lines = len(lines)
     end_line = offset + limit - 1
     page_text = "\n".join(lines[offset - 1:end_line])
+    from tools.tool_output_limits import get_max_line_length
+    max_line_length = get_max_line_length()
+    truncated_lines = any(len(line) > max_line_length for line in page_text.split('\n'))
     result_dict = {
         "content": file_ops._add_line_numbers(page_text, offset) if page_text else "",
         "total_lines": total_lines,
@@ -476,7 +486,8 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
         redacted = result_dict["content"] != rendered
     else:
         redacted = False
-    if offset == 1 and not result_dict["truncated"] and not redacted:
+    if (offset == 1 and not result_dict["truncated"] and not redacted
+            and not truncated_lines and not result_dict.get("truncated_lines")):
         # The whole document was shown, so a text-authorable format (.ipynb)
         # may later be overwritten by write_file; the binary-container guard
         # keeps refusing .docx/.xlsx/.pdf regardless of this baseline.
@@ -522,7 +533,7 @@ def _dedup_stub_or_block(task_data: dict, dedup_key: tuple, path: str) -> str:
 def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_str: str,
                             offset: int, limit: int, dedup_key: tuple, *, partial: bool,
                             redacted: bool = False, end_line: int | None = None,
-                            total_lines=None) -> int:
+                            total_lines=None, version_before=None, snapshot=None) -> int:
     """Bookkeeping after a real (non-stub) read; returns the consecutive-read count.
 
     Per-task tracker under the lock (stub counter, history, consecutive count,
@@ -535,7 +546,9 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
     background-review read-mark (a FULL read of a skill file counts like
     skill_view so a follow-up skill_manage(patch) is accepted).
     """
-    complete = not partial
+    version = (snapshot or _file_version(resolved_str)) if version_before is not None else None
+    stable = version is not None and version[:-1] == version_before == _file_metadata(resolved_str)
+    complete = False
     with _read_tracker_lock:
         task_data["dedup_hits"].pop(dedup_key, None)
         task_data["dedup_generation_reads"].add(dedup_key)
@@ -543,15 +556,28 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
         count = _bump_consecutive(task_data, ("read", path, offset, limit))
         try:
             _mtime_now = os.path.getmtime(resolved_str)
-            task_data["dedup"][dedup_key] = _mtime_now
             task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
-            if partial and end_line is not None:
-                complete, redacted = _note_read_coverage(
-                    task_data, resolved_str, _mtime_now, offset, end_line, total_lines, redacted)
         except OSError:
             pass
-        if complete and not redacted:
-            task_data.setdefault("full_write_baselines", set()).add(resolved_str)
+        baselines = task_data["full_write_baselines"]
+        if stable and version is not None and count < 4:
+            task_data["dedup"][dedup_key] = version_before
+            # A narrower view does not undo knowledge of these same bytes. Do
+            # not revive a baseline after a partial read of a different version.
+            complete = baselines.get(resolved_str) == version
+            if not complete:
+                complete = not partial
+                if partial and end_line is not None:
+                    complete, redacted = _note_read_coverage(
+                        task_data, resolved_str, version, offset, end_line, total_lines, redacted)
+                complete = complete and not redacted
+            if complete:
+                baselines[resolved_str] = version
+        if not complete:
+            baselines.pop(resolved_str, None)
+        if not stable or count >= 4:
+            task_data["dedup"].pop(dedup_key, None)
+            task_data["dedup_generation_reads"].discard(dedup_key)
         _cap_read_tracker_data(task_data)
 
     try:
@@ -642,27 +668,27 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         dedup_key = (resolved_str, offset, limit)
         with _read_tracker_lock:
             task_data = _task_data(task_id)
-            cached_mtime = task_data["dedup"].get(dedup_key)
+            cached_version = task_data["dedup"].get(dedup_key)
             # First unchanged read after a compaction boundary serves full content
             # (the summary may have dropped exact bytes); later ones get the stub.
             content_served_in_generation = dedup_key in task_data["dedup_generation_reads"]
         # Same rule as skill_view: the review fork shares the parent's task_id and its
         # read-before-write guard needs a real read, which the stub path never records (#95976).
-        if cached_mtime is not None and not is_background_review():
-            try:
-                if os.path.getmtime(resolved_str) == cached_mtime and content_served_in_generation:
-                    return _dedup_stub_or_block(task_data, dedup_key, path)
-            except OSError:
-                pass  # stat failed — fall through to full read
+        file_ops = _get_file_ops(task_id)
+        version_before = _file_metadata(resolved_str) if _file_ops_uses_host_paths(file_ops) else None
+        if (cached_version is not None and not is_background_review()
+                and version_before == cached_version and content_served_in_generation):
+            return _dedup_stub_or_block(task_data, dedup_key, path)
 
-        result = _get_file_ops(task_id).read_file(path, offset, limit)
+        result = file_ops.read_file(resolved_str if _file_ops_uses_host_paths(file_ops) else path, offset, limit)
         result_dict = result.to_dict()
 
-        # Cache a not-found result for retries. Deliberately NO early return:
-        # error results still flow through the tracking below unchanged.
+        # Failed reads cannot establish whole-file knowledge.
         _err = result_dict.get("error") or ""
         if isinstance(_err, str) and _err.startswith("File not found:"):
             _record_not_found("read", resolved_str, task_id, json.dumps(result_dict, ensure_ascii=False))
+        if _err or result_dict.get("is_binary"):
+            return json.dumps(result_dict, ensure_ascii=False)
 
         # Char budget on the FORMATTED content (what enters context), BEFORE
         # redaction (skip the regex pass on huge content); truncate gracefully
@@ -705,7 +731,10 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 end_line = min(end_line, total_lines)
         count = _record_successful_read(task_data, task_id, path, resolved_str, offset, limit,
                                         dedup_key, partial=(offset > 1) or bool(result_dict.get("truncated")),
-                                        redacted=redacted, end_line=end_line, total_lines=total_lines)
+                                        redacted=redacted or bool(result_dict.get("truncated_lines")),
+                                        end_line=end_line, total_lines=total_lines,
+                                        version_before=version_before,
+                                        snapshot=getattr(result, "_snapshot", None))
         if count >= 4:
             return tool_error(
                 f"BLOCKED: You have read this exact file region {count} times in a row. "
@@ -726,10 +755,11 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
 
 # ── Shared write/patch plumbing ──────────────────────────────────────────
 
-def _resolve_or_none(filepath: str, task_id: str) -> str | None:
-    """Task-resolved path string, or None when resolution fails for any reason."""
+def _resolve_or_none(filepath: str, task_id: str, *, entry: bool = False) -> str | None:
+    """Task-resolved path string, or None when resolution fails for any reason.
+    ``entry``: keep a symlink in the last component (``_resolve_entry_for_task``)."""
     try:
-        return str(_resolve_path_for_task(filepath, task_id))
+        return str((_resolve_entry_for_task if entry else _resolve_path_for_task)(filepath, task_id))
     except Exception:
         return None
 
@@ -865,7 +895,8 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                 return json.dumps(_stale_write_refusal(path, blocker, _resolved), ensure_ascii=False)
             warnings = _edit_warnings([path], path_to_resolved, task_id)
             rewrite_hint = _whole_file_rewrite_hint(task_id, _resolved, content)
-            result_dict = _get_file_ops(task_id).write_file(_resolved or path, content).to_dict()
+            result = _get_file_ops(task_id).write_file(_resolved or path, content)
+            result_dict = result.to_dict()
             if warnings:
                 result_dict["_warning"] = warnings[0]
             if rewrite_hint and not result_dict.get("error"):
@@ -881,7 +912,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                     result_dict["files_modified"] = [_resolved]
                     # Own write = current whole-file content: consecutive
                     # same-task writes stay unblocked. patch never does this.
-                    _mark_full_write_baseline(_resolved, task_id)
+                    _mark_full_write_baseline(_resolved, task_id, getattr(result, "_content_sha256", None))
                 _note_edited(task_id, [path], path_to_resolved, session_id)
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
@@ -892,13 +923,14 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
         return tool_error(str(e))
 
 
-def _collect_v4a_header_paths(patch: str) -> tuple[list[str], list[str]] | str:
+def _collect_v4a_header_paths(patch: str) -> tuple[list[str], list[str], list[str]] | str:
     """Extract every path named in V4A headers, rejecting ``..`` traversal.
 
-    Returns ``(all_paths, content_write_paths)`` or a tool_error string. Header
-    paths come from patch CONTENT (more attacker-influenceable than ``path=``,
-    which keeps its legitimate ``..`` use). Move headers check BOTH endpoints;
-    only Update/Add write text and feed the binary-document guard.
+    Returns ``(all_paths, content_write_paths, entry_paths)`` or a tool_error
+    string. Header paths come from patch CONTENT (more attacker-influenceable
+    than ``path=``, which keeps its legitimate ``..`` use). Move headers check
+    BOTH endpoints; only Update/Add write text and feed the binary-document
+    guard; Delete and Move act on the directory entry (``entry_paths``).
     """
     from tools.path_security import has_traversal_component
 
@@ -906,6 +938,7 @@ def _collect_v4a_header_paths(patch: str) -> tuple[list[str], list[str]] | str:
     headers += [(g, False) for m in _V4A_MOVE_HEADER_RE.finditer(patch) for g in (m.group(2), m.group(3))]
     paths: list[str] = []
     content_paths: list[str] = []
+    entry_paths: list[str] = []
     for raw, writes_text in headers:
         v4a_path = raw.strip()
         if has_traversal_component(v4a_path):
@@ -915,9 +948,8 @@ def _collect_v4a_header_paths(patch: str) -> tuple[list[str], list[str]] | str:
                 "path in '*** Update File:' / '*** Add File:' / "
                 "'*** Delete File:' / '*** Move File:' headers.")
         paths.append(v4a_path)
-        if writes_text:
-            content_paths.append(v4a_path)
-    return paths, content_paths
+        (content_paths if writes_text else entry_paths).append(v4a_path)
+    return paths, content_paths, entry_paths
 
 
 def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
@@ -931,12 +963,14 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
     """
     _paths_to_check = [path] if path else []
     _content_write_paths = list(_paths_to_check)
+    _entry_paths: list[str] = []
     if mode == "patch" and patch:
         collected = _collect_v4a_header_paths(patch)
         if isinstance(collected, str):
             return collected
         _paths_to_check += collected[0]
         _content_write_paths += collected[1]
+        _entry_paths = collected[2]
     precheck_err = _write_precheck_error(_paths_to_check, _content_write_paths, task_id, cross_profile)
     if precheck_err:
         return tool_error(precheck_err)
@@ -945,8 +979,9 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         # overlapping multi-file patches can't deadlock (every caller locks in
         # the same order). An unresolvable path is simply not locked.
         _path_to_resolved: dict[str, str] = {_p: _resolve_or_none(_p, task_id) for _p in _paths_to_check}
+        _path_to_entry: dict[str, str] = {_p: _resolve_or_none(_p, task_id, entry=True) for _p in _entry_paths}
         with ExitStack() as _locks:
-            for _r in sorted({_r for _r in _path_to_resolved.values() if _r}):
+            for _r in sorted({_r for _r in (*_path_to_resolved.values(), *_path_to_entry.values()) if _r}):
                 _locks.enter_context(file_state.lock_path(_r))
             stale_warnings = _edit_warnings(_paths_to_check, _path_to_resolved, task_id)
             file_ops = _get_file_ops(task_id)
@@ -963,7 +998,8 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             elif mode == "patch":
                 if not patch:
                     return tool_error("patch content required")
-                result = file_ops.patch_v4a(_rewrite_v4a_patch_paths_for_host(patch, _path_to_resolved, file_ops))
+                result = file_ops.patch_v4a(
+                    _rewrite_v4a_patch_paths_for_host(patch, _path_to_resolved, _path_to_entry, file_ops))
             else:
                 return tool_error(f"Unknown mode: {mode}")
 
@@ -973,7 +1009,8 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             if not result_dict.get("error"):
                 # Report the ABSOLUTE path(s) actually patched so a wrong-cwd
                 # mismatch is visible instead of silently landing elsewhere.
-                _resolved_modified = [_path_to_resolved.get(_p) or _p for _p in _paths_to_check]
+                _resolved_modified = [_path_to_entry.get(_p) or _path_to_resolved.get(_p) or _p
+                                      for _p in _paths_to_check]
                 result_dict["files_modified"] = _resolved_modified
                 if len(_resolved_modified) == 1:
                     result_dict["resolved_path"] = _resolved_modified[0]
@@ -1109,7 +1146,7 @@ READ_FILE_SCHEMA = {
     # Document formats are stated unconditionally: firecrawl-anydoc is a
     # core dependency (bundled), so its absence is a broken install, not a
     # configuration — the teaching error in read_extract handles that rare
-    # case with the pip-install fix. The ONE dynamic word: "PDF (text
+    # case with the PM repair hint. The ONE dynamic word: "PDF (text
     # layer)" upgrades to "PDF (scanned or text)" when hosted OCR has a
     # route we trust (_read_file_schema_overrides). Scanned-page coverage
     # teaching lives in the response-time NEEDS-OCR warning

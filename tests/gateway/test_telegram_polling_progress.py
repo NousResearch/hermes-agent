@@ -9,6 +9,7 @@ import pytest
 from gateway.config import PlatformConfig
 from plugins.platforms.telegram import adapter as tg_adapter
 from plugins.platforms.telegram.adapter import TelegramAdapter
+from plugins.platforms.telegram.transport_admission import AdmissionHTTPTransport
 
 
 class _ControlledRequest:
@@ -239,9 +240,8 @@ async def test_fallback_disabled_skips_doh_discovery_on_connect(monkeypatch):
 
     assert await adapter.connect() is True
     assert builders[0].polling_request is _ControlledRequest.instances[-1]
-    assert "transport" not in (
-        builders[0].polling_request.kwargs.get("httpx_kwargs") or {}
-    )
+    httpx_kwargs = builders[0].polling_request.kwargs.get("httpx_kwargs") or {}
+    assert isinstance(httpx_kwargs["transport"], AdmissionHTTPTransport)
     await adapter.disconnect()
 
 
@@ -337,10 +337,10 @@ async def test_fallback_disabled_excludes_configured_ips_from_proxy_targets(monk
 
     assert await adapter.connect() is True
     assert proxy_targets == [["api.telegram.org"]]
-    assert builders[0].polling_request.kwargs.get("proxy") == "http://127.0.0.1:8080"
-    assert "transport" not in (
-        builders[0].polling_request.kwargs.get("httpx_kwargs") or {}
-    )
+    httpx_kwargs = builders[0].polling_request.kwargs.get("httpx_kwargs") or {}
+    transport = httpx_kwargs["transport"]
+    assert isinstance(transport, AdmissionHTTPTransport)
+    assert str(transport.proxy.url) == "http://127.0.0.1:8080"
     await adapter.disconnect()
 
 

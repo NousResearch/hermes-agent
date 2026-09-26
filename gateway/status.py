@@ -532,8 +532,9 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
 def inline_source_flag_index(tokens: list[str]) -> int | None:
     """Index of the ``-c`` token when *tokens* is an interpreter running INLINE SOURCE, else None.
 
-    Everything after ``-c`` is data the inline program receives, not this process's own identity.
-    The detached gateway restart watcher (``gateway._spawn_gateway_restart_watcher``) is spawned as
+    Everything after ``-c`` is data the inline program receives; whether that data names THIS
+    process (the bootstrap launcher) or a later spawn is ``_inline_source_tail_names_a_program``'s
+    call. The detached gateway restart watcher (``gateway._spawn_gateway_restart_watcher``) is spawned as
     ``python -c <watcher source> <old_pid> <python> -m hermes_cli.main gateway run``: its trailing
     argv is the command the watcher will LATER spawn, so every argv matcher used to read it as a
     live gateway. See #107002 and the "never infer process identity from argv substrings" rule.
@@ -588,6 +589,62 @@ def command_line_runs_inline_source(tokens: list[str]) -> bool:
     return inline_source_flag_index(tokens) is not None
 
 
+# A Python string literal: optional prefix, then a body that (single-quoted, as in Python) stops at
+# a newline. A quote right after an identifier character (``O'Brien`` in a path) opens nothing.
+_PYTHON_STRING_LITERAL_RE = re.compile(
+    r"""(?<!\w)[rbfut]{0,2}(?:'(?:\\.|[^\\'\n])*'|"(?:\\.|[^\\"\n])*")""", re.IGNORECASE
+)
+
+
+def _inline_source_argv(after_flag: str) -> list[str]:
+    """The words after ``python -c`` (*after_flag*: the command line after the ``-c`` token) that
+    can speak for the process, normalised like the matcher's tokens.
+
+    ``/proc`` and psutil join argv with spaces, so the inline source cannot be delimited from its
+    tail and its words stay in — but not its string literals: the launcher embeds the install
+    root there (and ``installation_command(home=…)`` the profile's ``HERMES_HOME``), and a folder
+    can be named anything, like a checkout at ``~/hermes``. A quoted string standing as a whole
+    word is an argument, not a literal: a Windows process listing quotes the ``-c`` operand that
+    way, and any other argument with a space in it. The first word is the operand (or its start),
+    so it goes.
+    """
+    def literal_as_word(literal: re.Match[str]) -> str:
+        text, start, end = literal.string, literal.start(), literal.end()
+        if text[start - 1 : start].strip() or text[end : end + 1].strip():
+            return " "  # inside a word: data of the inline source
+        return "".join(literal.group().split())  # a whole quoted argument: keep it one word
+
+    words = _PYTHON_STRING_LITERAL_RE.sub(literal_as_word, after_flag).split()[1:]
+    return [word.strip("\"'").replace("\\", "/").lower() for word in words]
+
+
+def _inline_source_tail_names_a_program(argv: list[str]) -> bool:
+    """True when the argv after ``python -c <src>`` (*argv*: ``_inline_source_argv``) invokes a
+    program of its own, so it identifies a process the inline source spawns LATER, not this one.
+
+    Two Hermes-owned shapes share the ``-c`` prefix and only their tails tell them apart. The
+    detached restart watcher's tail is a whole command line — ``<old_pid> <python> -m
+    hermes_cli.main gateway run`` (``gateway._spawn_gateway_restart_watcher``, #107002) or the
+    bootstrap-wrapped ``<old_pid> <delay> <python> -I -c <bootstrap> gateway restart``
+    (``gateway/run_shutdown.py``). The bootstrap launcher's tail is plain arguments — ``gateway run
+    --replace`` — that its source hands to ``hermes_cli.main`` in-process
+    (``hermes_cli/_launchers.py``: ``runtime_command`` and the ``.hermes/bin/hermes`` script every
+    service unit execs), so they DO name this process; refusing every ``-c`` made each status probe
+    unlink a live gateway's ``gateway.pid``/``gateway.lock`` (#123109). A program is an
+    interpreter, a Hermes executable or a ``-m`` module selector; a ``--profile``/``-p`` value is a
+    profile name even when it reads like one (``python-bot``). Pinned against the real builders in
+    ``tests/gateway/test_gateway_command_line_matcher.py``.
+    """
+    names = [arg.rsplit("/", 1)[-1] for arg in argv]
+    return any(
+        name == "-m"
+        or name.removesuffix(".exe") in ("hermes", "hermes-gateway")
+        or name.startswith(("python", "pypy"))
+        for previous, name in zip(["", *names], names)
+        if previous not in ("--profile", "-p")
+    )
+
+
 def _gateway_command_subcommand(command: str | None) -> str | None:
     """Hermes gateway lifecycle subcommand from a command line, or None. No loose substring matches
     (``"gateway" in cmdline`` also matched ``gateway status`` / ``python -m tui_gateway``): needs a
@@ -608,24 +665,38 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     basenames = [t.rsplit("/", 1)[-1] for t in tokens]
     # ``python -c <src> … -m hermes_cli.main gateway run``: the trailing argv belongs to the program
     # the inline source will spawn later, not to this process (#107002). Case-preserving tokens:
-    # the operand-taking ``-X``/``-W``/``-Q`` must not be conflated with ``-q``/``-b``.
-    if command_line_runs_inline_source(cased_tokens):
-        return None
+    # the operand-taking ``-X``/``-W``/``-Q`` must not be conflated with ``-q``/``-b``. The bootstrap
+    # launcher is ``python -I -c <src> gateway run`` too, but its tail is this process's own argv
+    # (#123109): only a tail that names a program is a later spawn, and only words outside the
+    # source's string literals speak for the process.
+    argv = tokens
+    flag_index = inline_source_flag_index(cased_tokens)
+    if flag_index is not None:
+        # The original text, not rejoined tokens: a token ends at a closing quote, so rejoining
+        # would stand the root literal in ``insert(0, '<root>')`` as a quoted argument of its own.
+        end = 0
+        for token in raw_tokens[: flag_index + 1]:
+            end = command.index(token, end) + len(token)
+        argv = _inline_source_argv(command[end:])
+        if _inline_source_tail_names_a_program(argv):
+            return None
+    argv_basenames = [t.rsplit("/", 1)[-1] for t in argv]
     # The launchd job's osascript wrapper (gateway_launchd.launchd_program_arguments) carries the gateway argv
     # inside one AppleScript string; the gateway itself is its child and is matched on its own command line.
     if basenames[0] == "osascript":
         return None
     # Gateway-dedicated entrypoints carry no subcommand to inspect.
-    if any(t == "gateway/run.py" or t.endswith("/gateway/run.py") for t in tokens):
+    if any(t == "gateway/run.py" or t.endswith("/gateway/run.py") for t in argv):
         return "run"
     # Atomic Hermes' bundled desktop runner shares HERMES_HOME with the CLI; without this,
     # `gateway run --replace` does not recognise it as a running gateway, skips the
     # terminate-and-scoped-lock-handoff path, and collides with its still-held scoped locks
     # (e.g. the Discord bot-token lock). See #22418.
-    if any(b == "desktop-gateway.py" for b in basenames):
+    if any(b == "desktop-gateway.py" for b in argv_basenames):
         return "run"
-    if any(b in ("hermes-gateway", "hermes-gateway.exe") for b in basenames):
+    if any(b in ("hermes-gateway", "hermes-gateway.exe") for b in argv_basenames):
         return "run"
+    # The entrypoint may be named inside the inline source (``run_module('hermes_cli.main')``).
     joined = " ".join(tokens)
     if "hermes_cli.main" not in joined and "hermes_cli/main.py" not in joined and not any(
         b in ("hermes", "hermes.exe") for b in basenames
@@ -634,7 +705,7 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     # Drop --profile X / -p X / --profile=X / -p=X (consumes a VALUE of "gateway" too).
     filtered: list[str] = []
     skip_next = False
-    for token in tokens:
+    for token in argv:
         if skip_next:
             skip_next = False
         elif token in ("--profile", "-p"):
@@ -652,7 +723,8 @@ def gateway_spawn_intent_subcommand(command: str | None) -> str | None:
     """Gateway lifecycle subcommand a command line would EVENTUALLY launch, or None.
 
     The identity matcher (``_gateway_command_subcommand``) deliberately refuses ``python -c <src>
-    …``: the trailing argv is the inline program's data, not that process's own identity (#107002).
+    …`` whose trailing argv names a program: that argv is the inline program's data, not the
+    process's own identity (#107002; the bootstrap launcher's plain-argument tail is, #123109).
     Callers that inspect a command line as SPAWN INTENT — "if I launch this, does a gateway runtime
     eventually appear?" — need the opposite answer, because
     ``gateway._spawn_gateway_restart_watcher`` hides a real ``… -m hermes_cli.main gateway run``

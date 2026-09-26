@@ -558,6 +558,15 @@ _GATE_ENV_KEYS = (
     "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS",
 )
 
+# Typed refusal vocabulary of the channel-admission gate (INS1-676 / REQ-INS1-SAAS-082 Beh 3).
+# A message this gate drops writes ONE operator-side line naming the channel id and one of
+# these tokens, written by the refusing branch itself, so the class is diagnosable from the
+# log without reading process internals. The trace is operator-side only: no message, no
+# placeholder and no wording reaches the channel, and no verdict the gate takes changes.
+# The vocabulary is closed: these two tokens are every type a dropped message can carry.
+_ADMISSION_REFUSAL_CHANNEL_NOT_ALLOWED = "channel_not_allowed"  # outside DISCORD_ALLOWED_CHANNELS
+_ADMISSION_REFUSAL_CHANNEL_IGNORED = "channel_ignored"  # inside DISCORD_IGNORED_CHANNELS
+
 
 def _multiplex_active() -> bool:
     """True when the gateway is running in multiplex_profiles mode."""
@@ -5969,11 +5978,22 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             allowed_channels = self._get_allowed_channels()
             if allowed_channels:
                 if "*" not in allowed_channels and not (channel_keys & allowed_channels):
-                    logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_keys)
+                    # The drop's own trace (INS1-676). INFO, not debug: gateway.log's handler
+                    # level is INFO and THIS logger routes there, so a debug line is invisible
+                    # to the operator — which is how three dropped messages read as a dead bot.
+                    logger.info(
+                        "[%s] admission refused type=%s channel_id=%s channel_keys=%s",
+                        self.name, _ADMISSION_REFUSAL_CHANNEL_NOT_ALLOWED,
+                        message.channel.id, sorted(channel_keys),
+                    )
                     return False
             ignored_channels = self._get_ignored_channels()
             if "*" in ignored_channels or (channel_keys & ignored_channels):
-                logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_keys)
+                logger.info(
+                    "[%s] admission refused type=%s channel_id=%s channel_keys=%s",
+                    self.name, _ADMISSION_REFUSAL_CHANNEL_IGNORED,
+                    message.channel.id, sorted(channel_keys),
+                )
                 return False
             free_channels = self._discord_free_response_channels()
             require_mention = self._discord_require_mention()

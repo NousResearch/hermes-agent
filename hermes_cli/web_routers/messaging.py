@@ -16,6 +16,7 @@ import threading
 import time
 import urllib.parse
 from datetime import datetime, timezone
+from functools import cache
 from pathlib import Path
 from typing import Any, Optional
 
@@ -165,7 +166,8 @@ def _require_platform(platform_id: str) -> dict[str, Any]:
 
 
 def _platform_enablement(
-    platform_id: str, entry: dict[str, Any], env_on_disk: dict[str, str], scoped: bool
+    platform_id: str, entry: dict[str, Any], env_on_disk: dict[str, str], scoped: bool,
+    *, config_loader=None,
 ) -> tuple[bool, bool, dict | None]:
     """(enabled, configured, home_channel). Profile-scoped: derive from the profile's
     config.yaml + .env only — load_gateway_config()'s env-override layer reads
@@ -174,7 +176,8 @@ def _platform_enablement(
     if scoped:
         configured = bool(required) and all(env_on_disk.get(key) for key in required)
         try:
-            plat_cfg = (load_config().get("platforms") or {}).get(platform_id)
+            config = config_loader() if config_loader is not None else load_config()
+            plat_cfg = (config.get("platforms") or {}).get(platform_id)
             plat_cfg = plat_cfg if isinstance(plat_cfg, dict) else {}
             hc = plat_cfg.get("home_channel")
             # Setup writes credentials without a platforms entry; explicit disable wins.
@@ -187,7 +190,7 @@ def _platform_enablement(
     try:
         from gateway.config import Platform, load_gateway_config
 
-        gateway_config = load_gateway_config()
+        gateway_config = config_loader() if config_loader is not None else load_gateway_config()
         platform = Platform(platform_id)
         platform_config = gateway_config.platforms.get(platform)
         enabled = bool(platform_config and platform_config.enabled)
@@ -202,6 +205,7 @@ def _platform_enablement(
 def _messaging_platform_payload(
     entry: dict[str, Any], env_on_disk: dict[str, str], runtime: dict | None,
     scoped: bool = False, profile_home: Optional[Path] = None,
+    *, config_loader=None,
 ) -> dict[str, Any]:
     platform_id = entry["id"]
     rt = runtime if isinstance(runtime, dict) else {}
@@ -240,7 +244,8 @@ def _messaging_platform_payload(
         for key, value in ((key, env_value(key)) for key in entry["env_vars"])
     ]
 
-    enabled, configured, home_channel = _platform_enablement(platform_id, entry, env_on_disk, scoped)
+    enabled, configured, home_channel = _platform_enablement(
+        platform_id, entry, env_on_disk, scoped, config_loader=config_loader)
 
     state = runtime_platform.get("state")
     if not enabled:
@@ -298,7 +303,22 @@ def _platform_payloads(scoped_dir: Optional[Path], entries) -> list[dict[str, An
         served = multiplexer_liveness_for_profile(own_home)
         if served is not None:
             runtime = {**served[1], "platforms": profile_platforms_from_multiplexer(served[1], own_home.name)}
-    return [_messaging_platform_payload(entry, env_on_disk, runtime, scoped=scoped_dir is not None, profile_home=scoped_dir)
+    @cache
+    def request_config():
+        # Request-local, including failure: never repeat discovery/Node probes for
+        # every catalog row, or retain another request/profile's config. Lazy so
+        # an empty catalog does no discovery and direct payload callers still work.
+        try:
+            if scoped_dir is not None:
+                return load_config()
+            from gateway.config import load_gateway_config
+
+            return load_gateway_config()
+        except Exception:
+            return None  # existing per-platform fallback, retried next request
+
+    return [_messaging_platform_payload(entry, env_on_disk, runtime, scoped=scoped_dir is not None,
+                                       profile_home=scoped_dir, config_loader=request_config)
             for entry in entries]
 
 

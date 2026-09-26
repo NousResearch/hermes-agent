@@ -94,11 +94,28 @@ def _route_report(child: Any) -> Optional[dict[str, Any]]:
             "service_tier": service_tier_word(_tier_in_effect(child)),
             **({"fallback_activated": True} if getattr(child, "_fallback_activated", False) is True else {})}
 
+def _child_spend(child: Any) -> dict[str, Any]:
+    """The child's spend so far: ``_child_cost_usd`` (folded into the parent's session cost, then stripped) plus the
+    model-visible ``cost_usd`` / ``cost_status``. Read on every exit path, since a child that times out, raises or
+    is abandoned on a parent interrupt has already been billed for the calls it made."""
+    cost = getattr(child, "session_estimated_cost_usd", 0.0)
+    cost = float(cost or 0.0) if isinstance(cost, (int, float)) else 0.0
+    status = getattr(child, "session_cost_status", None)
+    return {
+        "_child_cost_usd": cost, "cost_usd": round(cost, 6),
+        "cost_status": status if isinstance(status, str) and status else "unknown",
+    }
+
+def _child_api_calls(child: Any) -> int:
+    with _quiet(None):
+        return _num((child.get_activity_summary() or {}).get("api_call_count", 0))
+    return 0
+
 def _fabricated_entry(idx: int, status: str, error: str, child: Any, duration: float = 0) -> dict[str, Any]:
     """Result entry for a child that raised, never finished, or was abandoned."""
     entry = {
-        "task_index": idx, "status": status, "summary": None, "error": error, "api_calls": 0,
-        "duration_seconds": duration, "_child_role": getattr(child, "_delegate_role", None),
+        "task_index": idx, "status": status, "summary": None, "error": error, "api_calls": _child_api_calls(child),
+        "duration_seconds": duration, "_child_role": getattr(child, "_delegate_role", None), **_child_spend(child),
     }
     route = _route_report(child)
     if route is not None:
@@ -670,8 +687,6 @@ def _build_result_entry(
         exit_reason = "completed" if result.get("completed", False) else "max_iterations"
         status = "completed" if usable_summary else "failed"
 
-    _cost = getattr(child, "session_estimated_cost_usd", 0.0)
-    _cost_status = getattr(child, "session_cost_status", None)
     # Result entry contract: see the _run_single_child docstring.
     entry: dict[str, Any] = {
         "task_index": task_index,
@@ -693,11 +708,8 @@ def _build_result_entry(
         # correct role; stripped before the dict is serialised back to the model (as is _child_cost_usd, folded into
         # the parent's session cost by the aggregator).
         "_child_role": getattr(child, "_delegate_role", None),
-        "_child_cost_usd": float(_cost or 0.0) if isinstance(_cost, (int, float)) else 0.0,
+        **_child_spend(child),
     }
-    # Model-visible per-delegation spend (unlike _child_cost_usd above).
-    entry["cost_usd"] = round(entry["_child_cost_usd"], 6)
-    entry["cost_status"] = _cost_status if isinstance(_cost_status, str) and _cost_status else "unknown"
     _route = _route_report(child)
     if _route is not None:
         entry["route"] = _route
@@ -1068,9 +1080,7 @@ class _ChildRun:
         duration = self.elapsed()
         logger.warning("Subagent %d %s after %.1fs", task_index, "timed out" if is_timeout else f"raised {type(exc).__name__}",
                        duration, exc_info=exc if not is_timeout else False)  # outside ``except``: pass it
-        child_api_calls = 0
-        with _quiet(None):
-            child_api_calls = int(child.get_activity_summary().get("api_call_count", 0) or 0)
+        child_api_calls = _child_api_calls(child)
         # A timeout BEFORE any API call is a black box without a diagnostic dump.
         before_first_call = is_timeout and child_api_calls == 0
         diagnostic_path: Optional[str] = None
@@ -1115,6 +1125,7 @@ class _ChildRun:
             "last_event_age": _child_last_event_age(child) if is_timeout else None,
             "_child_role": getattr(child, "_delegate_role", None),
             "diagnostic_path": diagnostic_path,
+            **_child_spend(child),
         }
         _error_entry = self.finish_failed(_error_entry, _late_pending_steer, preview=f"Timed out after {duration}s" if is_timeout else str(exc))
         close_deferred = is_timeout and not future.done()

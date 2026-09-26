@@ -1953,7 +1953,7 @@ class GatewayTurnMixin:
         _streaming_tts_done = adapter is not None and bool(
             getattr(adapter, "_streaming_tts_turn_completed", lambda *_a, **_k: False)(session_key, run_generation)
         )
-        if not _streaming_tts_done and self._should_send_voice_reply(
+        if not _streaming_tts_done and not agent_result.get("queued_voice_delivered") and self._should_send_voice_reply(
             event, response, agent_messages, already_sent=bool(agent_result.get("already_sent")),
         ):
             await self._send_voice_reply(event, response)
@@ -3720,6 +3720,7 @@ class GatewayTurnMixin:
 
     async def _run_agent_deliver_first_response(
         self, turn_ctx: TurnContext, adapter: Any, response: Any, result: Any, stream_task: Any,
+        message_type: Optional[str] = None,
     ) -> None:
         """Deliver the first response before a queued follow-up runs, unless streaming already did."""
         if turn_ctx.mute_notification_reply:
@@ -3770,6 +3771,7 @@ class GatewayTurnMixin:
                     # The text send records a delivery-ledger obligation under this key, keyed on
                     # the raw inbound id (the anchor above is only the reply target).
                     session_key=session_key, inbound_message_id=turn_ctx.inbound_message_id,
+                    message_type=message_type, delivery_result=result if isinstance(result, dict) else None,
                 )
             except Exception as e:
                 logger.warning("Failed to send first response before queued message: %s", e)
@@ -3795,7 +3797,7 @@ class GatewayTurnMixin:
 
     async def _run_agent_queued_followup(
         self, turn_ctx: TurnContext, adapter: Any, pending: Optional[str], pending_event: Any,
-        response: Any, result: Any, stream_task: Any,
+        response: Any, result: Any, stream_task: Any, message_type: Optional[str] = None,
     ) -> Any:
         """Run the queued / interrupting follow-up as the next turn (recursive ``_run_agent``)."""
         from gateway.platforms.base import merge_pending_message_event
@@ -3829,7 +3831,8 @@ class GatewayTurnMixin:
 
         # Interrupted: discard the response ("Operation interrupted." is noise).
         if not result.get("interrupted"):
-            await self._run_agent_deliver_first_response(turn_ctx, adapter, response, result, stream_task)
+            await self._run_agent_deliver_first_response(
+                turn_ctx, adapter, response, result, stream_task, message_type=message_type)
 
         updated_history = result.get("messages", history)
         next_source, next_message, next_session_key = source, pending, session_key
@@ -4330,6 +4333,7 @@ class GatewayTurnMixin:
             if pending_event or pending:
                 return await self._run_agent_queued_followup(
                     turn_ctx, adapter, pending, pending_event, response, result, stream_task,
+                    message_type=message_type,
                 )
         finally:
             await self._run_agent_cleanup_turn_tasks(

@@ -31,6 +31,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskPr
 from rich.console import Console
 from hermes_constants import OPENROUTER_BASE_URL, get_hermes_home
 from agent.retry_utils import jittered_backoff
+from agent.redact import redact_sensitive_text
 from hermes_cli.env_loader import load_hermes_dotenv
 
 # Load .env from HERMES_HOME first, then project root as a dev fallback.
@@ -455,7 +456,13 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
 
     def _generate_summary(self, content: str, metrics: TrajectoryMetrics) -> str:
         """Summarize ``content`` with retries; returns a fallback summary after the last failure."""
-        prompt = self._summary_prompt(content)
+        # The turns are raw tool output: API keys, tokens and credentials that
+        # appeared in a terminal result or a file read are still verbatim in
+        # here. The summariser is a THIRD-PARTY endpoint (OpenRouter), so this
+        # is the boundary where they must be scrubbed. force=True because the
+        # caller cannot know whether the trajectory is trusted.
+        safe_content = redact_sensitive_text(content, force=True)
+        prompt = self._summary_prompt(safe_content)
         for attempt in range(self.config.max_retries):
             try:
                 metrics.summarization_api_calls += 1
@@ -474,7 +481,13 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
 
     async def _generate_summary_async(self, content: str, metrics: TrajectoryMetrics) -> str:
         """Async twin of ``_generate_summary``."""
-        prompt = self._summary_prompt(content)
+        # The turns are raw tool output: API keys, tokens and credentials that
+        # appeared in a terminal result or a file read are still verbatim in
+        # here. The summariser is a THIRD-PARTY endpoint (OpenRouter), so this
+        # is the boundary where they must be scrubbed. force=True because the
+        # caller cannot know whether the trajectory is trusted.
+        safe_content = redact_sensitive_text(content, force=True)
+        prompt = self._summary_prompt(safe_content)
         for attempt in range(self.config.max_retries):
             try:
                 metrics.summarization_api_calls += 1

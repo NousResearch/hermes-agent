@@ -26,7 +26,7 @@ import time
 import threading
 import atexit
 from dataclasses import dataclass
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Union
 
 logger = logging.getLogger(__name__)
 
@@ -1437,6 +1437,40 @@ TERMINAL_SCHEMA = {
 }
 
 
+_NOTIFY_TRUTHY = frozenset({"1", "true", "yes", "on", "enabled"})
+_NOTIFY_FALSY = frozenset({"0", "false", "no", "off", "disabled"})
+
+
+def _coerce_notify(value: Any) -> Optional[Union[bool, List[str]]]:
+    """Normalise ``notify`` to a bool or a list of patterns, or ``None`` if unusable.
+
+    Models routinely send ``"true"``/``"yes"`` as a JSON string for a boolean parameter, and
+    this is the one argument whose schema is a ``boolean | array`` union, so a stringified bool
+    has nowhere else to go and used to be rejected outright (#123345). The sibling boolean
+    arguments (``background``, ``pty``) already ride Python truthiness, so accepting the
+    spellings here is what makes ``notify`` behave like the rest of the tool.
+
+    Returns ``None`` for a value that cannot be read as either branch — the caller turns that
+    into the schema error. A list keeps its non-string members filtered out rather than
+    rejected, since a stray pattern should not cost the whole call.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in _NOTIFY_TRUTHY:
+            return True
+        if text in _NOTIFY_FALSY:
+            return False
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        # JSON has no int-typed boolean, but 0/1 arrive from shell-ish callers and batch replay.
+        return bool(value)
+    if isinstance(value, (list, tuple)):
+        return [item for item in value if isinstance(item, str) and item.strip()]
+    return None
+
+
 def _handle_terminal(args, **kw):
     from agent.terminal_approval_batch import validate_prepared_terminal
     validate_prepared_terminal(args)
@@ -1480,17 +1514,18 @@ def _handle_terminal(args, **kw):
                 "terminal(command=..., background=true, persist_on_release=true)."
             )
     if notify is not None:
-        if isinstance(notify, bool):
-            notify_on_complete = notify
-            watch_patterns = None
-        elif isinstance(notify, list):
-            watch_patterns = notify
-            notify_on_complete = False
-        else:
+        coerced_notify = _coerce_notify(notify)
+        if coerced_notify is None:
             return tool_error(
                 "notify must be true/false (notify on exit) or a list of "
                 "strings (notify on output pattern match)."
             )
+        if isinstance(coerced_notify, bool):
+            notify_on_complete = coerced_notify
+            watch_patterns = None
+        else:
+            watch_patterns = coerced_notify
+            notify_on_complete = False
     if heartbeat:
         notify_on_complete = True  # the heartbeat rides the completion delivery path
     return terminal_tool(

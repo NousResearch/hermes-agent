@@ -1872,8 +1872,8 @@ def _maybe_unregister_gateway_service(profile_name: str) -> None:
         print(f"⚠ Could not unregister s6 gateway service: {exc}")
 
 
-def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:
-    """Disable and remove systemd/launchd service for a profile."""
+def _cleanup_gateway_service(name: str, profile_dir: Path) -> bool:
+    """Disable and remove systemd/launchd service for a profile; True when a unit was removed."""
     import platform as _platform
 
     # The service name follows get_hermes_home(): bind the override (the seam a multiplexed
@@ -1899,12 +1899,14 @@ def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:
                 svc_file.unlink(missing_ok=True)
                 _run("systemctl", "--user", "daemon-reload")
                 print(f"✓ Service {svc_name} removed")
+                return True
         elif system == "Darwin":
             plist_path = get_launchd_plist_path()
             if plist_path.exists():
                 _run("launchctl", "unload", str(plist_path))
                 plist_path.unlink(missing_ok=True)
                 print("✓ Launchd service removed")
+                return True
     except Exception as e:
         print(f"⚠ Service cleanup: {e}")
     finally:
@@ -1912,6 +1914,7 @@ def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:
         os.environ.pop("HERMES_HOME", None)
         if old_home is not None:
             os.environ["HERMES_HOME"] = old_home
+    return False
 
 
 def _stop_gateway_process(profile_dir: Path) -> None:
@@ -2328,9 +2331,14 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     if new_dir.exists():
         raise _profile_exists_error(new_canon)
 
-    # 1. Stop gateway if running, and the screen whose launcher holds paths under the old name
-    if _check_gateway_running(old_dir):
-        _cleanup_gateway_service(old_canon, old_dir)
+    # 1. Remove the old name's service even when its gateway is stopped: the unit is named after
+    # the old profile and runs ``--profile <old>``, so the service manager would crash-loop it on
+    # the next login or container boot. Then stop the gateway and the screen whose launcher
+    # holds paths under the old name.
+    gw_running = _check_gateway_running(old_dir)
+    service_removed = _cleanup_gateway_service(old_canon, old_dir)
+    _maybe_unregister_gateway_service(old_canon)
+    if gw_running:
         _stop_gateway_process(old_dir)
     _stop_bot_desktop(old_dir)
 
@@ -2360,6 +2368,9 @@ def rename_profile(old_name: str, new_name: str) -> Path:
         if live_mux:
             clear_named_profile_deleted(old_dir)
             _notify_multiplexer(old_canon)
+        _maybe_register_gateway_service(old_canon)
+        if service_removed:
+            print(f"⚠ The gateway service was removed. Reinstall it with: hermes -p {old_canon} gateway install")
         raise
     print(f"✓ Renamed {old_dir.name} → {new_dir.name}")
     # The tombstone lives at profiles/.deleted/<old_name>; old_dir is gone so nothing can
@@ -2396,6 +2407,9 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     # 7. Hot-serve the renamed profile now (mirrors create; a missed signal only delays it).
     if live_mux:
         _notify_multiplexer(new_canon)
+    _maybe_register_gateway_service(new_canon)
+    if service_removed:
+        print(f"⚠ The gateway service was removed. Reinstall it with: hermes -p {new_canon} gateway install")
     return new_dir
 
 

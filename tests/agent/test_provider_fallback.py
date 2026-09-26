@@ -464,6 +464,24 @@ class TestFallbackExtraBodyReResolution:
         assert agent.request_overrides.get("temperature") == 0.2
 
 
+def test_fallback_to_openai_compatible_server_never_sends_fast_speed():
+    """#122010: static /fast pins Anthropic ``speed``; the chat-completions transport would pass it
+    to a local fallback as a top-level kwarg, which the OpenAI SDK rejects with a TypeError."""
+    fb_url, fb_model = "http://127.0.0.1:8080/v1", "Hermes-3-Llama-3.1-8B-4bit"
+    agent = _make_agent(fallback_model={"provider": "custom", "model": fb_model, "base_url": fb_url})
+    agent.provider, agent.model, agent.base_url = "anthropic", "claude-opus-4-8", "https://api.anthropic.com"
+    agent.service_tier = "priority"
+    agent.request_overrides = {"speed": "fast", "temperature": 0.2}
+    with patch(
+        "agent.auxiliary_client.resolve_provider_client",
+        return_value=(_mock_client(base_url=fb_url), fb_model),
+    ), patch("agent.model_metadata.get_model_context_length", return_value=128_000):
+        assert agent._try_activate_fallback() is True
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+    assert "speed" not in kwargs and "speed" not in (kwargs.get("extra_body") or {})
+    assert kwargs["temperature"] == 0.2
+
+
 # ── MoA preset as a fallback entry (#112525, #112623) ─────────────────────
 
 

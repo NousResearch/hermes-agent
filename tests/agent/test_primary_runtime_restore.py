@@ -700,6 +700,32 @@ class TestSwitchModelRequestOverridesSnapshot:
         # …and recovery restores the switch-time snapshot.
         assert agent.request_overrides == overrides
 
+    def test_restore_after_switch_does_not_resurrect_fast_speed(self):
+        """#122010: the switch snapshot keeps the pre-switch overrides, so a /fast
+        ``speed`` pinned for the old route must be re-gated when the primary is
+        restored (restore and transport recovery) instead of reaching a local server."""
+        agent = _make_agent(provider="custom", request_overrides={"speed": "fast"})
+        self._switch(
+            agent,
+            new_model="local-model",
+            new_provider="custom",
+            base_url="https://my-llm.example.com/v1",
+        )
+        assert "speed" not in agent.request_overrides
+        agent._fallback_activated = True
+        agent.request_overrides = {"extra_body": {"fallback_only": True}}
+        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+            assert agent._restore_primary_runtime() is True
+        assert "speed" not in agent.request_overrides
+
+        agent.request_overrides = {"extra_body": {"fallback_only": True}}
+        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()), \
+             patch("time.sleep"):
+            assert agent._try_recover_primary_transport(
+                _make_transport_error("ReadTimeout"), retry_count=3, max_retries=3,
+            ) is True
+        assert "speed" not in agent.request_overrides
+
     def test_switch_then_restore_restores_current_overrides(self):
         overrides = {"extra_body": {"reasoning": {"effort": "high"}}}
         agent = _make_agent(provider="custom", request_overrides=overrides)

@@ -33,7 +33,7 @@ from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
-from agent.fast_mode import effective_request_overrides
+from agent.fast_mode import effective_request_overrides, regate_pinned_fast_overrides
 from agent.turn_context import substitute_api_content
 from agent.gemini_native_adapter import is_native_gemini_base_url
 # Remote endpoints must never be fingerprinted: the probe waterfall is only valid for local/LM-Studio/Ollama
@@ -2164,6 +2164,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
             _update_fallback_context_compressor(agent)
             _reresolve_fallback_reasoning_config(agent)
             _rescope_fallback_extra_body(agent, old_model, old_provider, old_base_url)
+            regate_pinned_fast_overrides(agent)
             rewrite_prompt_model_identity(agent, fb_model, fb_provider)
 
             notice = (

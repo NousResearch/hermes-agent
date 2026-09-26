@@ -539,6 +539,11 @@ WEB_EXTRACT_SCHEMA = {
                 "description": "List of URLs to extract content from (max 5 URLs per call)",
                 "maxItems": 5
             },
+            "format": {
+                "type": "string",
+                "enum": ["markdown", "summary"],
+                "description": "Output format. \"markdown\" (default) returns the full clean page. \"summary\" returns a short AI-generated summary of the page, using far fewer tokens; use it when you only need the gist rather than the full text. Best-effort: only extract backends that support summaries (currently Firecrawl with an API key) honour it; others, and key-less Firecrawl, return the full page."
+            },
             "char_limit": {
                 "type": "integer",
                 "description": "Optional per-page character budget sent back (default 15000). Pages larger than this are head+tail truncated with the full text stored to disk. Raise it when you need more of a long page inline.",
@@ -555,12 +560,26 @@ registry.register(
     check_fn=check_web_api_key, requires_env=_web_requires_env(), emoji="🔍",
     max_result_size_chars=100_000,
 )
+async def _web_extract_format_error(fmt: Any) -> str:
+    allowed = ", ".join(repr(f) for f in WEB_EXTRACT_SCHEMA["parameters"]["properties"]["format"]["enum"])
+    return tool_error(f"Unknown web_extract format {fmt!r}; expected one of {allowed}.")
+
+
+def _web_extract_handler(args, **kw):
+    """Validate ``format`` (default "markdown") before dispatching; an unknown value is an error, not a pass-through."""
+    fmt = args.get("format") or "markdown"
+    if fmt not in WEB_EXTRACT_SCHEMA["parameters"]["properties"]["format"]["enum"]:
+        return _web_extract_format_error(fmt)
+    return web_extract_tool(
+        args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [],
+        fmt,
+        char_limit=args.get("char_limit"),
+    )
+
+
 registry.register(
     name="web_extract", toolset="web", schema=WEB_EXTRACT_SCHEMA,
-    handler=lambda args, **kw: web_extract_tool(
-        args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [], "markdown",
-        char_limit=args.get("char_limit"),
-    ),
+    handler=_web_extract_handler,
     check_fn=check_web_api_key, requires_env=_web_requires_env(), is_async=True, emoji="📄",
     max_result_size_chars=100_000,
 )

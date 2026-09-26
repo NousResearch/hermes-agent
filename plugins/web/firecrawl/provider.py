@@ -292,7 +292,10 @@ async def _scrape_one(url: str, formats: List[str], format: Optional[str]) -> Di
             logger.info("Blocked redirected web_extract for %s by rule %s", final_blocked["host"], final_blocked["rule"])
             return _error_entry(final_url, final_blocked["message"], title=title, raw=True, blocked=final_blocked)
         markdown, html = payload.get("markdown"), payload.get("html")
-        content = markdown if format == "markdown" or (format is None and markdown) else html or markdown or ""
+        if format == "summary":
+            content = payload.get("summary") or markdown or ""
+        else:
+            content = markdown if format == "markdown" or (format is None and markdown) else html or markdown or ""
         return {"url": final_url, "title": title, "content": content, "raw_content": content, "metadata": metadata}
     except Exception as scrape_err:  # noqa: BLE001
         logger.debug("Firecrawl scrape failed for %s: %s", url, scrape_err)
@@ -330,14 +333,17 @@ class FirecrawlWebSearchProvider(BaseWebSearchProvider):
 
     async def extract(self, urls: List[str], **kwargs: Any) -> List[Dict[str, Any]]:
         """Per-URL scrape; failures become items with an ``error`` field.
-        ``format``: "markdown" | "html" | both (markdown preferred)."""
+        ``format``: "markdown" | "html" | "summary" (Firecrawl's AI page summary,
+        falling back to markdown when absent) | both markdown and html (markdown preferred)."""
         from tools.interrupt import is_interrupted as _is_interrupted
         if _is_interrupted():
             return [{"url": u, "error": "Interrupted", "title": ""} for u in urls]
         if _use_keyless_ring():
             return await asyncio.to_thread(keyless_extract, "Firecrawl", "firecrawl", urls, logger)
         format = kwargs.get("format")
-        formats = [format] if format in ("markdown", "html") else ["markdown", "html"]
+        # "summary" asks Firecrawl for its AI page summary — a far smaller payload than
+        # the full page — and _scrape_one returns it as the content.
+        formats = [format] if format in ("markdown", "html", "summary") else ["markdown", "html"]
         return [
             {"url": url, "error": "Interrupted", "title": ""} if _is_interrupted() else await _scrape_one(url, formats, format)
             for url in urls

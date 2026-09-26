@@ -3470,8 +3470,13 @@ def _launch_external_cron_worker(job: dict) -> bool:
     ack_path = handoff_dir / f"{execution_id}.ready"
     # Captured so a worker that dies before its acknowledgement can name the cause (#112729).
     stderr_path = handoff_dir / f"{execution_id}.stderr"
+    # Under the PM runtime ``sys.executable`` is the bare store Python (no third-party
+    # packages); the committed environment's own interpreter carries them (#123400).
+    repo_root = Path(__file__).resolve().parent.parent
+    from cron import scheduler_worker_env
+    worker_interpreter = str(scheduler_worker_env.managed_runtime_python(repo_root) or sys.executable)
     command = [
-        sys.executable,
+        worker_interpreter,
         "-m",
         "cron.scheduler",
         "--external-worker-file",

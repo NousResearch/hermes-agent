@@ -817,6 +817,73 @@ class LineAdapter(BasePlatformAdapter):
         msgs: List[Dict[str, Any]] = [{"type": "image", "originalContentUrl": url, "previewImageUrl": url}]
         return await self._send_messages(chat_id, msgs + ([_text_message(caption)] if caption else []))
 
+    def _combined_image_messages(self, extracted) -> List[Dict[str, Any]]:
+        """Message objects for the image attachments that can ride the reply call; each
+        drained source is cleared from *extracted* (attempted — the follow-up lane must
+        not re-deliver it). Non-image media and non-HTTPS URLs stay for the normal lane."""
+        from gateway.platforms.base import _IMAGE_EXTS
+
+        msgs: List[Dict[str, Any]] = []
+        for url in [u for u in extracted.images if str(u).lower().startswith("https://")]:
+            extracted.images.remove(url)
+            msgs.append({"type": "image", "originalContentUrl": url, "previewImageUrl": url})
+        for path, _is_voice in [
+                (p, v) for p, v in extracted.media_files
+                if Path(p).suffix.lower() in _IMAGE_EXTS and not extracted.force_document_attachments]:
+            extracted.media_files.remove((path, _is_voice))
+            preflight, err = self._check_media_file("image", path)
+            if err is not None:
+                continue
+            url = self._serve_file(preflight)
+            if not url.lower().startswith("https://"):
+                continue
+            msgs.append({"type": "image", "originalContentUrl": url, "previewImageUrl": url})
+        for path in [p for p in extracted.local_files
+                     if Path(p).suffix.lower() in _IMAGE_EXTS and not extracted.force_document_attachments]:
+            extracted.local_files.remove(path)
+            preflight, err = self._check_media_file("image", path)
+            if err is not None:
+                continue
+            url = self._serve_file(preflight)
+            if not url.lower().startswith("https://"):
+                continue
+            msgs.append({"type": "image", "originalContentUrl": url, "previewImageUrl": url})
+        return msgs
+
+    async def _deliver_final_with_attachments(
+        self, event: MessageEvent, session_key: str, extracted,
+        metadata: Optional[Dict[str, Any]], *, is_ephemeral_response: bool, ephemeral_ttl: int,
+        record_delivery) -> bool:
+        """LINE rides the reply token (#123435): the final text and the image attachments
+        go out as ONE call — replies are free, pushes are metered per recipient, and a
+        text-then-attachment turn spent the reply on the text and pushed every image.
+        The combined send IS the final text send, so it takes the same ledger bracket."""
+        delivery_adapter = self._final_delivery_adapter(event.source)
+        if delivery_adapter is not self:
+            return False  # a routed replacement owns the final; the normal lane delivers through it
+        if not self._client:
+            return False
+        extra_msgs = self._combined_image_messages(extracted)
+        if not extra_msgs or not extracted.text_content:
+            return False
+        obligation_id = await self._record_delivery_obligation(
+            event, session_key, extracted.text_content, delivery_adapter, is_ephemeral_response)
+        if obligation_id is not None:
+            await self._release_turn_marker(event)
+        logger.info("[LINE] Combined delivery: text (%d chars) + %d image(s) in one call",
+                    len(extracted.text_content), len(extra_msgs))
+        # ``text=False``: the text contract's reply-early-return would drop follow-up
+        # batches; the first batch rides the reply and the rest push (metered) instead.
+        result = await self._send_messages(
+            event.source.chat_id, [*_text_messages(extracted.text_content), *extra_msgs],
+            force_push=False, text=False)
+        record_delivery(result)
+        if obligation_id is not None:
+            await self._finalize_delivery_obligation(obligation_id, result, event, delivery_adapter)
+        if ephemeral_ttl and ephemeral_ttl > 0 and result.success and result.message_id:
+            self._schedule_ephemeral_delete(event.source.chat_id, result.message_id, ephemeral_ttl)
+        return result.success
+
     async def send_voice(
         self, chat_id: str, audio_path: str, duration_ms: int = 1000, metadata: Optional[Dict[str, Any]] = None,
         **kwargs: Any,

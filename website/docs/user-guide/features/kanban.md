@@ -968,6 +968,7 @@ hermes kanban watch [--assignee P] [--tenant T]        # live stream ALL events 
         [--kinds completed,blocked,…] [--interval SECS]
 hermes kanban heartbeat <id> [--note "..."]            # worker liveness signal for long ops
 hermes kanban runs <id> [--json]                       # attempt history (one row per run)
+hermes kanban worker-budget <id> [--run N]             # machine-readable turn/phase budget record (JSON)
 hermes kanban assignees [--json]                       # profiles on disk + per-assignee task counts
 hermes kanban dispatch [--dry-run] [--max N]           # one-shot pass
         [--failure-limit N] [--json]
@@ -1001,6 +1002,7 @@ All commands are also available as a slash command in the interactive CLI and in
 | `kanban.dispatch_profiles` | unset (any existing profile) | Per-home claim allowlist for boards shared across Hermes homes. When the key is present, this home's dispatcher only claims cards whose assignee is listed — fail-closed: an empty list, `null` or a bare `dispatch_profiles:` claims nothing, and a config read that fails logs a warning and claims nothing; other assignees land in `skipped_nonspawnable`. Only omitting the key means "any existing profile". `hermes kanban diagnostics` prints the resolved value for this home (`any`, the listed names, or `none (fail-closed: …)`). See [Shared boards across homes](#shared-boards-across-homes). |
 | `kanban.auto_promote_children` | `true` | After `decompose_triage_task()` produces children with no parent-blocker dependencies, they're automatically promoted to `ready` so the dispatcher can pick them up. Set to `false` to require manual review — children stay in `todo` until you promote them. |
 | `kanban.default_workdir` | unset | Board-level default working directory applied to new tasks when neither `--workspace` nor the task itself overrides it. Per-task `workspace:` still wins. |
+| `kanban.worker_budget_telemetry` | `false` | Record each worker's turn/phase budget as run-scoped `worker_budget` events, readable through `hermes kanban worker-budget <id> [--run N]`. Off by default; `HERMES_KANBAN_WORKER_BUDGET_TELEMETRY=1` overrides it (an explicit `0` wins). With it off the command still answers every board-derived field and names the worker-only ones in `unavailable`. |
 
 ```yaml
 kanban:

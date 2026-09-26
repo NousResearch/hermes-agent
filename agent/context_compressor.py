@@ -4375,7 +4375,8 @@ Write only the summary body. Do not include any preamble or prefix."""
     def _strip_context_summary_handoff_message(cls, message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Drop stale handoff data while preserving merged prior-tail content.
         Returns a copy for non-handoff rows, the unwrapped prior-tail content for merged handoffs
-        (delimiter form, or legacy end-marker form), and ``None`` for standalone ones."""
+        (delimiter form, or legacy end-marker form), and ``None`` for standalone ones. A carrier that
+        holds ``tool_calls`` is never dropped, even with no prior text: its results follow it."""
         if not isinstance(message, dict):
             return message
         if not cls._is_context_summary_message(message):
@@ -4387,6 +4388,13 @@ Write only the summary body. Do not include any preamble or prefix."""
             unwrapped.pop(COMPRESSED_SUMMARY_METADATA_KEY, None)
             return unwrapped
 
+        def _unwrapped_or_none(new_content: Any) -> Optional[Dict[str, Any]]:
+            # The summary is merged into an empty tool-call row whenever that row opens the tail
+            # (_assemble_compressed); dropping it would orphan, and so lose, its tool results.
+            if new_content:
+                return _unwrapped(new_content)
+            return _unwrapped("") if message.get("tool_calls") else None
+
         if isinstance(content, str):
             if _MERGED_SUMMARY_DELIMITER in content:
                 prior = content.split(_MERGED_SUMMARY_DELIMITER, 1)[0].strip()
@@ -4396,7 +4404,7 @@ Write only the summary body. Do not include any preamble or prefix."""
                 prior = content.split(_SUMMARY_END_MARKER, 1)[1].lstrip()
             else:
                 prior = ""
-            return _unwrapped(prior) if prior else None
+            return _unwrapped_or_none(prior)
         if isinstance(content, list):
             prior_blocks: list[Any] = []
             found_delimiter = False
@@ -4417,8 +4425,8 @@ Write only the summary body. Do not include any preamble or prefix."""
                         remainder = text.split(_SUMMARY_END_MARKER, 1)[1].lstrip()
                         legacy_blocks = [_with_part_text(item, remainder)] if remainder else []
                         legacy_blocks += [later.copy() if isinstance(later, dict) else later for later in content[index + 1:]]
-                        return _unwrapped(legacy_blocks) if legacy_blocks else None
-                return None
+                        return _unwrapped_or_none(legacy_blocks)
+                return _unwrapped_or_none(None)
 
             # Strip the PRIOR CONTEXT header from the first block that carries it.
             for index, item in enumerate(prior_blocks):
@@ -4430,8 +4438,8 @@ Write only the summary body. Do not include any preamble or prefix."""
                     else:
                         prior_blocks.pop(index)
                     break
-            return _unwrapped(prior_blocks) if prior_blocks else None
-        return None
+            return _unwrapped_or_none(prior_blocks)
+        return _unwrapped_or_none(None)
 
     @staticmethod
     def _get_tool_call_id(tc) -> str:
@@ -4981,9 +4989,12 @@ Write only the summary body. Do not include any preamble or prefix."""
 
         window = [_window_row(idx, msg) for idx, msg in enumerate(messages[compress_start:summary_idx], start=compress_start)]
         window.append(_window_row(summary_idx, messages[summary_idx]))
-        scan.turns_to_summarize = [row for row in window if row is not None] + messages[summary_idx + 1:compress_end]
         if summary_idx >= compress_end:
-            scan.tail_start = summary_idx + 1
+            # A handoff past the window is folded with its tool results: a tail opening on them
+            # would leave them orphaned, and the pair sanitizer drops orphans unsummarized.
+            scan.tail_start = self._align_boundary_forward(messages, summary_idx + 1)
+        scan.turns_to_summarize = [row for row in window if row is not None] + messages[
+            summary_idx + 1:max(compress_end, scan.tail_start)]
         return scan
 
     def _begin_compress_attempt(self, current_tokens: Optional[int], force: bool) -> Dict[str, Any]:

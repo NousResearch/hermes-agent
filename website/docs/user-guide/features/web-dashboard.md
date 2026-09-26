@@ -478,6 +478,12 @@ Both collectors are fail-safe: any sampling error degrades the block to
 `{"pressure": "unknown"}` instead of failing the status endpoint. The numbers
 are coarse (whole MB, whole-percent) since `/api/status` is public.
 
+`runtime_kind` (`container` or `native`) names the runtime of the process
+answering the request, beside `version` in the public part of the payload, so a
+desktop can show which backend it is talking to even behind the auth gate.
+Gateways older than the field omit it; treat an absent value as unknown, never
+as `native`.
+
 ### GET /api/chat/workspaces
 
 Directories a fresh Chat-tab session may start in: the profile's projects (with folders) and discovered git repositories (`root`, `label`, `sessions`, `last_active`), plus `default_cwd` (where a chat lands when nothing is picked) and `home`. `?scan=1` rescans `desktop.repo_scan_roots` on the host first. Pair with `/api/pty?cwd=<path>`, which fails closed on a missing directory.

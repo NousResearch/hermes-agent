@@ -383,8 +383,10 @@ def _run_attached_cell(kernel: RemoteKernel, key: Tuple, code: str, *, env, task
         _REGISTRY.discard(key, kernel)
         kernel_info["ended"] = True
     kernel.execution_count = kernel_info["execution_count"] = int(cell_payload.get("execution_count", 0) or 0)
+    exit_code = cell_payload.get("exit_code", 0) or 0
     if cell_status in ("ok", "exit"):
         result["status"] = "success"
+        result["exit_code"] = exit_code
     result["stdout_clipped"] = bool(cell_payload.get("stdout_clipped"))
     result["stderr_clipped"] = bool(cell_payload.get("stderr_clipped"))
     if state_reset:
@@ -395,6 +397,10 @@ def _run_attached_cell(kernel: RemoteKernel, key: Tuple, code: str, *, env, task
             "restart, or idle self-exit); state from earlier calls was lost and a fresh kernel was started."))
     if cell_status == "error" and result["traceback"]:
         result["error"] = result["traceback"].strip().splitlines()[-1]
+    elif cell_status == "exit" and exit_code:
+        # A nonzero sys.exit() is still a failure — only exit(None)/exit(0) is success.
+        result["status"] = "error"
+        result["error"] = f"Script exited with code {exit_code}"
     return result
 
 

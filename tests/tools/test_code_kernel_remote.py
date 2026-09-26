@@ -136,6 +136,27 @@ class TestSpawnAndReuse(RemoteKernelBase):
         self.assertEqual(sum(1 for c in env.commands if "nohup" in c), 2)
 
 
+class TestExitCode(RemoteKernelBase):
+    def test_clean_exit_is_success(self):
+        env = ScriptedEnv(_spawn_ok_handlers(
+            [_cell(status="exit", exit_code=0)],
+        ))
+        result = _run(env)
+        self.assertEqual(result["status"], "success", result)
+        self.assertEqual(result["exit_code"], 0)
+        self.assertTrue(result["kernel"].get("ended"))
+
+    def test_nonzero_exit_code_reports_error(self):
+        env = ScriptedEnv(_spawn_ok_handlers(
+            [_cell(status="exit", exit_code=1)],
+        ))
+        result = _run(env)
+        self.assertEqual(result["status"], "error", result)
+        self.assertEqual(result["exit_code"], 1)
+        self.assertIn("exited with code 1", result["error"])
+        self.assertTrue(result["kernel"].get("ended"))
+
+
 class TestDeathDetection(RemoteKernelBase):
     def test_dead_kernel_is_reported_and_respawned(self):
         env = ScriptedEnv(_spawn_ok_handlers([_cell(), _cell()]))

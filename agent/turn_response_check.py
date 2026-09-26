@@ -45,8 +45,11 @@ class ResponseCheckVerdict:
 
 
 def _codex_finish_reason(response: Any) -> str:
-    """Responses API max-output exhaustion is a normal Codex incomplete turn: route it to
-    the Codex continuation path (``"incomplete"``), not the length rollback."""
+    """Route incomplete Responses turns to continuation and preserve content-filter refusals.
+
+    Some OpenAI-compatible gateways omit ``incomplete_details`` even though the terminal
+    response has ``status=incomplete``. The status still means the turn did not finish.
+    """
     status = getattr(response, "status", None)
     if isinstance(status, str):
         status = status.strip().lower()
@@ -57,7 +60,7 @@ def _codex_finish_reason(response: Any) -> str:
         incomplete_reason = getattr(incomplete_details, "reason", None)
     if incomplete_reason is not None:
         incomplete_reason = str(incomplete_reason).strip().lower()
-    if status == "incomplete" and incomplete_reason in {"max_output_tokens", "length"}:
+    if status == "incomplete" and incomplete_reason in {None, "max_output_tokens", "length"}:
         return "incomplete"
     if status == "incomplete" and incomplete_reason == "content_filter":
         return "content_filter"

@@ -1807,13 +1807,14 @@ def run_conversation(
     from agent.turn_finalizer import fence_result_reply, settle_held_final
     from agent.prompt_cache_lifecycle import end_turn_prompt_cache_warming
     from agent.voice_turn_route import end_voice_turn_route
+    from agent.turn_observer_lifecycle import observe_turn_completion
     from tools.vision_tools_history_budget import native_turn_images
 
     # Steer / redirect / interrupt set this mid-turn; the result reports whether the turn ran untouched.
     agent._turn_user_intervened = False
     # Images attached natively to this user turn stay visible to vision_analyze for the turn, so
     # it does not embed the same pixels a second time into the same request (#76411).
-    with native_turn_images(user_message):
+    with native_turn_images(user_message), observe_turn_completion(agent) as observation:
         try:
             result = _run_conversation_turn(
                 agent,
@@ -1837,6 +1838,7 @@ def run_conversation(
             # Every turn exit (early returns included): a machine session stops warming; a chat a
             # person types into keeps its budget of keep-alives while idle (prompt_cache_lifecycle).
             end_turn_prompt_cache_warming(agent)
+        observation.result = result
     fence_result_reply(result)
     # Joined before settle_held_final so a held transform sees the lead, unless a collapsed partial already ran it.
     from agent.primary_auth_fallback import lead_failed_turn_with_primary_auth

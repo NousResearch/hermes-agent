@@ -494,24 +494,59 @@ def _capped_structured_content(result):
     return _truncate_mcp_text_result(as_json) if len(as_json) > _MCP_HARD_RESULT_CAP_CHARS else structured
 
 
+def _json_value_matches_text(text: str, value) -> bool:
+    """Compare one MCP text block with a JSON value without Python's bool/int coercion."""
+    if isinstance(value, str):
+        return text == value
+    try:
+        parsed = json.loads(text)
+        left = json.dumps(parsed, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        right = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        return left == right
+    except (TypeError, ValueError):
+        return False
+
+
 def _content_dual_emits_structured(result, structured) -> bool:
-    """True when some text block is ``structuredContent`` serialized as JSON — the spec's
-    backwards-compat dual-emit ("a tool that returns structured content SHOULD also return the
-    serialized JSON in a TextContent block"). Compared as parsed JSON so whitespace, indent, key
-    order and ``ensure_ascii`` escaping do not matter; checked per block because the spec puts the
-    copy in *a* block and a server may add a status line next to it. Deterministic equality, not a
-    richness heuristic: a prose summary or a reorganised rendering fails it and keeps its
-    ``structuredContent`` (#115430)."""
-    for block in (result.content or []):
-        text = getattr(block, "text", None)
-        if not text:
-            continue
-        try:
-            if json.loads(text) == structured:
-                return True
-        except (TypeError, ValueError):
-            continue
-    return False
+    """True when some text block is the same JSON value as structuredContent."""
+    return any(
+        _json_value_matches_text(text, structured)
+        for text in (getattr(block, "text", None) for block in (result.content or []))
+        if text
+    )
+
+
+def _sdk_wrapped_result_projection(result, structured):
+    """Return (matched, value) for the Python SDK's single-key result wrapper dual emit.
+
+    Collapse only when every content block is text and corresponds one-for-one with the wrapped
+    value. The returned value is rebuilt from sanitized text so normalization cannot bypass the
+    Unicode-tag filtering applied by the normal content renderer.
+    """
+    if not (isinstance(structured, dict) and structured.keys() == {"result"}):
+        return False, None
+    blocks = list(result.content or [])
+    if not blocks or any(getattr(block, "text", None) is None for block in blocks):
+        return False, None
+    value = structured["result"]
+    expected = value if isinstance(value, list) else [value]
+    if len(blocks) != len(expected):
+        return False, None
+
+    projected = []
+    for block, item in zip(blocks, expected):
+        raw = block.text
+        if not _json_value_matches_text(raw, item):
+            return False, None
+        clean = strip_unicode_tags(raw)
+        if isinstance(item, str):
+            projected.append(clean)
+        else:
+            try:
+                projected.append(json.loads(clean))
+            except (TypeError, ValueError):
+                return False, None
+    return True, projected if isinstance(value, list) else projected[0]
 
 
 def _render_call_tool_result(result, server_name: str) -> str:
@@ -530,6 +565,18 @@ def _render_call_tool_result(result, server_name: str) -> str:
     text_result, usable_parts = _render_content_blocks(result, server_name)
     structured = _capped_structured_content(result)
     meta = _strip_reserved_meta_keys(mcp_field(result, "meta", "meta"))
+    # Python MCP SDK scalar/list returns are dual-emitted as text plus {"result": value}. When
+    # the whole content is exactly that representation, project the structured value once instead
+    # of flattening list item boundaries into the renderer's newline-joined text.
+    wrapped_match, wrapped_value = _sdk_wrapped_result_projection(result, structured)
+    if wrapped_match:
+        payload: Dict[str, Any] = {"result": wrapped_value}
+        if meta is not None:
+            payload["_meta"] = meta
+        try:
+            return json.dumps(payload, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return json.dumps({"result": wrapped_value}, ensure_ascii=False)
     # A str here is the over-cap truncation stand-in (wire structuredContent is always an object): next to
     # usable text it would be a second multi-MB copy — the flood #56059 caps — so it only fills an empty result.
     if structured is not None and usable_parts > 0 and (isinstance(structured, str) or _content_dual_emits_structured(result, structured)):

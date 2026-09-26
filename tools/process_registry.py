@@ -2462,6 +2462,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
         # _interrupt_running_turn's lifecycle class (eviction / /new while the turn runs):
         # the gateway-side twin of these sweeps, so a persisted job survives them (#41225).
         "gateway_turn_lifecycle",
+        # api_server SSE abandon (client disconnect / server-side cancellation): turn abandon,
+        # not an operator stop — POST /v1/responses/{id}/stop keeps its own source
+        # (api_server_run_stop) and still reaches persisted jobs (#41225).
+        "api_server_sse_disconnect", "api_server_sse_cancelled",
     })
 
     def kill_started_since(self, task_id: str, baseline_ids, *, source: str) -> int:

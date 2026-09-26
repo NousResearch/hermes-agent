@@ -20,6 +20,7 @@ from gateway.run import (
     _INTERRUPT_REASON_STOP,
 )
 from gateway.run_agent_cache import GatewayAgentCacheMixin
+from gateway.platforms.api_server import _reap_disconnected_agent_processes
 from tools.process_registry import ProcessRegistry, ProcessSession
 
 
@@ -125,5 +126,116 @@ def test_stop_command_reap_still_kills_persist_on_release_jobs(monkeypatch):
 
     assert volatile.exited is True
     assert persisted.exited is True, (
-        "/stop is an explicit operator stop — it must still kill a persist_on_release job"
+        "/stop is an explicit operator stop — it must keep reaching persisted jobs"
     )
+
+
+# ---- api_server SSE abandon: the same lifecycle class, its own reap seam ------------
+
+
+def _seed_api(registry: ProcessRegistry) -> tuple[ProcessSession, ProcessSession]:
+    persisted = ProcessSession(id="proc_persist", command="sleep 600", task_id="session-a")
+    persisted.persist_on_release = True
+    volatile = ProcessSession(id="proc_new", command="sleep 600", task_id="session-a")
+    registry._running[persisted.id] = persisted
+    registry._running[volatile.id] = volatile
+    return persisted, volatile
+
+
+def _api_agent() -> SimpleNamespace:
+    return SimpleNamespace(
+        _gateway_turn_process_task_id="session-a",
+        _gateway_turn_process_baseline=frozenset(),
+        _gateway_turn_process_epoch=None,
+    )
+
+
+class _FakeKill:
+    """Recorded kill_process stand-in: marks the session exited."""
+
+    def __init__(self, registry: ProcessRegistry):
+        self.registry = registry
+        self.killed: list[str] = []
+
+    def __call__(self, session_id, **kwargs):
+        self.killed.append(session_id)
+        self.registry._running[session_id].exited = True
+        return {"status": "killed"}
+
+
+def _drive(monkeypatch, registry: ProcessRegistry, source: str) -> list[str]:
+    import tools.process_registry as pr_module
+
+    fake = _FakeKill(registry)
+    monkeypatch.setattr(pr_module, "process_registry", registry)
+    monkeypatch.setattr(registry, "kill_process", fake)
+
+    import threading
+    done = threading.Event()
+
+    real_thread = threading.Thread
+
+    class _ImmediateThread:
+        def __init__(self, *, target, args, kwargs, name=None, daemon=None):
+            self._t = real_thread(target=self._run, daemon=True)
+            self._target, self._args, self._kwargs = target, args, kwargs
+
+        def _run(self):
+            try:
+                self._target(*self._args, **self._kwargs)
+            finally:
+                done.set()
+
+        def start(self):
+            self._t.start()
+
+    monkeypatch.setattr(
+        "gateway.platforms.api_server.threading.Thread", _ImmediateThread
+    )
+    _reap_disconnected_agent_processes(_api_agent(), source=source)
+    assert done.wait(timeout=2.0), "reap thread did not run"
+    return fake.killed
+
+
+def test_sse_disconnect_reap_spares_persist_on_release_jobs(monkeypatch):
+    """Client disconnect is turn abandon, not an operator stop: persisted job survives."""
+    registry = ProcessRegistry()
+    persisted, volatile = _seed_api(registry)
+
+    killed = _drive(monkeypatch, registry, "api_server_sse_disconnect")
+
+    assert "proc_new" in killed
+    assert "proc_persist" not in killed, (
+        "a persist_on_release job died on SSE client disconnect — the terminal "
+        "schema promises it survives agent-lifecycle cleanup (#41225)"
+    )
+    assert persisted.exited is False
+    assert volatile.exited is True
+
+
+def test_sse_cancelled_reap_spares_persist_on_release_jobs(monkeypatch):
+    """Server-side SSE cancellation (shutdown/timeout) is lifecycle: persisted job survives."""
+    registry = ProcessRegistry()
+    persisted, volatile = _seed_api(registry)
+
+    killed = _drive(monkeypatch, registry, "api_server_sse_cancelled")
+
+    assert "proc_new" in killed
+    assert "proc_persist" not in killed
+    assert persisted.exited is False
+    assert volatile.exited is True
+
+
+def test_run_stop_reap_still_kills_persist_on_release_jobs(monkeypatch):
+    """POST /v1/responses/{id}/stop is an explicit operator stop: persisted job dies."""
+    registry = ProcessRegistry()
+    persisted, volatile = _seed_api(registry)
+
+    killed = _drive(monkeypatch, registry, "api_server_run_stop")
+
+    assert "proc_new" in killed
+    assert "proc_persist" in killed, (
+        "an explicit API run stop must still reach a persist_on_release job"
+    )
+    assert persisted.exited is True
+    assert volatile.exited is True

@@ -80,3 +80,29 @@ def test_terminal_dispatch_heartbeat_implies_notify_and_refuses_foreground(monke
     bg = json.loads(dispatch({"command": "sleep 1", "background": True, "heartbeat": 120}))
     assert "error" not in bg or not bg["error"]
     assert captured["heartbeat"] == 120 and captured["notify_on_complete"] is True
+
+
+def test_terminal_dispatch_ignores_stray_heartbeat_on_foreground_defaults(monkeypatch):
+    """Models like Gemini auto-fill integer schema defaults (heartbeat=60) on foreground calls.
+    Verify they are not falsely rejected as invalid background requests."""
+    from tools import terminal_tool as tt
+
+    captured = {}
+
+    def fake_terminal_tool(**kwargs):
+        captured.update(kwargs)
+        return json.dumps({"output": "hello", "exit_code": 0, "error": None})
+
+    monkeypatch.setattr(tt, "terminal_tool", fake_terminal_tool)
+    dispatch = tt._handle_terminal
+    res = json.loads(dispatch({
+        "command": "echo hello",
+        "background": False,
+        "timeout": 60,
+        "pty": False,
+        "notify": False,
+        "heartbeat": 60
+    }))
+    assert "error" not in res or not res["error"]
+    assert captured.get("background") is False
+    assert captured.get("heartbeat") == 0

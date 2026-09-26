@@ -323,7 +323,17 @@ def _script_argv(path: Path) -> tuple[Optional[list[str]], dict[str, str], Optio
     else ``sys.executable`` (Windows uv-venv overlay gets the .pth bootstrap)."""
     if path.suffix.lower() in {".sh", ".bash"}:
         # which() finds Git Bash on Windows; None there → clear error instead of a "[WinError 2]".
-        _bash = shutil.which("bash") or ("/bin/bash" if os.path.isfile("/bin/bash") else None)
+        # shutil.which("bash") returns WSL's System32 stub when System32 precedes Git on
+        # PATH; that stub cannot run a Windows-path script ("execvpe(/bin/bash) failed").
+        # Reuse the same ordered discovery the shell tool uses (HERMES_GIT_BASH_PATH ->
+        # portable Git -> Git for Windows -> PATH, skipping System32/WindowsApps).
+        _bash = None
+        try:
+            from tools.environments.local import _windows_bash_candidates
+            _bash = next(iter(_windows_bash_candidates(os.environ.get("HERMES_GIT_BASH_PATH"))), None)
+        except Exception:  # pragma: no cover - fall back to historic behaviour
+            _bash = None
+        _bash = _bash or shutil.which("bash") or ("/bin/bash" if os.path.isfile("/bin/bash") else None)
         if _bash is None:
             return None, {}, (
                 f"Cannot run .sh/.bash script {path.name!r}: bash not found on PATH. "

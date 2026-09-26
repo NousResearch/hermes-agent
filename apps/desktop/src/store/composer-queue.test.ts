@@ -4,6 +4,7 @@ import { $composerAttachments, addComposerAttachment, type ComposerAttachment, m
 import {
   $parkedQueueSessions,
   $queuedPromptsBySession,
+  canAutoDrainQueuedPrompt,
   clearQueuedPrompts,
   dequeueQueuedPrompt,
   enqueueQueuedPrompt,
@@ -395,5 +396,25 @@ describe('cross-window sync (#46732)', () => {
     dispatchStorage('unrelated.key', '{}')
 
     expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.text)).toEqual(['kept'])
+  })
+})
+
+describe('canAutoDrainQueuedPrompt', () => {
+  it('allows entries queued in the current Desktop process', () => {
+    expect(
+      canAutoDrainQueuedPrompt({ id: 'fresh', text: 'send next', attachments: [], queuedAt: Date.now() })
+    ).toBe(true)
+  })
+
+  it('requires an explicit send for entries restored from persistence', () => {
+    expect(
+      canAutoDrainQueuedPrompt({
+        id: 'restored',
+        text: 'old prompt',
+        attachments: [],
+        queuedAt: Date.now() - 86_400_000,
+        requiresManualSend: true
+      })
+    ).toBe(false)
   })
 })

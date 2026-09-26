@@ -511,9 +511,46 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
 
 
 def _wait_live_dm(home: str, delivery_id: str, *, dm_file: "str | os.PathLike | None" = None) -> int:
-    from tools.bot_live_delivery import await_delivery
+    from tools.bot_failure_reasons import RUNTIME_OFFLINE
+    from tools.bot_live_delivery import (await_delivery, cancel_queued_delivery,
+                                         find_canonical_live_owner, read_delivery_result)
 
-    record = await_delivery(home, delivery_id, _LIVE_WAIT_SECONDS)
+    owner_missing_claimed = False
+    while True:
+        record = await_delivery(home, delivery_id, _LIVE_WAIT_SECONDS)
+        if record is None or record["status"] not in ("queued", "claimed"):
+            break
+        try:
+            owner = find_canonical_live_owner(home)
+        except Exception:
+            logger.debug("Could not check live DM owner; keep waiting for receipt", exc_info=True)
+            continue
+        pinned = record["owner"]
+        if owner is not None and all(owner[key] == pinned[key] for key in
+                                     ("profile_home", "lease_id", "live_session_id")):
+            owner_missing_claimed = False
+            continue
+        # A claim or settlement can race the owner lookup. Decide from a fresh
+        # receipt so the runner cannot exit on a stale queued snapshot.
+        record = read_delivery_result(home, delivery_id)
+        if record is None or record["status"] not in ("queued", "claimed"):
+            break
+        if record["status"] == "queued":
+            # The consumer may still have a captured owner and race this read.
+            # Under the same mailbox lock as claim, either cancellation wins or
+            # the claim wins and we must keep waiting for its outcome.
+            record = cancel_queued_delivery(
+                home, delivery_id, error="Live Bot Chat owner is no longer available",
+                reason=RUNTIME_OFFLINE)
+            if record is None or record["status"] != "claimed":
+                break
+            owner_missing_claimed = False
+            continue
+        if owner_missing_claimed:
+            # A vanished consumer may leave a permanent claim. Allow one more
+            # wait window for an in-flight turn to settle, then release the runner.
+            break
+        owner_missing_claimed = True
     status = record["status"] if record else "ambiguous"
     payload = {key: record[key] for key in ("reply", "error", "reason") if record and record.get(key)}
     payload.update(status=status, delivery_id=delivery_id)

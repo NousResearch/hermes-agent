@@ -142,7 +142,7 @@ from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult, classify_send_error, unauthorized_action_notice,
     cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_video_from_bytes_async, resolve_proxy_url, SUPPORTED_VIDEO_TYPES,
-    SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len,
+    SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, _prefix_within_utf16_limit, utf16_len,
 )
 
 # Every refused button tap answers with the same sentence.
@@ -5145,7 +5145,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _caption_1024(caption: Optional[str]) -> Optional[str]:
-        return caption[:1024] if caption else None
+        return _prefix_within_utf16_limit(caption, 1024) if caption else None  # Bot API counts UTF-16 units
 
     async def _send_voice_bubble(self, audio_file, chat_id, reply_to, metadata, caption, duration_secs):
         """sendVoice with caption variants: MarkdownV2 when it fits 1024 chars, plain fallback when the
@@ -5162,7 +5162,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     _caption_variants.append((_formatted_caption, ParseMode.MARKDOWN_V2))
             except Exception:
                 logger.debug("[%s] voice caption MarkdownV2 formatting failed; sending plain caption", self.name, exc_info=True)
-            _caption_variants.append((caption[:1024], None))
+            _caption_variants.append((self._caption_1024(caption), None))
         else:
             _caption_variants.append((None, None))
         _last_parse_error: Optional[Exception] = None

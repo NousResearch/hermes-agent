@@ -292,6 +292,14 @@ def _render_table_block(table_block: list[str]) -> str:
     return "\n\n".join(rendered_groups)
 
 
+_GFM_BACKTICK_FENCE_RE = re.compile(r"^ {0,3}```")
+
+
+def _is_fence_line(line: str) -> bool:
+    """True for a backtick fence delimiter at GFM's allowed 0-3 space indent."""
+    return bool(_GFM_BACKTICK_FENCE_RE.match(line))
+
+
 def convert_table_to_bullets(text: str) -> str:
     """Rewrite GFM pipe tables into bold-heading + bullet groups; fenced code is left alone."""
     if '|' not in text or '-' not in text:
@@ -302,9 +310,9 @@ def convert_table_to_bullets(text: str) -> str:
     i = 0
     while i < len(lines):
         line = lines[i]
-        is_fence_line = line.lstrip().startswith('```')
-        in_fence ^= is_fence_line
-        if not (in_fence or is_fence_line) and '|' in line and i + 1 < len(lines) \
+        fence_line = _is_fence_line(line)
+        in_fence ^= fence_line
+        if not (in_fence or fence_line) and '|' in line and i + 1 < len(lines) \
                 and TABLE_SEPARATOR_RE.match(lines[i + 1]):
             j = i + 2
             while j < len(lines) and is_table_row(lines[j]):
@@ -376,8 +384,8 @@ def compile_mention_patterns(raw, *, log_prefix: str, platform_label: str | None
 
 
 def text_has_unclosed_fence(text: str) -> bool:
-    """Return True when *text* ends inside an unclosed ``` code fence."""
-    return sum(line.startswith('```') for line in text.split('\n')) % 2 == 1
+    """Return True when *text* ends inside an unclosed GFM backtick fence."""
+    return sum(_is_fence_line(line) for line in text.split('\n')) % 2 == 1
 
 
 def text_ends_with_table_row(text: str) -> bool:
@@ -386,8 +394,8 @@ def text_ends_with_table_row(text: str) -> bool:
 
 
 def is_fence_atom(text: str) -> bool:
-    """True when an atomic block is a code block (starts with ```)."""
-    return text.lstrip().startswith('```')
+    """True when an atomic block starts with a valid GFM backtick fence."""
+    return _is_fence_line(text.split('\n', 1)[0])
 
 
 def _is_pipe_row(line: str) -> bool:
@@ -449,10 +457,10 @@ def split_markdown_atoms(text: str) -> "list[str]":
     for line in text.split('\n'):
         if in_fence:
             current_lines.append(line)
-            if line.startswith('```'):
+            if _is_fence_line(line):
                 in_fence = False
                 _flush_current()
-        elif line.startswith('```'):
+        elif _is_fence_line(line):
             _flush_current()
             in_fence = True
             current_lines.append(line)
@@ -470,10 +478,12 @@ def split_markdown_atoms(text: str) -> "list[str]":
 def infer_block_separator(prev_chunk: str, next_chunk: str) -> str:
     """``'\\n'`` when the boundary sits at a code fence or a continued table, else ``'\\n\\n'``."""
     prev_trimmed = prev_chunk.rstrip()
-    next_trimmed = next_chunk.lstrip()
-    if prev_trimmed.endswith('```') or next_trimmed.startswith('```'):
+    next_trimmed = next_chunk.lstrip('\n')
+    prev_line = prev_trimmed.rsplit('\n', 1)[-1]
+    next_line = next_trimmed.split('\n', 1)[0]
+    if _is_fence_line(prev_line) or _is_fence_line(next_line):
         return '\n'
-    if text_ends_with_table_row(prev_chunk) and next_trimmed and _is_pipe_row(next_trimmed.split('\n')[0]):
+    if text_ends_with_table_row(prev_chunk) and next_trimmed and _is_pipe_row(next_line):
         return '\n'
     return '\n\n'
 
@@ -512,7 +522,7 @@ def fence_state_after(text: str, in_code: bool = False, lang: str = "") -> "tupl
     """Walk ``text`` line by line toggling on ``` lines; return the final (in_code, lang)."""
     for line in text.split("\n"):
         stripped = line.strip()
-        if stripped.startswith("```"):
+        if _is_fence_line(line):
             tag = stripped[3:].split()
             in_code, lang = (False, "") if in_code else (True, tag[0] if tag else "")
     return in_code, lang

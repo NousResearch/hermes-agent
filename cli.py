@@ -264,21 +264,40 @@ def format_duration_compact(*args, **kwargs):
 
 
 # model id -> shortest configured alias (process-lifetime cache; config is read once).
-_REVERSE_ALIAS_CACHE: dict[str, str] | None = None
+_REVERSE_ALIAS_CACHE: dict[str, dict[str, str]] | None = None
 
 
-def _reverse_alias_for_display(model_name: str) -> str:
-    """Shortest alias for ``model_name`` from ``model_aliases:`` or ``model.aliases:``, else ``model_name``."""
+def _reverse_alias_for_display(model_name: str, provider: str | None = None) -> str:
+    """Return the shortest configured alias for ``model_name``, or ``model_name``.
+
+    Looks up both ``model_aliases:`` (dict-based, full DirectAlias entries)
+    and ``model.aliases:`` (string-based, set via ``hermes config set``)
+    from config.yaml. Multiple aliases pointing at the same model — the
+    shortest wins, so ``opus47`` beats ``palantir-claude47``. When the active
+    provider is known, only aliases for that provider are considered; this keeps
+    a same-model alias from another provider out of the status bar.
+    """
     global _REVERSE_ALIAS_CACHE
     if not model_name:
         return model_name
+    provider_key = str(provider or "").strip()
+    if provider_key.lower() in {"auto", "default"}:
+        provider_key = ""
+
+    def _prefer_shortest(mapping: dict[str, str], key: str, alias: str) -> None:
+        alias = str(alias or "").strip()
+        if alias and (key not in mapping or len(alias) < len(mapping[key])):
+            mapping[key] = alias
+
+    def _split_provider_model(value: str) -> tuple[str | None, str]:
+        value = str(value or "").strip()
+        if "/" not in value:
+            return None, value
+        maybe_provider, model = value.split("/", 1)
+        return maybe_provider.strip() or None, model.strip()
+
     if _REVERSE_ALIAS_CACHE is None:
-        rmap: dict[str, str] = {}
-
-        def _put(m: str, alias: str) -> None:
-            if m and (m not in rmap or len(alias) < len(rmap[m])):
-                rmap[m] = alias
-
+        rmap: dict[str, dict[str, str]] = {"provider_model": {}, "model": {}}
         try:
             from hermes_cli.config import load_config
             cfg = load_config() or {}
@@ -286,19 +305,39 @@ def _reverse_alias_for_display(model_name: str) -> str:
             if isinstance(ma, dict):
                 for alias, entry in ma.items():
                     if isinstance(entry, dict):
-                        _put(str(entry.get("model", "") or "").strip(), alias)
+                        m = str(entry.get("model", "") or "").strip()
+                        if not m:
+                            continue
+                        entry_provider = str(entry.get("provider", "") or "").strip()
+                        if not entry_provider:
+                            entry_provider, parsed_model = _split_provider_model(m)
+                            if parsed_model:
+                                m = parsed_model
+                        if entry_provider:
+                            _prefer_shortest(rmap["provider_model"], f"{entry_provider}/{m}", alias)
+                            _prefer_shortest(rmap["model"], m, alias)
+                        else:
+                            _prefer_shortest(rmap["model"], m, alias)
             mdl = cfg.get("model", {}) or {}
             if isinstance(mdl, dict):
                 simple = mdl.get("aliases")
                 if isinstance(simple, dict):
                     for alias, val in simple.items():
                         if isinstance(val, str) and val.strip():
-                            v = val.strip()
-                            _put(v.split("/", 1)[1] if "/" in v else v, alias)
+                            entry_provider, m = _split_provider_model(val)
+                            if not m:
+                                continue
+                            if entry_provider:
+                                _prefer_shortest(rmap["provider_model"], f"{entry_provider}/{m}", alias)
+                                _prefer_shortest(rmap["model"], m, alias)
+                            else:
+                                _prefer_shortest(rmap["model"], m, alias)
         except Exception:
             pass
         _REVERSE_ALIAS_CACHE = rmap
-    return _REVERSE_ALIAS_CACHE.get(model_name, model_name)
+    if provider_key:
+        return _REVERSE_ALIAS_CACHE["provider_model"].get(f"{provider_key}/{model_name}", model_name)
+    return _REVERSE_ALIAS_CACHE["model"].get(model_name, model_name)
 
 
 def format_token_count_compact(*args, **kwargs):

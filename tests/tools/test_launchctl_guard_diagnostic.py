@@ -55,3 +55,37 @@ def test_interpreter_kill_rejection_names_the_owned_process_route(tmp_path, monk
     # Absence on the wrong side: a plain foreground `hermes gateway run` carries no launch marker.
     monkeypatch.delenv("HERMES_SUPERVISED_CHILD")
     assert run("pkill -9 python3") is None
+
+
+def test_budget_exhaustion_can_be_deferred_but_lifecycle_command_cannot(tmp_path, monkeypatch):
+    import cron.lifecycle_guard as lifecycle_guard
+    from tools import process_registry
+    from tools.terminal_tool_guards import LifecycleBudgetApproval
+
+    monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
+    monkeypatch.setattr(lifecycle_guard, "_MAX_LIFECYCLE_SCAN_BYTES", 8)
+    monkeypatch.setattr(lifecycle_guard, "_MAX_LIFECYCLE_SCAN_LINE_BYTES", 8)
+
+    deferred = gateway_lifecycle_block(
+        command="echo hello", env=None, env_type="local", cwd=str(tmp_path),
+        workdir=None, session_key="budget-test", defer_budget_exhaustion=True,
+    )
+    assert isinstance(deferred, LifecycleBudgetApproval)
+    assert "scan budget was exhausted" in deferred.reason
+
+    historical = gateway_lifecycle_block(
+        command="echo hello", env=None, env_type="local", cwd=str(tmp_path),
+        workdir=None, session_key="budget-test",
+    )
+    assert historical is not None
+    assert json.loads(historical)["exit_code"] == 1
+
+    # A proved lifecycle command is never eligible for approval deferral.
+    monkeypatch.setattr(lifecycle_guard, "_MAX_LIFECYCLE_SCAN_BYTES", 1024)
+    monkeypatch.setattr(lifecycle_guard, "_MAX_LIFECYCLE_SCAN_LINE_BYTES", 1024)
+    hard = gateway_lifecycle_block(
+        command="hermes gateway restart", env=None, env_type="local", cwd=str(tmp_path),
+        workdir=None, session_key="budget-test", defer_budget_exhaustion=True,
+    )
+    assert isinstance(hard, str)
+    assert json.loads(hard)["exit_code"] == 1

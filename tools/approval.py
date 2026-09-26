@@ -794,7 +794,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                     pattern_key: str, pattern_keys: list[str], warnings: list[tuple],
                     session_key: str, approval_callback, is_cli: bool, is_gateway: bool,
                     is_ask: bool, smart: bool = False,
-                    permanent_capable: bool = True, pending_body=None) -> dict:
+                    permanent_capable: bool = True, allow_session: bool = True,
+                    allow_pending: bool = True, pending_body=None) -> dict:
     """Ask a human (after the optional guardian-LLM step) and turn the answer into the gate result.
 
     ``warnings`` are the ``(key, _, is_tirith)`` tuples :func:`_persist_choice` stores on
@@ -836,7 +837,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         attempt = _present_with_selected_transport(
             command=command, description=description, pattern_key=pattern_key, pattern_keys=pattern_keys,
             session_key=session_key, surface="gateway" if (is_gateway or is_ask) else "cli",
-            allow_session=not smart_denied, allow_permanent=allow_permanent,
+            allow_session=allow_session and not smart_denied, allow_permanent=allow_permanent,
         )
         choice, denied = _transport_choice(attempt, pattern_key=pattern_key, description=description)
         if denied is not None:
@@ -863,7 +864,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                 "command": display_command, "pattern_key": pattern_key,
                 "pattern_keys": pattern_keys, "description": display_description,
                 "allow_permanent": permanent_capable and not smart_denied,
-                "allow_session": not smart_denied,
+                "allow_session": allow_session and not smart_denied,
             }
             if smart_denied:
                 data["smart_denied"] = True
@@ -897,6 +898,12 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         if not _should_fall_through_to_cli_approval(
             is_cli=is_cli, approval_callback=approval_callback, notify_cb=notify_cb,
         ):
+            if not allow_pending:
+                return _blocked(
+                    "BLOCKED: explicit human approval is required, but no answerable approval "
+                    "surface is attached to this session.",
+                    pattern_key=pattern_key, description=description,
+                )
             if not spec.pending_keys:
                 display_command, display_description = command, description
             return _pending_result(
@@ -912,8 +919,11 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     hook_kwargs = dict(command=prompt_command, description=prompt_description, pattern_key=pattern_key,
                        pattern_keys=list(pattern_keys), session_key=session_key, surface="cli")
     approval_context._fire_approval_hook("pre_approval_request", **hook_kwargs)
-    choice = prompt_dangerous_approval(prompt_command, prompt_description, allow_permanent=allow_permanent,
-                                       smart_denied=smart_denied, approval_callback=approval_callback)
+    choice = prompt_dangerous_approval(
+        prompt_command, prompt_description, allow_permanent=allow_permanent,
+        allow_session=allow_session and not smart_denied,
+        smart_denied=smart_denied, approval_callback=approval_callback,
+    )
     approval_context._fire_approval_hook("post_approval_response", **hook_kwargs, choice=choice)
     if choice == "timeout":
         return deny(spec.cli_timeout, "timeout")
@@ -1098,6 +1108,38 @@ def check_dangerous_command(command: str, env_type: str,
         subject=f"Command flagged as dangerous ({description})", noun="dangerous commands",
         advice="Find an alternative approach that avoids this command.",
         autoapprove_log_prefix="AUTO-APPROVED dangerous command in non-interactive non-gateway context",
+    )
+
+
+def request_one_shot_command_approval(
+    command: str, reason: str, *, approval_callback=None,
+) -> dict:
+    """Require an explicit human decision for this exact command execution.
+
+    Unlike normal dangerous-command approvals this gate has no yolo/mode-off bypass, no
+    session/permanent cache, and no unattended auto-approve path. It exists for security
+    uncertainty that was previously a non-bypassable hard block (for example lifecycle scan
+    budget exhaustion): only a present human can accept the residual risk, once.
+    """
+    description = reason or "explicit one-shot command approval required"
+    pattern_key = (
+        "one_shot_command:"
+        + hashlib.sha256((command + "\0" + description).encode("utf-8")).hexdigest()[:16]
+    )
+    session_key = get_current_session_key()
+    approval_callback, is_cli, is_gateway, is_ask = _presence(approval_callback)
+    if not (is_cli or is_gateway or is_ask):
+        return _blocked(
+            "BLOCKED: this command requires explicit one-shot human approval, but no "
+            "interactive approval surface is present.",
+            pattern_key=pattern_key, description=description,
+        )
+    return _human_decision(
+        _COMMAND_GATE, command=command, description=description,
+        pattern_key=pattern_key, pattern_keys=[pattern_key], warnings=[],
+        session_key=session_key, approval_callback=approval_callback,
+        is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask,
+        permanent_capable=False, allow_session=False, allow_pending=False,
     )
 
 

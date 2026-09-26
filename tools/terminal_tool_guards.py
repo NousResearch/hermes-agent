@@ -14,12 +14,24 @@ import logging
 import re
 import shlex
 import stat
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
 from tools.shell_heredoc import strip_inert_heredoc_bodies
 
 logger = logging.getLogger("tools.terminal_tool")
+
+@dataclass(frozen=True)
+class LifecycleBudgetApproval:
+    """A bounded lifecycle scan exhausted work budget without finding a lifecycle command.
+
+    The terminal layer may escalate this one uncertainty to explicit human approval *after*
+    the bounded scanner returns. Other lifecycle refusals remain hard blocks.
+    """
+
+    reason: str
+
 
 
 # Workdir allowlist: Unicode alnum plus path/drive/UNC separators and common
@@ -183,7 +195,8 @@ def gateway_lifecycle_block(
     cwd: str,
     workdir: Optional[str],
     session_key: str,
-) -> Optional[str]:
+    defer_budget_exhaustion: bool = False,
+) -> Optional[str | LifecycleBudgetApproval]:
     """Refuse gateway lifecycle commands issued from inside the supervised gateway.
 
     ``systemctl``/``launchctl``/``hermes gateway restart|stop|uninstall``
@@ -235,6 +248,12 @@ def gateway_lifecycle_block(
         read_remote_script=lambda p: _read_script_for_guard(env, guard_cwd, p, _MAX_REFERENCED_SCRIPT_BYTES),
     )
     if unsafe and refusal:
+        # Budget exhaustion is uncertainty, not proof of a lifecycle command. The terminal
+        # execution path can ask a present human to accept that uncertainty for ONE run,
+        # outside the scanner's bounded worker. Cron creation and every non-budget refusal
+        # keep the historical non-bypassable fail-closed behavior.
+        if defer_budget_exhaustion and refusal.startswith("the scan budget was exhausted ("):
+            return LifecycleBudgetApproval(refusal)
         # Not a lifecycle command: a script the command EXECUTES could not be scanned (budget,
         # size, device, live SQLite, cloud placeholder). Say so, or the model rewords and retries
         # the same command in a loop (#113944).

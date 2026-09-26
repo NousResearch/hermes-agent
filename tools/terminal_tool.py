@@ -807,7 +807,7 @@ def _command_requires_pipe_stdin(command: str) -> bool:
 
 
 from tools.terminal_tool_guards import (
-    _foreground_background_guidance, _safe_command_preview, _validate_workdir,
+    LifecycleBudgetApproval, _foreground_background_guidance, _safe_command_preview, _validate_workdir,
     gateway_lifecycle_block, self_repo_block,
 )
 from tools.terminal_tool_background import _YIELDED_NOTE, spawn_background_process, yield_to_background_handler
@@ -1197,16 +1197,18 @@ _PRE_EXEC_GUARD_MIN_TIMEOUT_S = 30
 def _pre_exec_block(
     command: str, *, env: Any, env_type: str, cwd: str,
     workdir: Optional[str], session_key: str,
-) -> None:
+) -> Optional[LifecycleBudgetApproval]:
     """Raise :class:`_Rejected` with the blocked-result JSON when the command must not run.
 
     Order matters: gateway lifecycle first (protects the running gateway),
     then the dangerous-workdir check, then the self-repo guard (local only).
     """
     blocked = gateway_lifecycle_block(
-        command=command, env=env, env_type=env_type, cwd=cwd, workdir=workdir, session_key=session_key,
+        command=command, env=env, env_type=env_type, cwd=cwd, workdir=workdir,
+        session_key=session_key, defer_budget_exhaustion=True,
     )
-    if blocked:
+    budget_approval = blocked if isinstance(blocked, LifecycleBudgetApproval) else None
+    if blocked and budget_approval is None:
         raise _Rejected(blocked)
     if workdir:
         workdir_error = _validate_workdir(workdir)
@@ -1218,6 +1220,7 @@ def _pre_exec_block(
         blocked = self_repo_block(command=command, cwd=cwd, workdir=workdir, session_key=session_key)
         if blocked:
             raise _Rejected(blocked)
+    return budget_approval
 
 
 _PTY_DISABLED_REASON = (
@@ -1331,9 +1334,31 @@ def terminal_tool(
                 "(process-identity probe wedged); the command was not run. Retry the call.",
                 status="error",
             ))
+        budget_approval = bounded_guard.value
+        budget_note = None
+        if isinstance(budget_approval, LifecycleBudgetApproval):
+            from tools.approval import request_one_shot_command_approval
+            reason = (
+                "The gateway lifecycle scanner could not finish proving the referenced scripts safe "
+                f"because {budget_approval.reason}. Approve only if you reviewed this command and "
+                "accept running it once despite the incomplete scan."
+            )
+            decision = request_one_shot_command_approval(
+                command, reason, approval_callback=_get_approval_callback(),
+            )
+            if not decision.get("approved"):
+                raise _Rejected(_error_json(
+                    decision.get("message") or "Command was not approved after lifecycle scan exhaustion.",
+                    status=decision.get("status") or "blocked",
+                    **({"user_summary": decision["user_summary"]} if decision.get("user_summary") else {}),
+                ))
+            budget_note = "Lifecycle scan budget exhausted; user explicitly approved this one execution."
         # Pre-exec security checks (tirith + dangerous command detection);
         # force=True means the user already confirmed.
         verdict = _run_approval_guards(command, env_type, plan.config, force=force)
+        if budget_note:
+            verdict.note = f"{budget_note} {verdict.note}".strip() if verdict.note else budget_note
+            verdict.approved_run = True
 
         pty_disabled = pty and _command_requires_pipe_stdin(command)
         if plan.promoted_from_foreground_timeout is not None:

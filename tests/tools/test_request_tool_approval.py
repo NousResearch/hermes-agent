@@ -247,3 +247,46 @@ class TestRequestToolApproval:
         )
         res = request_tool_approval("computer_use", "click", rule_key="cua")
         assert res == {"approved": True, "message": None}
+
+
+def test_one_shot_command_approval_has_no_cached_or_unattended_bypass(monkeypatch):
+    from tools.approval import request_one_shot_command_approval
+
+    # Even a matching cached/session approval cannot authorize a fresh uncertain scan.
+    monkeypatch.setattr(approval, "is_approved", lambda *_a, **_k: True)
+    monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)
+    monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
+    monkeypatch.setattr(tools_approval_context, "_is_gateway_approval_context", lambda: False)
+    seen = {}
+    def approve_once(*args, **kwargs):
+        seen.update(kwargs)
+        return "session"  # hostile/legacy callback returns a broader scope than offered
+    monkeypatch.setattr(approval, "prompt_dangerous_approval", approve_once)
+    monkeypatch.setattr(approval_prompt, "prompt_dangerous_approval", approve_once)
+    session_calls, permanent_calls = [], []
+    monkeypatch.setattr(approval, "approve_session", lambda *args: session_calls.append(args))
+    monkeypatch.setattr(approval, "approve_permanent", lambda *args: permanent_calls.append(args))
+
+    result = request_one_shot_command_approval("bash wrapper.sh", "scan budget exhausted")
+
+    assert result["approved"] is True
+    assert seen["allow_session"] is False
+    assert seen["allow_permanent"] is False
+    assert session_calls == []
+    assert permanent_calls == []
+
+
+def test_one_shot_command_approval_requires_present_human_even_if_cron_autoapproves(monkeypatch):
+    from tools.approval import request_one_shot_command_approval
+
+    monkeypatch.setattr(approval, "_is_interactive_cli", lambda: False)
+    monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
+    monkeypatch.setattr(tools_approval_context, "_is_gateway_approval_context", lambda: False)
+    monkeypatch.setattr(approval, "_is_cron_approval_context", lambda: True)
+    monkeypatch.setattr(tools_approval_context, "_is_cron_approval_context", lambda: True)
+    monkeypatch.setattr(approval_context, "_get_cron_approval_mode", lambda: "approve")
+
+    result = request_one_shot_command_approval("bash wrapper.sh", "scan budget exhausted")
+
+    assert result["approved"] is False
+    assert "explicit one-shot human approval" in result["message"]

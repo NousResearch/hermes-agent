@@ -5,7 +5,7 @@ import logging
 import os
 import re
 import threading
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Mapping, Optional
 
 from hermes_constants import display_hermes_home
@@ -233,7 +233,8 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
         from tools.skills_tool import _skills_dir, skill_view
         from agent.skill_utils import normalize_skill_lookup_name
         normalized = normalize_skill_lookup_name(raw_identifier)
-        loaded_skill = json.loads(skill_view(normalized, task_id=task_id, preprocess=False))
+        loaded_skill = json.loads(
+            skill_view(normalized, task_id=task_id, preprocess=False, host_paths=True))
     except Exception:
         return None
     if not loaded_skill.get("success"):
@@ -242,6 +243,8 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
     skill_dir = None
     # Prefer the absolute skill_dir from skill_view() (correct for external
     # skills too); fall back to SKILLS_DIR-relative reconstruction for legacy responses.
+    # host_paths=True above: everything below walks the real filesystem host-side,
+    # while skill_view's model-facing skill_dir is the container path under Docker.
     if loaded_skill.get("skill_dir"):
         skill_dir = Path(loaded_skill["skill_dir"])
     elif skill_path:
@@ -296,6 +299,21 @@ def _inject_skill_config(loaded_skill: dict[str, Any], parts: list[str]) -> None
         pass
 
 
+def _agent_visible_skill_dir(skill_dir):
+    """The skill directory as the AGENT's terminal sees it (container-side).
+
+    Falls back to the host path on a local backend or when no bind mount covers
+    it, which is exactly when the host path is the one the agent can open.
+    """
+    try:
+        from tools.container_paths import to_container_path
+
+        return PurePosixPath(to_container_path(str(skill_dir)) or skill_dir)
+    except Exception:
+        logger.debug("skill dir container translation unavailable", exc_info=True)
+        return skill_dir
+
+
 _SKILL_DIR_NOTE = (
     "Resolve any relative paths in this skill (e.g. `scripts/foo.js`, "
     "`templates/config.yaml`) against that directory, then run them "
@@ -344,8 +362,16 @@ def _build_skill_message(
     )
     parts = [activation_note, "", content.strip()]
     # Absolute skill dir lets the agent run bundled scripts without a skill_view() round-trip.
+    # The agent's terminal runs in the sandbox, so it must be told the CONTAINER path.
+    # Handing it the host path is not a loud failure: the agent quietly reimplements the
+    # helper script it cannot open. Only the injected text is translated — skill_dir itself
+    # stays a host Path because every filesystem read below it runs host-side.
     if skill_dir:
-        parts += ["", f"[Skill directory: {skill_dir}]", _SKILL_DIR_NOTE]
+        agent_skill_dir = _agent_visible_skill_dir(skill_dir)
+        parts += ["", f"[Skill directory: {agent_skill_dir}]", _SKILL_DIR_NOTE]
+        host_note = loaded_skill.get("skill_dir_note")
+        if host_note:
+            parts.append(host_note)
     _inject_skill_config(loaded_skill, parts)
     setup_note = _setup_note(loaded_skill)
     if setup_note:
@@ -361,7 +387,7 @@ def _build_skill_message(
         parts.append(
             f'\nLoad any of these with skill_view(name="{skill_view_target}", '
             f'file_path="<path>"), or run scripts directly by absolute path '
-            f"(e.g. `node {skill_dir}/scripts/foo.js`)."
+            f"(e.g. `node {agent_skill_dir}/scripts/foo.js`)."
         )
     stable_prefix = None
     if user_instruction:

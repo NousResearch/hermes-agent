@@ -2417,15 +2417,19 @@ def _resolve_gateway_model_context(
         context_length=context_length, context_source=context_source)
 
 
-def _resolve_runtime_agent_kwargs_for_provider(provider: str, target_model: Optional[str] = None) -> dict:
+def _resolve_runtime_agent_kwargs_for_provider(
+    provider: str, target_model: Optional[str] = None, explicit_base_url: Optional[str] = None,
+) -> dict:
     """Resolve runtime credentials for a specific provider (e.g. from channel override).
 
     ``target_model`` is the model the override will actually send: the ladder's model-keyed rungs
     (Zen/Go relay + api_mode) must see it rather than config's ``default``, or a Go-only override
-    resolves an api_mode/base_url the sent model cannot use (#112600)."""
+    resolves an api_mode/base_url the sent model cannot use (#112600). ``explicit_base_url`` resolves
+    for that endpoint instead of the provider's configured one (a bare-custom session override)."""
     from hermes_cli.runtime_provider import resolve_runtime_provider, format_runtime_provider_error
+    extra = {"explicit_base_url": explicit_base_url} if explicit_base_url else {}
     try:
-        runtime = resolve_runtime_provider(requested=provider, target_model=target_model or None)
+        runtime = resolve_runtime_provider(requested=provider, target_model=target_model or None, **extra)
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
     return {

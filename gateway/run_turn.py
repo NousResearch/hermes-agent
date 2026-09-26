@@ -181,7 +181,7 @@ class GatewayTurnMixin:
             _credential_pool_for_provider, _get_channel_override, _resolve_gateway_model,
             _resolve_runtime_agent_kwargs, _resolve_runtime_agent_kwargs_for_provider,
         )
-        from gateway.run_agent_cache import _is_blank
+        from gateway.run_agent_cache import _is_blank, _resolve_override_runtime
         skey = self._resolve_session_key_or_none(source, session_key)
         # Every exit path starts clean: the /model-override fast path returns before the pop below,
         # and hygiene/inbound callers resolve without a turn runner consuming the stash — a stale
@@ -231,8 +231,8 @@ class GatewayTurnMixin:
         runtime_kwargs, unavailable_override = None, None
         if override and override.get("provider"):
             try:
-                runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(
-                    override["provider"], target_model=override.get("model") or None)
+                runtime_kwargs = _resolve_override_runtime(
+                    override["provider"], override.get("model") or None, override.get("base_url"))
             except Exception as exc:
                 # Layering the override on the default runtime sent its model to the default provider's
                 # endpoint (openai-codex on the Nous URL). Run this turn on the whole default route and say

@@ -132,6 +132,28 @@ def test_worker_link_preserves_foreign_child_rules(kanban_home, monkeypatch):
         assert kb.parent_ids(conn, worker) == [parent]
 
 
+def test_create_accepts_board_override_after_action(kanban_home):
+    """Automation may place the shared board flag after ``create``."""
+    kb.create_board("ops")
+    parser = argparse.ArgumentParser(prog="hermes", add_help=False)
+    sub = parser.add_subparsers(dest="command")
+    kc.build_parser(sub)
+
+    args = parser.parse_args(["kanban", "create", "trailing board", "--board", "ops"])
+    assert args.board == "ops"
+    assert kc.kanban_command(args) == 0
+
+    # The action-local default must not erase a global override on old syntax.
+    global_args = parser.parse_args(["kanban", "--board", "ops", "create", "global board"])
+    assert global_args.board == "ops"
+    assert kc.kanban_command(global_args) == 0
+
+    with kbc.connect_closing(board="ops") as conn:
+        assert {task.title for task in kb.list_tasks(conn, limit=10)} == {
+            "global board", "trailing board",
+        }
+
+
 def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch):
     kb.create_board("alpha")
     kb.create_board("beta")

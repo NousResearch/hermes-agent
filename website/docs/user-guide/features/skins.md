@@ -46,7 +46,7 @@ display:
 
 ### Colors (`colors:`)
 
-Controls all color values throughout the CLI. Values are hex color strings.
+Controls all color values throughout the CLI. Values are hex color strings. Quote them (`"#CD7F32"`): YAML reads an unquoted `#` as a comment, and a key left empty inherits the `default` skin's value.
 
 | Key | Description | Default (`default` skin) |
 |-----|-------------|--------------------------|

@@ -413,6 +413,29 @@ class TestBridgeDispatch:
         })
         assert err is not None
 
+    def test_resolve_underlying_call_corrects_a_directly_listed_tool(self):
+        """A memory-provider tool is directly listed but neither core nor registered.
+
+        The bridge rejected ``tool_call(fact_store)`` as an unknown name even though the
+        tool was in the session's schema; ``direct_names`` is that live surface.
+        """
+        from tools.tool_search import resolve_underlying_call
+        name, args, err = resolve_underlying_call(
+            {"calls": [{"name": "fact_store", "arguments": {"action": "search"}}]},
+            direct_names={"fact_store"},
+        )
+        assert name is None
+        assert "directly-listed" in err
+
+    def test_resolve_underlying_call_still_flags_an_unknown_name(self):
+        from tools.tool_search import resolve_underlying_call
+        name, args, err = resolve_underlying_call(
+            {"calls": [{"name": "fact_stroe", "arguments": {}}]},
+            direct_names={"fact_store"},
+        )
+        assert name is None
+        assert "not a known tool name" in err
+
     @pytest.mark.parametrize("raw_args", ["", "  \n", None])
     def test_resolve_underlying_call_treats_blank_arguments_as_no_arguments(self, raw_args):
         """An OpenAI-compatible gateway emitting ``arguments: ""`` for a parameterless deferred tool
@@ -473,6 +496,24 @@ class TestHandleFunctionCallIntegration:
         assert payload["turn_id"] == "private-turn"
         assert payload["api_request_id"] == "private-request"
         assert payload["tool_call_id"] == "private-call"
+
+    def test_bridge_call_naming_a_directly_listed_tool_says_call_it_directly(self):
+        """A memory-provider tool is in the schema but neither core nor registry.
+
+        ``handle_function_call`` receives the live surface as ``enabled_tools``; without it
+        the bridge misreported ``fact_store`` as unknown, and the model concluded memory was
+        unavailable (observed 2026-09-26 on the desktop session).
+        """
+        import model_tools
+
+        result = json.loads(model_tools.handle_function_call(
+            function_name="tool_call",
+            function_args={"calls": [{"name": "fact_store", "arguments": {"action": "search"}}]},
+            enabled_tools=["tool_search", "tool_call", "fact_store"],
+        ))
+
+        assert "directly-listed" in result["error"]
+        assert "not a known tool name" not in result["error"]
 
 
 class TestRegression_OpenClawCron84141:

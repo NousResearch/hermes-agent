@@ -520,10 +520,72 @@ def _apply_main_model_assignment(model_cfg: "Any", result: "ModelSwitchResult", 
     return model_cfg
 
 
+_JS_MAX_SAFE_INTEGER = (1 << 53) - 1  # 9007199254740991
+_JS_MIN_SAFE_INTEGER = -_JS_MAX_SAFE_INTEGER
+
+_ID_KEYS = frozenset({
+    "home_channel", "chat_id", "channel_id", "user_id",
+    "allowed_chats", "group_allowed_chats", "allowed_users",
+})
+
+
+def _is_unsafe_js_int(val: Any) -> bool:
+    """Return True if integer exceeds JavaScript IEEE-754 safe integer limits."""
+    return isinstance(val, int) and not isinstance(val, bool) and (val > _JS_MAX_SAFE_INTEGER or val < _JS_MIN_SAFE_INTEGER)
+
+
+def _normalize_json_safe_numbers(val: Any, parent_key: Optional[str] = None) -> Any:
+    """Coerce integers exceeding JS safe precision (or platform ID fields) to strings."""
+    if isinstance(val, dict):
+        return {k: _normalize_json_safe_numbers(v, parent_key=k) for k, v in val.items()}
+    if isinstance(val, list):
+        return [_normalize_json_safe_numbers(item, parent_key=parent_key) for item in val]
+    if isinstance(val, int) and not isinstance(val, bool):
+        if _is_unsafe_js_int(val) or (parent_key and parent_key in _ID_KEYS):
+            return str(val)
+    return val
+
+
+def _denormalize_json_safe_numbers(incoming: Any, disk: Any, path: str = "") -> Any:
+    """Validate safe precision on incoming web payloads and recover on-disk scalar types."""
+    if isinstance(incoming, dict):
+        disk_dict = disk if isinstance(disk, dict) else {}
+        result = {}
+        for k, v in incoming.items():
+            subpath = f"{path}.{k}" if path else k
+            result[k] = _denormalize_json_safe_numbers(v, disk_dict.get(k), path=subpath)
+        return result
+    if isinstance(incoming, list):
+        disk_list = disk if isinstance(disk, list) else []
+        result = []
+        for idx, item in enumerate(incoming):
+            disk_item = disk_list[idx] if idx < len(disk_list) else None
+            subpath = f"{path}[{idx}]"
+            result.append(_denormalize_json_safe_numbers(item, disk_item, path=subpath))
+        return result
+    if isinstance(incoming, (int, float)) and not isinstance(incoming, bool):
+        if incoming > _JS_MAX_SAFE_INTEGER or incoming < _JS_MIN_SAFE_INTEGER:
+            field = path if path else "config"
+            raise ValueError(
+                f"Value for {field} ({incoming}) exceeds JavaScript safe integer limit (2^53 - 1). "
+                f"Large IDs and numbers must be passed as strings to prevent precision loss."
+            )
+    if isinstance(incoming, str):
+        try:
+            int_val = int(incoming)
+            if isinstance(disk, int) and not isinstance(disk, bool):
+                return int_val
+        except (ValueError, TypeError):
+            pass
+    return incoming
+
+
 def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
     """Flatten a dict-form ``model`` to its string form (the schema is built from
     DEFAULT_CONFIG where ``model`` is a string) and surface ``model_context_length``
-    as a top-level field (0 = auto-detect)."""
+    as a top-level field (0 = auto-detect). Also normalizes integers exceeding JavaScript
+    safe integer precision (2^53 - 1) and platform ID fields to strings so JSON boundaries
+    do not lose precision."""
     config = dict(config)
     model_val = config.get("model")
     if isinstance(model_val, dict):
@@ -532,7 +594,7 @@ def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
         config["model_context_length"] = ctx_len if isinstance(ctx_len, int) else 0
     else:
         config["model_context_length"] = 0
-    return config
+    return _normalize_json_safe_numbers(config)
 
 
 # ---------------------------------------------------------------------------
@@ -860,7 +922,9 @@ def _infer_provider_on_model_change(model_val: str, prev_provider: str) -> tuple
     return "", name
 
 
-def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
+def _denormalize_config_from_web(
+    config: Dict[str, Any], disk_cfg: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     """Reverse ``_normalize_config_for_web`` before saving.
 
     Reconstructs ``model`` as a dict from the on-disk config to recover subkeys (provider,
@@ -872,10 +936,21 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
     ``model_context_length`` is written back as ``context_length`` (0 = auto-detect, key
     removed). A partial update (Settings autosave diff) that OMITS the key means "unchanged"
     and must leave the on-disk override alone — not be treated as an explicit 0.
+
+    Also validates safe JS integer boundaries on incoming config payloads and restores
+    coerced ID strings to their on-disk integer types when matching.
     """
     from hermes_cli.config import load_config
     config = dict(config)
     config.pop("_model_meta", None)
+
+    if disk_cfg is None:
+        try:
+            disk_cfg = load_config()
+        except Exception:
+            disk_cfg = {}
+
+    config = _denormalize_json_safe_numbers(config, disk_cfg)
 
     ctx_sent = "model_context_length" in config
     ctx_override = config.pop("model_context_length", 0)
@@ -889,10 +964,11 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
     has_model = isinstance(model_val, str) and bool(model_val)
     if not (has_model or ctx_sent):
         return config
-    try:
-        disk_cfg = load_config()
-    except Exception:
-        return config  # can't read disk config — just use the string form
+    if not isinstance(disk_cfg, dict) or not disk_cfg:
+        try:
+            disk_cfg = load_config()
+        except Exception:
+            return config  # can't read disk config — just use the string form
     # Only the disk READ has a fallback. A validation rejection below must propagate as its
     # HTTPException(400): swallowing it here left ``model`` a flat string, and the caller's
     # deep-merge then overwrote the whole on-disk ``model:`` dict (provider, base_url, slots).

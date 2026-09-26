@@ -1,36 +1,48 @@
+import { EventEmitter } from 'node:events'
+
 import { describe, expect, it, vi } from 'vitest'
 
 import { killChildOnAbort } from './git-abort'
 
 /**
- * A child-like object: `kill` records the signals, `once`/`removeListener` let
- * a test fire 'close'/'error' and observe teardown. No main.ts source is read.
+ * A child-like object over a real EventEmitter, so `emit` has Node's exact
+ * behaviour: an 'error' with no listener throws. That is the property the
+ * escalation depends on — a spent once-listener is a crash, not a no-op.
+ * `kill` records the signals; `removeListener` records what teardown dropped.
  */
 function fakeChild() {
   const kills: Array<NodeJS.Signals | number | undefined> = []
-  const listeners = new Map<string, Array<() => void>>()
   const removed: string[] = []
+  const emitter = new EventEmitter()
 
   const child = {
     // Undefined until a test says otherwise: a real ChildProcess has a pid
     // only once the spawn has happened.
     pid: undefined as number | undefined,
+    // null while the process runs, set once it exited or was signalled.
+    exitCode: null as number | null,
+    signalCode: null as NodeJS.Signals | null,
     kill(signal?: NodeJS.Signals | number) {
       kills.push(signal)
 
       return true
     },
-    once(event: string, listener: () => void) {
-      const list = listeners.get(event) ?? []
-
-      list.push(listener)
-      listeners.set(event, list)
+    on(event: string, listener: (...args: any[]) => void) {
+      emitter.on(event, listener)
 
       return child
     },
-    removeListener(event: string, _listener: () => void) {
+    // A real ChildProcess has both. The unfixed source registers 'error' with
+    // `once`, so the fake keeps it too: the P1 tests then fail for the real
+    // reason — a spent once-listener — not because a method is missing.
+    once(event: string, listener: (...args: any[]) => void) {
+      emitter.once(event, listener)
+
+      return child
+    },
+    removeListener(event: string, listener: (...args: any[]) => void) {
       removed.push(event)
-      listeners.delete(event)
+      emitter.removeListener(event, listener)
 
       return child
     }
@@ -41,9 +53,7 @@ function fakeChild() {
     kills,
     removed,
     emit(event: string) {
-      for (const listener of [...(listeners.get(event) ?? [])]) {
-        listener()
-      }
+      emitter.emit(event)
     }
   }
 }
@@ -126,6 +136,106 @@ describe('killChildOnAbort', () => {
     }
   })
 
+  // P1: 'close' waits for the stdio pipes to drain, which a killed git can
+  // take time over. Once 'exit' has fired the process is gone and its pid may
+  // be reused, so the SIGKILL must not follow. 'exit' is the second proof of
+  // exit; teardown drops the escalation on either.
+  it('does not escalate once the child exits inside the grace period', () => {
+    vi.useFakeTimers()
+
+    try {
+      const { child, kills, emit } = fakeChild()
+      const controller = new AbortController()
+
+      killChildOnAbort(child, controller.signal, 20)
+      controller.abort()
+      emit('exit')
+
+      vi.advanceTimersByTime(1_000)
+
+      expect(kills).toEqual(['SIGTERM'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // P1: a ChildProcess that has already exited carries a non-null exitCode or
+  // signalCode. Signalling it again could hit a reused pid, so the SIGKILL is
+  // withheld when either field is set.
+  it('withholds the SIGKILL when the child already exited (exitCode set)', () => {
+    vi.useFakeTimers()
+
+    try {
+      const { child, kills } = fakeChild()
+      const controller = new AbortController()
+
+      killChildOnAbort(child, controller.signal, 20)
+      controller.abort()
+
+      child.exitCode = 0
+
+      vi.advanceTimersByTime(20)
+
+      expect(kills).toEqual(['SIGTERM'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('withholds the SIGKILL when the child was already signalled (signalCode set)', () => {
+    vi.useFakeTimers()
+
+    try {
+      const { child, kills } = fakeChild()
+      const controller = new AbortController()
+
+      killChildOnAbort(child, controller.signal, 20)
+      controller.abort()
+
+      child.signalCode = 'SIGTERM'
+
+      vi.advanceTimersByTime(20)
+
+      expect(kills).toEqual(['SIGTERM'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // P1: Node emits 'error' on a kill that fails (EPERM, and other errno values
+  // besides ESRCH), not only on a spawn that fails. A once-listener is spent by
+  // the first such error, so the SIGKILL's own error would reach no listener —
+  // and an unhandled 'error' throws in the Electron main process. The listener
+  // must outlive both errors and go only at teardown.
+  it('survives an error after SIGTERM and another after SIGKILL', () => {
+    vi.useFakeTimers()
+
+    try {
+      const { child, kills, emit } = fakeChild()
+      const controller = new AbortController()
+
+      child.pid = 4242
+
+      killChildOnAbort(child, controller.signal, 20)
+      controller.abort()
+
+      expect(kills).toEqual(['SIGTERM'])
+
+      // The SIGTERM kill failed. The process may still be running, so the
+      // escalation stays armed and the error must not throw.
+      expect(() => emit('error')).not.toThrow()
+
+      vi.advanceTimersByTime(20)
+
+      expect(kills).toEqual(['SIGTERM', 'SIGKILL'])
+
+      // The SIGKILL kill failed too; still a listener, still no throw.
+      expect(() => emit('error')).not.toThrow()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('removes its listeners once the child closes', () => {
     const { child, kills, removed, emit } = fakeChild()
     const { listenerCount, signal } = fakeSignal()
@@ -139,6 +249,7 @@ describe('killChildOnAbort', () => {
 
     expect(listenerCount()).toBe(0)
     expect(removed).toContain('close')
+    expect(removed).toContain('exit')
 
     // A signal that fires after the child is gone must not kill it again.
     signal.abort()
@@ -216,6 +327,9 @@ describe('killChildOnAbort', () => {
       kill() {
         throw new Error('ESRCH')
       },
+      on() {
+        return child
+      },
       once() {
         return child
       },
@@ -251,6 +365,11 @@ describe('killChildOnAbort', () => {
           }
 
           return true
+        },
+        on(event: string, listener: () => void) {
+          listeners.set(event, [...(listeners.get(event) ?? []), listener])
+
+          return child
         },
         once(event: string, listener: () => void) {
           listeners.set(event, [...(listeners.get(event) ?? []), listener])

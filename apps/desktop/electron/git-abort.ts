@@ -24,16 +24,25 @@ export interface AbortKillableChild {
    * spawn never happened (or failed before a process existed).
    */
   pid?: number
+  /** Set once the process exited; null while it runs. Optional for fakes. */
+  exitCode?: number | null
+  /** Set once the process was signalled; null while it runs. Optional for fakes. */
+  signalCode?: NodeJS.Signals | null
   kill(signal?: NodeJS.Signals | number): boolean
-  once(event: string | symbol, listener: (...args: any[]) => void): unknown
+  on(event: string | symbol, listener: (...args: any[]) => void): unknown
   removeListener?(event: string | symbol, listener: (...args: any[]) => void): unknown
 }
 
 /**
- * Wire `signal` to `child`: SIGTERM on abort, SIGKILL if 'close' or 'error'
- * has not arrived within `graceMs`. Idempotent teardown — once the child is
- * gone, both the escalation timer and the listeners are dropped, so a later
- * abort cannot signal a dead (or reused) child.
+ * Wire `signal` to `child`: SIGTERM on abort, SIGKILL if the child is not
+ * proven gone within `graceMs`. Idempotent teardown — once the child is gone,
+ * both the escalation timer and the listeners are dropped, so a later abort
+ * cannot signal a dead (or reused) child.
+ *
+ * "Gone" has three proofs and any one of them cancels the escalation: an
+ * 'exit' or a 'close' event, or a non-null exitCode/signalCode. 'close' waits
+ * for the stdio pipes to drain and can lag a killed process, so a pid that has
+ * already exited may otherwise be signalled again — and reused by then.
  *
  * An already-aborted signal kills immediately, because the spawn happened
  * before the abort was observed.
@@ -58,8 +67,19 @@ export function killChildOnAbort(
 
     signal.removeEventListener('abort', onAbort)
     child.removeListener?.('close', teardown)
+    child.removeListener?.('exit', teardown)
     child.removeListener?.('error', onError)
   }
+
+  /**
+   * True when Node's own fields prove the process has stopped: exitCode is set
+   * once it exited, signalCode once it was signalled; null means still running.
+   * A fake that carries neither field offers no proof here, and the 'exit' and
+   * 'close' listeners carry it instead.
+   */
+  const hasExited = (): boolean =>
+    (child.exitCode !== undefined && child.exitCode !== null) ||
+    (child.signalCode !== undefined && child.signalCode !== null)
 
   /**
    * Node emits 'error' on two very different things: a spawn that failed, and
@@ -67,7 +87,13 @@ export function killChildOnAbort(
    * gone. After a failed kill the process may still be running, so tearing
    * down here would cancel the SIGKILL escalation and leave a git alive. The
    * pid is the test: a child that never spawned has none, so it is torn down;
-   * a spawned child keeps listening and 'close' stays the only proof of exit.
+   * a spawned child keeps listening, and only 'exit'/'close' or a set
+   * exitCode/signalCode prove it exited.
+   *
+   * Registered with `on`, not `once`: a failed SIGTERM and the later failed
+   * SIGKILL each emit 'error', and a spent once-listener would leave the
+   * second one unhandled — which throws in the Electron main process. The
+   * listener is dropped in teardown, once the child is provably gone.
    */
   const onError = (): void => {
     if (child.pid === undefined) {
@@ -89,15 +115,20 @@ export function killChildOnAbort(
       // Deliberately swallowed; the escalation below still gets its chance.
     }
 
-    // A child that closed the instant it was signalled needs no SIGKILL.
-    if (closed) {
+    // A child that closed the instant it was signalled needs no SIGKILL, and
+    // neither does one whose fields already say it exited.
+    if (closed || hasExited()) {
+      teardown()
+
       return
     }
 
     escalation = setTimeout(() => {
       escalation = null
 
-      if (closed) {
+      if (closed || hasExited()) {
+        teardown()
+
         return
       }
 
@@ -107,12 +138,16 @@ export function killChildOnAbort(
         // The timer must never throw either.
       }
     }, graceMs)
+
+    // A pending kill timer must not hold the process open on its own.
+    ;(escalation as { unref?: () => void }).unref?.()
   }
 
-  // 'close', not 'exit', matches how runGit resolves: the stdio pipes must
-  // drain, and a git that closed its pipes is one that will not need SIGKILL.
-  child.once('close', teardown)
-  child.once('error', onError)
+  // 'close' is how runGit resolves: the stdio pipes must drain. 'exit' fires
+  // earlier and is also proof the process is gone, so both tear down.
+  child.on('close', teardown)
+  child.on('exit', teardown)
+  child.on('error', onError)
 
   if (signal.aborted) {
     onAbort()

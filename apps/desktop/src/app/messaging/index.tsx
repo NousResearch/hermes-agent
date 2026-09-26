@@ -990,7 +990,7 @@ function MessagingField({
   return (
     <ListRow
       action={
-        <div className="flex items-center gap-2">
+        <div className="flex w-full items-center gap-2 @2xl:w-88">
           <Input
             className={CREDENTIAL_CONTROL_CLASS}
             id={fieldId}

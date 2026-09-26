@@ -259,13 +259,16 @@ def hidden_declared_sources() -> List[Dict[str, Any]]:
 
 
 def build_catalog_listing_with_form(
-    deferrable: List[Dict[str, Any]], *, max_tokens: int = 4000) -> Tuple[Optional[str], str]:
+    deferrable: List[Dict[str, Any]], *, max_tokens: int = 4000,
+    shown: Optional[frozenset] = None) -> Tuple[Optional[str], str]:
     """Render the deferred-catalog manifest: ``- name: short desc`` lines grouped per source.
     Returns ``(text, form)``; form is ``"full"``, ``"names"``, ``"mixed"`` (oversized servers
     collapsed to a name + count line), ``"groups"`` (every server summarized) or ``"none"``
     (over budget even summarized -> text is None). Ordering is deterministic (sorted groups
     and tools) so the block is byte-stable — the request prefix stays cacheable. Degradation
-    is PER SERVER, largest first: one huge server must not cost a small one its listing."""
+    is PER SERVER, largest first: one huge server must not cost a small one its listing.
+    ``shown`` (``listing_groups``) pins the choice: only those groups list tool names, and
+    every collapsed group shares one line."""
     groups: Dict[str, List[Tuple[str, str]]] = {}
     for td in deferrable:
         fn = _fn(td)
@@ -304,22 +307,30 @@ def build_catalog_listing_with_form(
             )
             for row in unavailable
         }
+        shared = [label for label in sorted(groups) if shown is not None and modes[label] == "summary"]
         blocks = [
             available_blocks[label] if label in available_blocks else unavailable_blocks[label]
-            for label in sorted(available_blocks | unavailable_blocks)
+            for label in sorted(available_blocks | unavailable_blocks) if label not in shared
         ]
+        if shared:
+            blocks.append(f"Names not listed; find with `{TOOL_SEARCH_NAME}`: "
+                          + ", ".join(f"{label} ({len(groups[label])})" for label in shared))
         text = "\n".join([header] + blocks)
         return text if math.ceil(len(text) / CHARS_PER_TOKEN) <= max_tokens else None
 
+    def collapsed_form(modes: Dict[str, str]) -> str:
+        return "groups" if all(m == "summary" for m in modes.values()) else "mixed"
+
+    forced = {lbl for lbl in groups if shown is not None and lbl not in shown}
     for mode in ("full", "names"):  # 1. everything full; 2. everything names-only
-        modes = {lbl: mode for lbl in groups}
+        modes = {lbl: "summary" if lbl in forced else mode for lbl in groups}
         text = assemble_if_fits(modes)
         if text is not None:
-            return text, mode
+            return text, collapsed_form(modes) if forced else mode
     # 3. Collapse the LARGEST rendered groups first (deterministic: size then label).
-    for lbl in sorted(groups, key=lambda lbl: (-len(render_group(lbl, "names")), lbl)):
+    for lbl in sorted(set(groups) - forced, key=lambda lbl: (-len(render_group(lbl, "names")), lbl)):
         modes[lbl] = "summary"
         text = assemble_if_fits(modes)
         if text is not None:
-            return text, "groups" if all(m == "summary" for m in modes.values()) else "mixed"
+            return text, collapsed_form(modes)
     return None, "none"

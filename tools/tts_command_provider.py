@@ -140,10 +140,13 @@ def run_command_provider(
     provider survives, a silently stalled one is killed. Child env is scrubbed of Hermes secrets
     while propagating delegated-child lineage markers."""
     from agent.delegation_context import delegated_child_subprocess_env
+    from tools.env_passthrough import resolve_passthrough_value
     from tools.environments.local import hermes_subprocess_env
     scrubbed = hermes_subprocess_env(inherit_credentials=False)
     for key in env_passthrough or []:
-        value = os.environ.get(key)
+        # Under the multiplexer os.environ is the LAUNCH profile's .env: resolve through the served
+        # profile's secret scope so its own key is forwarded and never another profile's.
+        value = resolve_passthrough_value(key, os.environ.get(key))
         if value is not None:
             scrubbed[key] = value
     # Own process group so the whole tree can be signalled on idle timeout. Lossy UTF-8 decode:

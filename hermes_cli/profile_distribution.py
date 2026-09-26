@@ -442,13 +442,14 @@ def _refuse_symlink(path: Path) -> None:
 
 
 def _is_container(path: Path, rel: Tuple[str, ...]) -> bool:
-    """A container of roots, not a root itself. Under ``skills/`` that is any dir without
-    SKILL.md (a category, whatever metadata it ships: DESCRIPTION.md, README.md, LICENSE);
+    """A container of roots, not a root itself. Under ``skills/`` that is a dir with no
+    SKILL.md in it or above it (a category, whatever metadata it ships: DESCRIPTION.md,
+    README.md, LICENSE; a dir inside a skill, like its ``scripts/``, belongs to that skill);
     elsewhere, a dir holding no files other than DESCRIPTION.md and dotfiles."""
     if not path.is_dir():
         return False
     if rel[0] == "skills":
-        return not (path / "SKILL.md").is_file()
+        return not any((p / "SKILL.md").is_file() for p in (path, *path.parents[: len(rel) - 1]))
     return not any(
         p.is_file() and p.name != "DESCRIPTION.md" and not p.name.startswith(".") for p in path.iterdir()
     )
@@ -479,8 +480,8 @@ def _refuse_symlinked_containers(src: Path, dest: Path, rel: Tuple[str, ...]) ->
 
 
 def _merges_per_root(src: Path, rel_parts: Tuple[str, ...]) -> bool:
-    """An owned top-level dir, or an owned category (``skills/research/``) holding only
-    roots, is merged per authored root instead of replaced whole, so skills the installer
+    """An owned top-level dir, or an owned container (``skills/research/``, see
+    ``_is_container``), is merged per authored root instead of replaced whole, so skills the installer
     added to it (``hermes skills install`` and agent-created skills land in
     ``skills/<category>/``) survive. The pre-write symlink guard and the copy loop both
     use this, so the guard covers exactly what the copy merges."""
@@ -510,7 +511,7 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
     ``preserve_config`` is False (fresh install / ``--force-config``). ``.env.template`` lands
     as ``.env.EXAMPLE`` so it never shadows a real ``.env``.
 
-    A top-level owned directory, and an owned category holding only roots, is merged per
+    A top-level owned directory, and an owned container (``_is_container``), is merged per
     authored root. ``cron/jobs.json`` is special: it is one multi-record runtime store, so
     shipped definitions merge by job id instead of replacing the file."""
     target.mkdir(parents=True, exist_ok=True)

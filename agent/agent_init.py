@@ -2460,6 +2460,8 @@ def init_agent(
     except Exception:
         _agent_cfg = {}
 
+    from agent.session_topics import initialize_topic_segmentation
+    initialize_topic_segmentation(agent, _agent_cfg)
     _apply_display_config(agent, _agent_cfg, platform)
     _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=memory_manager)
     _apply_agent_section(agent, _agent_cfg)

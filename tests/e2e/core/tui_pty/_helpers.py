@@ -264,6 +264,8 @@ class TmuxTui:
         self.pane_pid = int(self.tmux("display", "-p", "-t", "p", "#{pane_pid}").strip())
         self.pane_tty = self.tmux("display", "-p", "-t", "p", "#{pane_tty}").strip()
         self.server_pid = int(self.tmux("display", "-p", "#{pid}").strip() or 0)
+        self._zombie_since = self._reap_nudged = 0.0
+        self.reap_nudges = 0
         self.seen: set[int] = set()
 
     # -- tmux ------------------------------------------------------------------------------------
@@ -427,6 +429,27 @@ class TmuxTui:
         status, _, sig = rest.partition("|")
         return (status, sig) if dead == "1" and (status or sig) else None
 
+    def reap_report(self) -> tuple[str, str] | None:
+        """:meth:`exit_report`, re-signalling tmux while the pane process sits exited but unreaped.
+
+        tmux 3.4 (the CI runner's) intermittently misses the SIGCHLD of an exited pane: the pane
+        process stays a single-threaded zombie of the tmux server -- parent alive, SIGCHLD caught,
+        neither blocked nor pending -- and ``pane_dead_status`` never fills. A spurious SIGCHLD only
+        makes tmux run its ``waitpid`` loop, which reaps the zombie with its real exit status; a
+        process that is still running (a real /exit hang) is untouched and still times out."""
+        report = self.exit_report()
+        if report is not None or _proc_letter(self.pane_pid) != "Z":
+            return report
+        now = time.monotonic()
+        self._zombie_since = self._zombie_since or now
+        # tmux's own SIGCHLD normally lands within milliseconds; nudge only a zombie it left behind.
+        if (now - self._zombie_since >= 2.0 and now - self._reap_nudged >= 1.0 and self.server_pid
+                and "tmux" in cmdline(self.server_pid)):
+            self._reap_nudged, self.reap_nudges = now, self.reap_nudges + 1
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(self.server_pid, signal.SIGCHLD)  # windows-footgun: ok — Linux-only suite
+        return None
+
     def exit_problem(self, timeout: float = 60.0) -> str:
         """``/exit``: the TUI exits 0 within ``timeout`` and leaves no process of its session."""
         self.track()
@@ -434,7 +457,7 @@ class TmuxTui:
         t0 = time.monotonic()
         self.submit("/exit")
         try:
-            status, sig = poll(self.exit_report, timeout=timeout, what="the TUI to exit")
+            status, sig = poll(self.reap_report, timeout=timeout, what="the TUI to exit")
         except AssertionError:
             return self.exit_diagnostics(f"/exit did not exit within {timeout:.0f}s", t0, before)
         def members() -> list[int]:
@@ -460,7 +483,8 @@ class TmuxTui:
                 f"elapsed since /exit: {time.monotonic() - t0:.1f}s\n"
                 f"tmux: rc={q.returncode} out={q.stdout.strip()!r} err={q.stderr.strip()!r}\n"
                 f"pane pid {self.pane_pid}: {proc}\n"
-                f"tmux server {self.server_pid}: {_status_fields(self.server_pid)}\n"
+                f"tmux server {self.server_pid}: {_status_fields(self.server_pid)} "
+                f"(SIGCHLD nudges sent: {self.reap_nudges})\n"
                 f"--- frame before /exit ---\n{before}\n"
                 f"--- last {tail} lines of the PTY transcript ---\n{self.transcript_tail(tail)}")
 
@@ -573,9 +597,13 @@ def _threads(pid: int) -> str:
     return " ".join(out)
 
 
-def _alive(pid: int) -> bool:
+def _proc_letter(pid: int) -> str:
+    """The ``/proc/<pid>/stat`` state letter, '' once the process is reaped."""
     try:
-        state = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()[0]
+        return Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()[0]
     except OSError:
-        return False
-    return state != "Z"
+        return ""
+
+
+def _alive(pid: int) -> bool:
+    return _proc_letter(pid) not in ("", "Z")

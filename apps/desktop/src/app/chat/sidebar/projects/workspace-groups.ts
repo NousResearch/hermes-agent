@@ -28,6 +28,12 @@ export interface SidebarSessionGroup {
   // worktrees (`<repo>/.worktrees/t_*`) into one row, so a heavy board doesn't
   // spray hundreds of throwaway branch lanes across the sidebar.
   isKanban?: boolean
+  // False ONLY for the non-git heuristic lane of a plain folder (backend
+  // `_place_by_heuristic`): it renders like a main lane but `git switch` on it
+  // dies with "fatal: not a git repository", so branch-targeted actions must
+  // skip it (#61362). Absent (undefined) on lanes from older backends — treat
+  // missing as git, matching the historical behavior.
+  isGit?: boolean
   mode?: 'profile' | 'source' | 'workspace'
   sourceId?: string
   // Exact owner for gateway/profile sidebar sections; absent for workspace lanes.

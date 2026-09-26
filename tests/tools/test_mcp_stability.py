@@ -595,6 +595,32 @@ class TestDeadRootPidRecycleGuard:
             assert fake_pid not in _orphan_stdio_pids
             assert fake_pid not in _stdio_create_times
 
+    def test_missing_create_time_token_is_dropped_without_signalling(self, monkeypatch):
+        """A Windows child whose creation time could not be captured at spawn (no token ever
+        recorded in _stdio_create_times) must not be signalled once it becomes an
+        already-exited-root orphan, even if the pid number is live again by sweep time
+        (#122391 review follow-up)."""
+        from tools.mcp_tool_lifecycle import _orphan_stdio_pid_servers, _orphan_stdio_pids
+        from tools.mcp_tool import _lock
+
+        self._reset_state()
+        monkeypatch.delattr(os, "killpg", raising=False)  # simulate Windows: no process groups
+        fake_pid = 909094
+        with _lock:
+            _orphan_stdio_pids.add(fake_pid)
+            _orphan_stdio_pid_servers[fake_pid] = "test-server"
+            # No _stdio_create_times entry: the initial capture failed at spawn time.
+
+        with patch("gateway.status._pid_exists", return_value=True), \
+             patch("agent.deadline.kill_process_tree") as mock_tree, \
+             patch("tools.mcp_tool_lifecycle.os.kill") as mock_kill:
+            _mcp_lifecycle._kill_orphaned_mcp_children()
+
+        mock_tree.assert_not_called()
+        mock_kill.assert_not_called()
+        with _lock:
+            assert fake_pid not in _orphan_stdio_pids
+
 
 # ---------------------------------------------------------------------------
 # Fix 3: MCP reload timeout (cli.py)

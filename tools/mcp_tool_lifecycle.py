@@ -225,18 +225,28 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
         _close_mcp_stderr_logs(scope=scope)
 
 
-def _drop_recycled_pids(pids: Dict[int, str], create_times: Dict[int, float]) -> Dict[int, str]:
-    """Windows-only guard: an already-exited root is reaped by walking a bare PID number
-    (taskkill /T, or kill_process_tree's PPID-based descendant fallback — see
-    _signal_mcp_process). If that number has since been recycled by an unrelated live process,
-    either path would target that process's tree instead of the MCP orphan's (#122391). Drop
-    any entry whose live process no longer matches the creation time recorded while the
-    original pid was still known to be ours."""
-    if not create_times:
+def _drop_recycled_pids(pids: Dict[int, str], create_times: Dict[int, float],
+                        no_pgroups: bool) -> Dict[int, str]:
+    """Windows-only guard (``no_pgroups``: ``os.killpg`` unavailable): an already-exited root is
+    reaped by walking a bare PID number (taskkill /T, or kill_process_tree's PPID-based
+    descendant fallback — see _signal_mcp_process). If that number has since been recycled by an
+    unrelated live process, either path would target that process's tree instead of the MCP
+    orphan's (#122391). On this platform every reaped pid depends on a verified creation-time
+    token; one that never got a token there (capture failed at spawn, before the root could
+    exit) is exactly as unverifiable as a confirmed mismatch — drop it too, rather than let a
+    missing token fall through to a bare-PID kill. POSIX (pgroups available) is untouched: a
+    missing pgid there already falls back to a plain per-pid kill, unrelated to this race."""
+    if not no_pgroups:
         return pids
     from gateway.status import _pid_exists
-    for pid, recorded in create_times.items():
-        if pid not in pids or not _pid_exists(pid):
+    for pid in list(pids):
+        recorded = create_times.get(pid)
+        if recorded is None:
+            owner = pids.pop(pid)
+            logger.warning("MCP orphan pid %d (%s) has no verified creation-time token; "
+                           "dropping without signalling it", pid, owner)
+            continue
+        if not _pid_exists(pid):
             continue  # gone (or gone again) — nothing to reuse, existing kill path handles it
         try:
             import psutil
@@ -273,7 +283,7 @@ def _take_reapable_pids(include_active: bool, server_name: Optional[str]) -> tup
                 _stdio_pids.pop(pid, None)
         pgids = {pid: _stdio_pgids.pop(pid) for pid in pids if pid in _stdio_pgids}
         create_times = {pid: _stdio_create_times.pop(pid) for pid in pids if pid in _stdio_create_times}
-    pids = _drop_recycled_pids(pids, create_times)
+    pids = _drop_recycled_pids(pids, create_times, getattr(os, "killpg", None) is None)
     return pids, pgids
 
 

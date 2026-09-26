@@ -573,6 +573,7 @@ import {
 } from './windows-remote-lifecycle'
 import {
   alreadyHasNoSandbox,
+  buildBundleSwapRelaunchArgs,
   buildNoSandboxRelaunchArgs,
   decideWindowsSandboxLaunch,
   fallbackMarker,
@@ -2557,6 +2558,24 @@ const BUNDLE_SWAP_RELAUNCH_FAILSAFE_MS = 15_000
 //
 // Returns true when the relaunch was scheduled; the caller must park rather
 // than continue booting, because the process exits underneath it.
+/**
+ * Relaunch args for a swapped bundle. Keeps the sandbox the app was started
+ * with, and says so in the log when it cannot (a rebuild leaves the helper
+ * non-setuid, which is repaired by the next `hermes desktop` launch).
+ */
+function bundleSwapRelaunchArgs(parentArgs: readonly string[] = process.argv.slice(1)): string[] {
+  const args = buildBundleSwapRelaunchArgs(parentArgs)
+
+  if (!parentArgs.includes('--no-sandbox') && args.includes('--no-sandbox')) {
+    rememberLog(
+      '[updates] relaunch cannot keep the Electron sandbox: chrome-sandbox is not root-owned setuid. ' +
+        'Run `hermes desktop` from a terminal to repair it.'
+    )
+  }
+
+  return args
+}
+
 function relaunchIntoSwappedBundle() {
   if (!IS_PACKAGED || process.argv.includes(BUNDLE_SWAP_RELAUNCH_FLAG)) {
     return false
@@ -2570,7 +2589,7 @@ function relaunchIntoSwappedBundle() {
 
   try {
     app.relaunch({
-      args: [...buildNoSandboxRelaunchArgs(process.argv.slice(1)), BUNDLE_SWAP_RELAUNCH_FLAG]
+      args: [...bundleSwapRelaunchArgs(), BUNDLE_SWAP_RELAUNCH_FLAG]
     })
   } catch (err) {
     rememberLog(`[updates] bundle-swap relaunch failed: ${err?.message || err}; continuing with the current build`)
@@ -17975,7 +17994,7 @@ ipcMain.handle('hermes:version', async (_event, scope?: { connectionId?: string;
 // bundle now lives there.
 ipcMain.handle('hermes:app:relaunch', async () => {
   rememberLog('[updates] renderer requested an app relaunch (swapped bundle pending)')
-  app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
+  app.relaunch({ args: bundleSwapRelaunchArgs() })
   void exitAfterBackendShutdown(0)
 })
 

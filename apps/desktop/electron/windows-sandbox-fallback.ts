@@ -392,3 +392,62 @@ export function buildNoSandboxRelaunchArgs(argv: readonly string[]): string[] {
 
   return args
 }
+
+/** Path of Electron's Linux sandbox helper next to a packaged binary. */
+export function bundledSandboxHelperPath(execPath: string = process.execPath): string {
+  return path.join(path.dirname(execPath), 'chrome-sandbox')
+}
+
+/**
+ * True when `chrome-sandbox` is root-owned with the setuid bit — the only state
+ * in which Chromium's SUID helper can back the renderer sandbox.
+ */
+export function sandboxHelperIsSetuidRoot(helperPath: string = bundledSandboxHelperPath()): boolean {
+  try {
+    const st = fs.statSync(helperPath)
+
+    return st.uid === 0 && (st.mode & 0o4000) !== 0
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Args for relaunching into an already-swapped app bundle.
+ *
+ * `buildNoSandboxRelaunchArgs` is right for the Windows crash-fallback legs, but
+ * this relaunch re-executes the SAME binary, so it must keep the sandbox
+ * decision the app was started with. Forcing `--no-sandbox` here dropped the
+ * sandbox on every in-app update — even on hosts where the helper is correctly
+ * configured — leaving the app unsandboxed until a fresh launcher start, with
+ * nothing user-visible to explain why.
+ *
+ *  - an unsandboxed parent stays unsandboxed (children inherit the decision);
+ *  - `--disable-setuid-sandbox`, the user-namespace path the launcher picks when
+ *    the helper is not setuid, is preserved: the launcher never emits it
+ *    together with a setuid helper;
+ *  - otherwise the sandbox is kept while the helper on disk can back it, and
+ *    degrades exactly the way the launcher does when it cannot;
+ *  - win32 keeps the existing call, and macOS needs no helper at all.
+ */
+export function buildBundleSwapRelaunchArgs(
+  argv: readonly string[],
+  options: { platform?: NodeJS.Platform; helperSetuidRoot?: boolean } = {}
+): string[] {
+  const args = Array.isArray(argv) ? [...argv] : []
+  const platform = options.platform ?? process.platform
+
+  if (platform === 'win32') {
+    return buildNoSandboxRelaunchArgs(args)
+  }
+
+  if (args.includes('--no-sandbox') || args.includes('--disable-setuid-sandbox')) {
+    return args
+  }
+
+  if (platform !== 'linux') {
+    return args
+  }
+
+  return (options.helperSetuidRoot ?? sandboxHelperIsSetuidRoot()) ? args : [...args, '--no-sandbox']
+}

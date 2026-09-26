@@ -903,7 +903,9 @@ export function preserveLocalPendingTurnMessages(
             !authoritative.error &&
             !textWithoutReferenceLines(chatMessageText(authoritative)).trim().length
 
-          if (!(authoritativeIsEmptyShell && message.interim !== true && hasStreamedContent(message))) {
+          const localFinalText = textWithoutReferenceLines(chatMessageText(message)).trim()
+
+          if (!(authoritativeIsEmptyShell && message.interim !== true && localFinalText.length > 0)) {
             continue
           }
         }

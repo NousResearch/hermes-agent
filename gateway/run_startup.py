@@ -75,6 +75,167 @@ class GatewayStartupMixin:
             _pre_state = self._peek_session_state(session_key)
             if (_pre_state.turn.agent if _pre_state else None) is _AGENT_PENDING_SENTINEL:
                 self._release_running_agent_state(session_key)
+                # Nothing will ever run for this session — drop the registration so
+                # shutdown does not cancel-and-remark a resume never dispatched.
+                self._clear_pending_boot_resume(session_key)
+
+    # ── Pending boot-resume registry ──────────────────────────────────────
+    # A boot auto-resume is SCHEDULED (slot claimed with the pending sentinel, internal
+    # event dispatched) long before its turn BODY runs: the body executes off-loop on
+    # the shared executor and can be minutes behind. A shutdown landing in that gap must
+    # not admit the turn into its drain. Registry lifetime: schedule -> turn start
+    # (cleared at the turn chokepoint) or shutdown (cancelled + re-marked).
+
+    def _register_pending_boot_resume(self, session_key: str, resume_reason, task) -> None:
+        """Record a scheduled-but-not-started boot resume. Fail-open."""
+        try:
+            from gateway.drain_resume import BootResumeRegistration
+
+            registry = getattr(self, "_pending_boot_resumes", None)
+            if registry is None:
+                registry = self._pending_boot_resumes = {}
+            registry[session_key] = (
+                BootResumeRegistration(
+                    session_key=session_key,
+                    resume_reason=resume_reason,
+                    scheduled_at=time.time(),
+                ),
+                task,
+            )
+        except Exception:
+            # Bookkeeping must never abort a resume.
+            logger.debug("could not register pending boot resume for %s", session_key, exc_info=True)
+
+    def _clear_pending_boot_resume(self, session_key: str) -> None:
+        """Drop a registration once its turn has actually started (or died)."""
+        with suppress(Exception):
+            registry = getattr(self, "_pending_boot_resumes", None)
+            if registry:
+                registry.pop(session_key, None)
+
+    def _session_has_pending_boot_resume(self, session_key: str) -> bool:
+        try:
+            registry = getattr(self, "_pending_boot_resumes", None)
+            return bool(registry) and session_key in registry
+        except Exception:
+            return False
+
+    async def _cancel_pending_boot_resumes_for_shutdown(self) -> int:
+        """Cancel scheduled-but-unstarted boot resumes and re-mark them resumable.
+
+        Runs at the START of shutdown (right after ``notify_active_sessions``, BEFORE the
+        drain wait), so the drain never waits on a resume turn that has not begun — a
+        pending sentinel still counts in ``len(self._running_agents)``, which is what the
+        drain loop gates on.
+
+        Each cancelled session is re-marked resumable under its ORIGINAL boot reason, so
+        the next boot resumes it exactly ONCE instead of re-deriving a second-generation
+        ``shutdown_timeout`` mark. A resume whose turn ALREADY started is left alone —
+        it is real in-flight work owned by the ordinary drain/interrupt path.
+        """
+        from gateway.drain_resume import DISPOSITION_CANCEL, classify_boot_resume_at_shutdown
+        from gateway.run import _AGENT_PENDING_SENTINEL
+
+        registry = getattr(self, "_pending_boot_resumes", None)
+        if not registry:
+            return 0
+
+        cancelled = 0
+        for session_key, entry in list(registry.items()):
+            try:
+                registration, task = entry
+                state = self._peek_session_state(session_key)
+                slot_value = state.turn.agent if state is not None else None
+                task_done = bool(getattr(task, "done", lambda: False)())
+                if classify_boot_resume_at_shutdown(
+                    registration,
+                    slot_value=slot_value,
+                    pending_sentinel=_AGENT_PENDING_SENTINEL,
+                    task_done=task_done,
+                ) != DISPOSITION_CANCEL:
+                    registry.pop(session_key, None)
+                    continue
+
+                # 1. Stop the wrapper so it cannot dispatch after we release the slot.
+                with suppress(Exception):
+                    if task is not None and not task_done:
+                        task.cancel()
+
+                # 2. Drop the queued internal resume event so an adapter late-arrival
+                #    drain cannot re-admit it.
+                with suppress(Exception):
+                    source = self._get_cached_session_source(session_key)
+                    adapter = self._delivery_adapter_for(source) if source is not None else None
+                    pending_slot = getattr(adapter, "_pending_messages", None)
+                    if isinstance(pending_slot, dict):
+                        queued = pending_slot.get(session_key)
+                        if queued is not None and getattr(queued, "internal", False):
+                            pending_slot.pop(session_key, None)
+
+                # 3. Release the claimed slot so the drain does not count it.
+                with suppress(Exception):
+                    self._release_running_agent_state(session_key)
+
+                # 4. Re-mark resumable under the ORIGINAL reason — the durable mark the
+                #    boot path reads. The work is deferred, not dropped.
+                _reason = registration.resume_reason or "restart_interrupted"
+                _marked = False
+                try:
+                    _marked = bool(
+                        await self.async_session_store.mark_resume_pending(session_key, _reason)
+                    )
+                except Exception:
+                    logger.warning(
+                        "re-mark of cancelled boot resume failed for %s", session_key, exc_info=True,
+                    )
+
+                registry.pop(session_key, None)
+                cancelled += 1
+                logger.warning(
+                    "PHASE=boot_resume_cancelled key=%s reason=%s remarked=%s pending_age=%.1fs "
+                    "cause=shutdown_before_turn_start",
+                    session_key, _reason, _marked,
+                    max(0.0, time.time() - registration.scheduled_at),
+                )
+            except Exception:
+                logger.debug(
+                    "pending boot-resume shutdown disposition failed for %s", session_key, exc_info=True,
+                )
+                registry.pop(session_key, None)
+
+        if cancelled:
+            with suppress(Exception):
+                self._persist_active_agents()
+            logger.warning(
+                "Cancelled %d scheduled-but-unstarted boot auto-resume(s) at shutdown and re-marked "
+                "them resumable; they will resume once on the next boot instead of being admitted "
+                "into this drain.",
+                cancelled,
+            )
+        return cancelled
+
+    def _log_drain_admission(self, session_key: str, event=None) -> None:
+        """Emit ``PHASE=drain_admission`` when a turn starts while shutdown is underway.
+
+        Without it, turns admitted mid-drain show up only as an unexplained ``active_now``
+        in the drain summary, with nothing naming the class of work that produced them.
+        Fail-open: a broken log sink must never abort a turn.
+        """
+        try:
+            if not getattr(self, "_draining", False):
+                return
+            from gateway.drain_resume import drain_admission_reason
+
+            logger.warning(
+                "PHASE=drain_admission key=%s reason=%s",
+                session_key,
+                drain_admission_reason(
+                    is_boot_resume=self._session_has_pending_boot_resume(session_key),
+                    is_internal=bool(getattr(event, "internal", False)),
+                ),
+            )
+        except Exception:
+            pass
 
     def _queue_startup_restore_event(self, event: MessageEvent) -> None:
         queue = getattr(self, "_startup_restore_queue", None)
@@ -611,6 +772,16 @@ class GatewayStartupMixin:
             event = MessageEvent(text="", message_type=MessageType.TEXT, source=source, internal=True)
             task = self._retain_background_task(
                 asyncio.create_task(self._run_startup_resume_event(adapter, event, entry.session_key))
+            )
+            # Track this scheduled resume so shutdown can tell a resume whose turn NEVER
+            # STARTED (cancel + re-mark) from one that is genuinely running (drain
+            # normally). The slot is claimed synchronously here, but the turn BODY runs
+            # off-loop on the shared executor and can start minutes later — a shutdown
+            # landing in that gap would otherwise admit phantom turns into its drain,
+            # interrupt them at the cap, and have the next boot resume them a second
+            # time. See gateway/drain_resume.py.
+            self._register_pending_boot_resume(
+                entry.session_key, getattr(entry, "resume_reason", None), task,
             )
             if getattr(self, "_startup_restore_in_progress", False):
                 tasks = getattr(self, "_startup_restore_tasks", None)

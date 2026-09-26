@@ -1829,6 +1829,20 @@ class GatewayShutdownMixin:
         await self._notify_active_sessions_of_shutdown()
         logger.info("Shutdown phase: notify_active_sessions done at +%.2fs", ctx.elapsed())
 
+        # Cancel boot auto-resumes that were SCHEDULED but whose turn never started, and
+        # re-mark them resumable. MUST run before the drain wait: a pending sentinel
+        # still counts in ``len(self._running_agents)``, so leaving these in place makes
+        # the drain burn its whole cap on work that exists only because of the pending
+        # resume — then interrupt it, skip the clean-shutdown marker, and have the next
+        # boot resume every affected session a SECOND time.
+        try:
+            await self._cancel_pending_boot_resumes_for_shutdown()
+        except Exception:
+            logger.warning(
+                "pending boot-resume shutdown cancellation failed; continuing shutdown", exc_info=True,
+            )
+        logger.info("Shutdown phase: pending boot-resume cancel done at +%.2fs", ctx.elapsed())
+
     async def _stop_drain_active_work(self, timeout: float, ctx: "GatewayShutdownMixin._StopContext") -> None:
         """Pre-mark resume_pending, drain agents/cron/API work into ``ctx``."""
         from gateway.run import GatewayRunner

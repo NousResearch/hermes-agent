@@ -2161,6 +2161,12 @@ class GatewayTurnMixin:
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
+        # A turn STARTING while shutdown is already in progress is the class that makes
+        # mid-drain admissions invisible — name it before anything else can fail.
+        self._log_drain_admission(_quick_key, event)
+        # This turn's body is genuinely running now, so it is no longer a
+        # "scheduled but not started" boot resume: shutdown must drain it, not cancel it.
+        self._clear_pending_boot_resume(_quick_key)
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
         logger.info(
             "inbound message: platform=%s user=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r",

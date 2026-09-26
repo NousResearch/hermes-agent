@@ -614,6 +614,17 @@ def _build_result_entry(
     # Model-visible per-delegation spend (unlike _child_cost_usd above).
     entry["cost_usd"] = round(entry["_child_cost_usd"], 6)
     entry["cost_status"] = _cost_status if isinstance(_cost_status, str) and _cost_status else "unknown"
+    # Goal mode (#124292): loop stats on every goal-mode entry; the remaining-work note only
+    # when the judge budget expired, so the parent can re-dispatch or take over.
+    _goal_loop = result.get("_goal_loop")
+    if isinstance(_goal_loop, dict) and _goal_loop.get("enabled"):
+        entry["goal_loop"] = {
+            "turns_used": _goal_loop.get("turns_used"), "max_turns": _goal_loop.get("max_turns"),
+            "outcome": _goal_loop.get("outcome"),
+        }
+    _remaining = result.get("remaining_work")
+    if isinstance(_remaining, str) and _remaining:
+        entry["remaining_work"] = _remaining
     if status == "failed":
         entry["error"] = result.get("error", "Subagent did not produce a response.")
         # Classified reason from the child loop (e.g. "rate_limit", "billing")

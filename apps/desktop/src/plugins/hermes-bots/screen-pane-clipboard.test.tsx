@@ -144,3 +144,15 @@ it('drops a paste while this viewer only watches (no lease)', async () => {
   expect(rfbs[0].clipboardPasteFrom).not.toHaveBeenCalled()
   view.unmount()
 })
+
+it('drops a paste over the bridge\'s 256 KiB cut-text cap instead of forwarding it', async () => {
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(rfbs).toHaveLength(1))
+  await waitFor(() => expect(rfbs[0].viewOnly).toBe(false))
+
+  const oversized = 'a'.repeat(256 * 1024 + 1)
+  fireEvent.paste(rfbs[0].target, { clipboardData: { getData: () => oversized } })
+
+  expect(rfbs[0].clipboardPasteFrom).not.toHaveBeenCalled()
+  view.unmount()
+})

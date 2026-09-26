@@ -61,6 +61,9 @@ const CLOSE_CONTROL_TAKEN = 4000
 /** Evictions arriving this soon after dialing count toward the loop budget; slower ones reset it. */
 const EVICTION_LOOP_WINDOW_MS = 10_000
 const MAX_RAPID_EVICTIONS = 3
+/** Mirrors tools/bot_desktop/rfb_filter.py's _MAX_CUT_TEXT: the bridge closes the display
+ *  socket on any ClientCutText over this, so an oversized paste must never reach the client. */
+const MAX_PASTE_CUT_TEXT = 256 * 1024
 
 async function loadRfb(): Promise<
   new (target: HTMLElement, socket: WebSocket, options?: Record<string, unknown>) => RfbLike
@@ -292,7 +295,7 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
 
           const text = event.clipboardData?.getData('text')
 
-          if (text) {
+          if (text && text.length <= MAX_PASTE_CUT_TEXT) {
             event.preventDefault()
             client.clipboardPasteFrom(text)
           }

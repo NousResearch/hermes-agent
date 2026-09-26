@@ -358,3 +358,45 @@ def test_evaluate_runtime_rebinds_after_page_target_closed(chrome_cdp, superviso
         time.sleep(0.25)
     assert out.get("ok") is True, out
     assert out["result"] == "replacement-tab"
+
+
+def test_evaluate_runtime_moves_off_startup_tab_to_web_page(chrome_cdp, supervisor_registry):
+    """Attached to a browser it did not launch, the supervisor binds to the startup tab before
+    the driver opens its own. Evaluation must run in the web page, not stay in about:blank /
+    chrome://newtab for the whole session."""
+    import http.server
+    import threading
+    import urllib.request
+
+    class _Page(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            body = b"<!doctype html><title>web-tab</title>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Page)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        cdp_url, port = chrome_cdp
+        supervisor = supervisor_registry.get_or_start(task_id="pytest-eval-webpage", cdp_url=cdp_url)
+        assert supervisor.evaluate_runtime("location.protocol")["result"] in ("about:", "chrome:")
+
+        page_url = f"http://127.0.0.1:{server.server_address[1]}/"
+        urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{port}/json/new?{page_url}", method="PUT"),
+                               timeout=5).read()
+        deadline = time.monotonic() + 10
+        out = {}
+        while time.monotonic() < deadline:
+            out = supervisor.evaluate_runtime("document.title", timeout=3.0)
+            if out.get("ok") and out.get("result") == "web-tab":
+                break
+            time.sleep(0.25)
+        assert out.get("result") == "web-tab", out
+    finally:
+        server.shutdown()

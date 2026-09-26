@@ -66,6 +66,9 @@ def _schedule(coro, loop, *, timeout: float):
     return fut.result(timeout=timeout)
 
 
+_WEB_SCHEMES = ("http://", "https://")
+
+
 def _is_lost_session_error(exc: BaseException) -> bool:
     """CDP -32001: the session's target no longer exists (its tab was closed or replaced)."""
     return "session with given id not found" in str(exc).lower()
@@ -105,6 +108,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
     are sync, thread-safe bridges onto that loop; all CDP I/O lives on the loop."""
 
     _page_target_id: Optional[str] = None  # target behind _page_session_id
+    _web_page_seen: bool = False  # binding has been on an http(s) page since the last (re)attach
 
     def __init__(self, task_id: str, cdp_url: str, *, dialog_policy: str = DEFAULT_DIALOG_POLICY,
                  dialog_timeout_s: float = DEFAULT_DIALOG_TIMEOUT_S) -> None:
@@ -225,9 +229,12 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         if loop is None or not loop.is_running():
             return _fail("supervisor loop is not running")
         with self._state_lock:
-            active, session_id, target_id = self._active, self._page_session_id, self._page_target_id
+            active = self._active
         if not active:
             return _fail("supervisor is not active")
+        self._prefer_web_page()
+        with self._state_lock:
+            session_id, target_id = self._page_session_id, self._page_target_id
         if not session_id:
             return _fail("supervisor has no attached page session")
 
@@ -440,6 +447,31 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 10.0)
 
+    def _prefer_web_page(self, timeout: float = 3.0) -> None:
+        """Move off a browser-internal page (the startup ``chrome://newtab``, ``about:blank``)
+        onto a web page when one exists. Attaching to a browser we did not launch, the supervisor
+        binds before the driver opens its own tab, so it would otherwise evaluate in the startup
+        tab for the whole session. Runs only until the binding has been on a web page once: after
+        that the page is the driver's, even if it later shows about:blank (a deliberate blank-out)."""
+        target_id = self._page_target_id
+        if self._web_page_seen or not target_id:
+            return
+        try:
+            infos = _schedule(self._cdp("Target.getTargets", timeout=timeout), self._loop, timeout=timeout + 1)
+        except Exception:
+            return
+        pages = [t for t in infos.get("result", {}).get("targetInfos", []) if t.get("type") == "page"]
+        mine = next((t for t in pages if t.get("targetId") == target_id), None)
+        if mine is not None and str(mine.get("url") or "").startswith(_WEB_SCHEMES):
+            self._web_page_seen = True
+            return
+        if any(str(t.get("url") or "").startswith(_WEB_SCHEMES) for t in pages):
+            result = self.focus_page("", timeout=timeout)
+            if result.get("ok"):
+                self._web_page_seen = True
+            else:
+                logger.debug("CDP supervisor %s: web-page rebind failed: %s", self.task_id, result.get("error"))
+
     def _page_target_alive(self, target_id: Optional[str], timeout: float = 3.0) -> bool:
         """Whether ``target_id`` is still a live target; True when it can't be told, so the
         caller keeps its original error rather than dropping a healthy session."""
@@ -484,6 +516,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             page_target = (await self._cdp("Target.createTarget", {"url": "about:blank"}))["result"]
         attach = await self._cdp("Target.attachToTarget", {"targetId": page_target["targetId"], "flatten": True})
         self._page_target_id = page_target["targetId"]
+        self._web_page_seen = False
         self._page_session_id = sid = attach["result"]["sessionId"]
         await self._enable_page_domains(sid, timeout=10.0)
         await self._install_dialog_bridge(sid)

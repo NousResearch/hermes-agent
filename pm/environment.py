@@ -351,7 +351,10 @@ class PythonEnvironment:
         # uv writes no __pycache__ (pip does): without --compile-bytecode the first import
         # of every module in the foreground of a user request compiles it (#100461).
         command = ["sync", "--locked" if locked else "--frozen", "--all-packages",
-                   "--python", str(self.python), "--compile-bytecode"]
+                   "--python", str(self.python), "--compile-bytecode",
+                   # ponytail: bypass only, not a version strategy; drop when pinned uv > 0.12.3
+                   # (uv fixed its setuptools-83 WHEEL parse) or if setuptools unpins from 83.
+                   "--no-build-isolation-package", "setuptools"]
         if no_default_groups:
             command.append("--no-default-groups")
         if all_extras:

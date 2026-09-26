@@ -70,7 +70,19 @@ for _hermes_candidate in "$_hermes_repo/.venv/bin/python" "$_hermes_repo/.venv/S
     [ -x "$_hermes_candidate" ] && { _hermes_py="$_hermes_candidate"; break; }
 done
 if [ -z "$_hermes_py" ]; then
-    for _hermes_store in "${HERMES_RUNTIME_DIR:-}" "$_hermes_repo/../tools" "${HERMES_HOME:-$HOME/.hermes}/tools"; do
+    # Mirror pm.environments.store_root -> hermes_constants.get_default_hermes_root:
+    # the store belongs to the ROOT, and a profile home (<root>/profiles/<name>)
+    # has none of its own. Probing only $HERMES_HOME/tools misses the store that
+    # setup just filled whenever activation runs under a profile.
+    _hermes_home_root="${HERMES_HOME:-$HOME/.hermes}"
+    _hermes_home_root="${_hermes_home_root%/}"
+    case "$_hermes_home_root" in
+        */profiles/?*) case "${_hermes_home_root##*/profiles/}" in
+                           */*) : ;;
+                           *) _hermes_home_root="${_hermes_home_root%/profiles/*}" ;;
+                       esac ;;
+    esac
+    for _hermes_store in "${HERMES_RUNTIME_DIR:-}" "$_hermes_repo/../tools" "$_hermes_home_root/tools"; do
         [ -n "$_hermes_store" ] || continue
         for _hermes_candidate in "$_hermes_store"/python-*/bin/python3 "$_hermes_store"/python-*/python.exe "$_hermes_store"/python-*/bin/python "$_hermes_store"/python-*/bin/python.exe; do
             [ -x "$_hermes_candidate" ] && { _hermes_py="$_hermes_candidate"; break; }
@@ -220,6 +232,6 @@ deactivate() {
 # remember the key list for deactivate (kept out of the loop vars above)
 __HERMES_KEY_LIST="$_hermes_keys"
 
-unset _hermes_repo _hermes_os _hermes_arch _hermes_target _hermes_store \
+unset _hermes_repo _hermes_os _hermes_arch _hermes_target _hermes_store _hermes_home_root \
       _hermes_py _hermes_json _hermes_keys _hermes_k _hermes_entry _hermes_venvpy \
       _hermes_winarch _hermes_top _hermes_cygpath

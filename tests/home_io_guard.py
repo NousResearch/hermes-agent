@@ -11,6 +11,21 @@ import sqlite3
 import sys
 import threading
 
+
+def _environment_generation(prefix: str) -> Path | None:
+    """The PM generation directory owning venv *prefix* (``<env>/gen-<uuid>/venv``), if any.
+
+    It holds only that venv, but code asking "is my venv an in-tree checkout venv?" probes
+    siblings of the venv there (update_owning_install stats ``<venv parent>/hermes_cli/main.py``
+    on every ``hermes update``). That path is outside sys.prefix, so under an activated test
+    environment (which lives under the real home) it tripped the guard.
+    """
+    generation = Path(prefix).resolve().parent
+    if generation.name.startswith("gen-") and (generation.parent / "active.json").is_file():
+        return generation
+    return None
+
+
 _INTERPRETER_PREFIXES = tuple({
     Path(p).resolve() for p in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix)
 } | {
@@ -18,6 +33,8 @@ _INTERPRETER_PREFIXES = tuple({
     # whose site-packages sits under the (real) Hermes home; third-party imports from it are the
     # interpreter's installation, not Hermes state.
     Path(p).resolve() for p in sys.path if p and Path(p).name in ("site-packages", "dist-packages")
+} | {
+    generation for generation in (_environment_generation(sys.prefix),) if generation is not None
 } | {
     # The default install checks the repo out INSIDE the home (install.sh:
     # INSTALL_DIR=$HERMES_HOME/hermes-agent). Reading test data, sources for tracebacks, or the

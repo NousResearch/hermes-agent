@@ -174,6 +174,22 @@ def test_checkout_inside_a_guarded_root_is_not_hermes_state():
         guard.check(PROJECT_ROOT.parent / "config.yaml")
 
 
+def test_activated_test_environment_generation_is_not_hermes_state(tmp_path):
+    """Activation builds the test venv at <home>/installs/<key>/test-environment/gen-<id>/venv,
+    under the real home. Code probing beside its own venv (update_owning_install stats
+    <venv parent>/hermes_cli/main.py) must not trip the guard there. Only a PM-published
+    generation (its environment root carries active.json) qualifies."""
+    from tests.home_io_guard import _environment_generation
+
+    env = tmp_path / "installs" / "key" / "test-environment"
+    venv = env / "gen-abc" / "venv"
+    venv.mkdir(parents=True)
+    assert _environment_generation(str(venv)) is None, "not PM-published until active.json names it"
+    (env / "active.json").write_text("{}", encoding="utf-8")
+    assert _environment_generation(str(venv)) == venv.parent.resolve()
+    assert _environment_generation(str(tmp_path / "venv")) is None
+
+
 def test_hermes_exported_scratch_tmp_is_not_the_test_temp_root(tmp_path):
     """A Hermes-launched shell hands pytest TMPDIR=<home>/cache/scratch (tagged by
     HERMES_SCRATCH_DIR). With that home guarded, honoring it would put the session

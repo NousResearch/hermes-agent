@@ -288,6 +288,28 @@ def test_activate_leaves_the_shell_paths_in_posix_form(tmp_path: Path):
     assert result.stdout.strip() == "posix"
 
 
+@pytest.mark.platforms("posix")
+def test_activate_under_a_profile_home_finds_the_root_store(tmp_path: Path):
+    """PM stores tools at the ROOT (<root>/tools; store_root -> get_default_hermes_root), and a
+    profile home <root>/profiles/<name> has no store of its own. Probing $HERMES_HOME/tools
+    alone made activation fail with "no bootstrap Python found" right after setup had filled
+    the root store, whenever the shell ran under a profile (every kanban worker)."""
+    root = _isolated_checkout(tmp_path)
+    store, _ = _fake_store(tmp_path)
+    env = _bash_env(store)
+    del env["HERMES_RUNTIME_DIR"]
+    hermes_root = Path(env["HOME"]) / ".hermes"
+    (hermes_root / "profiles" / "worker").mkdir(parents=True)
+    store.rename(hermes_root / "tools")
+    env["HERMES_HOME"] = _posix(hermes_root / "profiles" / "worker")
+    script = f'source "{_posix(root / "activate")}" && printf "%s" "${CANARY}"'
+    result = subprocess.run(
+        [_bash(), "-c", script], capture_output=True, text=True, cwd=_posix(tmp_path), env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "env-ok"
+
+
 def test_activate_fails_cleanly_without_a_store(tmp_path: Path):
     env = _bash_env(tmp_path / "empty-store")
     isolated = _isolated_checkout(tmp_path) / "activate"

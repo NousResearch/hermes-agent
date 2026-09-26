@@ -33,7 +33,12 @@ foreach ($candidate in @("$repo\.venv\Scripts\python.exe", "$repo\venv\Scripts\p
 }
 if (-not $py) {
     $roots = @($env:HERMES_RUNTIME_DIR, "$repo\..\tools")
-    $homeRoot = if ($env:HERMES_HOME) { $env:HERMES_HOME } else { "$env:LOCALAPPDATA\hermes" }
+    $homeRoot = if ($env:HERMES_HOME) { $env:HERMES_HOME.TrimEnd('\', '/') } else { "$env:LOCALAPPDATA\hermes" }
+    # The store belongs to the root (pm.environments.store_root ->
+    # get_default_hermes_root); a profile home <root>\profiles\<name> has none.
+    if ((Split-Path -Leaf (Split-Path -Parent $homeRoot)) -eq 'profiles') {
+        $homeRoot = Split-Path -Parent (Split-Path -Parent $homeRoot)
+    }
     $roots += (Join-Path $homeRoot 'tools')
     foreach ($root in $roots) {
         if (-not $root) { continue }

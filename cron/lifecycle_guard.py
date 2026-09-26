@@ -913,15 +913,36 @@ def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterat
 def _iter_referenced_shell_scripts(command: str, *, cwd: Optional[str] = None) -> Iterator[Path]:
     """Yield scripts executed directly or through a POSIX shell. Each segment is read at the
     original token AND at the peeled wrapper target — additive on purpose: peeling must never REMOVE
-    a reference (a local ``./timeout`` is a script, not the coreutils wrapper)."""
+    a reference (a local ``./timeout`` is a script, not the coreutils wrapper).
+
+    ``cd`` segments move the cwd later relative references resolve against: in
+    ``cd /p/proj && ./proj`` the shell runs ``/p/proj/proj``, not ``<cwd>/proj``."""
     for segment in _iter_command_segments(command):
         index = _command_token_index(segment)
         if index is None:
+            continue
+        if _executable_name(segment[index]) == "cd":
+            cwd = _cd_target(segment[index + 1 :], cwd)
             continue
         yield from _references_at(segment, index, cwd)
         peeled = _peel_transparent_prefixes(segment, index)
         if peeled != index:
             yield from _references_at(segment, peeled, cwd)
+
+
+def _cd_target(arguments: list[str], cwd: Optional[str]) -> Optional[str]:
+    """Return the directory ``cd <arguments>`` moves to from *cwd*. No operand means HOME; an
+    untrackable target (``cd -``, junk) yields ``None`` so relative refs fall back to the process
+    cwd while absolute refs still scan."""
+    operands = [a for a in arguments if a == "-" or not a.startswith("-")]
+    if not operands:
+        try:
+            return str(Path.home())
+        except (RuntimeError, OSError):
+            return None
+    if operands[0] == "-":
+        return None
+    return next((str(p) for p in _resolved_or_nothing(operands[0], cwd)), None)
 
 
 def _iter_shell_command_payloads(command: str) -> Iterator[str]:

@@ -302,11 +302,18 @@ def _persist_queued_user_row(session: dict, envelope: dict, display_kind: str | 
                 if db is None:
                     return
                 try:
-                    db.set_user_message_content(session.get("session_key"), staged["_row_id"], envelope["text"])
+                    key = session.get("session_key")
+                    # An in-place compaction of the live turn re-sequences the row to a new id: follow it.
+                    live_id = db.resolve_active_row_id(key, staged["_row_id"])
+                    updated = live_id is not None and db.set_user_message_content(key, live_id, envelope["text"])
                 except Exception:
                     logger.debug("queued-prompt row merge update failed", exc_info=True)
                     return
-            staged["content"] = envelope["text"]
+            if not updated:
+                # No live row carries the prompt any more: the drained turn writes its own.
+                envelope.pop("_submit_user_row", None)
+                return
+            staged["_row_id"], staged["content"] = live_id, envelope["text"]
         return
     staged = _write_submit_user_row(session, envelope.get("text"), display_kind)
     if staged is not None:
@@ -340,7 +347,12 @@ def _replace_queued_user_row_for_turn(session: dict, queued: dict) -> dict | Non
         if db is None:
             return
         try:
-            db.deactivate_message(session.get("session_key"), early["_row_id"])
+            key = session.get("session_key")
+            # Deactivate the row that is live NOW: an in-place compaction may have re-sequenced the
+            # accept-time row, and deactivating the original id would leave its clone active.
+            live_id = db.resolve_active_row_id(key, early["_row_id"])
+            if live_id is not None:
+                db.deactivate_message(key, live_id)
         except Exception:
             # Both rows briefly active merges in projection but never loses the message; deleting or
             # losing text would be worse.

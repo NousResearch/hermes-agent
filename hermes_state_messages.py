@@ -966,6 +966,25 @@ class SessionMessagesMixin:
             "UPDATE messages SET content = ? WHERE id = ? AND session_id = ? AND role = 'user' AND active = 1",
             (self._encode_content(content), row_id, session_id))
 
+    def resolve_active_row_id(self, session_id: str, row_id: int) -> Optional[int]:
+        """The active row that still carries *row_id*'s message: *row_id* itself while active, else the one
+        row an in-place compaction re-sequenced it into (``_clone_message_rows`` copies role, content and
+        timestamp byte-exact to a higher id). ``None`` when neither exists or the clone is ambiguous.
+        A caller holding a row id across a compaction (the queued-prompt envelope) re-resolves it here."""
+        if not session_id or isinstance(row_id, bool) or not isinstance(row_id, int) or row_id <= 0:
+            return None
+        origin = self._read_one("SELECT active FROM messages WHERE id = ? AND session_id = ?", (row_id, session_id))
+        if origin is None:
+            return None
+        if origin[0]:
+            return row_id
+        clones = self._read_all(
+            "SELECT c.id FROM messages c JOIN messages o ON o.id = ? "
+            "WHERE c.session_id = ? AND c.active = 1 AND c.id > o.id AND c.role = o.role "
+            "AND c.content IS o.content AND c.timestamp = o.timestamp",
+            (row_id, session_id))
+        return int(clones[0][0]) if len(clones) == 1 else None
+
     def deactivate_message(self, session_id: str, row_id: int) -> int:
         """Deactivate ONE known row (id-addressed, idempotent; returns the affected row count). Used by
         the queued-prompt drain: the row written at accept time sits ahead of the in-flight turn's

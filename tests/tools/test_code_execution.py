@@ -265,17 +265,41 @@ class TestRemoteSharedHostLockdown(unittest.TestCase):
             self.assertFalse(any(token in c for c in commands),
                              f"{env_name} token appeared in a remote command line")
         run_cmd = next(c for c in commands if "python3 script.py" in c)
-        # The env file is sourced inside a subshell so set -a's exports never
-        # reach the backend's session-snapshot dump (issue #71296 class); exec
-        # keeps the script's exit code as the command's.
-        self.assertIn("( set -a", run_cmd)
-        self.assertIn(". ./sandbox.env", run_cmd)
-        self.assertIn("exec python3 script.py", run_cmd)
         self.assertNotIn("HERMES_RPC_TOKEN=", run_cmd)
+        if sys.platform == "win32":
+            return
+        # Behaviour, not command text: replay the recorded setup + launch
+        # commands through a real shell against a private temp root.
+        import shutil
+        import subprocess
+        import tempfile
         mkdir_cmd = next(c for c in commands
                          if "mkdir -p" in c and "hermes_exec_" in c)
-        self.assertIn("umask 077", mkdir_cmd)
-        self.assertIn("chmod 700", mkdir_cmd)
+        sandbox = next(c.args[1] for c in ship_mock.call_args_list
+                       if c.args[1].endswith("sandbox.env")).rsplit("/", 1)[0]
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        local = root + sandbox
+        sh = lambda c: subprocess.run(["bash", "-c", c.replace(sandbox, local)],
+                                      capture_output=True, text=True)
+        self.assertEqual(sh(mkdir_cmd).returncode, 0)
+        for d in (local, f"{local}/rpc"):
+            self.assertEqual(os.stat(d).st_mode & 0o777, 0o700, d)
+        env_ship = next(c for c in ship_mock.call_args_list
+                        if c.args[1].endswith("sandbox.env"))
+        token = next(l for l in env_ship.args[2].splitlines()
+                     if l.startswith("HERMES_RPC_TOKEN="))
+        token = token.split("=", 1)[1].strip("'\"")
+        with open(f"{local}/sandbox.env", "w") as fh:
+            fh.write(env_ship.args[2])
+        with open(f"{local}/script.py", "w") as fh:
+            fh.write("import os, sys\nprint(os.environ['HERMES_RPC_TOKEN'])\nsys.exit(7)\n")
+        # The env reaches the child, its exit code is the command's, and the
+        # token never leaks into the outer shell (the backend's session
+        # snapshot dump; issue #71296 class).
+        run = sh(run_cmd + ' ; echo "[${HERMES_RPC_TOKEN:-}]"')
+        self.assertEqual(run.stdout.splitlines(), [token, "[]"], run.stderr)
+        self.assertEqual(sh(run_cmd).returncode, 7)
 
 
 @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")

@@ -1006,10 +1006,17 @@ class GatewayStartupMixin:
             )
             logger.error(
                 "Refusing to start: %s has dm_policy/group_policy set to 'open' "
-                "but neither GATEWAY_ALLOW_ALL_USERS nor %s is enabled.", platform_value,
+                "but neither GATEWAY_ALLOW_ALL_USERS nor %s is enabled. "
+                "To fix: set %s=true (or GATEWAY_ALLOW_ALL_USERS=true) in your "
+                ".env, or change dm_policy/group_policy away from 'open' in "
+                "your config.yaml.", platform_value,
                 allow_all_env or "a platform allow-all flag",
+                allow_all_env or "GATEWAY_ALLOW_ALL_USERS",
             )
             _write_runtime_status_quiet(gateway_state="startup_failed", exit_reason=reason)
+            # Exit with the fatal-config code so a supervisor (systemd/s6) parks the unit
+            # instead of restart-looping on a configuration it can never start (#57474).
+            self._exit_code = GATEWAY_FATAL_CONFIG_EXIT_CODE
             self._request_clean_exit(reason)
             return True
         return False

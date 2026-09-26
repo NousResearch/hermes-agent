@@ -1735,6 +1735,20 @@ class TestJobsJsonIdKeyedMap:
         on_disk = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
         assert [j["id"] for j in on_disk["jobs"]] == [job["id"]]
 
+    def test_all_junk_list_is_repaired_on_disk_without_logging_values(self, tmp_cron_dir, caplog):
+        """With no valid job left the repair must still persist (else every tick repeats it), and
+        the warning must not copy raw file content into the logs."""
+        import json
+        from cron.jobs import JOBS_FILE, ensure_dirs
+
+        ensure_dirs()
+        JOBS_FILE.write_text(json.dumps({"jobs": [None, "sk-leaked-value", 42]}), encoding="utf-8")
+
+        with caplog.at_level("WARNING", logger="cron.jobs"):
+            assert list_jobs(include_disabled=True) == []
+        assert json.loads(JOBS_FILE.read_text(encoding="utf-8"))["jobs"] == []
+        assert "sk-leaked-value" not in caplog.text
+
 
 
 

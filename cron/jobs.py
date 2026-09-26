@@ -1377,13 +1377,17 @@ def load_jobs() -> List[Dict[str, Any]]:
     if isinstance(jobs, list) and not all(isinstance(j, dict) for j in jobs):
         # Every reader and the due scan index records as dicts: one junk entry would crash the
         # whole tick and freeze every healthy sibling job, so skip it like the id-keyed map does.
+        # Types only: the raw values are arbitrary file content and must not reach the logs.
         junk = [j for j in jobs if not isinstance(j, dict)]
         logger.warning(
-            "Skipping %d non-object entr%s in jobs.json: %s",
-            len(junk), "y" if len(junk) == 1 else "ies", ", ".join(map(repr, junk[:5])))
+            "Skipping %d non-object entr%s in jobs.json (types: %s)",
+            len(junk), "y" if len(junk) == 1 else "ies",
+            ", ".join(sorted({type(j).__name__ for j in junk})))
         jobs = [j for j in jobs if isinstance(j, dict)]
         repair = repair or "non-object entries dropped"
-    if jobs and repair:
+    # Persist even an empty result, or an all-junk store repeats the repair on every tick; the
+    # save's shrink-merge still keeps any valid job a sibling wrote meanwhile.
+    if repair:
         save_jobs(jobs)
         logger.warning("Auto-repaired jobs.json (%s)", repair)
     _record_load_stamp(pre_read_stamp)

@@ -28,6 +28,22 @@ _MAX_SEEN_SENDERS = 2048
 logger = logging.getLogger("gateway.run")
 
 
+def is_served_bot_identity(runner, source) -> bool:
+    """Whether *source* was sent by an account one of this gateway's own adapters (any served
+    profile) sends as. Such a sender is never a stranger to pair, decline or report."""
+    platform = getattr(source, "platform", None)
+    user_id = getattr(source, "user_id", None)
+    if platform is None or not user_id:
+        return False
+    adapter_maps = [runner._primary_adapters(), *runner._profile_adapters_map().values()]
+    for adapter in (m.get(platform) for m in adapter_maps):
+        check = getattr(adapter, "is_own_identity", None)
+        # Literal True only: duck-typed/mocked adapters must not turn a stranger into "ours".
+        if callable(check) and check(user_id) is True:
+            return True
+    return False
+
+
 def pairing_profile_arg(pairing_store) -> str:
     """``-p <profile> `` when the store belongs to a non-default profile, else ``""``."""
     store_profile = getattr(pairing_store, "profile", None)

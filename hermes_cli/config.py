@@ -2911,6 +2911,31 @@ _SHOW_CONFIG_API_KEYS = (
     ("FAL_KEY", "FAL"))
 
 
+def _configured_provider_key_rows(exclude_env_keys: Set[str]) -> List[Tuple[str, str]]:
+    """Configured model-provider credentials not already rendered by fixed rows.
+
+    The unified provider catalog owns provider labels + credential env-var aliases.
+    Pick at most one configured env var per provider so aliases never create duplicate
+    rows; account/OAuth providers and the special Anthropic resolver stay out.
+    """
+    from hermes_cli.provider_catalog import provider_catalog
+
+    excluded = set(exclude_env_keys)
+    rows: List[Tuple[str, str]] = []
+    for provider in provider_catalog():
+        if provider.slug == "anthropic" or provider.tab != "keys" or not provider.api_key_env_vars:
+            continue
+        env_key = next(
+            (key for key in provider.api_key_env_vars if key not in excluded and get_env_value(key)),
+            None,
+        )
+        if env_key is None:
+            continue
+        rows.append((env_key, provider.label or provider.slug))
+        excluded.update(provider.api_key_env_vars)
+    return rows
+
+
 def _show_model_section(config: Dict[str, Any]) -> None:
     _section("Model")
     print(f"  Model:        {redact_config_value(config.get('model', 'not set'))}")
@@ -3046,10 +3071,14 @@ def show_config():
     print(f"  Install:      {get_project_root()}")
 
     _section("API Keys")
+    shown_env_keys = {env_key for env_key, _ in _SHOW_CONFIG_API_KEYS}
+    provider_rows = _configured_provider_key_rows(shown_env_keys)
     for env_key, name in _SHOW_CONFIG_API_KEYS:
-        print(f"  {name:<14} {redact_key(get_env_value(env_key))}")
+        print(f"  {name:<20} {redact_key(get_env_value(env_key))}")
     from hermes_cli.auth import get_anthropic_key
-    print(f"  {'Anthropic':<14} {redact_key(get_anthropic_key())}")
+    print(f"  {'Anthropic':<20} {redact_key(get_anthropic_key())}")
+    for env_key, label in provider_rows:
+        print(f"  {label:<20} {redact_key(get_env_value(env_key))}")
 
     _show_model_section(config)
     _show_display_section(config)

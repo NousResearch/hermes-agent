@@ -69,6 +69,30 @@ def test_context_used_never_exceeds_model_window():
                                             last_real_prompt_tokens=150_000))
     assert seeded["context_used"] <= seeded["context_max"]
 
+def test_empty_transcript_still_reports_the_conversation_category():
+    """Zero conversation tokens is a measurement, not an absence (#87903).
+
+    A fresh session (or one whose first turn never completed) estimates the
+    conversation at zero. Dropping the row there made "the transcript is empty"
+    render identically to "the breakdown never measured it" — the Desktop
+    Context usage panel hid Conversation until a turn completed. Structurally
+    absent categories (mcp/memory/skills with nothing configured) stay dropped.
+    """
+    agent, parts = _make_agent(
+        tools=[{"type": "function", "function": {"name": "terminal", "description": "run"}}]
+    )
+    history = []  # nothing said yet
+
+    with patch("agent.system_prompt.build_system_prompt_parts", return_value=parts):
+        data = compute_session_context_breakdown(agent, history)
+
+    categories = {item["id"]: item["tokens"] for item in data["categories"]}
+    assert categories["conversation"] == 0
+    # Optional surfaces with nothing configured are still omitted at zero —
+    # "not configured" is exactly what their absence communicates.
+    assert "mcp" not in categories
+    assert "skills" not in categories
+
 # ── /context renderers (pure functions over the payload) ────────────────────
 
 from agent.context_breakdown import (  # noqa: E402

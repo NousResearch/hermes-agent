@@ -20,6 +20,9 @@ from hermes_cli._subprocess_compat import harden_git_argv, noninteractive_git_en
 
 _GIT_TIMEOUT = 30
 _GH_TIMEOUT = 30
+# How much of a failed gh command's stderr rides into the surfaced error. A
+# toast can carry the informative tail; the full traceback helps nobody (#87731).
+_GH_ERR_TAIL_CHARS = 400
 _UNTRACKED_LINE_MAX_BYTES = 1024 * 1024
 _UNTRACKED_SCAN_CAP = 500
 _COMMIT_CONTEXT_DIFF_MAX_CHARS = 120_000
@@ -383,21 +386,23 @@ def review_commit_context(cwd: str) -> dict:
 # ── ship flow (gh) ───────────────────────────────────────────────────────────
 
 
-def _gh(cwd: str, args: list[str]) -> tuple[bool, str]:
+def _gh(cwd: str, args: list[str]) -> tuple[bool, str, str]:
+    """``(ok, stdout, stderr)`` of ``gh`` in ``cwd``. Never raises on non-zero exit —
+    the caller decides what a failure means, and the real reason rides in stderr."""
     if not shutil.which("gh"):
-        return False, ""
+        return False, "", ""
     # GH_PROMPT_DISABLED: gh's documented kill-switch for interactive prompts.
     env = noninteractive_git_env()
     env["GH_PROMPT_DISABLED"] = "1"
     proc = _run(["gh", *args], cwd, _GH_TIMEOUT, env)
     if proc is None:
-        return False, ""
-    return proc.returncode == 0, proc.stdout or ""
+        return False, "", ""
+    return proc.returncode == 0, proc.stdout or "", proc.stderr or ""
 
 
 def _gh_json(cwd: str, args: list[str]):
     """Parsed JSON stdout of a successful gh call, else None."""
-    ok, out = _gh(cwd, args)
+    ok, out, _stderr = _gh(cwd, args)
     if not ok:
         return None
     try:
@@ -463,7 +468,7 @@ def review_pr_list(cwd: str, branches: list[str], numbers: list[int] = None) -> 
     by_number = list(dict.fromkeys(int(n) for n in (numbers or []) if n))[:_PR_QUERY_BRANCH_CAP]
     if not wanted and not by_number:
         return not_ready
-    repo_ok, repo_out = _gh(cwd, ["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
+    repo_ok, repo_out, _repo_err = _gh(cwd, ["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
     owner, _, name = repo_out.strip().partition("/")
     if not repo_ok or not owner or not name:
         # gh missing, unauthenticated, or no GitHub remote — all "nothing to badge".
@@ -490,9 +495,15 @@ def review_create_pr(cwd: str) -> dict:
         _review_push(cwd)
     except RuntimeError:
         pass
-    created, out = _gh(cwd, ["pr", "create", "--fill"])
+    created, out, err = _gh(cwd, ["pr", "create", "--fill"])
     if not created:
-        raise RuntimeError("gh pr create failed (is gh installed and authenticated?)")
+        # gh's own stderr says why the create failed ("no commits between main
+        # and feature", a missing upstream, a publish-email refusal). The generic
+        # fallback lied whenever gh itself was fine — keep it only for the case
+        # gh reported nothing (#87731). Bounded: a toast carries the tail, not
+        # the whole traceback.
+        detail = err.strip()[-_GH_ERR_TAIL_CHARS:] or "is gh installed and authenticated?"
+        raise RuntimeError(f"gh pr create failed: {detail}")
     url = next((line for line in reversed(out.strip().splitlines()) if line.strip()), "")
     return {"url": url}
 

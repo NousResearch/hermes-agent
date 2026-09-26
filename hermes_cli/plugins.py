@@ -497,6 +497,45 @@ class PluginContext:
                      " (override)" if override else "")
         return handle
 
+    def register_toolset(
+        self, name: str, description: str, tools: List[str] | None = None, includes: List[str] | None = None,
+    ) -> Optional[PluginRegistration]:
+        """Define a toolset: ``tools`` by name plus every tool of the toolsets in ``includes`` (and any
+        tool later registered into ``name``). Selectable wherever a built-in toolset is. Scoped to this
+        plugin's profile; a name a built-in toolset or another plugin in this profile holds is rejected.
+        Unloading the plugin removes it."""
+        from toolsets import TOOLSETS
+        from tools.registry import registry
+        clean = (name or "").strip()
+        if not clean or clean in TOOLSETS:
+            logger.warning("Plugin '%s' tried to register toolset %r, which is empty or a built-in toolset. "
+                           "Skipping.", self.manifest.name, name)
+            return None
+        scope = self._manager.scope_key
+        definition = registry.register_toolset_definition(
+            clean, description, list(tools or []), list(includes or []), scope=scope)
+        if definition is None:
+            logger.warning("Plugin '%s' tried to register toolset %r, already defined in this profile. "
+                           "Skipping.", self.manifest.name, clean)
+            return None
+        return self._track("toolset", clean,
+                           lambda: registry.remove_toolset_definition(clean, definition, scope=scope))
+
+    def add_to_toolset(self, toolset: str, tool_name: str) -> Optional[PluginRegistration]:
+        """Add ``tool_name`` to an existing toolset -- typically a built-in bundle such as ``hermes-cli``
+        whose tool list is static, which ``register_tool(toolset=...)`` (one toolset per tool) cannot
+        reach. Scoped to this plugin's profile; unloading the plugin removes the membership."""
+        from toolsets import validate_toolset
+        from tools.registry import registry
+        if not validate_toolset(toolset):
+            logger.warning("Plugin '%s' tried to add %r to unknown toolset %r. Skipping.",
+                           self.manifest.name, tool_name, toolset)
+            return None
+        scope = self._manager.scope_key
+        member = registry.add_toolset_member(toolset, tool_name, scope=scope)
+        return self._track("toolset_member", f"{toolset}:{tool_name}",
+                           lambda: registry.remove_toolset_member(toolset, member, scope=scope))
+
     # -- capability probing (#64228) -----------------------------------------
     def has_capability(self, capability: str) -> bool:
         """True when *capability* is live for this plugin (probe, then degrade gracefully). Bundled

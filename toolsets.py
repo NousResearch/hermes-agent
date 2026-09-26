@@ -300,7 +300,8 @@ def get_toolset(name: str, *, include_registry: bool = True) -> Optional[Dict[st
         return toolset if toolset else None
 
     if toolset:
-        merged_tools = set(toolset.get("tools", [])) | set(registry.get_tool_names_for_toolset(name))
+        merged_tools = (set(toolset.get("tools", [])) | set(registry.get_tool_names_for_toolset(name))
+                        | set(registry.get_toolset_members(name)))
         # An MCP server named like a built-in toolset ("homeassistant", "browser") registers a bare
         # alias to its `mcp-<name>` toolset; without this union the static entry shadows it and the
         # server's tools never reach the model even though discovery registered them.
@@ -308,6 +309,12 @@ def get_toolset(name: str, *, include_registry: bool = True) -> Optional[Dict[st
         if alias_target and alias_target != name:
             merged_tools |= set(registry.get_tool_names_for_toolset(alias_target))
         return {**toolset, "tools": sorted(merged_tools)}
+
+    definition = registry.get_toolset_definition(name)
+    if definition is not None:  # PluginContext.register_toolset
+        definition["tools"] = sorted(set(definition["tools"]) | set(registry.get_tool_names_for_toolset(name))
+                                     | set(registry.get_toolset_members(name)))
+        return definition
 
     if name in _get_plugin_toolset_names():
         # Plugin toolset; shown as its MCP server alias when one exists.
@@ -413,8 +420,10 @@ def resolve_toolset(name: str, visited: Set[str] = None, *, include_registry: bo
 
 
 def _get_plugin_toolset_names() -> Set[str]:
-    """Registry toolset names absent from the static TOOLSETS dict."""
-    return {n for n in _registry_call("get_registered_toolset_names", ()) if n not in TOOLSETS}
+    """Registry toolset names (tool groups and plugin-defined toolsets) absent from static TOOLSETS."""
+    names = set(_registry_call("get_registered_toolset_names", ())) | set(
+        _registry_call("get_toolset_definition_names", ()))
+    return {n for n in names if n not in TOOLSETS}
 
 
 def _get_registry_toolset_aliases() -> Dict[str, str]:

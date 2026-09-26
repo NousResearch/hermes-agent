@@ -1003,6 +1003,24 @@ ctx.register_tool(
 )
 ```
 
+### Define a toolset, or join a built-in bundle
+
+`register_tool(toolset=...)` puts a tool in exactly one toolset. Two companions cover the rest:
+
+```python
+def register(ctx):
+    # A composite toolset: named tools plus every tool of the included toolsets.
+    # Users select it like a built-in one (toolsets: [my_suite]).
+    ctx.register_toolset("my_suite", "My plugin's working set",
+                         tools=["my_tool"], includes=["file", "web", "todo"])
+
+    # Add a tool to an existing toolset whose tool list is static,
+    # e.g. the hermes-cli bundle every CLI session resolves.
+    ctx.add_to_toolset("hermes-cli", "my_tool")
+```
+
+Both are scoped to the plugin's profile (a multi-profile process keeps them apart) and are removed when the plugin unloads. A name held by a built-in toolset, or already defined by another plugin in the same profile, is rejected with a warning; `add_to_toolset` refuses an unknown toolset. Toolset membership is part of the tool schema sent on every API call, so register at plugin load, not mid-session.
+
 ### Overriding a built-in tool
 
 To replace a built-in tool with your own implementation (e.g. swap the

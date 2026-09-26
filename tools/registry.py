@@ -16,7 +16,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from hermes_constants import hermes_home_key, normalize_scope
 
@@ -438,6 +438,11 @@ class ToolRegistry:
         self._plugin_module_scopes: Dict[str, Set[Optional[str]]] = {}
         self._toolset_checks: Dict[str, Callable] = {}
         self._toolset_aliases: Dict[str, str] = {}
+        # Plugin toolsets (PluginContext.register_toolset / add_to_toolset), keyed by write scope like
+        # tools: scope -> name -> definition, and scope -> toolset -> member records. Records are their
+        # own unload tokens (identity), so one owner never removes another's.
+        self._toolset_defs: Dict[Optional[str], Dict[str, Dict[str, Any]]] = {}
+        self._toolset_members: Dict[Optional[str], Dict[str, List[Dict[str, str]]]] = {}
         # MCP refresh mutates while other threads read: serialize writes, snapshot reads.
         self._lock = threading.RLock()
         # Bumped on every mutation; get_tool_definitions memoizes against it.
@@ -533,6 +538,79 @@ class ToolRegistry:
                 )
             self._toolset_aliases[alias] = toolset
             self._generation += 1
+
+    def register_toolset_definition(
+        self, name: str, description: str, tools: List[str], includes: List[str], *,
+        scope: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Define toolset *name* in *scope*; returns the stored definition (its unload token), or None
+        when *scope* already defines *name*."""
+        scope = normalize_scope(scope)
+        definition = {"description": description, "tools": list(tools), "includes": list(includes)}
+        with self._lock:
+            defs = self._toolset_defs.setdefault(scope, {})
+            if name in defs:
+                return None
+            defs[name] = definition
+            self._generation += 1
+        return definition
+
+    def remove_toolset_definition(
+        self, name: str, definition: Dict[str, Any], *, scope: Optional[str] = None) -> bool:
+        """Remove *name* from *scope* while *definition* is still the one stored there."""
+        scope = normalize_scope(scope)
+        with self._lock:
+            defs = self._toolset_defs.get(scope, {})
+            if defs.get(name) is not definition:
+                return False
+            del defs[name]
+            self._generation += 1
+            return True
+
+    def add_toolset_member(self, toolset: str, tool_name: str, *, scope: Optional[str] = None) -> Dict[str, str]:
+        """Add *tool_name* to *toolset*'s membership in *scope*; returns the record (its unload token)."""
+        scope = normalize_scope(scope)
+        member = {"tool": tool_name}
+        with self._lock:
+            self._toolset_members.setdefault(scope, {}).setdefault(toolset, []).append(member)
+            self._generation += 1
+        return member
+
+    def remove_toolset_member(self, toolset: str, member: Dict[str, str], *, scope: Optional[str] = None) -> bool:
+        """Remove one membership record from *scope* (identity match)."""
+        scope = normalize_scope(scope)
+        with self._lock:
+            members = self._toolset_members.get(scope, {}).get(toolset, [])
+            for index, candidate in enumerate(members):
+                if candidate is member:
+                    del members[index]
+                    self._generation += 1
+                    return True
+            return False
+
+    def _read_scopes(self) -> tuple:
+        """Global first, then the active profile's overlay."""
+        return (None, self.current_scope_key())
+
+    def get_toolset_definition(self, name: str) -> Optional[Dict[str, Any]]:
+        """The active profile's plugin definition of *name* (falling back to global), as a copy."""
+        with self._lock:
+            for scope in reversed(self._read_scopes()):
+                definition = self._toolset_defs.get(scope, {}).get(name)
+                if definition is not None:
+                    return {**definition, "tools": list(definition["tools"]),
+                            "includes": list(definition["includes"])}
+        return None
+
+    def get_toolset_definition_names(self) -> List[str]:
+        with self._lock:
+            return sorted({n for scope in self._read_scopes() for n in self._toolset_defs.get(scope, {})})
+
+    def get_toolset_members(self, toolset: str) -> List[str]:
+        """Tool names plugins added to *toolset* (global plus the active profile)."""
+        with self._lock:
+            return sorted({m["tool"] for scope in self._read_scopes()
+                           for m in self._toolset_members.get(scope, {}).get(toolset, [])})
 
     def get_registered_toolset_aliases(self) -> Dict[str, str]:
         with self._lock:

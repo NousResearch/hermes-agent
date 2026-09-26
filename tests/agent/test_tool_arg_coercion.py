@@ -132,6 +132,36 @@ class TestCoerceToolArgs:
     def test_empty_args(self):
         assert coerce_tool_args("test_tool", {}) == {}
 
+    def test_drops_unset_placeholders_only_where_schema_rejects_them(self):
+        """``null``/``{}`` for an optional single-type field is dropped so the handler default
+        applies (anomalyco/opencode#45002); required, nullable, union, enum-with-null and
+        object-typed fields keep the value because their schema may legitimately accept it."""
+        schema = self._mock_schema({
+            "limit": {"type": "integer"},
+            "context": {"type": "integer"},
+            "path": {"type": "string"},
+            "opt_null": {"type": ["integer", "null"]},
+            "union": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+            "mode": {"type": "string", "enum": ["a", None]},
+            "action": {"type": "string", "enum": ["add", "remove"]},
+            "cfg": {"type": "object"},
+        })
+        schema["parameters"]["required"] = ["path"]
+        args = {"limit": None, "context": {}, "path": None, "opt_null": None, "union": None,
+                "mode": None, "action": None, "cfg": {}}
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            result = coerce_tool_args("test_tool", args)
+        assert "limit" not in result and "context" not in result and "action" not in result
+        assert result["path"] is None  # required: never dropped
+        assert result["opt_null"] is None and result["union"] is None and result["mode"] is None
+        assert result["cfg"] == {}
+
+    def test_real_search_files_null_limit_falls_back_to_default(self):
+        """Live symptom: strict providers send ``limit: null`` and search_files crashed with
+        ``'>' not supported between instances of 'NoneType' and 'int'``."""
+        result = coerce_tool_args("search_files", {"pattern": "x", "limit": None, "context": None})
+        assert result == {"pattern": "x"}
+
 
 
 
@@ -229,6 +259,17 @@ class TestCoerceToolArgsNested:
             args = {"items": ['{"id": "1", "content": "x"}']}
             result = coerce_tool_args("test_tool", args)
             assert result["items"] == [{"id": "1", "content": "x"}]
+
+    def test_nested_scalar_strings_coerced_to_item_schema(self):
+        """``"2"`` inside a container follows the same rule as a top-level ``"2"`` (opencode#45002)."""
+        schema = {"name": "test_tool", "description": "test", "parameters": {"type": "object", "properties": {
+            "items": {"type": "array", "items": {"type": "object", "properties": {"count": {"type": "integer"}}}},
+            "flags": {"type": "array", "items": {"type": "boolean"}},
+        }}}
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            result = coerce_tool_args("test_tool", {"items": [{"count": "2"}], "flags": ["true", "no"]})
+        assert result["items"] == [{"count": 2}]
+        assert result["flags"] == [True, "no"]
 
 
     def test_string_subfield_with_json_content_preserved(self):

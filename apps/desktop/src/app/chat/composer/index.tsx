@@ -30,7 +30,7 @@ import { interceptsTypedVoiceStop } from '@/lib/voice-stop-word'
 import { sessionCompacting } from '@/store/compaction'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
-import { parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
+import { isSteerableEntry, parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
 import { $hudMode } from '@/store/hud'
 import { $showsAdvancedChrome } from '@/store/interface-mode'
 import { sessionBlockingPrompt } from '@/store/prompts'
@@ -1018,19 +1018,21 @@ export function ChatBar({
         return
       }
 
-      // Empty Enter while busy. With prompts queued this is the double-send:
-      // the first Enter put the words in the queue, a second sends them now
-      // (promote + interrupt + drain on settle), mirroring the idle empty-Enter
-      // drain above. With nothing queued it stays a no-op — interrupting is
-      // explicit (Stop/Esc), never a stray Enter after sending. Gate on the live
-      // DOM payload (not the render-lagged composer state) so a message typed
-      // fast / via IME while busy still reaches submitDraft() and gets queued
-      // instead of being mistaken for an empty Enter.
+      // Empty Enter while busy is the keyboard sibling of the queue panel's
+      // "Steer now": text-only entries join the live turn without interrupting.
+      // Attachments/slash commands cannot steer, so they keep send-now semantics.
+      // With nothing queued this remains a no-op — interrupting is explicit
+      // (Stop/Esc), never a stray Enter after sending. Gate on the live DOM
+      // payload so fast typing/IME still reaches submitDraft() instead.
       if (busy && !hasLivePayload) {
         const head = queuedPrompts.find(entry => entry.id !== queueEdit?.entryId)
 
         if (head) {
-          sendQueuedNow(head.id)
+          if (isSteerableEntry(head)) {
+            void steerQueuedNow(head.id)
+          } else {
+            sendQueuedNow(head.id)
+          }
         }
 
         return

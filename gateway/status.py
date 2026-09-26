@@ -611,9 +611,10 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     # the operand-taking ``-X``/``-W``/``-Q`` must not be conflated with ``-q``/``-b``.
     if command_line_runs_inline_source(cased_tokens):
         return None
-    # The launchd job's osascript wrapper (gateway_launchd.launchd_program_arguments) carries the gateway argv
-    # inside one AppleScript string; the gateway itself is its child and is matched on its own command line.
-    if basenames[0] == "osascript":
+    # The launchd job's wrapper (gateway_launchd.launchd_program_arguments) carries the gateway argv
+    # inside one shell string; the gateway itself is its child and is matched on its own command line.
+    # caffeinate since #123595; osascript kept for jobs installed before the wrapper switch.
+    if basenames[0] in ("osascript", "caffeinate"):
         return None
     # Gateway-dedicated entrypoints carry no subcommand to inspect.
     if any(t == "gateway/run.py" or t.endswith("/gateway/run.py") for t in tokens):

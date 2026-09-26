@@ -26,16 +26,12 @@ from gateway.restart import (
 )
 
 
-def _osascript_exec_argv(program_args: list[str]) -> list[str]:
-    """The argv a launchd ``ProgramArguments`` of ``/usr/bin/osascript -e <script>`` hands to ``exec`` —
-    undoing the AppleScript string escaping, then POSIX shell quoting, the way osascript and /bin/sh will."""
-    assert program_args[:2] == ["/usr/bin/osascript", "-e"] and len(program_args) == 3, program_args
-    script = program_args[2]
-    prefix, suffix = 'do shell script "', '"'
-    assert script.startswith(prefix) and script.endswith(suffix), script
-    shell = re.sub(r"\\(.)", r"\1", script[len(prefix):-len(suffix)])
-    exec_, *argv = shlex.split(shell)
-    assert exec_ == "exec", shell
+def _launchd_wrapper_exec_argv(program_args: list[str]) -> list[str]:
+    """The argv a launchd ``ProgramArguments`` of ``/usr/bin/caffeinate /bin/sh -c <script>`` hands to
+    ``exec`` — undoing the POSIX shell quoting the way /bin/sh will."""
+    assert program_args[:3] == ["/usr/bin/caffeinate", "/bin/sh", "-c"] and len(program_args) == 4, program_args
+    exec_, *argv = shlex.split(program_args[3])
+    assert exec_ == "exec", program_args[3]
     return argv
 
 
@@ -1744,10 +1740,11 @@ class TestProfileArg:
         plist = gateway_cli.generate_launchd_plist()
         program_args = plistlib.loads(plist.encode("utf-8"))["ProgramArguments"]
 
-        # The job is launched through osascript so macOS Local Network Privacy attributes the
+        # The job is launched through caffeinate so macOS Local Network Privacy attributes the
         # gateway's sockets to a platform binary (#71206); the real command is the exec'd child,
         # whose python runs through the PM installation launcher (-I -c bootstrap ...).
-        exec_argv = _osascript_exec_argv(program_args)
+        assert program_args[0] == "/usr/bin/caffeinate"  # not osascript: pending `do shell script` stalls display wake (#123595)
+        exec_argv = _launchd_wrapper_exec_argv(program_args)
         assert exec_argv[-4:] == [">>", str(profile_dir / "logs" / "gateway.log"),
                                   "2>>", str(profile_dir / "logs" / "gateway.error.log")]
         program_args = exec_argv[:-4]
@@ -1758,8 +1755,8 @@ class TestProfileArg:
         assert program_args[separator - 2:separator] == ["--error-log", str(profile_dir / "logs" / "gateway.error.log")]
         assert "--replace" not in program_args
 
-    def test_launchd_osascript_wrapper_round_trips_shell_hostile_paths(self, tmp_path, monkeypatch):
-        """A home with spaces, quotes and a backslash survives shlex + AppleScript + plist quoting."""
+    def test_launchd_caffeinate_wrapper_round_trips_shell_hostile_paths(self, tmp_path, monkeypatch):
+        """A home with spaces, quotes and a backslash survives shlex + plist quoting."""
         profile_dir = tmp_path / 'my "odd" dir \\ here' / ".hermes"
         profile_dir.mkdir(parents=True)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -1768,12 +1765,16 @@ class TestProfileArg:
         monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(profile_dir / "bin dir" / "python"))
 
         program_args = plistlib.loads(gateway_cli.generate_launchd_plist().encode("utf-8"))["ProgramArguments"]
-        argv = _osascript_exec_argv(program_args)
+        argv = _launchd_wrapper_exec_argv(program_args)
 
         assert argv[0] == str(profile_dir / "bin dir" / "python")
         assert argv[-3:] == [str(profile_dir / "logs" / "gateway.log"), "2>>", str(profile_dir / "logs" / "gateway.error.log")]
-        # The wrapper's own ps line must never be taken for the gateway (stop/status would signal osascript).
+        # The wrapper's own ps line must never be taken for the gateway (stop/status would signal caffeinate);
+        # the pre-#123595 osascript wrapper must stay excluded too — installed jobs keep running it until
+        # the plist is regenerated.
         assert status.looks_like_gateway_command_line(" ".join(program_args)) is False
+        legacy = ["/usr/bin/osascript", "-e", f'do shell script "exec {argv[0]} gateway run"']
+        assert status.looks_like_gateway_command_line(" ".join(legacy)) is False
 
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
@@ -2386,8 +2387,8 @@ class TestServiceTakeoverGovernance:
         plist = gateway_cli.generate_launchd_plist()
         # The whole bug class: no --replace anywhere in the supervised argv.
         assert "--replace" not in plist
-        # It still runs the plain gateway command under KeepAlive (inside the osascript wrapper).
-        argv = _osascript_exec_argv(plistlib.loads(plist.encode("utf-8"))["ProgramArguments"])
+        # It still runs the plain gateway command under KeepAlive (inside the caffeinate wrapper).
+        argv = _launchd_wrapper_exec_argv(plistlib.loads(plist.encode("utf-8"))["ProgramArguments"])
         assert argv[argv.index("gateway") + 1] == "run"
         assert "<key>KeepAlive</key>" in plist
         assert "<true/>" in plist

@@ -300,11 +300,11 @@ def _command_survives_generation_collection(tmp_path, monkeypatch, surface):
                 monkeypatch.setattr(gateway, "PROJECT_ROOT", repo)
                 if surface == "launchd":
                     import plistlib
-                    from tests.hermes_cli.test_gateway_service import _osascript_exec_argv
+                    from tests.hermes_cli.test_gateway_service import _launchd_wrapper_exec_argv
                     unit = gateway.generate_launchd_plist()
-                    # The job runs through osascript (#71206); exec the child it would spawn, minus the
+                    # The job runs through caffeinate (#71206); exec the child it would spawn, minus the
                     # `>> log 2>> log` tail that only means something to the shell.
-                    command = _osascript_exec_argv(plistlib.loads(unit.encode())["ProgramArguments"])[:-4]
+                    command = _launchd_wrapper_exec_argv(plistlib.loads(unit.encode())["ProgramArguments"])[:-4]
                     args = ["gateway", "run", "--external-supervisor"]
                 else:
                     unit = gateway.generate_systemd_unit()

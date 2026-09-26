@@ -220,20 +220,22 @@ def launchd_program_arguments(command: list[str], stdout_log: Path, stderr_log: 
     venv Python has no application ID and is not platform-entitled, so every LAN connect from the
     launchd gateway dies with ``EHOSTUNREACH`` while the same code works from Terminal (whose grant it
     inherits). An ad-hoc-signed helper .app does not help: nehelper never prompts for it and denies
-    (#57812 dead-end table, re-verified live on macOS 26.3). ``/usr/bin/osascript``'s ``do shell script``
-    spawns its child as osascript-responsible — an Apple platform binary — so the child is exempt;
-    ``/bin/sh -c exec …`` and ``/usr/bin/time`` wrappers are NOT (the launchd job identity is the
-    non-entitled first executable). ``do shell script`` buffers the child's stdout/stderr until it exits,
-    so the command appends both to the same files the plist's ``StandardOutPath``/``StandardErrorPath``
-    name (those keys stay: they are where osascript's own output lands — an empty result line per exit
-    and an un-timestamped ``execution error`` line on non-zero exit); ``exec`` keeps the
-    gateway a direct child in the job's process group, so ``launchctl bootout`` / ``kickstart -k`` still
-    deliver SIGTERM to it and KeepAlive's ``SuccessfulExit`` semantics are preserved (osascript exits 0
-    exactly when the shell did).
+    (#57812 dead-end table, re-verified live on macOS 26.3). ``/usr/bin/caffeinate`` is an Apple
+    platform binary, so a child it spawns is exempt the same way ``do shell script``'s was;
+    ``/bin/sh -c exec …`` and ``/usr/bin/time`` as the first executable are NOT (the launchd job
+    identity is the non-entitled first executable). Unlike the previous ``osascript`` wrapper
+    (#123595): a pending ``do shell script`` blocks external-display wake for ~10s on macOS 27,
+    whereas caffeinate waits on its child without AppleScript; caffeinate also propagates the
+    child's exit status, so ``KeepAlive``/``SuccessfulExit`` semantics are preserved. caffeinate
+    holds a ``PreventUserIdleSystemSleep`` assertion for the child's lifetime (display sleep is
+    not affected) — an always-on gateway staying awake is the intended service posture. The shell
+    redirection keeps both streams in the files the plist's ``StandardOutPath``/``StandardErrorPath``
+    name (those keys stay: they are where the wrapper's own output lands — caffeinate produces
+    none); ``exec`` keeps the gateway a direct child in the job's process group, so
+    ``launchctl bootout`` / ``kickstart -k`` still deliver SIGTERM to it.
     """
     shell = f"exec {shlex.join(command)} >> {shlex.quote(str(stdout_log))} 2>> {shlex.quote(str(stderr_log))}"
-    applescript = shell.replace("\\", "\\\\").replace('"', '\\"')
-    return ["/usr/bin/osascript", "-e", f'do shell script "{applescript}"']
+    return ["/usr/bin/caffeinate", "/bin/sh", "-c", shell]
 
 
 def _timestamped_stderr_gateway_command(error_log: Path, *, external_supervisor: bool = False) -> list[str]:
@@ -355,7 +357,7 @@ def generate_launchd_plist() -> str:
     sane_path = ":".join(dict.fromkeys(priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p]))
 
     # ProgramArguments (incl. --profile); the stderr wrapper keeps launchd restart semantics while timestamping
-    # stderr; the osascript wrapper gives the job a Local Network identity (see launchd_program_arguments).
+    # stderr; the caffeinate wrapper gives the job a Local Network identity (see launchd_program_arguments).
     stdout_log, stderr_log = log_dir / "gateway.log", log_dir / "gateway.error.log"
     command = _timestamped_stderr_gateway_command(stderr_log, external_supervisor=True)
     prog_args_xml = "\n        ".join(

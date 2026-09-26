@@ -777,9 +777,15 @@ def _pre_dispatch_guards(function_name: str, function_args: Dict[str, Any], skip
         block_message: Optional[str] = None
         serve = None                                     # Optional[_ServeDirective]
         try:
-            from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
-            block_message, modified_args, serve = _dispatch_pre_tool_call_hooks(
-                function_name, function_args, middleware_trace=list(middleware_trace), **ids.hook_kwargs(),
+            from hermes_cli.plugins import (
+                _dispatch_pre_tool_call_hooks,
+                _normalize_pre_tool_call_hook_result,
+            )
+            block_message, modified_args, serve = _normalize_pre_tool_call_hook_result(
+                _dispatch_pre_tool_call_hooks(
+                    function_name, function_args,
+                    middleware_trace=list(middleware_trace), **ids.hook_kwargs(),
+                )
             )
             if modified_args is not None:
                 function_args = modified_args

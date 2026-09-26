@@ -666,13 +666,18 @@ def _pre_tool_block(agent, ref: _ToolCallRef):
     with ``serve: Optional[_ServeDirective]`` and any hook-modified args applied. Hook
     failures never block."""
     try:
-        from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
+        from hermes_cli.plugins import (
+            _dispatch_pre_tool_call_hooks,
+            _normalize_pre_tool_call_hook_result,
+        )
 
-        block_msg, modified_args, serve = _dispatch_pre_tool_call_hooks(
-            ref.name,
-            ref.args,
-            **tool_hook_ids(agent, ref.task_id, ref.call_id),
-            middleware_trace=list(ref.trace),
+        block_msg, modified_args, serve = _normalize_pre_tool_call_hook_result(
+            _dispatch_pre_tool_call_hooks(
+                ref.name,
+                ref.args,
+                **tool_hook_ids(agent, ref.task_id, ref.call_id),
+                middleware_trace=list(ref.trace),
+            )
         )
         return block_msg, (ref.args if modified_args is None else modified_args), serve
     except Exception:

@@ -573,6 +573,70 @@ def test_serve_directive_honored_by_sequential_executor():
     assert cached[0]["status"] == "cached"
 
 
+def test_two_tuple_pre_tool_hook_block_is_honoured(caplog):
+    """Regression for #103404: a producer that still returns the pre-serve 2-tuple
+    ``(block_message, modified_args)`` must have its block honoured. The strict 3-tuple
+    unpack raised ValueError into the broad fail-open handler, silently dropping the veto
+    and running the tool. The tolerated shape must also be logged (never silent)."""
+    import logging
+
+    agent = _make_agent("read_file")
+    tc = _mock_tool_call("read_file", '{"path": "/x"}', "c-2tuple")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    with (
+        caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"),
+        patch(
+            "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
+            return_value=("plugin policy", None),
+        ),
+        patch("model_tools.handle_function_call", side_effect=AssertionError("must not run")) as handle,
+    ):
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    handle.assert_not_called()
+    assert len(messages) == 1
+    assert json.loads(messages[0]["content"]) == {"error": "plugin policy"}
+    assert any(
+        record.levelno == logging.WARNING and "2-tuple" in record.getMessage()
+        for record in caplog.records
+    ), "an unexpected 2-tuple return shape must be logged at WARNING, never silent"
+
+
+def test_three_tuple_pre_tool_hook_serve_still_works():
+    """The 3-tuple ``(block_message, modified_args, serve)`` contract still works after
+    the 2-tuple compat normalisation: the serve settles without dispatching."""
+    agent = _make_agent("read_file")
+    tc = _mock_tool_call("read_file", '{"path": "/x"}', "c-3tuple")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+    post_calls = []
+    with (
+        patch(
+            "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
+            return_value=(None, None, _ServeDirective(result='{"cached": true}')),
+        ),
+        patch("model_tools.handle_function_call", side_effect=AssertionError("must not run")) as handle,
+        patch(
+            "model_tools._apply_transform_tool_result_hook",
+            side_effect=lambda _name, _args, result, _dur, _ids: result,
+        ),
+        patch(
+            "model_tools._emit_post_tool_call_hook",
+            side_effect=lambda **kwargs: post_calls.append(kwargs),
+        ),
+    ):
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    handle.assert_not_called()
+    assert len(messages) == 1
+    assert json.loads(messages[0]["content"]) == {"cached": True}
+    cached = [c for c in post_calls if c.get("tool_call_id") == "c-3tuple"]
+    assert len(cached) == 1
+    assert cached[0]["status"] == "cached"
+
+
 def test_serve_directive_honored_by_invoke_tool():
     """The runtime helper ``invoke_tool`` settles a serve directive without dispatch,
     emits the RAW served value to post_tool_call, and re-applies transform_tool_result."""

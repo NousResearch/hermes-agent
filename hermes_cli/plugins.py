@@ -2106,6 +2106,37 @@ def _dispatch_pre_tool_call_hooks(
     return (block_msg, details.modified_args, details.serve)
 
 
+def _normalize_pre_tool_call_hook_result(
+    result: Any,
+) -> Tuple[Optional[str], Optional[Dict[str, Any]], Optional[_ServeDirective]]:
+    """Normalize a ``pre_tool_call`` hook result to ``(block_message, modified_args, serve)``.
+
+    The 3-tuple is the documented contract. A backport/older producer may still return the
+    pre-serve 2-tuple ``(block_message, modified_args)``; accept it as ``serve=None`` so its
+    block is not silently dropped by a caller's fail-open ``except``. Any other shape is
+    logged at WARNING and re-raised: the caller still fails open (hook failures never block),
+    but the integration error stays visible instead of vanishing."""
+    if isinstance(result, tuple):
+        if len(result) == 3:
+            return result
+        if len(result) == 2:
+            block_message, modified_args = result
+            logger.warning(
+                "pre_tool_call hook returned a 2-tuple %r; treating it as "
+                "(block_message, modified_args) with serve=None — update the producer to "
+                "return (block_message, modified_args, serve)",
+                result,
+            )
+            return block_message, modified_args, None
+    logger.warning(
+        "pre_tool_call hook returned unexpected result %r; ignoring it (fail-open)", result,
+    )
+    raise ValueError(
+        "pre_tool_call hook must return a 3-tuple (block_message, modified_args, serve); "
+        f"got {type(result).__name__}"
+    )
+
+
 def get_pre_verify_continue_message(
     *, session_id: str = "", platform: str = "", model: str = "", coding: bool = False,
     attempt: int = 0, final_response: str = "", changed_paths: Optional[List[str]] = None,

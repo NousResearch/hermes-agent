@@ -854,28 +854,46 @@ class PluginContext:
         logger.debug("Plugin %s registered Slack action handler: %s", self.manifest.name, action_id)
         return handle
 
-    def register_platform_handler(self, platform: str, factory: Callable) -> None:
+    def register_platform_handler(
+        self, platform: str, factory: Callable, *, reload_safe: bool = False,
+    ) -> None:
         """Register ``factory(native, adapter)``, invoked at ``connect()`` before/as the core handlers
         register (``adapter`` read-only). ``native``: telegram PTB ``Application``, discord
         ``commands.Bot``, slack ``AsyncApp``, matrix client, teams ``App``, dingtalk
         ``DingTalkStreamClient``, line aiohttp ``web.Application``, others ``None``. Keep SDK imports
         inside the factory; exceptions are logged and the platform still connects. Scope handlers in
         first-match dispatch tables so core flows keep working. Raises ``ValueError`` when not callable
-        or platform is empty."""
+        or platform is empty. ``reload_safe=True`` opts into a new wiring generation after unload;
+        use it only when the plugin's unload callback removes the prior native handlers."""
         if not callable(factory):
             raise self._refuse("a platform handler factory with a non-callable factory")
+        if type(reload_safe) is not bool:
+            raise self._refuse("a platform handler factory with a non-boolean reload_safe value")
         key = (platform or "").strip().lower()
         if not key:
             raise self._refuse("a platform handler factory with an empty platform name")
-        self._manager._platform_handler_factories.setdefault(key, []).append((factory, self.manifest.name))
+        factories = self._manager._platform_handler_factories.setdefault(key, [])
+        entry = (factory, self.manifest.name)
+        factories.append(entry)
+        generation = object() if reload_safe else None
+        if generation is not None:
+            self._manager._platform_handler_reload_generations[id(entry)] = generation
+
+        def release() -> None:
+            self._manager._remove_identity(factories, entry)
+            if self._manager._platform_handler_reload_generations.get(id(entry)) is generation:
+                self._manager._platform_handler_reload_generations.pop(id(entry), None)
+
+        factory_name = getattr(factory, "__qualname__", None) or repr(factory)
+        self._track("platform_handler", f"{key}:{factory_name}", release)
         logger.debug("Plugin %s registered %s handler factory: %s", self.manifest.name, key,
                      getattr(factory, "__name__", repr(factory)))
 
-    def register_telegram_handler(self, factory: Callable) -> None:
+    def register_telegram_handler(self, factory: Callable, *, reload_safe: bool = False) -> None:
         """``register_platform_handler("telegram", factory)``. PTB dispatches only the FIRST matching
         handler per group and core registers a catch-all ``CallbackQueryHandler`` — always scope with
         ``pattern=`` or you swallow the core button flows."""
-        self.register_platform_handler("telegram", factory)
+        self.register_platform_handler("telegram", factory, reload_safe=reload_safe)
 
     @_serialized_replacement
     def register_auxiliary_task(
@@ -1217,6 +1235,9 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._approval_transports: Dict[str, Any] = {}
         self._slack_action_handlers: List[tuple] = []
         self._platform_handler_factories: Dict[str, List[tuple]] = {}
+        # Opted-in factory entry id -> opaque wiring generation. The public accessor remains
+        # ``(factory, plugin_name)`` pairs for compatibility.
+        self._platform_handler_reload_generations: Dict[int, object] = {}
         # Process-owned discovery listeners (``on_plugin_loaded``); never cleared by unload().
         self._plugin_loaded_listeners: List[Callable] = []
         # Event bus: owner-tagged subscriptions (unload removes zombies); one daemon worker keeps
@@ -1541,6 +1562,10 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         """``(factory, plugin_name)`` tuples for one platform; adapters call ``factory(native,
         adapter)`` at connect (see :meth:`PluginContext.register_platform_handler`)."""
         return list(self._platform_handler_factories.get((platform or "").strip().lower(), []))
+
+    def get_platform_handler_factory_generation(self, registration: tuple) -> object | None:
+        """Opaque rewire generation for an opted-in live factory registration."""
+        return self._platform_handler_reload_generations.get(id(registration))
 
     def get_telegram_handler_factories(self) -> List[tuple]:
         """Back-compat alias for ``get_platform_handler_factories("telegram")``."""

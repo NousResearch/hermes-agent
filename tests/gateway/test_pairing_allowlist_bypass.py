@@ -112,6 +112,43 @@ def test_approval_adds_to_configured_allowlist(store, monkeypatch):
     assert captured.get("TELEGRAM_ALLOWED_USERS") == "owner1,newuser99"
 
 
+def test_approval_on_json_list_allowlist_preserves_existing_ids(store, monkeypatch):
+    """A JSON-list allowlist (the shape ``hermes config set`` writes, decoded by
+    gateway.authz_mixin._coerce_allow_set) must not be corrupted by an approval's
+    write-back: ``["owner1","owner2"],newuser99`` is no longer valid JSON, which would
+    comma-split into garbage entries and lock owner1/owner2 out permanently."""
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", '["owner1","owner2"]')
+    captured = {}
+    import hermes_cli.config as cfg
+
+    monkeypatch.setattr(cfg, "save_env_value",
+                        lambda k, v: (captured.__setitem__(k, v),
+                                      os.environ.__setitem__(k, v)))
+
+    _approve_new_user(store, "telegram", "newuser99")
+
+    from gateway.authz_mixin import _coerce_allow_set
+    written = captured.get("TELEGRAM_ALLOWED_USERS")
+    assert written is not None
+    assert sorted(_coerce_allow_set(written)) == ["newuser99", "owner1", "owner2"]
+
+
+def test_revoke_on_json_list_allowlist_removes_only_the_target(store, monkeypatch):
+    """Revoking against a JSON-list allowlist must remove only the target id, not
+    corrupt the rest into garbage comma-split entries."""
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", '["owner1","newuser99"]')
+    saved = {}
+    import hermes_cli.config as cfg
+
+    monkeypatch.setattr(cfg, "save_env_value",
+                        lambda k, v: (saved.__setitem__(k, v),
+                                      os.environ.__setitem__(k, v)))
+    store._approve_user("telegram", "newuser99", "")
+
+    assert store.revoke("telegram", "newuser99") is True
+    assert saved.get("TELEGRAM_ALLOWED_USERS") == "owner1"
+
+
 def test_revoke_removes_from_allowlist(store, monkeypatch):
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "owner1,newuser99")
     saved = {}

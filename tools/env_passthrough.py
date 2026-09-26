@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from contextvars import ContextVar
 from typing import Iterable
-from hermes_cli.config import cfg_get, read_raw_config
+from hermes_cli.config import cfg_get, get_config_path, read_raw_config
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ def _get_allowed() -> set[str]:
 # Config-based allowlist, keyed by Hermes home: under gateway.multiplex_profiles one process serves
 # many profiles, and a single slot would let the first profile's operator allowlist decide which env
 # vars tunnel into every other profile's sandbox children.
-_config_passthrough: dict[str, frozenset[str]] = {}
+_config_passthrough: dict[str, tuple[tuple[int, int] | None, frozenset[str]]] = {}
 
 
 def _is_hermes_provider_credential(name: str) -> bool:
@@ -83,6 +83,16 @@ def _accepted(names, refusal_msg: str):
         yield name
 
 
+def _config_sig() -> tuple[int, int] | None:
+    """``(st_mtime_ns, st_size)`` of the active config.yaml, ``None`` when absent —
+    the same signature ``_read_raw_config_impl`` caches on."""
+    try:
+        st = get_config_path().stat()
+    except (RuntimeError, OSError):
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
 def _load_config_passthrough() -> frozenset[str]:
     """Load ``tools.env_passthrough`` from config.yaml (cached). Same credential
     filter as register_env_passthrough: operator config must not tunnel provider
@@ -94,9 +104,12 @@ def _load_config_passthrough() -> frozenset[str]:
     except (RuntimeError, OSError):
         # No resolvable home (stripped environ in a sandbox child): nothing to scope by.
         home_key = ""
+    # Memoized on the config file signature so editing config.yaml (e.g. revoking a
+    # passthrough var) takes effect without a process restart.
+    sig = _config_sig()
     cached = _config_passthrough.get(home_key)
-    if cached is not None:
-        return cached
+    if cached is not None and cached[0] == sig:
+        return cached[1]
     result: set[str] = set()
     try:
         passthrough = cfg_get(read_raw_config(), "terminal", "env_passthrough")
@@ -111,8 +124,8 @@ def _load_config_passthrough() -> frozenset[str]:
         )))
     except Exception as e:
         logger.debug("Could not read tools.env_passthrough from config: %s", e)
-    _config_passthrough[home_key] = frozenset(result)
-    return _config_passthrough[home_key]
+    _config_passthrough[home_key] = (sig, frozenset(result))
+    return _config_passthrough[home_key][1]
 
 
 def is_env_passthrough(var_name: str) -> bool:

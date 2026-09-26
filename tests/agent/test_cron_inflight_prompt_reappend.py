@@ -317,3 +317,55 @@ def test_flagged_scaffolding_row_is_never_the_inflight_task():
     found = ContextCompressor._find_inflight_user_task(msgs)
     assert found is not None
     assert JOB_SENTINEL in str(found.get("content"))
+
+
+SWITCH_NOTE = (
+    "[Note: model was just switched from gpt-6-sol to claude-fable-5-1 "
+    "via Nous Portal. Adjust your self-identification accordingly.]"
+)
+
+
+def _noted_transcript() -> List[Dict[str, Any]]:
+    """A session that switched models before its first prompt: the CLI's
+    one-shot note rides in the in-memory first user row (the persisted and
+    displayed value is clean) so the cached prompt prefix stays stable."""
+    return [
+        {"role": "system", "content": "You are Hermes."},
+        {"role": "user", "content": f"{SWITCH_NOTE}\n\n{JOB_SENTINEL}"},
+        *_tool_pairs(40),
+    ]
+
+
+def test_switch_note_is_not_restated_after_the_handoff():
+    """Regression for #124170: the one-shot /model note was written for the
+    turn it was prepended to. Restating the in-flight task after a compaction
+    re-delivered it verbatim — reading as if the switch had just happened
+    again. The replay must carry the user's text only."""
+    compressed = _compress(_noted_transcript())
+
+    idx = _handoff_idx(compressed)
+    assert idx >= 0, "expected a compaction handoff in the compressed transcript"
+    after = compressed[idx + 1:]
+    carrier_tail = _text(compressed[idx]).split(_SUMMARY_END_MARKER)[-1]
+
+    replayed = [
+        _text(m) for m in _actionable_user_rows(after) if JOB_SENTINEL in _text(m)
+    ]
+    if JOB_SENTINEL in carrier_tail and not replayed:
+        replayed = [carrier_tail]
+    assert replayed, "expected the in-flight task to be restated after the handoff"
+    for text in replayed:
+        assert "model was just switched" not in text, text
+
+
+def test_repeated_compactions_never_nest_the_switch_note():
+    """The note must not survive into any restated request, and must not nest
+    inside the replay header across repeated compactions."""
+    out: List[Dict[str, Any]] = _noted_transcript()
+    for cycle in (1, 2, 3):
+        extra = _tool_pairs(40, start=100 * cycle) if cycle > 1 else []
+        out = _compress_with(2, cycle, out + extra)
+        for m in out:
+            if m.get("role") == "user":
+                assert "model was just switched" not in str(m.get("content")), cycle
+        assert _job_copies(out) == 1, cycle

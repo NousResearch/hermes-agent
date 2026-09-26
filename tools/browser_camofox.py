@@ -395,12 +395,28 @@ def _navigate_tab(task_id: Optional[str], browser_url: str) -> tuple[Dict[str, A
     return _ensure_tab(task_id, browser_url), {"ok": True, "url": browser_url}
 
 
+def _navigate_title(session: Dict[str, Any], data: dict) -> str:
+    """Return the navigation title, looking up this owned tab when Camofox omits it."""
+    response_title = data.get("title")
+    if isinstance(response_title, str) and response_title:
+        return response_title
+    try:
+        tabs = _get("/tabs", params=_user_params(session)).get("tabs", [])
+        for tab in tabs if isinstance(tabs, list) else []:
+            if isinstance(tab, dict) and tab.get("tabId") == session["tab_id"]:
+                title = tab.get("title")
+                return title if isinstance(title, str) else ""
+    except Exception as exc:
+        logger.debug("Camofox title lookup failed for tab %s: %s", session.get("tab_id"), exc)
+    return ""
+
+
 def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
     """Navigate to a URL via Camofox."""
     try:
         browser_url, rewrite_info = _rewrite_loopback_url_for_camofox(url)
         session, data = _navigate_tab(task_id, browser_url)
-        result = {"success": True, "url": data.get("url", browser_url), "title": data.get("title", "")}
+        result = {"success": True, "url": data.get("url", browser_url), "title": _navigate_title(session, data)}
         if rewrite_info:
             result["requested_url"], result["url_rewrite"] = url, rewrite_info
             result["warning"] = ("Rewrote loopback URL for Docker-hosted Camofox: "

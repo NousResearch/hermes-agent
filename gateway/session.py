@@ -784,6 +784,10 @@ class SessionStore(
         self._routing_fallback_baseline: Optional[Dict[str, Any]] = None
         self._lock = threading.Lock()  # guards _entries / _loaded only
         self._save_lock = threading.Lock()  # whole-index persistence, never held with _lock
+        # sessions.json mirror: file-write lock (taken under _save_lock by sync writers and by the off-loop
+        # mirror lane, never by a loop-side submit) and the latest-wins pending slot.
+        self._mirror_write_lock = threading.Lock()
+        self._mirror_pending_lock = threading.Lock()
         # Fast (single-entry) and full saves share one generation counter so they are totally
         # ordered; _fast_persisted_entries: key -> (revision, entry_json) since the last rewrite.
         self._routing_generation = 0

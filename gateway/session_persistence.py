@@ -4,10 +4,12 @@ load/save paths (state.db gateway_routing primary, sessions.json legacy mirror).
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import json
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional
 from utils import atomic_json_write
@@ -17,6 +19,29 @@ if TYPE_CHECKING:
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.session")
+
+# One worker for every store's sessions.json mirror write (see
+# SessionPersistenceMixin._submit_sessions_json_mirror): the mirror is a multi-MB atomic write + fsync +
+# os.replace whose tail is unbounded under filesystem pressure, and full routing saves are still reached
+# synchronously from coroutines (adapter observe paths call SessionStore.get_or_create_session inline).
+_MIRROR_LANE: Optional[ThreadPoolExecutor] = None
+_MIRROR_LANE_LOCK = threading.Lock()
+
+
+def _get_mirror_lane() -> ThreadPoolExecutor:
+    global _MIRROR_LANE
+    with _MIRROR_LANE_LOCK:
+        if _MIRROR_LANE is None:
+            _MIRROR_LANE = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sessions-json-mirror")
+        return _MIRROR_LANE
+
+
+def _on_running_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
 
 # "No SessionDB pinned" sentinel: lets ``_db`` distinguish "resolve from the active scope" from a
 # deliberate ``store._db = None`` (JSONL fallback).
@@ -453,9 +478,13 @@ class SessionPersistenceMixin:
                     db_saved = True
                 except Exception as exc:
                     logger.warning("gateway.session: state.db routing save failed: %s", exc)
-            if getattr(self, "_write_sessions_json", True) or not db_saved:
+            if db_saved and getattr(self, "_write_sessions_json", True) and _on_running_loop():
+                # state.db (authoritative) already committed: the legacy mirror may lag, so never
+                # fsync/rename it on the event loop. Latest-wins; see _submit_sessions_json_mirror.
+                self._submit_sessions_json_mirror(data, generation)
+            elif getattr(self, "_write_sessions_json", True) or not db_saved:
                 try:
-                    self._save_sessions_json(data)
+                    self._write_sessions_json_mirror(data, generation)
                 except Exception as exc:
                     if not db_saved:
                         raise
@@ -470,6 +499,46 @@ class SessionPersistenceMixin:
             if fast_persisted:
                 for key in [k for k, (rev, _) in fast_persisted.items() if rev <= generation]:
                     del fast_persisted[key]
+
+    def _write_sessions_json_mirror(self, data: Dict[str, Any], generation: int) -> bool:
+        """Write the mirror unless a newer generation already landed; returns True when written.
+
+        Serialized on ``_mirror_write_lock`` (never ``_save_lock``, so a loop-side persist that only
+        submits to the lane never waits on this file write), and generation-checked so the lane can
+        never overwrite a newer synchronous write with an older snapshot."""
+        with self._lazy("_mirror_write_lock", threading.Lock):
+            if generation <= getattr(self, "_mirrored_generation", 0):
+                return False
+            self._save_sessions_json(data)
+            self._mirrored_generation = generation
+            return True
+
+    def _submit_sessions_json_mirror(self, data: Dict[str, Any], generation: int) -> None:
+        """Queue a mirror write on the single off-loop worker; only the newest pending snapshot is
+        written (intermediate ones are superseded before they cost a multi-MB fsync)."""
+        with self._lazy("_mirror_pending_lock", threading.Lock):
+            self._mirror_pending = (data, generation)
+            if getattr(self, "_mirror_scheduled", False):
+                return
+            self._mirror_scheduled = True
+        _get_mirror_lane().submit(self._drain_sessions_json_mirror)
+
+    def _drain_sessions_json_mirror(self) -> None:
+        while True:
+            with self._mirror_pending_lock:
+                pending = getattr(self, "_mirror_pending", None)
+                self._mirror_pending = None
+                if pending is None:
+                    self._mirror_scheduled = False
+                    return
+            try:
+                self._write_sessions_json_mirror(*pending)
+            except Exception as exc:
+                logger.warning("gateway.session: off-loop sessions.json mirror save failed: %s", exc)
+
+    def fence_sessions_json_mirror(self, timeout: float = 10.0) -> bool:
+        """Block until every mirror write queued before this call has landed (tests, shutdown)."""
+        return _get_mirror_lane().submit(lambda: None).result(timeout=timeout) is None
 
     def _save_sessions_json(self, data: Dict[str, Any]) -> None:
         """Write the legacy sessions.json mirror of the routing index (atomic + fsync)."""

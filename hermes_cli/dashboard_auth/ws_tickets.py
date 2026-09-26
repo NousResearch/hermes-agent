@@ -27,6 +27,9 @@ _internal_credential: Optional[str] = None  # lazily minted; guarded by ``_lock`
 #: Identity recorded for internal-credential connections (audit logs distinguish them from tickets).
 INTERNAL_USER_ID = "server-internal"
 INTERNAL_PROVIDER = "server-internal"
+#: Provider recorded for loopback tickets minted with the dashboard session token; they carry
+#: no user identity and are accepted only while the OAuth gate is off.
+SESSION_TOKEN_PROVIDER = "session-token"
 
 
 class TicketInvalid(Exception):

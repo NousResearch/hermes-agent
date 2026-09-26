@@ -2,7 +2,8 @@
 
 The dashboard's WS endpoints (``/api/pty``, ``/api/console``, ``/api/ws``,
 ``/api/pub``, ``/api/events``) share an auth gate: ``_ws_auth_ok``. In
-loopback mode it accepts ``?token=<_SESSION_TOKEN>``; in gated mode it accepts
+loopback mode it accepts ``?token=<_SESSION_TOKEN>``, the session-token header, or
+a session-token-minted single-use ticket; in gated mode it accepts
 a single-use ``?ticket=`` minted by ``POST /api/auth/ws-ticket``.
 
 These tests exercise the helper at the unit level (no actual WS upgrade)
@@ -23,6 +24,7 @@ from hermes_cli import web_server
 import hermes_cli.web_server_chat as _web_server_chat
 from hermes_cli.dashboard_auth import clear_providers, register_provider
 from hermes_cli.dashboard_auth.ws_tickets import (
+    SESSION_TOKEN_PROVIDER,
     _reset_for_tests,
     consume_internal_credential,
     internal_ws_credential,
@@ -128,6 +130,23 @@ class TestWsTicketEndpoint:
         # returns either 401 or 302. Either is fine.
         assert r.status_code in (302, 401)
 
+    def test_loopback_session_token_header_can_mint(self, loopback_app):
+        r = loopback_app.post(
+            "/api/auth/ws-ticket",
+            headers={web_server._SESSION_HEADER_NAME: web_server._SESSION_TOKEN},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert isinstance(body["ticket"], str) and len(body["ticket"]) >= 32
+        assert body["ttl_seconds"] == 30
+        assert web_server._SESSION_TOKEN not in r.text
+
+    def test_loopback_mint_without_session_token_is_unauthorized(self, loopback_app):
+        assert loopback_app.post("/api/auth/ws-ticket").status_code == 401
+        r = loopback_app.post(
+            "/api/auth/ws-ticket", headers={web_server._SESSION_HEADER_NAME: "wrong"})
+        assert r.status_code == 401
+
 
     def test_get_method_is_not_allowed(self, gated_app):
         _logged_in(gated_app)
@@ -208,6 +227,47 @@ class TestWsAuthOkLoopback:
         ws = _fake_ws(query={"token": web_server._SESSION_TOKEN})
         assert _web_server_chat._ws_auth_ok(ws) is True
 
+    def test_session_token_minted_ticket_is_single_use(self, loopback_app):
+        ticket = loopback_app.post(
+            "/api/auth/ws-ticket",
+            headers={web_server._SESSION_HEADER_NAME: web_server._SESSION_TOKEN},
+        ).json()["ticket"]
+        first = _fake_ws(query={"ticket": ticket})
+        assert _web_server_chat._ws_auth_reason(first) == (None, "ticket")
+        # No identity is invented for a token-authorized ticket (parity with ?token=).
+        assert not hasattr(first, "_hermes_auth_identity")
+        assert _web_server_chat._ws_auth_reason(_fake_ws(query={"ticket": ticket})) == (
+            "ticket_invalid", "ticket")
+
+    def test_session_token_ticket_via_subprotocol(self, loopback_app):
+        ticket = loopback_app.post(
+            "/api/auth/ws-ticket",
+            headers={web_server._SESSION_HEADER_NAME: web_server._SESSION_TOKEN},
+        ).json()["ticket"]
+        protocols = (
+            _web_server_chat._GATEWAY_WS_PROTOCOL,
+            f"{_web_server_chat._GATEWAY_WS_TICKET_PROTOCOL_PREFIX}{ticket}",
+        )
+        ws = _fake_ws(query={}, path="/api/ws", protocols=protocols)
+        assert _web_server_chat._ws_auth_reason(ws) == (None, "ticket-subprotocol")
+        assert ws._hermes_ws_subprotocol == _web_server_chat._GATEWAY_WS_PROTOCOL
+
+    def test_bad_ticket_does_not_fall_back_to_token(self, loopback_app):
+        ws = _fake_ws(query={"ticket": "never-minted", "token": web_server._SESSION_TOKEN})
+        assert _web_server_chat._ws_auth_reason(ws) == ("ticket_invalid", "ticket")
+
+    def test_identity_ticket_is_not_a_loopback_login(self, loopback_app):
+        # Tickets carrying another provider's identity (e.g. display tickets) stay scoped.
+        ticket = mint_ticket(user_id="viewer", provider="bot-desktop")
+        assert _web_server_chat._ws_auth_ok(_fake_ws(query={"ticket": ticket})) is False
+
+    def test_session_header_accepted(self, loopback_app):
+        ws = _fake_ws(query={})
+        ws.headers = {web_server._SESSION_HEADER_NAME: web_server._SESSION_TOKEN}
+        assert _web_server_chat._ws_auth_reason(ws) == (None, "session_header")
+        ws.headers = {web_server._SESSION_HEADER_NAME: "wrong"}
+        assert _web_server_chat._ws_auth_reason(ws) == ("token_mismatch", "session_header")
+
 
 class TestWsAuthOkGated:
     """Gate ON — ticket path only."""
@@ -260,6 +320,13 @@ class TestWsAuthOkGated:
         )
         assert _web_server_chat._ws_auth_ok(ambiguous) is False
 
+
+    def test_session_header_and_session_token_ticket_rejected_in_gated_mode(self, gated_app):
+        ws = _fake_ws(query={})
+        ws.headers = {web_server._SESSION_HEADER_NAME: web_server._SESSION_TOKEN}
+        assert _web_server_chat._ws_auth_ok(ws) is False
+        ticket = mint_ticket(user_id="", provider=SESSION_TOKEN_PROVIDER)
+        assert _web_server_chat._ws_auth_ok(_fake_ws(query={"ticket": ticket})) is False
 
     def test_legacy_token_rejected_in_gated_mode(self, gated_app):
         """Critical: gated mode must NOT honour the legacy token path

@@ -224,8 +224,10 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
     ``token_mismatch``, ``ticket_invalid``, ``internal_invalid``);
     ``credential`` names what was presented so the accept path can log *how*.
 
-    Loopback / ``--insecure``: legacy ``?token=`` (constant-time compared).
-    Gated: ``?ticket=`` (browser-minted, single-use, 30s TTL) or ``?internal=``
+    Loopback / ``--insecure``: a single-use ticket minted with the session
+    token (gateway subprotocol or ``?ticket=``), the ``X-Hermes-Session-Token``
+    header (non-browser clients and reverse proxies), or the legacy ``?token=``;
+    token comparisons are constant-time. Gated: ``?ticket=`` (browser-minted, single-use, 30s TTL) or ``?internal=``
     (process-lifetime, multi-use, only for server-spawned WS clients so the PTY
     child can reconnect; never injected into the SPA).  The legacy token is
     rejected in gated mode: a leaked ``_SESSION_TOKEN`` must not grant access.
@@ -237,7 +239,7 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
         # that don't bring in the dashboard_auth layer.
         from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
         from hermes_cli.dashboard_auth.ws_tickets import (
-            TicketInvalid, consume_internal_credential, consume_ticket)
+            SESSION_TOKEN_PROVIDER, TicketInvalid, consume_internal_credential, consume_ticket)
 
         def _reject(reason: str) -> None:
             audit_log(
@@ -271,6 +273,8 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
 
         try:
             info = consume_ticket(ticket)
+            if info.get("provider") == SESSION_TOKEN_PROVIDER:
+                raise TicketInvalid("loopback session-token ticket presented behind the OAuth gate")
             if info.get("provider") == "bot-desktop":
                 # A display ticket admits one RFB bridge on /api/display/ws (a watch-only
                 # capability handed to a screen viewer); it must not double as a login here.
@@ -287,12 +291,48 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
             _reject(str(exc))
             return "ticket_invalid", "ticket"
 
+    ticket_reason, ticket_credential = _loopback_ws_ticket_reason(ws)
+    if ticket_credential != "none":
+        return ticket_reason, ticket_credential
+    from hermes_cli.web_server import _SESSION_HEADER_NAME
+    header = str(ws.headers.get(_SESSION_HEADER_NAME, "") or "")
+    if header:
+        if hmac.compare_digest(header.encode(), _SESSION_TOKEN.encode()):
+            return None, "session_header"
+        return "token_mismatch", "session_header"
     token = ws.query_params.get("token", "")
     if not token:
         return "no_credential", "none"
     if hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
         return None, "token"
     return "token_mismatch", "token"
+
+
+def _loopback_ws_ticket_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
+    """Gate-off ticket admission; credential ``"none"`` when no ticket was presented.
+
+    Only tickets minted with the session token qualify: they carry no identity, so
+    none is stamped (same as ``?token=``). A presented-but-bad ticket is rejected
+    rather than falling through to another credential.
+    """
+    from hermes_cli.dashboard_auth.ws_tickets import (
+        SESSION_TOKEN_PROVIDER, TicketInvalid, consume_ticket)
+    protocol_ticket, protocol_reason = _gateway_ws_ticket_from_subprotocol(ws)
+    if protocol_reason == "invalid":
+        return "ticket_invalid", "ticket-subprotocol"
+    ticket = protocol_ticket or ws.query_params.get("ticket", "")
+    if not ticket:
+        return None, "none"
+    credential = "ticket-subprotocol" if protocol_ticket else "ticket"
+    try:
+        info = consume_ticket(ticket)
+    except TicketInvalid:
+        return "ticket_invalid", credential
+    if info.get("provider") != SESSION_TOKEN_PROVIDER:
+        return "ticket_invalid", credential
+    if protocol_ticket:
+        ws._hermes_ws_subprotocol = _GATEWAY_WS_PROTOCOL
+    return None, credential
 
 
 def _ws_auth_ok(ws: "WebSocket") -> bool:

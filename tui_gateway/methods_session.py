@@ -1128,8 +1128,13 @@ def _(rid, params: dict, session: dict, db) -> dict:
 @method("session.set_hidden")
 def _(rid, params: dict) -> dict:
     """Set/clear ``hidden`` (leaves the default list, stays resumable by its owner) on a session + lineage:
-    LIVE runtime id first (unpersisted drafts via ``pending_hidden``), then a stored id/key in the profile db."""
-    hidden = is_truthy_value(params.get("hidden", True))
+    LIVE runtime id first (unpersisted drafts via ``pending_hidden``), then a stored id/key in the profile db.
+    ``hidden`` is required: defaulting a missing flag to True let any caller that dropped the param
+    silently hide the session (and the whole compression lineage, via ``set_session_hidden``) —
+    the "user never hid anything" shape in #122190."""
+    if "hidden" not in params:
+        return _err(rid, 4021, "hidden required")
+    hidden = is_truthy_value(params.get("hidden"))
     # Quiet live lookup: a stored id that is not in memory is this method's expected second tier, not a
     # rejection — _sess_nowait would log "session-scoped RPC rejected … not in memory" for a request that is
     # then fulfilled from the profile db, burying the real stale-runtime-id signal under sweep noise.

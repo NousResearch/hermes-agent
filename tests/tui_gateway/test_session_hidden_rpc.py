@@ -59,6 +59,22 @@ def test_set_hidden_unknown_id_still_errors(db):
     assert envelope.get("error"), envelope
 
 
+def test_set_hidden_without_flag_leaves_visible_session_alone(db):
+    """Regression for #122190: a ``session.set_hidden`` call with no explicit
+    ``hidden`` flag must not hide anything. The handler used to default the
+    missing flag to True, so any caller that dropped the param (stale client,
+    profile-switch retry, typo ``hide``) silently hid the session — and
+    ``set_session_hidden`` propagates across the whole compression lineage,
+    which is exactly the "whole chain hidden=1, user never hid anything"
+    shape from the issue."""
+    _seed(db, "plain-chat")
+    assert db.get_session("plain-chat")["hidden"] == 0
+
+    envelope = _call("session.set_hidden", {"session_id": "plain-chat"})
+    assert envelope.get("error"), envelope
+    assert db.get_session("plain-chat")["hidden"] == 0
+
+
 
 
 def test_session_list_include_hidden(db):

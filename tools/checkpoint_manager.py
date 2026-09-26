@@ -497,6 +497,15 @@ def _migrate_legacy_store(base: Path) -> Optional[Path]:
     return legacy_root
 
 
+def _write_store_excludes(store: Path) -> None:
+    """Write the store's ``info/exclude`` from the current DEFAULT_EXCLUDES."""
+    info_dir = store / "info"
+    info_dir.mkdir(exist_ok=True)
+    (info_dir / "exclude").write_text(
+        "\n".join(DEFAULT_EXCLUDES) + "\n", encoding="utf-8"
+    )
+
+
 def _init_store(store: Path, working_dir: str) -> Optional[str]:
     """Initialise the shared shadow store if needed.  Returns error or None.
 
@@ -515,6 +524,11 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
         _migrate_legacy_store(base)
 
     if (store / "HEAD").exists():
+        # A store created by an older version carries the exclude file as it
+        # was written then; converge it on every call (idempotent rewrite) so
+        # new DEFAULT_EXCLUDES patterns reach installs that already have a
+        # store — the population the patterns exist for.
+        _write_store_excludes(store)
         return None
 
     store.mkdir(parents=True, exist_ok=True)
@@ -560,11 +574,7 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
     _run_git(["config", "tag.gpgSign", "false"], store, cfg_wd)
     _run_git(["config", "gc.auto", "0"], store, cfg_wd)
 
-    info_dir = store / "info"
-    info_dir.mkdir(exist_ok=True)
-    (info_dir / "exclude").write_text(
-        "\n".join(DEFAULT_EXCLUDES) + "\n", encoding="utf-8"
-    )
+    _write_store_excludes(store)
 
     logger.debug("Initialised checkpoint store at %s", store)
     return None

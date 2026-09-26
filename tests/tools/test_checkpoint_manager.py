@@ -182,6 +182,35 @@ class TestTakeCheckpoint:
             for n in names
         ), names
 
+    def test_still_image_excludes_reach_preexisting_stores(
+        self, mgr, work_dir, checkpoint_base
+    ):
+        """A store created before the still-image patterns keeps the exclude file
+        as it was written then — the write happens exactly once, at store creation.
+        Without convergence on the existing-store path, the patterns never reach the
+        installs that already have a store, which is the store-bloat population."""
+        assert mgr.ensure_checkpoint(str(work_dir), "first") is True
+        store = _store_path(checkpoint_base)
+        aged = (store / "info" / "exclude").read_text(encoding="utf-8")
+        for pattern in ("*.jpg", "*.jpeg", "*.png", "*.gif", "*.bmp", "*.webp", "*.ico"):
+            aged = aged.replace(pattern + "\n", "")
+        (store / "info" / "exclude").write_text(aged, encoding="utf-8")
+
+        (work_dir / "shot.jpg").write_bytes(b"\xff\xd8\xff\xe0fake-jpg")
+        (work_dir / "icon.png").write_bytes(b"\x89PNGfake-png")
+        (work_dir / "main.py").write_text("print('modified')\n")
+        mgr.new_turn()
+        assert mgr.ensure_checkpoint(str(work_dir), "images present") is True
+
+        exclude_text = (store / "info" / "exclude").read_text(encoding="utf-8")
+        assert "*.jpg" in exclude_text and "*.png" in exclude_text
+        ref = _ref_name(_project_hash(str(work_dir)))
+        ok, out, err = _run_git(["ls-tree", "-r", "--name-only", ref], store, str(work_dir))
+        assert ok, err
+        names = [n for n in out.splitlines() if n.strip()]
+        assert "main.py" in names
+        assert not any(n.endswith((".jpg", ".png")) for n in names), names
+
 
 # =========================================================================
 # CheckpointManager — listing

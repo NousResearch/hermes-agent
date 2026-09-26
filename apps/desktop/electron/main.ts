@@ -108,7 +108,7 @@ import {
   BROWSER_WINDOW_WIDTH,
   buildBrowserWindowUrl
 } from './browser-windows'
-import { detectBundleSkew } from './bundle-skew'
+import { createBundleSkewProbe } from './bundle-skew'
 import { detectBundleSwap, readBundleSwapStamp } from './bundle-swap'
 import { registerChatOnboardingWindow } from './chat-onboarding-window'
 import { provisionCliLinks } from './cli-provision'
@@ -3255,6 +3255,23 @@ function runGit(args, options: any = {}): Promise<{ code: number; stdout: string
 
     let stdout = ''
     let stderr = ''
+    // The probe aborts git at its timeout (a treeless partial clone can
+    // lazy-fetch trees for minutes), so a caller-supplied signal kills the
+    // child. Without it the spawn outlives the promise that stopped waiting.
+    const signal: AbortSignal | undefined = options.signal
+
+    const killOnAbort = (): void => {
+      child.kill()
+    }
+
+    if (signal) {
+      if (signal.aborted) {
+        killOnAbort()
+      } else {
+        signal.addEventListener('abort', killOnAbort, { once: true })
+      }
+    }
+
     child.stdout.on('data', chunk => {
       const text = chunk.toString()
       stdout += text
@@ -3268,6 +3285,7 @@ function runGit(args, options: any = {}): Promise<{ code: number; stdout: string
     // A spawn-level failure means git itself never ran (missing, not
     // executable, wrong CPU architecture) — a local problem, not a network one.
     child.once('error', error => {
+      signal?.removeEventListener('abort', killOnAbort)
       const local = describeGitSpawnFailure(error, gitBinary)
 
       reject(local ? Object.assign(new Error(local), { kind: GIT_UNUSABLE, cause: error }) : error)
@@ -3275,7 +3293,10 @@ function runGit(args, options: any = {}): Promise<{ code: number; stdout: string
     // 'close', not 'exit': exit can fire before the stdio pipes drain, and a
     // resolved-early `remote get-url` came back as "" often enough to route
     // passive checks down the wrong remote path.
-    child.once('close', (code: number): void => resolve({ code, stdout, stderr }))
+    child.once('close', (code: number): void => {
+      signal?.removeEventListener('abort', killOnAbort)
+      resolve({ code, stdout, stderr })
+    })
   })
 }
 
@@ -17983,8 +18004,21 @@ function resolveHermesVersion(scope: { connectionId?: string; profile?: string }
 // apps/desktop/, and warn when the running renderer is provably behind.
 // Fail-quiet: dev runs (no stamp), non-git builds, and shallow-clone gaps all
 // report in-sync rather than risk a false "your install is torn" warning.
+// One probe for the whole process: concurrent callers (window focus, the
+// update poller, checkUpdates, About) share a single in-flight run, and a
+// result is reused while HEAD is unchanged — a probe hit costs one
+// `rev-parse`. Without it each caller spawned its own merge-base/rev-list
+// pair, and a treeless partial clone's lazy fetch could hold a core for
+// minutes. The timeout aborts a hung git so nothing outlives the probe.
+// resolveUpdateRoot is called per probe: dev can retarget the tree at runtime.
+const rendererSkewProbe = createBundleSkewProbe({
+  stamp: INSTALL_STAMP,
+  runGit,
+  repoRoot: resolveUpdateRoot
+})
+
 async function detectRendererSkew() {
-  return detectBundleSkew(INSTALL_STAMP, runGit, resolveUpdateRoot())
+  return rendererSkewProbe()
 }
 
 // Re-resolve the live Hermes version and push it into the native About panel

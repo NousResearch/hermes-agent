@@ -47,6 +47,7 @@ function isConsoleMessageDetails(value: unknown): value is ConsoleMessageDetails
   }
 
   const event = value as ConsoleMessageEventLike
+
   const isKnownLevel =
     event.level === 'info' || event.level === 'warning' || event.level === 'error' || event.level === 'debug'
 
@@ -80,6 +81,7 @@ export function attachRendererConsoleCapture(win: WindowLike, label: string, log
         didReportConsoleMessageSignatureDrift = true
         log('[renderer console] Electron console-message signature drift detected; renderer errors may not be captured')
       }
+
       return
     }
 

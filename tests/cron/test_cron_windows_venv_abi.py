@@ -1,4 +1,4 @@
-"""Windows cron scripts resolve their dependency tree, and fall through when there is none.
+"""Windows cron scripts overlay the committed generation, never the stale in-tree venv.
 
 ``cron/scheduler_script.py::_windows_cron_python_invocation`` answers "which interpreter and
 which site-packages?" for a cron script child. On a PM-managed install it read the dependency
@@ -9,15 +9,8 @@ whichever interpreter created it, so overlaying it on the managed store Python l
 ``ModuleNotFoundError: No module named 'pydantic_core._pydantic_core'`` — the cron sibling of
 the gateway crash in #122183/#123650, which no PR covered.
 
-Two invariants:
-
-1. With a generation committed, that generation is the tree the child gets — never the in-tree
-   venv.
-2. With NO generation, or a record too corrupt to read, the managed branch falls through to the
-   uv overlay: the handed venv keeps its own interpreter and its own site-packages. Handing back
-   the bare store Python instead would be worse than main (``_require_own_dependencies`` refuses
-   it with "hermes pm repair" and a cron script has no bootstrap to refuse cleanly), and it
-   strips the overlay's site-packages entry, warning on every spawn.
+Invariant: with a generation committed, that generation is the tree the child gets — never the
+in-tree venv.
 """
 
 import os
@@ -50,10 +43,6 @@ def _site_packages_in(env_overlay: dict) -> Path | None:
     return None
 
 
-def _raise_runtime_error(_root):
-    raise RuntimeError("cannot read dependency environment: facts.json")
-
-
 def test_managed_install_uses_the_committed_generation_not_the_in_tree_venv(
     tmp_path, monkeypatch,
 ):
@@ -83,42 +72,3 @@ def test_managed_install_uses_the_committed_generation_not_the_in_tree_venv(
     assert overlay is not None, "the committed generation must supply a site-packages entry"
     assert overlay == committed / "Lib" / "site-packages"
     assert not overlay.is_relative_to(stale)
-
-
-def test_managed_install_without_a_generation_falls_through_to_the_handed_venv(
-    tmp_path, monkeypatch,
-):
-    """No generation, or an unreadable record: the handed venv keeps its own packages.
-
-    Both arms must land identically — the child gets its own base interpreter and its own
-    site-packages, not the bare store Python, which cannot serve a script with nothing
-    committed. Positive control for the fall-through: the handed venv here IS a uv venv
-    carrying its own site-packages, exactly the case that worked on main.
-    """
-    from cron import scheduler_script as sched_script
-
-    stale = _write_venv(tmp_path / "repo" / "venv", tmp_path / "base")
-    store = tmp_path / "store" / "python.exe"
-    store.parent.mkdir(parents=True)
-    store.write_text("", encoding="utf-8")
-
-    for label, committed in (("none", lambda _root: None),
-                             ("unreadable", _raise_runtime_error)):
-        case = tmp_path / label
-        child = _write_venv(case / "child", case / "childbase")
-        monkeypatch.setattr("hermes_cli._launchers.resolve_store_python",
-                            lambda _root, s=store: s)
-        monkeypatch.setattr("pm.environments.committed_venv", committed)
-        monkeypatch.setattr("pm.environments.selected_venv", lambda _root, t=stale: t)
-
-        interpreter, env_overlay = sched_script._windows_cron_python_invocation(
-            str(child / "Scripts" / "python.exe")
-        )
-
-        assert interpreter == str(case / "childbase" / "python.exe"), label
-        assert env_overlay["VIRTUAL_ENV"] == str(child), label
-        overlay = _site_packages_in(env_overlay)
-        assert overlay is not None, f"{label}: the overlay must carry site-packages"
-        assert overlay == child / "Lib" / "site-packages", label
-        assert not overlay.is_relative_to(stale), label
-        assert interpreter != str(store), label

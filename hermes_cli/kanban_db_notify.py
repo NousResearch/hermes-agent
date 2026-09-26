@@ -199,6 +199,48 @@ def list_notify_subs(
     return out
 
 
+def count_live_tasks(
+    db_path: Optional[Path] = None,
+    *,
+    board: Optional[str] = None,
+) -> int:
+    """Count non-terminal task rows via a read-only connection.
+
+    "Live" = the schema's own status set minus the quiet-by-design pair
+    (``done``, ``archived``): a board holding ``blocked``, ``ready``,
+    ``todo``, ``running`` or ``review`` work may still need a human, so a
+    board with tasks in flight and no subscriber is a state the operator
+    almost certainly never chose — every dispatched worker, cron job and CLI
+    invocation runs without ``HERMES_SESSION_PLATFORM`` / ``HERMES_SESSION_CHAT_ID``,
+    so ``auto_subscribe_on_create`` cannot fire for agent-created cards
+    (#124389). A finished board is quiet by design and counts zero.
+
+    Same fail-open posture as :func:`count_notify_subs` (missing DB / missing
+    table → 0); raises :class:`sqlite3.Error` on an unreadable DB so callers
+    pick their own fallback. Never creates the file.
+    """
+    path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
+    if not path.exists():
+        return 0
+    # Derived from the schema's own status set, so a new live status can never
+    # be silently excluded here. ``done``/``archived`` are the quiet-by-design
+    # pair; everything else may still need a human.
+    live = sorted(set(_kb.VALID_STATUSES) - {"done", "archived"})
+    placeholders = ",".join("?" for _ in live)
+    query = f"SELECT COUNT(*) FROM tasks WHERE status IN ({placeholders})"
+    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    try:
+        try:
+            row = conn.execute(query, live).fetchone()
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc).lower():
+                return 0
+            raise
+        return int(row[0]) if row else 0
+    finally:
+        conn.close()
+
+
 def count_notify_subs(
     db_path: Optional[Path] = None,
     *,

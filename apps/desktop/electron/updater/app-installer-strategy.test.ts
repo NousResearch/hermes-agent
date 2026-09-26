@@ -97,18 +97,19 @@ describe('AppInstallerStrategy.apply', () => {
     expect(calls).toEqual(['relaunch-marker', 'teardown', 'quit'])
   })
 
-  it.each(['http://external.example/update.appinstaller', 'https://user:pass@registered.example/update.appinstaller', 'https://registered.example/../update.appinstaller'])(
-    'rejects an unsafe registered source URI before staging: %s',
-    async (sourceUri: string): Promise<void> => {
-      const { deps, calls } = makeDeps({
-        feedBaseUrl: '',
-        run: async () => ({ code: 2, stdout: JSON.stringify({ available: true, source_uri: sourceUri }) })
-      })
+  it.each([
+    'http://external.example/update.appinstaller',
+    'https://user:pass@registered.example/update.appinstaller',
+    'https://registered.example/../update.appinstaller'
+  ])('rejects an unsafe registered source URI before staging: %s', async (sourceUri: string): Promise<void> => {
+    const { deps, calls } = makeDeps({
+      feedBaseUrl: '',
+      run: async () => ({ code: 2, stdout: JSON.stringify({ available: true, source_uri: sourceUri }) })
+    })
 
-      await expect(new AppInstallerStrategy(deps).apply()).rejects.toThrow()
-      expect(calls).toEqual([])
-    }
-  )
+    await expect(new AppInstallerStrategy(deps).apply()).rejects.toThrow()
+    expect(calls).toEqual([])
+  })
 
   it('uses an exact descriptor without a Python check, and rejects unverified prepared packages before teardown', async (): Promise<void> => {
     const { deps, calls } = makeDeps({

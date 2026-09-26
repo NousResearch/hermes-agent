@@ -65,7 +65,6 @@ _PROVIDER_ENV_HINTS = (
     "TOKENHUB_API_KEY", "TOKENPLAN_API_KEY",
 )
 
-
 @doctor_check()
 def _check_auth_providers(should_fix: bool, f: Finding) -> None:
     """Refresh-free OAuth status snapshot (doctor must never trigger a token refresh)."""
@@ -185,6 +184,7 @@ def run_doctor(args):
         from hermes_cli.doctor_live import maybe_run_live_checks
         maybe_run_live_checks(args, total.manual_issues)
     _print_summary(should_fix, total)
+    return int(bool(total.issues or total.manual_issues))
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

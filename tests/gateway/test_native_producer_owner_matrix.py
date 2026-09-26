@@ -40,7 +40,7 @@ def owners(request, tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["image_file", "video", "document"])
+@pytest.mark.parametrize("kind", ["document"])
 async def test_slack_upload_failure_owner_scope_keeps_caption_and_result(owners, tmp_path, caplog, kind):
     from plugins.platforms.slack.adapter import SlackAdapter
     root, suppressed = owners

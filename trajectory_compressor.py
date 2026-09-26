@@ -17,7 +17,7 @@ import random
 import shutil
 import tempfile
 import time
-import yaml
+import hermes_yaml as yaml
 import logging
 import asyncio
 from pathlib import Path
@@ -30,6 +30,7 @@ import fire
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn
 from rich.console import Console
 from hermes_constants import OPENROUTER_BASE_URL, get_hermes_home
+from agent.compression_marker import elide_middle
 from agent.retry_utils import jittered_backoff
 from hermes_cli.env_loader import load_hermes_dotenv
 
@@ -401,7 +402,7 @@ class TrajectoryCompressor:
             turn = trajectory[i]
             value = turn.get("value", "")
             if len(value) > 3000:
-                value = value[:1500] + "\n...[truncated]...\n" + value[-500:]
+                value = elide_middle(value, 1500, 500)
             parts.append(f"[Turn {i} - {turn.get('from', 'unknown').upper()}]:\n{value}")
         return "\n\n".join(parts)
 
@@ -572,7 +573,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
 
     async def process_entry_async(self, entry: Dict[str, Any]) -> Tuple[Dict[str, Any], TrajectoryMetrics]:
         """Compress one JSONL entry's ``conversations``; attach metrics when compressed."""
-        if "conversations" not in entry:
+        if not isinstance(entry, dict) or "conversations" not in entry:
             return entry, TrajectoryMetrics()
         compressed_trajectory, metrics = await self.compress_trajectory_async(entry["conversations"])
         result = dict(entry, conversations=compressed_trajectory)

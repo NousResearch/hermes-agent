@@ -49,7 +49,7 @@ export interface ActiveTip {
    *  tip follows an element that re-renders and leaves when it goes away. */
   targets: readonly string[]
   text: string
-  /** Catalog id. Absent for an agent-authored tip, which has nothing to retire. */
+  /** Stable id used by the seen and retirement ledgers. */
   tipId?: string
   title?: string
 }
@@ -68,6 +68,20 @@ export const $nextTipAt = persistentAtom<null | number>(
   Codecs.json(value => (typeof value === 'number' && Number.isFinite(value) ? value : null))
 )
 export const $activeTip = atom<ActiveTip | null>(null)
+
+/** Agent tips have no catalog entry, so hash their content into a compact durable identity. */
+export function agentTipId(selector: string, text: string): string {
+  let hash = 0xcbf29ce484222325n
+  const identity = JSON.stringify([selector, text])
+
+  // Hash the tuple encoding so neither arbitrary agent copy nor selectors are persisted verbatim.
+  for (let index = 0; index < identity.length; index += 1) {
+    hash ^= BigInt(identity.charCodeAt(index))
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n)
+  }
+
+  return `agent:${hash.toString(16).padStart(16, '0')}`
+}
 
 // Off has to reach the agent, not just the renderer: the `tip` tool leaves the
 // model's schema entirely rather than staying on offer and being dropped.
@@ -120,6 +134,10 @@ export const $spentTipCount = computed([$retiredTips, $tipShownAt], (retired, sh
 
 /** Put a tip on screen, replacing whatever was there. */
 export function showTip(tip: ActiveTip): void {
+  if (tip.tipId && $retiredTips.get().includes(tip.tipId)) {
+    return
+  }
+
   if (tip.tipId) {
     // The cursor belongs to the rotation's walk. A campaign tip (an id the
     // catalog doesn't hold) records when it showed but must not move the
@@ -128,7 +146,11 @@ export function showTip(tip: ActiveTip): void {
       $lastTipId.set(tip.tipId)
     }
 
-    $tipShownAt.set({ ...$tipShownAt.get(), [tip.tipId]: Date.now() })
+    // Agent tips are unbounded in number and only need the ✕ to persist; keep
+    // them out of the seen ledger so a chatty agent cannot grow localStorage.
+    if (!tip.tipId.startsWith('agent:')) {
+      $tipShownAt.set({ ...$tipShownAt.get(), [tip.tipId]: Date.now() })
+    }
   }
 
   // Any tip starts the cooldown, an agent's included: whoever just pointed at
@@ -142,8 +164,7 @@ export function dismissTip(): void {
   $activeTip.set(null)
 }
 
-/** Hard close (the ✕): retire the catalog tip behind the bubble for good. An
- *  agent tip has no catalog entry, so it just closes. */
+/** Hard close (the ✕): retire the identified tip behind the bubble for good. */
 export function retireActiveTip(): void {
   const tipId = $activeTip.get()?.tipId
 

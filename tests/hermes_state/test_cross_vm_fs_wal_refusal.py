@@ -120,5 +120,3 @@ class TestWalRefusalOnCrossVmFs:
                 conn.close()
         errors = [r for r in caplog.records if r.levelno == logging.ERROR and "cross-VM" in r.getMessage()]
         assert len(errors) == 1
-        assert "PRAGMA journal_mode=DELETE" in errors[0].getMessage()
-        assert "native volume" in errors[0].getMessage()

@@ -62,15 +62,20 @@ type ResolveHeadFn = (activeRoot: string | null | undefined) => string | null
  * (all-zero) install stamps still produce a marker that
  * isBootstrapComplete() accepts (pinnedCommit length >= 7).
  */
-function resolveCheckoutHead(activeRoot: string | null | undefined, opts: { execGit?: ExecGitFn } = {}): string | null {
+function resolveCheckoutHead(
+  activeRoot: string | null | undefined,
+  opts: { execGit?: ExecGitFn; gitBinary?: string } = {}
+): string | null {
   if (!activeRoot) {
     return null
   }
 
+  // Bare 'git' takes the first PATH hit, which can exist yet be unlaunchable
+  // (Intel-only build on Apple Silicon); main.ts passes its probed binary.
   const run: ExecGitFn =
     opts.execGit ||
     ((args, cwd) =>
-      execFileSync('git', args, {
+      execFileSync(opts.gitBinary || 'git', args, {
         cwd,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'ignore'],
@@ -105,8 +110,10 @@ function readExistingPinnedCommit(activeRoot: string | null | undefined): string
 
 /**
  * Pick the commit to store on the bootstrap-complete marker.
- * Packaged fallback stamps must NOT win (all-zero is not a real pin); after a
- * successful install the checkout's HEAD (or install.ps1's marker) does.
+ * The installed checkout owns source runtime identity: its live HEAD wins, so
+ * a repair/update bootstrap reports the commit the checkout is actually at,
+ * never the older commit baked into the packaged app. Packaged fallback stamps
+ * (all-zero) are not real pins and never win.
  */
 function resolveMarkerPinnedCommit(
   installStamp: { commit?: string; branch?: string | null } | null | undefined,
@@ -115,14 +122,14 @@ function resolveMarkerPinnedCommit(
 ): string | null {
   const resolveHead = opts.resolveHead || resolveCheckoutHead
 
-  if (installStamp && isPinnedCommit(installStamp.commit)) {
-    return installStamp.commit
-  }
-
   const head = resolveHead(activeRoot)
 
   if (head) {
     return head
+  }
+
+  if (installStamp && isPinnedCommit(installStamp.commit)) {
+    return installStamp.commit
   }
 
   return readExistingPinnedCommit(activeRoot)
@@ -741,7 +748,9 @@ async function fetchManifest({
     // the installer's colour/OSC bytes here too (#112675).
     const tail = stripAnsi(result.stderr || result.stdout).trim()
 
-    throw new Error(`${isPosix ? 'install.sh --manifest' : 'install.ps1 -Manifest'} failed: exit ${result.code}\n${tail}`)
+    throw new Error(
+      `${isPosix ? 'install.sh --manifest' : 'install.ps1 -Manifest'} failed: exit ${result.code}\n${tail}`
+    )
   }
 
   // The manifest is the LAST JSON line on stdout (install.ps1 may print
@@ -900,7 +909,8 @@ async function runBootstrap(opts) {
     logRoot,
     onEvent,
     abortSignal,
-    writeMarker // callback to write the bootstrap-complete marker; main.ts provides
+    writeMarker, // callback to write the bootstrap-complete marker; main.ts provides
+    gitBinary // probed git path from main.ts; bare 'git' when absent
   } = opts
 
   // Bail before spawning anything if the user already cancelled — otherwise an
@@ -1021,7 +1031,9 @@ async function runBootstrap(opts) {
     // not real pins -- resolve HEAD from the checkout we just installed so
     // isBootstrapComplete() (pinnedCommit.length >= 7) accepts the marker
     // instead of re-running bootstrap on every launch (#50823 review).
-    const pinnedCommit = resolveMarkerPinnedCommit(installStamp, activeRoot)
+    const pinnedCommit = resolveMarkerPinnedCommit(installStamp, activeRoot, {
+      resolveHead: root => resolveCheckoutHead(root, { gitBinary })
+    })
 
     if (!pinnedCommit) {
       emit({

@@ -29,7 +29,7 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False):
     if paginate:
         command += ["--paginate", "--slurp"]
     result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
-                            text=True, timeout=30, check=True)
+                            text=True, encoding="utf-8", errors="replace", timeout=30, check=True)
     value = json.loads(result.stdout)
     if isinstance(value, dict) and value.get("errors"):
         raise ValueError("GitHub returned incomplete GraphQL evidence")

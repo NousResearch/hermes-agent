@@ -69,6 +69,20 @@
   overflow-x: auto;
 }
 
+/* Wrapped (multi-row) board view: columns wrap to the container width,
+   no horizontal scroll ever, columns grow to their content height. */
+.hermes-kanban-columns--wrapped {
+  flex-wrap: wrap;
+  overflow-x: hidden;
+  /* Extra vertical space between wrapped rows so rows read as distinct bands */
+  row-gap: 2.5rem;
+}
+.hermes-kanban-columns--wrapped .hermes-kanban-column {
+  flex: 1 1 280px;
+  max-width: 420px;
+  max-height: none;
+}
+
 .hermes-kanban-columns--scrollable {
   cursor: grab;
 }

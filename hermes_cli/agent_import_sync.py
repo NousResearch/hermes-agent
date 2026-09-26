@@ -121,7 +121,7 @@ def update_sync_manifest(agent: str, source_root: Path, target_root: Path,
             skills[Path(item["destination"]).name] = skill_tree_digest(Path(item["destination"]))
     entry.update({"source": str(source_root), "overwrite": bool(overwrite),
                   "last_import": int(time.time()), "imported_skills": dict(sorted(skills.items()))})
-    if refresh_digest or "digest" not in entry:
+    if refresh_digest:
         entry["digest"] = compute_source_digest(agent, Path(source_root))
     agents[agent] = entry
     save_sync_manifest(target_root, manifest)
@@ -172,8 +172,6 @@ def sync_imported_agents(args) -> None:
             continue
         print_import_report(report, dry_run=dry_run)
         had_errors = bool(report.get("summary", {}).get("error"))
-        if had_errors:
-            failed += 1
         if not dry_run:
             try:
                 # Errors keep the old source digest so the next sync retries the failed items.
@@ -181,7 +179,11 @@ def sync_imported_agents(args) -> None:
                                      refresh_digest=not had_errors)
             except OSError as exc:
                 logger.warning("Could not update import sync manifest: %s", exc)
-        synced += 1
+                had_errors = True
+        if had_errors:
+            failed += 1
+        else:
+            synced += 1
 
     print()
     if synced == 0 and failed == 0:
@@ -189,4 +191,8 @@ def sync_imported_agents(args) -> None:
         return
     parts = [f"{synced} synced"] + [f"{n} {label}" for n, label in
                                     ((unchanged, "unchanged"), (failed, "failed")) if n]
-    print_success("Sync complete: " + ", ".join(parts) + ".")
+    message = "Sync complete: " + ", ".join(parts) + "."
+    if failed:
+        print_error(message)
+        raise SystemExit(1)
+    print_success(message)

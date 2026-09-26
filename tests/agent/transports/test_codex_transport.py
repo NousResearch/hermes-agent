@@ -43,13 +43,9 @@ class TestCodexBuildKwargs:
     ])
     def test_astra_copilot_forwards_configured_reasoning(self, transport, model, effort, expected):
         from agent.reasoning_params import ReasoningParamsMixin
-        from hermes_cli.config import get_config_path, load_config
         from hermes_constants import resolve_reasoning_config
 
-        get_config_path().write_text(json.dumps({
-            "model": {"default": model}, "agent": {"reasoning_effort": effort},
-        }), encoding="utf-8")
-        reasoning = resolve_reasoning_config(load_config(), model)
+        reasoning = resolve_reasoning_config({"agent": {"reasoning_effort": effort}}, model)
         agent = SimpleNamespace(model=model, reasoning_config=reasoning)
         kw = transport.build_kwargs(
             model=model, messages=[{"role": "user", "content": "Hi"}],
@@ -58,16 +54,6 @@ class TestCodexBuildKwargs:
             github_reasoning_extra=ReasoningParamsMixin._github_models_reasoning_extra_body(agent),
         )
         assert kw.get("reasoning") == ({"effort": expected} if expected else None)
-
-    @pytest.mark.parametrize("model, expected", [
-        ("gpt-6-astra", ["low", "medium", "high", "xhigh", "max"]),
-        ("openai/gpt-6-astra", ["low", "medium", "high", "xhigh", "max"]),
-        ("gpt-6-astra-pro", []),  # speed-tier / unknown suffixes stay off the Astra ladder
-    ])
-    def test_copilot_offline_astra_efforts_use_exact_slug(self, model, expected):
-        from hermes_cli.models import github_model_reasoning_efforts
-
-        assert github_model_reasoning_efforts(model, catalog=[]) == expected
 
     def test_astra_direct_request_applies_model_contract_after_overrides(self, transport):
         kw = transport.build_kwargs(

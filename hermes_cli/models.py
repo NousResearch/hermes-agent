@@ -544,6 +544,18 @@ def clamp_reasoning_effort_to_supported(
     return _clamp_effort(effort, supported_efforts)
 
 
+def clamp_github_reasoning_effort(effort: Any, supported: list[str]) -> str:
+    """Copilot/GitHub Models effort for a non-empty *supported* list: the level itself when listed,
+    else the nearest WEAKER listed level; bespoke names the ladder can't place fall to ``medium``
+    (or the first listed level)."""
+    effort = str(effort or "medium").strip().lower()
+    if effort not in supported:
+        effort = _clamp_effort(effort, supported)
+        if effort not in supported:
+            effort = "medium" if "medium" in supported else supported[0]
+    return effort
+
+
 def _fetch_live_catalog_index(url: str, timeout: float, opener) -> Optional[tuple[list, dict[str, dict[str, Any]]]]:
     """GET an OpenAI-style ``/models`` listing → ``(raw data array, {id: item})``, or None when the
     endpoint is unreachable or the payload has no ``data`` list."""

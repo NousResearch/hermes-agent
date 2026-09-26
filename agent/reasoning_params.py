@@ -8,7 +8,6 @@ import time
 
 from agent.lazy_forward import forward as _forward, forward_static as _forward_static
 from agent.message_sanitization import matches_reasoning_echo_family
-from agent.reasoning_effort import clamp_effort
 from utils import base_url_host_matches
 
 # Static OpenRouter fallback when the live /v1/models capability cache is cold.
@@ -140,7 +139,7 @@ class ReasoningParamsMixin:
     def _github_models_reasoning_extra_body(self) -> dict | None:
         """Format reasoning payload for GitHub Models/OpenAI-compatible routes."""
         try:
-            from hermes_cli.models import github_model_reasoning_efforts
+            from hermes_cli.models import clamp_github_reasoning_effort, github_model_reasoning_efforts
         except Exception:
             return None
 
@@ -151,13 +150,7 @@ class ReasoningParamsMixin:
         cfg = self.reasoning_config if isinstance(self.reasoning_config, dict) else {}
         if cfg.get("enabled") is False:
             return None
-        effort = str(cfg.get("effort", "medium")).strip().lower()
-
-        if effort not in supported:
-            effort = clamp_effort(effort, supported)
-            if effort not in supported:
-                effort = "medium" if "medium" in supported else supported[0]
-        return {"effort": effort}
+        return {"effort": clamp_github_reasoning_effort(cfg.get("effort"), supported)}
 
     _build_assistant_message = _forward("agent.chat_completion_helpers", "build_assistant_message")
 

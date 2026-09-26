@@ -14,7 +14,7 @@ from agent.reasoning_effort import (
     CODEX_ASTRA_EFFORTS, CODEX_LEGACY_EFFORTS,
     XAI_GROK46_EFFORTS, XAI_LEGACY_EFFORTS, clamp_effort, is_astra_model,
     # Same declared vocabulary + shared clamp as the main Codex transport (agent.reasoning_effort):
-    # per-model — "max" availability varies; "minimal"/"ultra" require wire translation.
+    # per-model — "max" availability varies; "minimal"/"ultra" clamp to a listed level.
     codex_supported_efforts,
 )
 from agent.transports.base import ProviderTransport

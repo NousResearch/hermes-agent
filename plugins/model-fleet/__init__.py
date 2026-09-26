@@ -350,9 +350,13 @@ def _apply_profiles(provider: str, model: str, result, settings: Dict[str, Any],
             changed.append(summary)
             continue
         if settings["backup"]:
-            bak = _backup(cfg_path, stamp)
-            if bak:
-                backups.append(str(bak))
+            # The active home's own config.yaml is already backed up in _apply_sync,
+            # before persist_model_selection rewrote it. Re-copying here would clobber
+            # that pre-change copy with post-change content (same stamp, same filename).
+            if cfg_path != _hermes_home() / "config.yaml":
+                bak = _backup(cfg_path, stamp)
+                if bak:
+                    backups.append(str(bak))
         for key, value in updates.items():
             atomic_roundtrip_yaml_update(cfg_path, f"model.{key}", value)
         for key, value in delegation_updates.items():
@@ -498,9 +502,8 @@ def _apply_sync(provider: str, model: str, dry_run: bool, with_auxiliary: bool) 
         # Reuse the resolved route without persisting it, so the preview matches the write.
         profile_changes, _ = _apply_profiles(provider, model, result, settings, stamp, True)
         cron_changes, cron_skipped, _ = _apply_crons(provider, model, settings, stamp, True)
-        aux_changes: List[str] = []
-        if settings["include_auxiliary"]:
-            aux_changes, _ = _apply_auxiliary(provider, model, settings, stamp, True)
+        aux_changes, aux_backups = _apply_auxiliary(provider, model, settings, stamp, False) if \
+            settings["include_auxiliary"] else ([], [])
         lines = [f"**Dry run** — would set the install to `{provider}/{model}`", ""]
         lines += [f"- {c}" for c in profile_changes]
         lines += [f"- {c}" for c in cron_changes]
@@ -511,13 +514,24 @@ def _apply_sync(provider: str, model: str, dry_run: bool, with_auxiliary: bool) 
 
     from hermes_cli.model_switch import persist_model_selection
 
+    # NOTE: the active home is also the "default" profile, so _apply_profiles() below
+    # backs up this same config.yaml. It runs AFTER persist_model_selection(), so the
+    # backup would capture post-change content. Back up first, and keep only that copy:
+    # a same-stamp second copy would overwrite it and make a restore a silent no-op.
+    backups: List[str] = []
+    if settings["backup"]:
+        active_cfg = _hermes_home() / "config.yaml"
+        if active_cfg.is_file():
+            bak = _backup(active_cfg, stamp)
+            if bak:
+                backups.append(str(bak))
+
     persist_model_selection(result)
     profile_changes, profile_backups = _apply_profiles(provider, model, result, settings, stamp, False)
     cron_changes, cron_skipped, cron_backups = _apply_crons(provider, model, settings, stamp, False)
     aux_changes: List[str] = []
-    aux_backups: List[str] = []
-    if settings["include_auxiliary"]:
-        aux_changes, aux_backups = _apply_auxiliary(provider, model, settings, stamp, False)
+    aux_changes, aux_backups = _apply_auxiliary(provider, model, settings, stamp, False) if \
+        settings["include_auxiliary"] else ([], [])
 
     lines = [f"**Install switched to `{provider}/{model}`**", ""]
     lines.append(f"- default model: {provider}/{model} (config.yaml, credentials re-resolved)")
@@ -526,7 +540,7 @@ def _apply_sync(provider: str, model: str, dry_run: bool, with_auxiliary: bool) 
     lines += [f"- {c}" for c in aux_changes]
     if cron_skipped:
         lines += [f"- skipped: {s}" for s in cron_skipped]
-    backups = profile_backups + cron_backups + aux_backups
+    backups = backups + profile_backups + cron_backups + aux_backups
     if backups:
         lines += ["", f"Backups ({len(backups)}): " + ", ".join(f"`{b}`" for b in backups)]
     lines += [

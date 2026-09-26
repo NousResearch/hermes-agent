@@ -12,18 +12,29 @@ import sys
 from pathlib import Path
 
 
+def _looks_like_root(path: Path) -> bool:
+    return (path / "hermes_cli").is_dir() and (path / "cron").is_dir()
+
+
 def _repo_root() -> Path | None:
+    """Find the checkout providing ``hermes_cli``/``cron``.
+
+    Walk up from this file first: in-tree the plugin sits inside the repo, so a parent
+    is the root and the result does not depend on what is importable. Only then fall
+    back to the installed package — and check the package's own directory, not its
+    parent's parent, which points outside the install for a flat layout.
+    """
+    for parent in Path(__file__).resolve().parents:
+        if _looks_like_root(parent):
+            return parent
     try:
         import hermes_constants
 
-        candidate = Path(hermes_constants.__file__).resolve().parent.parent
-        if (candidate / "hermes_cli").is_dir():
-            return candidate
+        for candidate in Path(hermes_constants.__file__).resolve().parents:
+            if _looks_like_root(candidate):
+                return candidate
     except Exception:
         pass
-    for parent in Path(__file__).resolve().parents:
-        if (parent / "hermes_cli").is_dir() and (parent / "cron").is_dir():
-            return parent
     return None
 
 

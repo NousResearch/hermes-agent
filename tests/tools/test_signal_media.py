@@ -48,9 +48,10 @@ class TestSendSignalMediaFiles:
     """Test that _send_signal correctly handles media_files parameter."""
 
 
-    def test_send_signal_with_missing_media_file(self):
+    def test_send_signal_with_missing_media_file(self, monkeypatch):
         """Missing media files should generate warnings but not fail."""
         from tools.send_message_tool import _send_signal
+        monkeypatch.setenv("SIGNAL_SEND_ALLOWED_USERS", "+155****9999")
 
         extra = {"http_url": "http://localhost:8080", "account": "+155****4567"}
 

@@ -39,6 +39,8 @@ from gateway.platforms.signal_rate_limit import (
     SignalRateLimitError, _extract_retry_after_seconds, _format_wait, _is_signal_rate_limit_error,
     _signal_send_timeout, get_scheduler)
 from gateway.platforms._shared import get_scoped_secret as _sig_secret
+from gateway.platforms.signal_egress import (
+    BLOCKED_ERROR as _BLOCKED_ERROR, dm_send_allowlist, outbound_allowed, parse_comma_list)
 from utils import TRUTHY_STRINGS
 
 logger = logging.getLogger(__name__)
@@ -62,11 +64,6 @@ _SKIP_IMAGE_LOG = {
     "oversize": lambda url, detail: ("Signal: image too large (%d bytes), skipping %s", detail, url)}
 _QUOTE_AUTHOR_KEYS = (
     "author", "authorNumber", "authorUuid", "authorAci", "authorServiceId", "authorServiceIdString")
-
-
-def _parse_comma_list(value: str) -> List[str]:
-    """Split a comma-separated string into a list, stripping whitespace."""
-    return [v.strip() for v in value.split(",") if v.strip()]
 
 
 def _guess_extension(data: bytes) -> str:
@@ -164,6 +161,11 @@ def check_signal_requirements() -> bool:
     return True
 
 
+class SignalOutboundBlocked(Exception):
+    """Raised when an outbound send targets a chat not on the egress allowlist. Fail-closed:
+    the caller must not issue the RPC."""
+
+
 def validate_signal_config(config: PlatformConfig) -> bool:
     """Check if Signal has enough config to connect."""
     extra = getattr(config, "extra", {}) or {}
@@ -190,11 +192,13 @@ class SignalAdapter(BasePlatformAdapter):
         # Allowlists are per-profile (scoped reads); group policy derives from the group allowlist's
         # presence. The DM allowlist mirrors run.py's SIGNAL_ALLOWED_USERS so reaction hooks (which
         # fire before run.py's auth gate) can skip unauthorized senders; "*" = open.
-        self.group_allow_from = set(_parse_comma_list(_sig_secret("SIGNAL_GROUP_ALLOWED_USERS", "")))
+        self.group_allow_from = set(parse_comma_list(_sig_secret("SIGNAL_GROUP_ALLOWED_USERS", "")))
         _rm_cfg = extra.get("require_mention")
         self.require_mention = (bool(_rm_cfg) if _rm_cfg is not None
                                 else (_sig_secret("SIGNAL_REQUIRE_MENTION", "false") or "false").lower() in TRUTHY_STRINGS)
-        self.dm_allow_from = set(_parse_comma_list(_sig_secret("SIGNAL_ALLOWED_USERS", "*")))
+        self.dm_allow_from = set(parse_comma_list(_sig_secret("SIGNAL_ALLOWED_USERS", "*")))
+        # Outbound egress allowlist (fail-closed); decision shared with the standalone sender.
+        self.dm_send_allow = dm_send_allowlist()
         self.client: Optional[httpx.AsyncClient] = None
         self._sse_task: Optional[asyncio.Task] = None
         self._health_monitor_task: Optional[asyncio.Task] = None
@@ -567,6 +571,9 @@ class SignalAdapter(BasePlatformAdapter):
 
     async def _with_target(self, params: Dict[str, Any], chat_id: str, *, resolve: bool = True) -> Dict[str, Any]:
         """Add the groupId / recipient routing key for *chat_id* to *params* (in place)."""
+        if not outbound_allowed(chat_id, self.dm_send_allow, self.group_allow_from):
+            logger.warning("Signal: blocked outbound to non-allowlisted target %s", redact_phone(chat_id))
+            raise SignalOutboundBlocked(chat_id)
         if chat_id.startswith("group:"):
             params["groupId"] = chat_id[6:]
         else:
@@ -706,7 +713,10 @@ class SignalAdapter(BasePlatformAdapter):
         await self._stop_typing_indicator(chat_id)
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
-        base_params = await self._with_target({"account": self.account}, chat_id)
+        try:
+            base_params = await self._with_target({"account": self.account}, chat_id)
+        except SignalOutboundBlocked:
+            return SendResult(success=False, error=_BLOCKED_ERROR)
         chunks = self._split_signal_formatted_message(*markdown_to_signal(content), self.MAX_MESSAGE_LENGTH)
         last_result = None
         for idx, (plain_text, text_styles) in enumerate(chunks, start=1):
@@ -749,7 +759,10 @@ class SignalAdapter(BasePlatformAdapter):
         now = time.monotonic()
         if now < self._typing_skip_until.get(chat_id, 0.0):
             return
-        params = await self._with_target({"account": self.account}, chat_id)
+        try:
+            params = await self._with_target({"account": self.account}, chat_id)
+        except SignalOutboundBlocked:
+            return
         fails = self._typing_failures.get(chat_id, 0)
         if await self._rpc("sendTyping", params, rpc_id="typing", log_failures=(fails == 0)) is not None:
             self._typing_failures.pop(chat_id, None)
@@ -799,7 +812,10 @@ class SignalAdapter(BasePlatformAdapter):
                          skipped["download"], skipped["missing"], skipped["oversize"])
             return SendResult(success=False, error="no valid images in batch")
         logger.info("Signal send_multiple_images: %d/%d images valid, sending in chunks", len(attachments), len(images))
-        base_params = await self._with_target({"account": self.account, "message": ""}, chat_id)
+        try:
+            base_params = await self._with_target({"account": self.account, "message": ""}, chat_id)
+        except SignalOutboundBlocked:
+            return SendResult(success=False, error=_BLOCKED_ERROR)
         per = SIGNAL_MAX_ATTACHMENTS_PER_MSG
         att_batches = [attachments[i:i + per] for i in range(0, len(attachments), per)]
         n_batches = len(att_batches)
@@ -875,8 +891,11 @@ class SignalAdapter(BasePlatformAdapter):
 
     async def _send_file(self, chat_id: str, file_path: str, caption: Optional[str], fail_error: str) -> SendResult:
         """Send one local file as a Signal attachment via the ``send`` RPC."""
-        params = await self._with_target(
-            {"account": self.account, "message": caption or "", "attachments": [file_path]}, chat_id)
+        try:
+            params = await self._with_target(
+                {"account": self.account, "message": caption or "", "attachments": [file_path]}, chat_id)
+        except SignalOutboundBlocked:
+            return SendResult(success=False, error=_BLOCKED_ERROR)
         _, err = await self._rpc_send(params, fail_error)
         return err or SendResult(success=True)
 
@@ -912,9 +931,13 @@ class SignalAdapter(BasePlatformAdapter):
         # Explicit stop-typing RPC so the recipient drops the indicator now instead of after
         # Signal's ~5s timeout. Best-effort: failures must not prevent the backoff cleanup below.
         with suppress(Exception):
-            params = await self._with_target({"account": self.account}, chat_id)
-            params["stop"] = True
-            await self._rpc("sendTyping", params, rpc_id="typing-stop", log_failures=False)
+            try:
+                params = await self._with_target({"account": self.account}, chat_id)
+            except SignalOutboundBlocked:
+                params = None
+            if params is not None:
+                params["stop"] = True
+                await self._rpc("sendTyping", params, rpc_id="typing-stop", log_failures=False)
         self._typing_failures.pop(chat_id, None)
         self._typing_skip_until.pop(chat_id, None)
 
@@ -924,7 +947,10 @@ class SignalAdapter(BasePlatformAdapter):
 
     async def _send_reaction_rpc(self, chat_id: str, params: Dict[str, Any]) -> bool:
         """Route a ``sendReaction`` RPC to *chat_id* (no UUID upgrade — author IDs come from the envelope)."""
-        await self._with_target(params, chat_id, resolve=False)
+        try:
+            await self._with_target(params, chat_id, resolve=False)
+        except SignalOutboundBlocked:
+            return False
         return await self._rpc("sendReaction", params) is not None
 
     async def send_reaction(self, chat_id: str, emoji: str, target_author: str, target_timestamp: int) -> bool:

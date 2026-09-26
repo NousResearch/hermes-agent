@@ -10,7 +10,7 @@ import pytest
 from gateway.platforms.event import MessageType
 from gateway.run import GatewayRunner
 from tests.gateway.test_telegram_group_gating import (
-    _dm_message, _group_message, _group_voice_message, _make_adapter,
+    _bot_command_entity, _dm_message, _group_message, _group_voice_message, _make_adapter,
     _mention_entities,
 )
 
@@ -64,7 +64,7 @@ def test_multi_bot_addressing_survives_real_handlers(media, observe):
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("trigger", ["mention", "text_mention", "reply", "wake_word", "open", "code", "command", "dm"])
+@pytest.mark.parametrize("trigger", ["mention", "approval", "prefixed_command", "text_mention", "reply", "wake_word", "open", "code", "command", "dm"])
 def test_sole_addressee_text_stays_clean_and_prompt_is_session_stable(trigger):
     """Our own handle is still stripped when nobody else is named (clarify answers like ``@bot 2``
     keep resolving), and the identity block is identical across turns: it rides the cached-agent
@@ -83,9 +83,11 @@ def test_sole_addressee_text_stays_clean_and_prompt_is_session_stable(trigger):
             msg = _group_message("/new@hermes_bot", entities=[SimpleNamespace(type="bot_command", offset=0, length=15)])
         elif trigger == "text_mention":
             msg = _group_message("Hermes hello", entities=[SimpleNamespace(type="text_mention", offset=0, length=6, user=SimpleNamespace(id=999))])
-        elif trigger == "mention":
-            text = "😀 @hermes_bot 2"
-            msg = _group_message(text, entities=[SimpleNamespace(type="mention", offset=3, length=11)])
+        elif trigger in {"mention", "approval", "prefixed_command"}:
+            text = {"mention": "😀 @hermes_bot 2", "approval": "@hermes_bot ok",
+                    "prefixed_command": "@hermes_bot /status"}[trigger]
+            offset = 3 if trigger == "mention" else 0
+            msg = _group_message(text, entities=[SimpleNamespace(type="mention", offset=offset, length=11)])
         elif trigger == "code":
             # Telegram says this is code, not a mention; a reply admits the turn.
             msg = _group_message("@hermes_bot", reply_to_bot=True, entities=[SimpleNamespace(type="code", offset=0, length=11)])
@@ -105,8 +107,11 @@ def test_sole_addressee_text_stays_clean_and_prompt_is_session_stable(trigger):
 
         assert len(events) == 2
         first, second = events
-        expected_text = {"command": "/new", "mention": "😀 2", "code": "@hermes_bot"}.get(trigger, msg.text)
+        expected_text = {"mention": "😀 2", "approval": "ok", "prefixed_command": "/status", "code": "@hermes_bot"}.get(trigger, msg.text)
         assert first.text == expected_text
+        if trigger in {"command", "prefixed_command"}:
+            assert first.get_command() == ("new" if trigger == "command" else "status")
+            assert first.get_command_args() == ""
         if trigger == "dm":
             assert not first.channel_prompt
         else:
@@ -114,5 +119,85 @@ def test_sole_addressee_text_stays_clean_and_prompt_is_session_stable(trigger):
         assert first.channel_prompt == second.channel_prompt
         assert _prompt_signature(first) == _prompt_signature(second)
         assert first.source.user_id == "111"
+
+    asyncio.run(run())
+
+
+def _command_entities(text):
+    token = text.lstrip().split(maxsplit=1)[0]
+    entities = [_bot_command_entity(text, token)]
+    for handle in ("@hermes_bot", "@ops_bot"):
+        start = text.index(token) + len(token)
+        while (start := text.find(handle, start)) >= 0:
+            entities.append(SimpleNamespace(type="mention", offset=start, length=len(handle)))
+            start += len(handle)
+    return entities
+
+
+@pytest.mark.parametrize("chat", ["group", "observed_group", "private"])
+@pytest.mark.parametrize("text,command,args", [
+    ("/group@hermes_bot list", "group", "list"),
+    ("/group@HeRmEs_BoT   1 files  monthly plan  ", "group", "1 files  monthly plan  "),
+    ("/group@hermes_bot\n1 send @hermes_bot hello\nagain", "group", "1 send @hermes_bot hello\nagain"),
+    (" \t/group@hermes_bot\tlist", "group", "list"),
+    ("/group 1 send @hermes_bot Hello, @hermes_bot\nready?", "group", "1 send @hermes_bot Hello, @hermes_bot\nready?"),
+    ("/group@hermes_bot 1 send @ops_bot hello @hermes_bot", "group", "1 send @ops_bot hello @hermes_bot"),
+    ("/new@hermes_bot", "new", ""),
+    ("/help\n", "help", ""),
+])
+def test_command_text_reaches_real_event_parser_unchanged(chat, text, command, args):
+    async def run():
+        adapter = _make_adapter(
+            require_mention=False, observe_unmentioned_group_messages=chat == "observed_group",
+            allowed_chats=["-100"], group_allowed_chats=["-100"],
+        )
+        adapter._ensure_forum_commands = AsyncMock()
+        adapter.handle_message = AsyncMock()
+        msg = _dm_message(text) if chat == "private" else _group_message(text)
+        msg.entities = _command_entities(text)
+        await adapter._handle_command(SimpleNamespace(update_id=1004, message=msg, effective_message=None), SimpleNamespace())
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.message_type == MessageType.COMMAND
+        assert event.raw_message is msg
+        assert event.is_command()
+        assert event.get_command() == command
+        assert event.get_command_args() == args
+        assert event.text == text
+        assert event.source.user_id == "111"
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("carrier,other_bot,require_mention", [
+    ("text", False, True), ("caption", False, True),
+    ("command", True, False), ("command", True, True),
+])
+def test_trigger_paths_preserve_commands_without_widening_admission(carrier, other_bot, require_mention):
+    async def run():
+        text = "/group@other_bot list" if other_bot else "/group@hermes_bot\nlist @hermes_bot"
+        adapter = _make_adapter(require_mention=require_mention, free_response_chats=["-100"])
+        adapter._ensure_forum_commands = AsyncMock()
+        adapter._cache_inbound_av = AsyncMock(return_value=False)
+        events = []
+        adapter._enqueue_text_event = events.append
+        adapter.handle_message = AsyncMock(side_effect=events.append)
+        if carrier == "caption":
+            msg = _group_voice_message(caption=text)
+            msg.caption_entities = _command_entities(text)
+        else:
+            msg = _group_message(text, reply_to_bot=other_bot, entities=_command_entities(text))
+        handler = {"text": adapter._handle_text_message, "caption": adapter._handle_media_message,
+                   "command": adapter._handle_command}[carrier]
+        await handler(SimpleNamespace(update_id=1005, message=msg, effective_message=None), SimpleNamespace())
+        if other_bot:
+            assert not events
+            adapter._ensure_forum_commands.assert_not_awaited()
+            return
+        assert len(events) == 1
+        assert events[0].get_command() == "group"
+        assert events[0].get_command_args() == "list @hermes_bot"
+        assert events[0].text == text
 
     asyncio.run(run())

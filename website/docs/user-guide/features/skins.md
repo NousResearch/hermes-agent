@@ -286,5 +286,6 @@ Hermes Mod respects the `HERMES_HOME` environment variable, so it works with [pr
 - Unknown skins automatically fall back to `default`.
 - `/skin` updates the active CLI theme immediately for the current session.
 - User skins in `~/.hermes/skins/` take precedence over built-in skins with the same name.
-- Skin changes via `/skin` are session-only. To make a skin your permanent default, set it in `config.yaml`.
+- `/skin <name>` saves `display.skin` to `config.yaml` immediately (unlike `/model`, there is no
+  session-only flag) — the new skin becomes the default for future sessions too.
 - The `banner_logo` and `banner_hero` fields support Rich console markup (e.g., `[bold #FF0000]text[/]`) for colored ASCII art.

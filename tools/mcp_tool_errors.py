@@ -49,11 +49,11 @@ def _is_method_not_found_error(exc: BaseException) -> bool:
     The substring fallback matters when a server reports method-not-found without a structural ``-32601``
     code (e.g. surfaced as a plain exception string). Besides the canonical "method not found", many
     JSON-RPC implementations phrase it as "Unknown method: <name>" — agentmemory's MCP server is one such
-    case (#50028).
+    case (#50028) — or "Method not supported: <name>" (Google's ``gws mcp`` server).
     """
     return _jsonrpc_matches(
         exc, (_core._JSONRPC_METHOD_NOT_FOUND,),
-        (str(_core._JSONRPC_METHOD_NOT_FOUND), "method not found", "unknown method", "not found: ping"))
+        (str(_core._JSONRPC_METHOD_NOT_FOUND), "method not found", "method not supported", "unknown method", "not found: ping"))
 
 
 class InvalidMcpUrlError(ValueError):

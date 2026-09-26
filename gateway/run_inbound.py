@@ -19,7 +19,7 @@ import time
 from contextlib import suppress
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.run_common import _UNSET
 from gateway.run_inbound_unauthorized import (
     PAIRING_RATE_LIMITED_REPLY, UnauthorizedOwnerNotifier, pairing_code_reply, pairing_profile_arg,
@@ -396,9 +396,15 @@ class GatewayInboundMixin:
                 "Gateway intercepted clarify text response (session=%s, id=%s)",
                 _quick_key, _pending_clarify.clarify_id,
             )
+            # The base adapter normally owns lifecycle hooks, but active-session clarify replies
+            # are dispatched inline and bypass that processing lifecycle.
+            _clarify_adapter = self._delivery_adapter_for(source)
+            if _clarify_adapter:
+                await _clarify_adapter._run_processing_hook("on_processing_start", event)
+                await _clarify_adapter._run_processing_hook(
+                    "on_processing_complete", event, ProcessingOutcome.SUCCESS)
             # The clarify callback pauses the platform typing/status indicator while waiting so
             # Slack users can type; the active agent resumes now, so re-enable its indicator.
-            _clarify_adapter = self._delivery_adapter_for(source)
             if _clarify_adapter:
                 try:
                     _clarify_adapter.resume_typing_for_chat(source.chat_id)

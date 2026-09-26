@@ -117,13 +117,38 @@ def _denial_breaker_addendum(session_key: str) -> str:
 # instead of only hearing "denied". Ported from qwibitai/nanoclaw#2832.
 _gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, …]
 _gateway_notify_cbs: dict[str, object] = {}  # session_key → callable(approval_data)
+_gateway_presence: dict[str, object] = {}    # session_key → callable() -> bool (a client can show the prompt)
 
 
-def register_gateway_notify(session_key: str, cb) -> None:
+def register_gateway_notify(session_key: str, cb, *, presence=None) -> None:
     """Register ``cb(approval_data: dict) -> None`` for sending approval requests. The callback
-    bridges sync→async: it runs in the agent thread and must schedule the send on the loop."""
+    bridges sync→async: it runs in the agent thread and must schedule the send on the loop.
+
+    *presence* is an optional cheap ``() -> bool`` reporting whether any client that can display
+    the prompt is attached. While it reports False the approval countdown is held (bounded by
+    ``approvals.detached_timeout``), so a client that dropped its socket does not come back to a
+    prompt that auto-denied while nobody could see it. Surfaces that pass none keep the plain
+    wall-clock timeout."""
     with _lock:
         _gateway_notify_cbs[session_key] = cb
+        if presence is None:
+            _gateway_presence.pop(session_key, None)
+        else:
+            _gateway_presence[session_key] = presence
+
+
+def _gateway_client_attached(session_key: str) -> bool:
+    """Whether a client can currently see *session_key*'s prompt. Fails open (True) with no probe or
+    a probe that raises, so a broken probe degrades to the ordinary timeout, never to a wedged turn."""
+    with _lock:
+        probe = _gateway_presence.get(session_key)
+    if probe is None:
+        return True
+    try:
+        return bool(probe())
+    except Exception:
+        logger.debug("approval presence probe failed for %s", session_key, exc_info=True)
+        return True
 
 
 def unregister_gateway_notify(session_key: str) -> None:
@@ -131,6 +156,7 @@ def unregister_gateway_notify(session_key: str) -> None:
     they don't hang forever (agent run finished or interrupted)."""
     with _lock:
         _gateway_notify_cbs.pop(session_key, None)
+        _gateway_presence.pop(session_key, None)
         for entry in _gateway_queues.pop(session_key, []):
             entry.event.set()
 

@@ -54,8 +54,19 @@ def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str)
     fail-closed: the command does not run. Who caused it is read from the
     per-thread interrupt-cause channel (``get_interrupt_reason()``, a trusted fixed
     category), never inferred from message text, so the caller can report a
-    withdrawn prompt without inventing a user refusal."""
-    deadline = time.monotonic() + max(_ctx._get_approval_timeout(), 0)
+    withdrawn prompt without inventing a user refusal.
+
+    The approval timeout is an answer budget: it only runs down while the surface's presence probe
+    (``register_gateway_notify(presence=...)``) reports a client that can display the prompt. A client
+    that dropped its socket would otherwise reconnect to a prompt that already timed out while nobody
+    could see it. ``approvals.detached_timeout`` caps the total wait so an abandoned prompt still ends."""
+    from tools import approval as _approval
+    timeout = max(_ctx._get_approval_timeout(), 0)
+    detached_timeout = _ctx._get_approval_detached_timeout()
+    started = time.monotonic()
+    hard_deadline = started + max(detached_timeout, timeout)
+    attended = 0.0
+    detached = False
     heartbeat = activity_heartbeat("waiting for user approval")
     with human_wait_window(session_key):
         while True:
@@ -65,11 +76,29 @@ def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str)
             if is_interrupted():
                 logger.info(interrupt_log, session_key)
                 return "interrupted"
-            remaining = deadline - time.monotonic()
+            remaining = timeout - attended
             if remaining <= 0:
                 return "timeout"
-            if event.wait(timeout=min(1.0, remaining)):
+            # Sample presence before the slice and charge the slice to that reading: charging it to the
+            # state at the end would bill a whole detached slice to a user who just reconnected.
+            tick = time.monotonic()
+            attached = detached_timeout <= 0 or _approval._gateway_client_attached(session_key)
+            if attached == detached:
+                detached = not attached
+                logger.info("Approval for session %s: %s", session_key,
+                            "no client attached, holding the timeout" if detached
+                            else f"client attached, {remaining:.0f}s of the timeout remain")
+            # The ceiling ends only a held (unseen) prompt: a client that reattaches late still gets
+            # the rest of its answer budget.
+            if detached and tick >= hard_deadline:
+                logger.info("Approval for session %s: no client reattached within %ss", session_key,
+                            detached_timeout)
+                return "timeout"
+            wait_s = min(1.0, remaining) if attached else min(1.0, hard_deadline - tick)
+            if event.wait(timeout=max(wait_s, 0.0)):
                 return "set"
+            if attached:
+                attended += time.monotonic() - tick
             heartbeat()
 
 

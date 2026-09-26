@@ -208,6 +208,32 @@ def test_live_session_payload_replays_open_requests(server):
     assert "open_requests" not in other
 
 
+def test_approval_presence_follows_the_session_transport(server, monkeypatch):
+    """The approval countdown is held while a session has no client (see approvals.detached_timeout): the probe
+    registered with the approval notify must read False once the session is parked on the disconnect sentinel
+    and True again when a client reattaches."""
+    from tools import approval
+
+    class _Peer:
+        _closed = False
+
+    monkeypatch.setattr(server, "_wire_callbacks", lambda sid: None)
+    peer = _Peer()
+    server._sessions["presence-sid"] = {"transport": peer, "session_key": "presence-key"}
+    try:
+        server._wire_session_agent("presence-sid", "presence-key", types.SimpleNamespace())
+        assert approval._gateway_client_attached("presence-key") is True
+        server._sessions["presence-sid"]["transport"] = server._detached_ws_transport
+        assert approval._gateway_client_attached("presence-key") is False
+        server._sessions["presence-sid"]["transport"] = peer
+        assert approval._gateway_client_attached("presence-key") is True
+        peer._closed = True
+        assert approval._gateway_client_attached("presence-key") is False
+    finally:
+        approval.unregister_gateway_notify("presence-key")
+        server._sessions.pop("presence-sid", None)
+
+
 
 
 # ── _emit ────────────────────────────────────────────────────────────

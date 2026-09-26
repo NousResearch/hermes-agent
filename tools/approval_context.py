@@ -257,6 +257,22 @@ def _get_approval_timeout() -> int:
     return min(raw, safe_cap)
 
 
+
+def _get_approval_detached_timeout() -> int:
+    """Read ``approvals.detached_timeout`` (default 1800s): the wall-clock ceiling for a prompt held
+    while no client can display it. ``approvals.timeout`` only runs down while a client is attached,
+    so this is what still resolves a prompt whose client never comes back. 0 disables the hold (plain
+    wall-clock timeout). Clamped like ``approvals.timeout``."""
+    try:
+        raw = max(int(_get_approval_config().get("detached_timeout", 1800)), 0)
+    except (ValueError, TypeError):
+        return 1800
+    try:
+        from agent.deadline import MAX_SAFE_TIMEOUT_S
+        return min(raw, int(MAX_SAFE_TIMEOUT_S))
+    except Exception:
+        return min(raw, 1800)
+
 def format_approval_window(seconds: int) -> str:
     """The ONE human wording for an approval timeout window, shared by the CLI timeout notice,
     the tool result's ``user_summary`` and the gateway card copy so every surface agrees:

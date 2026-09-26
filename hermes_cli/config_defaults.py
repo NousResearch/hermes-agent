@@ -1655,6 +1655,10 @@ DEFAULT_CONFIG = {
         # prompt expired before the user reached their phone), so the default is 300.
         "mode": "smart",
         "timeout": 300,
+        # Surfaces that know whether a client is attached (TUI gateway / desktop / web) run ``timeout``
+        # down only while one is: a phone that dropped its socket must not come back to a prompt that
+        # auto-denied unseen. This is the wall-clock ceiling for such a held prompt; 0 disables the hold.
+        "detached_timeout": 1800,
         "cron_mode": "deny",
         "single_query_mode": "deny",
         "unattended_mode": "deny",

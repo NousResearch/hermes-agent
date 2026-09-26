@@ -380,6 +380,43 @@ class CLILoopsMixin:
         else:
             _cprint(f"  Moved queue item {src} to {dst}.")
 
+    def _tui_recall_queued_prompt(self, buf) -> bool:
+        """Up on an empty composer: take the newest queued prompt back into ``buf`` for editing.
+
+        The item leaves the queue (it is the user's draft again, not a pending turn); its images
+        re-attach. ``_queue_recall_armed`` makes the next Enter re-queue it even under
+        ``busy_input_mode: interrupt`` — otherwise "edit what I queued" would silently become
+        "interrupt the running turn". Only str/voice/(text, images) payloads are recallable; a
+        foreign payload at the tail is left alone. False when nothing was recalled.
+        Ported from GitHub Copilot CLI ("Press Up in an empty chat input to take it back").
+        """
+        from cli import _DIM, _RST, _cprint
+        recalled: list = []
+
+        def _pop_tail(items: list) -> list:
+            # str, (text, images), or a text-bearing sentinel (voice / seeded query). Duck-typed:
+            # another test module may have replaced sys.modules["cli"], so class identity is unsafe.
+            if items and (isinstance(items[-1], (str, tuple)) or hasattr(items[-1], "text")):
+                recalled.append(items.pop())
+            return items
+
+        _, after = self._mutate_pending_input(_pop_tail)
+        if not recalled:
+            return False
+        item = recalled[0]
+        if isinstance(item, tuple):
+            text, images = (list(item) + [[]])[:2]
+        else:
+            text, images = str(item), list(getattr(item, "images", None) or [])
+        if images:
+            self._attached_images.extend(images)
+        buf.text = text or ""
+        buf.cursor_position = len(buf.text)
+        self._queue_recall_armed = True
+        left = f"{len(after)} still queued · " if after else ""
+        _cprint(f"  {_DIM}↩ Recalled queued prompt — {left}Enter re-queues it · Ctrl+P browses history{_RST}")
+        return True
+
     def _cmd_queue(self, cmd_original: str):
         """``/queue <prompt>`` enqueues; a leading management verb whose arguments fit
         (``list``/``clear`` alone, ``edit N …``/``rm N``/``move A B``) manages the queue

@@ -875,7 +875,9 @@ class CLITuiMixin:
         if self._command_running:
             return f"{self._command_spinner_frame()} {self._command_status or 'Processing command...'}"
         if self._agent_running:
-            return "msg=interrupt · /queue · /bg · /steer · Ctrl+C cancel"
+            queued = self._pending_input.qsize() if hasattr(self, "_pending_input") else 0
+            recall = f" · ↑ edit {queued} queued" if queued else ""
+            return f"msg=interrupt · /queue · /bg · /steer · Ctrl+C cancel{recall}"
         if self._voice_mode:
             return f"type or {self._voice_record_key_label()} to record"
         # Advertise a parked draft so the stash can never be silently forgotten.
@@ -1001,6 +1003,7 @@ class CLITuiMixin:
         if event.app.current_buffer.text or self._attached_images:
             event.app.current_buffer.reset()
             self._attached_images.clear()
+            self._queue_recall_armed = False
             event.app.invalidate()
         else:
             self._should_exit = True
@@ -1143,6 +1146,7 @@ class CLITuiMixin:
             return
         buf.reset(append_to_history=bool(buf.text))
         self._attached_images.clear()
+        self._queue_recall_armed = False
         event.app.invalidate()
 
     def _tui_handle_ignored_terminal_sequence(self, event):
@@ -1219,9 +1223,10 @@ class CLITuiMixin:
         """
         before = buf.text
         self._skip_paste_collapse = True
-        move()
+        result = move()
         if buf.text == before:
             self._skip_paste_collapse = False
+        return result
 
     def _tui_handle_alt_v(self, event):
         """Alt+V pastes an image from the clipboard. Alt combos pass through every terminal
@@ -1531,6 +1536,7 @@ class CLITuiMixin:
             self._pending_input.put(payload)
         # History stores real pasted content, not the placeholder, so up-arrow recall restores it.
         self._inline_pastes(buf)
+        self._queue_recall_armed = False
         buf.reset(append_to_history=True)
 
     def _tui_enter_inline_command(self, event, text: str, has_images: bool) -> bool:
@@ -1571,7 +1577,11 @@ class CLITuiMixin:
         multimodal follow-ups, or a turn that finished in the race). queue → next turn.
         """
         from cli import CLI_CONFIG, _ACCENT, _DIM, _RST, _cprint, _hermes_home
-        _effective_mode = self.busy_input_mode
+        # A prompt taken back from the queue with Up goes back to the queue on Enter, whatever the
+        # busy mode: editing a queued prompt must never turn into interrupting the running turn.
+        _recalled = bool(getattr(self, "_queue_recall_armed", False))
+        _effective_mode = "queue" if _recalled else self.busy_input_mode
+        self._queue_recall_armed = False  # consumed by this submit
         redirected = False
         if _effective_mode == "steer":
             if images or not text:
@@ -1620,7 +1630,7 @@ class CLITuiMixin:
         # onboarding can never break the input loop.
         try:
             from agent.onboarding import BUSY_INPUT_FLAG, busy_input_hint_cli, is_seen, mark_seen
-            if not is_seen(CLI_CONFIG, BUSY_INPUT_FLAG):
+            if not _recalled and not is_seen(CLI_CONFIG, BUSY_INPUT_FLAG):  # a re-queued recall says nothing about /busy
                 _hint_mode = "redirect" if redirected else _effective_mode
                 _cprint(f"  {_DIM}{busy_input_hint_cli(_hint_mode)}{_RST}")
                 mark_seen(_hermes_home / "config.yaml", BUSY_INPUT_FLAG)
@@ -1839,6 +1849,8 @@ class CLITuiMixin:
         but batch newlines; Alt+Enter adds 1 newline per event so never trips it).
         """
         self._tui_last_text_change = time.monotonic()
+        if not buf.text:
+            self._queue_recall_armed = False  # draft gone (submitted or cleared): Enter routes normally again
         from cli import _strip_leaked_bracketed_paste_wrappers, _strip_leaked_terminal_responses_with_meta
         text = _strip_leaked_bracketed_paste_wrappers(buf.text)
         text, _had_mouse_reports = _strip_leaked_terminal_responses_with_meta(text)
@@ -1895,8 +1907,12 @@ class CLITuiMixin:
         event.app.invalidate()
 
     def _tui_history_up(self, event):
-        """Up: browse history when on the first line, else move the cursor up."""
+        """Up: take back the newest queued prompt when the composer is empty; otherwise browse
+        history when on the first line, else move the cursor up."""
         buf = event.app.current_buffer
+        if not buf.text and self._tui_recall_without_recollapse(buf, lambda: self._tui_recall_queued_prompt(buf)):
+            event.app.invalidate()
+            return
         self._tui_recall_without_recollapse(buf, lambda: buf.auto_up(count=event.arg))
 
     def _tui_history_down(self, event):

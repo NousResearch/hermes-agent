@@ -417,6 +417,8 @@ display:
 
 Whatever the mode, `/queue <prompt>` queues a follow-up turn explicitly, and `/queue list`, `/queue rm N`, `/queue edit N …` and `/queue move A B` act on the pending queue immediately, even mid-run. The live work dock lists what is waiting.
 
+To take a queued prompt back for editing, press **↑** in an empty composer: the newest queued prompt leaves the queue and lands in the input (its images re-attach). Edit it and press Enter — it goes back to the queue even in `"interrupt"` mode, so editing a queued prompt never turns into interrupting the running turn; Esc Esc discards it instead. While prompts are queued, ↑ recalls them before it browses history (Ctrl+P browses history directly). The same gesture exists in the Ink TUI and the Desktop composer.
+
 You can also change it inside the CLI:
 
 ```text

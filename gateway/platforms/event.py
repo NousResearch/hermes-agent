@@ -86,10 +86,11 @@ class MessageEvent:
     metadata: Dict[str, Any] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=datetime.now)
     # May this event resolve gateway commands / control prompts? Proactive plugin events set False
-    # so untrusted payload text stays conversational. Kept last for positional compat.
+    # so untrusted payload text stays conversational. New fields append after it (positional compat).
     allow_gateway_control: bool = True
-    # Whether this inbound turn was addressed to this bot. False means the adapter admitted a
-    # free-response or peer-addressed message, None means the adapter cannot determine it.
+    # Was this message addressed to this bot? False lets a bare silence marker stand (the adapter
+    # knows the message was meant for someone else); None means unknown and keeps the visible
+    # fallback, like True.
     reply_expected: Optional[bool] = None
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.

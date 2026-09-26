@@ -211,6 +211,32 @@ def refuse_foreign_owned_venv(project_root: Path) -> None:
             )
 
 
+def _pm_environment_python_if_foreign(root: Path) -> Path | None:
+    """Re-exec into PM's recorded environment venv when this process is not it.
+
+    Generated PM workspaces have no ``.git`` and often no install stamp, so the
+    source-update path returns early. Without this hop the gateway keeps the
+    bare managed-runtime interpreter: plugin memory providers never instantiate
+    and cron workers inherit the same missing site-packages.
+    """
+    import sys
+    from pm.environments import committed_venv, venv_python
+
+    environment = committed_venv(root)
+    if environment is None:
+        return None
+    python = venv_python(environment)
+    if not python.is_file():
+        return None
+    # uv/PM venvs often symlink bin/python to a shared base binary. Comparing
+    # resolved paths collapses bare runtime and env venv to the same file, so
+    # the re-exec never fires. Prefer env identity (sys.prefix) and the
+    # unresolved sys.executable path (still the venv shim when active).
+    if str(environment) == sys.prefix or Path(sys.executable) == python:
+        return None
+    return python
+
+
 def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     """Finish a self-managed source update before importing app dependencies.
 
@@ -230,9 +256,10 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     if (command_argv(argv)[:1] == ["pm"]
             or _METADATA_FLAGS & set(argv)
             or os.environ.get("HERMES_DISABLE_LAZY_INSTALLS", "").lower() in ("1", "true", "yes")
-            or not (root / ".git").exists()
             or not (root / "pyproject.toml").is_file()):
         return None
+    if not (root / ".git").exists():
+        return _pm_environment_python_if_foreign(root)
     stamp = read_install_stamp(root)
     if not stamp:
         from hermes_cli.post_update import step_adopt_blessed_checkout

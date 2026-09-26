@@ -116,7 +116,7 @@ def bounded_put(store: MutableMapping[str, Any], key: str, value: Any, cap: int)
 # squeeze run after these, in that order (see ``strip_markdown``).
 _STRIP_RULES = (
     (re.compile(r"\*\*(.+?)\*\*", re.DOTALL), r"\1"),
-    (re.compile(r"\*(.+?)\*", re.DOTALL), r"\1"),
+    (re.compile(r"(?<!\*)\*(?!\s)([^*\n]+?)(?<!\s)\*(?!\*)"), r"\1"),
     (re.compile(r"\b__(?![\s_])(.+?)(?<![\s_])__\b", re.DOTALL), r"\1"),
     (re.compile(r"\b_(?![\s_])(.+?)(?<![\s_])_\b", re.DOTALL), r"\1"),
     (re.compile(r"```[a-zA-Z0-9_+-]*\n?"), ""),
@@ -148,9 +148,36 @@ def strip_markdown(text: str, *, keep_link_targets: bool = False) -> str:
     ``keep_link_targets`` rewrites ``[label](https://url)`` as ``label\nurl``
     instead of discarding the URL; pass it on platforms that auto-link bare URLs.
     """
+    if not text:
+        return text
+
+    placeholders: dict[str, str] = {}
+    counter = [0]
+
+    def _stash_code(m: re.Match) -> str:
+        key = f"\x00STRIP_PH_{counter[0]}\x00"
+        counter[0] += 1
+        raw = m.group(0)
+        if raw.startswith("```"):
+            inner = re.sub(r"^```[a-zA-Z0-9_+-]*\n?", "", raw)
+            inner = re.sub(r"\n?```$", "", inner)
+            placeholders[key] = inner
+        elif raw.startswith("`") and raw.endswith("`"):
+            placeholders[key] = raw[1:-1]
+        else:
+            placeholders[key] = raw
+        return key
+
+    text = re.sub(r'(```(?:[^\n]*\n)?[\s\S]*?```)', _stash_code, text)
+    text = re.sub(r'(`[^`\n]+`)', _stash_code, text)
+
     for pattern, repl in _STRIP_RULES:
         text = pattern.sub(repl, text)
     text = _MD_LINK_RE.sub(_keep_link_target if keep_link_targets else r"\1", text)
+
+    for key, val in reversed(list(placeholders.items())):
+        text = text.replace(key, val)
+
     return _NEWLINE_SQUEEZE_RE.sub("\n\n", text).strip()
 
 
@@ -753,3 +780,193 @@ class TextBatchAggregator:
         self._pending_tasks.clear()
         self._pending.clear()
 # ---- END PLUGIN-COMPAT ----
+
+
+# ─── LaTeX & Math Normalization ──────────────────────────────────────────────
+_LATEX_MACRO_REPLACEMENTS = (
+    # Relations / Comparisons
+    (re.compile(r'\\%'), '%'),
+    (re.compile(r'\\#'), '#'),
+    (re.compile(r'\\&'), '&'),
+    (re.compile(r'\\(?:ge|geq)\b'), '≥'),
+    (re.compile(r'\\(?:le|leq)\b'), '≤'),
+    (re.compile(r'\\(?:approx|sim)\b'), '≈'),
+    (re.compile(r'\\(?:neq|ne)\b'), '≠'),
+    (re.compile(r'\\equiv\b'), '≡'),
+    (re.compile(r'\\pm\b'), '±'),
+    (re.compile(r'\\mp\b'), '∓'),
+
+    # Arithmetic & Operations
+    (re.compile(r'\\times\b'), '×'),
+    (re.compile(r'\\div\b'), '÷'),
+    (re.compile(r'\\cdot\b'), '·'),
+
+    # Arrows
+    (re.compile(r'\\(?:to|rightarrow|longrightarrow)\b'), '→'),
+    (re.compile(r'\\(?:leftarrow|longleftarrow)\b'), '←'),
+    (re.compile(r'\\(?:Rightarrow|Longrightarrow)\b'), '⇒'),
+    (re.compile(r'\\(?:Leftarrow|Longleftarrow)\b'), '⇐'),
+    (re.compile(r'\\(?:leftrightarrow|longleftrightarrow)\b'), '↔'),
+    (re.compile(r'\\(?:Leftrightarrow|Longleftrightarrow)\b'), '⇔'),
+
+    # Common symbols, sets & dots
+    (re.compile(r'\\infty\b'), '∞'),
+    (re.compile(r'\\(?:dots|ldots|cdots|ddots|vdots)\b'), '…'),
+    (re.compile(r'\\degree\b'), '°'),
+    (re.compile(r'\^\{\\circ\}|\^\\circ'), '°'),
+    (re.compile(r'\\forall\b'), '∀'),
+    (re.compile(r'\\exists\b'), '∃'),
+    (re.compile(r'\\in\b'), '∈'),
+    (re.compile(r'\\notin\b'), '∉'),
+    (re.compile(r'\\subset\b'), '⊂'),
+    (re.compile(r'\\subseteq\b'), '⊆'),
+    (re.compile(r'\\cup\b'), '∪'),
+    (re.compile(r'\\cap\b'), '∩'),
+    (re.compile(r'\\sqrt\b'), '√'),
+
+    # Greek letters (lowercase & uppercase)
+    (re.compile(r'\\alpha\b'), 'α'),
+    (re.compile(r'\\beta\b'), 'β'),
+    (re.compile(r'\\gamma\b'), 'γ'),
+    (re.compile(r'\\Gamma\b'), 'Γ'),
+    (re.compile(r'\\delta\b'), 'δ'),
+    (re.compile(r'\\Delta\b'), 'Δ'),
+    (re.compile(r'\\(?:epsilon|varepsilon)\b'), 'ε'),
+    (re.compile(r'\\zeta\b'), 'ζ'),
+    (re.compile(r'\\eta\b'), 'η'),
+    (re.compile(r'\\(?:theta|vartheta)\b'), 'θ'),
+    (re.compile(r'\\Theta\b'), 'Θ'),
+    (re.compile(r'\\iota\b'), 'ι'),
+    (re.compile(r'\\kappa\b'), 'κ'),
+    (re.compile(r'\\lambda\b'), 'λ'),
+    (re.compile(r'\\Lambda\b'), 'Λ'),
+    (re.compile(r'\\mu\b'), 'μ'),
+    (re.compile(r'\\nu\b'), 'ν'),
+    (re.compile(r'\\xi\b'), 'ξ'),
+    (re.compile(r'\\Xi\b'), 'Ξ'),
+    (re.compile(r'\\(?:pi|varpi)\b'), 'π'),
+    (re.compile(r'\\Pi\b'), 'Π'),
+    (re.compile(r'\\(?:rho|varrho)\b'), 'ρ'),
+    (re.compile(r'\\(?:sigma|varsigma)\b'), 'σ'),
+    (re.compile(r'\\Sigma\b'), 'Σ'),
+    (re.compile(r'\\tau\b'), 'τ'),
+    (re.compile(r'\\upsilon\b'), 'υ'),
+    (re.compile(r'\\Upsilon\b'), 'Υ'),
+    (re.compile(r'\\(?:phi|varphi)\b'), 'φ'),
+    (re.compile(r'\\Phi\b'), 'Φ'),
+    (re.compile(r'\\chi\b'), 'χ'),
+    (re.compile(r'\\psi\b'), 'ψ'),
+    (re.compile(r'\\Psi\b'), 'Ψ'),
+    (re.compile(r'\\omega\b'), 'ω'),
+    (re.compile(r'\\Omega\b'), 'Ω'),
+)
+
+_LATEX_WRAPPER_RE = re.compile(r'\\(?:text|mathrm|mathbf|mathit|mathsf|mathtt)\{([^}]+)\}')
+_LATEX_FRAC_RE = re.compile(r'\\frac\{([^}]+)\}\{([^}]+)\}')
+_DISPLAY_MATH_RE = re.compile(r'\$\$([\s\S]*?)\$\$|\\\[([\s\S]*?)\\\]')
+_PAREN_MATH_RE = re.compile(r'\\\(([\s\S]*?)\\\)')
+_MATH_SYMBOLS_SET = set("≥≤≈≠≡±∓×÷·→←⇒⇐↔⇔∞…°∀∃∈∉⊂⊆∪∩√αβγΓδΔεζηθΘικλΛμνξΞπΠρσΣτυΥφΦχψΨωΩ")
+_CURRENCY_TEXT_RE = re.compile(
+    r'^\d+(?:\.\d+)?(?:\s*-\s*\d+(?:\.\d+)?)?(?:k|M|B)?(?:\s+(?:and|to|or|per|each|for|in)\s+|\s+[a-zA-Z]{2,}\s+)',
+    re.IGNORECASE,
+)
+
+
+def _clean_inline_dollar(match: re.Match) -> str:
+    content = match.group(1)
+    if not content.strip():
+        return match.group(0)
+    if _CURRENCY_TEXT_RE.search(content):
+        return match.group(0)
+    if any(c in _MATH_SYMBOLS_SET for c in content) or any(op in content for op in ('=', '<', '>', '\\', '^', '_')):
+        return content.strip()
+    if re.match(r'^[a-zA-Z0-9_]{1,6}(?:\([a-zA-Z0-9_,\s]*\))?$', content.strip()):
+        return content.strip()
+    if re.match(r'^\d+$', content.strip()):
+        return content.strip()
+    return content.strip()
+
+
+def normalize_latex_math_symbols(text: str) -> str:
+    """Normalize LaTeX math commands and delimiters to Unicode characters.
+
+    Protects code blocks (fenced and inline) from transformation.
+    """
+    if not text:
+        return text
+
+    placeholders: dict[str, str] = {}
+    counter = [0]
+
+    def _stash_code(m: re.Match) -> str:
+        key = f"\x00LATEX_PH_{counter[0]}\x00"
+        counter[0] += 1
+        placeholders[key] = m.group(0)
+        return key
+
+    # 1. Protect fenced code blocks (```...```)
+    text = re.sub(r'(```(?:[^\n]*\n)?[\s\S]*?```)', _stash_code, text)
+    # 2. Protect inline code (`...`)
+    text = re.sub(r'(`[^`\n]+`)', _stash_code, text)
+
+    # 3. Strip display math $$...$$, \[...\]
+    text = _DISPLAY_MATH_RE.sub(lambda m: (m.group(1) if m.group(1) is not None else m.group(2)).strip(), text)
+    # 4. Strip \(...\)
+    text = _PAREN_MATH_RE.sub(lambda m: m.group(1).strip(), text)
+
+    # 5. LaTeX wrappers like \text{...}, \mathbf{...}
+    text = _LATEX_WRAPPER_RE.sub(r'\1', text)
+    # 6. Fractions \frac{a}{b} -> a/b
+    text = _LATEX_FRAC_RE.sub(r'\1/\2', text)
+
+    # 7. Apply LaTeX macro replacements to Unicode
+    for pattern, repl in _LATEX_MACRO_REPLACEMENTS:
+        text = pattern.sub(repl, text)
+
+    # 8. Strip inline math $...$
+    text = re.sub(r'\$([^\$\n]+?)\$', _clean_inline_dollar, text)
+
+    # 9. Restore code block placeholders
+    for key, val in reversed(list(placeholders.items())):
+        text = text.replace(key, val)
+
+    return text
+
+
+def normalize_markdown_bullets(text: str) -> str:
+    """Normalize markdown list markers (*, -, +) into clean Unicode bullets (•, ◦).
+
+    Top-level list markers (0 or 1 leading space) are replaced with '• ' (U+2022).
+    Nested list markers (2+ leading spaces or tabs) are replaced with '◦ ' (U+25E6).
+    Protects fenced code blocks and inline code from transformation.
+    """
+    if not text:
+        return text
+
+    placeholders: dict[str, str] = {}
+    counter = [0]
+
+    def _stash_code(m: re.Match) -> str:
+        key = f"\x00BULLET_PH_{counter[0]}\x00"
+        counter[0] += 1
+        placeholders[key] = m.group(0)
+        return key
+
+    # 1. Protect fenced code blocks (```...```)
+    text = re.sub(r'(```(?:[^\n]*\n)?[\s\S]*?```)', _stash_code, text)
+    # 2. Protect inline code (`...`)
+    text = re.sub(r'(`[^`\n]+`)', _stash_code, text)
+
+    # 3. Replace nested list markers (2+ spaces or tabs, optionally in blockquotes) with ◦ (U+25E6)
+    text = re.sub(r'(?m)^((?:>{1,3}[ \t]*)?[ \t]*?(?: {2,}|\t+))[*+-][ \t]+', r'\1◦ ', text)
+
+    # 4. Replace top-level list markers (0 or 1 space, optionally in blockquotes) with • (U+2022)
+    text = re.sub(r'(?m)^((?:>{1,3}[ \t]*)? {0,1})[*+-][ \t]+', r'\1• ', text)
+
+    # 5. Restore code block placeholders
+    for key, val in reversed(list(placeholders.items())):
+        text = text.replace(key, val)
+
+    return text
+
+

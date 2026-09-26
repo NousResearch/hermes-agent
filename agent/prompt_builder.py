@@ -650,7 +650,9 @@ PLATFORM_HINTS = {
     "telegram": (
         "You are on Telegram. Standard Markdown auto-converts: **bold**, "
         "*italic*, ~~strikethrough~~, ||spoiler||, `code`, ```blocks```, "
-        "[links](url), ## headers. Prefer bullets or labeled lines for structured data (no tables). "
+        "[links](url), ## headers. Telegram DOES NOT support LaTeX math notation ($...$, $$...$$, \\ge, \\le, \\approx) — "
+        "use Unicode mathematical symbols instead: ≥, ≤, ≈, ≠, ±, ×, ÷, →, ², etc. "
+        "Prefer bullet lists or labeled lines for structured data (no tables). "
         f"{_MEDIA_NATIVE}Images (.png, .jpg, .webp) send as photos, videos (.mp4) play inline; image URLs via ![alt](url) send as "
         "photos. Audio: add [[audio_as_voice]] on its own line to send ANY audio file as a native voice bubble "
         "(non-Opus transcodes automatically); without it, .mp3/.m4a arrive as audio files, other formats as documents."

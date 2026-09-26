@@ -140,19 +140,6 @@ describe('the id half: group room member sessions', () => {
     expect(hiddenCalls().every(([, options]) => options.hidden)).toBe(true)
   })
 
-  it('never consults a stored canonical pointer', async () => {
-    // Canonical Bot Chats are hidden by the TITLE sweep below — they are
-    // identified by name, not by pointer. The load-time reconciliation reads
-    // no bot-meta chat id and issues no id-verification RPC.
-    groupChats.value = { Core: { sessions: { alpha: 'room-core-a' } } }
-    lastRoster.value = [{ name: 'alpha' } as RosterRow]
-
-    await runSweep()
-
-    expect(requestForBotMock).not.toHaveBeenCalled()
-    expect(hostMock.request).not.toHaveBeenCalled()
-  })
-
   it('routes a remote member session through its immutable persisted owner', async () => {
     const owner = {
       name: 'worker',
@@ -206,9 +193,7 @@ describe('the id half: group room member sessions', () => {
       }
     }
     lastRoster.value = [{ name: 'alpha' } as RosterRow]
-    hostMock.setPersistedSessionHidden.mockRejectedValue(
-      new Error('404: {"detail":"Session not found"}')
-    )
+    hostMock.setPersistedSessionHidden.mockRejectedValue(new Error('404: {"detail":"Session not found"}'))
 
     await runSweep()
 

@@ -56,8 +56,14 @@ TERMINAL_WORKER_REAP_GRACE_SECONDS = 120
 
 # Patterns in last_failure_error that indicate a quota / auth blocker.
 # These errors won't resolve by retrying immediately — auto-block instead.
+# The auth family is a curated list, not an open `auth\w*` stem: that stem
+# also matched ordinary English words like "author"/"authored"/"authoring"/
+# "authoritative" in worker progress prose, parking a healthy card forever
+# (#117009).
 _RESPAWN_BLOCKER_RE = re.compile(
-    r"\b(quota|rate[\s_\-]?limit|429|403|auth\w*|"
+    r"\b(quota|rate[\s_\-]?limit|429|403|"
+    r"auth|authenticat(?:e|es|ed|ing|ion)|authoriz(?:e|es|ed|ing|ation)|"
+    r"authoris(?:e|es|ed|ing|ation)|authz|"
     r"unauthorized|forbidden|billing|subscription|"
     r"access[\s_]denied|permission[\s_]denied|"
     r"invalid[\s_]api[\s_]key)\b",
@@ -246,6 +252,8 @@ def _exit_code_kind(code: int) -> "tuple[str, int]":
         return ("clean_exit", 0)
     if code == _kb.KANBAN_RATE_LIMIT_EXIT_CODE:
         return ("rate_limited", code)
+    if code == _kb.KANBAN_TERMINAL_PROVIDER_EXIT_CODE:
+        return ("terminal_provider", code)
     return ("nonzero_exit", code)
 
 
@@ -1016,6 +1024,9 @@ class _DeadWorker:
     event_payload: dict
     protocol_violation: bool = False
     rate_limited: bool = False
+    terminal_provider: bool = False
+    """``KANBAN_TERMINAL_PROVIDER_EXIT_CODE``: the provider rejected the worker's
+    credential/model — trips the breaker on this first occurrence."""
 
     @property
     def run_outcome(self) -> str:
@@ -1084,6 +1095,18 @@ def _classify_dead_worker_exit(
             {"pid": pid, "claimer": claimer, "exit_code": code},
             rate_limited=True,
         )
+    if kind == "terminal_provider":
+        # The worker classified its own provider failure as unhealable (credential
+        # revoked, model gone): every further spawn would hit the same wall, so
+        # ``_account_crashes`` trips the breaker now instead of after ``failure_limit``.
+        return _DeadWorker(
+            kind, code,
+            f"pid {pid} exited on a terminal provider error (exit {code}): the provider rejected "
+            "this profile's credential or model — fix the configuration, then unblock.",
+            "crashed",
+            {"pid": pid, "claimer": claimer, "exit_kind": kind, "exit_code": code, "terminal_provider": True},
+            terminal_provider=True,
+        )
     if kind == "nonzero_exit":
         error_text = f"pid {pid} exited with code {code}"
     elif kind == "signaled":
@@ -1103,9 +1126,9 @@ class _CrashSweep:
 
     crashed: list[str] = field(default_factory=list)
     rate_limited: list[str] = field(default_factory=list)
-    # ``(task_id, pid, claimer, protocol_violation, error_text)``: accounted
-    # after the txn via ``_record_task_failure`` (needs its own write_txn).
-    crash_details: list[tuple[str, int, str, bool, str]] = field(default_factory=list)
+    # ``(task_id, pid, claimer, dead_worker)``: accounted after the txn via
+    # ``_record_task_failure`` (needs its own write_txn).
+    crash_details: list[tuple[str, int, str, _DeadWorker]] = field(default_factory=list)
     # Worker-exit observer payloads, fired only after every reclaim/accounting
     # txn has committed.
     exited_hook_payloads: list[dict] = field(default_factory=list)
@@ -1177,9 +1200,7 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 sweep.rate_limited.append(row["id"])
             else:
                 sweep.crashed.append(row["id"])
-                sweep.crash_details.append(
-                    (row["id"], pid, row["claim_lock"], dead.protocol_violation, dead.error_text)
-                )
+                sweep.crash_details.append((row["id"], pid, row["claim_lock"], dead))
     return sweep
 
 
@@ -1188,16 +1209,18 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
 
     Protocol violations get a BOUNDED violation-only budget independent of
     ``consecutive_failures`` (per-task ``max_retries`` takes precedence);
-    systemic same-error crashes (>= 3 identical fingerprints this tick) trip
-    immediately.
+    systemic same-error crashes (>= 3 identical fingerprints this tick) and
+    terminal provider errors (credential revoked, model gone — a retry cannot
+    heal them) trip immediately.
     """
     auto_blocked: list[str] = []
     fp_counts: dict[str, int] = {}
-    for _, _, _, _, err_text in crash_details:
-        fp = _error_fingerprint(err_text)
+    for _, _, _, dead in crash_details:
+        fp = _error_fingerprint(dead.error_text)
         fp_counts[fp] = fp_counts.get(fp, 0) + 1
-    for tid, pid, claimer, protocol_violation, error_text in crash_details:
-        if protocol_violation:
+    for tid, pid, claimer, dead in crash_details:
+        error_text = dead.error_text
+        if dead.protocol_violation:
             streak = _protocol_violation_streak(conn, tid)
             trow = conn.execute("SELECT max_retries FROM tasks WHERE id = ?", (tid,)).fetchone()
             if trow is None:
@@ -1226,6 +1249,20 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
                     "protocol_violations": streak,
                     "protocol_violation_limit": violation_limit,
                 },
+            )
+        elif dead.terminal_provider:
+            # A retry cannot heal a revoked credential or a missing model, so
+            # the whole ``failure_limit`` budget would be spent on identical
+            # failures. ``force_trip`` blocks now, sticky: ``recompute_ready``
+            # must not auto-resume it before the operator fixes the provider.
+            tripped = _record_task_failure(
+                conn, tid,
+                error=error_text,
+                outcome="crashed",
+                force_trip=True,
+                release_claim=False,
+                end_run=False,
+                event_payload_extra={"pid": pid, "claimer": claimer, "terminal_provider": True},
             )
         else:
             is_systemic = fp_counts.get(_error_fingerprint(error_text), 0) >= 3
@@ -1511,9 +1548,13 @@ def check_respawn_guard(
         # (spaced by the cooldown) until quota returns or a real run supersedes it.
         return None
 
-    # 2. Quota / auth blocker: retrying immediately will not help.
-    err = row["last_failure_error"]
-    if err and _RESPAWN_BLOCKER_RE.search(err):
+    # 2. Quota / auth blocker: retrying immediately will not help.  A plain
+    # crash is different: its persisted error includes the worker's last
+    # captured output, which is context rather than a diagnosis and may contain
+    # benign commands such as ``claude auth status`` (#117097).
+    err = _kb._lossy_text(row["last_failure_error"])
+    latest_outcome = latest_run["outcome"] if latest_run is not None else None
+    if err and latest_outcome != "crashed" and _RESPAWN_BLOCKER_RE.search(err):
         return "blocker_auth"
 
     # Review-lane spawns stop here: a recent completed run and a fresh PR URL
@@ -1556,7 +1597,8 @@ def check_respawn_guard(
         "WHERE task_id = ? AND created_at >= ? ORDER BY created_at DESC",
         (task_id, pr_cutoff),
     ).fetchall():
-        if not (c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"])):
+        body = _kb._lossy_text(c["body"])
+        if not (body and _RESPAWN_GUARD_PR_URL_RE.search(body)):
             continue
         events = conn.execute(
             # Strictly after: a same-second tie stays guarded (fail closed).
@@ -2529,6 +2571,52 @@ def _worker_terminal_timeout_env(
     return str(desired)
 
 
+@contextlib.contextmanager
+def _worker_profile_scope(hermes_home: str, *, bind_home: bool = True):
+    """Bind an assigned profile's runtime scope (secrets + terminal policy, optionally home) for
+    one dispatch-side read or spawn-env build.
+
+    The dispatcher runs detached from any turn, so nothing binds a profile for it: ``load_config``,
+    the toolset probes' ``get_secret`` reads and ``build_subprocess_env``'s passthrough resolution
+    all fall back to the LAUNCH profile's ambient ``os.environ`` / ``TERMINAL_*``. Binding was
+    previously conditional on ``is_multiplex_active()``, so on a single-profile host a worker for
+    profile B was built entirely from the dispatcher's own environment.
+
+    ``bind_home=False`` for the spawn-env build: which variables may cross into a child is the
+    DISPATCHER's ``terminal.env_passthrough`` policy (#109494, read through the home override) —
+    only their VALUES come from the assignee's scope, so that branch binds the secret scope alone.
+    Toolset resolution binds the home and the terminal policy, as it always has.
+
+    The secret mapping is never widened: a profile that is not this process's own home gets its own
+    ``.env`` + external sources ONLY, while the launch home keeps its established
+    env-over-``.env`` precedence (``launch_secret_scope``) so systemd / ``op run`` injection still
+    resolves for a standalone dispatcher.
+    """
+    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+    from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
+    from tui_gateway.launch_profile_policy import launch_secret_scope, launch_terminal_env
+
+    home = Path(hermes_home)
+    is_launch_home = str(home.resolve()) == str(Path(get_process_hermes_home()).resolve())
+    home_token = secret_token = terminal_token = None
+    try:
+        home_token = set_hermes_home_override(str(home)) if bind_home else None
+        secret_token = set_secret_scope(
+            launch_secret_scope(home) if is_launch_home else build_profile_secret_scope(home),
+            profile_home=None if is_launch_home else str(home))
+        terminal_token = install_profile_terminal_scope(
+            home, env_overlay=launch_terminal_env() if is_launch_home else None) if bind_home else None
+        yield
+    finally:
+        if terminal_token is not None:
+            reset_terminal_scope(terminal_token)
+        if secret_token is not None:
+            reset_secret_scope(secret_token)
+        if home_token is not None:
+            reset_hermes_home_override(home_token)
+
+
 def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[str]]:
     """Return the assigned profile's effective CLI toolsets for a worker.
 
@@ -2541,25 +2629,12 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
     if not hermes_home:
         return None
     try:
-        from agent.secret_scope import (
-            build_profile_secret_scope, is_multiplex_active, reset_secret_scope, set_secret_scope)
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
         from hermes_cli.config import load_config
         from hermes_cli.tools_config import _get_platform_tools
 
-        token = set_hermes_home_override(hermes_home)
-        # Toolset availability probes read credentials (``get_secret``); under multiplex an
-        # unscoped read raises and the pin was silently dropped for every worker.
-        secret_token = (
-            set_secret_scope(build_profile_secret_scope(Path(hermes_home)))
-            if is_multiplex_active() else None)
-        try:
+        with _worker_profile_scope(hermes_home):
             cfg = load_config()
             toolsets = sorted(_get_platform_tools(cfg, "cli"))
-        finally:
-            if secret_token is not None:
-                reset_secret_scope(secret_token)
-            reset_hermes_home_override(token)
         return toolsets or None
     except Exception as exc:
         _kb._log.debug(
@@ -2702,9 +2777,8 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
 
     profile_arg = normalize_profile_name(task.assignee)
 
-    from agent.secret_scope import (
-        build_profile_secret_scope, is_multiplex_active, reset_secret_scope, set_secret_scope)
-    from tools.environments.local import build_subprocess_env, strip_launch_profile_env
+    from agent.secret_scope import is_multiplex_active
+    from tools.environments.local import _is_routed_home, build_subprocess_env, strip_launch_profile_env
 
     try:
         profile_home = resolve_profile_env(profile_arg)
@@ -2713,22 +2787,20 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
         # HERMES_PROFILE (set below) instead.
         profile_home = None
 
-    multiplex_active = is_multiplex_active()
-    # build_subprocess_env's secret scrub resolves terminal.env_passthrough vars
-    # through get_secret(), which raises UnscopedSecretError with no profile scope
-    # installed while multiplexing is on — mirrors _resolve_worker_cli_toolsets's
-    # own scope-then-read ordering a few functions up in this module.
-    secret_token = (
-        set_secret_scope(build_profile_secret_scope(Path(profile_home)))
-        if multiplex_active and profile_home else None)
-    try:
+    # Scrub for a ROUTED home, not only under multiplex: the authority test is "does this worker act
+    # for another profile", exactly as served_profile_child_env decides it (tools/environments/local.py).
+    # Gating on the gateway-wide flag left B's worker inheriting the dispatcher's own OPENAI_API_KEY and
+    # systemd-injected tokens on every single-profile host.
+    routed = bool(profile_home) and _is_routed_home(profile_home)
+    # build_subprocess_env's secret scrub resolves terminal.env_passthrough vars through get_secret(),
+    # which without a bound scope reads the LAUNCH profile's ambient environment for a worker spawned
+    # on B's behalf (and raises under multiplex) — so bind B's secret scope around the build.
+    with (_worker_profile_scope(profile_home, bind_home=False) if profile_home
+          else contextlib.nullcontext()):
         env = build_subprocess_env(
-            scrub_secrets=multiplex_active,
+            scrub_secrets=is_multiplex_active() or routed,
             inherit_profile_home=True,
         )
-    finally:
-        if secret_token is not None:
-            reset_secret_scope(secret_token)
     # The dispatcher is detached from every conversation; its worker must never
     # inherit routing mirrored by a previous gateway turn.
     from gateway.session_context import _VAR_MAP

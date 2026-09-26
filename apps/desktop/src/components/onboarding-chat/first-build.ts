@@ -27,7 +27,7 @@ const CHECK_IN_NOTE =
 
 interface FirstBuild {
   /** Profile of the build session. The note must be routed to this profile explicitly: the user can return to
-   *  Setup's chat while the build runs, which makes hermes-setup the active gateway. */
+   *  Setup's chat while the build runs, which makes the setup profile the active gateway. */
   profile: string
   sessionId: string
   tools: number

@@ -6,6 +6,9 @@ description: "配置 Hermes Agent — config.yaml、providers、模型、API 密
 
 # 配置
 
+本页的 Python 依赖命令使用 [PM 准备的源码环境](../reference/package-management.md#developer-workflow)。
+依赖变更后，请重新激活该 checkout 并重启 Hermes。
+
 所有设置均存储在 `~/.hermes/` 目录中，便于访问。
 
 ## 目录结构
@@ -248,7 +251,7 @@ terminal:
 **必需安装：** 安装可选 SDK 扩展：
 
 ```bash
-pip install 'hermes-agent[vercel]'
+python -c "import pm; pm.sync_venv(['vercel'], explicit=True)"
 ```
 
 **必需认证：** 使用 `VERCEL_TOKEN`、`VERCEL_PROJECT_ID` 和 `VERCEL_TEAM_ID` 三者全部配置访问令牌认证。这是在 Render、Railway、Docker 及类似宿主上部署和正常长期运行 Hermes 进程的受支持设置。
@@ -1000,7 +1003,7 @@ AUXILIARY_VISION_MODEL=openai/gpt-4o
 | `"auto"` | 最佳可用（默认）。Vision 尝试 OpenRouter → Nous → Codex。 | — |
 | `"openrouter"` | 强制 OpenRouter —— 路由到任何模型（Gemini、GPT-4o、Claude 等） | `OPENROUTER_API_KEY` |
 | `"nous"` | 强制 Nous Portal | `hermes auth` |
-| `"codex"` | 强制 Codex OAuth（ChatGPT 账户）。支持视觉（gpt-5.3-codex）。 | `hermes model` → ChatGPT or Codex Subscription |
+| `"codex"` | 强制 Codex OAuth（ChatGPT 账户）。请显式设置 `model`（例如 `gpt-5.4`）。 | `hermes model` → ChatGPT or Codex Subscription |
 | `"minimax-oauth"` | 强制 MiniMax OAuth（浏览器登录，无需 API 密钥）。辅助任务使用 MiniMax-M2.7-highspeed。 | `hermes model` → MiniMax (OAuth) |
 | `"xai-oauth"` | 强制 xAI Grok OAuth（SuperGrok 或 X Premium+ 订阅者的浏览器登录，无需 API 密钥）。相同的 OAuth token 涵盖聊天、TTS、图像、视频和转录。 | `hermes model` → xAI Grok OAuth (SuperGrok / Premium+) |
 | `"main"` | 使用您的活跃自定义/主端点。可以来自 `OPENAI_BASE_URL` + `OPENAI_API_KEY` 或通过 `hermes model` / `config.yaml` 保存的自定义端点。适用于 OpenAI、本地模型或任何 OpenAI 兼容 API。**仅限辅助任务 —— 对 `model.provider` 无效。** | 自定义端点凭据 + 基础 URL |
@@ -1054,7 +1057,7 @@ auxiliary:
 auxiliary:
   vision:
     provider: "codex"     # 使用您的 ChatGPT OAuth token
-    # 模型默认为 gpt-5.3-codex（支持视觉）
+    model: "gpt-5.4"      # Codex 路径没有隐式默认模型
 ```
 
 **使用 MiniMax OAuth**（浏览器登录，无需 API 密钥）：
@@ -1344,7 +1347,7 @@ stt:
 
 Provider 行为：
 
-- `local` 使用在您机器上运行的 `faster-whisper`。使用 `pip install faster-whisper` 单独安装。静音幻觉防护默认开启:Silero VAD 过滤器让静音/噪声不会进入 Whisper,跨窗口条件预测被禁用,并且模型自己标记为"很可能不是语音"且低置信度的片段会被丢弃。设置 `stt.local.vad: false` 可用原始行为转录非语音音频(音乐、环境声)。
+- `local` 使用在您机器上运行的 `faster-whisper`。使用 `python -c "import pm; pm.sync_venv(['stt-whisper'], explicit=True)"` 单独安装。静音幻觉防护默认开启:Silero VAD 过滤器让静音/噪声不会进入 Whisper,跨窗口条件预测被禁用,并且模型自己标记为"很可能不是语音"且低置信度的片段会被丢弃。设置 `stt.local.vad: false` 可用原始行为转录非语音音频(音乐、环境声)。
 - `groq` 使用 Groq 的 Whisper 兼容端点，读取 `GROQ_API_KEY`。
 - `openai` 使用 OpenAI 语音 API，读取 `VOICE_TOOLS_OPENAI_KEY`。
 
@@ -1455,7 +1458,7 @@ quick_commands:
     command: df -h /
   update:
     type: exec
-    command: cd ~/.hermes/hermes-agent && git pull && uv pip install -e .
+    command: hermes update
   gpu:
     type: exec
     command: nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total --format=csv,noheader

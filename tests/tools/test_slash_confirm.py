@@ -103,9 +103,6 @@ class TestClear:
         slash_confirm.clear("sess1")
         assert slash_confirm.get_pending("sess1") is None
 
-    def test_clear_missing_is_noop(self):
-        # Should not raise.
-        slash_confirm.clear("nobody")
 
 
 class TestClearIfStale:

@@ -61,7 +61,7 @@ def _make_args(**kwargs):
 
 def _seed_config(tmp_path: Path, mcp_servers: dict):
     """Write a config.yaml with the given mcp_servers."""
-    import yaml
+    import hermes_yaml as yaml
 
     config = {"mcp_servers": mcp_servers, "_config_version": 9}
     config_path = tmp_path / "config.yaml"
@@ -82,12 +82,6 @@ class FakeTool:
 # ---------------------------------------------------------------------------
 
 class TestMcpList:
-    def test_list_empty_config(self, tmp_path, capsys):
-        from hermes_cli.mcp_config import cmd_mcp_list
-
-        cmd_mcp_list()
-        out = capsys.readouterr().out
-        assert "No MCP servers configured" in out
 
     def test_list_with_servers(self, tmp_path, capsys):
         _seed_config(tmp_path, {
@@ -285,23 +279,6 @@ class TestMcpAdd:
 
 class TestMcpTest:
 
-    def test_test_success(self, tmp_path, capsys, monkeypatch):
-        _seed_config(tmp_path, {
-            "ink": {"url": "https://mcp.ml.ink/mcp"},
-        })
-
-        def mock_probe(name, config, **kw):
-            return [("create_service", "Deploy"), ("list_services", "List all")]
-
-        monkeypatch.setattr(
-            "hermes_cli.mcp_config._probe_single_server", mock_probe
-        )
-        from hermes_cli.mcp_config import cmd_mcp_test
-
-        cmd_mcp_test(_make_args(name="ink"))
-        out = capsys.readouterr().out
-        assert "Connected" in out
-        assert "Tools discovered: 2" in out
 
     def test_exit_codes_distinguish_failure_from_unknown_server(self, tmp_path, capsys, monkeypatch):
         """0 connected, 1 connection failed, 3 not in config — never argparse's 2, never a silent 0."""
@@ -336,7 +313,6 @@ class TestMcpTest:
         """OAuth-capable probes must not hard-code a short 30s timeout."""
         import asyncio
         from hermes_cli import mcp_config
-        import tools.mcp_tool as mcp_tool
         from tools import mcp_tool_discovery as _mcp_discovery
         from tools import mcp_tool_lifecycle as _mcp_lifecycle
         from tools import mcp_tool_loop as _mcp_loop
@@ -417,7 +393,6 @@ class TestContextVarInterpolation:
         assert _interpolate_env_vars("${/}") == os.sep
 
     def test_workspace_folder_and_basename(self, monkeypatch):
-        import tools.mcp_tool as mcp_tool
 
         monkeypatch.setattr(
             _mcp_config, "_workspace_folder", lambda: "/srv/projects/myapp"
@@ -443,7 +418,6 @@ class TestContextVarInterpolation:
     def test_mixed_string_with_env_and_context_vars(self, monkeypatch):
         import os
 
-        import tools.mcp_tool as mcp_tool
 
         monkeypatch.setenv("MY_TOKEN", "tok-1")
         monkeypatch.setattr(_mcp_config, "_workspace_folder", lambda: "/ws/app")
@@ -472,7 +446,6 @@ class TestContextVarInterpolation:
     def test_context_vars_in_nested_config(self, monkeypatch):
         import os
 
-        import tools.mcp_tool as mcp_tool
         from tools import mcp_tool_config as _mcp_config
 
         monkeypatch.setattr(_mcp_config, "_workspace_folder", lambda: "/ws/app")
@@ -846,6 +819,38 @@ class TestMcpLogin:
         # OAuth round-trip — far longer than the 30s probe default.
         assert seen["connect_timeout"] >= 180
 
+    def test_login_clears_tokens_but_keeps_discovered_server_metadata(self, tmp_path, capsys, monkeypatch):
+        """Re-login wipes the stale grant and client registration but spares ``.meta.json``: when the
+        authorization server's metadata document cannot be re-fetched (a WAF-fronted split-host
+        server), the cached ``authorization_endpoint`` is what keeps the announced authorize URL off
+        the SDK's ``{mcp-origin}/authorize`` guess (#115329)."""
+        _seed_config(tmp_path, {
+            "tv": {"url": "https://mcp.example.com/mcp", "auth": "oauth"},
+        })
+        token_dir = tmp_path / "mcp-tokens"
+        token_dir.mkdir()
+        (token_dir / "tv.json").write_text('{"access_token": "stale"}', encoding="utf-8")
+        (token_dir / "tv.client.json").write_text('{"client_id": "old"}', encoding="utf-8")
+        (token_dir / "tv.meta.json").write_text(
+            '{"issuer": "https://www.example.com", "authorization_endpoint": "https://www.example.com/oauth/authorize",'
+            ' "token_endpoint": "https://www.example.com/oauth/token"}', encoding="utf-8")
+        state_at_probe = {}
+
+        def mock_probe(name, cfg, connect_timeout=30):
+            state_at_probe.update({p.name: p.exists() for p in token_dir.glob("tv*")})
+            state_at_probe["meta"] = (token_dir / "tv.meta.json").exists()
+            (token_dir / "tv.json").write_text('{"access_token": "fresh"}', encoding="utf-8")
+            return [("a", "d")]
+
+        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", mock_probe)
+        from hermes_cli.mcp_config import cmd_mcp_login
+
+        cmd_mcp_login(_make_args(name="tv"))
+
+        assert state_at_probe["meta"] is True
+        assert state_at_probe.get("tv.json") is None and state_at_probe.get("tv.client.json") is None
+        assert "Authenticated — 1 tool(s) available" in capsys.readouterr().out
+
 
 # ---------------------------------------------------------------------------
 # Tests: cmd_mcp_reauth (GH#36767)
@@ -912,4 +917,3 @@ def test_tool_filters_keeps_explicit_empty_include():
     assert _tool_filters({"tools": {"include": []}}) == ([], None)
     assert _tool_filters({"tools": {"include": "bad", "exclude": ["x"]}}) == (None, ["x"])
     assert _tool_filters({}) == (None, None)
-

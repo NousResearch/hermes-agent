@@ -15,14 +15,14 @@ OBLITERATUS: abliterate LLM refusals (diff-in-means).
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/mlops/obliteratus` |
-| Path | `optional-skills/mlops\obliteratus` |
+| Path | `optional-skills/mlops/obliteratus` |
 | Version | `2.0.0` |
 | Author | Hermes Agent |
 | License | MIT |
 | Dependencies | `obliteratus`, `torch`, `transformers`, `bitsandbytes`, `accelerate`, `safetensors` |
 | Platforms | linux, macos |
 | Tags | `Abliteration`, `Uncensoring`, `Refusal-Removal`, `LLM`, `Weight-Projection`, `SVD`, `Mechanistic-Interpretability`, `HuggingFace`, `Model-Surgery` |
-| Related skills | [`serving-llms-vllm`](./mlops-inference-serving-llms-vllm.md), [`llama-cpp`](./mlops-inference-llama-cpp.md), [`huggingface-tokenizers`](./mlops-huggingface-tokenizers.md) |
+| Related skills | [`serving-llms-vllm`](../../optional/mlops/mlops-inference-serving-llms-vllm.md), [`llama-cpp`](../../optional/mlops/mlops-inference-llama-cpp.md), [`huggingface-tokenizers`](../../optional/mlops/mlops-huggingface-tokenizers.md) |
 
 ## Reference: full SKILL.md
 

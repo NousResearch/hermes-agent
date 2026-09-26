@@ -33,7 +33,7 @@ def _read_message_body(positional: Optional[str], file_path: Optional[str]) -> O
         if file_path == "-":
             return sys.stdin.read()
         try:
-            return Path(file_path).read_text(encoding="utf-8")
+            return Path(file_path).read_text(encoding="utf-8-sig")
         except UnicodeDecodeError:
             _fail(
                 f"hermes send: {file_path} is not a text file. --file reads the "
@@ -281,10 +281,10 @@ def register_send_subparser(subparsers) -> argparse.ArgumentParser:
             "Examples:\n"
             "  hermes send --to telegram \"deploy finished\"\n"
             "  echo \"RAM 92%\" | hermes send --to telegram:-1001234567890\n"
-            "  hermes send --to discord:#ops --file /tmp/report.md\n"
+            "  hermes send --to discord:#ops --file ./report.md\n"
             "  hermes send --to slack:#eng --subject \"[CI]\" --file build.log\n"
             "  hermes send --to whatsapp:GROUP@g.us --mention 15551234567 \"@15551234567 hello\"\n"
-            "  hermes send --to telegram \"MEDIA:/tmp/chart.png\"   # send a media attachment\n"
+            "  hermes send --to telegram \"MEDIA:./chart.png\"   # send a media attachment\n"
             "  hermes send --list                  # all platforms\n"
             "  hermes send --list telegram         # filter by platform\n"
             "\n"

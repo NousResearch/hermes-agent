@@ -132,12 +132,16 @@ class RateLimitCreditsMixin:
         if not self._credits_notices_enabled() or state is None:
             return
         try:
-            from agent.credits_tracker import evaluate_credits_notices, is_free_tier_model, new_credits_latch
+            from agent.credits_tracker import (
+                evaluate_credits_notices, is_free_tier_model, new_credits_latch, rewarm_pricing_before_depleted_notice,
+            )
             latch = getattr(self, "_credits_latch", None)
             if latch is None:
                 latch = self._credits_latch = new_credits_latch()
             # Free-model gate: a depleted account can still inference on a free model. Local data only.
             model_is_free = is_free_tier_model(getattr(self, "model", "") or "", getattr(self, "base_url", "") or "")
+            if state.depleted and not model_is_free and rewarm_pricing_before_depleted_notice(self):
+                return  # a cold catalog cannot say the model is billed elsewhere; the warm's re-run decides
             to_show, to_clear = evaluate_credits_notices(state, latch, model_is_free=model_is_free)
             for key in to_clear:
                 self._emit_notice_clear(key)

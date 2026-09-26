@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from agent.turn_failure_copy import PARTIAL_FAILED_TURN_NOTICE
+from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, PARTIAL_FAILED_TURN_NOTICE
 
 
 def test_gateway_failure_writer_preserves_accepted_turn_identity(tmp_path):
@@ -228,8 +228,10 @@ def test_fresh_session_agent_flushed_failed_turn_is_closed(tmp_path):
                 response="x", agent_failed_early=True, hidden_reasoning_incomplete=False,
                 is_context_overflow_failure=False,
             )
-        roles = [m["role"] for m in db.get_messages(sid) if m["role"] != "session_meta"]
-        assert roles == ["user", "assistant"]
+        rows = [m for m in db.get_messages(sid) if m["role"] != "session_meta"]
+        assert [m["role"] for m in rows] == ["user", "assistant"]
+        # Typed like the core closer's row, or Desktop reads the boundary as the model's reply.
+        assert rows[-1]["display_kind"] == FAILED_TURN_DISPLAY_KIND
         assert store.transcript_tail_role(sid) == "assistant"
         db.close()
 

@@ -6,6 +6,10 @@ description: "Frequently asked questions and solutions to common issues with Her
 
 # FAQ & Troubleshooting
 
+Python dependency commands on this page use a
+[PM-prepared source checkout](./package-management.md#developer-workflow).
+After a dependency change, reactivate the checkout and restart Hermes.
+
 Quick answers and fixes for the most common questions and issues.
 
 ---
@@ -28,7 +32,7 @@ Hermes Agent works with any OpenAI-compatible API. Supported providers include:
 
 Set your provider with `hermes model` or by editing `~/.hermes/.env`. See the [Environment Variables](./environment-variables.md) reference for all provider keys.
 
-### Does it work on Windows/Android/Termux/my plataform??
+### Does it work on Windows/Android/my platform??
 See **[Platform Support](../getting-started/platform-support.md)** for the full platform availability matrix.
 
 ### I run Hermes in WSL2. What's the best way to control my normal Windows Chrome?
@@ -144,20 +148,19 @@ ls ~/.local/bin/hermes
 The installer adds `~/.local/bin` to your PATH. If you use a non-standard shell config, add `export PATH="$HOME/.local/bin:$PATH"` manually.
 :::
 
-#### Python version too old
+#### Unsupported Python version
 
-**Cause:** Hermes requires Python 3.11 or newer.
+Current first-party installations require **Python 3.14**, not an arbitrary
+newer version. The `>=3.11,<3.15` range in `pyproject.toml` allows older
+installations to run the updater before switching to 3.14; it does not mean
+the current runtime supports 3.11–3.13. The installer and packaged
+distributions provide their pinned interpreter.
 
-**Solution:**
-```bash
-python3 --version   # Check current version
-
-# Install a newer Python
-sudo apt install python3.12   # Ubuntu/Debian
-brew install python@3.12      # macOS
-```
-
-The installer handles this automatically — if you see this error during manual installation, upgrade Python first.
+For a manual source environment, use the
+[development setup](../developer-guide/contributing.md#development-setup).
+Do not replace the interpreter inside an installed app or container.
+For a managed-install error, run `hermes doctor` and use that installation's
+[update method](../getting-started/updating.md).
 
 #### Terminal commands say `node: command not found` (or `nvm`, `pyenv`, `asdf`, …)
 
@@ -229,6 +232,28 @@ To isolate the source:
 4. If an explicit tool error appears, use its exact text when reporting the problem.
 
 See [Security](../user-guide/security.md) for Hermes' documented execution controls and [Providers](../integrations/providers.md) for provider configuration.
+
+#### "…refused this request because of a policy on your account"
+
+**Meaning:** the provider rejected the request for an account-level reason that retrying cannot change — an aggregator's data/privacy settings excluded every endpoint for the model, or the model's upstream provider has blocked the account (for example `this user has been blocked for a previous policy violation`, which OpenRouter can relay inside an otherwise successful HTTP 200 stream). Hermes sends the request once, does not retry it or rotate credentials, and moves to your fallback chain if one is configured.
+
+**Solution:** check the account's status and data/privacy settings with the provider named in the reply, or switch to another model or provider with `/model`. `hermes fallback add` routes future blocks to a backup automatically.
+
+#### "Could not open a stream to `<host>` after N attempts (request X KB)"
+
+**Meaning:** every connect attempt to that endpoint failed before a single stream event arrived, so nothing was billed; the normal retry/fallback chain still runs afterwards. The line names the host actually contacted, how many attempts were made, and the serialized request size — the three things that separate an outage from a request-size limit.
+
+**Solution:** if the request is large (hundreds of KB — long coding sessions reach this once the context grows) and short new chats work, the endpoint or a proxy in front of it is likely rejecting bodies that size: raise its body limit, or run `/compress` to shrink the context. If the request is small, the endpoint is unreachable — check the `base_url`, then retry with `/retry`. `logs/agent.log` records the exception chain for each attempt.
+
+#### Messaging replies: "interrupted mid-request" vs "not running or is unreachable" vs "could not reach"
+
+Chat surfaces (Telegram, Discord, Slack, …) never show the raw transport exception; the gateway maps it to one of three short replies, and the difference tells you where to look:
+
+| Reply | What happened | What to do |
+|---|---|---|
+| "The connection to the AI model service was **interrupted mid-request** — usually transient." | An established connection was cut (`Connection reset by peer`, EOF, `RemoteProtocolError`). The endpoint answered the connect, so it is running. | `/retry`. If it recurs on large requests, see the "stream" entry above. |
+| "The AI model service isn't reachable right now — the configured model endpoint is **not running or is unreachable**." | Nothing accepted the connection (`Connection refused`, no route to host, DNS failure). | Start the model server / check `base_url`, then `/retry`; `hermes doctor` on the host. |
+| "Hermes **could not reach** the AI model service (no further detail from the SDK)." | The SDK reported a generic `APIConnectionError` and kept no cause; neither of the above is certain. | `/retry`; `hermes doctor` if it persists. The raw exception is in `hermes logs`. |
 
 #### `/model` only shows one provider / can't switch providers
 
@@ -322,6 +347,8 @@ If this happens on the first long conversation, Hermes may have the wrong contex
 Look at the CLI startup line — it shows the detected context length (e.g., `📊 Context limit: 128000 tokens`). You can also check with `/usage` during a session.
 
 **Local servers (llama.cpp, Ollama) that go silent instead of erroring:** when a provider rejects a request as too large, Hermes compacts the conversation and rebuilds the request. Hermes re-measures the *complete* rebuilt request (system prompt + tool schemas + messages) before retrying, and runs further bounded compaction passes if it is still over the threshold. If the request still cannot fit, the turn ends with `Context length exceeded: compression could not reduce the rebuilt request below the safe threshold` rather than sending an oversized request that llama.cpp would silently truncate (`stop processing: n_tokens = 65535, truncated = 1` in the server log). If you hit that message, the fix is almost always the configured `context_length` above: make it match the server's actual `-c` / `--ctx-size`.
+
+**"The model server rejected this request as too large, but this conversation is only about N tokens…":** a local server (localhost, LAN, Tailscale) said "context exceeded" without quoting any measurement, while Hermes's own estimate of the request is far below the window it knows for the model — so it does **not** compress or blame the conversation, and the turn stays retryable. On single-slot local servers (LM Studio, Ollama) this is almost always another request holding the server's context at that moment — typically a background memory review from an earlier session (`thread=bg-review` in `logs/agent.log`). Wait a moment and `/retry`. If it recurs with no other Hermes process running, the server is loading the model with a smaller window than Hermes assumes: raise the server's context setting or lower `model.context_length` to match it. Hosted providers never get this message: they have no shared slot to wait out, so the same rejection there means the route's real window is smaller than Hermes assumes, and Hermes compresses and retries instead.
 
 To fix context detection, set it explicitly:
 
@@ -439,7 +466,7 @@ Configure in `~/.hermes/config.yaml` under your gateway's settings. See the [Mes
 **Solution:**
 ```bash
 # Install core messaging gateway dependencies
-cd ~/.hermes/hermes-agent && uv pip install -e ".[messaging]"  # Telegram, Discord, Slack, and shared gateway deps
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['messaging'], explicit=True)"  # Telegram, Discord, Slack, and shared gateway deps
 
 # Check for port conflicts
 lsof -i :8080
@@ -565,14 +592,14 @@ hermes chat --continue
 **Solution:**
 ```bash
 # Ensure MCP dependencies are installed (already included in standard install)
-cd ~/.hermes/hermes-agent && uv pip install -e ".[mcp]"
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['mcp'], explicit=True)"
 
 # For npm-based servers, ensure Node.js is available
 node --version
 npx --version
 
 # Test the server manually
-npx -y @modelcontextprotocol/server-filesystem /tmp
+npx -y @modelcontextprotocol/server-filesystem /path/to/allowed/dir
 ```
 
 Verify your `~/.hermes/config.yaml` MCP configuration:
@@ -772,7 +799,9 @@ Skills with very long descriptions are truncated to 40 characters in the Telegra
    ```bash
    hermes backup
    ```
-   This creates a zip of your entire `~/.hermes/` directory — config, API keys, memories, skills, sessions, and profiles — saved to your home directory as `~/hermes-backup-<timestamp>.zip`.
+   This saves a zip archive at `~/hermes-backup-<timestamp>.zip`.
+   The full backup covers configuration, credentials, memories, skills, sessions,
+   and profiles under the Hermes data root. It is not an application or runtime image.
 
 3. Copy the zip to the new machine and import it:
    ```bash
@@ -799,15 +828,31 @@ hermes profile import ./work-backup.tar.gz work
 
 The imported profile will have all config, memories, sessions, and skills from the export. You may need to update paths or re-authenticate with providers if the new machine has a different setup.
 
-### `hermes backup` vs `hermes profile export`
+### `hermes backup` vs `hermes profile export` {#hermes-backup-vs-hermes-profile-export}
 
 | Feature | `hermes backup` | `hermes profile export` |
 | :--- | :--- | :--- |
 | **Use Case** | **Full machine migration** | **Porting/sharing a specific profile** |
-| **Scope** | Global (entire `~/.hermes` directory) | Local (single profile directory) |
+| **Scope** | Hermes data root, with the exclusions listed below | Single profile directory |
 | **Includes** | All profiles, global config, API keys, sessions | Single profile: SOUL.md, memories, sessions, skills |
 | **Credentials** | **Included** (`.env` and `auth.json`) | **Excluded** (stripped for safe sharing) |
 | **Format** | `.zip` | `.tar.gz` |
+
+The full backup excludes:
+
+- The source checkout, dependency environments, and downloaded tools, models, and runtimes.
+- Build caches, checkpoints, previous backups, and quick snapshots.
+- Browser profiles, including copies of real-browser credentials.
+- Bytecode, SQLite sidecars, `gateway.pid`, `cron.pid`, and `.backup.lock`.
+
+`hermes backup --quick` saves selected state files instead of a full archive.
+It is not a replacement for the full backup before a machine migration.
+
+Full backups report files that fail to copy. An archive can therefore exist
+with missing data. Review the skipped-file report before you remove the source installation.
+Restored package declarations let PM download dependencies again. Bytecode and
+SQLite sidecars regenerate locally. The exclusions do not remove `.env` or
+`auth.json` from the full backup.
 
 **Manual fallback (rsync):** If you prefer to copy files directly, exclude the code repo:
 ```bash

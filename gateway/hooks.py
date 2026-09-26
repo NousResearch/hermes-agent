@@ -16,7 +16,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.config import get_hermes_home
 from hermes_constants import hermes_home_key
@@ -45,7 +45,7 @@ def _load_hook_dir(hook_dir: Path) -> Optional[tuple]:
     manifest_path, handler_path = hook_dir / "HOOK.yaml", hook_dir / "handler.py"
     if not manifest_path.exists() or not handler_path.exists():
         return None
-    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8-sig"))
     if not manifest or not isinstance(manifest, dict):
         return _skip(hook_dir.name, "invalid HOOK.yaml")
     hook_name = manifest.get("name", hook_dir.name)

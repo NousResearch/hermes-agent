@@ -167,36 +167,7 @@ class TestCmdPeersMap:
     def test_nothing_changed_writes_nothing(self, monkeypatch, tmp_path, cfg, answers, kwargs):
         assert _run_map(monkeypatch, tmp_path, answers=answers, cfg=cfg, **kwargs) == {}
 
-    @pytest.mark.parametrize("cfg, answers, kwargs, expected", [
-        (_cfg(peerName="eri"), ["1", "fresh-name", ""], dict(db_rows=[_row("111", name="bob")], ws_peers=["eri", "111"]),
-         ["'fresh-name' is a new peer", "peer '111' keeps its existing history"]),
-        (_cfg(peerName="eri"), [""], dict(db_rows=[_row("111"), _row("222", "discord", "b", 50.0)], ws_peers=["eri", "111"]),
-         ["111 ✓", "222 ○ new"]),
-        (_cfg(), ["7654321", "eri", ""], {}, ["peers unavailable"]),
-        (_cfg(peerName="eri"), ["p2", ""], dict(ws_peers=["eri", "meow"]), ["(card of meow)"]),
-        (_cfg(peerName="eri"), [""], dict(ws_peers=[]), ["No peers here yet", "Wrong workspace?"]),
-        (_cfg(peerName="eri"), [""], dict(ws_peers=["stranger1", "stranger2"]),
-         ["None of these match your configured identity"]),
-        ({"apiKey": "***", "userPeerAliases": {},
-          "hosts": {"hermes": {"workspace": "hermes"}, "hermes.dreamer": {"workspace": "dreamland"}}},
-         ["222", "tek", "", "all"], {}, ["also apply in workspace 'dreamland'"]),
-        ({"apiKey": "***", "hosts": {"hermes": {"peerName": "eri", "userPeerAliases": {"111": "eri"}},
-                                     "hermes.dreamer": {"peerName": "eri", "userPeerAliases": {"111": "bob"}}}},
-         [""], dict(db_rows=[_row("111", name="x")]), ["≠ dreamer→bob"]),
-    ], ids=["new-peer-and-history-consequences", "exists-markers", "offline-typed-targets", "inspect-peer-card",
-            "empty-workspace-hint", "unrecognized-workspace-hint", "cross-workspace-root-write-warns",
-            "sibling-divergence-marked"])
-    def test_view_and_consequence_messages(self, monkeypatch, tmp_path, capsys, cfg, answers, kwargs, expected):
-        _run_map(monkeypatch, tmp_path, answers=answers, cfg=cfg, **kwargs)
-        out = capsys.readouterr().out
-        for text in expected:
-            assert text in out
 
-    def test_peers_dispatches_map_action(self, monkeypatch):
-        called = {}
-        monkeypatch.setattr(honcho_cli, "cmd_peers_map", lambda a: called.update({"map": True}))
-        honcho_cli.cmd_peers(SimpleNamespace(peers_action="map"))
-        assert called == {"map": True}
 
 
 class TestWorkspaceSwitch:

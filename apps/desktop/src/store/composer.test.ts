@@ -2,19 +2,25 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   $composerAttachments,
+  $restoredDraftNotice,
   $voiceConversationStartRequest,
   addComposerAttachment,
+  adoptGoneSessionDraft,
+  announceGoneSessionDraft,
   clearSessionDraft,
   type ComposerAttachment,
   createComposerAttachmentOccurrenceId,
   createComposerAttachmentScope,
+  mainComposerScope,
   migrateSessionDraft,
   removeComposerAttachment,
   requestVoiceConversationStart,
+  revokeAttachmentPreviewUrls,
   SESSION_DRAFTS_STORAGE_KEY,
   stashSessionDraft,
   takeSessionDraft,
   takeVoiceConversationStart,
+  undoRestoredDraft,
   updateComposerAttachment
 } from './composer'
 
@@ -34,6 +40,51 @@ describe('voice conversation start requests', () => {
 function attachment(overrides: Partial<ComposerAttachment> & Pick<ComposerAttachment, 'id'>): ComposerAttachment {
   return { kind: 'file', label: 'doc.pdf', ...overrides }
 }
+
+function stubRevokeObjectURL() {
+  const revokeObjectURL = vi.fn()
+  vi.stubGlobal('URL', { ...URL, revokeObjectURL })
+
+  return revokeObjectURL
+}
+
+describe('blob preview URL ownership handoff', () => {
+  afterEach(() => {
+    $composerAttachments.set([])
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it('direct-submit handoff keeps blob previews across clear, then revokes when the optimistic consumer is discarded', () => {
+    // Mirrors use-composer-submit: clone → clear({ retainPreviewUrls }) → dispatch clone.
+    const revokeObjectURL = stubRevokeObjectURL()
+    const blobUrl = 'blob:hermes-direct-submit-1'
+    addComposerAttachment(attachment({ id: 'image:drop', kind: 'image', label: 'Lattice.png', previewUrl: blobUrl }))
+
+    const submittedAttachments = $composerAttachments.get().map(item => ({ ...item }))
+    mainComposerScope.clear({ retainPreviewUrls: true })
+
+    expect($composerAttachments.get()).toEqual([])
+    expect(revokeObjectURL).not.toHaveBeenCalled()
+    expect(submittedAttachments[0]?.previewUrl).toBe(blobUrl)
+
+    // Optimistic bubble discarded / replaced without restoring into the composer.
+    revokeAttachmentPreviewUrls(submittedAttachments)
+    expect(revokeObjectURL).toHaveBeenCalledWith(blobUrl)
+  })
+
+  it('still revokes blob previews on a normal clear (no handoff)', () => {
+    const revokeObjectURL = stubRevokeObjectURL()
+    const blobUrl = 'blob:hermes-clear-1'
+    const scope = createComposerAttachmentScope()
+    scope.add(attachment({ id: 'image:x', kind: 'image', previewUrl: blobUrl }))
+
+    scope.clear()
+
+    expect(scope.$attachments.get()).toEqual([])
+    expect(revokeObjectURL).toHaveBeenCalledWith(blobUrl)
+  })
+})
 
 describe('updateComposerAttachment', () => {
   afterEach(() => {
@@ -265,6 +316,38 @@ describe('session drafts', () => {
     taken.attachments[0]!.label = 'mutated'
 
     expect(takeSessionDraft('session-a').attachments[0]?.label).toBe('doc.pdf')
+  })
+
+  it('restores a gone session draft only into an EMPTY fresh chat, and Undo puts it back where it was (#111868)', () => {
+    // Never clobber what the user is already typing in the new chat.
+    stashSessionDraft('session-a', 'from the dead session', [])
+    stashSessionDraft(null, 'already composing here', [])
+    announceGoneSessionDraft('session-a')
+
+    expect(adoptGoneSessionDraft()).toBe(false)
+    expect($restoredDraftNotice.get()).toBeNull()
+    expect(takeSessionDraft(null).text).toBe('already composing here')
+    expect(takeSessionDraft('session-a').text).toBe('from the dead session')
+
+    // Empty fresh chat → restored; Undo (text untouched) returns it to the
+    // dead key, so the same recovery path can find it again later.
+    clearSessionDraft(null)
+    announceGoneSessionDraft('session-a')
+
+    expect(adoptGoneSessionDraft()).toBe(true)
+    expect(takeSessionDraft(null).text).toBe('from the dead session')
+    expect(undoRestoredDraft('from the dead session')).toBe(true)
+    expect(takeSessionDraft(null).text).toBe('')
+    expect(takeSessionDraft('session-a').text).toBe('from the dead session')
+    expect($restoredDraftNotice.get()).toBeNull()
+
+    // Once the user has edited the restored text, Undo would destroy their
+    // work: it only dismisses.
+    announceGoneSessionDraft('session-a')
+    adoptGoneSessionDraft()
+
+    expect(undoRestoredDraft('from the dead session, edited')).toBe(false)
+    expect(takeSessionDraft(null).text).toBe('from the dead session')
   })
 
   it('migrates a tip-keyed draft onto the post-compression tip', () => {

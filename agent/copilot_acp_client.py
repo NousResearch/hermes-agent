@@ -14,6 +14,7 @@ import queue
 import re
 import shlex
 import subprocess
+import tempfile
 import threading
 import time
 from collections import deque
@@ -90,7 +91,12 @@ def _acp_supported(command: str, args: list[str]) -> bool | None:
         return cached
     try:
         probe = subprocess.run(
-            [command, "--help"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
+            [command, "--help"],
+            # Explicit codec because text=True alone decodes with the
+            # locale default and crashes on non-ASCII help text under
+            # GBK/CP932 locales.
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=5,
             stdin=subprocess.DEVNULL,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
@@ -103,7 +109,7 @@ def _acp_supported(command: str, args: list[str]) -> bool | None:
 
 
 def _resolve_home_dir() -> str:
-    """Stable HOME for child ACP processes; /tmp as a last resort so the child never starts HOME-less."""
+    """Stable HOME for child ACP processes; the temp dir as a last resort so the child never starts HOME-less."""
     if home := os.environ.get("HOME", "").strip():
         return home
     if (expanded := os.path.expanduser("~")) and expanded != "~":
@@ -111,9 +117,9 @@ def _resolve_home_dir() -> str:
     try:
         import pwd
 
-        return pwd.getpwuid(os.getuid()).pw_dir.strip() or "/tmp"  # windows-footgun: ok — POSIX fallback inside try/except (pwd import fails on Windows)
+        return pwd.getpwuid(os.getuid()).pw_dir.strip() or tempfile.gettempdir()  # windows-footgun: ok — POSIX fallback inside try/except (pwd import fails on Windows)
     except Exception:
-        return "/tmp"
+        return tempfile.gettempdir()
 
 
 def _build_subprocess_env() -> dict[str, str]:
@@ -245,7 +251,7 @@ def _fs_read_text_file(params: dict[str, Any], cwd: str) -> Any:
     if block_error := get_read_block_error(str(path)):
         raise PermissionError(block_error)
     try:
-        content = path.read_text(encoding="utf-8")
+        content = path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         content = ""
     line, limit = params.get("line"), params.get("limit")

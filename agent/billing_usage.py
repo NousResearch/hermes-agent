@@ -16,6 +16,8 @@ import os
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from hermes_time import safe_strftime
+
 logger = logging.getLogger(__name__)
 
 # Below this TOTAL spendable ($) a paid account is flagged "low" — the alert state
@@ -47,13 +49,12 @@ def nous_logged_in() -> bool:
 
 
 def fetch_nous_account(timeout: float):
-    """Wall-clock-bounded fresh portal account fetch. Raises on failure/timeout."""
-    import concurrent.futures
-    import contextvars
-    from hermes_cli.nous_account import get_nous_portal_account_info
-    context = contextvars.copy_context()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(context.run, get_nous_portal_account_info, force_fresh=True).result(timeout=timeout)
+    """Wall-clock-bounded fresh portal account fetch. Raises on failure/timeout.
+
+    Shares the one bounded implementation so a stalled portal releases the
+    /billing surface at ``timeout`` too (see ``_fetch_portal_account``)."""
+    from agent.account_usage import _fetch_portal_account
+    return _fetch_portal_account(timeout)
 
 
 def format_renews(value: Optional[str]) -> Optional[str]:
@@ -71,7 +72,7 @@ def format_renews(value: Optional[str]) -> Optional[str]:
         except ValueError:
             return text
     # %-d isn't portable to Windows; build the day without a leading zero.
-    return f"{dt.strftime('%b')} {dt.day}, {dt.year}"
+    return f"{safe_strftime(dt, '%b')} {dt.day}, {dt.year}"
 
 
 @dataclass(frozen=True)

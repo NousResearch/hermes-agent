@@ -66,7 +66,7 @@ async def test_queued_followup_persists_authored_text():
     note = discord_triggering_note("6002")
     runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value=f"{note}\n\nthe follow-up")
     runner._reply_anchor_for_event = MagicMock(return_value=None)
-    runner._adapter_for_source = MagicMock(return_value=None)
+    runner._delivery_adapter_for = MagicMock(return_value=None)
     runner._refresh_agent_cache_message_count = AsyncMock()
     source = _discord_source()
     turn_ctx = SimpleNamespace(
@@ -76,6 +76,7 @@ async def test_queued_followup_persists_authored_text():
     )
     pending_event = SimpleNamespace(
         source=source, message_id="6002", channel_prompt=None, message_type=None, internal=False, metadata={},
+        reply_expected=None,
     )
 
     await GatewayRunner._run_agent_queued_followup(

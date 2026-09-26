@@ -277,6 +277,16 @@ Hermes acknowledges inbound messages immediately:
 
 This makes it obvious when the bot has seen your message versus when it's still working on a response.
 
+To opt out, set it in `~/.hermes/config.yaml` (on by default):
+
+```yaml
+# ~/.hermes/config.yaml
+whatsapp_cloud:
+  send_read_receipts: false
+```
+
+Disabling read receipts also disables the typing indicator — Meta's Cloud API only exposes the indicator as part of the mark-as-read request, so there is no way to show "typing…" without also marking the message read.
+
 ### Voice messages
 
 WhatsApp distinguishes between a "voice note" (the green waveform bubble) and a generic audio file attachment. The difference is purely codec: voice notes need to be `audio/ogg` with `opus` encoding.
@@ -405,8 +415,8 @@ This uses your Nous Portal access token instead of needing a separate OpenAI key
 | Groups | Full support | DMs only (v1) |
 | 24h window | No restriction | Hard rule — templates required after |
 | Voice notes (out) | Native | Native with ffmpeg, MP3 fallback otherwise |
-| Read receipts | No | Yes (blue double-checkmarks) |
-| Typing indicator | No | Yes (auto-dismisses on response) |
+| Read receipts | Opt-in (`send_read_receipts`, default off) | On by default (disable with `send_read_receipts: false` in `config.yaml`) |
+| Typing indicator | No | Yes (auto-dismisses on response; off when read receipts are disabled) |
 | Interactive buttons | Text fallback only | Native (clarify, approval, slash-confirm) |
 | Production use | Risky (Meta can ban) | Designed for it |
 

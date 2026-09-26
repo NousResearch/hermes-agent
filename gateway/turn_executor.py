@@ -1,4 +1,4 @@
-"""Unbounded executor for gateway turn bodies (see ``_TURN_MAX_WORKERS`` in gateway/run.py)."""
+"""Unbounded executor for gateway turn bodies (see ``GatewayRunner._get_executor`` in gateway/run.py)."""
 
 from __future__ import annotations
 

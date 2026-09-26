@@ -58,12 +58,6 @@ _TELEGRAM_CONNECT_TIMEOUT_SECS_DEFAULT = 180.0
 # offline update queue, #46621).
 _TELEGRAM_INITIAL_CONNECT_TIMEOUT_SECS_DEFAULT = 45.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
-# Size of the pool that runs turn bodies (blocking agent work). ``None`` = unbounded: a turn body
-# holds its thread for the whole turn (every tool call blocks), so a finite pool silently queued
-# already-accepted turns behind running ones. Actual bound: one live turn per session, plus turns
-# abandoned by the inactivity timeout (run_turn keeps no handle; their thread runs to completion).
-# ``max_concurrent_sessions`` is the only admission cap and is unset by default.
-_TURN_MAX_WORKERS = None
 # Size of the separate pool for best-effort session HOUSEKEEPING; why it is separate: _run_housekeeping_in_executor.
 _HOUSEKEEPING_MAX_WORKERS = 4
 
@@ -4317,7 +4311,7 @@ class GatewayRunner(
         return await loop.run_in_executor(
             self._get_housekeeping_executor(), copy_context().run, func, *args)
 
-    def _get_or_create_pool(self, attr: str, max_workers: Optional[int], prefix: str) -> concurrent.futures.Executor:
+    def _get_or_create_pool(self, attr: str, make_pool: Callable[[], concurrent.futures.Executor]) -> concurrent.futures.Executor:
         """Return (creating under ``_executor_lock``) the pool at ``attr``; one lock + closing flag fences both."""
         lock = getattr(self, "_executor_lock", None)
         if lock is None:
@@ -4328,20 +4322,28 @@ class GatewayRunner(
                 raise RuntimeError("Gateway is shutting down; executor unavailable")
             executor = getattr(self, attr, None)
             if executor is None or getattr(executor, "_shutdown", False):
-                if max_workers is None:
-                    executor = _UnboundedThreadExecutor(thread_name_prefix=prefix)
-                else:
-                    executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=prefix)
+                executor = make_pool()
                 setattr(self, attr, executor)
             return executor
 
     def _get_executor(self) -> concurrent.futures.Executor:
-        """Return the gateway-owned executor for blocking agent work."""
-        return GatewayRunner._get_or_create_pool(self, "_executor", _TURN_MAX_WORKERS, "hermes-gateway")
+        """Return the gateway-owned, UNBOUNDED executor for turn bodies and other blocking agent work.
+
+        A turn body holds its thread for the whole turn (every tool call blocks), so a finite pool
+        silently queued already-accepted turns behind running ones. Actual bound: one live turn per
+        session, plus turns abandoned by the inactivity timeout (run_turn keeps no handle; their
+        thread runs to completion). ``max_concurrent_sessions`` is the only admission cap and is
+        unset by default.
+        """
+        return GatewayRunner._get_or_create_pool(
+            self, "_executor", lambda: _UnboundedThreadExecutor(thread_name_prefix="hermes-gateway"))
 
     def _get_housekeeping_executor(self) -> concurrent.futures.ThreadPoolExecutor:
         """Return the gateway-owned executor for best-effort session housekeeping."""
-        return GatewayRunner._get_or_create_pool(self, "_housekeeping_executor", _HOUSEKEEPING_MAX_WORKERS, "hermes-gateway-hk")
+        return GatewayRunner._get_or_create_pool(
+            self, "_housekeeping_executor",
+            lambda: concurrent.futures.ThreadPoolExecutor(
+                max_workers=_HOUSEKEEPING_MAX_WORKERS, thread_name_prefix="hermes-gateway-hk"))
 
     @staticmethod
     def _stop_pool(executor) -> list:

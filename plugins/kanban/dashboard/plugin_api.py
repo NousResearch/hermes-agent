@@ -336,6 +336,56 @@ def get_board(
 _read_board = coalesced_read(get_board)
 
 
+# --- GET /board/all ---------------------------------------------------------
+
+def _all_boards_payload(tenant: Optional[str] = None, include_archived: bool = False) -> dict:
+    """Shared cross-board query (#121549 "All boards"): the same columns from
+    every non-archived board, each card tagged with its board ``slug`` so the
+    dashboard can label cards, filter by board, and aggregate the attention
+    banner across boards. Per-board cards come from :func:`get_board` so the
+    single-board and cross-board views cannot drift.
+
+    Read-only first step; one sequential full-board read per board
+    (# ponytail: O(boards) sequential reads - parallelize if installs grow)."""
+    columns: dict[str, list[dict]] = {}
+    tenants: list[str] = []
+    assignees: list[str] = []
+    latest_event_id = 0
+    for meta in kanban_db.list_boards(include_archived=False):
+        slug = meta["slug"]
+        try:
+            payload = get_board(
+                tenant=tenant, include_archived=include_archived, board=slug,
+                workflow_template_id=None, current_step_key=None)
+        except Exception as exc:
+            # One unreadable board must not blank the whole cross-board view.
+            log.warning("cross-board read of %r failed: %s", slug, exc)
+            continue
+        latest_event_id = max(latest_event_id, int(payload["latest_event_id"]))
+        for col in payload["columns"]:
+            bucket = columns.setdefault(col["name"], [])
+            for task in col["tasks"]:
+                task["board"] = slug
+            bucket.extend(col["tasks"])
+        tenants.extend(name for name in payload["tenants"] if name not in tenants)
+        assignees.extend(name for name in payload["assignees"] if name not in assignees)
+
+    # The same two stable sorts as GET /board's done column, reapplied over
+    # the merged list ("completed_at DESC NULLS LAST, id DESC").
+    done = columns.get("done", [])
+    done.sort(key=lambda d: d["id"], reverse=True)
+    done.sort(key=lambda d: (d["completed_at"] is None, -(d["completed_at"] or 0)))
+
+    names = list(BOARD_COLUMNS) + (["archived"] if include_archived else [])
+    return {
+        "columns": [{"name": name, "tasks": columns.get(name, [])} for name in names],
+        "tenants": tenants,
+        "assignees": assignees,
+        "latest_event_id": latest_event_id,
+        "now": int(time.time()),
+    }
+
+
 @router.get("/board")
 async def get_board_endpoint(
     tenant: Optional[str] = Query(None, description="Filter to a single tenant"),
@@ -352,6 +402,17 @@ async def get_board_endpoint(
         workflow_template_id=workflow_template_id,
         current_step_key=current_step_key,
     )
+
+
+@router.get("/board/all")
+def get_all_boards(
+    tenant: Optional[str] = Query(None, description="Filter to a single tenant"),
+    include_archived: bool = Query(False),
+):
+    """Every non-archived board's cards in one payload, each card tagged with
+    its ``board`` slug. Backs the dashboard's "All boards" selector option
+    (#121549); read-only first step."""
+    return _all_boards_payload(tenant=tenant, include_archived=include_archived)
 
 
 # --- GET /tasks/:id ---------------------------------------------------------

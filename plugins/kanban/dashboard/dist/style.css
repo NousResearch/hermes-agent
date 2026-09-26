@@ -293,6 +293,16 @@
   padding: 0.05rem 0.3rem !important;
 }
 
+/* "All boards" view: a card's board-slug tag; click filters to that board. */
+.hermes-kanban-board-tag {
+  font-size: 0.6rem !important;
+  padding: 0.05rem 0.3rem !important;
+  cursor: pointer;
+}
+.hermes-kanban-board-tag:hover {
+  background: color-mix(in srgb, var(--color-ring) 18%, transparent);
+}
+
 /* Board-level project binding readout in the board switcher; the × unbinds. */
 .hermes-kanban-board-project-unbind {
   margin-left: 0.25rem;

@@ -1,0 +1,18 @@
+name: honcho
+repo: https://github.com/plastic-labs/honcho
+sha: f014a64306bac21f233f51a8e5cddf94a704f62d
+subdir: hermes-plugin-honcho
+version: "1.0.0"
+description: Honcho AI-native memory provider — cross-session user modeling with dialectic Q&A, semantic
+  search, and persistent conclusions. Maintained by Plastic Labs; the same provider that shipped in-tree.
+maintainer: plastic-labs
+tier: community
+category: memory
+docs_url: https://github.com/plastic-labs/honcho/tree/main/hermes-plugin-honcho#readme
+capabilities:
+  provides_tools: []
+  provides_hooks:
+  - on_session_end
+  provides_middleware: []
+  requires_env:
+  - HONCHO_API_KEY

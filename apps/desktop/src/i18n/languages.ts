@@ -1,3 +1,5 @@
+import { LOCALE_ENDONYMS } from '@hermes/shared/i18n'
+
 import { normalize } from '@/lib/text'
 
 import type { Locale } from './types'
@@ -7,33 +9,57 @@ export const DEFAULT_LOCALE: Locale = 'en'
 export const LOCALE_OPTIONS = [
   {
     id: 'en',
-    name: 'English',
+    name: LOCALE_ENDONYMS.en,
     englishName: 'English',
     configValue: 'en'
   },
   {
     id: 'zh',
-    name: '简体中文',
+    name: LOCALE_ENDONYMS.zh,
     englishName: 'Simplified Chinese',
     configValue: 'zh'
   },
   {
     id: 'zh-hant',
-    name: '繁體中文',
+    name: LOCALE_ENDONYMS['zh-hant'],
     englishName: 'Traditional Chinese',
     configValue: 'zh-hant'
   },
   {
     id: 'ja',
-    name: '日本語',
+    name: LOCALE_ENDONYMS.ja,
     englishName: 'Japanese',
     configValue: 'ja'
   },
   {
     id: 'ar',
-    name: 'العربية',
+    name: LOCALE_ENDONYMS.ar,
     englishName: 'Arabic',
     configValue: 'ar'
+  },
+  {
+    id: 'ru',
+    name: LOCALE_ENDONYMS.ru,
+    englishName: 'Russian',
+    configValue: 'ru'
+  },
+  {
+    id: 'fr',
+    name: LOCALE_ENDONYMS.fr,
+    englishName: 'French',
+    configValue: 'fr'
+  },
+  {
+    id: 'de',
+    name: LOCALE_ENDONYMS.de,
+    englishName: 'German',
+    configValue: 'de'
+  },
+  {
+    id: 'es',
+    name: LOCALE_ENDONYMS.es,
+    englishName: 'Spanish',
+    configValue: 'es'
   }
 ] as const satisfies readonly { configValue: string; englishName: string; id: Locale; name: string }[]
 
@@ -79,7 +105,49 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   'ar-eg': 'ar',
   ar_eg: 'ar',
   arabic: 'ar',
-  العربية: 'ar'
+  العربية: 'ar',
+  ru: 'ru',
+  'ru-ru': 'ru',
+  ru_ru: 'ru',
+  'ru-by': 'ru',
+  'ru-kz': 'ru',
+  russian: 'ru',
+  'russian-russian': 'ru',
+  русский: 'ru',
+  руский: 'ru',
+  fr: 'fr',
+  'fr-fr': 'fr',
+  fr_fr: 'fr',
+  'fr-be': 'fr',
+  fr_be: 'fr',
+  'fr-ca': 'fr',
+  fr_ca: 'fr',
+  'fr-ch': 'fr',
+  fr_ch: 'fr',
+  french: 'fr',
+  français: 'fr',
+  francais: 'fr',
+  de: 'de',
+  'de-de': 'de',
+  de_de: 'de',
+  'de-at': 'de',
+  de_at: 'de',
+  'de-ch': 'de',
+  de_ch: 'de',
+  german: 'de',
+  deutsch: 'de',
+  es: 'es',
+  'es-es': 'es',
+  es_es: 'es',
+  'es-mx': 'es',
+  es_mx: 'es',
+  'es-ar': 'es',
+  es_ar: 'es',
+  'es-419': 'es',
+  es_419: 'es',
+  spanish: 'es',
+  español: 'es',
+  espanol: 'es'
 }
 
 export function isLocale(value: unknown): value is Locale {
@@ -96,6 +164,32 @@ export function normalizeLocale(value: unknown): Locale {
 
 export function isSupportedLocaleValue(value: unknown): boolean {
   return typeof value === 'string' && LOCALE_ALIASES[normalize(value)] != null
+}
+
+/** OS tags can include regions absent from the picker aliases, such as ru-UA. */
+export function osPreferredLocale(tag: string | null | undefined): Locale | null {
+  if (!tag) {
+    return null
+  }
+
+  const exact = LOCALE_ALIASES[normalize(tag)]
+
+  if (exact) {
+    return exact
+  }
+
+  const base = tag.split(/[-_]/)[0]
+
+  return (base && LOCALE_ALIASES[normalize(base)]) || null
+}
+
+/** An explicit choice must win even when it differs from the OS language. */
+export function resolveInitialLocale(saved: string | null | undefined, osLocale: string | null | undefined): Locale {
+  if (isSupportedLocaleValue(saved)) {
+    return normalizeLocale(saved)
+  }
+
+  return osPreferredLocale(osLocale) ?? DEFAULT_LOCALE
 }
 
 export function localeConfigValue(locale: Locale): string {

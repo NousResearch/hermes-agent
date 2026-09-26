@@ -101,6 +101,45 @@ describe('useRouteResume', () => {
     expect(resumeSession).not.toHaveBeenCalled()
   })
 
+  it('honors an explicit resume request on /:sid even while a fresh draft is staged', () => {
+    // A gateway/profile switch stages a fresh draft (wipeSessionListsForGatewaySwitch)
+    // but deliberately leaves the URL on /:sid. In that state pathnameChanged,
+    // gatewayBecameOpen and stuckOnRoutedSession are all false, so an explicit
+    // request (plugin/SDK reselect, 4001 recovery) is the ONLY lever left — it
+    // must still fire. Filtering doomed ids happens at requestSessionResume and
+    // resumeSession, not by guessing from freshDraftReady.
+    const resumeSession = vi.fn(async () => undefined)
+    const startFreshSessionDraft = vi.fn()
+    const activeSessionIdRef: MutableRefObject<null | string> = { current: null }
+    const creatingSessionRef = { current: false }
+    const runtimeIdByStoredSessionIdRef = { current: new Map<string, string>() }
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: null }
+
+    const props = {
+      activeSessionId: null,
+      activeSessionIdRef,
+      creatingSessionRef,
+      currentView: 'chat',
+      freshDraftReady: true,
+      gatewayState: 'open',
+      locationPathname: '/session-1',
+      resumeSession,
+      routedSessionId: 'session-1',
+      runtimeIdByStoredSessionIdRef,
+      selectedStoredSessionId: null,
+      selectedStoredSessionIdRef,
+      startFreshSessionDraft
+    }
+
+    const { rerender } = render(<RouteResumeHarness {...props} />)
+
+    resumeSession.mockClear()
+
+    rerender(<RouteResumeHarness {...props} sessionResumeRequest={{ sequence: 1, sessionId: 'session-1' }} />)
+
+    expect(resumeSession).toHaveBeenCalledWith('session-1', true)
+  })
+
   it('self-heals a stranded routed session (null selected/active, same pathname, not a fresh draft)', () => {
     const resumeSession = vi.fn(async () => undefined)
     const startFreshSessionDraft = vi.fn()
@@ -388,6 +427,58 @@ describe('useRouteResume', () => {
 
     expect(resumeSession).toHaveBeenCalledTimes(1)
     expect(resumeSession).toHaveBeenCalledWith('session-2', true)
+  })
+
+  it('preserves an active new-chat session when the gateway reconnects (#53374)', () => {
+    const resumeSession = vi.fn(async () => undefined)
+    const startFreshSessionDraft = vi.fn()
+    const activeSessionIdRef: MutableRefObject<null | string> = { current: 'runtime-1' }
+    const creatingSessionRef = { current: false }
+    const runtimeIdByStoredSessionIdRef = { current: new Map<string, string>() }
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: null }
+
+    // First render: gateway CLOSED on the new-chat route with an active runtime
+    // session (the machine just woke; the WS dropped mid-chat).
+    const { rerender } = render(
+      <RouteResumeHarness
+        activeSessionId="runtime-1"
+        activeSessionIdRef={activeSessionIdRef}
+        creatingSessionRef={creatingSessionRef}
+        currentView="chat"
+        freshDraftReady={false}
+        gatewayState="closed"
+        locationPathname="/"
+        resumeSession={resumeSession}
+        routedSessionId={null}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId={null}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        startFreshSessionDraft={startFreshSessionDraft}
+      />
+    )
+
+    // Sleep/wake: the gateway reopens, nothing navigated. The active chat must
+    // survive — no forced fresh draft, no new session.
+    rerender(
+      <RouteResumeHarness
+        activeSessionId="runtime-1"
+        activeSessionIdRef={activeSessionIdRef}
+        creatingSessionRef={creatingSessionRef}
+        currentView="chat"
+        freshDraftReady={false}
+        gatewayState="open"
+        locationPathname="/"
+        resumeSession={resumeSession}
+        routedSessionId={null}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId={null}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        startFreshSessionDraft={startFreshSessionDraft}
+      />
+    )
+
+    expect(startFreshSessionDraft).not.toHaveBeenCalled()
+    expect(resumeSession).not.toHaveBeenCalled()
   })
 
   it('does not re-resume the old session when the new profile gateway opens before /new commits (#68594)', () => {

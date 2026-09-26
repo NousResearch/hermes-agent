@@ -18,7 +18,8 @@ import {
   resolveGatedDownloadAuth,
   resolveJsonBody,
   resolveOauthRestAuth,
-  resolveReadinessProbeAuth
+  resolveReadinessProbeAuth,
+  shouldRotateNativeTokenAfterRejection
 } from './native-auth-decisions'
 
 // --- 1. body encoding (guards the double-JSON.stringify 422) ---
@@ -170,4 +171,34 @@ test('resolveGatedDownloadAuth uses the session token for token and local modes'
   })
   assert.deepEqual(resolveGatedDownloadAuth('local', null, 'sess'), { kind: 'token', token: 'sess' })
   assert.deepEqual(resolveGatedDownloadAuth(undefined, null, null), { kind: 'token', token: null })
+})
+
+// --- 7. forced native rotation after a bearer rejection (#95701) ---
+
+test('shouldRotateNativeTokenAfterRejection: only a structured 401 earns the one forced refresh', () => {
+  // The gate never rotates a native bearer server-side, so a 401 on a
+  // locally-unexpired access token is ambiguous until /auth/native/refresh
+  // has run once.
+  assert.equal(
+    shouldRotateNativeTokenAfterRejection(Object.assign(new Error('401: expired'), { statusCode: 401 })),
+    true
+  )
+  assert.equal(shouldRotateNativeTokenAfterRejection({ statusCode: 401 }), true)
+})
+
+test('shouldRotateNativeTokenAfterRejection: 403, 5xx, transport, and anonymous errors never rotate', () => {
+  // 403 is a policy refusal for an identity the gate recognized — a fresh
+  // bearer for the same identity cannot change it.
+  assert.equal(
+    shouldRotateNativeTokenAfterRejection(Object.assign(new Error('403: forbidden'), { statusCode: 403 })),
+    false
+  )
+  assert.equal(shouldRotateNativeTokenAfterRejection(Object.assign(new Error('503: down'), { statusCode: 503 })), false)
+  assert.equal(shouldRotateNativeTokenAfterRejection(Object.assign(new Error('reset'), { code: 'ECONNRESET' })), false)
+  // The pre-fix fetchJson shape: a "401: ..." message with no statusCode says
+  // nothing structured about the credential and must not trigger rotation.
+  assert.equal(shouldRotateNativeTokenAfterRejection(new Error('401: {"error":"session_expired"}')), false)
+  assert.equal(shouldRotateNativeTokenAfterRejection(null), false)
+  assert.equal(shouldRotateNativeTokenAfterRejection(undefined), false)
+  assert.equal(shouldRotateNativeTokenAfterRejection('401'), false)
 })

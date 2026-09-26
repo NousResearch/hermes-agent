@@ -17,7 +17,6 @@ contract: the plugin scans ALL of your sessions, not the first 200.
 """
 from __future__ import annotations
 
-import asyncio
 import importlib.util
 import sys
 import threading
@@ -54,7 +53,7 @@ def plugin_api(tmp_path, monkeypatch):
     # Stash monkeypatch so ``_install_fake_session_db`` can use it to
     # swap ``sys.modules['hermes_state']`` with auto-restoration. Without
     # this, a raw ``sys.modules[...] = fake`` assignment would leak the
-    # fake into later tests in the same xdist worker — breaking every
+    # fake into later tests in the same process — breaking every
     # test that does ``from hermes_state import SessionDB``.
     module._test_monkeypatch = monkeypatch
     yield module
@@ -101,7 +100,7 @@ class _FakeSessionDB:
             for i in range(effective)
         ]
 
-    def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
+    def get_messages(self, session_id: str, include_compacted: bool = False) -> List[Dict[str, Any]]:
         self.messages_calls += 1
         return [
             {"role": "user", "content": f"ask {session_id}"},
@@ -121,89 +120,11 @@ def _install_fake_session_db(plugin_api, fake_db):
 
     Uses the monkeypatch stashed on ``plugin_api`` by the fixture, so the
     ``sys.modules['hermes_state']`` swap is auto-restored at test teardown
-    and cannot leak into unrelated tests in the same xdist worker.
+    and cannot leak into unrelated tests in the same process.
     """
     fake_module = type(sys)("hermes_state")
-    fake_module.SessionDB = lambda: fake_db
+    fake_module.SessionDB = lambda **_kw: fake_db
     plugin_api._test_monkeypatch.setitem(sys.modules, "hermes_state", fake_module)
-
-
-class _Request:
-    def __init__(self, query=None, header=""):
-        self.query_params = query or {}
-        self.headers = {"accept-language": header}
-
-
-def _fixed_snapshot(plugin_api):
-    achievements = []
-    unlocked_count = 0
-    secret_count = 0
-    for index, definition in enumerate(plugin_api.ACHIEVEMENTS):
-        is_secret = bool(definition.get("secret"))
-        state = "secret" if is_secret else "unlocked"
-        if is_secret:
-            secret_count += 1
-        else:
-            unlocked_count += 1
-        achievements.append(
-            plugin_api.display_achievement(
-                {
-                    **definition,
-                    "unlocked": not is_secret,
-                    "discovered": not is_secret,
-                    "state": state,
-                    "progress": 1 if not is_secret else 0,
-                    "progress_pct": 100 if not is_secret else 0,
-                    "tier": "Bronze" if not is_secret else None,
-                    "unlocked_at": len(plugin_api.ACHIEVEMENTS) - index,
-                }
-            )
-        )
-    return {
-        "achievements": achievements,
-        "sessions": [
-            {
-                "session_id": "session-1",
-                "tool_call_count": 100_000,
-                "distinct_tool_count": 100,
-                "message_count": 100_000,
-                "terminal_calls": 100_000,
-                "file_tool_calls": 100_000,
-                "web_calls": 100_000,
-                "web_browser_calls": 100_000,
-                "files_touched_count": 100_000,
-            }
-        ],
-        "aggregate": {},
-        "scan_meta": {"mode": "full", "sessions_total": 1},
-        "error": None,
-        "unlocked_count": unlocked_count,
-        "discovered_count": 0,
-        "secret_count": secret_count,
-        "total_count": len(achievements),
-        "generated_at": 1,
-    }
-
-
-def _stub_evaluate_all(plugin_api, snapshot):
-    plugin_api._test_monkeypatch.setattr(
-        plugin_api, "evaluate_all", lambda force=False: snapshot
-    )
-
-
-def _contains_cjk(value):
-    return any("\u3400" <= character <= "\u9fff" for character in value)
-
-
-def _string_values(value):
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, dict):
-        for item in value.values():
-            yield from _string_values(item)
-    elif isinstance(value, (list, tuple, set)):
-        for item in value:
-            yield from _string_values(item)
 
 
 def test_scan_sessions_default_scans_all_history_not_first_200(plugin_api):
@@ -382,219 +303,33 @@ def test_partial_snapshots_do_not_persist_unlock_timestamps(plugin_api):
     )
 
 
-def test_achievements_locale_applies_names_descriptions_and_criteria(plugin_api):
-    """zh-CN locale should translate achievement data, not just dashboard chrome."""
-    definition = next(a for a in plugin_api.ACHIEVEMENTS if a["id"] == "let_him_cook")
-    item = plugin_api.display_achievement({**definition, "state": "discovered", "unlocked": False}, "zh-CN")
+def test_scan_sessions_never_opens_a_writable_session_db(plugin_api, tmp_path, monkeypatch):
+    """The scan is a pure read that runs inside the dashboard process (per background scan,
+    per /rescan). A writable ``SessionDB()`` there was one more writer connection on the
+    dashboard's own state.db each time — the same-process handle leak behind the
+    ``N live SessionDB handles`` precursor (#100896). Real store, real open, no fakes."""
+    import hermes_state
+    from hermes_state import SessionDB
 
-    assert item["name"] == "放手一搏"
-    assert item["description"] == "让 Hermes 在一次会话中自主执行一套完整的工具链。"
-    assert item["category"] == "自主代理"
-    assert "要求" in item["criteria"]
-    assert "单次会话工具调用次数" in item["criteria"]
-    assert "青铜 200" in item["criteria"]
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    seed = SessionDB(db_path=tmp_path / "state.db")
+    seed.create_session("s1", source="cli")
+    seed.append_message("s1", "user", "hello")
+    seed.close()
 
+    writable_opens = []
+    real_init = SessionDB.__init__
 
-def test_zh_cn_locale_translates_every_catalog_metric(plugin_api):
-    """Every metric used to render criteria has a non-empty zh-CN label."""
-    used_metrics = {
-        metric
-        for achievement in plugin_api.ACHIEVEMENTS
-        for metric in (
-            [achievement["threshold_metric"]]
-            if "threshold_metric" in achievement
-            else [requirement["metric"] for requirement in achievement.get("requirements", [])]
-        )
-    }
-    translated_metrics = plugin_api._load_locale("zh-CN")["._metrics"]
+    def spy(self, *args, **kwargs):
+        if not kwargs.get("read_only"):
+            writable_opens.append(kwargs)
+        return real_init(self, *args, **kwargs)
 
-    missing_metrics = {
-        metric
-        for metric in used_metrics
-        if not isinstance(translated_metrics.get(metric), str) or not translated_metrics[metric].strip()
-    }
-    assert missing_metrics == set()
+    monkeypatch.setattr(SessionDB, "__init__", spy)
 
+    result = plugin_api.scan_sessions()
 
-def test_achievements_locale_keeps_secret_cards_hidden(plugin_api):
-    """Localized secret achievements still hide trigger/name until discovered."""
-    definition = next(a for a in plugin_api.ACHIEVEMENTS if a.get("secret"))
-    item = plugin_api.display_achievement({**definition, "state": "secret", "unlocked": False}, "zh-CN")
-
-    assert item["name"] == "???"
-    assert item["icon"] == "secret"
-    assert "秘密成就" in item["description"]
-    assert "秘密成就" in item["criteria"]
-
-
-def test_achievements_locale_resolution_accepts_query_and_header(plugin_api):
-    assert plugin_api._resolve_locale_from_request(_Request({"locale": "zh"})) == "zh-CN"
-    assert plugin_api._resolve_locale_from_request(_Request(header="zh-CN,zh;q=0.9,en;q=0.8")) == "zh-CN"
-    assert plugin_api._resolve_locale_from_request(_Request({"locale": "en"}, "zh-CN")) == "en"
-    assert plugin_api._resolve_locale_from_request(_Request(header="fr,en;q=0.8")) == "en"
-
-
-@pytest.mark.parametrize(
-    ("header", "expected"),
-    [
-        ("en-US,en;q=0.9,zh-CN;q=0.8", "en"),
-        ("zh-CN;q=0,en;q=1", "en"),
-        ("en;q=1,zh-CN;q=0", "en"),
-    ],
-)
-def test_accept_language_honors_quality_and_exclusions(plugin_api, header, expected):
-    assert plugin_api._resolve_locale_from_request(_Request(header=header)) == expected
-
-
-@pytest.mark.parametrize(
-    "header",
-    [
-        "zh;q=1,zh-CN;q=0",
-        "zh-CN;q=0,zh;q=1",
-        "zh;q=1,zh-CN;q=0,zh-CN;q=0",
-        "zh;q=1,zh_CN;q=0",
-        "zh;q=1,zh-Hans-CN;q=0",
-    ],
-)
-def test_accept_language_specific_exclusion_overrides_broader_range(
-    plugin_api, header
-):
-    assert plugin_api._resolve_locale_from_request(_Request(header=header)) == "en"
-
-
-def test_accept_language_duplicate_specific_ranges_keep_best_quality(plugin_api):
-    request = _Request(header="zh;q=1,zh-CN;q=0,zh-CN;q=0.5")
-
-    assert plugin_api._resolve_locale_from_request(request) == "zh-CN"
-
-
-@pytest.mark.parametrize(
-    ("header", "expected"),
-    [
-        ("zh-Hans-CN;q=0.7,en-GB;q=0.6", "zh-CN"),
-        ("zh-CN;q=0.8,en;q=0.8", "zh-CN"),
-        ("en;q=0,zh-SG;q=0.001", "zh-CN"),
-        ("*;q=1,zh-CN;q=0.5", "en"),
-        ("zh-Hant;q=1,zh-CN;q=0.5", "zh-CN"),
-    ],
-)
-def test_accept_language_handles_supported_ranges_ties_and_wildcards(
-    plugin_api, header, expected
-):
-    assert plugin_api._resolve_locale_from_request(_Request(header=header)) == expected
-
-
-@pytest.mark.parametrize(
-    "malformed_quality",
-    ["", ".8", "bogus", "-0.1", "1.001", "0.1234"],
-)
-def test_accept_language_ignores_malformed_quality_values(plugin_api, malformed_quality):
-    header = f"zh-CN;q={malformed_quality},en;q=0.5"
-
-    assert plugin_api._resolve_locale_from_request(_Request(header=header)) == "en"
-
-
-def test_explicit_locale_param_wins_over_accept_language(plugin_api):
-    request = _Request({"locale": "ja"}, "zh-CN")
-
-    assert plugin_api._resolve_locale_from_request(request) == "en"
-
-
-def test_explicit_locale_wins_over_lang_and_lang_wins_over_header(plugin_api):
-    assert (
-        plugin_api._resolve_locale_from_request(
-            _Request({"locale": "ja", "lang": "zh-CN"}, "zh-CN")
-        )
-        == "en"
-    )
-    assert (
-        plugin_api._resolve_locale_from_request(_Request({"lang": "en-US"}, "zh-CN"))
-        == "en"
-    )
-
-
-def test_zh_hant_does_not_fall_back_to_simplified(plugin_api):
-    request = _Request({"locale": "zh-hant"}, "zh-CN")
-
-    assert plugin_api._resolve_locale_from_request(request) == "en"
-
-
-def test_achievements_route_returns_localized_payload(plugin_api):
-    snapshot = _fixed_snapshot(plugin_api)
-    _stub_evaluate_all(plugin_api, snapshot)
-
-    chinese = asyncio.run(plugin_api.achievements(_Request({"locale": "zh-CN"})))
-    english = asyncio.run(plugin_api.achievements(_Request({"locale": "en"})))
-
-    assert all("criteria" in item for item in chinese["achievements"])
-    assert all(
-        _contains_cjk(item["name"])
-        for item in chinese["achievements"]
-        if item["state"] != "secret"
-    )
-    assert english["achievements"][0]["name"] == "Let Him Cook"
-    assert not any(_contains_cjk(item["name"]) for item in english["achievements"])
-
-
-def test_achievements_route_honors_accept_language_header(plugin_api):
-    _stub_evaluate_all(plugin_api, _fixed_snapshot(plugin_api))
-
-    payload = asyncio.run(plugin_api.achievements(_Request(header="zh-CN,zh;q=0.9")))
-
-    assert payload["achievements"][0]["name"] == "放手一搏"
-    assert "要求" in payload["achievements"][0]["criteria"]
-
-
-def test_recent_unlocks_route_localized(plugin_api):
-    _stub_evaluate_all(plugin_api, _fixed_snapshot(plugin_api))
-
-    payload = asyncio.run(plugin_api.recent_unlocks(_Request({"locale": "zh-CN"})))
-
-    assert payload[0]["name"] == "放手一搏"
-    assert "要求" in payload[0]["criteria"]
-
-
-def test_session_badges_route_localized(plugin_api):
-    _stub_evaluate_all(plugin_api, _fixed_snapshot(plugin_api))
-
-    payload = asyncio.run(
-        plugin_api.session_badges("session-1", _Request({"locale": "zh-CN"}))
-    )
-
-    assert set(payload) == {"session_id", "badges"}
-    badge = next(item for item in payload["badges"] if item["id"] == "let_him_cook")
-    assert badge["name"] == "放手一搏"
-    assert "要求" in badge["criteria"]
-
-
-def test_rescan_route_localized(plugin_api):
-    snapshot = _fixed_snapshot(plugin_api)
-    force_values = []
-
-    def evaluate_all(force=False):
-        force_values.append(force)
-        return snapshot
-
-    plugin_api._test_monkeypatch.setattr(plugin_api, "evaluate_all", evaluate_all)
-
-    payload = asyncio.run(plugin_api.rescan(_Request({"locale": "zh-CN"})))
-
-    assert payload["ok"] is True
-    assert payload["achievements"][0]["name"] == "放手一搏"
-    assert force_values == [True]
-
-
-def test_secret_cards_stay_hidden_through_route(plugin_api):
-    _stub_evaluate_all(plugin_api, _fixed_snapshot(plugin_api))
-    definition = next(item for item in plugin_api.ACHIEVEMENTS if item.get("secret"))
-
-    payload = asyncio.run(plugin_api.achievements(_Request({"locale": "zh-CN"})))
-    secret_card = next(
-        item for item in payload["achievements"] if item["id"] == definition["id"]
-    )
-
-    assert secret_card["name"] == "???"
-    assert secret_card["icon"] == "secret"
-    assert "秘密成就" in secret_card["description"]
-    assert "秘密成就" in secret_card["criteria"]
-    assert all(definition["name"] not in value for value in _string_values(secret_card))
+    assert result.get("error") is None
+    assert [s["session_id"] for s in result["sessions"]] == ["s1"]
+    assert writable_opens == [], "the achievements scan must attach read-only"

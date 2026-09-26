@@ -40,17 +40,36 @@ Prebuilt installers are built and distributed via [the Hermes Desktop website.](
 
 ## Updating
 
-The app checks for updates in the background and offers a one-click update when one is ready. You can also update any time from the CLI:
+Update through the owner of the installed artifact: Windows App Installer for
+sideload MSIX, Microsoft Store for Store packages, and `electron-updater` for
+macOS bundles. Source-built apps use the checkout update handoff.
 
-```bash
-hermes update
-```
+`hermes update` updates managed source checkouts; it does not rewrite a bundled
+payload. See [BUILDING.md](BUILDING.md) for package and release contracts.
 
 ---
 
+## Screenshot shortcut (macOS)
+
+Enable **Settings → Keyboard Shortcuts → Screenshot shortcut**, then press the
+left and right Command keys together in any app. Hermes captures that app's
+frontmost window and attaches the image to the last-active Hermes composer,
+including split-pane chats. It does not send the draft or capture the whole
+screen. Release both keys before taking another screenshot.
+
+The shortcut is off by default and saved only on this Mac. macOS requires
+**Input Monitoring** and **Screen & System Audio Recording** permission; the
+settings row links to the relevant system pane and offers Retry. If macOS asks
+to restart the app after granting access, do so before retrying. Review the
+attachment before sending, especially when the captured window is sensitive.
+
 ## Requirements
 
-The installer handles everything for you (Python 3.11+, a portable Git, ripgrep).
+Bundled packages provide Python 3.14 and their supported dependencies.
+Source/bootstrap builds have a separate preparation path. Platform-native
+requirements, including system Git on POSIX, are described in [BUILDING.md](BUILDING.md).
+macOS source builds also require Xcode Command Line Tools to compile the native
+shortcut helper. Prebuilt installers include it; no compiler is needed at runtime.
 
 ---
 
@@ -68,9 +87,9 @@ Point the app at a specific source checkout, or sandbox it away from your real c
 
 ```bash
 # throwaway HERMES_HOME, separate Electron userData, distinct app name to avoid the single-instance lock
-../scripts/dev-sandbox.sh npm run dev
+../../scripts/dev-sandbox.sh npm run dev
 HERMES_DESKTOP_HERMES_ROOT=/path/to/clone npm run dev
-HERMES_HOME=/tmp/throwaway npm run dev
+HERMES_HOME=$HOME/.hermes/cache/scratch/throwaway npm run dev
 npm run dev:fake-boot   # exercise the startup overlay with deterministic delays
 ```
 
@@ -78,19 +97,22 @@ npm run dev:fake-boot   # exercise the startup overlay with deterministic delays
 
 ```bash
 npm run dist:mac     # DMG + zip
-npm run dist:win     # NSIS + MSI
+npm run dist:win     # MSIX
 npm run dist:linux   # AppImage + deb + rpm
 npm run pack         # unpacked app under release/ (no installer)
 ```
 
-Installers are built and uploaded to GitHub Releases manually. macOS/Windows signing & notarization happen automatically when the relevant credentials are present in the environment (`CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_*` for macOS, `WIN_CSC_*` for Windows).
+These are ordinary packaging commands, not complete tagged payload builds.
+Use [BUILDING.md](BUILDING.md) for the native bundled builder, Azure/Apple
+signing, R2 artifact publication, and release gates. The current release matrix
+publishes Windows and macOS packages; Linux desktop legs are disabled.
 
 ### How it works
 
-The packaged app ships the Electron shell and a native React chat surface. On
-first launch it can install the Hermes Agent runtime into `HERMES_HOME`
-(`~/.hermes`, or `%LOCALAPPDATA%\hermes` on Windows), using the same layout as a
-CLI install.
+The bundled app carries the Electron shell, native React chat surface, and
+local agent payload. It runs the payload directly from resources. User data
+lives in `HERMES_HOME` outside the app. Bootstrap builds instead provision a
+source installation; Light is a remote-only variant without a local runtime.
 
 The app has three boundaries:
 
@@ -102,16 +124,13 @@ The app has three boundaries:
   `tui_gateway` JSON-RPC/WebSocket API. The renderer connects through
   [`apps/shared`](../shared/), which is also used by the browser dashboard.
 
-Backend resolution is an ordered ladder:
+A bundled artifact uses its payload. If that payload is unusable, the app
+reports damage rather than installing a second checkout. It does not adopt
+an arbitrary `hermes` command on PATH or a system Python installation.
 
-1. `HERMES_DESKTOP_HERMES_ROOT`
-2. the current source checkout during development
-3. a completed managed install
-4. `HERMES_DESKTOP_HERMES`, or `hermes` on `PATH`
-5. a system Python that can import the Hermes runtime
-6. the first-launch bootstrap installer
-
-Candidates are probed before use; an existing shim or interpreter is not enough.
+Non-bundled builds can use the explicit source-root override, development
+checkout, completed managed install, or `HERMES_DESKTOP_HERMES` deployment
+override before offering bootstrap. Candidates are probed before use.
 A runtime that predates `serve` falls back to headless
 `dashboard --no-open`. This is compatibility for the backend command only and
 does not launch or embed the dashboard UI.
@@ -147,6 +166,32 @@ In remote mode the gateway host is the execution boundary: agent tools,
 terminal commands, and file operations run against the remote Hermes host, not
 the computer displaying the Desktop UI.
 
+Remote gateways that sit behind an access proxy may require extra headers on
+every HTTP and WebSocket request. Configure them per connection in Settings →
+Connections (Extra gateway headers), or add a `headers` object to Desktop's
+Electron `userData/connection.json` remote block:
+
+```json
+{
+  "mode": "remote",
+  "remote": {
+    "url": "https://hermes.example.com",
+    "authMode": "token",
+    "token": { "encoding": "safeStorage", "value": "..." },
+    "headers": {
+      "CF-Access-Client-Id": { "encoding": "safeStorage", "value": "..." },
+      "CF-Access-Client-Secret": { "encoding": "safeStorage", "value": "..." }
+    }
+  }
+}
+```
+
+Per-profile remote entries under `profiles[name].headers` use the same shape.
+Desktop applies these headers only to matching remote gateway requests, treats
+`https` and `wss` as the same gateway origin for WebSocket upgrades, and drops
+transport- or Hermes-managed header names such as `Authorization`, `Cookie`,
+`Host`, `Origin`, `Referer`, and `X-Hermes-Session-Token`.
+
 Projects are the workspace abstraction. A project may own multiple folders,
 repositories, worktrees, and sessions; a bare new chat remains detached unless
 the user enters a project or configures a default project directory. Use the
@@ -156,7 +201,9 @@ Changing profiles or connection modes is a soft workspace switch, not another
 cold boot. The shell and current management overlay remain mounted while
 gateway-bound nanostores are wiped, query-backed data is invalidated, and the
 new connection repopulates skeletons. This prevents rows or transcripts from
-the previous gateway bleeding into the next one.
+the previous gateway bleeding into the next one. Switching changes only the
+foreground view and request route: it does not cancel turns or stop a backend,
+and retained background sockets continue receiving events from running jobs.
 
 ### Verification
 

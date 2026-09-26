@@ -13,11 +13,13 @@ import {
   HUD_SURFACE,
   HUD_TEXT
 } from '@/app/floating-hud'
+import { SESSION_IMPORT_ROUTE } from '@/app/routes'
 import { codiconIcon } from '@/components/ui/codicon'
 import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import { HighlightMatches } from '@/components/ui/highlight-matches'
 import { KbdCombo } from '@/components/ui/kbd'
 import { getHermesConfigRecord, listAllProfileSessions } from '@/hermes'
+import { useMediaQuery } from '@/hooks/use-media-query'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import {
@@ -44,6 +46,7 @@ import {
   Package,
   Palette,
   PawPrint,
+  Pin,
   Plus,
   RefreshCw,
   Settings,
@@ -55,6 +58,7 @@ import {
   Wrench,
   Zap
 } from '@/lib/icons'
+import { getServers } from '@/lib/mcp-servers'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { resolveVersionStatus } from '@/lib/version-status'
@@ -62,14 +66,18 @@ import { $repoWorktrees } from '@/store/coding-status'
 import {
   $commandPaletteOpen,
   $commandPalettePage,
+  $commandPaletteSeed,
   closeCommandPalette,
   setCommandPaletteOpen
 } from '@/store/command-palette'
 import { $bindings, bindingsFor } from '@/store/keybinds'
-import { $dismissedAutoProjectIds, filterVisibleProjects } from '@/store/layout'
+import { $dismissedAutoProjectIds, $pinnedSessionIds, filterVisibleProjects } from '@/store/layout'
 import { openPetGenerate } from '@/store/pet-generate'
+import { openBrowserTab } from '@/store/preview'
 import { $projectTree, goToProject, openFolderAsProject, requestStartWorkSession } from '@/store/projects'
-import { $connection } from '@/store/session'
+import { $connection, $cronSessions, $messagingSessions, $sessions } from '@/store/session'
+import { $unconfirmedPinWrites } from '@/store/session-pin-sync'
+import { $removedSessionIds } from '@/store/session-removal'
 import { runGatewayRestart } from '@/store/system-actions'
 import {
   $backendUpdateApply,
@@ -84,10 +92,12 @@ import { luminance } from '@/themes/color'
 import { type ThemeMode, useTheme } from '@/themes/context'
 import { isUserTheme, resolveTheme } from '@/themes/user-themes'
 
-import { openSession, openSessionIntentFromModifiers } from '../open-session'
+import { buildSessionByAnyId, resolvePinnedSessions } from '../chat/sidebar/session-index'
+import { openSessionFromPicker, openSessionIntentFromModifiers } from '../open-session'
 import {
   AGENTS_ROUTE,
   ARTIFACTS_ROUTE,
+  CAPABILITIES_ROUTE,
   COMMAND_CENTER_ROUTE,
   CRON_ROUTE,
   MESSAGING_ROUTE,
@@ -95,14 +105,14 @@ import {
   NEW_CHAT_ROUTE,
   PROFILES_ROUTE,
   SETTINGS_ROUTE,
-  SKILLS_ROUTE,
   STARMAP_ROUTE
 } from '../routes'
-import { FIELD_LABELS, SECTIONS } from '../settings/constants'
-import { fieldCopyForSchemaKey } from '../settings/field-copy'
-import { prettyName } from '../settings/helpers'
+import { SECTIONS } from '../settings/constants'
+import { type SettingsSearchEntry, settingsSearchTargetQuery } from '../settings/settings-search'
+import { useSettingsSearchCatalog } from '../settings/use-settings-search'
 
 import { usePaletteContributions } from './contrib'
+import { HighlightWatcher } from './highlight-watcher'
 import { MarketplaceThemePage } from './marketplace-theme-page'
 import { PetInlineToggle, PetPalettePage } from './pet-palette-page'
 
@@ -125,6 +135,11 @@ interface PaletteItem {
   label: string
   /** Label shown while ⌘/⌃ is held — previews the modifier-variant action. */
   modLabel?: string
+  /**
+   * Runs when the row becomes the cmdk highlight (arrow keys or hover). When
+   * a row has no onHighlight, a highlight on it clears the live preview.
+   */
+  onHighlight?: () => void
   /**
    * When set, ⌘/⌃-select (or ⌘-Enter) opens a new tab and ⇧⌘-select pops a
    * window — matching sidebar session rows. Plain select stays in-place.
@@ -240,8 +255,8 @@ const rankGroups = (groups: PaletteGroup[], search: string): PaletteGroup[] => {
     .map(entry => entry.group)
 }
 
-// cmdk selection values must be unique; labels alone can repeat (the same
-// theme lists under both Light and Dark). The id suffix disambiguates.
+// cmdk selection values must be unique; labels alone can repeat (a settings
+// field and a session can share a title). The id suffix disambiguates.
 const paletteValue = (item: PaletteItem): string => `${item.label}\u0001${item.id}`
 
 const EMPTY_GROUPS: PaletteGroup[] = []
@@ -382,16 +397,13 @@ const toSessionEntry = (session: SessionRow): SessionEntry => ({
   title: sessionTitle(session)
 })
 
+// Search terms beyond the label: the preview and branch, so a session is
+// findable by what it's about, not only what it's called.
+const sessionKeywords = (session: SessionEntry, ...tags: string[]): string[] =>
+  [...tags, 'chat', 'session', session.preview, session.git_branch].filter((word): word is string => !!word)
+
 type NonConfigSettingsLabel =
-  | 'about'
-  | 'archivedChats'
-  | 'gateway'
-  | 'keysSettings'
-  | 'keysTools'
-  | 'mcp'
-  | 'plugins'
-  | 'providerAccounts'
-  | 'providerApiKeys'
+  'about' | 'archivedChats' | 'gateway' | 'keysSettings' | 'keysTools' | 'mcp' | 'providerAccounts' | 'providerApiKeys'
 
 const NON_CONFIG_SETTINGS: ReadonlyArray<{
   icon: IconComponent
@@ -411,7 +423,24 @@ const NON_CONFIG_SETTINGS: ReadonlyArray<{
     labelKey: 'providerApiKeys',
     tab: 'providers&pview=keys'
   },
-  { icon: Globe, keywords: ['connection', 'messaging'], labelKey: 'gateway', tab: 'gateway' },
+  {
+    icon: Globe,
+    // The Connections registry merged into the unified Gateways page.
+    keywords: [
+      'connection',
+      'connections',
+      'messaging',
+      'remote',
+      'multi',
+      'instances',
+      'ssh',
+      'cloud',
+      'add gateway',
+      'registry'
+    ],
+    labelKey: 'gateway',
+    tab: 'gateway'
+  },
   {
     icon: KeyRound,
     keywords: ['api', 'secrets', 'tokens', 'credentials', 'browser', 'search'],
@@ -423,12 +452,6 @@ const NON_CONFIG_SETTINGS: ReadonlyArray<{
     keywords: ['gateway', 'proxy', 'server', 'webhook', 'env', 'egress proxy', 'iron proxy'],
     labelKey: 'keysSettings',
     tab: 'keys&kview=settings'
-  },
-  {
-    icon: Package,
-    keywords: ['plugins', 'extensions', 'desktop plugins', 'addon', 'add-on'],
-    labelKey: 'plugins',
-    tab: 'plugins'
   },
   { icon: Archive, keywords: ['history', 'archived'], labelKey: 'archivedChats', tab: 'sessions' },
   { icon: Info, keywords: ['version', 'about'], labelKey: 'about', tab: 'about' }
@@ -524,14 +547,29 @@ export function CommandPalette() {
 function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   const { t } = useI18n()
   const pendingPage = useStore($commandPalettePage)
+  const pendingSeed = useStore($commandPaletteSeed)
   const bindings = useStore($bindings)
   const worktrees = useStore($repoWorktrees)
   const projectTree = useStore($projectTree)
   const dismissedAutoProjects = useStore($dismissedAutoProjectIds)
   const navigate = useNavigate()
-  const { availableThemes, mode, resolvedMode, setMode, setTheme, themeName } = useTheme()
+
+  const { availableThemes, clearThemePreview, mode, previewTheme, resolvedMode, setMode, setTheme, themeName } =
+    useTheme()
+
+  // Mode rows preview like theme rows do: paint the committed skin at the
+  // highlighted brightness. `system` has to be resolved here — previewTheme
+  // paints a concrete light/dark.
+  const systemDark = useMediaQuery('(prefers-color-scheme: dark)')
+
+  const resolveThemeMode = useCallback(
+    (target: ThemeMode): 'light' | 'dark' => (target === 'system' ? (systemDark ? 'dark' : 'light') : target),
+    [systemDark]
+  )
+
   const [search, setSearch] = useState('')
   const [page, setPage] = useState<string | null>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
 
   // The Update row names the same install the statusbar names — same target
   // selection, same resolver. Reduced to the label string: an in-flight apply
@@ -605,28 +643,68 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   // reopen paints from cache and revalidates in the background.
   const configQuery = useQuery({
     queryKey: ['command-palette', 'config'],
-    queryFn: getHermesConfigRecord
+    queryFn: () => getHermesConfigRecord()
   })
 
+  // staleTime 0 (not the 60s client default): renames, pins, and archives
+  // happen in the sidebar while this component is unmounted, so nothing can
+  // invalidate these keys — every open must revalidate. The cached page
+  // still paints instantly; the live-store overlay below covers the gap.
   const sessionsQuery = useQuery({
     queryKey: ['command-palette', 'sessions'],
-    queryFn: () => listAllProfileSessions(200, 1, 'exclude')
+    queryFn: () => listAllProfileSessions(200, 1, 'exclude'),
+    staleTime: 0
   })
 
   const archivedQuery = useQuery({
     queryKey: ['command-palette', 'archived'],
-    queryFn: () => listAllProfileSessions(200, 0, 'only')
+    queryFn: () => listAllProfileSessions(200, 0, 'only'),
+    staleTime: 0
   })
 
-  const mcpServers = useMemo(() => {
-    const raw = configQuery.data?.mcp_servers
+  const liveSessions = useStore($sessions)
+  const liveCronSessions = useStore($cronSessions)
+  const liveMessagingSessions = useStore($messagingSessions)
+  const pinnedSessionIds = useStore($pinnedSessionIds)
+  const unconfirmedPinWrites = useStore($unconfirmedPinWrites)
+  const removedSessionIds = useStore($removedSessionIds)
 
-    return raw && typeof raw === 'object' && !Array.isArray(raw)
-      ? Object.keys(raw as Record<string, unknown>).sort()
-      : []
-  }, [configQuery.data])
+  // getServers is the shared choke point that also drops malformed (null/
+  // scalar) entries, so the palette never lists a server the MCP tab dropped.
+  const mcpServers = useMemo(() => Object.keys(getServers(configQuery.data ?? null)).sort(), [configQuery.data])
 
-  const sessions = useMemo(() => (sessionsQuery.data?.sessions ?? []).map(toSessionEntry), [sessionsQuery.data])
+  // The sidebar's stores are where a rename / pin / archive lands first (the
+  // server page confirms later). Overlay them on the fetched 200-row page so
+  // the palette says what the sidebar says: same title, same pin, and no row
+  // the user just archived or deleted.
+  const liveRows = useMemo(() => {
+    const byId = new Map(
+      [...liveCronSessions, ...liveMessagingSessions, ...liveSessions].map(row => [row.id, row] as const)
+    )
+
+    return (sessionsQuery.data?.sessions ?? [])
+      .filter(session => !removedSessionIds.has(session.id))
+      .map(session => {
+        const live = byId.get(session.id)
+
+        return live ? { ...session, pinned: live.pinned, title: live.title } : session
+      })
+  }, [liveCronSessions, liveMessagingSessions, liveSessions, removedSessionIds, sessionsQuery.data])
+
+  // Same resolution as the sidebar's Pinned section: local pin order first,
+  // then server-flagged pins, minus our own in-flight unpins.
+  const pinnedSessions = useMemo(() => {
+    const byAnyId = buildSessionByAnyId(liveRows, [], [])
+
+    return resolvePinnedSessions(pinnedSessionIds, byAnyId, liveRows, unconfirmedPinWrites).map(toSessionEntry)
+  }, [liveRows, pinnedSessionIds, unconfirmedPinWrites])
+
+  const sessions = useMemo(() => {
+    const pinned = new Set(pinnedSessions.map(session => session.id))
+
+    return liveRows.filter(session => !pinned.has(session.id)).map(toSessionEntry)
+  }, [liveRows, pinnedSessions])
+
   const archivedSessions = useMemo(() => (archivedQuery.data?.sessions ?? []).map(toSessionEntry), [archivedQuery.data])
 
   // Search/sub-page are local to a mount, and this component remounts per open
@@ -640,6 +718,24 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     }
   }, [pendingPage])
 
+  // Landing on a page (deep-link open onto Settings, drilling into a submenu,
+  // stepping back out) must leave the filter typeable immediately — the whole
+  // point of the pill/⌘K hand-off is "just start typing". Radix only
+  // autofocuses on mount; a page swap re-renders the same input, and the
+  // back-button click moves focus to the button.
+  useEffect(() => {
+    inputRef.current?.focus()
+  }, [page])
+
+  // Type-to-search hand-off: the keystroke that opened the palette (typing on
+  // the Settings page) prefills the filter so the first character isn't lost.
+  useEffect(() => {
+    if (pendingSeed !== null) {
+      setSearch(pendingSeed)
+      $commandPaletteSeed.set(null)
+    }
+  }, [pendingSeed])
+
   const go = useCallback((path: string) => () => navigateToWorkspacePage(navigate, path), [navigate])
 
   // Sessions: plain select = open beside what's already loaded (focus existing
@@ -648,7 +744,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   // sidebar, minus the sidebar's licence to spend main.
   const goSession = useCallback(
     (sessionId: string) => (event?: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) => {
-      openSession(sessionId, navigate, openSessionIntentFromModifiers(event, 'stack'))
+      openSessionFromPicker(sessionId, navigate, openSessionIntentFromModifiers(event, 'stack'))
     },
     [navigate]
   )
@@ -663,14 +759,6 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   const settingsSectionLabel = useCallback(
     (section: (typeof SECTIONS)[number]) => t.settings.sections[section.id] ?? section.label,
     [t.settings.sections]
-  )
-
-  const configFieldLabel = useCallback(
-    (key: string) =>
-      fieldCopyForSchemaKey(t.settings.fieldLabels, key) ??
-      fieldCopyForSchemaKey(FIELD_LABELS, key) ??
-      prettyName(key.split('.').pop() ?? key),
-    [t.settings.fieldLabels]
   )
 
   // Running a keepOpen row (a toggle) changes state the rows themselves report,
@@ -777,12 +865,12 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             run: go(SETTINGS_ROUTE)
           },
           {
-            action: 'nav.skills',
+            action: 'nav.capabilities',
             icon: Wrench,
             id: 'nav-skills',
             keywords: ['skills', 'tools', 'toolsets', 'mcp', 'capabilities'],
-            label: cc.nav.skills.title,
-            run: go(SKILLS_ROUTE)
+            label: cc.nav.capabilities.title,
+            run: go(CAPABILITIES_ROUTE)
           },
           {
             action: 'nav.messaging',
@@ -851,6 +939,13 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             run: go(`${COMMAND_CENTER_ROUTE}?section=sessions`)
           },
           {
+            icon: Download,
+            id: 'session-import',
+            keywords: ['import', 'claude', 'codex', 'conversation'],
+            label: t.sessionImport.action,
+            run: go(SESSION_IMPORT_ROUTE)
+          },
+          {
             icon: Activity,
             id: 'cc-system',
             keywords: ['command center', 'system', 'status', 'logs'],
@@ -878,6 +973,21 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             keywords: ['update', 'upgrade', 'hermes', 'version', 'system', 'restart'],
             label: cc.updateHermes,
             run: () => requestActiveUpdate()
+          },
+          {
+            icon: RefreshCw,
+            id: 'cc-reload-window',
+            keywords: ['reload', 'window', 'refresh', 'restart', 'ui', 'stuck'],
+            label: cc.reloadWindow,
+            run: () => window.location.reload()
+          },
+          {
+            action: 'view.showBrowser',
+            icon: codiconIcon('globe'),
+            id: 'cc-open-browser',
+            keywords: ['browser', 'web', 'url', 'address', 'open', 'navigate', 'internet', 'site'],
+            label: cc.openBrowser,
+            run: () => openBrowserTab()
           }
         ]
       },
@@ -955,6 +1065,26 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   // The long, granular lists (settings fields, API keys, MCP servers, archived
   // chats) only surface once the user types — otherwise they'd bury the
   // navigation entries on an empty palette.
+  //
+  // Settings results are the DEEP catalog (schema-driven config fields,
+  // appearance controls, stored credentials — the same entries the Settings
+  // page serves), not a hardcoded key list: ⌘K is the de-facto settings
+  // search everywhere, so root and the settings page must agree. The body
+  // mounts per open, so the catalog queries fire on open and stay warm.
+  const settingsCatalog = useSettingsSearchCatalog(true)
+
+  const settingsEntryItem = useCallback(
+    (entry: SettingsSearchEntry): PaletteItem => ({
+      detail: entry.context,
+      icon: entry.icon,
+      id: `sp-${entry.id}`,
+      keywords: [entry.context, entry.description ?? '', ...entry.keywords],
+      label: entry.label,
+      run: go(`${SETTINGS_ROUTE}?${settingsSearchTargetQuery(entry.target)}`)
+    }),
+    [go]
+  )
+
   const searchGroups = useMemo<PaletteGroup[]>(() => {
     if (!search.trim()) {
       return []
@@ -1000,7 +1130,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     // Deep-link straight to a Capabilities sub-tab. The root "Go to" entry only
     // lands on the top-level Skills view; typing "mcp"/"tools"/"skills" should
     // jump to the exact tab (matches the "not just the top lvl" ask).
-    const capLabel = t.commandCenter.nav.skills.title
+    const capLabel = t.commandCenter.nav.capabilities.title
 
     result.push({
       heading: capLabel,
@@ -1010,21 +1140,28 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
           id: 'cap-skills',
           keywords: ['skills', 'capabilities'],
           label: `${capLabel}: ${t.skills.tabSkills}`,
-          run: go(`${SKILLS_ROUTE}?tab=skills`)
+          run: go(`${CAPABILITIES_ROUTE}?tab=skills`)
         },
         {
           icon: SlidersHorizontal,
           id: 'cap-toolsets',
           keywords: ['tools', 'toolsets', 'capabilities'],
           label: `${capLabel}: ${t.skills.tabToolsets}`,
-          run: go(`${SKILLS_ROUTE}?tab=toolsets`)
+          run: go(`${CAPABILITIES_ROUTE}?tab=toolsets`)
         },
         {
           icon: Layers3,
-          id: 'cap-mcp',
-          keywords: ['mcp', 'servers', 'tools', 'capabilities', 'model context protocol'],
-          label: `${capLabel}: ${t.skills.tabMcp}`,
-          run: go(`${SKILLS_ROUTE}?tab=mcp`)
+          id: 'cap-connectors',
+          keywords: ['connectors', 'apps', 'mcp', 'servers', 'tools', 'capabilities', 'model context protocol'],
+          label: `${capLabel}: ${t.connectorsPage.title}`,
+          run: go(`${CAPABILITIES_ROUTE}?tab=connectors`)
+        },
+        {
+          icon: Package,
+          id: 'cap-plugins',
+          keywords: ['plugins', 'extensions', 'desktop plugins', 'agent plugins', 'catalog', 'addon', 'add-on'],
+          label: `${capLabel}: ${t.skills.tabPlugins}`,
+          run: go(`${CAPABILITIES_ROUTE}?tab=plugins`)
         }
       ]
     })
@@ -1034,21 +1171,32 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     // can't render the current light/dark mode, flip to the one it supports.
     result.push({
       heading: t.settings.appearance.themeTitle,
-      items: availableThemes.map(theme => ({
-        active: themeName === theme.name,
-        icon: Palette,
-        id: `search-theme-${theme.name}`,
-        keepOpen: true,
-        keywords: ['theme', 'appearance', 'color', 'skin', theme.name, theme.description],
-        label: theme.label,
-        run: () => {
-          setTheme(theme.name)
+      items: availableThemes.map(theme => {
+        // Same mode fixup as run(): if a theme cannot render the current
+        // light/dark, preview (and commit) in the one mode it supports.
+        const previewMode = themeSupportsMode(theme.name, resolvedMode)
+          ? resolvedMode
+          : resolvedMode === 'dark'
+            ? 'light'
+            : 'dark'
 
-          if (!themeSupportsMode(theme.name, resolvedMode)) {
-            setMode(resolvedMode === 'dark' ? 'light' : 'dark')
+        return {
+          active: themeName === theme.name,
+          icon: Palette,
+          id: `search-theme-${theme.name}`,
+          keepOpen: true,
+          keywords: ['theme', 'appearance', 'color', 'skin', theme.name, theme.description],
+          label: theme.label,
+          onHighlight: () => previewTheme(theme.name, previewMode),
+          run: () => {
+            setTheme(theme.name)
+
+            if (!themeSupportsMode(theme.name, resolvedMode)) {
+              setMode(previewMode)
+            }
           }
         }
-      }))
+      })
     })
 
     // Switch light/dark/system directly (typing "dark" shouldn't require the
@@ -1062,9 +1210,25 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
         keepOpen: true,
         keywords: ['appearance', 'color mode', 'brightness', entry.mode, t.settings.modeOptions[entry.mode].label],
         label: t.settings.modeOptions[entry.mode].label,
+        onHighlight: () => previewTheme(themeName, resolveThemeMode(entry.mode)),
         run: () => setMode(entry.mode)
       }))
     })
+
+    // Pinned before Sessions: rankGroups' stable sort keeps source order on
+    // equal scores, so a pin wins a tie with an unpinned row of the same name.
+    if (pinnedSessions.length > 0) {
+      result.push({
+        heading: t.sidebar.pinned,
+        items: pinnedSessions.map(session => ({
+          icon: Pin,
+          id: `pinned-${session.id}`,
+          keywords: sessionKeywords(session, 'pinned'),
+          label: session.title,
+          runWithEvent: goSession(session.id)
+        }))
+      })
+    }
 
     if (sessions.length > 0) {
       result.push({
@@ -1072,29 +1236,43 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
         items: sessions.map(session => ({
           icon: MessageCircle,
           id: `session-${session.id}`,
-          keywords: [
-            'chat',
-            'session',
-            ...(session.preview ? [session.preview] : []),
-            ...(session.git_branch ? [session.git_branch] : [])
-          ],
+          keywords: sessionKeywords(session),
           label: session.title,
           runWithEvent: goSession(session.id)
         }))
       })
     }
 
-    const fieldItems = SECTIONS.flatMap(section =>
-      section.keys.map(key => ({
-        icon: section.icon,
-        id: `field-${key}`,
-        keywords: ['settings', key, section.label, settingsSectionLabel(section)],
-        label: `${settingsSectionLabel(section)}: ${configFieldLabel(key)}`,
-        run: go(`${SETTINGS_ROUTE}?tab=config:${section.id}&field=${encodeURIComponent(key)}`)
-      }))
-    )
+    const fieldItems = [
+      ...settingsCatalog.subpageEntries,
+      ...settingsCatalog.settingEntries,
+      ...settingsCatalog.configEntries
+    ].map(settingsEntryItem)
 
-    result.push({ heading: t.commandCenter.settingsFields, items: fieldItems })
+    if (fieldItems.length > 0) {
+      result.push({ heading: t.commandCenter.settingsFields, items: fieldItems })
+    }
+
+    if (settingsCatalog.pluginEntries.length > 0) {
+      result.push({
+        heading: t.skills.tabPlugins,
+        items: settingsCatalog.pluginEntries.map(entry => ({
+          detail: entry.context,
+          icon: entry.icon,
+          id: `sp-${entry.id}`,
+          keywords: [entry.context, entry.description ?? '', ...entry.keywords],
+          label: entry.label,
+          run: go(`${CAPABILITIES_ROUTE}?tab=plugins&plugin=${encodeURIComponent(entry.plugin)}`)
+        }))
+      })
+    }
+
+    if (settingsCatalog.credentialEntries.length > 0) {
+      result.push({
+        heading: t.settings.nav.apiKeys,
+        items: settingsCatalog.credentialEntries.map(settingsEntryItem)
+      })
+    }
 
     if (mcpServers.length > 0) {
       result.push({
@@ -1104,7 +1282,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
           id: `mcp-${name}`,
           keywords: ['mcp', 'server', 'tool'],
           label: name,
-          run: go(`${SKILLS_ROUTE}?tab=mcp&server=${encodeURIComponent(name)}`)
+          run: go(`${CAPABILITIES_ROUTE}?tab=connectors&server=${encodeURIComponent(name)}`)
         }))
       })
     }
@@ -1115,13 +1293,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
         items: archivedSessions.map(session => ({
           icon: Archive,
           id: `archived-${session.id}`,
-          keywords: [
-            'archived',
-            'chat',
-            'session',
-            ...(session.preview ? [session.preview] : []),
-            ...(session.git_branch ? [session.git_branch] : [])
-          ],
+          keywords: sessionKeywords(session, 'archived'),
           label: session.title,
           run: go(`${SETTINGS_ROUTE}?tab=sessions&session=${encodeURIComponent(session.id)}`)
         }))
@@ -1132,17 +1304,20 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   }, [
     archivedSessions,
     availableThemes,
-    configFieldLabel,
     go,
     goSession,
     mcpServers,
     mode,
+    pinnedSessions,
+    previewTheme,
     resolvedMode,
+    resolveThemeMode,
     search,
     sessions,
     setMode,
     setTheme,
-    settingsSectionLabel,
+    settingsCatalog,
+    settingsEntryItem,
     t,
     themeName
   ])
@@ -1155,6 +1330,57 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     () => [...baseGroups, ...searchGroups, ...branchGroup],
     [baseGroups, branchGroup, searchGroups]
   )
+
+  // Settings-scoped page (⌘K on the Settings overlay, or its search pill):
+  // the same catalog as root, minus everything that isn't settings. Pages
+  // always list; the granular entries surface on type, same contract as the
+  // root.
+  const settingsPageGroups = useMemo<PaletteGroup[]>(() => {
+    const settingsTab = (tab: string) => `${SETTINGS_ROUTE}?tab=${tab}`
+    const cc = t.commandCenter
+
+    const result: PaletteGroup[] = [
+      {
+        heading: cc.settings,
+        items: [
+          ...SECTIONS.map(section => ({
+            icon: section.icon,
+            id: `sp-config-${section.id}`,
+            keywords: ['settings', section.label, settingsSectionLabel(section)],
+            label: settingsSectionLabel(section),
+            run: go(settingsTab(`config:${section.id}`))
+          })),
+          ...NON_CONFIG_SETTINGS.map(entry => ({
+            icon: entry.icon,
+            id: `sp-${entry.tab}`,
+            keywords: ['settings', ...(entry.keywords ?? [])],
+            label: t.settings.nav[entry.labelKey],
+            run: go(settingsTab(entry.tab))
+          }))
+        ]
+      }
+    ]
+
+    if (search.trim()) {
+      result.push({
+        heading: cc.settingsFields,
+        items: [
+          ...settingsCatalog.subpageEntries,
+          ...settingsCatalog.settingEntries,
+          ...settingsCatalog.configEntries
+        ].map(settingsEntryItem)
+      })
+
+      if (settingsCatalog.credentialEntries.length > 0) {
+        result.push({
+          heading: t.settings.nav.apiKeys,
+          items: settingsCatalog.credentialEntries.map(settingsEntryItem)
+        })
+      }
+    }
+
+    return result
+  }, [go, search, settingsCatalog, settingsEntryItem, settingsSectionLabel, t])
 
   // Nested palette pages (VS Code-style submenus). Reusable: add an entry here
   // and point a root item at it via `to`.
@@ -1176,26 +1402,51 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
               }
             ]
           },
-          // Built-ins and imported families list under the mode(s) they support;
-          // picking sets skin + mode at once. A multi-variant import (GitHub,
-          // Solarized) appears in both groups and switches variants with the mode.
-          ...(['light', 'dark'] as const).map(groupMode => ({
-            heading: groupMode === 'light' ? t.settings.modeOptions.light.label : t.settings.modeOptions.dark.label,
-            items: availableThemes
-              .filter(theme => themeSupportsMode(theme.name, groupMode))
-              .map(theme => ({
-                active: themeName === theme.name && resolvedMode === groupMode,
-                icon: groupMode === 'light' ? Sun : Moon,
-                id: `theme-${theme.name}-${groupMode}`,
+          // Brightness lives with the palettes: one mode toggle for the whole
+          // list instead of splitting every theme across a Light and a Dark group.
+          {
+            heading: t.settings.appearance.colorMode,
+            items: THEME_MODES.map(entry => ({
+              active: mode === entry.mode,
+              icon: entry.icon,
+              id: `theme-mode-${entry.mode}`,
+              keepOpen: true,
+              keywords: ['appearance', 'brightness', 'color mode', t.settings.modeOptions[entry.mode].label],
+              label: t.settings.modeOptions[entry.mode].label,
+              onHighlight: () => previewTheme(themeName, resolveThemeMode(entry.mode)),
+              run: () => setMode(entry.mode)
+            }))
+          },
+          // Every palette once, applied on top of the selected mode. An import
+          // that only ships one variant (Dracula) flips the mode to the side it
+          // can actually render.
+          {
+            heading: t.settings.appearance.themeTitle,
+            items: availableThemes.map(theme => {
+              const previewMode = themeSupportsMode(theme.name, resolvedMode)
+                ? resolvedMode
+                : resolvedMode === 'dark'
+                  ? 'light'
+                  : 'dark'
+
+              return {
+                active: themeName === theme.name,
+                icon: Palette,
+                id: `theme-${theme.name}`,
                 keepOpen: true,
-                keywords: ['theme', 'appearance', 'palette', groupMode, theme.label, theme.description ?? ''],
+                keywords: ['theme', 'appearance', 'palette', theme.label, theme.description ?? ''],
                 label: theme.label,
+                onHighlight: () => previewTheme(theme.name, previewMode),
                 run: () => {
                   setTheme(theme.name)
-                  setMode(groupMode)
+
+                  if (previewMode !== resolvedMode) {
+                    setMode(previewMode)
+                  }
                 }
-              }))
-          }))
+              }
+            })
+          }
         ]
       },
       'color-mode': {
@@ -1211,6 +1462,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
               keepOpen: true,
               keywords: ['appearance', 'brightness', t.settings.modeOptions[entry.mode].label],
               label: t.settings.modeOptions[entry.mode].label,
+              onHighlight: () => previewTheme(themeName, resolveThemeMode(entry.mode)),
               run: () => setMode(entry.mode)
             }))
           }
@@ -1228,15 +1480,82 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
         title: t.commandCenter.installTheme.pageTitle,
         placeholder: t.commandCenter.installTheme.placeholder,
         groups: []
+      },
+      // Settings-scoped search (⌘K while the Settings overlay is up, or the
+      // search pill beside its close button).
+      settings: {
+        title: t.commandCenter.nav.settings.title,
+        placeholder: t.settings.search.placeholder,
+        groups: settingsPageGroups
       }
     }),
-    [availableThemes, mode, resolvedMode, setMode, setTheme, t, themeName]
+    [
+      availableThemes,
+      mode,
+      previewTheme,
+      resolvedMode,
+      resolveThemeMode,
+      setMode,
+      setTheme,
+      settingsPageGroups,
+      t,
+      themeName
+    ]
   )
 
   const activePage = page ? subPages[page] : null
   const unrankedGroups = activePage ? activePage.groups : groups
   const visibleGroups = useMemo(() => rankGroups(unrankedGroups, search), [unrankedGroups, search])
   const placeholder = activePage ? activePage.placeholder : t.commandCenter.searchPlaceholder
+
+  // The HighlightWatcher inside <Command> reports the highlighted row (arrows
+  // or hover) from the cmdk store. Resolve it back to its PaletteItem so
+  // preview-capable rows (the theme pickers) can paint live. Any other
+  // highlight clears the preview.
+  const itemByValue = useMemo(() => {
+    const map = new Map<string, PaletteItem>()
+
+    for (const group of visibleGroups) {
+      for (const item of group.items) {
+        map.set(paletteValue(item), item)
+      }
+    }
+
+    return map
+  }, [visibleGroups])
+
+  const handleHighlight = useCallback(
+    (value: string) => {
+      const item = itemByValue.get(value)
+
+      if (item?.onHighlight) {
+        item.onHighlight()
+      } else {
+        clearThemePreview()
+      }
+    },
+    [clearThemePreview, itemByValue]
+  )
+
+  // A preview lives only while its rows show. If the page changes, give the
+  // paint back to the committed appearance.
+  useEffect(() => {
+    clearThemePreview()
+  }, [page, clearThemePreview])
+
+  // Clear at close START, not at unmount. The body stays mounted through the
+  // whole exit animation (see CommandPalette), so an unmount clear would
+  // revert the theme only after the fade. The unmount return is the backstop
+  // for a body that dies without a close (a remount on reopen).
+  const paletteOpen = useStore($commandPaletteOpen)
+
+  useEffect(() => {
+    if (!paletteOpen) {
+      clearThemePreview()
+    }
+  }, [paletteOpen, clearThemePreview])
+
+  useEffect(() => clearThemePreview, [clearThemePreview])
 
   const handleSelect = (item: PaletteItem) => {
     if (item.to) {
@@ -1289,6 +1608,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
       >
         <DialogPrimitive.Title className="sr-only">{t.commandCenter.paletteTitle}</DialogPrimitive.Title>
         <Command className="bg-transparent" loop shouldFilter={false}>
+          <HighlightWatcher onValue={handleHighlight} />
           {activePage && (
             <button
               className="flex w-full items-center gap-1.5 border-b border-border px-3 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
@@ -1324,6 +1644,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             }}
             onValueChange={setSearch}
             placeholder={placeholder}
+            ref={inputRef}
             right={page === 'pets' ? <PetInlineToggle /> : undefined}
             value={search}
           />

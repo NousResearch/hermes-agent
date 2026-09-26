@@ -199,7 +199,7 @@ export const coreCommands: SlashCommand[] = [
         ctx.session.newSession(isNew ? 'new session started' : undefined, requestedTitle || undefined)
       }
 
-      if (NO_CONFIRM_DESTRUCTIVE) {
+      if (NO_CONFIRM_DESTRUCTIVE || !ctx.ui.destructiveSlashConfirm) {
         return commit()
       }
 
@@ -712,7 +712,9 @@ export const coreCommands: SlashCommand[] = [
                 `steer queued — arrives after next tool call: "${payload.slice(0, 50)}${payload.length > 50 ? '…' : ''}"`
               )
             } else {
-              ctx.transcript.sys('steer rejected')
+              // The turn ended before the steer landed (#64578): keep the words as the next turn.
+              ctx.composer.enqueue(payload)
+              ctx.transcript.sys('steer rejected — no active turn, queued for next turn')
             }
           })
         )

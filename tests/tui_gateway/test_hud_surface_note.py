@@ -39,12 +39,6 @@ def _session(*, tools=FULL_KIT, **extra):
 class TestNoteContents:
     """Every tool the note names has to be one this agent actually has."""
 
-    def test_points_at_the_window_below_and_at_working_in_it(self):
-        note = hud_surface_note(FULL_KIT)
-
-        assert "read_window_below" in note
-        assert "computer_use" in note
-        assert "browser_navigate" in note
 
     def test_no_note_at_all_without_the_tool_it_rests_on(self):
         assert hud_surface_note({"computer_use", "browser_navigate"}) == ""

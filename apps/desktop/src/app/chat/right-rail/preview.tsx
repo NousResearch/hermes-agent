@@ -6,6 +6,8 @@ import { $previewReloadRequest, $previewTabs } from '@/store/preview'
 import { PreviewPane } from './preview-pane'
 
 interface PreviewTilePaneProps {
+  /** The tab's own Close, for body states that offer one (a failed load). */
+  onClose?: () => void
   /** The `$previewTabs` id this pane renders. */
   tabId: string
 }
@@ -15,11 +17,12 @@ interface PreviewTilePaneProps {
  * drag/stack/split and ⌘W — belongs to the ZONE (see `preview-tile.tsx`), so
  * this renders only the body and a preview tab behaves like every other tab.
  *
- * The console / DevTools glyphs live in the zone STRIP (`preview-strip-tools`),
- * keyed by `tabId`; the restart handler arrives through the atom bridge the old
- * rail wrapper used, since the mirror renders this pane with no props to thread.
+ * The console / DevTools toggles live in the pane's own browser bar beside the
+ * address (`preview-browser-bar`); the restart handler arrives through the atom
+ * bridge the old rail wrapper used, since the mirror renders this pane with no
+ * props to thread.
  */
-export function PreviewTilePane({ tabId }: PreviewTilePaneProps) {
+export function PreviewTilePane({ onClose, tabId }: PreviewTilePaneProps) {
   const previewReloadRequest = useStore($previewReloadRequest)
   const previewTabs = useStore($previewTabs)
   const restartPreviewServer = useStore($restartPreviewServer)
@@ -34,6 +37,7 @@ export function PreviewTilePane({ tabId }: PreviewTilePaneProps) {
   return (
     <PreviewPane
       embedded
+      onClose={onClose}
       onRestartServer={target.kind === 'url' ? (restartPreviewServer ?? undefined) : undefined}
       reloadRequest={previewReloadRequest}
       tabId={tabId}

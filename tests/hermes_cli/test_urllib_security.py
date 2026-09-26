@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import ssl
 from threading import Thread
 import urllib.error
 import urllib.request
@@ -37,9 +38,10 @@ class _RecordingHandler(BaseHTTPRequestHandler):
     requests: list[tuple[str, dict[str, str]]] = []
 
     def _record(self) -> None:
-        type(self).requests.append(
-            (self.command, {name.lower(): value for name, value in self.headers.items()})
-        )
+        type(self).requests.append((
+            self.command,
+            {name.lower(): value for name, value in self.headers.items()},
+        ))
 
     def do_GET(self):
         if self.path.startswith("/redirect"):
@@ -84,8 +86,6 @@ def _credential_headers() -> dict[str, str]:
         "Accept": "application/json",
         "User-Agent": "hermes-test",
     }
-
-
 
 
 def test_cross_host_redirect_drops_arbitrary_credentials_on_wire():
@@ -140,10 +140,6 @@ def test_same_host_different_port_drops_credentials_on_wire():
     assert "cf-access-client-secret" not in headers
 
 
-
-
-
-
 def test_post_307_remains_rejected_by_urllib():
     request = urllib.request.Request(
         "https://models.example.test/load",
@@ -181,10 +177,6 @@ def test_explicit_opener_factory_is_instrumentable_without_security_bypass():
     with open_credentialed_url(request, timeout=7, opener_factory=factory):
         pass
     assert calls == [("https://models.example.test/models", 7)]
-
-
-
-
 
 
 def test_installed_request_processor_cannot_resurrect_cross_origin_secret(
@@ -238,9 +230,7 @@ def test_multihop_redirects_never_resurrect_credentials():
         "https://a.example.test/step-two",
     )
     assert same_origin is not None
-    same_headers = {
-        name.lower(): value for name, value in same_origin.header_items()
-    }
+    same_headers = {name.lower(): value for name, value in same_origin.header_items()}
     assert "authorization" in same_headers
 
     cross_origin = handler.redirect_request(
@@ -252,9 +242,7 @@ def test_multihop_redirects_never_resurrect_credentials():
         "https://b.example.test/step-three",
     )
     assert cross_origin is not None
-    cross_headers = {
-        name.lower(): value for name, value in cross_origin.header_items()
-    }
+    cross_headers = {name.lower(): value for name, value in cross_origin.header_items()}
     assert "authorization" not in cross_headers
     assert "cf-access-client-secret" not in cross_headers
 
@@ -267,9 +255,7 @@ def test_multihop_redirects_never_resurrect_credentials():
         "https://a.example.test/final",
     )
     assert returned is not None
-    returned_headers = {
-        name.lower(): value for name, value in returned.header_items()
-    }
+    returned_headers = {name.lower(): value for name, value in returned.header_items()}
     assert "authorization" not in returned_headers
     assert "cf-access-client-secret" not in returned_headers
 
@@ -332,7 +318,7 @@ def test_anthropic_profile_drops_x_api_key_on_redirect(monkeypatch):
     original_request = urllib.request.Request
 
     def local_anthropic_request(url, *args, **kwargs):
-        if url == "https://api.anthropic.com/v1/models":
+        if url.startswith("https://api.anthropic.com/v1/models"):
             url = f"http://127.0.0.1:{source.server_port}/redirect"
         return original_request(url, *args, **kwargs)
 
@@ -395,3 +381,95 @@ def test_azure_anthropic_probe_drops_api_key_and_bearer_on_redirect():
     assert "api-key" not in headers
 
 
+def _clear_ca_bundle_env(monkeypatch) -> None:
+    for name in (
+        "HERMES_CA_BUNDLE",
+        "SSL_CERT_FILE",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_hermes_owned_opener_uses_resolved_https_context(monkeypatch):
+    import hermes_cli.urllib_security as urllib_security
+
+    context = ssl.create_default_context()
+    monkeypatch.setattr(urllib.request, "_opener", None)
+    monkeypatch.setattr(urllib_security, "_resolved_https_context", lambda: context)
+
+    opener = urllib_security._secure_opener_from_installed_policy(
+        "https://models.example.test/catalog"
+    )
+
+    https_handlers = [
+        handler
+        for handler in opener.handlers
+        if isinstance(handler, urllib.request.HTTPSHandler)
+    ]
+    assert len(https_handlers) == 1
+    assert getattr(https_handlers[0], "_context", None) is context
+
+
+def test_resolved_https_context_defers_to_the_platform_store(monkeypatch, tmp_path):
+    """Hermes-owned urllib openers verify against the OS certificate store.
+
+    None means "urllib's default context", which — with truststore installed
+    process-wide — IS the platform verifier. There is no CA-bundle ladder
+    here any more: a stale or bogus env var must not steer or break trust,
+    which is precisely what the removed env/certifi ladder used to do.
+    """
+    import hermes_cli.urllib_security as urllib_security
+
+    assert urllib_security._resolved_https_context() is None
+
+    for var in ("HERMES_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
+        monkeypatch.setenv(var, str(tmp_path / "nope.pem"))
+    assert urllib_security._resolved_https_context() is None
+
+
+def test_resolved_https_context_installs_the_platform_verifier():
+    """Resolving trust for a Hermes opener must put truststore in force.
+
+    A stdlib urllib request is the call path certifi never covered (the
+    llama.cpp engine download among them), so the install has to happen here
+    and not only on the httpx side.
+    """
+    import ssl
+
+    import hermes_cli.urllib_security as urllib_security
+
+    urllib_security._resolved_https_context()
+
+    assert ssl.SSLContext.__module__.startswith("truststore")
+
+
+def test_installed_https_context_is_preserved(monkeypatch):
+    import hermes_cli.urllib_security as urllib_security
+
+    context = ssl.create_default_context()
+    installed = urllib.request.build_opener(
+        urllib.request.HTTPSHandler(context=context)
+    )
+    monkeypatch.setattr(urllib.request, "_opener", installed)
+
+    def unexpected_context_resolution():
+        raise AssertionError("installed TLS policy must remain authoritative")
+
+    monkeypatch.setattr(
+        urllib_security,
+        "_resolved_https_context",
+        unexpected_context_resolution,
+    )
+
+    opener = urllib_security._secure_opener_from_installed_policy(
+        "https://models.example.test/catalog"
+    )
+
+    https_handlers = [
+        handler
+        for handler in opener.handlers
+        if isinstance(handler, urllib.request.HTTPSHandler)
+    ]
+    assert len(https_handlers) == 1
+    assert getattr(https_handlers[0], "_context", None) is context

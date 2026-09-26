@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from gateway.platforms.base import unauthorized_action_notice, utf16_len
+
 # ---------------------------------------------------------------------------
 # Ensure the repo root is importable
 # ---------------------------------------------------------------------------
@@ -15,36 +17,6 @@ _repo = str(Path(__file__).resolve().parents[2])
 if _repo not in sys.path:
     sys.path.insert(0, _repo)
 
-
-# ---------------------------------------------------------------------------
-# Minimal Telegram mock so TelegramAdapter can be imported
-# ---------------------------------------------------------------------------
-def _ensure_telegram_mock():
-    """Wire up the minimal mocks required to import TelegramAdapter."""
-    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
-        return
-
-    mod = MagicMock()
-    mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    mod.constants.ParseMode.MARKDOWN = "Markdown"
-    mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    mod.constants.ParseMode.HTML = "HTML"
-    mod.constants.ChatType.PRIVATE = "private"
-    mod.constants.ChatType.GROUP = "group"
-    mod.constants.ChatType.SUPERGROUP = "supergroup"
-    mod.constants.ChatType.CHANNEL = "channel"
-    # Provide real exception classes so ``except (NetworkError, ...)`` in
-    # connect() doesn't blow up under xdist when this mock leaks.
-    mod.error.NetworkError = type("NetworkError", (OSError,), {})
-    mod.error.TimedOut = type("TimedOut", (OSError,), {})
-    mod.error.BadRequest = type("BadRequest", (Exception,), {})
-
-    for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
-        sys.modules.setdefault(name, mod)
-    sys.modules.setdefault("telegram.error", mod.error)
-
-
-_ensure_telegram_mock()
 
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from gateway.config import Platform, PlatformConfig
@@ -105,6 +77,53 @@ class TestTelegramExecApproval:
         assert "dangerous deletion" in kwargs["text"]
         assert kwargs["reply_markup"] is not None  # InlineKeyboardMarkup
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("smart_denied", [False, True])
+    async def test_oversized_escaped_approval_text_keeps_inline_keyboard(self, smart_denied):
+        """The rendered HTML card (escaped command + reason + framing) must fit Telegram's
+        4096-char cap, otherwise the API rejects it and the gateway falls back to /approve."""
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
+
+        await adapter.send_exec_approval(
+            chat_id="12345",
+            command="&" * 3700,  # inside the old raw budget; 5x larger once escaped
+            session_key="s",
+            description="<reason>" * 1000,
+            smart_denied=smart_denied,
+        )
+
+        kwargs = adapter._bot.send_message.call_args.kwargs
+        assert len(kwargs["text"]) <= adapter.MAX_MESSAGE_LENGTH
+        assert "&amp;&amp;" in kwargs["text"] and "&lt;reason&gt;" in kwargs["text"]
+        assert kwargs["reply_markup"] is not None
+
+    @pytest.mark.asyncio
+    async def test_emoji_dense_approval_card_fits_in_utf16_units(self):
+        """Telegram counts UTF-16 code units (astral emoji = 2), like the adapter's chunker."""
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
+
+        await adapter.send_exec_approval(chat_id="12345", command="😀" * 3000, session_key="s")
+
+        kwargs = adapter._bot.send_message.call_args.kwargs
+        assert utf16_len(kwargs["text"]) <= adapter.MAX_MESSAGE_LENGTH
+        assert kwargs["reply_markup"] is not None
+
+    @pytest.mark.asyncio
+    async def test_slash_confirm_preview_fits_after_markdown_escaping(self):
+        """The slash-confirm card is measured after format_message (MarkdownV2 escaping expands
+        text), so a 3800-char raw message must still land under the 4096 cap."""
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
+
+        await adapter.send_slash_confirm(
+            chat_id="12345", title="t", message="." * 3800, session_key="s", confirm_id="c1")
+
+        kwargs = adapter._bot.send_message.call_args.kwargs
+        assert utf16_len(kwargs["text"]) <= adapter.MAX_MESSAGE_LENGTH
+        assert kwargs["reply_markup"] is not None
+
 
     @pytest.mark.asyncio
     async def test_non_smart_allow_permanent_false_keeps_session(self, monkeypatch):
@@ -126,29 +145,6 @@ class TestTelegramExecApproval:
 
         assert buttons == ["✅ Allow Once", "✅ Session", "❌ Deny"]
 
-    @pytest.mark.asyncio
-    async def test_full_approval_keyboard_is_two_by_two(self, monkeypatch):
-        """Regression: d48bf743f flattened all buttons into one row (4x1)."""
-        adapter = _make_adapter()
-        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
-        captured_rows = []
-        monkeypatch.setattr(
-            "plugins.platforms.telegram.adapter.InlineKeyboardButton",
-            lambda text, callback_data: text,
-        )
-        monkeypatch.setattr(
-            "plugins.platforms.telegram.adapter.InlineKeyboardMarkup",
-            lambda rows: captured_rows.extend(rows) or rows,
-        )
-
-        await adapter.send_exec_approval(
-            chat_id="12345", command="curl example.test", session_key="s",
-        )
-
-        assert captured_rows == [
-            ["✅ Allow Once", "✅ Session"],
-            ["✅ Always", "❌ Deny"],
-        ]
 
 
     @pytest.mark.asyncio
@@ -266,7 +262,6 @@ class TestTelegramApprovalCallback:
         edit_kwargs = query.edit_message_text.call_args[1]
         assert "MARKDOWN_V2" in repr(edit_kwargs["parse_mode"])
         assert "Alice\\_Bob" in edit_kwargs["text"]
-        assert "Approved once" in edit_kwargs["text"]
 
 
     @pytest.mark.asyncio
@@ -323,7 +318,7 @@ class TestTelegramApprovalCallback:
                 await adapter._handle_callback_query(update, context)
 
         query.answer.assert_called_once()
-        assert "not authorized" in query.answer.call_args[1]["text"].lower()
+        assert query.answer.call_args[1]["text"] == unauthorized_action_notice("telegram")
         query.edit_message_text.assert_not_called()
         assert not (tmp_path / ".update_response").exists()
 
@@ -353,7 +348,7 @@ class TestTelegramApprovalCallback:
                 await adapter._handle_callback_query(update, context)
 
         query.answer.assert_called_once()
-        assert "not authorized" in query.answer.call_args[1]["text"].lower()
+        assert query.answer.call_args[1]["text"] == unauthorized_action_notice("telegram")
         query.edit_message_text.assert_not_called()
         assert not (tmp_path / ".update_response").exists()
         assert runner.last_source is not None

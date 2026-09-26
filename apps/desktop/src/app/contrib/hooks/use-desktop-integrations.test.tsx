@@ -1,9 +1,21 @@
-import { renderHook } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { setApiRequestConnection, setApiRequestProfile } from '@/hermes'
+import { createClientSessionState } from '@/lib/chat-runtime'
+import { adoptNewSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
+import { $confirmRequest, runConfirm, settleConfirm } from '@/store/confirm'
+import { $hubInstalledOverride } from '@/store/hub-actions'
+import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
+import { requestPluginCatalogInstallFromDeepLink } from '@/store/plugin-catalog-install'
+import { openPluginInstallRequest } from '@/store/plugin-install-request'
 import { _resetLegacyDiscardForTests } from '@/store/session'
+import { dropSessionState, publishSessionState } from '@/store/session-states'
 import type * as WindowsStore from '@/store/windows'
 import type { SessionInfo } from '@/types/hermes'
+
+import { makeSessionInfo } from '../../../test/session-info'
+import { sessionRoute } from '../../routes'
 
 import { useDesktopIntegrations } from './use-desktop-integrations'
 
@@ -11,6 +23,18 @@ import { useDesktopIntegrations } from './use-desktop-integrations'
 // hook believes it runs in. Default false keeps the pre-existing restore
 // coverage exercising the real main-window path.
 const { hudWindowMock } = vi.hoisted(() => ({ hudWindowMock: vi.fn(() => false) }))
+
+vi.mock('@/store/mcp-deeplink-install', () => ({
+  requestMcpInstallFromDeepLink: vi.fn()
+}))
+
+vi.mock('@/store/plugin-catalog-install', () => ({
+  requestPluginCatalogInstallFromDeepLink: vi.fn()
+}))
+
+vi.mock('@/store/plugin-install-request', () => ({
+  openPluginInstallRequest: vi.fn()
+}))
 
 vi.mock('@/store/windows', async importOriginal => {
   const actual = await importOriginal<typeof WindowsStore>()
@@ -31,24 +55,7 @@ vi.mock('@/store/windows', async importOriginal => {
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
 const initialHermesDesktop = desktopWindow.hermesDesktop
 
-const session = (over: Partial<SessionInfo> = {}): SessionInfo => ({
-  archived: false,
-  cwd: null,
-  ended_at: null,
-  id: 'live',
-  input_tokens: 0,
-  is_active: false,
-  last_active: 0,
-  message_count: 0,
-  model: null,
-  output_tokens: 0,
-  preview: null,
-  source: null,
-  started_at: 0,
-  title: null,
-  tool_call_count: 0,
-  ...over
-})
+const session = (over: Partial<SessionInfo> = {}): SessionInfo => makeSessionInfo({ id: 'live', ...over })
 
 describe('useDesktopIntegrations', () => {
   let navigate: ReturnType<typeof vi.fn<(...args: unknown[]) => void>>
@@ -56,6 +63,9 @@ describe('useDesktopIntegrations', () => {
   beforeEach(() => {
     window.localStorage.clear()
     _resetLegacyDiscardForTests()
+    vi.mocked(requestMcpInstallFromDeepLink).mockClear()
+    vi.mocked(requestPluginCatalogInstallFromDeepLink).mockClear()
+    vi.mocked(openPluginInstallRequest).mockClear()
     navigate = vi.fn()
     // Every test starts as a main window; only the HUD describe flips this.
     hudWindowMock.mockReturnValue(false)
@@ -68,10 +78,16 @@ describe('useDesktopIntegrations', () => {
       onOpenUpdatesRequested: vi.fn(),
       onFocusSession: vi.fn(),
       onNotificationAction: vi.fn(),
+      onNotificationActivate: vi.fn(),
       onDeepLink: vi.fn(),
       signalDeepLinkReady: vi.fn(),
       onClosePreviewRequested: vi.fn(),
-      onOpenFolderRequested: vi.fn()
+      onOpenFolderRequested: vi.fn(),
+      // getSession() rides hermesDesktop.api; tests that exercise the
+      // remembered-session resolution stub this per-test.
+      api: vi.fn(async () => {
+        throw new Error('no api stub for this test')
+      })
     } as unknown as Window['hermesDesktop']
   })
 
@@ -88,6 +104,8 @@ describe('useDesktopIntegrations', () => {
     locationPathname = '/',
     profileReady = false,
     resumeExhaustedSessionId = null as string | null,
+    // null = config record still loading (the hook takes undefined; null dodges the destructuring default).
+    resumeLastSession = true as boolean | null,
     routedSessionId = null as string | null,
     sessions = [] as readonly SessionInfo[]
   } = {}) {
@@ -97,6 +115,7 @@ describe('useDesktopIntegrations', () => {
         locationPathname,
         profileReady,
         resumeExhaustedSessionId,
+        resumeLastSession,
         routedSessionId,
         sessions
       }: {
@@ -104,6 +123,7 @@ describe('useDesktopIntegrations', () => {
         locationPathname: string
         profileReady: boolean
         resumeExhaustedSessionId: string | null
+        resumeLastSession: boolean | null
         routedSessionId: string | null
         sessions: readonly SessionInfo[]
       }) =>
@@ -116,6 +136,7 @@ describe('useDesktopIntegrations', () => {
           profileReady,
           refreshSessions: vi.fn(),
           resumeExhaustedSessionId,
+          resumeLastSession: resumeLastSession ?? undefined,
           routedSessionId,
           runtimeIdByStoredSessionId: { current: new Map() },
           sessions
@@ -126,6 +147,7 @@ describe('useDesktopIntegrations', () => {
           locationPathname,
           profileReady,
           resumeExhaustedSessionId,
+          resumeLastSession,
           routedSessionId,
           sessions
         }
@@ -166,6 +188,19 @@ describe('useDesktopIntegrations', () => {
       expect(navigate).toHaveBeenCalledWith('/remembered-session', { replace: true })
     })
 
+    it('announces the restored session so the pre-session draft follows the cold-start navigation', () => {
+      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/remembered-session')
+      // Typed on the fresh chat while the backend was still coming up.
+      stashSessionDraft(null, 'typed while booting', [])
+
+      render({ profileReady: true, sessions: [session({ id: 'remembered-session', profile: 'default' })] })
+
+      expect(navigate).toHaveBeenCalledWith('/remembered-session', { replace: true })
+      // The composer's scope swap may only carry the draft when the restore announced this key.
+      expect(adoptNewSessionDraft('remembered-session')).toBe(true)
+      expect(takeSessionDraft('remembered-session').text).toBe('typed while booting')
+    })
+
     it('waits for sessions before validating a remembered session route', () => {
       window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/remembered-session')
 
@@ -179,11 +214,110 @@ describe('useDesktopIntegrations', () => {
         locationPathname: '/',
         profileReady: true,
         resumeExhaustedSessionId: null,
+        resumeLastSession: true,
         routedSessionId: null,
         sessions: [session({ id: 'remembered-session', profile: 'default' })]
       })
 
       expect(navigate).toHaveBeenCalledWith('/remembered-session', { replace: true })
+    })
+  })
+
+  describe('display.resume_last_session', () => {
+    it('stays on the fresh chat when the setting is off, and keeps remembering the open chat', () => {
+      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/remembered-session')
+      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'remembered-session')
+
+      const sessions = [session({ id: 'remembered-session', profile: 'default' })]
+      const result = render({ profileReady: true, resumeLastSession: false, sessions })
+
+      expect(navigate).not.toHaveBeenCalled()
+
+      // The user opens another chat: it is still remembered for the next launch
+      // (and for notifications), so flipping the switch back on resumes it.
+      result.rerender({
+        activeProfile: 'default',
+        locationPathname: '/other-session',
+        profileReady: true,
+        resumeExhaustedSessionId: null,
+        resumeLastSession: false,
+        routedSessionId: 'other-session',
+        sessions: [...sessions, session({ id: 'other-session', profile: 'default' })]
+      })
+
+      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('other-session')
+    })
+
+    it('holds the restore until the config record answers, then restores when on', () => {
+      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'remembered-session')
+
+      const sessions = [session({ id: 'remembered-session', profile: 'default' })]
+      const result = render({ profileReady: true, resumeLastSession: null, sessions })
+
+      expect(navigate).not.toHaveBeenCalled()
+
+      result.rerender({
+        activeProfile: 'default',
+        locationPathname: '/',
+        profileReady: true,
+        resumeExhaustedSessionId: null,
+        resumeLastSession: true,
+        routedSessionId: null,
+        sessions
+      })
+
+      expect(navigate).toHaveBeenCalledWith('/remembered-session', { replace: true })
+    })
+  })
+
+  describe('delegate subagent sessions', () => {
+    const stubGetSession = (row: Partial<SessionInfo>) => {
+      vi.mocked(desktopWindow.hermesDesktop!.api as ReturnType<typeof vi.fn>).mockImplementation(
+        async (request: { path?: string }) => {
+          if (request.path?.startsWith('/api/sessions/')) {
+            return session({ profile: 'default', ...row })
+          }
+
+          throw new Error(`unexpected api call: ${request.path}`)
+        }
+      )
+    }
+
+    it('repairs a remembered delegate child to its parent on restore', async () => {
+      // Written by an older build (or a list slice that served the child).
+      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'delegate-child')
+      stubGetSession({ id: 'delegate-child', parent_session_id: 'parent-session', source: 'subagent' })
+
+      const sessions = [session({ id: 'parent-session', profile: 'default' })]
+
+      render({ profileReady: true, sessions })
+
+      await waitFor(() => expect(navigate).toHaveBeenCalledWith('/parent-session', { replace: true }))
+      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('parent-session')
+    })
+
+    it('remembers the parent, never the delegate child, when routed to one', () => {
+      // A messaging slice can serve the child row, so list membership alone
+      // must not make it rememberable.
+      const sessions = [
+        session({ id: 'delegate-child', parent_session_id: 'parent-session', profile: 'default', source: 'subagent' })
+      ]
+
+      render({ locationPathname: '/delegate-child', profileReady: true, routedSessionId: 'delegate-child', sessions })
+
+      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('parent-session')
+      expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.default')).toBe('/parent-session')
+    })
+
+    it('keeps remembering a /branch child: source, not parenthood, is the discriminator', () => {
+      const sessions = [
+        session({ id: 'branch-child', parent_session_id: 'parent-session', profile: 'default', source: 'tui' })
+      ]
+
+      render({ locationPathname: '/branch-child', profileReady: true, routedSessionId: 'branch-child', sessions })
+
+      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('branch-child')
+      expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.default')).toBe('/branch-child')
     })
   })
 
@@ -337,6 +471,7 @@ describe('useDesktopIntegrations', () => {
         locationPathname: '/ops-session',
         profileReady: true,
         resumeExhaustedSessionId: null,
+        resumeLastSession: true,
         routedSessionId: 'ops-session',
         sessions
       })
@@ -368,15 +503,15 @@ describe('useDesktopIntegrations', () => {
   })
 
   describe('route-scoped restoration', () => {
-    it('restores a non-session route like /skills', () => {
-      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/skills')
+    it('restores a non-session route like /capabilities', () => {
+      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/capabilities')
 
       const sessions = [session({ id: 'some-session', profile: 'default' })]
 
       render({ profileReady: true, sessions })
 
-      // /skills is not a session route — no ownership validation needed.
-      expect(navigate).toHaveBeenCalledWith('/skills', { replace: true })
+      // /capabilities is not a session route — no ownership validation needed.
+      expect(navigate).toHaveBeenCalledWith('/capabilities', { replace: true })
     })
 
     it('does NOT restore overlay routes (settings/command-center)', () => {
@@ -403,6 +538,7 @@ describe('useDesktopIntegrations', () => {
         locationPathname: '/settings',
         profileReady: true,
         resumeExhaustedSessionId: null,
+        resumeLastSession: true,
         routedSessionId: null,
         sessions: []
       })
@@ -464,6 +600,246 @@ describe('useDesktopIntegrations', () => {
       })
 
       expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('other-session')
+    })
+  })
+
+  describe('notification activate + plugin deep links', () => {
+    it('navigates when a plugin notification activate payload arrives', () => {
+      let activate: ((payload: { activate?: string }) => void) | undefined
+      desktopWindow.hermesDesktop = {
+        ...desktopWindow.hermesDesktop,
+        onNotificationActivate: (cb: (payload: { activate?: string }) => void) => {
+          activate = cb
+
+          return () => undefined
+        }
+      } as unknown as Window['hermesDesktop']
+
+      render({ profileReady: true, sessions: [] })
+      activate?.({ activate: '/index-network/intent/1' })
+      expect(navigate).toHaveBeenCalledWith('/index-network/intent/1')
+    })
+
+    it('navigates hermes://index-network/intent/1 deep links through the same path vocabulary', () => {
+      let deepLink: ((payload: { kind: string; name: string; params: Record<string, string> }) => void) | undefined
+      desktopWindow.hermesDesktop = {
+        ...desktopWindow.hermesDesktop,
+        onDeepLink: (cb: (payload: { kind: string; name: string; params: Record<string, string> }) => void) => {
+          deepLink = cb
+
+          return () => undefined
+        },
+        signalDeepLinkReady: vi.fn()
+      } as unknown as Window['hermesDesktop']
+
+      render({ profileReady: true, sessions: [] })
+      deepLink?.({ kind: 'index-network', name: 'intent/1', params: {} })
+      expect(navigate).toHaveBeenCalledWith('/index-network/intent/1')
+    })
+
+    it('routes hermes://mcp/install to the pending-install dialog, not navigation', () => {
+      let deepLink: ((payload: { kind: string; name: string; params: Record<string, string> }) => void) | undefined
+      desktopWindow.hermesDesktop = {
+        ...desktopWindow.hermesDesktop,
+        onDeepLink: (cb: (payload: { kind: string; name: string; params: Record<string, string> }) => void) => {
+          deepLink = cb
+
+          return () => undefined
+        },
+        signalDeepLinkReady: vi.fn()
+      } as unknown as Window['hermesDesktop']
+
+      render({ profileReady: true, sessions: [] })
+      deepLink?.({ kind: 'mcp', name: 'install', params: { name: 'context7' } })
+      expect(requestMcpInstallFromDeepLink).toHaveBeenCalledWith({ name: 'context7' })
+      expect(navigate).not.toHaveBeenCalled()
+    })
+
+    it('routes hermes://plugin/install?catalog= to the catalog lookup, not the git-path modal', () => {
+      let deepLink: ((payload: { kind: string; name: string; params: Record<string, string> }) => void) | undefined
+      desktopWindow.hermesDesktop = {
+        ...desktopWindow.hermesDesktop,
+        onDeepLink: (cb: (payload: { kind: string; name: string; params: Record<string, string> }) => void) => {
+          deepLink = cb
+
+          return () => undefined
+        },
+        signalDeepLinkReady: vi.fn()
+      } as unknown as Window['hermesDesktop']
+
+      render({ profileReady: true, sessions: [] })
+      deepLink?.({ kind: 'plugin', name: 'install', params: { catalog: 'weather', repo: 'evil/repo' } })
+      expect(requestPluginCatalogInstallFromDeepLink).toHaveBeenCalledWith('weather')
+      expect(openPluginInstallRequest).not.toHaveBeenCalled()
+      expect(navigate).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('catalog install deep links', () => {
+    function listen() {
+      render({ profileReady: true, resumeLastSession: false })
+
+      return vi.mocked(window.hermesDesktop.onDeepLink!).mock.calls[0]![0]
+    }
+
+    afterEach(() => {
+      settleConfirm(false)
+      $hubInstalledOverride.set({})
+      setApiRequestConnection(null)
+      setApiRequestProfile(null)
+    })
+
+    it('opens repository confirmation without trusting catalog metadata from the link', () => {
+      const deepLink = listen()
+      const params = { repo: 'owner/repo#plugin', catalog_name: 'catalog-plugin', sha: 'display-pin' }
+      deepLink({ kind: 'plugin', name: 'install', params })
+
+      expect(openPluginInstallRequest).toHaveBeenCalledExactlyOnceWith({
+        repo: params.repo,
+        enable: true,
+        force: false,
+        legacyHint: null
+      })
+      expect(requestPluginCatalogInstallFromDeepLink).not.toHaveBeenCalled()
+      expect(navigate).not.toHaveBeenCalled()
+    })
+
+    it('requires skill confirmation, preserves the request scope, and uses the hub pipeline', async () => {
+      const api = vi.fn(async (request: { path: string }) => {
+        if (request.path === '/api/skills/hub/install') {
+          return { name: 'skill-link-test' }
+        }
+
+        if (request.path.startsWith('/api/actions/skill-link-test/')) {
+          return { name: 'skill-link-test', running: false, exit_code: 0, lines: ['Installed'], pid: 123 }
+        }
+
+        return {}
+      })
+
+      desktopWindow.hermesDesktop = { ...desktopWindow.hermesDesktop, api } as unknown as Window['hermesDesktop']
+      const deepLink = listen()
+      const installs = () => api.mock.calls.filter(([r]) => r.path === '/api/skills/hub/install')
+      const identifier = 'skills-sh/owner/repo/skill'
+      const payload = { kind: 'skill', name: 'install', params: { identifier } }
+
+      for (const [connection, profile] of [
+        ['server-a', 'research'],
+        ['server-b', 'work'],
+        ['server-a', 'research']
+      ]) {
+        setApiRequestConnection(connection)
+        setApiRequestProfile(profile)
+        api.mockClear()
+        $hubInstalledOverride.set({})
+        act(() => deepLink(payload))
+        expect($confirmRequest.get()?.title).toBe('Install “skill”?')
+        expect($confirmRequest.get()?.details).toEqual([
+          { label: 'Source', value: identifier },
+          { label: 'Install to', value: `${connection} · ${profile}` }
+        ])
+        expect(installs()).toHaveLength(0)
+        await act(async () => settleConfirm(false))
+        expect(installs()).toHaveLength(0)
+
+        act(() => deepLink(payload))
+        await act(async () => runConfirm($confirmRequest.get()!))
+        expect($confirmRequest.get()?.phase).toBe('done')
+        settleConfirm(true)
+        await waitFor(() => expect($hubInstalledOverride.get()[identifier]).toBe(true))
+        expect(installs()).toEqual([
+          [
+            {
+              connectionId: connection,
+              profile,
+              priority: 'foreground',
+              path: '/api/skills/hub/install',
+              method: 'POST',
+              body: { identifier }
+            }
+          ]
+        ])
+        expect(api).toHaveBeenCalledWith({
+          connectionId: connection,
+          profile,
+          priority: 'foreground',
+          path: '/api/actions/skill-link-test/status?lines=200'
+        })
+      }
+
+      api.mockClear()
+      act(() => deepLink(payload))
+      setApiRequestConnection('server-b')
+      setApiRequestProfile('work')
+      await expect(runConfirm($confirmRequest.get()!)).rejects.toThrow('The destination changed')
+      settleConfirm(false)
+      expect(installs()).toHaveLength(0)
+      act(() => deepLink({ kind: 'skill', name: 'install', params: {} }))
+      expect($confirmRequest.get()).toBeNull()
+      expect(navigate).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('notification click -> focus-session id translation', () => {
+    function withFocusSession(): (sessionId: string) => void {
+      let handler: ((sessionId: string) => void) | undefined
+      desktopWindow.hermesDesktop = {
+        ...desktopWindow.hermesDesktop,
+        onFocusSession: (cb: (sessionId: string) => void) => {
+          handler = cb
+
+          return () => undefined
+        }
+      } as unknown as Window['hermesDesktop']
+
+      return sessionId => handler?.(sessionId)
+    }
+
+    function renderWithRuntimeMap(map: Map<string, string>) {
+      return renderHook(
+        ({ sessions }: { sessions: readonly SessionInfo[] }) =>
+          useDesktopIntegrations({
+            activeProfile: 'default',
+            chatOpen: false,
+            hasPreview: false,
+            locationPathname: '/',
+            navigate,
+            profileReady: true,
+            refreshSessions: vi.fn(),
+            resumeExhaustedSessionId: null,
+            resumeLastSession: false,
+            routedSessionId: null,
+            runtimeIdByStoredSessionId: { current: map },
+            sessions
+          }),
+        { initialProps: { sessions: [] as readonly SessionInfo[] } }
+      )
+    }
+
+    it('translates a runtime id via the window map before navigating', () => {
+      const fire = withFocusSession()
+
+      renderWithRuntimeMap(new Map([['stored-abc', 'runtime-123']]))
+      fire('runtime-123')
+
+      // 'stack' intent spends the unoccupied main draft → in-place navigate.
+      expect(navigate).toHaveBeenCalledWith(sessionRoute('stored-abc'))
+    })
+
+    it('falls back to the durable per-runtime state mirror when the window map has no binding', () => {
+      const fire = withFocusSession()
+      const { unmount } = renderWithRuntimeMap(new Map())
+
+      // Simulate a main-pane runtime whose ensureSessionState binding lives in
+      // the shared store mirror, not this window's map (window reload /
+      // pop-out window / gateway respawn).
+      publishSessionState('runtime-999', createClientSessionState('stored-xyz'))
+      fire('runtime-999')
+
+      expect(navigate).toHaveBeenCalledWith(sessionRoute('stored-xyz'))
+
+      unmount()
+      dropSessionState('runtime-999')
     })
   })
 })

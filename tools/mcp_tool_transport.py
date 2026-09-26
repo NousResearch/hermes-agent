@@ -322,10 +322,13 @@ class MCPServerTransportMixin:
         # A stdio child inherits this process's cwd when none is configured. Hosted sessions (ACP,
         # gateway) pin a logical cwd via agent.runtime_cwd; without it the child resolves relative
         # paths against the daemon's launch dir, not the session workspace. Explicit config always
-        # wins; an existing session/TERMINAL_CWD anchor becomes the default; else native (None).
-        stdio_cwd = config.get("cwd")
+        # wins (``cwd``, with ``workdir`` as a compat alias — #5467); an existing session/TERMINAL_CWD
+        # anchor becomes the default; else native (None). Configured paths may use ``~``.
+        stdio_cwd = config.get("cwd") or config.get("workdir")
         if stdio_cwd is None:
             stdio_cwd = _runtime_cwd.resolve_context_cwd() or None
+        else:
+            stdio_cwd = os.path.expanduser(str(stdio_cwd))
         server_params = _core.StdioServerParameters(
             command=command, args=args, env=safe_env or None, cwd=stdio_cwd,
             # Windows pipes can split non-UTF-8 bytes at chunk boundaries; substitute, don't raise.

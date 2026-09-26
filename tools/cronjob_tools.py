@@ -264,6 +264,23 @@ def _run_heartbeat(job_name: str):
             thread.join(timeout=_CRON_RUN_HEARTBEAT_INTERVAL + 1)
 
 
+def _manual_run_adapters(runner):
+    """Live adapters of the profile that OWNS the job, never the multiplexer's launch profile.
+
+    ``runner.adapters`` is the launch (default) profile's map, so handing it over made a
+    secondary profile's manual run post through the default profile's bot. The ticker already
+    delivers via the owning profile (``scheduler_provider.tick_adapters_for``); this matches it
+    through the gateway's own resolver (fail-closed ``{}`` for a profile with no adapter).
+    """
+    if runner is None:
+        return None
+    resolve = getattr(runner, "_adapters_for_profile", None)
+    if not callable(resolve):
+        return getattr(runner, "adapters", None)
+    from hermes_cli.profiles import current_profile_name
+    return resolve(current_profile_name())
+
+
 def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) -> Dict[str, Any]:
     """Fire an already-claimed job through the shared ``run_one_job`` body (split from
     ``_execute_job_now`` so the background path can claim synchronously and hand the run
@@ -295,7 +312,7 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
         # standalone asyncio.run() loop raises errors like "Timeout context manager should be used inside a
         # task" and can break encrypted Matrix delivery (#61495 — salvaged from #63586 by @Fly-onlyone).
         runner = runner_ref() if callable(runner_ref) else None
-        adapters = getattr(runner, "adapters", None) if runner is not None else None
+        adapters = _manual_run_adapters(runner)
         gateway_loop = getattr(runner, "_gateway_loop", None) if runner is not None else None
         try:
             # run_one_job records last_run_at/last_status via mark_job_run; `job` is the

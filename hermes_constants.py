@@ -956,13 +956,16 @@ def apply_scratch_tmp_env(env: MutableMapping[str, str]) -> bool:
     A temp var the user (or the OS: macOS ``/var/folders``, Windows ``%TEMP%``) set is
     respected and nothing changes. A value Hermes itself exported earlier — recognisable
     because it equals ``HERMES_SCRATCH_DIR`` — is re-derived, so a child running under another
-    profile's home gets that home's scratch dir rather than its parent's. Returns True when
-    the vars were (re)written.
+    profile's home gets that home's scratch dir rather than its parent's. The MSYS/Git Bash
+    shell default (``MSYSTEM`` set, value exactly ``/tmp``) carries no user intent — the
+    shell pre-sets it before Hermes starts — so it is overwritten like an unset var.
+    Returns True when the vars were (re)written.
     """
     ours = env.get(SCRATCH_DIR_MARKER_ENV, "")
+    msys_default = env.get("MSYSTEM", "").strip() != ""
     for key in SCRATCH_TMP_ENV_VARS:
         value = env.get(key, "").strip()
-        if value and value != ours:
+        if value and value != ours and not (msys_default and value == "/tmp"):
             return False
     home = env.get("HERMES_HOME", "").strip()
     try:
@@ -980,7 +983,8 @@ def apply_scratch_tmp_env(env: MutableMapping[str, str]) -> bool:
 def export_scratch_tmp_env() -> bool:
     """Boot hook: apply :func:`apply_scratch_tmp_env` to this process and reset ``tempfile``'s
     cached default so ``tempfile.gettempdir()`` follows. Call again after anything that
-    re-homes the process (``--profile`` resolution); a user-set temp var is never overridden."""
+    re-homes the process (``--profile`` resolution); a user-set temp var is never overridden
+    (the MSYS/Git Bash ``/tmp`` shell default excepted — see :func:`apply_scratch_tmp_env`)."""
     changed = apply_scratch_tmp_env(os.environ)
     if changed:
         import tempfile

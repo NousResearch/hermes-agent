@@ -264,8 +264,8 @@ def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float, *, on_progress
     """SIGUSR1 (drain-aware restart) a gateway PID and wait for exit; False if unsent or it outlived the timeout.
 
     gateway/run.py maps SIGUSR1 to ``request_restart(via_service=True)``: refuse new turns, drain,
-    ``stop()``, exit; the supervisor relaunches. ``drain_timeout`` must cover after-turn wait + drain
-    — pass ``resolve_restart_exit_wait_budget(...)``. ``on_progress`` (zero-arg) runs on every poll so
+    ``stop()``, exit; the supervisor relaunches. ``drain_timeout`` must cover after-turn wait + the full stop
+    envelope — pass ``resolve_restart_exit_wait_budget(...)``. ``on_progress`` (zero-arg) runs on every poll so
     a long wait can report what the gateway is still holding for (``update_cmd_drain_report``).
     """
     if not hasattr(signal, "SIGUSR1") or pid <= 0:
@@ -3561,14 +3561,11 @@ def _get_cron_drain_timeout() -> float:
 def _get_restart_exit_wait_budget() -> float:
     """CLI wait for gateway exit after SIGUSR1 / self-restart (#77184)."""
     return resolve_restart_exit_wait_budget(
-        # TimeoutStopSec must cover the full stop budget, not just restart_drain_timeout. Cron work can
-        # legally wait cron_drain_timeout plus cleanup reserve before interrupt/teardown, and systemd
-        # SIGKILLs if the unit's deadline is shorter (#94759). 30s of post-drain headroom is preserved on
-        # top, with a 60s floor.
         _get_restart_drain_timeout(),
         _agent_timeout_setting(
             "HERMES_RESTART_AFTER_TURN_TIMEOUT", "restart_after_turn_timeout", parse_restart_after_turn_timeout
         ),
+        _get_cron_drain_timeout(),
     )
 
 

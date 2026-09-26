@@ -32,7 +32,12 @@ def _pid_alive(pid: int) -> bool:
 
 
 def _state_endpoint() -> dict | None:
-    from hermes_cli.local_runtime.recovery import is_modern, read_state, recorded_process
+    from hermes_cli.local_runtime.recovery import (
+        is_modern,
+        legacy_recorded_process,
+        read_state,
+        recorded_process,
+    )
 
     state = read_state()
     base_url = state.get("base_url", "")
@@ -42,12 +47,7 @@ def _state_endpoint() -> dict | None:
         if recorded_process(state) is None:
             return None
     else:
-        # Preserve the legacy endpoint shape, with malformed PID values rejected.
-        try:
-            pid = state.get("pid")
-            if isinstance(pid, bool) or not _pid_alive(int(pid or 0)):
-                return None
-        except (TypeError, ValueError, OverflowError):
+        if legacy_recorded_process(state) is None:
             return None
     return {"base_url": base_url, "api_key": state.get("api_key", "")}
 

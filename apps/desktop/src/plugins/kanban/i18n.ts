@@ -77,6 +77,14 @@ type KanbanMessages = {
   parkedOption: string
   skills: string
   skillsPlaceholder: string
+  /** Skills picker — search field, no-match row, and the empty-roster hint. */
+  searchSkills: string
+  noSkillMatch: string
+  noSkillsForProfile: string
+  skillsLoadFailed: string
+  /** Skills dropdown — manual retry when the roster fetch fails. */
+  retrySkills: string
+  retryingSkills: string
   parent: string
   noParent: string
   goalMode: string
@@ -293,8 +301,14 @@ export const en: KanbanMessages = {
   assignee: 'Assignee',
   defaultOption: name => `${name} (default)`,
   parkedOption: "unassigned (parked — won't run)",
-  skills: 'Skills (comma-separated)',
-  skillsPlaceholder: 'translation, github',
+  skills: 'Skills (from the assignee)',
+  skillsPlaceholder: 'Pick skills installed for the assignee…',
+  searchSkills: 'Search skills…',
+  noSkillMatch: 'No matching skill',
+  noSkillsForProfile: 'No skills installed for this profile.',
+  skillsLoadFailed: 'Could not load this profile’s skills.',
+  retrySkills: 'Retry',
+  retryingSkills: 'Retrying…',
   parent: "Parent (blocks until it's done)",
   noParent: '— no parent —',
   goalMode: "Goal mode (worker loops until a judge agrees it's done)",
@@ -507,8 +521,14 @@ const ja: KanbanMessages = {
   assignee: '担当',
   defaultOption: name => `${name}（既定）`,
   parkedOption: '未割り当て（保留 — 実行されません）',
-  skills: 'スキル（カンマ区切り）',
-  skillsPlaceholder: 'translation, github',
+  skills: 'スキル（担当のプロファイルから）',
+  skillsPlaceholder: '担当プロファイルにインストール済みのスキルを選択…',
+  searchSkills: 'スキルを検索…',
+  noSkillMatch: '一致するスキルはありません',
+  noSkillsForProfile: 'このプロファイルにスキルはインストールされていません。',
+  skillsLoadFailed: 'このプロファイルのスキル一覧を読み込めませんでした。',
+  retrySkills: '再試行',
+  retryingSkills: '再試行中…',
   parent: '親（完了するまでブロック）',
   noParent: '— 親なし —',
   goalMode: 'ゴールモード（ジャッジが完了と認めるまでワーカーがループ）',
@@ -719,8 +739,14 @@ const zh: KanbanMessages = {
   assignee: '负责人',
   defaultOption: name => `${name}（默认）`,
   parkedOption: '未分配（搁置 — 不会运行）',
-  skills: '技能（逗号分隔）',
-  skillsPlaceholder: 'translation, github',
+  skills: '技能（来自指派档案）',
+  skillsPlaceholder: '选择指派档案已安装的技能…',
+  searchSkills: '搜索技能…',
+  noSkillMatch: '没有匹配的技能',
+  noSkillsForProfile: '此档案未安装任何技能。',
+  skillsLoadFailed: '无法加载此档案的技能列表。',
+  retrySkills: '重试',
+  retryingSkills: '重试中…',
   parent: '父任务（完成前会阻塞）',
   noParent: '— 无父任务 —',
   goalMode: '目标模式（工作单元循环直到评判代理认可完成）',
@@ -929,8 +955,14 @@ const zhHant: KanbanMessages = {
   assignee: '負責人',
   defaultOption: name => `${name}（預設）`,
   parkedOption: '未指派（擱置 — 不會執行）',
-  skills: '技能（以逗號分隔）',
-  skillsPlaceholder: 'translation, github',
+  skills: '技能（來自指派檔案）',
+  skillsPlaceholder: '選擇指派檔案已安裝的技能…',
+  searchSkills: '搜尋技能…',
+  noSkillMatch: '沒有符合的技能',
+  noSkillsForProfile: '此檔案未安裝任何技能。',
+  skillsLoadFailed: '無法載入此檔案的技能列表。',
+  retrySkills: '重試',
+  retryingSkills: '重試中…',
   parent: '父任務（完成前會阻擋）',
   noParent: '— 無父任務 —',
   goalMode: '目標模式（工作單元循環直到評判代理認可完成）',

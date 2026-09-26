@@ -1730,6 +1730,16 @@ export { Codicon } from '@/components/ui/codicon'
  *  shares the generated palette's saturation and lightness; a bespoke grid of
  *  literal hex drifts off-theme the moment the palette moves. */
 export { ColorSwatches } from '@/components/ui/color-swatches'
+/** Searchable picker list (cmdk). Pair `variant="menu"` with
+ *  `<PopoverContent variant="menu">` for a combobox that reads like a Select. */
+export {
+  Command,
+  CommandEmpty,
+  CommandInput,
+  CommandItem,
+  CommandItemCheck,
+  CommandList
+} from '@/components/ui/command'
 export { ConfirmDialog } from '@/components/ui/confirm-dialog'
 export {
   ContextMenu,
@@ -1744,6 +1754,8 @@ export {
   ContextMenuSubTrigger,
   ContextMenuTrigger
 } from '@/components/ui/context-menu'
+/** The shared field look (Input / SelectTrigger), for a custom trigger button. */
+export { controlVariants } from '@/components/ui/control'
 export { CopyButton } from '@/components/ui/copy-button'
 export { DecodeText } from '@/components/ui/decode-text'
 export {

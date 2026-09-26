@@ -91,6 +91,8 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_edit = cron_subparsers.add_parser("edit", help="Edit an existing scheduled job")
     cron_edit.add_argument("job_id", help="Job ID to edit")
     cron_edit.add_argument("--schedule", help="New schedule")
+    _flag(cron_edit, "--preserve-lifecycle",
+        help="When changing --schedule, keep the job's current enabled/paused state instead of re-arming it.")
     cron_edit.add_argument("--prompt", help="New prompt/task instruction")
     cron_edit.add_argument("--name", help="New job name")
     cron_edit.add_argument("--deliver", help="New delivery target")

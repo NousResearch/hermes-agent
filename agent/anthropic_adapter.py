@@ -886,3 +886,25 @@ def create_anthropic_message(
                 "%sAnthropic Messages stream unavailable; falling back to messages.create(): %s", log_prefix, exc
             )
     return messages_api.create(**{k: v for k, v in api_kwargs.items() if k != "stream"})
+
+
+def chat_usage(usage: Any) -> Any:
+    """An Anthropic Messages ``usage`` in both shapes the auxiliary callers read. Consumers pick the
+    normalizer by route: native Anthropic accounting (provider="anthropic" / api_mode
+    "anthropic_messages") reads the fresh ``input_tokens`` + ``cache_*`` fields, while the Chat path
+    (MoA, other providers on this wire) reads an inclusive ``prompt_tokens`` and subtracts
+    ``prompt_tokens_details``."""
+    from types import SimpleNamespace
+
+    fresh_input_tokens = getattr(usage, "input_tokens", 0) or 0
+    cache_read_tokens = getattr(usage, "cache_read_input_tokens", 0) or 0
+    cache_write_tokens = getattr(usage, "cache_creation_input_tokens", 0) or 0
+    completion_tokens = getattr(usage, "output_tokens", 0) or 0
+    prompt_tokens = fresh_input_tokens + cache_read_tokens + cache_write_tokens
+    return SimpleNamespace(
+        prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
+        total_tokens=getattr(usage, "total_tokens", 0) or (prompt_tokens + completion_tokens),
+        prompt_tokens_details=SimpleNamespace(cached_tokens=cache_read_tokens, cache_write_tokens=cache_write_tokens),
+        input_tokens=fresh_input_tokens, output_tokens=completion_tokens,
+        cache_read_input_tokens=cache_read_tokens, cache_creation_input_tokens=cache_write_tokens,
+    )

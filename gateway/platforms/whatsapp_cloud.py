@@ -811,12 +811,20 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     "[whatsapp_cloud] delivery failed for wamid %s to %s: no error details in status payload",
                     wamid, recipient)
                 return
+            # Summary of the first few errors, bounded by _CAUSE_LIMIT;
+            # the overflow marker is always preserved.
+            marker = (
+                f" (+{len(parts) - _MAX_ERRORS_SHOWN} more)"
+                if len(parts) > _MAX_ERRORS_SHOWN else ""
+            )
+            budget = _CAUSE_LIMIT - len(marker)
             cause = "; ".join(parts[:_MAX_ERRORS_SHOWN])
-            if len(parts) > _MAX_ERRORS_SHOWN:
-                cause += f" (+{len(parts) - _MAX_ERRORS_SHOWN} more)"
+            if len(cause) > budget:
+                cause = cause[:max(0, budget - 3)] + "..."
+            cause += marker
             logger.warning(
                 "[whatsapp_cloud] delivery failed for wamid %s to %s: %s",
-                wamid, recipient, _one_line(cause, _CAUSE_LIMIT))
+                wamid, recipient, cause)
         except Exception:
             logger.warning("[whatsapp_cloud] delivery failed for an unparseable status payload")
             logger.debug("[whatsapp_cloud] unparseable status payload", exc_info=True)

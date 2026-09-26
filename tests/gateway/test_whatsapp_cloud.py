@@ -748,6 +748,43 @@ class TestDeliveryFailureStatuses:
         assert len(text) < 2000
 
     @pytest.mark.asyncio
+    async def test_failed_status_long_errors_preserve_overflow_marker(self, caplog):
+        import logging
+
+        from gateway.platforms.whatsapp_cloud import _CAUSE_LIMIT, _MAX_ERRORS_SHOWN
+
+        adapter = _make_adapter()
+        error_count = 500
+        payload = self._status_payload(
+            [
+                {
+                    "id": "wamid.LONG",
+                    "status": "failed",
+                    "recipient_id": "15551234567",
+                    "errors": [
+                        {
+                            "code": i,
+                            "title": f"err-{i}",
+                            "error_data": {"details": "d" * 295 + "\r\nEND"},
+                        }
+                        for i in range(error_count)
+                    ],
+                }
+            ]
+        )
+        with caplog.at_level(logging.WARNING):
+            await adapter._dispatch_payload(payload)
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(warnings) == 1
+        text = warnings[0].getMessage()
+        cause = text.split(": ", 1)[1]
+        marker = f" (+{error_count - _MAX_ERRORS_SHOWN} more)"
+        assert cause.endswith("..." + marker)
+        assert len(cause) <= _CAUSE_LIMIT
+        assert "err-0" in cause
+        assert "\n" not in text and "\r" not in text
+
+    @pytest.mark.asyncio
     async def test_failed_status_through_signed_webhook(self, caplog):
         import logging
 

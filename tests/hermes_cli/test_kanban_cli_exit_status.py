@@ -58,3 +58,19 @@ def test_delegated_child_kanban_cli_refusal_returns_nonzero_exit_status(tmp_path
 
     assert refused.returncode == 1
     assert "delegate_task" in refused.stderr
+
+
+def test_delegated_child_kanban_list_degrades_instead_of_refusing(tmp_path):
+    """`kanban list` is a read; a fenced child must list, not fail on the ready refresh (#123733)."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+
+    created = _run_hermes(home, "kanban", "create", "listable in a fenced lane", "--json")
+    assert created.returncode == 0, created.stderr
+    task_id = json.loads(created.stdout)["id"]
+
+    listed = _run_hermes(home, "kanban", "list", "--json", marker=True)
+
+    assert listed.returncode == 0, listed.stderr
+    assert task_id in listed.stdout
+    assert "delegate_task" not in listed.stderr

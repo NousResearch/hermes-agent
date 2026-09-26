@@ -65,6 +65,8 @@ def test_only_one_process_claims_a_due_pass(env, monkeypatch):
         runs.append(kw)
         started.set()
         release.wait(10)
+        if kw.get("hold_run_claim"):
+            curator._release_run_claim()
         return {}
 
     monkeypatch.setattr(curator, "run_curator_review", _slow_review)
@@ -79,3 +81,39 @@ def test_only_one_process_claims_a_due_pass(env, monkeypatch):
         holder.join(5)
     assert not curator._run_claim_path().exists(), "claim released after the pass"
     assert curator.maybe_run_curator() is not None, "and the next due pass can claim again"
+
+
+def test_claim_covers_async_worker_lifetime(env, monkeypatch):
+    """The claim must outlive maybe_run_curator returning: the async review worker is still
+    mutating skills and .curator_state afterwards, so releasing at call-return let later ticks
+    start overlapping passes (six concurrent reviews observed within 49 s on one install)."""
+    curator = env["curator"]
+    monkeypatch.setattr(curator, "should_run_now", lambda now=None: True)
+    entered, release = threading.Event(), threading.Event()
+
+    def _slow_report(**kw):
+        entered.set()
+        release.wait(10)
+        return None
+
+    monkeypatch.setattr(curator, "_write_run_report", _slow_report)
+    assert curator.maybe_run_curator() is not None, "first pass starts"
+    assert entered.wait(5), "async worker reached the report step"
+    try:
+        assert curator._run_claim_path().exists(), (
+            "claim held while the async worker is active"
+        )
+        assert curator.maybe_run_curator() is None, (
+            "a later tick must not start an overlapping pass"
+        )
+    finally:
+        release.set()
+    for t in threading.enumerate():
+        if t.name == "curator-review" and t.is_alive():
+            t.join(timeout=10.0)
+    assert not curator._run_claim_path().exists(), (
+        "claim released when the worker finishes"
+    )
+    assert curator.maybe_run_curator() is not None, (
+        "and the next due pass can claim again"
+    )

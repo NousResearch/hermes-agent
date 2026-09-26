@@ -803,3 +803,49 @@ class TestEscapeNativeToolArg:
         assert node_cmds, f"no node command captured in: {commands}"
         assert "'C:/Users/alice/app/main.js'" in node_cmds[0]
         assert "/c/Users" not in node_cmds[0]
+
+
+# =========================================================================
+# Non-UTF-8 source encoding on write (#121982: an edit used to encode the
+# INSERTED text as UTF-8 regardless of the file's own encoding, leaving the
+# file in two encodings at once — and reporting success)
+# =========================================================================
+
+class TestNonUtf8SourceEncoding:
+    """The write must be refused, not silently mixed, when the text an edit
+    adds cannot be represented in the file's own encoding."""
+
+    def test_undeclared_non_utf8_refuses_non_ascii_insertion(self, tmp_path):
+        """A latin-1 file with no encoding declaration: inserting ``olé`` used to
+        land as UTF-8 ``ol\xc3\xa9`` beside the untouched ``caf\xe9``, so Python
+        (which honours latin-1) read the new line as ``olÃ©``. The edit reported
+        success and linted clean. Refuse it instead."""
+        ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
+        path = tmp_path / "legacy.py"
+        original = "name = 'café'\nlabel = 'x'\n"
+        path.write_bytes(original.encode("latin-1"))
+
+        result = ops.patch_replace(str(path), "label = 'x'", "label = 'olé'")
+
+        assert result.success is not True
+        assert "latin-1" in (result.error or "") or "utf-8" in (result.error or "").lower()
+        # The file on disk is untouched: still valid latin-1, no UTF-8 bytes.
+        assert path.read_bytes() == original.encode("latin-1")
+
+    def test_declared_encoding_is_honoured_for_inserted_text(self, tmp_path):
+        """With a PEP 263 cookie naming the encoding, the edit is applied IN that
+        encoding — the whole file stays single-encoding and Python reads it back
+        as the author intended."""
+        ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
+        path = tmp_path / "legacy.py"
+        original = "# -*- coding: latin-1 -*-\nname = 'café'\nlabel = 'x'\n"
+        path.write_bytes(original.encode("latin-1"))
+
+        result = ops.patch_replace(str(path), "label = 'x'", "label = 'olé'")
+
+        assert getattr(result, "error", None) is None, result.error
+        on_disk = path.read_bytes()
+        assert b"ol\xe9" in on_disk, "inserted text must be encoded latin-1"
+        assert b"\xc3\xa9" not in on_disk, "no UTF-8 bytes may be mixed in"
+        # And it decodes as the file declares, round-trip.
+        assert on_disk.decode("latin-1").splitlines()[-1] == "label = 'olé'"

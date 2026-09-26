@@ -26,8 +26,11 @@ from tools.binary_extensions import has_binary_extension
 from agent.file_safety import get_write_denied_error
 from tools.file_operations_common import (
     ExecuteResult, PatchResult, ReadResult, SearchResult, WriteResult,
-    _UTF8_BOM, _detect_line_ending, _has_bom, _normalize_line_endings, _strip_bom,
-    _strip_terminal_fence_leaks, normalize_read_pagination, normalize_search_pagination)
+    _UTF8_BOM, _contains_escaped_bytes, _detect_line_ending, _has_bom, _normalize_line_endings,
+    _sniff_encoding, _strip_bom, source_encoding_write_payload,
+    _strip_terminal_fence_leaks, declared_source_encoding, encode_in_source_encoding,
+    encoding_refusal,
+    normalize_read_pagination, normalize_search_pagination)
 from tools.file_operations_lint import LINTERS_INPROC, LintMixin, _FAIL_CLOSED_INPROC_EXTS
 from tools.file_operations_search import SearchMixin
 
@@ -1315,6 +1318,53 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                 "encoded as UTF-8. The file was NOT created or modified."))
         return None
 
+    def _source_encoding_for_write(self, path: str,
+                                   pre_content: Optional[str]) -> Optional[str]:
+        """The encoding a write must use for a non-UTF-8 file, else None (UTF-8).
+
+        Set only when the caller handed over the original (``pre_content``) AND
+        that original carries bytes UTF-8 could not decode — the surrogateescape
+        range U+DC80-U+DCFF. A declared PEP 263 cookie is authoritative; without
+        one there is no way to know the encoding, so the name is only used to
+        phrase the refusal (see :meth:`_reject_foreign_encoding`).
+        """
+        if pre_content is None or not _contains_escaped_bytes(pre_content):
+            return None
+        return declared_source_encoding(path, pre_content.encode("utf-8", "surrogateescape"))
+
+    def _reject_foreign_encoding(self, path: str, content: str,
+                                 pre_content: Optional[str]) -> Optional[WriteResult]:
+        """Refuse an edit that would leave a non-UTF-8 file in two encodings
+        (#121982). The write encodes the whole post-edit file once; untouched
+        non-UTF-8 bytes ride along as U+DC80-U+DCFF (surrogateescape) and
+        round-trip, but text the edit ADDS would go out as UTF-8 — mixing the
+        two in one file, silently, with success reported.
+
+        Only consulted when the caller has the original (``pre_content``); a
+        caller that hands over pre-content is mid-edit on a file it just read,
+        which is the only shape that can carry the original's encoding."""
+        if pre_content is None or not _contains_escaped_bytes(pre_content):
+            return None
+        declared = self._source_encoding_for_write(path, pre_content)
+        if declared is not None:
+            # The file names its own encoding: encode the edit in it, and only
+            # refuse if the added text genuinely cannot be represented there.
+            try:
+                encode_in_source_encoding(content, declared)
+            except (UnicodeEncodeError, LookupError) as exc:
+                return WriteResult(error=(
+                    f"Refusing to write '{path}': the file declares encoding "
+                    f"{declared} and this edit adds text that encoding cannot "
+                    f"represent ({exc}). The file was NOT modified."))
+            return None
+        # No declaration: the encoding is unknown, so only an ASCII insertion is
+        # safe — in every ASCII-compatible encoding this reaches in practice
+        # (latin-1, cp1252, ...) an ASCII character is the same byte.
+        raw = pre_content.encode("utf-8", "surrogateescape")
+        encoding = _sniff_encoding(pre_content)
+        reason = encoding_refusal(path, encoding, content)
+        return WriteResult(error=reason) if reason else None
+
     @staticmethod
     def _fail_closed_syntax_error(path: str, ext: str, content: str) -> Optional[WriteResult]:
         """Fail-closed pre-write gate for ``_FAIL_CLOSED_INPROC_EXTS`` (JSON/YAML/TOML):
@@ -1462,6 +1512,9 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         refused = self._reject_unencodable(path, content)
         if refused is not None:
             return refused
+        refused = self._reject_foreign_encoding(path, content, pre_content)
+        if refused is not None:
+            return refused
         ext = os.path.splitext(path)[1].lower()
         refused = self._fail_closed_syntax_error(path, ext, content)
         if refused is not None:
@@ -1486,7 +1539,16 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # this content, so these are the bytes on disk; the early rejection above
         # guarantees this cannot raise.
         content_bytes = content.encode("utf-8", "surrogateescape")
-        write_result = self._atomic_write(path, content)
+        # A file that declares its own non-UTF-8 encoding gets the whole post-edit
+        # file written in THAT encoding, not UTF-8 (#121982): the transport encodes
+        # stdin once, so re-express the payload so that encode lands the declared
+        # bytes. No declaration + non-UTF-8 bytes was already refused above.
+        write_payload = content
+        source_encoding = self._source_encoding_for_write(path, pre_content)
+        if source_encoding is not None:
+            write_payload = source_encoding_write_payload(content, source_encoding)
+            content_bytes = encode_in_source_encoding(content, source_encoding)
+        write_result = self._atomic_write(path, write_payload)
         if write_result.exit_code != 0:
             return WriteResult(error=f"Failed to write file: {write_result.stdout}")
         content_verified, verify_error = self._verify_written_hash(path, content_bytes)
@@ -1530,21 +1592,31 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
     def _verify_patch_persisted(self, path: str, new_content: str) -> Optional[PatchResult]:
         """Re-read ``path`` and confirm the intended bytes landed; error result or None.
         Catches silent persistence failures (FS oddities, races, truncated pipe).
-        Line endings are normalized first (Windows text-mode ``open()`` writes LF as
-        CRLF) and the re-read's BOM stripped (``new_content`` is the BOM-less
-        string we matched against)."""
+        Compared as BYTES after stripping a leading BOM, because a file that
+        declares a non-UTF-8 encoding is written in that encoding (#121982) — the
+        on-disk bytes are not the UTF-8 encoding of ``new_content``, and decoding
+        them to compare would read the latin-1 edit back as mojibake. Line endings
+        are normalized first (Windows text-mode ``open()`` writes LF as CRLF)."""
         data, _failed = self._read_exact_bytes(path)
         if data is None:
             return PatchResult(error=f"Post-write verification failed: could not re-read {path}")
-        bomless, _ = _strip_bom(data.decode("utf-8", "surrogateescape"))
-        on_disk = bomless.replace("\r\n", "\n").replace("\r", "\n")
-        intended = new_content.replace("\r\n", "\n").replace("\r", "\n")
+        bomless = data[len(_UTF8_BOM.encode("utf-8")):] if data.startswith(_UTF8_BOM.encode("utf-8")) else data
+        on_disk = bomless.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        # The bytes the write was supposed to produce: UTF-8 + surrogateescape for
+        # the normal path, the file's own encoding when it declares one.
+        declared = declared_source_encoding(path, new_content.encode("utf-8", "surrogateescape"))
+        try:
+            intended_bytes = (encode_in_source_encoding(new_content, declared)
+                              if declared else new_content.encode("utf-8", "surrogateescape"))
+        except (UnicodeEncodeError, LookupError):
+            intended_bytes = new_content.encode("utf-8", "surrogateescape")
+        intended = intended_bytes.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
         if on_disk != intended:
             return PatchResult(error=(
                 f"Post-write verification failed for {path}: on-disk content "
                 f"differs from intended write "
-                f"(wrote {len(intended)} chars, read back "
-                f"{len(on_disk)} chars after normalizing line endings). "
+                f"(wrote {len(intended)} bytes, read back "
+                f"{len(on_disk)} bytes after normalizing line endings). "
                 "The patch did not persist. Re-read the file and try again."))
         return None
 

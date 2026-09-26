@@ -20,7 +20,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-import yaml
+import hermes_yaml as yaml
 
 from tests.fakes.fake_llm_provider import Text, write_hermes_home
 from tests.fakes.platforms._standin import wait_until

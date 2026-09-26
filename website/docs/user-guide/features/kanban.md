@@ -186,6 +186,12 @@ Board resolution order (highest precedence first):
    boards switch`.
 4. `default`.
 
+Any explicit board activation inside the classic CLI or TUI — `boards switch`,
+`boards create --switch`, or `boards import --switch` — also updates that chat
+process's `HERMES_KANBAN_BOARD` pin after the pointer is written successfully.
+An activation in another process still cannot redirect an active chat, and
+dashboard/gateway request handlers do not mutate the shared process environment.
+
 Slugs are validated: lowercase alphanumerics + hyphens + underscores, 1-64
 chars, must start with alphanumeric. Uppercase input is auto-downcased.
 Anything else (slashes, spaces, dots, `..`) is rejected at the CLI layer

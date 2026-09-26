@@ -360,6 +360,39 @@ class TestExecutionGuidanceInjection:
             "deepseek/deepseek-v4-pro", valid_tool_names=())
 
 
+class TestAsyncDelegationHandoffGuidance:
+    """A background child cannot re-enter until the parent yields its current turn (#124072)."""
+
+    def _prompt(self, model, *, tool_use_enforcement="auto", execution_guidance="auto",
+                valid_tool_names=("delegate_task", "execute_code")):
+        return _stable_prompt(_make_agent(
+            valid_tool_names=list(valid_tool_names),
+            model=model,
+            _tool_use_enforcement=tool_use_enforcement,
+            _execution_guidance=execution_guidance,
+        ))
+
+    def test_kimi_handoff_overrides_generic_tool_persistence(self):
+        stable = self._prompt("kimi-coding/kimi-k3", tool_use_enforcement=False)
+        assert "Execution discipline" in stable
+        assert "Tool-use enforcement" not in stable
+        assert "Async handoff" in stable
+        assert stable.index("Async handoff") > stable.index("Execution discipline")
+        assert "Do not manufacture polling, no-op, placeholder, or unrelated tool calls" in stable
+
+    def test_handoff_follows_tool_enforcement_for_models_that_receive_both(self):
+        stable = self._prompt("openai/gpt-5.5")
+        assert "Tool-use enforcement" in stable
+        assert "Execution discipline" in stable
+        assert stable.index("Async handoff") > stable.index("Tool-use enforcement")
+        assert stable.index("Async handoff") > stable.index("Execution discipline")
+
+    def test_no_delegation_tool_means_no_handoff_guidance(self):
+        stable = self._prompt("kimi-coding/kimi-k3", valid_tool_names=("execute_code",))
+        assert "Execution discipline" in stable
+        assert "Async handoff" not in stable
+
+
 class TestNamedProfileHintIntegration:
     """The same defect through the REAL resolution chain (#72894).
 

@@ -177,6 +177,22 @@ export const getQueuedPrompts = (key: string | null | undefined): QueuedPromptEn
   return sid ? queueFor(sid) : []
 }
 
+/**
+ * Run one drain of a session's queue while holding its cross-window claim, with
+ * `task` given that queue read fresh INSIDE the claim. Every idle window
+ * auto-drains the shared queue, so a renderer-local flag cannot stop two of
+ * them submitting the same entry — and the gateway runs the second copy as its
+ * own turn. Web Locks are arbitrated by the browser across windows and freed if
+ * the holder closes; a waiting window then finds an entry the holder sent
+ * already gone. Without Web Locks there is no other window to exclude.
+ */
+export const withQueueDrainClaim = <T>(sid: string, task: (queue: QueuedPromptEntry[]) => Promise<T>): Promise<T> => {
+  const run = () => task(current()[sid] ?? [])
+  const locks = typeof navigator === 'undefined' ? undefined : navigator.locks
+
+  return locks ? locks.request(`${STORAGE_KEY}.drain.${sid}`, run) : run()
+}
+
 export const enqueueQueuedPrompt = (
   key: string | null | undefined,
   payload: { text: string; attachments: ComposerAttachment[]; displayText?: string; displayKind?: 'hidden' }

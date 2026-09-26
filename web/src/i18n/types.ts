@@ -141,6 +141,35 @@ export interface Translations {
     sharedMetricsSaveFailed?: string;
   };
 
+  /** Channels page — optional; English literals used as fallback in components. */
+  channelsPage?: {
+    whatsappRoutes: {
+      title: string;
+      hostIntro: string;
+      hostProfileLabel: string;
+      multiplexOn: string;
+      ingressOwnedByHost: string;
+      colName: string;
+      colChatId: string;
+      colProfile: string;
+      empty: string;
+      addRoute: string;
+      saveRoutes: string;
+      saving: string;
+      saved: string;
+      loadFailed: string;
+      edit: string;
+      remove: string;
+      modalAddTitle: string;
+      modalEditTitle: string;
+      fieldName: string;
+      fieldChatId: string;
+      fieldChatIdHint: string;
+      fieldProfile: string;
+      modalApply: string;
+    };
+  };
+
   // ── Status page ──
   status: {
     actionFailed: string;

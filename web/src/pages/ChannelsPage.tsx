@@ -38,6 +38,7 @@ import { AllowlistInput } from "@/components/AllowlistInput";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
 import { errorMessage } from "@/lib/api-error";
+import { WhatsAppProfileRoutesPanel } from "@/components/WhatsAppProfileRoutesPanel";
 
 // State → badge mapping. The backend emits a small, fixed vocabulary plus
 // whatever the live gateway runtime reports (connected/disconnected/fatal).
@@ -667,13 +668,16 @@ export default function ChannelsPage() {
                   />
                 )}
                 {platform.id === "whatsapp" && (
-                  <WhatsAppOnboardingPanel
-                    onChanged={load}
-                    onRestartNeeded={() => setRestartNeeded(true)}
-                    platform={platform}
-                    setRestartNeeded={setRestartNeeded}
-                    showToast={showToast}
-                  />
+                  <div className="grid gap-4 xl:grid-cols-2">
+                    <WhatsAppOnboardingPanel
+                      onChanged={load}
+                      onRestartNeeded={() => setRestartNeeded(true)}
+                      platform={platform}
+                      setRestartNeeded={setRestartNeeded}
+                      showToast={showToast}
+                    />
+                    <WhatsAppProfileRoutesPanel showToast={showToast} />
+                  </div>
                 )}
               </CardContent>
             </Card>

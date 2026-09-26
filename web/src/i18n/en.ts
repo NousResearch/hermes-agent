@@ -125,6 +125,36 @@ export const en: Translations = {
     sharedMetricsSaveFailed: "Couldn't save your choice",
   },
 
+  channelsPage: {
+    whatsappRoutes: {
+      title: "One number, many profiles",
+      hostIntro:
+        "WhatsApp bridge and multiplex routing live on the host (default) profile config, not the profile picker selection.",
+      hostProfileLabel: "Host profile",
+      multiplexOn: "Multiplex routing is on (gateway.multiplex_profiles).",
+      ingressOwnedByHost:
+        "WhatsApp ingress is owned by the host profile; enabling WhatsApp on a secondary profile does not start a second bridge.",
+      colName: "Name",
+      colChatId: "Chat id",
+      colProfile: "Profile",
+      empty: "No WhatsApp routes yet. Add a group JID or DM target.",
+      addRoute: "Add route",
+      saveRoutes: "Save routes",
+      saving: "Saving…",
+      saved: "Routes saved. They take effect the next time the gateway process starts.",
+      loadFailed: "Could not load WhatsApp routes.",
+      edit: "Edit route",
+      remove: "Remove route",
+      modalAddTitle: "Add WhatsApp route",
+      modalEditTitle: "Edit WhatsApp route",
+      fieldName: "Name",
+      fieldChatId: "Chat id",
+      fieldChatIdHint: "Groups must end with @g.us. DMs may use a phone number or user JID.",
+      fieldProfile: "Target profile",
+      modalApply: "Apply",
+    },
+  },
+
   status: {
     actionFailed: "Action failed",
     actionFinished: "Finished",

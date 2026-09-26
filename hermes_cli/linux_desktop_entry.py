@@ -1,4 +1,4 @@
-"""Install and remove the Linux desktop entry (``hermes.desktop``).
+"""Install and remove the Linux desktop entry (``<app_id>.desktop``).
 
 The entry must be launch-context independent: ``Exec=`` is an absolute launcher that survives the
 venv (no ``#!/usr/bin/env python3`` escapes, no checkout-internal argv[0]), and ``Icon=`` is the
@@ -21,7 +21,17 @@ import time
 from pathlib import Path
 from typing import Callable, Mapping, Optional
 
-DESKTOP_ENTRY_NAME = "hermes.desktop"
+# Identity the packaged app claims for its window: electron-builder bakes product-identity.cjs's
+# `appId` into extraMetadata.desktopName, and Electron hands that string to the compositor
+# verbatim (Wayland app_id, CHROME_DESKTOP). GNOME links a window to a launcher by StartupWMClass
+# or by a `<app_id>.desktop` file name, so the entry has to carry the same id — under the old
+# "hermes.desktop" name a packaged launch matches neither rung and lands on the placeholder icon.
+APP_ID = "com.nousresearch.hermes"
+DESKTOP_ENTRY_NAME = f"{APP_ID}.desktop"
+
+# Entry name written before the app-id rename; a successful install retires it so the menu does
+# not list Hermes twice (see _remove_legacy_desktop_entry).
+LEGACY_DESKTOP_ENTRY_NAME = "hermes.desktop"
 
 # XDG startup notification: set by an app-grid / menu launch, absent for terminal and detached
 # (updater relaunch) launches. See launched_from_shell().
@@ -221,7 +231,7 @@ def _resolve_hermes_bin_for_desktop_entry(
     # A resolver miss (argv[0] is ``-c`` under ``python -m`` on a cold relaunch AND PATH has no
     # ``hermes``) must NOT return None here: that skipped the durable-wrapper probe below and persisted
     # the module form, so the entry's bytes flipped on every alternating launch context — and
-    # gnome-shell 50.x crashes when hermes.desktop changes while its ShellApp is STARTING (#110885).
+    # gnome-shell 50.x crashes when the entry changes while its ShellApp is STARTING (#110885).
     # ``primary is None`` implies ``rerouted is None`` (the rerun only hides argv[0]), so only the
     # probe can still find anything.
     if primary and rerouted is not None and not _inside_checkout(
@@ -232,7 +242,7 @@ def _resolve_hermes_bin_for_desktop_entry(
     # desktop-update hand-off hands the updater <checkout>/venv/bin at the front of PATH, so
     # persisting a reroute to the venv console script pins the entry to WHO wrote it. The next
     # DE-launched context re-resolves to the durable wrapper and flips the bytes back — and
-    # every flip rewrites hermes.desktop, which arms the gnome-shell 50.x crash this function's
+    # every flip rewrites the entry, which arms the gnome-shell 50.x crash this function's
     # callers guard against when the write lands inside a launch's STARTING window. Fall
     # through to the durable probe below, exactly as a PATH miss does.
 
@@ -424,7 +434,7 @@ def render_desktop_entry(exec_command: str, icon: str) -> str:
         "Terminal=false\n"
         "Categories=Utility;\n"
         "StartupNotify=true\n"
-        "StartupWMClass=Hermes\n"
+        f"StartupWMClass={APP_ID}\n"
     )
 
 
@@ -573,13 +583,14 @@ def _install_icon_to_hicolor(icon: Path) -> bool:
 
 
 def _launcher_entry_management_enabled() -> bool:
-    """Whether config.yaml allows rewriting an EXISTING launcher entry.
+    """Whether config.yaml allows touching an EXISTING launcher entry.
 
     ``desktop.manage_launcher_entry: false`` opts out of the every-launch
-    rewrite: a hand-edited ``hermes.desktop`` is then left alone instead
-    of silently reverting (#101097's clobber complaint). A MISSING entry
-    is still created regardless — the opt-out protects user edits, not
-    first-run presence. Any config error reads as enabled (default).
+    rewrite: a hand-edited entry is then left alone instead
+    of silently reverting (#101097's clobber complaint), and the pre-rename
+    retirement is skipped with it — deletion is management too. A MISSING
+    entry is still created regardless — the opt-out protects user edits,
+    not first-run presence. Any config error reads as enabled (default).
     """
     try:
         from hermes_cli.config import load_config_readonly
@@ -595,11 +606,32 @@ def _launcher_entry_management_enabled() -> bool:
         return True
 
 
-def install_desktop_entry(project_root: Path) -> Optional[Path]:
-    """Create or refresh the entry, respecting the opt-out for existing entries.
+def _remove_legacy_desktop_entry(applications_dir: Path) -> None:
+    """Delete the pre-rename ``hermes.desktop`` left beside the app-id entry.
 
-    ``None`` on non-Linux platforms or when the write fails — a convenience, never a reason to
-    fail a launch.
+    Without it the menu lists Hermes twice, and an old taskbar pin keeps resolving to an entry
+    that no longer matches the window. Only a file that still names this app is removed —
+    anything else at that path (a hand-written launcher, another vendor's file) is left alone.
+    """
+    legacy = applications_dir / LEGACY_DESKTOP_ENTRY_NAME
+    try:
+        text = legacy.read_text(encoding="utf-8-sig")
+    except OSError:
+        return
+    if not any(line.strip() == "Name=Hermes" for line in text.splitlines()):
+        return
+    try:
+        legacy.unlink()
+    except OSError:
+        pass
+
+
+def install_desktop_entry(project_root: Path) -> Optional[Path]:
+    """Create or refresh the app-id entry, respecting the opt-out for existing entries.
+
+    Only the app-id entry is written; a pre-rename ``hermes.desktop`` beside it is retired once
+    the new entry exists, and only while launcher management is enabled. ``None`` on non-Linux
+    platforms or when the write fails — a convenience, never a reason to fail a launch.
     """
     if not is_supported():
         return None
@@ -608,7 +640,8 @@ def install_desktop_entry(project_root: Path) -> Optional[Path]:
 
     # Opt-out honored only for an entry that already exists: the flag
     # stops the every-launch clobber, not first-run creation.
-    if entry_path.is_file() and not _launcher_entry_management_enabled():
+    manage_enabled = _launcher_entry_management_enabled()
+    if entry_path.is_file() and not manage_enabled:
         return entry_path
 
     icon = icon_path(project_root)
@@ -638,6 +671,11 @@ def install_desktop_entry(project_root: Path) -> Optional[Path]:
     except OSError:
         return None
 
+    # Retiring the old entry is management too: with the opt-out set, an existing
+    # launcher stays even here, in the missing-entry path where the new entry is
+    # still created.
+    if manage_enabled:
+        _remove_legacy_desktop_entry(entry_path.parent)
     refresh_desktop_databases(entry_path.parent)
     return entry_path
 

@@ -6,6 +6,7 @@ add_whole_comment; local -> reply_to_comment, falling back to add_whole_comment 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import contextvars
 import json
 import logging
@@ -502,13 +503,20 @@ def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
             logger.info("[Feishu-Comment] _run_comment_agent: loaded %d history messages from session %s", len(history), session_key)
         agent = AIAgent(model=model, **{k: runtime_kwargs.get(k) for k in ("base_url", "api_key", "provider", "api_mode", "credential_pool", "reasoning_config")},
                         quiet_mode=True, skip_context_files=True, skip_memory=True, max_iterations=15, enabled_toolsets=["feishu_doc", "feishu_drive"])
-        logger.info("[Feishu-Comment] _run_comment_agent: calling run_conversation (prompt=%d chars, history=%d)", len(prompt), len(history))
-        result = agent.run_conversation(prompt, conversation_history=history or None)
-        response = (result.get("final_response") or "").strip()
-        logger.info("[Feishu-Comment] _run_comment_agent: done api_calls=%d response_len=%d response=%s", result.get("api_calls", 0), len(response), response[:200])
-        if session_key and result.get("messages", []):
-            _save_session_history(session_key, result["messages"])
-        return response
+        try:
+            logger.info("[Feishu-Comment] _run_comment_agent: calling run_conversation (prompt=%d chars, history=%d)", len(prompt), len(history))
+            result = agent.run_conversation(prompt, conversation_history=history or None)
+            response = (result.get("final_response") or "").strip()
+            logger.info("[Feishu-Comment] _run_comment_agent: done api_calls=%d response_len=%d response=%s", result.get("api_calls", 0), len(response), response[:200])
+            if session_key and result.get("messages", []):
+                _save_session_history(session_key, result["messages"])
+            return response
+        finally:
+            # One agent per comment run in a long-lived gateway process: close()
+            # releases tool subprocesses and httpx clients, else they leak per
+            # comment (#50197).
+            with contextlib.suppress(Exception):
+                agent.close()
     except Exception as e:
         logger.exception("[Feishu-Comment] _run_comment_agent: agent failed: %s", e)
         return ""

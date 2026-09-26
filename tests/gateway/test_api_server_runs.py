@@ -165,14 +165,18 @@ def _make_scripted_agent():
 
 
 async def _read_sse_frame(response):
+    """Read the next event frame; comment-only frames (``: open``) dispatch nothing in SSE."""
     lines = []
     while True:
         line = await response.content.readline()
         if not line:
             break
-        lines.append(line.decode())
         if line == b"\n":
-            break
+            if any(not entry.startswith(":") for entry in lines):
+                break
+            lines = []
+            continue
+        lines.append(line.decode())
     sequence = next(
         (int(line.removeprefix("id: ")) for line in lines if line.startswith("id: ")),
         None,
@@ -851,6 +855,50 @@ class TestRunEvents:
                     approval_mod._gateway_queues.pop(victim_run, None)
                 victim_interrupted.set()
                 attacker_interrupted.set()
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/runs/{run_id}/events — CORS on the SSE stream
+# ---------------------------------------------------------------------------
+
+
+class TestRunEventsCORS:
+    """StreamResponse flushes headers on prepare(), so the CORS middleware cannot
+    inject them afterwards — the handler must resolve them up front (#6358)."""
+
+    @staticmethod
+    def _primed_adapter(api_key="sk-secret"):
+        adapter = _make_adapter(api_key=api_key)
+        adapter._cors_origins = ("http://localhost:3000",)
+        return adapter
+
+    @staticmethod
+    def _prime_closed_stream(adapter, run_id):
+        _claim_run(adapter, run_id)
+        stream = _RunStream()
+        stream.put_nowait(None)  # run finished: handler writes ": stream closed" and returns
+        adapter._run_streams[run_id] = stream
+
+    @pytest.mark.asyncio
+    async def test_events_cors_headers_present_for_allowed_origin(self):
+        adapter = self._primed_adapter()
+        self._prime_closed_stream(adapter, "cors_run_1")
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get(
+                "/v1/runs/cors_run_1/events",
+                headers={
+                    "Authorization": "Bearer sk-secret",
+                    "Origin": "http://localhost:3000",
+                    "Accept": "text/event-stream",
+                },
+            )
+            assert resp.status == 200
+            assert resp.headers.get("Content-Type") == "text/event-stream"
+            assert resp.headers.get("Access-Control-Allow-Origin") == "http://localhost:3000"
+            assert "GET" in resp.headers.get("Access-Control-Allow-Methods", "")
+            assert "Authorization" in resp.headers.get("Access-Control-Allow-Headers", "")
+            await resp.text()
 
 
 # ---------------------------------------------------------------------------
@@ -2530,3 +2578,39 @@ class TestHostedRoomRuns:
                 )
             assert rejected.status == 403
             create.assert_not_called()
+
+
+class TestRunEventsHeadFlush:
+    """The SSE head must reach the client before the first event (#80757).
+
+    ``_handle_run_events`` used to call ``prepare()`` and go straight into the
+    queue wait. aiohttp keeps the headers in the socket buffer until the first
+    body write, so a subscriber that connects before the run emits anything got
+    no bytes at all — ``fetch()``/``EventSource`` never resolve and the client
+    looks hung. The approval flow is the worst case: ``approval.request`` only
+    fires after the model thinks, so the client waits that whole time (or the
+    30s keepalive) for headers that were ready immediately.
+    """
+
+    @pytest.mark.asyncio
+    async def test_head_arrives_before_any_event(self, adapter):
+        """A subscriber on a silent run reads its first byte immediately."""
+        app = _create_runs_app(adapter)
+        run_id = "run_silent_head"
+        # A registered run whose queue stays empty for the whole test — the
+        # exact shape of "subscribed before the first event was emitted".
+        adapter._run_streams[run_id] = _RunStream()
+        _claim_run(adapter, run_id)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await asyncio.wait_for(
+                cli.get(f"/v1/runs/{run_id}/events"), timeout=5.0
+            )
+            assert resp.status == 200
+            assert resp.headers["Content-Type"].startswith("text/event-stream")
+
+            # Without the preamble this blocks until the 30s keepalive.
+            first = await asyncio.wait_for(resp.content.read(1), timeout=3.0)
+            assert first, "no body byte arrived before the first event"
+
+            resp.close()

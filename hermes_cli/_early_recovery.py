@@ -589,6 +589,12 @@ def recover_if_needed(project_root: Path | None = None, argv: list[str] | None =
         from pm.recovery import repair_dependencies
 
         print("hermes: repairing the recorded dependency environment...", file=sys.stderr)
+        # ponytail: pre-increment, not post-failure — a SIGKILL (Android LMK,
+        # OOM killer) skips the handler below, so counting only on failure lets
+        # a kill reset the retry breaker forever (#123860). Counting up front
+        # is safe: success unlinks the markers, failure keeps the one count.
+        for marker in markers:
+            _count_failed_attempt(marker)
         repair_dependencies(root)
         for marker in markers:
             marker.unlink(missing_ok=True)
@@ -596,8 +602,6 @@ def recover_if_needed(project_root: Path | None = None, argv: list[str] | None =
         print("hermes: dependency environment repaired", file=sys.stderr)
         return True
     except Exception as exc:
-        for marker in markers:
-            _count_failed_attempt(marker)
         print(f"hermes: dependency repair failed: {exc}; run `hermes pm repair`", file=sys.stderr)
         return False
     finally:

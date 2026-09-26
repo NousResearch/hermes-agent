@@ -131,6 +131,38 @@ def test_marker_owner_liveness_uses_recorded_pid(tmp_path, monkeypatch):
     assert er._marker_owner_is_live(marker) is True
     assert seen == [4321]
 
+def test_sigkill_during_repair_counts_as_attempt(tmp_path):
+    """A kill mid-repair must persist the attempt counter (#123860).
+
+    The retry breaker only engaged when the failure handler ran. A SIGKILL
+    (Android LMK, OOM killer) skips every handler, so the counter never
+    persisted and each new launch re-attempted the fatal build forever.
+    The child below kills itself inside repair_dependencies — exactly the
+    code path a SIGKILL takes — then the parent checks the marker.
+    """
+    root = _project(tmp_path)
+    marker = root / ".update-incomplete"
+    marker.write_text('{"attempts": 0}', encoding="utf-8")
+    child = tmp_path / "sigkill_child.py"
+    child.write_text(
+        "import os, signal, sys\n"
+        f"sys.path.insert(0, {str(REPO_ROOT)!r})\n"
+        "from hermes_cli import _early_recovery as er\n"
+        "from pm import recovery\n"
+        "sig = signal.SIGTERM if sys.platform == 'win32' else signal.SIGKILL\n"
+        "recovery.repair_dependencies = lambda _root: os.kill(os.getpid(), sig)\n"
+        "er.recover_if_needed(sys.argv[1], argv=[])\n",
+        encoding="utf-8",
+    )
+    env = {**os.environ, "PYTHONPATH": str(REPO_ROOT)}
+    result = subprocess.run(
+        [sys.executable, str(child), str(root)],
+        capture_output=True, text=True, timeout=60, env=env,
+    )
+    assert result.returncode != 0  # the child died by signal, never returned
+    assert er._read_marker_attempts(marker) == 1
+
+
 def _project(tmp_path: Path, *, pyproject: bool = True) -> Path:
     root = tmp_path / "proj"
     root.mkdir(exist_ok=True)

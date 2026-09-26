@@ -1190,6 +1190,7 @@ def _prepare_runtime_status_update(
     error_code: Any = _UNSET, error_message: Any = _UNSET, needs_attention: Any = _UNSET,
     retrying_since: Any = _UNSET, served_profiles: Any = _UNSET, session_store: Any = _UNSET,
     multiplex_standalone_reason: Any = _UNSET,
+    platform_metrics: Any = _UNSET,
     ingress_url: Any = _UNSET, listener_base: Any = _UNSET, clear_profile_platforms: bool = False,
     drop_profile_platforms: Optional[str] = None,
     load_existing: bool = True, reload_existing: bool = False,
@@ -1241,6 +1242,7 @@ def _prepare_runtime_status_update(
                 ("error_message", error_message, None),
                 ("needs_attention", needs_attention, bool),
                 ("retrying_since", retrying_since, None),
+                ("metrics", platform_metrics, None),
                 ("ingress_url", ingress_url, None),
                 ("listener_base", listener_base, None),
             ))
@@ -1258,7 +1260,6 @@ def _emit_runtime_status_transition(
     with contextlib.suppress(Exception):
         from agent.monitoring.gateway_health import emit_runtime_status_transition
         emit_runtime_status_transition(previous_payload, payload)
-
 
 def write_runtime_status(
     *, reload_existing: bool = False, wait_timeout: Optional[float] = None, **fields: Any,

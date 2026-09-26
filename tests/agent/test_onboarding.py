@@ -95,3 +95,48 @@ class TestProfileBuildMode:
 
         assert profile_build_mode("not a dict") == "ask"  # type: ignore[arg-type]
         assert profile_build_mode({"onboarding": "nope"}) == "ask"
+
+
+class TestFirstContactTurnNote:
+    def test_returns_profile_directive_and_marks_seen(self, tmp_path):
+        from agent.onboarding import (
+            PROFILE_BUILD_FLAG,
+            first_contact_turn_note,
+            profile_build_directive,
+        )
+
+        cfg_path = tmp_path / "config.yaml"
+        cfg = {"onboarding": {"profile_build": "ask"}}
+        note = first_contact_turn_note(
+            cfg,
+            cfg_path,
+            session_history_empty=True,
+            install_has_prior_sessions=False,
+        )
+        assert note == profile_build_directive().strip()
+        loaded = yaml.safe_load(cfg_path.read_text())
+        assert loaded["onboarding"]["seen"][PROFILE_BUILD_FLAG] is True
+
+    def test_returns_none_when_not_first_contact(self, tmp_path):
+        from agent.onboarding import first_contact_turn_note
+
+        cfg_path = tmp_path / "config.yaml"
+        assert (
+            first_contact_turn_note(
+                {},
+                cfg_path,
+                session_history_empty=False,
+                install_has_prior_sessions=False,
+            )
+            is None
+        )
+        assert (
+            first_contact_turn_note(
+                {},
+                cfg_path,
+                session_history_empty=True,
+                install_has_prior_sessions=True,
+            )
+            is None
+        )
+        assert not cfg_path.exists()

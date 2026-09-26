@@ -566,6 +566,31 @@ def test_existing_non_git_workspace_still_becomes_a_project():
     assert [p["id"] for p in tree["projects"]] == ["/www/notes"]
 
 
+def test_git_lanes_are_flagged_is_git():
+    # Every placement backed by a git probe (or a persisted repo root, when no
+    # probe ran) marks its lane isGit, so the renderer can offer branch
+    # switching only where `git switch` can actually run.
+    probed = pt.build_tree(
+        [], [_session("/repo", branch="main")], [], _resolver({"/repo": ("/repo", "/repo")}), hydrate=True)
+    persisted = pt.build_tree(
+        [], [_session("/repo", branch="main", repo_root="/repo")], [], None, hydrate=True)
+
+    for tree in (probed, persisted):
+        lane = tree["projects"][0]["repos"][0]["groups"][0]
+        assert lane["isMain"] and lane["isGit"]
+
+
+def test_non_git_heuristic_lane_is_flagged_not_git():
+    # The path-only heuristic lane for a plain folder keeps the project and the
+    # lane (pinned above), but carries isGit=False so the renderer never runs
+    # `git switch <folder-name>` and dies with "not a git repository" (#61362).
+    tree = pt.build_tree([], [_session("/www/notes")], [], lambda _cwd: None, hydrate=True)
+
+    lane = tree["projects"][0]["repos"][0]["groups"][0]
+    assert lane["isMain"] and lane["id"] == "/www/notes::branch::main"
+    assert lane["isGit"] is False
+
+
 def test_stale_persisted_repo_root_does_not_become_a_project():
     # A session carrying a git_repo_root whose repo has since been deleted must
     # not resurrect it as a project on the strength of the persisted value alone.

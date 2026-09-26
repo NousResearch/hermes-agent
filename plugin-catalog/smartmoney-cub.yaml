@@ -1,0 +1,33 @@
+# Catalog entry for the SmartMoney-Cub Hermes plugin.
+#
+# Admission rules this entry is built to satisfy (plugin-catalog/README.md):
+#   rule 2  - "sha" is a full 40-char commit SHA, never a branch or short sha.
+#   rule 5  - submitted by the plugin repository owner (myc0576 owns both repos).
+#   rule 6  - "capabilities" below matches what register() actually registers at
+#             the pinned commit, verified with the real capability probe.
+#   rule 7  - the install scanner runs at admission; this plugin scans "safe".
+name: smartmoney-cub
+repo: https://github.com/myc0576/hermes-smartmoney-cub
+sha: 274cff6ee6ed25dfc69cf28b8718752208ab9d64
+description: >-
+  Read-only review tools over a local SmartMoney-Cub trading journal: validate a
+  run envelope, build and replay hashed evidence packs, grade one run against its
+  recorded outcome, and report promotion readiness. Offline and local-only - no
+  orders, no cancels, no broker or account connection, and no financial advice.
+maintainer: myc0576
+tier: community
+category: tools
+docs_url: https://github.com/myc0576/hermes-smartmoney-cub#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+  - smcub_doctor
+  - smcub_validate_envelope
+  - smcub_build_evidence_pack
+  - smcub_replay_evidence_pack
+  - smcub_evaluate_run
+  - smcub_inspect_artifacts
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -69,6 +69,55 @@ def test_notifies_remove_with_old_text_after_success():
     ]
 
 
+def test_batch_new_text_alias_is_forwarded_for_add_and_replace():
+    mgr, provider = _manager_with_provider()
+
+    mgr.notify_memory_tool_write(
+        json.dumps({"success": True}),
+        {
+            "target": "memory",
+            "operations": [
+                {"action": "add", "new_text": "Preferred shell is zsh"},
+                {
+                    "action": "replace",
+                    "old_text": "Preferred shell is zsh",
+                    "new_text": "Preferred shell is fish",
+                },
+            ],
+        },
+    )
+    mgr.notify_memory_tool_write(
+        json.dumps({"success": True}),
+        {
+            "action": "replace",
+            "target": "memory",
+            "old_text": "Preferred shell is fish",
+            "content": "Preferred shell is nushell",
+        },
+    )
+
+    assert provider.calls == [
+        {
+            "action": "add",
+            "target": "memory",
+            "content": "Preferred shell is zsh",
+            "metadata": {},
+        },
+        {
+            "action": "replace",
+            "target": "memory",
+            "content": "Preferred shell is fish",
+            "metadata": {"old_text": "Preferred shell is zsh"},
+        },
+        {
+            "action": "replace",
+            "target": "memory",
+            "content": "Preferred shell is nushell",
+            "metadata": {"old_text": "Preferred shell is fish"},
+        },
+    ]
+
+
 
 
 

@@ -154,17 +154,74 @@ OpenViking server auto-commit is disabled by default, so an accepted message
 whose explicit commit fails normally remains live and unextracted until it is
 manually committed.
 
-Hermes built-in `memory` tool additions are mirrored to OpenViking after the
-local memory operation succeeds:
+Successful Hermes built-in `memory` mutations are mirrored to OpenViking in
+FIFO order. Hermes persists the exact OpenViking URI for each native memory
+entry in the active profile at
+`$HERMES_HOME/openviking/memory_mirror_registry.json`, so later mutations never
+need to guess a target by semantic similarity:
 
 | Hermes action | OpenViking operation |
 |---------------|----------------------|
-| `add` | `content/write` with `mode=create` under user memory, or the configured peer memory directory |
+| `add` | `content/write` with `mode=create` under user memory, or the configured peer memory directory; store the exact returned URI in the mirror registry |
+| `replace` | resolve one registry entry from `target` + `old_text`, then replace the same URI and wait for semantic/vector refresh |
+| `remove` | resolve one registry entry from `target` + `old_text`, then delete that exact URI and wait for semantic cleanup |
 
-Built-in `replace` and `remove` operations are not mirrored because Hermes
-native memory entries do not yet carry stable OpenViking file URIs. Use
-`viking_forget` when the user explicitly asks to delete a specific OpenViking
-memory URI.
+URI construction uses the same server-asserted explicit user identity and
+connection snapshot as the current OpenViking provider. The registry stores a
+fingerprint of that connection with each mapping, without storing the raw API
+key. It also stores the full current text of each mirrored native memory so it
+can resolve the native tool's later `old_text` reference. This prevents a later
+connection from reusing mappings that belong to another OpenViking endpoint,
+identity, or peer.
+
+Changing the endpoint, credentials, identity, or peer starts a new registry
+scope. Mappings from the earlier connection then fail closed instead of being
+applied to the new connection.
+
+The mirror registry owns only memories created through this built-in-memory
+bridge. Session-extracted memories and explicit `viking_remember` writes are not
+registered or modified by it. Existing OpenViking memories created before the
+registry was introduced also have no safe automatic mapping: a later built-in
+`replace` or `remove` for such an entry fails closed with a warning and leaves
+OpenViking unchanged rather than guessing which memory to mutate. Use
+`viking_forget` with an exact URI for manual cleanup of those entries.
+
+`replace` and `remove` resolve the same `old_text` supplied by the native memory
+tool against the registry's pre-mutation content. If that text no longer maps
+to exactly one registry entry, the OpenViking mutation fails closed rather than
+selecting a URI heuristically.
+
+The mirror is asynchronous and intentionally not a distributed transaction.
+The local Hermes memory mutation commits before the OpenViking request. If that
+remote request then fails (for example because of a transient network error),
+the failure is logged at WARNING and the mirror does not durably replay the
+event. Hermes and OpenViking can therefore drift until the entry is repaired
+manually or later reconciliation/durable-outbox work handles it. Drift can also
+occur if OpenViking accepts a mutation but the following local registry save
+fails. In that case, later mutations fail closed because Hermes cannot prove
+the exact remote mapping.
+
+Mirror events are ordered within each provider. Registry updates are also
+serialized across provider instances that use the same profile in one Hermes
+process. The registry does not provide cross-process serialization.
+
+Registry writes request file mode `0600` on POSIX systems. That mode is not an
+equivalent Windows ACL guarantee, so Windows deployments should rely on the
+normal account/filesystem access controls protecting `HERMES_HOME`.
+
+An unreadable registry, an invalid registry structure, or an unsupported
+registry version blocks all mirror operations. This prevents Hermes from
+creating OpenViking files that it cannot track and prevents an older Hermes
+version from overwriting mappings written by a newer version. The warning
+identifies the registry path and distinguishes an unsupported version from an
+invalid format.
+
+Stop Hermes before repairing the registry. For an unsupported version, run a
+Hermes version that supports the reported registry version; do not delete or
+replace the file. For an unreadable or invalid registry, restore a valid backup.
+If no backup exists, rename the invalid file and restart Hermes only if you
+accept that its existing OpenViking files will no longer have stable mappings.
+Those files then require manual cleanup by exact URI.
 
 `viking_forget` is intentionally narrow. It only accepts concrete user memory
 file URIs, such as

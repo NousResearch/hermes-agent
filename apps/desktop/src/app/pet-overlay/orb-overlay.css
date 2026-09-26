@@ -1,0 +1,59 @@
+.desktop-orb {
+  --jarvis-hero-size: 280px;
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+  overflow: hidden;
+  color: var(--ui-text-primary);
+}
+
+.desktop-orb__sphere {
+  width: var(--jarvis-hero-size);
+  height: var(--jarvis-hero-size);
+  cursor: grab;
+  touch-action: none;
+  flex-shrink: 0;
+}
+.desktop-orb__sphere:active {
+  cursor: grabbing;
+}
+.desktop-orb__sphere > * {
+  pointer-events: none;
+}
+.desktop-orb__caption {
+  margin-top: -22px;
+  padding: 5px 14px;
+  border-radius: var(--radius-xl);
+  background: var(--ui-bg-chrome);
+  border: 1px solid var(--stroke-nous);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+}
+.desktop-orb__controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  opacity: 0;
+  transform: translateY(4px);
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+}
+.desktop-orb:hover .desktop-orb__controls,
+.desktop-orb:focus-within .desktop-orb__controls {
+  opacity: 1;
+  transform: translateY(0);
+}
+@media (prefers-reduced-motion: reduce) {
+  .desktop-orb__controls {
+    transition: none;
+    transform: none;
+  }
+}

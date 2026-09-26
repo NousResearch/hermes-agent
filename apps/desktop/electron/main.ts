@@ -15403,7 +15403,8 @@ registerPetOverlayIpc({
   getMainWindow: () => mainWindow,
   getPetOverlayWindow: () => petOverlayWindow,
   openPetOverlay,
-  closePetOverlay
+  closePetOverlay,
+  setVoiceActive: active => streamThrottle.updateVoice(active)
 })
 
 // --- HUD mode (chrome-free floating chat) — see hud-ipc.ts. ---------------

@@ -6,6 +6,7 @@ import { Loader2, Mic, MicOff, Square, VolumeX } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 import { useMicLevelVar } from './audio-level'
+import { DesktopOrbToggle } from './desktop-orb-toggle'
 import { VoiceWaveform } from './voice-waveform'
 
 type VoiceAction = () => Promise<void> | void
@@ -141,6 +142,7 @@ export function VoiceControls({
         {pendingAction === 'cancelTask' ? <Loader2 className="animate-spin" /> : <Square />}
         {copy.cancelTask}
       </Button>
+      <DesktopOrbToggle />
       {error ? (
         <p className="basis-full text-xs text-destructive" role="alert">
           {error}

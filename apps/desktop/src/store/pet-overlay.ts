@@ -1,8 +1,18 @@
 import { atom } from 'nanostores'
 
+import { desktopOrbCopy } from '@/app/jarvis/desktop-orb-copy'
+import {
+  $desktopOrbConnection,
+  $desktopOrbMode,
+  type DesktopOrbState,
+  ORB_WINDOW_SIZE
+} from '@/app/jarvis/desktop-orb-state'
+import { $jarvisUi } from '@/app/jarvis/store'
 import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
+import { notifyError } from '@/store/notifications'
 import { $petActivity, $petInfo, $petUnread, clearPetUnread, type PetActivity, type PetInfo } from '@/store/pet'
 import { $awaitingResponse, $busy } from '@/store/session'
+import { $micLevel } from '@/store/voice-level'
 
 /**
  * Controller for the pop-out pet overlay (main-renderer side).
@@ -40,6 +50,8 @@ export interface PetOverlayOpenRequest {
 
 /** Everything the overlay needs to reproduce the live mascot. */
 export interface PetOverlayStatePayload {
+  orb?: DesktopOrbState
+  audioLevel?: number
   info: PetInfo
   activity: PetActivity
   busy: boolean
@@ -51,6 +63,7 @@ export interface PetOverlayStatePayload {
 }
 
 export type PetOverlayControl =
+  | { type: 'orb-toggle-voice' }
   | { type: 'pop-in' }
   | { type: 'ready' }
   | { type: 'submit'; text: string }
@@ -136,12 +149,17 @@ export function overlayWindowSize(frameW: number, frameH: number, scale: number)
 
 let stateUnsubs: Array<() => void> = []
 let controlUnsub: (() => void) | null = null
+let bridgeUsers = 0
 let submitHandler: ((text: string) => void) | null = null
 let openAppHandler: (() => void) | null = null
 let scaleHandler: ((scale: number) => void) | null = null
 
 function currentPayload(): PetOverlayStatePayload {
   return {
+    orb: $desktopOrbMode.get()
+      ? { ...$desktopOrbConnection.get(), voice: $jarvisUi.get().voice, task: $jarvisUi.get().task.phase }
+      : undefined,
+    audioLevel: $desktopOrbMode.get() ? $micLevel.get() : undefined,
     info: $petInfo.get(),
     activity: $petActivity.get(),
     busy: $busy.get(),
@@ -153,6 +171,50 @@ function currentPayload(): PetOverlayStatePayload {
 
 function pushNow(): void {
   window.hermesDesktop?.petOverlay?.pushState(currentPayload())
+}
+
+function subscribeOrbAudio(): () => void {
+  let timer: ReturnType<typeof setTimeout> | undefined
+
+  const off = $micLevel.listen(() => {
+    if (!$desktopOrbMode.get() || timer) {
+      return
+    }
+
+    timer = setTimeout(() => {
+      timer = undefined
+      pushNow()
+    }, 40)
+  })
+
+  return () => {
+    off()
+    clearTimeout(timer)
+  }
+}
+
+export function popOutDesktopOrb(): void {
+  $desktopOrbMode.set(true)
+
+  if ($petOverlayActive.get() && stateUnsubs.length) {
+    const saved = loadSavedBounds()
+
+    if (saved) {
+      void window.hermesDesktop?.petOverlay?.open({ bounds: { ...saved, ...ORB_WINDOW_SIZE }, screen: true }).then(result => {
+        if (result.bounds) {saveBounds(result.bounds)}
+      })
+    }
+
+    pushNow()
+
+    return
+  }
+
+  const saved = loadSavedBounds()
+  openOverlay({
+    bounds: { ...(saved ?? { x: Math.max(0, window.innerWidth - 360), y: 100 }), ...ORB_WINDOW_SIZE },
+    screen: Boolean(saved)
+  })
 }
 
 /**
@@ -168,17 +230,27 @@ function openOverlay(request: PetOverlayOpenRequest): void {
   }
 
   $petOverlayActive.set(true)
-  void api.open(request).then(res => {
-    if (res?.bounds) {
-      saveBounds(res.bounds)
-    }
+  void api
+    .open(request)
+    .then(res => {
+      if (res?.bounds) {
+        saveBounds(res.bounds)
+      }
 
-    pushNow()
-  })
+      pushNow()
+    })
+    .catch(error => {
+      popInPet()
+      notifyError(error, desktopOrbCopy[$desktopOrbConnection.get().locale].error)
+    })
 
   // Mirror live state into the overlay. subscribe() fires immediately, so the
   // overlay also gets a first frame the moment it's ready (it asks via 'ready').
   stateUnsubs = [
+    $desktopOrbMode.subscribe(pushNow),
+    $desktopOrbConnection.subscribe(pushNow),
+    $jarvisUi.subscribe(pushNow),
+    subscribeOrbAudio(),
     $petInfo.subscribe(pushNow),
     $petActivity.subscribe(pushNow),
     $busy.subscribe(pushNow),
@@ -210,7 +282,11 @@ export function popOutPet(petRect: PetOverlayBounds): void {
   // Size the window off the pet's scale (not the measured rect, which includes
   // the shadow) so it matches the live resize math exactly — no jump on open.
   const pet = $petInfo.get()
-  const { width, height } = overlayWindowSize(pet.frameW ?? 192, pet.frameH ?? 208, pet.scale ?? 0.33)
+
+  const { width, height } = $desktopOrbMode.get()
+    ? ORB_WINDOW_SIZE
+    : overlayWindowSize(pet.frameW ?? 192, pet.frameH ?? 208, pet.scale ?? 0.33)
+
   const x = Math.round(petRect.x - (width - petRect.width) / 2)
   const y = Math.round(petRect.y - (height - petRect.height) / 2)
 
@@ -235,7 +311,7 @@ export function restorePetOverlay(): void {
     return
   }
 
-  openOverlay({ bounds: saved, screen: true })
+  openOverlay({ bounds: $desktopOrbMode.get() ? { ...saved, ...ORB_WINDOW_SIZE } : saved, screen: true })
 }
 
 /** Pop the pet back into the window (closes the overlay window). */
@@ -271,8 +347,29 @@ export function setPetOverlayScaleHandler(fn: ((scale: number) => void) | null):
 export function initPetOverlayBridge(): () => void {
   const api = window.hermesDesktop?.petOverlay
 
-  if (!api || controlUnsub) {
+  if (!api) {
     return () => {}
+  }
+
+  bridgeUsers++
+  let released = false
+
+  const release = () => {
+    if (released) {
+      return
+    }
+
+    released = true
+    bridgeUsers--
+
+    if (!bridgeUsers) {
+      controlUnsub?.()
+      controlUnsub = null
+    }
+  }
+
+  if (controlUnsub) {
+    return release
   }
 
   controlUnsub = api.onControl(payload => {
@@ -299,8 +396,5 @@ export function initPetOverlayBridge(): () => void {
     }
   })
 
-  return () => {
-    controlUnsub?.()
-    controlUnsub = null
-  }
+  return release
 }

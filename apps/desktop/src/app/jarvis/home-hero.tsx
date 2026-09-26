@@ -14,6 +14,7 @@ import { requestComposerInsert } from '../chat/composer/focus'
 
 import { greetingFor } from './characters'
 import { JarvisCore } from './core'
+import { DesktopOrbToggle } from './desktop-orb-toggle'
 import { $jarvisRailVisible } from './focus-mode'
 import { plasmaTone } from './plasma'
 import { JarvisQuickAccess } from './quick-access'
@@ -106,7 +107,8 @@ export function JarvisHomeHero({
           <JarvisCore live taskPhase={state.task.phase} variant="hero" voice={listening ? 'listening' : state.voice} />
         </div>
 
-        <div className="flex flex-wrap items-center justify-center gap-2">
+      <div className="flex flex-wrap items-center justify-center gap-2">
+        <DesktopOrbToggle />
           <Button
             aria-pressed={listening}
             className={cn('min-h-12 rounded-full px-7 text-base font-semibold', !listening && 'jarvis-cta')}

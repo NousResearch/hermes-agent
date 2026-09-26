@@ -7,13 +7,15 @@ export interface PetOverlayIpcDeps {
   getPetOverlayWindow: () => BrowserWindow | null
   openPetOverlay: (bounds: unknown) => void
   closePetOverlay: () => void
+  setVoiceActive: (active: boolean) => void
 }
 
 export function registerPetOverlayIpc({
   getMainWindow,
   getPetOverlayWindow,
   openPetOverlay,
-  closePetOverlay
+  closePetOverlay,
+  setVoiceActive
 }: PetOverlayIpcDeps) {
   // `request` is `{ bounds, screen }`. A fresh pop-out passes viewport-space
   // bounds (screen=false): convert to screen space by adding the main window's
@@ -45,6 +47,7 @@ export function registerPetOverlayIpc({
     return { ok: true, bounds: screenBounds }
   })
   ipcMain.handle('hermes:pet-overlay:close', async () => {
+    setVoiceActive(false)
     closePetOverlay()
 
     return { ok: true }
@@ -106,7 +109,9 @@ export function registerPetOverlayIpc({
     }
   })
   // Main renderer → overlay: forward the latest pet state for the overlay to render.
-  ipcMain.on('hermes:pet-overlay:state', (_event, payload) => {
+  ipcMain.on('hermes:pet-overlay:state', (event, payload) => {
+    if (event.sender !== getMainWindow()?.webContents) {return}
+    setVoiceActive(payload?.orb?.active === true)
     const petOverlayWindow = getPetOverlayWindow()
 
     if (petOverlayWindow && !petOverlayWindow.isDestroyed()) {

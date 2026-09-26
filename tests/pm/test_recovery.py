@@ -209,6 +209,15 @@ def test_repair_prunes_recorded_extras_the_tree_no_longer_declares(tmp_path, mon
     repaired_fact = Facts(paths.runtime_facts_path(), strict=True).get("venv")
     assert repaired_fact is not None
     assert repaired_fact["extras"] == ["all"]
+    # The repaired ledger must read CURRENT against the members the launch
+    # path will stamp with — a stamp over a different member set would make
+    # the next ordinary sync report "out of sync" and pay a spurious rebuild.
+    from pm.packages import Venv
+    from pm.registry import get_package
+
+    venv_package = get_package("venv")
+    assert isinstance(venv_package, Venv)
+    assert repaired_fact["stamp"] == venv_package.expected_stamp(["all"])
 
 
 def test_uncertain_profile_selection_skips_sync_but_not_admission_or_recorded_repair(tmp_path, monkeypatch, recovery_graph, caplog):

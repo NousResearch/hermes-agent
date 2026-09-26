@@ -424,7 +424,7 @@ def _copy_auth_file(src_file: str, dst_file: str) -> str | None:
             # while replacing only the destination file can replay its abandoned WAL.
             # Connection busy timeouts do not bound backup's retry loop; its callback does.
             with contextlib.closing(sqlite3.connect(
-                    Path(src_file).resolve().as_uri() + "?mode=ro", uri=True, timeout=0.0)) as source:
+                    Path(src_file).resolve().as_uri() + "?mode=ro&immutable=1", uri=True, timeout=0.0)) as source:
                 with contextlib.closing(sqlite3.connect(dst_file, timeout=0.0)) as out:
                     source.backup(out, pages=256, progress=check_deadline, sleep=0.1)
         else:

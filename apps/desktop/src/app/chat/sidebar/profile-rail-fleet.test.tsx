@@ -292,6 +292,26 @@ describe('ProfileRail overflow', () => {
     expect(container.querySelector('[data-slot="profile-dropdown"]')).toBeNull()
   })
 
+  it('maps negative RTL offsets to physical clipped edges and scrolls toward hidden profiles', () => {
+    profiles.set(Array.from({ length: 8 }, (_, index) => ({ is_default: index === 0, name: index ? `agent${index}` : 'default' })))
+    render(<ProfileRail />)
+    const scroller = screen.getByRole('button', { name: 'agent1' }).closest('.overflow-x-auto') as HTMLDivElement
+    scroller.style.direction = 'rtl'
+    Object.defineProperties(scroller, {
+      clientWidth: { configurable: true, value: 100 },
+      scrollWidth: { configurable: true, value: 200 }
+    })
+    fireEvent.scroll(scroller)
+    expect(mask.mock.calls.at(-1)?.[0]).toContain('to right, transparent,')
+    expect(mask.mock.calls.at(-1)?.[0]).toMatch(/, black\)$/)
+    scroller.dispatchEvent(new WheelEvent('wheel', { cancelable: true, deltaY: 30 }))
+    expect(scroller.scrollLeft).toBe(-30)
+    scroller.scrollLeft = -100
+    fireEvent.scroll(scroller)
+    expect(mask.mock.calls.at(-1)?.[0]).toContain('to right, black,')
+    expect(mask.mock.calls.at(-1)?.[0]).toContain('transparent)')
+  })
+
   it('restores wheel navigation and edge feedback after leaving the condensed menu', () => {
     profiles.set(
       Array.from({ length: 14 }, (_, index) => ({ is_default: index === 0, name: index ? `agent${index}` : 'default' }))

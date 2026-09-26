@@ -213,7 +213,7 @@ const stepThroughCells: Modifier = ({ containerNodeRect, draggingNodeRect, trans
 // the picker spans the fleet. Groups keep registry order regardless of which
 // one is active, so a square never moves under the pointer that clicked it.
 export function ProfileRail() {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const p = t.profiles
   const profiles = useStore($profiles)
   const scope = useStore($profileScope)
@@ -314,7 +314,10 @@ export function ProfileRail() {
         scrollEdges({
           clientHeight: el.clientWidth,
           scrollHeight: el.scrollWidth,
-          scrollTop: el.scrollLeft
+          scrollTop:
+            getComputedStyle(el).direction === 'rtl'
+              ? el.scrollWidth - el.clientWidth + el.scrollLeft
+              : el.scrollLeft
         }),
         'x'
       )
@@ -323,6 +326,9 @@ export function ProfileRail() {
 
   // Observe both widths: adding/removing a profile need not resize the viewport.
   useResizeObserver(measureScroll, scrollRef, scrollContentRef)
+
+  // A locale switch can reverse direction without changing either width.
+  useEffect(measureScroll, [locale, measureScroll])
 
   const switchToRest = (agent: FleetAgent) => {
     const commitRestSwitch = (target: FleetAgent) => {
@@ -378,7 +384,7 @@ export function ProfileRail() {
         return
       }
 
-      el.scrollLeft += event.deltaY
+      el.scrollLeft += event.deltaY * (getComputedStyle(el).direction === 'rtl' ? -1 : 1)
       event.preventDefault()
     }
 

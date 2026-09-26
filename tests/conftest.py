@@ -548,6 +548,33 @@ def _neutralize_webbrowser(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _neutralize_windows_registry_writes(monkeypatch):
+    """Record registry writes instead of changing the real user environment.
+
+    Launch/update flows publish ``HERMES_HOME\\bin`` on the User PATH through
+    ``winreg`` directly (``_launchers._register_windows_user_path``,
+    ``_install_repair.migrate_windows_bin_path``, uninstall's env cleanup), so
+    a test reaching them prepended its temp home to the real HKCU PATH. Reads
+    stay real; the write primitives and the environment broadcast are stubbed.
+    """
+    try:
+        import winreg
+    except ImportError:
+        return []
+    import ctypes
+
+    writes: list[tuple[str, tuple]] = []
+
+    def _recorder(name):
+        return lambda *args, **_kwargs: writes.append((name, args[1:]))
+
+    for name in ("SetValue", "SetValueEx", "DeleteValue", "DeleteKey", "DeleteKeyEx"):
+        monkeypatch.setattr(winreg, name, _recorder(name))
+    monkeypatch.setattr(ctypes.windll.user32, "SendMessageTimeoutW", lambda *_args: 1)
+    return writes
+
+
+@pytest.fixture(autouse=True)
 def _neutralize_macos_keychain_creds(request, monkeypatch):
     """Default Anthropic credential resolution away from the real macOS Keychain."""
     if request.node.get_closest_marker(_ALLOW_MACOS_KEYCHAIN_MARK):

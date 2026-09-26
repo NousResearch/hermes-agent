@@ -104,6 +104,22 @@ class FileOperations(ABC):
     def read_file_raw(self, path: str) -> ReadResult:
         """Whole file as a plain string: no pagination, line numbers or clamping."""
 
+    def validate_write_candidate(self, path: str, content: str) -> Optional[str]:
+        """Return an error when a candidate cannot safely be written.
+
+        Backends may override this non-mutating preflight. The default keeps
+        third-party backends compatible with V4A's validation phase.
+        """
+        return None
+
+    def validate_delete(self, path: str) -> Optional[str]:
+        """Return a deterministic policy error before deleting, when available."""
+        return None
+
+    def validate_move(self, src: str, dst: str) -> Optional[str]:
+        """Return a deterministic policy error before moving, when available."""
+        return None
+
     @abstractmethod
     def write_file(self, path: str, content: str, pre_content: Optional[str] = None) -> WriteResult:
         """Write content to a file, creating directories as needed."""
@@ -1247,11 +1263,27 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return ReadResult(error=f"Backend returned invalid binary data for: {path}")
         return ReadResult(base64_content=compact, file_size=file_size, is_binary=True)
 
+    def _first_write_policy_denial(self, verb: str, *paths: str) -> Optional[str]:
+        for path in paths:
+            denied = get_write_denied_error(path, verb=verb)
+            if denied:
+                return denied
+        return None
+
+    def validate_delete(self, path: str) -> Optional[str]:
+        """Preflight the same path policy enforced by ``delete_file``."""
+        return self._first_write_policy_denial("Delete", self._expand_path(path))
+
+    def validate_move(self, src: str, dst: str) -> Optional[str]:
+        """Preflight both paths governed by the same policy as ``move_file``."""
+        return self._first_write_policy_denial(
+            "Move", self._expand_path(src), self._expand_path(dst))
+
     def delete_file(self, path: str) -> WriteResult:
         """Delete a single file (directories rejected) via the backend's ``python -c``
         so one code path works on local/docker/ssh AND Windows shells (no ``rm``)."""
         path = self._expand_path(path)
-        denied = get_write_denied_error(path, verb="Delete")
+        denied = self._first_write_policy_denial("Delete", path)
         if denied:
             return WriteResult(error=denied)
         # Path baked in via repr() for shell-independent quoting; no
@@ -1288,10 +1320,9 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
     def move_file(self, src: str, dst: str) -> WriteResult:
         src = self._expand_path(src)
         dst = self._expand_path(dst)
-        for p in (src, dst):
-            denied = get_write_denied_error(p, verb="Move")
-            if denied:
-                return WriteResult(error=denied)
+        denied = self._first_write_policy_denial("Move", src, dst)
+        if denied:
+            return WriteResult(error=denied)
         result = self._exec(f"mv {self._escape_shell_arg(src)} {self._escape_shell_arg(dst)}")
         if result.exit_code != 0:
             return WriteResult(error=f"Failed to move {src} -> {dst}: {result.stdout}")
@@ -1331,6 +1362,18 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             f"Refusing to write '{path}': candidate content fails "
             f"{ext} syntax validation ({err}). The file was "
             "NOT created or modified. Fix the content and retry."))
+
+    def validate_write_candidate(self, path: str, content: str) -> Optional[str]:
+        """Share non-mutating write policy, encoding and syntax gates with V4A."""
+        path = self._expand_path(path)
+        denied = get_write_denied_error(path)
+        if denied:
+            return denied
+        refused = self._reject_unencodable(path, content)
+        if refused is None:
+            ext = os.path.splitext(path)[1].lower()
+            refused = self._fail_closed_syntax_error(path, ext, content)
+        return refused.error if refused is not None else None
 
     def _write_probe_cmd(self, path: str, sentinel: str, body: Optional[str]) -> str:
         """One shell command for the on-disk questions ``write_file`` asks. Two
@@ -1456,16 +1499,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         caller already has (skips the read); BOM detection always probes disk.
         """
         path = self._expand_path(path)
-        denied = get_write_denied_error(path)
-        if denied:
-            return WriteResult(error=denied)
-        refused = self._reject_unencodable(path, content)
-        if refused is not None:
-            return refused
+        candidate_error = self.validate_write_candidate(path, content)
+        if candidate_error:
+            return WriteResult(error=candidate_error)
         ext = os.path.splitext(path)[1].lower()
-        refused = self._fail_closed_syntax_error(path, ext, content)
-        if refused is not None:
-            return refused
 
         # Pre-content is read only for extensions in the UNION of in-process lint and
         # LSP coverage (keeps the hot path fast for binaries).

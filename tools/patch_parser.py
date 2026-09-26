@@ -146,12 +146,44 @@ def _hint_ambiguity(content: str, hint: str, tail: str = "") -> Tuple[int, str]:
     return n, f"context hint '{hint}' is ambiguous ({n} occurrences){tail}" if n > 1 else ""
 
 
+def _candidate_validation_error(
+    candidate_validator: Any,
+    path: str,
+    content: str,
+) -> Optional[str]:
+    """Keep backend preflight exceptions inside the structured patch result."""
+    if not callable(candidate_validator):
+        return None
+    try:
+        result = candidate_validator(path, content)
+        # The interface contract is Optional[str]. Ignore other truthy values
+        # so duck-typed backends and unspecced mocks do not become accidental
+        # hard rejections merely because they expose a callable attribute.
+        return result if isinstance(result, str) and result else None
+    except Exception as exc:
+        return f"candidate preflight raised {type(exc).__name__}: {exc}"
+
+
+def _policy_validation_error(policy_validator: Any, *paths: str) -> Optional[str]:
+    """Use optional backend policy preflights without tightening duck-typed APIs."""
+    if not callable(policy_validator):
+        return None
+    try:
+        result = policy_validator(*paths)
+        return result if isinstance(result, str) and result else None
+    except Exception as exc:
+        return f"policy preflight raised {type(exc).__name__}: {exc}"
+
+
 def _validate_operations(operations: List[PatchOperation], file_ops: Any) -> List[str]:
     """Dry-run every operation -> error strings (empty = safe). UPDATE hunks are simulated in
     order so later hunks see post-earlier-hunk content, exactly as apply will."""
     from tools.fuzzy_match import fuzzy_find_and_replace, is_already_applied
     errors: List[str] = []
     real_change_count = 0
+    candidate_validator = getattr(file_ops, "validate_write_candidate", None)
+    delete_policy_validator = getattr(file_ops, "validate_delete", None)
+    move_policy_validator = getattr(file_ops, "validate_move", None)
     # Overlay so inter-op state validates (a MOVE creating the path a later UPDATE targets).
     pending_content: dict = {}
     removed_paths: set = set()
@@ -180,6 +212,7 @@ def _validate_operations(operations: List[PatchOperation], file_ops: Any) -> Lis
 
     def _validate_update(op: PatchOperation) -> None:
         nonlocal real_change_count
+        operation_error_count = len(errors)
         simulated, read_err = _read(op.file_path)
         if read_err:
             errors.append(f"{op.file_path}: {read_err}")
@@ -192,14 +225,12 @@ def _validate_operations(operations: List[PatchOperation], file_ops: Any) -> Lis
                 real_change_count += any(l.prefix in '-+' for l in hunk.lines)
                 continue
             real_change_count += 1
-            if not search_lines:  # addition-only: the context hint must be unique
-                if hunk.context_hint:
-                    occurrences, ambiguous = _hint_ambiguity(simulated, hunk.context_hint)
-                    if occurrences == 0:
-                        errors.append(f"{op.file_path}: addition-only hunk context hint "
-                                      f"'{hunk.context_hint}' not found")
-                    elif ambiguous:
-                        errors.append(f"{op.file_path}: addition-only hunk {ambiguous}")
+            if not search_lines:
+                candidate, error = _insert_addition_only(simulated, hunk, '\n'.join(replace_lines))
+                if error:
+                    errors.append(f"{op.file_path}: {error}")
+                else:
+                    simulated = candidate
                 continue
             search_pattern, replacement = '\n'.join(search_lines), '\n'.join(replace_lines)
             new_simulated, count, _strategy, match_error = fuzzy_find_and_replace(
@@ -214,6 +245,10 @@ def _validate_operations(operations: List[PatchOperation], file_ops: Any) -> Lis
                     + (f" — {match_error}" if match_error else "")
                     + _no_match_hint(match_error, search_pattern, simulated))
         pending_content[op.file_path] = simulated
+        if len(errors) == operation_error_count and simulated is not None:
+            candidate_error = _candidate_validation_error(candidate_validator, op.file_path, simulated)
+            if candidate_error:
+                errors.append(f"{op.file_path}: {candidate_error}")
 
     def _remove(path: str) -> None:
         removed_paths.add(path)
@@ -227,6 +262,8 @@ def _validate_operations(operations: List[PatchOperation], file_ops: Any) -> Lis
         if op.operation == OperationType.DELETE:
             if _read(op.file_path)[1]:
                 errors.append(f"{op.file_path}: file not found for deletion")
+            elif policy_error := _policy_validation_error(delete_policy_validator, op.file_path):
+                errors.append(f"{op.file_path}: {policy_error}")
             else:
                 _remove(op.file_path)
         elif op.operation == OperationType.MOVE:
@@ -241,9 +278,14 @@ def _validate_operations(operations: List[PatchOperation], file_ops: Any) -> Lis
                 errors.append(f"{op.new_path}: destination already exists — move would overwrite")
             elif dst_taken:
                 errors.append(f"{op.new_path}: {dst_taken}")
-            elif not src_err:  # only a cleanly-validated move updates the overlay
-                pending_content[op.new_path] = src_content if src_content is not None else ""
-                _remove(op.file_path)
+            elif not src_err:
+                policy_error = _policy_validation_error(
+                    move_policy_validator, op.file_path, op.new_path)
+                if policy_error:
+                    errors.append(f"{op.file_path}: {policy_error}")
+                else:
+                    pending_content[op.new_path] = src_content if src_content is not None else ""
+                    _remove(op.file_path)
         elif op.operation == OperationType.ADD:
             # An Add must create a NEW file. If the target already exists, write_file
             # would clobber it with only the patch's '+' lines and report success,
@@ -261,6 +303,10 @@ def _validate_operations(operations: List[PatchOperation], file_ops: Any) -> Lis
                 removed_paths.discard(op.file_path)
                 pending_content[op.file_path] = '\n'.join(
                     line.content for hunk in op.hunks for line in hunk.lines if line.prefix == '+')
+                candidate_error = _candidate_validation_error(
+                    candidate_validator, op.file_path, pending_content[op.file_path])
+                if candidate_error:
+                    errors.append(f"{op.file_path}: {candidate_error}")
     if not errors and real_change_count == 0:
         errors.append("Patch contains no changes (only context lines were provided)")
     return errors
@@ -389,6 +435,8 @@ def _insert_addition_only(new_content: str, hunk: Hunk, insert_text: str) -> Tup
     if hunk.context_hint:
         occurrences, ambiguous = _hint_ambiguity(
             new_content, hunk.context_hint, " — provide a more unique hint")
+        if occurrences == 0:
+            return None, f"Addition-only hunk: context hint '{hunk.context_hint}' not found"
         if ambiguous:
             return None, f"Addition-only hunk: {ambiguous}"
         if occurrences == 1:
@@ -396,7 +444,7 @@ def _insert_addition_only(new_content: str, hunk: Hunk, insert_text: str) -> Tup
             if eol == -1:
                 return new_content + '\n' + insert_text, None
             return new_content[:eol + 1] + insert_text + '\n' + new_content[eol + 1:], None
-    # No hint / hint not found — append at end as a safe fallback.
+    # No hint: append at end.
     return new_content.rstrip('\n') + '\n' + insert_text + '\n', None
 
 

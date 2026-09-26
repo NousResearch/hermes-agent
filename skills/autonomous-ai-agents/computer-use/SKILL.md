@@ -348,8 +348,7 @@ agent; `cua-driver skills status` shows the link state). You'll then have:
 - `LINUX.md` — Linux specifics (AT-SPI tree, X11 / Wayland, terminal
   emulator detection)
 - `RECORDING.md` — trajectory + video recording semantics
-- `WEB_APPS.md` — browser page interaction tips
-- `TESTS.md` — replay-by-trajectory workflow
+- `BROWSER.md` — browser page interaction tips
 
 Those files describe the driver's OWN MCP tools (`get_window_state`,
 `element_token`, `snapshot_id`, …). Read them for platform context; keep

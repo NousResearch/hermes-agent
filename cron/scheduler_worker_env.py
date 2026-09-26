@@ -16,6 +16,7 @@ site-packages, dropped venv markers) stand.
 from __future__ import annotations
 
 import os
+import sys
 import sysconfig
 from pathlib import Path
 
@@ -27,8 +28,36 @@ def _installed_purelib() -> Path | None:
         return None
 
 
+def _activated_site_packages() -> Path | None:
+    """Find the activated dependency site-packages directory from sys.path.
+
+    When running under a self-managed install, the gateway activates dependencies
+    by placing the selected generation's site-packages on sys.path. The external
+    cron worker spawned with the store Python needs this path restored next to
+    the tree, while excluding the interpreter's own purelib and requiring a real
+    venv ancestor (pyvenv.cfg).
+    """
+    own_purelib = _installed_purelib()
+    for entry in sys.path:
+        if not entry:
+            continue
+        try:
+            p = Path(entry).resolve()
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if p.name != "site-packages":
+            continue
+        if own_purelib is not None and p == own_purelib:
+            continue
+        if any((ancestor / "pyvenv.cfg").is_file() for ancestor in p.parents):
+            return p
+    return None
+
+
+
+
 def pin_hermes_tree_on_pythonpath(worker_env: dict, repo_root: Path) -> dict:
-    """Prepend ``repo_root`` to the worker env's own PYTHONPATH (never ``os.environ``'s).
+    """Prepend ``repo_root`` and activated dependency site-packages to the worker env's own PYTHONPATH.
 
     Skipped when ``repo_root`` is the interpreter's ``purelib``: under a wheel / pipx /
     uv-tool install ``cron/`` lives in site-packages itself, which is already importable,
@@ -38,5 +67,10 @@ def pin_hermes_tree_on_pythonpath(worker_env: dict, repo_root: Path) -> dict:
     if _installed_purelib() == Path(root).resolve():
         return worker_env
     existing = [e for e in worker_env.get("PYTHONPATH", "").split(os.pathsep) if e]
-    worker_env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys([root, *existing]))
+    added = [root]
+    activated = _activated_site_packages()
+    if activated is not None:
+        added.append(str(activated))
+    worker_env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys([*added, *existing]))
     return worker_env
+

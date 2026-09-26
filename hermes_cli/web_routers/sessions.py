@@ -534,6 +534,20 @@ async def get_session_latest_descendant(session_id: str, profile: Optional[str] 
         "changed": bool(path and latest != path[0])}
 
 
+def _is_untyped_scaffold_notice(message) -> bool:
+    """A ``[System: …]`` role=user row persisted without a ``display_kind``.
+
+    ``[System:`` is a reserved gateway-notice namespace — it must never render as a user
+    bubble (the gateway's own history projection drops these rows outright) — but recovery
+    scaffolding written before typing existed carries no kind. Rows WITH a kind
+    (``model_switch``, …) are timeline entries and keep flowing.
+    """
+    if not isinstance(message, dict) or message.get("role") != "user" or message.get("display_kind"):
+        return False
+    content = message.get("content")
+    return isinstance(content, str) and content.lstrip().startswith("[System:")
+
+
 def _stored_tool_call_labels(message: dict) -> dict:
     from agent.display import tool_labels_for_call
     from tools.tool_labels import BRIDGE_TOOL_NAMES
@@ -572,6 +586,17 @@ def _history_profile_home(profile):
 
 
 def _project_for_display(messages: list, *, home=None) -> list:
+    """Replace compaction summaries with their display-only projection and hide untyped
+    gateway-scaffold notices.
+
+    Recovery scaffolding (e.g. the stream-timeout nudge appended when a tool call's stream
+    is cut) persists as a ``[System: …]`` ``role=user`` row with no ``display_kind``. This
+    projection feeds the Desktop's transcript prefetch, which addresses VISIBLE user rows by
+    durable row id — and the gateway truncation resolver refuses scaffold rows fail-closed,
+    so a shipped scaffold row can never resolve as a rewind/regenerate target and dead-ends
+    every retry (``refusing truncation without fallback``). Hide them the same way the
+    Desktop collapses other display-only rows; typed notices stay for the timeline.
+    """
     from agent.compaction_display import project_compaction_message_for_display
     from agent.context_compressor import is_compaction_summary_message
     from agent.history_commentary import project_history_commentary
@@ -579,6 +604,11 @@ def _project_for_display(messages: list, *, home=None) -> list:
 
     projected_messages = []
     for message in messages:
+        if _is_untyped_scaffold_notice(message):
+            projected = message.copy()
+            projected["display_kind"] = "hidden"
+            projected_messages.append(projected)
+            continue
         message = _with_tool_call_labels(message)
         # Same read-side typing as session.resume (tui_gateway/session_history.py).
         failed_turn = not message.get("display_kind") and untyped_failed_turn_display_kind(

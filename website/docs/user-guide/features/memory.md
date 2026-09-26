@@ -454,7 +454,10 @@ prompt, and tool definitions still contribute to the provider request. A second
 setting, `max_input_tokens` (see "Capping review cost" below), caps the input
 tokens one automatic review may consume across its whole tool loop; like
 `max_replay_tokens` it can only be lowered, never lifted, and explicit `/refine`
-is exempt.
+is exempt. The effective replay bound is the smaller of `max_replay_tokens` and
+that aggregate budget (derived from the review model's context window when
+`max_input_tokens` is unset), so the replay admitted into a review never
+exceeds the budget the fork runs under.
 
 ### Disabling automatic reviews (`enabled`)
 

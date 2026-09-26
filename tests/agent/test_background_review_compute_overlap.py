@@ -1518,6 +1518,77 @@ def test_single_turn_larger_than_replay_budget_skips_automatic_review(
     assert review_admission.REASON_OVERSIZED in caplog.text
 
 
+@pytest.mark.parametrize(
+    "task_cfg, window",
+    [
+        ({}, 128_000),
+        ({}, 65_536),
+        ({}, 200_000),
+        ({}, None),
+        ({"max_replay_tokens": 50_000}, 128_000),
+        ({"max_input_tokens": 40_000}, 128_000),
+    ],
+)
+def test_replay_budget_is_the_smaller_of_the_ceiling_and_the_aggregate_budget(
+    task_cfg, window
+):
+    """One rule: the automatic replay never exceeds the aggregate input budget the fork runs
+    under. The fork resolves the same context window as its parent on the same-model path, so
+    the parent answers for it at replay-bounding time."""
+    agent = _bare_agent()
+    if window is not None:
+        agent.context_compressor = types.SimpleNamespace(context_length=window)
+
+    ceiling = review_admission.replay_token_budget(task_cfg)
+    aggregate = background_review_module._review_input_token_budget(task_cfg, agent)
+
+    assert review_admission.replay_token_budget(task_cfg, agent) == min(
+        ceiling, aggregate
+    )
+
+
+def test_replay_never_exceeds_the_forks_aggregate_input_budget(
+    review_forks, monkeypatch
+):
+    """A replay admitted under the replay ceiling but above the fork's aggregate input budget
+    (75% of the review model's window) is refused at the fork's first provider request: a
+    zero-request review with no memory or skill writes. The replay the fork receives must fit
+    the budget the fork is built with."""
+    _patch_config(monkeypatch, _config())
+    window = 128_000
+    fake_fork = run_agent_module.AIAgent  # the review_forks fixture's recorder
+
+    class WindowedFork(fake_fork):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.context_compressor = types.SimpleNamespace(context_length=window)
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", WindowedFork)
+    agent = _bare_agent()
+    agent.context_compressor = types.SimpleNamespace(context_length=window)
+    snapshot = _snapshot(pairs=50, filler_chars=8_000)
+    aggregate = background_review_module._review_input_token_budget({}, agent)
+    assert (
+        aggregate
+        < estimate_messages_tokens_rough(snapshot)
+        <= review_admission.MAX_REPLAY_TOKENS_DEFAULT
+    )
+
+    AIAgent._spawn_background_review(
+        agent, messages_snapshot=snapshot, review_memory=True
+    )
+
+    assert len(review_forks) == 1
+    history = review_forks[0]["history"]
+    assert history is not None
+    fork_budget = review_forks[0]["attrs"]["_review_input_token_budget"]
+    assert fork_budget == aggregate
+    assert estimate_messages_tokens_rough(history) <= fork_budget, (
+        "replay admitted above the fork's aggregate input budget"
+    )
+    _assert_plain_user_anchor(history)
+
+
 # ---------------------------------------------------------------------------
 # 5 — persistence isolation survives both paths
 # ---------------------------------------------------------------------------

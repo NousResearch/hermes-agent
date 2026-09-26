@@ -481,8 +481,9 @@ def rebind_foreground_review_ownership(agent: Any, session_id: str) -> None:
 # to a DIFFERENT model the cache is cold anyway, so the fork replays a compact digest instead.
 _REVIEW_MAX_ITERATIONS = 16
 # Aggregate INPUT-token budget for one review fork (checked in conversation_loop's
-# ``_review_input_budget_exhausted``). Request #1 replays the full snapshot as a warm cache read
-# (both compression gates deferred until the first response); compaction then bounds each
+# ``_review_input_budget_exhausted``). Request #1 replays the snapshot as a warm cache read —
+# bounded at spawn to fit this budget (``review_admission.replay_token_budget``), both
+# compression gates deferred until the first response; compaction then bounds each
 # request, but nothing else caps the SUM across the tool loop. The default leaves 25% of the
 # review model's context window available and never exceeds the historical cloud-scale ceiling.
 # Override via ``auxiliary.background_review.max_input_tokens``; operators may lower the limit

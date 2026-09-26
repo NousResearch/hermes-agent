@@ -271,8 +271,24 @@ def foreground_block_reason(
     return reason or _followup_block_reason(agent)
 
 
-def replay_token_budget(task_cfg: Optional[Dict[str, Any]]) -> int:
-    """Resolve the operator setting without permitting automatic replay to become unbounded."""
+def replay_token_budget(task_cfg: Optional[Dict[str, Any]], agent: Any = None) -> int:
+    """Resolve the operator setting without permitting automatic replay to become unbounded.
+
+    With ``agent`` (the spawning parent) the replay is also never wider than the aggregate input
+    budget the fork will run under: a wider replay is refused at the fork's first provider
+    request, a zero-request review. The fork resolves the same context window as its parent on
+    the same-model path, so the parent answers for it at replay-bounding time.
+    """
+    ceiling = _replay_ceiling(task_cfg)
+    if agent is None:
+        return ceiling
+    from agent.background_review import _review_input_token_budget
+
+    return min(ceiling, _review_input_token_budget(task_cfg, agent))
+
+
+def _replay_ceiling(task_cfg: Optional[Dict[str, Any]]) -> int:
+    """``max_replay_tokens`` clamped to the hard ceiling; the default on any invalid value."""
     config = task_cfg or {}
     if "max_replay_tokens" not in config:
         return MAX_REPLAY_TOKENS_DEFAULT

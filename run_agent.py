@@ -848,7 +848,7 @@ class AIAgent(
                 return
 
             messages_snapshot, replay_reason = review_admission.bounded_replay_history(
-                messages_snapshot, review_admission.replay_token_budget(task_cfg),
+                messages_snapshot, review_admission.replay_token_budget(task_cfg, self),
             )
             if replay_reason:
                 if not messages_snapshot:

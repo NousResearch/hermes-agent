@@ -443,6 +443,7 @@ import {
   revalidateRemoteConnection,
   revalidateSuspectPooledRemoteBackends
 } from './remote-liveness'
+import { fetchRemoteMedia } from './remote-media-fetch'
 import { resolveRemoteOauthTicket, rosterSourceEnumerationTimeoutMs } from './remote-oauth-ticket'
 import {
   attachRemoteRequestHeaderListener,
@@ -1493,26 +1494,38 @@ function registerMediaProtocol(): void {
     ensureRemoteBearer: (baseUrl: string): Promise<string | null> => ensureNativeAccessToken(baseUrl),
     // Electron's file:// loader ignores Range, which prevents video seeking.
     fetchLocal: fetchLocalMedia,
-    fetchRemote: (url, headers, method) =>
-      electronNet.fetch(url, {
-        bypassCustomProtocolHandlers: true,
-        credentials: 'omit',
+    fetchRemote: (url, headers, method, signal) =>
+      fetchRemoteMedia(
+        (mediaHeaders, fetchSignal) =>
+          electronNet.fetch(url, {
+            bypassCustomProtocolHandlers: true,
+            credentials: 'omit',
+            headers: mediaHeaders,
+            method,
+            signal: fetchSignal
+          }),
         headers,
-        method
-      }),
-    fetchRemoteWithCookies: (url, headers, method) => {
+        signal
+      ),
+    fetchRemoteWithCookies: (url, headers, method, signal) => {
       const oauthSession = getOauthSessionForUrl(url)
 
       if (!oauthSession) {
         throw new Error('OAuth session partition is unavailable.')
       }
 
-      return oauthSession.fetch(url, {
-        bypassCustomProtocolHandlers: true,
-        credentials: 'include',
+      return fetchRemoteMedia(
+        (mediaHeaders, fetchSignal) =>
+          oauthSession.fetch(url, {
+            bypassCustomProtocolHandlers: true,
+            credentials: 'include',
+            headers: mediaHeaders,
+            method,
+            signal: fetchSignal
+          }),
         headers,
-        method
-      })
+        signal
+      )
     },
     resolveLocalFile: async filePath => {
       // On a Windows host with a WSL backend the media path arrives as a

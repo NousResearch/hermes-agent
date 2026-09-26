@@ -14,6 +14,7 @@ import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { TranscriptVideo } from '@/components/chat/transcript-video'
+import { useMediaElementRef } from '@/components/chat/use-media-element-ref'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { useMediaImage } from '@/hooks/use-media-image'
@@ -160,6 +161,7 @@ function MediaAttachment({ path }: { path: string }) {
 
 function MediaPlaybackAttachment({ path }: { path: string }) {
   const [src, setSrc] = useState('')
+  const audioRef = useMediaElementRef<HTMLAudioElement>(src)
   const [failed, setFailed] = useState(false)
   const { open, openFailed } = useOpenMediaFile(path)
   const kind = mediaKind(path)
@@ -211,7 +213,14 @@ function MediaPlaybackAttachment({ path }: { path: string }) {
     return (
       <span className="my-3 block max-w-md rounded-xl border border-(--ui-stroke-tertiary) bg-muted/35 p-3">
         <span className="mb-2 block truncate text-xs font-medium text-muted-foreground">{name}</span>
-        <audio className="block w-full" controls onError={() => setFailed(true)} preload="metadata" src={src} />
+        <audio
+          className="block w-full"
+          controls
+          onError={() => setFailed(true)}
+          preload={src.startsWith('hermes-media://remote/') ? 'none' : 'metadata'}
+          ref={audioRef}
+          src={src}
+        />
         {failed && <OpenMediaButton kind="audio" path={path} />}
       </span>
     )
@@ -225,6 +234,7 @@ function MediaPlaybackAttachment({ path }: { path: string }) {
           className="block max-h-112 w-full rounded-lg bg-black"
           controls
           onError={() => setFailed(true)}
+          preload={src.startsWith('hermes-media://remote/') ? 'none' : undefined}
           src={src}
         />
         {failed && <OpenMediaButton kind="video" path={path} />}

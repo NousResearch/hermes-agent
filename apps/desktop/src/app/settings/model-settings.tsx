@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
+import type { RecycleBackendScope } from '@/global'
 import {
   getAuxiliaryModels,
   getGlobalModelInfo,
@@ -47,6 +48,26 @@ import { getNested, setNested } from './helpers'
 import { ModelSelect, withActive } from './model-select'
 import { ListRow, ListRowSkeleton, Pill, SectionHeading, SectionHeadingSkeleton } from './primitives'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
+
+function exactRecycleScope(scope: ProfileScope): RecycleBackendScope | undefined {
+  if (!scope || typeof scope !== 'object') {
+    return scope
+  }
+
+  const profile = scope.profile?.trim()
+
+  if (scope.connectionId === null && profile && scope.legacyConnection) {
+    return { connectionId: null, legacyConnection: scope.legacyConnection, profile }
+  }
+
+  const connectionId = scope.connectionId?.trim()
+
+  if (connectionId && profile && scope.connectionOwner) {
+    return { connectionId, connectionOwner: scope.connectionOwner, profile }
+  }
+
+  throw new Error('Restart requires an exact connection and profile.')
+}
 
 // Skeleton mirror of the Model settings DOM so the page keeps its shape while
 // the provider/model catalog loads, instead of collapsing to a centered
@@ -891,7 +912,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
     setSkewRestart(false)
 
     try {
-      await window.hermesDesktop?.recycleBackend?.(scopeProfile)
+      await window.hermesDesktop?.recycleBackend?.(exactRecycleScope(scopeProfile))
       await refresh({ replaceSelection: true })
     } catch (err) {
       setCaughtError(err, m.restartFailed)

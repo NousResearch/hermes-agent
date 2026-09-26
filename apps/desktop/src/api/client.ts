@@ -193,6 +193,7 @@ export type ProfileScope =
       profile?: null | string
       connectionOwner?: ConnectionOwner
       legacyConnection?: LegacyConnectionOwner
+      legacyConnectionProfile?: string
     }
 
 export function capabilityScoped(scope?: ProfileScope): {
@@ -201,6 +202,7 @@ export function capabilityScoped(scope?: ProfileScope): {
   profile?: string
   connectionOwner?: ConnectionOwner
   legacyConnection?: LegacyConnectionOwner
+  legacyConnectionProfile?: string
 } {
   if (scope && typeof scope === 'object') {
     const profile = (scope.profile ?? '').trim()
@@ -212,6 +214,7 @@ export function capabilityScoped(scope?: ProfileScope): {
       ...(connectionId ? { connectionId } : scope.connectionId === null ? { connectionId: null } : {}),
       ...(scope.connectionOwner ? { connectionOwner: scope.connectionOwner } : {}),
       ...(scope.legacyConnection ? { legacyConnection: scope.legacyConnection } : {}),
+      ...(scope.legacyConnectionProfile ? { legacyConnectionProfile: scope.legacyConnectionProfile } : {}),
       priority: 'foreground'
     }
   }

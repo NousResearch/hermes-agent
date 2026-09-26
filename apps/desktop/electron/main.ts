@@ -133,6 +133,7 @@ import {
   connectionScopeKey,
   cookiesHaveLiveSession,
   cookiesHaveSession,
+  dispatchLegacySessionRequest,
   gatewayWsUrlIpcResult,
   hostLabelFromBaseUrl,
   isGatewayAuthRejection,
@@ -16587,6 +16588,12 @@ async function interceptSessionRequestForRemote(request) {
 
   const { pathname, searchParams } = parsed
 
+  const dispatchLegacySession = (dispatch: () => Promise<any>, profile = request?.profile) =>
+    dispatchLegacySessionRequest(request, profile, ensureBackend, dispatch, {
+      request: { method: request?.method, path: request?.path },
+      spawnPriority: spawnPriorityFrom(request?.priority)
+    })
+
   if (method === 'GET' && pathname === '/api/profiles/sessions') {
     const remoteProfiles = configuredRemoteProfileNames()
     const registrySources = await pooledRegistrySessionSources()
@@ -16598,10 +16605,14 @@ async function interceptSessionRequestForRemote(request) {
     const requested = (searchParams.get('profile') || 'all').trim() || 'all'
 
     if (requested !== 'all') {
-      return profileHasRemoteOverride(requested) ? remoteSessionList(requested, searchParams) : undefined
+      if (!profileHasRemoteOverride(requested)) {
+        return undefined
+      }
+
+      return dispatchLegacySession(() => remoteSessionList(requested, searchParams), requested)
     }
 
-    return mergeRemoteProfileSessions(searchParams, remoteProfiles)
+    return dispatchLegacySession(() => mergeRemoteProfileSessions(searchParams, remoteProfiles))
   }
 
   // Batched sidebar slices. With no remote profiles the local batched endpoint
@@ -16618,15 +16629,18 @@ async function interceptSessionRequestForRemote(request) {
       return undefined // local fast path → batched endpoint's single DB open
     }
 
-    const { recents: recentsSp, cron: cronSp, messaging: messagingSp } = buildSidebarSessionSliceParams(searchParams)
+    return dispatchLegacySession(async () => {
+      const { recents: recentsSp, cron: cronSp, messaging: messagingSp } =
+        buildSidebarSessionSliceParams(searchParams)
 
-    const [recents, cron, messaging] = await Promise.all([
-      fetchProfilesSessionSlice(recentsSp, remoteProfiles),
-      fetchProfilesSessionSlice(cronSp, remoteProfiles),
-      fetchProfilesSessionSlice(messagingSp, remoteProfiles)
-    ])
+      const [recents, cron, messaging] = await Promise.all([
+        fetchProfilesSessionSlice(recentsSp, remoteProfiles),
+        fetchProfilesSessionSlice(cronSp, remoteProfiles),
+        fetchProfilesSessionSlice(messagingSp, remoteProfiles)
+      ])
 
-    return assembleSidebarSessionSlices(recents, cron, messaging)
+      return assembleSidebarSessionSlices(recents, cron, messaging)
+    })
   }
 
   // Per-session read/mutation. Owner is in ?profile= (reads) or request.profile
@@ -16671,9 +16685,13 @@ async function interceptSessionRequestForRemote(request) {
         profile
 
       if (method === 'GET') {
-        return fetchJsonForProfile(
-          profile,
-          pathWithRemoteOwnerScope(passthroughQuery ? `${pathname}?${passthroughQuery}` : pathname, ownerScope)
+        return dispatchLegacySession(
+          () =>
+            fetchJsonForProfile(
+              profile,
+              pathWithRemoteOwnerScope(passthroughQuery ? `${pathname}?${passthroughQuery}` : pathname, ownerScope)
+            ),
+          profile
         )
       }
 
@@ -16683,7 +16701,7 @@ async function interceptSessionRequestForRemote(request) {
         ;(body as Record<string, unknown>).profile = ownerScope
       }
 
-      return requestJsonForProfile(profile, pathname, method, body)
+      return dispatchLegacySession(() => requestJsonForProfile(profile, pathname, method, body), profile)
     }
 
     if (globalRemoteActive()) {
@@ -16692,12 +16710,12 @@ async function interceptSessionRequestForRemote(request) {
       const path = `${pathname}?${passthroughParams.toString()}`
 
       if (method === 'GET') {
-        return fetchJsonForProfile(null, path)
+        return dispatchLegacySession(() => fetchJsonForProfile(null, path), profile)
       }
 
       const body = request.body && typeof request.body === 'object' ? { ...request.body, profile } : { profile }
 
-      return requestJsonForProfile(null, path, method, body)
+      return dispatchLegacySession(() => requestJsonForProfile(null, path, method, body), profile)
     }
 
     return undefined

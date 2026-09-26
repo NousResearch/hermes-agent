@@ -197,7 +197,7 @@ export const $settingsOwner = computed([$settingsTarget, $resolvedSettingsConnec
   }
 
   return connectionOwner?.mode === 'remote' && connectionOwner.baseUrl
-    ? { connectionId: null, profile, legacyConnection: connectionOwner }
+    ? { connectionId: null, profile, legacyConnection: connectionOwner, legacyConnectionProfile: foregroundProfile }
     : null
 })
 

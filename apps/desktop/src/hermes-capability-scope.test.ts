@@ -175,10 +175,11 @@ describe('capability helpers are connection-scoped', () => {
     void getSkills({
       connectionId: null,
       profile: 'coder',
+      legacyConnectionProfile: 'default',
       legacyConnection: { baseUrl: 'https://legacy.example', mode: 'remote', token: 'synthetic-token' }
     })
 
-    expect(last()).toMatchObject({ connectionId: null, profile: 'coder' })
+    expect(last()).toMatchObject({ connectionId: null, profile: 'coder', legacyConnectionProfile: 'default' })
   })
 
   it('registered owner descriptors partition cache keys without exposing credentials', () => {

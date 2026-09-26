@@ -53,7 +53,8 @@ export async function recyclePinnedBackend(
   const legacy = connectionId == null && owner.legacyConnection
 
   if (
-    (!legacy && (typeof connectionId !== 'string' || !connectionId.trim())) ||
+    (!legacy &&
+      (typeof connectionId !== 'string' || !connectionId.trim() || !Object.hasOwn(owner, 'connectionOwner'))) ||
     typeof profile !== 'string' ||
     !profile.trim()
   ) {
@@ -119,7 +120,7 @@ export async function recyclePinnedBackend(
 
   if (legacy) {
     assertLegacyConnectionOwner(legacy, descriptor)
-  } else if (Object.hasOwn(owner, 'connectionOwner')) {
+  } else {
     assertConnectionOwner(owner.connectionOwner, descriptor)
   }
 

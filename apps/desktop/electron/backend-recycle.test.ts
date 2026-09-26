@@ -53,7 +53,7 @@ it('pinned recovery follows the real local/registry pool keys and leaves same-na
     const primary = vi.fn()
     const primaryPromise = Promise.resolve({ mode: 'local' as const })
     await recyclePinnedBackend(
-      { connectionId, profile: 'worker' },
+      { connectionId, connectionOwner: descriptor, profile: 'worker' },
       {
         registry,
         routeOptions: { globalRemote, primaryProfile: 'default' },
@@ -104,20 +104,25 @@ it('primary pins preserve recovery but reject unmanaged and changed owners befor
     notifyApplied: vi.fn()
   }
 
-  const owner = { connectionId: 'ssh-a', profile: 'default' }
+  const connectionOwner = {
+    mode: 'remote' as const,
+    remoteKind: 'ssh' as const,
+    connectionId: 'ssh-a',
+    ssh: { effectiveConfigFingerprint: 'fixture' }
+  }
+
+  const owner = { connectionId: 'ssh-a', connectionOwner, profile: 'default' }
   const run = recyclePinnedBackend(owner, deps)
   promise = Promise.resolve({ mode: 'local' })
   resolve({ mode: 'remote', remoteKind: 'ssh', connectionId: 'ssh-a', ssh: { effectiveConfigFingerprint: 'fixture' } })
   await expect(run).rejects.toThrow('changed')
-  await expect(recyclePinnedBackend({ connectionId: 'url', profile: 'default' }, deps)).rejects.toThrow('not managed')
+
+  await expect(
+    recyclePinnedBackend({ connectionId: 'url', connectionOwner: { mode: 'remote' }, profile: 'default' }, deps)
+  ).rejects.toThrow('not managed')
   expect(teardownSsh).not.toHaveBeenCalled()
   expect(teardownPrimary).not.toHaveBeenCalled()
-  promise = Promise.resolve({
-    mode: 'remote',
-    remoteKind: 'ssh',
-    connectionId: 'ssh-a',
-    ssh: { effectiveConfigFingerprint: 'fixture' }
-  })
+  promise = Promise.resolve(connectionOwner)
   await expect(recyclePinnedBackend(owner, deps)).resolves.toBe('primary')
   expect(teardownPrimary).toHaveBeenCalledOnce()
   expect(deps.notifyApplied).toHaveBeenCalledOnce()
@@ -156,6 +161,32 @@ it('rejects a same-id replacement that no longer matches the captured connection
   ).rejects.toThrow('Backend changed')
   expect(teardownSsh).not.toHaveBeenCalled()
   expect(teardownPrimary).not.toHaveBeenCalled()
+})
+
+it('rejects registry object recovery without an exact owner before teardown', async () => {
+  const teardownSsh = vi.fn(async () => {})
+  const teardownPool = vi.fn(async () => {})
+
+  await expect(
+    recyclePinnedBackend(
+      { connectionId: 'ssh-a', profile: 'worker' },
+      {
+        registry,
+        routeOptions: { primaryProfile: 'default' },
+        effectiveSshFingerprint: async () => 'fixture',
+        primarySshKey: '',
+        primaryPromise: () => null,
+        pool: new Map(),
+        sshState: () => ({ remotePlatform: 'Linux' }),
+        teardownSsh,
+        teardownPool,
+        teardownPrimary: vi.fn(async () => {}),
+        notifyApplied: vi.fn()
+      }
+    )
+  ).rejects.toThrow('exact connection and profile')
+  expect(teardownSsh).not.toHaveBeenCalled()
+  expect(teardownPool).not.toHaveBeenCalled()
 })
 
 it('legacy SSH recovery validates the descriptor before the existing ordered teardown', async () => {

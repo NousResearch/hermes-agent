@@ -26,6 +26,7 @@ import {
   connectionScopeKey,
   cookiesHaveLiveSession,
   cookiesHaveSession,
+  dispatchLegacySessionRequest,
   gatewayTicketFailure,
   gatewayWsUrlIpcResult,
   isGatewayAuthRejection,
@@ -157,6 +158,80 @@ test('registered writes fail closed when the same id resolves to a replaced desc
     release()
     await assert.rejects(write, /Backend changed/)
   }
+})
+
+test('legacy session interception preserves global owner validation while dispatching a profile override', async () => {
+  const original = {
+    mode: 'remote',
+    baseUrl: 'https://original.example',
+    token: 'original-token',
+    headers: { 'Cf-Access-Client-Id': 'original-client' }
+  }
+
+  const override = { ...original, baseUrl: 'https://worker.example', token: 'worker-token' }
+  const ensureBackend = vi.fn(async profile => (profile === 'default' ? original : override))
+  const dispatch = vi.fn(async () => override)
+
+  const request = {
+    legacyConnection: original,
+    legacyConnectionProfile: 'default',
+    method: 'DELETE',
+    path: '/api/sessions/session-a',
+    profile: 'worker'
+  }
+
+  assert.equal(await dispatchLegacySessionRequest(request, 'worker', ensureBackend, dispatch), override)
+  assert.equal(ensureBackend.mock.calls.length, 1)
+  assert.deepEqual(ensureBackend.mock.calls[0], ['default', { passive: undefined }])
+  assert.equal(dispatch.mock.calls.length, 1)
+})
+
+test('legacy session interception rejects a stale captured owner before dispatch', async () => {
+  const original = {
+    mode: 'remote',
+    baseUrl: 'https://original.example',
+    token: 'original-token',
+    headers: { 'Cf-Access-Client-Id': 'original-client' }
+  }
+
+  const replacement = { ...original, token: 'replacement-token' }
+  const ensureBackend = vi.fn(async () => replacement)
+  const dispatch = vi.fn(async () => replacement)
+
+  await assert.rejects(
+    dispatchLegacySessionRequest(
+      {
+        legacyConnection: original,
+        legacyConnectionProfile: 'default',
+        method: 'DELETE',
+        path: '/api/sessions/session-a',
+        profile: 'worker'
+      },
+      'worker',
+      ensureBackend,
+      dispatch
+    ),
+    /Backend changed/
+  )
+  assert.deepEqual(ensureBackend.mock.calls[0], ['default', { passive: undefined }])
+  assert.equal(dispatch.mock.calls.length, 0)
+})
+
+test('legacy session interception remains byte-compatible without a captured owner', async () => {
+  const ensureBackend = vi.fn()
+  const dispatch = vi.fn(async () => ({ ok: true }))
+
+  assert.deepEqual(
+    await dispatchLegacySessionRequest(
+      { method: 'DELETE', path: '/api/sessions/session-a', profile: 'worker' },
+      'worker',
+      ensureBackend,
+      dispatch
+    ),
+    { ok: true }
+  )
+  assert.equal(ensureBackend.mock.calls.length, 0)
+  assert.equal(dispatch.mock.calls.length, 1)
 })
 
 // --- connectionScopeKey / normAuthMode ---

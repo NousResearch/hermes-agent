@@ -1085,6 +1085,29 @@ export async function resolveLegacyApiConnection(request, routeProfile, ensureBa
   return connection
 }
 
+/** Fail closed before a legacy session interceptor bypasses the normal API resolver. */
+export async function assertLegacyApiRequestOwner(request, routeProfile, ensureBackend, options = {}): Promise<void> {
+  if (!request || !Object.hasOwn(request, 'legacyConnection')) {
+    return
+  }
+
+  await resolveLegacyApiConnection(request, routeProfile, ensureBackend, options)
+}
+
+/** Validate the captured legacy owner at the session-interception boundary,
+ * then dispatch to the row's route. The two profiles intentionally differ
+ * when Settings is global-remote and an archived row has a profile override. */
+export async function dispatchLegacySessionRequest(request, routeProfile, ensureBackend, dispatch, options = {}) {
+  await assertLegacyApiRequestOwner(
+    request,
+    request?.legacyConnectionProfile ?? routeProfile,
+    ensureBackend,
+    options
+  )
+
+  return dispatch()
+}
+
 export interface ProfileApiRequestRoute {
   /** Profile passed to ensureBackend; null selects the primary backend. */
   backendProfile: null | string

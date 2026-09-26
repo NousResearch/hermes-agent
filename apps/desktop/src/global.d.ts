@@ -584,9 +584,7 @@ declare global {
       /** Resolve This device without starting an install. Missing on an older preload. */
       probeLocalBackend?: () => Promise<{ bootstrapNeeded: boolean }>
       continueBootstrapLocal: () => Promise<{ ok: boolean }>
-      recycleBackend?: (
-        profile?: null | string | { connectionId?: null | string; profile?: null | string }
-      ) => Promise<{ ok: boolean }>
+      recycleBackend?: (profile?: RecycleBackendScope) => Promise<{ ok: boolean }>
       resetBootstrap: () => Promise<{ ok: boolean }>
       repairBootstrap: () => Promise<{ ok: boolean; error?: string }>
       cancelBootstrap: () => Promise<{ ok: boolean; cancelled: boolean }>
@@ -1415,6 +1413,12 @@ export type ConnectionOwner = Pick<
 
 export type LegacyConnectionOwner = ConnectionOwner
 
+export type RecycleBackendScope =
+  | null
+  | string
+  | { connectionId: string; connectionOwner: ConnectionOwner; profile: string }
+  | { connectionId: null; legacyConnection: LegacyConnectionOwner; profile: string }
+
 export interface HermesApiRequest {
   path: string
   method?: string
@@ -1448,6 +1452,9 @@ export interface HermesApiRequest {
   connectionOwner?: ConnectionOwner
   // Expected resolved legacy route, not an address the renderer may dial.
   legacyConnection?: LegacyConnectionOwner
+  // Profile whose route produced legacyConnection. Session actions may target
+  // an archived row on a different profile without changing this owner.
+  legacyConnectionProfile?: string
 }
 
 export interface HermesPreviewTarget {

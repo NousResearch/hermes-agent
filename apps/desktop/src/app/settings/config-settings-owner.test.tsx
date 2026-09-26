@@ -210,6 +210,7 @@ it('keeps a pending autosave mounted across an equivalent legacy reconnect', asy
 
   expect(writes).toHaveLength(1)
   expect(writes[0].legacyConnection?.headers).toEqual(descriptor.headers)
+  expect(writes[0].legacyConnectionProfile).toBe('default')
 })
 
 it('the production pinned model child can restart its exact owner after code skew', async () => {

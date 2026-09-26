@@ -1,0 +1,128 @@
+{
+  "totalDecisions": 1,
+  "modelDistribution": {
+    "haiku": 0,
+    "sonnet": 1,
+    "opus": 0,
+    "inherit": 0
+  },
+  "avgComplexity": 0.1358629337670852,
+  "avgConfidence": 0.7772534172907819,
+  "circuitBreakerTrips": 7,
+  "lastUpdated": "2026-08-05T09:18:58.605Z",
+  "learningHistory": [
+    {
+      "task": "17 * 23 = ? Reply with only the number.",
+      "model": "haiku",
+      "complexity": 0.146,
+      "outcome": "failure",
+      "timestamp": "2026-08-05T08:55:50.920Z"
+    },
+    {
+      "task": "17 * 23 = ? Reply with only the number.",
+      "model": "haiku",
+      "complexity": 0.146,
+      "outcome": "failure",
+      "timestamp": "2026-08-05T08:58:09.693Z"
+    },
+    {
+      "task": "17 * 23 = ? Reply with only the number.",
+      "model": "haiku",
+      "complexity": 0.146,
+      "outcome": "failure",
+      "timestamp": "2026-08-05T08:58:53.271Z"
+    },
+    {
+      "task": "17 * 23 = ? Reply with only the number.",
+      "model": "sonnet",
+      "complexity": 0.146,
+      "outcome": "failure",
+      "timestamp": "2026-08-05T09:05:06.337Z"
+    },
+    {
+      "task": "17 * 23 = ? Reply with only the number.",
+      "model": "haiku",
+      "complexity": 0.146,
+      "outcome": "failure",
+      "timestamp": "2026-08-05T09:10:16.335Z"
+    },
+    {
+      "task": "17 * 23 = ? Reply with only the number.",
+      "model": "haiku",
+      "complexity": 0.146,
+      "outcome": "failure",
+      "timestamp": "2026-08-05T09:11:33.325Z"
+    },
+    {
+      "task": "17 * 23 = ? Reply with only the number.",
+      "model": "haiku",
+      "complexity": 0.146,
+      "outcome": "failure",
+      "timestamp": "2026-08-05T09:12:05.963Z"
+    },
+    {
+      "task": "17 * 23 = ? Reply with only the number.",
+      "model": "haiku",
+      "complexity": 0.146,
+      "outcome": "success",
+      "timestamp": "2026-08-05T09:18:58.605Z"
+    }
+  ],
+  "version": 2,
+  "priors": {
+    "low": {
+      "haiku": {
+        "alpha": 2,
+        "beta": 7
+      },
+      "sonnet": {
+        "alpha": 1,
+        "beta": 2
+      },
+      "opus": {
+        "alpha": 1,
+        "beta": 1
+      },
+      "inherit": {
+        "alpha": 1,
+        "beta": 1
+      }
+    },
+    "med": {
+      "haiku": {
+        "alpha": 1,
+        "beta": 1
+      },
+      "sonnet": {
+        "alpha": 1,
+        "beta": 1
+      },
+      "opus": {
+        "alpha": 1,
+        "beta": 1
+      },
+      "inherit": {
+        "alpha": 1,
+        "beta": 1
+      }
+    },
+    "high": {
+      "haiku": {
+        "alpha": 1,
+        "beta": 1
+      },
+      "sonnet": {
+        "alpha": 1,
+        "beta": 1
+      },
+      "opus": {
+        "alpha": 1,
+        "beta": 1
+      },
+      "inherit": {
+        "alpha": 1,
+        "beta": 1
+      }
+    }
+  }
+}

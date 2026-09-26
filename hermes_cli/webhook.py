@@ -355,6 +355,7 @@ def _resolve_route_cron_job(profile: str, reference: str):
 
 
 def _cmd_list(args):
+    from gateway.platforms.webhook_filters import route_names
     subs = _load_subscriptions()
     if not subs:
         print("  No dynamic webhook subscriptions.")
@@ -363,7 +364,7 @@ def _cmd_list(args):
 
     print(f"\n  {len(subs)} webhook subscription(s):\n")
     for name, route in subs.items():
-        events = ", ".join(route.get("events", [])) or "(all)"
+        events = ", ".join(route_names(route.get("events"))) or "(all)"
         deliver = route.get("deliver", "log")
         invalid_delivery = not _is_known_delivery_target(deliver)
         if invalid_delivery:

@@ -18,6 +18,17 @@ DEFAULT_SCRIPT_TIMEOUT_SECONDS = 30
 _MISSING = object()
 
 
+def route_names(value: Any) -> list[str]:
+    """A route's ``events`` / ``skills`` value as a list of names. A hand-edited scalar
+    (``events: pull_request_review``) is read like the ``--events a,b`` flag: used raw, ``in``
+    substring-matched it (a ``pull_request`` event passed) and iterating it yielded characters."""
+    if isinstance(value, str):
+        value = value.split(",")
+    if not isinstance(value, list):
+        return []
+    return [name for item in value if (name := str(item).strip())]
+
+
 def _stringify_filter_value(value: Any) -> str:
     return "" if value is _MISSING else json.dumps(value, sort_keys=True) if isinstance(value, (dict, list)) else str(value)
 

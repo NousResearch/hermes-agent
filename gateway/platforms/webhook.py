@@ -41,7 +41,7 @@ from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.tcp_site import start_tcp_site
 from gateway.platforms.webhook_coalesce import WebhookCoalescer, validate_coalesce_config
-from gateway.platforms.webhook_filters import DEFAULT_SCRIPT_TIMEOUT_SECONDS, WebhookRouteProcessor
+from gateway.platforms.webhook_filters import DEFAULT_SCRIPT_TIMEOUT_SECONDS, WebhookRouteProcessor, route_names
 from gateway.platforms.webhook_mcp_events import (
     handle_mcp_event_control, mcp_event_delivery_id, render_mcp_event_prompt)
 from gateway.response_filters import is_autonomous_silence_response
@@ -705,7 +705,7 @@ class WebhookAdapter(BasePlatformAdapter):
         delivery_id = mcp_event_delivery_id(route_config, payload) or delivery_id
         event_type = (headers.get("X-GitHub-Event", "") or headers.get("X-GitLab-Event", "")
                       or payload.get("event_type", "") or payload.get("type", "") or "unknown")
-        allowed_events = route_config.get("events", [])
+        allowed_events = route_names(route_config.get("events"))
         if allowed_events and event_type not in allowed_events:
             logger.debug("[webhook] Ignoring event %s for route %s (allowed: %s)", event_type, route_name,
                          allowed_events)
@@ -730,7 +730,7 @@ class WebhookAdapter(BasePlatformAdapter):
             prompt = (render_mcp_event_prompt(self, route_config, payload, event_type, route_name)
                       or self._render_prompt(route_config.get("prompt", ""), payload, event_type, route_name))
             # cron_job routes: the job's own skills apply; the rendered prompt is only per-run context.
-            if (skills := route_config.get("skills", [])) and not route_config.get("cron_job"):
+            if (skills := route_names(route_config.get("skills"))) and not route_config.get("cron_job"):
                 prompt = self._apply_skills(prompt, skills)
         now = time.time()  # idempotency: skip duplicate deliveries (webhook retries)
         delivery_identity = _WebhookDeliveryIdentity.from_parts(profile, route_name, delivery_id)

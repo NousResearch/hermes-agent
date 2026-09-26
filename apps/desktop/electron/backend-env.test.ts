@@ -224,3 +224,35 @@ test('Windows matches profile homes and dotenv names case-insensitively', () => 
   assert.deepEqual(scoped('default'), currentEnv)
   assert.deepEqual(scoped('urbot'), { HERMES_HOME: currentEnv.HERMES_HOME, Path: 'C:\\Windows' })
 })
+
+test('appendUniquePathEntries dedupes Windows spelling variants case-insensitively', () => {
+  // C:\Foo\, c:/foo and C:\FOO name the same directory on Windows (issue #108508)
+  assert.equal(
+    appendUniquePathEntries(['C:\\Foo\\;c:/foo', 'C:\\FOO', 'C:\\Bar'], { delimiter: ';' }),
+    'C:\\Foo\\;C:\\Bar'
+  )
+})
+
+test('appendUniquePathEntries keeps POSIX entries case-sensitive', () => {
+  // On POSIX, /opt/Git and /opt/git are genuinely different directories
+  assert.equal(
+    appendUniquePathEntries(['/opt/Git:/opt/git', '/OPT/GIT'], { delimiter: ':' }),
+    '/opt/Git:/opt/git:/OPT/GIT'
+  )
+})
+
+test('buildDesktopBackendPath does not stack venv Scripts duplicates on Windows', () => {
+  const venvScripts = 'C:\\Users\\test\\AppData\\Local\\hermes\\hermes-agent\\venv\\Scripts'
+
+  const result = buildDesktopBackendPath({
+    hermesHome: 'C:\\Users\\test\\AppData\\Local\\hermes',
+    venvRoot: 'C:\\Users\\test\\AppData\\Local\\hermes\\hermes-agent\\venv',
+    currentPath: `${venvScripts}\\;c:/users/test/appdata/local/hermes/hermes-agent/venv/scripts`,
+    platform: 'win32',
+    pathModule: path.win32
+  })
+
+  const entries = result.split(';')
+  const scriptsCount = entries.filter(e => e.toLowerCase().replace(/\\/g, '/').endsWith('venv/scripts') || e.toLowerCase().replace(/\\/g, '/').endsWith('venv/scripts/')).length
+  assert.equal(scriptsCount, 1)
+})

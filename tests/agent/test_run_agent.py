@@ -2492,6 +2492,41 @@ class TestHandleMaxIterations:
             outcome="success",
         )
 
+    def test_iteration_summary_invalid_response_retries(self, agent):
+        """When the first summary response has choices=None, it retries and succeeds (#123436)."""
+        malformed_resp = SimpleNamespace(choices=None, model="test/model")
+        agent.client.chat.completions.create.side_effect = [
+            malformed_resp,
+            _mock_response(content="Recovered Summary"),
+        ]
+        agent._cached_system_prompt = "You are helpful."
+
+        result = agent._handle_max_iterations(
+            [{"role": "user", "content": "do stuff"}],
+            60,
+        )
+
+        assert result == "Recovered Summary"
+        assert agent.client.chat.completions.create.call_count == 2
+
+    def test_iteration_summary_invalid_response_fallback_when_retries_exhausted(self, agent):
+        """When all summary attempts return choices=None, emit fallback text without crashing (#123436)."""
+        malformed_resp = SimpleNamespace(choices=None, model="test/model")
+        agent.client.chat.completions.create.side_effect = [
+            malformed_resp,
+            malformed_resp,
+        ]
+        agent._cached_system_prompt = "You are helpful."
+
+        result = agent._handle_max_iterations(
+            [{"role": "user", "content": "do stuff"}],
+            60,
+        )
+
+        from agent.chat_completion_helpers import _EMPTY_SUMMARY_RESPONSE
+        assert result == _EMPTY_SUMMARY_RESPONSE
+        assert agent.client.chat.completions.create.call_count == 2
+
     def test_suppress_status_output_keeps_iteration_warning_off_stdout(self, agent, capsys):
         """Machine-readable mode (-Q/oneshot) must not contaminate stdout (#26155)."""
         resp = _mock_response(content="Summary")

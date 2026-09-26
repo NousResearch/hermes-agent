@@ -2278,7 +2278,11 @@ def _summary_text(agent, response, **normalize_kwargs) -> str:
         # Router failure in a 200 envelope (#68396): an empty summary takes the retry slot.
         logger.warning("Iteration summary returned a router timeout shim; retrying")
         return ""
-    normalized = agent._get_transport().normalize_response(response, **normalize_kwargs)
+    transport = agent._get_transport()
+    if hasattr(transport, "validate_response") and not transport.validate_response(response):
+        logger.warning("Iteration summary returned an invalid response; retrying")
+        return ""
+    normalized = transport.normalize_response(response, **normalize_kwargs)
     if normalized.tool_calls:
         # No summary path executes tool calls; log so a tool-only response that falls into the
         # empty-summary retry is diagnosable.
@@ -2376,7 +2380,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             break
 
     except Exception as e:
-        logger.warning("Failed to get summary response: %s", e)
+        logger.warning("Failed to get summary response: %s", e, exc_info=True)
         from agent.turn_failure_copy import site_copy
         final_response = site_copy("max_iterations_no_summary", limit=agent.max_iterations)
     finally:

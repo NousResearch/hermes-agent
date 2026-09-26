@@ -63,6 +63,9 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_post("/api/jobs/{job_id}/pause", adapter._handle_pause_job)
     app.router.add_post("/api/jobs/{job_id}/resume", adapter._handle_resume_job)
     app.router.add_post("/api/jobs/{job_id}/run", adapter._handle_run_job)
+    app.router.add_get("/api/jobs/{job_id}/executions", adapter._handle_list_job_executions)
+    app.router.add_get("/api/jobs/{job_id}/output", adapter._handle_get_job_output)
+    app.router.add_get("/api/jobs/{job_id}/output/{timestamp}", adapter._handle_get_job_output)
     return app
 
 
@@ -396,6 +399,156 @@ class TestRunJob:
                 )
                 assert resp.status == 400
                 mock_trigger.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 16b. test_list_job_executions / test_get_job_output
+# ---------------------------------------------------------------------------
+
+class TestListJobExecutions:
+    @pytest.mark.asyncio
+    async def test_list_job_executions(self, adapter):
+        """GET /api/jobs/{id}/executions returns the ledger's run history."""
+        app = _create_app(adapter)
+        records = [{"id": "e1", "job_id": VALID_JOB_ID, "status": "completed"}]
+        mock_list_executions = MagicMock(return_value=records)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_get", return_value=SAMPLE_JOB
+            ), patch(
+                f"{_MOD}._cron_list_executions", mock_list_executions
+            ):
+                resp = await cli.get(f"/api/jobs/{VALID_JOB_ID}/executions?limit=10&before=2026-01-01")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["executions"] == records
+                mock_list_executions.assert_called_once_with(
+                    job_id=VALID_JOB_ID, limit=10, before_claimed_at="2026-01-01",
+                )
+
+    @pytest.mark.asyncio
+    async def test_list_job_executions_job_not_found(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(
+                f"{_MOD}._cron_get", return_value=None
+            ):
+                resp = await cli.get(f"/api/jobs/{VALID_JOB_ID}/executions")
+                assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_list_job_executions_limit_clamped(self, adapter):
+        """?limit=1000000 is clamped server-side instead of streaming the whole ledger."""
+        app = _create_app(adapter)
+        mock_list_executions = MagicMock(return_value=[])
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_get", return_value=SAMPLE_JOB
+            ), patch(
+                f"{_MOD}._cron_list_executions", mock_list_executions
+            ):
+                resp = await cli.get(f"/api/jobs/{VALID_JOB_ID}/executions?limit=1000000")
+                assert resp.status == 200
+                mock_list_executions.assert_called_once_with(
+                    job_id=VALID_JOB_ID, limit=500, before_claimed_at=None,
+                )
+
+    @pytest.mark.asyncio
+    async def test_list_job_executions_negative_limit_clamped(self, adapter):
+        """A negative limit must not reach list_executions, where SQLite treats it as unbounded."""
+        app = _create_app(adapter)
+        mock_list_executions = MagicMock(return_value=[])
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_get", return_value=SAMPLE_JOB
+            ), patch(
+                f"{_MOD}._cron_list_executions", mock_list_executions
+            ):
+                resp = await cli.get(f"/api/jobs/{VALID_JOB_ID}/executions?limit=-5")
+                assert resp.status == 200
+                mock_list_executions.assert_called_once_with(
+                    job_id=VALID_JOB_ID, limit=1, before_claimed_at=None,
+                )
+
+    @pytest.mark.asyncio
+    async def test_list_job_executions_malformed_before(self, adapter):
+        """A malformed cursor gets a 400 telling the client, not a generic 500."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_get", return_value=SAMPLE_JOB
+            ):
+                resp = await cli.get(f"/api/jobs/{VALID_JOB_ID}/executions?before=not-a-timestamp")
+                assert resp.status == 400
+
+
+class TestGetJobOutput:
+    @pytest.mark.asyncio
+    async def test_get_latest_output(self, adapter):
+        """GET /api/jobs/{id}/output returns the latest saved run output."""
+        app = _create_app(adapter)
+        mock_read = MagicMock(return_value="# run output")
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_get", return_value=SAMPLE_JOB
+            ), patch(
+                f"{_MOD}._cron_read_output", mock_read
+            ):
+                resp = await cli.get(f"/api/jobs/{VALID_JOB_ID}/output")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["output"] == "# run output"
+                mock_read.assert_called_once_with(VALID_JOB_ID, None)
+
+    @pytest.mark.asyncio
+    async def test_get_output_by_timestamp(self, adapter):
+        app = _create_app(adapter)
+        mock_read = MagicMock(return_value="# older run")
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_get", return_value=SAMPLE_JOB
+            ), patch(
+                f"{_MOD}._cron_read_output", mock_read
+            ):
+                resp = await cli.get(f"/api/jobs/{VALID_JOB_ID}/output/2026-01-01_00-00-00")
+                assert resp.status == 200
+                mock_read.assert_called_once_with(VALID_JOB_ID, "2026-01-01_00-00-00")
+
+    @pytest.mark.asyncio
+    async def test_get_output_not_found(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_get", return_value=SAMPLE_JOB
+            ), patch(
+                f"{_MOD}._cron_read_output", return_value=None
+            ):
+                resp = await cli.get(f"/api/jobs/{VALID_JOB_ID}/output")
+                assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_get_output_job_not_found(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(
+                f"{_MOD}._cron_get", return_value=None
+            ):
+                resp = await cli.get(f"/api/jobs/{VALID_JOB_ID}/output")
+                assert resp.status == 404
 
 
 # ---------------------------------------------------------------------------

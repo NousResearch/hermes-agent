@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 import types
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 from pathlib import Path
 
@@ -1188,6 +1189,26 @@ def test_cli_exec_blocked(server, argv):
 
 
 # ── slash.exec skill command interception ────────────────────────────
+
+
+def test_live_model_mirror_runs_inside_session_profile_scope(server, monkeypatch):
+    """The off-turn /model mirror may resolve profile-scoped Codex secrets after multiplexing."""
+    session = {"session_key": "session-key", "agent": object(), "profile_home": "/profiles/b"}
+    entered = []
+
+    @contextmanager
+    def profile_scope(actual_session):
+        entered.append(actual_session)
+        yield
+
+    def model_mirror(_sid, actual_session, _agent, _arg):
+        assert entered == [actual_session]
+        return "scoped"
+
+    monkeypatch.setattr(server, "_session_profile_runtime_scope", profile_scope)
+    monkeypatch.setitem(server._SLASH_MIRRORS, "model", model_mirror)
+
+    assert server._mirror_slash_side_effects("sid", session, "/model gpt-5.6-sol") == "scoped"
 
 
 def test_slash_exec_rejects_skill_commands(server):

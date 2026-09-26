@@ -1,0 +1,17 @@
+name: commandcode-oauth
+repo: https://github.com/NanamiMio/hermes-commandcode-oauth
+sha: 1a58050b460114a7b1f2e0bbe465048cae979aaf
+description: Command Code (commandcode.ai) as a model provider for accounts that sign in with the Command Code CLI — the same endpoint and sign-in the CLI uses, plus a live model catalog, plan limits and failover classification, through documented Hermes plugin seams only.
+maintainer: NanamiMio
+tier: community
+category: models
+requires_hermes: ">=0.21"
+docs_url: https://github.com/NanamiMio/hermes-commandcode-oauth#readme
+version: "0.1.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

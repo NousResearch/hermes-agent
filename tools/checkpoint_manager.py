@@ -1218,8 +1218,9 @@ class CheckpointManager:
                     index_file=index_file,
                 )
         else:
+            checkout_targets = [file_path or "."]
             ok, stdout, err = _run_git(
-                ["checkout", commit_hash, "--", file_path if file_path else "."],
+                ["checkout", commit_hash, "--", *checkout_targets],
                 store, abs_dir, timeout=_GIT_TIMEOUT * 2,
                 index_file=index_file,
             )
@@ -1227,6 +1228,26 @@ class CheckpointManager:
         if not ok:
             return {"success": False, "error": f"Restore failed: {err}",
                     "debug": err or None}
+
+        # A successful checkout is itself a Hermes write. Without refreshing
+        # these hashes, the next safe rollback mistakes it for a user's edit.
+        # Read only the checked-out tree paths, never skipped/untracked files.
+        if checkout_targets:
+            listed, restored_names, _ = _run_git(
+                ["ls-tree", "-r", "--name-only", "-z", commit_hash, "--", *checkout_targets],
+                store, abs_dir,
+            )
+            if listed:
+                ledger_key = self._ledger_key(abs_dir)
+                ledger = _load_ledger(store, ledger_key)
+                for rel in filter(None, restored_names.split("\x00")):
+                    path = Path(abs_dir) / rel
+                    digest = _hash_file(path)
+                    if digest is not None:
+                        ledger[str(path)] = {"sha256": digest, "ts": time.time()}
+                # restore() already holds the store lock; record_agent_write()
+                # would try to acquire it again and discard the update as busy.
+                _save_ledger(store, ledger_key, ledger)
 
         ok2, reason_out, _ = _run_git(
             ["log", "--format=%s", "-1", commit_hash], store, abs_dir,

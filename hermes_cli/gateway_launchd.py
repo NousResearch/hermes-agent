@@ -406,6 +406,9 @@ def installed_service_launcher_root(definition: str) -> Path | None:
 
 def generate_launchd_plist() -> str:
     from html import escape
+    # Fail closed BEFORE any write: a bad definition is an infinite respawn loop, and the previous
+    # (working) definition must survive a refused regeneration.
+    assert_launcher_root_is_viable(_gw().PROJECT_ROOT)
     # Stable cwd anchor — never the volatile source checkout (same rot risk as systemd's WorkingDirectory).
     working_dir = _gw()._stable_service_working_dir()
     hermes_home = str(_gw().get_hermes_home().resolve())
@@ -968,11 +971,25 @@ def launchd_status(deep: bool = False):
     launchd_unsupported = _gw()._launchd_unsupported_marker_exists()
 
     print(f"Launchd plist: {plist_path}")
-    if _gw().launchd_plist_is_current():
+    installed_text = plist_path.read_text(encoding="utf-8-sig") if plist_path.exists() else ""
+    installed_root = installed_service_launcher_root(installed_text)
+    current_root = _gw().PROJECT_ROOT
+    if installed_root is not None and installed_root.resolve() != current_root.resolve():
+        print(f"✗ Service definition runs a DIFFERENT code root: {installed_root}")
+        print(f"  Current code root: {current_root}")
+        print(f"  Repair: {current_root}/.hermes/bin/hermes gateway install --force")
+        service_definition_ok = False
+    elif not launcher_root_is_viable(current_root):
+        print(f"✗ This code root ({current_root}) cannot resolve its dependencies;")
+        print("  a service definition written from here would never start.")
+        print("  Repair: run gateway install from the install root that owns the install state.")
+        service_definition_ok = False
+    elif launchd_plist_is_current():
         print("✓ Service definition matches the current Hermes install")
+        service_definition_ok = True
     else:
         print("⚠ Service definition is stale relative to the current Hermes install")
-        print("  Run: hermes gateway start")
+        service_definition_ok = False
 
     if not service_listed:
         print("✗ Gateway service is not loaded")

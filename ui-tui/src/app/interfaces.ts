@@ -1,4 +1,5 @@
 import type { MouseTrackingMode, ScrollBoxHandle } from '@hermes/ink'
+import type { ModelPickerStage } from '../domain/slash.js'
 import type { Usage } from '@hermes/shared/gateway-events'
 import type { MutableRefObject, ReactNode, RefObject, SetStateAction } from 'react'
 
@@ -298,7 +299,7 @@ export interface OverlayState {
   /** Modal widget app — owns input, blocks the composer. */
   widget: ActiveWidget | null
   journey: boolean
-  modelPicker: boolean | { refresh?: boolean }
+  modelPicker: boolean | { refresh?: boolean; stage?: ModelPickerStage; sessionOnly?: boolean }
   pager: null | PagerState
   petPicker: boolean
   pluginsHub: boolean

@@ -71,6 +71,31 @@ def _prefix_completions(
             yield _completion(name, partial, name, meta)
 
 
+def _ranked_completions(
+    rows: Iterable[tuple[str, Any]], partial: str, *, skip_exact: bool = True):
+    """Same CLI fuzzy as curses pickers (``curses_ui._fuzzy_score``). Empty *partial* keeps row order."""
+    from hermes_cli.curses_ui import _fuzzy_score
+    lowered = partial.lower()
+    scored: list[tuple[float, str, Any]] = []
+    for name, meta in rows:
+        if skip_exact and name.lower() == lowered:
+            continue
+        if not lowered:
+            scored.append((0.0, name, meta))
+            continue
+        score = _fuzzy_score(name, lowered)
+        if score is None:
+            stripped = name[1:] if name.startswith("/") else name
+            score = _fuzzy_score(stripped, lowered)
+        if score is None:
+            continue
+        scored.append((-score, name, meta))
+    if lowered:
+        scored.sort(key=lambda row: (row[0], row[1]))
+    for _, name, meta in scored:
+        yield _completion(name, partial, name, meta)
+
+
 def _split_args(sub_text: str) -> tuple[list[str], str]:
     """``(completed_words, partial)``; a trailing space means a fresh word."""
     parts = sub_text.split()
@@ -96,7 +121,7 @@ def _skin_completions(sub_text: str, sub_lower: str):
     """/skin — available skins."""
     from hermes_cli.skin_engine import list_skins
     rows = ((s["name"], s.get("description", "") or s.get("source", "")) for s in list_skins())
-    yield from _prefix_completions(rows, sub_text)
+    yield from _ranked_completions(rows, sub_text)
 
 
 @_quiet
@@ -107,7 +132,7 @@ def _personality_completions(sub_text: str, sub_lower: str):
     rows = chain(
         [("none", "clear personality overlay")],
         ((name, describe_personality(prompt)) for name, prompt in personalities.items()))
-    yield from _prefix_completions(rows, sub_text)
+    yield from _ranked_completions(rows, sub_text)
 
 
 @_quiet
@@ -116,7 +141,7 @@ def _tools_completions(sub_text: str, sub_lower: str):
     offered only when the subcommand would change their state; MCP server prefixes always."""
     completed, partial = _split_args(sub_text)
     if not completed:
-        yield from _prefix_completions(((s, None) for s in ("list", "disable", "enable")), partial)
+        yield from _ranked_completions(((s, None) for s in ("list", "disable", "enable")), partial)
         return
     subcommand = completed[0].lower()
     if subcommand not in ("enable", "disable"):
@@ -139,7 +164,7 @@ def _tools_completions(sub_text: str, sub_lower: str):
     rows = [(k, m) for k, m in rows if (k in enabled) == want_enabled]
     if isinstance(mcp_servers, dict):
         rows += [(f"{srv}:", f"MCP server '{srv}'") for srv in sorted(mcp_servers)]
-    yield from _prefix_completions(
+    yield from _ranked_completions(
         ((k, m) for k, m in rows if k not in already), partial, skip_exact=False)
 
 
@@ -168,11 +193,99 @@ def _handoff_completions(sub_text: str, sub_lower: str):
             name, partial, name, f"→ {home_name}" if home_name else "send this session here")
 
 
+_MODEL_COMPLETION_TTL_S = 5.0
+_model_completion_memo: tuple[float, tuple, dict[str, list[tuple[str, str]]]] | None = None
+
+
+def _invalidate_model_completion_catalog() -> None:
+    """Drop the /model catalog memo (``--refresh``, auth/config change)."""
+    global _model_completion_memo
+    _model_completion_memo = None
+
+
+def _model_catalog_sig() -> tuple:
+    """Config path + mtime + size so an auth/provider edit does not serve a stale hop list."""
+    try:
+        from hermes_cli.config import get_config_path
+        cfg_path = get_config_path()
+        st = cfg_path.stat()
+        return (str(cfg_path), st.st_mtime_ns, st.st_size)
+    except Exception:
+        return (None, None, None)
+
+
+def _model_completion_catalog(*, refresh: bool = False) -> dict[str, list[tuple[str, str]]]:
+    """Authenticated provider slugs + `slug/id` rows, memoised a few seconds so /model
+    completions don't rebuild inventory on every keystroke. ``refresh`` (``/model --refresh``)
+    and a changed config signature bypass the TTL."""
+    global _model_completion_memo
+    now = time.monotonic()
+    sig = _model_catalog_sig()
+    if (
+        not refresh
+        and _model_completion_memo
+        and now - _model_completion_memo[0] < _MODEL_COMPLETION_TTL_S
+        and _model_completion_memo[1] == sig
+    ):
+        return _model_completion_memo[2]
+    from hermes_cli.inventory import build_models_payload, load_picker_context
+    payload = build_models_payload(
+        load_picker_context(), picker_hints=False, pricing=False, capabilities=False,
+        featured=False, max_models=80, refresh=refresh)
+    providers: list[tuple[str, str]] = []
+    models: list[tuple[str, str]] = []
+    for row in payload.get("providers") or []:
+        slug = str(row.get("slug") or "").strip()
+        if not slug:
+            continue
+        name = str(row.get("name") or slug)
+        providers.append((slug, name))
+        for model in row.get("models") or []:
+            mid = str(model).strip()
+            if mid:
+                models.append((f"{slug}/{mid}", name))
+    catalog = {"providers": providers, "models": models}
+    _model_completion_memo = (now, sig, catalog)
+    return catalog
+
+
+@_quiet
+def _model_completions(sub_text: str, sub_lower: str):
+    """/model — flags like /reasoning, provider slugs after --provider, else slug/id hops."""
+    from hermes_constants import VALID_REASONING_EFFORTS
+    completed, partial = _split_args(sub_text)
+    last = completed[-1].lower() if completed else ""
+    used_flags = {c.lower() for c in completed if c.startswith("--")}
+    catalog = _model_completion_catalog(refresh="--refresh" in used_flags)
+    flag_rows = (
+        ("--provider", "filter by provider"),
+        ("--reasoning", "reasoning effort"),
+        ("--global", "persist to config"),
+        ("--session", "this session only"),
+        ("--refresh", "reload model catalog"),
+    )
+    used = used_flags
+    if last == "--provider":
+        yield from _ranked_completions(catalog["providers"], partial, skip_exact=False)
+        return
+    if last == "--reasoning":
+        rows = [(e, "reasoning effort") for e in ("none", *VALID_REASONING_EFFORTS)]
+        yield from _ranked_completions(rows, partial, skip_exact=False)
+        return
+    has_model = any(not c.startswith("-") for c in completed)
+    if partial.startswith("-") or not has_model:
+        yield from _ranked_completions(
+            ((name, meta) for name, meta in flag_rows if name not in used), partial, skip_exact=False)
+    if not has_model:
+        yield from _ranked_completions(catalog["models"], partial, skip_exact=False)
+
+
 # base command -> (handler(sub_text, sub_lower), single_word_only). Single-word handlers only
 # run while the first argument is typed; /tools and /handoff parse multi-word input themselves.
 _DYNAMIC_COMPLETIONS: dict[str, tuple[Callable[..., Any], bool]] = {
     "/skin": (_skin_completions, True),
     "/personality": (_personality_completions, True),
+    "/model": (_model_completions, False),
     "/tools": (_tools_completions, False),
     "/handoff": (_handoff_completions, False)}
 
@@ -435,7 +548,7 @@ class SlashCommandCompleter(Completer):
             if handler is not None and (not single_word or first_arg):
                 yield from handler(sub_text, sub_text.lower())
             elif first_arg and base_cmd in SUBCOMMANDS and self._command_allowed(base_cmd):
-                yield from _prefix_completions(
+                yield from _ranked_completions(
                     ((s, None) for s in SUBCOMMANDS[base_cmd]), sub_text)
             return
         word = text[1:]
@@ -443,25 +556,23 @@ class SlashCommandCompleter(Completer):
         def _cmd_completion(cmd_name: str, meta: str):
             return _completion(self._completion_text(cmd_name, word), word, f"/{cmd_name}", meta)
 
+        candidates: list[tuple[str, str]] = []
         for cmd, desc in COMMANDS.items():
-            if self._command_allowed(cmd) and cmd[1:].startswith(word):
-                yield _cmd_completion(cmd[1:], desc)
+            if self._command_allowed(cmd):
+                candidates.append((cmd[1:], desc))
         for cmd, info in self._call_provider(self._skill_bundles_provider).items():
-            if cmd[1:].startswith(word):
-                skill_count = len(info.get("skills", []))
-                yield _cmd_completion(
-                    cmd[1:], f"▣ {info.get('description', 'Skill bundle')} ({skill_count} skills)")
+            skill_count = len(info.get("skills", []))
+            candidates.append((cmd[1:], f"▣ {info.get('description', 'Skill bundle')} ({skill_count} skills)"))
         for cmd, info in self._iter_skill_commands().items():
-            if cmd[1:].startswith(word):
-                yield _cmd_completion(cmd[1:], f"⚡ {info.get('description', 'Skill command')}")
+            candidates.append((cmd[1:], f"⚡ {info.get('description', 'Skill command')}"))
         try:
             from hermes_cli.plugins import get_plugin_commands
             for cmd_name, cmd_info in get_plugin_commands().items():
-                if cmd_name.startswith(word):
-                    yield _cmd_completion(
-                        cmd_name, f"🔌 {cmd_info.get('description', 'Plugin command')}")
+                candidates.append((cmd_name, f"🔌 {cmd_info.get('description', 'Plugin command')}"))
         except Exception:
             pass
+        for completion in _ranked_completions(candidates, word, skip_exact=False):
+            yield _cmd_completion(completion.text, str(completion.display_meta or ""))
 
 
 class SlashCommandAutoSuggest(AutoSuggest):

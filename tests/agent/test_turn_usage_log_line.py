@@ -64,3 +64,39 @@ def test_forensics_parser_reads_the_new_fields(tmp_path):
     assert [c["n"] for c in calls] == [3, 4]
     assert calls[0]["write"] == 28604 and calls[0]["id"] == "gen-1788636728-qMa1" and calls[0]["upstream"] == "Claude Platform on AWS"
     assert "write" not in calls[1] and "id" not in calls[1]
+
+
+def test_ttfb_rides_the_line_when_the_stream_stamped_a_first_chunk(tmp_path, monkeypatch, caplog):
+    """Total latency cannot split queue/prefill wait from generation; the first-chunk stamp the
+    stream monitor already records does (port of PrimeIntellect-ai/prime-agent#2462). It is
+    appended LAST so ``upstream=`` (which reads to the next ``key=``) and the forensics parser's
+    ``latency=..s cache=`` adjacency are untouched."""
+    from agent import turn_usage
+    from evals.postmortem.forensics.logcalls import parse_logs
+    a = _agent(tmp_path, monkeypatch)
+    try:
+        a._last_api_first_chunk_at = 1_000.0 + 12.3
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="agent.turn_usage"):
+            turn_usage.record_response_usage(
+                a, SimpleNamespace(usage=_usage(40, 0, 100), id="r1", provider="Claude Platform on AWS", model="m"),
+                messages=[{"role": "user", "content": "hi"}], api_call_count=1, api_duration=30.0,
+                compression_attempts=0, max_compression_attempts=3, api_start_time=1_000.0)
+        line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("API call #"))
+    finally:
+        a.close()
+    assert line.endswith(" upstream=Claude Platform on AWS ttfb=12.3s")
+    log = tmp_path / "agent.log"
+    log.write_text(f"2026-09-06 19:32:08,549 INFO [s1] agent.conversation_loop: {line}\n", encoding="utf-8")
+    assert parse_logs([str(log)], {"s1"})[0]["upstream"] == "Claude Platform on AWS"
+
+
+def test_ttfb_is_omitted_without_a_first_chunk_stamp(tmp_path, monkeypatch, caplog):
+    """Non-streamed attempts (and callers that pass no start time) keep the line unchanged."""
+    a = _agent(tmp_path, monkeypatch)
+    try:
+        a._last_api_first_chunk_at = None
+        line = _line(a, caplog, SimpleNamespace(usage=_usage(0, 0, 100), id=None, model="m"))
+    finally:
+        a.close()
+    assert "ttfb=" not in line

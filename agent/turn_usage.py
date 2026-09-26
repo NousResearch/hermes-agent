@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from agent.image_token_cost import calibrate_from_usage
 from agent.usage_anchor import capture_usage_anchor, set_usage_anchor
@@ -70,19 +70,40 @@ def _fold_moa_usage(agent, canonical_usage):
     return _moa_client, canonical_usage, _moa_ref_cost
 
 
+def _ttfb_field(agent: Any, api_start_time: Optional[float]) -> str:
+    """`` ttfb=<s>`` for the log line, or "" when the attempt was not streamed / no chunk arrived.
+
+    Total latency alone cannot tell a 30 s wait in the provider's queue (or a prompt-cache miss
+    re-reading a long context) from 30 s of generation; the first-chunk stamp the stream monitor
+    already records (``agent._last_api_first_chunk_at``) splits the two. Appended last so the
+    forensics parser's ``latency=..s cache=`` adjacency and older prefix readers keep matching.
+    """
+    first_chunk_at = getattr(agent, "_last_api_first_chunk_at", None)
+    if api_start_time is None or first_chunk_at is None:
+        return ""
+    try:
+        ttfb = float(first_chunk_at) - float(api_start_time)
+    except (TypeError, ValueError):
+        return ""
+    return f" ttfb={ttfb:.1f}s" if ttfb >= 0 else ""
+
+
 def record_response_usage(
     agent: Any, response: Any, *, messages: List[Dict[str, Any]], api_call_count: int,
     api_duration: float, compression_attempts: int, max_compression_attempts: int,
+    api_start_time: Optional[float] = None,
 ) -> ResponseUsageOutcome:
     """Fold ``response.usage`` into compressor, anchors, session counters, state.db
     and the API-call log line (see module docstring). No-usage responses only
-    consume a pending compaction verdict. Returns the loop-visible outcome."""
+    consume a pending compaction verdict. Returns the loop-visible outcome.
+    ``api_start_time`` (epoch s) lets the log line carry the stream's TTFB."""
     rearmed = False
     compressor = agent.context_compressor
     # Count every completed provider attempt, including providers that omit usage.
     # Token/cost accounting below stays gated on real usage, but the request itself
     # must remain observable.
     agent.session_api_calls += 1
+    _ttfb = _ttfb_field(agent, api_start_time)
     if not (hasattr(response, 'usage') and response.usage):
         if getattr(compressor, "awaiting_real_usage_after_compression", False):
             # No usage -> cannot adjudicate the prior compaction; consume the
@@ -93,8 +114,8 @@ def record_response_usage(
         if callable(_note_usage_less):
             _note_usage_less()
         logger.info(
-            "API call #%d: model=%s provider=%s in=? out=? total=? latency=%.1fs usage=unavailable",
-            agent.session_api_calls, agent.model, agent.provider or "unknown", api_duration,
+            "API call #%d: model=%s provider=%s in=? out=? total=? latency=%.1fs usage=unavailable%s",
+            agent.session_api_calls, agent.model, agent.provider or "unknown", api_duration, _ttfb,
         )
         return ResponseUsageOutcome(compression_attempts=compression_attempts, rearmed=rearmed)
 
@@ -202,10 +223,10 @@ def record_response_usage(
     if isinstance(_upstream, str) and _upstream:
         _ident += f" upstream={_upstream}"
     logger.info(
-        "API call #%d: model=%s provider=%s in=%d out=%d total=%d latency=%.1fs%s%s",
+        "API call #%d: model=%s provider=%s in=%d out=%d total=%d latency=%.1fs%s%s%s",
         agent.session_api_calls, agent.model, agent.provider or "unknown",
         prompt_tokens, completion_tokens, total_tokens,
-        api_duration, _cache_pct, _ident,
+        api_duration, _cache_pct, _ident, _ttfb,
     )
     # nous.anthropic_wire=auto: the session's wire is decided once, from this first response.
     if agent.session_api_calls == 1 and (agent.provider or "") == "nous":

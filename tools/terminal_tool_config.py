@@ -9,8 +9,10 @@ so ``tools.terminal_tool.<name>`` keeps resolving (and monkeypatching) as before
 import logging
 import json
 import os
+import posixpath
+import re
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, overload
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("tools.terminal_tool")
@@ -51,9 +53,14 @@ def _safe_getcwd() -> str:
         return _tenv("TERMINAL_CWD") or os.path.expanduser("~")
 
 
-# Host-cwd prefixes that cannot exist inside a container sandbox (POSIX user
-# dirs and Windows drive paths as they leak toward a Linux ``-w`` flag).
-_HOST_CWD_PREFIXES = ("/Users/", "/home/", "C:\\", "C:/")
+# Host-cwd shapes that cannot exist inside a container sandbox: POSIX user dirs and ANY Windows
+# drive path (``D:\\...``, ``e:/...``) as they leak toward a Linux ``-w`` flag.
+_HOST_CWD_PREFIXES = ("/Users/", "/home/")
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _is_host_cwd(path: str) -> bool:
+    return path.startswith(_HOST_CWD_PREFIXES) or bool(_WINDOWS_DRIVE_RE.match(path))
 
 _CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona", "vercel_sandbox"})
 _BUILTIN_BACKENDS = _CONTAINER_BACKENDS | {"local", "ssh", "managed_modal"}
@@ -89,12 +96,43 @@ def _get_plugin_env_provider(env_type: str):
     return _plugin_registry_lookup(env_type, "get_provider", None)
 
 
+@overload
+def coerce_ssh_remote_cwd(cwd: str, env_type: str | None) -> str: ...
+@overload
+def coerce_ssh_remote_cwd(cwd: None, env_type: str | None) -> None: ...
+def coerce_ssh_remote_cwd(cwd: str | None, env_type: str | None) -> str | None:
+    """Cwd to send to an SSH backend.
+
+    ``~``-prefixed paths stay literal so the remote shell expands them to the
+    SSH user's home. The Hermes process's subprocess home (``/opt/data/home``
+    in the official Docker image) is a directory on the machine running
+    Hermes: it and anything under it are rewritten onto the remote ``~``, since
+    ``cd`` into the host path exits 126 on the target. A subprocess home that is
+    the OS user's real home is left alone: a remote path may legitimately match
+    it. Other backends are unchanged.
+    """
+    if not isinstance(cwd, str) or (env_type or "").strip().lower() != "ssh":
+        return cwd
+    text = cwd.strip()
+    if not text or text.startswith("~"):
+        return text or "~"
+    from hermes_constants import get_real_home, get_subprocess_home
+
+    home = get_subprocess_home()
+    if not home or not posixpath.isabs(text) or posixpath.normpath(home) == posixpath.normpath(get_real_home()):
+        return text
+    rel = posixpath.relpath(posixpath.normpath(text), posixpath.normpath(home))
+    if rel == ".":
+        return "~"
+    return text if rel == ".." or rel.startswith("../") else f"~/{rel}"
+
+
 def _is_unusable_container_cwd(cwd: str) -> bool:
     """True if *cwd* is a host or relative path that can't be a container
     workdir: ``docker run -w`` needs an absolute in-sandbox path, otherwise the
     container fails to start (exit 125). Windows drive paths aren't ``isabs``
     on POSIX, so they're caught by the prefix check."""
-    return bool(cwd) and (cwd.startswith(_HOST_CWD_PREFIXES) or not os.path.isabs(cwd))
+    return bool(cwd) and (_is_host_cwd(cwd) or not os.path.isabs(cwd))
 
 
 def _tenv(name: str, default: str = "") -> str:

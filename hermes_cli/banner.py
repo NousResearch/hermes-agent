@@ -2,12 +2,14 @@
 import json
 import logging
 import os
+import re
 import shutil
-import subprocess
+import sys
 import threading
-import time
 from pathlib import Path
-from urllib.parse import urlparse
+from hermes_cli import source_check
+# Historical updater import (tests/compat/old_updater_surface.json). In-tree callers use the owner.
+from hermes_cli.source_check import _github_compare_behind  # noqa: F401
 from hermes_constants import get_hermes_home
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -22,6 +24,16 @@ logger = logging.getLogger(__name__)
 # ANSI building blocks for conversation display (``_DIM``/``_RST`` are imported by callbacks.py).
 _DIM = "\033[2m"
 _RST = "\033[0m"
+
+
+def _check_via_pypi() -> Optional[int]:
+    # Shim to stop the old updater doing work until relaunch. no registry query.
+    return None
+
+
+def check_via_pypi() -> Optional[int]:
+    # Shim to stop the old updater doing work until relaunch. status is unknown.
+    return None
 
 
 def _quiet(fn, default=None):
@@ -55,7 +67,8 @@ def _skin_color(key: str, fallback: str) -> str:
 
 # === ASCII Art & Branding ===
 
-from hermes_cli import __version__ as VERSION, __release_date__ as RELEASE_DATE
+from hermes_cli import __release_date__ as RELEASE_DATE
+from hermes_cli.version_info import get_version_info
 
 HERMES_AGENT_LOGO = """[bold #FFD700]██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
 [bold #FFD700]██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝██╔════╝      ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
@@ -92,7 +105,13 @@ _UNCACHED = object()  # compute() result that must not be memoized
 
 
 def _memo(cache_name: str, compute):
-    """Return the cached value under module global ``cache_name``, computing (and storing) it once."""
+    """Return the cached value under module global ``cache_name``, computing (and storing) it once.
+
+    Not consulted under a routed profile (HERMES_HOME override): every memo here is derived from the
+    launch home (its skills tree, its checkout), and the TUI gateway calls these per profile."""
+    from hermes_constants import get_hermes_home_override
+    if get_hermes_home_override() is not None:
+        return compute()
     cached = globals()[cache_name]
     if cached is not None:
         return cached[0]
@@ -124,240 +143,6 @@ def get_available_skills() -> Dict[str, List[str]]:
     return {} if result is _UNCACHED else result
 
 
-# === Update check ===
-
-_UPDATE_CHECK_CACHE_SECONDS = 6 * 3600  # avoid repeated git fetches
-
-# Returned when an update is known to exist but commits can't be counted (e.g. nix builds).
-UPDATE_AVAILABLE_NO_COUNT = -1
-
-_UPSTREAM_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
-_OFFICIAL_REPO_CANONICAL = "github.com/nousresearch/hermes-agent"
-
-
-def _canonical_github_remote(url: str | None) -> str:
-    """Return ``host/owner/repo`` for common GitHub remote URL forms."""
-    if not url:
-        return ""
-    value = url.strip()
-    for ssh_prefix in ("git@github.com:", "ssh://git@github.com/"):
-        if value.startswith(ssh_prefix):
-            value = "github.com/" + value[len(ssh_prefix):]
-            break
-    else:
-        parsed = urlparse(value)
-        if parsed.netloc and parsed.path:
-            value = f"{parsed.netloc}{parsed.path}"
-    return value.strip().rstrip("/").removesuffix(".git").lower()
-
-
-def _is_official_ssh_remote(url: str | None) -> bool:
-    return bool(url) and url.strip().lower().startswith(("git@", "ssh://")) and (
-        _canonical_github_remote(url) == _OFFICIAL_REPO_CANONICAL)
-
-
-_GIT_TEXT_KW = {"text": True, "encoding": "utf-8", "errors": "replace"}
-
-
-def _git_run(args: list[str], *, cwd: Optional[Path] = None, timeout: int = 5, text: bool = True,
-             network: bool = False):
-    """Run ``git <args>`` with the shared subprocess boilerplate; None on any exception.
-
-    git output is UTF-8; on Windows ``text=True`` defaults to the ANSI code page and a byte like the
-    3rd of 🐛 in a commit subject crashes the stdlib reader thread (#52649), hence the explicit
-    encoding. ``network=True`` (ls-remote/fetch) detaches stdin and disables git/GCM prompts so a
-    passive update check can never hang on a ``Username for 'https://github.com':`` prompt.
-    """
-    kwargs: dict = {}
-    if network:
-        from hermes_cli._subprocess_compat import noninteractive_git_env
-        kwargs = {"stdin": subprocess.DEVNULL, "env": noninteractive_git_env()}
-    try:
-        return subprocess.run(
-            ["git", *args], capture_output=True, timeout=timeout, cwd=str(cwd) if cwd is not None else None,
-            **(_GIT_TEXT_KW if text else {}), **kwargs)
-    except Exception:
-        return None
-
-
-def _git_stdout(args: list[str], *, cwd: Path, timeout: int = 5) -> Optional[str]:
-    result = _git_run(args, cwd=cwd, timeout=timeout)
-    if result is None or result.returncode != 0:
-        return None
-    return (result.stdout or "").strip()
-
-
-def _git_ok(args: list[str], **kw) -> bool:
-    """True when ``git <args>`` ran and exited 0 (output discarded)."""
-    result = _git_run(args, text=False, **kw)
-    return result is not None and result.returncode == 0
-
-
-def _git_count(args: list[str], *, cwd: Path) -> Optional[int]:
-    """``int`` of a successful ``git rev-list --count``-style command, else None.
-
-    Deliberately bypasses ``_git_stdout`` so tests can stub the two layers independently.
-    """
-    result = _git_run(args, cwd=cwd)
-    if result is not None and result.returncode == 0:
-        return _quiet(lambda: int(result.stdout.strip()))
-    return None
-
-
-def _is_full_sha(value: Optional[str]) -> bool:
-    return isinstance(value, str) and len(value) == 40 and all(c in "0123456789abcdefABCDEF" for c in value)
-
-
-def _github_compare_behind(current_rev: str, target_rev: str) -> Optional[int]:
-    """Exact behind-count via the GitHub compare API for uncountable graphs.
-
-    Shallow installer clones and ls-remote-only probes know the two tip SHAs but have no local
-    history to run ``rev-list --count`` across.
-    """
-    if not (_is_full_sha(current_rev) and _is_full_sha(target_rev)):
-        return None
-    url = f"https://api.github.com/repos/nousresearch/hermes-agent/compare/{current_rev}...{target_rev}"
-
-    def _fetch():
-        import urllib.request
-        # api.github.com 403s requests without a User-Agent.
-        req = urllib.request.Request(
-            url, headers={"Accept": "application/vnd.github+json", "User-Agent": "hermes-cli-update-check"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    payload = _quiet(_fetch)
-    ahead = payload.get("ahead_by") if isinstance(payload, dict) else None
-    return ahead if isinstance(ahead, int) and not isinstance(ahead, bool) and ahead >= 0 else None
-
-
-def _tips_behind(head_rev: Optional[str], target_rev: Optional[str], repo_dir: Optional[Path] = None) -> Optional[int]:
-    """Behind-count from two tip SHAs: None if either is unknown, 0 when equal, else count/sentinel.
-
-    With ``repo_dir``, a target that is already an ancestor of HEAD (local-ahead checkout) is 0 too.
-    ``ahead_by == 0`` with differing tips means the remote tip is reachable from our HEAD — NOT
-    behind. A local-only HEAD 404s on the API, which degrades to ``UPDATE_AVAILABLE_NO_COUNT`` —
-    never a fabricated 1.
-    """
-    if not head_rev or not target_rev:
-        return None
-    if head_rev == target_rev or (repo_dir is not None and _git_ok(
-            ["merge-base", "--is-ancestor", target_rev, "HEAD"], cwd=repo_dir)):
-        return 0
-    counted = _github_compare_behind(head_rev, target_rev)
-    return counted if counted is not None else UPDATE_AVAILABLE_NO_COUNT
-
-
-def _upstream_main_sha() -> Optional[str]:
-    """Tip SHA of upstream main via HTTPS ls-remote (no auth, no prompts)."""
-    result = _git_run(["ls-remote", _UPSTREAM_REPO_URL, "refs/heads/main"], timeout=10, network=True)
-    if result is None or result.returncode != 0 or not result.stdout:
-        return None
-    return result.stdout.split()[0] or None
-
-
-def _check_via_rev(local_rev: str) -> Optional[int]:
-    """Compare an embedded git revision to upstream main via ls-remote (see ``_tips_behind``)."""
-    return _tips_behind(local_rev, _upstream_main_sha())
-
-
-def _check_via_local_git(repo_dir: Path) -> Optional[int]:
-    """Count commits behind origin/main in a local checkout."""
-    origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
-    if _is_official_ssh_remote(origin_url):
-        head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
-        if not head_rev:
-            return None
-        # Passive probe via HTTPS ls-remote (never SSH — no hardware-key prompts). Tip SHAs alone
-        # can't distinguish "behind" from a local commit AHEAD of origin/main, and misreporting an
-        # ahead checkout nudges the user into `hermes update`, which can wipe carried work — hence
-        # the ancestor check, against the FRESH upstream SHA (a stale tracking ref can't fake an
-        # up-to-date report).
-        return _tips_behind(head_rev, _upstream_main_sha(), repo_dir)
-
-    # Installer checkouts are shallow (`git clone --depth 1`): a plain `git fetch` would unshallow
-    # the repo and `rev-list --count HEAD..origin/main` would report a bogus "12492 commits
-    # behind". Fetch with --depth 1 to preserve the boundary and compare tip SHAs instead. Full
-    # clones keep the exact count path. Mirrors apps/desktop/electron/main.cjs.
-    is_shallow = _git_stdout(["rev-parse", "--is-shallow-repository"], cwd=repo_dir) == "true"
-
-    def _fetch() -> bool:
-        # Self-heal abandoned git lock files first. A stale .git/shallow.lock from a crashed fetch
-        # makes every fetch fail silently and stale refs get compared against HEAD until a human
-        # removes the lock. This passive check is also the main tmp_pack GENERATOR on flaky lines,
-        # so it must be the janitor too (#93732).
-        from hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs
-        clear_stale_git_locks(repo_dir)
-        clear_stale_tmp_packs(repo_dir)
-
-        # Scope the fetch to the one branch compared against: an unscoped ``git fetch origin``
-        # transfers ~1,400 remote heads (3.0 s vs 0.55 s measured) and can burn the full timeout.
-        # A scoped fetch still updates ``origin/main`` and FETCH_HEAD; ``--depth 1`` preserves
-        # the shallow boundary.
-        fetch_args = ["fetch", "origin", "main", *(["--depth", "1"] if is_shallow else []), "--quiet"]
-        return _git_ok(fetch_args, cwd=repo_dir, timeout=10, network=True)
-
-    fetch_ok = _quiet(_fetch, False)  # Offline or timeout — don't use stale refs
-    # When the fetch fails the local origin/main ref is stale: it cannot prove *currentness*, but
-    # if it already shows HEAD behind, that is sound evidence an update exists. Return the positive
-    # stale count; None (inconclusive) otherwise so the caller doesn't cache a false "up to date".
-    if is_shallow:
-        # (#82166, review #92578)
-        if not fetch_ok:
-            return None
-        # No history across the shallow boundary. `origin/main` may not be a tracking ref in a
-        # `clone --depth 1`, so prefer FETCH_HEAD (just updated) and fall back to origin/main.
-        head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
-        target_rev = (
-            _git_stdout(["rev-parse", "FETCH_HEAD"], cwd=repo_dir)
-            or _git_stdout(["rev-parse", "origin/main"], cwd=repo_dir))
-        return _tips_behind(head_rev, target_rev)
-    behind = _git_count(["rev-list", "--count", "HEAD..origin/main"], cwd=repo_dir)
-    return behind if fetch_ok or (behind is not None and behind > 0) else None
-
-
-def _read_json(path: Path) -> Optional[dict]:
-    """Parse ``path`` as a JSON object; None when missing, unreadable, or not a dict."""
-    blob = _quiet(lambda: json.loads(path.read_text(encoding="utf-8")))
-    return blob if isinstance(blob, dict) else None
-
-
-def check_for_updates() -> Optional[int]:
-    """Check whether a Hermes update is available.
-
-    If ``HERMES_REVISION`` is set (nix builds embed it), compare it to upstream main via
-    ``git ls-remote``; otherwise count commits behind ``origin/main`` in the local checkout.
-    """
-    cache_file = get_hermes_home() / ".update_check"
-    embedded_rev = os.environ.get("HERMES_REVISION") or None
-    # Docker images have no working tree (the image excludes `.git`) and set no HERMES_REVISION.
-    # None makes both the Rich banner and the Ink badge show nothing, mirroring the dashboard's
-    # `/api/hermes/update/check` short-circuit so the surfaces agree.
-    def _install_method():
-        from hermes_cli.config import detect_install_method, get_project_root
-        return detect_install_method(get_project_root())
-
-    if _quiet(_install_method) in {"docker", "apt"}:
-        return None
-    # Cache is invalidated when the embedded rev OR installed version changed since the last check.
-    now = time.time()
-    cached = _read_json(cache_file)
-    if (cached is not None and now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
-            and cached.get("rev") == embedded_rev and cached.get("ver") == VERSION):
-        return cached.get("behind")
-    if embedded_rev:
-        behind = _check_via_rev(embedded_rev)
-    else:
-        # No checkout and no embedded revision — status can't be determined.
-        repo_dir = _resolve_repo_dir()
-        behind = _check_via_local_git(repo_dir) if repo_dir is not None else None
-    # Don't cache inconclusive results: None means the check could not run (typically a failed
-    # fetch), and caching it would suppress retries for the full 6-hour window (#82166).
-    if behind is not None:
-        _quiet(lambda: cache_file.write_text(
-            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION}), encoding="utf-8"))
-    return behind
-
-
 def _resolve_repo_dir() -> Optional[Path]:
     """The active Hermes git checkout, or None if this isn't a git install.
 
@@ -384,8 +169,8 @@ def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
 def _baked_banner_state() -> Optional[dict]:
     """Banner state from the baked build SHA (Docker image path), or None."""
     def _baked():
-        from hermes_cli.build_info import get_build_sha
-        return get_build_sha(short=8)
+        from hermes_cli.version_info import get_code_identity
+        return get_code_identity().get("short_sha")
     baked = _quiet(_baked)
     return {"upstream": baked, "local": baked, "ahead": 0} if baked else None
 
@@ -394,11 +179,11 @@ def _compute_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]
     repo_dir = repo_dir or _resolve_repo_dir()
     if repo_dir is None:
         return _baked_banner_state()
-    upstream, local = (_git_stdout(["rev-parse", "--short=8", rev], cwd=repo_dir) for rev in ("origin/main", "HEAD"))
+    upstream, local = (source_check._git_stdout(["rev-parse", "--short=8", rev], cwd=repo_dir) for rev in ("origin/main", "HEAD"))
     if not upstream or not local:
         # Live-git lookup failed (e.g. shallow clone without origin/main).
         return _baked_banner_state()
-    ahead = _git_count(["rev-list", "--count", "origin/main..HEAD"], cwd=repo_dir) or 0
+    ahead = source_check._git_count(["rev-list", "--count", "origin/main..HEAD"], cwd=repo_dir) or 0
     return {"upstream": upstream, "local": local, "ahead": max(ahead, 0)}
 
 
@@ -412,14 +197,40 @@ def get_latest_release_tag(repo_dir: Optional[Path] = None) -> Optional[tuple]:
     """
     def _compute():
         rd = repo_dir or _resolve_repo_dir()
-        tag = _git_stdout(["describe", "--tags", "--abbrev=0"], cwd=rd, timeout=3) if rd else None
+        tag = source_check._git_stdout(["describe", "--tags", "--abbrev=0"], cwd=rd, timeout=3) if rd else None
         return (tag, f"{_RELEASE_URL_BASE}/{tag}") if tag else None
     return _memo("_latest_release_cache", _compute)
 
 
 def format_banner_version_label() -> str:
     """Return the version label shown in the startup banner title."""
-    base = f"Hermes Agent v{VERSION} ({RELEASE_DATE})"
+    from hermes_cli.config import get_project_root
+    from hermes_cli.steward import read_install_stamp
+    from hermes_cli.update_channel import is_canary_tag
+
+    stamp = read_install_stamp(get_project_root())
+    if stamp.get("distribution") == "desktop-app":
+        label = f"Hermes Agent v{get_version_info().derived_version}"
+        if stamp.get("source") == "commit-build":
+            return f"{label} · commit-build · {str(stamp.get('commit') or '')[:12]}"
+        if stamp.get("tag"):
+            channel = "canary" if is_canary_tag(stamp["tag"]) else "stable"
+            return f"{label} · {channel}"
+        if stamp.get("payload") == "bootstrap":
+            # The old installer shell's CLI backend: the shell never updates
+            # itself (`self`), the managed checkout under it does. Name the
+            # shell so it doesn't read as a plain packaged build.
+            return f"{label} · installer"
+        return label
+
+    base = f"Hermes Agent v{get_version_info().derived_version} ({RELEASE_DATE})"
+    from hermes_cli.config import load_config
+    from hermes_cli.update_channel import resolve_update_channel
+
+    channel = resolve_update_channel(_quiet(load_config), get_project_root())
+    if channel != "main":
+        head = source_check._git_stdout(["rev-parse", "HEAD"], cwd=get_project_root())
+        return f"{base} · {channel}" + (f" · local {head[:12]}" if head else "")
     state = get_git_banner_state()
     if not state:
         return base
@@ -441,11 +252,37 @@ def _daemon(name: Optional[str], target) -> None:
     threading.Thread(target=lambda: _quiet(target), name=name, daemon=True).start()
 
 
+def _skip_background_prefetch() -> bool:
+    """True when the banner's background prefetch threads must not start.
+
+    Under pytest the prefetch daemon threads shell out to git (``rev-parse``,
+    ``remote get-url``, the banner's git state) at an arbitrary point after
+    import, and any test that patches the process-wide ``subprocess`` singleton
+    (``patch("subprocess.run")`` / ``patch("subprocess.Popen")``) can record
+    that stray spawn in place of the call it meant to pin.  Importing
+    ``tui_gateway.server`` starts this prefetch, which is what flaked
+    tests/tui_gateway/test_bot_relay_methods.py.
+    Nothing under pytest needs a live update check; tests that exercise the
+    prefetch itself monkeypatch this predicate to False.
+
+    ``PYTEST_CURRENT_TEST`` is only set while a test runs, not during
+    collection-time imports, hence the ``sys.modules`` check as well.
+    """
+    return "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
+
+
 def prefetch_update_check():
-    """Kick off update check in a background daemon thread."""
+    """Kick off update check in a background daemon thread.
+
+    No-op under pytest — see ``_skip_background_prefetch``.
+    """
+    if _skip_background_prefetch():
+        _update_check_done.set()
+        return
+
     def _run():
         global _update_result
-        _update_result = check_for_updates()
+        _update_result = source_check.check_for_updates(passive=True).get("behind")
         _update_check_done.set()
     _daemon(None, _run)
 
@@ -462,6 +299,13 @@ def prefetch_banner_data():
     """
     global _banner_data_prefetch_started
     if _banner_data_prefetch_started:
+        return
+    if _skip_background_prefetch():
+        # Same stray-git-spawn cross-talk class as prefetch_update_check:
+        # get_git_banner_state() shells out via the shared subprocess
+        # singleton from a daemon thread, poisoning process-wide subprocess
+        # mocks in unrelated tests.
+        _banner_data_prefetch_started = True
         return
     _banner_data_prefetch_started = True
     _daemon("banner-data-prefetch", lambda: [_quiet(warm) for warm in (
@@ -491,11 +335,25 @@ def _format_update_notice(behind: int) -> str:
 _deferred_update_notice_started = False
 
 
-def _defer_update_notice(console: "Console", max_wait: float = 30.0) -> None:
+def _render_markup_to_ansi(markup: str) -> str:
+    """Rich markup → ANSI string, for output that must go through prompt_toolkit's renderer.
+
+    Under ``patch_stdout`` (the interactive CLI), a plain ``Console.print`` writes ESC bytes into
+    the StdoutProxy, which sanitizes them into visible ``?[1;33m…`` artifacts (#83969).
+    """
+    from io import StringIO
+    from rich.console import Console as _Console
+    buf = StringIO()
+    _Console(file=buf, force_terminal=True, color_system="truecolor", highlight=False).print(markup)
+    return buf.getvalue().rstrip("\n")
+
+
+def _defer_update_notice(max_wait: float = 30.0) -> None:
     """Print the update warning once the prefetched check completes (at most once per process).
 
     Used when the banner rendered before the update prefetch finished so startup never blocks on
-    git/network.
+    git/network. The notice lands after prompt_toolkit owns the terminal, so it is routed through
+    ``cprint`` (prompt_toolkit's renderer prints above a running application from any thread).
     """
     global _deferred_update_notice_started
     if _deferred_update_notice_started:
@@ -504,7 +362,7 @@ def _defer_update_notice(console: "Console", max_wait: float = 30.0) -> None:
 
     def _wait_and_print() -> None:
         if _update_check_done.wait(timeout=max_wait) and _update_result:
-            console.print(_format_update_notice(_update_result))
+            cprint(_render_markup_to_ansi(_format_update_notice(_update_result)))
     _daemon("update-notice", _wait_and_print)  # never break the session over an update notice
 
 
@@ -561,8 +419,9 @@ def banner_snapshot_fingerprint() -> Optional[str]:
     for p in paths:
         st = _quiet(p.stat)
         parts.append(f"{p.name}:{st.st_mtime_ns}:{st.st_size}" if st else f"{p.name}:absent")
-    # Code checkout: version + git HEAD when available (post-update change).
-    parts.append(str(VERSION))
+    # Code checkout: commit when known, otherwise its derived version.
+    version_info = get_version_info()
+    parts.append(version_info.commit or version_info.derived_version)
     state = get_git_banner_state()
     if state:
         parts.append(str(state.get("local", "")))
@@ -571,8 +430,8 @@ def banner_snapshot_fingerprint() -> Optional[str]:
 
 def load_banner_snapshot(enabled_toolsets: List[str] = None) -> Optional[Dict[str, Any]]:
     """Return the stored banner snapshot when its fingerprint is current."""
-    blob = _read_json(_banner_snapshot_path())
-    if blob is None:
+    blob = _quiet(lambda: json.loads(_banner_snapshot_path().read_text(encoding="utf-8-sig")))
+    if not isinstance(blob, dict):
         return None
     fp = banner_snapshot_fingerprint()
     if (not fp or blob.get("fingerprint") != fp
@@ -603,13 +462,8 @@ def save_banner_snapshot(tools: List[dict], enabled_toolsets: List[str], availab
     }
 
     def _write():
-        import tempfile
-        path = _banner_snapshot_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".banner_snap.")
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(payload, fh)
-        os.replace(tmp, path)
+        from utils import atomic_json_write
+        atomic_json_write(_banner_snapshot_path(), payload, indent=None, mode=0o600)
     _quiet(_write)
 
 
@@ -644,12 +498,28 @@ def _mcp_server_line(srv: dict, *, dim: str, text: str) -> str:
     name, transport = srv["name"], srv["transport"]
     if srv["connected"]:
         return f"[dim {dim}]{name}[/] [{text}]({transport})[/] [dim {dim}]—[/] [{text}]{srv['tools']} tool(s)[/]"
+    # Needs srv['tools'], so it cannot live in the suffix dict below. A registered but unspawned
+    # server has callable tools; falling through to the red "failed" line misreports a working setup.
+    if srv.get("status") == "lazy":
+        return (f"[dim {dim}]{name}[/] [{text}]({transport})[/] [dim {dim}]—[/] "
+                f"[{text}]{srv['tools']} tool(s)[/] [dim {dim}](lazy, starts on first use)[/]")
     status = "disabled" if srv.get("disabled") else srv.get("status")
     suffix = {"disabled": f"[dim {dim}]— disabled[/]", "connecting": "[yellow]— connecting[/]",
               "configured": f"[dim {dim}]— configured[/]"}.get(status)
     if suffix is not None:
         return f"[dim {dim}]{name}[/] [dim]({transport})[/] {suffix}"
-    return f"[red]{name}[/] [dim]({transport})[/] [red]— failed[/]"
+    return _mcp_failed_line(name, transport, srv.get("error"))
+
+
+def _mcp_failed_line(name: str, transport: str, error: Optional[str]) -> str:
+    """Failed MCP connect: the short reason (already humanised by ``_format_connect_error``) and the
+    exact next command, so 'failed' is never the whole story."""
+    from rich.markup import escape
+    reason = escape(" ".join(str(error or "").split())[:120]) or "no details recorded"
+    next_cmd = (f"hermes mcp login {name}" if re.search(r"\b401\b|unauthori[sz]ed", reason, re.I)
+                else f"hermes mcp test {name}")
+    return (f"[red]{name}[/] [dim]({transport})[/] [red]— could not connect:[/] {reason} "
+            f"[dim]— run `{next_cmd}`[/]")
 
 
 def _truncate_tool_names(tool_names: List[str]) -> List[Optional[str]]:
@@ -726,13 +596,30 @@ def _active_profile_name() -> Optional[str]:
     return get_active_profile_name()
 
 
-def _banner_left_lines(model: str, cwd: str, session_id, context_length, provider, *, accent: str, dim: str) -> list:
-    """Model / cwd / session lines under the hero art."""
+def _route_model_for_banner(provider: Any) -> str:
+    """The model the resolved route will actually serve when config names none: today only the Nous
+    free tier (welcome host -> ``nous/welcome``). Read from the boot record and local auth state;
+    no network. Empty when nothing resolves, so the caller keeps its "no model configured" line."""
+    if (provider or "auto").strip().lower() not in ("auto", "nous"):
+        return ""
+    from hermes_cli.anon_auth import GUEST_MODEL, guest_carries_inference
+    return GUEST_MODEL if guest_carries_inference() else ""
+
+
+def _banner_left_lines(model: str, cwd: str, session_id, context_length, provider, *, accent: str, dim: str,
+                       context_pinned: bool = False) -> list:
+    """Model / cwd / session lines under the hero art. ``context_pinned`` marks a
+    ``model.context_length`` pin so the user can tell it apart from provider metadata (#66168)."""
     def _dim_sep(label: str) -> str:
         return f" [dim {dim}]·[/] [dim {dim}]{label}[/]"
     lines = []
-    ctx_str = _dim_sep(f"{_format_context_length(context_length)} context") if context_length else ""
+    pin = " (pinned)" if context_pinned else ""
+    ctx_str = _dim_sep(f"{_format_context_length(context_length)} context{pin}") if context_length else ""
     nous_str = _dim_sep("Nous Research")
+    if not (model or "").strip():
+        # Credentials resolve lazily on the first message; the banner prints first. Ask the route
+        # the same question so a fresh free-tier install shows its model, not a red "unconfigured".
+        model = _quiet(lambda: _route_model_for_banner(provider), "") or model
     if (provider or "").strip().lower() == "moa":
         # MoA virtual provider: ``model`` is a preset name; show it with its aggregator.
         agg_label = _quiet(lambda: _moa_aggregator_label(model), "")
@@ -801,6 +688,7 @@ def build_welcome_banner(
     console: "Console", model: str, cwd: str, tools: List[dict] = None, enabled_toolsets: List[str] = None,
     session_id: str = None, get_toolset_for_tool=None, context_length: int = None, provider: str = None,
     availability: Dict[str, Any] = None, skills_by_category: Dict[str, List[str]] = None,
+    context_pinned: bool = False,
 ):
     """Build and print a welcome banner with caduceus on left and info on right.
 
@@ -824,7 +712,8 @@ def build_welcome_banner(
     # Use skin's custom caduceus art if provided
     _bskin = _quiet(_active_skin)
     left_lines = ["", getattr(_bskin, "banner_hero", None) or HERMES_CADUCEUS, ""]
-    left_lines += _banner_left_lines(model, cwd, session_id, context_length, provider, accent=accent, dim=dim)
+    left_lines += _banner_left_lines(model, cwd, session_id, context_length, provider, accent=accent, dim=dim,
+                                     context_pinned=context_pinned)
     right_lines = _banner_tool_lines(
         tools, availability.get("unavailable_toolsets", []), get_toolset_for_tool,
         lazy_tools=set(availability.get("lazy_tools", [])), disabled_tools=set(availability.get("disabled_tools", [])),
@@ -863,17 +752,16 @@ def build_welcome_banner(
     right_lines.append(f"[dim {dim}]{' · '.join(summary_parts)}[/]")
     # Update check — NEVER block the banner on it: the prefetch does git/network work that rarely
     # finishes before render, so a blocking wait adds its full timeout to every startup. If not
-    # ready, a daemon thread prints the same notice above the prompt when it lands
-    # (prompt_toolkit's patch_stdout renders late prints safely).
+    # ready, a daemon thread prints the same notice above the prompt when it lands.
     def _update_line():
         behind = get_update_result(timeout=0.05)
         if behind is None and not _update_check_done.is_set():
-            _defer_update_notice(console)
+            _defer_update_notice()
         elif behind is not None and behind != 0:
             right_lines.append(_format_update_notice(behind))
     _quiet(_update_line)  # Never break the banner over an update check
     layout_table = Table.grid(padding=(0, 2))
-    layout_table.add_column("left", justify="center")
+    layout_table.add_column("left", justify="left")
     layout_table.add_column("right", justify="left")
     layout_table.add_row("\n".join(left_lines), "\n".join(right_lines))
     version_label = format_banner_version_label()

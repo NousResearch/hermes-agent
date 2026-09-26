@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import contextvars
 import json
+import os
 import threading
 import time
 from concurrent.futures import TimeoutError as FuturesTimeoutError
@@ -60,9 +61,25 @@ def _with_children_lock(parent_agent: Any, op: str, child: Any) -> None:
         getattr(parent_agent._active_children, op)(child)
 
 def _attach_child(parent_agent: Any, child: Any) -> None:
-    """Register the child for parent interrupt propagation."""
+    """Register the child for parent interrupt propagation.
+
+    ``interrupt()`` fans out to a SNAPSHOT of ``_active_children``; a child attached after the stop
+    landed (a fan-out still building its siblings, a turn that has not reached its iteration check yet)
+    would otherwise start with no signal and run to completion as an orphan. Mirror a pending stop here
+    so the whole spawn tree dies with its parent."""
     if hasattr(parent_agent, "_active_children"):
         _with_children_lock(parent_agent, "append", child)
+    if getattr(parent_agent, "_interrupt_requested", False) is not True:
+        return
+    # Same soft/hard split as ``interrupt()``'s own fan-out: a hard stop cancels, a soft one redirects.
+    message = getattr(parent_agent, "_interrupt_message", None)
+    hard = getattr(parent_agent, "_hard_interrupt_requested", None)
+    if hard is None or hard.is_set():
+        _signal_child_stop(child, message or "parent agent interrupted",
+                           tool_reason=getattr(parent_agent, "_tool_interrupt_reason", None) or "parent agent interrupted")
+    else:
+        with _quiet("Failed to propagate interrupt to late child: %s"):
+            child.interrupt(message)
 
 def _detach_child(parent_agent: Any, child: Any) -> None:
     """Remove the child from parent interrupt propagation (no-op if absent)."""
@@ -73,10 +90,12 @@ def _detach_child(parent_agent: Any, child: Any) -> None:
     except (ValueError, UnboundLocalError) as e:
         logger.debug("Could not remove child from active_children: %s", e)
 
-def _signal_child_stop(child: Any, *reason: str) -> None:
-    """Cooperative interrupt so the child's worker thread can exit cleanly."""
+def _signal_child_stop(child: Any, *reason: str, tool_reason: str = "parent delegation ended") -> None:
+    """Cooperative interrupt so the child's worker thread can exit cleanly. ``tool_reason`` is the
+    fixed cause the child's tools see (a pending approval wait reports it instead of a user deny)."""
     with _quiet(None):
-        if child is not None and not request_hard_interrupt(child, *reason) and hasattr(child, "_interrupt_requested"):
+        if (child is not None and not request_hard_interrupt(child, *reason, tool_reason=tool_reason)
+                and hasattr(child, "_interrupt_requested")):
             child._interrupt_requested = True
 
 # ── 0-API-call timeout diagnostic ────────────────────────────────────────────
@@ -202,8 +221,52 @@ def _dump_subagent_timeout_diagnostic(
 
 # ── Per-run helpers ──────────────────────────────────────────────────────────
 
+# Granularity for re-checking a child's progress while a configured ``child_timeout_seconds`` budget runs.
+# Five seconds is finer than the 30s heartbeat and cheap (one activity-summary read per slice).
+_LIVENESS_POLL_SECONDS = 5.0
+# Fraction of the inactivity budget after which the child is warned once (via its steer channel) that the window is
+# closing, so a child that is merely slow can wrap up and return instead of losing its whole context (#116001).
+_BUDGET_WARNING_FRACTION = 0.8
+
+def _budget_warning_text(idle_seconds: float, child_timeout: float) -> str:
+    return (
+        f"[delegation budget warning] No progress signal for {idle_seconds:.0f}s of your {child_timeout:.0f}s "
+        "inactivity window. Finish the current step and return your summary now — the work is discarded if the "
+        "window elapses."
+    )
+
+def _warn_child_budget(child: Any, idle_seconds: float, child_timeout: float) -> None:
+    """Queue the one-line warning through the child's steer path (delivered at its next iteration boundary)."""
+    steer = getattr(child, "steer", None)
+    if not callable(steer):
+        return
+    try:
+        steer(_budget_warning_text(idle_seconds, child_timeout))
+    except Exception as exc:
+        logger.debug("budget warning steer failed: %s", exc)
+
+def _child_activity_fingerprint(child: Any) -> tuple:
+    """``(completed calls, current tool, activity clock)`` — the progress signals the heartbeat's stale verdict
+    already watches. A child waiting on an in-flight LLM completion is ALIVE: its activity clock ticks while the
+    provider works (``direct_api_call``'s 15s heartbeat) and the call itself is bounded by the per-call stale
+    watchdog, so at the delegation layer it must not read as stuck (#116001)."""
+    try:
+        summary = child.get_activity_summary() or {}
+    except Exception:
+        return (None, None, None)
+    return (summary.get("api_call_count"), summary.get("current_tool"), summary.get("last_activity_ts"))
+
+def _child_last_event_age(child: Any) -> Optional[float]:
+    """Seconds since the child's activity clock last ticked, or None when the child exposes no clock. Reported on a
+    timeout so an operator can tell a slow-but-live provider from a runaway without transcript forensics."""
+    try:
+        ts = (child.get_activity_summary() or {}).get("last_activity_ts")
+        return round(max(0.0, time.time() - float(ts)), 2) if ts is not None else None
+    except Exception:
+        return None
+
 class _Heartbeat:
-    """One child's parent-activity heartbeat on the shared periodic scheduler thread
+    """One child's parent-activity heartbeat via the shared periodic scheduler
     (``agent.periodic_scheduler``) — not one daemon thread per child. NOT started at construction:
     the caller calls ``start()`` inside its ``try`` so a failed schedule (OS thread exhaustion on
     first use) leaves ``handle`` None and ``stop()`` is a no-op."""
@@ -214,6 +277,12 @@ class _Heartbeat:
         # activity_ts) all froze; thresholds differ idle vs in-tool.
         self.last_seen = {"iter": 0, "tool": None, "ts": None, "stale": 0}
         self.handle = None
+        # Set on the stale verdict; ``await_child`` waits on it (its worker's done-callback
+        # sets it too) so a wedged child ends the wait instead of only ending the heartbeat.
+        self.settled = threading.Event()
+        # Threshold (seconds of frozen activity) the stale verdict fired at; None until it does.
+        # ``await_child`` reads it to name the real cause when a configured cap was still pending.
+        self.stale_threshold_seconds: Optional[float] = None
 
     def start(self) -> None:
         from agent.periodic_scheduler import schedule
@@ -227,7 +296,7 @@ class _Heartbeat:
 
     def tick(self):
         """Returning False stops the periodic callback."""
-        from tools.delegate_tool import _HEARTBEAT_STALE_CYCLES_IDLE, _HEARTBEAT_STALE_CYCLES_IN_TOOL
+        from tools.delegate_tool import _HEARTBEAT_INTERVAL, _HEARTBEAT_STALE_CYCLES_IDLE, _HEARTBEAT_STALE_CYCLES_IN_TOOL
         child, parent_agent, task_index, last_seen = self.child, self.parent_agent, self.task_index, self.last_seen
         touch = getattr(parent_agent, "_touch_activity", None) if parent_agent is not None else None
         if not touch:
@@ -250,12 +319,16 @@ class _Heartbeat:
                     last_seen["ts"] = child_activity_ts
             else:
                 last_seen["stale"] += 1
-            if last_seen["stale"] >= (_HEARTBEAT_STALE_CYCLES_IN_TOOL if child_tool else _HEARTBEAT_STALE_CYCLES_IDLE):
+            stale_cycles = _HEARTBEAT_STALE_CYCLES_IN_TOOL if child_tool else _HEARTBEAT_STALE_CYCLES_IDLE
+            if last_seen["stale"] >= stale_cycles:
                 logger.warning(
-                    "Subagent %d appears stale (no progress for %d heartbeat cycles, tool=%s) — stopping heartbeat",
+                    "Subagent %d appears stale (no progress for %d heartbeat cycles, tool=%s) — abandoning its wait",
                     task_index, last_seen["stale"], child_tool or "<none>",
                 )
-                return False  # stop touching parent, let gateway timeout fire
+                # A finite/-Q turn has no gateway watchdog behind this; the wait itself must end (#109749).
+                self.stale_threshold_seconds = stale_cycles * _HEARTBEAT_INTERVAL
+                self.settled.set()
+                return False
             if child_tool:
                 desc = f"delegate_task: subagent running {child_tool} (iteration {child_iter}/{child_max})"
             elif child_summary.get("last_activity_desc", ""):
@@ -361,14 +434,27 @@ def _defer_close_after_timeout(child: Any, child_future: Any) -> None:
     _resweep_timer.start()
 
 def _lease_child_credential(child: Any) -> tuple[Any, Optional[str]]:
-    """Lease a credential from the child's pool (if any) and bind it; ``(pool, lease_id)``."""
+    """Lease a credential from the child's pool (if any) and bind it; ``(pool, lease_id)``. The bound entry must
+    serve the child's endpoint: on a mixed same-provider pool the least-leased pick may target another host, so it is
+    released and an endpoint-matching entry is leased by id instead (#68237)."""
     child_pool = getattr(child, "_credential_pool", None)
     if child_pool is None:
         return None, None
+    from agent.credential_pool import credential_pool_entry_serves_endpoint as _entry_serves_endpoint
+    base_url = getattr(child, "base_url", None)
     leased_cred_id = child_pool.acquire_lease()
     if leased_cred_id is not None:
         with _quiet("Failed to bind child to leased credential: %s"):
-            leased_entry = child_pool.current()
+            # Resolve the leased entry by id: the pool is shared with the parent/siblings, so current() is a
+            # mutable cursor that may already point at someone else's pick.
+            leased_entry = next((e for e in child_pool.entries() if e.id == leased_cred_id), None)
+            if not _entry_serves_endpoint(leased_entry, base_url):
+                child_pool.release_lease(leased_cred_id)
+                leased_entry = next(
+                    (e for e in child_pool.entries() if e.last_status != "dead" and _entry_serves_endpoint(e, base_url)),
+                    None,
+                )
+                leased_cred_id = child_pool.acquire_lease(leased_entry.id) if leased_entry is not None else None
             if leased_entry is not None and hasattr(child, "_swap_credential"):
                 child._swap_credential(leased_entry)
     return child_pool, leased_cred_id
@@ -408,9 +494,14 @@ def _validate_child_output_schema(
     # schema re-paste — the child already holds the contract in its context).
     _retry_result = None
     try:
-        _retry_result = child.run_conversation(
-            user_message=build_retry_message(_schema_errors), task_id=child_task_id, stream_callback=relay_child_text,
-        )
+        # Same identity as the main child turn: this runs on the parent worker's thread, and an
+        # unmarked turn is misread as the dispatcher-owned worker by every HERMES_KANBAN_* gate.
+        from agent.delegation_context import delegated_child_context
+        with delegated_child_context(str(getattr(child, "session_id", "") or "")):
+            _retry_result = child.run_conversation(
+                user_message=build_retry_message(_schema_errors), task_id=child_task_id,
+                stream_callback=relay_child_text,
+            )
     except Exception as _retry_exc:
         logger.warning("Subagent %d schema-retry turn failed: %s", task_index, _retry_exc)
     if isinstance(_retry_result, dict):
@@ -469,19 +560,31 @@ def _build_result_entry(
     # "(empty)" is run_agent's give-up sentinel after repeated empty LLM
     # responses (usually a transport bug) — a failure, not a success.
     usable_summary = bool(summary) and summary.strip() != "(empty)"
+    interrupt_note = ""
     if result.get("interrupted", False):
         status, exit_reason = "interrupted", "interrupted"
+        # The loop's final_response is a placeholder here ("Operation interrupted…", also appended as the closing
+        # assistant row); the completion must carry what the child actually had so far — its last real assistant
+        # text — and keep the placeholder as the error.
+        from agent.message_content import flatten_message_text
+        placeholders = {"", summary.strip(), "Operation interrupted."}
+        partial = next((t for m in reversed(result.get("messages") or []) if m.get("role") == "assistant"
+                        and (t := flatten_message_text(m.get("content")).strip()) not in placeholders), "")
+        if partial:
+            interrupt_note, summary = summary.strip(), partial
     elif result.get("failed") or result.get("error"):
         # The loop returns the error text as final_response, which would otherwise read as "completed". Never report a
         # provider rejection as "max_iterations" — that is only truthful for real budget exhaustion.
         status, exit_reason = "failed", "error"
     else:
         # exit_reason ("completed" vs "max_iterations") tells the parent HOW the task ended; completed=False with no
-        # failure = budget exhaustion. A declared schema still violated after the bounded retry makes the summary
-        # unusable under the contract, so status must not say completed (orchestrators reading only status/icon would
-        # accept an empty verdict).
+        # failure = budget exhaustion. A declared schema still violated after the bounded retry does NOT fail the
+        # run: the child's raw final text is the deliverable (audits of up to 68 min were written off as "failed"
+        # over a stray code fence or one missing field); ``schema_valid: false`` + ``schema_errors`` carry the
+        # contract verdict, and the summary is prefixed with a notice so a status-only reader cannot mistake it
+        # for validated output.
         exit_reason = "completed" if result.get("completed", False) else "max_iterations"
-        status = "completed" if schema.valid is not False and usable_summary else "failed"
+        status = "completed" if usable_summary else "failed"
 
     _cost = getattr(child, "session_estimated_cost_usd", 0.0)
     _cost_status = getattr(child, "session_cost_status", None)
@@ -512,18 +615,14 @@ def _build_result_entry(
     entry["cost_usd"] = round(entry["_child_cost_usd"], 6)
     entry["cost_status"] = _cost_status if isinstance(_cost_status, str) and _cost_status else "unknown"
     if status == "failed":
-        if schema.valid is False and usable_summary:
-            # The child DID respond; name the contract violation instead of the generic "no response" error.
-            entry["error"] = (
-                "Final answer does not satisfy the declared output_schema" + (" (after 1 retry)." if schema.retries else ".")
-            )
-        else:
-            entry["error"] = result.get("error", "Subagent did not produce a response.")
+        entry["error"] = result.get("error", "Subagent did not produce a response.")
         # Classified reason from the child loop (e.g. "rate_limit", "billing")
         # lets the parent tell a quota wall from a task error without parsing prose.
         _failure_reason = result.get("failure_reason")
         if isinstance(_failure_reason, str) and _failure_reason:
             entry["failure_reason"] = _failure_reason
+    elif interrupt_note:
+        entry["error"] = interrupt_note
 
     # Schema-validation outcome — emitted ONLY when a schema was requested, so
     # legacy (schema-less) payloads keep their exact shape.
@@ -533,6 +632,13 @@ def _build_result_entry(
             entry["schema_retries"] = schema.retries
         if not schema.valid and schema.errors:
             entry["schema_errors"] = schema.errors
+        if schema.valid is False and usable_summary:
+            entry["schema_note"] = (
+                "Final answer does not satisfy the declared output_schema"
+                + (" (after 1 retry)" if schema.retries else "")
+                + "; `summary` is the child's raw, UNVALIDATED final text — extract what you need from it "
+                "yourself (see schema_errors) rather than re-running the task."
+            )
 
     # A steer queued after the final assistant turn had no tool batch to land
     # in; name it so the parent sees it was MISSED rather than silently absorbed.
@@ -542,6 +648,57 @@ def _build_result_entry(
         _miss_note = ("[steer did not land — the subagent finished before it could " f"be delivered: {_missed_steer}]")
         entry["summary"] = f"{summary}\n\n{_miss_note}" if summary else _miss_note
     return entry
+
+
+def _is_image_url(ref: str) -> bool:
+    return ref.startswith(("http://", "https://", "data:image/"))
+
+
+def _build_child_goal_message(goal: str, images: List[str], child) -> Any:
+    """The child's first user message when a task forwards ``images``.
+
+    Routing reuses the inbound-image policy (``agent.image_routing``, honouring ``agent.image_input_mode``): a
+    vision-capable child gets an OpenAI-style content list (text part + one ``image_url`` part per image; local files
+    as data URLs behind the read guard, http(s)/data URLs verbatim); otherwise the goal gains ``[Image attached …]``
+    hint lines for ``vision_analyze``. Any failure degrades to the text-only goal so image plumbing never breaks a
+    spawn — logged at warning since the caller asked for the images.
+    """
+    try:
+        # data: URLs ride as image parts only — their base64 never goes into the text hint or a text-mode goal.
+        data_urls = [s for s in images if s.startswith("data:image/")]
+        urls = [s for s in images if _is_image_url(s) and s not in data_urls]
+        paths = [s for s in images if not _is_image_url(s)]
+        from agent.image_routing import build_native_content_parts, decide_image_input_mode
+        cfg = None
+        with _quiet(None):
+            from hermes_cli.config import load_config_readonly
+            cfg = load_config_readonly()
+        mode = decide_image_input_mode(
+            str(getattr(child, "provider", "") or ""), str(getattr(child, "model", "") or ""), cfg,
+            requested_provider=str(getattr(child, "requested_provider", "") or ""),
+        )
+        if mode == "native":
+            parts, skipped = build_native_content_parts(goal, paths, urls)
+            if skipped:
+                logger.warning("delegate_task: skipped %d unreadable image(s) for subagent: %s", len(skipped), ", ".join(skipped[:3]))
+            if data_urls:
+                parts = (parts or [{"type": "text", "text": goal}]) + [{"type": "image_url", "image_url": {"url": u}} for u in data_urls]
+            return parts if any(p.get("type") == "image_url" for p in parts) else goal
+        if data_urls:
+            logger.warning("delegate_task: %d inline data-URL image(s) dropped for a non-vision subagent", len(data_urls))
+        hints: List[str] = []
+        for p in paths:
+            if os.path.isfile(p):
+                hints.append(f"[Image attached at: {p}]")
+            else:
+                logger.warning("delegate_task: image path not found, not forwarded: %s", p)
+        hints.extend(f"[Image attached: {u}]" for u in urls)
+        if not hints:
+            return goal
+        return goal + "\n\n" + "\n".join(hints) + "\nUse vision_analyze to inspect these images."
+    except Exception:
+        logger.warning("delegate_task: image forwarding failed; sending text-only goal", exc_info=True)
+        return goal
 
 
 @dataclass
@@ -556,6 +713,7 @@ class _ChildRun:
     goal: str
     subagent_id: Optional[str]
     child_progress_cb: Any
+    heartbeat: Any = None
     child_start: float = field(default_factory=time.monotonic)
     worktree_info: Optional[Dict[str, str]] = None
     child_task_id: str = ""
@@ -629,6 +787,44 @@ class _ChildRun:
         """Close steer acceptance (see ``_merge_late_steer``); returns late steer text, if any."""
         return _close_subagent_steering(self.subagent_id, self.child) if self.subagent_id else None
 
+    def wait_liveness_aware(self, settled: threading.Event, child_future: Any, child_timeout: Optional[float]) -> None:
+        """Wait for the worker or the stale verdict, where ``child_timeout`` bounds INACTIVITY, not total runtime.
+
+        A configured cap used to be a dispatch-to-death stopwatch, so it only ever killed children the runtime had
+        already judged healthy: all 75 reported deaths happened while waiting on an in-flight LLM completion, none
+        mid-tool (#116001). A provider serving multi-minute completions is progress — the child's activity clock
+        ticks during the wait and the request is bounded by the per-call stale watchdog — so the budget restarts on
+        every sign of progress, exactly the signals the heartbeat's stale verdict reads. Genuinely frozen children
+        keep two authorities: this budget (when configured) and the heartbeat's stale threshold.
+        """
+        if child_timeout is None:
+            settled.wait()
+            return
+        deadline = time.monotonic() + child_timeout
+        warn_at = deadline - child_timeout * (1.0 - _BUDGET_WARNING_FRACTION)
+        warned = False
+        fingerprint = _child_activity_fingerprint(self.child)
+        while True:
+            now = time.monotonic()
+            remaining = deadline - now
+            if remaining <= 0:
+                return  # no progress for the whole budget
+            wait = min(_LIVENESS_POLL_SECONDS, remaining)
+            if not warned:
+                wait = min(wait, max(warn_at - now, 0.0))
+            settled.wait(timeout=wait)
+            if settled.is_set():
+                return  # the worker finished, or the heartbeat declared the child stale
+            current = _child_activity_fingerprint(self.child)
+            if current != fingerprint:
+                fingerprint = current
+                deadline = time.monotonic() + child_timeout
+                warn_at = deadline - child_timeout * (1.0 - _BUDGET_WARNING_FRACTION)
+                warned = False  # a fresh window gets its own warning
+            elif not warned and time.monotonic() >= warn_at:
+                warned = True
+                _warn_child_budget(self.child, child_timeout - (deadline - time.monotonic()), child_timeout)
+
     def await_child(self) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], bool]:
         """Run the child's conversation on a daemon worker: ``(result, None, False)`` or ``(None, error_entry,
         close_deferred)`` on timeout/exception.
@@ -651,18 +847,33 @@ class _ChildRun:
         )
         # Worker thread handle so the timeout diagnostic can dump its stack.
         worker_thread_holder: Dict[str, Optional[threading.Thread]] = {"t": None}
+        # Resolved after seed_workspace so a multimodal goal's text part carries the worktree note too.
+        _images = list(getattr(child, "_delegate_images", None) or [])
+        user_message: Any = _build_child_goal_message(self.goal, _images, child) if _images else self.goal
 
         def _run_with_thread_capture():
             worker_thread_holder["t"] = threading.current_thread()
             from agent.delegation_context import delegated_child_context
             with delegated_child_context(str(getattr(child, "session_id", "") or "")):
                 return child.run_conversation(
-                    user_message=self.goal, task_id=self.child_task_id, stream_callback=self.relay_text,
+                    user_message=user_message, task_id=self.child_task_id, stream_callback=self.relay_text,
                 )
 
         future = executor.submit(contextvars.copy_context().run, _run_with_thread_capture)
+        # One wait covers both ways out: the worker finishing, or the heartbeat's stale verdict.
+        # Without the second, a worker wedged after its final answer holds a finite (-Q / Bot Chat
+        # one-shot) turn — and its session lease — forever, since that runtime has no gateway
+        # inactivity watchdog (#109749). The configured cap bounds INACTIVITY (see wait_liveness_aware).
+        settled = self.heartbeat.settled if self.heartbeat is not None else threading.Event()
+        future.add_done_callback(lambda _f: settled.set())
+        # Set when the stale verdict — not the configured cap — ended the wait; the entry must name that cause.
+        stale_after: Optional[float] = None
         try:
-            return future.result(timeout=child_timeout), None, False
+            self.wait_liveness_aware(settled, future, child_timeout)
+            if not future.done():
+                stale_after = getattr(self.heartbeat, "stale_threshold_seconds", None)
+                raise FuturesTimeoutError()
+            return future.result(), None, False
         except Exception as wait_exc:
             exc: BaseException = wait_exc  # ``as`` targets are unbound after the except block
         finally:
@@ -672,6 +883,8 @@ class _ChildRun:
         _late_pending_steer = self.close_steering()
         _signal_child_stop(child)
         is_timeout = isinstance(exc, (FuturesTimeoutError, TimeoutError))
+        # What actually ended the wait: the stale threshold pre-empts a longer configured cap.
+        timeout_cause = stale_after if stale_after is not None else child_timeout
         duration = self.elapsed()
         logger.warning("Subagent %d %s after %.1fs", task_index, "timed out" if is_timeout else f"raised {type(exc).__name__}", duration)
         child_api_calls = 0
@@ -683,15 +896,19 @@ class _ChildRun:
         if before_first_call:
             diagnostic_path = _dump_subagent_timeout_diagnostic(
                 child=child, task_index=task_index,
-                # is_timeout implies a cap was configured (result(timeout=None)
-                # never raises FuturesTimeoutError); guard for the type checker.
-                timeout_seconds=float(child_timeout or 0.0), duration_seconds=float(duration),
+                # A stale verdict or a configured cap; ``or 0.0`` guards the type checker.
+                timeout_seconds=float(timeout_cause or 0.0), duration_seconds=float(duration),
                 worker_thread=worker_thread_holder.get("t"), goal=self.goal,
             )
             if diagnostic_path:
                 logger.warning("Subagent %d 0-API-call timeout — diagnostic written to %s", task_index, diagnostic_path)
         if not is_timeout:
             _err = str(exc)
+        elif stale_after is not None:
+            _err = (
+                f"Subagent stopped making progress after {child_api_calls} API call(s) — no activity for "
+                f"{stale_after:g}s (heartbeat stale threshold); the pending worker was abandoned."
+            )
         elif before_first_call:
             _err = (
                 f"Subagent timed out after {child_timeout}s without making any API call — the child never reached its "
@@ -699,8 +916,9 @@ class _ChildRun:
             )
         else:
             _err = (
-                f"Subagent timed out after {child_timeout}s with {child_api_calls} API call(s) completed — likely "
-                f"stuck on a slow API call, tool call, or unresponsive network request."
+                f"Subagent timed out after {child_timeout}s with {child_api_calls} API call(s) completed — no "
+                f"progress in that window (no completed call, tool change, or activity-clock tick): a stalled "
+                f"provider request or an unresponsive network request."
             )
         if diagnostic_path:
             _err += f" Diagnostic: {diagnostic_path}"
@@ -708,9 +926,12 @@ class _ChildRun:
         _error_entry = {
             "task_index": task_index, "status": status, "summary": None, "error": _err, "exit_reason": status,
             "api_calls": child_api_calls, "duration_seconds": duration,
-            "timeout_seconds": child_timeout if is_timeout else None,
+            "timeout_seconds": timeout_cause if is_timeout else None,
             "timed_out_after_seconds": duration if is_timeout else None,
             "timeout_phase": "before_first_llm_call" if before_first_call else "after_llm_calls" if is_timeout else None,
+            # How long the child had been silent when the wait ended: distinguishes a slow provider from a runaway
+            # without transcript forensics (#116001).
+            "last_event_age": _child_last_event_age(child) if is_timeout else None,
             "_child_role": getattr(child, "_delegate_role", None),
             "diagnostic_path": diagnostic_path,
         }
@@ -741,6 +962,26 @@ class _ChildRun:
             else:
                 entry["stale_paths"] = mod_paths
 
+    def account_background_processes(self, entry: Dict[str, Any]) -> None:
+        """Name the child's background processes on the result BEFORE ``cleanup`` kills them: handed-off ones now
+        belong to the parent (their completion lands in the parent's chat); anything else still running is about to be
+        terminated, and the parent must hear that from the runtime rather than trust a child's "watcher running"."""
+        handed = list(getattr(self.child, "_handed_off_processes", None) or [])
+        if handed:
+            entry["handed_off_processes"] = handed
+        with _quiet(None):
+            from tools.process_registry import process_registry, _output_tail
+            leftover = process_registry.running_owned_by(self.child_task_id)
+            if leftover:
+                entry["orphaned_processes"] = [
+                    {"session_id": s.id, "command": s.command[:200], "runtime_seconds": round(time.time() - s.started_at)}
+                    for s in leftover]
+            unread = process_registry.unread_completions_owned_by(self.child_task_id)
+            if unread:
+                entry["unread_completions"] = [
+                    {"session_id": s.id, "command": s.command[:200], "exit_code": s.exit_code,
+                     "output_tail": _output_tail(s, 600)} for s in unread]
+
     def emit_complete(self, result: Dict[str, Any], entry: Dict[str, Any], duration: float) -> None:
         """Fire ``subagent.complete`` with the per-branch observability payload (tokens, cost, files touched,
         tool-output tail); every field is optional and degrades gracefully on the client."""
@@ -767,6 +1008,9 @@ class _ChildRun:
             "files_written": sorted({p for tid, paths in _files_written_map.items() if tid == self.child_task_id for p in paths})[:40],
             "output_tail": _extract_output_tail(result, max_entries=8, max_chars=600),
         }
+        if entry.get("failure_reason"):
+            # Classified verdict rides the event so every surface glosses the failure the same way.
+            complete_kwargs["failure_reason"] = entry["failure_reason"]
         _cost_usd = getattr(child, "session_estimated_cost_usd", None)
         if _cost_usd is not None:
             with _quiet(None):
@@ -802,6 +1046,11 @@ class _ChildRun:
         # processes, httpx clients) so subagent subprocesses don't outlive the delegation.
         if not close_deferred:
             _close_child(child, "Failed to close child agent after delegation")
+        # The child's execute_code kernels live exactly as long as the child (pinned against the LRU
+        # cap while it runs); dispose them here so they never squat the cap after the child is gone.
+        with _quiet("Failed to dispose child execute_code kernels: %s"):
+            from tools.code_kernel import shutdown_kernels_for_delegated_child
+            shutdown_kernels_for_delegated_child(str(getattr(child, "session_id", "") or ""))
 
         # The AIAgent turn boundary normally closes the child scope itself. This fallback covers failures before that
         # boundary starts, but must not pop a scope while a timed-out child worker is still unwinding.

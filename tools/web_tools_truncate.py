@@ -99,6 +99,11 @@ def _truncate_with_footer(content: str, url: str, char_limit: int) -> tuple[str,
         tail = tail[nl + 1:]
 
     stored_path = _store_full_text(url, content)
+    if stored_path:
+        # The footer is read by the AGENT, whose read_file runs inside the active backend: render the
+        # path where docker/modal/ssh/... see the mounted cache, not the host path (#72389, #81984).
+        from tools.credential_files import to_agent_visible_cache_path
+        stored_path = to_agent_visible_cache_path(stored_path)
     footer_lines = [
         "", "─" * 8 + " [TRUNCATED] " + "─" * 8,
         f"Showing {len(head):,} chars (head) + {len(tail):,} chars (tail) "
@@ -128,6 +133,23 @@ def _effective_char_limit(char_limit: Optional[int]) -> int:
     return _clamp_or_default(char_limit) if char_limit is not None else _get_extract_char_limit()
 
 
+_UNAMBIGUOUS_BINARY_KINDS = ("SQLite", "ZIP", "gzip", "bzip2", "xz", "7-Zip", "ELF", "Mach-O", "PNG", "JPEG", "GIF", "TIFF", "FLAC", "Ogg")
+
+
+def _binary_payload_kind(text: str) -> str:
+    """Magic-byte type name when a fetched body is a raw binary file, else ``""``. Backends return
+    the body as text with NUL bytes dropped, so signatures are compared NUL-stripped on both sides.
+    Only the file tools' own signature table; HTML/markdown/JSON never start with one."""
+    from tools.file_operations import _MAGIC_SIGNATURES
+
+    head = text[:32].encode("latin-1", "ignore").replace(b"\x00", b"")
+    for prefix, name in _MAGIC_SIGNATURES:
+        sig = prefix.replace(b"\x00", b"")
+        if sig and name.startswith(_UNAMBIGUOUS_BINARY_KINDS) and head.startswith(sig):
+            return name
+    return ""
+
+
 def _truncate_results(results: List[dict], char_limit: int, debug_call_data: dict) -> None:
     """In place: replace each successful entry's content with its base64-cleaned, budgeted text;
     per-page truncation metrics go into ``debug_call_data``."""
@@ -135,6 +157,16 @@ def _truncate_results(results: List[dict], char_limit: int, debug_call_data: dic
         url = result.get("url", "")
         raw_content = result.get("raw_content", "") or result.get("content", "")
         if result.get("error") or not raw_content:
+            continue
+        binary_kind = _binary_payload_kind(raw_content)
+        if binary_kind:
+            # A backend that fetched a raw file (SQLite, archive, executable) hands back its bytes as
+            # "text"; 800K chars of that would enter context. Name the type and point at the tool that reads it.
+            result["content"] = ""
+            result["error"] = (
+                f"URL returned binary content ({binary_kind}), not a page. Download it with the terminal "
+                "(curl -L -o) and use read_file (SQLite/Office/PDF auto-extract) or terminal utilities on the file.")
+            logger.info("%s (binary payload: %s, %d chars dropped)", url, binary_kind, len(raw_content))
             continue
         clean = convert_base64_images_to_links(raw_content)
         model_text, truncated = _truncate_with_footer(clean, url, char_limit)

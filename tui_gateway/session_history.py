@@ -3,7 +3,22 @@ turn tracking and turn-failure detail. Bodies are rebound onto server.py's globa
 
 from __future__ import annotations
 
+import re
+
 from .method_ctx import bind_module
+from agent.prompt_builder import STEER_DISPLAY_KIND
+
+# Discord routing note (gateway/run_inbound.py::discord_triggering_note) persisted as user
+# ``content`` by gateways before the authored-text fix; presentation-only heal for those rows.
+_DISCORD_TRIGGERING_NOTE_RE = re.compile(
+    r"(^|\n)\[Triggering message id: `[^`\n]*` — use as `message_id` for reply/react/pin via the discord tools\.\]\n*"
+)
+
+
+def _bridged_tool_labels(name: str, args: dict) -> list[dict]:
+    from agent.display import tool_labels_for_call
+
+    return [label.as_payload() for label in tool_labels_for_call(name, args)]
 
 
 def _active_image_routing_identity(agent: Any) -> tuple[str, str]:
@@ -164,14 +179,27 @@ _AUTO_CONTINUE_NOTE_PREFIX = "[System note: Your previous turn was interrupted m
 def _legacy_display_kind(role: str, text: str) -> str | None:
     """Display type of a synthetic row persisted untyped: new rows are typed at turn start (``persist_user_display_kind``);
     this prefix sniff migrates rows already on disk (a turn killed mid-run never reached the stamp)."""
+    # Imported functions are not rebound onto server.py (method_ctx.bind_module): import here.
+    from agent.turn_failure_copy import untyped_failed_turn_display_kind
+
+    if failed_turn := untyped_failed_turn_display_kind(role, text):
+        return failed_turn
     return "auto_continue" if role == "user" and text.lstrip().startswith(_AUTO_CONTINUE_NOTE_PREFIX) else None
 
 
-_HISTORY_REASONING_KEYS = ("reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items")
+_HISTORY_ASSISTANT_DETAIL_KEYS = (
+    "reasoning",
+    "reasoning_content",
+    "reasoning_details",
+    "codex_reasoning_items",
+    "codex_message_items",
+)
 _HISTORY_ROLES = frozenset({"user", "assistant", "tool", "system"})
 
 
-def _history_to_messages(history: list[dict]) -> list[dict]:
+def _history_to_messages(history: list[dict], *, profile_home=None) -> list[dict]:
+    from agent.history_commentary import project_history_commentary
+
     messages = []
     tool_call_args = {}
     for m in history:
@@ -187,6 +215,8 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         content_text = _coerce_message_text(m.get("content"))
         if _is_display_hidden_marker(role, content_text):
             continue
+        if role == "user":
+            content_text = _DISCORD_TRIGGERING_NOTE_RE.sub(r"\1", content_text)
         if role == "assistant" and m.get("tool_calls"):
             for tc in m["tool_calls"]:
                 fn, tc_id = tc.get("function", {}), tc.get("id", "")
@@ -196,18 +226,27 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
                     except (json.JSONDecodeError, TypeError):
                         args = {}
                     tool_call_args[tc_id] = (fn["name"], args)
-            if not content_text.strip():
-                continue
+        if role == "user" and m.get("display_kind") == STEER_DISPLAY_KIND:
+            # Mid-turn /steer: show the user's own words, not the model-facing marker wrapper.
+            from agent.conversation_compression import _extract_steer_text_from_message
+            content_text = _extract_steer_text_from_message(m) or content_text
         if role == "tool":
             tc_name, tc_args = tool_call_args.get(m.get("tool_call_id") or "", (None, None))
             name = tc_name or m.get("tool_name") or "tool"
             args = tc_args or {}
             # `context` is an 80-char preview; ship args so a full-call renderer isn't truncated.
-            messages.append({"role": "tool", "name": name, "context": _tool_ctx(name, args), **({"args": args} if args else {})})
+            labels = _bridged_tool_labels(name, args)
+            messages.append({"role": "tool", "name": name, "context": _tool_ctx(name, args),
+                             # Edit cards need the original result; other tool outputs
+                             # remain omitted from this compact display projection.
+                             **({"content": m.get("content")} if name in {"write_file", "patch", "skill_manage"} else {}),
+                             **{key: m[key] for key in ("tool_call_id", "timestamp", "display_metadata")
+                                if m.get(key) is not None},
+                             **({"args": args} if args else {}), **({"labels": labels} if labels else {})})
             continue
-        # A reasoning-only assistant turn is kept so "Thinking…" still shows after resume/reload.
-        has_reasoning = role == "assistant" and any(m.get(key) for key in _HISTORY_REASONING_KEYS)
-        if not content_text.strip() and not has_reasoning:
+        # Assistant detail sidecars can carry the only visible reply or reasoning after resume/reload.
+        has_assistant_detail = role == "assistant" and any(m.get(key) for key in _HISTORY_ASSISTANT_DETAIL_KEYS)
+        if not content_text.strip() and not has_assistant_detail:
             continue
         msg = {"role": role, "text": content_text}
         # Authoring time (Unix seconds) for display.timestamps; display-only.
@@ -223,7 +262,7 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         if invocation:
             msg.update(text=invocation, display_kind="skill_invocation")
         if role == "assistant":
-            msg.update((key, m[key]) for key in _HISTORY_REASONING_KEYS if m.get(key) is not None)
+            msg.update((key, m[key]) for key in _HISTORY_ASSISTANT_DETAIL_KEYS if m.get(key) is not None)
         # Display-only timeline metadata (model switches, delegation events).
         display_kind = m.get("display_kind") or _legacy_display_kind(role, content_text)
         if display_kind:
@@ -231,7 +270,7 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         if m.get("display_metadata"):
             msg["display_metadata"] = m["display_metadata"]
         messages.append(msg)
-    return messages
+    return project_history_commentary(messages, home=profile_home)
 
 
 def _coerce_seed_history(value: Any) -> list[dict]:
@@ -241,7 +280,13 @@ def _coerce_seed_history(value: Any) -> list[dict]:
             continue
         content = item.get("text") if item.get("content") is None else item.get("content")
         if isinstance(content, str) and content.strip():
-            history.append({"role": item["role"], "content": content})
+            row = {"role": item["role"], "content": content}
+            # "hidden" is the one display_kind a seeding client may author: model-facing scaffolding the
+            # renderer must not paint (a guided-chat runbook). Every other kind is stamped by the gateway
+            # at turn time, so it is not accepted from the wire.
+            if item.get("display_kind") == "hidden":
+                row["display_kind"] = "hidden"
+            history.append(row)
     return history
 
 
@@ -249,9 +294,20 @@ def _inflight_text(value: Any) -> str:
     return _content_display_text(value).strip()
 
 
-def _start_inflight_turn(session: dict, text: Any) -> None:
+def _start_inflight_turn(
+    session: dict, text: Any, *, display_kind: str | None = None,
+    display_metadata: dict | None = None,
+) -> None:
     now = time.time()
-    session["inflight_turn"] = {"assistant": "", "started_at": now, "streaming": True, "updated_at": now, "user": _inflight_text(text)}
+    turn = {
+        "assistant": "", "started_at": now, "streaming": True, "updated_at": now,
+        "user": _inflight_text(text),
+    }
+    if display_kind:
+        turn["display_kind"] = display_kind
+    if isinstance(display_metadata, dict):
+        turn["display_metadata"] = dict(display_metadata)
+    session["inflight_turn"] = turn
 
 
 def _append_inflight_delta(session: dict, delta: Any) -> None:
@@ -283,6 +339,9 @@ def _record_inflight_correction(session: dict, text: Any) -> None:
 
 def _clear_inflight_turn(session: dict) -> None:
     session["inflight_turn"] = None
+    # A turn that never reached the agent (cancelled/refused before ready) leaves its submit-time row
+    # as the durable record of the send; a later turn must not adopt it as its own input.
+    session.pop("_submit_user_row", None)
 
 
 def _fail_inflight_turn(session: dict, error: Any, error_surface: Optional[dict] = None) -> None:
@@ -304,6 +363,9 @@ def _fail_inflight_turn(session: dict, error: Any, error_surface: Optional[dict]
         turn.pop("error_surface", None)
     turn.update(streaming=False, updated_at=now)
     session["inflight_turn"] = turn
+    # The turn is over (build failed, agent missing, prologue raised): the submit-time row stays as the
+    # durable record of the send, but a later turn must not adopt it as its own input.
+    session.pop("_submit_user_row", None)
 
 
 _TURN_FAILURE_DETAIL_LIMIT = 240

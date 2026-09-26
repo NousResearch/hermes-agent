@@ -19,6 +19,10 @@ class TurnRetryState:
     anthropic_auth_retry_attempted: bool = False
     nous_auth_retry_attempted: bool = False
     nous_paid_entitlement_refresh_attempted: bool = False
+    # Nous free tier: one model move onto the tier's own model after a ``model_not_free``
+    # refusal, and one route re-read after a wrong-host refusal (``anon_on_paid_host``).
+    welcome_model_switch_attempted: bool = False
+    welcome_route_heal_attempted: bool = False
     copilot_auth_retry_attempted: bool = False
     # Copilot surfaces a stale credential as a 400 ``model_not_available_for_integrator``
     # / ``model_not_supported``, not a 401 — separate guard from the 401 one.
@@ -40,6 +44,8 @@ class TurnRetryState:
     has_retried_429: bool = False
     # Persistent 401/403 already escalated to the fallback chain once this attempt.
     auth_failover_attempted: bool = False
+    # Post-exhaustion auto-recovery cycles spent on this API call (agent.auto_recovery_cycles caps it).
+    auto_recovery_cycles_used: int = 0
 
     # Restart signals (read by the outer loop after the attempt)
     restart_with_compressed_messages: bool = False

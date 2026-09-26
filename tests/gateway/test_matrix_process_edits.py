@@ -105,7 +105,7 @@ def test_apply_yaml_config_bridges_process_edits(monkeypatch):
     monkeypatch.delenv("MATRIX_PROCESS_EDITS", raising=False)
     seeded = _apply_yaml_config({}, {"process_edits": True})
 
-    assert seeded is None  # _apply_yaml_config always returns None; everything flows through env
+    assert seeded == {"process_edits": True}
     assert os.environ["MATRIX_PROCESS_EDITS"] == "true"
 
 

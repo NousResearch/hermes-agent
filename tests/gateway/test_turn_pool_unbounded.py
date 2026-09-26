@@ -3,7 +3,8 @@
 A turn body holds its executor thread for the whole turn (every tool call blocks). With a finite
 pool (it was 10 threads), a burst of turns after a restart (resumed sessions plus new messages)
 filled it, and every later turn, including the user's next message, waited in the executor queue
-for minutes with no log line naming the wait. Concurrency is bounded at admission, not here.
+for minutes with no log line naming the wait. Concurrency is bounded by one live turn per session
+(plus turns abandoned by the inactivity timeout), not by the pool.
 """
 
 from __future__ import annotations
@@ -47,7 +48,7 @@ def test_a_new_turn_starts_while_many_are_parked():
         runner._shutdown_executor(drain_timeout=5)
 
 
-def test_shutdown_counts_a_live_turn_worker(monkeypatch):
+def test_failed_thread_start_leaves_nothing_for_shutdown_to_join(monkeypatch):
     runner = _runner()
     wedge = threading.Event()
     entered = threading.Event()
@@ -61,7 +62,7 @@ def test_shutdown_counts_a_live_turn_worker(monkeypatch):
     assert entered.wait(5)
 
     # At the OS thread limit Thread.start raises; that submit must fail without leaving an
-    # unstarted thread behind for shutdown to join.
+    # unstarted thread behind, or shutdown's join() raises and skips the quiesce decision.
     def refuse(self):
         raise RuntimeError("can't start new thread")
 
@@ -69,8 +70,7 @@ def test_shutdown_counts_a_live_turn_worker(monkeypatch):
         m.setattr(threading.Thread, "start", refuse)
         with pytest.raises(RuntimeError):
             ex.submit(lambda: None)
-    try:
-        live = runner._shutdown_executor(drain_timeout=0.2)
-    finally:
-        wedge.set()
-    assert live == 1, f"wedged turn worker not reported as live (got {live})"
+    # Release first and give a real deadline so the drain joins EVERY registered thread,
+    # whatever the set's iteration order; a leftover unstarted one then always raises.
+    wedge.set()
+    assert runner._shutdown_executor(drain_timeout=5) == 0

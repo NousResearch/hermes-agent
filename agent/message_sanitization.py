@@ -137,6 +137,12 @@ def sanitize_outbound_kwargs(agent: Any, api_kwargs: dict) -> None:
     providers reject with a non-retryable 400 (#50959); one in-place walk makes the whole
     payload json.dumps()-safe. The ASCII strip is opt-in via the recovery flag set after an
     ASCII-codec rejection.
+
+    Also caps replayed tool-call ids at ``MAX_TOOL_CALL_ID_LENGTH`` (see
+    ``clamp_outbound_tool_call_ids``). This runs for EVERY api_mode — it sits above the
+    ``api_mode == "codex_responses"`` branch in turn_api_request — so the cap is the one place
+    that covers Chat Completions, Responses and every other wire shape alike. Copy-on-write:
+    ``api_kwargs["messages"]`` is REBOUND to the clamped list, never mutated in place.
     """
     _sanitize_structure_surrogates(api_kwargs)
     if agent._force_ascii_payload:
@@ -150,6 +156,7 @@ def sanitize_outbound_kwargs(agent: Any, api_kwargs: dict) -> None:
 
             api_kwargs["tools"] = _clone_message_for_send(api_kwargs["tools"])
         _sanitize_structure_non_ascii(api_kwargs)
+    api_kwargs["messages"] = clamp_outbound_tool_call_ids(api_kwargs.get("messages"))
 
 
 def _escape_invalid_chars_in_json_strings(raw: str) -> str:
@@ -566,6 +573,116 @@ def uniquify_tool_call_ids(tool_calls: list) -> list:
             "call/result pairing lossless.", cid, new_id, _fn_name,
         )
     return tool_calls
+
+
+# --------------------------------------------------- outbound call_id length cap (single owner) --
+# Responses-backed OpenAI models (direct, Azure, and OpenRouter-relayed) reject a REPLAYED tool-call
+# id longer than 64 chars with a non-retryable 400:
+#   Invalid 'input[N].call_id': string too long. Expected a string with maximum length 64 …
+# Oversized ids reach the wire two ways: a provider that returns a long id live, and state.db rows
+# written by older builds (ids carrying an embedded ``__thought__`` signature blob, observed up to
+# 9739 chars). The poison is self-perpetuating — the very first oversized row usually sits inside
+# ``compression.protect_first_n``, so compaction can never drop it and the chat is bricked for every
+# later turn. The cap is a pure function of the ORIGINAL id, so an assistant ``tool_calls[].id`` and
+# its ``role=tool`` ``tool_call_id`` always clamp to the SAME surrogate; clamping one side alone
+# orphans the pair and trades the length 400 for a pairing 400. Ids at or under the cap are returned
+# untouched — these ids feed prompt-cache prefixes, so the cap must stay byte-identical for every
+# non-pathological conversation. NOT merged with codex_responses_adapter._clamp_responses_call_id:
+# that one walks the Responses ``input`` item array, this one the Chat Completions ``messages``
+# array — same 64-char limit and same surrogate scheme, different payload shape.
+MAX_TOOL_CALL_ID_LENGTH = 64
+
+
+def clamp_tool_call_id(call_id: Any) -> Any:
+    """Cap a tool-call id at ``MAX_TOOL_CALL_ID_LENGTH`` chars via deterministic hash surrogates.
+
+    Composite Responses ids (``call_x|fc_y``) keep their response-item half when the WHOLE id still
+    fits after the call half is clamped; a pathological tail is itself hashed to fit, so every
+    returned id is within the cap. Mirrors ``coalesce_tool_call_id``'s split (the call half is the
+    pairing key). Pure function of the input: the same original id always renders the same bytes.
+    """
+    if not isinstance(call_id, str) or not call_id:
+        return call_id
+    if len(call_id) <= MAX_TOOL_CALL_ID_LENGTH:
+        return call_id
+    head, sep, tail = call_id.partition("|")
+    head_out = head
+    if len(head) > MAX_TOOL_CALL_ID_LENGTH:
+        head_out = f"call_{hashlib.sha256(head.encode('utf-8', errors='replace')).hexdigest()[:32]}"
+    if len(head_out) + len(sep) + len(tail) <= MAX_TOOL_CALL_ID_LENGTH:
+        return f"{head_out}{sep}{tail}"
+    budget = MAX_TOOL_CALL_ID_LENGTH - len(head_out) - len(sep)
+    if budget >= 8:
+        # Keep a deterministic, shortened stand-in for the response-item half.
+        return f"{head_out}{sep}{hashlib.sha256(tail.encode('utf-8', errors='replace')).hexdigest()[:budget]}"
+    # No room for a meaningful tail (head alone fills the cap): the call half is the pairing key.
+    return head_out
+
+
+def _clamp_tool_call_entry(tc: dict) -> tuple[dict, bool]:
+    """Copy-on-write clamp of one ``tool_calls`` entry: returns ``(entry, changed)``. The input is
+    never mutated — it may alias the live transcript."""
+    out, changed = tc, False
+    for key in ("id", "call_id"):
+        if key not in out:
+            continue
+        clamped = clamp_tool_call_id(out[key])
+        if clamped == out[key]:
+            continue
+        if out is tc:
+            out = dict(tc)
+        out[key] = clamped
+        changed = True
+    return out, changed
+
+
+def clamp_outbound_tool_call_ids(messages: Any) -> Any:
+    """Wire-safe view of ``messages`` with every tool-call id capped (``MAX_TOOL_CALL_ID_LENGTH``).
+
+    Copy-on-write ON PURPOSE: ``api_kwargs["messages"]`` may alias the LIVE transcript dicts, and
+    rows already flushed to state.db carry the ORIGINAL ids — rewriting those dicts in memory would
+    diverge the live/DB pair that the ``_DB_PERSISTED_MARKER`` contract guards. The input is never
+    mutated: unchanged messages are shared as-is, only messages holding an oversized id are replaced
+    by copies in the returned list. Deterministic clamps keep the wire prefix byte-stable across
+    turns, and a later replay of the unclamped DB rows re-clamps to the same surrogates. Returns the
+    SAME list object when nothing needs clamping (the hot path allocates nothing).
+    """
+    if not isinstance(messages, list):
+        return messages
+    result = messages
+    for i, msg in enumerate(messages):
+        if not isinstance(msg, dict):
+            continue
+        msg_out = msg
+        changed_msg = False
+        tcs = msg.get("tool_calls")
+        if isinstance(tcs, list):
+            new_tcs = None
+            for j, tc in enumerate(tcs):
+                if not isinstance(tc, dict):
+                    continue
+                tc_out, changed = _clamp_tool_call_entry(tc)
+                if not changed:
+                    continue
+                changed_msg = True
+                if new_tcs is None:
+                    new_tcs = list(tcs)
+                new_tcs[j] = tc_out
+            if new_tcs is not None:
+                msg_out = dict(msg)
+                msg_out["tool_calls"] = new_tcs
+        if "tool_call_id" in msg:
+            clamped = clamp_tool_call_id(msg["tool_call_id"])
+            if clamped != msg["tool_call_id"]:
+                changed_msg = True
+                if msg_out is msg:
+                    msg_out = dict(msg)
+                msg_out["tool_call_id"] = clamped
+        if changed_msg:
+            if result is messages:
+                result = list(messages)
+            result[i] = msg_out
+    return result
 
 
 # -- reasoning_content policy: single owner of strip-vs-re-pad; adapters keep only SYNTAX --

@@ -23,6 +23,7 @@ from typing import Any, Callable, Optional
 
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
 from gateway.platforms.base import _custom_unit_to_cp
+from gateway.platforms.helpers import continuation_start
 from gateway.config import (
     DEFAULT_STREAMING_EDIT_INTERVAL as _DEFAULT_STREAMING_EDIT_INTERVAL,
     DEFAULT_STREAMING_BUFFER_THRESHOLD as _DEFAULT_STREAMING_BUFFER_THRESHOLD,
@@ -808,7 +809,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             cp_budget = _custom_unit_to_cp(self._accumulated, self._safe_limit, self._len_fn)
             split_at = self._accumulated.rfind("\n", 0, cp_budget)
             if split_at < cp_budget // 2:
-                split_at = cp_budget
+                # No usable newline: end the head after the last whole word (#124219).
+                split_at = continuation_start(self._accumulated, cp_budget)
             chunk = self._accumulated[:split_at]
             # finalize=True: the sealed chunk is never edited again, so it needs its
             # rich-text pass now.  is_turn_final=False: a split head is not the

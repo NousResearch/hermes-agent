@@ -4762,11 +4762,15 @@ Write only the summary body. Do not include any preamble or prefix."""
         if not cls._is_context_summary_message(message):
             return False
         text = _content_text_for_contains(message.get("content"))
-        _, boundary, remainder = text.partition(_SUMMARY_END_MARKER)
+        # The LAST end marker is the real handoff boundary: a merged-into-tail
+        # carrier can embed an older carrier (marker + replay) in its prior
+        # context, ahead of the new summary's own marker.
+        _, boundary, remainder = text.rpartition(_SUMMARY_END_MARKER)
+        rest = remainder.lstrip()
         return bool(
             boundary
-            and remainder.lstrip().startswith(_INFLIGHT_TASK_REPLAY_HEADER)
-            and remainder.lstrip()[len(_INFLIGHT_TASK_REPLAY_HEADER):].strip()
+            and rest.startswith(_INFLIGHT_TASK_REPLAY_HEADER)
+            and rest.removeprefix(_INFLIGHT_TASK_REPLAY_HEADER).strip()
         )
 
     @classmethod

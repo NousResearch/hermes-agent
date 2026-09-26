@@ -700,10 +700,12 @@ def _run_setup_wizard_impl(args):
         _run_setup_section(config, section)
         return
 
-    # Existing installation == a provider is configured
-    from hermes_cli.auth import get_active_provider
-    is_existing = bool(get_env_value("OPENROUTER_API_KEY") or get_env_value("OPENAI_BASE_URL")
-                       or get_active_provider() is not None)
+    # Existing installation == a provider is configured. Delegate to the same
+    # helper that ``cmd_chat`` uses so all API-key providers registered in
+    # ``PROVIDER_REGISTRY`` (Anthropic, Z.AI, MiniMax, Kimi, ...) are recognised,
+    # not just OPENROUTER_API_KEY / OPENAI_BASE_URL / OAuth (#13024).
+    from hermes_cli.main import _has_any_provider_configured
+    is_existing = bool(_has_any_provider_configured())
     _print_banner("│             ☤ Hermes Agent Setup Wizard                │",
                   "├─────────────────────────────────────────────────────────┤",
                   "│  Let's configure your Hermes Agent installation.       │",

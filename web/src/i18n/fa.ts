@@ -1453,6 +1453,8 @@ export const fa = defineLocale({
   },
 
   channels: {
+    gatewayNotRunning: "دروازه اجرا نمی‌شود. کانال‌ها را همین‌جا پیکربندی کنید، سپس دروازه را با {command} راه‌اندازی کنید (یا دکمهٔ راه‌اندازی دوباره در بالا).",
+    channelsConfigured: "{configured} از {total} کانال پیکربندی شده. اعتبارنامه‌ها در {path} نوشته می‌شوند؛ دروازه هر کانال فعال را در راه‌اندازی دوبارهٔ بعدی وصل می‌کند.",
     catalog: {
       telegram: {
         name: "Telegram",

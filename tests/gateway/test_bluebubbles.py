@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.base import BasePlatformAdapter, SendResult
 
 
 def _make_adapter(monkeypatch, **extra):
@@ -645,3 +645,56 @@ class TestBlueBubblesPrivateApiMethod:
         result = await adapter.send("chat-1", "hello world")
         assert result.success
         assert "method" not in adapter._api_post.payloads[0]
+
+    @pytest.mark.asyncio
+    async def test_first_message_to_new_handle_carries_method(self, monkeypatch):
+        """A brand-new chat has no message history, so a method-less /chat/new
+        request is exactly what the server routes to the legacy AppleScript path
+        — the cold-start form of the #122949 stall. This branch is only reached
+        when the private API is live, so the payload must carry the method."""
+        adapter = self._adapter(monkeypatch)
+
+        async def fake_resolve(chat_id):
+            return None  # no chat for this handle yet
+
+        payloads: list = []
+
+        async def fake_post_message(path, payload):
+            payloads.append((path, payload))
+            return SendResult(success=True, message_id="new-chat-msg")
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve)
+        monkeypatch.setattr(adapter, "_post_message", fake_post_message)
+        result = await adapter.send("+15551230000", "hello first time")
+        assert result.success
+        path, payload = payloads[0]
+        assert path == "/api/v1/chat/new"
+        assert payload["method"] == "private-api"
+
+    @pytest.mark.asyncio
+    async def test_attachment_carries_method_when_private_api_live(self, monkeypatch, tmp_path):
+        """Media rides the same discriminator server-side (sendAttachmentRules,
+        absent → AppleScript); unrouted attachments stall on helper-only setups
+        while the caption riding them is correctly routed."""
+        adapter = self._adapter(monkeypatch)
+        file_path = tmp_path / "media.bin"
+        file_path.write_bytes(b"media-payload")
+        captured = {}
+
+        class MockResponse:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"status": 200, "data": {"guid": "att-guid-1"}}
+
+        class MockClient:
+            async def post(self, url, *, files, data, timeout):
+                captured.update(url=url, data=data)
+                return MockResponse()
+
+        adapter.client = MockClient()
+        result = await adapter._send_attachment("chat-1", str(file_path), filename="media.bin")
+        assert result.success
+        assert "/api/v1/message/attachment" in captured["url"]
+        assert captured["data"]["method"] == "private-api"

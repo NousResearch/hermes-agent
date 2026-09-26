@@ -19,6 +19,7 @@ export const $changeEventsAvailable = atom(false)
 export const $cronChangeTick = atom(0)
 export const $sessionsChangeTick = atom(0)
 export const $platformsChangeTick = atom(0)
+export const $projectsChangeTick = atom(0)
 export const $pairingChangeTick = atom(0)
 
 /** `pet.info.meta`-shaped payload carried on `pet.changed` — lets the pet skip
@@ -57,6 +58,10 @@ export function notifySessionsChanged(): void {
 
 export function notifyPlatformsChanged(): void {
   $platformsChangeTick.set($platformsChangeTick.get() + 1)
+}
+
+export function notifyProjectsChanged(): void {
+  $projectsChangeTick.set($projectsChangeTick.get() + 1)
 }
 
 export function notifyPairingChanged(): void {

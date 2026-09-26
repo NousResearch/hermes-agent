@@ -157,11 +157,7 @@ class TestBranchRoutingColumns:
 class TestBranchSystemPrompt:
     @pytest.mark.asyncio
     async def test_branched_session_carries_parent_system_prompt(self, store):
-        """The branch copies the parent transcript byte-for-byte so its first
-        turn can hit the warm prefix cache, but create_session() at branch
-        time dropped the system prompt: the child row's system_prompt column
-        was None even though the parent row held one. Mirrors the CLI/TUI fix
-        in 2ec12952 for the third branch-creation site (the gateway)."""
+        """A /branch child row carries the parent's system prompt."""
         source = _make_source()
         parent_entry = store.get_or_create_session(source)
         store._db.update_system_prompt(parent_entry.session_id, "PARENT PROMPT")

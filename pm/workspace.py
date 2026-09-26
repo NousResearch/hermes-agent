@@ -102,6 +102,91 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
         target = destination / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(entry, target)
+    _propagate_workspace_identity(source, destination)
+
+
+def _propagate_workspace_identity(source: Path, destination: Path) -> None:
+    """Ensure destination workspace has install-stamp.json and .install_method from source."""
+    from pm.paths import install_stamp_path, install_root
+
+    stamp_src = source / "install-stamp.json"
+    if not stamp_src.is_file():
+        candidate = install_stamp_path(source)
+        if candidate.is_file():
+            stamp_src = candidate
+        elif (install_root() / "install-stamp.json").is_file():
+            stamp_src = install_root() / "install-stamp.json"
+    if stamp_src.is_file():
+        shutil.copy2(stamp_src, destination / "install-stamp.json")
+
+    method_src = source / ".install_method"
+    if not method_src.is_file() and (install_root() / ".install_method").is_file():
+        method_src = install_root() / ".install_method"
+    if method_src.is_file():
+        shutil.copy2(method_src, destination / ".install_method")
+    else:
+        try:
+            from hermes_cli.config import detect_install_method
+            method = detect_install_method(source)
+            if method:
+                (destination / ".install_method").write_text(f"{method}\n", encoding="utf-8")
+        except Exception:
+            pass
+
+
+def heal_installed_workspaces(project_root: Path | None = None) -> list[Path]:
+    """Ensure all managed environment workspaces have install-stamp.json and .install_method.
+
+    Opportunistically heals the primary install and any secondary installs found under
+    installs_root() whose workspace was staged without stamps.
+    """
+    from pm.paths import repo_root, install_root, install_stamp_path
+    from pm.environments import installs_root
+
+    root = Path(project_root).resolve() if project_root is not None else repo_root()
+    healed: list[Path] = []
+
+    stamp_src = install_stamp_path(root)
+    if not stamp_src.is_file() and (install_root() / "install-stamp.json").is_file():
+        stamp_src = install_root() / "install-stamp.json"
+
+    method_src = root / ".install_method"
+    if not method_src.is_file() and (install_root() / ".install_method").is_file():
+        method_src = install_root() / ".install_method"
+    method_text = None
+    if method_src.is_file():
+        try:
+            method_text = method_src.read_text(encoding="utf-8")
+        except Exception:
+            pass
+    if not method_text:
+        try:
+            from hermes_cli.config import detect_install_method
+            method = detect_install_method(root)
+            if method:
+                method_text = f"{method}\n"
+        except Exception:
+            pass
+
+    try:
+        base_installs = installs_root()
+        if base_installs.is_dir():
+            for ws in base_installs.glob("*/environments/*/workspace"):
+                if not ws.is_dir():
+                    continue
+                ws_stamp = ws / "install-stamp.json"
+                if not ws_stamp.is_file() and stamp_src.is_file():
+                    shutil.copy2(stamp_src, ws_stamp)
+                    healed.append(ws_stamp)
+                ws_method = ws / ".install_method"
+                if not ws_method.is_file() and method_text:
+                    ws_method.write_text(method_text, encoding="utf-8")
+                    healed.append(ws_method)
+    except Exception:
+        pass
+
+    return healed
+
 
 
 def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Path, *, source: Path) -> None:
@@ -374,4 +459,6 @@ def lock_and_sync(
         shutil.copytree(replay, root, symlinks=True, ignore=_member_ignored)
         frozen = True
 
+    _propagate_workspace_identity(source, root)
     environment.sync(root, extras=extras, frozen=frozen)
+

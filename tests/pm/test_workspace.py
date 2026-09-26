@@ -144,3 +144,51 @@ def test_staging_root_and_env_are_honored_without_live_mutation(layout, monkeypa
         assert kwargs["env"]["UV_PROJECT_ENVIRONMENT"] == str(environment.destination)
         assert kwargs["env"]["UV_PYTHON"] == str(environment.python)
     assert os.environ["PM_WORKSPACE_TEST_SENTINEL"] == "live"
+
+
+def test_workspace_staging_propagates_install_stamp_and_method(layout, monkeypatch):
+    import json
+    tmp, core, _, _ = layout
+    (core / "install-stamp.json").write_text(json.dumps({"commit": "abcd1234ef", "updateMechanism": "self"}), encoding="utf-8")
+    (core / ".install_method").write_text("managed-runtime\n", encoding="utf-8")
+
+    staging = tmp / "staging-stamped-ws"
+    environment = managed_environment(tmp / "staging-venv")
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, "", ""))
+
+    ws.lock_and_sync([], [], root=staging, source=core, seed_lock=None, environment=environment)
+
+    assert (staging / "install-stamp.json").is_file()
+    data = json.loads((staging / "install-stamp.json").read_text(encoding="utf-8"))
+    assert data["commit"] == "abcd1234ef"
+    assert (staging / ".install_method").read_text(encoding="utf-8").strip() == "managed-runtime"
+
+
+def test_heal_installed_workspaces_repairs_missing_secondary_stamp(tmp_path, monkeypatch):
+    import json
+    installs = tmp_path / "installs"
+    installs.mkdir()
+    monkeypatch.setattr("pm.environments.installs_root", lambda: installs)
+
+    # Primary repo with stamp and method
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "install-stamp.json").write_text(json.dumps({"commit": "prime111", "updateMechanism": "self"}), encoding="utf-8")
+    (repo / ".install_method").write_text("git\n", encoding="utf-8")
+    monkeypatch.setattr("pm.paths.repo_root", lambda: repo)
+    monkeypatch.setattr("pm.paths.install_root", lambda: repo)
+
+    # Secondary environment without stamp
+    sec_ws = installs / "secondary_uuid/environments/gen1/workspace"
+    sec_ws.mkdir(parents=True)
+    assert not (sec_ws / "install-stamp.json").exists()
+    assert not (sec_ws / ".install_method").exists()
+
+    healed = ws.heal_installed_workspaces(repo)
+    assert sec_ws / "install-stamp.json" in healed
+    assert sec_ws / ".install_method" in healed
+
+    stamp_data = json.loads((sec_ws / "install-stamp.json").read_text(encoding="utf-8"))
+    assert stamp_data["commit"] == "prime111"
+    assert (sec_ws / ".install_method").read_text(encoding="utf-8").strip() == "git"
+

@@ -303,6 +303,7 @@ import { INSTALL_STAMP, installShape } from './install-stamp'
 import type { InstallStamp } from './install-stamp'
 import { createIntroRevealWindowController } from './intro-reveal-window'
 import { CURL_TITLE_WRITE_OUT, parseCurlTitleResponse } from './link-title-curl'
+import { canonicalTitleCacheKey, isFetchableHttpUrl } from './link-title-url'
 import { isAuthWall, resolveLinkTitle } from './link-title-wall'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
@@ -5395,24 +5396,6 @@ let oauthSession = null
 let renderTitleInFlight = 0
 const renderTitleQueue = []
 
-function canonicalTitleCacheKey(rawUrl) {
-  const value = String(rawUrl || '').trim()
-
-  if (!value) {
-    return ''
-  }
-
-  try {
-    const url = new URL(value)
-    const host = url.hostname.replace(/^www\./i, '').toLowerCase()
-    const pathname = url.pathname === '/' ? '/' : url.pathname.replace(/\/+$/, '') || '/'
-
-    return `${host}${pathname}${url.search || ''}`
-  } catch {
-    return value
-  }
-}
-
 function cacheTitle(key, title) {
   if (titleCache.size >= TITLE_CACHE_LIMIT) {
     titleCache.delete(titleCache.keys().next().value)
@@ -5629,6 +5612,18 @@ function fetchHtmlTitleWithRenderer(rawUrl: string): Promise<string> {
 // electron/link-title-wall.ts; main.ts only supplies the two tiers' I/O.
 function fetchLinkTitle(rawUrl) {
   const url = String(rawUrl || '').trim()
+
+  // Scheme gate (#93893): only absolute http(s) URLs enter the title
+  // pipeline. Anything else — leaked `@url:` markup, placeholders, garbage —
+  // must never reach curl or the hidden title window's loadURL(), where it
+  // surfaces as a repeating `Failed to load URL: … ERR_NAME_NOT_RESOLVED`
+  // loop. canonicalTitleCacheKey's '' return is the second layer of the same
+  // guard; this check keeps non-URLs out even when a parseable-but-wrong
+  // scheme (file:, mailto:) would still build a cache key.
+  if (!isFetchableHttpUrl(url)) {
+    return Promise.resolve('')
+  }
+
   const key = canonicalTitleCacheKey(url)
 
   if (!key) {

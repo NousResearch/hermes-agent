@@ -706,7 +706,11 @@ fn desktop_app_payload_paths(install_root: &Path) -> Vec<PathBuf> {
             release.join("mac-arm64").join("Hermes.app").join("Contents").join("Resources").join("app.asar"),
         ]
     } else {
-        vec![release.join("linux-unpacked").join("resources").join("app.asar")]
+        // x64 builds land in `linux-unpacked`, ARM64 in `linux-arm64-unpacked` (#94703).
+        vec![
+            release.join("linux-unpacked").join("resources").join("app.asar"),
+            release.join("linux-arm64-unpacked").join("resources").join("app.asar"),
+        ]
     }
 }
 
@@ -1268,6 +1272,18 @@ mod tests {
             }),
             "packaged app.asar must be probed so repair/re-clone waits for the old desktop to exit"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn lock_probe_paths_cover_arm64_linux_build() {
+        let root = Path::new("/x/hermes-agent");
+        let probes = install_lock_probe_paths(root);
+
+        for dir in ["linux-unpacked", "linux-arm64-unpacked"] {
+            let asar = root.join("apps/desktop/release").join(dir).join("resources/app.asar");
+            assert!(probes.contains(&asar), "{dir} payload must be probed (#94703)");
+        }
     }
 
     #[test]

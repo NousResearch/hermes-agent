@@ -57,7 +57,14 @@ const MODIFIER_CODES = new Set([
 // Modifier names as reported by `event.key` on a bare modifier keydown.
 const MODIFIER_KEYS = new Set(['Alt', 'Control', 'Meta', 'Shift'])
 
-function baseKeyFromCode(code: string): string | null {
+function baseKeyFromCode(code: unknown): string | null {
+  // event.code is typed string, but synthetic/IME keydowns can arrive without
+  // one (packaged-renderer TypeError reproductions in #91611); treat a
+  // non-string or empty code as "no physical key" instead of throwing.
+  if (typeof code !== 'string' || !code) {
+    return null
+  }
+
   if (code.startsWith('Key')) {
     return code.slice(3).toLowerCase()
   }

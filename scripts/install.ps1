@@ -978,8 +978,12 @@ function Test-DesktopProductPresent {
     # upgrade rerun on a desktop install must REBUILD it rather than leave a
     # bundle built by the previous code: the app is part of that install and its
     # artifacts live inside the tree, so an update makes them stale, not gone.
+    # electron-builder suffixes the output dir with the arch on every non-x64
+    # target (win-arm64-unpacked, linux-arm64-unpacked, mac-arm64), so the x64
+    # names alone miss a desktop build on ARM64 (#94703).
     $release = Join-Path $InstallDir "apps/desktop/release"
-    foreach ($candidate in @("win-unpacked", "linux-unpacked", "mac", "mac-arm64")) {
+    foreach ($candidate in @("win-unpacked", "win-ia32-unpacked", "win-arm64-unpacked",
+                             "linux-unpacked", "linux-arm64-unpacked", "mac", "mac-arm64")) {
         if (Test-Path (Join-Path $release $candidate)) { return $true }
     }
     return $false

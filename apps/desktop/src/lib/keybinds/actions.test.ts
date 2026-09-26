@@ -86,3 +86,30 @@ describe('KEYBIND_ACTIONS', () => {
     }
   })
 })
+
+describe('profile.switch.N vs view.tabSlot.N (#92569)', () => {
+  it('profile switchers claim ⌘1…⌘9; tab-slot actions ship unbound', () => {
+    // The bug: the profile handler dispatched tab-first, so open session
+    // tabs silently ate ⌘1…⌘9 and rebinding the chord could not change the
+    // semantics. The contract now: profile.switch.N owns the mod+N defaults
+    // unconditionally, and positional tab switching is its own action with
+    // no default chord.
+    for (let slot = 1; slot <= 9; slot += 1) {
+      expect(defaultBindings()[`profile.switch.${slot}`]).toContain(`mod+${slot}`)
+      expect(keybindAction(`view.tabSlot.${slot}`)).toMatchObject({ category: 'view', defaults: [] })
+      expect(defaultBindings()[`view.tabSlot.${slot}`]).toEqual([])
+    }
+  })
+
+  it('tab-slot actions precede profile switchers so a rebind wins the combo race', () => {
+    // defaultBindings builds its combo index in KEYBIND_ACTIONS order; a
+    // user binding mod+2 to view.tabSlot.2 must win over profile.switch.2's
+    // default claim of the same combo — first action to claim it wins.
+    const ids = KEYBIND_ACTIONS.map(action => action.id)
+    const firstTabSlot = ids.indexOf('view.tabSlot.1')
+    const firstProfileSwitch = ids.indexOf('profile.switch.1')
+
+    expect(firstTabSlot).toBeGreaterThanOrEqual(0)
+    expect(firstProfileSwitch).toBeGreaterThan(firstTabSlot)
+  })
+})

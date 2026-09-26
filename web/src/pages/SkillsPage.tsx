@@ -99,6 +99,26 @@ function prettyCategory(
     .join(" ");
 }
 
+/** Translated badge label for a hub skill's trust level. */
+function trustVisual(
+  level: string,
+  labels: { trusted: string; builtin: string; community: string; unknown: string },
+): {
+  tone: "success" | "secondary" | "warning" | "outline";
+  label: string;
+} {
+  switch (level) {
+    case "trusted":
+      return { tone: "success", label: labels.trusted };
+    case "builtin":
+      return { tone: "secondary", label: labels.builtin };
+    case "community":
+      return { tone: "warning", label: labels.community };
+    default:
+      return { tone: "outline", label: level || labels.unknown };
+  }
+}
+
 const TOOLSET_ICONS: Record<
   string,
   React.ComponentType<{ className?: string }>
@@ -845,36 +865,22 @@ interface SkillRowProps {
 /*  Hub browser — search the skill hub, preview, scan, install         */
 /* ------------------------------------------------------------------ */
 
-/** Map a trust level to a Badge tone + label + icon. */
-function trustVisual(level: string): {
-  tone: "success" | "secondary" | "warning" | "outline";
-  label: string;
-} {
-  switch (level) {
-    case "trusted":
-      return { tone: "success", label: "trusted" };
-    case "builtin":
-      return { tone: "secondary", label: "builtin" };
-    case "community":
-      return { tone: "warning", label: "community" };
-    default:
-      return { tone: "outline", label: level || "unknown" };
-  }
-}
-
-/** Map a scan verdict to tone + icon. */
-function verdictVisual(verdict: string): {
+/** Map a scan verdict to tone + icon. Labels come from the i18n catalog. */
+function verdictVisual(
+  verdict: string,
+  labels: { safe: string; caution: string; dangerous: string },
+): {
   tone: "success" | "warning" | "destructive";
   Icon: React.ComponentType<{ className?: string }>;
   label: string;
 } {
   switch (verdict) {
     case "safe":
-      return { tone: "success", Icon: ShieldCheck, label: "Safe" };
+      return { tone: "success", Icon: ShieldCheck, label: labels.safe };
     case "caution":
-      return { tone: "warning", Icon: ShieldAlert, label: "Caution" };
+      return { tone: "warning", Icon: ShieldAlert, label: labels.caution };
     case "dangerous":
-      return { tone: "destructive", Icon: ShieldAlert, label: "Dangerous" };
+      return { tone: "destructive", Icon: ShieldAlert, label: labels.dangerous };
     default:
       return { tone: "warning", Icon: ShieldQuestion, label: verdict };
   }
@@ -1299,7 +1305,13 @@ function HubResultCard({
   onOpen: () => void;
   onInstall: () => void;
 }) {
-  const trust = trustVisual(result.trust_level);
+  const { t } = useI18n();
+  const trust = trustVisual(result.trust_level, {
+    trusted: t.env.trustLevelTrusted,
+    builtin: t.env.trustLevelBuiltin,
+    community: t.env.trustLevelCommunity,
+    unknown: t.env.trustLevelUnknown,
+  });
   return (
     <Card className="rounded-none transition-colors hover:bg-muted/30">
       <CardContent className="py-3 flex items-start gap-3">
@@ -1392,7 +1404,12 @@ function SkillDetailDialog({
   const [previewFailed, setPreviewFailed] = useState(false);
   const [scan, setScan] = useState<SkillHubScan | null>(null);
   const [scanning, setScanning] = useState(false);
-  const trust = trustVisual(result.trust_level);
+  const trust = trustVisual(result.trust_level, {
+    trusted: t.env.trustLevelTrusted,
+    builtin: t.env.trustLevelBuiltin,
+    community: t.env.trustLevelCommunity,
+    unknown: t.env.trustLevelUnknown,
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -1586,7 +1603,11 @@ function ScanPanel({
     );
   }
 
-  const v = verdictVisual(scan.verdict);
+  const v = verdictVisual(scan.verdict, {
+    safe: t.env.verdictSafe,
+    caution: t.env.verdictCaution,
+    dangerous: t.env.verdictDangerous,
+  });
   const policyTone =
     scan.policy === "allow"
       ? "success"

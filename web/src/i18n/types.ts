@@ -686,6 +686,16 @@ export interface Translations {
   // ── Env / Keys page ──
   env: {
     /** Optional until all locales translate; deep-merge falls back to English. */
+    envCatTools: string;
+    envCatSettings: string;
+    trustLevelTrusted: string;
+    trustLevelBuiltin: string;
+    trustLevelCommunity: string;
+    trustLevelUnknown: string;
+    verdictSafe: string;
+    verdictCaution: string;
+    verdictDangerous: string;
+    /** Optional until all locales translate; deep-merge falls back to English. */
     jumpToSection?: string;
     changesNote: string;
     confirmClearMessage: string;

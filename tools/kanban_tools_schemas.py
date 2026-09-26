@@ -433,6 +433,18 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "— a specifier profile is expected to flesh out "
                 "the body before work starts."
         )),
+        "hold": _prop("boolean", (
+                "Create the card OUT of dispatch. It is written in "
+                "'hold' status in the same statement as the INSERT, so "
+                "nothing can claim it -- not for one tick -- while you "
+                "add the parents it needs. Use it whenever the parents "
+                "can only be attached AFTER the create: without it the "
+                "card is dispatchable from the moment it exists, and the "
+                "dispatcher may claim it before the first link lands. "
+                "Clear it with kanban_unhold once the links are in; only "
+                "the creating session may clear it (an operator can clear "
+                "an orphaned one with `hermes kanban unhold <id>`)."
+        )),
         "idempotency_key": _prop("string", (
                 "If a non-archived task with this key already "
                 "exists, return that task's id instead of creating "
@@ -515,6 +527,22 @@ KANBAN_UNBLOCK_SCHEMA = _schema(
     ),
     {
         "task_id": _prop("string", "Blocked task id to move to ready or parent-gated todo."),
+    },
+    ["task_id"],
+)
+
+KANBAN_UNHOLD_SCHEMA = _schema(
+    "kanban_unhold",
+    (
+        "Clear the create-time hold on a card you created with "
+        "``kanban_create(hold=True)``, once its ``kanban_link`` calls are in. "
+        "The card lands in ``todo`` while any parent is still open and "
+        "``ready`` once every parent is ``done`` -- it is never promoted past "
+        "an unmet parent. Only the creating session may clear its own hold; "
+        "an operator clears an orphaned one with ``hermes kanban unhold <id>``."
+    ),
+    {
+        "task_id": _prop("string", "Held task id to release to todo/ready per its parents."),
     },
     ["task_id"],
 )

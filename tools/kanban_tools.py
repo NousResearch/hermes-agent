@@ -24,7 +24,7 @@ from tools.kanban_tools_schemas import (
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
     KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
     KANBAN_LIST_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA, KANBAN_REQUEST_REVIEW_SCHEMA,
-    KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
+    KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA, KANBAN_UNHOLD_SCHEMA)
 
 logger = logging.getLogger(__name__)
 
@@ -1066,6 +1066,7 @@ def _handle_create(args: dict, **kw) -> str:
             goal_mode=goal_mode, goal_max_turns=_opt_int(args.get("goal_max_turns")),
             completion_contract=args.get("completion_contract"),
             initial_status=str(args.get("initial_status") or "running"),
+            hold=_parse_bool_arg(args, "hold"),
             created_by=_persisted_identity(), session_id=session_id)
         landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)
         wait = [e for e in kb.list_events(conn, new_tid) if e.kind == "dependency_wait"]
@@ -1161,6 +1162,36 @@ def _handle_unblock(args: dict, **kw) -> str:
         return _ok(task_id=tid, **_fields(kb.get_task(conn, tid), ("status",)))
 
 
+@_kanban_handler("kanban_unhold")
+def _handle_unhold(args: dict, **kw) -> str:
+    """Clear a create-time hold on a card this session created (`hold=True`)."""
+    _reject_delegated_child_mutation("kanban_unhold")
+    tid = args.get("task_id")
+    _check(tid, "task_id is required")
+    tid = str(tid)
+    # Deliberately NOT `_require_orchestrator_tool` / `_enforce_worker_task_ownership`:
+    # the card under a hold is a CHILD the caller filed this run, so a
+    # dispatcher-spawned filer must be able to release its own hold. The trust
+    # boundary is the creator identity below, which `kanban_db` checks against
+    # the row -- both halves are read from the runtime (profile + the same
+    # session chain `kanban_create` stamps), never from tool args.
+    with _board(args.get("board")) as (kb, conn):
+        from gateway.session_context import get_session_env
+        from tools.async_delegation import _current_origin_session_id
+        self_tid = (os.environ.get("HERMES_KANBAN_TASK")
+                    if _is_dispatcher_owned_worker() else None)
+        self_task = kb.get_task(conn, self_tid) if self_tid else None
+        session_id = ((self_task.session_id if self_task else None)
+                      or _persisted_session_id(_current_origin_session_id())
+                      or _persisted_session_id(get_session_env("HERMES_SESSION_ID", "")))
+        ok, detail = kb.unhold_task(
+            conn, tid, requester=_persisted_identity(), requester_session=session_id)
+        if not ok:
+            # `operator=<id>` is the CLI escape hatch (`hermes kanban unhold`).
+            raise _Reject(f"cannot unhold {tid}: {detail}")
+        return _ok(task_id=tid, **_fields(kb.get_task(conn, tid), ("status",)))
+
+
 @_kanban_handler("kanban_link")
 def _handle_link(args: dict, **kw) -> str:
     """Add a parent→child dependency edge after the fact (cycles/self-links/running
@@ -1196,6 +1227,7 @@ _TOOLS = (
     ("kanban_attachments", KANBAN_ATTACHMENTS_SCHEMA, _handle_attachments, "📎"),
     ("kanban_create", KANBAN_CREATE_SCHEMA, _handle_create, "➕"),
     ("kanban_unblock", KANBAN_UNBLOCK_SCHEMA, _handle_unblock, "▶"),
+    ("kanban_unhold", KANBAN_UNHOLD_SCHEMA, _handle_unhold, "⏏"),
     ("kanban_link", KANBAN_LINK_SCHEMA, _handle_link, "🔗"))
 
 for _name, _sch, _handler, _emoji in _TOOLS:

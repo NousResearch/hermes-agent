@@ -374,6 +374,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_max_turns=getattr(args, "goal_max_turns", None),
             completion_contract=getattr(args, "completion_contract", None),
             initial_status=getattr(args, "initial_status", "running"),
+            hold=bool(getattr(args, "hold", False)),
             creator_task_id=(os.environ.get("HERMES_KANBAN_TASK")
                              if is_dispatcher_owned_worker_context() else None),
         )
@@ -382,6 +383,9 @@ def _cmd_create(args: argparse.Namespace) -> int:
         _print_json(_task_to_dict(task))
     else:
         print(f"Created {task_id}  ({task.status}, assignee={task.assignee or '-'})")
+        if task.status == "hold":
+            print("  held: not dispatchable until cleared — "
+                  f"`hermes kanban unhold {task_id}`")
         # Warn only for ready+assigned tasks that would sit without a dispatcher (triage/todo idle
         # by design, unassigned can't dispatch); skipped under --json so stdout stays parseable.
         if task.status == "ready" and task.assignee:
@@ -1031,6 +1035,29 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
                            lambda tid: f"cannot unblock {tid} (not blocked/scheduled?)")
 
 
+def _cmd_unhold(args: argparse.Namespace) -> int:
+    """Operator escape hatch: clear a create-time hold whose filer never did.
+
+    In-process clearing belongs to the creator alone (``kanban_unhold``, keyed on
+    the row's ``created_by`` + ``session_id``); this path exists for the hold that
+    outlived its filer -- a worker that died between the create and the unhold.
+    """
+    ids, rc = _require_ids(args)
+    if rc:
+        return rc
+    reason = _stripped_or_none(getattr(args, "reason", None))
+    author = _profile_author() if reason else None
+    suffix = f": {reason}" if reason else ""
+    with kbc.connect_closing() as conn:
+        def _clear(tid):
+            ok, _detail = kb.unhold_task(conn, tid, operator=True)
+            return ok
+
+        op = _commented(conn, reason, author, "UNHOLD", _clear)
+        return _bulk_apply(ids, op, lambda tid: f"Unheld {tid}{suffix}",
+                           lambda tid: f"cannot unhold {tid} (not held?)")
+
+
 def _cmd_request_review(args: argparse.Namespace) -> int:
     tid = args.task_id
     summary = _stripped_or_none(getattr(args, "summary", None))
@@ -1139,7 +1166,7 @@ def _cmd_stats(args: argparse.Namespace) -> int:
     if _json_out(args, stats):
         return 0
     print("By status:")
-    for k in ("triage", "todo", "scheduled", "ready", "running", "blocked", "done"):
+    for k in ("triage", "todo", "scheduled", "ready", "running", "blocked", "hold", "done"):
         print(f"  {k:8s}  {stats['by_status'].get(k, 0)}")
     if stats["by_assignee"]:
         print("\nBy assignee:")
@@ -1326,7 +1353,7 @@ _HANDLERS = {
     "comment": _cmd_comment, "attach": _cmd_attach,
     "attachments": _cmd_attachments, "attach-rm": _cmd_attach_rm,
     "complete": _cmd_complete, "edit": _cmd_edit, "block": _cmd_block,
-    "schedule": _cmd_schedule, "unblock": _cmd_unblock,
+    "schedule": _cmd_schedule, "unblock": _cmd_unblock, "unhold": _cmd_unhold,
     "request-review": _cmd_request_review, "request-changes": _cmd_request_changes,
     "reopen-review": _cmd_reopen_review, "promote": _cmd_promote,
     "archive": _cmd_archive, "tail": _cmd_tail, "dispatch": _cmd_dispatch,

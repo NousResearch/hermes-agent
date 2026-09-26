@@ -56,6 +56,7 @@ The repo ships these bundled plugins under `plugins/`. All are opt-in — enable
 | Plugin | Kind | Purpose |
 |---|---|---|
 | `disk-cleanup` | hooks + slash command | Auto-track ephemeral files and clean them on session end |
+| `model-fleet` | slash command | Repoint the default model, sub-agents, profiles and cron jobs at one provider/model |
 | `security-guidance` | hooks | Pattern-match dangerous code on `write_file`/`patch` and append a security warning (or block) — 25 rules (Apache-2.0 fork of Anthropic's `claude-plugins-official` patterns) |
 | `observability/langfuse` | hooks | Trace turns / LLM calls / tools to [Langfuse](https://langfuse.com) |
 | `teams_pipeline` | standalone | Microsoft Teams meeting pipeline — Graph-backed, transcript-first meeting summaries |
@@ -68,6 +69,37 @@ The repo ships these bundled plugins under `plugins/`. All are opt-in — enable
 | `kanban/dashboard` | dashboard tab | Kanban board UI for the multi-agent dispatcher — tasks, comments, fan-out, board switching. See [Kanban Multi-Agent](./kanban.md). |
 
 Memory providers (`plugins/memory/*`) and context engines (`plugins/context_engine/*`) are listed separately on [Memory Providers](./memory-providers.md) — they're managed through `hermes memory` and `hermes plugins` respectively. The full per-plugin detail for the two long-running hooks-based plugins follows.
+
+### model-fleet
+
+Repoints a whole install at one provider/model in a single command.
+
+A Hermes install accumulates several **independent** model pins: the default model, the sub-agent (`delegation.*`) model, every named profile's `config.yaml`, every cron job, and the `auxiliary.*` task models. Keeping those aligned by hand means editing a dozen files, then repeating the whole edit on the next upgrade.
+
+**Slash command:**
+
+```
+/model-fleet                            # numbered list of authenticated providers
+/model-fleet 3                          # numbered model list for provider #3
+/model-fleet 3 5                        # apply provider #3 / model #5 across the install
+/model-fleet nous z-ai/glm-5.3-flash    # same, addressed by slug
+/model-fleet status                     # current model map (profiles, auxiliary, crons)
+/model-fleet auxiliary nous <model>     # also repoint auxiliary.* task models
+```
+
+Add `--dry-run` to any apply form to preview the full plan without writing.
+
+**What one apply changes:**
+
+1. Default model, written through the same `switch_model` / `persist_model_selection` pipeline `/model` uses, so `base_url` / `api_key` / `api_mode` / the context pin are re-resolved for the target route rather than carried over from the old provider.
+2. `delegation.*` (sub-agents); stale endpoint and key pins are cleared when the provider changes.
+3. Every in-scope profile's `config.yaml`, both blocks above.
+4. Every in-scope cron job that is not `no_agent` — pure-script jobs are skipped, and writes go through `cron.jobs.save_jobs` so the jobs lock and shrink-merge guard still apply.
+5. `auxiliary.*`, only via the `auxiliary` subcommand or `include_auxiliary: true` (off by default — those are usually pinned to a cheap tier deliberately).
+
+**Safety:** a refused switch (bad model, missing credentials) is reported and nothing is written; the check runs before the first mutation. Every touched `config.yaml` / `jobs.json` is copied to `<name>.bak-model-fleet-<UTC stamp>` first. A new model reaches new sessions and the next cron fire — the chat that ran the command keeps its current model until a new session starts.
+
+**Configuration** (`plugins.entries.model-fleet` in `config.yaml`): `include_profiles`, `include_cron`, `include_auxiliary`, `profile_allowlist`, `profile_blocklist`, `model_allowlist`, `backup`. An install with no profiles and no cron jobs simply gets a smaller blast radius.
 
 ### disk-cleanup
 

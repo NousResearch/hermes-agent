@@ -820,6 +820,9 @@ export const ja = defineLocale({
       remoteTitle: 'リモートゲートウェイ',
       remoteDesc:
         'このデスクトップシェルをリモートの Hermes バックエンドに接続します。ホスト型ゲートウェイは OAuth またはユーザー名とパスワードを使用します。自己ホスト型はセッショントークンを使用する場合があります。',
+      remoteComputerUseBridgeTitle: 'この Mac を Computer Use に使う',
+      remoteComputerUseBridgeDesc:
+        'リモートゲートウェイ接続時、Desktop はプライベートなローカルブリッジを起動し、Computer Use がリモートホストではなくこのマシンをキャプチャして操作できるようにします。',
       remoteUrlTitle: 'リモート URL',
       remoteUrlDesc:
         'リモートダッシュボードバックエンドのベース URL。/hermes などのパスプレフィックスもサポートしています。',

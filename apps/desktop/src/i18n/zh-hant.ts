@@ -797,6 +797,9 @@ export const zhHant = defineLocale({
       remoteTitle: '遠端閘道',
       remoteDesc:
         '將此桌面殼層連線至遠端 Hermes 後端。託管閘道使用 OAuth 或帳號密碼；自託管閘道也可使用工作階段 Token。',
+      remoteComputerUseBridgeTitle: '使用這台 Mac 進行 Computer Use',
+      remoteComputerUseBridgeDesc:
+        '連線至遠端閘道時，Desktop 會啟動私有本機橋接，讓 Computer Use 擷取並控制這台機器，而不是遠端主機。',
       remoteUrlTitle: '遠端 URL',
       remoteUrlDesc: '遠端儀表板後端的基礎 URL。支援路徑前綴，例如 /hermes。',
       probing: '正在檢查此閘道的驗證方式…',

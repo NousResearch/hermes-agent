@@ -1099,17 +1099,31 @@ def _config_declares_model(
     """A model declared in the user's ``providers:``/``custom_providers:`` config is accepted even
     when the remote /v1/models does not list it (cloud/aliased models). Custom entries match by
     slug alias or by base_url."""
+    return _config_model_match_reason(
+        new_model, target_provider, base_url, user_providers, custom_providers) is not None
+
+
+def _config_model_match_reason(
+    new_model: str, target_provider: str, base_url: str, user_providers, custom_providers) -> Optional[str]:
+    """Return why the config declares *new_model*: ``"catalogue"`` when the match came from an
+    explicit non-empty ``models`` list/dict (the user curated that list, so a failed /v1/models
+    probe is not a cause for alarm), ``"bare"`` for a scalar ``model:`` match (old
+    soft-accept-with-warning behaviour), or ``None`` when the config does not declare it."""
     if user_providers:
         from hermes_cli.config import is_provider_enabled
         cfg = user_providers.get(target_provider)
-        if cfg is not None and is_provider_enabled(cfg) and new_model in _declared_model_ids(cfg.get("models", {})):
-            return True
+        if cfg is not None and is_provider_enabled(cfg):
+            declared = cfg.get("models")
+            if new_model in _declared_model_ids(declared):
+                return "catalogue" if isinstance(declared, (list, tuple, dict)) and bool(declared) else "bare"
     for entry in _custom_entries(custom_providers):
-        if (target_provider.lower() in _entry_aliases(entry) or entry.get("base_url", "") == base_url) and (
-            new_model == entry.get("model", "") or new_model in _declared_model_ids(entry.get("models", {}))
-        ):
-            return True
-    return False
+        if (target_provider.lower() in _entry_aliases(entry) or entry.get("base_url", "") == base_url):
+            entry_models = entry.get("models")
+            if new_model == entry.get("model", ""):
+                return "bare"
+            if new_model in _declared_model_ids(entry_models):
+                return "catalogue" if isinstance(entry_models, (list, tuple, dict)) and bool(entry_models) else "bare"
+    return None
 
 
 def _apply_direct_alias_endpoint(st: "_Switch", da: DirectAlias) -> None:
@@ -1643,12 +1657,20 @@ def _validate_switch(st: _Switch) -> Optional[ModelSwitchResult]:
                       "message": f"Could not validate `{st.new_model}`: {e}"}
 
     if not validation.get("accepted"):
-        if not _config_declares_model(
-                st.new_model, st.target_provider, st.base_url, st.user_providers, st.custom_providers):
+        match_reason = _config_model_match_reason(
+            st.new_model, st.target_provider, st.base_url, st.user_providers, st.custom_providers)
+        if match_reason is None:
             return st.fail(
                 validation.get("message", "Invalid model"),
                 new_model=st.new_model, target_provider=st.target_provider, provider_label=st.provider_label)
-        validation = {"accepted": True, "persist": True, "recognized": False, "message": validation.get("message", "")}
+        if match_reason == "catalogue":
+            # The user's explicit non-empty models catalogue is verification enough:
+            # suppress the misleading "could not reach /v1/models" warning and mark
+            # the model as recognized. A bare scalar ``model:`` keeps the old
+            # soft-accept-with-warning behaviour.
+            validation = {"accepted": True, "persist": True, "recognized": True, "message": None}
+        else:
+            validation = {"accepted": True, "persist": True, "recognized": False, "message": validation.get("message", "")}
     st.validation = validation
     return None
 

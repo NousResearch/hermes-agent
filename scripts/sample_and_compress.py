@@ -16,14 +16,23 @@ Usage:
 """
 
 import json
+import logging
 import random
+import sys
 from pathlib import Path
 from typing import List, Dict, Any, Tuple
 import fire
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from trajectory_compressor_tokens import (
+    count_conversation_tokens, load_trajectory_tokenizer, resolve_tokenizer_revision,
+)
+
 # Load environment variables
 from dotenv import load_dotenv
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 # Default datasets to sample from
@@ -78,11 +87,10 @@ def load_dataset_from_hf(dataset_name: str) -> List[Dict[str, Any]]:
 _TOKENIZER = None
 
 
-def _init_tokenizer_worker(tokenizer_name: str):
+def _init_tokenizer_worker(tokenizer_name: str, tokenizer_revision=None, trust_remote_code=True):
     """Initialize tokenizer in worker process."""
     global _TOKENIZER
-    from transformers import AutoTokenizer
-    _TOKENIZER = AutoTokenizer.from_pretrained(tokenizer_name, trust_remote_code=True)
+    _TOKENIZER, _ = load_trajectory_tokenizer(tokenizer_name, tokenizer_revision, trust_remote_code)
 
 
 def _count_tokens_for_entry(entry: Dict) -> Tuple[Dict, int]:
@@ -97,21 +105,7 @@ def _count_tokens_for_entry(entry: Dict) -> Tuple[Dict, int]:
     """
     global _TOKENIZER
     
-    conversations = entry.get("conversations", [])
-    if not conversations:
-        return entry, 0
-    
-    total = 0
-    for turn in conversations:
-        value = turn.get("value", "")
-        if value:
-            try:
-                total += len(_TOKENIZER.encode(value))
-            except Exception:
-                # Fallback to character estimate
-                total += len(value) // 4
-    
-    return entry, total
+    return entry, count_conversation_tokens(_TOKENIZER, entry.get("conversations", []))
 
 
 def sample_from_datasets(
@@ -120,7 +114,9 @@ def sample_from_datasets(
     min_tokens: int = 16000,
     tokenizer_name: str = "moonshotai/Kimi-K2-Thinking",
     seed: int = 42,
-    num_proc: int = 8
+    num_proc: int = 8,
+    tokenizer_revision: str = None,
+    trust_remote_code: bool = True,
 ) -> List[Dict[str, Any]]:
     """
     Load all datasets, filter by token count, then randomly sample from combined pool.
@@ -132,11 +128,17 @@ def sample_from_datasets(
         tokenizer_name: HuggingFace tokenizer for counting tokens
         seed: Random seed for reproducibility
         num_proc: Number of parallel processes for tokenization
+        tokenizer_revision: Hub revision (resolved to a commit before starting workers)
+        trust_remote_code: Whether to allow the configured tokenizer's custom code
         
     Returns:
         List of sampled trajectory entries
     """
     from multiprocessing import Pool
+    # Pool initializer failures can respawn workers indefinitely; validate in the parent first.
+    tokenizer, metadata = load_trajectory_tokenizer(tokenizer_name, tokenizer_revision, trust_remote_code)
+    tokenizer_revision = metadata["revision"]
+    del tokenizer
     
     random.seed(seed)
     
@@ -173,7 +175,7 @@ def sample_from_datasets(
     with Pool(
         processes=num_proc,
         initializer=_init_tokenizer_worker,
-        initargs=(tokenizer_name,)
+        initargs=(tokenizer_name, tokenizer_revision, trust_remote_code)
     ) as pool:
         # Process in chunks and show progress
         chunk_size = 1000
@@ -255,7 +257,7 @@ def save_samples_for_compression(
     print(f"   ✅ Saved {num_batches} batch files")
 
 
-def run_compression(input_dir: Path, output_dir: Path, config_path: str):
+def run_compression(input_dir: Path, output_dir: Path, config_path: str, compression_config=None):
     """
     Run trajectory compression on the sampled data.
     
@@ -263,10 +265,9 @@ def run_compression(input_dir: Path, output_dir: Path, config_path: str):
         input_dir: Directory containing JSONL files to compress
         output_dir: Directory for compressed output
         config_path: Path to compression config YAML
+        compression_config: Shared resolved config when called by the sampling pipeline
     """
     # Import the compressor
-    import sys
-    sys.path.insert(0, str(Path(__file__).parent.parent))
     from trajectory_compressor import TrajectoryCompressor, CompressionConfig
     
     print("\n🗜️  Running trajectory compression...")
@@ -275,7 +276,7 @@ def run_compression(input_dir: Path, output_dir: Path, config_path: str):
     print(f"   Config: {config_path}")
     
     # Load config
-    config = CompressionConfig.from_yaml(config_path)
+    config = compression_config if compression_config is not None else CompressionConfig.from_yaml(config_path)
     
     # Initialize compressor
     compressor = TrajectoryCompressor(config)
@@ -364,6 +365,21 @@ def main(
     sampled_dir = base_dir / "data" / f"{output_name}_raw"
     compressed_dir = base_dir / "data" / f"{output_name}_batches"
     final_output = base_dir / "data" / f"{output_name}.jsonl"
+
+    # Resolve the target tokenizer before sampling, then reuse that exact config for compression.
+    from trajectory_compressor import CompressionConfig
+    config_path = base_dir / config
+    if not config_path.exists():
+        print(f"❌ Config not found: {config_path}")
+        return
+    compression_config = CompressionConfig.from_yaml(str(config_path))
+    try:
+        compression_config.tokenizer_revision = resolve_tokenizer_revision(
+            compression_config.tokenizer_name, compression_config.tokenizer_revision,
+        )
+    except (ValueError, OSError) as exc:
+        logger.error("Cannot resolve tokenizer %r: %s", compression_config.tokenizer_name, exc)
+        raise SystemExit(1) from None
     
     if not skip_download:
         # Step 1: Download, filter by token count, and sample from combined pool
@@ -371,6 +387,9 @@ def main(
             dataset_list, 
             total_samples, 
             min_tokens=min_tokens,
+            tokenizer_name=compression_config.tokenizer_name,
+            tokenizer_revision=compression_config.tokenizer_revision,
+            trust_remote_code=compression_config.trust_remote_code,
             seed=seed,
             num_proc=num_proc
         )
@@ -383,14 +402,15 @@ def main(
         save_samples_for_compression(samples, sampled_dir, batch_size)
     else:
         print(f"\n⏭️  Skipping download, using existing data in {sampled_dir}")
+        logger.warning(
+            "--skip_download reuses the cached selection and _original_tokens without "
+            "revalidating them against the current tokenizer or min_tokens. Compression "
+            "recounts tokens but does not reselect rows. Re-run without --skip_download "
+            "after changing tokenizers or sampling thresholds."
+        )
     
     # Step 3: Run compression
-    config_path = base_dir / config
-    if not config_path.exists():
-        print(f"❌ Config not found: {config_path}")
-        return
-    
-    run_compression(sampled_dir, compressed_dir, str(config_path))
+    run_compression(sampled_dir, compressed_dir, str(config_path), compression_config=compression_config)
     
     # Step 4: Merge into single JSONL file
     merge_output_to_single_jsonl(compressed_dir, final_output)

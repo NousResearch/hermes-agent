@@ -19,7 +19,11 @@ def _aux(timeout, *, reasoning_effort=True, **extra):
 
 
 DEFAULT_CONFIG = {
-    "model": "",
+    "model": {
+        "default": "",
+        # Explicitly acknowledge that a configured model.context_length below 64K may make tool use unreliable.
+        "allow_context_below_minimum": False,
+    },
     "providers": {},
     "fallback_providers": [],
     # min_switch_reset_seconds: opt-in (0 = off). When a rate-limited primary declares a reset

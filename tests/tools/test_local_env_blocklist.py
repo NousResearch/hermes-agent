@@ -162,6 +162,44 @@ def test_runtime_adapter_secret_follows_the_bound_profiles_registry(child_env, m
     assert child_sees() == {name: "fake-secret", "MY_APP_KEY": "operator"}
 
 
+@pytest.mark.parametrize("declared_by", ["skill", "config"])
+def test_passthrough_accepted_before_an_adapter_owns_the_name_stops_forwarding_it(
+        child_env, monkeypatch, declared_by):
+    from agent import secret_scope as ss
+    from gateway.platform_registry import PlatformEntry, platform_registry
+    from tools.code_execution_env import _scrub_child_env
+    from tools.env_passthrough import register_env_passthrough
+    name, names = "ACME_CHAT_SIGNING_SECRET", ["ACME_CHAT_SIGNING_SECRET", "MY_APP_KEY"]
+    monkeypatch.setenv(name, "fake-secret")
+    monkeypatch.setenv("MY_APP_KEY", "operator")
+    if declared_by == "skill":
+        register_env_passthrough(names)
+    else:
+        home = child_env / "hermes"
+        home.mkdir(exist_ok=True)
+        (home / "config.yaml").write_text("terminal:\n  env_passthrough: [%s]\n" % ", ".join(names))
+    builders = [lambda: local._make_run_env({}), lambda: local._sanitize_subprocess_env(dict(os.environ)),
+                lambda: _scrub_child_env(dict(os.environ))]
+    assert [observe_child(b(), names) for b in builders] == [
+        {name: "fake-secret", "MY_APP_KEY": "operator"}] * 3  # accepted while operator-owned
+
+    scope = platform_registry.current_scope_key()
+    platform_registry.register(PlatformEntry(name="acme-chat", label="Acme", adapter_factory=lambda c: None,
+                                             check_fn=lambda: True), scope=scope)
+    try:
+        assert [observe_child(b(), names) for b in builders] == [{name: None, "MY_APP_KEY": "operator"}] * 3
+        # A routed profile's value lives only in its scope; the stale declaration must not add it back.
+        monkeypatch.delenv(name)
+        token = ss.set_secret_scope({name: "scoped-secret", "MY_APP_KEY": "scoped-operator"})
+        try:
+            assert [observe_child(b(), names) for b in (builders[0], builders[2])] == [
+                {name: None, "MY_APP_KEY": "scoped-operator"}] * 2
+        finally:
+            ss.reset_secret_scope(token)
+    finally:
+        platform_registry.unregister("acme-chat", scope=scope)
+
+
 @pytest.mark.parametrize("builder", ["foreground", "background", "factory", "nonterminal"])
 def test_builders_strip_runtime_markers_and_owned_paths(child_env, monkeypatch, builder):
     repo, site = Path(__file__).resolve().parents[2], _running_site()

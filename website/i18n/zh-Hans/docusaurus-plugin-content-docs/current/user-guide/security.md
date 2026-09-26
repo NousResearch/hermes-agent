@@ -441,7 +441,7 @@ terminal:
 - 凭据文件以**只读**方式挂载到 Docker 容器中
 - Skills Guard 在安装前会扫描技能内容中的可疑环境变量访问模式
 - 缺失/未设置的变量永远不会被注册（不存在的内容无法泄露）
-- Hermes 基础设施密钥（提供商 API 密钥、gateway token）不应添加到 `env_passthrough`——它们有专用机制
+- Hermes 基础设施密钥（提供商 API 密钥、gateway token）不应添加到 `env_passthrough`——它们有专用机制。声明此类名称时会被拒绝；已声明的名称若之后被某个平台适配器占用（例如在技能加载后才注册的插件适配器），从那时起便不再转发
 
 ## MCP 凭据处理
 

@@ -3,6 +3,7 @@
 
 import logging
 import os
+import re
 from dataclasses import replace
 from fastapi import HTTPException
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
@@ -22,6 +23,47 @@ if TYPE_CHECKING:
 
 # Same logger the code used before extraction (record parity).
 _log = logging.getLogger("hermes_cli.web_server")
+
+# JSON integers beyond JavaScript's safe range (2**53 - 1) lose precision the
+# moment a browser parses them: every JS number is an IEEE-754 double, so a
+# 19-digit Discord snowflake comes back rounded and a config round-trip then
+# PERSISTS the rounded id — delivery for that channel silently stops (#123439).
+# GET emits such ints as strings; PUT restores the canonical decimal form.
+_JS_SAFE_INT_MAX = 2 ** 53 - 1
+_DECIMAL_INT_RE = re.compile(r"-?(?:0|[1-9][0-9]*)\Z")
+
+
+def _web_safe_ints(value: Any) -> Any:
+    """JSON-safe view of *value*: ints beyond ``_JS_SAFE_INT_MAX`` become strings."""
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, int):
+        return str(value) if abs(value) > _JS_SAFE_INT_MAX else value
+    if isinstance(value, dict):
+        return {key: _web_safe_ints(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_web_safe_ints(item) for item in value]
+    return value
+
+
+def _restore_big_ints(value: Any) -> Any:
+    """Reverse ``_web_safe_ints``: a canonical decimal string beyond the safe
+    range becomes an int again, so a saved id keeps the YAML semantics of the
+    same bare literal. Ordinary strings (phone numbers, mixed ids) are never
+    touched — only a whole-string decimal that JS could not have held exactly."""
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, str):
+        if len(value) > 16 and _DECIMAL_INT_RE.fullmatch(value):
+            restored = int(value)
+            if abs(restored) > _JS_SAFE_INT_MAX:
+                return restored
+        return value
+    if isinstance(value, dict):
+        return {key: _restore_big_ints(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_restore_big_ints(item) for item in value]
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -523,7 +565,12 @@ def _apply_main_model_assignment(model_cfg: "Any", result: "ModelSwitchResult", 
 def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
     """Flatten a dict-form ``model`` to its string form (the schema is built from
     DEFAULT_CONFIG where ``model`` is a string) and surface ``model_context_length``
-    as a top-level field (0 = auto-detect)."""
+    as a top-level field (0 = auto-detect). Ints beyond JS's safe range are emitted
+    as strings so the browser's IEEE-754 doubles can never round them (#123439)."""
+    return _web_safe_ints(_flatten_model_for_web(config))
+
+
+def _flatten_model_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
     config = dict(config)
     model_val = config.get("model")
     if isinstance(model_val, dict):
@@ -876,6 +923,10 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
     from hermes_cli.config import load_config
     config = dict(config)
     config.pop("_model_meta", None)
+    # A browser-held config cannot hold big ints exactly (IEEE-754 doubles);
+    # GET emitted them as strings, so restore the canonical decimal form
+    # before anything downstream reads the id (#123439).
+    config = _restore_big_ints(config)
 
     ctx_sent = "model_context_length" in config
     ctx_override = config.pop("model_context_length", 0)

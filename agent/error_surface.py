@@ -53,7 +53,8 @@ _FREE_TIER_RETRYABLE_KINDS = {"rate_limited", "at_capacity", "outage"}
 # Kept in sync with ``classify_api_error``'s retryable=False verdicts.
 _NON_RETRYABLE_REASONS = {
     "auth", "auth_permanent", "billing", "billing_unverified", "content_policy_blocked",
-    "provider_policy_blocked", "model_not_found", "format_error", "ssl_cert_verification",
+    "provider_policy_blocked", "model_not_found", "format_error", "image_too_small",
+    "ssl_cert_verification",
     "context_overflow", "interpreter_shutdown", "upstream_blocked",
 }
 

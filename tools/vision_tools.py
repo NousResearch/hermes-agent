@@ -49,9 +49,11 @@ from tools.vision_tools_image_prep import (
     _VISION_MAX_VALIDATED_FRAME_COUNT,
     _crop_image_region,
     _determine_mime_type,
+    _image_below_min_dimension,
     _image_exceeds_dimension,
     _normalize_to_supported_image,
-    _validate_raster_image_decodable)
+    _validate_raster_image_decodable,
+    below_min_dimension_message)
 
 logger = logging.getLogger(__name__)
 
@@ -618,6 +620,10 @@ async def _vision_analyze_native(
             prepared = await _prepare_image(image_url, task_id, region, validate_decode=True)
         except _ImagePrepError as exc:
             return tool_error(str(exc), success=False)
+        too_small = await _run_encode_on_cpu_executor(
+            _image_below_min_dimension, prepared.path)
+        if too_small:
+            return tool_error(below_min_dimension_message(*too_small), success=False)
         image_data_url = await _run_encode_on_cpu_executor(
             _image_to_base64_data_url, prepared.path, mime_type=prepared.mime)
         # Proactive embed cap: this image is re-sent on every later turn, so resize DOWN to the
@@ -794,6 +800,10 @@ async def vision_analyze_tool(
     async def stage(prompt: str, debug_call_data: dict, temp_paths: list) -> tuple:
         prepared = await _prepare_image(image_url, task_id, region, validate_decode=False)
         temp_paths.append(prepared.path)
+        too_small = await _run_encode_on_cpu_executor(
+            _image_below_min_dimension, prepared.path)
+        if too_small:
+            raise ValueError(below_min_dimension_message(*too_small))
         logger.info("Image ready (%.1f KB)", prepared.size_bytes / 1024)
         # Send at full resolution first; on a size rejection, downscale and retry.
         logger.info("Converting image to base64...")

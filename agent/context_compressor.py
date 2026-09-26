@@ -3336,22 +3336,32 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
     # Aggregate cap applied after per-message limits; class alias so subclasses/tests can override.
     _SUMMARY_INPUT_MAX_CHARS = _SUMMARY_INPUT_MAX_CHARS
 
-    def _render_tool_call_for_summary(self, tc: Any) -> str:
-        """``  name(args)`` line for the summarizer; object-shaped calls render as ``name(...)``."""
+    def _render_tool_call_for_summary(self, tc: Any, index: Optional[int] = None) -> str:
+        """``  #N name(args)`` line for the summarizer; object-shaped calls render as ``name(...)``."""
+        prefix = f"  #{index} " if index is not None else "  "
         if not isinstance(tc, dict):
             fn = getattr(tc, "function", None)
-            return f"  {getattr(fn, 'name', '?') if fn else '?'}(...)"
+            return f"{prefix}{getattr(fn, 'name', '?') if fn else '?'}(...)"
         fn = tc.get("function", {})
         args = _redact_compaction_text(fn.get("arguments", ""))
         if len(args) > self._TOOL_ARGS_MAX:
             args = args[:self._TOOL_ARGS_HEAD] + "..."
-        return f"  {fn.get('name', '?')}({args})"
+        return f"{prefix}{fn.get('name', '?')}({args})"
 
     def _serialize_records_for_summary(self, turns: List[Dict[str, Any]]) -> List[str]:
-        """Serialize turns into a list of labeled, redacted records for the summarizer."""
+        """Serialize turns into a list of labeled, redacted records for the summarizer.
+
+        Tool calls carry a 1-based sequential ``#N`` and their results repeat it with the tool
+        name (``[TOOL RESULT #N name]``): a turn firing several calls of the same tool produces
+        back-to-back result blobs the summarizer would otherwise pair by position, and the raw
+        provider ``tool_call_id`` alone (opaque, sometimes hundreds of chars) names neither the
+        tool nor the call. A result whose call was not serialized keeps the id-based label.
+        """
         # Lazy import: agent_runtime_helpers pulls heavy transitive imports.
         from agent.agent_runtime_helpers import strip_think_blocks
         parts = []
+        call_index: Dict[str, int] = {}
+        call_count = 0
         for msg in turns:
             role = msg.get("role", "unknown")
             content = msg.get("content")
@@ -3365,10 +3375,22 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             if len(content) > self._CONTENT_MAX:
                 content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
             if role == "tool":
-                parts.append(f"[TOOL RESULT {msg.get('tool_call_id', '')}]: {content}")
+                call_id = str(msg.get("tool_call_id") or "")
+                name = str(msg.get("name") or msg.get("tool_name") or "")
+                if call_id in call_index:
+                    label = f"#{call_index[call_id]} {name}".rstrip()
+                else:
+                    label = f"{call_id} {name}".strip()
+                parts.append(f"[TOOL RESULT {label}]: {content}")
                 continue
             if role == "assistant" and msg.get("tool_calls", []):
-                content += "\n[Tool calls:\n" + "\n".join(map(self._render_tool_call_for_summary, msg["tool_calls"])) + "\n]"
+                rendered = []
+                for tc in msg["tool_calls"]:
+                    call_count += 1
+                    if call_id := str(_tc_get(tc, "id") or ""):
+                        call_index[call_id] = call_count
+                    rendered.append(self._render_tool_call_for_summary(tc, call_count))
+                content += "\n[Tool calls:\n" + "\n".join(rendered) + "\n]"
             parts.append(f"[{role.upper()}]: {content}")
         return parts
 

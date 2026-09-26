@@ -252,6 +252,11 @@ export const SETTINGS_MANIFEST = {
       subpage: 'updates',
       keywords: ['update', 'auto update', 'download', 'release', 'version'],
       copy: t => ({ label: t.settings.about.updates })
+    },
+    autoUpdate: {
+      subpage: 'updates',
+      keywords: ['auto update', 'automatic updates', 'update on login', 'install updates automatically'],
+      copy: t => ({ label: t.updates.autoUpdate.title, description: t.updates.autoUpdate.desc })
     }
   }
 } as const satisfies Record<string, Record<string, SettingDefinition>>

@@ -636,6 +636,12 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     apply: opts => ipcRenderer.invoke('hermes:updates:apply', opts),
     getBranch: () => ipcRenderer.invoke('hermes:updates:branch:get'),
     setBranch: name => ipcRenderer.invoke('hermes:updates:branch:set', name),
+    auto: {
+      get: () => ipcRenderer.invoke('hermes:updates:auto:get'),
+      set: enabled => ipcRenderer.invoke('hermes:updates:auto:set', enabled),
+      claim: () => ipcRenderer.invoke('hermes:updates:auto:claim'),
+      report: report => ipcRenderer.invoke('hermes:updates:auto:report', report)
+    },
     onProgress: callback => {
       const listener = (_event, payload) => callback(payload)
       ipcRenderer.on('hermes:updates:progress', listener)

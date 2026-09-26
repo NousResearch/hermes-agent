@@ -4555,6 +4555,30 @@ export const deOverrides = {
     checkNow: 'Jetzt prüfen',
     seeWhatsNew: 'Neuigkeiten ansehen',
     releaseNotes: 'Versionshinweise',
+    autoUpdate: {
+      title: 'Updates automatisch installieren',
+      desc: 'Beim ersten Start nach der Anmeldung lädt Hermes das neueste Update Ihres Update-Kanals und startet sich neu. Läuft auf einem Gateway gerade eine Aufgabe, wartet Hermes. Pro Anmeldung gibt es einen Versuch.',
+      unsupported: 'Automatische Updates sind unter macOS und Linux verfügbar.',
+      saveFailed: 'Automatische Updates konnten nicht geändert werden',
+      deferredTitle: 'Automatisches Update wartet',
+      deferredMessage:
+        'Ein Gateway erledigt gerade eine Aufgabe. Hermes aktualisiert sich, sobald sie abgeschlossen ist.',
+      skippedTitle: 'Automatisches Update übersprungen',
+      skippedDirty:
+        'Dieser Hermes-Checkout enthält lokale Änderungen und wurde daher nicht automatisch aktualisiert. Aktualisieren Sie manuell, wenn Sie bereit sind.',
+      checkFailed: 'Hermes konnte nicht nach Updates suchen. Bei Ihrer nächsten Anmeldung wird es erneut versucht.',
+      last: (outcome: string, age: string) => `Letztes automatisches Update: ${outcome} · ${age}`,
+      outcomes: {
+        'handed-off': 'installiert',
+        updated: 'installiert',
+        'up-to-date': 'bereits aktuell',
+        failed: 'fehlgeschlagen',
+        'skipped-dirty': 'übersprungen (lokale Änderungen)',
+        'skipped-unsupported': 'für diese Installation nicht unterstützt',
+        'check-failed': 'Prüfung fehlgeschlagen',
+        'deferred-timeout': 'übersprungen (Gateway blieb beschäftigt)'
+      }
+    },
     onLatest: 'Sie verwenden die neueste Version.',
     installing: 'Ein Update wird derzeit installiert.',
     cantReach: 'Der Update-Server konnte nicht erreicht werden.',

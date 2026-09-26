@@ -4566,6 +4566,30 @@ export const frOverrides = {
     checkNow: 'Vérifier maintenant',
     seeWhatsNew: 'Voir les nouveautés',
     releaseNotes: 'Notes de version',
+    autoUpdate: {
+      title: 'Installer les mises à jour automatiquement',
+      desc: 'Au premier lancement après votre connexion, Hermes récupère la dernière mise à jour de votre canal et redémarre. Il attend si une passerelle est occupée, et ne fait qu’une tentative par connexion.',
+      unsupported: 'Les mises à jour automatiques sont disponibles sur macOS et Linux.',
+      saveFailed: 'Impossible de modifier les mises à jour automatiques',
+      deferredTitle: 'Mise à jour automatique en attente',
+      deferredMessage:
+        'Une passerelle est en train d’exécuter une tâche. Hermes se mettra à jour dès qu’elle sera terminée.',
+      skippedTitle: 'Mise à jour automatique ignorée',
+      skippedDirty:
+        'Ce dépôt Hermes contient des modifications locales ; il n’a donc pas été mis à jour automatiquement. Mettez-le à jour manuellement quand vous serez prêt.',
+      checkFailed: 'Hermes n’a pas pu rechercher de mises à jour. Nouvel essai à votre prochaine connexion.',
+      last: (outcome: string, age: string) => `Dernière mise à jour automatique : ${outcome} · ${age}`,
+      outcomes: {
+        'handed-off': 'installée',
+        updated: 'installée',
+        'up-to-date': 'déjà à jour',
+        failed: 'échec',
+        'skipped-dirty': 'ignorée (modifications locales)',
+        'skipped-unsupported': 'non prise en charge pour cette installation',
+        'check-failed': 'vérification impossible',
+        'deferred-timeout': 'ignorée (passerelle restée occupée)'
+      }
+    },
     onLatest: 'Vous utilisez la dernière version.',
     installing: "Une mise à jour est en cours d'installation.",
     cantReach: "Impossible d'atteindre le serveur de mises à jour.",

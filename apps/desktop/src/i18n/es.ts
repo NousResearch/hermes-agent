@@ -4545,6 +4545,29 @@ export const esOverrides = {
     checkNow: 'Comprobar ahora',
     seeWhatsNew: 'Ver novedades',
     releaseNotes: 'Notas de la versión',
+    autoUpdate: {
+      title: 'Instalar actualizaciones automáticamente',
+      desc: 'La primera vez que Hermes se abre tras iniciar sesión, descarga la última actualización de tu canal y se reinicia. Espera si una pasarela está ocupada y solo lo intenta una vez por inicio de sesión.',
+      unsupported: 'Las actualizaciones automáticas están disponibles en macOS y Linux.',
+      saveFailed: 'No se pudieron cambiar las actualizaciones automáticas',
+      deferredTitle: 'La actualización automática está en espera',
+      deferredMessage: 'Una pasarela está en mitad de una tarea. Hermes se actualizará cuando termine.',
+      skippedTitle: 'Actualización automática omitida',
+      skippedDirty:
+        'Esta copia de Hermes tiene cambios locales, así que no se actualizó automáticamente. Actualízala manualmente cuando quieras.',
+      checkFailed: 'Hermes no pudo buscar actualizaciones. Lo intentará de nuevo en tu próximo inicio de sesión.',
+      last: (outcome: string, age: string) => `Última actualización automática: ${outcome} · ${age}`,
+      outcomes: {
+        'handed-off': 'instalada',
+        updated: 'instalada',
+        'up-to-date': 'ya estaba al día',
+        failed: 'falló',
+        'skipped-dirty': 'omitida (cambios locales)',
+        'skipped-unsupported': 'no compatible con esta instalación',
+        'check-failed': 'no se pudo comprobar',
+        'deferred-timeout': 'omitida (la pasarela siguió ocupada)'
+      }
+    },
     onLatest: 'Ya tienes la versión más reciente.',
     installing: 'Se está instalando una actualización.',
     cantReach: 'No pudimos contactar con el servidor de actualizaciones.',

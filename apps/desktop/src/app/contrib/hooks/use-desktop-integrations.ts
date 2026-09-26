@@ -11,6 +11,7 @@ import { getSession } from '@/hermes'
 import { resolveDeepLinkAction } from '@/lib/deeplink-routes'
 import { pathFromHermesDeepLink, resolveHermesOpenPath } from '@/lib/hermes-open-target'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
+import { runAutoUpdateOnLaunch } from '@/store/auto-update'
 import { announceNewSessionDraftKey } from '@/store/composer'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
 import { startMcpHealthChecker, stopMcpHealthChecker } from '@/store/mcp-health'
@@ -87,6 +88,14 @@ export function useDesktopIntegrations({
   // process's "open updates" menu request.
   useEffect(() => {
     startUpdatePoller()
+
+    // Opt-in "install updates on first launch after login" (#123674). Main
+    // grants at most one claim per OS login session, so only the primary
+    // window asks — secondary/HUD/browser windows never drive an update.
+    if (!isSecondaryWindow() && !isHudWindow() && !isBrowserWindow()) {
+      runAutoUpdateOnLaunch()
+    }
+
     // Background MCP health: HTTP/SSE servers only (never spawns stdio),
     // notifies on transitions into needs-auth/error with a Sign in action.
     startMcpHealthChecker()

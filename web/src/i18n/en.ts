@@ -594,6 +594,15 @@ export const en: Translations = {
     hubSearchPlaceholder:
       "Search the skill hub (GitHub, official, community)…",
     connectingHubs: "Connecting to skill hubs…",
+    hubDirLabel: "Local file or directory",
+    hubBrowseEmpty:
+      "Search the hub above to browse installable skills from the connected sources.",
+    hubNoMatches: "No matching skills found in the hub.",
+    hubSourcesNote: "Results come from the same sources as hermes skills search.",
+    scanPrompt:
+      "Run a security scan to inspect this skill for risky patterns before installing.",
+    scanClean: "No risky patterns detected",
+    scanFetching: "Fetching, quarantining, and scanning…",
     enabledOf: "{enabled}/{total} enabled",
     all: "All",
     categories: "Categories",
@@ -1302,6 +1311,39 @@ export const en: Translations = {
     portalNotLoggedIn: "not logged in",
     portalInferenceProvider: "inference provider: ",
     toolGatewayRouting: "Tool Gateway routing",
+    portalLoginHint: "Log in with hermes portal.",
+    sharedRestartTitle: "Restart the shared gateway?",
+    sharedRestartConfirm: "Restart all",
+    updateConfirmTitle: "Update Hermes?",
+    updateConfirmLabel: "Update now",
+    updateConfirmBehind:
+      "This will run 'hermes update' ({command}) and pull {count} new commit(s). The gateway restarts when the update finishes; the current session keeps its prompt cache until then.",
+    updateConfirmPlain:
+      "This will run 'hermes update' ({command}) and restart the gateway when it finishes.",
+    memoryResetDescription:
+      "This permanently erases the selected built-in memory files. This cannot be undone.",
+    credentialDeleteDescription:
+      "Remove this pooled API key? The agent will no longer rotate through it.",
+    pruneDescription:
+      "Delete the rollback checkpoint shadow store? Existing /rollback points will be lost.",
+    hookDeleteDescription:
+      "Remove this hook from config and revoke its consent? It stops firing on the next restart.",
+    multiplexExplanation:
+      "Your profiles each run their own gateway. One multiplexed gateway serves every profile from a single process.",
+    multiplexBlockedTitle: "Fix the blockers below first",
+    multiplexButton: "Migrate to a single multiplexed gateway",
+    memoryProviderMissing:
+      "The configured provider is no longer installed. Switch to built-in memory or configure another provider in Plugins.",
+    noPooledCredentials:
+      "No pooled credentials. Add one above to enable key rotation.",
+    addKey: "Add key",
+    chooseRestoreZip: "Choose restore zip",
+    noArchiveSelected: "No backup archive selected",
+    shareDebugReport: "Share debug report",
+    shareDebugDescription:
+      "Uploads system info + logs to a public paste service and returns links to send the Hermes team. Pastes auto-delete after 6 hours.",
+    shareUploadFailures: "Some logs failed to upload: {errors}",
+    noHooksConfigured: "No shell hooks configured.",
   },
 
   mcp: {

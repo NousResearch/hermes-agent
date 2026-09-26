@@ -525,7 +525,11 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     skill_dir, guard = _locate_for_write(name, "delete")
     if guard := guard or _curator_consolidation_delete_guard(name, absorbed_into):
         return guard
-    if pinned_err := _pinned_guard(name):
+    # Pins and ESSENTIAL_SKILLS are keyed by the skill's frontmatter `name:`, but _find_skill
+    # resolves by directory (bare or categorized, `mlops/axolotl`), and the two can differ.
+    from tools.skill_usage import _read_skill_name
+    fm_name = _read_skill_name(skill_dir / "SKILL.md", fallback=skill_dir.name)
+    if pinned_err := _pinned_guard(skill_dir.name) or _pinned_guard(fm_name):
         return _err(pinned_err)
     absorbed_target = absorbed_into.strip() if isinstance(absorbed_into, str) else ""
     if absorbed_target:

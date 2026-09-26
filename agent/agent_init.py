@@ -903,11 +903,12 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
         )
     if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
         # Explicit non-OpenRouter provider with no creds and no usable fallback: fail fast.
-        from agent.auxiliary_unavailable import missing_provider_credentials_message
-        raise RuntimeError(missing_provider_credentials_message(_explicit))
+        from agent.auxiliary_unavailable import ProviderNotConfiguredError, missing_provider_credentials_message
+        raise ProviderNotConfiguredError(missing_provider_credentials_message(_explicit))
     from hermes_constants import profile_cli_selector
+    from agent.auxiliary_unavailable import ProviderNotConfiguredError
     _sel = profile_cli_selector()
-    raise RuntimeError(
+    raise ProviderNotConfiguredError(
         "No LLM provider configured. Run `hermes model` to "
         "select a provider, or run `hermes setup` for first-time "
         "configuration."

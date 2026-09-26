@@ -368,6 +368,15 @@ _FETCH_FAILURE_RULES = (
     (lambda s: "Permission denied (publickey)" in s or "Host key verification failed" in s,
      "✗ SSH authentication failed — check your SSH key is added to GitHub, or switch"
      " `origin` to HTTPS: `git remote set-url origin https://github.com/NousResearch/hermes-agent.git`."),
+    # A wall-clock timeout kill says nothing about the transport: the fetch was
+    # likely still transferring when the cap hit (#123254) — a huge pack on a
+    # slow link, not a dead remote, and the install usually needs the shallow
+    # heal (or one manual fetch) rather than network debugging.
+    (lambda s: "network limit" in s,
+     "✗ The fetch exceeded the update time limit while still transferring — this is a"
+     " slow/large fetch, not a broken connection. A very stale shallow install can hit"
+     " this repeatedly; re-running `hermes update` (which now heals the shallow history"
+     " first) or one manual `git fetch origin` usually gets past it."),
 )
 
 

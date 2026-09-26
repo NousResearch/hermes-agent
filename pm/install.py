@@ -739,6 +739,15 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
             raise ValueError("repair restores the recorded environment; it cannot change features or plugins")
         if evict_incompatible_plugins and (repair or plugins is not None or not explicit):
             raise ValueError("only an explicit sync of the discovered plugin selection may disable plugins")
+        if explicit and not repair:
+            # A provider enabled via config (clone, dashboard, `config set`) without a
+            # recorded setup sync must still rebuild WITH its runtime dep (#123784).
+            # Before the frozen-bundle policy, so a bundle refuses cleanly instead of
+            # drifting. Reads as no extras when config is unreadable.
+            # ponytail: config read per explicit sync; cache if measurable.
+            from pm.extras import configured_memory_extras
+            if (memory_extras := configured_memory_extras()):
+                extras = sorted(set(extras or []) | set(memory_extras))
         shipped, frozen = _feature_policy(extras, repair=repair)
         package = get_package("venv")
         from hermes_cli.runtime_state import recover_publication

@@ -67,6 +67,37 @@ def _memory_provider_setup_manifest(name: str) -> tuple[dict, dict]:
     }, inputs
 
 
+def _hindsight_embedded_runtime_missing(name: str) -> bool:
+    """True when hindsight local_embedded mode lacks the ``hindsight`` runtime.
+
+    The catalog plugin pin declares only ``hindsight-client`` as a PM member, so a
+    rebuilt environment is ledger-current while the embedded ``hindsight-all``
+    runtime is gone (``No module named 'hindsight'``) — without this the setup
+    probe reports installed and the outage is silent (#123784). Never raises:
+    unreadable config or an unresolvable import reads as not-missing.
+    # ponytail: hindsight-specific; generalize to provider-declared runtime
+    # anchors if a second embedded runtime appears."""
+    if str(name or "").strip() != "hindsight":
+        return False
+    try:
+        import json
+
+        from hermes_cli.config import get_hermes_home
+
+        raw = json.loads((get_hermes_home() / "hindsight" / "config.json").read_text(
+            encoding="utf-8-sig"))
+    except Exception:
+        return False
+    if not isinstance(raw, dict) or raw.get("mode") != "local_embedded":
+        return False
+    try:
+        import importlib.util
+
+        return importlib.util.find_spec("hindsight") is None
+    except Exception:
+        return False
+
+
 def _memory_provider_setup_info(name: str) -> Dict[str, Any]:
     import pm
 
@@ -80,6 +111,8 @@ def _memory_provider_setup_info(name: str) -> Dict[str, Any]:
         python_ready = not inputs or pm.venv_is_current(**inputs)
     except Exception:
         _log.debug("Could not read dependency state for %s", name, exc_info=True)
+        python_ready = False
+    if python_ready and _hindsight_embedded_runtime_missing(name):
         python_ready = False
     setup["dependencies_installed"] = python_ready and _memory_provider_external_dependencies_installed(setup)
     return setup

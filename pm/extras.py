@@ -185,6 +185,42 @@ def install_hint(extra: str) -> str:
     return f"hermes pm install --extra {extra}"
 
 
+def configured_memory_extras() -> list[str]:
+    """PM extras for the configured memory provider (``memory.provider``).
+
+    Explicit environment builds union these in: a provider enabled via config
+    (clone, dashboard, ``config set``) without a recorded setup sync would
+    otherwise rebuild a venv without its runtime dep (#123784). Never raises:
+    unreadable config or an unknown provider reads as no extras, never a
+    broken install."""
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly
+        provider = cfg_get(load_config_readonly(), "memory", "provider")
+    except Exception:
+        return []
+    if not isinstance(provider, str) or not provider.strip():
+        return []
+    try:
+        from plugins.memory import find_provider_dir
+        provider_dir = find_provider_dir(provider.strip())
+    except Exception:
+        return []
+    if provider_dir is None:
+        return []
+    try:
+        from pm.plugin_declarations import read_python_declaration
+        extra = read_python_declaration(provider_dir).manifest.get("extra")
+    except Exception:
+        return []
+    if not isinstance(extra, str) or not extra:
+        return []
+    # Only a real PM extra the resolver can carry; a catalog-only dependency
+    # name must never reach uv as an extra (it would fail the sync).
+    if extra not in ANCHORS or not extra_supported(extra, importable=lambda _anchor: False):
+        return []
+    return [extra]
+
+
 def ensure_import(extra: str) -> None:
     """Make an extra available: no-op when the anchor imports, otherwise
     sync the venv with the extra enabled. Raises InstallError on failure

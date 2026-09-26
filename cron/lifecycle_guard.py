@@ -286,6 +286,63 @@ _DATA_SINK_EXECUTABLES = frozenset(
 )
 # Argument shapes that smuggle execution back INTO a data sink (command/process substitution, psql
 # `\!`). Any hit disables masking for the whole segment — fail closed to the plain regex verdict.
+# ``ssh <host> <command>`` runs <command> on the REMOTE host: it cannot SIGTERM this gateway, so a
+# lifecycle command there is (for this guard) data. Loopback targets reach this host and stay
+# blocked; so do options that run text LOCALLY (ProxyCommand / LocalCommand). A hostname that
+# resolves to this machine cannot be detected from text and is an accepted residual gap.
+_SSH_EXECUTABLES = frozenset({"ssh", "autossh"})
+_SSH_VALUE_OPTIONS = frozenset("BbcDEeFIiJLlMmOoPpQRSWw")
+_SSH_LOCAL_EXEC_OPTION = re.compile(r"(?i)(?:proxycommand|localcommand|permitlocalcommand|knownhostscommand)")
+_LOOPBACK_HOST = re.compile(
+    r"(?i)^(?:localhost(?:\.localdomain)?|(?:::ffff:)?127\.\d{1,3}\.\d{1,3}\.\d{1,3}|::1|0\.0\.0\.0|0:0:0:0:0:0:0:1)$"
+)
+
+
+def _ssh_remote_host(arguments: list[str]) -> Optional[str]:
+    """Destination host of an ``ssh`` argument list (user@ and [brackets] stripped), or None when
+    it cannot be determined or an option would execute text locally."""
+    i = 0
+    while i < len(arguments):
+        token = arguments[i]
+        if _SSH_LOCAL_EXEC_OPTION.search(token):
+            return None
+        if token == "--":
+            i += 1
+            break
+        if token.startswith("-") and len(token) > 1:
+            flags = token[1:]
+            for pos, flag in enumerate(flags):
+                if flag in _SSH_VALUE_OPTIONS:
+                    value = flags[pos + 1:] or (arguments[i + 1] if i + 1 < len(arguments) else "")
+                    if _SSH_LOCAL_EXEC_OPTION.search(value):
+                        return None
+                    if not flags[pos + 1:]:
+                        i += 1
+                    break
+            i += 1
+            continue
+        break
+    if i >= len(arguments):
+        return None
+    host = arguments[i]
+    if host.startswith("ssh://"):
+        host = host[len("ssh://"):].split("/", 1)[0]
+    host = host.rsplit("@", 1)[-1]
+    if host.startswith("["):
+        host = host[1:].split("]", 1)[0]
+    elif host.count(":") == 1:
+        host = host.split(":", 1)[0]
+    return host or None
+
+
+def _is_remote_ssh_segment(segment: list[str], index: int) -> bool:
+    """True for ``ssh <non-loopback host> ...``: its command runs on another machine."""
+    if Path(segment[index]).name not in _SSH_EXECUTABLES:
+        return False
+    host = _ssh_remote_host(segment[index + 1:])
+    return bool(host) and not _LOOPBACK_HOST.match(host)
+
+
 _UNSAFE_DATA_ARG_MARKERS = ("`", "$(", "<(", ">(", "\\!")
 # sqlite3 dot-commands (`.shell`, `.system`) also disable masking. Dot must be followed by a NAME
 # character so relative paths (`.`, `./x`) stay paths.
@@ -734,7 +791,9 @@ def _mask_data_sink_arguments(text: str) -> str:
         rebuilt: list[str] = []
         for segment in _split_segments(tokens, keep_controls=True):
             index = _command_token_index(segment)
-            if index is not None and Path(segment[index]).name in _DATA_SINK_EXECUTABLES:
+            if index is not None and (
+                    Path(segment[index]).name in _DATA_SINK_EXECUTABLES
+                    or _is_remote_ssh_segment(segment, index)):
                 arguments = segment[index + 1 :]
                 if not any(
                     _DOT_COMMAND_ARGUMENT.match(argument)

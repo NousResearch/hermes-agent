@@ -13,6 +13,8 @@ import hashlib
 import logging
 from typing import Any, Optional
 
+from utils import base_url_hostname
+
 logger = logging.getLogger(__name__)
 
 _MEMO_ATTR = "_prompt_cache_scope_memo"
@@ -173,6 +175,9 @@ def resolve_prompt_cache_scope(agent: Any) -> str:
 # colons are never mistaken for a fork scope.
 FORK_SCOPE_SEPARATOR = "::"
 
+# Aggregator slugs that front xAI Grok (OpenRouter and friends).
+GROK_AGGREGATOR_MODEL_PREFIXES = ("x-ai/grok-", "xai/grok-")
+
 
 def is_slot_keyed_cache_route(provider: Any, model: Any, base_url: Any = "") -> bool:
     """True when the cache key selects ONE server-side slot per conversation.
@@ -186,9 +191,9 @@ def is_slot_keyed_cache_route(provider: Any, model: Any, base_url: Any = "") -> 
     """
     if str(provider or "").strip().lower() in {"xai", "xai-oauth"}:
         return True
-    if "api.x.ai" in str(base_url or "").lower():
+    if base_url_hostname(str(base_url or "")) == "api.x.ai":
         return True
-    return str(model or "").strip().lower().startswith(("x-ai/grok-", "xai/grok-"))
+    return str(model or "").strip().lower().startswith(GROK_AGGREGATOR_MODEL_PREFIXES)
 
 
 def is_fork_cache_scope(scope: Any) -> bool:

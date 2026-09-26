@@ -114,12 +114,44 @@ def _read_windows_pyvenv_cfg(venv_dir: Path) -> dict[str, str]:
     }
 
 
+def _posix_dependency_env_overlay() -> dict[str, str]:
+    """PYTHONPATH overlay for POSIX cron scripts: repo root + committed generation site-packages,
+    plus whatever PYTHONPATH the caller left. Empty when the install has no store Python or no
+    generation environment (source checkout, portable run) — the child then keeps today's
+    behaviour instead of failing the job on an env probe.
+
+    ``.pth`` files are not processed for PYTHONPATH entries; the only one that matters here is
+    the editable hermes install, whose target (the repo root) is added explicitly.
+    """
+    try:
+        from pm.environments import selected_venv, site_packages as dependency_site
+
+        repo = Path(__file__).resolve().parents[1]
+        dependencies = dependency_site(selected_venv(repo))
+        if not dependencies.is_dir():
+            # No managed generation environment (source checkout, portable run): leave the child
+            # as it is today rather than putting a dangling path on PYTHONPATH.
+            return {}
+        entries = [str(repo), str(dependencies)]
+    except Exception:  # pragma: no cover - never fail a job on env probing
+        return {}
+    existing = os.environ.get("PYTHONPATH", "")
+    if existing:
+        entries.append(existing)
+    return {"PYTHONPATH": os.pathsep.join(entries)}
+
+
 def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str]]:
     """Hidden, output-capable Python invocation for Windows cron scripts. ``pythonw.exe`` loses
     captured output; uv venv launchers can re-exec the base console python and flash a window
     even with CREATE_NO_WINDOW, so run the base python directly with venv paths overlaid in env."""
     if sys.platform != "win32":
-        return python_exe, {}
+        # POSIX: the launcher runs the managed ("store") Python, and its site-packages holds only
+        # Hermes' own runtime — a cron script's third-party imports live in the committed
+        # generation environment instead, so the child needs the same PYTHONPATH overlay the
+        # Windows branch installs (repo + generation site-packages). The interpreter stays
+        # ``sys.executable``: it is already the managed Python, so no bootstrap re-exec is needed.
+        return python_exe, _posix_dependency_env_overlay()
 
     interpreter = _sched.Path(python_exe)
     venv_dir = interpreter.parent.parent
@@ -329,7 +361,9 @@ def _script_argv(path: Path) -> tuple[Optional[list[str]], dict[str, str], Optio
             )
         return [_bash, str(path)], {}, None
     python_exe, env_overlay = _windows_cron_python_invocation(sys.executable)
-    if env_overlay:
+    if env_overlay and sys.platform == "win32":
+        # The .pth bootstrap exists for uv-venv launchers on Windows; on POSIX the overlay alone
+        # is enough (the interpreter is the managed Python and the repo is on PYTHONPATH).
         return _windows_cron_bootstrap_argv(python_exe, env_overlay, str(path)), env_overlay, None
     return [python_exe, str(path)], env_overlay, None
 

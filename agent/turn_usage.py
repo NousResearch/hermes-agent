@@ -198,6 +198,15 @@ def record_response_usage(
         _cache_pct += f" write={canonical_usage.cache_write_tokens}"
     _rid = getattr(response, "id", None)
     _ident = f" id={_rid}" if isinstance(_rid, str) and _rid else ""
+    # Persist the provider response id per call (deduped) so cron fire records can
+    # reference the exact provider response after the fact (usage_audit cost/ids PR).
+    if isinstance(_rid, str) and _rid:
+        _ids = getattr(agent, "session_provider_response_ids", None)
+        if _ids is None:
+            _ids = []
+            agent.session_provider_response_ids = _ids
+        if _rid not in _ids:
+            _ids.append(_rid)
     _upstream = getattr(response, "provider", None)
     if isinstance(_upstream, str) and _upstream:
         _ident += f" upstream={_upstream}"

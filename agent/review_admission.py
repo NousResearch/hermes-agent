@@ -43,6 +43,9 @@ REASON_REVIEW_SLOT_BUSY = "review_slot_busy"
 # not confirmed, or when the turn handed the session to a queued follow-up's drain task.
 REASON_DELIVERY_UNCONFIRMED = "delivery_unconfirmed"
 REASON_PENDING_HANDOFF = "pending_followup_handoff"
+# A turn nested inside this turn's delivery window (/retry while the reply is on the wire)
+# rewound the transcript; the fresher nested candidate replaces this turn's retracted one.
+REASON_CANDIDATE_SUPERSEDED = "review_candidate_superseded"
 # Cancellation and idle-queue outcomes, so a review that vanished mid-flight is as greppable as
 # one that was never admitted.
 REASON_LIVE_TURN_CANCELLED = "live_turn_cancelled"

@@ -1245,7 +1245,9 @@ def test_stale_probe_state_and_fresh_fence_state_cannot_deadlock(monkeypatch):
     gateway_thread.join(timeout=5.0)
     try:
         assert not review_thread.is_alive(), "review wedged inside the host probe"
-        assert not gateway_thread.is_alive(), "gateway slot write wedged behind the review"
+        assert not gateway_thread.is_alive(), (
+            "gateway slot write wedged behind the review"
+        )
         assert fenced == [True]
         # The rotated session's live turn is another registry owner: the review is admitted.
         assert admitted == [True]
@@ -1281,7 +1283,9 @@ def test_pending_probe_takes_no_lock_from_a_replaced_admission_state(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_inline_dispatched_nested_turn_completes_its_review_ownership(monkeypatch):
+async def test_inline_dispatched_nested_turn_completes_its_review_ownership(
+    monkeypatch,
+):
     """/retry typed while the outgoing turn's reply is on the wire is dispatched inline (every
     recognised command bypasses the active-session guard) and nests a second agent turn through
     the runner's idle path. That turn parks its review-ownership completion on the live session
@@ -1315,9 +1319,11 @@ async def test_inline_dispatched_nested_turn_completes_its_review_ownership(monk
     runner._delivery_adapter_for = lambda _source: adapter
     original_finish = _GatewayReviewAdmission.finish
 
-    def _finish(self, *, delivery_succeeded, cause=None):
+    def _finish(self, *, delivery_succeeded, cause=None, outer=None):
         finishes.append((self.token, delivery_succeeded, cause))
-        return original_finish(self, delivery_succeeded=delivery_succeeded, cause=cause)
+        return original_finish(
+            self, delivery_succeeded=delivery_succeeded, cause=cause, outer=outer
+        )
 
     monkeypatch.setattr(_GatewayReviewAdmission, "finish", _finish)
 
@@ -1335,7 +1341,9 @@ async def test_inline_dispatched_nested_turn_completes_its_review_ownership(monk
         sends.append(content)
         if len(sends) == 1:
             # The user's /retry lands while this (outgoing) reply is being sent.
-            await adapter._handle_message_while_active(_event(text="/retry"), session_key)
+            await adapter._handle_message_while_active(
+                _event(text="/retry"), session_key
+            )
         return SendResult(success=True, message_id=f"sent-{len(sends)}")
 
     adapter.set_message_handler(_handler)
@@ -1347,3 +1355,204 @@ async def test_inline_dispatched_nested_turn_completes_its_review_ownership(monk
     assert [ok for _token, ok, _cause in finishes] == [True, True]
     assert len({token for token, _ok, _cause in finishes}) == 2
     assert review_admission.other_live_turn(session_id, None, profile_key) is False
+
+
+@pytest.mark.asyncio
+async def test_direct_handoff_completes_ownership_from_its_own_event_beside_a_live_task(
+    monkeypatch,
+):
+    """The CLI->gateway handoff is a direct-call ingress: it runs the synthetic turn inline
+    and completes review ownership from its OWN event. The destination chat may have a live
+    adapter task at that moment, so the runner must not park the handoff's completion on that
+    task's session Event: nobody reads it there (the task took its own callback the moment its
+    handler returned), or it overwrites the callback the task still has parked. Either way a
+    live-turn token leaks and every later automatic review on the session is refused as
+    ``live_turn_active``.
+    """
+    monkeypatch.setattr(BasePlatformAdapter, "__abstractmethods__", frozenset())
+    adapter = BasePlatformAdapter(
+        PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM
+    )
+    runner = object.__new__(GatewayRunner)
+    session_id = "handoff-beside-live-task"
+    session_key = "handoff-beside-live-task-key"
+    profile_key = review_admission.current_profile_key()
+    guard = asyncio.Event()
+    adapter._active_sessions[session_key] = guard
+    sends = []
+
+    def live_task_finish(*, delivery_succeeded, cause=None):
+        raise AssertionError("the live adapter task's own completion must stay parked")
+
+    guard._gateway_review_delivery_complete = live_task_finish
+
+    async def _resolve(event, _source):
+        return event.source, types.SimpleNamespace(session_id=session_id), session_key
+
+    async def _prepare(*_args):
+        return "handoff reply", []
+
+    async def _handle_message(event):
+        return await runner._handle_message_with_agent(
+            event, event.source, session_key, 1
+        )
+
+    async def _send(_platform, _chat_id, text, _metadata=None):
+        sends.append(text)
+        return SendResult(success=True, message_id="sent")
+
+    destination = types.SimpleNamespace(
+        source=_event().source,
+        platform=Platform.TELEGRAM,
+        platform_name="telegram",
+        home=types.SimpleNamespace(chat_id="chat"),
+        effective_thread_id=None,
+        transport=types.SimpleNamespace(send=_send),
+    )
+
+    async def _resolve_destination(_row, _profile_name):
+        return destination
+
+    async def _get_or_create_session(_source):
+        return None
+
+    async def _switch_session(_key, _cli_session_id):
+        return object()
+
+    store = types.SimpleNamespace()
+    runner.session_store = store
+    runner._async_session_store = types.SimpleNamespace(
+        _store=store,
+        get_or_create_session=_get_or_create_session,
+        switch_session=_switch_session,
+    )
+    runner._hmwa_resolve_session = _resolve
+    runner._hmwa_prepare_turn = _prepare
+    runner._delivery_adapter_for = lambda _source: adapter
+    runner._handle_message = _handle_message
+    runner._handoff_resolve_destination = _resolve_destination
+    runner._handoff_session_key = lambda _dest, _profile_name: session_key
+    runner._evict_cached_agent = lambda _key: None
+    runner._release_running_agent_state = lambda _key, **_kwargs: True
+
+    await runner._process_handoff({
+        "id": "cli-session",
+        "title": "work",
+        "handoff_platform": "telegram",
+    })
+
+    assert sends == ["handoff reply"]
+    assert review_admission.other_live_turn(session_id, None, profile_key) is False
+    assert guard._gateway_review_delivery_complete is live_task_finish
+
+
+@pytest.mark.asyncio
+async def test_nested_retry_review_supersedes_the_retracted_outgoing_candidate(
+    monkeypatch, caplog
+):
+    """/retry typed while the outgoing turn's reply is on the wire rewinds the transcript and
+    nests the retried turn inline (previous test). The outgoing turn's live-turn token is
+    released only when ITS send completes, so the nested turn's candidate cannot spawn when the
+    inline dispatch completes it — and the outgoing turn's own candidate is the transcript
+    ``/retry`` just retracted. The terminal delivery owner must spawn the freshest candidate
+    exactly once, after every token is released: the retried turn's, never the retracted one.
+    """
+    import gateway.run_turn as run_turn_module
+
+    monkeypatch.setattr(BasePlatformAdapter, "__abstractmethods__", frozenset())
+    adapter = BasePlatformAdapter(
+        PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM
+    )
+    monkeypatch.setattr(adapter.config, "typing_indicator", False, raising=False)
+    runner = object.__new__(GatewayRunner)
+    session_id = "nested-retry-session"
+    session_key = "nested-retry-key"
+    profile_key = review_admission.current_profile_key()
+    guard = asyncio.Event()
+    adapter._active_sessions[session_key] = guard
+    sends, spawns = [], []
+
+    def _spawn(**kwargs):
+        spawns.append((
+            kwargs["messages_snapshot"][0]["content"],
+            review_admission.other_live_turn(
+                session_id, kwargs["_spawning_turn_token"], profile_key
+            ),
+        ))
+
+    agent = types.SimpleNamespace(
+        session_id=session_id, _spawn_background_review=_spawn
+    )
+
+    class _InlineThread:
+        def __init__(self, *, target, args=(), kwargs=None, daemon=None, name=None):
+            self._run = lambda: target(*args, **(kwargs or {}))
+
+        def start(self):
+            self._run()
+
+    monkeypatch.setattr(
+        run_turn_module,
+        "threading",
+        types.SimpleNamespace(
+            Thread=_InlineThread, Lock=threading.Lock, Event=threading.Event
+        ),
+    )
+
+    async def _resolve(event, _source):
+        return event.source, types.SimpleNamespace(session_id=session_id), session_key
+
+    async def _prepare(event, *_args):
+        # The turn ran: its terminal candidate is frozen on this turn's delivery owner, which
+        # the runner parked on the live session Event before preparing the turn.
+        admission = guard._gateway_review_delivery_complete.__self__
+        admission.bind_agent(agent)
+        admission.capture_candidate(
+            agent,
+            [{"role": "user", "content": event.text}],
+            review_memory=True,
+            review_skills=False,
+        )
+        return "reply", []
+
+    runner._hmwa_resolve_session = _resolve
+    runner._hmwa_prepare_turn = _prepare
+    runner._delivery_adapter_for = lambda _source: adapter
+
+    async def _handler(event):
+        turn = (
+            _event(text="retried prompt")
+            if (event.text or "").startswith("/retry")
+            else event
+        )
+        return await runner._handle_message_with_agent(
+            turn, turn.source, session_key, run_generation=len(sends) + 1
+        )
+
+    async def _send(chat_id, content, reply_to=None, metadata=None):
+        sends.append(content)
+        if len(sends) == 1:
+            # The user's /retry lands while this (outgoing) reply is being sent.
+            await adapter._handle_message_while_active(
+                _event(text="/retry"), session_key
+            )
+        return SendResult(success=True, message_id=f"sent-{len(sends)}")
+
+    adapter.set_message_handler(_handler)
+    adapter.send = _send
+
+    with caplog.at_level("INFO"):
+        await adapter._process_message_background(_event(text="first"), session_key)
+
+    assert sends == ["reply", "reply"]
+    assert spawns == [("retried prompt", False)]
+    assert review_admission.other_live_turn(session_id, None, profile_key) is False
+    superseded = [
+        record.getMessage()
+        for record in caplog.records
+        if review_admission.REASON_CANDIDATE_SUPERSEDED in record.getMessage()
+    ]
+    assert len(superseded) == 1, caplog.text
+    assert review_admission.owner_tag(profile_key, session_id) in superseded[0]
+    assert session_id not in superseded[0]
+    assert "first" not in superseded[0]

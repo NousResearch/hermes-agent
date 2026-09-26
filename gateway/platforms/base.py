@@ -3539,13 +3539,16 @@ class BasePlatformAdapter(ABC):
         Event, which the outgoing task read once, the moment its own handler returned. Only a
         completion that appeared during this handler call is taken — the outgoing turn's own,
         still parked while its handler runs, is never touched — and it completes with this
-        send's outcome, so the nested turn's live-turn token never outlives its delivery.
+        send's outcome, so the nested turn's live-turn token never outlives its delivery. Its
+        candidate goes to the outgoing turn (still the session's delivery owner), which spawns
+        it once its own token is released: a spawn here would be refused against that token.
         """
         thread_meta = _thread_metadata_for_event(event)
         if session_key is None:
             session_key = self._event_session_key(event)
         guard = self._active_sessions.get(session_key)
         parked = getattr(guard, "_gateway_review_delivery_complete", None)
+        outgoing = getattr(guard, "_gateway_review_delivery_outgoing", None)
         review_delivery_complete = None
         delivery_succeeded = False
         try:
@@ -3571,7 +3574,8 @@ class BasePlatformAdapter(ABC):
         finally:
             if callable(review_delivery_complete):
                 await self._complete_review_delivery(
-                    review_delivery_complete, delivery_succeeded=delivery_succeeded)
+                    review_delivery_complete, delivery_succeeded=delivery_succeeded,
+                    outer=getattr(outgoing, "__self__", None))
 
     def _media_delivery_scope(self, source: Optional[SessionSource]):
         """Routed home + terminal policy for post-handler text, media and error delivery;
@@ -4565,16 +4569,20 @@ class BasePlatformAdapter(ABC):
 
     async def _complete_review_delivery(
         self, callback: Callable[..., Any], *, delivery_succeeded: bool,
-        cause: Optional[str] = None,
+        cause: Optional[str] = None, outer: Any = None,
     ) -> None:
-        """Complete one turn's gateway review ownership with its delivery outcome.
+        """Complete one turn's gateway review ownership with its delivery outcome; ``outer`` is
+        the still-open owner of the turn this one was nested in (inline dispatch).
 
         ``finish()`` released ownership and dropped the candidate before the spawn hop, so a
         failure here silently disables the review: one owner-tagged line, never fatal."""
         from agent.review_admission import REASON_COMPLETION_ERROR
 
         try:
-            result = callback(delivery_succeeded=delivery_succeeded, cause=cause)
+            kwargs = {"delivery_succeeded": delivery_succeeded, "cause": cause}
+            if outer is not None:
+                kwargs["outer"] = outer
+            result = callback(**kwargs)
             if inspect.isawaitable(result):
                 await asyncio.wait_for(result, timeout=_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
         except Exception:
@@ -4631,6 +4639,10 @@ class BasePlatformAdapter(ABC):
             response = await self._message_handler(event)
             review_delivery_complete = self._take_review_delivery_callback(event, interrupt_event)
             review_ownership_taken = True
+            if callable(review_delivery_complete):
+                # Still the session's delivery owner until the send below completes: a turn an
+                # inline dispatch nests meanwhile (/retry) hands its candidate to this one.
+                interrupt_event._gateway_review_delivery_outgoing = review_delivery_complete
             # A muted diagnostic wake ran for the session; its reply is not presented. The
             # policy read binds the routed profile; delivery itself stays in the launch scope.
             with self._media_delivery_scope(event.source):
@@ -4736,6 +4748,8 @@ class BasePlatformAdapter(ABC):
             if callable(review_delivery_complete):
                 from agent.review_admission import REASON_PENDING_HANDOFF
 
+                with contextlib.suppress(Exception):
+                    delattr(interrupt_event, "_gateway_review_delivery_outgoing")
                 await self._complete_review_delivery(
                     review_delivery_complete,
                     delivery_succeeded=bool(processing_ok and not pending_handoff),

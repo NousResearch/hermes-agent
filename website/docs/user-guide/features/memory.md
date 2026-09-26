@@ -422,7 +422,8 @@ Every skip, defer, cancel, or drop is one body-free `agent.log` line carrying a
 hashed owner tag and a stable reason (`live_turn_active`,
 `queued_followup_pending`, `oversized_snapshot`, `durable_foreground_active`,
 `review_slot_busy`, `delivery_unconfirmed`, `pending_followup_handoff`,
-`review_preempted_cross_process`, `review_preempted_by_transcript_edit`,
+`review_candidate_superseded`, `review_preempted_cross_process`,
+`review_preempted_by_transcript_edit`,
 `review_dropped_after_lease_yield`, `review_lease_expired_reclaimed`, `review_lease_lost`,
 `review_cancel_unacknowledged`, `review_revoked`, `review_completion_error`, …),
 never the session id or any message text.

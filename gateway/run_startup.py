@@ -1786,6 +1786,9 @@ class GatewayStartupMixin:
             source=dest.source,
             internal=True,
         )
+        # Direct-call ingress: review ownership completes from this event (finally below), never
+        # from the destination chat's session Event, which a live adapter task may own.
+        synthetic_event._gateway_review_completes_on_event = True
         logger.info(
             "Handoff: dispatching synthetic turn for CLI session %s → %s "
             "(home=%s, thread=%s, session_key=%s)",

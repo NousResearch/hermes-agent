@@ -190,8 +190,44 @@ class _GatewayReviewAdmission:
             if not self._finished:
                 self._candidate = candidate
 
+    def adopt_candidate(
+        self, candidate: Dict[str, Any], owner: "_GatewayReviewAdmission"
+    ) -> bool:
+        """Carry a nested turn's confirmed candidate until this turn's ownership is released.
+
+        ``/retry`` typed while this turn's reply is on the wire rewinds the transcript and nests
+        the retried turn, whose delivery completes first. Spawning there is refused (this token
+        is still live) and this turn's own candidate — the transcript ``/retry`` retracted —
+        would be reviewed instead. The nested candidate replaces it and spawns when THIS turn
+        releases, gated by this turn's delivery outcome like its own. False once this turn has
+        finished: the nested ``owner`` then spawns on its own.
+        """
+        from agent import review_admission
+
+        with self._lock:
+            if self._finished:
+                return False
+            superseded = self._candidate
+            self._candidate = candidate
+            if self.agent is None:
+                self.agent, self.context = owner.agent, owner.context
+        if isinstance(superseded, dict):
+            logger.info(
+                "Background review candidate superseded (owner=%s): %s",
+                review_admission.owner_tag(
+                    self.profile_key,
+                    superseded.get("_review_session_id") or self.session_id,
+                ),
+                review_admission.REASON_CANDIDATE_SUPERSEDED,
+            )
+        return True
+
     def finish(
-        self, *, delivery_succeeded: bool, cause: Optional[str] = None
+        self,
+        *,
+        delivery_succeeded: bool,
+        cause: Optional[str] = None,
+        outer: Optional["_GatewayReviewAdmission"] = None,
     ) -> Optional[threading.Thread]:
         """Release once; start the latest candidate only after a successful terminal delivery.
 
@@ -199,7 +235,9 @@ class _GatewayReviewAdmission:
         spawn pipeline (config read, replay bound, structural clone, runtime resolution) is
         O(transcript). Ownership is released HERE, before the hop, so the spawn's foreground
         probe observes the truth. A dropped candidate logs why (``cause`` names a drain
-        handoff) so a starved review is as greppable as a refused one.
+        handoff) so a starved review is as greppable as a refused one. ``outer`` is the turn
+        whose delivery window this turn was nested in: while it still owns the session the
+        candidate is handed to it (``adopt_candidate``) instead of being refused at spawn.
         """
         with self._lock:
             if self._finished:
@@ -226,6 +264,12 @@ class _GatewayReviewAdmission:
                 ),
                 cause or review_admission.REASON_DELIVERY_UNCONFIRMED,
             )
+            return None
+        if (
+            isinstance(outer, _GatewayReviewAdmission)
+            and outer is not self
+            and outer.adopt_candidate(candidate, self)
+        ):
             return None
         if self.context is None or agent is None:
             return None
@@ -2342,12 +2386,18 @@ class GatewayTurnMixin:
         gateway_review_admission = await _GatewayReviewAdmission.begin(
             self, str(session_entry.session_id), profile_key
         )
+        # The completion is parked where its delivery owner reads it: the live session Event for
+        # an adapter task (a drain handoff re-uses the Event; an inline dispatch reads it for the
+        # turn it nests), or the event itself for a direct-call ingress that completes ownership
+        # from its own event (the CLI->gateway handoff) — it may run beside a live adapter task on
+        # the same chat, whose Event carries that task's own completion.
         delivery_carrier = event
-        with suppress(Exception):
-            adapter = self._delivery_adapter_for(source)
-            delivery_carrier = (
-                getattr(adapter, "_active_sessions", {}).get(_quick_key) or event
-            )
+        if not getattr(event, "_gateway_review_completes_on_event", False):
+            with suppress(Exception):
+                adapter = self._delivery_adapter_for(source)
+                delivery_carrier = (
+                    getattr(adapter, "_active_sessions", {}).get(_quick_key) or event
+                )
         delivery_carrier._gateway_review_delivery_complete = (
             gateway_review_admission.finish
         )

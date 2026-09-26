@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import locale
 import math
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -20,7 +21,11 @@ from typing import Any, Dict, List, Optional, Tuple
 from agent.conversation_compression import COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE
 from agent.fast_mode import fast_mode_unprovisioned, mark_fast_mode_unavailable
 from agent.model_metadata import is_output_cap_error, parse_available_output_tokens_from_error
-from agent.retry_utils import is_zai_coding_overload_error, zai_coding_overload_retry_ceiling
+from agent.retry_utils import (
+    is_zai_coding_overload_error,
+    named_retry_after_seconds,
+    zai_coding_overload_retry_ceiling,
+)
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.message_sanitization import (
     _looks_like_corrupt_image_rejection, _looks_like_image_content_rejection, _sanitize_messages_non_ascii,
@@ -1392,33 +1397,14 @@ def compute_error_backoff(
     buffered; long Z.AI Coding waits surface immediately."""
     # Imported lazily so tests that patch ``agent.retry_utils.jittered_backoff`` /
     # ``adaptive_rate_limit_backoff`` (incl. the run_agent conftest fast-backoff fixture) intercept.
-    from agent.retry_utils import adaptive_rate_limit_backoff, jittered_backoff, parse_retry_after_seconds
+    from agent.retry_utils import adaptive_rate_limit_backoff, jittered_backoff, named_retry_after_seconds
 
     # Respect Retry-After on every retryable provider error, not just 429s. Retryable
     # 5xx responses (e.g. Cloudflare 520/524) also carry the header or a structured
     # ``retry_after`` problem-detail body field; ignoring either turns an origin
-    # outage into a retry storm.
-    _retry_after = parse_retry_after_seconds(
-        getattr(getattr(api_error, "response", None), "headers", None)
-    )
-    if _retry_after is None:
-        _error_body = getattr(api_error, "body", None)
-        if isinstance(_error_body, dict):
-            # Some providers nest it as error.retry_after (the same unwrap
-            # extract_api_error_context uses), others put it at the top level.
-            _nested = _error_body.get("error")
-            _payload = _nested if isinstance(_nested, dict) else _error_body
-            _retry_after = parse_retry_after_seconds(_payload.get("retry_after"))
-    if _retry_after is not None:
-        # Cap at 10 minutes. Anthropic Tier 1 input-token buckets reset in ~171s, so a 120s cap
-        # caused us to retry before the actual reset window and re-trip the limit. 600s covers all
-        # realistic provider reset windows while still rejecting pathological values. (#26293)
-        _retry_after = min(_retry_after, 600)
-        if _retry_after <= 0:
-            # A zero/expired cooldown (retry-after: 0, or an HTTP-date in the
-            # past, which the parser clamps to 0.0) carries no usable wait —
-            # treat it as absent so we never hot-loop the provider.
-            _retry_after = None
+    # outage into a retry storm. Read through the shared helper so the eager-fallback
+    # deferral above cannot decide on a different number than we wait for.
+    _retry_after = named_retry_after_seconds(api_error)
     wait_time = _retry_after if _retry_after is not None else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
     _backoff_policy = None
     _adaptive = is_rate_limited or is_zai_coding_overload
@@ -1677,6 +1663,94 @@ def _cap_long_context_tier(agent: Any) -> int:
     return old_ctx
 
 
+#: Longest pause we will sit out on the current provider rather than failing over.
+#: Above this the 429 is a wall (a daily or weekly cap), and the fallback chain is the
+#: only way to answer at all; below it, switching costs a turn we could simply have
+#: waited for.
+DEFAULT_SHORT_NAMED_PAUSE_CEILING_SECONDS = 120.0
+
+
+def short_named_pause_ceiling() -> float:
+    """The ceiling, read from the env on every call so a long-lived process picks up a
+    change without a restart (and so tests need no module reload).
+
+    ``inf`` passes ``> 0`` and would make a 600s wall look waitable; ``nan`` fails every
+    comparison and would silently disable the deferral instead of defaulting. Check
+    finiteness, not just sign.
+    """
+    default = DEFAULT_SHORT_NAMED_PAUSE_CEILING_SECONDS
+    try:
+        value = float(os.environ.get("HERMES_SHORT_NAMED_PAUSE_MAX_SECONDS") or default)
+    except (TypeError, ValueError):
+        return default
+    return value if math.isfinite(value) and value > 0 else default
+#: How many times in one turn a named pause may hold off the eager fallback. A provider
+#: that keeps naming a pause and keeps refusing is not throttling us, it is down — the
+#: third 429 in a turn falls over exactly as before.
+SHORT_NAMED_PAUSE_MAX_DEFERRALS = 2
+#: Providers whose own divert sits between this decision and ``compute_error_backoff``,
+#: so cancelling the fallback would not actually buy a wait. ``nous``: a genuine
+#: account-level 429 is recorded to a shared cross-session file and the turn re-enters
+#: the loop (see below), never reaching the backoff. Promising a wait we cannot perform
+#: is worse than failing over, and letting that path run changes state other sessions
+#: read.
+_PROVIDERS_THAT_DIVERT_BEFORE_THE_WAIT = frozenset({"nous"})
+
+
+def short_named_pause(
+    agent: Any, classified: Any, api_error: Exception, *, retry_count: int, max_retries: int,
+) -> Optional[float]:
+    """Seconds to sit out instead of failing over now, or ``None`` to fail over.
+
+    A ``Retry-After`` is an instruction, not a hint. ``compute_error_backoff`` already
+    honours it and retries the same provider — but the eager fallback above fires on the
+    first 429, so for a provider that names a short pause that code is unreachable and
+    every throttle costs a backend switch. Observed against a corporate relay that names
+    7-45s: 56 turns in two days left the primary on attempt 1 of 3 and died on a second
+    backend's own limit, when waiting the named seconds would have answered.
+
+    Narrow on purpose:
+
+    * only ``rate_limit`` — ``billing`` has nothing to wait for, and an
+      ``upstream_rate_limit`` is a *different* provider's throttle, so its clock says
+      nothing about ours;
+    * only a pause the provider actually named, read through
+      :func:`~agent.retry_utils.named_retry_after_seconds`, the same source
+      ``compute_error_backoff`` will wait for. Deciding on a number the waiting code
+      would not use is worse than not deciding: it would cancel the fallback and then
+      sleep a 2-4s generic backoff into the same wall;
+    * only a short one, and only twice per turn;
+    * only when the wait is actually reachable from here — never on the last attempt
+      (``retry_count >= max_retries`` routes to the exhausted-retries branch, which
+      activates the chain *without* a reason, so the rate-limit cooldown that keeps the
+      next turn off this provider is never armed), and never for a provider whose own
+      divert runs first.
+
+    ``max_retries`` is deliberately untouched: this spends the existing retry budget on
+    waiting instead of on hammering, it does not enlarge it.
+    """
+    if classified is None or getattr(classified, "reason", None) != FailoverReason.rate_limit:
+        return None
+    if not 1 <= retry_count <= min(SHORT_NAMED_PAUSE_MAX_DEFERRALS, max_retries - 1):
+        return None
+    provider = str(getattr(agent, "provider", "") or "").strip().lower()
+    if provider in _PROVIDERS_THAT_DIVERT_BEFORE_THE_WAIT:
+        return None
+    # The other divert between here and the backoff: ``is_client_error`` aborts the turn
+    # for a ValueError/TypeError, and the classifier reads the error *text*, so a
+    # third-party shim raising ``ValueError("Error code: 429 ... retry_after: 7")``
+    # classifies as rate_limit and would be "deferred" into an abort with no wait at
+    # all. Imported lazily: turn_api_error imports this module.
+    from agent.turn_api_error import _is_local_validation_error
+
+    if _is_local_validation_error(api_error):
+        return None
+    seconds = named_retry_after_seconds(api_error)
+    if seconds is None or seconds > short_named_pause_ceiling():
+        return None
+    return seconds
+
+
 def _eager_fallback_status(classified: Any, is_upstream: bool, is_transport_failure: bool) -> str:
     """Status line announcing an eager fallback switch."""
     if is_upstream:
@@ -1879,6 +1953,17 @@ def route_classified_error(
         (is_rate_limited and _wrapped_output_cap_budget is None)
         or (_is_transport_failure and retry_count >= 2)
     )
+    if _should_fallback:
+        _short_wait = short_named_pause(
+            agent, classified, api_error, retry_count=retry_count, max_retries=max_retries,
+        )
+        if _short_wait is not None:
+            agent._buffer_diagnostic_status(
+                f"⏱️ Provider asked for {_short_wait:.0f}s — waiting it out on this "
+                f"provider instead of failing over (attempt {retry_count}/"
+                f"{SHORT_NAMED_PAUSE_MAX_DEFERRALS})..."
+            )
+            _should_fallback = False
     if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
         # No eager fallback while credential pool rotation may recover. Exception: an
         # upstream-aggregator 429 — the pool can't help, always fall back.

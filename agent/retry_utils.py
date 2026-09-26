@@ -64,6 +64,47 @@ def parse_retry_after_seconds(value_or_headers: Any) -> Optional[float]:
     return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
 
 
+#: Cap at 10 minutes. Anthropic Tier 1 input-token buckets reset in ~171s, so a 120s cap
+#: caused us to retry before the actual reset window and re-trip the limit. 600s covers all
+#: realistic provider reset windows while still rejecting pathological values. (#26293)
+RETRY_AFTER_CAP_SECONDS = 600.0
+
+
+def named_retry_after_seconds(error: Any) -> Optional[float]:
+    """The pause the provider itself named, capped, or ``None`` if it named none.
+
+    Header first, then a structured ``retry_after`` in the body (top level, or nested
+    under ``error``) — the same order, and the same cap, that ``compute_error_backoff``
+    actually waits for. Callers that *decide* something from the named pause must read
+    it through this function instead of re-deriving it: a decision taken on a number the
+    waiting code will not use is worse than no decision at all, because it cancels the
+    fallback and then sleeps a short generic backoff instead of the pause it promised.
+
+    A zero or expired cooldown (``retry-after: 0``, or an HTTP-date already in the past,
+    which the parser clamps to 0.0) carries no usable wait, so it reads as absent and we
+    never hot-loop the provider. Never raises: the only callers are inside an error
+    handler, where an exception would replace the provider's real failure.
+    """
+    try:
+        seconds = parse_retry_after_seconds(
+            getattr(getattr(error, "response", None), "headers", None)
+        )
+        if seconds is None:
+            body = getattr(error, "body", None)
+            if isinstance(body, dict):
+                # Some providers nest it as error.retry_after (the same unwrap
+                # extract_api_error_context uses), others put it at the top level.
+                nested = body.get("error")
+                payload = nested if isinstance(nested, dict) else body
+                seconds = parse_retry_after_seconds(payload.get("retry_after"))
+    except Exception:
+        return None
+    if seconds is None:
+        return None
+    seconds = min(seconds, RETRY_AFTER_CAP_SECONDS)
+    return seconds if seconds > 0 else None
+
+
 # Free-text "reset" grammars providers put in error bodies, tried in order. One table so the
 # conversation loop's error context and the credential pool's cooldown agree on the same wait.
 _QUOTA_RESET_DELAY_RE = re.compile(r"quotaResetDelay[:\s\"]+(\d+(?:\.\d+)?)(ms|s)", re.IGNORECASE)

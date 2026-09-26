@@ -1063,11 +1063,19 @@ class GatewayInboundMixin:
                     # The agent-turn path binds HERMES_SESSION_* via _set_session_env; this dispatch
                     # sits before it, so a handler reading get_session_env() would see an empty or a
                     # foreign (cron agent's os.environ) session (#108698). No session_entry exists yet,
-                    # so session_key is derived from source. Sync handlers run on the gateway pool
-                    # (contextvars carried), never the loop thread: blocking I/O there starves the
-                    # liveness watchdog and the process exits 75 mid-handler (#105279).
+                    # so session_key is derived from source. The routing entry is peeked read-only to
+                    # bind HERMES_SESSION_ID too: a handler keying state by session id can then record
+                    # the id the next /new reports as old_session_id (#123245). Never get_or_create
+                    # here — a slash command must not mint a session or touch the activity clock.
+                    # Sync handlers run on the gateway pool (contextvars carried), never the loop
+                    # thread: blocking I/O there starves the liveness watchdog and the process exits
+                    # 75 mid-handler (#105279).
                     _plugin_context = build_session_context(source, self.config)
                     _plugin_context.session_key = self._session_key_for_source(source)
+                    _store = getattr(self, "session_store", None)
+                    _entry = _store._entries.get(_plugin_context.session_key) if _store is not None else None  # noqa: SLF001
+                    if _entry is not None:
+                        _plugin_context.session_id = _entry.session_id
                     user_args = event.get_command_args().strip()
                     with self._session_env_scope(_plugin_context):
                         if asyncio.iscoroutinefunction(plugin_handler):

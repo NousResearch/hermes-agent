@@ -442,18 +442,15 @@ def _resolved_identity(server_name: str, config: dict) -> str:
     default cwd; an HTTP connection's URL and headers after a ``server_json`` live endpoint and
     ``identity_header`` (``value_from: profile``). The transport publishes the digest of the very
     inputs each attempt connects with; an adopter recomputes it here."""
-    from tools.mcp_tool_errors import _apply_identity_header
-    from tools.mcp_tool_transport import LiveEndpointUnavailable, _http_endpoint, _stdio_launch
+    from tools.mcp_tool_transport import LiveEndpointUnavailable, _connect_inputs
 
-    if "url" in config:
-        try:
-            url, headers = _http_endpoint(server_name, config)
-        except LiveEndpointUnavailable:  # the transport cannot connect either; never equal to a live one
-            return ""
-        return _identity_digest([url, _apply_identity_header(server_name, config, headers)])
-    if not config.get("command"):  # the transport refuses it before resolving anything
+    if "url" not in config and not config.get("command"):  # the transport refuses it before resolving
         return ""
-    return _identity_digest(list(_stdio_launch(config)))
+    try:
+        inputs, _ = _connect_inputs(server_name, config)
+    except LiveEndpointUnavailable:  # the transport cannot connect either; never equal to a live one
+        return ""
+    return _identity_digest(inputs)
 
 
 def _same_server_route(server: Any, config: dict, *, cross_profile: bool = False,

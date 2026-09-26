@@ -135,6 +135,19 @@ def _stdio_launch(config: dict) -> tuple:
     return command, env, cwd
 
 
+def _connect_inputs(server_name: str, config: dict) -> tuple[list, set]:
+    """What a connection is opened with, resolved in the current profile's scope: stdio
+    ``[command, env, cwd]``; HTTP ``[url, headers]`` after the live endpoint and the identity
+    header. The owner hashes this very list and an adopter recomputes it, so both digests are
+    built from one code path. Also returns the configured header names (HTTP only), captured
+    before the identity header is merged in, for the strict-redirect boundary."""
+    if "url" in config:
+        url, headers = _http_endpoint(server_name, config)
+        configured_header_names = {key.lower() for key in headers}
+        return [url, _apply_identity_header(server_name, config, headers)], configured_header_names
+    return list(_stdio_launch(config)), set()
+
+
 class MCPServerTransportMixin:
     """Methods of :class:`tools.mcp_tool.MCPServerTask` (mixed in; relies on its attributes)."""
 
@@ -340,9 +353,10 @@ class MCPServerTransportMixin:
         command = config.get("command")
         if not command:
             raise ValueError(f"MCP server '{self.name}' has no 'command' in config")
-        command, safe_env, stdio_cwd = _stdio_launch(config)
+        inputs, _ = _connect_inputs(self.name, config)
         # Hash the inputs this attempt spawns with, never a second resolution of them.
-        self._resolved_identity = _registration._identity_digest([command, safe_env, stdio_cwd])
+        self._resolved_identity = _registration._identity_digest(inputs)
+        command, safe_env, stdio_cwd = inputs
         # OSV malware preflight, then the cached-npx swap (ordering enforced there).
         command, args = await _core._preflight_stdio_command(self.name, command, config.get("args", []))
         server_params = _core.StdioServerParameters(
@@ -547,16 +561,15 @@ class MCPServerTransportMixin:
             raise ImportError(f"MCP server '{self.name}' requires HTTP transport but "
                               "mcp.client.streamable_http is not available. "
                               "Upgrade the mcp package to get HTTP support.")
-        url, headers = _http_endpoint(self.name, config)
-        logger.debug("MCP server '%s': connecting to %s", self.name, url)
-        self._http_rejection = {}  # last 4xx/5xx the owned client saw this attempt (recorder hook)
         # Agent Plugins v1 strict_redirect_headers: configured headers MUST NOT follow a cross-origin
-        # redirect — capture their names BEFORE client-generated headers are merged in.
-        configured_header_names = {key.lower() for key in headers}
-        headers = _apply_identity_header(self.name, config, headers)  # explicit same-name headers win
+        # redirect — their names are captured BEFORE client-generated headers are merged in.
+        inputs, configured_header_names = _connect_inputs(self.name, config)
         # Hash the endpoint this attempt connects to: a second read of the runtime file could
         # publish another endpoint's identity alongside this session.
-        self._resolved_identity = _registration._identity_digest([url, headers])
+        self._resolved_identity = _registration._identity_digest(inputs)
+        url, headers = inputs
+        logger.debug("MCP server '%s': connecting to %s", self.name, url)
+        self._http_rejection = {}  # last 4xx/5xx the owned client saw this attempt (recorder hook)
         # Seed MCP-Protocol-Version (user override wins) from the HANDSHAKE version, not the latest: a
         # 2026-07-28 header routes the handshake-era ``initialize()`` onto the envelope ladder, which rejects it.
         if not any(key.lower() == "mcp-protocol-version" for key in headers):

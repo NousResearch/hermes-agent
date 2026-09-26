@@ -229,10 +229,11 @@ def resolve_client_voice_config() -> Dict[str, Any]:
             logger.exception("client voice-config %s resolution failed", key.upper())
             out[key] = _relay("resolution error")
     from hermes_cli.plugins import has_hook
+    from tools.tts_synthesis_policy import required_pre_synthesis_plugins
     # Client-direct TTS bypasses the server's pre-synthesis policy entirely.
-    # Keep STT direct, but make every spoken script return through the guarded server.
+    # A required plugin must force relay even when its import failed and no hook survived.
     try:
-        if has_hook("pre_tts_synthesis"):
+        if required_pre_synthesis_plugins() or has_hook("pre_tts_synthesis"):
             out["tts"] = _relay("server TTS policy active")
     except Exception:
         out["tts"] = _relay("TTS policy availability unknown")

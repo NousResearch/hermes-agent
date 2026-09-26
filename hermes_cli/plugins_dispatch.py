@@ -480,6 +480,15 @@ class PluginDispatchMixin:
         """Return True when at least one callback is registered for a hook."""
         return bool(self._hooks.get(hook_name))
 
+    def has_plugin_hook(self, plugin_key: str, hook_name: str) -> bool:
+        """Only a successfully loaded plugin with a live owned callback satisfies a required policy."""
+        loaded = getattr(self, "_plugins", {}).get(plugin_key)
+        return bool(
+            loaded and loaded.enabled and not loaded.error
+            and any(reg.active and reg.kind == "hook" and reg.key == hook_name
+                    for reg in getattr(self, "_ownership_ledger", {}).get(plugin_key, ()))
+        )
+
     async def ainvoke_hook(self, hook_name: str, **kwargs: Any) -> List[Any]:
         """:meth:`invoke_hook` for callers that are already on an event loop.
 

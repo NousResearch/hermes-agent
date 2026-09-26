@@ -492,6 +492,10 @@ export const deOverrides = {
     backendOutOfDateTitle: 'Backend veraltet',
     backendOutOfDateMessage:
       'Ihr Hermes-Backend ist älter als dieser Desktop-Build und funktioniert möglicherweise nicht richtig. Aktualisieren Sie, um beide abzugleichen.',
+    desktopOutOfDateTitle: 'Hermes-App veraltet',
+    desktopOutOfDateMessage:
+      'Diese Hermes-App ist älter als das verbundene Backend und funktioniert möglicherweise nicht richtig. Aktualisieren Sie die App, um beide abzugleichen.',
+    updateDesktopApp: 'App aktualisieren',
     installMethodUnsupportedTitle: 'Nicht unterstützte Installationsmethode',
     updateHermes: 'Hermes aktualisieren',
     updateReadyTitle: 'Update bereit',
@@ -4593,9 +4597,12 @@ export const deOverrides = {
     maybeLater: 'Später',
     moreChanges: count => `+ ${count} weitere Änderung${count === 1 ? '' : 'en'} enthalten.`,
     manualTitle: 'Über Ihr Terminal aktualisieren',
+    manualUnavailableTitle: 'Aktualisierung hier nicht möglich',
     manualBody:
       'Sie haben Hermes über die Befehlszeile installiert, daher laufen Updates auch dort. Fügen Sie dies in Ihr Terminal ein:',
     manualPickedUp: 'Hermes übernimmt die neue Version beim nächsten Start.',
+    manualBodyBackend: 'Das Hermes-Backend wird außerhalb dieser App verwaltet. Führen Sie dies auf dem Server aus, der es hostet:',
+    manualPickedUpBackend: 'Das Backend lädt die neue Version, sobald das Update abgeschlossen ist.',
     guiSkewTitle: 'Desktop-App aktualisieren',
     guiSkewBody:
       'Das Backend wurde aktualisiert, aber dieses Desktop-App-Paket nicht. Aktualisieren oder installieren Sie die Hermes-Desktop-App neu (Ihr AppImage / .deb / .rpm), um beide abzugleichen.',
@@ -4793,6 +4800,7 @@ export const deOverrides = {
     replaceCurrent: 'Aktuellen Wert ersetzen',
     pasteApiKey: 'API-Key einfügen',
     localApiKeyPlaceholder: 'API-Key (optional – nur falls Ihr Endpunkt einen benötigt)',
+    localModelNamePlaceholder: 'Modellname (z. B. command-a-plus-05-2026)',
     couldNotSave: 'Anmeldedaten konnten nicht gespeichert werden.',
     connecting: 'Verbinden',
     update: 'Aktualisieren',

@@ -128,7 +128,12 @@ export function UpdatesOverlay() {
         )}
 
         {phase === 'manual' && (
-          <ManualView command={apply.command ?? null} message={apply.message} onDone={() => handleClose(false)} />
+          <ManualView
+            command={apply.command ?? null}
+            isBackend={isBackend}
+            message={apply.message}
+            onDone={() => handleClose(false)}
+          />
         )}
 
         {phase === 'guiSkew' && <GuiSkewView message={apply.message} onDone={() => handleClose(false)} />}
@@ -331,7 +336,17 @@ function IdleView({
   )
 }
 
-function ManualView({ command, message, onDone }: { command: string | null; message?: string; onDone: () => void }) {
+function ManualView({
+  command,
+  isBackend,
+  message,
+  onDone
+}: {
+  command: string | null
+  isBackend: boolean
+  message?: string
+  onDone: () => void
+}) {
   const { t } = useI18n()
   const u = t.updates
   const [copied, setCopied] = useState(false)
@@ -356,7 +371,9 @@ function ManualView({ command, message, onDone }: { command: string | null; mess
         <div className="flex flex-col items-center gap-3 text-center">
           <Terminal className="size-8 text-primary" />
 
-          <DialogTitle className="text-center text-xl">{u.manualTitle}</DialogTitle>
+          <DialogTitle className="text-center text-xl">
+            {isBackend ? u.manualUnavailableTitle : u.manualTitle}
+          </DialogTitle>
           <DialogDescription className="text-center text-sm">{message || u.manualPickedUp}</DialogDescription>
         </div>
 
@@ -373,7 +390,9 @@ function ManualView({ command, message, onDone }: { command: string | null; mess
         <Terminal className="size-8 text-primary" />
 
         <DialogTitle className="text-center text-xl">{u.manualTitle}</DialogTitle>
-        <DialogDescription className="text-center text-sm">{guidance ?? u.manualBody}</DialogDescription>
+        <DialogDescription className="text-center text-sm">
+          {guidance ?? (isBackend ? u.manualBodyBackend : u.manualBody)}
+        </DialogDescription>
       </div>
 
       <button
@@ -399,7 +418,11 @@ function ManualView({ command, message, onDone }: { command: string | null; mess
         </span>
       </button>
 
-      {!guidance && <p className="text-center text-xs text-muted-foreground">{u.manualPickedUp}</p>}
+      {!guidance && (
+        <p className="text-center text-xs text-muted-foreground">
+          {isBackend ? u.manualPickedUpBackend : u.manualPickedUp}
+        </p>
+      )}
 
       <Button className="font-semibold" onClick={onDone} size="lg" variant="secondary">
         {u.done}

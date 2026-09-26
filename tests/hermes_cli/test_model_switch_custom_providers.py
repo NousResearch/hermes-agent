@@ -10,6 +10,7 @@ local model server. The live-probe cases set it separately when discovery is
 the behavior under test.
 """
 
+import threading
 import time
 
 import hermes_cli.providers as providers_mod
@@ -2405,3 +2406,60 @@ def test_same_provider_switch_on_session_only_custom_endpoint_keeps_endpoint(mon
     assert result.success
     assert result.base_url == "http://10.0.0.5:8000/v1"
     assert result.api_key == "session-secret"
+
+
+def test_refresh_warms_user_provider_endpoints_in_parallel(monkeypatch):
+    """``refresh=True`` must not serially live-probe every ``providers:`` endpoint (#123793).
+
+    31 configured endpoints made the model-picker refresh block ~2 minutes: the refresh wiped
+    ``provider_models_cache.json`` and the section-3 lap then made one blocking HTTPS round-trip
+    per endpoint group. The prefetch now fetches all probeable groups concurrently and stores
+    each through the same cache key/fingerprint the lap reads, so the lap's
+    ``cached_fetch_api_models`` probe is served warm. Asserts the contract (one live fetch per
+    endpoint, concurrent, full catalogs on the rows), not a wall-clock bound.
+    """
+    import hermes_cli.model_switch_providers as msp
+    from hermes_cli.models import _load_provider_models_cache
+
+    endpoints = {f"https://ep-{i}.example.com/v1": [f"m{i}-{j}" for j in range(3)] for i in range(6)}
+    state = {"live_fetches": 0, "max_concurrency": 0, "active": 0}
+    lock = threading.Lock()
+
+    # Patch the INNERMOST live fetch so the real cache machinery runs: the prefetch workers'
+    # fetches and the lap's warm hits both flow through cached_fetch_api_models.
+    def _fake_fetch_api_models(api_key, base_url, timeout=5.0, api_mode=None, headers=None):
+        with lock:
+            state["live_fetches"] += 1
+            state["active"] += 1
+            state["max_concurrency"] = max(state["max_concurrency"], state["active"])
+        try:
+            time.sleep(0.15)  # let overlapping workers prove concurrency
+            return list(endpoints[str(base_url)])
+        finally:
+            with lock:
+                state["active"] -= 1
+
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", _fake_fetch_api_models)
+
+    user_providers = {
+        f"prov-{i}": {
+            "name": f"Prov {i}", "base_url": url, "api_key": f"sk-test-{i}",
+        }
+        for i, url in enumerate(endpoints)
+    }
+    rows = list_authenticated_providers(
+        current_provider="prov-0", user_providers=user_providers, refresh=True)
+
+    assert state["live_fetches"] == len(endpoints), (
+        f"expected one live fetch per endpoint (warm lap), got {state['live_fetches']}")
+    assert state["max_concurrency"] > 1, "endpoint probes did not run in parallel"
+    for i, url in enumerate(endpoints):
+        row = next(r for r in rows if r["slug"] == f"prov-{i}")
+        assert row["models"] == endpoints[url]
+        assert row["total_models"] == len(endpoints[url])
+    # Every endpoint landed in the disk cache under the key the no-probe paths read.
+    cache = _load_provider_models_cache()
+    warmed = [k for k in cache if str(k).startswith("custom:https://ep-")]
+    assert len(warmed) == len(endpoints)

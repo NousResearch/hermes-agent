@@ -8,6 +8,7 @@ import logging
 import contextlib
 import argparse
 import hashlib
+import json
 import os
 import platform
 import re
@@ -947,10 +948,72 @@ def _install_rebuilt_desktop_app(desktop_dir: Path) -> tuple[list[Path], list[st
     rebuilt_exe = _desktop_packaged_executable(desktop_dir)
     if rebuilt_exe is None:
         return [], []
-    from hermes_cli.gui_uninstall import packaged_gui_app_paths  # noqa: PLC0415
     # .../Hermes.app/Contents/MacOS/Hermes -> .../Hermes.app
     return _install_rebuilt_macos_bundles(
-        rebuilt_exe.parents[2], packaged_gui_app_paths(), running=_running_macos_app_bundles())
+        rebuilt_exe.parents[2], _installed_desktop_apps(), running=_running_macos_app_bundles())
+
+
+def _refresh_installed_desktop_apps(desktop_dir: Path) -> None:
+    """Install the rebuilt bundle over stale installed copies and report each outcome."""
+    installed, problems = _install_rebuilt_desktop_app(desktop_dir)
+    for app in installed:
+        print(f"  ✓ Installed the rebuilt Desktop app at {app}")
+    for problem in problems:
+        print(f"  ⚠ {problem}")
+
+
+def _update_owned_macos_bundles(candidates: list[Path]) -> list[Path]:
+    """The existing bundles in *candidates* that only ``hermes update`` keeps current (#52339).
+
+    Ownership comes from the bundle's own ``install-stamp.json``. ``updateMechanism: self`` is a
+    bootstrap build (a local pack or the bootstrap download), and stamps older than the field
+    predate every self-updating kind. Bundled/light releases update themselves and commit builds
+    are external, so a local build must never be copied over them. No readable stamp, no claim.
+    """
+    owned = []
+    for app in candidates:
+        try:
+            stamp = json.loads((app / "Contents" / "Resources" / "install-stamp.json").read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(stamp, dict) and stamp.get("updateMechanism", "self") == "self":
+            owned.append(app)
+    return owned
+
+
+def _installed_desktop_apps() -> list[Path]:
+    """Installed macOS ``Hermes.app`` bundles this checkout's update owns (none off macOS).
+
+    A packaged app runs the checkout under the default Hermes home, so only that checkout may
+    build for it: a bundle from any other tree (a dev worktree) would split shell from backend.
+    """
+    if sys.platform != "darwin":
+        return []
+    from hermes_cli.gui_uninstall import packaged_gui_app_paths  # noqa: PLC0415
+    from hermes_cli.main import PROJECT_ROOT  # noqa: PLC0415
+    from hermes_constants import get_default_hermes_root  # noqa: PLC0415
+    if Path(PROJECT_ROOT).resolve() != (get_default_hermes_root() / "hermes-agent").resolve():
+        return []
+    return _update_owned_macos_bundles(packaged_gui_app_paths())
+
+
+def _installed_desktop_launch_target(desktop_dir: Path, packaged_executable: Path) -> Path:
+    """The executable ``hermes desktop`` launches: the installed app once it IS the checkout build.
+
+    Finder, the Dock and Spotlight open the installed ``Hermes.app``; launching the ``release/``
+    bundle beside it ran the same app from a second path while the installed copy went stale
+    (#52339). Refresh the installed copies, then launch the first one that matches the checkout
+    build. The checkout bundle stays the fallback: nothing installed, or a copy that is running
+    or could not be replaced.
+    """
+    if sys.platform != "darwin":
+        return packaged_executable
+    _refresh_installed_desktop_apps(desktop_dir)
+    rebuilt_hash = _app_asar_hash(packaged_executable.parents[2])
+    for app in _installed_desktop_apps():
+        if rebuilt_hash is not None and _app_asar_hash(app) == rebuilt_hash:
+            return app / "Contents" / "MacOS" / "Hermes"
+    return packaged_executable
 
 
 def _install_rebuilt_macos_bundles(
@@ -1539,7 +1602,8 @@ def cmd_gui(args: argparse.Namespace):
             print(f"✗ Desktop package build completed but no launchable app was found at: {desktop_dir / 'release'}")
             print("  Expected an unpacked Electron app for the current OS.")
             sys.exit(1)
-        launch_command = _packaged_desktop_launch_command(packaged_executable)
+        launch_command = _packaged_desktop_launch_command(
+            _installed_desktop_launch_target(desktop_dir, packaged_executable))
         launch_command.extend(config_electron_flags)
     if getattr(args, "local", False):
         launch_command.append("--local")

@@ -272,3 +272,73 @@ class TestLinkEntitiesInput:
     def test_unknown_fact_id_raises(self, store):
         with pytest.raises(KeyError):
             store.link_entities(999999, ["Ghost"])
+
+
+class TestRegisterEntity:
+    """Bootstrapping entity metadata (type + aliases) through the public API, with no raw SQL.
+
+    link_entities() attaches a name to a fact; register_entity() attaches metadata to the NAME,
+    which is what the gazetteer then matches on the next write. Before this, repairing an entity's
+    aliases -- the exact step a Robotsmart/Robosmart repair needs -- meant UPDATE entities SET
+    aliases = ... by hand.
+    """
+
+    def test_creates_an_entity_with_type_and_aliases(self, store):
+        entity_id = store.register_entity("Robosmart", entity_type="client", aliases=["Robotsmart"])
+
+        row = store._conn.execute(
+            "SELECT name, entity_type, aliases FROM entities WHERE entity_id = ?", (entity_id,)).fetchone()
+        assert (row["name"], row["entity_type"], row["aliases"]) == ("Robosmart", "client", "Robotsmart")
+
+    def test_is_idempotent_and_merges_new_aliases(self, store):
+        first = store.register_entity("Robosmart", entity_type="client", aliases=["Robotsmart"])
+        second = store.register_entity("Robosmart", aliases="robosmart solutions,Robotsmart")  # comma string
+
+        assert first == second
+        row = store._conn.execute("SELECT aliases FROM entities WHERE entity_id = ?", (first,)).fetchone()
+        assert row["aliases"] == "Robotsmart,robosmart solutions"
+
+    def test_a_registered_single_word_alias_auto_links_a_later_fact(self, store):
+        store.register_entity("Zorbex", entity_type="tool", aliases=["Zorbex Platform"])
+
+        fact_id = store.add_fact("Zorbex approved the renewal.", category="project")
+
+        assert entity_names(store, fact_id) == {"Zorbex"}
+
+    def test_registering_by_an_existing_alias_updates_that_entity(self, store):
+        entity_id = store.register_entity("Robosmart", aliases=["Robotsmart"])
+
+        again = store.register_entity("Robotsmart", entity_type="client")  # the alias, not the name
+
+        assert again == entity_id
+        row = store._conn.execute("SELECT name, entity_type FROM entities WHERE entity_id = ?", (entity_id,)).fetchone()
+        assert (row["name"], row["entity_type"]) == ("Robosmart", "client")
+
+    def test_alias_equal_to_the_name_is_not_duplicated(self, store):
+        entity_id = store.register_entity("Robosmart", aliases=["robosmart"])
+
+        row = store._conn.execute("SELECT aliases FROM entities WHERE entity_id = ?", (entity_id,)).fetchone()
+        assert row["aliases"] == ""
+
+    def test_alias_that_is_another_entitys_name_is_dropped(self, store):
+        store.register_entity("B2B Scaler", entity_type="company")
+
+        entity_id = store.register_entity("Robosmart", aliases=["B2B Scaler", "Robotsmart"])
+
+        row = store._conn.execute("SELECT aliases FROM entities WHERE entity_id = ?", (entity_id,)).fetchone()
+        assert row["aliases"] == "Robotsmart"
+
+    def test_empty_name_raises(self, store):
+        with pytest.raises(ValueError):
+            store.register_entity("   ")
+
+    def test_sibling_store_sees_the_registered_name(self, tmp_path):
+        first = MemoryStore(tmp_path / "memory_store.db")
+        second = MemoryStore(tmp_path / "memory_store.db")
+        second._known_names_in("warm second's gazetteer while the table is empty")
+
+        first.register_entity("Zorbex", aliases=["Zorbex Platform"])
+
+        fact_id = second.add_fact("Zorbex covers the north region.", category="project")
+
+        assert "Zorbex" in entity_names(second, fact_id)

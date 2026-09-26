@@ -317,6 +317,53 @@ class MemoryStore:
                     ids.append(entity_id)
             return ids
 
+    def register_entity(self, name: str, entity_type: "str | None" = None,
+                        aliases: "str | list[str] | None" = None) -> int:
+        """Create or update an entity's metadata (type, aliases) by name; returns its entity_id.
+
+        The write-side counterpart to the gazetteer: it makes a name KNOWN without needing a fact
+        that mentions it, which is what bootstraps an entity the extractor deliberately does not
+        guess (a single-word name). link_entities() attaches a name to a FACT; this attaches
+        metadata to the NAME, which the next extraction pass then matches.
+
+        Idempotent. Existing aliases are MERGED, never replaced, and an existing ``entity_type`` is
+        only overwritten when one is supplied. An alias that duplicates the canonical name, or that
+        is another entity's canonical name, is dropped rather than corrupting the lookup order
+        (an exact name always beats an alias, so such an alias could never be reached anyway).
+        """
+        clean = _strip_leading_article((name or "").strip())
+        if not clean:
+            raise ValueError("name must not be empty")
+        if isinstance(aliases, str):
+            aliases = aliases.split(",")
+        candidates: list[str] = []
+        for alias in aliases or []:
+            cleaned = _strip_leading_article((alias or "").strip())
+            if cleaned and cleaned.lower() not in {c.lower() for c in candidates}:
+                candidates.append(cleaned)
+        with self._lock:
+            entity_id = self._resolve_entity(clean)
+            row = self._one("SELECT name, entity_type, aliases FROM entities WHERE entity_id = ?", (entity_id,))
+            canonical = (row["name"] or "").strip()
+            existing = [a.strip() for a in (row["aliases"] or "").split(",") if a.strip()]
+            known = {a.lower() for a in existing} | {canonical.lower()}
+            for alias in candidates:
+                if alias.lower() in known:
+                    continue
+                other = self._one("SELECT entity_id FROM entities WHERE name LIKE ? AND entity_id != ? LIMIT 1",
+                                  (alias, entity_id))
+                if other is not None:
+                    continue  # would duplicate another entity's canonical name
+                existing.append(alias)
+                known.add(alias.lower())
+            new_aliases = ",".join(existing)
+            new_type = entity_type if entity_type is not None else row["entity_type"]
+            if new_aliases != (row["aliases"] or "") or new_type != row["entity_type"]:
+                self._write("UPDATE entities SET entity_type = ?, aliases = ? WHERE entity_id = ?",
+                            (new_type, new_aliases, entity_id))
+                self._entry["gazetteer"] = None  # a changed alias/type changes the gazetteer for every instance
+            return entity_id
+
     def reindex_entities(self, fact_id: "int | None" = None, prune: bool = False) -> dict:
         """Re-run entity extraction over stored facts and link whatever it now finds.
 

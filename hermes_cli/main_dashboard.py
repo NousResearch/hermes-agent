@@ -35,22 +35,24 @@ def _find_stale_dashboard_pids(*, exclude_pids: set[int] | None = None,
         _scan_dashboard_processes,
     )
     pids = [pid for pid, _cmd in _scan_dashboard_processes(exclude_pids=exclude_pids)]
-    # The argv substring scan also selects the caller's own wrapper shell (``bash -c
-    # 'hermes dashboard --stop'``); killing it takes down the invoking terminal.
+    # The scan can still select the caller's own wrapper (a ``hermes dashboard --stop`` ancestor);
+    # killing it takes down the invoking terminal.
     ancestors = _caller_ancestor_pids()
     pids = [pid for pid in pids if not _is_caller_wrapper_shell(pid, ancestors)]
     return _pids_owned_by_hermes_home(pids, scope_home) if scope_home else pids
 
 
 def _parse_dashboard_runtime(command: str) -> tuple[str, str, int] | None:
-    """Best-effort parse of a dashboard/server cmdline into mode, host, and port."""
-    mode = None
-    for candidate in ("dashboard", "serve"):
-        patterns = (f"hermes {candidate}", f"hermes_cli.main {candidate}", f"hermes_cli/main.py {candidate}")
-        if any(pattern in command for pattern in patterns):
-            mode = candidate
-            break
-    if mode is None:
+    """Best-effort parse of a dashboard/server cmdline into mode, host, and port.
+
+    The mode comes from the canonical token matcher, never an argv substring: this gates the
+    launchd backend inventory (a KILL + kickstart path) and ``--status``, and ``hermes serve``
+    is a prefix of ``hermes server``/``service`` — a ``herdr --session hermes server``
+    multiplexer must not be claimed as a Hermes backend (#121156).
+    """
+    from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
+    mode = _hermes_holder_subcommand(command)
+    if mode not in ("dashboard", "serve"):
         return None
 
     port = 9119

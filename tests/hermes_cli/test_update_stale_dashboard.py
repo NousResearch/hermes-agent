@@ -140,6 +140,25 @@ def test_explicit_stop_does_not_spare_backend_owned_by_valid_ssh_lock(
 class TestFindStaleDashboardPids:
     """Unit tests for the ps/wmic-based detection step."""
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-table scan")
+    def test_process_scan_uses_exact_hermes_entrypoints(self, monkeypatch):
+        import hermes_cli.process_identity as process_identity
+
+        rows = [
+            (12341, "herdr --session hermes server"),
+            (12342, "python worker.py --note 'hermes serve'"),
+            (12343, "python worker.py hermes serve --host 127.0.0.1 --port 0"),
+            (12344, "hermes serve --port 9119"),
+            (12345, "/venv/bin/python /venv/bin/hermes serve --port 9119"),
+            (12346, "python -m hermes_cli.main dashboard --port 9119"),
+        ]
+        monkeypatch.setattr(dashboard_procs, "_iter_process_table", lambda: rows)
+        monkeypatch.setattr(process_identity, "ledger_entries", lambda: [])
+        monkeypatch.setattr(dashboard_procs, "_caller_ancestor_pids", lambda: [])
+        monkeypatch.setattr(dashboard_procs, "_is_caller_wrapper_shell", lambda *_: False)
+
+        assert _find_stale_dashboard_pids() == [12344, 12345, 12346]
+
 
 
     @pytest.mark.skipif(sys.platform == "win32", reason="ps-based scan path")

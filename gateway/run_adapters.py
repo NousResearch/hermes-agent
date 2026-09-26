@@ -1687,7 +1687,11 @@ class GatewayAdapterLifecycleMixin:
 
         async def _handler(event, source):
             self._canonicalize(source, transport_profile=profile_name)
-            with self._scope_or_null(_profile_runtime_scope, profile_home):
+            # Sync on the adapter's event loop (per Discord edit/delete): never hydrate external
+            # secret sources here — that takes the process-global source lock (#99519). Startup and
+            # the message path hydrate off-loop; this reads their cache.
+            with self._scope_or_null(
+                    functools.partial(_profile_runtime_scope, hydrate_secrets=False), profile_home):
                 return await self._handle_gateway_platform_event(event, source)
 
         return _handler
@@ -1701,7 +1705,8 @@ class GatewayAdapterLifecycleMixin:
             profile_home = self._admit_primary_source(source, default_home)
             if profile_home is None:
                 return None  # rejected route: same disposition as the message ingress gate
-            with _profile_runtime_scope(profile_home):
+            # Same on-loop hydration constraint as the per-profile handler above (#99519).
+            with functools.partial(_profile_runtime_scope, hydrate_secrets=False)(profile_home):
                 return await self._handle_gateway_platform_event(event, source)
 
         return _handler

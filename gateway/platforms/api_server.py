@@ -2356,6 +2356,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             gateway_session_key=gateway_session_key, session_id=session_id)
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        # Tool-granular subtraction on top of enabled_toolsets, same as cli.py / gateway/run.py /
+        # acp_adapter/server.py — _get_platform_tools only prunes toolset NAMES, so without this a
+        # config-disabled toolset (e.g. "todo") stayed fully executable over the API server.
+        from agent.skill_utils import parse_config_string_list
+
+        disabled_toolsets = parse_config_string_list((user_config.get("agent") or {}).get("disabled_toolsets")) or None
         # Same gate the messaging gateway and TUI apply: ``display.interim_assistant_messages``
         # off means no callback is installed, so mid-turn commentary never leaves the agent.
         if not resolve_display_setting(user_config, "api_server", "interim_assistant_messages", True):
@@ -2374,7 +2380,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "model": model, **runtime_kwargs, **_checkpoint_agent_kwargs(user_config),
             "max_iterations": max_iterations, "quiet_mode": True, "verbose_logging": False,
             "ephemeral_system_prompt": ephemeral_system_prompt or None,
-            "enabled_toolsets": enabled_toolsets, "session_id": session_id,
+            "enabled_toolsets": enabled_toolsets, "disabled_toolsets": disabled_toolsets, "session_id": session_id,
             "platform": "api_server",
             "stream_delta_callback": stream_delta_callback,
             "tool_progress_callback": tool_progress_callback,

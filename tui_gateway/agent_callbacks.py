@@ -270,12 +270,6 @@ def _validate_personality(value: str, cfg: dict | None = None) -> tuple[str, str
     return name, render_personality_prompt(personalities[name])
 
 
-def _prompt_text(value) -> str:
-    """Normalize config prompt values from YAML for AIAgent (hermes_cli.personality owns this)."""
-    from hermes_cli.personality import prompt_text
-    return prompt_text(value)
-
-
 def _apply_personality_to_session(
     sid: str, session: dict, new_prompt: str, personality: str = "") -> tuple[bool, dict | None]:
     """Apply a personality change without resetting history: the ephemeral system prompt is

@@ -11159,7 +11159,6 @@ def test_slash_exec_r7_read_commands_use_metadata_mirror_flag_on(monkeypatch):
     cases = {
         "usage": "140",
         "history": "live question from state db",
-        "prompt": "host system prompt",
         "status": "140",
         "context": "Context usage: 80 / 1,000 tokens",
         "tools": "terminal",
@@ -14433,8 +14432,8 @@ def test_apply_pending_model_switch_runs_queued_pick(monkeypatch):
 
 
 def test_mirror_slash_side_effects_rejects_mutating_commands_while_running(monkeypatch):
-    """Slash worker passthrough (e.g. /model, /personality, /prompt,
-    /compress) must reject during an in-flight turn.  Same race as
+    """Slash worker passthrough (e.g. /model, /personality, /compress)
+    must reject during an in-flight turn.  Same race as
     config.set — mutates live agent state while run_conversation is
     reading it."""
     import types
@@ -14458,7 +14457,6 @@ def test_mirror_slash_side_effects_rejects_mutating_commands_while_running(monke
     for cmd, expected_name in [
         ("/model new/model", "model"),
         ("/personality default", "personality"),
-        ("/prompt", "prompt"),
         ("/compress", "compress"),
     ]:
         warning = server._mirror_slash_side_effects("sid", session, cmd)

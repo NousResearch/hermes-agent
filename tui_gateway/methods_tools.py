@@ -682,6 +682,15 @@ def _cmd_queue(rid, params, session, name, arg):
     return _ok(rid, {"type": "send", "message": arg}) if arg else _err(rid, 4004, "usage: /queue <prompt>")
 
 
+def _cmd_prompt(rid, params, session, name, arg):
+    """/prompt [text] (/compose): the CLI and TUI compose the next prompt in $EDITOR. A GUI client's
+    composer is its editor, so seed it for editing instead of sending (an empty prefill leaves the
+    draft untouched)."""
+    if arg:
+        return _ok(rid, {"type": "prefill", "message": arg})
+    return _ok(rid, {"type": "prefill", "message": "", "notice": "usage: /prompt <text> puts the text in the composer to edit before sending"})
+
+
 def _prompt_builtin(module: str, fn: str, kw: str = ""):
     """/learn, /plan, /init: submit ``module.fn(arg)`` as a normal turn (the live agent does the work)."""
 
@@ -912,7 +921,7 @@ def _cmd_compress(rid, params, session, name, arg):
 
 
 _SLASH_BUILTINS = {
-    "queue": _cmd_queue, "q": _cmd_queue, "learn": _cmd_learn, "plan": _cmd_plan, "init": _cmd_init,
+    "queue": _cmd_queue, "q": _cmd_queue, "prompt": _cmd_prompt, "learn": _cmd_learn, "plan": _cmd_plan, "init": _cmd_init,
     "moa": _cmd_moa, "focus": _cmd_focus, "retry": _cmd_retry, "steer": _cmd_steer, "goal": _cmd_goal,
     "loop": _cmd_loop, "undo": _cmd_undo, "snapshot": _cmd_snapshot, "snap": _cmd_snapshot,
     "compress": _cmd_compress, "compact": _cmd_compress}

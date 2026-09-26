@@ -238,8 +238,7 @@ export function useSlashCompletions(options: {
             return { ...item, text: `${prefix}${argText}` }
           })
           .filter(
-            item =>
-              isArgCompletion || isDesktopSlashSuggestionWithOptions(item.text, { exactAlias: exactAliasQuery })
+            item => isArgCompletion || isDesktopSlashSuggestionWithOptions(item.text, { exactAlias: exactAliasQuery })
           )
           .map(item => ({
             ...item,

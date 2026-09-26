@@ -40,6 +40,7 @@ describe('HudShell resize-frame engagement gates', () => {
         <HudShell />
       </MemoryRouter>
     )
+
     const shell = shellOf(container)
 
     expect(shell.hasAttribute('data-hud-typing')).toBe(false)
@@ -61,6 +62,7 @@ describe('HudShell resize-frame engagement gates', () => {
         <HudShell />
       </MemoryRouter>
     )
+
     const shell = shellOf(container)
 
     // useHudGlass stamps data-hud-typing live from the :focus query — the

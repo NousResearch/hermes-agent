@@ -58,6 +58,9 @@ def _prompt_vercel_sandbox_settings(config: dict):
         ("    Vercel team ID", "VERCEL_TEAM_ID", "orgId", False)):
         default = _setup.get_env_value(env_var) or (linked.get(linked_key, "") if linked_key else "")
         value = _setup.prompt(label, default, password=secret)
+        value, stripped = _strip_pasted_quotes(value)
+        if stripped:
+            _warn_removed_pasted_quotes(value)
         if value:
             _setup.save_env_value(env_var, value)
 
@@ -82,9 +85,49 @@ def _read_nearest_vercel_project(start: Path | None = None) -> dict[str, str]:
     return {}
 
 
+def _strip_pasted_quotes(value: str) -> tuple[str, bool]:
+    """Return ``(value, stripped)`` with every matching surrounding quote pair removed.
+
+    A matching quote pair around a pasted credential/config value is a paste artifact;
+    saving it verbatim makes save_env_value escape the quotes, so the loader hands the
+    quotes back to the vendor and the value breaks the thing it configures (#47264).
+    Once the artifact quotes come off, surrounding whitespace inside them is artifact
+    too — ``'" "'`` must yield ``('', True)``, not a stored single space the vendor
+    would reject with a message that reads as a bad token.
+    The strip loops so a doubly-quoted paste cannot leave a single surviving pair
+    that the vendor still rejects. A value that genuinely begins and ends with a
+    matching quote character is normalized too — that is accepted deliberately,
+    because the user is always told the value was altered (see
+    ``_warn_removed_pasted_quotes``) and a credential, ID, path or port wrapped in
+    matching quotes is a paste artifact far more often than a real value.
+    """
+    stripped = False
+    while len(value) > 1 and value[0] == value[-1] and value[0] in ("'", '"'):
+        value = value[1:-1].strip()
+        stripped = True
+    if stripped and value in ("'", '"'):
+        # A value that is only quote characters is a paste artifact, not a credential:
+        # an odd run like '\"\"\"' strips to one lone quote, which must not reach .env.
+        return "", True
+    return value, stripped
+
+
+def _warn_removed_pasted_quotes(value: str) -> None:
+    """Tell the user a pasted value lost its artifact quotes, and that an empty
+    result was not stored — the extract path stores nothing when the value is empty."""
+    _setup.print_warning("  Removed the surrounding quotes from the pasted value.")
+    if not value:
+        _setup.print_warning("  Empty after removing quotes — nothing saved.")
+
+
 def _prompt_secret_env(label: str, env_var: str, *, confirm_msg: str = "") -> None:
     """Prompt for a secret and persist it to .env when non-empty."""
     value = _setup.prompt(label, password=True)
+    value, stripped = _strip_pasted_quotes(value)
+    if stripped:
+        _warn_removed_pasted_quotes(value)
+        if not value:
+            return
     if value:
         _setup.save_env_value(env_var, value)
         if confirm_msg:
@@ -231,6 +274,9 @@ def _setup_backend_ssh(config: dict) -> None:
     values = []
     for label, env_var, default in fields:
         value = _setup.prompt(label, _setup.get_env_value(env_var) or default)
+        value, stripped = _strip_pasted_quotes(value)
+        if stripped:
+            _warn_removed_pasted_quotes(value)
         values.append(value)
         if value and (env_var != "TERMINAL_SSH_PORT" or value != "22"):
             _setup.save_env_value(env_var, value)

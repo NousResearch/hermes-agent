@@ -1424,24 +1424,15 @@ class GatewayTurnMixin:
         if history:
             return
         if not await self.async_session_store.has_any_sessions():
-            from agent.onboarding import PLAIN_INTRO_NOTE
-            _intro_note = PLAIN_INTRO_NOTE
-            # onboarding.profile_build == "ask" (default) and not yet offered: swap the plain intro for
-            # a consent-gated profile-build directive. Fires at most once.
-            try:
-                from agent.onboarding import (
-                    PROFILE_BUILD_FLAG, is_seen, mark_seen, profile_build_directive,
-                    profile_build_mode,
-                )
-                _onb_cfg = _load_gateway_config()
-                if profile_build_mode(_onb_cfg) == "ask" and not is_seen(_onb_cfg, PROFILE_BUILD_FLAG):
-                    turn_sidecar_notes.append(profile_build_directive().strip())
-                    mark_seen(_hermes_home / "config.yaml", PROFILE_BUILD_FLAG)
-                else:
-                    turn_sidecar_notes.append(_intro_note)
-            except Exception as _pb_err:
-                logger.debug("Profile-build onboarding directive failed, using plain intro: %s", _pb_err)
-                turn_sidecar_notes.append(_intro_note)
+            # Same branch logic as the TUI (profile-build offer once when "ask", else plain intro);
+            # first_contact_turn_note already falls back to the plain intro on error.
+            from agent.onboarding import first_contact_turn_note
+            note = first_contact_turn_note(
+                _load_gateway_config(), _hermes_home / "config.yaml",
+                session_history_empty=True, install_has_prior_sessions=False,
+            )
+            if note:
+                turn_sidecar_notes.append(note)
 
         # One-time prompt if no home channel is set (webhooks deliver to configured targets instead).
         if not source.platform or source.platform in (Platform.LOCAL, Platform.WEBHOOK):

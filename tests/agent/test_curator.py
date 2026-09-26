@@ -338,6 +338,39 @@ def test_unreferenced_skill_is_still_archived(curator_env, monkeypatch):
     assert usage["orphan"]["state"] == u.STATE_ARCHIVED
 
 
+@pytest.mark.parametrize("name", ["requesting-code-review", "humanizer", "sdlc-review"])
+def test_kanban_hardcoded_skill_survives_inactivity(curator_env, monkeypatch, name):
+    """Swarm dispatch and the review lane hardcode these bundled skills with no
+    existence check, so an inactivity archive crashes every later card with
+    ``Unknown skill(s)`` until the failure limit blocks it (#118753). Like
+    cron-referenced skills, they are in use by definition.
+
+    Deliberately does NOT stub ``_kanban_referenced_skills`` — the protection
+    set is derived from the same module-level constants the dispatchers use,
+    so a renamed role skill must fail here first.
+    """
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, name)
+    (skills_dir / ".bundled_manifest").write_text(f"{name}:abc\n", encoding="utf-8")
+    _enable_prune_builtins(curator_env, monkeypatch)
+
+    super_old = (datetime.now(timezone.utc) - timedelta(days=500)).isoformat()
+    data = u.load_usage()
+    data[name] = u._empty_record()
+    data[name]["last_used_at"] = super_old
+    data[name]["created_at"] = super_old
+    data[name]["use_count"] = 1
+    u.save_usage(data)
+
+    counts = c.apply_automatic_transitions()
+
+    assert counts["archived"] == 0
+    assert u.load_usage()[name]["state"] == u.STATE_ACTIVE
+    assert (skills_dir / name).exists()
+
+
 
 
 

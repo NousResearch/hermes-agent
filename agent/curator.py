@@ -190,6 +190,22 @@ def _cron_referenced_skills() -> Set[str]:
         return set()
 
 
+def _kanban_referenced_skills() -> Set[str]:
+    """Skill names the kanban dispatch mechanism hardcodes as role/lane dependencies (swarm verifier/synthesizer, review lane). Dispatch has no existence check, so an archived one crashes every later card with ``Unknown skill(s)`` — in use by definition, same treatment as cron references. Best-effort: an import failure yields an empty set, never a crash."""
+    names: Set[str] = set()
+    try:
+        from hermes_cli.kanban_swarm import SYNTHESIZER_SKILLS, VERIFIER_SKILLS
+        names |= set(VERIFIER_SKILLS) | set(SYNTHESIZER_SKILLS)
+    except Exception as e:
+        logger.debug("Curator could not read kanban swarm skill references: %s", e, exc_info=True)
+    try:
+        from hermes_cli.kanban_db_dispatch import REVIEW_LANE_SKILLS
+        names |= set(REVIEW_LANE_SKILLS)
+    except Exception as e:
+        logger.debug("Curator could not read kanban review-lane skill references: %s", e, exc_info=True)
+    return names
+
+
 def _archive_as_curator(_u, name: str) -> bool:
     """Archive via skill_usage with the ledger actor tagged 'curator', so the ledger entry reads as an autonomous transition, not a foreground call."""
     try:
@@ -215,8 +231,10 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
     stale_cutoff = now - timedelta(days=get_stale_after_days())
     archive_cutoff = now - timedelta(days=get_archive_after_days())
     # Cron-referenced skills are in use by definition (usage only bumps when a
-    # job fires, so paused/rare jobs would age them out). Treat as pinned.
-    protected = _cron_referenced_skills()
+    # job fires, so paused/rare jobs would age them out). Kanban's hardcoded
+    # role/lane dependencies are the same: no direct invocation ever bumps
+    # them. Treat both as pinned.
+    protected = _cron_referenced_skills() | _kanban_referenced_skills()
     counts = {"marked_stale": 0, "archived": 0, "reactivated": 0, "checked": 0, "seeded": 0}
 
     def _set(name: str, state: str, key: str) -> None:

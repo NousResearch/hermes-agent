@@ -1907,6 +1907,9 @@ display:
   #   error:   Only the final raw-output message when exit code != 0
   #   all:     Running output updates + final raw-output message
   background_process_notifications: concise
+  # First Ctrl+C in the classic CLI discards this session's pending background reports.
+  # Running work and stored output/results survive. false restores interrupt-only behavior.
+  ctrl_c_purge_notifications: true
 
 
   # Play terminal bell when agent finishes a response.

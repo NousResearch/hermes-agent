@@ -1328,14 +1328,25 @@ function titlePartsFromAction(title: string, action?: string): ToolTitleParts {
 // we're about to prefix so the verb appears once.
 function withoutLeadingAction(value: string, action: string): string {
   const verb = action.trim()
-  const text = value.trimStart()
-  const boundary = text.search(/\s/)
 
-  if (!verb || boundary < 0) {
+  if (!verb) {
     return value
   }
 
-  return text.slice(0, boundary).toLowerCase() === verb.toLowerCase() ? text.slice(boundary + 1).trimStart() : value
+  const text = value.trimStart()
+  const boundary = text.search(/\s/)
+  // The leading word is the whole string when there is no whitespace (a
+  // single-word context that is itself the verb, e.g. just "Running").
+  const head = boundary < 0 ? text : text.slice(0, boundary)
+  // Tolerate one trailing separator so a punctuated form ("Running:", "Running,")
+  // still matches the verb instead of doubling.
+  const word = head.replace(/[:;,.…-]+$/, '')
+
+  if (word.toLowerCase() !== verb.toLowerCase()) {
+    return value
+  }
+
+  return boundary < 0 ? '' : text.slice(boundary + 1).trimStart()
 }
 
 function dynamicTitle(

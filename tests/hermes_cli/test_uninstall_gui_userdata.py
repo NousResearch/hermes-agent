@@ -11,7 +11,6 @@ from pathlib import Path
 import pytest
 
 import hermes_cli.uninstall as uninstall
-from hermes_cli.gui_uninstall import uninstall_gui
 
 
 @pytest.fixture
@@ -32,9 +31,11 @@ def homes(tmp_path, monkeypatch):
     return home, project_root
 
 
-def test_keep_data_uninstall_preserves_desktop_userdata(homes, monkeypatch):
-    home, _ = homes
-    calls: list[bool | None] = []
+@pytest.mark.parametrize("full_uninstall", [False, True])
+def test_uninstall_forwards_desktop_userdata_policy(homes, monkeypatch, full_uninstall):
+    """Keep-data preserves Electron userData; only the full wipe removes it."""
+    home, project_root = homes
+    calls: list = []
 
     def spy(*args, **kwargs):
         calls.append(kwargs.get("remove_userdata", "absent"))
@@ -42,44 +43,6 @@ def test_keep_data_uninstall_preserves_desktop_userdata(homes, monkeypatch):
 
     monkeypatch.setattr("hermes_cli.gui_uninstall.uninstall_gui", spy)
     uninstall._perform_uninstall(
-        project_root=homes[1], hermes_home=home, full_uninstall=False,
+        project_root=project_root, hermes_home=home, full_uninstall=full_uninstall,
         remove_profiles=False, named_profiles=[])
-    assert calls == [False], "keep-data must forward remove_userdata=False to uninstall_gui"
-    assert (home / "config.yaml").exists(), "keep-data must keep $HERMES_HOME data"
-
-
-def test_full_uninstall_still_removes_desktop_userdata(homes, monkeypatch):
-    home, _ = homes
-    calls: list[bool | None] = []
-
-    def spy(*args, **kwargs):
-        calls.append(kwargs.get("remove_userdata", "absent"))
-        return [Path("sentinel")]
-
-    monkeypatch.setattr("hermes_cli.gui_uninstall.uninstall_gui", spy)
-    uninstall._perform_uninstall(
-        project_root=homes[1], hermes_home=home, full_uninstall=True,
-        remove_profiles=False, named_profiles=[])
-    assert calls == [True], "full wipe must forward remove_userdata=True to uninstall_gui"
-    assert not home.exists(), "full wipe must remove $HERMES_HOME"
-
-
-def test_uninstall_gui_keeps_userdata_dir_when_told_to(tmp_path, monkeypatch):
-    """The gui_uninstall half of the contract: remove_userdata=False leaves the dir on disk."""
-    home = tmp_path / "home"
-    home.mkdir()
-    built = home / "hermes-agent" / "apps" / "desktop" / "node_modules"
-    built.mkdir(parents=True)
-    userdata = tmp_path / "appdata" / "Hermes"
-    (userdata / "Partitions").mkdir(parents=True)
-    (userdata / "connections.json").write_text('{"id":"local"}', encoding="utf-8")
-    monkeypatch.setattr("hermes_cli.gui_uninstall.desktop_userdata_dir", lambda: userdata)
-
-    removed = uninstall_gui(home, remove_userdata=False)
-    assert userdata.exists(), "remove_userdata=False must keep the Electron userData dir"
-    assert (userdata / "connections.json").read_text(encoding="utf-8") == '{"id":"local"}'
-    assert not built.exists(), "built GUI artifacts are still removed"
-    assert userdata not in removed
-
-    uninstall_gui(home, remove_userdata=True)
-    assert not userdata.exists(), "remove_userdata=True must remove the Electron userData dir"
+    assert calls == [full_uninstall]

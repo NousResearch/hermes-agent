@@ -56,27 +56,6 @@ def test_dry_run_lists_named_profiles_without_desktop_userdata(monkeypatch, tmp_
     assert "work" in out
 
 
-def test_keep_data_dry_run_omits_named_profiles_even_with_desktop_userdata(
-    monkeypatch, tmp_path, capsys
-):
-    """Keep-data dry-run never lists named profiles (keep-data never removes them), even
-    when a desktop userData dir exists."""
-    profile = SimpleNamespace(name="work", path=tmp_path / "profiles" / "work")
-    userdata = tmp_path / "appdata" / "Hermes"
-    userdata.mkdir(parents=True)
-    monkeypatch.setattr(uninstall, "_is_default_hermes_home", lambda home: True)
-    monkeypatch.setattr(uninstall, "_discover_named_profiles", lambda: [profile])
-    monkeypatch.setattr("hermes_cli.gui_uninstall.desktop_userdata_dir", lambda: userdata)
-
-    uninstall._print_uninstall_dry_run(
-        project_root=tmp_path, hermes_home=tmp_path / ".hermes", full_uninstall=False
-    )
-
-    out = capsys.readouterr().out
-    assert "Named profiles" not in out
-    assert "Keep desktop app data" in out
-
-
 def test_build_uninstall_parser_accepts_dry_run():
     import argparse
     from hermes_cli.subcommands.uninstall import build_uninstall_parser

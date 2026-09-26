@@ -110,7 +110,51 @@ test('wsl: spawns cmd.exe and resolves ok on the happy path', async () => {
 
   assert.deepEqual(result, { ok: true })
   assert.equal(spawned[0], 'cmd.exe')
-  assert.ok(spawned.some(arg => arg === 'https://example.com/'))
+  assert.ok(spawned.some(arg => arg === '"https://example.com/"'))
+})
+
+test('wsl: quotes the url so a query string cannot start a second command', async () => {
+  const spawned: string[] = []
+  const proc = new EventEmitter() as unknown as ChildProcess
+
+  const { deps } = makeDeps({
+    isWsl: true,
+    spawn: (cmd, args) => {
+      spawned.push(cmd, ...args)
+
+      return proc
+    }
+  })
+
+  await openExternalUrl('https://example.com/?a=1&echo PWNED', deps)
+
+  // The whole URL must be one quoted token. If any '&' sits outside the
+  // quotes, cmd.exe re-parses it and runs `echo PWNED` as a second command.
+  const urlArg = spawned[spawned.length - 1]
+  assert.ok(urlArg.startsWith('"') && urlArg.endsWith('"'), `url arg not quoted: ${urlArg}`)
+  assert.equal(urlArg.slice(1, -1).includes('"'), false)
+  assert.equal((urlArg.match(/"/g) || []).length, 2)
+})
+
+test('wsl: an injected second command is not smuggled through argv', async () => {
+  const spawned: string[] = []
+  const proc = new EventEmitter() as unknown as ChildProcess
+
+  const { deps } = makeDeps({
+    isWsl: true,
+    spawn: (cmd, args) => {
+      spawned.push(cmd, ...args)
+
+      return proc
+    }
+  })
+
+  await openExternalUrl('https://example.com/&calc.exe', deps)
+
+  // argv shape: the injection is inside the quoted token, never a separate arg.
+  assert.deepEqual(spawned.slice(0, 3), ['cmd.exe', '/c', 'start'])
+  assert.equal(spawned[3], '""')
+  assert.equal(spawned[4], '"https://example.com/&calc.exe"')
 })
 
 test('wsl: falls back to openExternal and notifies when cmd.exe fails to spawn', async () => {

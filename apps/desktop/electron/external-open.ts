@@ -86,7 +86,11 @@ export async function openExternalUrl(rawUrl: string, deps: ExternalOpenDeps): P
 async function openViaWsl(url: string, deps: ExternalOpenDeps): Promise<ExternalOpenResult> {
   deps.log(`[link] opening via WSL→Windows: ${url}`)
 
-  const proc = deps.spawn('cmd.exe', ['/c', 'start', '""', url], {
+  // cmd.exe re-parses its own command line, so the URL must arrive as ONE
+  // quoted token. Unquoted, any '&' in a query string starts a second command
+  // (the same rule CMD_UNSAFE_PATH screens for in updater-process.ts). The
+  // empty "" is `start`'s window-title argument, not the URL.
+  const proc = deps.spawn('cmd.exe', ['/c', 'start', '""', `"${url}"`], {
     detached: true,
     stdio: 'ignore',
     windowsHide: true

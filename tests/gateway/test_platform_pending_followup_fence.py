@@ -1,11 +1,12 @@
 """Platform-surface pending-slot writes publish to background-review admission.
 
 The base adapter and the gateway runner fence every accepted follow-up already
-(``test_background_review_followup_admission.py``). Two platform surfaces write the pending slot
-directly instead: raft's busy-session wake merge and yuanbao's message-recall interrupt. Each
-write IS the next live turn, so an automatic review that sampled "no follow-up" a moment earlier
-must not get its full-transcript request onto the wire beside it. Rejected and no-op events must
-leave admission untouched, or a dropped message would suppress learning forever.
+(``test_background_review_followup_admission.py``). Three surfaces write the pending slot
+directly instead: raft's busy-session wake merge, yuanbao's message-recall interrupt, and the
+runner's /stop, /new, /reset tail that re-parks an internal wake (#114456). Each write IS the
+next live turn, so an automatic review that sampled "no follow-up" a moment earlier must not get
+its full-transcript request onto the wire beside it. Rejected and no-op events must leave
+admission untouched, or a dropped message would suppress learning forever.
 """
 
 from __future__ import annotations
@@ -15,10 +16,11 @@ import threading
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter
+from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.yuanbao import InboundContext, RecallGuardMiddleware
+from gateway.run import _INTERRUPT_REASON_STOP, GatewayRunner
 from gateway.session import SessionSource, build_session_key
 
 # The raft plugin registers its Platform member at import time.
@@ -173,5 +175,117 @@ def test_yuanbao_recall_for_an_idle_message_leaves_admission_untouched(monkeypat
     )
 
     assert session_key not in adapter._pending_messages
+    assert fenced_under_admission == []
+    assert state.epoch == 0
+
+
+class _CommandAdapter(BasePlatformAdapter):
+    """Concrete adapter for the runner's session-command path; processing starts are recorded."""
+
+    def __init__(self) -> None:
+        super().__init__(PlatformConfig(enabled=True), Platform.TELEGRAM)
+        self.restarted: list[MessageEvent] = []
+
+    @property
+    def name(self) -> str:
+        return "telegram"
+
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        return True
+
+    async def disconnect(self) -> None:
+        pass
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        return SendResult(success=True)
+
+    async def get_chat_info(self, chat_id) -> dict:
+        return {"id": chat_id, "type": "private"}
+
+    def _start_session_processing(
+        self, event, session_key, *, interrupt_event=None
+    ) -> bool:
+        self.restarted.append(event)
+        return True
+
+
+def _command_gateway():
+    adapter = _CommandAdapter()
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig()
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    source = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="c1", chat_type="dm", user_id="u1"
+    )
+    key = adapter._event_session_key(
+        MessageEvent(text="", message_type=MessageType.TEXT, source=source)
+    )
+    return adapter, runner, source, key
+
+
+def _accepted(source: SessionSource, text: str, *, internal: bool) -> MessageEvent:
+    event = MessageEvent(
+        text=text, message_type=MessageType.TEXT, source=source, internal=internal
+    )
+    event._gateway_accepted = True
+    return event
+
+
+async def _stop_pending_sentinel(runner, adapter, source, key) -> None:
+    """``/stop`` with no in-flight turn: the one session command that can run beside a review."""
+    adapter._active_sessions[key] = asyncio.Event()
+    await runner._interrupt_and_clear_session(
+        key,
+        source,
+        interrupt_reason=_INTERRUPT_REASON_STOP,
+        invalidation_reason="stop_command_pending",
+    )
+
+
+@pytest.mark.asyncio
+async def test_interrupt_promoting_a_parked_wake_publishes_the_followup_fence():
+    """/stop discards the human head and re-parks the wake queued behind it. That slot write is
+    the next live turn: it is staged BEFORE the overflow pop (a probe never sees both empty) and
+    published through the same fence as every other accepted follow-up."""
+    adapter, runner, source, key = _command_gateway()
+    adapter._pending_messages[key] = _accepted(source, "human head", internal=False)
+    wake = _accepted(
+        source, "[ASYNC DELEGATION BATCH COMPLETE] 1 task done", internal=True
+    )
+    slot_staged_before_pop: list[bool] = []
+
+    class _ProbedOverflow(list):
+        def remove(self, item) -> None:
+            slot_staged_before_pop.append(adapter._pending_messages.get(key) is item)
+            super().remove(item)
+
+    runner._session_state(key).conversation.queued_events = _ProbedOverflow([wake])
+    state, fenced_under_admission = _watch_admission(adapter, key)
+
+    await _stop_pending_sentinel(runner, adapter, source, key)
+
+    assert adapter._pending_messages[key] is wake
+    assert runner._overflow_queue(key) == []
+    assert slot_staged_before_pop == [True]
+    assert fenced_under_admission == [True]
+    assert state.epoch == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "parked_internal", [True, False], ids=["wake_already_parked", "human_only"]
+)
+async def test_interrupt_without_a_new_slot_write_leaves_admission_untouched(
+    parked_internal,
+):
+    """Keeping an already-parked wake, or discarding a human follow-up, queues no new turn."""
+    adapter, runner, source, key = _command_gateway()
+    parked = _accepted(source, "parked", internal=parked_internal)
+    adapter._pending_messages[key] = parked
+    state, fenced_under_admission = _watch_admission(adapter, key)
+
+    await _stop_pending_sentinel(runner, adapter, source, key)
+
+    assert (adapter._pending_messages.get(key) is parked) is parked_internal
     assert fenced_under_admission == []
     assert state.epoch == 0

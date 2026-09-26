@@ -533,15 +533,24 @@ class GatewayAgentCacheMixin:
             # promoted out of the overflow FIFO for the same reason. Whether a wake may still run
             # against a session /new just closed is decided where it is processed
             # (_resolve_async_delegation_session fails closed), not here.
-            parked = adapter.get_pending_message(session_key)
-            wake = parked if getattr(parked, "internal", False) else None
-            if wake is None:
+            def _keep_parked_internal_wake() -> bool:
+                parked = adapter.get_pending_message(session_key)
+                wake = parked if getattr(parked, "internal", False) else None
+                if wake is not None:
+                    adapter._pending_messages[session_key] = wake
+                    return False  # the slot holds what it held: nothing new for review admission
                 overflow = self._overflow_queue(session_key) or []
                 wake = next((e for e in overflow if getattr(e, "internal", False)), None)
-                if wake is not None:
-                    overflow.remove(wake)
-            if wake is not None:
+                if wake is None:
+                    return False
+                # The promoted wake IS the next live turn: stage the slot BEFORE popping the
+                # overflow so a review-admission probe never sees both empty, and publish the
+                # write through the same fence as every other accepted follow-up.
                 adapter._pending_messages[session_key] = wake
+                overflow.remove(wake)
+                return True
+
+            self._apply_followup_queue_mutation(adapter, session_key, _keep_parked_internal_wake)
         if state is not None:
             state.persistent.pending_command_text = None
         if release_running_state:

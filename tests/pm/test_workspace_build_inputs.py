@@ -240,3 +240,99 @@ def test_plugin_can_move_compatible_transitive_but_not_exact_requirement(tmp_pat
                                 capture_output=True, text=True, check=True, timeout=30)
         assert result.stdout.strip() == "1.0 1.3"
     assert (baseline / "uv.lock").read_bytes() == first_lock
+
+
+def test_copy_core_inputs_scopes_exclusions_to_root_and_carries_metadata(tmp_path):
+    """Only the root lock/dotfiles are dropped; nested ones are build inputs.
+
+    Regression test for #122425: the snapshot excluded ``uv.lock`` and every
+    dotfile at every depth (so ``pm/uv.lock`` vanished and ``pm doctor``
+    crashed), and it never carried ``install-stamp.json`` / ``.install_method``
+    (so the managed venv reported ``vunknown``).
+    """
+    src, dst = tmp_path / "src", tmp_path / "dst"
+    (src / "pkg").mkdir(parents=True)
+    (src / "pyproject.toml").write_text(
+        '[project]\nname="scoped-core"\nversion="1"\nrequires-python=">=3.11"\n', encoding="utf-8")
+    (src / "pkg" / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (src / "uv.lock").write_text("ROOT LOCK\n", encoding="utf-8")
+    (src / ".env").write_text("SECRET=1\n", encoding="utf-8")
+    (src / "install-stamp.json").write_text('{"baseVersion": "0.0.0"}\n', encoding="utf-8")
+    (src / ".install_method").write_text("git\n", encoding="utf-8")
+    (src / "pkg" / "uv.lock").write_text("NESTED LOCK\n", encoding="utf-8")
+    (src / "pkg" / ".keep").write_text("nested dotfile is a build input\n", encoding="utf-8")
+    (src / "pm").mkdir()
+    (src / "pm" / "uv.lock").write_text("PM LOCK\n", encoding="utf-8")
+    (src / ".git").mkdir()
+    (src / ".git" / "config").write_text("gitdir\n", encoding="utf-8")
+
+    workspace._copy_core_inputs(src, dst)
+
+    assert (dst / "pkg" / "__init__.py").is_file()
+    assert (dst / "pkg" / "uv.lock").read_text() == "NESTED LOCK\n"
+    assert (dst / "pkg" / ".keep").is_file()
+    assert (dst / "pm" / "uv.lock").read_text() == "PM LOCK\n"
+    assert (dst / "install-stamp.json").is_file()
+    assert (dst / ".install_method").read_text() == "git\n"
+    assert not (dst / "uv.lock").exists()
+    assert not (dst / ".env").exists()
+    assert not (dst / ".git").exists()
+
+
+def test_sync_sources_refreshes_code_but_keeps_lock(tmp_path, monkeypatch):
+    """``sync_sources`` re-snapshots a committed generation without re-resolving.
+
+    Regression test for #122425: after an update the committed workspace keeps
+    running old code; the refresh carries the new sources (and the install
+    metadata) while the committed ``uv.lock`` stays byte-identical.
+    """
+    import os
+
+    from pm.lock import Facts
+
+    project = tmp_path / "project"
+    project.mkdir()
+    core = tmp_path / "core"
+    core.mkdir()
+    _buildable_source(core)
+    (core / "build/backend.py").rename(core / "backend.py")
+    metadata = core / "pyproject.toml"
+    metadata.write_text(metadata.read_text().replace('backend-path=["build"]', 'backend-path=["."]'))
+    (core / "install-stamp.json").write_text('{"baseVersion": "9.9.9"}\n', encoding="utf-8")
+    (core / ".install_method").write_text("git\n", encoding="utf-8")
+    (core / "replay_plugin" / "doomed.py").write_text("OLD = True\n", encoding="utf-8")
+    monkeypatch.setattr("pm.environments.install_state_dir", lambda _root: tmp_path / "state")
+    monkeypatch.setattr("pm.environments.runtime_facts_path",
+                        lambda _root: tmp_path / "state" / "facts.json")
+    monkeypatch.setattr(workspace.paths, "repo_root", lambda: core)
+    generation = tmp_path / "state" / "environments" / "gen0"
+    workspace_root, venv = generation / "workspace", generation / "venv"
+    uv = shutil.which("uv")
+    assert uv is not None
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(uv), Path(sys.executable)))
+    workspace.lock_and_sync([], [], root=workspace_root, source=core, seed_lock=None,
+                            environment=managed_environment(venv))
+    assert (workspace_root / "replay_plugin" / "doomed.py").is_file()
+    before_lock = (workspace_root / "uv.lock").read_bytes()
+    Facts(tmp_path / "state" / "facts.json").record_state(
+        "venv", "test-stamp", [], environment=venv, resolved_lock=workspace_root / "uv.lock")
+
+    (core / "replay_plugin" / "values.py").write_text("VALUE = 'refreshed bytes'\n", encoding="utf-8")
+    (core / "replay_plugin" / "doomed.py").unlink()
+    (core / "replay_plugin" / "added.py").write_text("NEW = True\n", encoding="utf-8")
+
+    synced = workspace.sync_sources(project, source=core, plugin_dirs=[])
+
+    assert synced == workspace_root
+    assert (workspace_root / "uv.lock").read_bytes() == before_lock
+    assert (workspace_root / "replay_plugin" / "values.py").read_text() == "VALUE = 'refreshed bytes'\n"
+    assert (workspace_root / "replay_plugin" / "added.py").is_file()
+    assert not (workspace_root / "replay_plugin" / "doomed.py").exists()
+    assert (workspace_root / "install-stamp.json").is_file()
+    assert (workspace_root / ".install_method").is_file()
+    assert not list(generation.glob("workspace.refresh-*"))
+    assert not list(generation.glob("workspace.superseded-*"))
+    python = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    probe = subprocess.run([str(python), "-c", "import replay_plugin; print(replay_plugin.VALUE)"],
+                           cwd=tmp_path, text=True, capture_output=True, check=True, timeout=120)
+    assert probe.stdout.strip() == "refreshed bytes"

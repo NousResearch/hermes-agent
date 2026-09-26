@@ -54,6 +54,26 @@ optional_env:
     description: "Path to the buzz CLI binary (default: 'buzz' on PATH, then ~/bin/buzz)"
     prompt: "buzz CLI path (or empty)"
     password: false
+  - name: BUZZ_CLI_SHA256
+    description: "Optional sha256 of the buzz CLI at BUZZ_CLI_PATH; mismatch refuses start"
+    prompt: "buzz CLI sha256 (or empty)"
+    password: false
+  - name: BUZZ_ALLOWED_DESTINATIONS
+    description: "Comma-separated channel/DM UUIDs the adapter may send to (empty = refuse all)"
+    prompt: "Allowed destinations (comma-separated, empty = refuse)"
+    password: false
+  - name: BUZZ_FORWARD_ONLY
+    description: "Forward inbound events to a unix socket instead of running the agent (true/false)"
+    prompt: "Forward-only mode? (true/false)"
+    password: false
+  - name: BUZZ_FORWARD_SOCKET
+    description: "Unix socket path for forward-only inbound frames"
+    prompt: "Forward socket path (or empty)"
+    password: false
+  - name: BUZZ_FORWARD_ACK_TIMEOUT
+    description: "Seconds to wait for a forward ack (default: 10)"
+    prompt: "Forward ack timeout seconds (or empty)"
+    password: false
   - name: BUZZ_CREDENTIALS_FILE
     description: "JSON credentials file holding the nsec (fallback when BUZZ_PRIVATE_KEY is unset)"
     prompt: "Credentials file path (or empty)"

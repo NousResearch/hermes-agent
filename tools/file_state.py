@@ -6,6 +6,14 @@ write would clobber B's changes. Complements the single-agent path-overlap
 check in ``agent.tool_dispatch_helpers._should_parallelize_tool_batch``. A process-wide
 ``FileStateRegistry`` tracks per-agent read stamps, the global last writer and
 a per-path lock; every method is a no-op under ``HERMES_DISABLE_FILE_STATE_GUARD=1``.
+
+"Agent" here is a task id, and one conversation legitimately runs under several of
+them: a context-compression rotation or a surface switch rebinds the caller's task
+id (delegation ``sa-…`` id → session-scoped id) while the conversation — and the
+agent's own authorship of the file — stays the same. The caller therefore reports
+its ``session_id``; a writer claim from that same conversation is not a sibling, so
+only genuinely foreign writers get the "sibling subagent" refusal. See
+``FileStateRegistry.check_stale``.
 """
 from __future__ import annotations
 
@@ -69,10 +77,13 @@ class FileStateRegistry:
     def __init__(self) -> None:
         self._reads: Dict[str, Dict[str, ReadStamp]] = defaultdict(dict)
         self._last_writer: Dict[str, Tuple[str, float]] = {}
+        # task_id -> conversation (session) it ran in. Lets a rebind of the task id
+        # (compression rotation, surface switch) stay recognizably the same agent.
+        self._task_sessions: Dict[str, str] = {}
         self._path_locks: Dict[str, threading.Lock] = {}
         self._path_lock_users: Dict[str, int] = {}
         self._meta_lock = threading.Lock()  # guards _path_locks
-        self._state_lock = threading.Lock()  # guards _reads + _last_writer
+        self._state_lock = threading.Lock()  # guards _reads + _last_writer + _task_sessions
 
     @contextmanager
     def lock_path(self, resolved: str):
@@ -100,17 +111,42 @@ class FileStateRegistry:
         agent_reads[resolved] = (float(mtime), now, bool(partial))
         _evict_oldest(agent_reads, _MAX_PATHS_PER_AGENT)
 
+    def _remember_session(self, task_id: str, session_id: Optional[str]) -> None:
+        """Caller holds ``_state_lock``. An empty/absent session id records nothing, so a
+        caller that cannot name its conversation keeps the conservative sibling behaviour."""
+        if not task_id or not session_id:
+            return
+        self._task_sessions[task_id] = str(session_id)
+        _evict_oldest(self._task_sessions, _MAX_GLOBAL_WRITERS)
+
+    def _same_conversation(self, task_id: str, last_writer: Optional[Tuple[str, float]],
+                           session_id: Optional[str]) -> bool:
+        """Caller holds ``_state_lock``. True when ``last_writer`` is this task or another task
+        of the same conversation — a task id rebind (compression rotation, surface switch), not
+        a sibling. Unknown session on either side stays conservative: treated as foreign."""
+        if last_writer is None:
+            return False
+        writer_tid = last_writer[0]
+        if writer_tid == task_id:
+            return True
+        our_session = session_id or self._task_sessions.get(task_id)
+        if not our_session:
+            return False
+        return self._task_sessions.get(writer_tid) == our_session
+
     def record_read(self, task_id: str, resolved: str, *, partial: bool = False,
-                    mtime: Optional[float] = None) -> None:
+                    mtime: Optional[float] = None, session_id: Optional[str] = None) -> None:
         if _disabled():
             return
         mtime = _mtime_or_none(resolved) if mtime is None else mtime
         if mtime is None:
             return
         with self._state_lock:
+            self._remember_session(task_id, session_id)
             self._stamp(task_id, resolved, mtime, time.time(), partial)
 
-    def note_write(self, task_id: str, resolved: str, *, mtime: Optional[float] = None) -> None:
+    def note_write(self, task_id: str, resolved: str, *, mtime: Optional[float] = None,
+                   session_id: Optional[str] = None) -> None:
         """Record a successful write: global last-writer AND this agent's own
         read stamp (a write is an implicit read of the current content)."""
         if _disabled():
@@ -120,18 +156,29 @@ class FileStateRegistry:
             return
         now = time.time()
         with self._state_lock:
+            self._remember_session(task_id, session_id)
             self._last_writer[resolved] = (task_id, now)
             _evict_oldest(self._last_writer, _MAX_GLOBAL_WRITERS)
             self._stamp(task_id, resolved, mtime, now, False)
 
-    def check_stale(self, task_id: str, resolved: str) -> Optional[str]:
+    def check_stale(self, task_id: str, resolved: str, *,
+                    session_id: Optional[str] = None) -> Optional[str]:
         """Model-facing warning if this write would be stale, else ``None``. Severity
-        order: sibling wrote after our read > mtime drift / partial read > never read."""
+        order: foreign writer wrote after our read > mtime drift / partial read > never read.
+
+        ``session_id`` is the conversation this call runs in. A recorded writer from that same
+        conversation is NOT a sibling: the task id of a long-lived conversation changes
+        legitimately (context-compression rotation, surface switch), and calling the agent's own
+        minutes-old write "modified by sibling subagent" misdiagnoses the guard's own bookkeeping
+        as a second agent. Such a claim falls through to the content checks below, which keep
+        refusing when the current bytes were never seen or changed since. A writer from another
+        conversation — a real concurrent subagent — still gets the sibling refusal."""
         if _disabled():
             return None
         with self._state_lock:
             stamp = self._reads.get(task_id, {}).get(resolved)
             last_writer = self._last_writer.get(resolved)
+            same_conversation = self._same_conversation(task_id, last_writer, session_id)
 
         if stamp is None and last_writer is None:  # net-new file / first touch
             return None
@@ -139,7 +186,7 @@ class FileStateRegistry:
         if current_mtime is None:
             return None  # file doesn't exist — write creates it; not stale
 
-        if last_writer is not None:
+        if last_writer is not None and not same_conversation:
             writer_tid, writer_ts = last_writer
             if writer_tid != task_id:
                 if stamp is None:
@@ -197,13 +244,15 @@ class FileStateRegistry:
             return list(self._reads.get(task_id, {}).keys())
 
     def forget_task(self, task_id: str) -> None:
-        """Release read stamps and writer claims owned by a task after its lifecycle ends.
+        """Release read stamps, writer claims and the conversation note owned by a task after
+        its lifecycle ends.
 
         A finished task is not a concurrent sibling: leaving its writer claims behind makes
         the next run of the same job (a fresh ``cron:<job>:<uuid>`` id) refuse to write the
         same scratch path as "modified by sibling subagent" hours after the writer exited."""
         with self._state_lock:
             self._reads.pop(task_id, None)
+            self._task_sessions.pop(task_id, None)
             for p in [p for p, (writer_tid, _ts) in self._last_writer.items() if writer_tid == task_id]:
                 del self._last_writer[p]
 
@@ -212,6 +261,7 @@ class FileStateRegistry:
         with self._state_lock:
             self._reads.clear()
             self._last_writer.clear()
+            self._task_sessions.clear()
         with self._meta_lock:
             self._path_locks.clear()
             self._path_lock_users.clear()
@@ -224,17 +274,20 @@ def get_registry() -> FileStateRegistry:
     return _registry
 
 
-# Convenience wrappers (short names used at call sites).
-def record_read(task_id: str, resolved_or_path: str | Path, *, partial: bool = False) -> None:
-    _registry.record_read(task_id, str(resolved_or_path), partial=partial)
+# Convenience wrappers (short names used at call sites). Each takes the session_id of the
+# calling conversation so a task-id rebind inside one conversation is not read as a sibling.
+def record_read(task_id: str, resolved_or_path: str | Path, *, partial: bool = False,
+                session_id: Optional[str] = None) -> None:
+    _registry.record_read(task_id, str(resolved_or_path), partial=partial, session_id=session_id)
 
 
-def note_write(task_id: str, resolved_or_path: str | Path) -> None:
-    _registry.note_write(task_id, str(resolved_or_path))
+def note_write(task_id: str, resolved_or_path: str | Path, *, session_id: Optional[str] = None) -> None:
+    _registry.note_write(task_id, str(resolved_or_path), session_id=session_id)
 
 
-def check_stale(task_id: str, resolved_or_path: str | Path) -> Optional[str]:
-    return _registry.check_stale(task_id, str(resolved_or_path))
+def check_stale(task_id: str, resolved_or_path: str | Path, *,
+                session_id: Optional[str] = None) -> Optional[str]:
+    return _registry.check_stale(task_id, str(resolved_or_path), session_id=session_id)
 
 
 def lock_path(resolved_or_path: str | Path):

@@ -698,6 +698,9 @@ async def converse_ws(ws: "WebSocket") -> None:
                     break
                 if msg.get("commit"):
                     session.commit()
+                if msg.get("type") == "drained":
+                    # Client finished PLAYING the reply → end the playback tail.
+                    session.notify_drained(msg.get("turn_id"))
         except Exception:
             _log.debug("converse client pump ended", exc_info=True)
         session.stop()

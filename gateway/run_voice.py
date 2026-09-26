@@ -116,9 +116,21 @@ class GatewayVoiceMixin:
         ]
         if not chat_sets:
             return
+        owner_profile = getattr(adapter, "_owner_profile", None)
         try:
             from hermes_cli.config import load_config  # lazy: no gateway -> hermes_cli module dep
-            auto_tts_default = bool((load_config().get("voice") or {}).get("auto_tts", False))
+            if isinstance(owner_profile, str) and owner_profile.strip():
+                # Bind the OWNING profile's scope before the config read. An unbound read resolves the
+                # LAUNCHER's (default) config, so its ``voice.auto_tts`` leaks into every secondary
+                # bot's adapter and auto-voice fires against the wrong profile's setting. The callers
+                # (startup + reconnect paths in ``run_adapters.py``) sync from OUTSIDE their
+                # ``_profile_runtime_scope`` block, so the binding has to live here.
+                from gateway.run import _profile_runtime_scope
+                from hermes_cli.profiles import get_profile_dir
+                with _profile_runtime_scope(get_profile_dir(owner_profile), hydrate_secrets=False):
+                    auto_tts_default = bool((load_config().get("voice") or {}).get("auto_tts", False))
+            else:
+                auto_tts_default = bool((load_config().get("voice") or {}).get("auto_tts", False))
         except Exception:
             auto_tts_default = False
         if hasattr(adapter, "_auto_tts_default"):

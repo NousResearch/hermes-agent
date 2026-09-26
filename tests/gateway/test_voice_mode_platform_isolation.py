@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import yaml
 
 
 from gateway.config import Platform
@@ -198,6 +199,54 @@ class TestVoiceModeProfileIsolation:
         runner._sync_voice_mode_state_to_adapter(bot2_ad)
         assert default_ad._auto_tts_enabled_chats == {"1"}
         assert bot2_ad._auto_tts_enabled_chats == {"2"}
+
+
+class TestAutoTtsDefaultIsProfileScoped:
+    """``_auto_tts_default`` must come from the OWNING profile's config.
+
+    The sync callers in ``run_adapters.py`` invoke this from OUTSIDE their
+    ``_profile_runtime_scope`` block, so an unbound ``load_config()`` read
+    resolved the LAUNCHER's (default) ``voice.auto_tts``. That value was then
+    pushed into every secondary adapter, so a served bot sent a voice note
+    reading out its own text reply while its own config said
+    ``voice.auto_tts: false``.
+    """
+
+    @staticmethod
+    def _write_voice_config(home: Path, profile, auto_tts: bool) -> None:
+        base = home if profile is None else home / "profiles" / profile
+        base.mkdir(parents=True, exist_ok=True)
+        (base / "config.yaml").write_text(
+            yaml.safe_dump({"voice": {"auto_tts": auto_tts}}), encoding="utf-8")
+
+    @staticmethod
+    def _adapter(owner, poisoned: bool):
+        a = MagicMock()
+        a.platform = Platform.TELEGRAM
+        a._owner_profile = owner
+        a._auto_tts_default = poisoned
+        # Real sets, not MagicMocks: the sync early-returns unless a chat set exists.
+        a._auto_tts_disabled_chats = set()
+        a._auto_tts_enabled_chats = set()
+        return a
+
+    def test_secondary_adapter_reads_its_own_profile_not_the_launcher(
+            self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        self._write_voice_config(home, None, True)      # launcher / default profile
+        self._write_voice_config(home, "bot2", False)   # the served secondary
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        runner = _make_runner()
+        launcher_ad = self._adapter(None, poisoned=False)
+        bot2_ad = self._adapter("bot2", poisoned=True)  # the leaked launcher value
+
+        runner._sync_voice_mode_state_to_adapter(launcher_ad)
+        runner._sync_voice_mode_state_to_adapter(bot2_ad)
+
+        assert launcher_ad._auto_tts_default is True
+        assert bot2_ad._auto_tts_default is False
 
 
 # ---------------------------------------------------------------------------

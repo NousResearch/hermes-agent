@@ -1993,6 +1993,10 @@ export {
   REASONING_EFFORTS,
   type ReasoningEffort
 } from '@hermes/shared'
+/** Strip ANSI escape sequences (SGR colour codes, OSC, lone ESC) for
+ *  plugin-rendered log text — worker stdout is piped but still styled,
+ *  and a plain log view has no terminal emulator. */
+export { stripAnsi } from '@hermes/shared/ansi'
 /** WCAG contrast, from the sRGB primitives shared with the TUI (`null` for
  *  an unparseable colour, never a fake 0). */
 export { contrastRatio } from '@hermes/shared/color'

@@ -19,7 +19,7 @@ class _StopSpawn(Exception):
 
 @pytest.fixture
 def profile_b(tmp_path, monkeypatch):
-    """A fake HOME so ``profiles/`` never resolves to the live install (see hermes-agent-dev)."""
+    """A fake HOME so ``profiles/`` never resolves to the live install."""
     launch = tmp_path / "fakehome" / ".hermes"
     served = launch / "profiles" / "b"
     served.mkdir(parents=True)

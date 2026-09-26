@@ -17,7 +17,7 @@ logger = logging.getLogger("tools.cronjob_tools")
 # a runtime defense-in-depth. 2. Assembled prompt that includes loaded skill content (large markdown bodies,
 # often security docs, postmortems, runbooks discussing attack patterns in PROSE). Reusing the strict
 # patterns here false-positives every time a skill *describes* a command — see #3968 follow-up: the
-# `hermes-agent-dev` skill contains a security postmortem mentioning `cat ~/.hermes/.env`, which tripped
+# A retired development skill contained a security postmortem mentioning `cat ~/.hermes/.env`, which tripped
 # `read_secrets` and silently killed all PR-scout jobs. Skill bodies are user-curated and scanned at install
 # time by `skills_guard.py`. The runtime cron scan only needs to catch the patterns whose phrasing does NOT
 # survive normal English prose: classic prompt-injection directives ("ignore previous instructions",

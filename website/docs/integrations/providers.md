@@ -1267,7 +1267,11 @@ model:
 
 Output limits govern a single generated response, not the conversation history.
 Hermes no longer reads `model.max_tokens`, `HERMES_MAX_TOKENS`, provider output-cap
-settings, or `model_overrides.*.*.max_output_tokens`. Remove these legacy settings.
+settings, `model_overrides.*.*.max_output_tokens`, `auxiliary.compression.max_output_tokens`,
+or the Mixture-of-Agents preset caps `moa.presets.<name>.max_tokens` /
+`moa.presets.<name>.reference_max_tokens`. Remove these legacy settings. For the config keys
+listed here, `hermes config set` now refuses each one by name and prints the matching
+`hermes config unset` command (pass `--force` only when an external tool still reads the key).
 Custom OpenAI-compatible endpoints receive no automatic catalog-sized output cap.
 Their server defaults apply; these can be lower than the model maximum.
 

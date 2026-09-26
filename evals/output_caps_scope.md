@@ -22,7 +22,10 @@ Removed: `HERMES_MAX_TOKENS`, `model.max_tokens`, dedicated named/custom provide
 MoA preset/reference/slot caps, and auxiliary compression user caps. Dedicated
 caps are no longer lifted through gateway/API/CLI, child, review or curator
 runtime resolution. Stale configuration is ignored; no global request-field
-scrubber is introduced.
+scrubber is introduced. The config surface now says so instead of implying
+otherwise (#60388): `hermes config set` refuses a removed cap key with the
+matching `hermes config unset` command (`--force` writes it anyway), and
+`hermes config get` reports it on stderr while leaving stdout/`--json` alone.
 
 Preserved:
 

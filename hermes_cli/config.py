@@ -3156,6 +3156,85 @@ def _suggest_closest_key(key: str, candidates: set[str], cutoff: float = 0.6) ->
     return next(iter(difflib.get_close_matches(key, sorted(candidates), n=1, cutoff=cutoff)), None)
 
 
+_OUTPUT_CAP_LEAVES = frozenset({"max_tokens", "max_output_tokens"})
+
+# ``_normalize_preset`` never read a cap, but ``moa.presets.<name>`` used to be documented with
+# these two names, and ``<name>`` is user-chosen — so they are matched by leaf, not by exact path.
+_MOA_PRESET_CAP_LEAVES = frozenset({"max_tokens", "reference_max_tokens"})
+
+# Exact removed-cap paths; ``moa.presets.<name>.<cap>`` and ``providers``/``model_overrides`` caps
+# are matched by prefix/depth in ``_removed_output_cap_key`` below (both namespaces are dynamic).
+_REMOVED_OUTPUT_CAP_KEYS = frozenset({
+    "model.max_tokens",
+    "moa.max_tokens",
+    "moa.reference_max_tokens",
+    "auxiliary.compression.max_output_tokens",
+})
+
+
+def _removed_output_cap_key(key: str) -> bool:
+    """True when *key* names an output-cap control Hermes removed — writing or echoing it would
+    hand back a value that is never read (#60388).
+
+    The provider-defaults change deleted the user-facing cap settings (evals/output_caps_scope.md,
+    website/docs/integrations/providers.md). The config surface did not follow: ``model.max_tokens``
+    is a VALID path (``model`` is a scalar ``str``, so the open walk accepts any child) and was
+    accepted with no notice at all, while the MoA preset caps were rejected with the generic
+    "not a recognized config key" plus a did-you-mean pointing at ``reference_models`` — a live key
+    the runtime does honor. Neither says "this setting is gone", so both resolve here instead.
+    """
+    segments = _split_key_path(key)
+    if not segments:
+        return False
+    if key in _REMOVED_OUTPUT_CAP_KEYS:
+        return True
+    # ``moa.presets.<preset-name>.<cap>``: the preset name is user-chosen, so an exact key set
+    # would never cover it.
+    if len(segments) == 4 and segments[:2] == ["moa", "presets"]:
+        return segments[3] in _MOA_PRESET_CAP_LEAVES
+    # Dedicated provider / model-override output caps (``providers.<name>``, ``model_overrides``).
+    if segments[0] in ("providers", "custom_providers", "model_overrides"):
+        return segments[-1] in _OUTPUT_CAP_LEAVES
+    return False
+
+
+def _removed_output_cap_refusal(key: str) -> str:
+    """``hermes config set`` refusal: say the setting is gone, and advertise the way out."""
+    return (
+        f"✗ '{key}' is a removed output-cap setting — Hermes no longer reads it; output caps come "
+        "from the provider defaults now.\n"
+        f"  Remove it: hermes config unset {key}\n"
+        "  (Use --force to write it anyway.)")
+
+
+def _removed_output_cap_notice(key: str) -> str:
+    """``hermes config get`` stderr notice: same verdict, stdout stays parseable."""
+    return (
+        f"⚠ '{key}' is a removed output-cap setting — Hermes no longer reads it; output caps come "
+        "from the provider defaults. The value printed above comes from your config file.\n"
+        f"  Remove it: hermes config unset {key}")
+
+
+def _validate_moa_preset_path(rest: list) -> tuple[bool, Optional[str]]:
+    """Validate what follows ``moa.presets`` in *rest* = ``[<preset-name>, <leaf>, ...]``.
+
+    The preset name is user-chosen (a dynamic namespace, like a platform name) and the leaves come
+    from ``_FLAT_PRESET_KEYS`` — not from the single ``default`` template ``DEFAULT_CONFIG`` seeds,
+    which is what used to make ``moa.presets.<name>.<supported-key>`` read as a typo (#60388).
+    Anything deeper than a leaf is slot payload (``...aggregator.provider``), validated by
+    ``_clean_slot`` at read time, exactly like an open-subkey section.
+    """
+    from hermes_cli.moa_config import SUPPORTED_PRESET_KEYS
+
+    if len(rest) == 1:  # ``moa.presets.fast`` — a whole preset, name and all.
+        return True, None
+    name, leaf = rest[0], rest[1]
+    if leaf in SUPPORTED_PRESET_KEYS:
+        return True, None
+    suggestion = _suggest_closest_key(leaf, set(SUPPORTED_PRESET_KEYS))
+    return False, ".".join(["moa", "presets", name] + ([suggestion] if suggestion else []))
+
+
 def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
     """Validate a dotted config-key path against the known schema -> ``(is_known, suggestion)``.
 
@@ -3166,6 +3245,12 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
     ``platforms`` namespace).
     """
     if not key:
+        return False, None
+
+    # A removed setting is a fact, not a typo: no did-you-mean, because the closest live key
+    # (``reference_models`` for ``reference_max_tokens``) is one the runtime still honors, and
+    # sending the user there hides that the cap itself was dropped (#60388).
+    if _removed_output_cap_key(key):
         return False, None
 
     segments = _split_key_path(key)
@@ -3195,6 +3280,13 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
     node: Any = DEFAULT_CONFIG.get(top)
     consumed = [top]
     for seg in segments[1:]:
+        # ``moa.presets`` is a dynamic namespace: the preset name is user-chosen and its leaves are
+        # exactly ``_FLAT_PRESET_KEYS``, not the three keys ``DEFAULT_CONFIG`` seeds on the
+        # ``default`` template. Everything from the preset name down is settled here, because the
+        # walk below would otherwise reject a valid preset name or a supported-but-unseeded leaf
+        # as a typo of ``reference_models``/``enabled`` (#60388).
+        if consumed == ["moa", "presets"]:
+            return _validate_moa_preset_path(segments[len(consumed):])
         if seg in _PLATFORM_CONTAINER_KEYS or not isinstance(node, dict) or not node:
             return True, None
         if seg not in node:
@@ -3567,6 +3659,12 @@ def set_config_value(key: str, value: str, force: bool = False):
     key, _redirect_note = _redirect_platform_display_key(key)
     if _redirect_note:
         print(_redirect_note)
+    # Removed output-cap controls (#60388): refuse BEFORE anything is written, so the user learns
+    # the setting is gone instead of getting "saved anyway" (a live-looking value nothing reads) or
+    # a did-you-mean pointing at an unrelated live key. --force stays the escape hatch for people
+    # wiring config.yaml to an external tool.
+    if _removed_output_cap_key(key) and not force:
+        _exit_invalid(_removed_output_cap_refusal(key))
     is_known, suggestion = _validate_config_key(key)
     # DEFAULT_CONFIG is an incomplete schema: runtime-read settings may deliberately have no
     # seeded default. Refuse only the positive wrong-prefix case from #112003; other unknown
@@ -3688,7 +3786,13 @@ def get_config_value(key: str, *, as_json: bool = False, raw: bool = False):
     # the wording hedges exactly like the set-path notice. Custom top-level keys stay exempt (they
     # are bridged into os.environ for skills) and ``_validate_config_key`` already accepts
     # open-subkey sections. stderr keeps stdout/--json parseable; the exit code stays 0.
-    if _split_key_path(key)[0] in _known_top_level_keys():
+    if _removed_output_cap_key(key):
+        # #60388: the stronger verdict. These paths are all VALID (``model`` is a scalar ``str``, so
+        # the open walk accepts any child), which is why the generic "may not read it" notice below
+        # never fired and a stored cap looked like a live setting. stderr keeps stdout/--json
+        # parseable, same as the phantom-key notice.
+        print(color(_removed_output_cap_notice(key), Colors.YELLOW), file=sys.stderr)
+    elif _split_key_path(key)[0] in _known_top_level_keys():
         is_known, suggestion = _validate_config_key(key)
         if not is_known:
             print(color(

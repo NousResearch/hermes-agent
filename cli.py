@@ -131,6 +131,7 @@ from hermes_cli.cli_render import (  # noqa: F401,E402
     _rich_text_from_ansi,
     _set_chrome_floor,
     _strip_markdown_syntax,
+    _strip_markdown_syntax_keep_links,
     _strip_reasoning_tags,
     _terminal_columns,
     _terminal_reflows,

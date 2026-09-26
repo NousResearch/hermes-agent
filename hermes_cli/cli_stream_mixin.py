@@ -415,7 +415,8 @@ class CLIStreamMixin:
         """Emit filtered text to the streaming display."""
         from agent.markdown_tables import is_table_divider, looks_like_table_row
         from cli import (
-            HermesCLI, _ACCENT, _RST, _STREAM_PARTIAL_PREVIEW_LEN, _cprint, _strip_markdown_syntax, datetime)
+            HermesCLI, _ACCENT, _RST, _STREAM_PARTIAL_PREVIEW_LEN, _cprint,
+            _strip_markdown_syntax_keep_links, datetime)
         if not text:
             return
         # Close a still-open reasoning box on the first content token so the answer streams
@@ -466,7 +467,7 @@ class CLIStreamMixin:
                 self._in_stream_table = True
                 continue
             if self.final_response_markdown == "strip":
-                line = _strip_markdown_syntax(line)
+                line = _strip_markdown_syntax_keep_links(line)
             self._emit_stream_line(line)
 
         # Partial lines are emitted ONLY at real newlines (no hard-wrapping — the terminal
@@ -490,7 +491,7 @@ class CLIStreamMixin:
     def _flush_stream(self) -> None:
         """Emit any remaining partial line from the stream buffer and close the box."""
         from agent.markdown_tables import is_table_divider, looks_like_table_row
-        from cli import _ACCENT, _RST, _cprint, _strip_markdown_syntax
+        from cli import _ACCENT, _RST, _cprint, _strip_markdown_syntax_keep_links
         # Still inside a "reasoning block" at end-of-stream = false positive (the model
         # mentioned a tag in prose and never closed it): recover the buffer as regular text.
         if getattr(self, "_in_reasoning_block", False) and getattr(self, "_stream_prefilt", ""):
@@ -509,7 +510,7 @@ class CLIStreamMixin:
         if getattr(self, "_stream_table_buf", None):
             self._flush_stream_table_buf()
         if self._stream_buf:
-            line = _strip_markdown_syntax(self._stream_buf) if self.final_response_markdown == "strip" else self._stream_buf
+            line = _strip_markdown_syntax_keep_links(self._stream_buf) if self.final_response_markdown == "strip" else self._stream_buf
             self._emit_stream_line(line)
             self._stream_buf = ""
         if self._stream_box_opened and getattr(self, "_stream_box_live", False):

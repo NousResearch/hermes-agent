@@ -12,6 +12,40 @@ def _render_to_text(renderable) -> str:
     return buf.getvalue()
 
 
+OSC_JIRA = "\x1b]8;;https://jira.skala-r.ru/browse/ITT-3320\x1b\\ITT-3320\x1b]8;;\x1b\\"
+
+
+def test_strip_keeps_hyperlinks_but_drops_markdown_and_colour():
+    from cli import _strip_markdown_syntax_keep_links
+
+    source = OSC_JIRA + " — **жирный** и \x1b[31mкрасный\x1b[0m"
+    stripped = _strip_markdown_syntax_keep_links(source)
+
+    # Link target survives as an OSC 8 pair around the same visible text.
+    assert "\x1b]8;;https://jira.skala-r.ru/browse/ITT-3320\x1b\\" in stripped
+    assert stripped.count("\x1b]8;;") == 2
+    # Markdown markers and colour SGR are gone, link text is untouched.
+    assert "**" not in stripped and "\x1b[31m" not in stripped
+    assert "ITT-3320" in stripped and "жирный" in stripped
+
+
+def test_strip_renderable_carries_link_span_without_escapes():
+    renderable = _render_final_assistant_content(OSC_JIRA + " — текст", mode="strip")
+
+    # Visible text stays plain (no escapes), so cell widths are computed correctly.
+    assert "\x1b" not in renderable.plain
+    assert renderable.plain.startswith("ITT-3320")
+    links = [s.style.link for s in renderable.spans if s.style and getattr(s.style, "link", None)]
+    assert links == ["https://jira.skala-r.ru/browse/ITT-3320"]
+
+
+def test_strip_plain_text_is_unchanged_by_link_handling():
+    renderable = _render_final_assistant_content("простой текст и **маркеры**", mode="strip")
+
+    assert "\x1b" not in renderable.plain
+    assert renderable.plain == "простой текст и маркеры"
+
+
 def test_final_assistant_content_uses_markdown_renderable():
     renderable = _render_final_assistant_content("# Title\n\n- one\n- two")
 

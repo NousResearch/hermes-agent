@@ -666,10 +666,11 @@ live session. After the root fix in PR #122825 is installed, use
 `hermes sessions repair-prompts` to find rows that were already degraded.
 
 The scan is conservative: it only proposes a repair when the stored prompt is
-missing the skills markers **and** the persisted `tools[]` pin proves either
-that skill tools belonged to the session or that the pin is exactly the
-maintenance `memory`-only surface. Older or malformed rows with no readable
-pin are reported as **unverifiable** and are never changed automatically.
+missing the `## Skill Safety` guidance **and** the persisted `tools[]` pin
+contains `skill_manage` (which always emits that guidance). Rows with no
+readable pin, or with a `memory`-only pin (which is also a legitimate
+`toolsets: [memory]` setup), are reported as **unverifiable** and are never
+changed automatically; clear them explicitly by `SESSION_ID` if needed.
 
 ```bash
 # Report verified candidates and unverifiable rows; writes nothing
@@ -689,8 +690,8 @@ hermes sessions repair-prompts --apply --json
 hermes sessions repair-prompts SESSION_ID --apply
 ```
 
-A verified memory-only `tools[]` pin is cleared together with the prompt so
-the next live turn can pin the real surface again. Clearing the prompt
+With an explicit `SESSION_ID`, a memory-only `tools[]` pin is cleared together
+with the prompt so the next live turn can pin the real surface again. Clearing the prompt
 intentionally stores NULL; the next turn rebuilds and persists healthy bytes,
 which causes one expected
 `Stored system prompt ... is null; rebuilding from scratch` warning for each
@@ -699,6 +700,10 @@ evidence of a new corruption.
 
 Run the repair only after the #122822 root fix is present; otherwise a later
 maintenance compaction can degrade the row again.
+
+A running gateway keeps each cached session's old prompt in memory, so restart
+the gateway after `--apply` (`hermes gateway restart`) for repaired rows to
+take effect.
 
 ### Repair State Crossed Between Profiles
 

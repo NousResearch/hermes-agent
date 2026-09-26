@@ -974,8 +974,6 @@ def _cmd_repair_routing(db, args):
     print(f"\nRepaired {repaired} of {len(adoptable)} session(s).")
 
 
-_SKILL_TOOL_NAMES = frozenset({"skills_list", "skill_view", "skill_manage"})
-_SKILLS_INDEX_MARKER = "<available_skills>"
 _SKILLS_GUIDANCE_MARKER = "## Skill Safety"
 _HYGIENE_PIN_TOOLS = frozenset({"memory"})
 
@@ -1010,26 +1008,22 @@ def _repair_prompts_pin_names(row) -> list[str] | None:
 
 
 def _repair_prompts_missing_skills_markers(row) -> bool:
+    # Only the Skill Safety guidance is a reliable marker: <available_skills> is legitimately
+    # absent when no skills are installed, but the guidance is emitted whenever skill_manage is.
     prompt = (row.get("system_prompt") or "").strip()
-    return bool(
-        prompt
-        and _SKILLS_INDEX_MARKER not in prompt
-        and _SKILLS_GUIDANCE_MARKER not in prompt
-    )
+    return bool(prompt and _SKILLS_GUIDANCE_MARKER not in prompt)
 
 
 def _repair_prompts_degraded_reason(row) -> str:
-    """Why the stored prompt is provably a reduced-toolset build; '' without sufficient evidence."""
+    """Why the stored prompt is provably a reduced-toolset build; '' without sufficient evidence.
+
+    A memory-only pin is not proof: toolsets=[memory] is also a legitimate user config whose
+    healthy prompt has no skills markers, so clearing it would repeat on every run.
+    """
     if not _repair_prompts_missing_skills_markers(row):
         return ""
-    pin = _repair_prompts_pin_names(row)
-    if pin is None:
-        return ""
-    names = set(pin)
-    if any(name in names for name in _SKILL_TOOL_NAMES):
-        return "skills index missing while the tools[] pin carries skill tools"
-    if names == _HYGIENE_PIN_TOOLS:
-        return "skills index missing and the tools[] pin is the reduced memory-only set"
+    if "skill_manage" in (_repair_prompts_pin_names(row) or ()):
+        return "Skill Safety guidance missing while the tools[] pin carries skill_manage"
     return ""
 
 
@@ -1086,10 +1080,16 @@ def _cmd_repair_prompts(db, args):
                 "prompt_chars": len(row["system_prompt"] or ""),
                 "clear_pin": set(pin or ()) == _HYGIENE_PIN_TOOLS,
             })
-        elif _repair_prompts_missing_skills_markers(row) and pin is None:
+        elif _repair_prompts_missing_skills_markers(row) and (
+            pin is None or set(pin) == _HYGIENE_PIN_TOOLS
+        ):
             unverifiable.append({
                 "id": row["id"],
-                "reason": "skills markers missing but the tools[] pin is unavailable or unreadable",
+                "reason": (
+                    "skills markers missing but the tools[] pin is unavailable or unreadable"
+                    if pin is None else
+                    "memory-only tools[] pin may be a user toolset; clear explicitly by SESSION_ID"
+                ),
                 "prompt_chars": len(row["system_prompt"] or ""),
             })
 
@@ -1118,7 +1118,7 @@ def _cmd_repair_prompts(db, args):
             suffix = " (tools[] pin cleared too)" if finding["clear_pin"] else ""
             print(f"  {finding['id']}  ({finding['prompt_chars']} chars) - {finding['reason']}{suffix}")
         if unverifiable:
-            print(f"\nSkipped {len(unverifiable)} unverifiable row(s) with no readable tools[] pin.")
+            print(f"\nSkipped {len(unverifiable)} unverifiable row(s) without enough tools[] evidence.")
 
     if not apply:
         if as_json:

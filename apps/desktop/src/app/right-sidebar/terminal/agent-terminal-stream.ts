@@ -79,15 +79,15 @@ export function syncAgentTerminalSnapshot(procId: string, output: string): void 
     return
   }
 
-  if (output.startsWith(previous)) {
-    writeAgentTerminalChunk(procId, output.slice(previous.length))
+  if (output.startsWith(body)) {
+    writeAgentTerminalChunk(procId, output.slice(body.length))
     lastSnapshots.set(procId, output)
 
     return
   }
 
-  if (output.startsWith(body)) {
-    writeAgentTerminalChunk(procId, output.slice(body.length))
+  if (output.startsWith(previous)) {
+    writeAgentTerminalChunk(procId, output.slice(previous.length))
     lastSnapshots.set(procId, output)
 
     return

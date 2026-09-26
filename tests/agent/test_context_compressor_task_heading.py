@@ -35,23 +35,25 @@ def test_grounding_collapses_alias_and_duplicate_task_sections():
     assert "stale" not in grounded
 
 
-def _summary_prompt(*, previous_summary: str = "") -> str:
+def _summary_prompt(*, previous_summary: str = "", tail_mode: str = "lean") -> str:
     compressor = ContextCompressor.__new__(ContextCompressor)
-    compressor.tail_mode = "lean"
+    compressor.tail_mode = tail_mode
     compressor._previous_summary = previous_summary
     source = "USER: " + ("Keep this deployment constraint and its rationale. " * 20)
     return compressor._build_summary_prompt(source, 800, "deployment safety", "", True)
 
 
 def test_source_copy_limit_is_the_final_prompt_rule():
-    for previous_summary in ("", "## Historical Task\nolder checkpoint"):
-        prompt = _summary_prompt(previous_summary=previous_summary)
-        rule_pos = prompt.rfind("SOURCE COPY LIMIT:")
+    for tail_mode in ("lean", "legacy"):
+        for previous_summary in ("", "## Historical Task\nolder checkpoint"):
+            prompt = _summary_prompt(previous_summary=previous_summary, tail_mode=tail_mode)
+            rule_pos = prompt.rfind("SOURCE COPY LIMIT:")
 
-        assert rule_pos > prompt.rfind("MUST be quoted VERBATIM")
-        assert rule_pos > prompt.rfind("FOCUS TOPIC:")
-        assert "longer than 200 characters verbatim" in prompt[rule_pos:]
-        assert "quote only a short key fragment and paraphrase the rest" in prompt[rule_pos:]
+            assert rule_pos > prompt.rfind("MUST be quoted VERBATIM")
+            assert rule_pos > prompt.rfind("FOCUS TOPIC:")
+            assert "longer than 200 characters verbatim" in prompt[rule_pos:]
+            assert "quote only a short key fragment and paraphrase the rest" in prompt[rule_pos:]
+            assert prompt.rstrip().endswith("[SKILL_PRUNED: ...] markers may remain exact.")
 
 
 def test_grounding_restores_latest_user_words_after_summary_generation():

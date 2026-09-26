@@ -1855,17 +1855,30 @@ def _cmd_update_impl(args, gateway_mode: bool):
         pre_pull_sha = _pull_updates(
             git_cmd, branch, _plan.auto_stash_ref, prompt_for_restore=_plan.prompt_for_restore,
             gw_input_fn=gw_input_fn, discard_local_changes=opts.discard_local_changes,
-            keep_stash=opts.keep_stash)
+            keep_stash=opts.keep_stash, target_ref=target_ref, pre_sync_sha=_plan.pre_sync_sha,
+            sync_upstream=is_fork and branch == "main" and not release_sha, assume_yes=assume_yes,
+            in_place_update=_plan.in_place_update, _windows_gateway_resume=_windows_gateway_resume)
+
+        _apply_pulled_update(
+            git_cmd, branch, pre_pull_sha, _plan,
+            _windows_gateway_resume=_windows_gateway_resume, completion_request=completion_request)
+
         # G3 guard rail (spec §5.1 Post-verify): report success only once config
         # parity, gateway liveness, and MCP fingerprints match the pre-update state.
+        # Seat: AFTER _apply_pulled_update — dep sync and patch restore are done, so the
+        # relaunch below runs the new code against the new deps (resuming any earlier
+        # restarts a gateway whose packages are about to be rewritten: the locked-.pyd
+        # hazard _clear_windows_venv_holders_or_exit exists to prevent).
+        # §5.2 puts the verifier after the relaunch and failure mode D is "the update's
+        # gateway relaunch was never verified", but on the normal path the updater only
+        # resumes the gateway from the atexit safety net at process exit — so take the
+        # resume token here or gateway_liveness can never pass.
+        _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
         if _verify_pre_state is not None:
             from hermes_cli.update_verification import verify_or_rollback
             if verify_or_rollback(_verify_pre_state, checkout=_repo_root_for_verification()):
                 _finalize_receipt("failed", "post-update verification failed")
                 sys.exit(1)
-        _apply_pulled_update(
-            git_cmd, branch, pre_pull_sha, _plan,
-            _windows_gateway_resume=_windows_gateway_resume, completion_request=completion_request)
     except subprocess.CalledProcessError as e:
         try:
             _handle_update_called_process_error(

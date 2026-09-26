@@ -241,6 +241,35 @@ def _recovered_results(task: Dict[str, Any], result_json: Optional[str], error: 
     return [recorded.get(i) or {"task_index": i, "status": "unknown", "summary": None, "error": error} for i in indexes]
 
 
+def _merge_recorded_children(delegation_id: str, record: Dict[str, Any], result: Any) -> Any:
+    """Recover durably recorded children into a batch unit's synthetic terminal result.
+
+    A synthetic batch terminal result (stall kill, worker crash) carries ``results: []`` — but for a
+    multi-child unit ``record_unit_child`` has been durably recording finished children on the row all
+    along, exactly so a crash loses only the unfinished ones (#116000). The owner-death path
+    (``recover_abandoned_delegations`` -> ``_recovered_results``) replays that partial; the in-process
+    stall/crash path used to discard it, overwriting ``result_json`` with an empty results wall at
+    ``_persist_completion``. Merge the recorded children back in here — same semantics as owner death:
+    recorded children with their real results, unrecorded ones ``unknown``.
+    """
+    if not (isinstance(result, dict) and record.get("is_batch") and result.get("error") and not result.get("results")):
+        return result
+    try:
+        with _DB_LOCK, _transaction() as conn:
+            row = conn.execute(
+                "SELECT result_json FROM async_delegations WHERE delegation_id=? AND state='running'",
+                (delegation_id,)).fetchone()
+        if row is None:
+            return result
+        recovered = _recovered_results(record, row[0], result.get("error") or "")
+        if not recovered:
+            return result
+        return {**result, "results": recovered}
+    except Exception:  # noqa: BLE001 — recovery merge must never fail a terminal result
+        logger.warning("Async delegation %s: could not merge recorded children into terminal result", delegation_id, exc_info=True)
+        return result
+
+
 def _owner_liveness() -> Optional[Callable[[Any, Any], bool]]:
     """``alive(owner_pid, owner_started_at)`` over the shared drift-tolerant start-time comparator,
     or None when the liveness probes cannot be imported."""
@@ -828,7 +857,10 @@ def _finalize(delegation_id: str, result: Any, status: str) -> None:
         record["interrupt_fn"] = None  # drop the closure; child is done
         record["progress_fn"] = None  # stop stale-monitor sampling
         snapshot = dict(record)
-    _push_completion_event(snapshot, result(snapshot) if callable(result) else result, status)
+    _push_completion_event(
+        snapshot,
+        _merge_recorded_children(delegation_id, snapshot, result(snapshot) if callable(result) else result),
+        status)
     with _records_lock:
         if delegation_id in _records:
             _records[delegation_id]["status"] = status

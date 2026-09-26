@@ -63,6 +63,21 @@ _LIVE_ADAPTERS: Dict[str, Any] = {}
 _HEADER_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 _TABLE_RULE_RE = re.compile(r"^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$")
 _FENCE_RE = re.compile(r"^```([^\n`]*)\s*$")
+# "Label: value" line (label ≤24 chars, no leading space, non-space content after
+# ": ") — the shape of structured confirmations like the /model switch summary.
+_LABEL_LINE_RE = re.compile(r"^\S[^:]{0,23}: \S")
+# Structured-marker prefixes that disqualify a line from the short-chat bubble split.
+_CHATTY_MARKER_PREFIXES = (">", "-", "*", "【", "#", "|")
+# Leading emoji/symbol decoration (🟠✅🔴…): U+200D ZWJ, U+FE0F variation selector, keycap and
+# pictograph ranges. CJK punctuation — 【 (U+3010) included — is deliberately absent so marker
+# characters survive the strip.
+_LEADING_EMOJI_RE = re.compile(
+    "^(?:[\\u00a9\\u00ae\\u203c\\u2049\\u2122\\u2139\\u2194-\\u21aa\\u231a-\\u23fa\\u24c2"
+    "\\u25aa-\\u25fe\\u2600-\\u27bf\\u2934\\u2935\\u2b00-\\u2bff\\u3030\\u303d\\u3297\\u3299"
+    "\\U0001f004\\U0001f0cf\\U0001f170-\\U0001f251\\U0001f300-\\U0001f6ff\\U0001f780-\\U0001f7ff"
+    "\\U0001f900-\\U0001faff"
+    "\\ufe0f\\u200d]|\\s)+"
+)
 
 
 def _is_stale_session_ret(ret: "Optional[int]", errcode: "Optional[int]", errmsg: "Optional[str]") -> bool:
@@ -468,9 +483,15 @@ def _split_delivery_units_for_weixin(content: str) -> List[str]:
 
 def _looks_like_chatty_line_for_weixin(line: str) -> bool:
     stripped = line.strip()
-    return bool(
-        stripped and len(stripped) <= 48 and not line.startswith((" ", "\t")) and not stripped.startswith((">", "-", "*", "【", "#", "|"))
-        and not _TABLE_RULE_RE.match(stripped) and not re.match(r"^\*\*[^*]+\*\*$", stripped) and not re.match(r"^\d+\.\s", stripped))
+    if not stripped or len(stripped) > 48 or line.startswith((" ", "\t")) or stripped.startswith(_CHATTY_MARKER_PREFIXES):
+        return False
+    if _TABLE_RULE_RE.match(stripped) or re.match(r"^\*\*[^*]+\*\*$", stripped) or re.match(r"^\d+\.\s", stripped):
+        return False
+    # An emoji-decorated marker (🟠【alert】…) is the same structured header as a bare one:
+    # strip the decoration and re-check so decorated headers keep their bubble together.
+    # Undecorated lines short-circuit here (bare == stripped), so behavior is unchanged for them.
+    bare = _LEADING_EMOJI_RE.sub("", stripped)
+    return not (bare != stripped and bare.startswith(_CHATTY_MARKER_PREFIXES))
 
 
 def _should_split_short_chat_block_for_weixin(block: str) -> bool:
@@ -481,7 +502,15 @@ def _should_split_short_chat_block_for_weixin(block: str) -> bool:
     first = lines[0].strip()
     if _HEADER_RE.match(first) or (len(first) <= 24 and first.endswith((":", "："))):
         return False
-    return all(_looks_like_chatty_line_for_weixin(line) for line in lines)
+    if not all(_looks_like_chatty_line_for_weixin(line) for line in lines):
+        return False
+    # A block whose lines are mostly "Label: value" pairs is structured output
+    # (e.g. the /model switch confirmation), not a short chatty exchange — keep
+    # it in one bubble even when every line is short enough to look chatty.
+    # Majority, not mere presence: a genuine chat may carry a stray
+    # "meeting moved: 3pm" line and must still split (#107946).
+    label_lines = sum(1 for line in lines if _LABEL_LINE_RE.match(line.strip()))
+    return label_lines <= len(lines) // 2
 
 
 def _pack_markdown_blocks_for_weixin(content: str, max_length: int) -> List[str]:

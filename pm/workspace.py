@@ -82,9 +82,17 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
         files.update(str(p.relative_to(source)) for p in source.glob(pattern))
     files.update(p.name for p in source.glob("*.py"))
 
-    excluded = {".git", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", "release", "uv.lock"}
+    excluded = {".git", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", "release"}
+
     def ignore(directory, names):
-        return [name for name in names if name in excluded or name.startswith(".")
+        # Only the workspace ROOT's uv.lock is excluded: lock_and_sync re-supplies it
+        # from the seed lock. A member's own lock (e.g. pm/uv.lock, the input for
+        # pm/pyproject.toml) is a build input and must travel with its member --
+        # pm/runtime.py::_inputs() reads it to key the runtime generation.
+        rooted = Path(directory) == source
+        return [name for name in names
+                if name in excluded or (rooted and name == "uv.lock")
+                or name.startswith(".")
                 or name.endswith(".egg-info") or (Path(directory) / name).is_symlink()]
 
     for entry in source.iterdir():

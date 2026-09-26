@@ -43,6 +43,9 @@ _HOOK_TIMEOUT_BOUNDED_HOOKS: Set[str] = {
     "post_tool_call", "transform_terminal_output", "transform_tool_result", "transform_llm_output",
     "pre_llm_call", "post_llm_call", "pre_api_request", "post_api_request", "api_request_error",
     "pre_auxiliary_call", "post_auxiliary_call", "pre_verify", "on_session_start", "on_session_end",
+    # Same hot path as pre_llm_call (before the turn's first request); fail-open = the turn
+    # proceeds without that plugin's durable context.
+    "pre_persist_user_message",
 }
 
 # Policy hooks: timeout / still-running must fail closed (block the tool).

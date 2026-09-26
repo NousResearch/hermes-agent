@@ -136,6 +136,13 @@ VALID_HOOKS: Set[str] = {
     # auth/pairing and dispatch. Kwargs: event, gateway, session_store. Return {"action": "skip",
     # "reason"} -> drop; {"action": "rewrite", "text"} -> replace event.text; "allow"/None -> normal.
     "pre_gateway_dispatch",
+    # pre_persist_user_message: agent-path ingress. Once per user turn in build_turn_context,
+    # BEFORE the turn's crash-resilience persist and the first API call — unlike pre_llm_call,
+    # whose context is ephemeral, returns here are DURABLE (they compose into the message the
+    # session row stores and replays). Kwargs: session_id, task_id, turn_id, user_message,
+    # conversation_history, platform, sender_id. Return {"user_message": ...} to replace the body
+    # (highest data.priority wins, ties -> first), {"context": ...} or a bare str to append.
+    "pre_persist_user_message",
     # agent_loop_stopped: an agent turn was interrupted mid-run (/stop, or the running-agent
     # fast-path of /new; see gateway/run.py::_interrupt_and_clear_session). Kwargs: session_key,
     # platform, reason, invalidation_reason. Return values are ignored.

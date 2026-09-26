@@ -1,0 +1,17 @@
+name: viaja_con_carlos
+version: "0.1.0"
+description: "Approved VIAJA CON CARLOS source lookup and natural Spanish conversation policy."
+author: "NousResearch"
+kind: standalone
+provides_tools:
+  - viaja_source_lookup
+provides_hooks:
+  - pre_llm_call
+config:
+  opening_owner: messenger_comment_adapter
+  opening_once: true
+  language_after_opening: es
+  factual_claims_require_source_lookup: true
+  unknown_or_conflicting_facts_require_confirmation: true
+  one_qualification_question_at_a_time: true
+  voluntary_wa_me_handoff: true

@@ -321,6 +321,32 @@ def _command_survives_generation_collection(tmp_path, monkeypatch, surface):
     assert json.loads(result.stdout)["argv"] == args
 
 
+def test_resolver_finds_deb_staged_python_prefers_flat(tmp_path, monkeypatch):
+    repo, home, _interpreter = fixture_tree(tmp_path, monkeypatch)
+    entry_name = "python-3.14.6-1-aarch64-linux-arm64-bionic"
+    store = home / "tools"
+    # The Termux .deb keeps its full $PREFIX tree inside the entry.
+    nested_bin = store / entry_name / "data/data/com.termux/files/usr/bin"
+    nested_bin.mkdir(parents=True)
+    (nested_bin / "python3.14").write_bytes(b"#!/system/bin/sh\n")
+    (nested_bin / "python3").symlink_to("python3.14")
+    (store / "facts.json").write_text(
+        json.dumps({
+            "schema": 1,
+            "packages": {"python": {"version": "fixture", "entry": entry_name}},
+        }),
+        encoding="utf-8",
+    )
+    assert _launchers.resolve_store_python(repo) == nested_bin / "python3"
+
+    # A flat bin/ alongside the nested tree still wins (python-build-
+    # standalone targets keep that shape; the deb prefix is a fallback).
+    flat_bin = store / entry_name / "bin"
+    flat_bin.mkdir()
+    (flat_bin / "python3").write_bytes(b"#!/bin/sh\n")
+    assert _launchers.resolve_store_python(repo) == flat_bin / "python3"
+
+
 @pytest.mark.parametrize("surface", ["published", "systemd", "launchd", "ssh", "legacy"])
 @pytest.mark.platforms("posix")
 @pytest.mark.spawns_gateway_lookalike

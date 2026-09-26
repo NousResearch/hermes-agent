@@ -707,10 +707,12 @@ function withoutBaseIds(rows: ChatMessage[], baseMessages: ChatMessage[]): ChatM
   return rows.filter(row => !baseIds.has(row.id))
 }
 
-/** Without a matched user interval, a journal can only be stale relative to
- *  the turn that most recently committed. A live row (no durable id yet) is
- *  covered by an equal reply in that last turn; a durable row needs identity.
- *  An older turn saying the same thing does not retire this journal. */
+/** Without a matched user interval, the journal can only be stale against what
+ *  the transcript already holds. A live row (no durable id yet) is covered by
+ *  an equal reply in the tip turn, or by a byte-identical reply a later turn
+ *  has already superseded — the journal only ever records the turn being
+ *  streamed, so a superseded match means the tail was replayed, not lost. A
+ *  durable row needs identity. */
 function journalTailAlreadyCommitted(tailAssistants: ChatMessage[], baseMessages: ChatMessage[]): boolean {
   const recoverable = tailAssistants.filter(assistantHasRecoverableContent)
 
@@ -721,8 +723,22 @@ function journalTailAlreadyCommitted(tailAssistants: ChatMessage[], baseMessages
   // Hidden prompts (bots mode, slash commands) start turns too.
   const lastTurnStart = baseMessages.findLastIndex(message => message.role === 'user')
 
-  const identityCovers = (base: ChatMessage, index: number, journaled: ChatMessage) =>
-    base.id === journaled.id || (journaled.rowId === undefined ? index > lastTurnStart : base.rowId === journaled.rowId)
+  const identityCovers = (base: ChatMessage, index: number, journaled: ChatMessage) => {
+    if (base.id === journaled.id) {
+      return true
+    }
+
+    if (journaled.rowId !== undefined) {
+      return base.rowId === journaled.rowId
+    }
+
+    // Position after the newest prompt (the tip turn), or a turn the transcript
+    // has moved past: a live journal row can only describe the turn streaming
+    // right now, so matching a superseded one means this snapshot is a replay.
+    return (
+      index > lastTurnStart || baseMessages.some((message, later) => later > index && message.role === 'user')
+    )
+  }
 
   return recoverable.every(message =>
     baseMessages.some(

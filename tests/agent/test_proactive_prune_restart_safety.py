@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -231,3 +232,46 @@ def test_patch_session_model_config_merge_and_delete(tmp_path: Path) -> None:
     # Missing rows and empty patches are no-ops, never errors.
     db.patch_session_model_config("NO_SUCH_SESSION", {"x": 1})
     db.patch_session_model_config(session_id, {})
+
+
+def test_prune_commit_is_logged(tmp_path: Path, caplog) -> None:
+    """A durable prune commit rewrites the whole transcript; it must be visible in logs."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "PRUNE_COMMIT_LOG"
+    db.create_session(session_id, source="telegram")
+    db.append_messages_batch(session_id, _history())
+
+    agent = _build_agent(db, session_id)
+    _configure_pruning(agent)
+    before = db.get_messages_as_conversation(session_id)
+
+    with caplog.at_level(logging.INFO, logger="agent.context_compressor"):
+        pruned, count = agent.context_compressor.prune_tool_results_only(
+            before, current_tokens=120_000,
+        )
+
+    assert count >= 1
+    commit_logs = [
+        record for record in caplog.records
+        if record.levelno == logging.INFO
+        and "Proactive tool-result prune committed" in record.getMessage()
+    ]
+    assert len(commit_logs) == 1
+    message = commit_logs[0].getMessage()
+    assert "reclaimed=" in message
+    assert f"transcript {len(before)} -> {len(pruned)} messages" in message
+    assert f"next_rearm=" in message
+
+    # The skip path below the rearm floor must stay silent, not log a second commit.
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="agent.context_compressor"):
+        rerun, rerun_count = agent.context_compressor.prune_tool_results_only(
+            pruned, current_tokens=120_000,
+        )
+
+    assert rerun is pruned
+    assert rerun_count == 0
+    assert not [
+        record for record in caplog.records
+        if "Proactive tool-result prune committed" in record.getMessage()
+    ]

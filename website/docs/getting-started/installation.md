@@ -162,6 +162,8 @@ Building Electron from source adds Node native-module requirements. These
 build prerequisites do not apply to installing a complete desktop package.
 Linux Chromium also requires system libraries supplied by the distribution.
 
+**Hardware:** what you need depends on where the model runs. To run models on your own machine, see [Local Models: Requirements and limits](../user-guide/local-models.md#requirements-and-limits) and the [What You Need](../guides/local-ollama-setup.md#what-you-need) table in the Ollama guide. macOS on x86 (Intel) processors is [not a supported platform](./platform-support.md#unsupported).
+
 :::tip Nix users
 Nix is **no longer an explicitly supported install path** (best-effort only). If you already use Nix (on NixOS, macOS, or Linux), there's a dedicated setup path with a Nix flake, declarative NixOS module, and optional container mode. See the **[Nix & NixOS Setup](./nix-setup.md)** guide.
 :::

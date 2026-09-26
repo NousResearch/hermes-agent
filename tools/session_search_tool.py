@@ -273,7 +273,7 @@ def _discovery_entry(lineage_root: Optional[str], **fields) -> Dict[str, Any]:
     return entry
 
 
-def _title_match_result(db, query: str, current_lineage_root: Optional[str]) -> Optional[Dict[str, Any]]:
+def _title_match_result(db, query: str) -> Optional[Dict[str, Any]]:
     """Discovery-shaped result when the query matches a session title, else None."""
     title_query = query.strip().strip("`'\"")  # models often quote a remembered title
     session_id = title_query and _quiet(lambda: db.resolve_session_by_title(title_query), None,
@@ -281,10 +281,6 @@ def _title_match_result(db, query: str, current_lineage_root: Optional[str]) -> 
     if not session_id:
         return None
     lineage_root = _resolve_lineage(db, session_id)
-    # Same-lineage title hits are in-context only while the session is live;
-    # /new-reset and compression-ended parents are not.
-    if current_lineage_root and lineage_root == current_lineage_root and not _session_left_live_context(db, session_id):
-        return None
     session_meta = _quiet(lambda: db.get_session(lineage_root) or db.get_session(session_id), None,
                           "get_session failed for title match %s", session_id) or {}
     if session_meta.get("source") in _HIDDEN_SESSION_SOURCES:
@@ -358,13 +354,20 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
     """Discovery shape: FTS5 plus adaptive or full result hydration."""
     current_lineage_root = _resolve_lineage(db, current_session_id) if current_session_id else None
     excluded_roots = _excluded_lineage_roots(db, exclude_session_ids or [])
-    title_result = _title_match_result(db, query, current_lineage_root)
-    # FTS rows are time-bounded in SQL (_search_filter_clauses); the title match bypasses that
-    # query, so it is the one place the window is re-checked in Python.
+    excluded_reasons: set[str] = set()
+    title_result = _title_match_result(db, query)
+    # FTS rows are time-bounded in SQL; title matches share the same discovery filters here.
     if title_result:
         title_sid, title_root = title_result["session_id"], title_result.get("_lineage_root") or title_result["session_id"]
         title_started = _coerce_started_ts((_get_session_meta(db, title_root) or _get_session_meta(db, title_sid)).get("started_at"))
-        if {title_sid, title_root} & excluded_roots or not _in_time_window(title_started, after_ts, before_ts):
+        if current_lineage_root and title_root == current_lineage_root and not _session_left_live_context(db, title_sid):
+            excluded_reasons.add("the current session's live context")
+            title_result = None
+        elif {title_sid, title_root} & excluded_roots:
+            excluded_reasons.add("exclude_session_ids")
+            title_result = None
+        elif not _in_time_window(title_started, after_ts, before_ts):
+            excluded_reasons.add("the requested time window")
             title_result = None
     raw_results, err = _loud(lambda: db.search_messages(
         query=query, role_filter=role_filter or ["user", "assistant"],
@@ -377,11 +380,6 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
     # order within each class.
     raw_results = sorted(raw_results, key=lambda r: (r.get("source") or "") in _DEMOTED_SESSION_SOURCES)
     # See #19434.
-    if not raw_results and not title_result:
-        return _discover_payload(db, query, detail, [], message=(
-            "No matching sessions found. FTS5 ANDs all terms by default — "
-            "broaden with OR (`alpha OR beta`), exact-match with quoted "
-            "phrases, exclude with NOT, or prefix-match with `deploy*`."))
     seen_sessions: Dict[str, Dict[str, Any]] = {}
     results = [title_result] if title_result else []
     if title_result and (title_lineage := title_result.pop("_lineage_root", None)):
@@ -396,6 +394,7 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
             break
         raw_sid, resolved_sid = r["session_id"], _resolve_lineage(db, r["session_id"])
         if raw_sid in excluded_roots or resolved_sid in excluded_roots:
+            excluded_reasons.add("exclude_session_ids")
             continue
         # Skip the current session lineage — UNLESS the hit's transcript has left live context. Three
         # sub-cases: Legacy compression rotation: the FTS hit lives in a session that itself ended with
@@ -410,8 +409,10 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
         is_compacted_hit = _is_compacted_message(db, r.get("id"))
         if current_lineage_root and resolved_sid == current_lineage_root and not (
                 _session_left_live_context(db, raw_sid) or is_compacted_hit):
+            excluded_reasons.add("the current session's live context")
             continue
         if current_session_id and raw_sid == current_session_id and not is_compacted_hit:
+            excluded_reasons.add("the current session's live context")
             continue
         seen_sessions.setdefault(resolved_sid, {**r, "_lineage_root": resolved_sid})
     for lineage_root, match_info in seen_sessions.items():
@@ -421,6 +422,24 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
         entry = _hydrate_hit(db, lineage_root, match_info, "full" if detail == "full" or not results else "compact")
         if entry is not None:
             results.append(entry)
+    if not results and not seen_sessions:
+        if excluded_reasons:
+            advice = []
+            if "the current session's live context" in excluded_reasons:
+                advice.append("search from another session")
+            if "exclude_session_ids" in excluded_reasons:
+                advice.append("remove exclude_session_ids")
+            if "the requested time window" in excluded_reasons:
+                advice.append("widen after/before")
+            if raw_results and "tool" not in set(role_filter or ["user", "assistant"]):
+                advice.append("include tool in role_filter if tool output may contain the match")
+            message = (f"Matching history exists but was filtered by {', '.join(sorted(excluded_reasons))}. "
+                       f"Try: {'; '.join(advice)}.")
+        else:
+            message = ("No matching sessions found. FTS5 ANDs all terms by default — "
+                       "broaden with OR (`alpha OR beta`), exact-match with quoted "
+                       "phrases, exclude with NOT, or prefix-match with `deploy*`.")
+        return _discover_payload(db, query, detail, [], message=message, sessions_searched=0)
     for entry in results:
         entry["link"] = _session_link(entry["session_id"], link_profile)
     return _discover_payload(db, query, detail, results, sessions_searched=len(seen_sessions), link_hint=(

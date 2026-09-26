@@ -244,19 +244,23 @@ class TestIterBackupFiles:
         assert str(Path("models/big.gguf")) not in selected
         assert not any(s.startswith("hermes-agent") for s in selected)
 
-    def test_prunes_browser_use_cli_profiles_at_home_roots_only(self, tmp_path):
-        """The Browser Use CLI backend writes ``HERMES_HOME/browser_profiles/`` (underscore) — a
-        live Chromium user-data dir holding Login Data / Cookies. It must never enter an archive,
-        at the root or under ``profiles/<name>/``; a skill's same-named dir is user data (#117346)."""
+    @pytest.mark.parametrize("browser_dir", ["browser_profiles", "chrome-debug"])
+    def test_prunes_live_browser_profiles_at_home_roots_only(self, tmp_path, browser_dir):
+        """Browser Use CLI and local-CDP profiles hold Login Data / Cookies. Exclude them at
+        home roots, but keep same-named user directories deeper in the tree (#117346, #61703)."""
         from hermes_cli.backup import _iter_backup_files
 
         root = tmp_path / ".hermes"
         root.mkdir()
         files = {
-            "browser_profiles/browser-use-default/Default/Login Data": False,
-            "browser_profiles/browser-use-default/Default/Network/Cookies": False,
-            "profiles/coder/browser_profiles/browser-use-default/Default/Cookies": False,
-            "skills/example/browser_profiles/notes.md": True,
+            f"{browser_dir}/Default/Login Data": False,
+            f"{browser_dir}/Default/Network/Cookies": False,
+            f"{browser_dir}/browser-use-default/Default/Login Data": False,
+            f"{browser_dir}/browser-use-default/Default/Network/Cookies": False,
+            f"profiles/coder/{browser_dir}/browser-use-default/Default/Cookies": False,
+            f"profiles/coder/{browser_dir}/Default/Cookies": False,
+            f"skills/example/{browser_dir}/notes.md": True,
+            f"profiles/coder/skills/example/{browser_dir}/notes.md": True,
         }
         for rel in files:
             f = root / rel
@@ -328,6 +332,78 @@ class TestIterBackupFiles:
 
 class TestBackup:
 
+    @pytest.mark.parametrize("browser_dir", ["browser_profiles", "chrome-debug"])
+    @pytest.mark.parametrize("entry_point", ["manual", "automatic"])
+    @pytest.mark.parametrize("invoking_profile", ["default", "coder"])
+    def test_live_browser_profile_is_pruned_before_both_full_backup_walks(
+        self, tmp_path, monkeypatch, capsys, browser_dir, entry_point, invoking_profile
+    ):
+        """Both full ZIP entry points prune live browser directories before traversal,
+        while retaining nested user content and upstream Browser Use CLI protection."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        live_dirs = [
+            hermes_home / browser_dir,
+            hermes_home / "profiles" / "coder" / browser_dir,
+        ]
+        for live_dir in live_dirs:
+            (live_dir / "Default").mkdir(parents=True)
+            (live_dir / "Default" / "Cookies").write_text("live runtime state")
+        nested_files = [
+            hermes_home / "skills" / "example" / browser_dir / "notes.md",
+            hermes_home / "profiles" / "coder" / "skills" / "example" / browser_dir / "notes.md",
+        ]
+        for nested_file in nested_files:
+            nested_file.parent.mkdir(parents=True)
+            nested_file.write_text("user content")
+
+        active_home = (
+            hermes_home if invoking_profile == "default"
+            else hermes_home / "profiles" / invoking_profile
+        )
+        monkeypatch.setenv("HERMES_HOME", str(active_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        import hermes_cli.backup as backup_mod
+
+        walked: list[Path] = []
+        real_walk = backup_mod.os.walk
+
+        def traced_walk(*args, **kwargs):
+            for item in real_walk(*args, **kwargs):
+                walked.append(Path(item[0]))
+                yield item
+
+        monkeypatch.setattr(backup_mod.os, "walk", traced_walk)
+        out_zip = tmp_path / f"{entry_point}.zip"
+        if entry_point == "manual":
+            # Manual backups retain their all-profiles scope even when invoked
+            # with a named HERMES_HOME; automatic writers also accept that home directly.
+            archive_root = hermes_home
+            assert backup_mod.run_backup(Namespace(output=str(out_zip))) is True
+            output = capsys.readouterr().out
+            for live_dir in live_dirs:
+                assert f"    {live_dir.relative_to(hermes_home)}/" in output
+        else:
+            archive_root = active_home
+            assert backup_mod._write_full_zip_backup(out_zip, active_home) == out_zip
+
+        assert not any(
+            walked_path == live_dir or live_dir in walked_path.parents
+            for live_dir in live_dirs
+            for walked_path in walked
+        )
+        with zipfile.ZipFile(out_zip) as zf:
+            names = set(zf.namelist())
+        assert not any(name.startswith(f"{browser_dir}/") for name in names)
+        assert not any(name.startswith(f"profiles/coder/{browser_dir}/") for name in names)
+        expected_nested = {
+            path.relative_to(archive_root).as_posix()
+            for path in nested_files if path.is_relative_to(archive_root)
+        }
+        assert expected_nested <= names
+        assert "config.yaml" in names
+        assert archive_root in walked
 
     def test_db_snapshots_staged_beside_output_zip(self, tmp_path, monkeypatch):
         """SQLite staging temp files must be created on the output zip's
@@ -946,6 +1022,43 @@ class TestBackupEdgeCases:
         assert exc.value.code == 1
         unreadable.chmod(0o600)
         assert run_backup(Namespace(output=str(tmp_path / "out4.zip"))) is True
+
+    def test_lstat_error_remains_writer_visible(self, tmp_path, monkeypatch, capsys):
+        """A transient lstat failure must not silently turn a source file into
+        an excluded entry; the archive writer reports its failure instead."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        raced_file = hermes_home / "skills" / "raced.txt"
+        raced_file.write_text("still selected")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        import hermes_cli.backup as backup_mod
+
+        real_lstat = Path.lstat
+        real_write = zipfile.ZipFile.write
+        lstat_attempts = []
+
+        def racing_lstat(path):
+            if path == raced_file:
+                lstat_attempts.append(path)
+                raise OSError("simulated lstat race")
+            return real_lstat(path)
+
+        def failing_write(zf, filename, arcname=None, *args, **kwargs):
+            if Path(filename) == raced_file:
+                raise OSError("simulated archive read failure")
+            return real_write(zf, filename, arcname, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "lstat", racing_lstat)
+        monkeypatch.setattr(zipfile.ZipFile, "write", failing_write)
+        out_zip = tmp_path / "raced.zip"
+
+        assert backup_mod.run_backup(Namespace(output=str(out_zip))) is False
+        assert lstat_attempts
+        output = capsys.readouterr().out
+        assert "Backup incomplete" in output
+        assert "raced.txt: simulated archive read failure" in output
 
     def test_empty_hermes_home(self, tmp_path, monkeypatch):
         """Backup handles empty hermes home (no files to back up)."""

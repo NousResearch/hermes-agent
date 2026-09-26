@@ -27,13 +27,13 @@ import pytest
 from hermes_state import SessionDB
 
 
-def _hold_write_lock(db_path, hold_s, started_evt):
-    """Hold the SQLite write lock on *db_path* for *hold_s* seconds."""
+def _hold_write_lock(db_path, hold_s, started_evt, release_evt=None):
+    """Hold the SQLite write lock on *db_path* for *hold_s* seconds, or until *release_evt* is set."""
     conn = sqlite3.connect(str(db_path), timeout=1.0, isolation_level=None)
     try:
         conn.execute("BEGIN IMMEDIATE")
         started_evt.set()
-        time.sleep(hold_s)
+        (release_evt or threading.Event()).wait(hold_s)
         conn.execute("COMMIT")
     finally:
         conn.close()
@@ -87,8 +87,11 @@ class TestTranscriptWritePatience:
         monkeypatch.setattr(SessionDB, "_WRITE_PATIENCE_S", 0.2)
 
         started = threading.Event()
+        release = threading.Event()
+        # Hold until released, not for a fixed time: each attempt's 1s busy timeout overshoots
+        # badly on a loaded runner, and a lock that lapses first lets the write succeed.
         holder = threading.Thread(
-            target=_hold_write_lock, args=(db.db_path, 2.0, started)
+            target=_hold_write_lock, args=(db.db_path, 15.0, started, release)
         )
         holder.start()
         try:
@@ -96,6 +99,7 @@ class TestTranscriptWritePatience:
             with pytest.raises(sqlite3.OperationalError) as excinfo:
                 db.set_meta("k", "v")  # routine write, short patience
         finally:
+            release.set()
             holder.join(timeout=10.0)
         assert not holder.is_alive()
         text = str(excinfo.value)

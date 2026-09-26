@@ -74,6 +74,16 @@ export default [
             'CallExpression[callee.name="useEffect"] > ArrowFunctionExpression[body.type="BlockStatement"]:has(CallExpression[callee.name="setMutableRef"])',
           message:
             'Do not mirror reactive values into refs via useEffect (setMutableRef included). Read $atom.get() directly in callbacks instead — refs synced from atoms lag one render and cause stale-read bugs.'
+        },
+        {
+          // {contribution.render()} anywhere inside JSX — calling a render
+          // callback inline makes its hooks belong to the HOST component, so
+          // loading/replacing a plugin changes the host's hook count → React
+          // #310 (#80560, crashed every Windows user with a desktop plugin).
+          // Mount it as a child instead: <ContribRender render={c.render} />.
+          selector: 'JSXExpressionContainer CallExpression[callee.property.name="render"]',
+          message:
+            'Do not call render() callbacks inline in JSX — the callback\u2019s hooks become the host\u2019s and plugin load/replace changes the host hook count (React #310). Mount it as a component: <ContribRender render={...} /> from @/contrib/react/boundary.'
         }
       ]
     }

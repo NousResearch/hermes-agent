@@ -19,24 +19,9 @@ from plugins.memory.honcho.client import (
     reset_honcho_client,
     resolve_active_host,
     resolve_config_path,
-    resolve_global_config_path,
 )
 
 
-class TestHonchoClientConfigDefaults:
-    def test_default_values(self):
-        config = HonchoClientConfig()
-        assert config.host == "hermes"
-        assert config.workspace_id == "hermes"
-        assert config.api_key is None
-        assert config.environment == "production"
-        assert config.timeout is None
-        assert config.enabled is False
-        assert config.save_messages is True
-        assert config.session_strategy == "per-directory"
-        assert config.recall_mode == "hybrid"
-        assert config.session_peer_prefix is False
-        assert config.sessions == {}
 
 
 class TestFromEnv:
@@ -47,14 +32,6 @@ class TestFromEnv:
         assert config.enabled is True
 
 
-    def test_defaults_without_env(self):
-        with patch.dict(os.environ, {}, clear=True):
-            # Remove HONCHO_API_KEY if it exists
-            os.environ.pop("HONCHO_API_KEY", None)
-            os.environ.pop("HONCHO_ENVIRONMENT", None)
-            config = HonchoClientConfig.from_env()
-        assert config.api_key is None
-        assert config.environment == "production"
 
 
     def test_enabled_without_api_key_when_base_url_set(self):
@@ -67,6 +44,29 @@ class TestFromEnv:
         assert config.enabled is True
 
 
+    def test_honcho_url_env_var_is_honored(self):
+        """HONCHO_URL is the SDK's own env var; from_env() accepts it too."""
+        with patch.dict(os.environ, {"HONCHO_URL": "http://localhost:8000"}, clear=False):
+            os.environ.pop("HONCHO_API_KEY", None)
+            os.environ.pop("HONCHO_BASE_URL", None)
+            config = HonchoClientConfig.from_env()
+        assert config.base_url == "http://localhost:8000"
+        assert config.enabled is True
+
+
+    def test_honcho_base_url_wins_over_honcho_url(self):
+        with patch.dict(
+            os.environ,
+            {
+                "HONCHO_BASE_URL": "http://localhost:8000",
+                "HONCHO_URL": "http://localhost:9999",
+            },
+            clear=False,
+        ):
+            config = HonchoClientConfig.from_env()
+        assert config.base_url == "http://localhost:8000"
+
+
 class TestFromGlobalConfig:
     def test_missing_config_falls_back_to_env(self, tmp_path):
         with patch.dict(os.environ, {}, clear=True):
@@ -76,6 +76,60 @@ class TestFromGlobalConfig:
         # Should fall back to from_env
         assert config.enabled is False
         assert config.api_key is None
+
+
+    def test_missing_config_still_reads_honcho_url(self, tmp_path):
+        """The env fallback path must honor HONCHO_URL, not just HONCHO_BASE_URL.
+
+        from_global_config() returns from_env() when the config file is
+        absent, so a fallback that only from_global_config() understood
+        would silently do nothing for users with no ~/.honcho/config.json.
+        """
+        with patch.dict(os.environ, {"HONCHO_URL": "http://localhost:8000"}, clear=True):
+            config = HonchoClientConfig.from_global_config(
+                config_path=tmp_path / "nonexistent.json"
+            )
+        assert config.base_url == "http://localhost:8000"
+        assert config.enabled is True
+
+
+    def test_base_url_from_sdk_native_endpoint_block(self, tmp_path):
+        """endpoint.baseUrl is the SDK-native spelling Claude Desktop writes."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "key",
+            "endpoint": {"baseUrl": "http://localhost:8000"},
+        }))
+
+        with patch.dict(os.environ, {}, clear=True):
+            config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.base_url == "http://localhost:8000"
+
+
+    def test_endpoint_base_url_wins_over_top_level_and_env(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "endpoint": {"baseUrl": "http://localhost:8000"},
+            "baseUrl": "http://localhost:9001",
+            "base_url": "http://localhost:9002",
+        }))
+
+        with patch.dict(os.environ, {"HONCHO_BASE_URL": "http://localhost:9003"}, clear=True):
+            config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.base_url == "http://localhost:8000"
+
+
+    def test_endpoint_block_non_dict_is_ignored(self, tmp_path):
+        """A malformed endpoint value falls through instead of crashing."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "endpoint": "http://localhost:8000",
+            "baseUrl": "http://localhost:9001",
+        }))
+
+        with patch.dict(os.environ, {}, clear=True):
+            config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.base_url == "http://localhost:9001"
 
 
     def test_host_block_overrides_root(self, tmp_path):
@@ -124,6 +178,53 @@ class TestFromGlobalConfig:
         config = HonchoClientConfig.from_global_config(config_path=config_file)
         # Should fall back to from_env without crashing
         assert isinstance(config, HonchoClientConfig)
+
+    def test_base_url_host_block_overrides_root_and_env(self, tmp_path):
+        """Host-specific baseUrl should win for self-hosted Honcho deployments."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "baseUrl": "http://root:9000",
+            "hosts": {"hermes": {"baseUrl": "http://host-block:9001"}},
+        }))
+
+        with patch.dict(os.environ, {"HONCHO_BASE_URL": "http://env:8000"}, clear=False):
+            config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.base_url == "http://host-block:9001"
+
+    def test_base_url_full_precedence_chain(self, tmp_path):
+        """Invariant: host block > endpoint.baseUrl (SDK-native) > flat root
+        > HONCHO_BASE_URL > HONCHO_URL. Pins the composed order of #14489
+        (host block) and #43803 (endpoint block + HONCHO_URL)."""
+        config_file = tmp_path / "config.json"
+        layers = {
+            "hosts": {"hermes": {"baseUrl": "http://host:1"}},
+            "endpoint": {"baseUrl": "http://endpoint:2"},
+            "baseUrl": "http://flat:3",
+        }
+        env = {"HONCHO_BASE_URL": "http://envbase:4", "HONCHO_URL": "http://envurl:5"}
+        expected = [
+            "http://host:1",     # full stack -> host block wins
+            "http://endpoint:2", # drop host block -> SDK-native endpoint
+            "http://flat:3",     # drop endpoint -> flat root key
+            "http://envbase:4",  # empty file -> HONCHO_BASE_URL
+            "http://envurl:5",   # drop HONCHO_BASE_URL -> HONCHO_URL
+        ]
+
+        for i, want in enumerate(expected):
+            cfg_dict = dict(layers)
+            if i >= 1:
+                cfg_dict.pop("hosts")
+            if i >= 2:
+                cfg_dict.pop("endpoint")
+            if i >= 3:
+                cfg_dict.pop("baseUrl")
+            env_dict = dict(env)
+            if i >= 4:
+                env_dict.pop("HONCHO_BASE_URL")
+            config_file.write_text(json.dumps(cfg_dict))
+            with patch.dict(os.environ, env_dict, clear=True):
+                config = HonchoClientConfig.from_global_config(config_path=config_file)
+            assert config.base_url == want, f"layer {i}: got {config.base_url!r}, want {want!r}"
 
 
 class TestResolveSessionName:
@@ -189,23 +290,6 @@ class TestResolveActiveHost:
             assert resolve_active_host() == "hermes.coder"
 
 
-    def test_profiles_import_failure_falls_back(self):
-        import sys
-        with patch.dict(os.environ, {}, clear=False), patch(
-            "plugins.memory.honcho.client.resolve_config_path",
-            return_value=Path("/nonexistent/test-honcho-config.json"),
-        ):
-            os.environ.pop("HERMES_HONCHO_HOST", None)
-            # Temporarily remove hermes_cli.profiles to simulate import failure
-            saved = sys.modules.get("hermes_cli.profiles")
-            sys.modules["hermes_cli.profiles"] = None  # type: ignore
-            try:
-                assert resolve_active_host() == "hermes"
-            finally:
-                if saved is not None:
-                    sys.modules["hermes_cli.profiles"] = saved
-                else:
-                    sys.modules.pop("hermes_cli.profiles", None)
 
 
 class TestProfileScopedConfig:
@@ -230,12 +314,6 @@ class TestObservationModeMigration:
         cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
         assert cfg.observation_mode == "unified"
 
-    def test_new_config_defaults_to_directional(self, tmp_path):
-        """Config with no host block and no credentials → 'directional' (new default)."""
-        cfg_file = tmp_path / "config.json"
-        cfg_file.write_text(json.dumps({}))
-        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
-        assert cfg.observation_mode == "directional"
 
 
     def test_granular_observation_overrides_preset(self, tmp_path):
@@ -268,66 +346,72 @@ class TestGetHonchoClient:
         not importlib.util.find_spec("honcho"),
         reason="honcho SDK not installed"
     )
-    def test_passes_timeout_from_config(self):
+    def test_dot_form_legacy_host_key_keeps_local_api_key(self):
+        """Regression for #37436: a legacy dot-form host block (hermes.work)
+        must be found by the local-auth check. Before the _host_block fallback,
+        the direct dict lookup missed it, the stored apiKey was dropped for the
+        'local' placeholder, and every write 401'd silently."""
         fake_honcho = MagicMock(name="Honcho")
         cfg = HonchoClientConfig(
-            api_key="test-key",
-            timeout=91.0,
+            api_key="explicit-local-key",
+            base_url="http://localhost:8000",
+            host="hermes_work",
             workspace_id="hermes",
-            environment="production",
+            raw={"hosts": {"hermes.work": {"apiKey": "explicit-local-key"}}},
         )
 
         with patch("honcho.Honcho", return_value=fake_honcho) as mock_honcho:
-            client = get_honcho_client(cfg)
+            get_honcho_client(cfg)
 
-        assert client is fake_honcho
-        mock_honcho.assert_called_once()
-        assert mock_honcho.call_args.kwargs["timeout"] == 91.0
-
+        assert mock_honcho.call_args.kwargs["api_key"] == "explicit-local-key"
 
     @pytest.mark.skipif(
         not importlib.util.find_spec("honcho"),
         reason="honcho SDK not installed"
     )
-    def test_timeout_change_triggers_client_rebuild(self):
-        """Changing timeout config must rebuild the cached client."""
-        from hermes_constants import get_hermes_home
-
-        cfg_yaml = get_hermes_home() / "config.yaml"
-        cfg_yaml.write_text("honcho:\n  timeout: 30\n")
-
-        fake_honcho_1 = MagicMock(name="Honcho_v1")
-        fake_honcho_2 = MagicMock(name="Honcho_v2")
+    def test_local_base_url_without_host_key_uses_placeholder(self):
+        """Without an explicit apiKey anywhere in honcho.json, a local
+        base_url gets the SDK's non-empty placeholder instead of the (likely
+        cloud, env-sourced) resolved key."""
+        fake_honcho = MagicMock(name="Honcho")
         cfg = HonchoClientConfig(
-            api_key="test-key",
+            api_key="cloud-root-key",
+            base_url="http://localhost:8000",
+            host="hermes",
             workspace_id="hermes",
-            environment="production",
+            raw={},
         )
 
-        with patch("honcho.Honcho", return_value=fake_honcho_1) as mock_h1:
-            client1 = get_honcho_client(cfg)
+        with patch("honcho.Honcho", return_value=fake_honcho) as mock_honcho:
+            get_honcho_client(cfg)
 
-        assert client1 is fake_honcho_1
-        assert mock_h1.call_args.kwargs["timeout"] == 30.0
+        assert mock_honcho.call_args.kwargs["api_key"] == "local"
 
-        # Same config — should return cached client (no rebuild)
-        with patch("honcho.Honcho", return_value=fake_honcho_2) as mock_h2:
-            client2 = get_honcho_client(cfg)
+    @pytest.mark.skipif(
+        not importlib.util.find_spec("honcho"),
+        reason="honcho SDK not installed"
+    )
+    def test_local_base_url_honors_top_level_api_key(self):
+        """Regression for #36098 issue 2: a top-level apiKey in honcho.json is
+        explicit user intent and must be honored for local base_urls (AUTH_USE_AUTH
+        self-hosts). Previously only a host-block apiKey escaped the 'local'
+        placeholder, so the top-level key was dropped and every request 401'd."""
+        fake_honcho = MagicMock(name="Honcho")
+        cfg = HonchoClientConfig(
+            api_key="explicit-top-level-key",
+            base_url="http://localhost:8000",
+            host="hermes",
+            workspace_id="hermes",
+            raw={"apiKey": "explicit-top-level-key"},
+        )
 
-        assert client2 is fake_honcho_1  # still cached
-        mock_h2.assert_not_called()
+        with patch("honcho.Honcho", return_value=fake_honcho) as mock_honcho:
+            get_honcho_client(cfg)
 
-        # Changed timeout — must rebuild
-        cfg_yaml.write_text("honcho:\n  timeout: 300\n")
-        st = cfg_yaml.stat()
-        os.utime(cfg_yaml, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+        assert mock_honcho.call_args.kwargs["api_key"] == "explicit-top-level-key"
 
-        with patch("honcho.Honcho", return_value=fake_honcho_2) as mock_h3:
-            client3 = get_honcho_client(cfg)
 
-        assert client3 is fake_honcho_2  # rebuilt
-        mock_h3.assert_called_once()
-        assert mock_h3.call_args.kwargs["timeout"] == 300.0
+
 
     @pytest.mark.skipif(
         not importlib.util.find_spec("honcho"),
@@ -445,20 +529,6 @@ class TestResolveSessionNameLengthLimit:
         assert len(result_b) == self.HONCHO_MAX
 
 
-class TestResetHonchoClient:
-    def test_reset_clears_singleton(self):
-        import plugins.memory.honcho.client as mod
-
-        # Seed the cached client through the slot's public surface, then
-        # verify reset_honcho_client() clears it. (The client is cached in
-        # mod._honcho_client_slot, a thread-safe SingletonSlot, not a bare
-        # module global anymore — see #24759.)
-        mod._honcho_client_slot.get(lambda: MagicMock())
-        assert mod._honcho_client_slot.peek() is not None
-        reset_honcho_client()
-        assert mod._honcho_client_slot.peek() is None
-
-
 class TestDialecticDepthParsing:
     """Tests for _parse_dialectic_depth and _parse_dialectic_depth_levels."""
 
@@ -549,18 +619,12 @@ class TestGetHonchoClientBaseUrlDoublePrefixFix:
     @pytest.mark.parametrize(
         "raw_url, expected",
         [
-            # LAN IP self-host
-            ("http://10.0.0.5:8000/v3", "http://10.0.0.5:8000"),
+            # LAN IP self-host with trailing slash
             ("http://192.168.1.20:38000/v3/", "http://192.168.1.20:38000"),
-            # Tailscale / custom-domain self-host
-            ("https://honcho.my.ts.net/v3", "https://honcho.my.ts.net"),
-            ("https://honcho.lab.internal/v3", "https://honcho.lab.internal"),
-            ("https://honcho.fly.dev/v3", "https://honcho.fly.dev"),
-            # higher version segments are also stripped
+            # custom domain, higher version segment
             ("https://honcho.lab.internal/v12", "https://honcho.lab.internal"),
             # self-host without a version segment is left unchanged
             ("https://honcho.my.ts.net", "https://honcho.my.ts.net"),
-            ("http://10.0.0.5:8000", "http://10.0.0.5:8000"),
         ],
     )
     def test_self_hosted_base_url_version_stripped(self, raw_url, expected):

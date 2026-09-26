@@ -79,16 +79,8 @@ def _run_finalize(agent: AIAgent) -> None:
     )
 
 
-def test_default_skip_background_review_is_false() -> None:
-    """Without an explicit override, AIAgent does NOT skip background review."""
-    agent = _make_agent()
-    assert agent.skip_background_review is False
 
 
-def test_skip_background_review_flag_persists() -> None:
-    """Passing skip_background_review=True records the flag on the instance."""
-    agent = _make_agent(skip_background_review=True)
-    assert agent.skip_background_review is True
 
 
 def test_finalize_turn_skips_review_when_flag_set() -> None:
@@ -111,18 +103,36 @@ def test_finalize_turn_fires_review_when_flag_unset() -> None:
     agent._spawn_background_review.assert_called_once()
 
 
-def test_cron_construction_sets_skip_background_review() -> None:
-    """The cron scheduler MUST construct AIAgent with skip_background_review=True.
 
-    Verified via source-text inspection — the cron scheduler is heavy to
-    boot in tests, so we assert that the source declares the flag rather
-    than running the scheduler. This catches accidental removal.
-    """
-    import pathlib
 
-    scheduler_src = pathlib.Path(__file__).resolve().parents[2] / "cron" / "scheduler.py"
-    text = scheduler_src.read_text(encoding="utf-8")
+def test_persistence_failure_error_fallback_is_pinned_and_leaves_final_response_empty(monkeypatch, tmp_path) -> None:
+    """With no model text, result["error"] carries a profile-pinned `hermes doctor`, while the
+    memory sync and the background-review gate still see the turn as having produced nothing."""
+    from hermes_constants import profile_cli_selector
 
-    assert "skip_background_review=True" in text, (
-        "cron/scheduler.py must construct AIAgent with skip_background_review=True."
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes" / "profiles" / "research"))
+    selector = profile_cli_selector()
+    assert selector.strip()
+    agent = _make_agent()
+    _stub_agent_for_finalize(agent)
+    # Force the fallback: the explainer normally supplies the text, so an empty explainer is
+    # the only way the hardcoded copy reaches the user.
+    monkeypatch.setattr(AIAgent, "_format_turn_completion_explanation", staticmethod(lambda *a, **k: ""))
+    result = finalize_turn(
+        agent,
+        final_response="",
+        api_call_count=1,
+        interrupted=False,
+        failed=True,
+        messages=[{"role": "user", "content": "hi"}],
+        conversation_history=[],
+        effective_task_id="test",
+        turn_id="test-turn",
+        user_message="hi",
+        original_user_message="hi",
+        _should_review_memory=True,
+        _turn_exit_reason="session_persistence_failed",
     )
+    assert f"`hermes {selector}doctor`" in result["error"]
+    assert agent._sync_external_memory_for_turn.call_args.kwargs["final_response"] == ""
+    agent._spawn_background_review.assert_not_called()

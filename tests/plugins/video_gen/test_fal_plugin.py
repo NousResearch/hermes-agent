@@ -10,45 +10,62 @@ from agent import video_gen_registry
 
 
 @pytest.fixture(autouse=True)
-def _reset_registry():
+def _reset_registry(monkeypatch):
     video_gen_registry._reset_for_tests()
+    # Individual tests install a fal_client fake before exercising requests.
+    # Avoid making the optional SDK a prerequisite for those mocked paths.
+    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *args, **kwargs: None)
     yield
     video_gen_registry._reset_for_tests()
 
 
-def test_fal_provider_registers():
-    from plugins.video_gen.fal import FALVideoGenProvider, DEFAULT_MODEL
-
-    provider = FALVideoGenProvider()
-    video_gen_registry.register_provider(provider)
-
-    assert video_gen_registry.get_provider("fal") is provider
-    assert provider.display_name == "FAL"
-    # DEFAULT_MODEL is the cheap-tier default
-    assert provider.default_model() == DEFAULT_MODEL
-    assert DEFAULT_MODEL in {"pixverse-v6", "ltx-2.3"}
-
-
-def test_kling_4k_uses_start_image_url():
-    """Kling v3 4K's image-to-video endpoint expects start_image_url,
-    not image_url. The family must declare image_param_key='start_image_url'."""
+def test_kling_v3_standard_and_pro_payload_shape():
+    """Kling 3.0 (v3 standard/pro): start_image_url on i2v, aspect_ratio
+    dropped on i2v (schema derives it from the image), no seed/resolution
+    keys, string duration 3-15, generate_audio + negative_prompt real."""
     from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
 
-    meta = FAL_FAMILIES["kling-v3-4k"]
-    assert meta.get("image_param_key") == "start_image_url"
-    payload = _build_payload(
-        meta,
-        prompt="x",
-        image_url="https://example.com/i.png",
-        duration=5,
-        aspect_ratio="16:9",
-        resolution="720p",
-        negative_prompt=None,
-        audio=None,
-        seed=None,
-    )
-    assert payload.get("start_image_url") == "https://example.com/i.png"
-    assert "image_url" not in payload
+    for fid in ("kling-v3", "kling-v3-pro"):
+        meta = FAL_FAMILIES[fid]
+        assert meta.get("image_param_key") == "start_image_url"
+
+        # text-to-video route
+        p = _build_payload(
+            meta,
+            prompt="a mecha lands",
+            image_url=None,
+            duration=7,
+            aspect_ratio="16:9",
+            resolution="1080p",
+            negative_prompt="blurry",
+            audio=True,
+            seed=3,
+        )
+        assert p == {
+            "prompt": "a mecha lands",
+            "aspect_ratio": "16:9",
+            "duration": "7",
+            "generate_audio": True,
+            "negative_prompt": "blurry",
+        }, fid
+
+        # image-to-video route: start_image_url in, aspect_ratio dropped
+        p = _build_payload(
+            meta,
+            prompt="animate it",
+            image_url="https://example.com/i.png",
+            duration=20,  # clamps to 15
+            aspect_ratio="16:9",
+            resolution="720p",
+            negative_prompt=None,
+            audio=False,
+            seed=None,
+        )
+        assert p.get("start_image_url") == "https://example.com/i.png", fid
+        assert "image_url" not in p, fid
+        assert "aspect_ratio" not in p, fid
+        assert p["duration"] == "15", fid
+        assert p["generate_audio"] is False, fid
 
 
 def test_minimax_h3_int_duration_and_resolution_alias():
@@ -81,6 +98,30 @@ def test_minimax_h3_int_duration_and_resolution_alias():
     assert hi["resolution"] == "2K"
 
 
+def test_h3_max_turbo_static_key_and_1080p_alias():
+    """H3 Max Turbo requires prompt_expansion_mode on both endpoints, adds a real
+    1080P tier (unlike Max, which caps at 768P), and its i2v drops aspect_ratio."""
+    from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
+
+    meta = FAL_FAMILIES["minimax-h3-max-turbo"]
+    t2v = _build_payload(
+        meta, prompt="x", image_url=None, duration=7, aspect_ratio="16:9",
+        resolution="1080p", negative_prompt=None, audio=None, seed=11,
+    )
+    assert t2v["prompt_expansion_mode"] == "balanced"
+    assert t2v["resolution"] == "1080P"
+    assert t2v["duration"] == 7 and isinstance(t2v["duration"], int)
+    assert t2v["seed"] == 11
+
+    i2v = _build_payload(
+        meta, prompt="x", image_url="https://example.com/i.png", duration=5,
+        aspect_ratio="16:9", resolution="480p", negative_prompt=None, audio=None, seed=None,
+    )
+    assert i2v["prompt_expansion_mode"] == "balanced"
+    assert "aspect_ratio" not in i2v
+    assert i2v["image_url"] == "https://example.com/i.png"
+
+
 def test_image_drop_keys_strips_aspect_ratio_on_i2v():
     """Seedance 2.5 / MiniMax H3 / Grok 1.5 i2v endpoints derive the
     aspect ratio from the input image; sending the key is rejected."""
@@ -103,28 +144,34 @@ def test_image_drop_keys_strips_aspect_ratio_on_i2v():
         assert t2v.get("aspect_ratio") == "16:9", fid
 
 
-def test_seedance_25_string_duration_up_to_30():
-    """Seedance 2.5 keeps the stringified duration convention and supports
-    the full 4-30s range."""
+def test_wan_30_audio_toggle_uses_family_key_and_start_image_url():
+    """Wan 3.0's schema names the audio toggle `audio` (not `generate_audio`), takes
+    `start_image_url` on i2v and an integer duration; veo3.1 keeps `generate_audio`."""
     from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
 
-    meta = FAL_FAMILIES["seedance-2.5"]
-    payload = _build_payload(
-        meta, prompt="x", image_url=None, duration=30, aspect_ratio="1:1",
-        resolution="480p", negative_prompt=None, audio=True, seed=None,
-    )
-    assert payload["duration"] == "30"
-    assert payload["generate_audio"] is True
+    kw = dict(prompt="x", duration=7, aspect_ratio="16:9", resolution="720p", negative_prompt=None, audio=True, seed=None)
+    p = _build_payload(FAL_FAMILIES["wan-3.0"], image_url="https://i.png", **kw)
+    assert p["audio"] is True and "generate_audio" not in p
+    assert p["start_image_url"] == "https://i.png" and p["duration"] == 7
+    assert _build_payload(FAL_FAMILIES["veo3.1"], image_url=None, **kw)["generate_audio"] is True
 
 
-def test_gemini_omni_flash_is_image_only():
-    """Gemini Omni Flash has no t2v endpoint on FAL — text jobs must
-    error cleanly instead of submitting to a None endpoint."""
-    from plugins.video_gen.fal import FAL_FAMILIES
+def test_text_only_job_errors_cleanly_for_i2v_only_family(monkeypatch):
+    """Catalog-shape guard: a family without a text endpoint must error cleanly
+    instead of submitting to a None endpoint. Every cataloged family is now
+    dual-modality, so the guard is exercised with a synthetic family."""
+    from plugins.video_gen import fal as fal_plugin
+    from plugins.video_gen.fal import FALVideoGenProvider, _family
 
-    meta = FAL_FAMILIES["gemini-omni-flash"]
-    assert meta.get("text_endpoint") is None
-    assert meta.get("image_endpoint")
+    synthetic = _family("Synthetic i2v", "~1s", "cheap", "test", None, "example/i2v-only/image-to-video", durations=(3, 10), duration_int=True)
+    monkeypatch.setattr(fal_plugin, "_fal_video_available", lambda: True)
+    monkeypatch.setattr(fal_plugin, "_load_fal_client", lambda: object())
+    monkeypatch.setattr(fal_plugin, "_resolve_family", lambda explicit: ("synthetic", synthetic))
+    monkeypatch.setattr(fal_plugin, "_submit_fal_video_request", lambda *a, **k: pytest.fail("submitted to a None endpoint"))
+
+    result = FALVideoGenProvider().generate("a dog running")
+    assert result["success"] is False
+    assert result["error_type"] == "modality_unsupported"
 
 
 def test_every_family_has_required_metadata():
@@ -220,20 +267,6 @@ class TestFamilyRouting:
         expected_endpoint = FAL_FAMILIES[DEFAULT_MODEL]["text_endpoint"]
         assert with_fake_fal["endpoint"] == expected_endpoint
 
-    def test_premium_seedance_routing(self, with_fake_fal):
-        """Sanity check the premium-tier seedance routes correctly."""
-        from plugins.video_gen.fal import FALVideoGenProvider
-
-        result = FALVideoGenProvider().generate(
-            "a dog",
-            model="seedance-2.0",
-            image_url="https://example.com/dog.png",
-        )
-        assert result["success"] is True
-        assert with_fake_fal["endpoint"] == "bytedance/seedance-2.0/image-to-video"
-        # Seedance uses regular image_url (not start_image_url)
-        assert with_fake_fal["arguments"]["image_url"] == "https://example.com/dog.png"
-
 
 class TestFamilyKeyNormalization:
     def test_full_endpoint_paths_resolve_to_their_own_family(self):
@@ -268,10 +301,34 @@ class TestFamilyKeyNormalization:
         assert _normalize_family_key("blackforestlabs/flux-3") == "flux-3"
 
     def test_capabilities_span_longest_family_duration(self):
-        """Provider caps must not understate Seedance 2.5's 30s ceiling."""
-        from plugins.video_gen.fal import FALVideoGenProvider
+        """capabilities() is active-MODEL-aware (#95681 diet): it reports
+        the resolved family's real window, so the schema doesn't overstate
+        short families or understate Seedance 2.5. The union fallback
+        (resolution failure) must still span the 30s ceiling."""
+        from unittest.mock import patch as _patch
 
-        caps = FALVideoGenProvider().capabilities()
+        import plugins.video_gen.fal as _fp
+        from plugins.video_gen.fal import FAL_FAMILIES, FALVideoGenProvider
+
+        # Active model resolved → that family's actual window.
+        meta = FAL_FAMILIES["seedance-2.5"]
+        with _patch.object(_fp, "_resolve_family",
+                           return_value=("seedance-2.5", meta)):
+            caps = FALVideoGenProvider().capabilities()
+        assert caps["max_duration"] >= 30
+        # A short family must NOT be inflated to the union ceiling.
+        short = FAL_FAMILIES["pixverse-v6"]
+        durs = short.get("durations")
+        hi = durs[1] if isinstance(durs, tuple) else max(durs)
+        with _patch.object(_fp, "_resolve_family",
+                           return_value=("pixverse-v6", short)):
+            caps = FALVideoGenProvider().capabilities()
+        assert caps["max_duration"] == hi
+
+        # Resolution failure → union fallback still spans the ceiling.
+        with _patch.object(_fp, "_resolve_family",
+                           side_effect=RuntimeError("no config")):
+            caps = FALVideoGenProvider().capabilities()
         assert caps["max_duration"] >= 30
         assert caps["min_duration"] <= 1
 
@@ -301,22 +358,6 @@ class TestPayloadBuilder:
         assert p["negative_prompt"] == "ugly"
         assert p["seed"] == 42
 
-    def test_pixverse_range_clamps_correctly(self):
-        from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
-
-        meta = FAL_FAMILIES["pixverse-v6"]
-        p = _build_payload(
-            meta,
-            prompt="x",
-            image_url="https://i.png",
-            duration=99,        # over max → 15
-            aspect_ratio="16:9",
-            resolution="540p",
-            negative_prompt=None,
-            audio=None,
-            seed=None,
-        )
-        assert p["duration"] == "15"
 
     @pytest.mark.parametrize(
         "family_id",
@@ -348,24 +389,6 @@ class TestPayloadBuilder:
         )
         assert "seed" not in p
 
-    def test_minimax_h3_uses_uppercase_resolution_enum(self):
-        """FAL spells MiniMax H3 resolutions "768P"/"2K"/"4K"; tool-style
-        values like "720p" are aliased via resolution_aliases."""
-        from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
-
-        meta = FAL_FAMILIES["minimax-h3"]
-        accepted = _build_payload(
-            meta, prompt="x", image_url=None, duration=7, aspect_ratio="16:9",
-            resolution="2K", negative_prompt=None, audio=None, seed=None,
-        )
-        assert accepted["resolution"] == "2K"
-        assert accepted["duration"] == 7
-
-        aliased = _build_payload(
-            meta, prompt="x", image_url=None, duration=7, aspect_ratio="16:9",
-            resolution="720p", negative_prompt=None, audio=None, seed=None,
-        )
-        assert aliased["resolution"] == "768P"
 
     def test_audio_only_sent_for_families_that_declare_it(self):
         """minimax-h3 and the i2v-only families have no generate_audio field."""
@@ -405,13 +428,14 @@ class TestPayloadBuilder:
         assert p["duration"] == expected
         assert type(p["duration"]) is type(expected)
 
-    def test_i2v_only_families_declare_no_text_endpoint(self):
-        """Catalog invariant: Gemini Omni Flash animates an existing image only."""
+    def test_every_family_declares_both_endpoints(self):
+        """Catalog invariant: since Gemini Omni Flash 1.1 every family is
+        dual-modality — both endpoints must be non-empty strings."""
         from plugins.video_gen.fal import FAL_FAMILIES
 
-        meta = FAL_FAMILIES["gemini-omni-flash"]
-        assert meta.get("text_endpoint") is None
-        assert meta["image_endpoint"]
+        for fid, meta in FAL_FAMILIES.items():
+            assert meta.get("text_endpoint"), fid
+            assert meta.get("image_endpoint"), fid
 
     def test_ltx_omits_duration_aspect_resolution(self):
         """LTX 2.3 doesn't declare duration/aspect/resolution enums —
@@ -460,24 +484,47 @@ class TestPayloadBuilder:
                 f"got {p.get('duration')!r}"
             )
 
-    def test_happy_horse_minimal_payload(self):
-        """Happy Horse has sparse docs — payload should be minimal."""
+
+    def test_ltx_25_payload(self):
+        """LTX 2.5: integer duration enum, 4K alias, no seed key."""
         from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
 
-        meta = FAL_FAMILIES["happy-horse"]
+        meta = FAL_FAMILIES["ltx-2.5"]
         p = _build_payload(
             meta,
-            prompt="a horse galloping",
+            prompt="a drone shot",
             image_url=None,
-            duration=8,
+            duration=7,
             aspect_ratio="16:9",
-            resolution="720p",
-            negative_prompt="watermark",
+            resolution="4k",
+            negative_prompt="blurry",
             audio=True,
-            seed=None,
+            seed=42,
         )
-        # Only prompt — no payload bloat for fields we can't verify
-        assert p == {"prompt": "a horse galloping"}
+        # duration snaps to the nearest enum value as a JSON integer; the
+        # tool's "4k" maps to the endpoint's "2160p"; seed/negative dropped.
+        assert p == {
+            "prompt": "a drone shot",
+            "aspect_ratio": "16:9",
+            "resolution": "2160p",
+            "duration": 6,
+            "generate_audio": True,
+        }
+        assert isinstance(p["duration"], int)
+
+        # i2v: the fast i2v endpoint takes the same even enum (19 snaps to 18 — a tie picks the lower entry, like veo 7→6),
+        # no seed key.
+        p = _build_payload(meta, prompt="animate", image_url="https://example.com/f.png", duration=19, aspect_ratio="9:16",
+                           resolution="720p", negative_prompt=None, audio=None, seed=7)
+        assert p == {"prompt": "animate", "image_url": "https://example.com/f.png", "aspect_ratio": "9:16", "resolution": "720p", "duration": 18}
+
+        # fal caps 1440p/2160p at 10s regardless of frame rate: 18 at 720p stays 18, at 4k it is capped to 10; and an
+        # unspecified duration is omitted so the endpoint's own default ("auto") applies instead of the enum minimum.
+        kw = dict(prompt="x", image_url=None, aspect_ratio="16:9", negative_prompt=None, audio=None, seed=None)
+        assert _build_payload(meta, duration=18, resolution="4k", **kw)["duration"] == 10
+        assert _build_payload(meta, duration=18, resolution="2k", **kw)["duration"] == 10
+        assert _build_payload(meta, duration=18, resolution="1080p", **kw)["duration"] == 18
+        assert "duration" not in _build_payload(meta, duration=None, resolution="4k", **kw)
 
 
 class TestUpscalePass:

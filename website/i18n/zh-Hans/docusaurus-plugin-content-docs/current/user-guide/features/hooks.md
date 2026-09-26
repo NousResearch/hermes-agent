@@ -11,7 +11,7 @@ Hermes 有四套 hook 系统，可在关键生命周期节点运行自定义代�
 | 系统 | 注册方式 | 运行环境 | 使用场景 |
 |------|---------|---------|---------|
 | **[Gateway hooks](#gateway-event-hooks)** | `~/.hermes/hooks/` 下的 `HOOK.yaml` + `handler.py` | 仅 Gateway | 日志、告警、webhook |
-| **[Plugin hooks](#plugin-hooks)** | [插件](/user-guide/features/plugins)中的 `ctx.register_hook()` | CLI + Gateway | 工具拦截、指标采集、护栏 |
+| **[Plugin hooks](#plugin-hooks)** | [插件](./plugins.md)中的 `ctx.register_hook()` | CLI + Gateway | 工具拦截、指标采集、护栏 |
 | **[Shell hooks](#shell-hooks)** | `~/.hermes/config.yaml` 中 `hooks:` 块指向的 shell 脚本 | CLI + Gateway | 用于阻断、自动格式化、上下文注入的即插即用脚本 |
 | **[Outbound webhooks](#outbound-webhooks)** | `~/.hermes/config.yaml` 中的 `hooks.outbound:` 列表 | CLI + Gateway | 将签名后的生命周期事件推送到外部 HTTP endpoint |
 
@@ -352,7 +352,7 @@ Gateway hooks 仅在 **gateway**（Telegram、Discord、Slack、WhatsApp、Teams
 
 ## Plugin Hooks
 
-[插件](/user-guide/features/plugins)可以注册在 **CLI 和 gateway** 会话中均会触发的 hook。这些 hook 通过插件 `register()` 函数中的 `ctx.register_hook()` 以编程方式注册。
+[插件](./plugins.md)可以注册在 **CLI 和 gateway** 会话中均会触发的 hook。这些 hook 通过插件 `register()` 函数中的 `ctx.register_hook()` 以编程方式注册。
 
 ```python
 def register(ctx):
@@ -391,7 +391,7 @@ def register(ctx):
 | `api_request_error` | 观察者 | 每次失败的 provider attempt；忽略返回值。 | `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `api_duration`, `started_at`, `ended_at`, `status_code`, `retry_count`, `max_retries`, `retryable`, `reason`, `error`, `request` | Error 文本可能含 provider/用户数据；`request` 设计为已清理。 |
 | `on_session_start` | 观察者 | 新 session 第一轮；忽略返回值。 | `session_id`, `model`, `platform` | 仅标识符和 routing metadata。 |
 | `on_session_end` | 观察者 | Canonical 路径在每轮 finalize；CLI/TUI 退出还有精简 legacy shape。 | Canonical：`session_id`, `task_id`, `turn_id`, `completed`, `failed`, `interrupted`, `turn_exit_reason`, `model`, `platform`；退出路径可能增加 `reason`/`api_request_id` 并省略字段。 | ID、model/platform 和结果；canonical payload 无消息正文。 |
-| `on_session_finalize` | 观察者 | CLI/TUI/gateway 通过 `finalize_session` teardown；gateway 关闭或过期时可只 finalize 而不 reset。忽略返回值。 | 按 surface：`session_id`, `platform`，可选 `reason`, `old_session_id`, `new_session_id` | Session 和 routing 标识。 |
+| `on_session_finalize` | 观察者 | CLI/TUI/gateway 通过 `finalize_session` teardown；gateway 关闭时可只 finalize 而不 reset。忽略返回值。 | 按 surface：`session_id`, `platform`，可选 `reason`, `old_session_id`, `new_session_id` | Session 和 routing 标识。 |
 | `on_session_reset` | 观察者 | CLI/TUI session boundary，或 gateway 创建替代 session 后；忽略返回值。 | CLI：`session_id`, `platform`, `reason`；TUI：`session_id`, `platform`；gateway：另有 `reason`, `old_session_id`, `new_session_id` | Session 和 routing 标识。 |
 | `on_skill_lifecycle` | 观察者 | 权威 skill 使用状态变更后；忽略返回值。 | `action`, `skill_name`, `provenance`, `task_id`, `session_id`, `use_count`, `reused`, `reuse_after_patch` | 暴露本地 skill 名和 provenance。 |
 | `subagent_start` | 观察者 | 子 agent 已构造、即将运行；忽略返回值。 | `parent_session_id`, `parent_turn_id`, `parent_subagent_id`, `child_session_id`, `child_subagent_id`, `child_role`, `child_goal` | Child goal 可能含用户/项目内容。 |
@@ -773,7 +773,7 @@ def register(ctx):
 
 ### `on_session_finalize`
 
-当 CLI 或 gateway **销毁**活跃会话时触发——例如用户执行 `/new`、gateway GC 了空闲会话，或 CLI 在 agent 活跃时退出。可用它刷新与旧 session ID 绑定的状态。Gateway reset 时，替代会话会先创建并持久化，然后才调用此回调。
+当 CLI 或 gateway **销毁**活跃会话时触发——例如用户执行 `/new`，或 CLI 在 agent 活跃时退出。仅回收资源的空闲缓存淘汰不会结束持久化对话。可用它刷新与旧 session ID 绑定的状态。Gateway reset 时，替代会话会先创建并持久化，然后才调用此回调。
 
 **回调签名：**
 
@@ -786,7 +786,7 @@ def my_callback(session_id: str | None, platform: str, **kwargs):
 | `session_id` | `str` 或 `None` | 即将销毁的会话 ID。若无活跃会话则可能为 `None`。 |
 | `platform` | `str` | `"cli"` 或消息平台名称（`"telegram"`、`"discord"` 等）。 |
 
-**触发位置：** CLI/TUI teardown，以及 gateway reset、关闭或空闲过期路径。Gateway 关闭和过期可只触发 finalize，而不触发对应的 `on_session_reset`。
+**触发位置：** CLI/TUI teardown，以及 gateway reset 或关闭路径。Gateway 关闭可只触发 finalize，而不触发对应的 `on_session_reset`。
 
 **返回值：** 忽略。
 
@@ -820,7 +820,7 @@ def my_callback(session_id: str, platform: str, **kwargs):
 
 ---
 
-参见 **[构建插件指南](/developer-guide/plugins)**，获取包含工具 schema、处理器和高级 hook 模式的完整演练。
+参见 **[构建插件指南](../../developer-guide/plugins/index.md)**，获取包含工具 schema、处理器和高级 hook 模式的完整演练。
 
 ---
 

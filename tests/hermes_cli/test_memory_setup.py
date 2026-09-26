@@ -1,8 +1,9 @@
+import re
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import hermes_cli.memory_setup as memory_setup
-from hermes_cli.memory_setup import _CANCELLED, _curses_select
+from hermes_cli.memory_setup import _CANCELLED
 
 
 
@@ -44,55 +45,80 @@ def test_cmd_setup_generic_choice_cancel_writes_nothing(tmp_path, monkeypatch):
     assert not (tmp_path / ".env").exists()
 
 
-def test_write_env_vars_strips_line_separators_and_nul(tmp_path):
-    """A pasted secret with embedded CR/LF/NUL must not inject an extra
-    KEY=VALUE line into .env (mirrors the openviking plugin's writer)."""
-    env_path = tmp_path / ".env"
-
-    memory_setup._write_env_vars(
-        env_path,
-        {"PROVIDER_API_KEY": "good\nINJECTED_KEY=attacker\r\u2028\x00tail"},
-    )
-
-    lines = env_path.read_text(encoding="utf-8").splitlines()
-    assert lines == ["PROVIDER_API_KEY=goodINJECTED_KEY=attackertail"]
-    parsed = dict(line.split("=", 1) for line in lines if "=" in line)
-    assert set(parsed) == {"PROVIDER_API_KEY"}
-
-
+# _write_env_vars's CR/LF-stripping, denylist, and plain-value-roundtrip
+# behavior is covered by tests/hermes_cli/test_memory_setup_env_denylist.py,
+# which exercises the current save_env_value-routed signature
+# (env_writes, hermes_home=None) \u2014 these three tests pinned the prior direct
+# Path.write_text(env_path, env_writes) signature/implementation and were
+# removed along with it (#60587).
 
 
 # ---------------------------------------------------------------------------
-# _provider_pip_dependencies — mode-aware dep expansion (#70636)
+# provider extras — mode-aware expansion (#70636)
 # ---------------------------------------------------------------------------
 
 
 
 
 
-def test_install_dependencies_force_reinstalls_versioned_specs(tmp_path, monkeypatch):
-    """force=True hands every declared spec (version ranges intact) to pip,
-    so a downgraded/stripped bridge package is restored on hermes update."""
-    import yaml as _yaml
+def test_install_dependencies_prepares_declared_extra_even_if_importable(tmp_path, monkeypatch):
+    """PM, not ambient importability, decides whether constraints are current."""
+    import hermes_yaml as _yaml
 
     plugin_dir = tmp_path / "mem0"
     plugin_dir.mkdir()
     (plugin_dir / "plugin.yaml").write_text(
-        _yaml.safe_dump({"pip_dependencies": ["mem0ai>=2.0.10,<3"]}), encoding="utf-8"
+        _yaml.safe_dump({"extra": "mem0"}), encoding="utf-8"
     )
     monkeypatch.setattr(
         "plugins.memory.find_provider_dir", lambda name: plugin_dir
     )
 
-    installed = []
+    synced = []
 
-    def fake_install_specs(specs, timeout=120):
-        installed.append(list(specs))
-        return SimpleNamespace(ok=True, blocked=False, reason="", stderr="")
+    import pm
 
-    monkeypatch.setattr("tools.lazy_deps.install_specs", fake_install_specs)
+    monkeypatch.setattr(pm, "available", lambda extra: True)
+    monkeypatch.setattr(
+        pm, "sync_venv",
+        lambda extras=None, explicit=False: synced.append((list(extras or []), explicit)),
+    )
 
-    memory_setup._install_dependencies("mem0", force=True)
+    memory_setup._install_dependencies("mem0")
 
-    assert installed, "force=True must reach the install step"
-    assert any("mem0ai>=2.0.10,<3" in specs for specs in installed)
+    assert synced == [(["mem0"], True)]
+
+
+def test_cmd_status_memory_tool_gate_disabled(capsys, monkeypatch):
+    """When both memory stores are disabled, Memory status reports memory tool as disabled."""
+    _cfg = {"memory": {"memory_enabled": False, "user_profile_enabled": False}}
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: _cfg)
+    # check_memory_requirements() reads the readonly loader, not load_config.
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly", lambda: _cfg, raising=False
+    )
+    monkeypatch.setattr(memory_setup, "_get_available_providers", lambda: [])
+
+    memory_setup.cmd_status(SimpleNamespace())
+
+    captured = capsys.readouterr().out
+    assert re.search(r"Memory tool:\s+disabled", captured)
+    assert re.search(r"Memory injection:\s+disabled", captured)
+    assert re.search(r"User profile:\s+disabled", captured)
+
+
+def test_cmd_status_memory_tool_gate_enabled(capsys, monkeypatch):
+    """When at least one memory store is enabled, Memory status reports memory tool as enabled."""
+    _cfg = {"memory": {"memory_enabled": True, "user_profile_enabled": False}}
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: _cfg)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly", lambda: _cfg, raising=False
+    )
+    monkeypatch.setattr(memory_setup, "_get_available_providers", lambda: [])
+
+    memory_setup.cmd_status(SimpleNamespace())
+
+    captured = capsys.readouterr().out
+    assert re.search(r"Memory tool:\s+enabled", captured)
+    assert re.search(r"Memory injection:\s+enabled", captured)
+    assert re.search(r"User profile:\s+disabled", captured)

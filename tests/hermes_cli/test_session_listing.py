@@ -3,14 +3,11 @@
 import pytest
 
 from hermes_cli.session_listing import (
-    parse_session_listing_args,
+    format_gateway_session_listing,
     query_session_listing,
 )
 
 
-class TestParseSessionListingArgs:
-    def test_plain_listing(self):
-        assert parse_session_listing_args("") == (False, False, "", None)
 
 
 
@@ -55,6 +52,33 @@ class TestQuerySessionListingSearch:
                 assert [r["id"] for r in rows] == ["tip_1"], query
         finally:
             db.close()
+
+    def test_plain_listing_still_hides_unnamed(self, db):
+        assert self._ids(db, source="telegram") == ["sess_an94"]
+
+    def test_current_session_is_hidden_by_default(self, db):
+        rows = query_session_listing(db, source="telegram", current_session_id="sess_an94")
+        assert [r["id"] for r in rows] == []
+
+    def test_current_session_can_be_listed_with_marker(self, db):
+        rows = query_session_listing(
+            db,
+            source="telegram",
+            current_session_id="sess_an94",
+            include_current_session=True,
+        )
+
+        assert [r["id"] for r in rows] == ["sess_an94"]
+        assert rows[0]["is_current_session"] is True
+
+
+class TestFormatGatewaySessionListing:
+
+
+    def test_notice_on_empty_listing(self):
+        listing = format_gateway_session_listing([], notice="_scoped_")
+        assert "_scoped_" in listing
+
 
 
 class TestQuerySessionListingLaneScope:

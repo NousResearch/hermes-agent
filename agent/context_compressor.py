@@ -236,7 +236,7 @@ def _is_summary_access_or_quota_error(exc: Exception) -> bool:
     if UnscopedSecretError and isinstance(exc, UnscopedSecretError):
         return True
     reason = classify_api_error(exc).reason
-    if reason is FailoverReason.rate_limit:
+    if reason == FailoverReason.rate_limit:
         return False
     if reason in {FailoverReason.auth, FailoverReason.auth_permanent}:
         return True
@@ -1163,6 +1163,11 @@ def _collect_protected_skill_names(messages: List[Dict[str, Any]], prune_boundar
 
 _CHARS_PER_TOKEN = CHARS_PER_TOKEN
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
+# After the auxiliary summary route fails with a non-retryable access/quota error the
+# compressor drives the main model; it re-probes the configured auxiliary route only
+# after this window, so a temporary outage cannot latch the fallback for the whole
+# session while a recovered route is still picked up (#123362).
+_AUX_SUMMARY_ROUTE_RETRY_SECONDS = _SUMMARY_FAILURE_COOLDOWN_SECONDS
 
 # Fallback handoff preserves continuity anchors only, not a transcript copy.
 _FALLBACK_SUMMARY_MAX_CHARS = 8_000
@@ -2238,6 +2243,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         # may differ from ``summary_model``/``model``). Recorded so a failed auto-resolved model is
         # named in the user-visible warning and falls back to the main model (#116472).
         self._last_aux_resolved_model = None
+        # Recovery deadline for the aux-route skip armed by a fallback; 0.0 = not fallen back.
+        self._summary_aux_route_retry_at = 0.0
         self._consecutive_timeout_failures = self._consecutive_truncation_failures = 0
         # Sustained-overload escalation bookkeeping (#123167): per-session, reset by success.
         self._consecutive_overload_aborts = 0
@@ -3833,9 +3840,13 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             failed_model or self.summary_model or getattr(self, "_last_aux_resolved_model", "") or ""
         ).strip()
         self._summary_model_fallen_back = True
+        # Re-probe the configured auxiliary route after a recovery window instead of
+        # latching the fallback for the compressor's whole (per-session) lifetime.
+        self._summary_aux_route_retry_at = time.monotonic() + _AUX_SUMMARY_ROUTE_RETRY_SECONDS
         logger.warning(
-            "Summary model '%s' %s (%s). Falling back to main model '%s' for compression.",
-            failed or "(auto)", reason, e, self.model,
+            "Summary model '%s' %s (%s). Falling back to main model '%s' for compression "
+            "(will re-probe the auxiliary route in %ds).",
+            failed or "(auto)", reason, e, self.model, _AUX_SUMMARY_ROUTE_RETRY_SECONDS,
         )
         self._last_aux_model_failure_error = _short_error_text(e)
         self._last_aux_model_failure_model = failed or None
@@ -3864,6 +3875,22 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         }
         if self.summary_model:
             call_kwargs["model"] = self.summary_model
+        elif getattr(self, "_summary_model_fallen_back", False):
+            # Pin the MAIN route explicitly. Clearing ``summary_model`` alone is not
+            # enough: ``call_llm`` re-resolves ``auxiliary.compression`` from config on
+            # every call, so a pinned-but-broken aux model would be re-selected and the
+            # "fall back to main" retry would hit the same 403 forever (#123362).
+            # Explicit kwargs outrank ``auxiliary.{task}.*`` in the resolver.
+            if self.model:
+                call_kwargs["model"] = self.model
+            if self.provider:
+                call_kwargs["provider"] = self.provider
+            if self.base_url:
+                call_kwargs["base_url"] = self.base_url
+            if self.api_key:
+                call_kwargs["api_key"] = self.api_key
+            if self.api_mode:
+                call_kwargs["api_mode"] = self.api_mode
         # Pinned route (stall fallback) overrides task routing so the retry leaves the stalled backend.
         call_kwargs.update(_pinned_summary_call_kwargs())
         # Compression is atomic: protect the in-flight summary call from a mid-turn gateway interrupt.
@@ -3943,6 +3970,12 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         prompt_started_at = time.monotonic()
         if self._compression_cancelled():
             raise AuxiliaryExplicitCancellation()
+        # The auxiliary route stays skipped only for its recovery window; once it elapses,
+        # clear the fallback latch so this attempt tries the configured aux model again
+        # (a recovered route must not stay permanently bypassed) (#123362).
+        if (getattr(self, "_summary_model_fallen_back", False)
+                and prompt_started_at >= getattr(self, "_summary_aux_route_retry_at", 0.0)):
+            self._summary_model_fallen_back = False
         # bypass_cooldown: provider-proven overflow gets ONE real attempt while armed.
         if prompt_started_at < self._summary_failure_cooldown_until and not bypass_cooldown:
             logger.debug(

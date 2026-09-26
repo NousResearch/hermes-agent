@@ -410,7 +410,15 @@ def verify_sqlite_integrity(
     if check_header:
         # Refused when a live connection exists (close() would cancel this process's POSIX locks
         # — see sqlite_safe_read); verification targets offline snapshots/backup artifacts anyway.
-        from hermes_cli.sqlite_safe_read import read_header_bytes_preopen
+        from hermes_cli.sqlite_safe_read import has_live_connection, read_header_bytes_preopen
+        if has_live_connection(path):
+            # The refusal returns None, the same value as an unreadable file, so answering
+            # "invalid" here made a healthy database read as corrupt — the updater then
+            # declared state.db corrupt and refused its own repair with that same connection.
+            # Indeterminate is not corruption: report valid=None so callers skip.
+            return _done(
+                "header check skipped: a live connection in this process owns this database",
+                valid=None, size=size)
         head = read_header_bytes_preopen(path, length=len(_SQLITE_HEADER))
         if head is None:
             return _done("cannot read header", size=size)

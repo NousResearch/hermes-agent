@@ -445,7 +445,10 @@ def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
         )
         return False
     restored = verify_sqlite_integrity(state_path, check_header=True, run_pragma=True)
-    return bool(restored.get("valid"))
+    if not restored.get("valid"):
+        print(f"  ✗ Restored copy failed integrity: {restored.get('message', 'unknown error')}")
+        return False
+    return True
 
 
 def _verify_and_restore_one_state_db(home: Path, *, label: str) -> None:
@@ -457,8 +460,10 @@ def _verify_and_restore_one_state_db(home: Path, *, label: str) -> None:
         if not state_path.exists():
             return
         ok = verify_sqlite_integrity(state_path, check_header=True, run_pragma=True)
-        if ok.get("valid"):
-            logger.debug("Post-update state.db integrity OK (%s): %s", label, ok.get("message"))
+        # valid=None is indeterminate (a live connection disabled the byte probe), not a
+        # corruption verdict; only a definite False may accuse the database.
+        if ok.get("valid") is not False:
+            logger.debug("Post-update state.db integrity not a failure (%s): %s", label, ok.get("message"))
             return
         print()
         print(f"⚠ state.db is corrupted after update ({label}): " + ok.get("message", "unknown error"))
@@ -476,7 +481,9 @@ def _verify_and_restore_one_state_db(home: Path, *, label: str) -> None:
                 if _restore_state_db_from_snapshot(state_path, snap_state):
                     print(f"  ✓ Auto-restored from snapshot {snap_dir.name} ({label})")
                 else:
-                    print("  ✗ Auto-restore FAILED — restored copy also failed integrity")
+                    # Not always an integrity failure: the restore also refuses while another
+                    # process or this one still holds the db. The helper prints which.
+                    print("  ✗ Auto-restore did not complete — see the reason above")
             except OSError as exc:
                 print(f"  ✗ Auto-restore file copy failed: {exc}")
             return

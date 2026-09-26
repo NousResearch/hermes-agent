@@ -15,6 +15,7 @@ LLM_PROVIDERS: dict[str, dict[str, Any]] = {
 EMBEDDER_PROVIDERS: dict[str, dict[str, Any]] = {
     "openai": {"label": "OpenAI", "needs_key": True, "env_var": "OPENAI_API_KEY", "default_model": "text-embedding-3-small", "base_url_key": "openai_base_url", "dims": 1536},
     "ollama": {"label": "Ollama (local)", "needs_key": False, "default_model": "nomic-embed-text", "default_url": "http://localhost:11434", "base_url_key": "ollama_base_url", "dims": 768, "pip_dep": "ollama"},
+    "cloudflare": {"label": "Cloudflare Workers AI", "needs_key": True, "env_var": "CLOUDFLARE_WORKERS_AI_TOKEN", "default_model": "@cf/baai/bge-m3", "dims": 1024},
 }
 
 VECTOR_PROVIDERS: dict[str, dict[str, Any]] = {
@@ -28,7 +29,7 @@ VECTOR_PROVIDERS: dict[str, dict[str, Any]] = {
     },
 }
 
-KNOWN_DIMS: dict[str, int] = {"text-embedding-3-small": 1536, "text-embedding-3-large": 3072, "text-embedding-ada-002": 1536, "nomic-embed-text": 768}
+KNOWN_DIMS: dict[str, int] = {"text-embedding-3-small": 1536, "text-embedding-3-large": 3072, "text-embedding-ada-002": 1536, "nomic-embed-text": 768, "@cf/baai/bge-m3": 1024}
 
 def vector_default_config(provider_id: str) -> dict[str, Any]:
     """A vector store's ``default_config`` with callable defaults resolved for the active profile."""

@@ -28,6 +28,10 @@ logger = logging.getLogger(__name__)
 # Circuit breaker: after _BREAKER_THRESHOLD consecutive failures, pause API
 # calls for _BREAKER_COOLDOWN_SECS to avoid hammering a down server.
 _BREAKER_THRESHOLD, _BREAKER_COOLDOWN_SECS, _PREFETCH_WAIT_SECS = 5, 120, 3
+# Wait for fact extraction before closing its backend. If it still runs after
+# the bound, keep the backend open: losing one client is safer than corrupting
+# an in-flight memory write.
+_SYNC_JOIN_TIMEOUT_S = 60.0
 _CLIENT_ERROR_TYPES = ("MemoryNotFoundError", "ValidationError")
 # Placeholder user_id. initialize() treats it as "no operator-configured user_id"
 # so legacy mem0.json files written by the wizard don't override gateway-native ids.
@@ -375,16 +379,30 @@ class Mem0MemoryProvider(MemoryProvider):
         self._record_success()
         return result
 
+    def _join_workers(self, timeout: float | None = None) -> None:
+        current = threading.current_thread()
+        for t in (self._prefetch_thread, self._sync_thread):
+            if t and t is not current and t.is_alive():
+                t.join(timeout=_SYNC_JOIN_TIMEOUT_S if timeout is None else timeout)
+
     def _shutdown_backend(self):
+        with suppress(Exception):
+            self._join_workers()
+        with suppress(Exception):
+            t = self._sync_thread
+            if t is not None and t is not threading.current_thread() and t.is_alive():
+                logger.warning(
+                    "Mem0 sync still running after %.0fs join; leaving the backend open.",
+                    _SYNC_JOIN_TIMEOUT_S,
+                )
+                return
         with suppress(Exception):
             if self._backend:
                 self._backend.close()
                 self._backend = None
 
     def shutdown(self) -> None:
-        for t in (self._prefetch_thread, self._sync_thread):
-            if t and t.is_alive():
-                t.join(timeout=5.0)
+        self._join_workers()
         self._shutdown_backend()
 
 

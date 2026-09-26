@@ -1595,6 +1595,74 @@ def test_resolve_hermes_argv_module_actually_runs():
     )
 
 
+def test_worker_module_argv_puts_package_root_on_child_pythonpath():
+    """A module-form worker must carry the import context that selected it.
+
+    ``_resolve_hermes_argv`` proves ``hermes_cli`` importable in the gateway,
+    where a store-python shim has the repo root on ``sys.path`` in-process;
+    the spawned bare ``sys.executable -m hermes_cli.main`` child cannot see
+    that injection and dies on import, auto-blocking the board (#122299).
+    The dispatcher must prepend the running install's package root to the
+    child's PYTHONPATH — never for a resolved shim path, which owns its own
+    imports.
+    """
+    import os
+    import sys
+    from pathlib import Path
+
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    root = str(Path(kbd.__file__).resolve().parents[1])
+
+    env: dict = {}
+    kbd._propagate_module_import_root([sys.executable, "-m", "hermes_cli.main"], env)
+    assert env["PYTHONPATH"].split(os.pathsep)[0] == root
+
+    # Existing entries survive, the root lands first, and it is not duplicated.
+    env = {"PYTHONPATH": os.pathsep.join(("/opt/other", root))}
+    kbd._propagate_module_import_root([sys.executable, "-m", "hermes_cli.main"], env)
+    assert env["PYTHONPATH"].split(os.pathsep) == ["/opt/other", root]
+
+    # A resolved shim path owns its own imports — no PYTHONPATH rewriting.
+    env = {}
+    kbd._propagate_module_import_root(["/usr/local/bin/hermes"], env)
+    assert "PYTHONPATH" not in env
+
+
+def test_module_argv_importable_from_scrubbed_env_at_neutral_cwd(tmp_path):
+    """The propagated root is exactly what a bare child needs to import.
+
+    Store-python repro shape (#122299): a bare interpreter launched from a
+    neutral cwd with no PYTHONPATH cannot import ``hermes_cli`` unless the
+    package root rides on PYTHONPATH. Execute the resolved module argv's
+    import question in a real subprocess to prove the propagated value works.
+    """
+    import os
+    import subprocess
+    import sys
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    env: dict = {}
+    kbd._propagate_module_import_root([sys.executable, "-m", "hermes_cli.main"], env)
+    child_env = {"PYTHONPATH": env["PYTHONPATH"]}
+    if os.name == "nt":
+        # A Windows python.exe needs SystemRoot for crypto/DLL initialization.
+        child_env["SystemRoot"] = os.environ["SystemRoot"]
+
+    probe = (
+        "import importlib.util, sys; "
+        "sys.exit(0 if importlib.util.find_spec('hermes_cli') is not None else 1)"
+    )
+    r = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=tmp_path, env=child_env, capture_output=True, text=True, timeout=30,
+    )
+    assert r.returncode == 0, (
+        f"bare {sys.executable} could not find hermes_cli from {tmp_path} "
+        f"with only PYTHONPATH={child_env['PYTHONPATH']!r}; stderr={r.stderr[:200]!r}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # task_age — guard against corrupt timestamp values
 #

@@ -2448,6 +2448,27 @@ def _module_hermes_argv() -> list[str]:
     return [sys.executable, "-m", "hermes_cli.main"]
 
 
+def _propagate_module_import_root(cmd: list[str], env: dict[str, str]) -> None:
+    """Put the running install's package root on a module-form worker's path.
+
+    ``_resolve_hermes_argv`` proves ``hermes_cli`` importable in THIS process,
+    where a store-python shim has the repo root on ``sys.path`` in-process;
+    the spawned child runs the bare ``sys.executable`` from the task workspace
+    with a scrubbed ``PYTHONPATH`` and cannot import the package the parent
+    just proved importable — it dies before any work and the board
+    auto-blocks (#122299). Same-interpreter child, so the root is version-safe
+    to propagate: the entries the scrub removes are dangerous only for a
+    different interpreter's compiled modules. ``hermes_cli.main``'s own
+    bootstrap then owns dependency activation as usual.
+    """
+    if cmd[1:3] != ["-m", "hermes_cli.main"]:
+        return
+    root = str(Path(__file__).resolve().parents[1])
+    parts = [p for p in env.get("PYTHONPATH", "").split(os.pathsep) if p]
+    if os.path.normcase(root) not in {os.path.normcase(p) for p in parts}:
+        env["PYTHONPATH"] = os.pathsep.join([root, *parts])
+
+
 def _absolute_hermes_path(path: str) -> str:
     """Return an absolute filesystem path for a resolved Hermes shim."""
     expanded = os.path.expanduser(path)
@@ -2871,6 +2892,9 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     env.pop("HERMES_TUI", None)
 
     cmd = _worker_argv(task, profile_arg, env.get("HERMES_HOME"))
+    # The module argv must carry the import context that made it resolvable:
+    # the shim's in-process path injection is invisible to the bare child.
+    _propagate_module_import_root(cmd, env)
     # A worker spawned by a managed systemd gateway must leave the gateway's
     # cgroup before startup; otherwise restarting the service kills the worker
     # that is performing the handoff.

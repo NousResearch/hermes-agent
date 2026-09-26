@@ -407,6 +407,12 @@ def resolve_startup_model_route(
     if not prefix or not model:
         return None
 
+    # A selected named endpoint may require its own vendor/model spelling. Do not
+    # reinterpret that vendor as a registry route and lose both the custom identity
+    # and the model prefix (#123997). Explicit aliases/colon routes above still win.
+    if not prefix.lower().startswith("custom:") and _clean(current_provider).lower() == custom_provider_slug(prefix):
+        return StartupModelRoute(model=raw, provider=_clean(current_provider))
+
     if current_provider:
         try:
             from hermes_cli.providers import is_routing_aggregator, normalize_provider as _norm_prov

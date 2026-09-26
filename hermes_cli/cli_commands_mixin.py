@@ -1712,6 +1712,8 @@ class CLICommandsMixin:
                 # in last_delivery_error (last_error is None).
                 if status == "delivery_failed" and job.get("last_delivery_error"):
                     status = _t("cron.status_delivery_failed", error=job["last_delivery_error"])
+                elif status == "delivery_partial" and job.get("last_delivery_error"):
+                    status = _t("cron.status_delivery_partial", error=job["last_delivery_error"])
                 elif status == "error" and job.get("last_error"):
                     status = _t("cron.status_error", error=job["last_error"])
                 print(f"  {_t('cron.last_run', when=job['last_run_at'], status=status)}")

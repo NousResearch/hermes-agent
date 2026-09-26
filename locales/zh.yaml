@@ -2877,6 +2877,7 @@ cli:
       next_run_na: "下次运行：无"
       prompt: "提示词：{prompt}"
       status_delivery_failed: "delivery_failed：{error}"
+      status_delivery_partial: "delivery_partial：{error}"
       status_error: "error：{error}"
       last_run: "上次运行：{when}（{status}）"
       usage_add: "(._.) 用法：/cron add <schedule> <prompt>"

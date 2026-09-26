@@ -2877,6 +2877,7 @@ cli:
       next_run_na: "Sonraki çalıştırma: yok"
       prompt: "İstem: {prompt}"
       status_delivery_failed: "delivery_failed: {error}"
+      status_delivery_partial: "delivery_partial: {error}"
       status_error: "hata: {error}"
       last_run: "Son çalıştırma: {when} ({status})"
       usage_add: "(._.) Kullanım: /cron add <schedule> <prompt>"

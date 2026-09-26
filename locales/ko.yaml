@@ -2877,6 +2877,7 @@ cli:
       next_run_na: "다음 실행: 해당 없음"
       prompt: "프롬프트: {prompt}"
       status_delivery_failed: "delivery_failed: {error}"
+      status_delivery_partial: "delivery_partial: {error}"
       status_error: "오류: {error}"
       last_run: "마지막 실행: {when} ({status})"
       usage_add: "(._.) 사용법: /cron add <일정> <프롬프트>"

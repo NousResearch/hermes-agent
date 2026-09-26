@@ -2877,6 +2877,7 @@ cli:
       next_run_na: "Наступний запуск: н/д"
       prompt: "Запит: {prompt}"
       status_delivery_failed: "не доставлено: {error}"
+      status_delivery_partial: "delivery_partial: {error}"
       status_error: "помилка: {error}"
       last_run: "Останній запуск: {when} ({status})"
       usage_add: "(._.) Використання: /cron add <schedule> <prompt>"

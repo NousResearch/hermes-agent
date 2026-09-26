@@ -2877,6 +2877,7 @@ cli:
       next_run_na: "التشغيل التالي: غير متاح"
       prompt: "المطالبة: {prompt}"
       status_delivery_failed: "delivery_failed: {error}"
+      status_delivery_partial: "delivery_partial: {error}"
       status_error: "خطأ: {error}"
       last_run: "آخر تشغيل: {when} ({status})"
       usage_add: "(._.) الاستخدام: /cron add <schedule> <prompt>"

@@ -2877,6 +2877,7 @@ cli:
       next_run_na: "An chéad rith eile: N/B"
       prompt: "Leid: {prompt}"
       status_delivery_failed: "delivery_failed: {error}"
+      status_delivery_partial: "delivery_partial: {error}"
       status_error: "earráid: {error}"
       last_run: "Rith deireanach: {when} ({status})"
       usage_add: "(._.) Úsáid: /cron add <schedule> <prompt>"

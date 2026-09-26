@@ -394,12 +394,14 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
         # "delivery_failed": the run succeeded but output never reached the user — not a
         # success for the caller; surface last_delivery_error.
         run_error = refreshed.get("last_error")
-        if last_status == "delivery_failed" and not run_error:
+        if last_status in {"delivery_failed", "delivery_partial"} and not run_error:
             run_error = refreshed.get("last_delivery_error")
         # That is NOT a success for the caller — the calling agent relays this result — so report it as
         # failed and surface the delivery error, which lives in last_delivery_error (last_error is None for
         # these runs, and a bare success=False with error=None reads as an unexplained failure). See #83993.
-        ok = last_status in {"ok", "delivery_queued"}
+        # "delivery_partial" (cron.delivery.partial_ok): the output reached at least one target;
+        # the failed targets are reported in ``error``.
+        ok = last_status in {"ok", "delivery_queued", "delivery_partial"}
         if execution is not None and execution.get("status") != "completed":
             ok = False
             run_error = execution.get("error") or f"execution ended in {execution.get('status') or 'unknown'} state"

@@ -2481,7 +2481,8 @@ def mark_job_run(
 
     ``delivery_error`` is separate from the agent error: agent succeeded but delivery failed records
     ``last_status = "delivery_failed"`` (never "ok") while ``failure_streak`` is left alone. An
-    explicit ``status`` (e.g. "blocked_config") overrides the derived value. False when the fence
+    explicit ``status`` (e.g. "blocked_config", or "delivery_partial" under
+    ``cron.delivery.partial_ok``) overrides the derived value. False when the fence
     can't be taken, the job is missing, or ``expected_fire_owner`` no longer holds the fire claim.
 
     ``model_unreachable``: this failed run never reached the model (transient network/DNS error,

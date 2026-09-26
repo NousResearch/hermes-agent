@@ -2877,6 +2877,7 @@ cli:
       next_run_na: "Volgende lopie: n.v.t."
       prompt: "Prompt: {prompt}"
       status_delivery_failed: "delivery_failed: {error}"
+      status_delivery_partial: "delivery_partial: {error}"
       status_error: "fout: {error}"
       last_run: "Laaste lopie: {when} ({status})"
       usage_add: "(._.) Gebruik: /cron add <skedule> <prompt>"

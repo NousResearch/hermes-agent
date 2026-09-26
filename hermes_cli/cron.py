@@ -212,6 +212,10 @@ def _last_run_display(job: Dict[str, Any]) -> str:
         return color("ok", Colors.GREEN)
     if last_status == "delivery_queued":
         return color("finished; delivery is still in progress", Colors.YELLOW)
+    if last_status == "delivery_partial":
+        # cron.delivery.partial_ok: at least one target got the result, another did not.
+        return color(f"ran, but the result reached only some targets ({_short_reason(job.get('last_delivery_error'))}). "
+                     f"{_delivery_fix_hint(job)}", Colors.YELLOW)
     if last_status == "delivery_failed":
         # Agent succeeded but the result never reached the user — not green; last_error is None.
         return color(f"ran, but the result was not delivered ({_short_reason(job.get('last_delivery_error'))}). "
@@ -655,10 +659,15 @@ def _next_run_overdue_issue(next_run: str) -> Optional[str]:
 def _cron_doctor_issues_for_job(job: Dict[str, Any]) -> List[str]:
     issues: List[str] = []
     last_status = str(job.get("last_status") or "").strip().lower()
-    # "delivery_failed" = the agent run succeeded; the delivery issue below reports it.
-    if last_status and last_status not in {"ok", "delivery_failed", "delivery_queued"}:
+    # "delivery_failed"/"delivery_partial" = the agent run succeeded; the delivery issue below
+    # reports it.
+    if last_status and last_status not in {"ok", "delivery_failed", "delivery_partial", "delivery_queued"}:
         issues.append(f"last run failed: {str(job.get('last_error') or 'unknown error').strip()}")
-    if delivery_err := str(job.get("last_delivery_error") or "").strip():
+    delivery_err = str(job.get("last_delivery_error") or "").strip()
+    if delivery_err and last_status == "delivery_partial":
+        issues.append(f"last run reached only some of its targets ({_short_reason(delivery_err)}). "
+                      f"{_delivery_fix_hint(job)}")
+    elif delivery_err:
         issues.append(f"last run finished but the result was not delivered ({_short_reason(delivery_err)}). "
                       f"{_delivery_fix_hint(job)}")
     if unverified := job.get("last_delivery_unverified"):

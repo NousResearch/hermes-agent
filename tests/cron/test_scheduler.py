@@ -2579,6 +2579,129 @@ class TestMultiTargetDeliveryContinuesOnFailure:
         assert "b@example.com" in result
         assert mock_pool.submit.call_count == 2
 
+
+class TestPartialDeliveryOutcome:
+    """``cron.delivery.partial_ok`` (default False) separates "some targets got the output"
+    from "nothing arrived". Off, a multi-target run with one failed target is recorded exactly
+    as before; on, it is recorded as ``delivery_partial`` / outcome ``partial``."""
+
+    def _deliver(self, job, cron_cfg, outcomes):
+        """Run ``_deliver_result`` over email targets; ``outcomes`` is one entry per target,
+        either a result dict or an exception raised by that target's send."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        gw_cfg = MagicMock()
+        gw_cfg.platforms = {Platform.EMAIL: pconfig}
+        futures = []
+        for outcome in outcomes:
+            future = MagicMock()
+            if isinstance(outcome, Exception):
+                future.result.side_effect = outcome
+            else:
+                future.result.return_value = outcome
+            futures.append(future)
+        with patch("gateway.config.load_gateway_config", return_value=gw_cfg), \
+             patch("cron.scheduler.load_config",
+                   return_value={"cron": {"wrap_response": False, **cron_cfg}}), \
+             patch("asyncio.run", side_effect=RuntimeError("no running loop")), \
+             patch("concurrent.futures.ThreadPoolExecutor") as mock_pool_cls:
+            mock_pool = MagicMock()
+            mock_pool_cls.return_value = mock_pool
+            mock_pool.submit.side_effect = futures
+            result = _deliver_result(job, "Report content")
+        assert mock_pool.submit.call_count == len(outcomes)
+        return result
+
+    def _job(self):
+        return {"id": "partial-job", "deliver": "email:a@example.com,email:b@example.com"}
+
+    @pytest.mark.parametrize("cron_cfg", [
+        {},
+        {"delivery": {"partial_ok": False}},
+        {"delivery": {"partial_ok": "yes"}},  # only an explicit True opts in
+    ])
+    def test_off_one_target_failed_is_not_partial(self, cron_cfg):
+        job = self._job()
+        result = self._deliver(
+            job, cron_cfg, [ConnectionError("SMTP connection refused"), {"success": True}])
+        assert result is not None and "a@example.com" in result
+        assert "_delivery_partial" not in job
+
+    def test_on_one_target_failed_is_partial_and_names_the_failed_target(self):
+        job = self._job()
+        result = self._deliver(
+            job, {"delivery": {"partial_ok": True}},
+            [ConnectionError("SMTP connection refused"), {"success": True}])
+        assert result is not None
+        assert "a@example.com" in result and "SMTP connection refused" in result
+        assert "b@example.com" not in result
+        assert job["_delivery_partial"] is True
+
+    def test_on_every_target_failed_is_not_partial(self):
+        job = self._job()
+        result = self._deliver(
+            job, {"delivery": {"partial_ok": True}},
+            [ConnectionError("refused"), ConnectionError("refused")])
+        assert result is not None
+        assert "_delivery_partial" not in job
+
+    def test_on_every_target_delivered_with_a_caveat_is_not_partial(self):
+        """An attachment warning on a target that received the text is not a failed target."""
+        job = self._job()
+        result = self._deliver(
+            job, {"delivery": {"partial_ok": True}},
+            [{"success": True, "warnings": ["attachment too large"]}, {"success": True}])
+        assert result is not None and "attachment too large" in result
+        assert "_delivery_partial" not in job
+
+    def test_flag_does_not_leak_into_the_next_delivery(self):
+        job = self._job()
+        self._deliver(
+            job, {"delivery": {"partial_ok": True}},
+            [ConnectionError("refused"), {"success": True}])
+        assert job["_delivery_partial"] is True
+        result = self._deliver(
+            job, {"delivery": {"partial_ok": True}}, [{"success": True}, {"success": True}])
+        assert result is None
+        assert "_delivery_partial" not in job
+
+    def test_classify_partial_only_when_flagged(self):
+        from cron.scheduler import _classify_delivery_outcome
+
+        kwargs = dict(
+            delivery_error="delivery to email:a@example.com failed: refused",
+            should_deliver=True, unresolved_origin=False, normalized_deliver="email",
+            incident_acked=False, success=True)
+        assert _classify_delivery_outcome(**kwargs) == "failed"
+        assert _classify_delivery_outcome(**kwargs, delivery_partial=True) == "partial"
+        kwargs["delivery_error"] = None
+        assert _classify_delivery_outcome(**kwargs, delivery_partial=True) == "delivered"
+
+    @pytest.mark.parametrize("partial, status, outcome", [
+        (False, None, "failed"),
+        (True, "delivery_partial", "partial"),
+    ])
+    def test_finish_records_status_and_outcome(self, partial, status, outcome):
+        from cron.scheduler import _RunDelivery, _finish_completed_run
+
+        job = {"id": "partial-job", "deliver": "email:a@example.com,email:b@example.com"}
+        if partial:
+            job["_delivery_partial"] = True
+        d = _RunDelivery(
+            job=job, success=True, error=None, delivery_attempted=True,
+            delivery_error="delivery to email:a@example.com failed: refused",
+            should_deliver=True)
+        with patch("cron.scheduler.self_removal_delivery_allowed", return_value=False), \
+             patch("cron.scheduler.mark_job_run", return_value=True) as mark, \
+             patch("cron.scheduler.finish_execution") as finish:
+            assert _finish_completed_run(d, None, "exec-1") is True
+        assert mark.call_args.kwargs.get("status") == status
+        assert mark.call_args.kwargs["delivery_error"] == d.delivery_error
+        assert finish.call_args.kwargs["delivery_outcome"] == outcome
+
+
 class TestBuildJobPromptExtraPrompt:
     """Regression: _build_job_prompt merges extra_prompt into the assembled prompt."""
 

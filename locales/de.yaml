@@ -2877,6 +2877,7 @@ cli:
       next_run_na: "Nächste Ausführung: k. A."
       prompt: "Prompt: {prompt}"
       status_delivery_failed: "delivery_failed: {error}"
+      status_delivery_partial: "delivery_partial: {error}"
       status_error: "error: {error}"
       last_run: "Letzte Ausführung: {when} ({status})"
       usage_add: "(._.) Verwendung: /cron add <schedule> <prompt>"

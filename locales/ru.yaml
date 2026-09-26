@@ -2877,6 +2877,7 @@ cli:
       next_run_na: "Следующий запуск: н/д"
       prompt: "Промпт: {prompt}"
       status_delivery_failed: "delivery_failed: {error}"
+      status_delivery_partial: "delivery_partial: {error}"
       status_error: "ошибка: {error}"
       last_run: "Последний запуск: {when} ({status})"
       usage_add: "(._.) Использование: /cron add <расписание> <промпт>"

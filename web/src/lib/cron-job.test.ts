@@ -188,6 +188,21 @@ describe("cronLastResult", () => {
     });
   });
 
+  it("is amber for delivery_partial and explains it from last_delivery_error", () => {
+    // Opt-in via cron.delivery.partial_ok: some targets got the output.
+    expect(
+      cronLastResult({
+        last_status: "delivery_partial",
+        last_error: null,
+        last_delivery_error: "email: timeout",
+      }),
+    ).toEqual({
+      status: "delivery_partial",
+      tone: "warning",
+      detail: "email: timeout",
+    });
+  });
+
   it("is red for error and any unrecognised literal", () => {
     expect(cronLastResult({ last_status: "error", last_error: "boom" })).toEqual({
       status: "error",

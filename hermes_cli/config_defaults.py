@@ -1850,6 +1850,13 @@ DEFAULT_CONFIG = {
             # otherwise sends with disable_notification=True and briefs look undelivered). False =
             # silent, no-push deliveries.
             "notify": True,
+            # Multi-target delivery (e.g. `deliver: slack,email:a@b.c`) where at least one target
+            # received the output but another failed outright. False = the run records
+            # last_status=delivery_failed and delivery outcome "failed", the same as a run where
+            # nothing arrived. True = last_status=delivery_partial and outcome "partial"; the
+            # failed targets are still named in last_delivery_error. A run where every target
+            # received the output but with a caveat (media dropped, thread fallback) is not partial.
+            "partial_ok": False,
         },
         # Make cron deliveries CONTINUABLE (user can reply to a brief with it in context). False
         # keeps deliveries isolated to the job's session; per-job `attach_to_session` overrides.

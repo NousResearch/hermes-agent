@@ -89,6 +89,7 @@ def review_forks(monkeypatch):
 
         def run_conversation(self, **kwargs):
             self.record["history"] = kwargs.get("conversation_history")
+            self.record["user_message"] = kwargs.get("user_message")
 
         def release_clients(self):
             pass
@@ -1529,31 +1530,62 @@ def test_single_turn_larger_than_replay_budget_skips_automatic_review(
         ({"max_input_tokens": 40_000}, 128_000),
     ],
 )
-def test_replay_budget_is_the_smaller_of_the_ceiling_and_the_aggregate_budget(
+def test_replay_budget_is_the_ceiling_or_the_aggregate_net_of_the_first_request(
     task_cfg, window
 ):
-    """One rule: the automatic replay never exceeds the aggregate input budget the fork runs
-    under. The fork resolves the same context window as its parent on the same-model path, so
-    the parent answers for it at replay-bounding time."""
+    """One rule: the automatic replay never exceeds what the fork's FIRST provider request can
+    carry under the aggregate input budget. That request is the replay plus the parent's system
+    prompt and tools[] (inherited byte-identical on the same-model path) and the review prompt.
+    The fork resolves the same context window as its parent on the same-model path, so the
+    parent answers for it at replay-bounding time."""
     agent = _bare_agent()
     if window is not None:
         agent.context_compressor = types.SimpleNamespace(context_length=window)
+    prompt = agent._COMBINED_REVIEW_PROMPT
 
     ceiling = review_admission.replay_token_budget(task_cfg)
     aggregate = background_review_module._review_input_token_budget(task_cfg, agent)
+    overhead = review_admission.request_overhead_tokens(agent, prompt)
 
-    assert review_admission.replay_token_budget(task_cfg, agent) == min(
-        ceiling, aggregate
+    assert 0 < overhead < aggregate
+    assert review_admission.replay_token_budget(task_cfg, agent, prompt) == min(
+        ceiling, aggregate - overhead
     )
+
+
+def test_first_request_overhead_alone_above_the_aggregate_skips_the_review(
+    review_forks, monkeypatch, caplog
+):
+    """When the parent's system prompt and tools[] leave no room under the aggregate budget,
+    no replay can make the fork's first request fit: the review is skipped as oversized instead
+    of spawning a fork that is refused at its first request."""
+    _patch_config(monkeypatch, _config(max_input_tokens=1_000))
+    agent = _bare_agent()
+    # ~2k tokens of system prompt: wider than the whole aggregate on its own.
+    agent._cached_system_prompt = "s" * 8_000
+    snapshot = _snapshot(pairs=2, filler_chars=40)
+
+    with caplog.at_level("INFO"):
+        AIAgent._spawn_background_review(
+            agent, messages_snapshot=snapshot, review_memory=True
+        )
+
+    assert review_forks == []
+    assert review_admission.REASON_OVERSIZED in caplog.text
 
 
 def test_replay_never_exceeds_the_forks_aggregate_input_budget(
     review_forks, monkeypatch
 ):
-    """A replay admitted under the replay ceiling but above the fork's aggregate input budget
-    (75% of the review model's window) is refused at the fork's first provider request: a
-    zero-request review with no memory or skill writes. The replay the fork receives must fit
-    the budget the fork is built with."""
+    """The fork's FIRST provider request is refused outright when its projection exceeds the
+    aggregate input budget (75% of the review model's window) with nothing consumed: a
+    zero-request review with no memory or skill writes. That request is not the replay alone —
+    the same-model fork inherits the parent's system prompt and tools[] byte-identically and
+    appends the review prompt — so the replay admitted at spawn must leave room for all of it,
+    and the fork must carry its owner tag so a refusal there is greppable."""
+    from agent.conversation_loop import _reserve_review_input_request
+    from agent.model_metadata import _estimate_tools_tokens_rough
+
     _patch_config(monkeypatch, _config())
     window = 128_000
     fake_fork = run_agent_module.AIAgent  # the review_forks fixture's recorder
@@ -1566,6 +1598,21 @@ def test_replay_never_exceeds_the_forks_aggregate_input_budget(
     monkeypatch.setattr(run_agent_module, "AIAgent", WindowedFork)
     agent = _bare_agent()
     agent.context_compressor = types.SimpleNamespace(context_length=window)
+    agent._cached_system_prompt = "system prompt " + "s" * 20_000  # ~5k tokens
+    agent.tools = [  # ~12k tokens of advertised schemas (a gateway surface)
+        {
+            "type": "function",
+            "function": {
+                "name": f"tool_{index}",
+                "description": "d" * 400,
+                "parameters": {
+                    "type": "object",
+                    "properties": {"arg": {"type": "string", "description": "e" * 500}},
+                },
+            },
+        }
+        for index in range(50)
+    ]
     snapshot = _snapshot(pairs=50, filler_chars=8_000)
     aggregate = background_review_module._review_input_token_budget({}, agent)
     assert (
@@ -1579,14 +1626,31 @@ def test_replay_never_exceeds_the_forks_aggregate_input_budget(
     )
 
     assert len(review_forks) == 1
-    history = review_forks[0]["history"]
+    record = review_forks[0]
+    history = record["history"]
     assert history is not None
-    fork_budget = review_forks[0]["attrs"]["_review_input_token_budget"]
+    fork_budget = record["attrs"]["_review_input_token_budget"]
     assert fork_budget == aggregate
-    assert estimate_messages_tokens_rough(history) <= fork_budget, (
-        "replay admitted above the fork's aggregate input budget"
-    )
     _assert_plain_user_anchor(history)
+    # Request #1 as the loop projects it: system prompt + replay + the review prompt user
+    # message, plus the advertised tools[] (agent/turn_request_assembly.py).
+    projected = estimate_messages_tokens_rough(
+        [{"role": "system", "content": record["attrs"]["_cached_system_prompt"]}]
+        + history
+        + [{"role": "user", "content": record["user_message"]}]
+    ) + _estimate_tools_tokens_rough(record["attrs"]["tools"])
+    fresh_fork = types.SimpleNamespace(
+        _review_input_token_budget=fork_budget,
+        session_prompt_tokens=0,
+        _review_input_tokens_reserved=0,
+    )
+    assert _reserve_review_input_request(fresh_fork, projected) is True, (
+        f"replay admitted at spawn is refused at the fork's first request "
+        f"({projected} > {fork_budget})"
+    )
+    assert record["attrs"]["_review_owner_tag"] == review_admission.owner_tag(
+        review_admission.current_profile_key(), agent.session_id
+    )
 
 
 # ---------------------------------------------------------------------------

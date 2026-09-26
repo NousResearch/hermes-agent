@@ -425,8 +425,8 @@ hashed owner tag and a stable reason (`live_turn_active`,
 `review_candidate_superseded`, `review_preempted_cross_process`,
 `review_preempted_by_transcript_edit`,
 `review_dropped_after_lease_yield`, `review_lease_expired_reclaimed`, `review_lease_lost`,
-`review_cancel_unacknowledged`, `review_revoked`, `review_completion_error`, …),
-never the session id or any message text.
+`review_cancel_unacknowledged`, `review_revoked`, `review_completion_error`,
+`review_input_budget_refused`, …), never the session id or any message text.
 
 Same-model reviews replay an ordinary conversation verbatim for prompt-cache
 reuse. When the rough conversation estimate exceeds the replay ceiling, Hermes
@@ -456,8 +456,13 @@ tokens one automatic review may consume across its whole tool loop; like
 `max_replay_tokens` it can only be lowered, never lifted, and explicit `/refine`
 is exempt. The effective replay bound is the smaller of `max_replay_tokens` and
 that aggregate budget (derived from the review model's context window when
-`max_input_tokens` is unset), so the replay admitted into a review never
-exceeds the budget the fork runs under.
+`max_input_tokens` is unset) net of what the review's first request carries
+besides the replay — the system prompt and tool definitions the fork inherits
+from the conversation and the review prompt — so that first request fits the
+budget the fork runs under. When those fixed parts alone leave no room, the
+automatic review is skipped as `oversized_snapshot`; a first request that is
+still refused by the budget makes no provider call and is logged as
+`review_input_budget_refused`.
 
 ### Disabling automatic reviews (`enabled`)
 

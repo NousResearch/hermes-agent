@@ -15,8 +15,10 @@ for one session.
   conversation, so two independent profiles can hold the same ID and must not suppress each other.
 * **Replay bound.** The un-routed fork replays the snapshot verbatim for warm-cache parity, which
   is right for an ordinary session and ruinous for a long one. Past
-  ``auxiliary.background_review.max_replay_tokens`` the fork keeps only the widest recent,
-  user-led suffix that fits; if no complete suffix fits, the automatic review is skipped.
+  ``auxiliary.background_review.max_replay_tokens`` — or past what the fork's first provider
+  request can carry under its aggregate input budget once the inherited system prompt, tools[]
+  and the review prompt are counted — the fork keeps only the widest recent, user-led suffix
+  that fits; if no complete suffix fits, the automatic review is skipped.
 
 Reasons are short, stable slugs — never message bodies — so logs stay greppable and silo-safe.
 """
@@ -73,10 +75,17 @@ REASON_LEASE_EXPIRED_RECLAIMED = "review_lease_expired_reclaimed"
 REASON_LEASE_LOST = "review_lease_lost"
 # The gateway's post-delivery completion raised before the captured candidate could spawn.
 REASON_COMPLETION_ERROR = "review_completion_error"
+# The fork's FIRST provider request was refused by its aggregate input budget: zero provider
+# calls, no writes (the replay is bounded at spawn so this stays a fail-safe, not the norm).
+REASON_INPUT_BUDGET_REFUSED = "review_input_budget_refused"
 
 # Verbatim replay ceiling for one review fork. Well above an ordinary session (so normal learning
 # keeps the warm-cache replay) and well below the ~205K incident.
 MAX_REPLAY_TOKENS_DEFAULT = 120_000
+# Slack kept under the aggregate budget for what the rough estimate at spawn cannot see in the
+# fork's first request: the tool-whitelist notice appended to the review prompt, ephemeral
+# per-request context, cache markers.
+REQUEST_OVERHEAD_MARGIN_TOKENS = 2_048
 
 _lock = threading.RLock()
 _live_turns: Dict[Tuple[str, str], Set[int]] = {}
@@ -271,20 +280,60 @@ def foreground_block_reason(
     return reason or _followup_block_reason(agent)
 
 
-def replay_token_budget(task_cfg: Optional[Dict[str, Any]], agent: Any = None) -> int:
+def request_overhead_tokens(agent: Any, review_prompt: Optional[str] = None) -> int:
+    """Rough tokens the fork's first provider request carries BESIDES the replay.
+
+    The same-model fork inherits the parent's system prompt and tools[] byte-identically
+    (prompt-cache parity) and appends the review prompt as its user message; the loop projects
+    that whole request against the aggregate input budget before request #1 and refuses it
+    outright when it does not fit. ``REQUEST_OVERHEAD_MARGIN_TOKENS`` covers what is only known
+    at request time. The estimators are the loop's own, so the two figures agree.
+    """
+    from agent.model_metadata import (
+        _estimate_tools_tokens_rough,
+        estimate_messages_tokens_rough,
+    )
+
+    fixed: List[Dict[str, Any]] = []
+    system_prompt = getattr(agent, "_cached_system_prompt", None)
+    if isinstance(system_prompt, str) and system_prompt:
+        fixed.append({"role": "system", "content": system_prompt})
+    if isinstance(review_prompt, str) and review_prompt:
+        fixed.append({"role": "user", "content": review_prompt})
+    tools = getattr(agent, "tools", None)
+    tools_tokens = _estimate_tools_tokens_rough(tools) if isinstance(tools, list) else 0
+    return (
+        estimate_messages_tokens_rough(fixed)
+        + tools_tokens
+        + REQUEST_OVERHEAD_MARGIN_TOKENS
+    )
+
+
+def replay_token_budget(
+    task_cfg: Optional[Dict[str, Any]],
+    agent: Any = None,
+    review_prompt: Optional[str] = None,
+) -> int:
     """Resolve the operator setting without permitting automatic replay to become unbounded.
 
-    With ``agent`` (the spawning parent) the replay is also never wider than the aggregate input
-    budget the fork will run under: a wider replay is refused at the fork's first provider
-    request, a zero-request review. The fork resolves the same context window as its parent on
-    the same-model path, so the parent answers for it at replay-bounding time.
+    With ``agent`` (the spawning parent) the replay is also never wider than what the fork's
+    FIRST provider request can carry under the aggregate input budget: that request is the
+    replay plus :func:`request_overhead_tokens` (system prompt, tools[], ``review_prompt``),
+    and a projection above the budget with nothing consumed is refused before any provider
+    call — a zero-request review. The fork resolves the same context window as its parent on
+    the same-model path, so the parent answers for it at replay-bounding time. Never below 1:
+    when the fixed parts alone exceed the budget no replay fits, and
+    :func:`bounded_replay_history` skips the review as ``oversized_snapshot``.
     """
     ceiling = _replay_ceiling(task_cfg)
     if agent is None:
         return ceiling
     from agent.background_review import _review_input_token_budget
 
-    return min(ceiling, _review_input_token_budget(task_cfg, agent))
+    aggregate = _review_input_token_budget(task_cfg, agent)
+    return max(
+        1, min(ceiling, aggregate - request_overhead_tokens(agent, review_prompt))
+    )
 
 
 def _replay_ceiling(task_cfg: Optional[Dict[str, Any]]) -> int:

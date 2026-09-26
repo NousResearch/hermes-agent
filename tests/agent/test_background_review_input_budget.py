@@ -179,6 +179,51 @@ def test_review_input_budget_preflight_blocks_request_that_would_cross_ceiling()
     assert result["completed"] is False
 
 
+def test_refused_first_request_logs_the_review_owner_and_a_stable_reason(caplog):
+    """A detached review whose FIRST request is refused by the aggregate budget makes zero
+    provider calls and writes nothing. That exit must be as greppable as every other skip:
+    one body-free line carrying the hashed owner tag and a stable reason, never the
+    session id."""
+    from agent import review_admission
+
+    agent = _make_loop_agent()
+    agent.session_id = "loop-session-id"
+    agent._review_input_token_budget = 1
+    agent._review_owner_tag = review_admission.owner_tag("profile", agent.session_id)
+
+    with caplog.at_level("INFO"):
+        result = _run_with_responses(agent, [_final_response()])
+
+    assert agent.client.chat.completions.create.call_count == 0
+    assert result["completed"] is False
+    skips = [
+        record.getMessage()
+        for record in caplog.records
+        if "Background review skipped" in record.getMessage()
+    ]
+    assert len(skips) == 1, skips
+    assert f"owner={agent._review_owner_tag}" in skips[0]
+    assert review_admission.REASON_INPUT_BUDGET_REFUSED in skips[0]
+    assert agent.session_id not in skips[0]
+
+
+def test_exhaustion_after_a_completed_request_is_not_a_refused_review(caplog):
+    """Upstream's contract: the budget-crossing request completes and the loop stops at the
+    top of the next iteration. That exhaustion is not a skipped review and must not be
+    logged as one."""
+    agent = _make_loop_agent()
+    agent._review_input_token_budget = 100_000
+    agent._review_owner_tag = "0123456789ab"
+
+    with caplog.at_level("INFO"):
+        _run_with_responses(
+            agent, [_tool_response(50_000), _tool_response(50_000), _final_response()]
+        )
+
+    assert agent.client.chat.completions.create.call_count >= 1
+    assert "Background review skipped" not in caplog.text
+
+
 def test_no_budget_attribute_leaves_tool_loop_unbounded():
     """Agents without ``_review_input_token_budget`` (every normal agent)
     are unaffected by the gate and consume all scripted responses."""

@@ -482,10 +482,13 @@ def rebind_foreground_review_ownership(agent: Any, session_id: str) -> None:
 _REVIEW_MAX_ITERATIONS = 16
 # Aggregate INPUT-token budget for one review fork (checked in conversation_loop's
 # ``_review_input_budget_exhausted``). Request #1 replays the snapshot as a warm cache read —
-# bounded at spawn to fit this budget (``review_admission.replay_token_budget``), both
-# compression gates deferred until the first response; compaction then bounds each
-# request, but nothing else caps the SUM across the tool loop. The default leaves 25% of the
-# review model's context window available and never exceeds the historical cloud-scale ceiling.
+# the replay is bounded at spawn so that request (replay + the inherited system prompt and
+# tools[] + the review prompt) fits this budget (``review_admission.replay_token_budget``; a
+# projection that still exceeds it is refused before any provider call and logged as
+# ``review_input_budget_refused``), both compression gates deferred until the first response;
+# compaction then bounds each request, but nothing else caps the SUM across the tool loop. The
+# default leaves 25% of the review model's context window available and never exceeds the
+# historical cloud-scale ceiling.
 # Override via ``auxiliary.background_review.max_input_tokens``; operators may lower the limit
 # but cannot disable or raise the 600k ceiling — <= 0, larger or invalid values fall back to
 # the derived default.
@@ -1647,6 +1650,10 @@ def _run_review_fork(
     st.review_agent._review_attended = explicit
     if explicit:
         st.review_agent._review_input_token_budget = None
+    # The loop logs a first-request budget refusal body-free under this tag (no session id).
+    st.review_agent._review_owner_tag = _review_owner_tag(
+        review_run, None, review_session_id or getattr(agent, "session_id", None)
+    )
     _track_review_fork(agent, st.review_agent, register=True)
     from hermes_cli.plugins import set_thread_tool_whitelist, clear_thread_tool_whitelist
     review_whitelist, configured_extra_tools = _review_tool_whitelist(st.review_agent, task_cfg, review_memory)
@@ -1870,6 +1877,14 @@ _PROMPT_NAME_BY_SCOPE = {
 }
 
 
+def review_prompt_for_scope(agent: Any, review_memory: bool, review_skills: bool) -> str:
+    """The review prompt a review of this scope runs; per-agent overrides
+    (``agent._MEMORY_REVIEW_PROMPT`` etc.) keep working. Known at spawn, so the replay bound can
+    count it against the fork's first request."""
+    name = _PROMPT_NAME_BY_SCOPE[(review_memory, review_skills)]
+    return getattr(agent, name, globals()[name])
+
+
 def spawn_background_review_thread(
     agent: Any, messages_snapshot: List[Dict], review_memory: bool = False,
     review_skills: bool = False, focus: Optional[str] = None,
@@ -1922,9 +1937,7 @@ def spawn_background_review_thread(
         )
         if review_run is None:
             raise RuntimeError("background review already active for this session")
-    # Per-agent overrides (agent._MEMORY_REVIEW_PROMPT etc.) keep working.
-    name = _PROMPT_NAME_BY_SCOPE[(review_memory, review_skills)]
-    prompt = getattr(agent, name, globals()[name])
+    prompt = review_prompt_for_scope(agent, review_memory, review_skills)
     if focus := (focus or "").strip():
         prompt = (
             f"{prompt}\n\nThe user explicitly requested this review with the following "

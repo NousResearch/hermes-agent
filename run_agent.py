@@ -847,8 +847,12 @@ class AIAgent(
                 )
                 return
 
+            from agent.background_review import review_prompt_for_scope
             messages_snapshot, replay_reason = review_admission.bounded_replay_history(
-                messages_snapshot, review_admission.replay_token_budget(task_cfg, self),
+                messages_snapshot,
+                review_admission.replay_token_budget(
+                    task_cfg, self, review_prompt_for_scope(self, review_memory, review_skills),
+                ),
             )
             if replay_reason:
                 if not messages_snapshot:

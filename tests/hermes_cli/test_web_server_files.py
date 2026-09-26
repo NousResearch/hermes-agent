@@ -361,6 +361,23 @@ def test_sensitive_env_files_hidden_from_listing(forced_files_client):
 
 
 
+def test_dangling_symlink_does_not_break_directory_listing(forced_files_client):
+    """A symlink whose target was deleted must not 500 the whole listing."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "notes.txt").write_text("hello")
+    (root / "dangling").symlink_to(root / "deleted-target.txt")
+
+    listing = client.get("/api/files", params={"path": str(root)})
+
+    assert listing.status_code == 200
+    entries = {e["name"]: e for e in listing.json()["entries"]}
+    assert set(entries) == {"notes.txt", "dangling"}
+    assert entries["dangling"]["broken_symlink"] is True
+    assert entries["dangling"]["is_directory"] is False
+    assert entries["notes.txt"]["broken_symlink"] is False
+
+
 def test_other_credential_store_basenames_blocked(forced_files_client):
     """Regression: the managed-files guard must cover the same credential
     basenames as gateway.platforms.base._ROOT_CREDENTIAL_FILES and

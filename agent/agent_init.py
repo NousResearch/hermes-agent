@@ -667,11 +667,17 @@ def _init_prompt_cache_config(agent):
     # subscription users where cache writes bill against "extra usage" or for third-party proxies that
     # inject their own cache_control markers (#13477).
     agent._cache_ttl = "5m"
+    # cache_warming: "off" (default), "streaming" (replay the last request with max_tokens=1 before
+    # its entry expires while a tool round is still running) or "idle" (also between turns, for up
+    # to 30 min). Opt-in: every refresh is a billed cache read. See agent/prompt_cache_warmer.py.
+    agent._cache_warming_mode = "off"
     with suppress(Exception):
         from hermes_cli.config import load_config_readonly as _load_pc_cfg
         from agent.agent_runtime_helpers import cache_ttl_means_disabled
         from agent.prompt_caching import AUTO_CACHE_TTL, auto_cache_ttl_for_source
+        from agent.prompt_cache_warmer import normalize_cache_warming_mode
         _pc_cfg = _load_pc_cfg().get("prompt_caching", {}) or {}
+        agent._cache_warming_mode = normalize_cache_warming_mode(_pc_cfg.get("cache_warming"))
         _ttl = _pc_cfg.get("cache_ttl", "5m")
         if _ttl in {"5m", "1h"}:
             agent._cache_ttl = _ttl

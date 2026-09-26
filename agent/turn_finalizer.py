@@ -18,6 +18,7 @@ from agent.context_compressor import _DB_PERSISTED_MARKER
 from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.message_sanitization import _sanitize_surrogates
+from agent.prompt_cache_warmer import settle_prompt_cache_warming
 from agent.served_model import result_model_fields
 
 # Verification-continuation nudges (verify-on-stop / pre_verify) must be stripped from
@@ -496,6 +497,8 @@ def finalize_turn(
     """Run the post-loop finalization and return the turn ``result`` dict."""
     from agent.conversation_loop import logger
 
+    # Streaming-mode warming ends with the run; idle mode keeps the entry warm between turns.
+    settle_prompt_cache_warming(agent)
     final_response, _turn_exit_reason, preserved_verification_fallback = _resolve_budget_fallback(
         agent, final_response=final_response, api_call_count=api_call_count,
         interrupted=interrupted, failed=failed, messages=messages,

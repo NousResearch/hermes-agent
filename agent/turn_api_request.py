@@ -13,6 +13,7 @@ import logging
 from typing import Any
 
 from agent.message_sanitization import sanitize_outbound_kwargs, strip_images_for_rejecting_model
+from agent.prompt_cache_warmer import cancel_prompt_cache_warming
 from utils import env_var_enabled
 
 logger = logging.getLogger("agent.conversation_loop")
@@ -101,6 +102,8 @@ def build_api_request(
         _moa_client_consumes_prepared_request, _redecorate_prompt_cache_for_provider,
     )
 
+    # The real request about to go out refreshes the cache entry itself.
+    cancel_prompt_cache_warming(agent, "new request in flight")
     agent._reset_stream_delivery_tracking()
     # Per-attempt first-chunk timestamp so a stale value never leaks into post_api_request.
     agent._last_api_first_chunk_at = None

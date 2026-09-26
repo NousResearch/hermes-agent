@@ -1380,6 +1380,20 @@ prompt_caching:
 
 The 1h tier writes at 2x the base input price (5m writes at 1.25x) and only pays off when your turns are more than five minutes apart — otherwise every tool result is written at the dearer rate for retention nobody uses. `"auto"` picks the tier per session from who paces it: `1h` for sessions a person types into (CLI, TUI, Desktop, Telegram/Discord/Slack and the other messaging platforms), `5m` for machine-paced ones (subagents, cron, `hermes -q` one-shots, webhooks, Kanban workers, the API server, tool-invoked and batch runs). On an install where interactive sessions are parked and resumed through the day, `auto` cut the interactive cache-write bill by roughly 40% while leaving fan-out subagent spend untouched. Delegated subagents are always clamped to `5m`, whatever the setting.
 
+### Cache warming (opt-in)
+
+A cache entry expires `cache_ttl` after its last use, so a single tool call that runs longer than that (a five-minute build, a long test suite) drops the whole prefix and the next request pays a full-price cache **write**. Cache warming replays the last request with `max_tokens: 1` shortly before the entry expires — one cache **read** of the prompt, roughly a twelfth of the write it prevents:
+
+```yaml
+prompt_caching:
+  cache_warming: "off"   # "off" (default) | "streaming" | "idle"
+```
+
+- `"streaming"` warms only while a turn is still running (a tool round longer than the TTL); the next request is certain, so the refresh is a near-guaranteed saving.
+- `"idle"` also warms between turns, for up to 30 minutes after the last response, pricing the chance you come back at 15%.
+
+Every refresh is gated on expected savings of at least $0.05 (`p × miss cost − warm cost`), so a small prompt or an unpriced model never pays for one; streaming warming stops after an hour and idle warming after 30 minutes regardless. Only native Anthropic (`api.anthropic.com`) requests that carry cache markers are warmed; requests with budget-based extended thinking are skipped because `max_tokens: 1` would change the budget Anthropic keys the cache on. Refresh tokens and dollars count toward the session totals (`session_cache_warm_calls`) but never enter the conversation.
+
 ## Auxiliary Models
 
 Hermes uses "auxiliary" models for side tasks like image analysis, browser screenshot analysis, session-title generation, and context compression. By default (`auxiliary.*.provider: "auto"`), Hermes routes every auxiliary task to your **main chat model** — the same provider/model you picked in `hermes model`. You don't need to configure anything to get started, but be aware that on expensive reasoning models (Opus, MiniMax M2.7, etc.) auxiliary tasks add meaningful cost. If you want cheap-and-fast side tasks regardless of your main model, set `auxiliary.<task>.provider` and `auxiliary.<task>.model` explicitly (for example, Gemini Flash on OpenRouter for vision). (Web extraction is not an auxiliary task: `web_extract` and browser snapshots truncate long content deterministically and store the full text for `read_file` paging — no LLM involved.)

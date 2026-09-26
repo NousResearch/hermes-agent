@@ -675,8 +675,11 @@ DEFAULT_CONFIG = {
     # Anthropic prompt caching (Claude via OpenRouter or native API). cache_ttl: "5m" | "1h" | "auto"
     # (auto = 1h for human-paced sessions — cli/tui/desktop/messaging — and 5m for subagent, cron,
     # oneshot, webhook, kanban, api, tool, batch); other non-falsy values are ignored; falsy (false, null, "off",
-    # "disabled", "no", "none") disables caching.
-    "prompt_caching": {"cache_ttl": "5m"},
+    # "disabled", "no", "none") disables caching. cache_warming: "off" | "streaming" | "idle" — replay the
+    # last native-Anthropic request with max_tokens=1 before its cache entry expires (one cache read
+    # instead of a full-price write on the next request); "streaming" only while a tool round is still
+    # running, "idle" also between turns for up to 30 min. Gated on >= $0.05 expected savings per refresh.
+    "prompt_caching": {"cache_ttl": "5m", "cache_warming": "off"},
     # OpenRouter settings. response_cache: X-OpenRouter-Cache header — identical requests return
     # cached responses at zero billing; independent of Anthropic prompt caching. response_cache_ttl:
     # seconds (1-86400), only used when response_cache is on. min_coding_score (0.0-1.0):

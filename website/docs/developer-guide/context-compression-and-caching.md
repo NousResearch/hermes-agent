@@ -722,6 +722,8 @@ prompt_caching:
 
 `"auto"` resolves once per session in `agent/agent_init.py::_init_prompt_cache_config` via `agent/prompt_caching.py::auto_cache_ttl_for_source`: `1h` for human-paced sources, `5m` for `MACHINE_PACED_SOURCES` (subagent, cron, oneshot, webhook, kanban, api, tool, batch). Auxiliary/stub calls (`configured_cache_ttl()`) treat `auto` as `5m`.
 
+`prompt_caching.cache_warming` (`"off"` default, `"streaming"`, `"idle"`) enables `agent/prompt_cache_warmer.py::PromptCacheWarmer`: after each native-Anthropic response (`turn_response_check.check_api_response`) it arms a daemon timer at 90% of the TTL that replays the exact request with `max_tokens=1` (a cache read keeps the entry alive); `turn_api_request.build_api_request` cancels it because the real request refreshes the entry itself, and `turn_finalizer.finalize_turn` settles it (`streaming` stops, `idle` keeps going for 30 min at a 15% continuation probability). Each refresh is gated on `evaluate_economics` (expected savings ≥ $0.05 from `usage_pricing.get_pricing_entry`), skips budget-based thinking (Anthropic keys the message cache on `budget_tokens`), and folds its usage into the session totals only — never the compressor or usage anchors.
+
 The CLI shows caching status at startup:
 ```
 💾 Prompt caching: ENABLED (Claude via OpenRouter, 5m TTL)

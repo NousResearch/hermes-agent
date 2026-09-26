@@ -968,6 +968,8 @@ class AIAgent(
         # never double-extract.
         session_messages = getattr(self, "_session_messages", None)
         _quietly(self.shutdown_memory_provider, session_messages if isinstance(session_messages, list) else None)
+        from agent.prompt_cache_warmer import cancel_prompt_cache_warming
+        _quietly(cancel_prompt_cache_warming, self, "agent_close")
         self._close_task_resources(getattr(self, "session_id", None) or "")
         self._close_active_children(soft=False)
         _quietly(self._drop_shared_client, lambda c: self._close_openai_client(c, reason="agent_close", shared=True))

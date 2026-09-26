@@ -1118,29 +1118,8 @@ def test_terminal_task_cwd_ssh_sentinel_cwd_uses_remote_home(monkeypatch):
     assert server._terminal_task_cwd({"cwd": "/host/session/dir"}) == "~"
 
 
-def test_completion_cwd_ssh_returns_raw_remote_path(monkeypatch):
-    """A non-local (ssh) backend's session cwd is used
-    verbatim even though it does not exist on the local host — the local isdir
-    gate would otherwise drop the remote project path to os.getcwd()."""
-    remote = "/home/felix/projects/xsd-parser"  # does not exist on this host
-    assert not os.path.isdir(remote)
-    monkeypatch.setenv("TERMINAL_ENV", "ssh")
-    monkeypatch.delenv("TERMINAL_CWD", raising=False)
-    monkeypatch.setattr(server, "_load_cfg", lambda: {})
-
-    assert server._completion_cwd({"cwd": remote}) == remote
 
 
-def test_completion_cwd_config_aware_backend_returns_raw_remote_path(monkeypatch):
-    """Config-aware detection: an in-process gateway sets terminal.backend in
-    config but NOT the TERMINAL_ENV env var — the exemption must still fire."""
-    remote = "/home/jonas/projects/pnin"
-    assert not os.path.isdir(remote)
-    monkeypatch.delenv("TERMINAL_ENV", raising=False)
-    monkeypatch.delenv("TERMINAL_CWD", raising=False)
-    monkeypatch.setattr(server, "_load_cfg", lambda: {"terminal": {"backend": "ssh"}})
-
-    assert server._completion_cwd({"cwd": remote}) == remote
 
 
 def test_completion_cwd_local_backend_still_guards_bad_path(monkeypatch, tmp_path):
@@ -1155,26 +1134,6 @@ def test_completion_cwd_local_backend_still_guards_bad_path(monkeypatch, tmp_pat
     assert server._completion_cwd({"cwd": bad}) == str(tmp_path)
 
 
-def test_session_create_sets_explicit_cwd_for_non_local_backend(monkeypatch):
-    """session.create marks explicit_cwd=True for a non-local
-    backend when a cwd param is passed, so _terminal_task_cwd_with_source returns
-    the session cwd instead of falling back to `~`."""
-    remote = "/home/felix/projects/space-crush"
-    assert not os.path.isdir(remote)
-    monkeypatch.setenv("TERMINAL_ENV", "ssh")
-    monkeypatch.delenv("TERMINAL_CWD", raising=False)
-    monkeypatch.setattr(server, "_load_cfg", lambda: {})
-    monkeypatch.setattr(server, "_schedule_agent_build", lambda sid: None)
-    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
-
-    resp = server._methods["session.create"]("r1", {"cols": 80, "cwd": remote})
-    sid = resp["result"]["session_id"]
-    session = server._sessions[sid]
-    try:
-        assert session["explicit_cwd"] is True
-        assert session["cwd"] == remote
-    finally:
-        server._sessions.pop(sid, None)
 
 
 def test_session_create_uses_bound_profile_backend_not_launch(monkeypatch, tmp_path):
@@ -1240,7 +1199,7 @@ def test_workspace_move_accepts_remote_dir_for_bound_ssh_profile(monkeypatch, tm
         def update_session_cwd(self, *a, **k):
             return 1
     import contextlib as _ctx
-    monkeypatch.setattr(server, "_profile_db", lambda params: _ctx.nullcontext(_DB()))
+    monkeypatch.setattr(server, "_profile_db", lambda params, **_kw: _ctx.nullcontext(_DB()))
     monkeypatch.setattr(server.git_probe, "branch", lambda c: None)
     monkeypatch.setattr(server.git_probe, "common_repo_root", lambda c: None)
 
@@ -1263,7 +1222,8 @@ def test_workspace_move_still_guards_bad_dir_for_local_profile(monkeypatch, tmp_
     assert resp["error"]["code"] == 4017
 
 
-def test_ssh_named_profile_cwd_beats_launch_terminal_cwd(monkeypatch, tmp_path):
+@pytest.mark.parametrize("launch_backend", ["ssh", "local"])
+def test_ssh_named_profile_cwd_beats_launch_terminal_cwd(monkeypatch, tmp_path, launch_backend):
     """A named SSH profile's terminal.cwd is on the remote. The desktop must use
     it even when that path does not exist on this host and the process
     TERMINAL_CWD still names the launch profile."""
@@ -1276,7 +1236,7 @@ def test_ssh_named_profile_cwd_beats_launch_terminal_cwd(monkeypatch, tmp_path):
         "terminal:\n  backend: ssh\n  cwd: /home/kali\n",
         encoding="utf-8",
     )
-    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    monkeypatch.setenv("TERMINAL_ENV", launch_backend)
     monkeypatch.setenv("TERMINAL_CWD", launch)
     monkeypatch.setattr(server, "_profile_home", lambda name: home if name == "hunter" else None)
 
@@ -1289,6 +1249,23 @@ def test_ssh_named_profile_cwd_beats_launch_terminal_cwd(monkeypatch, tmp_path):
     assert server._terminal_task_cwd(
         {"cwd": "/opt/picked", "explicit_cwd": True, "profile_home": str(home)}
     ) == "/opt/picked"
+    # A local launch profile must not "heal" the remote dir to its nearest host ancestor (/home).
+    assert server._display_session_cwd({"cwd": remote, "profile_home": str(home)}) == remote
+
+
+def test_named_profile_without_backend_stays_local_under_ssh_launch(monkeypatch, tmp_path):
+    """A named profile that declares no terminal.backend is local; the launch profile's ssh backend must not
+    turn its terminal.cwd into a remote path."""
+    home = tmp_path / "plain"
+    home.mkdir()
+    (home / "config.yaml").write_text("terminal:\n  cwd: /srv/not-on-this-host\n", encoding="utf-8")
+    launch = str(tmp_path)
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    monkeypatch.setattr(server, "_profile_home", lambda name: home if name == "plain" else None)
+
+    assert server._completion_cwd({"profile": "plain", "cwd": launch, "cwd_explicit": False}) == launch
+    assert server._session_is_local_backend({"profile_home": str(home)}) is True
+
 
 
 class _ChunkyStdout:

@@ -430,17 +430,31 @@ def _auth_type(config: dict) -> str:
 
 def _resolved_identity(server_name: str, config: dict) -> str:
     """Digest of what a connection is opened with that the config does not show, resolved in the
-    CURRENT profile's scope: a stdio child's env (external secret-source values) and default cwd,
-    an HTTP connection's headers after ``identity_header`` (``value_from: profile``). The
-    connecting task records it per attempt; an adopter recomputes it. Only the hash is kept."""
+    CURRENT profile's scope the way the transport resolves it: a stdio child's executable (bare
+    ``npx``/``node`` may resolve under the profile's home), env (external secret-source values) and
+    default cwd; an HTTP connection's URL and headers after a ``server_json`` live endpoint and
+    ``identity_header`` (``value_from: profile``). The connecting task records it per attempt; an
+    adopter recomputes it. Only the hash is kept."""
     from agent.runtime_cwd import resolve_context_cwd
     from tools.mcp_tool_errors import _apply_identity_header
+    from tools.mcp_tool_transport import LiveEndpointUnavailable, _live_endpoint
 
     if "url" in config:
-        resolved: Any = _apply_identity_header(server_name, config, dict(config.get("headers") or {}))
+        url, headers = config["url"], dict(config.get("headers") or {})
+        try:
+            live = _live_endpoint(server_name)
+        except LiveEndpointUnavailable:  # the transport cannot connect either; never equal to a live one
+            live = (None, {})
+        if live is not None:
+            url, live_headers = live
+            headers.update(live_headers)
+        resolved: Any = [url, _apply_identity_header(server_name, config, headers)]
     else:
+        command, env = config.get("command"), _config._build_safe_env(config.get("env"))
+        if command:  # the transport refuses a command-less stdio config before resolving anything
+            command, env = _config._resolve_stdio_command(command, env)
         cwd = config.get("cwd")
-        resolved = [_config._build_safe_env(config.get("env")), cwd if cwd is not None else resolve_context_cwd()]
+        resolved = [command, env, cwd if cwd is not None else resolve_context_cwd() or None]
     return hashlib.sha256(json.dumps(resolved, sort_keys=True, default=str).encode()).hexdigest()
 
 

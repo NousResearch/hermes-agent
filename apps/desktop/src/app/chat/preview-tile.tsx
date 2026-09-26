@@ -13,7 +13,13 @@
 import { useStore } from '@nanostores/react'
 
 import { findGroup } from '@/components/pane-shell/tree/model'
-import { $activeTreeGroup, $layoutTree, revealTreePane, treePanesWithPrefix } from '@/components/pane-shell/tree/store'
+import {
+  $activeTreeGroup,
+  $layoutTree,
+  closeTabPane,
+  revealTreePane,
+  treePanesWithPrefix
+} from '@/components/pane-shell/tree/store'
 import { type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { FileTypeIcon } from '@/components/ui/file-type-icon'
 import { ToolIcon } from '@/components/ui/tool-icon'
@@ -282,7 +288,8 @@ const watchPreviewTileMirror = paneMirror<{ id: string }>({
 
     return target?.kind === 'url' || target?.previewKind === 'html'
   },
-  render: tabId => <PreviewTilePane tabId={tabId} />,
+  // The body's own Close (an error state's way out) is the tab's ✕, verbatim.
+  render: tabId => <PreviewTilePane onClose={() => closeTabPane(previewPaneId(tabId))} tabId={tabId} />,
   close: tabId => {
     forgetBrowserPage(tabId)
     forgetPreviewConsole(tabId)

@@ -16,6 +16,7 @@ describe('preprocessMarkdown', () => {
 
     expect(output).not.toContain('```')
     expect(output).toContain("Here's your scene:")
+    // Bare localhost URLs (with or without trailing slash) are still stripped.
     expect(output).not.toContain('http://localhost:8812/')
     expect(output).toContain('- **Multicolored cube**')
   })
@@ -33,6 +34,7 @@ describe('preprocessMarkdown', () => {
     const output = preprocessMarkdown(input)
 
     expect(output).not.toContain('```')
+    // Bare localhost URLs (with or without trailing slash) are still stripped.
     expect(output).not.toContain('http://localhost:8812/')
     expect(output).toContain('- **Scroll wheel** - zoom')
   })
@@ -45,7 +47,26 @@ describe('preprocessMarkdown', () => {
 
     expect(output).toContain('Server is back.')
     expect(output).not.toContain('```')
+    // Bare localhost URLs (no path after port) are still stripped.
     expect(output).not.toContain('http://localhost:8812/')
+  })
+
+  it('preserves localhost URLs with paths in fenced blocks', () => {
+    const fence = '```'
+    const input = ['Open this:', '', fence, 'http://localhost:8080/piwo', fence].join('\n')
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toContain('Open this:')
+    expect(output).not.toContain('```')
+    expect(output).toContain('http://localhost:8080/piwo')
+  })
+
+  it('preserves localhost URLs with paths in prose', () => {
+    const output = preprocessMarkdown('Use this URL:\nhttp://localhost:8080/piwo')
+
+    expect(output).toContain('Use this URL:')
+    expect(output).toContain('http://localhost:8080/piwo')
   })
 
   it('demotes prose sentence masquerading as fence info', () => {
@@ -274,6 +295,58 @@ describe('preprocessMarkdown', () => {
     expect(output).toContain('<https://example.com/a_b/c~d/page>')
   })
 
+  it('escapes lone tildes in CJK ranges without touching strikethrough syntax', () => {
+    const output = preprocessMarkdown('Ranges: 1~10,11~20 and ~~deleted~~ text.')
+
+    expect(output).toContain('1\\~10,11\\~20')
+    expect(output).toContain('~~deleted~~')
+  })
+
+  it('escapes lone-tilde approximation prefixes so they cannot pair up mid-paragraph', () => {
+    const output = preprocessMarkdown('收益为 3~5 倍，成本约 ~¥0.089。')
+
+    expect(output).toContain('3\\~5 倍')
+    expect(output).toContain('\\~¥0.089')
+  })
+
+  it('does not escape lone tildes inside inline or fenced code', () => {
+    const input = ['Use `1~10` as a literal.', '', '```txt', '1~10,11~20', '```'].join('\n')
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toContain('`1~10`')
+    expect(output).toContain(['```txt', '1~10,11~20', '```'].join('\n'))
+  })
+
+  it('escapes unknown html-like prose tokens before they reach the renderer', () => {
+    const output = preprocessMarkdown(
+      'The proxy uses <tool_call> and <observation> blocks. Keep the rest of the sentence visible.'
+    )
+
+    expect(output).toContain(
+      'The proxy uses &lt;tool_call&gt; and &lt;observation&gt; blocks. Keep the rest of the sentence visible.'
+    )
+    expect(output).not.toContain('<tool_call>')
+    expect(output).not.toContain('<observation>')
+  })
+
+  it('preserves known html tags and autolinks while escaping unknown tags', () => {
+    const output = preprocessMarkdown(
+      'Use <strong>bold</strong> and visit https://example.com/page, then <span>ok</span> and <unk> text.'
+    )
+
+    expect(output).toContain('<strong>bold</strong>')
+    expect(output).toContain('<https://example.com/page>')
+    expect(output).toContain('<span>ok</span>')
+    expect(output).toContain('&lt;unk&gt;')
+  })
+
+  it('leaves math comparisons like a < b and 2<3 untouched', () => {
+    const output = preprocessMarkdown('If a < b and 2<3 then keep it as text.')
+
+    expect(output).toContain('a < b and 2<3')
+  })
+
   it('handles a fenced block larger than V8 spread-argument limit', () => {
     // A single huge code block (e.g. a logged minified bundle) used to throw
     // `RangeError: Maximum call stack size exceeded` via `out.push(...lines)`.
@@ -463,5 +536,51 @@ describe('preprocessMarkdown', () => {
     const output = preprocessMarkdown('Per the paper[2], $\\sqrt[3]{8}$ is 2.')
 
     expect(output).toBe('Per the paper, $\\sqrt[3]{8}$ is 2.')
+  })
+
+  // #103546: a bare `$identifier` twice in CJK prose is not math. The escape
+  // fires on the OPENING `$` of a span whose body carries East Asian script or
+  // punctuation, so remark-math reads it as a literal dollar and the sentence
+  // renders as prose with recoverable copy-out.
+  it('does not pair two bare dollars around CJK prose as inline math (#103546)', () => {
+    const input = '...的经典嫌疑是 **$connection 被别的写者整包覆盖**（丢了 `isFullscreen` 字段）...搜 `$connection` 的所有写者：'
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toContain('\\$connection 被别的写者整包覆盖')
+    // The backticked `$connection` is untouched — inline code stays code.
+    expect(output).toContain('`$connection`')
+  })
+
+  it('escapes the opening dollar when both identifiers are bare in CJK prose (#103546)', () => {
+    const output = preprocessMarkdown('搜 $connection 的所有写者，再搜 $session 的读者')
+
+    expect(output).toContain('\\$connection')
+  })
+
+  it('escapes a span whose body is fullwidth punctuation plus Latin (#103546)', () => {
+    const output = preprocessMarkdown('值 $foo（bar）$ 已确认')
+
+    expect(output).toContain('\\$foo（bar）$')
+  })
+
+  it('leaves real inline math in CJK prose untouched (#103546)', () => {
+    const output = preprocessMarkdown('代入 $x^2 + y^2$ 得到结果')
+
+    expect(output).toContain('$x^2 + y^2$')
+    expect(output).not.toContain('\\$x^2')
+  })
+
+  it('leaves real inline math adjacent to CJK untouched (#103546)', () => {
+    const output = preprocessMarkdown('其中 $\\alpha = 1$，所以')
+
+    expect(output).toContain('$\\alpha = 1$')
+    expect(output).not.toContain('\\$\\alpha')
+  })
+
+  it('leaves display math in CJK prose untouched (#103546)', () => {
+    const output = preprocessMarkdown('公式 $$E = mc^2$$ 成立')
+
+    expect(output).toContain('$$E = mc^2$$')
   })
 })

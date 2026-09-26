@@ -99,7 +99,11 @@ function isUpdateToastSnoozed(): boolean {
 
 // Must match tui_gateway's DESKTOP_BACKEND_CONTRACT that this build was written
 // against. The backend reports its own value in session runtime info; a lower
-// value (or none — a pre-GUI checkout) means GUI<->backend skew.
+// value (or none — a pre-GUI checkout) means the backend is older than this
+// GUI, a higher value means this GUI is older than the backend. Both
+// directions are GUI<->backend skew and both warn — an old GUI silently
+// driving a newer backend is just as broken as the reverse, it only fails
+// further from the cause.
 // v2: requires the file.attach RPC (remote-gateway non-image file upload).
 // v3: requires approvals.mode config RPCs and session.info reconciliation.
 // v4: requires explicit Fast-off session creation and session-scoped Fast edits.
@@ -111,12 +115,14 @@ function isUpdateToastSnoozed(): boolean {
 //     `<kind>.request` notifications would never render a card.
 export const REQUIRED_BACKEND_CONTRACT = 8
 const SKEW_TOAST_ID = 'backend-contract-skew'
+const GUI_SKEW_TOAST_ID = 'gui-contract-skew'
 // The contract check runs on every session.resume (applyRuntimeInfo), so
 // without a snooze the warning re-popped on every thread the user opened, even
 // right after they closed it. Mirror the update toast: persist a cooldown when
-// the user dismisses it. It still reminds again after the window if the backend
-// is still behind, and clears immediately once the backend catches up.
+// the user dismisses it. It still reminds again after the window if the skew
+// persists, and clears immediately once the two sides align.
 const SKEW_TOAST_SNOOZE_KEY = 'hermes:backend-skew-toast-snooze-until'
+const GUI_SKEW_TOAST_SNOOZE_KEY = 'hermes:gui-skew-toast-snooze-until'
 const SKEW_TOAST_COOLDOWN_MS = 24 * 60 * 60 * 1000
 
 function snoozeSkewToast(): void {
@@ -125,6 +131,16 @@ function snoozeSkewToast(): void {
 
 function isSkewToastSnoozed(): boolean {
   const until = Number(storedString(SKEW_TOAST_SNOOZE_KEY) || 0)
+
+  return Number.isFinite(until) && Date.now() < until
+}
+
+function snoozeGuiSkewToast(): void {
+  persistString(GUI_SKEW_TOAST_SNOOZE_KEY, String(Date.now() + SKEW_TOAST_COOLDOWN_MS))
+}
+
+function isGuiSkewToastSnoozed(): boolean {
+  const until = Number(storedString(GUI_SKEW_TOAST_SNOOZE_KEY) || 0)
 
   return Number.isFinite(until) && Date.now() < until
 }
@@ -148,43 +164,80 @@ function isInstallMethodToastSnoozed(): boolean {
 }
 
 /**
- * Guard against a desktop GUI talking to a backend that predates its contract
- * (e.g. a bb/gui-built app pointed at a `main` checkout). Rather than failing
- * cryptically downstream, surface a warning with a one-click align that runs
- * the normal update flow (which self-heals to the right branch).
+ * Guard against GUI<->backend contract skew in either direction. A backend
+ * that predates this GUI's contract (e.g. a bb/gui-built app pointed at a
+ * `main` checkout) gets a "backend out of date" warning with a one-click
+ * align that runs the normal backend update flow. A backend *ahead* of this
+ * GUI's contract (typically a long-running app that survived a backend
+ * update without relaunching) gets the reverse "app out of date" warning
+ * pointing at the client update flow. Without the reverse check an old GUI
+ * silently drives a newer backend and fails cryptically downstream.
  *
- * Runs on every session open; closing the toast snoozes it for a cooldown so it
+ * Runs on every session open; closing a toast snoozes it for a cooldown so it
  * doesn't nag on every thread switch.
  */
 export function reportBackendContract(contract: number | undefined): void {
-  if ((contract ?? 0) >= REQUIRED_BACKEND_CONTRACT) {
+  const reported = contract ?? 0
+
+  if (reported >= REQUIRED_BACKEND_CONTRACT) {
     dismissNotification(SKEW_TOAST_ID)
     // Backend caught up — forget any prior snooze so a future regression warns
     // immediately rather than staying silent for the rest of the window.
     persistString(SKEW_TOAST_SNOOZE_KEY, null)
+  }
+
+  if (reported <= REQUIRED_BACKEND_CONTRACT) {
+    dismissNotification(GUI_SKEW_TOAST_ID)
+    // GUI caught up (or the backend rolled back) — same reset for the reverse
+    // direction.
+    persistString(GUI_SKEW_TOAST_SNOOZE_KEY, null)
+  }
+
+  if (reported < REQUIRED_BACKEND_CONTRACT) {
+    if (isSkewToastSnoozed()) {
+      return
+    }
+
+    notify({
+      action: {
+        label: translateNow('notifications.updateHermes'),
+        onClick: () => {
+          snoozeSkewToast()
+          void applyBackendUpdate()
+        }
+      },
+      durationMs: 0,
+      id: SKEW_TOAST_ID,
+      kind: 'warning',
+      message: translateNow('notifications.backendOutOfDateMessage'),
+      onDismiss: () => snoozeSkewToast(),
+      title: translateNow('notifications.backendOutOfDateTitle')
+    })
 
     return
   }
 
-  if (isSkewToastSnoozed()) {
-    return
-  }
+  if (reported > REQUIRED_BACKEND_CONTRACT) {
+    if (isGuiSkewToastSnoozed()) {
+      return
+    }
 
-  notify({
-    action: {
-      label: translateNow('notifications.updateHermes'),
-      onClick: () => {
-        snoozeSkewToast()
-        void applyBackendUpdate()
-      }
-    },
-    durationMs: 0,
-    id: SKEW_TOAST_ID,
-    kind: 'warning',
-    message: translateNow('notifications.backendOutOfDateMessage'),
-    onDismiss: () => snoozeSkewToast(),
-    title: translateNow('notifications.backendOutOfDateTitle')
-  })
+    notify({
+      action: {
+        label: translateNow('notifications.updateDesktopApp'),
+        onClick: () => {
+          snoozeGuiSkewToast()
+          openUpdateOverlayFor('client')
+        }
+      },
+      durationMs: 0,
+      id: GUI_SKEW_TOAST_ID,
+      kind: 'warning',
+      message: translateNow('notifications.desktopOutOfDateMessage'),
+      onDismiss: () => snoozeGuiSkewToast(),
+      title: translateNow('notifications.desktopOutOfDateTitle')
+    })
+  }
 }
 
 export function reportInstallMethodWarning(message: string | undefined): void {
@@ -455,10 +508,26 @@ export interface UpdateCheckOptions {
   force?: boolean
 }
 
+// Key of the connection that wants the next check once the in-flight one
+// (if any) clears — set when a check is requested while another is already
+// running for a different target, so that target isn't silently dropped.
+let backendCheckPendingKey: string | undefined
+
 export async function checkBackendUpdates({
   force = false
 }: UpdateCheckOptions = {}): Promise<DesktopUpdateStatus | null> {
-  if (!isRemoteMode() || $backendUpdateChecking.get()) {
+  if (!isRemoteMode()) {
+    return $backendUpdateStatus.get()
+  }
+
+  // Bind this request to the connection active when it started. Switching
+  // remote targets mid-request must not let a slower, now-stale response
+  // (for the connection we've since left) overwrite the newer one.
+  const requestKey = connectionKey($connection.get())
+
+  if ($backendUpdateChecking.get()) {
+    backendCheckPendingKey = requestKey
+
     return $backendUpdateStatus.get()
   }
 
@@ -466,8 +535,11 @@ export async function checkBackendUpdates({
 
   try {
     const status = mapBackendCheck(await checkHermesUpdate(force))
-    $backendUpdateStatus.set(status)
-    maybeNotifyUpdateAvailable(status, 'backend')
+
+    if (connectionKey($connection.get()) === requestKey) {
+      $backendUpdateStatus.set(status)
+      maybeNotifyUpdateAvailable(status, 'backend')
+    }
 
     return status
   } catch (error) {
@@ -478,11 +550,24 @@ export async function checkBackendUpdates({
       fetchedAt: Date.now()
     }
 
-    $backendUpdateStatus.set(fallback)
+    if (connectionKey($connection.get()) === requestKey) {
+      $backendUpdateStatus.set(fallback)
+    }
 
     return fallback
   } finally {
     $backendUpdateChecking.set(false)
+
+    const pendingKey = backendCheckPendingKey
+
+    backendCheckPendingKey = undefined
+
+    // Someone asked for a check for a different (still-active) target while
+    // this one was in flight — run it now instead of leaving that target
+    // showing whatever this request happened to return.
+    if (pendingKey && pendingKey !== requestKey && pendingKey === connectionKey($connection.get())) {
+      void checkBackendUpdates()
+    }
   }
 }
 
@@ -766,10 +851,13 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
 
     if (!started.ok) {
       const message = (started as { message?: string }).message || translateNow('updates.applyStatus.notAvailable')
-      const command = (started as { update_command?: string }).update_command || 'hermes update'
+      // An empty update_command is the backend saying "there is no command to
+      // run here" (managed container, commit build) — render the message-only
+      // view. Only a field absent from an older backend falls back.
+      const command = ((started as { update_command?: string | null }).update_command ?? 'hermes update') || null
       $backendUpdateApply.set({ ...IDLE, applying: false, stage: 'manual', message, command })
 
-      return { ok: false, error: 'manual', manual: true, message, command }
+      return { ok: false, error: 'manual', manual: true, message, command: command ?? undefined }
     }
 
     $backendUpdateApply.set({
@@ -1072,7 +1160,20 @@ function ingestProgress(payload: DesktopUpdateProgress): void {
 let pollerStarted = false
 let backgroundTimer: ReturnType<typeof setInterval> | null = null
 let connectionUnsub: (() => void) | null = null
-let lastConnectionMode: string | undefined
+let lastConnectionKey: string | undefined
+
+// mode alone can't tell two remote backends apart — switching directly from
+// remote profile A to remote profile B leaves mode === 'remote' both times.
+// Key on the actual backend target so a target change re-checks even when
+// the mode doesn't. Pooled profiles share a baseUrl, so the profile joins
+// the key: the update check is profile-scoped (per-profile overrides can
+// pin a different channel/branch).
+function connectionKey(conn: HermesConnection | null): string {
+  if (conn?.mode !== 'remote') {
+    return String(conn?.mode)
+  }
+  return conn.profile ? `remote:${conn.baseUrl}:${conn.profile}` : `remote:${conn.baseUrl}`
+}
 
 export const BACKGROUND_UPDATE_CHECK_MS = 24 * 60 * 60 * 1000
 const FOCUS_RECHECK_KEY = 'hermes.updates.last-passive-check'
@@ -1108,13 +1209,16 @@ export function startUpdatePoller(): void {
 
   // The poller starts at mount, before the gateway connects — so the first
   // backend check above sees mode≠remote and no-ops. Re-check once the
-  // connection resolves to remote.
+  // connection resolves to remote, and again whenever the remote target
+  // itself changes (switching between two remote profiles).
   connectionUnsub = $connection.subscribe((conn: HermesConnection | null): void => {
-    if (conn?.mode === lastConnectionMode) {
+    const key = connectionKey(conn)
+
+    if (key === lastConnectionKey) {
       return
     }
 
-    lastConnectionMode = conn?.mode
+    lastConnectionKey = key
 
     if (conn?.mode === 'remote') {
       void checkBackendUpdates()
@@ -1133,7 +1237,7 @@ export function stopUpdatePoller(): void {
 
   connectionUnsub?.()
   connectionUnsub = null
-  lastConnectionMode = undefined
+  lastConnectionKey = undefined
   window.removeEventListener('focus', onFocus)
   pollerStarted = false
 }

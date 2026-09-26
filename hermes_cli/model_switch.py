@@ -520,17 +520,14 @@ def resolve_persist_behavior(
     Order: ``--once`` / ``--session`` -> False; ``--global`` -> True; no default configured yet
     (neither ``model.default`` nor ``model.provider`` — a fresh install's first pick) -> True, so
     the pick does not evaporate into whatever ``*_API_KEY`` is lying around on the next launch;
-    ``--provider`` without a persist flag -> False (exploratory); else
-    ``model.persist_switch_by_default`` (default False). A flat-string ``model`` IS a configured
+    ``model.persist_switch_by_default`` -> True (the user's explicit opt-in to persistence);
+    ``--provider`` without a persist flag -> False (exploratory). A flat-string ``model`` IS a configured
     default; an unreadable config -> False.
 
     1. ``--once`` explicitly opts out → ``False`` (next turn only). 2. ``--session`` explicitly opts out →
     ``False`` (this session only). 3. 4. Applies to every surface (CLI, gateway, Desktop picker) so no
-    client has to hardcode ``--global``. 5. Provider switches are typically exploratory — the user is trying
-    a different backend for this conversation, not reconfiguring the default. 6. Otherwise defer to
-    ``model.persist_switch_by_default`` in ``config.yaml`` (defaults to ``False``: a plain ``/model <name>``
-    affects only the current session). Users who want the old persist-by-default behavior can set the key to
-    ``true``; a one-off ``--global`` always persists. See #86414.
+    client has to hardcode ``--global``. 5. ``model.persist_switch_by_default: true`` also covers provider picks (a pick between two providers sharing one ``base_url`` is tenant selection on the same backend, not exploration;
+    session-scoping it silently serves the next chat with the other twin's key). 6. Without that opt-in, provider switches stay exploratory — the user is trying a different backend for this conversation, not reconfiguring the default. The key defaults to ``False`` (a plain ``/model <name>`` affects only the current session); users who want the old persist-by-default behavior can set it to ``true``; a one-off ``--global`` always persists, and ``--session`` / ``--once`` always opt out. See #86414.
     """
     if is_once or is_session:
         return False
@@ -544,9 +541,11 @@ def resolve_persist_behavior(
     if isinstance(model_cfg, dict):
         if not (model_cfg.get("default") or model_cfg.get("provider")):
             return True
+        if bool(model_cfg.get("persist_switch_by_default", False)):
+            return True
         if explicit_provider:
             return False
-        return bool(model_cfg.get("persist_switch_by_default", False))
+        return False
     return not model_cfg
 
 

@@ -807,6 +807,9 @@ class SessionMessagesMixin:
             self._clone_message_rows(conn, unseen)
             inserted += len(unseen)
             tool_calls_total += unseen_tool_calls
+        # A carried copy whose stored identity was computed differently lands in its own
+        # display_order group and would project twice; re-fold before publishing (#122167).
+        self._reconcile_display_orders(conn, session_id)
         conn.execute(
             f"{_SET_COUNTERS_SQL}{', model_config = ?' if patch else ''} WHERE id = ?",
             (inserted, tool_calls_total, *((patched_model_config,) if patch else ()), session_id))
@@ -886,6 +889,9 @@ class SessionMessagesMixin:
                 self._clone_message_rows(conn, tail_ids)
                 inserted += len(tail_ids)
                 tool_calls_total += tail_tool_calls
+            # A carried copy whose stored identity was computed differently lands in its own
+            # display_order group and would project twice; re-fold before publishing (#122167).
+            self._reconcile_display_orders(conn, session_id)
             conn.execute(f"{_SET_COUNTERS_SQL}{', model_config = ?' if patch else ''} WHERE id = ?",
                 (inserted, tool_calls_total, *((patched_model_config,) if patch else ()), session_id))
             return inserted
@@ -1010,6 +1016,39 @@ class SessionMessagesMixin:
         # copy in a newer generation has a higher id than messages emitted after the original.
         return [seen[key] for key in sorted(seen, key=first_id.__getitem__)]
 
+    def _reconcile_display_orders(self, conn, session_id: str) -> None:
+        """Re-fold split display generations by the recomputed display key.
+
+        A compaction generation that computed the display identity differently (or cloned
+        without inheriting it) leaves one logical message in two ``display_order`` groups,
+        and ``GROUP BY display_order`` then projects it twice (#122167). Folding by the same
+        recomputed key :meth:`_dedupe_display_generations` uses keeps every display projection
+        on one definition of a logical message; the live copy wins its group via the read
+        path's ``ORDER BY candidate.active DESC, candidate.id DESC``. Writes only on drift."""
+        first_id: Dict[bytes, int] = {}
+        last_id = 0
+        while True:
+            rows = conn.execute(
+                "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, "
+                "display_kind, display_metadata, display_order, display_identity "
+                "FROM messages INDEXED BY idx_messages_session_id "
+                "WHERE session_id = ? AND id > ? AND (active = 1 OR compacted = 1) "
+                "ORDER BY id LIMIT 1000",
+                (session_id, last_id))
+            batch_start = last_id
+            updates = []
+            for row in rows:
+                last_id = row["id"]
+                identity = self._display_identity(self._display_dedupe_key(row))
+                order = first_id.setdefault(identity, last_id)
+                if order != row["display_order"] or identity != row["display_identity"]:
+                    updates.append((order, identity, last_id))
+            rows.close()
+            if last_id == batch_start:
+                break
+            conn.executemany(
+                "UPDATE messages SET display_order = ?, display_identity = ? WHERE id = ?", updates)
+
     def _ensure_display_order(self, session_id: str) -> bool:
         """Backfill one legacy session once, preserving the pre-index display identity exactly."""
         with self._read_ctx() as conn:
@@ -1025,29 +1064,7 @@ class SessionMessagesMixin:
             missing = conn.execute(_DISPLAY_INDEX_MISSING_SQL, (session_id,)).fetchone()
             if missing is None:
                 return True
-            first_id: Dict[bytes, int] = {}
-            last_id = 0
-            while True:
-                rows = conn.execute(
-                    "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, "
-                    "display_kind, display_metadata, display_order, display_identity "
-                    "FROM messages INDEXED BY idx_messages_session_id "
-                    "WHERE session_id = ? AND id > ? AND (active = 1 OR compacted = 1) "
-                    "ORDER BY id LIMIT 1000",
-                    (session_id, last_id))
-                batch_start = last_id
-                updates = []
-                for row in rows:
-                    last_id = row["id"]
-                    identity = self._display_identity(self._display_dedupe_key(row))
-                    order = first_id.setdefault(identity, last_id)
-                    if order != row["display_order"] or identity != row["display_identity"]:
-                        updates.append((order, identity, last_id))
-                rows.close()
-                if last_id == batch_start:
-                    break
-                conn.executemany(
-                    "UPDATE messages SET display_order = ?, display_identity = ? WHERE id = ?", updates)
+            self._reconcile_display_orders(conn, session_id)
             return True
 
         return bool(self._execute_write(_do))

@@ -40,12 +40,12 @@ def _make_web_dir(tmp_path: Path) -> tuple[Path, Path]:
 def test_web_build_prepares_once_and_skips_a_current_product(source_products):
     root, acquired = source_products
     assert _build_web_ui(root / "web", fatal=True)
-    assert [event["step"] for event in _events(root)] == ["deps", "icons", "web"]
+    assert [event["step"] for event in _events(root)] == ["deps", "web"]
     assert acquired == ["npm"]
     assert not _web_ui_build_needed(root / "web")
     assert _build_web_ui(root / "web", fatal=True)
     assert acquired == ["npm"]
-    assert len(_events(root)) == 3
+    assert len(_events(root)) == 2
 
 
 @pytest.mark.platforms("posix")
@@ -58,7 +58,7 @@ def test_web_failure_is_not_success_even_with_an_old_dist(source_products, fatal
     (root / "fail-web").touch()
     assert not _build_web_ui(root / "web", fatal=fatal)
     assert acquired == ["npm"]
-    assert [event["step"] for event in _events(root)] == ["deps", "icons", "web"]
+    assert [event["step"] for event in _events(root)] == ["deps", "web"]
     assert dist.read_text() == "old product"
     assert not (root / "hermes_cli/web_dist/hermes-build.json").exists()
 
@@ -82,7 +82,7 @@ def test_web_rebuild_reuses_the_existing_desktop_union(source_products):
     before = _events(root)
     (root / "web/changed.ts").write_text("changed web source")
     assert _build_web_ui(root / "web", fatal=True)
-    assert _events(root) == [*before, {"step": "icons"}, {"step": "web"}]
+    assert _events(root) == [*before, {"step": "web"}]
     assert acquired == ["npm", "npm"]
     assert (root / "node_modules/apps-desktop").exists()
 

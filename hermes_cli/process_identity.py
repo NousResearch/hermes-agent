@@ -125,6 +125,9 @@ class LedgerEntry:
     port: Optional[int] = None
     profile: str = ""
     hermes_home: str = ""
+    # `serve --isolated`: opted out of the host singleton (Desktop's SSH backend for another
+    # machine). Attach-first readers must never adopt it; argv is truncated, so this is canonical.
+    isolated: bool = False
 
 
 def _ledger_path() -> Path:
@@ -201,7 +204,8 @@ def register_self(purpose: str, *, project_root: Optional[Path] = None, detail: 
 
     Called at the top of every long-lived entry point; dead ``(pid, create_time)`` entries are
     pruned on every write. ``detail`` may carry ``host``/``port``/``profile`` so the update
-    pipeline can relaunch a manually-started serve with its real bind address.
+    pipeline can relaunch a manually-started serve with its real bind address, and ``isolated``
+    so attach-first discovery skips a backend that opted out of the host singleton.
     """
     from hermes_constants import hermes_home_key
 
@@ -214,6 +218,7 @@ def register_self(purpose: str, *, project_root: Optional[Path] = None, detail: 
             entry.host = str(detail.get("host") or "")
             entry.port = int(detail["port"]) if detail.get("port") is not None else None
             entry.profile = str(detail.get("profile") or "")
+            entry.isolated = bool(detail.get("isolated"))
         except (TypeError, ValueError):
             pass
     try:

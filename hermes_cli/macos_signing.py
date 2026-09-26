@@ -29,7 +29,7 @@ def sign_managed_python(python: Path) -> bool:
             [codesign, "--force", "--deep", "--sign", "-", "--timestamp=none",
              "--identifier", _IDENTIFIER, "--requirements",
              f'=designated => identifier "{_IDENTIFIER}"', str(python)],
-            check=False, capture_output=True, text=True,
+            check=False, capture_output=True, text=True, encoding="utf-8", errors="replace",
         )
         if signed.returncode != 0:
             logger.warning("could not stably sign managed Python %s: %s", python,
@@ -37,7 +37,7 @@ def sign_managed_python(python: Path) -> bool:
             return False
         verified = subprocess.run(
             [codesign, "--verify", "--deep", "--strict", str(python)],
-            check=False, capture_output=True, text=True,
+            check=False, capture_output=True, text=True, encoding="utf-8", errors="replace",
         )
         if verified.returncode != 0:
             logger.warning("macOS signature verification failed for managed Python %s: %s", python,

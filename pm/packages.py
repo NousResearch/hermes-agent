@@ -385,8 +385,13 @@ class Venv(StatePackage):
         h.update(members_stamp(enabled_member_dirs() if plugin_dirs is None else plugin_dirs).encode())
         return h.hexdigest()
 
-    def apply(self, extras: list[str], *, plugin_dirs=None, repair: bool = False, explicit: bool = False) -> dict:
-        """Prepare one complete environment; the caller commits its selection."""
+    def apply(self, extras: list[str], *, plugin_dirs=None, repair: bool = False, explicit: bool = False,
+              skip_invalid_secondary: bool = False) -> dict:
+        """Prepare one complete environment; the caller commits its selection.
+
+        ``skip_invalid_secondary`` is the update's contract: an unreadable secondary profile
+        is left out (the caller reports it) instead of refusing the whole graph.
+        """
         import uuid
         from pm.environments import install_state_dir, runtime_facts_path
         from pm.environment import managed_environment
@@ -402,8 +407,9 @@ class Venv(StatePackage):
         if not repair:
             # Inspection may skip a broken secondary profile, but publishing a replacement
             # graph must not silently evict its recorded members (including passed candidates).
+            # An update does evict them, loudly: it must not fail on another profile's config.
             from pm.plugins_state import enabled_plugins_ordered
-            enabled_plugins_ordered()
+            enabled_plugins_ordered(skip_invalid_secondary=skip_invalid_secondary)
         members = [] if repair else (enabled_member_dirs() if plugin_dirs is None else plugin_dirs)
         try:
             generation.mkdir(parents=True)
@@ -872,6 +878,10 @@ class AgentBrowser(BinaryPackage):
         for item in bin_dir.iterdir():
             if item.is_file() and item.name.startswith("agent-browser-") and item.name != keep:
                 item.unlink()
+        # The npm tarball ships every native binary as 0644; agent-browser's
+        # own postinstall sets the exec bit, and pm runs no postinstall.
+        kept = bin_dir / keep
+        kept.chmod(kept.stat().st_mode | 0o111)
 
 
 @register
@@ -1088,9 +1098,10 @@ class LlamaCppVulkan(LlamaCpp):
 class LlamaCppHip(LlamaCpp):
     name = "llamacpp-hip"
     backend = "hip"
+    # Upstream renamed the ROCm archives to 10.0 at b10767 (cff184438e).
     assets = {
-        "win32-x64": "win-rocm-7.14-x64",
-        "linux-x64": "ubuntu-rocm-7.14-x64",
+        "win32-x64": "win-rocm-10.0-x64",
+        "linux-x64": "ubuntu-rocm-10.0-x64",
     }
 
 

@@ -33,6 +33,8 @@ CATALOG_TIERS = ("official", "community")
 CATALOG_CATEGORIES = ("desktop", "memory", "platform", "web", "tools", "voice", "automation", "models", "general")
 LIVE_CATALOG_URL = "https://hermes-agent.nousresearch.com/docs/api/plugin-catalog.json"
 LIVE_CATALOG_TTL_SECONDS = 6 * 60 * 60
+# Offline pins expire, but cached removals remain a permanent kill list.
+LIVE_CATALOG_MAX_STALE_SECONDS = 24 * 60 * 60
 LIVE_CATALOG_FAILURE_TTL_SECONDS = 60.0
 _REQUEST_TIMEOUT = 5.0
 _MAX_LIVE_BYTES = 2 * 1024 * 1024
@@ -314,9 +316,17 @@ _live_fetch_failed_until = 0.0
 
 
 def _stale_live_cache(cache: Path) -> Optional[Dict[str, Any]]:
-    """A previously fetched copy still beats the in-tree one when the network is down."""
+    """A previously fetched copy still beats the in-tree one when the network is down — for
+    :data:`LIVE_CATALOG_MAX_STALE_SECONDS`. Past that its pins may trail the checkout's own catalog
+    (a 90-day-old cache outranked a freshly updated in-tree pin), so the entries are dropped and the
+    caller falls back to in-tree; the removals are kept."""
     try:
-        return json.loads(cache.read_text(encoding="utf-8-sig")) if cache.is_file() else None
+        if not cache.is_file():
+            return None
+        data = json.loads(cache.read_text(encoding="utf-8-sig"))
+        if time.time() - cache.stat().st_mtime > LIVE_CATALOG_MAX_STALE_SECONDS:
+            data = {**data, "entries": []}
+        return data
     except Exception:
         return None
 
@@ -375,7 +385,7 @@ def in_tree_catalog_time() -> Optional[float]:
         try:
             import subprocess
             out = subprocess.run(["git", "-C", str(root), "log", "-1", "--format=%ct", "--", "plugin-catalog"],
-                                 capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL)
+                                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, stdin=subprocess.DEVNULL)
             resolved = float(out.stdout.strip()) if out.returncode == 0 and out.stdout.strip() else None
         except Exception as exc:
             logger.debug("Plugin catalog: could not date the in-tree catalog: %s", exc)

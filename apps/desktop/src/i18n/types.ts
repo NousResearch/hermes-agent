@@ -64,10 +64,69 @@ export interface Translations {
     message: string
     copyUrl: string
     close: string
-  };
+  }
   intro: {
     stock: Record<string, string[]>
     custom: (label: string) => string[]
+  }
+  catalog: {
+    add: string
+    added: string
+    discover: string
+    featured: string
+    explorePlugins: string
+    exploreSkills: string
+    mostStarred: string
+    newest: string
+    recentlyUpdated: string
+    alphabetical: string
+    sortBy: string
+    seeAll: string
+    related: string
+    tags: string
+    screenshots: string
+    listView: string
+    cardView: string
+    installTitle: (name: string) => string
+    installDescription: string
+    installTo: string
+    thisComputer: string
+    installing: string
+    installComplete: (name: string) => string
+    destinationChanged: string
+    installed: string
+    searchSkills: string
+    searchPlugins: string
+    allSources: string
+    allCategories: string
+    about: string
+    author: string
+    source: string
+    category: string
+    version: string
+    platforms: string
+    requires: string
+    tools: string
+    hooks: string
+    middleware: string
+    commands: string
+    license: string
+    addedDate: string
+    updatedDate: string
+    repository: string
+    documentation: string
+    noResults: string
+    tryAnother: string
+    clearFilters: string
+    filters: string
+    loadFailed: string
+    retry: string
+    more: string
+    pinned: string
+    snapshotHint: string
+    installHint: string
+    results: (count: number) => string
+    back: string
   }
   connectors: {
     title: string
@@ -504,6 +563,9 @@ export interface Translations {
     copyDetailFailed: string
     backendOutOfDateTitle: string
     backendOutOfDateMessage: string
+    desktopOutOfDateTitle: string
+    desktopOutOfDateMessage: string
+    updateDesktopApp: string
     installMethodUnsupportedTitle: string
     updateHermes: string
     updateReadyTitle: string
@@ -761,6 +823,7 @@ export interface Translations {
         agentSuccess: (name: string) => string
         desktopSuccess: (name: string) => string
         agentFailed: string
+        installUncertain: string
         desktopFailed: string
         missingEnv: (name: string, vars: string) => string
       }
@@ -2583,6 +2646,15 @@ export interface Translations {
       onGateway: (name: string, gateway: string) => string
       switchTo: (name: string, gateway: string) => string
       deleteOn: (gateway: string) => string
+      /** At-rest local default pill: device, not Home, and the click's consequence. */
+      localDevice: string
+      switchDeviceTitle: string
+      switchDeviceDesc: string
+      switchDeviceConfirm: string
+      installDeviceTitle: string
+      installDeviceDesc: string
+      installDeviceConfirm: string
+      connectExistingInstead: string
     }
     status: {
       unread: (count: number) => string
@@ -3022,6 +3094,7 @@ export interface Translations {
       branchFrom: string
       rename: string
       archive: string
+      unarchive: string
       newWindow: string
       openInTerminal: string
       hideTabBar: string
@@ -3390,8 +3463,11 @@ export interface Translations {
     maybeLater: string
     moreChanges: (count: number) => string
     manualTitle: string
+    manualUnavailableTitle: string
     manualBody: string
+    manualBodyBackend: string
     manualPickedUp: string
+    manualPickedUpBackend: string
     /** GUI/backend skew (#45205): backend updated but the running desktop app
      *  package (AppImage/.deb/.rpm) was not changed and must be reinstalled. */
     guiSkewTitle: string
@@ -3601,6 +3677,7 @@ export interface Translations {
     replaceCurrent: string
     pasteApiKey: string
     localApiKeyPlaceholder: string
+    localModelNamePlaceholder: string
     couldNotSave: string
     connecting: string
     update: string
@@ -3751,6 +3828,7 @@ export interface Translations {
       search: string
       noModels: string
       editModels: string
+      followDefault: string
       refreshModels: string
       fast: string
     }
@@ -3887,7 +3965,8 @@ export interface Translations {
         title: string
         tokenSummary: (used: string, max: string) => string
       }
-      session: string
+      focusedSince: string
+      focusedSinceTitle: string
       yoloOn: string
       yoloOff: string
       modelNone: string
@@ -4249,6 +4328,7 @@ export interface Translations {
       openSafetySettings: string
       run: string
       command: string
+      commandDetails: string
       moreOptions: string
       allowSession: string
       alwaysAllowMenu: string
@@ -4466,6 +4546,8 @@ export interface Translations {
     deleteFailed: string
     archived: string
     archiveFailed: string
+    restored: string
+    unarchiveFailed: string
     cwdChangeFailed: string
     cwdStagedTitle: string
     cwdStagedMessage: string

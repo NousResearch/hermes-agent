@@ -736,6 +736,26 @@ class SshConnection {
     return err
   }
 
+  // The classified error only reaches the caller (the renderer shows friendly
+  // copy for its kind), so record what ssh actually did — exit code, close
+  // signal, stderr — in desktop.log. Without it a connect that dies right after
+  // TCP setup leaves nothing to diagnose it by (#80836).
+  _connectFailed(raw) {
+    const err = this._fail(raw, SSH_ERROR.UNREACHABLE)
+
+    if (err?.kind !== 'superseded') {
+      const code = raw && typeof raw === 'object' && 'code' in raw ? String(raw.code) : '?'
+      const stderr = String(sshCloseStderr(raw)).trim().slice(-500) || '(empty)'
+
+      this._logLine(
+        `connect to ${target(this.user, this.host)}:${this.port} failed ` +
+          `(kind=${err.kind}, exit=${code}, signal=${sshCloseSignal(raw) || 'none'}): ${stderr}`
+      )
+    }
+
+    return err
+  }
+
   // Open the connection. Mux: start the persistent ControlMaster (idempotent —
   // a live master is a no-op). No-mux: there is no master; validate auth +
   // reachability with a one-shot `ssh true` so failures classify identically.
@@ -788,11 +808,11 @@ class SshConnection {
           signal
         })
       } catch (error) {
-        throw this._fail(error, SSH_ERROR.UNREACHABLE)
+        throw this._connectFailed(error)
       }
 
       if (!sshCloseOk(result)) {
-        throw this._fail(result, SSH_ERROR.UNREACHABLE)
+        throw this._connectFailed(result)
       }
 
       this._opened = true
@@ -808,11 +828,11 @@ class SshConnection {
     try {
       result = await runSsh(args, { timeoutMs: this._connectTimeoutMs, spawnFn: this._spawnFn, signal })
     } catch (error) {
-      throw this._fail(error, SSH_ERROR.UNREACHABLE)
+      throw this._connectFailed(error)
     }
 
     if (!sshCloseOk(result)) {
-      throw this._fail(result, SSH_ERROR.UNREACHABLE)
+      throw this._connectFailed(result)
     }
 
     this._opened = true

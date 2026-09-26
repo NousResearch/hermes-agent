@@ -185,7 +185,6 @@
     "electron": "44.4.5",
     "electron-builder": "27.0.0-alpha.8",
     "esbuild": "0.28.1",
-    "joi": "18.2.5",
     "jsdom": "29.1.1",
     "prettier": "3.9.5",
     "rcedit": "5.0.2",

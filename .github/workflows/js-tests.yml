@@ -88,3 +88,31 @@ jobs:
       # nothing.
       - name: Run all workspace checks
         run: node .github/scripts/run-workspace-checks.mjs
+
+  windows-electron-install:
+    name: Windows Electron clean install (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest-32-core
+          - arch: arm64
+            runner: windows-latest-32-arm-core
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: ./.github/actions/setup-pm
+        with:
+          toolchain: node
+      # Do not cache node_modules: exercise Electron's native extraction on
+      # both Windows architectures, including @electron-internal/extract-zip.
+      - name: Install the locked workspace with postinstall scripts
+        shell: bash
+        run: npm ci --no-audit --no-fund
+      - name: Exercise the installed Electron executable and both resolution layouts
+        shell: bash
+        run: |
+          npm run test --workspace apps/desktop -- scripts/connector-electron-binary.test.mjs
+          node apps/desktop/scripts/check-electron-install.mjs

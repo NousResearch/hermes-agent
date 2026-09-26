@@ -8,6 +8,7 @@ import { invalidateCronJobsRequests, setCronJobs } from '@/store/cron'
 import { resetSessionsLimit } from '@/store/layout'
 import { resetLiveSync } from '@/store/live-sync'
 import { invalidateProfileListFetches } from '@/store/profile'
+import { exitProjectScope } from '@/store/project-scope'
 import {
   $unreadFinishedSessionIds,
   setActiveSessionId,
@@ -195,6 +196,9 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // has never seen them, so drop the "already pushed" bookkeeping and let the
   // next reconcile re-assert the whole set against the new backend.
   resetSessionPinMirror()
+  // Project ids belong to the outgoing backend's projects.db; a scope left
+  // entered would root the next draft's cwd in the old source's project.
+  exitProjectScope()
   setSessions([])
   setSessionProfilesTruncated({})
   setSessionProfilesUsage({})

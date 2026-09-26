@@ -189,7 +189,8 @@ def test_provision_runtimes_reensures_only_what_pm_names(monkeypatch):
     monkeypatch.setattr(pm_ensure, "sealed", lambda: False)
     monkeypatch.setattr(pm_ensure, "lazy_installs_allowed", lambda: True)
     monkeypatch.setattr(pm, "ensure", lambda name, explicit=False: ensured.append((name, explicit)))
-    monkeypatch.setattr(pm, "sync_venv", lambda explicit=False: ensured.append(("venv", explicit)))
+    monkeypatch.setattr(pm, "sync_venv", lambda explicit=False, evict_incompatible_plugins=False:
+                        ensured.append(("venv", explicit and evict_incompatible_plugins)))
 
     result = post_update.step_provision_runtimes()
 

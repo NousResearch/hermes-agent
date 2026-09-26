@@ -269,6 +269,31 @@ def test_launch_without_marker_publishes_then_skips_and_rebuilds_on_lock_change(
 
 
 @pytest.mark.platforms("posix")
+def test_process_spawned_by_the_update_commits_dependencies_but_not_the_tail(source_launch, tmp_path):
+    """A process an update spawns before its dependencies are current (its restarted gateway)
+    must not boot on a tree built for another interpreter; it syncs, but leaves the tail alone."""
+    import time
+    from hermes_cli.update_lock import update_marker_path
+    from pm.environments import committed_venv
+
+    root, store_python, _ = source_launch
+    marker = update_marker_path()
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(f"{os.getppid()}\n{int(time.time())}\n", encoding="utf-8")  # the updater is our ancestor
+    assert committed_venv(root) is None
+
+    assert venv_sync.prepare_launch(root, []) == store_python
+    assert committed_venv(root) == Path(_fact(root)["environment"])
+    assert not (tmp_path / "completion-calls").exists(), "the tail is the updater's, not its child's"
+    assert not venv_sync.completion_pending_path(root).exists()
+
+    facts_bytes, receipts = runtime_facts_path(root).read_bytes(), _receipts(tmp_path)
+    venv_sync.prepare_launch(root, [])
+    assert runtime_facts_path(root).read_bytes() == facts_bytes
+    assert _receipts(tmp_path) == receipts, "a committed child synced again under the updater's claim"
+
+
+@pytest.mark.platforms("posix")
 def test_failed_real_sync_preserves_previous_selection_and_retries(source_launch, tmp_path):
     root, store_python, _ = source_launch
     # Established PM installs must retain their selection, not gain legacy [all].
@@ -302,6 +327,38 @@ def test_failed_real_sync_preserves_previous_selection_and_retries(source_launch
     assert rebuilt["extras"] == ["launch-extra"]
     assert pm.venv_is_current(project_root=root)
     assert not any(marker.exists() for marker in markers)
+
+
+@pytest.mark.platforms("posix")
+def test_source_update_that_removes_a_recorded_extra_still_syncs(source_launch):
+    """A dropped extra (hindsight, 73c598e319) must not brick every later sync."""
+    root, store_python, _ = source_launch
+    pm.sync_venv(["all", "launch-extra"], explicit=True, project_root=root)
+    assert _fact(root)["extras"] == ["all", "launch-extra"]
+
+    pyproject = root / "pyproject.toml"
+    pyproject.write_text(pyproject.read_text(encoding="utf-8").replace("launch-extra = []\n", ""),
+                         encoding="utf-8")
+    pm.lock_project(root, offline=True, explicit=True)
+    assert not pm.venv_is_current(project_root=root)
+
+    assert venv_sync.prepare_launch(root, []) == store_python
+    assert _fact(root)["extras"] == ["all"]
+    assert pm.venv_is_current(project_root=root)
+
+
+@pytest.mark.platforms("posix")
+def test_recorded_extra_spelled_differently_from_its_declaration_survives(source_launch):
+    """uv matches extras by PEP 685 name; `launch_extra` is the declared `launch-extra`."""
+    root, store_python, _ = source_launch
+    pm.sync_venv(["all", "launch_extra"], explicit=True, project_root=root)
+    assert _fact(root)["extras"] == ["all", "launch_extra"]
+
+    lock = root / "uv.lock"
+    lock.write_bytes(lock.read_bytes() + b"\n# source update changes the committed lock\n")
+    assert venv_sync.prepare_launch(root, []) == store_python
+    assert _fact(root)["extras"] == ["all", "launch_extra"]
+    assert pm.venv_is_current(project_root=root)
 
 
 @pytest.mark.platforms("posix")

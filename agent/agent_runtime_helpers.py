@@ -1263,10 +1263,13 @@ def restore_primary_runtime(agent) -> bool:
     primary_provider = str((rt or {}).get("provider") or "").strip().lower()
     primary_model = str((rt or {}).get("model") or "").strip()
     from agent.fallback_cooldown import _is_entitlement_rejected
-    if primary_model and _is_entitlement_rejected(agent, primary_provider, primary_model):
-        # The primary slug was rejected as unentitled for this account (#106475): restoring
-        # here would announce a recovery that was never verified and re-fail every turn.
-        # Stay on the fallback; the user sees the terminal entitlement error instead.
+    from hermes_cli.chat_catalog import is_known_non_chat_model
+    if primary_model and (
+        _is_entitlement_rejected(agent, primary_provider, primary_model)
+        or is_known_non_chat_model(primary_model)
+    ):
+        # Unentitled (#106475) or already known non-chat: restoring would announce a recovery
+        # that was never verified and re-fail every turn. Stay on the fallback.
         return False
     primary_runtime_base_url = str((rt or {}).get("base_url") or "")
 

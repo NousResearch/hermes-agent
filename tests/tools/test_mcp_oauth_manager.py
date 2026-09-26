@@ -77,7 +77,7 @@ def _set_interactive_stdin(monkeypatch, *, is_tty: bool = True) -> None:
 
 @pytest.mark.asyncio
 async def test_disk_watch_invalidates_on_mtime_change(tmp_path, monkeypatch):
-    """When the tokens file mtime changes, provider._initialized flips False.
+    """When the tokens file mtime changes after baseline, provider reloads.
 
     This is the behaviour Claude Code ships as
     invalidateOAuthCacheIfDiskChanged (CC-1096 / GH#24317) and is the core
@@ -99,10 +99,14 @@ async def test_disk_watch_invalidates_on_mtime_change(tmp_path, monkeypatch):
     mgr = MCPOAuthManager()
     provider = mgr.get_or_build_provider("srv", "https://example.com/mcp", None)
     assert provider is not None
+    await provider._initialize()
+    assert provider._initialized is True
 
-    # First call: records mtime (zero -> real) -> returns True
+    # First call only records the baseline mtime. Reloading here would reset
+    # the provider during its first auth handshake.
     changed1 = await mgr.invalidate_if_disk_changed("srv")
-    assert changed1 is True
+    assert changed1 is False
+    assert provider._initialized is True
 
     # No file change -> False
     changed2 = await mgr.invalidate_if_disk_changed("srv")
@@ -118,6 +122,65 @@ async def test_disk_watch_invalidates_on_mtime_change(tmp_path, monkeypatch):
     assert provider._initialized is False
 
 
+
+
+@pytest.mark.asyncio
+async def test_first_observation_401_still_allows_in_place_refresh(tmp_path, monkeypatch):
+    """A 401 on the first disk observation seeds the baseline but must still
+    report refreshable when the SDK can refresh in place (GH#39551)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from tools.mcp_oauth_manager import MCPOAuthManager, _ProviderEntry
+
+    token_dir = tmp_path / "mcp-tokens"
+    token_dir.mkdir(parents=True)
+    (token_dir / "srv.json").write_text(json.dumps({"access_token": "OLD"}), encoding="utf-8")
+
+    class _Ctx:
+        current_tokens = object()  # tokens already in memory (in-process sign-in)
+
+        def can_refresh_token(self):
+            return True
+
+    class _Provider:
+        context = _Ctx()
+        _initialized = True
+
+    mgr = MCPOAuthManager()
+    provider = _Provider()
+    mgr._entries[mgr._key("srv")] = _ProviderEntry(
+        server_url="https://example.com/mcp", oauth_config=None, provider=provider,
+    )
+    assert await mgr.handle_401("srv", failed_access_token="OLD") is True
+    # Baseline seeding must not have torn down the live provider.
+    assert provider._initialized is True
+    assert mgr._entries[mgr._key("srv")].last_mtime_ns != 0
+
+
+@pytest.mark.asyncio
+async def test_external_login_after_absent_tokens_file_forces_reload(tmp_path, monkeypatch):
+    """Provider built before login (no file, no in-memory tokens) must reload
+    once another process writes the tokens file (GH#39551 review)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from tools.mcp_oauth_manager import MCPOAuthManager, _ProviderEntry
+
+    class _Ctx:
+        current_tokens = None
+
+    class _Provider:
+        context = _Ctx()
+        _initialized = True
+
+    mgr = MCPOAuthManager()
+    provider = _Provider()
+    mgr._entries[mgr._key("srv")] = _ProviderEntry(
+        server_url="https://example.com/mcp", oauth_config=None, provider=provider,
+    )
+    assert await mgr.invalidate_if_disk_changed("srv") is False  # file absent
+    token_dir = tmp_path / "mcp-tokens"
+    token_dir.mkdir(parents=True)
+    (token_dir / "srv.json").write_text(json.dumps({"access_token": "NEW"}), encoding="utf-8")
+    assert await mgr.invalidate_if_disk_changed("srv") is True
+    assert provider._initialized is False
 
 
 @pytest.mark.asyncio

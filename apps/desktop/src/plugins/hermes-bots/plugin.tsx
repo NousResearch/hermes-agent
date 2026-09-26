@@ -66,6 +66,7 @@ import {
   updateGroupChat
 } from './group-chat'
 import { groupWorkspaceOwnerKey } from './group-membership'
+import { startGroupRelay, stopGroupRelay } from './group-relay'
 import { annotateOrphanedGroupChatMembers } from './hygiene'
 import { BOTS_LOCALES } from './i18n'
 import { displayName } from './labels'
@@ -120,6 +121,9 @@ export default {
     startBotRelay()
     // Opt-in per bot: raise a bot's Screen tab on its first live screen tool call.
     const stopScreenAutoRaise = startScreenAutoRaise()
+    // `hermes group send` into Desktop-coordinated rooms: drain the gateway's
+    // group_relay outbox and act on the user's behalf (group-relay.ts).
+    startGroupRelay()
 
     // Disabling the plugin (or a hot reload) must actually stop the clock —
     // before this, the rAF loop + 1Hz document scan ran until app restart.
@@ -128,6 +132,7 @@ export default {
       ctx.onDispose(stopFaceClock)
       ctx.onDispose(stopBotRelay)
       ctx.onDispose(stopScreenAutoRaise)
+      ctx.onDispose(stopGroupRelay)
     }
 
     // @-mention autocomplete: typing "@rese…" in ANY composer offers the

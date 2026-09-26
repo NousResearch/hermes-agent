@@ -342,6 +342,11 @@ export function groupChatSyncSnapshot(
           ? {
               truncated: true
             }
+          : {}),
+        ...(entry?.from?.via
+          ? {
+              via: String(entry.from.via).slice(0, 128)
+            }
           : {})
       }
     })

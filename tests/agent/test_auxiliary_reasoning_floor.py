@@ -74,3 +74,23 @@ def test_field_rejection_still_strips_instead_of_stepping_up():
     retry = client.chat.completions.create.call_args_list[1].kwargs
     assert "reasoning_effort" not in retry
     assert not auxiliary_reasoning_floor._FLOORED_ROUTES
+
+
+def test_vocabulary_rejection_floors_like_a_mandatory_route():
+    """A custom endpoint whose vocabulary is [low, high, max] rejects the disable with a bracketed
+    allowed-set instead of a mandatory marker ("reasoning_effort must be [low, high, max] for
+    glm-5.3", #118627) — plain prose, so the structured-param rule cannot see it either. ``low``
+    is in the set, so the floor rung answers it and remembers the route."""
+    client = MagicMock()
+    client.base_url = "http://127.0.0.1:8765/v1"
+    client.chat.completions.create.side_effect = [
+        RuntimeError("Error code: 400 - request param validation error, Value error, "
+                     "reasoning_effort must be [low, high, max] for glm-5.3"),
+        {"ok": True},
+    ]
+    assert _call(client) == {"ok": True}
+    first, retry = (c.kwargs for c in client.chat.completions.create.call_args_list[:2])
+    assert first["reasoning_effort"] == "none"
+    assert retry["reasoning_effort"] == auxiliary_reasoning_floor.REASONING_FLOOR_EFFORT
+    assert retry["extra_body"]["response_format"] == {"type": "json_object"}
+    assert auxiliary_reasoning_floor._FLOORED_ROUTES

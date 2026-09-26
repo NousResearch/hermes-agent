@@ -482,8 +482,6 @@ _V_ROLE_ALTERNATION = _v(_R.role_alternation, **_ABORT_FALLBACK)
 # other provider can fix that output, so falling back only replays the same broken turn 4-5 times
 # (20-60s per occurrence, #12770). Abort this call; the loop's argument repair handles the retry.
 _V_MALFORMED_TOOL_ARGS = _v(_R.format_error, retryable=False, should_fallback=False)
-# A reasoning-mandatory route answering ``reasoning: {enabled: false}`` (Nous Portal + OpenRouter wording).
-_REASONING_MANDATORY_PATTERN = "reasoning is mandatory"
 
 # Generic markers a provider 400 puts next to the offending parameter name. Bedrock Converse
 # rejects sampling params for reasoning-first models with the contraction ("This model doesn't
@@ -526,10 +524,19 @@ _REASONING_REQUIRED_MARKERS = (
     "always enabled", "cannot be turned off",
 )
 
+# Vocabulary rejection: the field is understood but the requested level isn't in the endpoint's
+# allowed set, published as a bracketed list right after the field ("reasoning_effort must be
+# [low, high, max] for glm-5.3", #118627). Same contract as a mandatory route — ``low`` is in
+# the set — so the floor rung answers it; the proximity window keeps unrelated bracketed
+# validations ("temperature must be [0, 2]") from matching.
+_REASONING_VOCABULARY_REJECTION = re.compile(r"must\s+be\s*\[")
+
 
 def is_reasoning_required_rejection(error_msg: str) -> bool:
     """Provider 400 saying the model's reasoning cannot be switched OFF ("Reasoning is mandatory for
-    this endpoint and cannot be disabled", the Nous Portal on gpt-6-astra). The opposite of
+    this endpoint and cannot be disabled", the Nous Portal on gpt-6-astra) or cannot be switched to
+    the requested level ("reasoning_effort must be [low, high, max] for glm-5.3", a custom relay
+    whose vocabulary excludes ``none``, #118627). The opposite of
     ``is_reasoning_field_rejection``: the field is understood, the *disable* is refused, so the right
     reaction is to step the effort up to the lowest level rather than drop the field (a dropped field
     also works, but tells the caller nothing about the next call)."""
@@ -538,7 +545,9 @@ def is_reasoning_required_rejection(error_msg: str) -> bool:
     if token is None:
         return False
     near = msg[max(0, token.start() - 48):token.end() + 96]
-    return any(m in near for m in _REASONING_REQUIRED_MARKERS)
+    return any(m in near for m in _REASONING_REQUIRED_MARKERS) or bool(
+        _REASONING_VOCABULARY_REJECTION.search(near)
+    )
 
 
 def is_reasoning_field_rejection(error_msg: str) -> bool:
@@ -1157,10 +1166,13 @@ def _classify_400(c: _Ctx) -> Verdict:
     ):
         return _V_INVALID_ENCRYPTED
     # Route rejecting a reasoning disable: a reasoning-mandatory route (GLM-5.3 on Nous Portal /
-    # OpenRouter) or a chat-only relay that does not accept ``reasoning_effort: none`` at all
-    # (#114460). Deterministic for the request shape, but the only bad field is the disable — the
-    # loop drops it and retries once. Must precede request-validation, which would abort as format_error.
-    if _REASONING_MANDATORY_PATTERN in msg or is_reasoning_field_rejection(msg):
+    # OpenRouter — the literal "reasoning is mandatory" wording survives as the predicate's
+    # "mandatory" marker next to the field token), a closed reasoning vocabulary
+    # ("reasoning_effort must be [low, high, max]", #118627), or a chat-only relay that does not
+    # accept ``reasoning_effort: none`` at all (#114460). Deterministic for the request shape,
+    # but the only bad field is the disable —
+    # the loop drops it and retries once. Must precede request-validation, which would abort as format_error.
+    if is_reasoning_required_rejection(msg) or is_reasoning_field_rejection(msg):
         return _V_REASONING_MANDATORY
     # 400 blaming a field this route never sent (Codex OAuth injects then rejects
     # prompt_cache_retention ~20% of the time): transient, retry identical request.

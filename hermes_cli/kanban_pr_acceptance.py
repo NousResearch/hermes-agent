@@ -80,9 +80,18 @@ def collect_acceptance(contract: str, published_pr: str | None) -> dict:
         for context, app_id in sorted(required, key=str):
             matching = [r for r in runs if r["name"] == context and
                         (app_id in (None, -1) or r["app"]["id"] == app_id)]
+            # filter=latest is per suite, not per required context. A rerun in
+            # a new suite supersedes older evidence from the same app. Use the
+            # creation id, not started_at: a newer queued run may not have a
+            # start time yet and must still block an older green result.
+            latest = {}
+            for run in matching:
+                source = run["app"]["id"]
+                if source not in latest or run["id"] > latest[source]["id"]:
+                    latest[source] = run
             # A legacy status can satisfy an unpinned context, but never a check pinned to an app.
             legacy = [s for s in statuses if s["context"] == context] if app_id in (None, -1) else []
-            selected = matching + ([max(legacy, key=lambda s: s["id"])] if legacy else [])
+            selected = list(latest.values()) + ([max(legacy, key=lambda s: s["id"])] if legacy else [])
             if not selected:
                 outcomes.append("missing")
                 receipt["checks"].append({"name": context, "classification": "missing", "head_sha": sha})

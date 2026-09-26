@@ -47,7 +47,56 @@ def _signature_from_schema(schema: dict | None) -> tuple[inspect.Signature, dict
         ann, default = (py, inspect.Parameter.empty) if pname in required else (Optional[py], None)
         annots[pname] = ann
         params.append(inspect.Parameter(pname, inspect.Parameter.KEYWORD_ONLY, annotation=ann, default=default))
-    return inspect.Signature(params, return_annotation=str), annots
+    return inspect.Signature(params, return_annotation=Any), annots
+
+
+def _project_tool_result(tool_name: str, result: Any) -> Any:
+    """Project a Hermes tool result onto something MCP can actually deliver.
+
+    Hermes tools return either a string or a ``_multimodal`` envelope used to attach a
+    screenshot to vision-capable models::
+
+        {"_multimodal": True, "text_summary": ..., "meta": {"screenshot_path": ...},
+         "content": [{"type": "text", ...}, {"type": "image_url", ...}]}
+
+    The MCP bridge only ever declared ``-> str`` and returned the result unchanged, so a
+    screenshot-producing call (``browser_exec`` with ``capture_screenshot()``, ``vision_analyze``,
+    ``computer_use``) died in pydantic validation — "Input should be a valid string" — instead of
+    returning the image, and every MCP client lost the vision half of the tool surface.
+
+    Text stays text; a multimodal envelope becomes a text block plus a real MCP image block read
+    from the screenshot path the envelope already carries. Anything else is JSON-serialized so an
+    unexpected shape degrades into text rather than a protocol error.
+    """
+    if isinstance(result, str):
+        return result
+    if isinstance(result, dict) and result.get("_multimodal"):
+        meta = result.get("meta") or {}
+        text = result.get("text_summary") or meta.get("text_summary") or ""
+        if not text:
+            text = json.dumps({k: v for k, v in result.items() if k != "content"},
+                              ensure_ascii=False, default=str)
+        path = meta.get("screenshot_path") or meta.get("image_path") or ""
+        if not path:
+            logger.warning("%s returned a multimodal result with no image path; sending text only",
+                           tool_name)
+            return text
+        text = f"{text}\n\n[screenshot: {path}]"
+        try:
+            from mcp.server.mcpserver.utilities.types import Image  # mcp >= 2.0
+        except ImportError:  # pragma: no cover - older SDK: keep the path, drop the inline image
+            try:
+                from mcp.server.fastmcp.utilities.types import Image  # mcp 1.x
+            except ImportError:
+                logger.warning("%s: SDK has no Image helper; the screenshot path is in the text",
+                               tool_name)
+                return text
+        try:
+            return [text, Image(path=path)]
+        except Exception:
+            logger.exception("%s: attaching screenshot %s failed", tool_name, path)
+            return text
+    return json.dumps(result, ensure_ascii=False, default=str)
 
 
 # Each name MUST match a registered Hermes tool ``model_tools.handle_function_call()`` can dispatch.
@@ -99,10 +148,11 @@ def _build_server() -> Any:
         # The SDK derives the input schema from the callable's signature, so synthesize it from the JSON Schema.
         sig, annots = _signature_from_schema(schema)
 
-        def _dispatch(**kwargs: Any) -> str:
+        def _dispatch(**kwargs: Any) -> Any:
             try:
                 # Drop None so unset optionals aren't forwarded to the handler.
-                return handle_function_call(tool_name, {k: v for k, v in kwargs.items() if v is not None})
+                result = handle_function_call(tool_name, {k: v for k, v in kwargs.items() if v is not None})
+                return _project_tool_result(tool_name, result)
             except Exception as exc:
                 logger.exception("tool %s raised", tool_name)
                 return json.dumps({"error": str(exc), "tool": tool_name})
@@ -110,7 +160,7 @@ def _build_server() -> Any:
         _dispatch.__name__ = tool_name
         _dispatch.__doc__ = description
         _dispatch.__signature__ = sig
-        _dispatch.__annotations__ = {**annots, "return": str}
+        _dispatch.__annotations__ = {**annots, "return": Any}
         return _dispatch
 
     exposed_count = 0

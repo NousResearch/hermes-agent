@@ -128,3 +128,18 @@ class TestMain:
         monkeypatch.setattr(m, "_build_server", lambda: CrashingServer())
         rc = m.main([])
         assert rc == 1
+
+
+def test_multimodal_result_becomes_text_plus_image(tmp_path):
+    """Screenshot-producing tools return a ``_multimodal`` envelope; MCP needs text plus an
+    image block instead of the dict, which failed string validation and dropped the call."""
+    from agent.transports.hermes_tools_mcp_server import _project_tool_result
+
+    shot = tmp_path / "shot.png"
+    shot.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+    result = _project_tool_result("browser_vision", {
+        "_multimodal": True, "text_summary": "page", "meta": {"screenshot_path": str(shot)}})
+    assert isinstance(result, list) and result[0].startswith("page")
+    assert type(result[1]).__name__ == "Image"
+    assert _project_tool_result("t", "plain") == "plain"
+    assert _project_tool_result("t", {"a": 1}) == '{"a": 1}'

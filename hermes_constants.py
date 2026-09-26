@@ -1103,10 +1103,63 @@ def resolve_per_model_provider_routing(model: str, models: dict | None) -> dict:
     return {}
 
 
-def resolve_reasoning_config(cfg: dict | None, model: str = "") -> dict | None:
-    """Effective reasoning config for *model*: per-model override, then global ``agent.reasoning_effort``.
+def _provider_entry_reasoning_raw(cfg: dict, provider: str | None):
+    """Raw ``reasoning_effort`` declared on a ``providers:`` entry, or the ``_UNSET`` sentinel.
 
-    Single chokepoint for every surface (CLI, gateway, TUI, cron, ``/model``, fallback activation).
+    Matches by mapping key or ``name`` (case-insensitive); ``custom:<key>`` prefixes are stripped
+    so runtime identities (``custom:myProv``) resolve to the same entry. Returns the sentinel when
+    absent so an explicit ``false`` (disabled) stays distinguishable from "not set".
+    """
+    if not provider or not isinstance(cfg, dict):
+        return _UNSET
+    providers = cfg.get("providers")
+    if not isinstance(providers, dict):
+        return _UNSET
+    want = str(provider).strip()
+    if not want:
+        return _UNSET
+    if want.lower().startswith("custom:"):
+        want = want.split(":", 1)[1].strip()
+    want_norm = want.lower()
+    for key, entry in providers.items():
+        if not isinstance(entry, dict):
+            continue
+        if str(key).strip().lower() == want_norm or str(entry.get("name") or "").strip().lower() == want_norm:
+            return entry.get("reasoning_effort", _UNSET)
+    return _UNSET
+
+
+def resolve_provider_reasoning_effort(cfg: dict | None, provider: str | None) -> dict | None:
+    """Parsed ``reasoning_effort`` from a ``providers:`` entry; None when unset/unrecognized."""
+    if not isinstance(cfg, dict):
+        return None
+    raw = _provider_entry_reasoning_raw(cfg, provider)
+    if raw is _UNSET:
+        return None
+    return parse_reasoning_effort(raw)
+
+
+def resolve_specific_reasoning_config(cfg: dict | None, model: str = "",
+                                      provider: str | None = None) -> dict | None:
+    """Per-model override, then ``providers:`` entry effort. None when neither pins a value.
+
+    Lets pinned routes (delegation children, provider switches) prefer an explicitly configured
+    level without falling back to the global default — the caller keeps its inherited config.
+    """
+    cfg = cfg if isinstance(cfg, dict) else {}
+    agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
+    per_model = resolve_per_model_reasoning_effort(model, agent_cfg.get("reasoning_overrides") or {})
+    if per_model is not None:
+        return per_model
+    return resolve_provider_reasoning_effort(cfg, provider)
+
+
+def resolve_reasoning_config(cfg: dict | None, model: str = "", provider: str | None = None) -> dict | None:
+    """Effective reasoning config: per-model override, then ``providers:`` entry, then global ``agent.reasoning_effort``.
+
+    Single chokepoint for every surface (CLI, gateway, TUI, cron, ``/model``, fallback activation,
+    delegation children). ``provider`` is the requested/named provider (``custom:<key>`` accepted);
+    when omitted and *model* is empty, the configured default model/provider is used.
     """
     cfg = cfg if isinstance(cfg, dict) else {}
     agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
@@ -1114,11 +1167,16 @@ def resolve_reasoning_config(cfg: dict | None, model: str = "") -> dict | None:
     if not model:
         model_cfg = cfg.get("model")
         if isinstance(model_cfg, dict):
+            if provider is None:
+                provider = model_cfg.get("provider") or None
             model_cfg = model_cfg.get("default") or model_cfg.get("model") or ""
         model = model_cfg.strip() if isinstance(model_cfg, str) else ""
     per_model = resolve_per_model_reasoning_effort(model, agent_cfg.get("reasoning_overrides") or {})
     if per_model is not None:
         return per_model
+    provider_effort = resolve_provider_reasoning_effort(cfg, provider)
+    if provider_effort is not None:
+        return provider_effort
 
     # Keep the raw value: ``or ""`` would turn a YAML False into "" and silently re-enable thinking.
     effort = agent_cfg.get("reasoning_effort", "")

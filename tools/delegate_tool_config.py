@@ -559,8 +559,11 @@ def _resolve_child_runtime(
             getattr(parent_agent, "requested_provider", None) or effective_provider
         )
 
-    # Reasoning: delegation.reasoning_effort > parent. Keep the raw value — a
-    # YAML ``false`` must disable thinking, not coerce to "" and inherit.
+    # Reasoning: delegation.reasoning_effort > pinned route profile (per-model override,
+    # then ``providers:`` entry) > parent inherit. Keep the raw value — a YAML ``false`` must
+    # disable thinking, not coerce to "" and inherit. A pinned child model/provider re-resolves
+    # through the shared chokepoint so a bare named provider's effort is honored; an unpinned
+    # child keeps the parent's live config (global + session overrides).
     child_reasoning = getattr(parent_agent, "reasoning_config", None)
     try:
         delegation_effort = delegation_cfg.get("reasoning_effort")
@@ -571,6 +574,17 @@ def _resolve_child_runtime(
                 logger.warning("Unknown delegation.reasoning_effort '%s', inheriting parent level", delegation_effort)
             else:
                 child_reasoning = parsed
+        elif model or override_provider:
+            from hermes_constants import resolve_specific_reasoning_config
+            try:
+                from hermes_cli.config import load_config_readonly
+                _full_cfg = load_config_readonly()
+            except Exception:
+                _full_cfg = {}
+            specific = resolve_specific_reasoning_config(
+                _full_cfg, effective_model or "", effective_provider)
+            if specific is not None:
+                child_reasoning = specific
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 

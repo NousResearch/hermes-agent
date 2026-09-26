@@ -112,6 +112,8 @@ def _lift_common_custom_fields(entry: Dict[str, Any], result: Dict[str, Any], *,
     _lift_extra_headers(entry, result)
     if api_mode:
         result["api_mode"] = api_mode
+    if "reasoning_effort" in entry:
+        result["reasoning_effort"] = entry["reasoning_effort"]
 
     _lift_model_capabilities(entry, None, result)
 
@@ -419,6 +421,8 @@ def _apply_custom_provider_extras(custom_provider: Dict[str, Any], target_model:
 
     if custom_provider.get("extra_headers"):
         result["extra_headers"] = dict(custom_provider["extra_headers"])
+    if "reasoning_effort" in custom_provider:
+        result["reasoning_effort"] = custom_provider["reasoning_effort"]
     request_overrides = _custom_provider_request_overrides(custom_provider)
     if request_overrides:
         result["request_overrides"] = {**(result.get("request_overrides") or {}), **request_overrides}

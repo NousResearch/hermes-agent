@@ -10,6 +10,8 @@ mapping, the auth/skip logic, and the fail-soft boot behaviour.
 
 from __future__ import annotations
 
+import http.client
+
 import pytest
 
 import gateway.relay as relay
@@ -135,4 +137,27 @@ def test_send_fail_soft_on_transport_error(monkeypatch):
     # Never raises; returns False so boot proceeds.
     assert relay.send_relay_policy() is False
 
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        pytest.param(ConnectionResetError("reset"), id="read-reset"),
+        pytest.param(ValueError("unknown url type"), id="bad-url"),
+        pytest.param(http.client.RemoteDisconnected("closed"), id="http-framing"),
+    ],
+)
+def test_post_policy_transport_failures_are_runtime_errors(monkeypatch, failure):
+    """The low-level policy POST should preserve its documented error contract."""
+    monkeypatch.setattr(
+        relay,
+        "_json_post",
+        lambda *args, **kwargs: (_ for _ in ()).throw(failure),
+    )
+
+    with pytest.raises(RuntimeError, match="connector transport failure"):
+        relay._post_policy(
+            policy_url="https://connector.example/relay/policy",
+            token="tok",
+            policy={"platform": "telegram"},
+        )
 

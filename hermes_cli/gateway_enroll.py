@@ -7,6 +7,7 @@ EXPERIMENTAL: the relay auth scheme may change without a deprecation cycle.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import socket
@@ -15,6 +16,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Optional
+
+from gateway.relay import _read_json_response
 
 
 def _default_gateway_id() -> str:
@@ -72,7 +75,7 @@ def _post_enroll(
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            payload = json.loads(resp.read().decode())
+            payload = _read_json_response(resp, context="connector")
     except urllib.error.HTTPError as exc:
         detail = ""
         try:
@@ -93,6 +96,8 @@ def _post_enroll(
         raise RuntimeError(
             f"Could not reach the connector at {connector_base_url}: {exc.reason}"
         ) from exc
+    except (OSError, ValueError, http.client.HTTPException) as exc:
+        raise RuntimeError(f"Connector transport failure: {exc}") from exc
 
     if not isinstance(payload, dict) or not payload.get("secret"):
         raise RuntimeError("Connector returned an unexpected response (no secret).")

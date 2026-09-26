@@ -40,3 +40,28 @@ def test_cron_accept_hooks_flag_on_run_and_tick():
     assert ns.accept_hooks is True
     ns2 = parser.parse_args(["cron", "tick", "--accept-hooks"])
     assert ns2.accept_hooks is True
+
+
+def test_script_path_flags_name_the_per_profile_scripts_dir():
+    """Regression for #99583 (help-text half): ``--script`` help said ``~/.hermes/scripts/`` while the scheduler and webhook
+    filter resolve under the job's own ``$HERMES_HOME/scripts/`` — a ``-p <name>`` job whose script
+    was placed per the help failed at run time. Every script-path flag must state the profile rule."""
+    from hermes_cli.subcommands._shared import SCRIPTS_DIR_HELP
+    from hermes_cli.subcommands.webhook import build_webhook_parser
+
+    parser = _build()
+    build_webhook_parser(parser._subparsers._group_actions[0], cmd_webhook=_sentinel_handler)
+    sub = parser._subparsers._group_actions[0].choices
+    flags = [
+        (sub["cron"], ("create",), "--script"),
+        (sub["cron"], ("create",), "--monitor-script"),
+        (sub["cron"], ("edit",), "--script"),
+        (sub["webhook"], ("subscribe",), "--script"),
+    ]
+    for root, path, flag in flags:
+        node = root
+        for name in path:
+            node = next(a for a in node._actions if isinstance(a, argparse._SubParsersAction)).choices[name]
+        action = next(a for a in node._actions if flag in a.option_strings)
+        assert SCRIPTS_DIR_HELP in action.help, (path, flag, action.help)
+        assert "$HERMES_HOME/scripts/" in SCRIPTS_DIR_HELP

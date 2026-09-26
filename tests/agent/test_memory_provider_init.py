@@ -3,6 +3,8 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from gateway.session_context import clear_session_vars, set_session_vars
+
 
 class RecordingMemoryProvider:
     name = "recording"
@@ -23,6 +25,11 @@ class RecordingMemoryProvider:
 
     def shutdown(self):
         pass
+
+
+def _recorded_init_kwargs(provider: RecordingMemoryProvider):
+    assert provider.init_kwargs is not None
+    return provider.init_kwargs
 
 
 def test_shutdown_memory_provider_is_idempotent():
@@ -121,11 +128,206 @@ def test_aiagent_forwards_user_id_alt_to_memory_provider():
 
     assert agent._memory_manager is not None
     assert provider.init_session_id == "sess-alt"
-    assert provider.init_kwargs["user_id"] == "open-id"
-    assert provider.init_kwargs["user_id_alt"] == "union-id"
-    assert provider.init_kwargs["platform"] == "feishu"
-    assert "warning_callback" not in provider.init_kwargs
-    assert "status_callback" not in provider.init_kwargs
+    init_kwargs = _recorded_init_kwargs(provider)
+    assert init_kwargs["user_id"] == "open-id"
+    assert init_kwargs["user_id_alt"] == "union-id"
+    assert init_kwargs["platform"] == "feishu"
+    assert "warning_callback" not in init_kwargs
+    assert "status_callback" not in init_kwargs
+
+
+def test_cli_session_source_overrides_memory_provider_platform(monkeypatch):
+    provider = RecordingMemoryProvider()
+    cfg = {"memory": {"provider": "recording"}, "agent": {}}
+    monkeypatch.setenv("HERMES_SESSION_SOURCE", "telegram")
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
+        patch("plugins.memory.load_memory_provider", return_value=provider),
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=False,
+            session_id="sess-source",
+            platform="cli",
+        )
+
+    assert agent._memory_manager is not None
+    assert provider.init_session_id == "sess-source"
+    init_kwargs = _recorded_init_kwargs(provider)
+    assert init_kwargs["platform"] == "telegram"
+    assert "warning_callback" in init_kwargs
+    assert "status_callback" in init_kwargs
+
+
+def test_context_session_source_overrides_non_cli_memory_provider_platform(monkeypatch):
+    provider = RecordingMemoryProvider()
+    cfg = {"memory": {"provider": "recording"}, "agent": {}}
+    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
+    tokens = set_session_vars(source="tool")
+    try:
+        with (
+            patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
+            patch("plugins.memory.load_memory_provider", return_value=provider),
+            patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+            patch("model_tools.get_tool_definitions", return_value=[]),
+            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("agent.process_bootstrap.OpenAI"),
+        ):
+            from run_agent import AIAgent
+
+            AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=False,
+                session_id="sess-context-source",
+                platform="tui",
+            )
+    finally:
+        clear_session_vars(tokens)
+
+    init_kwargs = _recorded_init_kwargs(provider)
+    assert init_kwargs["platform"] == "tool"
+    assert "warning_callback" not in init_kwargs
+    assert "status_callback" not in init_kwargs
+
+
+def test_context_session_source_overrides_cli_memory_provider_platform(monkeypatch):
+    provider = RecordingMemoryProvider()
+    cfg = {"memory": {"provider": "recording"}, "agent": {}}
+    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
+    tokens = set_session_vars(source="telegram")
+    try:
+        with (
+            patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
+            patch("plugins.memory.load_memory_provider", return_value=provider),
+            patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+            patch("model_tools.get_tool_definitions", return_value=[]),
+            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("agent.process_bootstrap.OpenAI"),
+        ):
+            from run_agent import AIAgent
+
+            AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=False,
+                session_id="sess-cli-context-source",
+                platform="cli",
+            )
+    finally:
+        clear_session_vars(tokens)
+
+    init_kwargs = _recorded_init_kwargs(provider)
+    assert init_kwargs["platform"] == "telegram"
+    assert "warning_callback" in init_kwargs
+    assert "status_callback" in init_kwargs
+
+
+def test_blank_session_source_falls_back_to_cli_and_keeps_callbacks(monkeypatch):
+    provider = RecordingMemoryProvider()
+    cfg = {"memory": {"provider": "recording"}, "agent": {}}
+    monkeypatch.setenv("HERMES_SESSION_SOURCE", "   ")
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
+        patch("plugins.memory.load_memory_provider", return_value=provider),
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=False,
+            session_id="sess-blank-source",
+            platform="cli",
+        )
+
+    init_kwargs = _recorded_init_kwargs(provider)
+    assert init_kwargs["platform"] == "cli"
+    assert "warning_callback" in init_kwargs
+    assert "status_callback" in init_kwargs
+
+
+def test_cron_memory_provider_platform_remains_cron(monkeypatch):
+    provider = RecordingMemoryProvider()
+    cfg = {"memory": {"provider": "recording"}, "agent": {}}
+    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
+        patch("plugins.memory.load_memory_provider", return_value=provider),
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=False,
+            session_id="sess-cron",
+            platform="cron",
+        )
+
+    init_kwargs = _recorded_init_kwargs(provider)
+    assert init_kwargs["platform"] == "cron"
+    assert "warning_callback" not in init_kwargs
+    assert "status_callback" not in init_kwargs
+
+
+def test_cli_memory_provider_platform_keeps_callbacks_without_session_source(monkeypatch):
+    provider = RecordingMemoryProvider()
+    cfg = {"memory": {"provider": "recording"}, "agent": {}}
+    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
+        patch("plugins.memory.load_memory_provider", return_value=provider),
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=False,
+            session_id="sess-cli",
+            platform="cli",
+        )
+
+    init_kwargs = _recorded_init_kwargs(provider)
+    assert init_kwargs["platform"] == "cli"
+    assert "warning_callback" in init_kwargs
+    assert "status_callback" in init_kwargs
 
 
 class CoreShadowProvider:

@@ -19,6 +19,7 @@ importing ``utils``.
 from __future__ import annotations
 
 import sys
+from types import ModuleType
 from typing import Mapping, Sequence
 
 # Root modules the narrow purge left behind, keyed by attributes that must
@@ -43,3 +44,46 @@ def drop_stale_root_modules(
             sys.modules.pop(name, None)
             dropped.append(name)
     return dropped
+
+
+# Packages the pre-handoff purge could not evict: it pops their ``sys.modules`` entries but the
+# package objects themselves (and so the submodule attributes the import system set on them) live on.
+_BRIDGED_PACKAGES = ("hermes_cli",)
+
+
+def drop_stale_package_bindings() -> list[str]:
+    """Drop submodule attributes that alias a module no longer in ``sys.modules``.
+
+    ``from hermes_cli import main_dashboard`` resolves through ``getattr(package, name)`` and only
+    imports when that attribute is *absent* (``importlib._bootstrap._handle_fromlist``), so a
+    binding that outlived the purge hands fresh code the PRE-pull module object instead of
+    re-importing it. That is how the pulled ``dashboard_procs._kill_stale_dashboard_processes``
+    called ``_loaded_launchd_backend_jobs`` on the old ``main_dashboard`` and killed the update
+    after ``✓ Update complete!`` (#115091). Deleting the stale attribute is enough: the next
+    ``from ... import`` re-imports the name from the pulled tree. Returns dropped names.
+    """
+    dropped: list[str] = []
+    for package in _BRIDGED_PACKAGES:
+        pkg = sys.modules.get(package)
+        if pkg is None:
+            continue
+        for name, value in list(vars(pkg).items()):
+            full = f"{package}.{name}"
+            # In sync (the attribute IS the live module) — leave it alone; a live entry with a
+            # different object is the fresh one, so only the attribute is stale.
+            if sys.modules.get(full) is value:
+                continue
+            if isinstance(value, ModuleType):
+                delattr(pkg, name)
+                dropped.append(full)
+    return dropped
+
+
+def drop_stale_modules() -> list[str]:
+    """Import-time bridge entry point for the one upgrade off a pre-handoff updater release.
+
+    Runs before any post-pull import chain can bind a symbol from the OLD tree. Both halves belong
+    to every caller: root modules (``utils.file_signature``) and stale package bindings
+    (``hermes_cli.main_dashboard``) are the same failure, one module apart. Returns dropped names.
+    """
+    return drop_stale_root_modules() + drop_stale_package_bindings()

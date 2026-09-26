@@ -340,9 +340,9 @@ Safety rules:
   times still never yields an `rm` entry.
 - Proposals already covered by your existing `command_allowlist` are skipped.
 - **Credentials inside mined commands are masked** (`ghp_…`, `bot<id>:<token>`
-  URLs, `KEY=value` assignments, bearer tokens) in both the printed `e.g.`
-  examples and the `--json` payload, using the same redactor as terminal
-  output. Masked text is never used as an allowlist pattern: a command whose
+  URLs, HTTP Basic Auth `user:pass@` URL userinfo, `KEY=value` assignments,
+  bearer tokens) in both the printed `e.g.` examples and the `--json`
+  payload, using the same redactor as terminal output. Masked text is never used as an allowlist pattern: a command whose
   glob would embed a credential (`TOKEN=… git …`) is proposed under its
   dangerous-class key instead. The session database itself still holds the
   command as it was executed.

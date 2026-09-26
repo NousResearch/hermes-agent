@@ -1,9 +1,14 @@
 """Multiplex A2A writes stay with the execution profile across HTTP thread hops."""
 import asyncio
 import json
+import os
+import sqlite3
+import sys
 import threading
 from types import SimpleNamespace
 
+from tests.e2e.core.security._helpers import hermetic_env, run_python, write_home
+from tests.fakes.fake_llm_provider import FakeLLMServer, Text
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from plugins.platforms.a2a.adapter import A2AAdapter
 from plugins.platforms.a2a import protocol
@@ -47,7 +52,7 @@ def test_multiplex_adapters_persist_under_own_homes(tmp_path, monkeypatch):
     assert not (launch / "a2a_audit.jsonl").exists()
 
 
-def test_local_completion_and_forwarded_roundtrip_isolated_after_restart(tmp_path, monkeypatch):
+def test_local_completion_and_forwarded_roundtrip_isolated_in_threads(tmp_path, monkeypatch):
     launch, a, b = (tmp_path / name for name in ("launch", "a", "b"))
     for home in (launch, a, b):
         home.mkdir()
@@ -109,7 +114,8 @@ def test_local_completion_and_forwarded_roundtrip_isolated_after_restart(tmp_pat
         loop_thread.join(timeout=10)
         loop.close()
 
-    # Fresh scope in a fresh OS thread models a new profile session after restart.
+    # A new OS thread checks scope isolation; the real subprocess/readback test below
+    # checks process boundaries and persisted sessions after process exit.
     def readback(home, own, foreign):
         try:
             token = set_hermes_home_override(home)
@@ -164,3 +170,68 @@ def test_forwarded_missing_profile_fails_without_creating_history(tmp_path, monk
     assert results[0]["result"]["status"]["state"] == protocol.STATE_FAILED
     assert not (launch / "a2a_conversations").exists()
     assert not (launch / "a2a_audit.jsonl").exists()
+
+
+def test_real_forwarded_profiles_survive_fresh_process_readback(tmp_path, monkeypatch):
+    """HTTP worker threads route real CLI turns; a new interpreter reads each home."""
+    root = tmp_path / "operator"
+    launch = root / ".hermes"
+    a, b = (launch / "profiles" / name for name in ("a", "b"))
+    root.mkdir()
+    launcher = tmp_path / "bin"
+    launcher.mkdir()
+    hermes = launcher / "hermes"
+    hermes.write_text(f"#! /bin/sh\nexec '{sys.executable}' -m hermes_cli.main \"$@\"\n")
+    hermes.chmod(0o700)
+    with FakeLLMServer([Text("ACK b"), Text("ACK a")], api_key="fixture-key") as model:
+        for home in (a, b):
+            write_home(home, model.base_url, api_key="fixture-key")
+        # The launcher has no model config or A2A state. All inference must occur in a or b.
+        env = hermetic_env(root, {"PATH": str(launcher) + os.pathsep + os.environ["PATH"]})
+        monkeypatch.setattr(os, "environ", env)
+        adapters = []
+        for home, source, target in ((a, "a", "b"), (b, "b", "a")):
+            monkeypatch.setenv("HERMES_PROFILE", source)
+            token = set_hermes_home_override(home)
+            try:
+                adapters.append(A2AAdapter(SimpleNamespace(extra={"agents": {target: {"profile": target}}})))
+            finally:
+                reset_hermes_home_override(token)
+        monkeypatch.delenv("HERMES_PROFILE")
+
+        failures = []
+        for adapter, target, context in zip(adapters, ("b", "a"), ("to-b", "to-a")):
+            def send():
+                try:
+                    params = {"message": protocol.text_message(protocol.ROLE_USER, context, context_id=context)}
+                    response = adapter._rpc_message_send(1, params, "trusted-peer", agent=adapter._agents[target])
+                    assert response["result"]["status"]["state"] == protocol.STATE_COMPLETED, response
+                except BaseException as exc:
+                    failures.append(exc)
+            thread = threading.Thread(target=send)
+            thread.start()
+            thread.join(timeout=60)
+            assert not thread.is_alive()
+        assert not failures, failures
+        assert len(model.main_requests()) == 2  # both turns reached the real target CLI
+
+        # Fresh interpreters after the worker subprocesses exit read persisted transcripts,
+        # not adapter caches or a cloned ContextVar.
+        for home, context, foreign, reply in ((a, "to-a", "to-b", "ACK a"),
+                                               (b, "to-b", "to-a", "ACK b")):
+            code = ("import json; from plugins.platforms.a2a.tools import a2a_history; "
+                    f"print(json.dumps([a2a_history({{'context_id': {context!r}}}), "
+                    f"a2a_history({{'context_id': {foreign!r}}})]))")
+            readback = run_python(code, root, extra_env={"HERMES_HOME": str(home)})
+            assert readback.returncode == 0, readback.stderr
+            own, other = json.loads(readback.stdout.strip().splitlines()[-1])
+            assert f"[user] {context}" in own and f"[agent] {reply}" in own
+            assert "No persisted conversation" in other
+            audit = [json.loads(line) for line in (home / "a2a_audit.jsonl").read_text().splitlines()]
+            assert [row["direction"] for row in audit] == ["inbound", "outbound"]
+            with sqlite3.connect(home / "state.db") as db:
+                sessions = db.execute("SELECT id, source FROM sessions WHERE source = 'a2a'").fetchall()
+            assert len(sessions) == 1 and sessions[0][0]
+        assert not (launch / "a2a_conversations").exists()
+        assert not (launch / "a2a_audit.jsonl").exists()
+        assert not (launch / "state.db").exists()

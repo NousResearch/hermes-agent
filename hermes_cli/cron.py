@@ -165,8 +165,8 @@ def _unverified_targets(unverified) -> str:
 _STATE_BADGES = {"paused": ("[paused]", Colors.YELLOW), "completed": ("[completed]", Colors.BLUE)}
 
 
-def cron_list(show_all: bool = False):
-    """List all scheduled jobs."""
+def cron_list(show_all: bool = False, as_json: bool = False):
+    """List all scheduled jobs; ``as_json`` prints the job records as a JSON array instead of the table."""
     from cron.jobs import effective_job_state, list_jobs
     jobs = list_jobs(include_disabled=True)
     if not show_all:
@@ -174,6 +174,11 @@ def cron_list(show_all: bool = False):
             job for job in jobs
             if job.get("enabled", True) or effective_job_state(job) == "paused"
         ]
+
+    if as_json:
+        import json
+        print(json.dumps(jobs, indent=2, ensure_ascii=False, default=str))
+        return
 
     if not jobs:
         print(color("No scheduled jobs.\nCreate one with 'hermes cron create ...' "
@@ -880,7 +885,7 @@ def cron_notepad(args) -> int:
 
 # Late-bound lambdas keep module-level monkeypatching working; list/status/runs return None -> 0.
 _CRON_SUBCOMMANDS = {
-    "list": lambda a: cron_list(getattr(a, "all", False)) or 0,
+    "list": lambda a: cron_list(getattr(a, "all", False), as_json=getattr(a, "json", False)) or 0,
     "status": lambda a: cron_status() or 0,
     "doctor": lambda a: cron_doctor(),
     "tick": lambda a: cron_tick(),

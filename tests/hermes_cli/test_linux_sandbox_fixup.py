@@ -11,9 +11,13 @@ probes for that capability first and skips the sudo path entirely.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import stat
 import subprocess
-from unittest.mock import patch
+import sys
+import threading
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -151,3 +155,108 @@ class TestDesktopLinuxNeedsDisableSetuidSandbox:
         exe = unpacked / "Hermes"
         exe.write_text("", encoding="utf-8")
         assert main_desktop._desktop_linux_needs_disable_setuid_sandbox(exe) is False
+
+
+class TestDesktopLinuxSandboxFixupNoTty:
+    """No-TTY sudo must fail fast, never hang the launch (#123927).
+
+    When the .desktop entry (``Terminal=false``), autostart, or a detached
+    updater relaunch reaches the sudo path — a user-owned ``chrome-sandbox``
+    plus no usable user namespace (hardened kernels such as CachyOS's
+    ``linux-cachyos-hardened``, ``user.max_user_namespaces=0``, containers)
+    — sudo's password prompt can never be answered. The call used to inherit
+    stdio with no ``-n`` and no timeout, so the icon click hung indefinitely.
+    """
+
+    def _fake_packaged_app(self, tmp_path):
+        unpacked = tmp_path / "linux-unpacked"
+        unpacked.mkdir(exist_ok=True)
+        exe = unpacked / "Hermes"
+        exe.write_text("", encoding="utf-8")
+        sandbox = unpacked / "chrome-sandbox"
+        sandbox.write_text("", encoding="utf-8")
+        with contextlib.suppress(OSError):
+            sandbox.chmod(0o755)
+        return exe
+
+    def test_sudo_is_non_interactive_without_a_tty(self, monkeypatch, tmp_path):
+        """Without a TTY sudo gets ``-n`` + DEVNULL stdin + a timeout."""
+        exe = self._fake_packaged_app(tmp_path)
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return Mock(returncode=0)
+
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(sys, "stdin", io.StringIO())  # isatty() is False
+        monkeypatch.setattr(
+            main_desktop, "_desktop_linux_userns_sandbox_available", lambda: False)
+        monkeypatch.setattr(main_desktop.shutil, "which", lambda _name: "/usr/bin/sudo")
+        monkeypatch.setattr(main_desktop.subprocess, "run", fake_run)
+        assert main_desktop._desktop_linux_sandbox_fixup(exe) is True
+        assert len(calls) == 2
+        for cmd, kwargs in calls:
+            assert cmd[0] == "/usr/bin/sudo"
+            assert "-n" in cmd
+            assert kwargs.get("stdin") == subprocess.DEVNULL
+            assert kwargs.get("timeout") is not None
+
+    def test_sudo_stays_interactive_with_a_tty(self, monkeypatch, tmp_path):
+        """A terminal launch keeps the password prompt (no -n)."""
+        exe = self._fake_packaged_app(tmp_path)
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return Mock(returncode=0)
+
+        tty = Mock()
+        tty.isatty.return_value = True
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(sys, "stdin", tty)
+        monkeypatch.setattr(
+            main_desktop, "_desktop_linux_userns_sandbox_available", lambda: False)
+        monkeypatch.setattr(main_desktop.shutil, "which", lambda _name: "/usr/bin/sudo")
+        monkeypatch.setattr(main_desktop.subprocess, "run", fake_run)
+        assert main_desktop._desktop_linux_sandbox_fixup(exe) is True
+        assert len(calls) == 2
+        for cmd, _kwargs in calls:
+            assert "-n" not in cmd
+
+    def test_blocking_sudo_returns_fast(self, tmp_path):
+        """A sudo stuck at its password prompt must not hang the fixup.
+
+        The fake honours ``-n`` (exit 1, like a real sudo with no cached
+        credentials) and blocks otherwise (the pre-fix hang: a prompt with
+        no TTY to answer it). Needs a POSIX shell, so Linux-only like the
+        rest of this file.
+        """
+        exe = self._fake_packaged_app(tmp_path)
+        fake_bin = tmp_path / "bin"
+        fake_bin.mkdir()
+        fake = fake_bin / "sudo"
+        fake.write_text(
+            "#!/bin/sh\n"
+            'for a in "$@"; do if [ "$a" = "-n" ]; then exit 1; fi; done\n'
+            "sleep 30\n",
+            encoding="utf-8",
+        )
+        fake.chmod(0o755)
+        outcome: dict = {}
+
+        def target():
+            outcome["result"] = main_desktop._desktop_linux_sandbox_fixup(exe)
+
+        with patch.object(sys, "platform", "linux"), \
+             patch.object(
+                 main_desktop, "_desktop_linux_userns_sandbox_available",
+                 return_value=False), \
+             patch.object(main_desktop.shutil, "which", return_value=str(fake)), \
+             patch.object(sys, "stdin", io.StringIO()):
+            worker = threading.Thread(target=target, daemon=True)
+            worker.start()
+            worker.join(timeout=10)
+            assert not worker.is_alive(), \
+                "fixup hung in sudo with no TTY (icon click goes nowhere)"
+            assert outcome.get("result") is False

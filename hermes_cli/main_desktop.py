@@ -1087,8 +1087,25 @@ def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
         return False
 
     print("→ Configuring Electron Linux sandbox helper (sudo required)...")
+    # A .desktop/autostart/detached launch has no TTY, so a sudo password prompt could never be
+    # answered — without -n the launch hangs indefinitely instead of failing (#123927). Terminal
+    # launches keep the interactive prompt.
+    # ponytail: fail-fast only, no GUI askpass fallback; add one if TTY-less hosts need password sudo.
+    non_interactive = not sys.stdin.isatty()
     for command in ([sudo, "chown", "root:root", str(sandbox)], [sudo, "chmod", "4755", str(sandbox)]):
-        if subprocess.run(command, check=False).returncode != 0:
+        if non_interactive:
+            command.insert(1, "-n")
+        try:
+            completed = subprocess.run(
+                command,
+                stdin=subprocess.DEVNULL if non_interactive else None,
+                timeout=60 if non_interactive else None,
+                check=False,
+            )
+            ok = completed.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            ok = False
+        if not ok:
             print(f"✗ Failed to configure Electron's Linux sandbox helper: {sandbox}")
             return False
     return True

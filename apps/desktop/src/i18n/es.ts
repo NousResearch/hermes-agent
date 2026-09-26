@@ -492,6 +492,10 @@ export const esOverrides = {
     backendOutOfDateTitle: 'Backend desactualizado',
     backendOutOfDateMessage:
       'Tu backend de Hermes es más antiguo que esta compilación de escritorio y puede no funcionar correctamente. Actualízalo para alinearlos.',
+    desktopOutOfDateTitle: 'Aplicación de Hermes desactualizada',
+    desktopOutOfDateMessage:
+      'Esta aplicación de Hermes es más antigua que el backend al que está conectada y puede no funcionar correctamente. Actualiza la aplicación para alinearlos.',
+    updateDesktopApp: 'Actualizar aplicación',
     installMethodUnsupportedTitle: 'Método de instalación no compatible',
     updateHermes: 'Actualizar Hermes',
     updateReadyTitle: 'Actualización lista',
@@ -4586,9 +4590,12 @@ export const esOverrides = {
     maybeLater: 'Quizá más tarde',
     moreChanges: count => `+ ${count} ${count === 1 ? 'cambio incluido' : 'cambios incluidos'}.`,
     manualTitle: 'Actualizar desde la terminal',
+    manualUnavailableTitle: 'No se puede actualizar desde aquí',
     manualBody:
       'Instalaste Hermes desde la línea de comandos, así que las actualizaciones también se ejecutan ahí. Pega esto en tu terminal:',
     manualPickedUp: 'Hermes usará la nueva versión la próxima vez que lo abras.',
+    manualBodyBackend: 'El backend de Hermes se gestiona fuera de esta app. Ejecuta esto en el servidor que lo aloja:',
+    manualPickedUpBackend: 'El backend cargará la nueva versión cuando termine la actualización.',
     guiSkewTitle: 'Actualiza la aplicación de escritorio',
     guiSkewBody:
       'El backend se actualizó, pero el paquete de esta aplicación de escritorio no cambió. Actualiza o reinstala la aplicación de escritorio de Hermes (tu AppImage / .deb / .rpm) para que coincidan.',
@@ -4783,6 +4790,7 @@ export const esOverrides = {
     replaceCurrent: 'Reemplazar valor actual',
     pasteApiKey: 'Pegar clave API',
     localApiKeyPlaceholder: 'Clave API (opcional; solo si tu endpoint la requiere)',
+    localModelNamePlaceholder: 'Nombre del modelo (p. ej. command-a-plus-05-2026)',
     couldNotSave: 'No se pudo guardar la credencial.',
     connecting: 'Conectando',
     update: 'Actualizar',

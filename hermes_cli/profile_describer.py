@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_cli import profiles as profiles_mod
-from agent.skill_utils import is_excluded_skill_path
+from agent.skill_utils import iter_skill_index_files
 
 logger = logging.getLogger(__name__)
 
@@ -82,9 +82,7 @@ def _collect_skills(profile_dir: Path) -> list[str]:
     if not skills_dir.is_dir():
         return []
     names: list[str] = []
-    for md in skills_dir.rglob("SKILL.md"):
-        if is_excluded_skill_path(md):
-            continue
+    for md in iter_skill_index_files(skills_dir, "SKILL.md"):
         try:
             parts = md.relative_to(skills_dir).parts[:-1]  # drop SKILL.md
         except ValueError:

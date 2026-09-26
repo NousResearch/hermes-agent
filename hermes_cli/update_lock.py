@@ -287,12 +287,33 @@ class UpdateLock:
                 return True
             self.holder = existing
             return False
+        if existing is not None:
+            with suppress(OSError):
+                self.path.unlink()
         try:
+            # Separate from the marker create: mkdir raises FileExistsError when the
+            # parent exists as a file, and that must degrade like any unwritable
+            # location, not be mistaken for a lost create race below.
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(f"{os.getpid()}\n{int(time.time())}\n", encoding="utf-8")
         except OSError as exc:
             # Best-effort, like the Rust guard: an unwritable marker must not block the
             # update itself (worse than the race it prevents). Degrade to pre-lock behavior.
+            logger.debug("Could not create marker dir %s: %s", self.path.parent, exc)
+            return True
+        try:
+            # O_EXCL (the pattern _early_recovery and the cron scheduler already use)
+            # closes the read-to-write race: a second updater that read "no live lock"
+            # in the same window loses the create instead of overwriting the winner.
+            fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            with os.fdopen(fd, "w", encoding="utf-8") as marker_file:
+                marker_file.write(f"{os.getpid()}\n{int(time.time())}\n")
+        except FileExistsError:
+            # Fail closed: re-read to name the holder for the refusal message. None
+            # means the winner's marker is mid-write (the Rust and Electron writers
+            # are not atomic) or already gone — either way the earlier side keeps it.
+            self.holder = read_live_update(path=self.path)
+            return False
+        except OSError as exc:
             logger.debug("Could not write update marker %s: %s", self.path, exc)
             return True
         self.acquired = True

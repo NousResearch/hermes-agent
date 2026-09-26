@@ -1,6 +1,6 @@
-export const HUD_WIDTH = 620
-export const HUD_HEIGHT = 320
-export const HUD_BOTTOM_MARGIN = 72
+export const HUD_WIDTH = 720
+export const HUD_HEIGHT = 720
+export const HUD_BOTTOM_MARGIN = 32
 
 export interface HudWorkArea {
   height: number
@@ -64,8 +64,8 @@ export function normalizeHudResizeBounds(value: unknown): HudResizeBounds | null
   return {
     x: Math.round(x),
     y: Math.round(y),
-    width: Math.max(380, Math.round(width)),
-    height: Math.max(160, Math.round(height))
+    width: Math.max(480, Math.round(width)),
+    height: Math.max(520, Math.round(height))
   }
 }
 

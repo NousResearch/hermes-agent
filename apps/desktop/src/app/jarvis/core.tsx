@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils'
 import { useTheme } from '@/themes/context'
 
 import { clampAudioLevel, jarvisAudioVars, useJarvisAudioBinding } from './audio-level'
-import { plasmaTone } from './plasma'
+import { type PlasmaSurface, plasmaTone } from './plasma'
 import { PlasmaCanvas } from './plasma-canvas'
 import type { JarvisTaskPhase, JarvisVoiceState } from './types'
 
@@ -25,6 +25,8 @@ export interface JarvisCoreProps {
    * per animation frame.
    */
   live?: boolean
+  /** Override the painted surface when a host owns its background. */
+  surface?: PlasmaSurface
   /**
    * `hero` is the home screen's centrepiece: a larger, denser orb floating
    * over the dashboard backdrop. `default` is the compact status orb.
@@ -97,6 +99,7 @@ export function JarvisCore({
   className,
   compact = false,
   live = false,
+  surface,
   taskPhase,
   variant = 'default',
   voice
@@ -214,7 +217,7 @@ export function JarvisCore({
         onReady={setPlasmaReady}
         reducedMotion={reducedMotion}
         signal={taskSignal}
-        surface={renderedMode}
+        surface={surface ?? renderedMode}
         tone={plasmaTone(voice, taskPhase)}
       />
     </div>

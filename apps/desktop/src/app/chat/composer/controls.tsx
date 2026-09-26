@@ -7,7 +7,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { AudioLines, Ear, EarOff, iconSize, Layers3, Loader2, Square, Volume2, VolumeX } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { $hudMode, closeHud, resetHudLayout } from '@/store/hud'
+import { $hudMode, closeHud } from '@/store/hud'
 import { $wakeWord, toggleWakeWord } from '@/store/wake-word'
 
 import { ACTIVE_ICON_BTN, GHOST_ICON_BTN, PRIMARY_ICON_BTN } from './control-classes'
@@ -105,7 +105,7 @@ export function ComposerControls({
 
   return (
     <div className="ml-auto flex min-w-0 shrink items-center gap-(--composer-control-gap)">
-      {minimal ? null : (
+      {minimal || hudMode ? null : (
         <>
           <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />
           {voiceControls}
@@ -183,18 +183,6 @@ function HudWindowButtons() {
 
   return (
     <>
-      <Tip label={t.titlebar.resetHudLayout}>
-        <Button
-          aria-label={t.titlebar.resetHudLayout}
-          className={cn(GHOST_ICON_BTN, 'p-0')}
-          onClick={resetHudLayout}
-          size="icon"
-          type="button"
-          variant="ghost"
-        >
-          <Codicon name="discard" size="0.875rem" />
-        </Button>
-      </Tip>
       <Tip label={t.titlebar.exitHud}>
         <Button
           aria-label={t.titlebar.exitHud}

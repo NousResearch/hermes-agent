@@ -76,26 +76,24 @@ describe('HUD mode', () => {
     expect(screen.queryByLabelText('Voice')).toBeNull()
   })
 
-  it('folds them into one menu and offers the way out in the HUD', () => {
+  it('keeps only the primary action and exit in the HUD', () => {
     $hudMode.set(true)
     renderControls()
 
-    expect(screen.getByLabelText('Voice')).toBeTruthy()
-    expect(screen.getByLabelText('Reset HUD size and position')).toBeTruthy()
+    expect(screen.getByLabelText('Send')).toBeTruthy()
     expect(screen.getByLabelText('Exit HUD mode')).toBeTruthy()
-
-    // Folded away, not duplicated — the whole point is the row's width back.
+    expect(screen.queryByLabelText('Reset HUD size and position')).toBeNull()
+    expect(screen.queryByLabelText('Voice')).toBeNull()
     expect(screen.queryByLabelText('Voice dictation')).toBeNull()
     expect(screen.queryByLabelText('Read replies aloud')).toBeNull()
   })
 
-  // A collapsed menu that looked idle while the mic was open would be a worse
-  // trade than the space it saves, so the trigger reports the live state.
-  it('reports a live voice state on the collapsed trigger', () => {
+  it('keeps secondary recording controls out of the focused HUD', () => {
     $hudMode.set(true)
     renderControls({ voiceStatus: 'recording' })
 
-    expect(screen.getByLabelText('Stop dictation')).toBeTruthy()
+    expect(screen.getByLabelText('Send')).toBeTruthy()
+    expect(screen.queryByLabelText('Stop dictation')).toBeNull()
     expect(screen.queryByLabelText('Voice')).toBeNull()
   })
 })

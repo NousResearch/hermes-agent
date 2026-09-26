@@ -14137,8 +14137,8 @@ function readHudState() {
 
     if (
       [raw?.x, raw?.y, raw?.width, raw?.height].every(v => Number.isFinite(v)) &&
-      raw.width >= 380 &&
-      raw.height >= 160
+      raw.width >= 480 &&
+      raw.height >= 520
     ) {
       return raw
     }

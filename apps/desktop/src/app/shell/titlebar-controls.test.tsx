@@ -83,10 +83,12 @@ describe('TitlebarControls fixed clusters', () => {
     expect(pluginChrome()).toBeNull()
   })
 
-  it('keeps the app clusters on a first-party workspace page', () => {
+  it('keeps app clusters on a workspace page without layout editor chrome', () => {
     renderControls('/skills')
 
     expect(windowControls()).not.toBeNull()
     expect(appControls()).not.toBeNull()
+    expect(screen.queryByLabelText('Layout editor')).toBeNull()
+    expect(screen.getByLabelText('HUD mode')).toBeTruthy()
   })
 })

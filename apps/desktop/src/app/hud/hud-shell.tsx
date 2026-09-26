@@ -9,9 +9,9 @@ import { $busy, $messages } from '@/store/session'
 
 import { RICH_INPUT_SLOT } from '../chat/composer/rich-editor'
 import { WiredPane } from '../contrib/wiring'
+import { JarvisCore } from '../jarvis/core'
+import { $jarvisUi } from '../jarvis/store'
 
-import { useHudClickThrough } from './click-through'
-import { useHudGameOverlay } from './game-overlay'
 import { useHudGlass } from './glass'
 import { useHudGoto, useReportHudSession } from './handoff'
 import { hudResizeDirections, useHudResizeHandle } from './resize-handle'
@@ -196,10 +196,11 @@ function useHudHeld(gameUnder: boolean): boolean {
  */
 export function HudShell() {
   const [recent, holdBand] = useRecentActivity()
+  const jarvisState = useStore($jarvisUi)
   // A fullscreen app (a game) is under the HUD: wear `data-hud-game` so the
   // idle bar steps back to overlay opacity (see styles.css). Detection is
   // main's — the page cannot see other apps' windows.
-  const gameUnder = useHudGameOverlay()
+  const gameUnder = false
   const held = useHudHeld(gameUnder)
 
   // Clicking away to another APP is the most common way the HUD is let go of,
@@ -287,7 +288,6 @@ export function HudShell() {
   const filled = useHudTranscriptBand(rootRef)
 
   useHudGlass(rootRef, filled)
-  useHudClickThrough(rootRef)
   useHudThreadFocus(rootRef)
 
   // Edge/corner resize frame. The window is created non-resizable so dragging can
@@ -299,7 +299,7 @@ export function HudShell() {
   const resizeDirections = hudResizeDirections(hudWindowing?.clientPlacement !== false)
   // Linux X11 cannot ignore-mouse; a visible band that also ignores the
   // pointer just eats the click. The stylesheet keys off this.
-  const hudInput = hudWindowing?.solid ? 'solid' : 'click-through'
+  const hudInput = 'solid'
 
   // Force the HOST layers transparent. index.html's pre-paint script writes an
   // opaque themed background onto <html> as an INLINE style (the anti-white-
@@ -342,6 +342,17 @@ export function HudShell() {
       {/* The band's sheet, on a layer of its own so it can carry the fade
           without the app's chat surface having to know about it. FIRST child so
           it paints behind the transcript. */}
+      <div data-hud-orb-stage>
+        <JarvisCore
+          className="hud-focus-orb"
+          live
+          surface="light"
+          taskPhase={jarvisState.task.phase}
+          variant="hero"
+          voice={jarvisState.voice}
+        />
+      </div>
+
       <div aria-hidden data-hud-glass />
 
       <WiredPane part="chatRoutes" />

@@ -28,7 +28,9 @@ import shutil
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
+from email.header import Header
 from email.mime.text import MIMEText
+from email.utils import formataddr, parseaddr
 from pathlib import Path
 
 # Ensure sibling modules (_hermes_home) are importable when run standalone.
@@ -126,6 +128,19 @@ def _run_gws(parts: list[str], *, params: dict | None = None, body: dict | None 
         print("ERROR: Unexpected non-JSON output from gws:", file=sys.stderr)
         print(stdout, file=sys.stderr)
         sys.exit(1)
+
+
+def _encode_address_header(value: str) -> str:
+    """RFC 2047-encode a non-ASCII display name in a To/From header value.
+
+    MIMEText's raw-MIME serialization does not encode header values itself;
+    a non-ASCII display name (e.g. Cyrillic) would go into the raw MIME
+    bytes unencoded and make the Gmail API reject the send with a 400.
+    """
+    name, addr = parseaddr(value)
+    if not name or name.isascii():
+        return value
+    return formataddr((str(Header(name, "utf-8")), addr))
 
 
 def _headers_dict(msg: dict) -> dict[str, str]:
@@ -440,10 +455,10 @@ def gmail_reply(args):
             subject = f"Re: {subject}"
 
         message = MIMEText(args.body)
-        message["To"] = headers.get("from", "")
+        message["To"] = _encode_address_header(headers.get("from", ""))
         message["Subject"] = subject
         if args.from_header:
-            message["From"] = args.from_header
+            message["From"] = _encode_address_header(args.from_header)
         if headers.get("message-id"):
             message["In-Reply-To"] = headers["message-id"]
             message["References"] = headers["message-id"]
@@ -469,10 +484,10 @@ def gmail_reply(args):
         subject = f"Re: {subject}"
 
     message = MIMEText(args.body)
-    message["To"] = headers.get("from", "")
+    message["To"] = _encode_address_header(headers.get("from", ""))
     message["Subject"] = subject
     if args.from_header:
-        message["From"] = args.from_header
+        message["From"] = _encode_address_header(args.from_header)
     if headers.get("message-id"):
         message["In-Reply-To"] = headers["message-id"]
         message["References"] = headers["message-id"]

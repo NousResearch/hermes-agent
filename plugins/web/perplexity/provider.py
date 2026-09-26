@@ -73,11 +73,15 @@ def _missing_key_error() -> str:
 def _managed_gateway(token_reader=None):
     """Nous Tool Gateway config when web_search is on the managed route, else None."""
     from tools import managed_tool_gateway as gw
+    from tools.tool_backend_helpers import fast_search_entitled
     from tools.web_tools import _managed_web_search
 
     if not _managed_web_search():
         return None
-    return gw.resolve_managed_tool_gateway("perplexity", token_reader=token_reader)
+    # Fast Search is free for every registered Portal tier, so this route brings its own
+    # eligibility instead of the generic Tool Gateway credit gate (issue 122394).
+    return gw.resolve_managed_tool_gateway(
+        "perplexity", token_reader=token_reader, entitled=fast_search_entitled)
 
 
 def _perplexity_request(endpoint: str, payload: Dict[str, Any], gateway=None) -> Dict[str, Any]:

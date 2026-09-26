@@ -10,8 +10,6 @@ import httpx
 
 @pytest.fixture
 def local_gateway(monkeypatch):
-    from tools import managed_tool_gateway
-
     requests = []
 
     class Handler(BaseHTTPRequestHandler):
@@ -43,8 +41,14 @@ def local_gateway(monkeypatch):
     monkeypatch.setenv("PERPLEXITY_GATEWAY_URL", base + "/perplexity")
     monkeypatch.setenv("FIRECRAWL_GATEWAY_URL", base)
     monkeypatch.setenv("PERPLEXITY_BASE_URL", base + "/direct")
-    # Only entitlement is stubbed: route and credential resolution remain real.
-    monkeypatch.setattr(managed_tool_gateway, "managed_nous_tools_enabled", lambda **kw: True)
+    # Only entitlement is stubbed, as a paid Portal account snapshot: both the generic credit
+    # gate and Fast Search eligibility derive from it; route and credential resolution remain real.
+    from hermes_cli.nous_account import NousPortalAccountInfo
+    monkeypatch.setattr(
+        "hermes_cli.nous_account.get_nous_portal_account_info",
+        lambda **kw: NousPortalAccountInfo(
+            logged_in=True, source="account_api", fresh=True, paid_service_access=True),
+    )
 
     # CI omits the firecrawl extra; stand in for the SDK, still over real HTTP.
     class FirecrawlSDK:
@@ -121,13 +125,18 @@ def test_only_managed_search_may_use_billed_fallback(
 
 def test_unentitled_managed_search_names_the_gateway(monkeypatch, tmp_path, local_gateway):
     from hermes_cli.config import atomic_config_write
-    from tools import managed_tool_gateway, web_tools
+    from hermes_cli.nous_account import NousPortalAccountInfo
+    from tools import web_tools
     from tests.tools.conftest import register_all_web_providers
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     atomic_config_write(tmp_path / "config.yaml", {"web": {"backend": "nous", "keyless_rescue": False}})
     monkeypatch.delenv("PERPLEXITY_API_KEY", raising=False)
-    monkeypatch.setattr(managed_tool_gateway, "managed_nous_tools_enabled", lambda **kw: False)
+    # No registered Portal identity: Fast Search eligibility and the generic gate both fail.
+    monkeypatch.setattr(
+        "hermes_cli.nous_account.get_nous_portal_account_info",
+        lambda **kw: NousPortalAccountInfo(logged_in=False, source="none", fresh=False),
+    )
     register_all_web_providers()
 
     error = json.loads(web_tools.web_search_tool("local fixture", limit=3))["error"]

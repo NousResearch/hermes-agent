@@ -164,9 +164,16 @@ def build_vendor_gateway_url(vendor: str) -> str:
 
 def resolve_managed_tool_gateway(
     vendor: str, gateway_builder: Optional[Callable[[str], str]] = None,
-    token_reader: Optional[Callable[[], Optional[str]]] = None) -> Optional[ManagedToolGatewayConfig]:
-    """Resolve shared managed-tool gateway config for a vendor."""
-    if not managed_nous_tools_enabled():
+    token_reader: Optional[Callable[[], Optional[str]]] = None, *,
+    entitled: Optional[Callable[[], bool]] = None) -> Optional[ManagedToolGatewayConfig]:
+    """Resolve shared managed-tool gateway config for a vendor.
+
+    ``entitled`` is the route's own eligibility check, supplied only by a capability with
+    its own entitlement (managed Fast Search is free for every registered Portal tier,
+    #122394). Every other vendor keeps the generic credit gate
+    (``managed_nous_tools_enabled``).
+    """
+    if not (entitled or managed_nous_tools_enabled)():
         return None
     gateway_origin = (gateway_builder or build_vendor_gateway_url)(vendor)
     nous_user_token = (token_reader or read_nous_access_token)()

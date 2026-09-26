@@ -28,6 +28,21 @@ def managed_nous_tools_enabled(*, force_fresh: bool = False) -> bool:
         return False
 
 
+def fast_search_entitled() -> bool:
+    """Eligibility for managed Fast Search (the Perplexity web_search route): any registered
+    Nous Portal identity, with no credit or pool requirement, because Fast Search is free
+    across all Portal tiers. This route must not run the generic Tool Gateway credit gate
+    (``managed_nous_tools_enabled``); every other capability keeps it. The anonymous tier has
+    no registered Portal account and stays on the keyless tier. The gateway server remains
+    authoritative for each call."""
+    try:
+        from hermes_cli.nous_account import get_nous_portal_account_info
+        account_info = get_nous_portal_account_info()
+        return bool(account_info.logged_in) and not account_info.is_anonymous_tier
+    except Exception:
+        return False
+
+
 def nous_tool_gateway_unavailable_message(capability: str = "the Nous Tool Gateway", *,
                                           force_fresh: bool = False) -> str:
     """Return account-aware guidance for an unavailable Nous Tool Gateway path."""

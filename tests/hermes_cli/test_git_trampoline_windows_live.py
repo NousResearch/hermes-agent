@@ -20,9 +20,7 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.skipif(
-    sys.platform != "win32", reason="live Windows trampoline E2E"
-)
+pytestmark = pytest.mark.platforms("windows")  # live Windows trampoline E2E
 
 _FORK_BOMB_BAT = (
     "@echo off\r\n"

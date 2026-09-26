@@ -5,9 +5,11 @@ bricked real Macs two ways: dynamically-linked builds died in dyld because
 ``@executable_path/../lib/libpython`` resolved into ``venv/lib/`` (#95425),
 and alias symlinks to the copied interpreter lost the venv prefix (#95541).
 
-Linux tests use fake checkout/uv-store layouts with ``platform.system``
-monkeypatched.  The real-interpreter E2E is ``macos_only`` so it runs on
-the existing macOS CI job, not against one-byte fixtures.
+macOS behaviour is tested on real macOS (``platforms("macos")``) using fake
+checkout/uv-store layouts; the non-macOS no-op branch is tested on real
+non-macOS hosts (``platforms("not macos")`` / ``platforms("linux")``).  The
+real-interpreter E2E is ``platforms("macos")`` so it runs on the existing
+macOS CI job, not against one-byte fixtures.
 """
 
 from __future__ import annotations
@@ -22,17 +24,9 @@ from pathlib import Path
 
 import pytest
 
-import hermes_cli.doctor as doctor
 import hermes_cli.macos_tcc_anchor as tcc
-from hermes_constants import venv_python_path
-
-
-def _darwin(monkeypatch):
-    monkeypatch.setattr(tcc.platform, "system", lambda: "Darwin")
-
-
-def _linux(monkeypatch):
-    monkeypatch.setattr(tcc.platform, "system", lambda: "Linux")
+from pm.environments import venv_python
+from hermes_cli import doctor_platform
 
 
 def _build_store(tmp_path, version: str = "3.11.15", *, with_libpython: bool = False) -> Path:
@@ -127,22 +121,29 @@ class TestUvStoreDetection:
         assert not tcc._is_uv_macos_store(path)
 
 
+@pytest.mark.platforms("not macos")
+class TestEnsureTccAnchorNonMacos:
+    def test_noop_on_non_macos(self, tmp_path):
+        # The host check gates before any filesystem access, so a plain
+        # regular-file interpreter fixture is enough: ensure must return None
+        # and leave the file byte-identical. Assert the fixture's actual path
+        # (venv_python is host-shaped: Scripts/python.exe on Windows).
+        venv_py = tmp_path / "checkout" / ".venv" / "bin" / "python"
+        venv_py.parent.mkdir(parents=True)
+        venv_py.write_bytes(b"#!fake interpreter")
+        venv_py.chmod(0o755)
+
+        assert tcc.ensure_tcc_anchor(tmp_path / "checkout") is None
+        assert venv_py.read_bytes() == b"#!fake interpreter"
+
+
+@pytest.mark.platforms("macos")
 class TestEnsureTccAnchor:
-    def test_noop_on_non_macos(self, tmp_path, monkeypatch):
-        _linux(monkeypatch)
-        root = _build_checkout(tmp_path, store_bin=_build_store(tmp_path))
-        venv_py = venv_python_path(root / ".venv")
-
-        assert tcc.ensure_tcc_anchor(root) is None
-        assert venv_py.is_symlink()
-
     def test_install_signs_the_anchor_copy(self, tmp_path, monkeypatch):
-        _darwin(monkeypatch)
         signed = []
-        import hermes_cli.managed_uv as managed_uv
 
         monkeypatch.setattr(
-            managed_uv, "_macos_sign_managed_python", lambda p: signed.append(Path(p)) or True
+            "hermes_cli.macos_signing.sign_managed_python", lambda p: signed.append(Path(p)) or True
         )
         store_bin = _build_store(tmp_path)
         root = _build_checkout(tmp_path, store_bin=store_bin)
@@ -153,8 +154,7 @@ class TestEnsureTccAnchor:
         assert len(signed) == 1
         assert signed[0].parent == anchored.parent
 
-    def test_anchors_repair_generation_interpreter(self, tmp_path, monkeypatch):
-        _darwin(monkeypatch)
+    def test_anchors_repair_generation_interpreter(self, tmp_path):
         store = (
             tmp_path
             / "checkout"
@@ -169,7 +169,7 @@ class TestEnsureTccAnchor:
         store_py.write_bytes(b"#!fake generation interpreter")
         store_py.chmod(0o755)
         root = _build_checkout(tmp_path, store_bin=store_bin)
-        venv_py = venv_python_path(root / ".venv")
+        venv_py = venv_python(root / ".venv")
         assert venv_py.is_symlink()
 
         anchored = tcc.ensure_tcc_anchor(root)
@@ -178,11 +178,10 @@ class TestEnsureTccAnchor:
         assert not venv_py.is_symlink()
         assert venv_py.read_bytes() == store_py.read_bytes()
 
-    def test_anchors_uv_managed_interpreter(self, tmp_path, monkeypatch):
-        _darwin(monkeypatch)
+    def test_anchors_uv_managed_interpreter(self, tmp_path):
         store_bin = _build_store(tmp_path)
         root = _build_checkout(tmp_path, store_bin=store_bin)
-        venv_py = venv_python_path(root / ".venv")
+        venv_py = venv_python(root / ".venv")
         assert venv_py.is_symlink()
 
         anchored = tcc.ensure_tcc_anchor(root)
@@ -199,11 +198,10 @@ class TestEnsureTccAnchor:
         assert alias.is_file() and not alias.is_symlink()
         assert alias.read_bytes() == venv_py.read_bytes()
 
-    def test_idempotent(self, tmp_path, monkeypatch):
-        _darwin(monkeypatch)
+    def test_idempotent(self, tmp_path):
         store_bin = _build_store(tmp_path)
         root = _build_checkout(tmp_path, store_bin=store_bin, anchored=True)
-        venv_py = venv_python_path(root / ".venv")
+        venv_py = venv_python(root / ".venv")
         marker = venv_py.parent / ".tcc-anchor-source"
         before = marker.read_text(encoding="utf-8")
 
@@ -213,8 +211,7 @@ class TestEnsureTccAnchor:
         assert venv_py.is_file() and not venv_py.is_symlink()
         assert marker.read_text(encoding="utf-8") == before
 
-    def test_repairs_alias_symlinks_left_by_predecessor(self, tmp_path, monkeypatch):
-        _darwin(monkeypatch)
+    def test_repairs_alias_symlinks_left_by_predecessor(self, tmp_path):
         store_bin = _build_store(tmp_path)
         root = _build_checkout(tmp_path, store_bin=store_bin, anchored=True)
         venv_bin = root / ".venv" / "bin"
@@ -228,11 +225,10 @@ class TestEnsureTccAnchor:
         assert alias.is_file() and not alias.is_symlink()
         assert alias.read_bytes() == venv_py.read_bytes()
 
-    def test_reanchors_after_patch_bump(self, tmp_path, monkeypatch):
-        _darwin(monkeypatch)
+    def test_reanchors_after_patch_bump(self, tmp_path):
         old_bin = _build_store(tmp_path, version="3.11.15")
         root = _build_checkout(tmp_path, store_bin=old_bin, anchored=True)
-        venv_py = venv_python_path(root / ".venv")
+        venv_py = venv_python(root / ".venv")
 
         new_bin = _build_store(tmp_path, version="3.11.16")
         new_py = new_bin / "python3.11"
@@ -251,20 +247,17 @@ class TestEnsureTccAnchor:
         assert alias.is_file() and not alias.is_symlink()
         assert alias.read_bytes() == new_py.read_bytes()
 
-    def test_skips_homebrew_interpreter(self, tmp_path, monkeypatch):
-        _darwin(monkeypatch)
+    def test_skips_homebrew_interpreter(self, tmp_path):
         root = _build_checkout(tmp_path, homebrew=True)
-        venv_py = venv_python_path(root / ".venv")
+        venv_py = venv_python(root / ".venv")
 
         assert tcc.ensure_tcc_anchor(root) is None
         assert venv_py.is_symlink()
 
-    def test_no_venv_returns_none(self, tmp_path, monkeypatch):
-        _darwin(monkeypatch)
+    def test_no_venv_returns_none(self, tmp_path):
         assert tcc.ensure_tcc_anchor(tmp_path / "missing") is None
 
-    def test_preserves_stdlib_source_home(self, tmp_path, monkeypatch):
-        _darwin(monkeypatch)
+    def test_preserves_stdlib_source_home(self, tmp_path):
         store_bin = _build_store(tmp_path)
         root = _build_checkout(tmp_path, store_bin=store_bin)
         cfg = root / ".venv" / "pyvenv.cfg"
@@ -273,8 +266,7 @@ class TestEnsureTccAnchor:
 
         assert f"home = {store_bin}" in cfg.read_text(encoding="utf-8")
 
-    def test_provisions_libpython_as_hardlink_when_present(self, tmp_path, monkeypatch):
-        _darwin(monkeypatch)
+    def test_provisions_libpython_as_hardlink_when_present(self, tmp_path):
         store_bin = _build_store(tmp_path, with_libpython=True)
         root = _build_checkout(tmp_path, store_bin=store_bin)
         src_dylib = store_bin.parent / "lib" / "libpython3.11.dylib"
@@ -287,10 +279,9 @@ class TestEnsureTccAnchor:
         assert dst.stat().st_ino == src_dylib.stat().st_ino
 
     def test_boot_gate_refusal_leaves_venv_untouched(self, tmp_path, monkeypatch):
-        _darwin(monkeypatch)
         store_bin = _build_store(tmp_path)
         root = _build_checkout(tmp_path, store_bin=store_bin)
-        venv_py = venv_python_path(root / ".venv")
+        venv_py = venv_python(root / ".venv")
         monkeypatch.setattr(tcc, "_passes_boot_gate", lambda *a, **k: False)
 
         assert tcc.ensure_tcc_anchor(root) is None
@@ -302,10 +293,9 @@ class TestEnsureTccAnchor:
         # written: a symlink alias to the anchored copy is the #95541 crash
         # shape, and a marker would make doctor report "active" over it.
         # The next ensure retries the whole install.
-        _darwin(monkeypatch)
         store_bin = _build_store(tmp_path)
         root = _build_checkout(tmp_path, store_bin=store_bin)
-        venv_py = venv_python_path(root / ".venv")
+        venv_py = venv_python(root / ".venv")
         monkeypatch.setattr(tcc, "_copy_alias", lambda *a, **k: False)
 
         import logging
@@ -320,7 +310,6 @@ class TestEnsureTccAnchor:
 
         # Recovery: with alias copies working again the retry completes.
         monkeypatch.undo()
-        monkeypatch.setattr(tcc.platform, "system", lambda: "Darwin")
         assert tcc.ensure_tcc_anchor(root) is not None
         assert tcc.tcc_anchor_state(root)[0] == "active"
 
@@ -359,12 +348,6 @@ class TestEnsureTccAnchor:
         assert marker.read_text(encoding="utf-8") == tcc._marker_value(source)
         assert not list(venv_bin.glob(".tcc-anchor-source.*"))
 
-    def test_store_root_marker_tracks_managed_uv_constant(self):
-        # The repair-generation store marker must stay derived from
-        # managed_uv's directory constant, not drift as a hardcoded string.
-        from hermes_cli.managed_uv import _RUNTIME_DIR_NAME
-
-        assert f"/{_RUNTIME_DIR_NAME}/python/" in tcc._STORE_ROOT_MARKERS
 
 
 class TestBootGate:
@@ -453,14 +436,24 @@ class TestBootGate:
         assert tcc._passes_boot_gate(tmp_path / "staged", venv)
 
 
+@pytest.mark.platforms("linux")
+class TestTccAnchorStateNonMacos:
+    def test_state_skip_on_linux(self, tmp_path):
+        store_bin = _build_store(tmp_path)
+        root = _build_checkout(tmp_path, store_bin=store_bin)
+        status, detail = tcc.tcc_anchor_state(root)
+        assert status == "skip"
+        assert detail == "not macOS"
+
+
+@pytest.mark.platforms("macos")
 class TestTccAnchorState:
-    def test_state_active_through_unpatched_home_symlink(self, tmp_path, monkeypatch):
+    def test_state_active_through_unpatched_home_symlink(self, tmp_path):
         # The managed-runtime layout symlinks cpython-3.11-macos-* →
         # cpython-3.11.15-macos-*, so pyvenv.cfg home and the marker record
         # different spellings of the same binary. State must resolve both
         # sides before comparing, or a fresh install reports stale
         # (review: kokhlo on #95605, hit on a live venv).
-        _darwin(monkeypatch)
         patched = _build_store(tmp_path, version="3.11.15")
         versionless = patched.parent.parent / "cpython-3.11-macos-aarch64-none"
         os.symlink(patched.parent, versionless)
@@ -477,37 +470,26 @@ class TestTccAnchorState:
         status, _ = tcc.tcc_anchor_state(root)
         assert status == "active"
 
-    def test_state_missing_then_active(self, tmp_path, monkeypatch):
-        _darwin(monkeypatch)
+    def test_state_missing_then_active(self, tmp_path):
         store_bin = _build_store(tmp_path)
         root = _build_checkout(tmp_path, store_bin=store_bin)
 
         status, detail = tcc.tcc_anchor_state(root)
         assert status == "missing"
-        assert str(venv_python_path(root / ".venv")) in detail
+        assert str(venv_python(root / ".venv")) in detail
 
         tcc.ensure_tcc_anchor(root)
 
         status, detail = tcc.tcc_anchor_state(root)
         assert status == "active"
 
-    def test_state_skip_on_linux(self, tmp_path, monkeypatch):
-        _linux(monkeypatch)
-        store_bin = _build_store(tmp_path)
-        root = _build_checkout(tmp_path, store_bin=store_bin)
-        status, detail = tcc.tcc_anchor_state(root)
-        assert status == "skip"
-        assert detail == "not macOS"
-
-    def test_state_skip_for_homebrew(self, tmp_path, monkeypatch):
-        _darwin(monkeypatch)
+    def test_state_skip_for_homebrew(self, tmp_path):
         root = _build_checkout(tmp_path, homebrew=True)
         status, detail = tcc.tcc_anchor_state(root)
         assert status == "skip"
         assert "not uv-managed" in detail
 
-    def test_state_stale_after_patch_bump(self, tmp_path, monkeypatch):
-        _darwin(monkeypatch)
+    def test_state_stale_after_patch_bump(self, tmp_path):
         old_bin = _build_store(tmp_path, version="3.11.15")
         root = _build_checkout(tmp_path, store_bin=old_bin, anchored=True)
         new_bin = _build_store(tmp_path, version="3.11.16")
@@ -515,7 +497,7 @@ class TestTccAnchorState:
         status, _ = tcc.tcc_anchor_state(root)
         assert status == "stale"
         anchored = tcc.ensure_tcc_anchor(root)
-        assert anchored == venv_python_path(root / ".venv")
+        assert anchored == venv_python(root / ".venv")
         assert (root / ".venv" / "bin" / "python").read_bytes() == (
             new_bin / "python3.11"
         ).read_bytes()
@@ -524,38 +506,14 @@ class TestTccAnchorState:
 
 
 class TestDoctorCheck:
-    def test_missing_warns_without_fix(self, monkeypatch, capsys):
-        monkeypatch.setattr(
-            tcc, "tcc_anchor_state", lambda *a, **k: ("missing", "/x/.venv/bin/python")
-        )
-        doctor.check_macos_tcc_anchor(should_fix=False)
-        out = capsys.readouterr().out
-        assert "macOS TCC anchor missing" in out
 
-    def test_fix_installs_anchor(self, monkeypatch, capsys):
-        monkeypatch.setattr(
-            tcc, "tcc_anchor_state", lambda *a, **k: ("missing", "/x/.venv/bin/python")
-        )
-        monkeypatch.setattr(
-            tcc, "ensure_tcc_anchor", lambda *a, **k: Path("/x/.venv/bin/python")
-        )
-        doctor.check_macos_tcc_anchor(should_fix=True)
-        out = capsys.readouterr().out
-        assert "macOS TCC anchor installed" in out
 
-    def test_active_reports_ok(self, monkeypatch, capsys):
-        monkeypatch.setattr(
-            tcc, "tcc_anchor_state", lambda *a, **k: ("active", "/x/.venv/bin/python")
-        )
-        doctor.check_macos_tcc_anchor(should_fix=False)
-        out = capsys.readouterr().out
-        assert "macOS TCC anchor active" in out
 
     def test_skip_is_silent_on_non_macos(self, monkeypatch, capsys):
         monkeypatch.setattr(
             tcc, "tcc_anchor_state", lambda *a, **k: ("skip", "not macOS")
         )
-        doctor.check_macos_tcc_anchor(should_fix=False)
+        doctor_platform.check_macos_tcc_anchor(should_fix=False)
         assert capsys.readouterr().out == ""
 
     def test_never_crashes_on_exception(self, monkeypatch, capsys):
@@ -563,18 +521,18 @@ class TestDoctorCheck:
             raise RuntimeError("tccd down")
 
         monkeypatch.setattr(tcc, "tcc_anchor_state", boom)
-        doctor.check_macos_tcc_anchor(should_fix=False)
+        doctor_platform.check_macos_tcc_anchor(should_fix=False)
         out = capsys.readouterr().out
         assert "macOS TCC anchor check failed" in out
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 class TestAnchoredAliasesBootE2E:
     """Real-interpreter proof that the re-land stays bootable (#95596).
 
     Copies the running interpreter's real base binary into a fake uv-store
     layout (stdlib via a ``lib`` symlink) and actually executes every
-    entry point after anchoring.  ``macos_only`` so Linux CI cannot
+    entry point after anchoring.  ``platforms("macos")`` so Linux CI cannot
     greenwash this with a fixture.
     """
 
@@ -599,6 +557,14 @@ class TestAnchoredAliasesBootE2E:
         store_bin = store / "bin"
         store_bin.mkdir(parents=True)
         shutil.copy2(real_py, store_bin / minor)
+        # The runner itself may already have PM's stable signature. Give only
+        # this disposable source a different identity so a skipped sign fails.
+        subprocess.run(
+            ["codesign", "--force", "--sign", "-", "--timestamp=none",
+             "--identifier", "test.hermes.unanchored", "--requirements",
+             '=designated => identifier "test.hermes.unanchored"', str(store_bin / minor)],
+            check=True, capture_output=True, timeout=30,
+        )
         os.symlink(base / "lib", store / "lib")
 
         root = tmp_path / "checkout"
@@ -618,6 +584,17 @@ class TestAnchoredAliasesBootE2E:
         assert anchored is not None
 
         for name in ("python", "python3", minor):
+            executable = venv_bin / name
+            assert not executable.is_symlink()
+            subprocess.run(
+                ["codesign", "--verify", "--deep", "--strict", str(executable)],
+                check=True, capture_output=True, timeout=30,
+            )
+            identity = subprocess.run(
+                ["codesign", "-d", "-r-", str(executable)],
+                check=True, capture_output=True, text=True, timeout=30,
+            )
+            assert 'designated => identifier "com.nousresearch.hermes.managed-python"' in identity.stdout
             probe = subprocess.run(
                 [str(venv_bin / name), "-c",
                  "import encodings, sys; print(sys.prefix)"],

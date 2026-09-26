@@ -37,6 +37,20 @@ describe('session tile optimistic owner metadata', () => {
     $sessionTiles.set([])
   })
 
+  it('never lists a bots-workspace tile — hidden relationship chats stay off the Sessions list (#113273)', () => {
+    expect(
+      listTileSessionRow({
+        preview: 'hello from the bot chat',
+        runtimeId: 'rt-bot-chat',
+        sessions: [],
+        storedSessionId: 'stored-bot-chat',
+        workspaceMode: 'bots'
+      })
+    ).toBe(false)
+
+    expect($sessions.get()).toEqual([])
+  })
+
   it('keeps the tile source on its first optimistic sidebar row', () => {
     const storedSessionId = 'stored-tile-owner-metadata'
     const ownerRoute = { connectionId: 'source-a', profile: 'default' }

@@ -8,8 +8,10 @@ import { $activeGatewayProfile } from '@/store/profile'
 import {
   $currentBranch,
   $currentCwd,
+  $currentReasoningEffort,
   setCurrentBranch,
   setCurrentCwd,
+  setCurrentReasoningEffort,
   setSelectedStoredSessionId,
   workspaceCwdBelongsToSelectedSession
 } from '@/store/session'
@@ -119,11 +121,13 @@ describe('applyRuntimeInfo foreground scoping', () => {
   beforeEach(() => {
     setCurrentCwd('/main-repo')
     setCurrentBranch('main')
+    setCurrentReasoningEffort('')
   })
 
   afterEach(() => {
     setCurrentCwd('')
     setCurrentBranch('')
+    setCurrentReasoningEffort('')
   })
 
   it('publishes a foreground runtime into the composer atoms', () => {
@@ -132,6 +136,21 @@ describe('applyRuntimeInfo foreground scoping', () => {
     expect($currentCwd.get()).toBe('/main-repo/worktree')
     expect($currentBranch.get()).toBe('bb/feature')
     expect(patch).toMatchObject({ branch: 'bb/feature', cwd: '/main-repo/worktree' })
+  })
+
+  // #99045: a session's pinned effort is per-session. The foreground resume path
+  // used to copy it into $currentReasoningEffort, which persists as the composer
+  // draft — so resuming a high-pinned session silently pinned every NEW chat too
+  // (the draft is shipped as `reasoning_effort` by `session.create`).
+  it('keeps a foreground runtime effort out of the persisted composer draft', () => {
+    setCurrentReasoningEffort('')
+
+    const patch = applyRuntimeInfo({ reasoning_effort: 'high', reasoning_effort_wire: 'high' })
+
+    // The caller still gets the pin for its own session slice...
+    expect(patch).toMatchObject({ reasoningEffort: 'high' })
+    // ...but the draft a new chat seeds from is left alone.
+    expect($currentReasoningEffort.get()).toBe('')
   })
 
   it('keeps a background runtime out of the composer atoms but still returns its patch', () => {

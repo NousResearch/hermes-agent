@@ -91,6 +91,29 @@ def test_same_named_server_with_other_credentials_is_a_separate_connection(two_p
     assert not disc._connect_cooldown_active("y")
     assert handlers._check_circuit_breaker("x") is None
 
+    # One server's identity resolver raising refuses adoption of that server only: discovery for
+    # B's scope survives and A's healthy same-identity connection is still adopted.
+    from tools import mcp_tool_transport as transport
+    scope_a = next(key[0] for key in core._servers if key[1] == "x")
+    same = {"url": "https://mcp.example/same", "headers": {"Authorization": "Bearer same"}}
+    for name in ("ok", "boom"):
+        srv = _server(name, dict(same))
+        srv._tools = []
+        core._servers[(scope_a, name)] = srv
+        core._server_tool_scopes[(scope_a, name)] = {scope_a}
+    real_inputs = transport._connect_inputs
+
+    def resolve(name, config):
+        if name == "boom":
+            raise RuntimeError("secret backend exploded")
+        return real_inputs(name, config)
+
+    scope_b = core._mcp_registry_scope()
+    with patch.object(transport, "_connect_inputs", side_effect=resolve):
+        reg.register_connected_into_current_scope({"ok": dict(same), "boom": dict(same)})
+    assert scope_b in core._server_tool_scopes[(scope_a, "ok")]
+    assert scope_b not in core._server_tool_scopes[(scope_a, "boom")]
+
 
 def test_oauth_server_is_not_adopted_across_profiles(two_profiles):
     import tools.mcp_tool as core

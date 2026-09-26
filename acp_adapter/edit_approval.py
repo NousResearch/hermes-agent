@@ -46,8 +46,11 @@ AUTO_APPROVE_ASK = "ask"
 AUTO_APPROVE_WORKSPACE = "workspace_session"
 AUTO_APPROVE_SESSION = "session"
 
-_V4A_FILE_RE = re.compile(r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$', re.MULTILINE)
-_V4A_MOVE_RE = re.compile(r'^\*\*\*\s+Move\s+File:\s*(.+?)\s*->\s*(.+)$', re.MULTILINE)
+# Header forms must stay at least as lenient as patch_parser's (``\s*`` after ``***``):
+# a header this extractor misses is a file the approval/auto-approve checks never see
+# (same invariant as tools/file_tools.py and agent/tool_dispatch_helpers.py).
+_V4A_FILE_RE = re.compile(r'^\*\*\*\s*(?:Update|Add|Delete)\s+File:\s*(.+)$', re.MULTILINE)
+_V4A_MOVE_RE = re.compile(r'^\*\*\*\s*Move\s+File:\s*(.+?)\s*->\s*(.+)$', re.MULTILINE)
 
 
 def set_edit_approval_requester(requester: EditApprovalRequester | None) -> Token:

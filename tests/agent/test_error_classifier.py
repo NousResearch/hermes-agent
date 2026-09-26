@@ -181,6 +181,56 @@ class TestClassifyApiError:
         assert result.retryable is True
         assert result.should_rotate_credential is False
 
+    def test_403_server_error_code_is_transient_not_auth(self):
+        """A relay 403 whose body self-identifies as ``server_error`` is an upstream
+        failure, not a credential refusal: the same request succeeds on retry (#117869)."""
+        body = {
+            "error": {
+                "type": "server_error",
+                "code": "server_error",
+                "message": "Upstream request failed: [server_error] Upstream response was not valid JSON",
+            }
+        }
+        result = classify_api_error(
+            MockAPIError("Forbidden", status_code=403, body=body), provider="custom"
+        )
+        assert result.reason == FailoverReason.overloaded
+        assert result.retryable is True
+        assert result.should_rotate_credential is False
+
+    def test_403_server_error_type_without_code_stays_auth(self):
+        """``type=server_error`` with no explicit ``error.code`` and no relay wrapper
+        wording is an unverified permission refusal: keep the auth verdict and the
+        abort path (fallback, not retry)."""
+        body = {"error": {"type": "server_error", "message": "Forbidden"}}
+        result = classify_api_error(
+            MockAPIError("Forbidden", status_code=403, body=body), provider="custom"
+        )
+        assert result.reason == FailoverReason.auth
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_403_server_error_wrapped_billing_stays_billing(self):
+        """A billing refusal that happens to carry ``type=server_error`` needs
+        credential rotation, not a retry loop on the same key."""
+        body = {"error": {"type": "server_error", "message": "Budget limit exceeded (monthly limit)"}}
+        result = classify_api_error(
+            MockAPIError("Forbidden", status_code=403, body=body), provider="custom"
+        )
+        assert result.reason == FailoverReason.billing
+        assert result.should_rotate_credential is True
+
+    def test_403_server_error_wrapped_waf_block_stays_upstream_blocked(self):
+        """A CDN block page wrapped in ``type=server_error`` takes the WAF fallback
+        path, not a retry on the same route."""
+        body = {"error": {"type": "server_error", "message": "Sorry, you have been blocked"}}
+        result = classify_api_error(
+            MockAPIError("Forbidden", status_code=403, body=body), provider="custom"
+        )
+        assert result.reason == FailoverReason.upstream_blocked
+        assert result.should_rotate_credential is False
+        assert result.should_fallback is True
+
 
 
 

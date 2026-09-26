@@ -471,6 +471,7 @@ class TestUpdate:
         staged = _make_staging_dir(profile_env, name, manifest=mf)
         (staged / "skills" / "research" / "web-search").mkdir(parents=True)
         (staged / "skills" / "research" / "web-search" / "SKILL.md").write_text("author skill\n", encoding="utf-8")
+        (staged / "skills" / "research" / "DESCRIPTION.md").write_text("research skills\n", encoding="utf-8")
         return staged, install_distribution(str(staged), name=name)
 
     def test_an_owned_category_keeps_skills_the_installer_added_to_it(self, profile_env):
@@ -494,6 +495,7 @@ class TestUpdate:
         assert (research / "web-search" / "SKILL.md").read_text(encoding="utf-8") == "author v2\n"
         assert not (research / "web-search" / "stale.txt").exists()  # an owned root is still replaced whole
         assert (research / "arxiv" / "SKILL.md").exists()
+        assert (research / "DESCRIPTION.md").read_text(encoding="utf-8") == "research skills\n"
 
     def test_an_owned_category_refuses_a_symlinked_subcategory_before_writing(self, profile_env, tmp_path):
         staged, plan = self._owned_category(profile_env, "rb")

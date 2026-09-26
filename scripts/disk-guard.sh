@@ -32,11 +32,18 @@ set -uo pipefail
 #   FLOOR_GI           the only thing that pages. Owner-pinned at 0.5Gi
 #                      (Den, 2026-09-22) — page only where writes actually fail.
 #
-# The 10Gi target is the capacity derivation in disk-guard-cron.sh: 2.0GB worst
-# case for 3 concurrent workers on a cold pnpm store + 8GB headroom for the
-# non-worker writers on this volume (state.db, postgres, gateway logs).
+# The target was 10Gi (the capacity derivation in disk-guard-cron.sh: 2.0GB
+# worst case for 3 concurrent workers on a cold pnpm store + 8GB headroom for
+# the non-worker writers on this volume — state.db, postgres, gateway logs).
+# RAISED TO 25Gi on 2026-09-25 (card t_2a74e97a, review round 1): the card
+# contracts >=25GB free, and a target of 10 never fires at 23Gi, so nothing
+# defended the contracted number — free space hit 25.17Gi once and decayed
+# straight back to 23.1Gi. The target is what holds a number; a one-shot sweep
+# is not. 25Gi (26.8GB) also clears the 25GB decimal contract with margin.
+# Raising it is safe by construction: the target only evicts sanctioned scratch
+# and is SILENT — it can never page, so a high target cannot cause alert fatigue.
 FLOOR_GI="${DISK_GUARD_FLOOR_GI:-0.5}"
-RECLAIM_TARGET_GI="${DISK_GUARD_RECLAIM_TARGET_GI:-10}"
+RECLAIM_TARGET_GI="${DISK_GUARD_RECLAIM_TARGET_GI:-25}"
 KANBAN_DB="${HERMES_KANBAN_DB:-$HOME/.hermes/kanban.db}"
 WORKSPACES="$HOME/.hermes/kanban/workspaces"
 TMPDIRS="/private/tmp"
@@ -55,15 +62,44 @@ free_gi() { awk -v m="$(free_mb)" 'BEGIN{printf "%.2f", m/1024}'; }
 lt() { awk -v a="$1" -v b="$2" 'BEGIN{exit !(a+0 < b+0)}'; }
 
 # --- derived fact 1: which task ids are dead (terminal or absent from the DB)
-dead_task() { # $1 = task id -> 0 if dead/unknown
-  [ -f "$KANBAN_DB" ] || return 1
-  local st
-  st=$(sqlite3 -noheader "$KANBAN_DB" \
-        "select status from tasks where id='$1';" 2>/dev/null)
-  case "$st" in
-    ''|done|archived|cancelled) return 0 ;;
-    *) return 1 ;;
-  esac
+# Every kanban DB on the host, default board first. A card id is only a name;
+# nothing ties it to the board whose directory it happens to sit under.
+kanban_dbs() {
+  [ -f "$KANBAN_DB" ] && printf '%s\n' "$KANBAN_DB"
+  local d
+  for d in "$HOME"/.hermes/kanban/boards/*/kanban.db; do
+    [ -f "$d" ] || continue
+    [ "$d" = "$KANBAN_DB" ] || printf '%s\n' "$d"
+  done
+}
+
+dead_task() { # $1 = task id -> 0 if dead/unknown on EVERY board
+  # SINGLE-BOARD BUG (measured 2026-09-25, card t_2a74e97a): this consulted
+  # only $KANBAN_DB. A live run of reclaim_dead_task_worktrees then deleted
+  # the worktrees of t_41e448bd and t_fb0730ea -- both `blocked`, i.e. very
+  # much alive -- because they live on the `vibebrowser` and
+  # `xsense-telegram-worker` boards, which the default DB has never heard of.
+  # Absence from one DB is not evidence of death; it is evidence of looking in
+  # one place. Ask every board and let ANY non-terminal status veto.
+  local db st known=0 seen=0
+  while IFS= read -r db; do
+    seen=1
+    st=$(sqlite3 -noheader "$db" \
+          "select status from tasks where id='$1';" 2>/dev/null)
+    [ -n "$st" ] && known=1
+    case "$st" in
+      ''|done|archived|cancelled) ;;
+      *) return 1 ;;                 # alive somewhere: hands off
+    esac
+  done < <(kanban_dbs)
+  [ "$known" = 1 ] && return 0
+  # Unknown to every board: a card id whose row has been pruned. Treated as
+  # dead on purpose -- that is the steady-state source of abandoned scratch --
+  # but ONLY if at least one board was actually readable. If we could not
+  # consult any DB, we have no evidence of anything and must not authorise a
+  # deletion; losing sight of the boards has to fail safe, not fail open.
+  [ "$seen" = 1 ] || return 1
+  return 0
 }
 
 # --- derived fact 2: is any running process sitting in this path
@@ -86,10 +122,29 @@ path_in_use() { # $1 = abs path
   # (Exported, not a command-prefix assignment: a prefix binds only to the
   # first command of the pipeline -- `ps` -- and awk would see an empty needle,
   # matching every line and reinstating the same always-in-use bug.)
-  export DG_NEEDLE="$1"
-  ps -Ao args= 2>/dev/null \
-    | awk 'index($0, ENVIRON["DG_NEEDLE"]) { found = 1 } END { exit !found }' \
-    && { unset DG_NEEDLE; return 0; }
+  # SYMLINKED-PREFIX BUG (found 2026-09-25): the caller's path and the live
+  # process's argv routinely spell the SAME file differently. On macOS $TMPDIR
+  # is /var/folders/... while /var is a symlink to /private/var, and `git
+  # worktree list` reports the resolved form; a worker launched with the
+  # unresolved form then goes undetected and its directory gets deleted out
+  # from under it. Compare BOTH spellings, not just the one we were handed.
+  local p1="$1" p2 p3 dg_n
+  p2=$(cd "$(dirname -- "$1")" 2>/dev/null && printf '%s/%s' "$(pwd -P)" "$(basename -- "$1")") || p2=""
+  [ -n "$p2" ] && [ "$p2" != "$p1" ] || p2=""
+  # ...and the UNRESOLVED spelling, which is the direction that actually bit:
+  # git reports /private/var/... while the worker's argv says /var/..., so
+  # resolving alone never converges. Strip the macOS /private prefix too.
+  p3=""
+  case "$p1" in /private/*) p3="${p1#/private}" ;; esac
+  case "$p2" in /private/*) [ -z "$p3" ] && p3="${p2#/private}" ;; esac
+  # dg_n, not n: this function is called from loops that keep their own
+  # counter, and an unlocalised `n` here silently clobbered the caller's.
+  for dg_n in "$p1" $p2 $p3; do
+    export DG_NEEDLE="$dg_n"
+    ps -Ao args= 2>/dev/null \
+      | awk 'index($0, ENVIRON["DG_NEEDLE"]) { found = 1 } END { exit !found }' \
+      && { unset DG_NEEDLE; return 0; }
+  done
   unset DG_NEEDLE
   [ -n "$(lsof +D "$1" 2>/dev/null | tail -n +2)" ] && return 0
   [ -n "$(lsof -- "$1" 2>/dev/null | tail -n +2)" ] && return 0
@@ -148,15 +203,33 @@ if [ "${1:-}" = "--rank-min-mb" ]; then
 fi
 
 reclaim_workspaces() {
-  local freed=0 n=0 id sz
-  [ -d "$WORKSPACES" ] || return 0
-  for w in "$WORKSPACES"/*/; do
-    [ -d "$w" ] || continue
-    id=$(basename "$w")
-    dead_task "$id" || continue
-    path_in_use "${w%/}" && { log "  skip (in use) $w"; continue; }
-    sz=$(du -sxm "$w" 2>/dev/null | cut -f1)
-    rm -rf "$w" && { freed=$((freed + ${sz:-0})); n=$((n + 1)); }
+  local freed=0 n=0 id sz root db
+  # WORKSPACE ROOTS ARE DISCOVERED, NOT PINNED. Until 2026-09-25 this swept
+  # only $HOME/.hermes/kanban/workspaces, i.e. the DEFAULT board. Every named
+  # board keeps its own kanban/boards/<slug>/workspaces tree with its own
+  # kanban.db, and none of them were ever reclaimed: boards/vibebrowser held
+  # 1.8GB of dead-card scratch while the guard logged "removed 0". A pinned
+  # list has the same rot as a pinned hash — a board created tomorrow would
+  # leak silently — so enumerate the roots and pair each with ITS OWN db,
+  # because a card id only has a status in the board that owns it (looking it
+  # up in the wrong db returns '' = "unknown" = dead, which would delete a
+  # RUNNING card's workspace).
+  for root in "$WORKSPACES" "$HOME"/.hermes/kanban/boards/*/workspaces; do
+    [ -d "$root" ] || continue
+    db="$KANBAN_DB"
+    case "$root" in
+      "$HOME"/.hermes/kanban/boards/*)
+        db="$(dirname "$root")/kanban.db"
+        [ -f "$db" ] || continue ;;   # no db => cannot prove a card is dead
+    esac
+    for w in "$root"/*/; do
+      [ -d "$w" ] || continue
+      id=$(basename "$w")
+      KANBAN_DB="$db" dead_task "$id" || continue
+      path_in_use "${w%/}" && { log "  skip (in use) $w"; continue; }
+      sz=$(du -sxm "$w" 2>/dev/null | cut -f1)
+      rm -rf "$w" && { freed=$((freed + ${sz:-0})); n=$((n + 1)); }
+    done
   done
   log "workspaces: removed $n dead scratch dirs, ${freed}MB"
 }
@@ -243,6 +316,103 @@ reclaim_safe_caches() {
 
   after=$(free_mb)
   log "safe caches: pruned $n cache dirs + aged session-state/logs, $(( after - before ))MB"
+}
+
+# --- npm's content-addressable cache. MEASURED 2026-09-25: ~/.npm held 2.3GB
+# (1.8GB _cacache + 495MB _npx) on a host contracted to hold 25GB free. It is
+# pure regrowable cache — every entry is re-fetchable from the registry — but
+# no class reclaimed it: reclaim_safe_caches enumerates a fixed list that never
+# included it, and ~/.npm is a dotdir so the node_modules sweep skips it.
+# `npm cache clean --force` is npm's own supported eviction, so we do not hand
+# rm the cache layout out from under it; if npm is absent there is nothing to do.
+reclaim_npm_cache() {
+  local before after
+  command -v npm >/dev/null 2>&1 || return 0
+  [ -d "$HOME/.npm" ] || return 0
+  path_in_use "$HOME/.npm/_cacache" && { log "  skip (in use) ~/.npm/_cacache"; return 0; }
+  before=$(free_mb)
+  npm cache clean --force >/dev/null 2>&1
+  # _npx is a scratch tree of fully installed throwaway packages, not part of
+  # the cache npm prunes. It is regenerated on the next `npx` invocation.
+  find "$HOME/.npm/_npx" -mindepth 1 -maxdepth 1 -mtime +0 \
+       -exec rm -rf {} + 2>/dev/null
+  after=$(free_mb)
+  log "npm cache: $(( after - before ))MB"
+}
+
+# --- superseded Hermes install generations. MEASURED 2026-09-25: 2.9GB across
+# three generations under ~/.hermes/installs while exactly one is live.
+#
+# LIVENESS IS DETECTED, NEVER PINNED. An allowlist of hashes rots the moment
+# hermes reinstalls, and would eventually name the live generation as garbage —
+# deleting the runtime out from under every agent on the box. A generation is
+# kept if ANY of:
+#   - a live process has its path in argv (path_in_use), i.e. it is running now
+#   - it is the newest generation (the one a fresh spawn will resolve to)
+# Everything else is a superseded copy that reinstall can recreate.
+reclaim_stale_installs() {
+  local root before after n=0 newest d
+  root="$HOME/.hermes/installs"
+  [ -d "$root" ] || return 0
+  newest=$(ls -dt "$root"/*/ 2>/dev/null | head -1)
+  [ -n "$newest" ] || return 0
+  before=$(free_mb); n=0
+  for d in "$root"/*/; do
+    [ -d "$d" ] || continue
+    [ "$d" = "$newest" ] && continue
+    path_in_use "${d%/}" && { log "  skip (live install) ${d%/}"; continue; }
+    rm -rf "$d" 2>/dev/null && n=$((n + 1))
+  done
+  after=$(free_mb)
+  log "installs: removed $n superseded generations, $(( after - before ))MB"
+}
+
+# --- worktrees named after a DEAD card, anywhere on the volume.
+# MEASURED 2026-09-25: ~/.hermes/hermes-agent-wt-t_bf5b8389-b2 held 554MB for a
+# card in status `done`. Two independent scoping bugs hid it:
+#   1. repo discovery was pinned to $HOME/workspace/*/.git, so no repo outside
+#      that one directory was ever scanned — including the agent's own checkout;
+#   2. reclaim_merged_worktrees gates on `merge-base --is-ancestor <tip> main`,
+#      which a squash-merging repo never satisfies, so it has removed 0
+#      worktrees over its entire log while reporting success.
+#
+# This class keys on the property that actually licenses deletion: THE CARD IS
+# TERMINAL. A worktree named t_<id> is scratch created for that card; once the
+# card is done/archived/cancelled the scratch is garbage regardless of how (or
+# whether) its branch landed. Cards that are not terminal, and paths a live
+# process holds, are kept. Repos are discovered from the worktree parents the
+# guard already derives, never from a pinned directory list.
+reclaim_dead_task_worktrees() {
+  local before after n=0 repo p b id sz
+  before=$(free_mb)
+  while read -r repo; do
+    [ -n "$repo" ] || continue
+    git -C "$repo" worktree prune 2>/dev/null
+    while read -r p; do
+      [ -d "$p" ] || continue
+      [ "$p" = "$repo" ] && continue
+      id=$(basename "$p" | grep -oE 't_[0-9a-f]{8}' | head -1)
+      [ -n "$id" ] || continue          # not card scratch; not ours to judge
+      dead_task "$id" || continue       # non-terminal card: hands off
+      path_in_use "$p" && { log "  skip (in use) $p"; continue; }
+      sz=$(du -sxm "$p" 2>/dev/null | cut -f1)
+      git -C "$repo" worktree remove --force "$p" 2>/dev/null || rm -rf "$p"
+      [ -d "$p" ] || { n=$((n + 1)); log "  removed dead-card worktree ${sz}MB $p"; }
+    done < <(git -C "$repo" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2}')
+    git -C "$repo" worktree prune 2>/dev/null
+  done < <(worktree_repos)
+  after=$(free_mb)
+  log "dead-card worktrees: removed $n, $(( after - before ))MB"
+}
+
+# Repos that actually have worktrees, DISCOVERED from the checkouts on this
+# volume rather than a pinned $HOME/workspace list (see the bug above).
+worktree_repos() {
+  {
+    ls -d "$HOME"/workspace/*/.git 2>/dev/null | xargs -n1 dirname 2>/dev/null
+    ls -d "$HOME"/.hermes/*/.git 2>/dev/null | xargs -n1 dirname 2>/dev/null
+    ls -d "$HOME"/workspace/*/*/.git 2>/dev/null | xargs -n1 dirname 2>/dev/null
+  } | sort -u
 }
 
 # --- target enforcement: silent, and strictly more of the SAME sanctioned
@@ -391,6 +561,9 @@ if [ "$RECLAIM" = 1 ]; then
   reclaim_tmp
   reclaim_home_node_modules
   reclaim_pytest_roots
+  reclaim_npm_cache
+  reclaim_stale_installs
+  reclaim_dead_task_worktrees
   # Target enforcement runs LAST: only after every ordinary class has been
   # reclaimed do we decide whether to escalate.
   reclaim_to_target

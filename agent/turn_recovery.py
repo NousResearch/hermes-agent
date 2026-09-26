@@ -1803,10 +1803,17 @@ def route_classified_error(
         and not getattr(agent, "compression_enabled", True)
         and not _is_output_cap_error
     ):
+        # Only blame config.yaml when config actually disabled compression; an embedding
+        # host flipping the flag off after init gets neutral copy (#123500).
+        _comp_off_in_config = getattr(agent, "compression_enabled_from_config", None) is False
         agent._flush_status_buffer()
         _vlines(
             agent,
-            "❌ The conversation is too long for the model and automatic shrinking is off (compression.enabled: false).",
+            "❌ The conversation is too long for the model and automatic shrinking is off "
+            "(compression.enabled: false)."
+            if _comp_off_in_config else
+            "❌ The conversation is too long for the model and automatic shrinking is off "
+            "for this session.",
             "   💡 Run /compress to shrink it now, /new to start fresh, "
             "pick a model with a bigger context window, or remove attachments.",
         )
@@ -1815,7 +1822,10 @@ def route_classified_error(
             f"auto-compaction disabled — not compressing."
         )
         agent._persist_session(messages, conversation_history)
-        _final_response = site_copy("compression_disabled", model=agent.model)
+        _final_response = site_copy(
+            "compression_disabled" if _comp_off_in_config else "compression_disabled_host",
+            model=agent.model,
+        )
         return _verdict("return", stamp_failure({
             "final_response": _final_response, "messages": messages, "completed": False,
             "api_calls": api_call_count, "error": _final_response, "partial": True, "failed": True,

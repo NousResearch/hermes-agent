@@ -317,3 +317,23 @@ def test_apply_live_compression_config_is_self_contained():
     _apply_live_compression_config(agent, {"compression": {"enabled": True}})
     assert agent.compression_enabled is True
     assert agent.codex_responses_native_compaction is False
+
+
+def test_live_enabled_flip_keeps_provenance_snapshot_in_sync(monkeypatch):
+    # Review finding on #123500: _apply_live_compression_config is a third writer of
+    # compression_enabled (TUI hot-reload). If the provenance snapshot goes stale there,
+    # a user who disables compression in config.yaml after init gets the neutral host
+    # copy and is never pointed at the config knob. Live-config adoption speaks for
+    # config.yaml (UNSET semantics), so the snapshot must follow every adopted value.
+    session, _ = _neutral_session()
+    agent = session["agent"]
+    agent.compression_enabled_from_config = True  # init-time snapshot: config said enabled
+
+    _sync_with_cfg(monkeypatch, session, {"compression": {"enabled": False}})
+    assert agent.compression_enabled is False
+    assert agent.compression_enabled_from_config is False
+
+    # Removing the key restores the default through the same UNSET semantics.
+    _sync_with_cfg(monkeypatch, session, {"compression": {}})
+    assert agent.compression_enabled is True
+    assert agent.compression_enabled_from_config is True

@@ -306,7 +306,7 @@ def _run_single_child(
       status      ∈ {completed, interrupted, failed} — a structured failure
                     (failed=True / non-empty error) or an invalid terminal state
                     is "failed" even when a summary exists.
-      exit_reason ∈ {completed, max_iterations, interrupted, error} —
+      exit_reason ∈ {completed, max_iterations, interrupted, guardrail_halt, error} —
                     "max_iterations" only for genuine budget exhaustion
                     (completed=False with no failure fields), never for errors.
       truncated   == (exit_reason == "max_iterations").

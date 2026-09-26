@@ -476,6 +476,19 @@ class _SchemaOutcome:
     errors: List[str]
     retries: int
 
+def _is_hard_guardrail(decision: Any) -> bool:
+    """True when the child turn ended in a hard (block/halt) tool-guardrail decision."""
+    return isinstance(decision, dict) and decision.get("action") in {"block", "halt"}
+
+
+def _public_guardrail(decision: Any) -> Optional[Dict[str, Any]]:
+    """Classification fields only — the explanatory message and raw tool
+    arguments never cross the agent boundary."""
+    if not isinstance(decision, dict):
+        return None
+    return {key: decision[key] for key in ("action", "code", "tool_name", "count", "signature") if key in decision}
+
+
 def _validate_child_output_schema(
     child: Any, result: Dict[str, Any], task_index: int, child_task_id: str, relay_child_text: Any
 ) -> _SchemaOutcome:
@@ -487,7 +500,14 @@ def _validate_child_output_schema(
     from tools.delegation_output_schema import build_retry_message, validate_output
     _first_text = result.get("final_response") or ""
     _schema_valid, _schema_errors = validate_output(_first_text, _output_schema)
-    if _schema_valid or not _first_text.strip() or result.get("interrupted", False):
+    if (
+        _schema_valid
+        or not _first_text.strip()
+        or result.get("interrupted", False)
+        # A hard tool guardrail deliberately ended the first turn; its prose
+        # violating the schema is not a correctness problem to correct.
+        or _is_hard_guardrail(result.get("guardrail"))
+    ):
         return _SchemaOutcome(_output_schema, _schema_valid, _schema_errors, 0)
 
     # Exactly one retry turn, carrying the validation errors verbatim (no
@@ -515,6 +535,12 @@ def _validate_child_output_schema(
         _retry_messages = _retry_result.get("messages")
         if isinstance(_retry_messages, list) and isinstance(result.get("messages"), list):
             result["messages"] = result["messages"] + _retry_messages
+        # The retry is the terminal child turn: carry every field that drives
+        # honest completion classification, otherwise a retry-side
+        # guardrail/error/interruption is read from the stale first turn.
+        for _terminal_key in ("completed", "interrupted", "failed", "error", "failure_reason", "guardrail"):
+            if _terminal_key in _retry_result:
+                result[_terminal_key] = _retry_result[_terminal_key]
         _schema_valid, _schema_errors = validate_output(_retry_text, _output_schema)
     return _SchemaOutcome(_output_schema, _schema_valid, _schema_errors, 1)
 
@@ -576,6 +602,10 @@ def _build_result_entry(
         # The loop returns the error text as final_response, which would otherwise read as "completed". Never report a
         # provider rejection as "max_iterations" — that is only truthful for real budget exhaustion.
         status, exit_reason = "failed", "error"
+    elif _is_hard_guardrail(result.get("guardrail")):
+        # A hard tool guardrail deliberately ends the turn with an explanatory assistant message. That text is useful
+        # output, not task success: the structured guardrail decision wins over the summary-presence heuristic below.
+        status, exit_reason = "failed", "guardrail_halt"
     else:
         # exit_reason ("completed" vs "max_iterations") tells the parent HOW the task ended; completed=False with no
         # failure = budget exhaustion. A declared schema still violated after the bounded retry does NOT fail the
@@ -614,13 +644,23 @@ def _build_result_entry(
     # Model-visible per-delegation spend (unlike _child_cost_usd above).
     entry["cost_usd"] = round(entry["_child_cost_usd"], 6)
     entry["cost_status"] = _cost_status if isinstance(_cost_status, str) and _cost_status else "unknown"
+    _guardrail_meta = _public_guardrail(result.get("guardrail"))
+    if _guardrail_meta is not None:
+        entry["guardrail"] = _guardrail_meta
     if status == "failed":
-        entry["error"] = result.get("error", "Subagent did not produce a response.")
-        # Classified reason from the child loop (e.g. "rate_limit", "billing")
-        # lets the parent tell a quota wall from a task error without parsing prose.
-        _failure_reason = result.get("failure_reason")
-        if isinstance(_failure_reason, str) and _failure_reason:
-            entry["failure_reason"] = _failure_reason
+        if exit_reason == "guardrail_halt":
+            entry["error"] = (
+                "Subagent halted by tool guardrail "
+                f"({result['guardrail'].get('code') or 'unknown'})."
+            )
+            entry["failure_reason"] = "guardrail_halt"
+        else:
+            entry["error"] = result.get("error", "Subagent did not produce a response.")
+            # Classified reason from the child loop (e.g. "rate_limit", "billing")
+            # lets the parent tell a quota wall from a task error without parsing prose.
+            _failure_reason = result.get("failure_reason")
+            if isinstance(_failure_reason, str) and _failure_reason:
+                entry["failure_reason"] = _failure_reason
     elif interrupt_note:
         entry["error"] = interrupt_note
 

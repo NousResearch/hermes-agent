@@ -34,6 +34,25 @@ QUEUE_STATE_KEYS = (
     "oldest_ready_seconds", "ageing_warn_count", "ageing_escalate_count", "ageing_oldest",
 )
 
+# §5.1's contract table, copied as a LITERAL from
+# yaan-platform/docs/READY-QUEUE-ADMISSION-MECHANISM.md §5.1 (lines 323-337 at
+# md5 a9949ea2406aecef2e662ef47ff5461d). It is a literal on purpose and is NOT
+# read from the doc at test time — the doc is a different repo. This is the
+# second place the contract lives so that a contract edit is a visible two-place
+# change: the branch's old parity test compared the module's DEFAULTS against the
+# code's own defaults (code agreeing with code), which is how an 11-key drift
+# passed 12 tests.
+SPEC_5_1_KANBAN_DEFAULTS = {
+    "admission_enabled_at": None,      # unset = off; also the bypass-audit baseline
+    "admission_budget": None,          # integer pin, overrides the derivation
+    "admission_window_hours": 24,      # trailing drain window
+    "admission_budget_floor": 5,       # floor for a quiet lane
+    "admission_p0_priority": 90,       # priority >= this is a P0 blocking fault
+    "admission_lane_budgets": None,    # optional {lane: int} overrides
+    "ageing_warn_hours": 24,           # routine tier
+    "ageing_escalate_hours": 72,       # escalate tier
+}
+
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
@@ -110,7 +129,7 @@ def _admit_payload(conn, task_id: str) -> dict:
 
 
 def test_v1_over_budget_create_parks_with_the_reason_on_the_event(home, conn):
-    enable_admission(home, admission_budget_pin=1)
+    enable_admission(home, admission_budget=1)
     first = kb.create_task(conn, title="first", assignee="lane-a")
     assert kb.get_task(conn, first).status == "ready"
 
@@ -134,18 +153,22 @@ def test_v1_over_budget_create_parks_with_the_reason_on_the_event(home, conn):
 
 
 def test_v2_lane_budget_binds_before_the_global_depth(home, conn):
-    enable_admission(home, admission_budget_pin=100, admission_lane_budget_pct=4)
-    ids = [kb.create_task(conn, title=f"a{i}", assignee="lane-a") for i in range(4)]
+    # A5/§5.1: lane-a's bound is its OWN derivation (6 completions in the
+    # window), and the board is pinned far higher — so only the LANE bound can
+    # refuse this filing. The old surface gave every lane a flat % of the board.
+    _seed_completions(conn, 6, lane="lane-a")
+    enable_admission(home, admission_budget=100)
+    ids = [kb.create_task(conn, title=f"a{i}", assignee="lane-a") for i in range(6)]
     assert all(kb.get_task(conn, i).status == "ready" for i in ids)
 
     verdict = adm.decide(conn, lane="lane-a")
     assert verdict.admitted is False and verdict.reason == adm.REASON_OVER_BUDGET
-    assert verdict.budget == 100 and verdict.depth == 4          # global room
-    assert verdict.lane_depth == 4 and verdict.lane_budget == 4  # lane is full
+    assert verdict.budget == 100 and verdict.depth == 6          # board room
+    assert verdict.lane_depth == 6 and verdict.lane_budget == 6  # lane is full
 
-    fifth = kb.create_task(conn, title="a4", assignee="lane-a")
-    assert kb.get_task(conn, fifth).status == "todo"
-    # A different lane with the same global budget still has room.
+    seventh = kb.create_task(conn, title="a6", assignee="lane-a")
+    assert kb.get_task(conn, seventh).status == "todo"
+    # A different lane derives its OWN (quiet-board) budget and still has room.
     other = kb.create_task(conn, title="b0", assignee="lane-b")
     assert kb.get_task(conn, other).status == "ready"
 
@@ -156,25 +179,27 @@ def test_v2_lane_budget_binds_before_the_global_depth(home, conn):
 def test_v3_budget_derives_from_the_window_then_the_pin(home, conn):
     _seed_completions(conn, 196, age_seconds=3 * 3600)
     budget, source = adm.ready_queue_budget(conn)
-    assert budget == 107 and source == adm.SOURCE_COHORT  # 196 x 0.55
+    assert budget == 196 and source == adm.SOURCE_COHORT  # §5.1: the cohort, x1
 
-    enable_admission(home, admission_budget_pin=108)
+    enable_admission(home, admission_budget=108)
     budget, source = adm.ready_queue_budget(conn)
     assert budget == 108 and source == adm.SOURCE_PIN
-    assert adm.lane_budget(108, "lane-a") == 4  # 4% of the effective budget
+    # The pin moves the BOARD budget only; the lane bound stays the lane's own
+    # derivation (196 here, not a share of the 108 pin).
+    assert adm.lane_budget(conn, "lane-a") == 196
 
     # A quiet board is not a stopped one: the floor holds the budget up.
-    enable_admission(home, admission_lookback_window_hours=1)
-    _seed_completions(conn, 5, tag="b")
+    enable_admission(home, admission_window_hours=1)
+    _seed_completions(conn, 3, age_seconds=60, tag="b")
     budget, source = adm.ready_queue_budget(conn)
-    assert budget == 20 and source == adm.SOURCE_FLOOR
+    assert budget == 5 and source == adm.SOURCE_FLOOR
 
 
 # --- V4: re-entry is exempt (its demand was already admitted) ----------------
 
 
 def test_v4_re_entry_is_exempt_and_restamps_the_wait_clock(home, conn):
-    enable_admission(home, admission_budget_pin=1)
+    enable_admission(home, admission_budget=1)
     held = kb.create_task(conn, title="held", assignee="lane-a")     # fills the budget
     blocked = kb.create_task(conn, title="blocked", assignee="lane-a")
     assert kb.get_task(conn, blocked).status == "todo"
@@ -202,7 +227,7 @@ def test_v5_deferred_child_waits_for_headroom_and_is_not_re_evented(home, conn):
     filler_b = kb.create_task(conn, title="fb", assignee="lane-a")
     child = kb.create_task(conn, title="child", parents=[parent], assignee="lane-a")
     assert kb.get_task(conn, child).status == "todo"
-    enable_admission(home, admission_budget_pin=1)
+    enable_admission(home, admission_budget=1)
 
     report: dict = {}
     kb.complete_task(conn, parent, summary="parent done", report=report)
@@ -235,23 +260,30 @@ def test_v5_deferred_child_waits_for_headroom_and_is_not_re_evented(home, conn):
 
 
 def test_v6_ageing_warns_escalates_and_clears_on_claim(home, conn):
-    enable_admission(
-        home, admission_budget_pin=10,
-        admission_ageing_warn_seconds=1, admission_ageing_escalate_seconds=2,
-    )
-    tid = kb.create_task(conn, title="slow", assignee="lane-a")
+    # §5.1: the tiers are HOURS spent in ready (24 / 72), not seconds.
+    enable_admission(home, admission_budget=10,
+                     ageing_warn_hours=24, ageing_escalate_hours=72)
+    warned = kb.create_task(conn, title="slow", assignee="lane-a")
+    escalated = kb.create_task(conn, title="slower", assignee="lane-a")
+    now = int(time.time())
     conn.execute("UPDATE tasks SET ready_since = ? WHERE id = ?",
-                 (int(time.time()) - 5, tid))
+                 (now - 25 * 3600, warned))
+    conn.execute("UPDATE tasks SET ready_since = ? WHERE id = ?",
+                 (now - 80 * 3600, escalated))
     conn.commit()
 
     state = adm.queue_state(conn)
-    assert state["oldest_ready_seconds"] >= 5
-    assert state["ageing_warn_count"] == 1
-    assert state["ageing_escalate_count"] == 1
+    assert state["oldest_ready_seconds"] >= 80 * 3600
+    assert state["ageing_warn_count"] == 2       # 25 h and 80 h are both past 24 h
+    assert state["ageing_escalate_count"] == 1   # only the 80 h card is past 72 h
 
-    assert kb.claim_task(conn, tid, claimer="tester") is not None
+    assert kb.claim_task(conn, warned, claimer="tester") is not None
     after = adm.queue_state(conn)
-    assert after["ageing_warn_count"] == 0 and after["ageing_escalate_count"] == 0
+    assert after["ageing_warn_count"] == 1 and after["ageing_escalate_count"] == 1
+    # The clock stops at the claim: a running card is no longer waiting.
+    assert kb.claim_task(conn, escalated, claimer="tester") is not None
+    drained = adm.queue_state(conn)
+    assert drained["ageing_warn_count"] == 0 and drained["ageing_escalate_count"] == 0
 
 
 # --- V7: with the mechanism off, nothing changes -----------------------------
@@ -270,13 +302,12 @@ def test_v7_off_means_the_previous_behaviour(home, conn):
     verdict = adm.decide(conn, lane="one-lane")
     assert verdict.admitted is True and verdict.reason == adm.REASON_DISABLED
 
-    # The keys exist in the shipped defaults, so `hermes config get kanban.…`
-    # answers and an operator can see what they are switching on.
+    # The §5.1 keys exist in the shipped defaults, so `hermes config get kanban.…`
+    # answers and an operator can see what they are switching on. The full parity
+    # check lives in test_5_1_parity_… below: a loop here over adm.DEFAULTS would
+    # only compare the code with itself, which is how an 11-key drift passed.
     from hermes_cli.config_defaults import DEFAULT_CONFIG
-    kanban_defaults = DEFAULT_CONFIG["kanban"]
-    for key in adm.DEFAULTS:
-        assert key in kanban_defaults, key
-    assert kanban_defaults["admission_enabled_at"] is None
+    assert DEFAULT_CONFIG["kanban"]["admission_enabled_at"] is None
 
 
 # --- V8: the pre-mechanism backlog is reported, never mass-addressed ----------
@@ -287,7 +318,7 @@ def test_v8_pre_mechanism_backlog_is_reported_not_touched(home, conn):
     # A card that predates the mechanism carries no admission state at all.
     conn.execute("UPDATE tasks SET admit_state = NULL, ready_since = NULL")
     conn.commit()
-    enable_admission(home, admission_budget_pin=1)
+    enable_admission(home, admission_budget=1)
 
     state = adm.queue_state(conn)
     assert state["pre_mechanism_backlog"] == 3
@@ -311,7 +342,7 @@ def test_v10_no_filing_is_dropped_silently(home, conn, capsys):
     kb.create_task(conn, title="filler", assignee="lane-a")
     kb.complete_task(conn, origin, summary="filed the follow-up from here",
                      fire_lifecycle_hook=False)
-    enable_admission(home, admission_budget_pin=1)
+    enable_admission(home, admission_budget=1)
     assert adm.queue_state(conn)["depth"] == 1  # at the budget: over it now
 
     # (a) no origin: the filing parks on its own card and is counted.
@@ -392,7 +423,7 @@ def test_a4_dedupe_is_reported_by_both_surfaces_and_the_key_is_readable(home, co
 
 
 def test_queue_state_exposes_the_frozen_keys(home, conn, capsys):
-    enable_admission(home, admission_budget_pin=3)
+    enable_admission(home, admission_budget=3)
     kb.create_task(conn, title="r", assignee="lane-a")
     assert kanban_cli._cmd_queue_state(_cli("queue-state", "--json")) == 0
     state = _json_out(capsys)
@@ -400,7 +431,76 @@ def test_queue_state_exposes_the_frozen_keys(home, conn, capsys):
         assert key in state, key
     assert state["budget"] == 3 and state["budget_source"] == adm.SOURCE_PIN
     assert state["lanes"]["lane-a"]["depth"] == 1
-    assert state["window_hours"] == 168
+    assert state["window_hours"] == 24
+
+
+# --- §5.1: the shipped config surface IS the contract ------------------------
+
+
+def test_5_1_parity_the_shipped_kanban_defaults_are_the_contract_table():
+    """§5.1 is the contract; the code is conformed to it.
+
+    Compares the SHIPPED defaults (and the kernel's own copy) against the §5.1
+    table above — equality, not containment, in both directions: a key the
+    contract does not carry (the retired ``admission_cohort_multiplier``, the
+    ``admission_lane_budget_pct`` family), a renamed key, a moved value, or a
+    missing key all fail here.
+    """
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    shipped = {
+        key: value
+        for key, value in DEFAULT_CONFIG["kanban"].items()
+        if key.startswith("admission_") or key.startswith("ageing_")
+    }
+    assert shipped == SPEC_5_1_KANBAN_DEFAULTS
+    # The kernel keeps its own copy so a board whose config.yaml predates the
+    # keys is still governed by §5.1 — and it is the same table.
+    assert adm.DEFAULTS == SPEC_5_1_KANBAN_DEFAULTS
+
+    # And the readers actually answer with those values on a bare home.
+    assert adm.admission_enabled_at() == 0          # unset = OFF
+    assert adm.lane_budgets() == {}                 # unset = no per-lane override
+    assert adm.is_p0_fault(89) is False and adm.is_p0_fault(90) is True
+
+
+# --- §5.1: the lane override map and the unassigned case ----------------------
+
+
+def test_lane_overrides_and_the_unassigned_demand_has_no_lane_bound(home, conn):
+    """A5's lane bound is the lane's own derivation; the map is the ONE override."""
+    _seed_completions(conn, 6, lane="lane-a")
+    enable_admission(home, admission_budget=50,
+                     admission_lane_budgets={"lane-a": 2, "lane-b": "3", "lane-d": -1})
+
+    # An explicit entry wins, and is coerced rather than trusted as YAML handed it
+    # over; a negative entry clamps to 0, which reads as "no lane bound".
+    assert adm.lane_budgets() == {"lane-a": 2, "lane-b": 3, "lane-d": 0}
+    assert adm.lane_budget(conn, "lane-a") == 2
+    assert adm.lane_budget(conn, "lane-b") == 3
+    assert adm.lane_budget(conn, "lane-d") == 0
+    # A lane with no entry keeps its OWN derivation (floor on a quiet lane).
+    assert adm.lane_budget(conn, "lane-c") == 5
+
+    # An unassigned demand has no lane bound at all: the board bound alone applies.
+    assert adm.lane_budget(conn, None) == 0
+    assert adm.lane_budget(conn, "  ") == 0
+    verdict = adm.decide(conn, lane=None)
+    assert verdict.lane_budget == 0 and verdict.budget == 50 and verdict.admitted is True
+
+    unassigned = kb.create_task(conn, title="nobody's", assignee=None)
+    assert kb.get_task(conn, unassigned).status == "ready"
+
+    # The override really binds: lane-a refuses at 2 ready cards, unmoved by the
+    # 50-slot board budget.
+    first = kb.create_task(conn, title="o1", assignee="lane-a")
+    second = kb.create_task(conn, title="o2", assignee="lane-a")
+    assert kb.get_task(conn, first).status == "ready"
+    assert kb.get_task(conn, second).status == "ready"
+    third = kb.create_task(conn, title="o3", assignee="lane-a")
+    parked = kb.get_task(conn, third)
+    assert parked.status == "todo" and parked.admit_state == adm.DEFERRED
+    assert adm.decide(conn, lane="lane-a").lane_budget == 2
 
 
 # --- Every ready-writer is accounted for -------------------------------------

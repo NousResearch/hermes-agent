@@ -204,6 +204,18 @@ def create_execution(
     return record  # type: ignore[return-value]
 
 
+def discard_unstarted_execution(execution_id: str) -> bool:
+    """Remove our provisional attempt when its fire claim was rejected."""
+    with _transaction() as conn:
+        cur = conn.execute(
+            """DELETE FROM executions
+               WHERE id=? AND status='claimed' AND started_at IS NULL
+                 AND handoff_pending=0 AND process_id=? AND pid=?""",
+            (execution_id, _PROCESS_ID, os.getpid()),
+        )
+        return cur.rowcount == 1
+
+
 def set_execution_occurrence(execution_id: str, instant: Optional[str]) -> None:
     """Bind the store-claimed snapshot before a provider hands it to a worker."""
     from cron.occurrences import scheduled_instant

@@ -7,6 +7,7 @@ import asyncio
 import errno
 import json
 import logging
+import re
 import sys
 import time
 import uuid
@@ -29,6 +30,19 @@ from gateway.platforms._shared import (
 )
 
 logger = logging.getLogger(__name__)
+
+_NOTIFY_SERVICE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+def _resolve_notify_service(extra: Optional[Dict[str, Any]] = None) -> str:
+    value = (extra or {}).get("notify_service") or _get_scoped_secret("HASS_NOTIFY_SERVICE", "")
+    service = str(value or "").strip().strip("/")
+    if service.startswith("notify."):
+        service = service.split(".", 1)[1]
+    if service and not _NOTIFY_SERVICE_RE.fullmatch(service):
+        logger.warning("Ignoring invalid Home Assistant notify service: %s", value)
+        return ""
+    return service
 
 
 def check_ha_requirements() -> bool:
@@ -103,6 +117,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         # DEFAULT profile's HA instance (os.environ under multiplex).
         self._hass_url: str = (extra.get("url") or _get_scoped_secret("HASS_URL", "http://homeassistant.local:8123")).rstrip("/")
         self._hass_token: str = config.token or _get_scoped_secret("HASS_TOKEN", "")
+        self._notify_service = _resolve_notify_service(extra)
         self._watch_domains: Set[str] = set(extra.get("watch_domains", []))
         self._watch_entities: Set[str] = set(extra.get("watch_entities", []))
         self._ignore_entities: Set[str] = set(extra.get("ignore_entities", []))
@@ -294,7 +309,8 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         REST rather than the WebSocket, to avoid racing the listener loop that
         reads from the same WS connection.
         """
-        url = f"{self._hass_url}/api/services/persistent_notification/create"
+        service = self._notify_service
+        url = f"{self._hass_url}/api/services/notify/{service}" if service else f"{self._hass_url}/api/services/persistent_notification/create"
         payload = {"title": "Hermes Agent", "message": content[:self.MAX_MESSAGE_LENGTH]}
 
         async def _post(session) -> SendResult:
@@ -345,7 +361,8 @@ async def _standalone_send(
     token = (getattr(pconfig, "token", None) or _get_scoped_secret("HASS_TOKEN", "")).strip()
     if not hass_url or not token:
         return send_error("Home Assistant standalone send: HASS_URL and HASS_TOKEN must both be set")
-    url = f"{hass_url}/api/services/notify/notify"
+    service = _resolve_notify_service(extra) or "notify"
+    url = f"{hass_url}/api/services/notify/{service}"
     payload = {"message": message, "target": chat_id}
     try:
         async with HomeAssistantAdapter._new_session() as session:

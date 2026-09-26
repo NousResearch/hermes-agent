@@ -754,22 +754,27 @@ export default function SystemPage() {
           setSharedRestartOpen(false);
           void restartShared();
         }}
-        title="Restart the shared gateway?"
+        title={t.system.sharedRestartTitle}
         description={sharedGatewayRestartDescription(sharedGateway ?? [])}
-        confirmLabel="Restart all"
+        confirmLabel={t.system.sharedRestartConfirm}
       />
 
       <ConfirmDialog
         open={canUpdateHermes && updateConfirmOpen}
         onCancel={() => setUpdateConfirmOpen(false)}
         onConfirm={() => void applyUpdate()}
-        title="Update Hermes?"
+        title={t.system.updateConfirmTitle}
         description={
           updateInfo && updateInfo.behind && updateInfo.behind > 0
-            ? `This will run 'hermes update' (${updateInfo.update_command}) and pull ${updateInfo.behind} new commit${updateInfo.behind === 1 ? "" : "s"}. The gateway restarts when the update finishes; the current session keeps its prompt cache until then.`
-            : `This will run 'hermes update' (${updateInfo?.update_command ?? "hermes update"}) and restart the gateway when it finishes.`
+            ? t.system.updateConfirmBehind
+                .replace("{command}", updateInfo.update_command)
+                .replace("{count}", String(updateInfo.behind))
+            : t.system.updateConfirmPlain.replace(
+                "{command}",
+                updateInfo?.update_command ?? "hermes update",
+              )
         }
-        confirmLabel="Update now"
+        confirmLabel={t.system.updateConfirmLabel}
       />
 
       <DeleteConfirmDialog
@@ -777,7 +782,7 @@ export default function SystemPage() {
         onCancel={memoryReset.cancel}
         onConfirm={memoryReset.confirm}
         title={t.system.resetMemory}
-        description="This permanently erases the selected built-in memory files. This cannot be undone."
+        description={t.system.memoryResetDescription}
         loading={memoryReset.isDeleting}
       />
       <DeleteConfirmDialog
@@ -785,7 +790,7 @@ export default function SystemPage() {
         onCancel={credDelete.cancel}
         onConfirm={credDelete.confirm}
         title={t.system.removeCredential}
-        description="Remove this pooled API key? The agent will no longer rotate through it."
+        description={t.system.credentialDeleteDescription}
         loading={credDelete.isDeleting}
       />
       <DeleteConfirmDialog
@@ -793,7 +798,7 @@ export default function SystemPage() {
         onCancel={checkpointsPrune.cancel}
         onConfirm={checkpointsPrune.confirm}
         title={t.system.pruneCheckpoints}
-        description="Delete the rollback checkpoint shadow store? Existing /rollback points will be lost."
+        description={t.system.pruneDescription}
         loading={checkpointsPrune.isDeleting}
       />
       <DeleteConfirmDialog
@@ -801,7 +806,7 @@ export default function SystemPage() {
         onCancel={hookDelete.cancel}
         onConfirm={hookDelete.confirm}
         title={t.system.removeShellHook}
-        description="Remove this hook from config and revoke its consent? It stops firing on the next restart."
+        description={t.system.hookDeleteDescription}
         loading={hookDelete.isDeleting}
       />
       <HermesConsoleModal
@@ -1093,7 +1098,9 @@ export default function SystemPage() {
             )}
             {!portal?.logged_in && (
               <p className="text-xs text-muted-foreground">
-                Log in with <span className="font-mono">hermes portal</span>.
+                {t.system.portalLoginHint.split("hermes portal")[0]}
+                <span className="font-mono">hermes portal</span>
+                {t.system.portalLoginHint.split("hermes portal")[1]}
               </p>
             )}
           </CardContent>
@@ -1194,16 +1201,20 @@ export default function SystemPage() {
             <CardContent className="flex flex-col gap-2 border-t border-border py-4 text-sm">
               <div className="flex items-center justify-between gap-3">
                 <span className="text-muted-foreground">
-                  Your profiles each run their own gateway. One multiplexed gateway serves every profile from a single process.
+                  {t.system.multiplexExplanation}
                 </span>
                 <Button
                   size="sm"
                   className="uppercase"
                   onClick={migrateToMultiplex}
                   disabled={!migratePlan.eligible}
-                  title={migratePlan.eligible ? undefined : "Fix the blockers below first"}
+                  title={
+                    migratePlan.eligible
+                      ? undefined
+                      : t.system.multiplexBlockedTitle
+                  }
                 >
-                  Migrate to a single multiplexed gateway
+                  {t.system.multiplexButton}
                 </Button>
               </div>
               {migratePlan.blockers.map((b) => (
@@ -1246,7 +1257,7 @@ export default function SystemPage() {
 
             {activeMemoryProvider?.status === "missing" && (
               <p className="border border-destructive/50 px-3 py-2 text-xs text-destructive">
-                The configured provider is no longer installed. Switch to built-in memory or configure another provider in Plugins.
+                {t.system.memoryProviderMissing}
               </p>
             )}
 
@@ -1295,12 +1306,12 @@ export default function SystemPage() {
             </div>
             <div className="flex justify-end">
               <Button size="sm" className="uppercase" onClick={addCredential} disabled={addingCred} prefix={addingCred ? <Spinner /> : undefined}>
-                Add key
+                {t.system.addKey}
               </Button>
             </div>
             {pool.length === 0 && (
               <p className="text-sm text-muted-foreground">
-                No pooled credentials. Add one above to enable key rotation.
+                {t.system.noPooledCredentials}
               </p>
             )}
             {pool.map((prov) => (
@@ -1407,11 +1418,11 @@ export default function SystemPage() {
                     prefix={<Upload className="h-3.5 w-3.5" />}
                     onClick={() => importUploadInputRef.current?.click()}
                   >
-                    Choose restore zip
+                    {t.system.chooseRestoreZip}
                   </Button>
                   <span
                     className="min-w-0 truncate text-xs text-muted-foreground"
-                    title={importFile?.name ?? "No backup archive selected"}
+                    title={importFile?.name ?? t.system.noArchiveSelected}
                   >
                     {importFile?.name ?? "No backup archive selected"}
                   </span>
@@ -1481,11 +1492,9 @@ export default function SystemPage() {
               <div className="flex items-start gap-2">
                 <Share2 className="h-4 w-4 mt-0.5 text-muted-foreground" />
                 <div className="flex flex-col">
-                  <span className="text-sm font-medium">Share debug report</span>
+                  <span className="text-sm font-medium">{t.system.shareDebugReport}</span>
                   <span className="text-xs text-muted-foreground max-w-prose">
-                    Uploads system info + logs to a public paste service and
-                    returns links to send the Hermes team. Pastes auto-delete
-                    after 6 hours.
+                    {t.system.shareDebugDescription}
                   </span>
                 </div>
               </div>
@@ -1592,7 +1601,10 @@ export default function SystemPage() {
 
                 {shareResult.failures.length > 0 && (
                   <span className="text-xs text-destructive">
-                    Some logs failed to upload: {shareResult.failures.join("; ")}
+                    {t.system.shareUploadFailures.replace(
+                      "{errors}",
+                      shareResult.failures.join("; "),
+                    )}
                   </span>
                 )}
               </div>
@@ -1632,7 +1644,7 @@ export default function SystemPage() {
         {(!hooks || hooks.hooks.length === 0) && (
           <Card>
             <CardContent className="py-6 text-center text-sm text-muted-foreground">
-              No shell hooks configured.
+              {t.system.noHooksConfigured}
             </CardContent>
           </Card>
         )}

@@ -714,7 +714,7 @@ export default function SkillsPage() {
           <div className="grid gap-3 py-2">
             <div className="grid gap-1.5">
               <label className="text-xs font-medium text-muted-foreground">
-                Local file or directory
+                {t.skills.hubDirLabel}
               </label>
               <Input
                 placeholder={t.skills.hubDirPlaceholder}
@@ -1135,8 +1135,7 @@ function HubBrowser({
           ) : (
             <Card className="rounded-none">
               <CardContent className="py-10 text-center text-sm text-muted-foreground">
-                Search the hub above to browse installable skills from the
-                connected sources.
+                {t.skills.hubBrowseEmpty}
               </CardContent>
             </Card>
           )}
@@ -1162,7 +1161,7 @@ function HubBrowser({
           {results.length === 0 ? (
             <Card className="rounded-none">
               <CardContent className="py-8 text-center text-sm text-muted-foreground">
-                No matching skills found in the hub.
+                {t.skills.hubNoMatches}
               </CardContent>
             </Card>
           ) : (
@@ -1212,8 +1211,9 @@ function ConnectedHubs({
   if (sources.length === 0) {
     return (
       <p className="text-xs text-muted-foreground">
-        Results come from the same sources as{" "}
-        <span className="font-mono">hermes skills search</span>.
+        {t.skills.hubSourcesNote.split("hermes skills search")[0]}
+        <span className="font-mono">hermes skills search</span>
+        {t.skills.hubSourcesNote.split("hermes skills search")[1]}
       </p>
     );
   }
@@ -1567,12 +1567,13 @@ function ScanPanel({
   scan: SkillHubScan | null;
   scanning: boolean;
 }) {
+  const { t } = useI18n();
   if (scanning && !scan) {
     return (
       <div className="flex flex-col items-center justify-center gap-2 py-12">
         <Loader2 className="h-6 w-6 animate-spin text-primary" />
         <span className="text-xs text-muted-foreground">
-          Fetching, quarantining, and scanning…
+          {t.skills.scanFetching}
         </span>
       </div>
     );
@@ -1580,8 +1581,7 @@ function ScanPanel({
   if (!scan) {
     return (
       <p className="text-sm text-muted-foreground text-center py-10">
-        Run a security scan to inspect this skill for risky patterns before
-        installing.
+        {t.skills.scanPrompt}
       </p>
     );
   }
@@ -1645,7 +1645,7 @@ function ScanPanel({
         {scan.findings.length === 0 && (
           <span className="flex items-center gap-1 text-xs text-emerald-400">
             <CheckCircle2 className="h-3.5 w-3.5" />
-            No risky patterns detected
+            {t.skills.scanClean}
           </span>
         )}
       </div>

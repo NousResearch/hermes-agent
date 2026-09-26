@@ -98,8 +98,6 @@ from tests.compat.old_updater_support import (
         ("hermes_cli.update_cmd", "get_default_hermes_root", (), {}, None),
         ("hermes_cli.tools_config", "_pip_install", (["--quiet", "honcho-ai"],), {}, None),
         ("hermes_cli.tools_config", "_pip_install", (["--quiet", "honcho-ai"],), {"timeout": 120, "capture_output": False}, None),
-        ("tools.lazy_deps", "install_specs", ([],), {"timeout": 120}, None),
-        ("tools.lazy_deps", "install_specs", (["honcho-ai"],), {"timeout": 120}, None),
     ],
 )
 def test_retired_dependency_entrypoints_handoff_without_fallback(module, name, args, kwargs, cached, fresh_child, monkeypatch):

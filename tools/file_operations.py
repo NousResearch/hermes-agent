@@ -243,10 +243,13 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
 
     def _run_python_snippet(self, snippet: str) -> ExecuteResult:
         """Run ``snippet`` via the backend's ``python3``, retrying with ``python``
-        when only that name exists (Windows / older systems)."""
-        result = self._exec(f"python3 -c {self._escape_shell_arg(snippet)}")
+        when only that name exists (Windows / older systems). The snippet is code, not a
+        path, so it is quoted verbatim: ``_escape_shell_arg``'s Windows path rewrite would
+        turn every backslash escape in it (``'\\n'``, ``b'\\xff'``) into a ``/``."""
+        quoted = "'" + snippet.replace("'", "'\"'\"'") + "'"
+        result = self._exec(f"python3 -c {quoted}")
         if result.exit_code != 0 and "python3" in (result.stdout or ""):
-            result = self._exec(f"python -c {self._escape_shell_arg(snippet)}")
+            result = self._exec(f"python -c {quoted}")
         return result
 
     def _fenced_read(self, body: str, *more: str) -> "tuple[Optional[list[str]], Optional[int], ExecuteResult]":

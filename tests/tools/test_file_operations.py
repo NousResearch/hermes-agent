@@ -259,6 +259,17 @@ class TestShellFileOpsHelpers:
         ) == "'/c/Users/alice/notes.txt'"
 
 
+    def test_python_snippet_is_passed_verbatim_on_windows(self, file_ops, mock_env, monkeypatch):
+        """The snippet is code: the Windows path rewrite must not turn its backslash
+        escapes into slashes (the UTF-16 reader's '\\n' split became '/n')."""
+        monkeypatch.setattr("tools.environments.local._IS_WINDOWS", True)
+        snippet = "print('a\\nb'); print(b'\\xff\\xfe')"
+        file_ops._run_python_snippet(snippet)
+        command = mock_env.execute.call_args[0][0]
+        assert "a\\nb" in command
+        assert "\\xff\\xfe" in command
+        assert "/n" not in command and "/xff" not in command
+
     def test_is_likely_binary_by_extension(self, file_ops):
         assert file_ops._is_likely_binary("photo.png") is True
         assert file_ops._is_likely_binary("data.db") is True

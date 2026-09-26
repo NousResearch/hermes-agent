@@ -64,6 +64,24 @@ def test_singleton_precedence_is_unchanged(home):
     assert resolve_xai_oauth_runtime_credentials(refresh_if_expiring=False)["api_key"] == "singleton"
 
 
+def test_global_pool_fallback_filters_dead_rows_without_cross_profile_leak(home, tmp_path, monkeypatch):
+    from hermes_cli import auth
+
+    global_home = tmp_path / "global"
+    global_home.mkdir()
+    global_path = write_store(global_home, [entry("revoked", "dead"), entry("global-live", "ok")])
+    monkeypatch.setattr(auth, "_global_auth_file_path", lambda: global_path)
+    profile_b = tmp_path / "profile-b"
+    profile_b.mkdir()
+    write_store(profile_b, [entry("b-live", "ok")])
+    local_path = write_store(home, [entry("local-dead", "dead")])
+    before = {p: p.read_bytes() for p in (global_path, local_path, profile_b / "auth.json")}
+    for active, expected in ((home, "global-live"), (profile_b, "b-live"), (home, "global-live")):
+        monkeypatch.setenv("HERMES_HOME", str(active))
+        assert resolve_xai_oauth_runtime_credentials(refresh_if_expiring=False)["api_key"] == expected
+    assert {p: p.read_bytes() for p in before} == before
+
+
 def test_empty_pool_still_raises_auth_error(home):
     write_store(home, [])
     with pytest.raises(AuthError):

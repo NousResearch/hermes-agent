@@ -673,14 +673,28 @@ class ResponsesApiTransport(ProviderTransport):
         is_codex_backend: bool — chatgpt.com/backend-api/codex is_xai_responses: bool — xAI/Grok backend
         github_reasoning_extra: dict | None — Copilot reasoning params
         """
+        from agent.codex_responses_adapter import _chat_content_to_responses_parts
         from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
         instructions = params.get("instructions", "")
-        payload_messages = messages
-        if not instructions and messages and messages[0].get("role") == "system":
-            instructions = str(messages[0].get("content") or "").strip()
-            payload_messages = messages[1:]
-        instructions = instructions or DEFAULT_AGENT_IDENTITY
+        system_parts = [instructions] if instructions else []
+        payload_messages = []
+        # Session seeds are additional system messages; the input converter intentionally
+        # accepts only conversational roles. Keep all instructions outside that lossy path.
+        for index, message in enumerate(messages):
+            if not isinstance(message, dict) or message.get("role") != "system":
+                payload_messages.append(message)
+                continue
+            # An explicit override replaces the leading native prompt, not later seeds.
+            if index == 0 and instructions:
+                continue
+            content = message.get("content") or ""
+            text = "\n".join(part["text"] for part in _chat_content_to_responses_parts(content, role="system") if part["type"] == "input_text") if isinstance(content, list) else str(content)
+            if index == 0:
+                text = text.strip()
+            if text.strip():
+                system_parts.append(text)
+        instructions = "\n\n".join(system_parts) or DEFAULT_AGENT_IDENTITY
 
         is_github_responses = params.get("is_github_responses") is True
         is_codex_backend = params.get("is_codex_backend") is True

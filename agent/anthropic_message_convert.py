@@ -720,7 +720,18 @@ def convert_messages_to_anthropic(
     for m in messages:
         role = m.get("role", "user")
         if role == "system":
-            system = _convert_system_content(m.get("content", ""))
+            content = _convert_system_content(m.get("content", ""))
+            if not system:
+                system = content
+            elif content:
+                # A seeded transcript can add guidance after the native prompt. Preserve
+                # both, including the native prompt's per-block cache breakpoints.
+                if isinstance(system, str) and isinstance(content, str):
+                    system += "\n\n" + content
+                else:
+                    before = system if isinstance(system, list) else [{"type": "text", "text": system}]
+                    after = content if isinstance(content, list) else [{"type": "text", "text": content}]
+                    system = [*before, *after]
         elif role == "assistant":
             result.append(_convert_assistant_message(m))
         elif role == "tool":

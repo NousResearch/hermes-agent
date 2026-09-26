@@ -7,10 +7,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import os
-import re
 import sqlite3
 import subprocess
 import threading
@@ -126,12 +126,6 @@ def _daemon_thread(target, name: str) -> threading.Thread:
     t = threading.Thread(target=target, name=name, daemon=True)
     t.start()
     return t
-
-
-def _safe_context_slug(value: str, max_len: int = 96) -> str:
-    """Sanitize attacker-provided context ids before using in session titles."""
-    slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value or "")).strip("-._")
-    return (slug or "ctx")[:max_len]
 
 
 def _state_db(profile: str, sql: str, params: tuple, log_msg: str, *, commit: bool = False) -> str:
@@ -292,9 +286,9 @@ class A2AAdapter(BasePlatformAdapter):
         self._watchdog_stop = threading.Event()
         # Per-adapter protocol state (not module-global).
         self.tasks, self._turns, self._rate_limiter = protocol.TaskStore(), protocol.TurnTracker(), protocol.RateLimiter()
-        # Forwarded profile sessions: (profile, agent_slug, context_id) -> session_id.
-        self._profile_sessions: Dict[tuple[str, str, str], str] = {}
-        self._profile_session_locks: Dict[tuple[str, str, str], threading.Lock] = {}
+        # Forwarded profile sessions: (profile, agent_slug, authenticated_peer, exact_context_id).
+        self._profile_sessions: Dict[tuple[str, str, str, str], str] = {}
+        self._profile_session_locks: Dict[tuple[str, str, str, str], threading.Lock] = {}
         self._profile_session_locks_guard = threading.Lock()
         # Pending reply futures: task_id -> (context_id, Future). _pending_order keeps per-context
         # FIFO so adapter.send() — which only knows the context — resolves the oldest task.
@@ -536,7 +530,7 @@ class A2AAdapter(BasePlatformAdapter):
             raise ValueError(f"A2A target profile {profile!r} is unavailable")
         return target
 
-    def _forward_lock(self, key: tuple[str, str, str]) -> threading.Lock:
+    def _forward_lock(self, key: tuple[str, str, str, str]) -> threading.Lock:
         with self._profile_session_locks_guard:
             return self._profile_session_locks.setdefault(key, threading.Lock())
 
@@ -601,9 +595,12 @@ class A2AAdapter(BasePlatformAdapter):
         ``source=a2a`` session and titles it deterministically; later turns ``--resume`` that id."""
         profile = str(agent.get("profile") or agent.get("slug") or "").strip()
         slug = str(agent.get("slug") or profile or "agent")
-        safe_ctx = _safe_context_slug(context_id)
-        session_title = f"a2a-{slug}-{safe_ctx}"
-        key = (profile or "default", slug, safe_ctx)
+        # Include authenticated identity and exact context in cache, lock and persisted lookup.
+        # Encoding the tuple before hashing prevents separator, sanitization and length aliases.
+        key = (profile or "default", slug, peer, context_id)
+        session_title = "a2a-" + hashlib.sha256(
+            json.dumps(key, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
         timeout = int(agent.get("timeout") or _reply_timeout())
         with self._forward_lock(key):
             session_id = self._profile_sessions.get(key) or _state_db(

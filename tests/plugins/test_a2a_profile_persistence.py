@@ -1,5 +1,6 @@
 """Multiplex A2A writes stay with the execution profile across HTTP thread hops."""
 import asyncio
+import hashlib
 import json
 import os
 import sqlite3
@@ -235,3 +236,80 @@ def test_real_forwarded_profiles_survive_fresh_process_readback(tmp_path, monkey
         assert not (launch / "a2a_conversations").exists()
         assert not (launch / "a2a_audit.jsonl").exists()
         assert not (launch / "state.db").exists()
+
+
+def test_forwarded_session_identity_survives_restart_without_peer_or_context_alias(tmp_path, monkeypatch):
+    """Real target CLI sessions cannot be resumed by another peer or colliding context."""
+    root = tmp_path / "operator"
+    launch = root / ".hermes"
+    target = launch / "profiles" / "receiver"
+    root.mkdir()
+    launcher = tmp_path / "bin"
+    launcher.mkdir()
+    hermes = launcher / "hermes"
+    hermes.write_text(f"#! /bin/sh\nexec '{sys.executable}' -m hermes_cli.main \"$@\"\n")
+    hermes.chmod(0o700)
+    # These exact IDs used to collapse to the same sanitized session title.
+    contexts = ("shared/id", "shared id", "x" * 96 + "one", "x" * 96 + "two")
+    turns = (("peer-one", contexts[0]), ("peer-two", contexts[0]),
+             ("peer-one", contexts[1]), ("peer-one", contexts[2]),
+             ("peer-one", contexts[3]), ("peer-one", contexts[0]))
+    with FakeLLMServer([Text(f"ACK {i}") for i in range(len(turns))], api_key="fixture-key") as model:
+        write_home(target, model.base_url, api_key="fixture-key")
+        env = hermetic_env(root, {"PATH": str(launcher) + os.pathsep + os.environ["PATH"]})
+        monkeypatch.setattr(os, "environ", env)
+        def new_listener():
+            monkeypatch.setenv("HERMES_PROFILE", "sender")
+            token = set_hermes_home_override(launch)
+            try:
+                return A2AAdapter(SimpleNamespace(extra={"agents": {"receiver": {"profile": "receiver"}}}))
+            finally:
+                reset_hermes_home_override(token)
+                monkeypatch.delenv("HERMES_PROFILE")
+
+        listener = new_listener()
+        for i, (peer, context) in enumerate(turns):
+            if i == len(turns) - 1:
+                listener = new_listener()  # empty cache; title must find only this peer/context
+            errors = []
+            def send():
+                try:
+                    params = {"message": protocol.text_message(protocol.ROLE_USER, f"turn {i}", context_id=context)}
+                    response = listener._rpc_message_send(1, params, peer, agent=listener._agents["receiver"])
+                    assert response["result"]["status"]["state"] == protocol.STATE_COMPLETED, response
+                except BaseException as exc:
+                    errors.append(exc)
+            thread = threading.Thread(target=send)
+            thread.start()
+            thread.join(timeout=60)
+            assert not thread.is_alive()
+            assert not errors, errors
+
+        assert len(model.main_requests()) == len(turns)
+        with sqlite3.connect(target / "state.db") as db:
+            sessions = db.execute("SELECT id, title FROM sessions WHERE source = 'a2a'").fetchall()
+            by_title = {title: session_id for session_id, title in sessions}
+            for peer, context in turns:
+                identity = ("receiver", "receiver", peer, context)
+                title = "a2a-" + hashlib.sha256(
+                    json.dumps(identity, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+                ).hexdigest()
+                assert title in by_title
+                user_turns = [row[0] for row in db.execute(
+                    "SELECT content FROM messages WHERE session_id = ? AND role = 'user' ORDER BY id",
+                    (by_title[title],))]
+                expected = [f"turn {j}" for j, pair in enumerate(turns) if pair == (peer, context)]
+                assert len(user_turns) == len(expected)
+                assert all(text in turn for text, turn in zip(expected, user_turns))
+        assert len(sessions) == len(turns) - 1  # only peer-one's exact context continues
+        assert len({title for _, title in sessions}) == len(sessions)
+        assert all(title.startswith("a2a-") for _, title in sessions)
+        # Fresh process reads the receiver's durable transcript; launch profile stays clean.
+        for context in contexts:
+            code = ("from plugins.platforms.a2a.tools import a2a_history; "
+                    f"print(a2a_history({{'context_id': {context!r}}}))")
+            readback = run_python(code, root, extra_env={"HERMES_HOME": str(target)})
+            assert readback.returncode == 0, readback.stderr
+            assert "[user]" in readback.stdout and "[agent]" in readback.stdout
+        assert not (launch / "state.db").exists()
+        assert not (launch / "a2a_conversations").exists()

@@ -1562,7 +1562,7 @@ print('fake reply')
         con = sqlite3.connect(db)
         title = con.execute("SELECT title FROM sessions WHERE id='sess-1'").fetchone()[0]
         con.close()
-        assert title == "a2a-dev-ctx-unsafe-value"
+        assert title.startswith("a2a-") and len(title) == len("a2a-") + 64
 
 
 # --------------------------------------------------------------------------

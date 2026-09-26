@@ -73,6 +73,12 @@ via `tasks/get`.
   fails without storing the request. Routing is synchronous and requires the
   target profile to be available. It is not an offline mailbox; task state
   (`tasks/get`) is process-local and is not guaranteed after a restart.
+- Forwarded model sessions are keyed by target profile, served route, authenticated
+  peer and the exact context ID. Distinct peers cannot resume each other's model
+  session even if they choose the same context ID; unsafe/truncated IDs cannot
+  alias. Older forwarded sessions titled using only a sanitized context are not
+  resumed automatically after this security change. Their existing records remain
+  in the target profile's session store for operator review.
 
 ## Env vars
 

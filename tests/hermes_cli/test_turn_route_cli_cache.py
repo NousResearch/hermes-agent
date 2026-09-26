@@ -227,3 +227,38 @@ def test_same_provider_model_change_resolves_selected_model_wire(routed_chat, mo
     assert route["model"] == "claude-sonnet-4-5"
     assert route["runtime"]["api_mode"] == "anthropic_messages"
     assert route["runtime"]["base_url"] == "https://opencode.ai/zen"
+
+def test_routed_model_uses_its_reasoning_policy(routed_chat, monkeypatch):
+    """Per-model reasoning must follow the model selected for this turn, not the configured model."""
+    shell, selected, _credential, _agents, _turn_agents = routed_chat
+    selected.update(model="beta")
+    shell.reasoning_config = {"enabled": True, "effort": "low"}
+    shell._explicit_reasoning_config = None
+
+    def resolve_reasoning(_config, model):
+        return {"enabled": True, "effort": "high" if model == "beta" else "low"}
+
+    monkeypatch.setattr("hermes_constants.resolve_reasoning_config", resolve_reasoning)
+
+    assert shell.chat("route to beta") == "beta"
+    assert shell.agent.reasoning_config == {"enabled": True, "effort": "high"}
+    # The configured session policy stays owned by the configured model; routing is turn-local.
+    assert shell.reasoning_config == {"enabled": True, "effort": "low"}
+
+
+def test_explicit_cli_reasoning_stays_authoritative_across_turn_route(routed_chat, monkeypatch):
+    """An explicit --reasoning choice outranks per-model config for the invocation."""
+    shell, selected, _credential, _agents, _turn_agents = routed_chat
+    selected.update(model="beta")
+    explicit = {"enabled": True, "effort": "medium"}
+    shell.reasoning_config = explicit
+    shell._explicit_reasoning_config = explicit
+
+    def unexpected_resolve(*_args, **_kwargs):
+        raise AssertionError("explicit reasoning must not be re-resolved")
+
+    monkeypatch.setattr("hermes_constants.resolve_reasoning_config", unexpected_resolve)
+
+    assert shell.chat("route to beta") == "beta"
+    assert shell.agent.reasoning_config == explicit
+

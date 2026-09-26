@@ -1,16 +1,20 @@
 """Auxiliary wire adapters must hand every usage consumer the provider's real token buckets.
 
-Regression for #71242. The adapters rebuild provider usage for ``call_llm`` callers, and each
-consumer then picks a ``normalize_usage`` shape from the route it knows: session accounting
-passes only ``provider``, the ``post_auxiliary_call`` hook and MoA reference slots pass the
-route's own ``api_mode``, and the MoA aggregator is read as Chat Completions. Whatever the
-selection, the adapted usage has to normalize to the same buckets as the native response.
+Regression for #71242 (and the MoA reference-slot zeros of #123157). The adapters rebuild
+provider usage for ``call_llm`` callers, and each consumer then picks a ``normalize_usage``
+shape from the route it knows: session accounting passes only ``provider``, the
+``post_auxiliary_call`` hook and MoA reference slots pass the route's own ``api_mode``, and the
+MoA aggregator is read as Chat Completions. Whatever the selection, the adapted usage has to
+normalize to the same buckets as the native response.
 """
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 from anthropic.types import Message, TextBlock, Usage
+from openai.types.responses import ResponseUsage
+from openai.types.responses.response_usage import InputTokensDetails, OutputTokensDetails
 
 from agent.usage_pricing import normalize_usage
 
@@ -44,6 +48,23 @@ _ANTHROPIC_USAGE = {
     "no-cache-fields": Usage(input_tokens=5, output_tokens=7),
 }
 
+
+def _adapt_codex(native_usage, monkeypatch):
+    from agent.auxiliary_client import _parse_codex_final_response
+
+    return _parse_codex_final_response(SimpleNamespace(output=[], usage=native_usage))[2]
+
+
+_CODEX_USAGE = {
+    "cached-and-reasoning": ResponseUsage(
+        input_tokens=4450, input_tokens_details=InputTokensDetails(cached_tokens=3000), output_tokens=90,
+        output_tokens_details=OutputTokensDetails(reasoning_tokens=64), total_tokens=4540,
+    ),
+    "cache-write-dict": {"input_tokens": 1000, "output_tokens": 20, "total_tokens": 1020,
+                         "input_tokens_details": {"cached_tokens": 600, "cache_write_tokens": 100}},
+    "no-details": {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12},
+}
+
 # wire -> (adapter, the native route's (provider, api_mode), native usage samples,
 #          the (provider, api_mode) each consumer passes for a route on that wire)
 _WIRES = {
@@ -51,6 +72,11 @@ _WIRES = {
         "session-accounting-native": ("anthropic", None),
         "session-accounting-other-provider": ("custom", None),
         "hook-and-moa-reference": ("custom", "anthropic_messages"),
+        "moa-aggregator": ("moa", "chat_completions"),
+    }),
+    "codex": (_adapt_codex, ("openai-codex", "codex_responses"), _CODEX_USAGE, {
+        "session-accounting": ("openai-codex", None),
+        "hook-and-moa-reference": ("openai-codex", "codex_responses"),
         "moa-aggregator": ("moa", "chat_completions"),
     }),
 }

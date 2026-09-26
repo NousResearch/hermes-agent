@@ -71,6 +71,8 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
         _fallback_api_mode_resolved, _rebind_fallback_credential_pool,
         _reresolve_fallback_reasoning_config, _rescope_fallback_extra_body, _update_fallback_context_compressor,
     )
+    from agent.primary_runtime_snapshot import remember_primary_window
+    remember_primary_window(agent)  # leaving the primary: keep the window it learned for the restore
     # raw_codex=True: the main agent needs direct responses.stream() access for Codex providers.
     route = resolve_route_entry_client(entry, provider, model)
     client, model, api_mode_explicit, api_mode = route.client, route.model, route.api_mode_explicit, route.api_mode

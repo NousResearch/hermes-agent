@@ -2443,6 +2443,9 @@ class TestLaunchctlBootstrapEioRetry:
             # First bootstrap hits EIO; bootout clears it; retry succeeds.
             if cmd[1] == "bootstrap" and len(bootstrap_calls) == 1:
                 raise subprocess.CalledProcessError(5, cmd)
+            if cmd[1] == "print":
+                # Label already gone once bootout returns.
+                return SimpleNamespace(returncode=113, stdout="", stderr="")
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
@@ -2452,8 +2455,60 @@ class TestLaunchctlBootstrapEioRetry:
         assert calls == [
             ["launchctl", "bootstrap", self.DOMAIN, self.PLIST],
             ["launchctl", "bootout", f"{self.DOMAIN}/{self.LABEL}"],
+            ["launchctl", "print", f"{self.DOMAIN}/{self.LABEL}"],
             ["launchctl", "bootstrap", self.DOMAIN, self.PLIST],
         ]
+
+    def test_retry_waits_for_draining_label_to_unload(self, monkeypatch):
+        """``bootout`` returns while the old gateway still drains; a bootstrap issued before launchd
+        drops the label fails EIO again and leaves the job unloaded (install --force over a live
+        gateway, 2026-09-23). The retry must wait until ``launchctl print`` reports it gone."""
+        calls = []
+        still_draining = {"prints": 3}
+
+        def fake_run(cmd, check=True, **kwargs):
+            calls.append(cmd)
+            if cmd[1] == "bootstrap":
+                # EIO for as long as the label is still registered.
+                if [c for c in calls if c[1] == "bootstrap"] == [cmd] or still_draining["prints"] > 0:
+                    raise subprocess.CalledProcessError(5, cmd)
+            if cmd[1] == "print":
+                if still_draining["prints"] > 0:
+                    still_draining["prints"] -= 1
+                    return SimpleNamespace(returncode=0, stdout="state = running\npid = 4242\n", stderr="")
+                return SimpleNamespace(returncode=113, stdout="", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(gateway_cli.time, "sleep", lambda _s: None)
+
+        gateway_cli._launchctl_bootstrap(self.DOMAIN, self.PLIST, self.LABEL)
+
+        verbs = [c[1] for c in calls]
+        assert verbs == ["bootstrap", "bootout", "print", "print", "print", "print", "bootstrap"]
+
+    def test_wait_for_unload_is_bounded(self, monkeypatch, tmp_path):
+        # A label that never unloads must not hang the caller: the wait gives up at the budget,
+        # the bootstrap retry runs (and fails loudly), and the reload log records why.
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: tmp_path)
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(gateway_cli.time, "monotonic", lambda: clock["now"])
+        monkeypatch.setattr(
+            gateway_cli.time, "sleep", lambda s: clock.__setitem__("now", clock["now"] + s)
+        )
+        monkeypatch.setattr(gateway_cli, "_launchd_reload_budget", lambda: 5.0)
+
+        def fake_run(cmd, check=True, **kwargs):
+            if cmd[1] == "bootstrap":
+                raise subprocess.CalledProcessError(5, cmd)
+            return SimpleNamespace(returncode=0, stdout="state = running\npid = 4242\n", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(subprocess.CalledProcessError):
+            gateway_cli._launchctl_bootstrap(self.DOMAIN, self.PLIST, self.LABEL)
+        assert clock["now"] - 1000.0 >= 5.0
+        assert "still loaded" in (tmp_path / "logs" / "launchd-reload.log").read_text()
 
     def test_persistent_eio_reraises_for_domain_fallback(self, monkeypatch):
         # When the retry also fails, the error must propagate so callers apply
@@ -2461,6 +2516,8 @@ class TestLaunchctlBootstrapEioRetry:
         def fake_run(cmd, check=True, **kwargs):
             if cmd[1] == "bootstrap":
                 raise subprocess.CalledProcessError(5, cmd)
+            if cmd[1] == "print":
+                return SimpleNamespace(returncode=113, stdout="", stderr="")
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)

@@ -41,15 +41,28 @@ def fallback_config():
             "base_url": "http://127.0.0.1:9/v1", "api_key": "fixture-key"}]}
 
 
-def test_billing_bench_routes_to_configured_fallback(nous_login):
+@pytest.mark.parametrize("entrypoint", ["explicit", "configured", "gateway"])
+def test_billing_bench_routes_to_configured_fallback(nous_login, tmp_path, entrypoint):
     pool, _ = nous_login
     pool.mark_exhausted_and_rotate(status_code=402, failure_reason="billing")
     assert load_pool("nous").select() is None
     stamp = load_pool("nous").entries()[0].last_status_at
     config = fallback_config()
-    runtime, fallback = resolve_runtime_with_fallback(config, requested="nous", target_model="fixture-model")
-    assert runtime["provider"] == "custom"
-    assert fallback == config["fallback_providers"][0]
+    if entrypoint != "explicit":
+        from hermes_cli.config import atomic_config_write
+        config["model"] = {"provider": "nous", "default": "fixture-primary"}
+        atomic_config_write(tmp_path / "config.yaml", config)
+    if entrypoint == "gateway":
+        from gateway.run import _resolve_runtime_agent_kwargs
+        runtime = _resolve_runtime_agent_kwargs()
+        assert runtime["provider"] == "custom"
+        assert runtime["model"] == "fixture-model"
+        assert runtime["api_key"] == "fixture-key"
+    else:
+        runtime, fallback = resolve_runtime_with_fallback(
+            config, requested="nous" if entrypoint == "explicit" else None, target_model="fixture-model")
+        assert runtime["provider"] == "custom"
+        assert fallback == config["fallback_providers"][0]
     assert load_pool("nous").entries()[0].last_status_at == stamp
 
 

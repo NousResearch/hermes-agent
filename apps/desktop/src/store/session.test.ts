@@ -615,7 +615,7 @@ describe('mergeSessionPage', () => {
     // the incoming page and unmatched by the root-only lineage key, so it
     // used to survive as a title-less ghost row the backend never sent.
     const previous = [
-      session({ id: 'seg2' }),  // old segment: no lineage of its own
+      session({ id: 'seg2' }), // old segment: no lineage of its own
       session({ id: 'tip', _lineage_root_id: 'fresh-root' }),
       session({ id: 'other' })
     ] as SessionInfo[]
@@ -655,9 +655,7 @@ describe('mergeSessionPage', () => {
     // really was absorbed into the projected tip, but the pinned row is a
     // different session. Lineage members must be profile-qualified like
     // every other key in the survivor predicate.
-    const previous = [
-      session({ id: 'sess-42', profile: 'quietbot', title: 'Pinned quiet work' })
-    ] as SessionInfo[]
+    const previous = [session({ id: 'sess-42', profile: 'quietbot', title: 'Pinned quiet work' })] as SessionInfo[]
 
     const incoming = [
       session({

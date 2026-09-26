@@ -4195,8 +4195,7 @@ class SlackAdapter(BasePlatformAdapter):
         thread_gated = self._slack_thread_require_mention() and is_thread_reply and not is_mentioned
         if force_process:
             return True
-        free_channel = channel_id not in self._slack_require_mention_channels() and (
-            channel_id in self._slack_free_response_channels() or not self._slack_require_mention())
+        free_channel = self._slack_is_free_channel(channel_id)
         if not free_channel and self._slack_strict_mention() and not is_mentioned:
             return False  # Strict mode: ignore until @-mentioned again
         if thread_gated:
@@ -4662,7 +4661,10 @@ class SlackAdapter(BasePlatformAdapter):
             event, text=text, original_text=original_text, command_probe_text=command_probe_text,
             is_command_text=is_command_text, channel_id=channel_id, team_id=team_id, ts=ts,
             user_id=user_id, thread_ts=thread_ts, is_dm=is_dm, media_urls=media_urls,
-            media_types=media_types, media_text_inlined=media_text_inlined, channel_context=channel_context)
+            media_types=media_types, media_text_inlined=media_text_inlined, channel_context=channel_context,
+            reply_expected=self._slack_reply_expected(
+                routing_text, bot_uid, channel_id=channel_id, opens_own_session=thread_ts == ts,
+                addressed=is_one_to_one_dm or is_mentioned or is_command_text or force_process))
         # React only when directly addressed; MPIMs are shared, so they need a
         # mention like any channel.
         if (is_one_to_one_dm or is_mentioned) and self._reactions_enabled():
@@ -4682,7 +4684,7 @@ class SlackAdapter(BasePlatformAdapter):
         self, event: dict, *, text: str, original_text: str, command_probe_text: str,
         is_command_text: bool, channel_id: str, team_id: str, ts: str, user_id: str,
         thread_ts: Optional[str], is_dm: bool, media_urls: List[str], media_types: List[str],
-        media_text_inlined: List[bool], channel_context: Optional[str]) -> MessageEvent:
+        media_text_inlined: List[bool], channel_context: Optional[str], reply_expected: Optional[bool] = None) -> MessageEvent:
         """Resolve names, title the DM thread, and build the ``MessageEvent``. Commands are restored
         from canonical input: the parser needs the token at char zero and enrichment (blocks,
         unfurls, file text, history) must never mutate arguments."""
@@ -4723,6 +4725,7 @@ class SlackAdapter(BasePlatformAdapter):
             reply_to_message_id=thread_ts if thread_ts != ts else None,
             channel_prompt=self._channel_prompt_with_identity(channel_id, team_id),
             channel_context=channel_context,
+            reply_expected=reply_expected,
             # thread_ts is the thread root, not an explicit reply (root is in channel_context).
             reply_to_text=None,
             auto_skill=resolve_channel_skills(self.config.extra, channel_id, None),
@@ -6348,6 +6351,27 @@ class SlackAdapter(BasePlatformAdapter):
         of someone other than the bot; ``<!here>``/``<#C…>`` address the room, not a person."""
         match = text and re.match(r"\s*<@([^>|\s]+)(?:\|[^>]*)?>", text)
         return bool(match) and match.group(1) not in self_uids
+
+    def _slack_is_free_channel(self, channel_id: str) -> bool:
+        """Does ``channel_id`` admit messages without an @mention?"""
+        return channel_id not in self._slack_require_mention_channels() and (
+            channel_id in self._slack_free_response_channels() or not self._slack_require_mention())
+
+    def _slack_reply_expected(
+        self, routing_text: str, bot_uid: Optional[str], *, channel_id: str, addressed: bool,
+        opens_own_session: bool) -> Optional[bool]:
+        """``MessageEvent.reply_expected`` for an admitted message. False (a bare silence marker may
+        stand) only when it opens by @mentioning someone else, or is an unaddressed message that a
+        free-response channel admitted as the start of its own session (a new top-level thread).
+        A plain follow-up in a conversation the bot is part of (a thread, or a flat
+        ``reply_in_thread: false`` channel) is None: it is usually meant for the bot, so the
+        gateway keeps its visible fallback (#110952)."""
+        self_uids = {u for u in (bot_uid, self._bot_user_id) if u}
+        if addressed or self._slack_message_mentions_self(routing_text, self_uids):
+            return True
+        if self._slack_message_addressed_to_other_user(routing_text, self_uids):
+            return False
+        return False if opens_own_session and self._slack_is_free_channel(channel_id) else None
 
     def _slack_message_mentions_self(self, text: str, self_uids: set) -> bool:
         """True when ``text`` @-mentions this bot anywhere, in either ``<@U123>`` or

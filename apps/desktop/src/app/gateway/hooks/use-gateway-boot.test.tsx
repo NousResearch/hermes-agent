@@ -526,6 +526,24 @@ describe('default-route profile adoption', () => {
     expect($activeGatewayProfile.get()).toBe('research')
     expect($desktopBoot.get().running).toBe(false)
   })
+
+  it('restores the last-used workspace when attaching to a shared primary backend', async () => {
+    const desktop = fakeDesktop()
+    desktop.getConnection.mockResolvedValue({ ...primaryConn, profile: 'default', sharedPrimary: true } as never)
+    desktop.profile.get.mockResolvedValue({ profile: 'fiona' })
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+
+    // The backend remains registered under default, but a multiplexed host can
+    // serve every profile. Registration identity must not overwrite the user's
+    // persisted workspace selection.
+    expect($connection.get()?.profile).toBe('default')
+    expect(desktop.profile.get).toHaveBeenCalled()
+    expect($activeGatewayProfile.get()).toBe('fiona')
+    expect($desktopBoot.get().running).toBe(false)
+  })
 })
 
 describe('primary failure foreground isolation', () => {

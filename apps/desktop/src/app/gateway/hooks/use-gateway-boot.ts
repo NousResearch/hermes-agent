@@ -660,12 +660,18 @@ export function useGatewayBoot({
       connection: HermesConnection,
       shouldPublish: () => boolean = () => true
     ): Promise<boolean> {
-      // The resolved descriptor reflects the explicit startup default. The
-      // legacy profile.get preference only remembers the last workspace used.
-      const override = windowProfileOverride() ?? connection.profile
+      // A dedicated backend's registered profile is its routing identity and
+      // therefore outranks the last-used workspace. A shared-primary backend is
+      // different: one multiplexed host serves every profile, so the profile it
+      // happened to register under is not the user's active workspace. Preserve
+      // an explicit helper-window override, otherwise restore the user's
+      // persisted workspace before falling back to the host registration.
+      const windowOverride = windowProfileOverride()
 
       try {
-        const profileKey = override ?? (await desktop.profile?.get?.())?.profile ?? ''
+        const remembered =
+          !windowOverride && connection.sharedPrimary === true ? (await desktop.profile?.get?.())?.profile : null
+        const profileKey = windowOverride ?? remembered ?? connection.profile ?? ''
 
         if (!shouldPublish()) {
           return false
@@ -680,7 +686,7 @@ export function useGatewayBoot({
           return false
         }
 
-        $activeGatewayProfile.set(normalizeProfileKey(override))
+        $activeGatewayProfile.set(normalizeProfileKey(windowOverride ?? connection.profile))
       }
 
       return true

@@ -97,6 +97,8 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
     process or in-process connection holds the file: replacing the inode
     under a live holder is the #90950 split-brain, so that branch fails
     closed (returns ``False``) and the caller reports the file as skipped.
+    It also returns ``False``, without touching *dst*, when *src* fails the
+    SQLite integrity check.
     """
     from hermes_cli.backup import verify_sqlite_integrity
 
@@ -462,6 +464,15 @@ def _import_db_member(
             dst.flush()
             os.fsync(dst.fileno())
         if not _safe_restore_db(Path(tmp_name), target):
+            from hermes_cli.backup import verify_sqlite_integrity
+
+            # Re-check only on failure so the user gets the real cause; the
+            # detailed integrity message was already logged by _safe_restore_db.
+            if not verify_sqlite_integrity(Path(tmp_name))["valid"]:
+                raise OSError(
+                    "the archived database failed its integrity check; the existing "
+                    "database was left untouched."
+                )
             raise OSError(
                 "live-safe restore refused or failed; the existing database was "
                 "left untouched. Stop the gateway/dashboard processes holding it "

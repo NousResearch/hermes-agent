@@ -373,6 +373,8 @@ def node_latest_versions(target: str | None = None, *, host_target: str | None =
             out.append(v)
     if target != host_target or not target or not target.startswith("darwin-"):
         return out
+    # mac_ver() returns its documented default tuple on non-macOS hosts;
+    # only malformed version strings need to fall back to the full catalogue.
     mac_version = platform.mac_ver()[0]
     try:
         major, minor = (int(part) for part in mac_version.split(".", 2)[:2])

@@ -902,6 +902,89 @@ class TestScopedLocks:
         assert json.loads(lock_path.read_text())["pid"] == 424242
 
 
+    def test_acquire_scoped_lock_does_not_allow_dual_ownership_during_initial_write(self, tmp_path, monkeypatch):
+        """A contender must not unlink a lock file that is still being initialized."""
+        import threading
+
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+
+        original_dump = status.json.dump
+        first_writer_started = threading.Event()
+        allow_first_writer = threading.Event()
+        second_writer_finished = threading.Event()
+        call_count = 0
+        call_count_lock = threading.Lock()
+
+        def coordinated_dump(obj, handle, *args, **kwargs):
+            nonlocal call_count
+            with call_count_lock:
+                call_count += 1
+                call_number = call_count
+
+            if call_number == 1:
+                first_writer_started.set()
+                assert allow_first_writer.wait(timeout=5)
+            else:
+                original_dump(obj, handle, *args, **kwargs)
+                second_writer_finished.set()
+                return
+
+            original_dump(obj, handle, *args, **kwargs)
+
+        monkeypatch.setattr(status.json, "dump", coordinated_dump)
+
+        results = []
+
+        def acquire():
+            results.append(
+                status.acquire_scoped_lock(
+                    "slack-app-token",
+                    "secret",
+                    metadata={"platform": "slack"},
+                )
+            )
+
+        first = threading.Thread(target=acquire)
+        second = threading.Thread(target=acquire)
+
+        first.start()
+        assert first_writer_started.wait(timeout=5)
+
+        second.start()
+        assert second_writer_finished.wait(timeout=5)
+
+        allow_first_writer.set()
+        first.join(timeout=5)
+        second.join(timeout=5)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert sum(acquired for acquired, _ in results) == 1
+
+    def test_acquire_scoped_lock_keeps_a_rival_lock_published_after_its_read(self, tmp_path, monkeypatch):
+        """A read that found no lock is stale by the time the leftover check runs: a rival's
+        complete lock published in between must survive, and this contender must lose."""
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = status._get_scope_lock_path("telegram-bot-token", "secret")
+        rival = {"pid": 424242, "start_time": 456, "kind": "hermes-gateway"}
+        real_read = status._read_json_file
+        reads = []
+
+        def read_then_rival_publishes(path, **kwargs):
+            result = real_read(path, **kwargs)
+            if not reads:
+                reads.append(path)
+                path.write_text(json.dumps(rival))
+            return result
+
+        monkeypatch.setattr(status, "_read_json_file", read_then_rival_publishes)
+
+        acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret")
+
+        assert acquired is False
+        assert existing["pid"] == 424242
+        assert json.loads(lock_path.read_text())["pid"] == 424242
+
     def test_acquire_scoped_lock_replaces_stale_record(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
         lock_path = tmp_path / "locks" / "telegram-bot-token-2bb80d537b1da3e3.lock"

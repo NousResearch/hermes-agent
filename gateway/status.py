@@ -1172,6 +1172,26 @@ def _write_json_excl(path: Path, record: dict[str, Any]) -> None:
         raise
 
 
+def _publish_json_excl(path: Path, record: dict[str, Any]) -> None:
+    """Create ``path`` already holding ``record`` (FileExistsError if it exists): dump to a private
+    temp name, then hard-link it into place. A bare O_EXCL create is visible EMPTY until its dump
+    lands, and ``acquire_scoped_lock`` deletes an empty lock as a crashed writer's leftover, so a
+    contender reading in that window (or holding an earlier empty read) took the lock from under a
+    live creator and both reported ownership."""
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{os.urandom(4).hex()}")
+    _write_json_excl(temporary, record)
+    try:
+        os.link(temporary, path)
+    except FileExistsError:
+        raise
+    except OSError:
+        # A mount without hard links (some FUSE/SMB shares): the bare create still arbitrates via
+        # O_EXCL, only the empty-file window comes back.
+        _write_json_excl(path, record)
+    finally:
+        _unlink_quietly(temporary)
+
+
 def _apply_set_fields(target: dict[str, Any], fields) -> None:
     """Assign each ``(key, value, coerce)`` whose value was explicitly passed (not ``_UNSET``)."""
     for key, value, coerce in fields:
@@ -1643,9 +1663,12 @@ def acquire_scoped_lock(
     profile = _profile_label_for_home(_get_process_hermes_home())
     if profile:
         record["profile"] = profile
+    # Probe BEFORE reading: "absent when read, present when checked" is a rival's lock published in
+    # between, and deleting it as a leftover hands the lock to both of us.
+    present = lock_path.exists()
     existing = _read_json_file(lock_path)
-    if existing is None and lock_path.exists():
-        # Empty/invalid JSON: previous process died between O_EXCL create and json.dump().
+    if existing is None and present:
+        # Empty/invalid JSON: a writer died mid-write (pre-link releases, or the no-hard-link fallback).
         _unlink_quietly(lock_path)
     if existing:
         existing_pid = _pid_from_record(existing)
@@ -1670,7 +1693,7 @@ def acquire_scoped_lock(
             os.replace(lock_path, tombstone)
             _unlink_quietly(tombstone)
     try:
-        _write_json_excl(lock_path, record)
+        _publish_json_excl(lock_path, record)
     except FileExistsError:
         return False, _read_json_file(lock_path)
     return True, None

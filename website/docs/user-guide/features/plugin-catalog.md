@@ -168,8 +168,10 @@ saved under `~/.hermes/plugins-backup/<name>-<sha>/` and the update warns you.
 The same folder receives any file of yours where the new version has a
 directory (or the reverse). If the installed revision can no longer be
 fetched, files the new version does not ship are kept, except code (Python
-and JavaScript files), which goes to the backup folder along with files the new
-version ships with different content.
+and JavaScript files) and plugin declarations (manifests, `mcp.json`,
+dependency files, `desktop/`, `skills/`, `sidecar/`), which go to the backup
+folder along with files the new version ships with different content. Files
+kept this way pass the same security scan as the new version.
 If the new pin renames the plugin's manifest, the old directory is removed and
 your enabled flag follows the new name. `hermes plugins list` shows catalog
 installs as `catalog:<tier>@<sha>` so you can see provenance at a glance.

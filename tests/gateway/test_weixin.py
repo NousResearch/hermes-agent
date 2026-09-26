@@ -278,6 +278,37 @@ class TestWeixinChunkDelivery:
         assert send_message_mock.await_count == 2
         assert sleep_mock.await_count == 1
 
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_cooldown_short_circuit_keeps_the_last_server_receipt(self, send_message_mock):
+        """The short-circuit path makes no request, so it must still name the receipt that opened the
+        circuit — otherwise every failure during the cooldown reads as one opaque string and the real
+        ret/errcode/errmsg never reaches the log (#123995)."""
+        from gateway.platforms.base import classify_send_error
+
+        adapter = self._connected_adapter()
+        adapter._send_chunk_retries = 0
+        adapter._rate_limit_circuit_threshold = 1
+        adapter._rate_limit_circuit_open_seconds = 60
+
+        send_message_mock.return_value = {"ret": weixin.RATE_LIMIT_ERRCODE, "errcode": weixin.RATE_LIMIT_ERRCODE, "errmsg": "frequency limit"}
+
+        first = asyncio.run(adapter.send("wxid_test123", "first"))
+        send_message_mock.return_value = {"ret": 0}  # the server has recovered by now
+        second = asyncio.run(adapter.send("wxid_test123", "second"))
+
+        assert first.success is False
+        assert "ret=-2" in (first.error or "") and "frequency limit" in (first.error or "")
+        # The follow-up send is short-circuited without another request, yet keeps the last receipt visible.
+        assert second.success is False
+        assert send_message_mock.await_count == 1
+        assert "last: ret=-2" in (second.error or "") and "frequency limit" in (second.error or "")
+        assert classify_send_error(None, second.error or "") == "rate_limited"
+        # Once a send succeeds again the stale receipt is dropped instead of resurfacing in a later cooldown.
+        adapter._rate_limit_circuit_until = 0.0
+        third = asyncio.run(adapter.send("wxid_test123", "third"))
+        assert third.success is True
+        assert adapter._rate_limit_last_receipt is None
+
     @pytest.mark.parametrize("error_field", ["ret", "errcode"])
     @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
     def test_prepare_failed_retries_without_context_token(self, send_message_mock, error_field):

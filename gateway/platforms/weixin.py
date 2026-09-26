@@ -718,6 +718,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._rate_limit_circuit_window_seconds = float(_extra_or_secret(extra, "rate_limit_circuit_window_seconds", "30.0"))
         self._rate_limit_circuit_open_seconds = float(_extra_or_secret(extra, "rate_limit_circuit_open_seconds", "30.0"))
         self._rate_limit_circuit_until, self._rate_limit_events = 0.0, []  # type: float, List[float]
+        self._rate_limit_last_receipt: Optional[str] = None
         self._dm_policy = _extra_or_secret(extra, "dm_policy", "pairing").lower()
         self._group_policy = _extra_or_secret(extra, "group_policy", "disabled").lower()
         # ``extra`` wins even when falsy (an explicit empty list disables the env allowlist).
@@ -976,7 +977,11 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             attempt = 0  # counts real failures only — the tokenless re-send must not eat the retry budget
             while True:
                 if self._rate_limit_cooldown_remaining() > 0:
-                    raise RuntimeError(f"iLink sendmessage rate limited; cooldown active for {self._rate_limit_cooldown_remaining():.1f}s")
+                    # No request is made here, so name the receipt that opened the circuit — otherwise every
+                    # short-circuited failure during the cooldown reads as one opaque string and the real
+                    # ret/errcode/errmsg never reaches the log (#123995).
+                    last = f" (last: {self._rate_limit_last_receipt})" if self._rate_limit_last_receipt else ""
+                    raise RuntimeError(f"iLink sendmessage rate limited{last}; cooldown active for {self._rate_limit_cooldown_remaining():.1f}s")
                 try:
                     resp = await _send_message(
                         self._send_session, base_url=self._base_url, token=self._token, to=chat_id, text=chunk,
@@ -995,6 +1000,8 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                             break
                         if ret != RATE_LIMIT_ERRCODE and errcode != RATE_LIMIT_ERRCODE:
                             raise RuntimeError(f"iLink sendmessage error: ret={ret} errcode={errcode} errmsg={errmsg or 'unknown error'}")
+                        # The cooldown short-circuit re-surfaces this receipt until a send succeeds again.
+                        self._rate_limit_last_receipt = f"ret={ret} errcode={errcode} errmsg={errmsg or 'rate limited'}"
                         # Keep a descriptive error for when the loop exhausts while still limited.
                         last_error = RuntimeError(f"iLink sendmessage rate limited: ret={ret} errcode={errcode} errmsg={errmsg or 'rate limited'}")
                         if self._record_rate_limit_event():
@@ -1011,6 +1018,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                         continue
                     self._rate_limit_events.clear()
                     self._rate_limit_circuit_until = 0.0
+                    self._rate_limit_last_receipt = None
                     return
                 except Exception as exc:
                     last_error = exc

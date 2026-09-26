@@ -560,6 +560,9 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "icon": "",
         "color": "",
         "default_workdir": None,
+        # Declared kind tasks are born with when no explicit --workspace is
+        # passed (None = unset; scratch/project-inherit as before). #123288
+        "default_workspace_kind": None,
         # Project scope: new tasks inherit it (deterministic worktree + branch).
         "project_id": None,
         "created_at": None,
@@ -584,10 +587,13 @@ def write_board_metadata(
     board: Optional[str], *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, archived: Optional[bool] = None,
     default_workdir: Optional[str] = None, project_id: Optional[str] = None,
+    default_workspace_kind: Optional[str] = None,
 ) -> dict:
     """Create/update ``board.json``; unmentioned fields are preserved, ``created_at``
     set on first write. ``project_id``/``default_workdir``: ``None`` = unchanged,
-    "" = clear (``project_id`` is not validated here)."""
+    "" = clear (``project_id`` is not validated here).
+    ``default_workspace_kind``: ``None`` = unchanged, "" = clear, otherwise a
+    ``VALID_WORKSPACE_KINDS`` member tasks inherit when no workspace is explicit."""
     _assert_not_delegated_child_mutation()
     slug = _slug_or_default(board)
     meta = read_board_metadata(slug)
@@ -603,6 +609,26 @@ def write_board_metadata(
     for key, value in (("default_workdir", default_workdir), ("project_id", project_id)):
         if value is not None:
             meta[key] = str(value) if value else None
+    if default_workspace_kind is not None:
+        kind = str(default_workspace_kind).strip()
+        if kind:
+            if kind not in VALID_WORKSPACE_KINDS:
+                raise ValueError(
+                    f"default_workspace_kind must be one of {sorted(VALID_WORKSPACE_KINDS)}, "
+                    f"got {default_workspace_kind!r}"
+                )
+            meta["default_workspace_kind"] = kind
+        else:
+            meta["default_workspace_kind"] = None
+    # A worktree default materializes ``<repo>/.worktrees/<task-id>`` under the
+    # board default_workdir; without the anchor, every defaulted task dies at
+    # dispatch workspace resolution instead of at this write (#123288).
+    if (meta.get("default_workspace_kind") or "") == "worktree" and not (meta.get("default_workdir") or "").strip():
+        raise ValueError(
+            "default_workspace_kind 'worktree' requires the board default_workdir "
+            "to be set (a git repo to anchor per-task worktrees under); set it "
+            "with `hermes kanban boards set-default-workdir <slug> <path>`"
+        )
     if not meta.get("created_at"):
         meta["created_at"] = int(time.time())
     path = board_metadata_path(slug)
@@ -617,13 +643,14 @@ def write_board_metadata(
 def create_board(
     slug: str, *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, default_workdir: Optional[str] = None,
-    project_id: Optional[str] = None,
+    project_id: Optional[str] = None, default_workspace_kind: Optional[str] = None,
 ) -> dict:
-    """Create board dir + DB + metadata (``mkdir -p`` semantics: existing board returns its metadata)."""
+    """Create board with an optional declared default workspace kind."""
     normed = _require_slug(slug)
     meta = write_board_metadata(
         normed, name=name, description=description, icon=icon, color=color,
         default_workdir=default_workdir, project_id=project_id,
+        default_workspace_kind=default_workspace_kind,
     )
     # Touch the DB so list_boards() sees it immediately.
     init_db(board=normed)
@@ -1303,7 +1330,18 @@ def create_task(
         except Exception:
             pass
     if workspace_kind is None:
-        workspace_kind = "scratch"
+        # No explicit workspace: the board may declare the kind its tasks are
+        # born with (#123288) — e.g. worktree, so a governed backend's binding
+        # guard (strict descendant AND exact git root) is satisfiable without
+        # passing --workspace on every creation. An explicit 'scratch' never
+        # reaches this branch.
+        try:
+            workspace_kind = (
+                (_board_meta_for(board).get("default_workspace_kind") or "").strip()
+                or "scratch"
+            )
+        except Exception:
+            workspace_kind = "scratch"
     if workspace_kind not in VALID_WORKSPACE_KINDS:
         raise ValueError(
             f"workspace_kind must be one of {sorted(VALID_WORKSPACE_KINDS)}, "

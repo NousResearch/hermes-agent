@@ -1281,6 +1281,8 @@ class CreateBoardBody(BaseModel):
     icon: Optional[str] = None
     color: Optional[str] = None
     default_workdir: Optional[str] = None
+    # Declared kind tasks are born with when no explicit workspace is set (#123288).
+    default_workspace_kind: Optional[str] = None
     # Project (id or slug) scoping the board: default_workdir mirrors its primary repo, tasks inherit it.
     project_id: Optional[str] = None
     switch: bool = False
@@ -1294,6 +1296,9 @@ class RenameBoardBody(BaseModel):
     # For both fields: ``None`` = leave unchanged; "" = clear; value = validate/resolve + set.
     default_workdir: Optional[str] = None
     project_id: Optional[str] = None
+    # Declared kind tasks are born with when no explicit workspace is set (#123288):
+    # ``None`` = leave unchanged; "" = clear; value = validated + set.
+    default_workspace_kind: Optional[str] = None
 
 
 # Board transfer exchanges filesystem PATHS, not bytes (same contract as profile export/import):
@@ -1353,7 +1358,11 @@ def _board_counts(slug: str) -> dict[str, int]:
 
 
 def _default_workspace_kind(board: dict[str, Any]) -> str:
-    """Recommend a non-destructive task workspace from board metadata."""
+    """Task default workspace: the board's declared kind when set (#123288),
+    else a non-destructive recommendation from board metadata."""
+    declared = str(board.get("default_workspace_kind") or "").strip()
+    if declared:
+        return declared
     workdir = str(board.get("default_workdir") or "").strip()
     if not workdir:
         return "scratch"
@@ -1421,7 +1430,9 @@ def create_board_endpoint(payload: CreateBoardBody):
         default_workdir = primary_path
     with _value_error_400():
         meta = kanban_db.create_board(
-            payload.slug, default_workdir=default_workdir, project_id=project_id, **_board_display_kwargs(payload))
+            payload.slug, default_workdir=default_workdir, project_id=project_id,
+            default_workspace_kind=payload.default_workspace_kind,
+            **_board_display_kwargs(payload))
     if payload.switch:
         with _value_error_400():
             kanban_db.set_current_board(meta["slug"])
@@ -1446,8 +1457,12 @@ def rename_board(slug: str, payload: RenameBoardBody):
                 default_workdir = primary_path
         else:
             project_id = ""  # clear the scope
+    default_workspace_kind: Optional[str] = None
+    if payload.default_workspace_kind is not None:
+        default_workspace_kind = payload.default_workspace_kind.strip()  # "" = clear
     meta = kanban_db.write_board_metadata(
-        normed, default_workdir=default_workdir, project_id=project_id, **_board_display_kwargs(payload))
+        normed, default_workdir=default_workdir, project_id=project_id,
+        default_workspace_kind=default_workspace_kind, **_board_display_kwargs(payload))
     return {"board": _annotate_board_meta(meta)}
 
 

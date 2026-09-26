@@ -32,6 +32,32 @@ def _int_or(value, default: int) -> int:
         return default
 
 
+# Quiet one-shot turn in flight: a shutdown signal must publish the session id
+# before any interrupt-grace work, because the spawner's SIGKILL window opens the
+# moment SIGTERM lands (a 1.5 s grace sleep inside the handler can outlive it).
+_quiet_session_line_due = False
+
+
+def _emit_quiet_session_line(cli) -> None:
+    """Publish the ``session_id:`` line an automation wrapper parses, exactly once.
+
+    Safe to call from a signal handler or the normal unwind: the flag guards the
+    double-print, ``_sync_cli_session_id_from_agent`` picks the post-rotation id
+    when mid-turn compression ended the parent, and stderr is flushed inline so a
+    hard kill right after the call cannot lose it.
+    """
+    global _quiet_session_line_due
+    if not _quiet_session_line_due:
+        return
+    _quiet_session_line_due = False
+    with suppress(Exception):
+        # Late bind: the cli facade owns the seam, same as the runner body itself.
+        from cli import _sync_cli_session_id_from_agent
+
+        _sync_cli_session_id_from_agent(cli)
+    print(f"\nsession_id: {cli.session_id}", file=sys.stderr, flush=True)
+
+
 def _interrupt_agent_for_signal(agent, signum) -> None:
     """Hard-interrupt ``agent`` for a shutdown signal, then sleep ``HERMES_SIGTERM_GRACE`` (1.5 s).
 
@@ -193,6 +219,7 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
     )
 
     author = take_turn_author_from_env()
+    global _quiet_session_line_due
     # A spawner that bounds only the turn (cron Bot Chat lane) learns the outcome from this
     # report, written before the linger below; popped so tool subprocesses do not inherit it.
     turn_report_path = take_turn_report_path()
@@ -200,6 +227,12 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
     adopt_unanswered_turn(cli, effective_query)
     author_kwargs = {"turn_author": author} if author is not None and _accepts_keyword(cli.agent.run_conversation, "turn_author") else {}
     with bind_quiet_session_key(getattr(cli, "session_id", "") or "default"):
+        # From here until the normal exit print, a shutdown signal can arrive in any
+        # phase (mid-turn, notify-linger, follow-up); the handler publishes the id
+        # line early so a short spawner grace cannot kill it unprinted. Stream-json
+        # runs stay unarmed: their result record owns the id, an early stderr line
+        # would duplicate it.
+        _quiet_session_line_due = emitter is None
         try:
             result = cli.agent.run_conversation(
                 user_message=effective_query, conversation_history=cli.conversation_history, **author_kwargs,
@@ -208,7 +241,7 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
             _emit_interrupted_session_end(cli, reason="keyboard_interrupt")
             if emitter is not None:
                 exit_single_query(emitter.emit_result({"failed": True, "error": "Interrupted"}, session_id=cli.session_id or "", exit_code=130))
-            print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
+            _emit_quiet_session_line(cli)
             exit_single_query(130)
         # The exit line below reports session_id to stderr for automation wrappers;
         # without this sync it would point at the ended parent after compression.
@@ -281,7 +314,7 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
             logger.debug("kanban goal loop failed: %s", _goal_exc)
 
     if emitter is None:
-        print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
+        _emit_quiet_session_line(cli)
 
     _exit_code = _single_query_exit_code(result)
     if emitter is not None:
@@ -381,6 +414,9 @@ def _install_single_query_signal_handlers(cli):
     def _signal_handler_q(signum, frame):
         logger.debug("Received signal %s in single-query mode", signum)
         _arm_exit_watchdog_on_shutdown_signal()  # covers wedges in the unwind below
+        # The spawner's kill sequence (SIGTERM then SIGKILL after its own grace) can
+        # land inside the interrupt-grace sleep below; publish the id line first.
+        _emit_quiet_session_line(cli)
         _interrupt_agent_for_signal(getattr(cli, "agent", None), signum)
         # Kanban: a non-daemon worker blocked in _wait_for_process survives KeyboardInterrupt
         # and the dispatcher sees 'running' forever, so os._exit(0) (SIGALRM deadman guards

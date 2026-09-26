@@ -466,10 +466,11 @@ def get_profiles_sessions(
 @_sidebar_singleflight_cache
 def get_profiles_sessions_sidebar(
     recents_profile: str = "all", recents_limit: int = 20, recents_exclude: str = None,
-    cron_limit: int = 50, messaging_limit: int = 100, messaging_exclude: str = None):
-    """Batched sidebar session slices (recents / cron / messaging) — one profile-DB open per
-    refresh instead of three ``/api/profiles/sessions`` calls. Same row projection and 300s
-    active heuristic as the per-slice endpoint; all slices use ``min_messages=1`` /
+    cron_limit: int = 50, messaging_limit: int = 100, messaging_exclude: str = None,
+    kanban_limit: int = 50):
+    """Batched sidebar session slices (recents / cron / messaging / kanban) — one profile-DB
+    open per refresh instead of four ``/api/profiles/sessions`` calls. Same row projection
+    and 300s active heuristic as the per-slice endpoint; all slices use ``min_messages=1`` /
     ``archived=exclude`` / recency order.
 
     ``recents_profile`` scopes the WHOLE payload, not just recents — the sidebar has one
@@ -485,9 +486,11 @@ def get_profiles_sessions_sidebar(
     messaging_exclude_list = [s for s in (messaging_exclude or "").split(",") if s.strip()]
     # (source, exclude) per slice; ``source=cron`` is the implicit cron taxonomy.
     slice_scope = {"recents": (None, recents_exclude_list), "cron": ("cron", None),
-                   "messaging": (None, messaging_exclude_list)}
+                   "messaging": (None, messaging_exclude_list),
+                   # kanban dispatcher workers: their own slice, never recents (#85219).
+                   "kanban": ("kanban", None)}
     cap = {"recents": min(max(recents_limit, 1), 500), "cron": min(max(cron_limit, 1), 500),
-           "messaging": min(max(messaging_limit, 1), 500)}
+           "messaging": min(max(messaging_limit, 1), 500), "kanban": min(max(kanban_limit, 1), 500)}
     rows: Dict[str, List[Dict[str, Any]]] = {k: [] for k in slice_scope}
     recents_truncated: Dict[str, bool] = {}
     profile_totals: Dict[str, Dict[str, float]] = {}
@@ -507,7 +510,8 @@ def get_profiles_sessions_sidebar(
         # ``usage`` is aggregated in SQL rather than over the recents window: the window is a
         # page, and a total that shrank when you scrolled would be worse than no total at all.
         slices = {"recents": _slice(db, "recents"), "usage": db.usage_totals(),
-                  "cron": _slice(db, "cron"), "messaging": _slice(db, "messaging")}
+                  "cron": _slice(db, "cron"), "messaging": _slice(db, "messaging"),
+                  "kanban": _slice(db, "kanban")}
         _sidebar_profile_cache_put(cache_key, slices)
         return slices
 
@@ -521,7 +525,7 @@ def get_profiles_sessions_sidebar(
             continue
         profile_cache_key = (str(db_path), _sidebar_db_fingerprint(db_path), cap["recents"],
                              tuple(recents_exclude_list), cap["cron"], cap["messaging"],
-                             tuple(messaging_exclude_list))
+                             tuple(messaging_exclude_list), cap["kanban"])
         slices = _sidebar_profile_cache_get(profile_cache_key)
         if slices is None:
             slices = _read_profile_db(name, home, errors,
@@ -548,6 +552,7 @@ def get_profiles_sessions_sidebar(
                     "profiles_usage": profile_totals},
         "cron": {"sessions": _window("cron")},
         "messaging": {"sessions": _window("messaging"), "total": len(rows["messaging"])},
+        "kanban": {"sessions": _window("kanban")},
         "errors": errors, "storage": _corrupt_profile_stores(scanned)}
 
 

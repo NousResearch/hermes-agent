@@ -107,6 +107,50 @@ def _slice_ids(payload, slice_name):
     return {row["id"] for row in payload[slice_name]["sessions"]}
 
 
+class TestKanbanSlice:
+
+    def test_concrete_profile_sees_only_its_own_kanban_rows(self, client, profiles_on_disk):
+        _seed_session(profiles_on_disk["default"], "default-kanban", source="kanban")
+        _seed_session(profiles_on_disk["worker"], "worker-kanban", source="kanban")
+
+        payload = client.get(
+            "/api/profiles/sessions/sidebar", params={"recents_profile": "worker"}
+        ).json()
+
+        assert payload["errors"] == []
+        assert _slice_ids(payload, "kanban") == {"worker-kanban"}
+
+    def test_kanban_rows_stay_out_of_recents_and_in_their_own_slice(self, client, profiles_on_disk):
+        _seed_session(profiles_on_disk["default"], "default-kanban", source="kanban")
+        _seed_session(profiles_on_disk["default"], "default-chat", source="cli")
+
+        payload = client.get(
+            "/api/profiles/sessions/sidebar",
+            params={"recents_profile": "default", "recents_exclude": "cron,kanban,subagent,tool"},
+        ).json()
+
+        # The desktop sends the exclude list above (`SIDEBAR_EXCLUDED_SOURCES`);
+        # the kanban slice answers for those rows in their own section.
+        assert _slice_ids(payload, "recents") == {"default-chat"}
+        assert _slice_ids(payload, "kanban") == {"default-kanban"}
+
+    def test_kanban_limit_is_part_of_the_cache_key(self, client, profiles_on_disk):
+        # Same DB, two different limits: the 5s profile cache must key on
+        # kanban_limit or the second call would answer with the first's window.
+        for index in range(3):
+            _seed_session(profiles_on_disk["default"], f"kanban-{index}", source="kanban")
+
+        wide = client.get(
+            "/api/profiles/sessions/sidebar", params={"recents_profile": "default", "kanban_limit": 3}
+        ).json()
+        narrow = client.get(
+            "/api/profiles/sessions/sidebar", params={"recents_profile": "default", "kanban_limit": 1}
+        ).json()
+
+        assert _slice_ids(wide, "kanban") == {"kanban-0", "kanban-1", "kanban-2"}
+        assert len(narrow["kanban"]["sessions"]) == 1
+
+
 class TestSidebarScope:
 
     def test_concrete_profile_sees_only_its_own_slices(self, client, profiles_on_disk):

@@ -12,6 +12,7 @@ import {
 } from '@/store/gateway-switch'
 import {
   $cronSessions,
+  $kanbanSessions,
   $messagingPlatformTotals,
   $messagingSessions,
   $messagingTruncated,
@@ -21,6 +22,7 @@ import {
   $sessionsLoadError,
   $sessionsLoading,
   setCronSessions,
+  setKanbanSessions,
   setMessagingPlatformTotals,
   setMessagingSessions,
   setMessagingTruncated,
@@ -65,11 +67,13 @@ const row = (id: string, over: Partial<SessionInfo> = {}): SessionInfo =>
 const sidebar = (
   recents: { sessions: SessionInfo[]; profiles_truncated?: Record<string, boolean> },
   cron: SessionInfo[] = [],
-  messaging: SessionInfo[] = []
+  messaging: SessionInfo[] = [],
+  kanban: SessionInfo[] = []
 ): SidebarSessionsResponse => ({
   recents: { sessions: recents.sessions, profiles_truncated: recents.profiles_truncated },
   cron: { sessions: cron },
-  messaging: { sessions: messaging }
+  messaging: { sessions: messaging },
+  kanban: { sessions: kanban }
 })
 
 const listSidebarSessions = vi.fn()
@@ -116,6 +120,7 @@ beforeEach(() => {
   setSessions([])
   setCronSessions([])
   setMessagingSessions([])
+  setKanbanSessions([])
   setMessagingPlatformTotals({})
   setMessagingTruncated(false)
   setSessionProfilesTruncated({})
@@ -129,6 +134,7 @@ afterEach(() => {
   setSessions([])
   setCronSessions([])
   setMessagingSessions([])
+  setKanbanSessions([])
   setMessagingPlatformTotals({})
   setMessagingTruncated(false)
   setSessionProfilesTruncated({})
@@ -572,10 +578,30 @@ describe('refreshSessions batches slices into one request', () => {
     expect(listSidebarSessions).toHaveBeenCalledWith(
       expect.objectContaining({
         recentsProfile: 'work',
-        recentsExclude: expect.arrayContaining(['cron']),
-        messagingExclude: expect.arrayContaining(['cron'])
+        recentsExclude: expect.arrayContaining(['cron', 'kanban']),
+        messagingExclude: expect.arrayContaining(['cron']),
+        kanbanLimit: 50
       })
     )
+  })
+
+  it('treats a response without the kanban key as an empty slice (older backend)', async () => {
+    listSidebarSessions.mockResolvedValue({
+      recents: { sessions: [row('a')] },
+      cron: { sessions: [] },
+      messaging: { sessions: [] }
+    } as SidebarSessionsResponse)
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    // No throw, and the kanban section's store ends up empty rather than
+    // keeping whatever a previous refresh left there.
+    expect($kanbanSessions.get()).toEqual([])
+    expect($sessions.get().map(s => s.id)).toEqual(['a'])
   })
 
   it('does not start a refresh callback captured before a profile switch', async () => {

@@ -27,7 +27,14 @@ import { setSessionPinnedRemote } from '@/hermes'
 import { onConnectionScopeChange } from '@/lib/connection-scoped'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
-import { $cronSessions, $messagingSessions, $sessions, sessionMatchesStoredId, sessionPinId } from '@/store/session'
+import {
+  $cronSessions,
+  $kanbanSessions,
+  $messagingSessions,
+  $sessions,
+  sessionMatchesStoredId,
+  sessionPinId
+} from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 // pin ids we've successfully PATCHed pinned=true this session.
@@ -75,7 +82,7 @@ function profileFor(pinId: string): null | string | undefined {
 }
 
 function loadedSessionRows(): SessionInfo[] {
-  return [...$sessions.get(), ...$cronSessions.get(), ...$messagingSessions.get()]
+  return [...$sessions.get(), ...$cronSessions.get(), ...$messagingSessions.get(), ...$kanbanSessions.get()]
 }
 
 /**
@@ -295,6 +302,7 @@ export function watchSessionPins(): void {
   $sessions.listen(reconcile)
   $cronSessions.listen(reconcile)
   $messagingSessions.listen(reconcile)
+  $kanbanSessions.listen(reconcile)
 }
 
 /**

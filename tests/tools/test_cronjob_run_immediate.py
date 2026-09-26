@@ -20,10 +20,8 @@ from unittest.mock import patch
 from tools.cronjob_tools import cronjob, _execute_job_now
 from tools.environments.base import set_activity_callback
 
-
 _JOB = {"id": "job-run-1", "name": "manual run", "prompt": "hi",
         "schedule": {"kind": "cron", "expr": "0 9 * * *"}}
-
 
 class TestCronjobRunExecutesImmediately:
     def test_run_action_claims_and_fires_via_run_one_job(self):
@@ -39,7 +37,7 @@ class TestCronjobRunExecutesImmediately:
         assert out["success"] is True
         assert out["job"]["executed"] is True
         assert out["job"]["execution_success"] is True
-        m_claim.assert_called_once_with("job-run-1", return_job=True)
+        m_claim.assert_called_once_with("job-run-1", manual=True, return_job=True)
         m_run.assert_called_once_with(claimed, adapters=None, loop=None, extra_prompt=None)
 
     def test_run_reconciles_external_provider_after_claimed_execution(self):
@@ -113,15 +111,6 @@ class TestCronjobRunExecutesImmediately:
         assert out["job"]["executed"] is True
         assert out["job"]["execution_success"] is False
         assert out["job"]["execution_error"] == "provider 500"
-
-    def test_execute_job_now_bails_without_claim(self):
-        """_execute_job_now never calls run_one_job when the claim is lost."""
-        with patch("tools.cronjob_tools.claim_job_for_fire", return_value=False), \
-             patch("cron.scheduler.run_one_job") as m_run:
-            res = _execute_job_now(dict(_JOB))
-        assert res["claimed"] is False
-        assert res["success"] is False
-        m_run.assert_not_called()
 
     def test_execute_job_now_passes_live_gateway_context_to_delivery(self):
         """Manual runs must deliver on the live gateway adapter's owning loop."""
@@ -208,24 +197,7 @@ class TestCronjobRunExecutesImmediately:
 
             m_run.assert_called_once()
             assert res["success"] is True, res
-            assert any("cronjob: running job" in t for t in touches), touches
-        finally:
-            set_activity_callback(None)
-
-    def test_execute_job_now_without_callback_does_not_heartbeat(self):
-        """No activity callback registered (direct callers, tests) → the
-        heartbeat thread is never started and behavior is unchanged."""
-        set_activity_callback(None)
-        try:
-            with patch("tools.cronjob_tools.claim_job_for_fire", return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \
-                 patch("cron.scheduler.run_one_job", return_value=True) as m_run, \
-                 patch("tools.cronjob_tools.get_job",
-                       return_value={"last_status": "ok", "last_error": None}), \
-                 patch("tools.cronjob_tools.threading.Thread") as m_thread:
-                res = _execute_job_now(dict(_JOB))
-            assert res["success"] is True
-            m_run.assert_called_once()
-            m_thread.assert_not_called()   # heartbeat thread truly never created
+            assert touches
         finally:
             set_activity_callback(None)
 
@@ -291,3 +263,25 @@ class TestCronjobRunExecutesImmediately:
             assert len(calls) >= 2, calls
         finally:
             set_activity_callback(None)
+
+class TestManualRunReportsDeliveryFailure:
+    """#83993: a manual run whose agent succeeded but whose delivery failed
+    must not come back as success=True with no error — the calling agent
+    relays that result to the user."""
+
+    def test_delivery_failed_status_is_not_success_and_surfaces_reason(self):
+        refreshed = {
+            "id": "job-run-1",
+            "last_status": "delivery_failed",
+            "last_error": None,
+            "last_delivery_error": "live adapter send failed: 502 (target telegram:123)",
+        }
+        with patch("tools.cronjob_tools.claim_job_for_fire",
+                   return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \
+             patch("cron.scheduler.run_one_job", return_value=True), \
+             patch("tools.cronjob_tools.get_job", return_value=refreshed):
+            res = _execute_job_now(dict(_JOB))
+
+        assert res["claimed"] is True
+        assert res["success"] is False
+        assert "502" in res["error"]

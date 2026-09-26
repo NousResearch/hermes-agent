@@ -125,6 +125,18 @@ export function isPeerInstanceWindow(search = typeof window === 'undefined' ? ''
   }
 }
 
+// Set by Electron only for an explicit "Open profile in new window". An
+// ordinary ⌘⇧N peer also carries profile/connectionId (its boot seed) but not
+// this marker, so a later device/profile selection stays the New-session
+// default there (#115102).
+export function isProfilePinnedWindow(search = typeof window === 'undefined' ? '' : window.location.search): boolean {
+  try {
+    return new URLSearchParams(search).get('profileWindow') === '1'
+  } catch {
+    return false
+  }
+}
+
 // The profile a helper window (the HUD) was asked to boot against, carried in
 // the query string by the main process (see hudUrl). The HUD is a full app
 // renderer that otherwise adopts the PRIMARY backend's profile — wrong the
@@ -136,6 +148,17 @@ export function isPeerInstanceWindow(search = typeof window === 'undefined' ? ''
 export function windowProfileOverride(): null | string {
   try {
     return new URLSearchParams(window.location.search).get('profile')?.trim() || null
+  } catch {
+    return null
+  }
+}
+
+// The registry connection a peer was launched against, paired with
+// windowProfileOverride(). Electron writes `connectionId=` (empty) for a
+// registry-local route, which reads back as null here.
+export function windowConnectionOverride(): null | string {
+  try {
+    return new URLSearchParams(window.location.search).get('connectionId') || null
   } catch {
     return null
   }
@@ -189,25 +212,39 @@ async function runWindowOpen(call: () => Promise<WindowOpenResult>, failMessage:
 // Open (or focus) a standalone OS window for a single chat session. No-ops
 // gracefully outside Electron so callers can wire it unconditionally.
 // `watch: true` opens a spectator window (lazy resume, live-mirror stream).
+// The window is a full renderer that adopts the PRIMARY profile unless told
+// otherwise, so the owning profile rides along (same ladder as openHud,
+// #82285): the session's stamped owner wins, and an unstamped/uncached id —
+// a brand-new subagent child — inherits the profile the user is looking at
+// (#82768, #61286).
 export async function openSessionInNewWindow(sessionId: string, opts?: { watch?: boolean }): Promise<void> {
   if (!sessionId || !canOpenSessionWindow()) {
     return
   }
 
+  // Lazy imports: `./profile` subscribes to the API client on load, so a
+  // static import here would drag it into every page that opens windows.
+  const [{ $activeGatewayProfile, normalizeProfileKey }, { $sessions, rememberedSessionProfile }] = await Promise.all([
+    import('./profile'),
+    import('./session')
+  ])
+
+  const profile = normalizeProfileKey(rememberedSessionProfile($sessions.get(), sessionId, $activeGatewayProfile.get()))
+
   await runWindowOpen(
-    () => window.hermesDesktop.openSessionWindow(sessionId, opts),
+    () => window.hermesDesktop.openSessionWindow(sessionId, { ...opts, profile }),
     'Could not open chat in a new window'
   )
 }
 
 // Open a new full-chrome app window — a peer instance of the primary that
 // renders the complete app against the shared backend. No-ops outside Electron.
-export async function openNewWindow(): Promise<void> {
+export async function openNewWindow(route?: { connectionId: null | string; profile: string }): Promise<void> {
   if (!canOpenNewWindow()) {
     return
   }
 
-  await runWindowOpen(() => window.hermesDesktop.openWindow(), 'Could not open a new window')
+  await runWindowOpen(() => window.hermesDesktop.openWindow(route), 'Could not open a new window')
 }
 
 /** Pop the in-app Browser into its own OS window. Returns whether the

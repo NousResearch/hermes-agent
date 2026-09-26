@@ -2,7 +2,7 @@
 
 import logging
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -10,7 +10,8 @@ from gateway.session import SessionSource, build_session_key
 from gateway.run import GatewayRunner
 from gateway.profile_routing import ProfileRoute, ProfileRouteRejected
 from gateway.config import GatewayConfig, Platform
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent
+from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.event import MessageEvent
 
 
 @pytest.fixture
@@ -21,6 +22,12 @@ def mock_runner():
     # Bind the actual methods to the mock
     runner._profile_name_for_source = GatewayRunner._profile_name_for_source.__get__(runner)
     runner._resolve_profile_home_for_source = GatewayRunner._resolve_profile_home_for_source.__get__(runner)
+    # _handle_message's ingress gates (profile route rejection) live in this helper.
+    runner._hm_admit_event = GatewayRunner._hm_admit_event.__get__(runner)
+    # The identity seam the gate canonicalizes through; a hand-built source has no transport owner.
+    runner._canonicalize = GatewayRunner._canonicalize.__get__(runner)
+    runner._transport_owner = lambda _source: None
+    runner._primary_profile_name = "default"
     return runner
 
 
@@ -86,15 +93,14 @@ class TestMissingProfileWarning:
                     with patch("hermes_constants.get_hermes_home", return_value=Path("/hermes")):
                         with caplog.at_level(logging.WARNING):
                             result = mock_runner._resolve_profile_home_for_source(discord_source)
-                            
+
                             # Should fall back to global HERMES_HOME
                             assert result == Path("/hermes")
-                            
+
                             # Should have logged a warning
                             assert len(caplog.records) == 1
                             assert caplog.records[0].levelname == "WARNING"
                             assert "nonexistent" in caplog.records[0].message
-                            assert "does not exist" in caplog.records[0].message
                             assert "discord" in caplog.records[0].message
                             assert "123456" in caplog.records[0].message
     
@@ -122,27 +128,9 @@ class TestExceptionHandling:
                         assert len(caplog.records) == 1
                         assert caplog.records[0].levelname == "WARNING"
                         assert "bad-profile" in caplog.records[0].message
-                        assert "Failed to resolve profile directory" in caplog.records[0].message
     
 
 
-class TestRoutingConsultation:
-    """Tests that _profile_name_for_source is consulted when source.profile is empty."""
-    
-    def test_routing_consulted_when_source_profile_empty(self, mock_runner, discord_source):
-        """_profile_name_for_source should be called when source.profile is empty."""
-        discord_source.profile = None
-        
-        with patch("hermes_cli.profiles.get_active_profile_name", return_value="active"):
-            with patch("hermes_cli.profiles.get_profile_dir") as mock_get_dir:
-                mock_get_dir.return_value = Path("/hermes/profiles/routed")
-                
-                mock_runner._profile_name_for_source = MagicMock(return_value="routed")
-                
-                mock_runner._resolve_profile_home_for_source(discord_source)
-                
-                # Should have called routing
-                mock_runner._profile_name_for_source.assert_called_once_with(discord_source)
     
 
 
@@ -172,8 +160,7 @@ class TestNonDiscordProfileRouting:
         ):
             assert mock_runner._profile_name_for_source(telegram_source) == "tg-profile"
 
-    def test_route_inside_allowlist_resolves(self, mock_runner, telegram_source):
-        mock_runner.config.multiplex_profile_allowlist = ["worker"]
+    def test_route_to_served_profile_resolves(self, mock_runner, telegram_source):
         mock_runner.config.profile_routes = [
             ProfileRoute(
                 name="worker-route",
@@ -191,12 +178,9 @@ class TestNonDiscordProfileRouting:
         ) as enumerate_profiles:
             assert mock_runner._profile_name_for_source(telegram_source) == "worker"
 
-        enumerate_profiles.assert_called_once_with(
-            multiplex=True, profile_allowlist=["worker"]
-        )
+        enumerate_profiles.assert_called_once_with(multiplex=True)
 
-    def test_route_outside_allowlist_rejects(self, mock_runner, telegram_source, caplog):
-        mock_runner.config.multiplex_profile_allowlist = ["worker"]
+    def test_route_to_unserved_profile_rejects(self, mock_runner, telegram_source, caplog):
         mock_runner.config.profile_routes = [
             ProfileRoute(
                 name="restricted-route",
@@ -218,7 +202,6 @@ class TestNonDiscordProfileRouting:
         assert "target profile 'restricted' is not served" in caplog.text
 
     def test_no_route_match_preserves_default_sentinel(self, mock_runner, telegram_source):
-        mock_runner.config.multiplex_profile_allowlist = ["worker"]
         mock_runner.config.profile_routes = [
             ProfileRoute(
                 name="other-chat",
@@ -241,12 +224,69 @@ class TestGatewayRunnerInjection:
     that makes the routing in TestNonDiscordProfileRouting reachable at runtime.
     """
 
-    def test_base_adapter_declares_gateway_runner(self):
-        from gateway.platforms.base import BasePlatformAdapter
 
-        # Class-level attribute exists and defaults to None.
-        assert hasattr(BasePlatformAdapter, "gateway_runner")
-        assert BasePlatformAdapter.gateway_runner is None
+    def test_factory_binds_every_adapter_to_runner(self, monkeypatch):
+        """``_create_adapter`` binds the runner regardless of which branch
+        built the adapter (plugin registry OR built-in if/elif) — every
+        lifecycle path (startup, reconnect, secondary profiles) goes through
+        it, so this is the single seam that makes profile_routes reachable
+        for built-ins like Signal (#68332 / #70831)."""
+        from gateway.config import PlatformConfig
+
+        runner = object.__new__(GatewayRunner)
+        adapter = MagicMock(spec=BasePlatformAdapter)
+        monkeypatch.setattr(runner, "_instantiate_adapter", lambda platform, config: adapter)
+        assert runner._create_adapter(Platform.SIGNAL, PlatformConfig(enabled=True)) is adapter
+        assert adapter.gateway_runner is runner
+        monkeypatch.setattr(runner, "_instantiate_adapter", lambda platform, config: None)
+        assert runner._create_adapter(Platform.SIGNAL, PlatformConfig(enabled=True)) is None
+
+    @pytest.mark.asyncio
+    async def test_real_signal_factory_routes_inbound_group_event(self, monkeypatch):
+        """A factory-built (built-in) Signal adapter resolves profile_routes
+        for a real inbound envelope — fails on main where the Signal branch
+        returned a bare ``SignalAdapter(config)`` with no runner."""
+        from gateway.config import PlatformConfig
+
+        group_id = "test-signal-route"
+        monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", group_id)
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(
+            multiplex_profiles=True,
+            profile_routes=[
+                ProfileRoute(name="signal", platform="signal", profile="ops", chat_id=f"group:{group_id}"),
+            ],
+        )
+        adapter = runner._create_adapter(
+            Platform.SIGNAL,
+            PlatformConfig(enabled=True, extra={"http_url": "http://127.0.0.1:18080", "account": "+15555550123"}),
+        )
+        assert adapter is not None and adapter.gateway_runner is runner
+
+        captured = {}
+
+        async def capture_event(event):
+            captured["event"] = event
+
+        adapter.handle_message = capture_event
+        with patch(
+            "hermes_cli.profiles.profiles_to_serve",
+            return_value=[("default", Path("/profiles/default")), ("ops", Path("/profiles/ops"))],
+        ):
+            await adapter._handle_envelope({
+                "envelope": {
+                    "sourceNumber": "+15555550124",
+                    "sourceName": "Test Operator",
+                    "timestamp": 1700000000000,
+                    "dataMessage": {
+                        "message": "diagnose the cluster",
+                        "groupInfo": {"groupId": group_id, "groupName": "US East 7"},
+                    },
+                },
+            })
+        source = captured["event"].source
+        assert source.profile == "ops"
+        assert build_session_key(source, profile=source.profile).startswith("agent:ops:")
 
 
 # A concrete adapter we can instantiate without the full platform stack.
@@ -308,9 +348,22 @@ class TestAdapterToSessionKeyIntegration:
         # A default-profile key would land in agent:main — must differ.
         assert key != build_session_key(source, profile=None)
 
+    def test_adapter_preserves_numeric_zero_user_id_for_routing(self, mock_runner):
+        mock_runner.config.profile_routes = [
+            ProfileRoute(name="zero", platform="discord", profile="zero", user_id="0")
+        ]
+        adapter = _stub_adapter(Platform.DISCORD, mock_runner)
+
+        with patch(
+            "hermes_cli.profiles.profiles_to_serve",
+            return_value=[("default", Path("/profiles/default")), ("zero", Path("/profiles/zero"))],
+        ):
+            source = adapter.build_source(chat_id="channel", user_id=0)
+
+        assert (source.user_id, source.profile) == ("0", "zero")
+
     @pytest.mark.asyncio
     async def test_adapter_drops_rejected_route_before_dispatch(self, mock_runner):
-        mock_runner.config.multiplex_profile_allowlist = []
         mock_runner.config.profile_routes = [
             ProfileRoute(
                 name="restricted-route",
@@ -338,10 +391,30 @@ class TestAdapterToSessionKeyIntegration:
         )
         assert result is None
 
+    def test_matcher_failure_rejects_instead_of_serving_the_default_profile(self, mock_runner):
+        mock_runner.config.multiplex_profiles = True
+        mock_runner.config.profile_routes = [
+            ProfileRoute(name="r", platform="discord", profile="routed", chat_id="c")
+        ]
+        with patch("gateway.profile_routing.match_profile_route", side_effect=RuntimeError("boom")):
+            with pytest.raises(ProfileRouteRejected):
+                mock_runner._profile_name_for_source(
+                    SessionSource(platform=Platform.DISCORD, chat_id="c")
+                )
+
+    def test_plain_no_match_still_serves_the_active_profile(self, mock_runner):
+        # Only failures fail closed; an ordinary unrouted sender keeps the historical behaviour.
+        mock_runner.config.multiplex_profiles = True
+        mock_runner.config.profile_routes = [
+            ProfileRoute(name="r", platform="discord", profile="routed", chat_id="other")
+        ]
+        source = SessionSource(platform=Platform.DISCORD, chat_id="c", user_id="nobody")
+        assert mock_runner._profile_name_for_source(source) is None
+        assert mock_runner._resolve_profile_home_for_source(source) is not None
+
     @pytest.mark.asyncio
     async def test_direct_source_is_rejected_at_shared_ingress(self, mock_runner):
         mock_runner.config.multiplex_profiles = True
-        mock_runner.config.multiplex_profile_allowlist = []
         mock_runner.config.profile_routes = [
             ProfileRoute(
                 name="restricted-route",

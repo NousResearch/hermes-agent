@@ -97,10 +97,38 @@ _LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS = (
 # Adaptive families that reject the "xhigh" effort (arrived with Opus 4.7) and still accept
 # sampling params.
 _NO_XHIGH_CLAUDE_SUBSTRINGS = ("claude-opus-4-6", "claude-opus-4.6", "claude-sonnet-4-6", "claude-sonnet-4.6")
+# Families shipping the "5.5-generation" request shape: thinking cannot be disabled AND forced
+# tool_choice is rejected (both HTTP 400, shipped as a pair on Fable/Mythos 5.1 and Opus 5.5). One
+# set read by both verdicts so an id cannot be added to one and forgotten in the other. Opus 5 is
+# NOT affected: the trailing "-5" is load-bearing. Dot spellings cover direct helper calls with the
+# OpenRouter/Portal ``claude-opus-5.5`` id.
+_OPUS_5_5_FAMILY_SUBSTRINGS = (
+    "claude-opus-5-5", "claude-opus-5.5", "claude-fable-5-1", "claude-fable-5.1",
+    "claude-mythos-5-1", "claude-mythos-5.1",
+)
 # Adaptive families where thinking is mandatory: ``thinking: {"type": "disabled"}`` answers HTTP
 # 400 (Portal flags them ``reasoning.mandatory``). The failure is asymmetric — a missing entry
 # 400s the turn, a spurious one only leaves thinking on — so when in doubt, add the family.
-_MANDATORY_THINKING_CLAUDE_SUBSTRINGS = ("claude-fable",)
+_MANDATORY_THINKING_CLAUDE_SUBSTRINGS = ("claude-fable",) + _OPUS_5_5_FAMILY_SUBSTRINGS
+# Families that 400 on ``tool_choice`` ``any``/``tool`` ("type "tool" and "any" are not supported
+# for this model") on Messages, Batches and token counting. Opt-IN, the opposite asymmetry: a
+# missing entry 400s loudly naming the field, a spurious one silently strips forced tool use.
+_NO_FORCED_TOOL_CHOICE_CLAUDE_SUBSTRINGS = _OPUS_5_5_FAMILY_SUBSTRINGS
+# Models already reported for the forced-tool_choice downgrade (bounded by id set, not volume).
+_forced_tool_choice_downgrade_logged: set = set()
+
+
+def _log_forced_tool_choice_downgrade(model: str) -> None:
+    """Report the ``any``/``tool`` -> ``auto`` substitution once per model."""
+    if model in _forced_tool_choice_downgrade_logged:
+        return
+    _forced_tool_choice_downgrade_logged.add(model)
+    logger.info(
+        "Anthropic %s rejects a forced tool_choice (HTTP 400) — sending tool_choice=auto instead. "
+        "The model may now answer in text where the caller required a tool call; prompt for the "
+        "tool explicitly if that matters.",
+        model,
+    )
 
 
 def _is_claude_model(model: str | None) -> bool:
@@ -192,6 +220,14 @@ def _accepts_thinking_disable(model: str) -> bool:
         and _supports_adaptive_thinking(model)
         and not _model_matches(model, _MANDATORY_THINKING_CLAUDE_SUBSTRINGS)
     )
+
+
+def _accepts_forced_tool_choice(model: str) -> bool:
+    """False when ``model`` rejects ``tool_choice`` ``any``/``tool`` (Opus 5.5, Fable/Mythos 5.1);
+    ``build_anthropic_kwargs`` then sends ``auto``. Scoped to Claude and opt-in within it:
+    third-party Anthropic-Messages endpoints have their own tool contract, and an unknown future
+    Claude keeps forced tool choice (a missing entry 400s loudly; a spurious one is silent)."""
+    return not (_is_claude_model(model) and _model_matches(model, _NO_FORCED_TOOL_CHOICE_CLAUDE_SUBSTRINGS))
 
 
 def _forbids_sampling_params(model: str) -> bool:
@@ -645,6 +681,13 @@ def build_anthropic_kwargs(
         kwargs["tools"] = anthropic_tools
         if tool_choice == "none":
             kwargs.pop("tools", None)  # no Anthropic "none" — omit tools to prevent use
+        elif isinstance(tool_choice, str) and tool_choice != "auto" and not _accepts_forced_tool_choice(model):
+            # Both forced shapes 400 on this family. The documented replacement is "auto + strict
+            # tool use"; ``strict`` is deliberately NOT injected: the registry's tool schemas do
+            # not fit the strict JSON-Schema subset (no ``additionalProperties: false``, and
+            # ``minimum``/``maximum``/``minItems``), so it would 400 every tool-bearing request.
+            kwargs["tool_choice"] = {"type": "auto"}
+            _log_forced_tool_choice_downgrade(model)
         elif tool_choice is None or isinstance(tool_choice, str):
             # A forced tool name goes through the OAuth normalizer too: every tools[] entry is
             # mcp__-prefixed/aliased there, so the literal would leak and name a nonexistent tool.

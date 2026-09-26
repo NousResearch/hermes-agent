@@ -16,6 +16,8 @@ import json
 import threading
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from tools.delegate_tool import (
     DELEGATE_TASK_SCHEMA,
     _run_single_child,
@@ -210,6 +212,32 @@ class TestRunSingleChildSchemaValidation:
         entry = _run(child)
         assert entry["schema_valid"] is False
         assert entry["schema_errors"]
+
+    @pytest.mark.parametrize("ending", [
+        {"failed": True, "error": "HTTP 402: Insufficient credits",
+         "final_response": "Billing or credits exhausted: HTTP 402: Insufficient credits"},
+        {"interrupted": True, "final_response": "Operation interrupted: waiting for model response (3.1s elapsed)."},
+    ])
+    def test_failed_or_stopped_retry_keeps_the_first_answer(self, ending):
+        """The retry turn's error/interrupt text is not an answer: the child's first answer stays the
+        summary, with the first answer's schema verdict."""
+        first = '{"zip": "0150", "findings": "the audit result"}'  # misses required "city"
+        child = _StubChild([first])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+        original = child.run_conversation
+
+        def retry_ends_badly(user_message, task_id=None, **kw):
+            if child.calls:
+                child.calls.append(user_message)
+                return {"completed": False, "api_calls": 1, "messages": [], **ending}
+            return original(user_message, task_id=task_id, **kw)
+
+        child.run_conversation = retry_ends_badly
+        entry = _run(child)
+        assert entry["summary"] == first
+        assert entry["status"] == "completed"
+        assert entry["schema_valid"] is False
+        assert any("city" in e for e in entry["schema_errors"])
 
     def test_no_schema_keeps_legacy_result_shape(self):
         """Schema-less calls must not gain new keys (wire-shape pinning)."""

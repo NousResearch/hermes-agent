@@ -2701,29 +2701,51 @@ class LiveClaimError(ValueError):
     """``complete_task`` refused: the task is ``running`` under a live claim and
     the caller neither owns its run (``expected_run_id``) nor passed ``force``.
     Completing anyway would close the worker's run row underneath a process
-    that is still executing. A ``ValueError`` so tool error handlers treat it
-    as recoverable."""
+    that is still executing — or, for a claim that never spawned a worker
+    (#120159), blow away another session's reservation before its TTL lapses.
+    A ``ValueError`` so tool error handlers treat it as recoverable."""
 
     def __init__(self, task_id: str):
         super().__init__(
-            f"{task_id} is running under a live worker claim; pass expected_run_id "
+            f"{task_id} is running under a live claim (a worker process, or an "
+            "unexpired claim from another session); pass expected_run_id "
             "(worker ownership) or force=True (explicit operator override) instead "
             "of closing the live run"
         )
 
 
-def _claim_is_live(trow) -> bool:
-    """True when a ``running`` task's claim still protects a run: the worker process
-    it spawned exists (PID + start-time fingerprint). A claim whose worker is gone,
-    or a library/CLI claim that never spawned one, has no run to protect. TTL expiry
-    is deliberately not consulted: ``reclaim_stale_tasks`` extends, not reclaims, the
-    claim of a live worker, so the process is the liveness authority here too."""
-    return bool(
-        trow["status"] == "running"
-        and trow["claim_lock"] is not None
-        and trow["worker_pid"]
-        and _worker_alive(trow["worker_pid"], trow["worker_started_at"])
-    )
+def _claim_is_live(trow, claimer: Optional[str] = None) -> bool:
+    """True when a ``running`` task's claim still stands between the card and a
+    claim-less close (#111764, #120159). Two claim shapes, two liveness
+    authorities:
+
+    * a claim whose **worker process** was spawned (``worker_pid`` set): the
+      process itself (PID + start-time fingerprint) is the authority. A claim
+      whose worker is gone protects no live run, and TTL expiry is deliberately
+      not consulted — ``reclaim_stale_tasks`` extends, not reclaims, the claim
+      of a live worker.
+    * a **library / CLI claim** (#120159: ``hermes kanban claim`` never spawns a
+      worker, ``worker_pid`` stays NULL): there is no process to ask, so the
+      claim's own ``claim_expires`` TTL is the authority — until it lapses a
+      second session may not close the card underneath. The one exemption is a
+      claimer CAS: a caller presenting the same ``claim_lock`` (the check
+      :func:`heartbeat_claim` already runs) owns the claim and may close it
+      without an override. ``claim_expires`` unset is broken bookkeeping
+      (``reconcile_orphans`` requeues the card) and stays non-live.
+    """
+    if trow["status"] != "running" or trow["claim_lock"] is None:
+        return False
+    if trow["worker_pid"]:
+        # A spawned worker: the process is the liveness authority (#111764).
+        return bool(_worker_alive(trow["worker_pid"], trow["worker_started_at"]))
+    # A claim that never spawned a worker (#120159): TTL bounds it, and the
+    # claimer holding this very lock is exempt from its own reservation. Like
+    # ``heartbeat_claim``, a missing ``claimer`` means "this process".
+    lock = _claimer_id() if claimer is None else claimer
+    if lock == trow["claim_lock"]:
+        return False
+    expires = trow["claim_expires"]
+    return bool(expires) and int(expires) > int(time.time())
 
 
 def complete_task(
@@ -2731,6 +2753,7 @@ def complete_task(
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
     fire_lifecycle_hook: bool = True, force: bool = False,
+    claimer: Optional[str] = None,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
 
@@ -2738,7 +2761,11 @@ def complete_task(
     approval. A ``running`` task under a live claim is only completed with
     proof of ownership (``expected_run_id``) or ``force=True`` (explicit
     operator override) — otherwise :class:`LiveClaimError`, the same fence
-    :func:`request_review` applies. With no active run the handoff fields survive via
+    :func:`request_review` applies. A claim that never spawned a worker
+    (``hermes kanban claim``, #120159) counts as live until its ``claim_expires``
+    TTL lapses, so a second session cannot close it underneath; the claimer
+    itself — ``claimer=`` (default: this process, the :func:`heartbeat_claim`
+    CAS) — may close its own claim. With no active run the handoff fields survive via
     :func:`_synthesize_ended_run`. ``summary`` (defaults to ``result``) and
     ``metadata`` land on the closing run for :func:`build_worker_context`.
     ``created_cards`` are verified first — a phantom id raises
@@ -2771,14 +2798,17 @@ def complete_task(
         if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
             return False
         trow = conn.execute(
-            "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
+            "SELECT status, claim_lock, claim_expires, worker_pid, worker_started_at"
+            " FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         prior_status = trow["status"] if trow else None
-        # Refuse to close a LIVE worker's run without proof of ownership
+        # Refuse to close a LIVE claim without proof of ownership
         # (expected_run_id) or an explicit human override (force=True); see
-        # _claim_is_live for what "live" means.
-        if expected_run_id is None and not force and trow and _claim_is_live(trow):
+        # _claim_is_live for what "live" means — a spawned worker's process, or
+        # (per #120159) a library/CLI claim whose TTL has not lapsed and whose
+        # lock this caller does not hold.
+        if expected_run_id is None and not force and trow and _claim_is_live(trow, claimer=claimer):
             raise LiveClaimError(task_id)
         sql = """
                 UPDATE tasks
@@ -3353,6 +3383,7 @@ def request_review(
     conn: sqlite3.Connection, task_id: str, *, summary: Optional[str] = None,
     metadata: Optional[dict] = None, reviewer: Optional[str] = None,
     expected_run_id: Optional[int] = None, force: bool = False, with_reason: bool = False,
+    claimer: Optional[str] = None,
 ):
     """``running``/``ready`` -> ``review``; never touches block recurrence accounting.
 
@@ -3360,7 +3391,10 @@ def request_review(
     route back to the right profile; ``reviewer`` reassigns the task, and on
     re-review defaults to the latest ``changes_requested`` provenance. A live
     claim is only cleared with proof of ownership (``expected_run_id``) or
-    ``force=True``. Returns ``bool``, or ``(ok, reason)`` with ``with_reason``.
+    ``force=True``, or by the claimer itself (``claimer=`` — default this
+    process, the :func:`heartbeat_claim` CAS); a worker-less claim
+    (#120159) stays live until its TTL lapses. Returns ``bool``, or ``(ok, reason)``
+    with ``with_reason``.
 
     ``metadata["artifacts"]`` names the handoff's deliverable
     files; a review handoff is the last implementer transition, and the
@@ -3390,15 +3424,17 @@ def request_review(
             if not _parents_satisfied(conn, task_id):
                 return _ret(False, "parent dependencies are not satisfied")
             trow = conn.execute(
-                "SELECT assignee, status, claim_lock, current_run_id, worker_pid, "
-                "worker_started_at FROM tasks WHERE id = ?", (task_id,),
+                "SELECT assignee, status, claim_lock, claim_expires, current_run_id, "
+                "worker_pid, worker_started_at FROM tasks WHERE id = ?", (task_id,),
             ).fetchone()
             if trow is None:
                 return _ret(False, "task not found")
-            # Refuse to clear a live worker's claim without proof of ownership
+            # Refuse to clear a live claim without proof of ownership
             # (expected_run_id) or an explicit human override (force=True);
-            # the same fence as complete_task (_claim_is_live).
-            if expected_run_id is None and not force and _claim_is_live(trow):
+            # the same fence as complete_task (_claim_is_live) — a claim that
+            # never spawned a worker (#120159) is live until its TTL lapses,
+            # except for the claimer presenting the lock it already holds.
+            if expected_run_id is None and not force and _claim_is_live(trow, claimer=claimer):
                 return _ret(
                     False, "task is running under a live claim; pass expected_run_id "
                     "(worker ownership) or force=True (explicit operator "

@@ -922,7 +922,8 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                                         expected_run_id=_worker_run_id_for(tid),
                                         force=bool(getattr(args, "force", False)))
             except kb.LiveClaimError:
-                fail_msg[tid] = (f"cannot complete {tid}: a live worker is running it. Wait for the "
+                fail_msg[tid] = (f"cannot complete {tid}: a live claim holds it (a worker is running it, "
+                                 f"or another session claimed it and its TTL has not lapsed). Wait for the "
                                  f"worker, `hermes kanban reclaim {tid}` to release it, or re-run with "
                                  f"--force to close its run and complete anyway.")
                 return False

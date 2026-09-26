@@ -67,8 +67,14 @@ def _memory_blocks(agent: Any) -> Tuple[str, str]:
     memory_block = user_block = ""
     store = getattr(agent, "_memory_store", None)
     try:
+        # Re-derive with the SAME pinned scope the live block was built with: this feeds
+        # _strip_blocks, and a scope-mismatched block is not stripped, so the memory text
+        # would be attributed here AND counted again inside the system-prompt category.
+        from agent.system_prompt import pinned_project_scope
+
+        scope = pinned_project_scope(agent)
         if store is not None and getattr(agent, "_memory_enabled", True):
-            memory_block = store.format_for_system_prompt("memory") or ""
+            memory_block = store.format_for_system_prompt("memory", scope) or ""
         if store is not None and getattr(agent, "_user_profile_enabled", True):
             user_block = store.format_for_system_prompt("user") or ""
     except Exception:

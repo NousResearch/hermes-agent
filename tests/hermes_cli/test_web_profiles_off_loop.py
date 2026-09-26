@@ -229,3 +229,70 @@ def test_describe_auto_unknown_profile_is_still_404(client):
     )
 
 # ── PUT /api/profiles/{name}/model — config.yaml read-modify-write ───────────
+
+
+# ── POST /api/profiles/{name}/open-terminal — the per-candidate `which` forks ─
+
+def test_open_terminal_does_not_block_the_dashboard(client, monkeypatch):
+    """Spawning the terminal is process work and must leave the loop.
+
+    The handler is ``async def``, so FastAPI runs it inline on the event loop; a
+    sync ``def`` would have been handed the threadpool. Blocking on
+    ``subprocess.Popen`` is the shared site: every platform branch reaches it.
+    """
+    from hermes_cli.web_routers import profiles as profiles_mod
+
+    blocker = _Blocker(result=None)
+    monkeypatch.setattr(profiles_mod.subprocess, "Popen", blocker)
+    monkeypatch.setattr("shutil.which", lambda _exe: "/usr/bin/xterm")
+
+    assert_serves_concurrently(
+        client, blocker, lambda: client.post("/api/profiles/demo/open-terminal")
+    )
+
+
+def test_open_terminal_probes_candidates_without_forking(client, monkeypatch):
+    """The Linux branch must not fork a ``which`` per candidate.
+
+    ``_LINUX_TERMINALS`` holds ten entries, so the old ``subprocess.call(["which", …])``
+    probe forked and waited up to ten times before anything launched. ``shutil.which``
+    is a PATH scan, and it does not need a ``which`` binary to exist at all.
+    """
+    import sys as _sys
+
+    from hermes_cli.web_routers import profiles as profiles_mod
+
+    monkeypatch.setattr(_sys, "platform", "linux")
+    calls, launched = [], []
+    monkeypatch.setattr(profiles_mod.subprocess, "call",
+                        lambda *a, **k: calls.append(a) or 0)
+    monkeypatch.setattr(profiles_mod.subprocess, "Popen",
+                        lambda argv, *a, **k: launched.append(argv))
+    # Only the third candidate is installed, so a forking probe would have run twice
+    # before reaching it.
+    third = profiles_mod._LINUX_TERMINALS[2][0]
+    monkeypatch.setattr("shutil.which",
+                        lambda exe: f"/usr/bin/{exe}" if exe == third else None)
+
+    resp = client.post("/api/profiles/demo/open-terminal")
+
+    assert resp.status_code == 200, resp.text
+    assert calls == [], f"the handler still forks a `which` per candidate: {calls}"
+    assert launched and launched[0][0] == third, launched
+
+
+def test_open_terminal_reports_when_no_emulator_is_installed(client, monkeypatch):
+    """Guard: the 400 still comes back when nothing on the list is present."""
+    import sys as _sys
+
+    from hermes_cli.web_routers import profiles as profiles_mod
+
+    monkeypatch.setattr(_sys, "platform", "linux")
+    monkeypatch.setattr("shutil.which", lambda _exe: None)
+    monkeypatch.setattr(profiles_mod.subprocess, "Popen",
+                        lambda *a, **k: pytest.fail("launched without an emulator"))
+
+    resp = client.post("/api/profiles/demo/open-terminal")
+
+    assert resp.status_code == 400, resp.text
+    assert "terminal emulator" in resp.text

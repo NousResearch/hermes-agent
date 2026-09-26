@@ -149,6 +149,87 @@ function refine(groups: AnnotateGroup[], total: number): AnnotateGroup[] {
 }
 
 /**
+ * A comment on a container plus comments inside it must stay one group.
+ * Nested keys would tell the model those pieces of work are safe to run in
+ * parallel, and they are not.
+ *
+ * Walk the clicked selectors, not the bucket keys. A comment on `main` can
+ * bucket as `body`, and that key is a prefix of `body>header.nav` even though
+ * header is a sibling. The element the user actually pointed at is what
+ * decides ownership. Empty-key unanchored comments never swallow a placed
+ * group.
+ */
+function flattenNested(groups: AnnotateGroup[]): AnnotateGroup[] {
+  const firstNumber = (group: AnnotateGroup) => group.items[0]?.number ?? 0
+  const selectorsOf = (group: AnnotateGroup) =>
+    group.items.map(item => item.identity?.selector || '').filter(Boolean)
+  const owns = (parent: AnnotateGroup, child: AnnotateGroup): boolean => {
+    const parents = selectorsOf(parent)
+    const children = selectorsOf(child)
+
+    if (!parents.length || !children.length) {
+      return false
+    }
+
+    return children.every(childSel =>
+      parents.some(parentSel => childSel === parentSel || childSel.startsWith(`${parentSel}>`))
+    )
+  }
+  const sorted = [...groups].sort((left, right) => {
+    const leftMin = Math.min(...selectorsOf(left).map(sel => sel.length))
+    const rightMin = Math.min(...selectorsOf(right).map(sel => sel.length))
+
+    if (leftMin !== rightMin) {
+      return leftMin - rightMin
+    }
+
+    return firstNumber(left) - firstNumber(right)
+  })
+  const kept: AnnotateGroup[] = []
+
+  for (const group of sorted) {
+    const parent = kept.find(candidate => candidate.key !== '' && owns(candidate, group))
+
+    if (parent) {
+      parent.items.push(...group.items)
+      parent.items.sort((left, right) => left.number - right.number)
+      const key = sharedSelectorPrefix(selectorsOf(parent))
+      parent.key = key
+      parent.label = labelFor(key)
+      continue
+    }
+
+    kept.push({ items: [...group.items], key: group.key, label: group.label })
+  }
+
+  kept.sort((left, right) => firstNumber(left) - firstNumber(right))
+
+  return kept
+}
+
+function sharedSelectorPrefix(selectors: string[]): string {
+  if (!selectors.length) {
+    return ''
+  }
+
+  const parts = selectors.map(segments)
+  const shortest = Math.min(...parts.map(list => list.length))
+  const common: string[] = []
+
+  for (let i = 0; i < shortest; i++) {
+    const seg = parts[0]?.[i]
+
+    if (!seg || parts.some(list => list[i] !== seg)) {
+      break
+    }
+
+    common.push(seg)
+  }
+
+  return common.join(SEP)
+}
+
+/**
  * Split a packed batch into groups the model can hand out in parallel.
  *
  * Comments with no element (area pins) cannot be placed in the tree, so they
@@ -160,7 +241,7 @@ export function groupAnnotations(items: readonly ComposerReadyAnnotation[]): Ann
   const placed = items.filter(item => item.identity?.selector)
   const loose = items.filter(item => !item.identity?.selector)
   const depth = annotateSplitDepth(placed.map(item => item.identity?.selector || ''))
-  const groups = refine(bucket(placed, depth), placed.length)
+  const groups = flattenNested(refine(bucket(placed, depth), placed.length))
 
   if (loose.length) {
     groups.push({ items: [...loose], key: '', label: '' })

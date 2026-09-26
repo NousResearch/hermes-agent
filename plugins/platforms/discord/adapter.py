@@ -670,6 +670,7 @@ class VoiceReceiver:
         self._dave_session = None
         self._bot_ssrc: int = 0
         self._ssrc_to_user: Dict[int, int] = {}
+        self._infer_attempts: Dict[int, float] = {}  # ssrc -> last sole-member inference attempt
         self._lock = threading.Lock()
         self._buffers: Dict[int, bytearray] = defaultdict(bytearray)
         self._last_packet_time: Dict[int, float] = {}
@@ -705,6 +706,7 @@ class VoiceReceiver:
             self._last_packet_time.clear()
             self._decoders.clear()
             self._ssrc_to_user.clear()
+            self._infer_attempts.clear()
         logger.info("VoiceReceiver stopped")
 
     def pause(self):
@@ -822,27 +824,36 @@ class VoiceReceiver:
             decrypted = decrypted[:-pad_len]
             if not decrypted:
                 return
-        # --- DAVE E2EE decrypt ---
+        self._decode_payload(ssrc, decrypted)
+
+    # DAVE E2EE frames end with the protocol's magic marker; plain Opus frames don't.
+    _DAVE_MAGIC_MARKER = b"\xfa\xfa"
+    _INFER_RETRY_SECONDS = 1.0
+
+    def _decode_payload(self, ssrc: int, payload: bytes) -> None:
+        """DAVE-decrypt (when E2EE is active) and Opus-decode one transport-decrypted payload into the
+        SSRC's buffer. An SSRC with no user yet (no SPEAKING since the bot joined) is attributed at once
+        when one allowed member is in the channel, so the first utterance is decrypted instead of lost.
+        An E2EE frame that still can't be attributed is dropped: Opus decodes ciphertext as noise, and
+        Whisper turned that into words from its prompt (e.g. the first thing heard after every join)."""
         if self._dave_session:
-            with self._lock:
-                user_id = self._ssrc_to_user.get(ssrc, 0)
+            user_id = self._user_for_ssrc(ssrc)
             if user_id:
                 try:
                     import davey
-                    decrypted = self._dave_session.decrypt(
-                        user_id, davey.MediaType.audio, decrypted
-                    )
+                    payload = self._dave_session.decrypt(user_id, davey.MediaType.audio, payload)
                 except Exception as e:
                     # Unencrypted passthrough — use NaCl-decrypted data as-is
                     if "Unencrypted" not in str(e):
                         if self._packet_debug_count <= 10:
                             logger.warning("DAVE decrypt failed for ssrc=%d: %s", ssrc, e)
                         return
-            # Unknown SSRC (no SPEAKING yet): skip DAVE, try Opus directly; user_id arrives with SPEAKING.
+            elif payload.endswith(self._DAVE_MAGIC_MARKER):
+                return
         try:
             if ssrc not in self._decoders:
                 self._decoders[ssrc] = discord.opus.Decoder()
-            pcm = self._decoders[ssrc].decode(decrypted)
+            pcm = self._decoders[ssrc].decode(payload)
             with self._lock:
                 self._buffers[ssrc].extend(pcm)
                 self._last_packet_time[ssrc] = time.monotonic()
@@ -851,6 +862,17 @@ class VoiceReceiver:
                 self._decoders.pop(ssrc, None)
             logger.debug("Opus decode error for SSRC %s; reset decoder: %s", ssrc, e)
             return
+
+    def _user_for_ssrc(self, ssrc: int) -> int:
+        """Mapped user for ``ssrc``, else infer a sole allowed member (at most once a second per SSRC)."""
+        with self._lock:
+            if user_id := self._ssrc_to_user.get(ssrc, 0):
+                return user_id
+            now = time.monotonic()
+            if now - self._infer_attempts.get(ssrc, float("-inf")) < self._INFER_RETRY_SECONDS:
+                return 0
+            self._infer_attempts[ssrc] = now
+            return self._infer_user_for_ssrc(ssrc)
 
     # --- Silence detection ---
 

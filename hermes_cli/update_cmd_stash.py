@@ -26,6 +26,14 @@ _AUTOSTASH_WARN_AGE_DAYS = 7
 
 _STASH_LEFT_IN_PLACE = "  The stash was left in place. You can remove it manually after checking the result."
 
+#: This run's autostash while still unsettled: (stash ref, stashed path count).
+#: Set the moment the update stashes local patches; cleared as soon as they are
+#: restored, parked or discarded (_record_stash_disposition), when the failed-pull
+#: branch has already reported them, or when _surface_pending_autostash names them.
+#: Any update outcome reported while this is still set would claim the patches were
+#: handled when they were not (#122557).
+_pending_autostash: Optional[tuple[str, int]] = None
+
 
 def _git_quiet(git_cmd: list[str], args: list[str], cwd: Path, **kwargs):
     """``subprocess.run`` of a git command with captured output; None when git cannot run."""
@@ -74,6 +82,7 @@ def _print_first_line(text: str) -> None:
 
 
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
+    global _pending_autostash
     from hermes_cli.update_cmd_git import _git_run
     status = _git_run(git_cmd, ["status", "--porcelain", "-z"], cwd, check=True)
     if not status.stdout.strip():
@@ -120,6 +129,8 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         # A partially-failed push also skips cleanup of TRACKED modifications; they'd break the following
         # pull. Safe to reset: all is in the stash.
         _reset_hard(git_cmd, cwd)
+    _pending_autostash = (
+        stash_ref, len([entry for entry in status.stdout.split("\0") if entry]))
     return stash_ref
 
 
@@ -136,6 +147,35 @@ def _resolve_stash_selector(git_cmd: list[str], cwd: Path, stash_ref: str) -> Op
             match = re.fullmatch(r"stash@\{(\d+)\}", selector.strip())
             return match.group(1) if match else selector.strip()
     return None
+
+
+def _clear_pending_autostash() -> None:
+    """Forget this run's unsettled autostash after it was already reported (#122557)."""
+    global _pending_autostash
+    _pending_autostash = None
+
+
+def _surface_pending_autostash() -> bool:
+    """Loudly name this run's unsettled autostash; True when something was printed (#122557).
+
+    Called by every update outcome boundary (failure verdicts and the completion request)
+    so local patches parked mid-run can never be invisible in ``git stash list`` while the
+    command claims success or reports a bare failure. Deliberately separate from
+    ``_warn_orphaned_update_autostashes``, which surfaces leftovers from EARLIER runs by age.
+    """
+    global _pending_autostash
+    pending, _pending_autostash = _pending_autostash, None
+    if pending is None:
+        return False
+    stash_ref, file_count = pending
+    print()
+    print(f"! hermes update stashed {file_count} local modification(s) and could not restore them.")
+    print("  The install may be functional, but your local patches are NOT applied.")
+    print(f"  Stash ref: {stash_ref}")
+    print(f"  Review with: git stash show --stat {stash_ref}")
+    print(f"  Re-apply with: git stash show -p {stash_ref} | git apply --3way")
+    print(f"  Discard with: git stash drop {stash_ref}")
+    return True
 
 
 def _warn_orphaned_update_autostashes(git_cmd: list[str], cwd: Path) -> int:
@@ -191,6 +231,8 @@ def _record_stash_disposition(outcome: str, stash_ref: str, detail: str = "") ->
     """Note the autostash disposition in the update receipt so a parked stash is visible
     to automation reading receipts instead of stdout (#115363: an update that ended with
     local changes parked in the stash reported a bare success with no trace of them)."""
+    global _pending_autostash
+    _pending_autostash = None  # this run's stash was reported: restored, parked or discarded
     from hermes_cli.update_receipt import record_step
     record_step(
         "local_changes_stash",
@@ -288,6 +330,7 @@ def _reject_unsafe_stash_restore(
     print(f"  Your local changes remain preserved in stash: {stash_ref}")
     print(f"  Inspect them with: git stash show --stat {stash_ref}")
     print(f"  Restore manually after fixing them: git stash apply {stash_ref}")
+    _clear_pending_autostash()  # reported loudly right above; not "silent" anymore
     raise SystemExit(1)
 
 

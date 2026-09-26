@@ -577,3 +577,65 @@ def test_keep_stash_park_records_parked_step_in_receipt(capsys):
     assert len(disposition) == 1
     assert disposition[0]["ok"] is False
     assert "parked" in disposition[0]["detail"]
+
+
+@pytest.mark.parametrize("zip_fallback", [False, True], ids=["git-failure", "windows-zip-fallback"])
+def test_unsettled_autostash_is_named_before_the_update_outcome(
+    update_tree, monkeypatch, capsys, zip_fallback,
+):
+    """#122557: once this run stashed local patches, every outcome must name the stash first.
+
+    A git failure right after the stash used to print only "Git update failed" -- the
+    patches stayed invisible unless the operator inspected ``git stash list`` -- and the
+    Windows ZIP fallback then went on to report success on top of the parked stash.
+    """
+    t = update_tree
+    git(t.clone, "checkout", "-q", "main")
+    t.args.channel = "main"
+    monkeypatch.setattr(hermes_main, "_sync_with_upstream_if_needed",
+                        update_cmd._sync_with_upstream_if_needed)
+    monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ())
+    local = t.clone / ".gitignore"
+    local.write_text(local.read_text(encoding="utf-8") + "# local patch 122557\n", encoding="utf-8")
+    if not zip_fallback:
+        monkeypatch.setattr(hermes_main, "_is_windows", lambda: False)
+
+    original = subprocess.run
+    zip_successes = []
+
+    def broken_rev_list(command, *args, **kwargs):
+        # The updater's first ``HEAD..<target>`` count runs right after the stash.
+        if isinstance(command, (list, tuple)) and any(
+            isinstance(arg, str) and arg.startswith("HEAD..") for arg in command
+        ):
+            raise subprocess.CalledProcessError(
+                128, command, output="", stderr="git exploded"
+            )
+        return original(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", broken_rev_list)
+
+    def fake_zip_update(*args, **kwargs):
+        zip_successes.append("Update complete!")
+        print("Update complete!")  # the verdict the stash notice must precede
+        return True
+
+    monkeypatch.setattr(update_cmd, "_update_via_zip", fake_zip_update)
+
+    if zip_fallback:
+        hermes_main.cmd_update(t.args)
+    else:
+        with pytest.raises(SystemExit) as error:
+            hermes_main.cmd_update(t.args)
+        assert error.value.code == 1
+
+    out = capsys.readouterr().out
+    stash_ref = git(t.clone, "rev-parse", "refs/stash")
+    assert "hermes-update-autostash" in git(t.clone, "stash", "list")
+    assert not t.requests, "the completion (success phase) must not run with an unsettled stash"
+    assert "could not restore them" in out, (
+        "the stashed local patches must be named before any outcome is reported\n" + out)
+    assert f"git stash show -p {stash_ref}" in out
+    if zip_fallback:
+        assert zip_successes, "the ZIP fallback success line is the verdict under test"
+        assert out.index("could not restore them") < out.index(zip_successes[0])

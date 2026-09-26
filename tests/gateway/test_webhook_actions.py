@@ -1,5 +1,6 @@
 """Task discussion controls preserve existing session ownership and never approve execution."""
 import asyncio
+from datetime import datetime, timezone
 from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -71,6 +72,8 @@ def test_action_owner_binding_delivery_dedup_and_admission(tmp_path, monkeypatch
 
 def test_restored_action_keeps_exact_session_and_sends_nothing(tmp_path, monkeypatch):
     async def scenario():
+        admit = AsyncMock()
+        monkeypatch.setattr(actions, "admit_internal_event", admit)
         owner, target, entry = owner_for(tmp_path)
         delivery = {"payload": {"discussion_action": {"eventId": "event-2", "taskId": "task-1", "cardId": "t_card", "sourceSessionId": "native-1"}}}
         assert (await actions.deliver(owner, target, Platform.WHATSAPP, "byron", None, "Needs attention", delivery)).success
@@ -82,6 +85,25 @@ def test_restored_action_keeps_exact_session_and_sends_nothing(tmp_path, monkeyp
         restored = owner.gateway_runner.session_store.lookup_by_session_id(entry.session_id)
         assert restored.metadata[actions.KEY]["binding"]["cardId"] == "t_card"
         assert clarify.has_pending(entry.session_key)
+        actions.retire(owner, {"discussion_retirement": {"taskId": "wrong", "cardId": "t_card", "sourceSessionId": "native-1", "occurredAt": datetime.now(timezone.utc).isoformat()}}, None)
+        assert restored.metadata[actions.KEY]["state"] == "pending"
+        actions.retire(owner, {"discussion_retirement": {"taskId": "task-1", "cardId": "t_card", "sourceSessionId": "native-1", "occurredAt": "2000-01-01T00:00:00Z"}}, None)
+        assert restored.metadata[actions.KEY]["state"] == "pending"
+        actions.retire(owner, {"discussion_retirement": {"taskId": "task-1", "cardId": "t_card", "sourceSessionId": "native-1", "occurredAt": datetime.now(timezone.utc).isoformat()}}, None)
+        assert restored.metadata[actions.KEY]["state"] == "retired"
+        await asyncio.gather(*owner._background_tasks)
+        vote = SimpleNamespace(text=actions.CHOICES[0], metadata={"whatsapp_native_type": "pollUpdateMessage", "whatsapp_native": {"pollUpdate": {"pollId": "poll-1"}}})
+        assert actions.consume_poll_reply(owner.gateway_runner.session_store, entry.session_key, vote, entry.origin)
+        record = restored.metadata[actions.KEY]
+        record["state"] = "pending"
+        record["expiresAt"] = 0
+        owner.gateway_runner.session_store.set_session_metadata(entry.session_key, actions.KEY, record)
+        await actions.restore(owner)
+        assert restored.metadata[actions.KEY]["state"] == "expired"
+        assert actions.consume_poll_reply(owner.gateway_runner.session_store, entry.session_key, vote, entry.origin)
+        assert not clarify.resolve_gateway_clarify(restored.metadata[actions.KEY]["clarifyId"], actions.CHOICES[0], user_id="byron")
+        assert target.send_clarify.await_count == 1
+        admit.assert_not_awaited()
         await stop(owner, entry)
     async def bounded():
         try:

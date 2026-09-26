@@ -51,3 +51,14 @@ def test_silent_nonzero_exit_is_logged_as_warning(tmp_path, monkeypatch, caplog)
     assert accepted is False
     silent = [r for r in caplog.records if "script ignored webhook path=filter.sh" in r.getMessage()]
     assert silent and silent[0].levelno == logging.WARNING
+
+
+def test_silenced_processor_metadata_is_retained_only_for_opted_in_consumer(tmp_path):
+    from hermes_constants import get_hermes_home
+    script = get_hermes_home() / "scripts" / "retire.py"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text('import json\nprint(json.dumps({"__hermes_ignore__": True, "discussion_retirement": {"taskId": "task-1"}}))\n')
+    processor = WebhookRouteProcessor()
+    assert processor.run_route_script(str(script), {}) == (False, None)
+    keep, value = processor.run_route_script(str(script), {}, preserve_silenced_payload=True)
+    assert not keep and value["discussion_retirement"]["taskId"] == "task-1"

@@ -6779,7 +6779,10 @@ def _define_discord_view_classes() -> None:
                 return
             from tools.clarify_gateway import _entries
             entry = _entries.get(self.clarify_id)
-            if entry and entry.owner_user_id and str(interaction.user.id) != entry.owner_user_id:
+            if entry is None:
+                await self._finish(interaction, discord.Color.greyple(), "This question is no longer active", log_edit_failure=False)
+                return
+            if entry.owner_user_id and str(interaction.user.id) != entry.owner_user_id:
                 await interaction.response.send_message(_UNAUTHORIZED, ephemeral=True)
                 return
             display_name = getattr(getattr(interaction, "user", None), "display_name", "user")
@@ -6815,7 +6818,10 @@ def _define_discord_view_classes() -> None:
                 return
             from tools.clarify_gateway import _entries
             entry = _entries.get(self.clarify_id)
-            if entry and entry.owner_user_id and str(interaction.user.id) != entry.owner_user_id:
+            if entry is None:
+                await self._finish(interaction, discord.Color.greyple(), "This question is no longer active", log_edit_failure=False)
+                return
+            if entry.owner_user_id and str(interaction.user.id) != entry.owner_user_id:
                 await interaction.response.send_message(_UNAUTHORIZED, ephemeral=True)
                 return
             # Don't pop: the gateway text-intercept needs the entry until the user types.

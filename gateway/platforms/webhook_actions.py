@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import time
+from datetime import datetime
 
 from gateway.platforms.base import SendResult
 from gateway.platforms.event import MessageEvent, MessageType
@@ -13,6 +14,35 @@ from tools import clarify_gateway
 KEY = "webhook_discussion_action"
 CHOICES = ["Ask about this task", "Show decision"]
 ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+
+
+def consume_poll_reply(store, session_key, event, source):
+    """Consume only recorded task polls; expired votes must not become model input."""
+    metadata = event.metadata or {}
+    poll = (metadata.get("whatsapp_native") or {}).get("pollUpdate") or {}
+    poll_id = poll.get("pollId")
+    if not poll_id or metadata.get("whatsapp_native_type") != "pollUpdateMessage":
+        return False
+    record = store.get_session_metadata(session_key, KEY)
+    if not isinstance(record, dict) or str(source.user_id or "") != record.get("userId"):
+        return False
+    if poll_id in record.get("previousPollIds", []):
+        return True
+    if poll_id != record.get("messageId"):
+        return False
+    if record.get("state") == "pending" and record.get("expiresAt", 0) > time.time():
+        clarify_gateway.attempt_text_response_for_session(session_key, event.text,
+                                                         user_id=str(source.user_id))
+    return True
+
+
+def stamp(value):
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
 
 
 def binding(payload):
@@ -109,7 +139,12 @@ async def deliver(owner, adapter, platform, chat_id, thread_id, content, deliver
     cid = hashlib.sha256(json.dumps([entry.session_id, refs], sort_keys=True).encode()).hexdigest()[:24]
     record = {"binding": refs, "clarifyId": cid, "sessionId": entry.session_id,
               "userId": str(source.user_id), "profile": profile or "default",
-              "question": content, "state": "pending", "expiresAt": time.time() + 300}
+              "question": content, "state": "pending", "expiresAt": time.time() + 300,
+              "sourceOccurredAt": stamp(delivery.get("payload", {}).get("occurredAt")) or time.time()}
+    old_polls = list((previous or {}).get("previousPollIds", []))
+    if previous and previous.get("messageId"):
+        old_polls.append(previous["messageId"])
+    record["previousPollIds"] = old_polls[-16:]
     if not store.set_session_metadata(entry.session_key, KEY, record):
         return SendResult(success=False, error="Discussion binding could not be persisted")
     if not _start_wait(owner, entry, source, adapter, record, profile):
@@ -157,3 +192,28 @@ async def restore(owner):
                 restore_card = getattr(adapter, "restore_clarify_card", None)
                 if callable(restore_card) and record.get("messageId"):
                     await restore_card(record["clarifyId"], CHOICES, record["messageId"])
+
+
+def retire(owner, payload, profile):
+    """A signed processor may quietly retire controls for its exact parent references."""
+    refs = payload.get("discussion_retirement")
+    if not isinstance(refs, dict) or set(refs) != {"taskId", "cardId", "sourceSessionId", "occurredAt"}:
+        return
+    if any(not isinstance(refs[key], str) or not ID.fullmatch(refs[key]) or ".." in refs[key]
+           for key in {"taskId", "cardId", "sourceSessionId"}):
+        return
+    completed_at = stamp(refs["occurredAt"])
+    if completed_at is None:
+        return
+    store = owner.gateway_runner.session_store
+    for entry in store.list_sessions()[:128]:
+        record = entry.metadata.get(KEY)
+        if not isinstance(record, dict) or record.get("state") != "pending" or record.get("profile") != (profile or "default"):
+            continue
+        original = record.get("binding") or {}
+        if (original.get("taskId") != refs["taskId"] or original.get("cardId") != refs["cardId"]
+                or completed_at < record.get("sourceOccurredAt", 0)):
+            continue
+        record["state"] = "retired"
+        if store.set_session_metadata(entry.session_key, KEY, record):
+            clarify_gateway.resolve_gateway_clarify(record["clarifyId"], "", user_id=record["userId"])

@@ -614,8 +614,12 @@ class WebhookAdapter(BasePlatformAdapter):
                 # Shells out (up to its timeout) — worker thread so the loop isn't blocked; to_thread
                 # copies contextvars so the profile scope follows.
                 keep, transformed_payload = await asyncio.to_thread(
-                    self._route_processor.run_route_script, script, payload)
+                    self._route_processor.run_route_script, script, payload,
+                    preserve_silenced_payload=route_config.get("discussion_actions") is True)
                 if not keep:
+                    if route_config.get("discussion_actions") is True and transformed_payload:
+                        from gateway.platforms.webhook_actions import retire
+                        retire(self, transformed_payload, profile)
                     logger.info("[webhook] script ignored event=%s route=%s", event_type, route_name)
                     return web.json_response({"status": "ignored", "reason": "script", "route": route_name})
                 payload = transformed_payload or payload

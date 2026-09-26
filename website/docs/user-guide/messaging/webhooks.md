@@ -726,3 +726,10 @@ Only one clarification may be active in a destination session. When another
 question is already pending, the alert is delivered as ordinary text rather than
 posting a second poll that could answer the wrong task. Additional platform
 adapters need verified responder-identity plumbing before enabling these controls.
+
+Processors may return `__hermes_ignore__: true` with `discussion_retirement`
+(`taskId`, `cardId`, `sourceSessionId`, `occurredAt`). On an opted-in route, the
+adapter consumes that metadata quietly: no message and no model turn. Exact
+parent/card references and event ordering prevent a replayed older completion
+from closing a later question on a reopened task. Ordinary silent processor
+behavior is unchanged for routes without discussion controls.

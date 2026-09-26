@@ -43,3 +43,17 @@ def test_delivery_target_only_applies_to_cron_agents(deliver_to):
     assert platform_hint(_agent("telegram")) == PLATFORM_HINTS["telegram"]
     _VAR_MAP["HERMES_CRON_AUTO_DELIVER_PLATFORM"].set("")
     assert platform_hint(_agent("cron")) == PLATFORM_HINTS["cron"]
+
+
+def test_cron_hint_does_not_forbid_user_questions():
+    """#102887 — the cron hint told the agent no user is present and that it cannot ask
+    questions, which forced messaging-delivered jobs (standups, report questionnaires) to
+    skip confirmations, guess answers, and loop for tens of minutes. The hint must keep
+    autonomous batch behavior as the default while allowing questions when the destination
+    is conversational.
+    """
+    hint = PLATFORM_HINTS["cron"]
+    assert "cannot ask questions" not in hint.lower()
+    assert "no user present" not in hint.lower()
+    assert "autonomously" in hint.lower()
+    assert "question" in hint.lower()

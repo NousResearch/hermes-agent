@@ -1,6 +1,6 @@
 """Tests for shared truthy-value helpers."""
 
-from utils import env_var_enabled, is_truthy_value
+from utils import env_bool, env_var_enabled, is_truthy_value
 
 
 def test_is_truthy_value_accepts_common_truthy_strings():
@@ -27,3 +27,10 @@ def test_env_var_enabled_uses_shared_truthy_rules(monkeypatch):
 
     monkeypatch.setenv("HERMES_TEST_BOOL", "no")
     assert env_var_enabled("HERMES_TEST_BOOL") is False
+
+
+def test_env_bool_respects_default_when_variable_is_unset(monkeypatch):
+    monkeypatch.delenv("HERMES_TEST_BOOL", raising=False)
+
+    assert env_bool("HERMES_TEST_BOOL", default=True) is True
+    assert env_bool("HERMES_TEST_BOOL", default=False) is False

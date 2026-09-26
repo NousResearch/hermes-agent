@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useState } from 'react'
 
 import { StatusControlRow } from '@/components/chat/status-control-row'
 import { StatusSection } from '@/components/chat/status-section'
+import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
@@ -38,17 +39,26 @@ interface HeartbeatSectionProps {
 
 function useHeartbeatClock(active: boolean): number {
   const [now, setNow] = useState(() => Date.now())
+  // Keep-alive keeps every ever-active tab mounted, so without this gate a
+  // background tile's heartbeat countdown would tick every second forever
+  // (same class of bug as the background-process poll in ./index.tsx).
+  const paneVisible = usePaneVisible()
 
   useEffect(() => {
-    if (!active) {
+    if (!active || !paneVisible) {
       return
     }
 
-    const tick = () => setNow(Date.now())
+    const tick = () => {
+      if (document.visibilityState === 'visible') {
+        setNow(Date.now())
+      }
+    }
+
     const interval = window.setInterval(tick, 1_000)
 
     return () => window.clearInterval(interval)
-  }, [active])
+  }, [active, paneVisible])
 
   return now
 }

@@ -147,10 +147,91 @@ class CronScheduler(ABC):
         return None
 
     def recover_interrupted(self) -> int:
-        """Run profile-local attempt recovery for every provider lifecycle."""
+        """Run profile-local attempt recovery for every provider lifecycle.
+
+        Two stores must be reconciled, not one:
+
+        1. ``executions`` (the attempt ledger) — abandoned ``claimed``/``running``
+           rows become ``unknown``.
+        2. ``jobs.json`` (what ``hermes cron`` and any status
+           dashboard actually READ) — the job's ``last_run_at``/``last_status``.
+
+        🔴 Only (1) was reconciled before 2026-08-08, which left a silent
+        stale-ledger class. A ``no_agent`` script runs with
+        ``start_new_session=True``, so when the gateway is SIGKILLed mid-drain the
+        SCRIPT SURVIVES as an orphan and runs to completion — but the process that
+        would have called ``mark_job_run`` is gone. Nothing ever writes the
+        outcome, so ``jobs.json`` keeps whatever it had from the PREVIOUS run,
+        potentially forever.
+
+        Observed in practice: two script jobs completed and left real artifacts on
+        disk, yet ``hermes cron list`` showed a 36h-stale ``last_run_at`` for both
+        because the gateway died mid-run in each window.
+
+        Recording the attempt as ``interrupted`` is deliberately honest rather than
+        optimistic: the orphan's exit status is genuinely unknowable from here (the
+        waiter died with it), so this records THAT — it does not claim success. The
+        value is that the timestamp advances, so the row stops masquerading as "this
+        job has not run since <two days ago>" when in fact it ran and we simply
+        could not observe the result.
+        """
         from cron.executions import recover_interrupted_executions
 
-        return recover_interrupted_executions()
+        recovered = recover_interrupted_executions()
+        if recovered:
+            try:
+                self._reconcile_jobs_after_recovery()
+            except Exception:  # never let bookkeeping break scheduler startup
+                import logging
+                logging.getLogger("cron.scheduler_provider").warning(
+                    "jobs.json reconciliation after execution recovery failed",
+                    exc_info=True,
+                )
+        return recovered
+
+    @staticmethod
+    def _reconcile_jobs_after_recovery() -> int:
+        """Advance ``last_run_at`` for jobs whose newest attempt died unobserved.
+
+        Only touches a job when its MOST RECENT execution is the ``unknown`` one
+        just recovered AND the job's ``last_run_at`` predates that attempt — so a
+        job that already recorded its own outcome (the normal path) is never
+        clobbered, and neither is a job that has since run again.
+        """
+        from cron.executions import list_executions
+        from cron.jobs import load_jobs, mark_job_run
+
+        seen: set = set()
+        reconciled = 0
+        for row in list_executions(limit=200):
+            job_id = row.get("job_id")
+            if not job_id or job_id in seen:
+                continue
+            seen.add(job_id)  # newest-first, so the first row IS the newest attempt
+            if row.get("status") != "unknown":
+                continue
+            claimed_at = row.get("claimed_at") or ""
+            job = next((j for j in load_jobs() if j.get("id") == job_id), None)
+            if job is None:
+                continue
+            last_run = job.get("last_run_at") or ""
+            if last_run >= claimed_at:
+                continue  # the job already recorded this run (or a newer one)
+            mark_job_run(
+                job_id, False,
+                "Interrupted: the scheduler process exited before this run's "
+                "outcome could be recorded. The script may have completed "
+                "(a no_agent script outlives the gateway) — check its own log "
+                "or output artifacts before assuming it failed.",
+            )
+            reconciled += 1
+        if reconciled:
+            import logging
+            logging.getLogger("cron.scheduler_provider").warning(
+                "Reconciled %d cron job(s) in jobs.json whose run outcome was "
+                "lost to a scheduler restart", reconciled,
+            )
+        return reconciled
 
     @property
     def supports_force_fire(self) -> bool:

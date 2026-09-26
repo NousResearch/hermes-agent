@@ -2381,7 +2381,14 @@ def _advance_after_run(job: Dict[str, Any], now: str) -> None:
     # preserving the no-immediate-catch-up completion contract.
     reserved_next = job.get("next_run_at")
     keep_reserved_interval = False
-    if kind == "interval" and reserved_next:
+    from cron.unreachable_retry import is_retry_fire
+
+    # Retry/hold instants are overrides, not cadence reservations. A manual
+    # completion before they fire must return to the natural schedule.
+    overridden = reserved_next and (
+        is_retry_fire(job, reserved_next) or job.get("quota_hold_until") == reserved_next
+    )
+    if kind == "interval" and reserved_next and not overridden:
         try:
             keep_reserved_interval = (
                 _ensure_aware(datetime.fromisoformat(reserved_next))

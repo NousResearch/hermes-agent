@@ -196,9 +196,19 @@ def _record_update_step(step: str, ok: bool, detail: str = "") -> None:
 
 
 # A fetch whose transport dead-stalls (HTTP/2 to GitHub on some networks, a black-holed proxy)
-# otherwise leaves `hermes update` on "Fetching updates..." forever (#93759, #95777). Five
-# minutes is generous for a scoped single-branch fetch and still ends in a real error.
+# otherwise leaves `hermes update` on "Fetching updates..." forever (#93759, #95777). The bound
+# belongs on SILENCE, not on elapsed time: as a wall-clock cap it also killed a *healthy* transfer
+# that was merely slow. Installs are shallow, so every update re-fetches a whole snapshot (tens of
+# MB); on a domestic uplink that legitimately exceeds five minutes, and because each retry restarts
+# the transfer from zero, such an install could never move off its current commit.
 NETWORK_GIT_TIMEOUT_SECONDS = 300
+# Transfers therefore delegate the stall bound to git itself (see _stall_bound_git_cmd) and keep
+# only this absolute ceiling, so a wedged child still cannot hang an update forever.
+NETWORK_GIT_MAX_SECONDS = 3 * 60 * 60
+# Below this, throughput counts as "not moving" for http.lowSpeedLimit (bytes/sec).
+NETWORK_GIT_MIN_BYTES_PER_SEC = 100
+# Only these move objects; ls-remote/rev-parse are request/response, so elapsed time bounds them.
+_GIT_TRANSFER_COMMANDS = frozenset({"clone", "fetch", "pull", "push"})
 
 
 def _record_update_skip(step: str, reason: str) -> None:
@@ -230,21 +240,47 @@ def _record_pre_update_backup_outcome(args, snapshot_id) -> None:
 
 
 
+def _stall_bound_git_cmd(git_cmd) -> list:
+    """``git_cmd`` plus the config that makes git abort a transfer that has gone quiet.
+
+    git measures the transfer itself, so it can tell "the remote stopped sending" from "the remote
+    is slow" — which a wall-clock timeout cannot. ``http.lowSpeedLimit``/``lowSpeedTime`` give up
+    after NETWORK_GIT_TIMEOUT_SECONDS below NETWORK_GIT_MIN_BYTES_PER_SEC, and git reports it as an
+    ordinary fetch error that ``_classify_fetch_failure`` already handles.
+
+    ``http.*`` is inert over ssh://, where the absolute ceiling remains the only bound. Pinning
+    ssh keepalives here would mean overriding ``core.sshCommand``/``GIT_SSH_COMMAND``, and this
+    path (unlike ``noninteractive_git_env``) does not isolate git config, so that would silently
+    replace a user's own ssh transport — a worse trade than the looser bound.
+    """
+    return list(git_cmd) + [
+        "-c", f"http.lowSpeedLimit={NETWORK_GIT_MIN_BYTES_PER_SEC}",
+        "-c", f"http.lowSpeedTime={NETWORK_GIT_TIMEOUT_SECONDS}"]
+
+
 def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
     """Run git capturing utf-8 text (default cwd: checkout); ``network=True`` disables the
-    terminal prompt so an HTTP 401 fails fast instead of hanging, and bounds the wait."""
+    terminal prompt so an HTTP 401 fails fast instead of hanging, and bounds the wait — a transfer
+    by silence (git's own stall detection), everything else by elapsed time."""
+    transfer = bool(network and args and args[0] in _GIT_TRANSFER_COMMANDS)
+    network_kwargs = {}
+    if network:
+        network_kwargs = {"timeout": NETWORK_GIT_TIMEOUT_SECONDS, **_no_prompt_git_kwargs()}
+        if transfer:
+            git_cmd = _stall_bound_git_cmd(git_cmd)
+            network_kwargs["timeout"] = NETWORK_GIT_MAX_SECONDS
     try:
         return subprocess.run(
             git_cmd + args, cwd=_m().PROJECT_ROOT if cwd is None else cwd, capture_output=True,
-            text=True, encoding="utf-8", errors="replace", check=check,
-            **({"timeout": NETWORK_GIT_TIMEOUT_SECONDS, **_no_prompt_git_kwargs()} if network else {}))
+            text=True, encoding="utf-8", errors="replace", check=check, **network_kwargs)
     except subprocess.TimeoutExpired as exc:
         # subprocess.run already killed the child; the checkout stays consistent because
         # fetch writes to tmp_pack_* and only renames on success. Report as a failed run
         # so every caller's existing stderr path prints one clear line.
+        bound = NETWORK_GIT_MAX_SECONDS if transfer else NETWORK_GIT_TIMEOUT_SECONDS
         result = subprocess.CompletedProcess(
             exc.cmd, 124, stdout="",
-            stderr=f"git {args[0]} timed out after {NETWORK_GIT_TIMEOUT_SECONDS}s with no response from the remote")
+            stderr=f"git {args[0]} timed out after {bound}s with no response from the remote")
         if check:
             raise subprocess.CalledProcessError(124, exc.cmd, output="", stderr=result.stderr) from exc
         return result

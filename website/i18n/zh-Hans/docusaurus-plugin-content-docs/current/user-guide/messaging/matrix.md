@@ -243,28 +243,29 @@ Hermes 支持 Matrix 端对端加密，你可以在加密房间中与机器人�
 
 ### 前提条件
 
-E2EE 需要带有加密扩展的 `mautrix` 库以及 `libolm` C 库：
+E2EE 需要 `python-olm`，它封装了已归档的 `libolm` C 库，并且只能在 **Linux** 上安装。
+在 Linux 上，`matrix` extra 已包含它；`matrix-e2ee` 只请求这一部分：
 
 ```bash
-# 安装带 E2EE 支持的 mautrix
-python -c "import pm; pm.sync_venv(['matrix'], explicit=True)"
-
-# 或通过 hermes extras 安装
-cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['matrix'], explicit=True)"
+hermes pm install --extra matrix-e2ee
 ```
 
-你还需要在系统上安装 `libolm`：
+`python-olm` 还需要系统中安装 `libolm`：
 
 ```bash
 # Debian/Ubuntu
 sudo apt install libolm-dev
 
-# macOS
-brew install libolm
-
 # Fedora
 sudo dnf install libolm-devel
 ```
+
+:::note macOS
+`python-olm` 没有 macOS wheel，其自带的 `libolm` 也无法再用当前的 Apple Clang 编译
+（Homebrew 也已移除 `libolm` formula）。在 macOS 上，Hermes 安装的是**不带**加密的
+Matrix，`hermes gateway setup` 也不会在 macOS 上提供 E2EE 选项。如需加密房间，请使用
+下文的“代理模式”。
+:::
 
 ### 启用 E2EE
 
@@ -422,17 +423,13 @@ curl -H "Authorization: Bearer YOUR_TOKEN" \
 
 **原因**：未安装 `mautrix` Python 包。
 
-**解决方法**：安装它：
+**解决方法**：安装 Matrix 支持（Linux 和 macOS），然后重启 Hermes：
 
 ```bash
-python -c "import pm; pm.sync_venv(['matrix'], explicit=True)"
+hermes pm install --extra matrix
 ```
 
-或通过 Hermes extras：
-
-```bash
-cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['matrix'], explicit=True)"
-```
+在 macOS 上这会安装不带加密的 Matrix；加密房间需要 Linux（参见上文的“前提条件”）。
 
 ### 加密错误/"无法解密事件"
 
@@ -512,7 +509,7 @@ cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['matrix'], expl
 
 ## 代理模式（macOS 上的 E2EE）
 
-Matrix E2EE 需要 `libolm`，而该库无法在 macOS ARM64（Apple Silicon）上编译。`hermes-agent[matrix]` extra 仅限 Linux。如果你在 macOS 上，代理模式允许你在 Linux 虚拟机的 Docker 容器中运行 E2EE，而实际的 agent 在 macOS 上原生运行，可完整访问你的本地文件、记忆和技能。
+Matrix E2EE 需要 `python-olm`，它只能在 Linux 上安装（`matrix-e2ee` extra）。明文 Matrix 可以在 macOS 上原生运行；如需在 macOS 上使用加密房间，代理模式允许你在 Linux 虚拟机的 Docker 容器中运行 E2EE，而实际的 agent 在 macOS 上原生运行，可完整访问你的本地文件、记忆和技能。
 
 ### 工作原理
 

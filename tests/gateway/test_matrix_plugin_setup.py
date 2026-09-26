@@ -80,3 +80,32 @@ class TestMatrixHomeChannelClear:
         assert "MATRIX_HOME_ROOM" not in saved
 
 
+class TestMatrixE2EEOfferedOnlyWhereOlmInstalls:
+    """#62401: a yes on macOS stored MATRIX_ENCRYPTION=true, then the adapter refused to start
+    because E2EE was required and python-olm cannot install there. The wizard asks pm's
+    ``matrix-e2ee`` gate before offering E2EE, and prepares the plaintext deps either way."""
+
+    def _run(self, monkeypatch, tmp_path, *, e2ee_supported):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        saved, removed, asked, synced = {}, [], [], []
+        _patch_setup_io(monkeypatch, _PROMPTS_BLANK, [], saved, removed, existing={})
+        monkeypatch.setattr(cli_output_mod, "prompt_yes_no",
+                            lambda question, *_a, **_kw: asked.append(question) or True)
+        monkeypatch.setattr("pm.extras.extra_supported",
+                            lambda extra: e2ee_supported if extra == "matrix-e2ee" else True)
+        monkeypatch.setattr(pm_mod, "sync_venv",
+                            lambda extras, **kw: synced.append((list(extras), kw)))
+        interactive_setup()
+        return saved, asked, synced
+
+    def test_e2ee_not_offered_where_python_olm_cannot_install(self, monkeypatch, tmp_path):
+        saved, asked, synced = self._run(monkeypatch, tmp_path, e2ee_supported=False)
+        assert not [q for q in asked if "E2EE" in q]
+        assert "MATRIX_ENCRYPTION" not in saved
+        assert synced == [(["matrix"], {"explicit": True})]
+
+    def test_e2ee_offered_where_python_olm_installs(self, monkeypatch, tmp_path):
+        saved, asked, synced = self._run(monkeypatch, tmp_path, e2ee_supported=True)
+        assert [q for q in asked if "E2EE" in q]
+        assert saved.get("MATRIX_ENCRYPTION") == "true"
+        assert synced == [(["matrix"], {"explicit": True})]

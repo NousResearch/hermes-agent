@@ -361,25 +361,30 @@ Hermes supports Matrix end-to-end encryption, so you can chat with your bot in e
 
 ### Requirements
 
-E2EE requires the `mautrix` library with encryption extras and the `libolm` C library:
+E2EE needs `python-olm`, which wraps the archived `libolm` C library and only
+installs on **Linux**. There the `matrix` extra already includes it;
+`matrix-e2ee` requests just that part:
 
 ```bash
-# Request the declared Matrix dependencies
-python -c "import pm; pm.sync_venv(['matrix'], explicit=True)"
+hermes pm install --extra matrix-e2ee
 ```
 
-You also need `libolm` installed on your system:
+`python-olm` also needs `libolm` on the system:
 
 ```bash
 # Debian/Ubuntu
 sudo apt install libolm-dev
 
-# macOS
-brew install libolm
-
 # Fedora
 sudo dnf install libolm-devel
 ```
+
+:::note macOS
+`python-olm` has no macOS wheel, and its bundled `libolm` no longer compiles with
+current Apple Clang (Homebrew dropped its `libolm` formula too). On macOS, Hermes
+installs Matrix **without** encryption, and `hermes gateway setup` does not offer
+E2EE there. For encrypted rooms, use [Proxy Mode](#proxy-mode-e2ee-on-macos).
+:::
 
 ### Enable E2EE
 
@@ -608,17 +613,14 @@ If this returns your user info, the token is valid. If it returns an error, gene
 
 **Cause**: The `mautrix` Python package is not installed.
 
-**Fix**: Install it:
+**Fix**: Install Matrix support (Linux and macOS), then restart Hermes:
 
 ```bash
-python -c "import pm; pm.sync_venv(['matrix'], explicit=True)"
+hermes pm install --extra matrix
 ```
 
-Or with Hermes extras:
-
-```bash
-cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['matrix'], explicit=True)"
-```
+On macOS this installs plaintext Matrix; encrypted rooms need Linux (see
+[Requirements](#requirements)).
 
 ### Encryption errors / "could not decrypt event"
 
@@ -716,9 +718,10 @@ history, so other clients trust it immediately.
 
 ## Proxy Mode (E2EE on macOS)
 
-The `matrix` extra is gated to Linux. On macOS or Windows, run the Matrix
-adapter and encryption dependencies in a Linux container and forward requests
-to the native agent. The example below uses a macOS host; the same separation
+Matrix E2EE needs `python-olm`, which only installs on Linux (the `matrix-e2ee`
+extra). Plaintext Matrix runs natively on macOS; for encrypted rooms on macOS
+or Windows, run the Matrix adapter and encryption dependencies in a Linux
+container and forward requests to the native agent. The example below uses a macOS host; the same separation
 applies to Windows with the corresponding host address and authentication.
 
 ### How It Works

@@ -403,7 +403,8 @@ _STARTUP_GRACE_SECONDS = 5  # ignore messages older than this many seconds befor
 
 _OUTBOUND_MENTION_RE = re.compile(r"(?<![\w/])(@[0-9A-Za-z._=/-]+:[0-9A-Za-z.-]+(?::\d+)?)")
 
-_E2EE_INSTALL_HINT = "Install with: pip install 'mautrix[encryption]' asyncpg aiosqlite  (requires libolm C library)"
+_E2EE_INSTALL_HINT = ("E2EE needs python-olm, which installs on Linux only "
+                      "(`hermes pm install --extra matrix-e2ee`)")
 
 _MATRIX_IMAGE_FILENAME_EXTS = frozenset({
     ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg", ".heic", ".heif", ".avif"})
@@ -3089,10 +3090,17 @@ def interactive_setup() -> None:
         if _ask("MATRIX_PASSWORD", "Password", password=True):
             print_success("Matrix credentials saved")
     if token or get_env_value("MATRIX_PASSWORD"):
-        want_e2ee = prompt_yes_no("Enable end-to-end encryption (E2EE)?", False)
-        if want_e2ee:
-            save_env_value("MATRIX_ENCRYPTION", "true")
-            print_success("E2EE enabled")
+        from pm.extras import extra_supported
+
+        # E2EE needs python-olm, which installs only where [matrix-e2ee] is supported (Linux).
+        # Elsewhere a yes would store MATRIX_ENCRYPTION=true, and the adapter would then refuse
+        # to start with its E2EE dependencies missing.
+        if extra_supported("matrix-e2ee"):
+            if prompt_yes_no("Enable end-to-end encryption (E2EE)?", False):
+                save_env_value("MATRIX_ENCRYPTION", "true")
+                print_success("E2EE enabled")
+        else:
+            print_info("E2EE needs python-olm, which installs on Linux only; Matrix runs unencrypted here.")
         try:
             from pm import sync_venv
 
@@ -3155,7 +3163,7 @@ def register(ctx) -> None:
     ctx.register_platform(
         name="matrix", label="Matrix", adapter_factory=MatrixAdapter, check_fn=matrix_deps_present,
         ensure_deps_fn=ensure_matrix_deps, is_connected=_is_connected,
-        required_env=["MATRIX_HOMESERVER", "MATRIX_ACCESS_TOKEN"], install_hint="pip install 'mautrix[encryption]'",
+        required_env=["MATRIX_HOMESERVER", "MATRIX_ACCESS_TOKEN"], install_hint="Run `hermes setup` to install Matrix support.",
         setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config, allowed_users_env="MATRIX_ALLOWED_USERS",
         allow_all_env="MATRIX_ALLOW_ALL_USERS", cron_deliver_env_var="MATRIX_HOME_ROOM",
         standalone_sender_fn=_standalone_send, max_message_length=DEFAULT_MAX_MESSAGE_LENGTH, emoji="🔐",

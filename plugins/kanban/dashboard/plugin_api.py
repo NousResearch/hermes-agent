@@ -26,7 +26,7 @@ from typing import Any, Callable, Iterator, Optional
 from fastapi import (
     APIRouter, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status as http_status)
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from hermes_cli import kanban_db
 from hermes_cli.web_read_coalescing import coalesced_read
@@ -384,6 +384,7 @@ def get_task(
             "child_results": [
                 {"id": c.id, "title": c.title, "status": c.status, "latest_summary": child_summaries.get(c.id), "result": c.result}
                 for c in children],
+            "goal_configuration_locked": kanban_db.goal_configuration_locked(conn, task_id),
             "runs": [asdict(r) for r in kanban_db.list_runs(conn, task_id, state_type=run_state_type, state_name=run_state_name)]}
 
 
@@ -525,6 +526,17 @@ class UpdateTaskBody(BaseModel):
     clear_model_override: bool = False
     reasoning_effort: Optional[str] = None
     clear_reasoning_effort: bool = False
+    # Omission retains the current budget; an explicit null returns this card
+    # to the goal engine's default turn budget.
+    goal_mode: Optional[bool] = None
+    goal_max_turns: Optional[int] = None
+
+    @field_validator("goal_max_turns", mode="before")
+    @classmethod
+    def validate_goal_max_turns(cls, value: Any) -> Any:
+        if value is not None and (type(value) is not int or value <= 0):
+            raise HTTPException(status_code=400, detail="goal_max_turns must be a positive integer")
+        return value
 
 
 class BulkTaskBody(BaseModel):
@@ -669,6 +681,19 @@ def _patch_title_body(conn, task_id: str, payload: UpdateTaskBody, board: Option
 def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn):
         _require_task(conn, task_id)
+        # Goal configuration must commit before any later operation can make
+        # this card dispatchable (notably assignment or ready/review status).
+        # Each existing mutation owns its own transaction, so reversing this
+        # order would let the embedded dispatcher claim between operations.
+        goal_fields = payload.model_fields_set
+        if payload.goal_mode is not None or "goal_max_turns" in goal_fields:
+            goal_kwargs = {}
+            if payload.goal_mode is not None:
+                goal_kwargs["goal_mode"] = payload.goal_mode
+            if "goal_max_turns" in goal_fields:
+                goal_kwargs["goal_max_turns"] = payload.goal_max_turns
+            with _map_errors(409, kanban_db.GoalConfigurationLockedError), _map_errors(400, ValueError):
+                _require_ok(kanban_db.edit_task(conn, task_id, board=board, **goal_kwargs))
         # For a combined assignee+review patch, request_review must capture the
         # current implementer before the task is routed to the reviewer.
         review_assignee_deferred = payload.status == "review" and payload.assignee is not None

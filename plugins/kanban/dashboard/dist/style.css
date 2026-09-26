@@ -464,6 +464,33 @@
   word-break: break-word;
 }
 
+.hermes-kanban-goal-row {
+  align-items: center;
+}
+
+.hermes-kanban-goal-control,
+.hermes-kanban-goal-budget {
+  flex: 1;
+  min-width: 0;
+}
+
+.hermes-kanban-goal-budget {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.hermes-kanban-goal-message,
+.hermes-kanban-goal-lock {
+  font-size: 0.7rem;
+  line-height: 1.35;
+}
+
+.hermes-kanban-goal-lock {
+  margin: 0.2rem 0 0 100px;
+  color: var(--color-muted-foreground);
+}
+
 .hermes-kanban-actions {
   display: flex;
   flex-wrap: wrap;

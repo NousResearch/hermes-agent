@@ -13,6 +13,7 @@ Covers three layers:
 from __future__ import annotations
 
 import sqlite3
+import threading
 from pathlib import Path
 
 import pytest
@@ -88,6 +89,96 @@ def test_legacy_db_migrates_goal_columns(tmp_path, monkeypatch):
     # Existing row keeps the safe default.
     assert task.goal_mode is False
     assert task.goal_max_turns is None
+
+
+def test_goal_configuration_edits_are_atomic_until_the_first_claim(kanban_home):
+    """A card's launch contract can be corrected, but never rewritten after a run."""
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="configure goal", assignee="worker")
+
+        # A budget is retained even while goal mode is off, ready for a later enable.
+        assert kb.edit_task(conn, task_id, goal_max_turns=40)
+        assert kb.get_task(conn, task_id).goal_mode is False
+        assert kb.get_task(conn, task_id).goal_max_turns == 40
+
+        assert kb.edit_task(conn, task_id, goal_mode=True)
+        assert kb.get_task(conn, task_id).goal_max_turns == 40
+
+        # Disabling preserves the stored budget for a later re-enable.
+        assert kb.edit_task(conn, task_id, goal_mode=False)
+        disabled = kb.get_task(conn, task_id)
+        assert disabled.goal_mode is False
+        assert disabled.goal_max_turns == 40
+        assert kb.edit_task(conn, task_id, goal_mode=True)
+        assert kb.get_task(conn, task_id).goal_max_turns == 40
+
+        # Explicit None remains the separate path back to the engine default.
+        assert kb.edit_task(conn, task_id, goal_mode=False, goal_max_turns=None)
+        cleared = kb.get_task(conn, task_id)
+        assert cleared.goal_mode is False
+        assert cleared.goal_max_turns is None
+
+        with pytest.raises(ValueError, match="cannot be set while disabling"):
+            kb.edit_task(conn, task_id, goal_mode=False, goal_max_turns=7)
+        with pytest.raises(ValueError, match="positive integer"):
+            kb.edit_task(conn, task_id, goal_max_turns=0)
+        with pytest.raises(ValueError, match="positive integer"):
+            kb.edit_task(conn, task_id, goal_max_turns=1.5)
+
+        assert kb.claim_task(conn, task_id, claimer="worker") is not None
+        assert kb.reclaim_task(conn, task_id, reason="retry")
+        with pytest.raises(kb.GoalConfigurationLockedError, match="cannot be changed"):
+            kb.edit_task(conn, task_id, goal_mode=True)
+
+
+def test_goal_edit_and_claim_serialize_across_real_sqlite_connections(kanban_home, monkeypatch):
+    """Both writer orders preserve the launch-contract boundary."""
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="racing launch contract", assignee="worker")
+
+    edit_entered = threading.Event()
+    release_edit = threading.Event()
+    real_task_status = kb._task_status
+    first_status_check = True
+
+    def paused_task_status(conn, current_task_id):
+        nonlocal first_status_check
+        if current_task_id == task_id and first_status_check:
+            first_status_check = False
+            edit_entered.set()
+            assert release_edit.wait(timeout=5)
+        return real_task_status(conn, current_task_id)
+
+    monkeypatch.setattr(kb, "_task_status", paused_task_status)
+    outcomes: dict[str, bool] = {}
+
+    def claim() -> None:
+        with kbc.connect() as conn:
+            outcomes["claim"] = kb.claim_task(conn, task_id, claimer="race") is not None
+
+    def edit() -> None:
+        with kbc.connect() as conn:
+            outcomes["edit"] = kb.edit_task(conn, task_id, goal_max_turns=11)
+
+    edit_thread = threading.Thread(target=edit)
+    edit_thread.start()
+    assert edit_entered.wait(timeout=5)
+    claim_thread = threading.Thread(target=claim)
+    claim_thread.start()
+    release_edit.set()
+    edit_thread.join()
+    claim_thread.join()
+
+    assert outcomes == {"edit": True, "claim": True}
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, task_id).goal_max_turns == 11
+        assert conn.execute("SELECT COUNT(*) FROM task_runs WHERE task_id = ?", (task_id,)).fetchone()[0] == 1
+
+        claimed_first = kb.create_task(conn, title="claim first", assignee="worker")
+        assert kb.claim_task(conn, claimed_first, claimer="race") is not None
+    with kbc.connect() as later_conn:
+        with pytest.raises(kb.GoalConfigurationLockedError):
+            kb.edit_task(later_conn, claimed_first, goal_max_turns=12)
 
 
 # ---------------------------------------------------------------------------

@@ -35,6 +35,7 @@ import { Card, CardHeader, CardTitle, CardContent } from "@nous-research/ui/ui/c
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { Separator } from "@nous-research/ui/ui/components/separator";
+import { Switch } from "@nous-research/ui/ui/components/switch";
 import { Tabs, TabsList, TabsTrigger } from "@nous-research/ui/ui/components/tabs";
 import { useI18n } from "@/i18n";
 import { registerSlot, PluginSlot } from "./slots";
@@ -176,6 +177,7 @@ export function exposePluginSDK() {
       Select,
       SelectOption,
       Separator,
+      Switch,
       Tabs,
       TabsList,
       TabsTrigger,

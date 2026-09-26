@@ -711,6 +711,15 @@ hermes kanban create "Translate the docs site to French" \
     --goal-max-turns 15      # optional; default 20
 ```
 
+Before a task's first worker run, you can change Goal mode and its turn budget with `hermes kanban edit` or in the Desktop and browser Kanban task drawers. The budget is optional: leave it blank to use the goal engine's default. Disabling Goal mode retains a saved budget so re-enabling it restores the same value; clearing the budget is a separate action. You can also set a budget while Goal mode is off. Once any worker run has started, these settings are permanently locked, even if the task is later blocked or requeued.
+
+```bash
+hermes kanban edit <id> --goal                    # enable, keeping any saved budget
+hermes kanban edit <id> --goal-max-turns 30       # set a budget, even while disabled
+hermes kanban edit <id> --no-goal                 # disable, keeping the budget
+hermes kanban edit <id> --clear-goal-max-turns   # use the engine default
+```
+
 Use it for open-ended, multi-step, or "keep going until X is true" cards. Skip it for cheap one-shot work — the per-turn judge overhead isn't worth it, and the dispatcher's existing retry/circuit-breaker already handles transient worker failures. The judge is only as good as your goal text, so write the body as **explicit acceptance criteria**.
 
 The judge gate on `kanban complete` / `kanban request-review` (and the matching `kanban_complete` / `kanban_request_review` tools) only rejects on a **real verdict**. If the judge call itself fails — relay error, auth, timeout — the handoff is allowed and a `goal judge unreachable … allowing lifecycle handoff` warning lands in the log, so an unreachable judge never blocks a human approval. The headless CLI gate sends the same per-task relay-affinity key (`kanban:<task-id>`) as `specify`/`decompose`, so relays that require a session key accept the judge request.
@@ -775,6 +784,7 @@ hermes dashboard        # "Kanban" tab appears in the nav, after "Skills"
 - **Click a card** (without shift/ctrl) to open a side drawer (Escape or click-outside closes) with:
   - **Editable title** — click the heading to rename.
   - **Editable assignee / priority** — click the meta row to rewrite.
+  - **Goal mode and Goal turn budget** — toggle Goal mode and edit the budget before the first worker run. The budget stays visible when Goal mode is off; blanking it restores the engine default. Both controls lock after a run starts.
   - **Editable description** — markdown-rendered by default (headings, bold, italic, inline code, fenced code, `http(s)` / `mailto:` links, bullet lists), with an "edit" button that swaps in a textarea. Markdown rendering is a tiny, XSS-safe renderer — every substitution runs on HTML-escaped input, only `http(s)` / `mailto:` links pass through, and `target="_blank"` + `rel="noopener noreferrer"` are always set.
   - **Dependency editor** — chip list of parents and children, each with an `×` to unlink, plus dropdowns over every other task to add a new parent or child. Cycle attempts are rejected server-side with a clear message.
   - **Status action row** (→ triage / → ready / → running / block / unblock / complete / archive) with confirm prompts for destructive transitions. For cards in the **Triage** column the row also exposes two LLM-driven actions: **⚗ Decompose** fans the task out into a graph of child tasks routed to specialist profiles by description, and **✨ Specify** does a single-task spec rewrite. Decompose falls back to specify-style promotion when the LLM decides the task doesn't benefit from fan-out, so it's a strict superset. Both are reachable from the CLI (`hermes kanban decompose <id>` / `specify <id>` / `--all`), from any gateway platform (`/kanban decompose <id>`), and programmatically via `POST /api/plugins/kanban/tasks/:id/decompose` and `…/specify`. Configure the models under `auxiliary.kanban_decomposer` and `auxiliary.triage_specifier` in `config.yaml`.
@@ -943,8 +953,9 @@ hermes kanban list [--mine] [--assignee P] [--status S] [--tenant T] [--archived
 hermes kanban show <id> [--json]
 hermes kanban assign <id> <profile>                    # or 'none' to unassign
 hermes kanban reassign <id>... <profile>               # bulk re-assign tasks to a profile
-hermes kanban edit <id> [--title ...] [--body ...]     # edit task title / body / priority in place
-        [--priority N]
+hermes kanban edit <id> [--title ...] [--body ...]     # edit task fields in place
+        [--priority N] [--goal|--no-goal]
+        [--goal-max-turns N|--clear-goal-max-turns]
 hermes kanban promote <id>...                          # move todo/blocked tasks to ready (recovery)
 hermes kanban schedule <id> --at <ISO8601>             # set/clear a task's scheduled_at start time
 hermes kanban diagnostics [--json]                     # board health snapshot (alias: diag)

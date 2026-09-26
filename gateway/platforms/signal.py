@@ -723,15 +723,25 @@ class SignalAdapter(BasePlatformAdapter):
         # No editable message identifier; message_id=None keeps the stream consumer on the non-edit path.
         return SendResult(success=True, message_id=None, raw_response=last_result)
 
+    @classmethod
+    def _iter_rpc_timestamps(cls, rpc_result):
+        """Yield sent timestamps from signal-cli's flat or per-recipient results."""
+        if isinstance(rpc_result, dict):
+            if ts := rpc_result.get("timestamp"):
+                yield ts
+            for key in ("results", "result"):
+                yield from cls._iter_rpc_timestamps(rpc_result.get(key))
+        elif isinstance(rpc_result, (list, tuple)):
+            for item in rpc_result:
+                yield from cls._iter_rpc_timestamps(item)
+
     def _track_sent_timestamp(self, rpc_result) -> None:
-        """Record outbound message timestamp for echo-back filtering."""
-        ts = rpc_result.get("timestamp") if isinstance(rpc_result, dict) else None
-        if not ts:
-            return
-        self._remember_sent_message_timestamp(ts)
+        """Record outbound message timestamps for echo-back filtering."""
         now, recent = time.monotonic(), self._recent_sent_timestamps
-        recent.pop(ts, None)  # re-insert to mark as most-recently-used
-        recent[ts] = now
+        for ts in self._iter_rpc_timestamps(rpc_result):
+            self._remember_sent_message_timestamp(ts)
+            recent.pop(ts, None)  # re-insert to mark as most-recently-used
+            recent[ts] = now
         # Drop entries older than TTL first, then enforce the hard cap.
         cutoff = now - self._recent_sent_ttl_seconds
         while recent and next(iter(recent.values())) < cutoff:

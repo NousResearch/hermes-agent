@@ -2778,28 +2778,23 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     profile_arg = normalize_profile_name(task.assignee)
 
     from agent.secret_scope import is_multiplex_active
+    from hermes_constants import get_routing_process_hermes_home
     from tools.environments.local import _is_routed_home, build_subprocess_env, strip_launch_profile_env
 
     try:
-        profile_home = resolve_profile_env(profile_arg)
-    except FileNotFoundError:
-        # No profile dir (isolated test fixtures) — the CLI resolves it from
-        # HERMES_PROFILE (set below) instead.
-        profile_home = None
-
-    # Scrub for a ROUTED home, not only under multiplex: the authority test is "does this worker act
-    # for another profile", exactly as served_profile_child_env decides it (tools/environments/local.py).
-    # Gating on the gateway-wide flag left B's worker inheriting the dispatcher's own OPENAI_API_KEY and
-    # systemd-injected tokens on every single-profile host.
-    routed = bool(profile_home) and _is_routed_home(profile_home)
-    # build_subprocess_env's secret scrub resolves terminal.env_passthrough vars through get_secret(),
-    # which without a bound scope reads the LAUNCH profile's ambient environment for a worker spawned
-    # on B's behalf (and raises under multiplex) — so bind B's secret scope around the build.
-    with (_worker_profile_scope(profile_home, bind_home=False) if profile_home
-          else contextlib.nullcontext()):
+        target_home = resolve_profile_env(profile_arg)
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"refusing to spawn Kanban worker for unresolved profile {profile_arg!r}") from exc
+    # Preserve main's launch-setting scrub BEFORE applying target provenance and
+    # HOME policy; scrubbing afterwards could discard freshly resolved target values.
+    base = strip_launch_profile_env(dict(os.environ), target_home)
+    # Bind the assigned profile while resolving its toolset/passthrough values. The explicit
+    # boundary above still owns source/target provenance; this scope supplies only target policy.
+    with _worker_profile_scope(str(target_home), bind_home=False):
         env = build_subprocess_env(
-            scrub_secrets=is_multiplex_active() or routed,
-            inherit_profile_home=True,
+            base=base, scrub_secrets=is_multiplex_active() or _is_routed_home(target_home),
+            profile_home=target_home,
+            source_profile_home=get_routing_process_hermes_home(), enforce_profile_boundary=True,
         )
     # The dispatcher is detached from every conversation; its worker must never
     # inherit routing mirrored by a previous gateway turn.
@@ -2807,15 +2802,8 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     for key in _VAR_MAP:
         env.pop(key, None)
 
-    # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml:
-    # without it the child's get_hermes_home() falls back to the DEFAULT
-    # profile root because `hermes -p` applies its override before
-    # hermes_constants is imported.
-    if profile_home:
-        env["HERMES_HOME"] = profile_home
-        # A multiplexer dispatching for another profile must not hand it the launch
-        # profile's .env settings / TERMINAL_* policy — a standalone dispatcher never would.
-        strip_launch_profile_env(env, profile_home)
+    # The factory sets target HERMES_HOME before deriving subprocess HOME and applies the
+    # target scope after launch-profile residue has been removed.
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id

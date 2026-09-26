@@ -113,7 +113,7 @@ def test_builders_strip_runtime_markers_and_owned_paths(child_env, monkeypatch, 
 
 
 @pytest.mark.parametrize("builder,base_force,extra_force", [
-    ("foreground", "base-forced", "extra-forced"),
+    ("foreground", None, "extra-forced"),
     ("background", None, "extra-forced"),
     ("factory", None, "extra-forced"),
     ("nonterminal", None, None),

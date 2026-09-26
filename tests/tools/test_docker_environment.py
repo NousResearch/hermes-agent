@@ -98,9 +98,10 @@ def test_auto_mount_host_cwd_adds_volume(monkeypatch, tmp_path):
 
 
 def _make_execute_only_env(forward_env=None):
+    from tools.environments.base import BaseEnvironment
+
     env = docker_env.DockerEnvironment.__new__(docker_env.DockerEnvironment)
-    env.cwd = "/root"
-    env.timeout = 60
+    BaseEnvironment.__init__(env, cwd="/root", timeout=60)
     env._forward_env = forward_env or []
     env._env = {}
     env._prepare_command = lambda command: (command, None)

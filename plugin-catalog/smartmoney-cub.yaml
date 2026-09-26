@@ -1,0 +1,22 @@
+name: smartmoney-cub
+repo: https://github.com/myc0576/hermes-smartmoney-cub
+sha: ccfb4d0cdfbc1c90c1ed65eba2bd48fd50b32e2d
+description: Read-only trading-journal review for SmartMoney-Cub — validate a run envelope, freeze and replay a hashed evidence pack, grade a run, and inspect artifacts. Offline-first; no orders, no broker, no advice.
+maintainer: myc0576
+tier: community
+category: tools
+requires_hermes: '>=0.19'
+docs_url: https://github.com/myc0576/hermes-smartmoney-cub/blob/ccfb4d0cdfbc1c90c1ed65eba2bd48fd50b32e2d/README.md
+version: "0.1.0"
+capabilities:
+  provides_tools:
+  - smcub_doctor
+  - smcub_validate_envelope
+  - smcub_build_evidence_pack
+  - smcub_replay_evidence_pack
+  - smcub_evaluate_run
+  - smcub_inspect_artifacts
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+

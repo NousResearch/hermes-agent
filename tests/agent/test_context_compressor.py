@@ -123,7 +123,7 @@ class TestSummarizeToolResultClarify:
 
         assert summary == '[clarify] user responded: ["lint", "tests"]'
 
-    def test_long_response_is_bounded_and_prefixed_text_is_not_trusted(self):
+    def test_long_response_is_complete_and_prefixed_text_is_not_trusted(self):
         content = json.dumps({
             "question": "Describe the deployment constraints",
             "choices_offered": None,
@@ -132,11 +132,7 @@ class TestSummarizeToolResultClarify:
 
         summary = _summarize_tool_result("clarify", "{}", content)
 
-        # Strictly below the prune floor so a later prune pass can never
-        # re-summarize the preserved answer away (idempotency below).
-        assert len(summary) == _PRUNE_MIN_CHARS - 1
-        assert summary.startswith('[clarify] user responded: "AAA')
-        assert summary.endswith("...[truncated]")
+        assert json.loads(summary.removeprefix("[clarify] user responded: ")) == "A" * 1_000
         assert (
             _summarize_tool_result("clarify", "{}", summary)
             == "[clarify] asked user a question"
@@ -185,10 +181,10 @@ class TestSummarizeToolResultClarify:
         )
         summary = pruned_messages[1]["content"]
 
-        assert pruned_count == 1
-        assert len(summary) <= _PRUNE_MIN_CHARS
+        assert pruned_count == 0
+        assert summary == content
         assert summary.encode("utf-8")
-        assert "Привет 😀" in summary
+        assert json.loads(summary)["user_response"] == "Привет 😀" + "\ud83d" * 1_000
         assert "\\ud83d" in summary
         with sqlite3.connect(":memory:") as connection:
             connection.execute("CREATE TABLE messages (content TEXT)")

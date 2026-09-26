@@ -853,8 +853,7 @@ def _is_summary_stub(content: str) -> bool:
     return content.startswith("[") and " chars)" in content and len(content) < 400
 
 
-# Shared floor; the clarify summary cap must stay strictly BELOW it so a preserved
-# user answer is never re-summarized away on a later prune pass.
+# Shared floor for disposable tool output; resolved clarify results are user input.
 _PRUNE_MIN_CHARS = 200
 
 # Sentinel ``user_response`` values from timeout / no-user clarify callbacks;
@@ -1743,12 +1742,8 @@ def _sum_skill_view(name, args, content, content_len, line_count):
     return f"[skill_view] name={skill} ({content_len:,} chars)" + marker
 
 
-def _sum_clarify(name, args, content, content_len, line_count):
-    response_prefix = "[clarify] user responded: "
-    # Strictly below _PRUNE_MIN_CHARS so the summary survives later prune passes via the
-    # min_prune_chars guard and skips the >=200-char dedup.
-    max_summary_chars = _PRUNE_MIN_CHARS - 1
-    truncation_marker = "...[truncated]"
+def _clarify_response(content: str) -> Any:
+    """Extract real answers; sentinels and malformed/internal results are not user input."""
     parsed = _json_dict(content)
     response = parsed.get("user_response")
     # Batch clarify (``questions=[...]``) nests each answer inside ``responses[].user_response``
@@ -1771,14 +1766,22 @@ def _sum_clarify(name, args, content, content_len, line_count):
     is_answer_shaped = (isinstance(response, str) and bool(response)) or (
         isinstance(response, list) and bool(response) and all(isinstance(s, str) and s for s in response)
     )
-    # Timeout / no-user sentinel prose must not be quoted as a user answer.
-    if is_answer_shaped and not _is_clarify_non_response_sentinel(response):
-        # Escape lone UTF-16 surrogates so the message stays UTF-8/SQLite safe.
+    return response if is_answer_shaped and not _is_clarify_non_response_sentinel(response) else None
+
+
+def _is_resolved_clarify(msg: Dict[str, Any], call_id_to_tool: Dict[str, tuple[str, str]]) -> bool:
+    """Protect structured user input, never a tool body's self-declared prose prefix."""
+    tool_name = call_id_to_tool.get(msg.get("tool_call_id", ""), ("", ""))[0]
+    return tool_name == "clarify" and _clarify_response(msg.get("content", "")) is not None
+
+
+def _sum_clarify(name, args, content, content_len, line_count):
+    response = _clarify_response(content)
+    if response is not None:
+        # Direct summary callers keep the complete decision too. The prune passes
+        # preserve the structured result instead, including its question context.
         serialized = json.dumps(response, ensure_ascii=False).encode("utf-8", errors="backslashreplace")
-        summary = response_prefix + serialized.decode("utf-8")
-        if len(summary) > max_summary_chars:
-            summary = summary[: max_summary_chars - len(truncation_marker)].rstrip() + truncation_marker
-        return summary
+        return "[clarify] user responded: " + serialized.decode("utf-8")
     return "[clarify] asked user a question"
 
 
@@ -3072,11 +3075,14 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         """Pass 1: keep the newest copy of identical tool results, back-reference older ones."""
         pruned = 0
         content_hashes: set = set()
+        call_id_to_tool = _tool_calls_by_id(result)
         for i in range(len(result) - 1, -1, -1):
             msg = result[i]
             content = msg.get("content") or ""
             # Non-string/multimodal-envelope shapes can't be hashed by text.
             if msg.get("role") != "tool" or not isinstance(content, str) or len(content) < _PRUNE_MIN_CHARS:
+                continue
+            if _is_resolved_clarify(msg, call_id_to_tool):
                 continue
             h = hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()[:12]
             if h in content_hashes:
@@ -3125,6 +3131,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         ):
             return False
         tool_name, tool_args = call_id_to_tool.get(msg.get("tool_call_id", ""), ("unknown", ""))
+        if _is_resolved_clarify(msg, call_id_to_tool):
+            return False
         if protected_skills and tool_name == "skill_view":
             _skill = _json_dict(tool_args).get("name", "")
             if isinstance(_skill, str) and _skill.lower() in protected_skills:
@@ -3578,10 +3586,13 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             protected.add(i)
         result = list(messages)
         demoted = 0
+        call_id_to_tool = _tool_calls_by_id(messages)
         for i in range(tail_start, len(messages)):
             msg = messages[i]
             content = msg.get("content")
             if msg.get("role") != "tool" or i in protected or not isinstance(content, str):
+                continue
+            if _is_resolved_clarify(msg, call_id_to_tool):
                 continue
             if len(content) < _LEAN_TAIL_DEMOTE_MIN_CHARS or SKILL_PRUNED_MARKER_PREFIX in content or _is_summary_stub(content):
                 continue

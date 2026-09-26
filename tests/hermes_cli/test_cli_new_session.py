@@ -451,6 +451,12 @@ def test_boundary_reset_message_names_startup_vs_config_default(monkeypatch):
     _reset_model_to_session_baseline(plain, False)
     assert any("config default" in n for n in notes)
 
+    notes.clear()
+    provider_only = _startup_reset_stub(startup_provider="other-provider")
+    _reset_model_to_session_baseline(provider_only, False)
+    assert any("config default" in n for n in notes)
+    assert not any("startup selection" in n for n in notes)
+
 
 def test_wake_path_new_session_silent_restores_startup_selection(monkeypatch):
     """The wake-word path (``new_session(silent=True)``) resets like ``/new``."""
@@ -637,6 +643,7 @@ def test_startup_provider_only_custom_survives_boundary(_offline_route, monkeypa
     # The configured custom provider's default model is picked at startup.
     assert cli.model == "relay-default-model"
     assert cli.requested_provider == "relay"
+    assert cli._startup_base_url is None  # inherited global URL is not this provider's endpoint
 
     startup = _boundary_round_trip(cli)
     assert startup[0] == "relay-default-model"
@@ -663,6 +670,65 @@ def test_startup_model_and_provider_survive_boundary(_offline_route, monkeypatch
     assert (agent_route["new_model"], agent_route["new_provider"],
             agent_route["base_url"]) == (
         "startup-model-x", "openrouter", _OPENROUTER_URL)
+
+
+@pytest.mark.parametrize("credential_result", ["ok", "empty", "error"])
+def test_plain_startup_restores_endpoint_after_session_alias(
+        _offline_route, monkeypatch, credential_result):
+    """C1: a real /model alias changes only the endpoint of a non-alias launch."""
+    import hermes_cli.runtime_provider as runtime_provider
+
+    startup_url = "https://startup.example/v1"
+    session_url = "https://session.example/v1"
+    cli = _make_startup_cli(
+        monkeypatch,
+        config_yaml=(
+            "model:\n  default: config-default-model\n  provider: openrouter\n"
+            f"  base_url: {_OPENROUTER_URL}\n"
+            "model_aliases:\n  sessionrelay:\n    model: startup-model-x\n"
+            f"    provider: openrouter\n    base_url: {session_url}\n"
+            "    api_key: session-key\n"),
+        model_cfg={"default": "config-default-model", "provider": "openrouter",
+                   "base_url": _OPENROUTER_URL},
+        model="startup-model-x", provider="openrouter", base_url=startup_url)
+    assert cli._startup_model_input is None
+    assert (cli.model, cli.provider, cli.base_url) == (
+        "startup-model-x", "openrouter", startup_url)
+
+    cli._handle_model_switch("/model sessionrelay --session")
+    assert (cli.model, cli.provider, cli.base_url, cli.api_key) == (
+        "startup-model-x", "openrouter", session_url, "session-key")
+
+    resolved = []
+    original_resolver = runtime_provider.resolve_runtime_provider
+
+    def resolve(**kwargs):
+        if kwargs.get("explicit_base_url") == startup_url:
+            resolved.append(kwargs)
+            if credential_result == "error":
+                raise RuntimeError("credential unavailable")
+            return {"api_key": "startup-key" if credential_result == "ok" else "",
+                    "base_url": startup_url, "api_mode": "chat_completions"}
+        return original_resolver(**kwargs)
+
+    monkeypatch.setattr(runtime_provider, "resolve_runtime_provider", resolve)
+    cli.agent = _RecordingAgent()
+    cli.new_session(silent=True)
+
+    assert resolved, "the startup endpoint needs freshly resolved credentials"
+    assert resolved == [{"requested": "openrouter", "target_model": "startup-model-x",
+                         "explicit_base_url": startup_url}]
+    assert (cli.model, cli.provider) == ("startup-model-x", "openrouter")
+    if credential_result == "ok":
+        assert (cli.base_url, cli.api_key) == (startup_url, "startup-key")
+    else:
+        # Fail closed to switch_model's internally consistent route, never
+        # attach the session/provider credential to the startup endpoint.
+        assert cli.base_url != startup_url
+    assert cli._explicit_base_url == cli.base_url
+    assert cli._explicit_api_key == cli.api_key
+    assert cli.agent.switch_calls[-1]["base_url"] == cli.base_url
+    assert cli.agent.switch_calls[-1]["api_key"] == cli.api_key
 
 
 def test_startup_direct_alias_endpoint_survives_boundary(_offline_route, monkeypatch):

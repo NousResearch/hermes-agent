@@ -74,7 +74,7 @@ def _reset_model_to_session_baseline(cli, silent: bool) -> None:
     _startup_base_url = getattr(cli, "_startup_base_url", None)
     if (_startup_model and _startup_model == getattr(cli, "model", None)
             and (not _startup_provider or _startup_provider == getattr(cli, "provider", None))
-            and (not _startup_input or not _startup_base_url
+            and (not _startup_base_url
                  or _startup_base_url == (getattr(cli, "base_url", None) or ""))):
         return  # already on the startup route (alias replay skipped: name != id)
     _model_config = CLI_CONFIG.get("model", {})
@@ -95,11 +95,12 @@ def _reset_model_to_session_baseline(cli, silent: bool) -> None:
     else:
         _desired_model = _startup_model or _config_model
         _desired_provider = _startup_provider or _config_provider
-    _restored_startup = bool(_startup_input or _startup_model or _startup_provider)
-    # Whole-route comparison: a provider-only difference must still switch.
+    # Whole-route comparison: provider-only or endpoint-only drift must switch.
     if not _desired_model or (
             _desired_model == getattr(cli, "model", None)
-            and (not _desired_provider or _desired_provider == getattr(cli, "provider", None))):
+            and (not _desired_provider or _desired_provider == getattr(cli, "provider", None))
+            and (not _startup_base_url
+                 or _startup_base_url == (getattr(cli, "base_url", None) or ""))):
         return
     try:
         from hermes_cli.model_switch import switch_model as _switch_model
@@ -116,15 +117,14 @@ def _reset_model_to_session_baseline(cli, silent: bool) -> None:
             custom_providers=CLI_CONFIG.get("custom_providers"))
         if not r.success:
             return
-        if (_startup_base_url and _startup_input
-                and getattr(cli, "_startup_provider_input", None)
+        if (_startup_base_url
+                and (not _startup_input or getattr(cli, "_startup_provider_input", None))
                 and _startup_model and r.new_model == _startup_model
                 and _startup_provider and r.target_provider == _startup_provider
                 and _startup_base_url != (r.base_url or "")):
-            # Alias + mismatched explicit --provider: the switch pipeline cannot
-            # express the alias endpoint under a foreign provider (no adoption in
-            # _route_explicit_provider), but startup runs there. Restore the
-            # startup endpoint only with a credential freshly resolved FOR it
+            # Plain --base-url or alias + mismatched explicit --provider: the
+            # switch pipeline cannot always recover the startup endpoint.
+            # Restore it only with a credential freshly resolved FOR it
             # (constructor's lazy inputs — never a stored secret, never the
             # replaced session/provider key). Otherwise fail closed to the
             # switch result, whose endpoint + key are at least consistent.
@@ -144,7 +144,7 @@ def _reset_model_to_session_baseline(cli, silent: bool) -> None:
                     r.api_mode = _startup_rt["api_mode"]
             else:
                 logger.debug(
-                    "Could not re-resolve the credential for startup alias host %s; keeping %s route",
+                    "Could not re-resolve the credential for startup host %s; keeping %s route",
                     _startup_host, r.target_provider)
         if cli.agent:
             cli.agent.switch_model(
@@ -163,6 +163,7 @@ def _reset_model_to_session_baseline(cli, silent: bool) -> None:
         if r.api_mode:
             cli.api_mode = r.api_mode
         if not silent:
+            _restored_startup = bool(_startup_input or _startup_model) and r.new_model == _startup_model
             _kind = "startup selection" if _restored_startup else "config default"
             _cprint(f"  (model reset to {_kind}: {r.new_model})")
     except Exception:

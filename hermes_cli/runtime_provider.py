@@ -469,11 +469,23 @@ def _resolve_runtime_from_pool_entry(*, provider: str, entry: PooledCredential, 
 
 
 def _openrouter_should_use_pool(requested_provider, model_cfg, explicit_api_key, explicit_base_url) -> bool:
-    """OpenRouter pool only for a plain openrouter/auto request with no custom endpoint or override."""
+    """Allow the OpenRouter pool for native OpenRouter requests and OpenRouter-backed custom configs."""
+    if explicit_api_key or explicit_base_url:
+        return False
+
     cfg_base_url = str(model_cfg.get("base_url") or "").strip()
     env_base_urls = _getenv("OPENAI_BASE_URL", "").strip() or _getenv("OPENROUTER_BASE_URL", "").strip()
-    has_custom_endpoint = bool(explicit_base_url or env_base_urls or (cfg_base_url and _cfg_provider(model_cfg) in {"auto", "custom"}))
-    return requested_provider in {"openrouter", "auto"} and not has_custom_endpoint and not bool(explicit_api_key or explicit_base_url)
+
+    # An explicit OpenRouter endpoint is safe for the OpenRouter pool even when
+    # config.yaml retains provider: custom.
+    effective_base = cfg_base_url or env_base_urls
+    if effective_base and base_url_host_matches(effective_base, "openrouter.ai"):
+        return True
+
+    if requested_provider in {"openrouter", "auto"}:
+        return not bool(env_base_urls or (cfg_base_url and _cfg_provider(model_cfg) in {"auto", "custom"}))
+
+    return False
 
 
 def _refresh_nous_pool_entry(pool: CredentialPool, entry: Any, pool_api_key: str):

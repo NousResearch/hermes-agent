@@ -2611,7 +2611,13 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[st
         return None, None, None
     custom_base = custom_base.strip().rstrip("/")
     if base_url_host_matches(custom_base, "openrouter.ai"):
-        return None, None, None  # requested='custom' falls back to OpenRouter when unconfigured.
+        if not custom_key.strip():
+            pool_present, entry = _select_pool_entry("openrouter")
+            if pool_present:
+                custom_key = _pool_runtime_api_key(entry)
+                if entry is not None:
+                    custom_base = _pool_runtime_base_url(entry, custom_base) or custom_base
+        return custom_base, custom_key.strip(), custom_mode
     # Local servers (Ollama, vLLM, ...) ignore auth but the SDK needs a non-empty key.
     # Use a placeholder key — the OpenAI SDK requires a non-empty string but local servers ignore the
     # Authorization header. Same fix as cli.py _ensure_runtime_credentials() (PR #2556).

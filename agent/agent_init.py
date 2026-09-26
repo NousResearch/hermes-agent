@@ -838,7 +838,11 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Dict[str,
     """
     from agent.auxiliary_client import resolve_provider_client
     _routed_client, _ = resolve_provider_client(
-        agent.provider or "auto", model=agent.model, raw_codex=True)
+        agent.provider or "auto",
+        model=agent.model,
+        raw_codex=True,
+        main_runtime=getattr(agent, "_primary_runtime", None),
+    )
     if _routed_client is not None:
         return _client_kwargs_from_routed(_routed_client, _provider_timeout)
     # No credentials: try the fallback chain BEFORE failing (an exhausted single-entry pool

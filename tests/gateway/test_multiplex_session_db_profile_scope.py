@@ -578,6 +578,44 @@ def test_unscoped_staleness_check_reads_the_key_owner_store(multiplex_homes):
     assert store._is_session_ended_in_db(entry.session_id) is True
 
 
+def test_cached_agent_dead_check_reads_the_routed_profile_store(multiplex_homes):
+    """The agent cache's dead-session guard must read the routed profile's store (#118862).
+
+    After the #54878 self-heal re-homes the routing key, the cached agent's session id is in
+    neither the routing index nor the owner hints, so resolving its store from the id falls
+    back to the launch home. The routed profile's row is not there, the guard reports the
+    ended session as live, and the stale agent keeps appending to it.
+    """
+    import threading
+    from types import SimpleNamespace
+
+    from gateway.run_turn_runner import TurnRunner
+
+    root, profile = multiplex_homes
+    store = _multiplex_store(root)
+
+    token = set_hermes_home_override(str(profile))
+    try:
+        old = store.get_or_create_session(_profile_source())
+        store._db.end_session(old.session_id, "session_reset")  # ended outside the gateway
+        healed = store.get_or_create_session(_profile_source())
+
+        assert healed.session_key == old.session_key
+        assert healed.session_id != old.session_id
+
+        cache = {old.session_key: (object(), "sig", 0, old.session_id)}
+        turn = TurnRunner(
+            SimpleNamespace(session_store=store),
+            SimpleNamespace(session_key=old.session_key, session_id=healed.session_id),
+        )
+        peek_sid, dead = turn._cached_sid_is_dead(threading.Lock(), cache)
+    finally:
+        reset_hermes_home_override(token)
+
+    assert peek_sid == old.session_id
+    assert dead is True
+
+
 def test_default_namespace_keeps_ambient_resolution(multiplex_homes):
     """Guardrail: the legacy ``agent:main`` namespace must not change stores.
 

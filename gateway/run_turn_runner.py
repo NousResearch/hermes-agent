@@ -1017,8 +1017,10 @@ class TurnRunner:
                 peek_sid = entry[3]
         dead = False
         if peek_sid is not None and ctx.session_id is not None and peek_sid != ctx.session_id:
+            # The cache is keyed by session_key, so the snapshot's row lives in that key's profile
+            # store; its id is no longer in the routing index once the self-heal moved the key on.
             with suppress(Exception):
-                dead = self._runner.session_store._is_session_ended_in_db(peek_sid)
+                dead = self._runner.session_store._is_session_ended_in_db(peek_sid, session_key=ctx.session_key)
         return peek_sid, dead
 
     def _current_message_count(self):

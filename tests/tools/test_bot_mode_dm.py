@@ -245,6 +245,47 @@ def test_current_name_of_a_renamed_profile_still_works(tmp_path):
     assert "error" not in result
 
 
+def test_reused_old_name_delivers_to_the_new_legitimate_owner(tmp_path):
+    """When the old slug is later claimed by an unrelated, legitimate profile, the exact live
+    match must win over stale rename history: `resolved` (the new claimant) is a valid exact
+    folder match, so `renamed_to()` must not be consulted at all — existing exact-folder
+    precedence, per Copilot's review of #123138."""
+    home = _managed_home(tmp_path, teammates=("oadp-velero-agent",))
+    (home / "profiles" / "oadp-velero-agent" / "profile.yaml").write_text(
+        textwrap.dedent(
+            """\
+            description: teammate for tests
+            previous_names:
+              - velero-agent
+            ui_meta:
+              hermes-bots:
+                shape: cloud
+            """
+        ),
+        encoding="utf-8",
+    )
+    # 'velero-agent' has since been legitimately claimed by a brand-new, unrelated profile.
+    reused = home / "profiles" / "velero-agent"
+    reused.mkdir(parents=True, exist_ok=True)
+    (reused / "profile.yaml").write_text(
+        textwrap.dedent(
+            """\
+            description: a new, unrelated teammate reusing the old slug
+            ui_meta:
+              hermes-bots:
+                shape: cloud
+            """
+        ),
+        encoding="utf-8",
+    )
+    agent = _FakeAgent(home, title="Bot Chat")
+    result = json.loads(
+        bot_mode_dm.message_agent_tool(target="velero-agent", message="hi", agent=agent)
+    )
+    assert "error" not in result, result
+    assert result["to"] == "@velero-agent"
+
+
 def test_cannot_message_self(tmp_path):
     home = _managed_home(tmp_path)
     agent = _FakeAgent(home, title="Bot Chat")  # default profile

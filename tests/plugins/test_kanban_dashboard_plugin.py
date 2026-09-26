@@ -1037,6 +1037,85 @@ def test_specify_happy_path(client, monkeypatch):
     assert detail["title"] == "Polished"
     assert "**Goal**" in (detail["body"] or "")
 
+
+# ---------------------------------------------------------------------------
+# Aux-LLM endpoints under multiplexed hosting — profile secret scope (#123372)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def multiplex_on():
+    """Fail-closed multiplex hosting for one test. Restore both the flag and the frozen
+    launch-env snapshot afterwards (``launch_secret_scope`` captures it lazily — same
+    restore pattern as the audio-router scope suite)."""
+    import agent.secret_scope as ss
+    from tui_gateway import launch_profile_policy
+
+    was_active = ss.is_multiplex_active()
+    snapshot = launch_profile_policy._snapshot
+    ss.set_multiplex_active(True)
+    try:
+        yield ss
+    finally:
+        ss.set_multiplex_active(was_active)
+        launch_profile_policy._snapshot = snapshot
+
+
+def _probe_call_llm(seen, *, content):
+    """Fake aux call that resolves its provider key exactly like the real one — through
+    ``get_secret`` — and records what it resolved; a valid JSON reply comes back."""
+    from unittest.mock import MagicMock
+
+    import agent.secret_scope as ss
+
+    def fake_call_llm(**kwargs):
+        seen.append(ss.get_secret("KANBAN_AUX_SCOPE_TEST_KEY"))
+        resp = MagicMock()
+        resp.choices = [MagicMock()]
+        resp.choices[0].message.content = content
+        return resp
+
+    return fake_call_llm
+
+
+def test_specify_binds_launch_profile_scope_under_multiplex(
+        client, kanban_home, monkeypatch, multiplex_on):
+    """Under multiplexing an unscoped ``get_secret`` raises, so the specifier used to
+    fail with ``LLM error: UnscopedSecretError``; the endpoint must bind the launch
+    profile's scope and resolve the key from its ``.env``."""
+    (kanban_home / ".env").write_text("KANBAN_AUX_SCOPE_TEST_KEY=scoped-from-launch-dotenv\n")
+    t = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "one-liner", "triage": True},
+    ).json()["task"]
+
+    seen: list = []
+    monkeypatch.setattr(
+        "agent.auxiliary_client.call_llm",
+        _probe_call_llm(seen, content=json.dumps({"title": "Polished", "body": "**Goal**\nDo it."})),
+    )
+
+    body = client.post(f"/api/plugins/kanban/tasks/{t['id']}/specify", json={"author": "ui-tester"}).json()
+    assert body["ok"] is True, body
+    assert seen == ["scoped-from-launch-dotenv"]
+
+
+def test_estimate_binds_launch_profile_scope_under_multiplex(
+        client, kanban_home, monkeypatch, multiplex_on):
+    """The estimator shares the same headless aux-LLM shape (``call_llm`` with no agent
+    turn), so its credential read must run inside the launch profile's scope too."""
+    (kanban_home / ".env").write_text("KANBAN_AUX_SCOPE_TEST_KEY=scoped-from-launch-dotenv\n")
+
+    seen: list = []
+    monkeypatch.setattr(
+        "agent.auxiliary_client.call_llm",
+        _probe_call_llm(seen, content='{"est_tokens": 8, "complexity": "S", "rationale": "tweak"}'),
+    )
+
+    body = client.post("/api/plugins/kanban/estimate", json={"title": "tweak a label"}).json()
+    assert body["ok"] is True, body
+    assert seen == ["scoped-from-launch-dotenv"]
+
+
 # ---------------------------------------------------------------------------
 # Final result visibility for Done cards
 # ---------------------------------------------------------------------------

@@ -113,12 +113,24 @@ def _require(getter: Callable, conn: sqlite3.Connection, ident, label: str):
     return obj
 
 
+def _aux_llm_scope():
+    """The launch profile's runtime scope for the dashboard's headless aux-LLM calls
+    (decompose / specify / estimate) once this process multiplexes: they run in no agent
+    turn, so their credential reads are otherwise unscoped and ``get_secret`` fails closed
+    (#123372). Single-profile hosting gets a ``nullcontext`` — binding nothing is still
+    correct while the ambient env IS the launch profile's."""
+    from tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
+    return launch_profile_scope_if_multiplexed()
+
+
 def _run_aux(board: Optional[str], module: str, fn: str, task_id: str, author: Optional[str]) -> Any:
-    """Run a slow auxiliary-LLM task helper (``hermes_cli.<module>.<fn>``) with the board pinned;
-    the module is imported lazily so a missing aux client can't break plugin load."""
+    """Run a slow auxiliary-LLM task helper (``hermes_cli.<module>.<fn>``) with the board pinned
+    and the launch profile's secret scope bound (multiplexed hosts only); the module is imported
+    lazily so a missing aux client can't break plugin load."""
     def _run():
         return getattr(importlib.import_module(f"hermes_cli.{module}"), fn)(task_id, author=(author or None))
-    return _with_board_pinned(board, _run)
+    with _aux_llm_scope():
+        return _with_board_pinned(board, _run)
 
 
 def _require_task(conn: sqlite3.Connection, task_id: str) -> kanban_db.Task:
@@ -1076,10 +1088,11 @@ def _run_estimate(title: str, body: Optional[str], *, task_id: Optional[str]) ->
     from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
     affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{task_id or 'estimate'}")
     try:
-        resp = call_llm(
-            task="kanban_estimator",
-            messages=[{"role": "system", "content": _ESTIMATE_SYSTEM_PROMPT}, {"role": "user", "content": user_msg}],
-            temperature=0.0, max_tokens=300, timeout=60)
+        with _aux_llm_scope():
+            resp = call_llm(
+                task="kanban_estimator",
+                messages=[{"role": "system", "content": _ESTIMATE_SYSTEM_PROMPT}, {"role": "user", "content": user_msg}],
+                temperature=0.0, max_tokens=300, timeout=60)
     except Exception as exc:
         return {"ok": False, "reason": f"LLM error: {type(exc).__name__}"}
     finally:

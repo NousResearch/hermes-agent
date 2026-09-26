@@ -1405,7 +1405,9 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         # An installed directory plugin keeps its identity when its own pip dependency also ships an
         # entry point under the same name (the pyproject wrapper shape): the directory is what the
         # user installed, carries catalog provenance and is what update/remove act on.
-        directory_keys = {manifest_key(m) for m in manifests}
+        # Nested manifests keep their path-qualified registry key, but their pip alias
+        # still uses the declared name. Suppress that alias before enable/disable gates.
+        directory_keys = {identity for m in manifests for identity in (manifest_key(m), m.name)}
         ep_manifests = [m for m in self._scan_entry_points() if manifest_key(m) not in directory_keys]
         logger.debug("  entrypoints: %d manifest(s)", len(ep_manifests))
         manifests.extend(ep_manifests)

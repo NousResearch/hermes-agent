@@ -516,8 +516,11 @@ def dispatch_tool_describe(args: Dict[str, Any], *, current_tool_defs: List[Dict
             (undescribed if hosted_failure else not_found).append(name)
         elif _registry_entry(name) is not None and not is_deferrable_tool_name(
             name, load_config_readonly().effective_defer_tools):
-            # Registered but bridge/core/GUI-surface: a real name, wrong door.
-            errors[name] = not_deferrable_error(name)
+            # Registered but bridge/core/GUI-surface: a real name, wrong door —
+            # unless the session never listed it (its toolset is disabled here),
+            # in which case the correction is "don't retry", not "call it directly".
+            errors[name] = not_deferrable_error(
+                name, frozenset(_tool_def_names(current_tool_defs)) if current_tool_defs else None)
         else:
             not_found.append(name)
     result: Dict[str, Any] = {"tools": tools}
@@ -540,7 +543,9 @@ def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
                      if n and is_deferrable_tool_name(n, defer_tools))
 
 
-def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
+def resolve_underlying_call(args: Dict[str, Any], *,
+                            current_tool_defs: Optional[List[Dict[str, Any]]] = None,
+                            ) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
     """Parse a ``tool_call`` invocation into (underlying_name, args, error_msg).
 
     Used by:
@@ -553,6 +558,11 @@ def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[s
     one dispatch unit owned by the ``model_tools`` bridge branch, and the
     sentinel is what planners/display layers see. A single local entry keeps
     the historical single-tool contract unchanged.
+
+    ``current_tool_defs`` (the session-scoped, pre-assembly tool list) lets the
+    not-deferrable rejection tell a directly-listed tool apart from one whose
+    toolset is disabled in this session; callers without a session list (display
+    and trajectory layers) omit it and get the legacy message.
 
     On parse error, returns ``(None, {}, error_message)``.
     """
@@ -568,7 +578,8 @@ def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[s
     name = entries[0]["name"]
     raw_args = entries[0]["arguments"]
     if not is_deferrable_tool_name(name, load_config_readonly().effective_defer_tools):
-        return None, {}, not_deferrable_error(name)
+        return None, {}, not_deferrable_error(
+            name, frozenset(_tool_def_names(current_tool_defs)) if current_tool_defs else None)
     return name, raw_args, None
 
 

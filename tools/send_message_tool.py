@@ -244,7 +244,9 @@ def _handle_send(args):
             return tool_error(err)
     if native_mattermost and rejected_media_count and not media_files and not cleaned_message:
         from plugins.platforms.mattermost.adapter import _media_delivery_receipt
-        return json.dumps(_media_delivery_receipt(chat_id, requested_media_count, 0, []))
+        receipt = _media_delivery_receipt(chat_id, requested_media_count, 0, [])
+        receipt["media_dropped"] = media_dropped
+        return json.dumps(receipt)
 
     if duplicate_skip := _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id):
         return json.dumps(duplicate_skip)

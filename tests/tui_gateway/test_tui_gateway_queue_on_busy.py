@@ -53,6 +53,16 @@ def test_enqueue_preserves_order_after_an_image_turn():
     ]
 
 
+def test_enqueue_merges_only_same_client_surface_text():
+    session = _session()
+    server._enqueue_prompt(session, "Desktop A", "ws-1", client_surface="desktop")
+    server._enqueue_prompt(session, "Desktop B", "ws-1", client_surface="desktop")
+    server._enqueue_prompt(session, "TUI C", "ws-2")
+    assert session["queued_prompt"]["text"] == "Desktop A\n\nDesktop B"
+    assert session["queued_prompt"]["_client_surface"] == "desktop"
+    assert session["queued_prompts"] == [{"text": "TUI C", "transport": "ws-2"}]
+
+
 
 
 # ── _handle_busy_submit (policy) ───────────────────────────────────────────

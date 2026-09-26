@@ -407,6 +407,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     archived INTEGER NOT NULL DEFAULT 0,
     pinned INTEGER NOT NULL DEFAULT 0,
     hidden INTEGER NOT NULL DEFAULT 0,
+    slack_sync INTEGER NOT NULL DEFAULT 0,
+    slack_sync_version INTEGER NOT NULL DEFAULT 0,
+    slack_sync_revoking INTEGER NOT NULL DEFAULT 0,
     last_read_at REAL,
     tool_names TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id),
@@ -440,6 +443,10 @@ CREATE TABLE IF NOT EXISTS messages (
     display_metadata TEXT,
     display_identity BLOB,
     display_order INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS slack_desktop_mirror_claims (
+    message_id INTEGER PRIMARY KEY
 );
 
 CREATE TABLE IF NOT EXISTS session_model_usage (

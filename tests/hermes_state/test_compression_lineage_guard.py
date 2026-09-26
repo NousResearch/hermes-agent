@@ -302,6 +302,22 @@ def test_publish_compression_child_exposes_complete_child(db: SessionDB) -> None
     assert [m["content"] for m in db.get_messages("atomic-child")] == ["summary"]
 
 
+def test_atomic_compression_preserves_slack_sync_consent(db: SessionDB) -> None:
+    db.create_session("consented-parent", source="slack")
+    db._execute_write(lambda conn: conn.execute(
+        "UPDATE sessions SET slack_sync = 1 WHERE id = ?", ("consented-parent",)))
+    assert db.try_acquire_compression_lock("consented-parent", "winner", ttl_seconds=60)
+
+    db.publish_compression_child(
+        parent_session_id="consented-parent", child_session_id="continued-child",
+        source="slack", messages=[{"role": "user", "content": "summary"}],
+        compression_lock_holder="winner",
+    )
+
+    child = db.get_session("continued-child")
+    assert child is not None and child["slack_sync"] == 1
+
+
 def test_publish_compression_child_rejects_lost_or_expired_lease(db: SessionDB) -> None:
     db.create_session("lease-parent", source="webui")
     db.append_message("lease-parent", "user", "new durable turn")

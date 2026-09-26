@@ -24,13 +24,14 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { CopyButton } from '@/components/ui/copy-button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { renameSession } from '@/hermes'
+import { renameSession, setSessionSlackSyncRemote } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { ArchiveOff } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
 import { PROFILE_SWATCHES } from '@/lib/profile-color'
 import { exportSession } from '@/lib/session-export'
+import { useStoreSelector } from '@/lib/use-session-slice'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $projectTree, moveSessionToProject, projectIdForCwd, projectRootCwd } from '@/store/projects'
@@ -49,6 +50,7 @@ import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session
 import { $sessionTiles, closeAllOpenSessionTiles } from '@/store/session-states'
 import { ackStoredSessionId } from '@/store/session-unread'
 import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal } from '@/store/windows'
+import type { SessionInfo } from '@/types/hermes'
 
 import type { SessionTitleResponse } from '../../types'
 
@@ -107,6 +109,8 @@ interface SessionActions {
    *  archive verb becomes Unarchive and restores the session (#98813). */
   archived?: boolean
   profile?: string
+  /** Exact owner for this surface; untagged local rows use `local`. */
+  connectionId?: string
   onPin?: () => void
   /** Toggle the persisted read-state watermark for this row. */
   onToggleUnread?: () => void
@@ -125,6 +129,22 @@ interface SessionActions {
   /** The MAIN tab's escape hatch: hide the zone's tab bar (it sticky-shows
    *  once a tab is ever gained; this is the explicit off switch). */
   onHideTabBar?: () => void
+}
+
+function slackSyncRow(rows: SessionInfo[], sessionId: string, profile?: string, connectionId?: string): SessionInfo | null {
+  // Consent cannot be inferred from a sole ID match: the selected tab/header
+  // may belong to a remote owner while that sole visible row is local.
+  if (!profile?.trim() || !connectionId?.trim()) {
+    return null
+  }
+
+  const matches = rows.filter(row =>
+    sessionMatchesStoredId(row, sessionId) &&
+    row.profile === profile &&
+    (row.connection_id?.trim() || 'local') === connectionId
+  )
+
+  return matches.length === 1 ? matches[0] : null
 }
 
 // The color picker inside the session menu's Appearance submenu. Its own
@@ -193,6 +213,7 @@ function useSessionActions({
   unread = false,
   archived = false,
   profile,
+  connectionId,
   onPin,
   onToggleUnread,
   onBranch,
@@ -215,6 +236,17 @@ function useSessionActions({
   // the project menu's appearance-popover guard.
   const suppressCloseFocusRef = useRef(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
+
+  const [slackSyncPending, setSlackSyncPending] = useState(false)
+
+  const slackSyncAvailable = useStoreSelector($sessions, rows =>
+    slackSyncRow(rows, sessionId, profile, connectionId)?.slack_sync_available === true
+  )
+
+  const slackSyncEnabled = useStoreSelector($sessions, rows =>
+    slackSyncRow(rows, sessionId, profile, connectionId)?.slack_sync === true
+  )
+
   const tiles = useStore($sessionTiles)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const isRemote = useStore($connection)?.mode === 'remote'
@@ -338,6 +370,51 @@ function useSessionActions({
       }
     })
   ]
+
+  // Eligibility can disappear after opt-in (bot removed/rotated); revocation
+  // must remain available even when starting a new sync is no longer allowed.
+  if (slackSyncAvailable || slackSyncEnabled) {
+    identityItems.push(spec({
+      disabled: slackSyncPending,
+      icon: slackSyncEnabled ? 'check' : 'comment-discussion',
+      label: slackSyncEnabled ? r.stopSlackSync : r.startSlackSync,
+      onSelect: () => {
+        if (slackSyncPending) {
+          return
+        }
+
+        const row = slackSyncRow($sessions.get(), sessionId, profile, connectionId)
+
+        if (!row || (!row.slack_sync_available && !row.slack_sync)) {
+          return
+        }
+
+        triggerHaptic('selection')
+
+        setSlackSyncPending(true)
+        const nextEnabled = !row.slack_sync
+        const ownerConnectionId = row.connection_id?.trim() || 'local'
+        const ownerProfile = row.profile ?? profile
+        void setSessionSlackSyncRemote(sessionId, nextEnabled, {
+          connectionId: ownerConnectionId,
+          profile: ownerProfile
+        })
+          .then(result => {
+            if (!result.ok) {
+              throw new Error(r.slackSyncFailed)
+            }
+
+            setSessions(rows => {
+              const current = slackSyncRow(rows, sessionId, ownerProfile, ownerConnectionId)
+
+              return current ? rows.map(s => s === current ? { ...s, slack_sync: nextEnabled } : s) : rows
+            })
+          })
+          .catch(err => notifyError(err, r.slackSyncFailed))
+          .finally(() => setSlackSyncPending(false))
+      }
+    }))
+  }
 
   // WORK — derive/extract from the session.
   const workItems: ActionItemSpec[] = [
@@ -596,7 +673,7 @@ function DeleteSessionDialog({ open, onOpenChange, onConfirm, sessionTitle }: De
 }
 
 interface SessionActionsMenuProps
-  extends SessionActions, Pick<React.ComponentProps<typeof ActionsMenu>, 'align' | 'sideOffset'> {
+  extends SessionActions, Partial<Pick<React.ComponentProps<typeof ActionsMenu>, 'align' | 'sideOffset'>> {
   children: React.ReactNode
 }
 

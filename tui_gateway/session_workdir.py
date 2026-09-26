@@ -456,7 +456,8 @@ def _persist_branch_seed(session: dict) -> None:
             _workdir_reraise_disk_full(exc, "branch seed persist failed")
 
 
-def _write_submit_user_row(session: dict, text: Any, display_kind: str | None) -> dict | None:
+def _write_submit_user_row(session: dict, text: Any, display_kind: str | None, *,
+                           client_surface: str = "") -> dict | None:
     """Write the submitted user turn to the transcript and RETURN the durable dict (stamped
     ``_DB_PERSISTED_MARKER``/``_row_id``) WITHOUT slotting it on the session. The write half of
     :func:`_persist_submit_user_row`, shared by the busy-queue accept (which attaches the dict to
@@ -468,6 +469,7 @@ def _write_submit_user_row(session: dict, text: Any, display_kind: str | None) -
     from agent.context_compressor import _DB_PERSISTED_MARKER
     from agent.message_metadata import stamp_message_timestamp
     staged = stamp_message_timestamp({"role": "user", "content": text})
+    staged["_client_surface"] = client_surface
     if display_kind:
         staged["display_kind"] = display_kind
     with _session_db(session) as db:
@@ -483,7 +485,8 @@ def _write_submit_user_row(session: dict, text: Any, display_kind: str | None) -
     return staged
 
 
-def _persist_submit_user_row(session: dict, text: Any, display_kind: str | None) -> None:
+def _persist_submit_user_row(session: dict, text: Any, display_kind: str | None, *,
+                             client_surface: str = "") -> None:
     """Write the submitted user turn at send time, before the agent build and turn: the agent's own
     crash persist only runs once the build finished, so quitting a frozen app during a slow first build
     left a session row with no message (#111868). The dict is staged on the session already stamped
@@ -491,7 +494,8 @@ def _persist_submit_user_row(session: dict, text: Any, display_kind: str | None)
     ``_stage_turn_user_message`` and the flush writes no second row. A failed write stages nothing:
     the turn's crash persist then writes the row as before."""
     session.pop("_submit_user_row", None)  # a failed/unsupported write must not acknowledge an older send
-    if (staged := _write_submit_user_row(session, text, display_kind)) is not None:
+    if (staged := _write_submit_user_row(
+            session, text, display_kind, client_surface=client_surface)) is not None:
         session["_submit_user_row"] = staged
 
 

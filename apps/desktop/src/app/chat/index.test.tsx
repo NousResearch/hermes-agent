@@ -17,7 +17,9 @@ import {
   $gatewayState,
   $messages,
   $selectedStoredSessionId,
-  $sessions
+  $sessions,
+  _resetSessionOwnerHintsForTests,
+  setSessionOwnerHint
 } from '@/store/session'
 
 const threadRenderCount = vi.hoisted(() => ({ current: 0 }))
@@ -57,8 +59,8 @@ vi.mock('./sidebar/session-actions-menu', async () => {
   const React = await import('react')
 
   return {
-    SessionActionsMenu: ({ children }: { children: React.ReactNode }) =>
-      React.createElement('div', { 'data-testid': 'session-actions-menu' }, children)
+    SessionActionsMenu: ({ children, connectionId, profile }: { children: React.ReactNode; connectionId?: string; profile?: string }) =>
+      React.createElement('div', { 'data-testid': 'session-actions-menu', 'data-connection': connectionId, 'data-profile': profile }, children)
   }
 })
 
@@ -106,32 +108,63 @@ describe('ChatView render isolation', () => {
     $sessions.set([])
   })
 
-  it('does not re-render chat history when an unrelated parent idle tick updates', () => {
-    const props = {
-      gateway: null,
-      maxVoiceRecordingSeconds: 120,
-      onAddContextRef: vi.fn(),
-      onAddUrl: vi.fn(),
-      onAttachDroppedItems: vi.fn(),
-      onAttachImageBlob: vi.fn(),
-      onBranchInNewChat: vi.fn(),
-      onCancel: vi.fn(),
-      onDeleteSelectedSession: vi.fn(),
-      onEdit: vi.fn(),
-      onPasteClipboardImage: vi.fn(),
-      onPickFiles: vi.fn(),
-      onPickFolders: vi.fn(),
-      onPickImages: vi.fn(),
-      onReload: vi.fn(),
-      onRemoveAttachment: vi.fn(),
-      onRetryResume: vi.fn(),
-      onSteer: vi.fn(),
-      onSubmit: vi.fn(),
-      onThreadMessagesChange: vi.fn(),
-      onToggleSelectedPin: vi.fn(),
-      onTranscribeAudio: vi.fn()
-    }
+  const props = {
+    gateway: null,
+    maxVoiceRecordingSeconds: 120,
+    onAddContextRef: vi.fn(),
+    onAddUrl: vi.fn(),
+    onAttachDroppedItems: vi.fn(),
+    onAttachImageBlob: vi.fn(),
+    onBranchInNewChat: vi.fn(),
+    onCancel: vi.fn(),
+    onDeleteSelectedSession: vi.fn(),
+    onEdit: vi.fn(),
+    onPasteClipboardImage: vi.fn(),
+    onPickFiles: vi.fn(),
+    onPickFolders: vi.fn(),
+    onPickImages: vi.fn(),
+    onReload: vi.fn(),
+    onRemoveAttachment: vi.fn(),
+    onRetryResume: vi.fn(),
+    onSteer: vi.fn(),
+    onSubmit: vi.fn(),
+    onThreadMessagesChange: vi.fn(),
+    onToggleSelectedPin: vi.fn(),
+    onTranscribeAudio: vi.fn()
+  }
 
+  it('does not offer the sole local row as the remote selected header owner', () => {
+    _resetSessionOwnerHintsForTests()
+    setSessionOwnerHint('stored-1', { connectionId: 'remote-a', profile: 'work' })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={['/stored-1']}><ChatView {...props} /></MemoryRouter>
+      </QueryClientProvider>
+    )
+    const menu = screen.getByTestId('session-actions-menu')
+    expect(menu.getAttribute('data-connection')).toBe('remote-a')
+    expect(menu.getAttribute('data-profile')).toBe('work')
+    _resetSessionOwnerHintsForTests()
+  })
+
+  it('pins the selected header to its matching remote owner', () => {
+    _resetSessionOwnerHintsForTests()
+    setSessionOwnerHint('stored-1', { connectionId: 'remote-a', profile: 'work' })
+    $sessions.set([{ id: 'stored-1', connection_id: 'remote-a', profile: 'work', title: 'Remote chat' } as never])
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={['/stored-1']}><ChatView {...props} /></MemoryRouter>
+      </QueryClientProvider>
+    )
+    const menu = screen.getByTestId('session-actions-menu')
+    expect(menu.getAttribute('data-connection')).toBe('remote-a')
+    expect(menu.getAttribute('data-profile')).toBe('work')
+    _resetSessionOwnerHintsForTests()
+  })
+
+  it('does not re-render chat history when an unrelated parent idle tick updates', () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } }
     })

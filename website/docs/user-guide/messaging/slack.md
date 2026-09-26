@@ -27,6 +27,37 @@ the steps below.
 
 ---
 
+## Continue a Slack thread in Hermes Desktop
+
+Opening a Slack-origin conversation in Desktop shares its transcript but **does not post Desktop
+messages to Slack by default**. To mirror future turns, open the eligible conversation's `⋯` menu in
+the Desktop sidebar and choose **Sync to Slack thread**. Choose **Stop Slack sync** in the same menu
+to revoke consent. The choice belongs to that conversation, not the entire Slack integration.
+
+When enabled, Hermes posts newly accepted Desktop user **text** (prefixed `[Desktop]`) and completed,
+nonempty assistant replies to the **original** Slack thread. It does not backfill earlier messages,
+mirror tool output or hidden/automatic turns, or upload Desktop attachments. Delivery is at most
+once: if Slack accepts a post but the response is lost, Hermes does not risk a duplicate by retrying.
+An opt-out may need to wait for an in-flight post to finish; if it reports a timeout, the stored
+consent remains disabled, and you can retry the opt-out to confirm completion.
+
+The menu appears only when Hermes can prove the original thread, workspace, and **receiving bot**.
+Routes recorded before this identity was saved cannot be safely matched to a current bot token and
+remain ineligible; starting a new Slack thread after updating the gateway records the identity.
+Threads without an explicit root and configurations with ambiguous bot credentials are also
+ineligible. If a once-eligible conversation loses its bot credential, **Stop Slack sync** remains
+available even though new opt-ins are blocked.
+
+:::caution Authenticated-client trust boundary
+The gateway authenticates the client and verifies per-conversation consent, but cannot independently
+attest that a `prompt.submit` request came from the Desktop application. Any client authorized to
+use the same gateway can deliberately claim the Desktop surface. Use this feature only when you
+trust all authenticated clients with that gateway access; the Desktop label is not a device-level
+security guarantee.
+:::
+
+---
+
 ## Step 1: Create a Slack App
 
 The fastest path is to paste a manifest Hermes generates for you. It

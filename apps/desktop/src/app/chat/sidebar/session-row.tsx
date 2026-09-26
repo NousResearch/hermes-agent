@@ -327,6 +327,7 @@ function SidebarSessionRowImpl({
       ))}
       <SessionActionsMenu
         archived={Boolean(session.archived)}
+        connectionId={session.connection_id?.trim() || 'local'}
         onArchive={onArchive}
         onBranch={onBranch}
         onDelete={onDelete}
@@ -357,6 +358,7 @@ function SidebarSessionRowImpl({
   return (
     <SessionContextMenu
       archived={Boolean(session.archived)}
+      connectionId={session.connection_id?.trim() || 'local'}
       onArchive={onArchive}
       onBranch={onBranch}
       onDelete={onDelete}

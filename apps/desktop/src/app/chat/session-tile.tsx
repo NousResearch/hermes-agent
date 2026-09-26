@@ -49,6 +49,7 @@ import {
   $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
+  getSessionOwnerHint,
   sessionMatchesStoredId,
   sessionPinId
 } from '@/store/session'
@@ -805,12 +806,17 @@ export function SessionTabMenu({
   tabPaneId: string
 }) {
   const { pinId, profile, title } = useTileMenuRow(storedSessionId)
+  const tiles = useStore($sessionTiles)
+  // The tab's explicit route (or unique open-time hint) identifies its owner.
+  // A sole same-ID row in recents is not proof: it may be from another backend.
+  const owner = tiles.find(tile => tile.storedSessionId === storedSessionId)?.ownerRoute ?? getSessionOwnerHint(storedSessionId)
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const pinned = pinnedSessionIds.includes(pinId)
 
   return (
     <span className="contents" onContextMenu={event => event.stopPropagation()}>
       <SessionContextMenu
+        connectionId={owner?.connectionId}
         onArchive={() => void sessionTileDelegate()?.archiveSession(storedSessionId)}
         onBranch={() => void sessionTileDelegate()?.branchSession(storedSessionId)}
         onClose={onClose}
@@ -818,7 +824,7 @@ export function SessionTabMenu({
         onHideTabBar={onHideTabBar}
         onPin={() => (pinned ? unpinSession(pinId) : pinSession(pinId))}
         pinned={pinned}
-        profile={profile}
+        profile={owner?.targetProfile || owner?.profile || profile}
         sessionId={storedSessionId}
         surface="tab"
         tabPaneId={tabPaneId}

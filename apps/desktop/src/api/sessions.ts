@@ -415,6 +415,25 @@ export function setSessionUnreadRemote(id: string, unread: boolean, profile?: st
   })
 }
 
+/** Opt in one conversation to mirroring Desktop turns into its original Slack thread. */
+export function setSessionSlackSyncRemote(id: string, slackSync: boolean, scope?: ProfileScope): Promise<{ ok: boolean }> {
+  // Consent writes cannot use the ambient connection/profile: a local row
+  // without connection_id may be acted on while a remote backend is active.
+  if (!scope || typeof scope !== 'object' || !scope.connectionId?.trim() || !scope.profile?.trim()) {
+    return Promise.reject(new Error('Slack sync requires an explicit session owner'))
+  }
+
+  const owner = scope.profile.trim()
+
+  return hermesApi<{ ok: boolean }>({
+    ...sessionScoped(scope),
+    ...(owner ? { profile: owner } : {}),
+    path: `/api/sessions/${encodeURIComponent(id)}`,
+    method: 'PATCH',
+    body: { slack_sync: slackSync, ...(owner ? { profile: owner } : {}) }
+  })
+}
+
 export function searchSessions(query: string): Promise<SessionSearchResponse> {
   return hermesApi<SessionSearchResponse>({
     path: `/api/sessions/search?q=${encodeURIComponent(query)}`

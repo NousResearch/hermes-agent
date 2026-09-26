@@ -140,6 +140,10 @@ function ChatHeader({
   const sessions = useStore($sessions)
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const profiles = useStore($profiles)
+  // A selected ID is not an owner: the only visible row may belong to a
+  // different backend. Use the selected session's explicit open-time route;
+  // without one this menu must not offer consent.
+  const selectedOwner = selectedSessionId ? getSessionOwnerHint(selectedSessionId) : undefined
 
   const activeStoredSession =
     (selectedSessionId && sessions.find(session => sessionMatchesStoredId(session, selectedSessionId))) || null
@@ -179,9 +183,11 @@ function ChatHeader({
         {showProfileTag && <ProfileTag className="pointer-events-auto mr-1.5" profile={activeStoredSession?.profile} />}
         <SessionActionsMenu
           align="start"
+          connectionId={selectedOwner?.connectionId}
           onDelete={selectedSessionId ? onDeleteSelectedSession : undefined}
           onPin={selectedSessionId ? onToggleSelectedPin : undefined}
           pinned={selectedIsPinned}
+          profile={selectedOwner?.targetProfile || selectedOwner?.profile}
           sessionId={selectedSessionId || activeSessionId || ''}
           sideOffset={8}
           title={title}

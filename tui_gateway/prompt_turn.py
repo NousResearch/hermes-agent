@@ -1062,6 +1062,19 @@ def _run_prompt_submit(
         muted = diagnostic_turn_muted(display_metadata, "tui", notification_config)
     if muted:
         display_kind = "hidden"
+    # A submitted visible row is positive proof of a Desktop user gesture.
+    # Synthesized/auto turns enter this function without that row, and TUI
+    # submissions must never use a Desktop-only consent flag.
+    staged = session.get("_submit_user_row") or {}
+    # Runtime source follows the currently attached Desktop gateway; the
+    # persisted session row, checked again by accepted_user/mirror_row, owns
+    # Slack provenance and consent. A Desktop resume of a Slack-origin row
+    # therefore does not need session["source"] to stay "slack".
+    mirror_user_id = (
+        staged.get("_row_id") if staged.get("_client_surface") == "desktop"
+        and display_kind is None
+        and terminal_callback is None and turn_author is None
+        and staged.get("content") == text else None)
     # The ONE INFO record proving a prompt was accepted by THIS process; ties ui sid,
     # session_key and the agent's live session_id together.  No prompt content is logged.
     _turn_started_monotonic = time.monotonic()
@@ -1091,6 +1104,15 @@ def _run_prompt_submit(
             notification_category=(display_metadata or {}).get("notification_category"))
         goal_followup = None
         try:
+            if mirror_user_id is not None:
+                try:
+                    from tui_gateway.slack_mirror import accepted_user
+                    with _session_db(session) as mirror_db:
+                        if mirror_db is not None:
+                            accepted_user(mirror_db, session["session_key"], mirror_user_id,
+                                          desktop=True, visible=True)
+                except Exception:
+                    logger.warning("Desktop Slack user mirror skipped", exc_info=True)
             prepared = _prepare_turn_input(sid, session, st, text, images)
             if prepared is None:
                 if st.terminal_callback is not None and not st.receipt_attempted:
@@ -1107,6 +1129,17 @@ def _run_prompt_submit(
                 sid, session, st, text, display_kind, display_metadata)
             payload, raw, status = _complete_turn_payload(session, st, status_note, cols)
             _emit("message.complete", sid, payload)
+            if mirror_user_id is not None:
+                try:
+                    from tui_gateway.slack_mirror import completed_final
+                    with _session_db(session) as mirror_db:
+                        if mirror_db is not None:
+                            completed_final(mirror_db, session["session_key"], payload.get("persisted_turn"),
+                                            status=status, text=raw, desktop=True,
+                                            successful=not any(st.result.get(k) for k in ("failed", "partial", "interrupted"))
+                                            and st.result.get("completed") is not False)
+                except Exception:
+                    logger.warning("Desktop Slack final mirror skipped", exc_info=True)
             goal_followup = _goal_followup_after_turn(sid, session, st.result, status, raw)
             if status == "complete":
                 _after_complete_turn(sid, session, st, raw)

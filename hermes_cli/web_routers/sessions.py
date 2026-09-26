@@ -218,6 +218,7 @@ def get_sessions(
             total = db.session_count(exclude_children=True, **scope)
             now = time.time()
             row_profile = profile_name or _cron_default_profile()
+            from hermes_cli.slack_desktop_sync import availability
             for s in sessions:
                 s["is_active"] = _is_active(s, now)
                 s["profile"] = row_profile
@@ -225,6 +226,8 @@ def get_sessions(
                 # SQLite stores the flags as 0/1; expose real JSON booleans.
                 s["archived"] = bool(s.get("archived"))
                 s["pinned"] = bool(s.get("pinned"))
+                s["slack_sync"] = bool(s.get("slack_sync"))
+                s["slack_sync_available"] = availability(db, s)
             if not full:
                 _strip_session_list_rows(sessions)
             # ``storage`` tells an empty page apart from an unreadable store (#72046); same
@@ -518,6 +521,9 @@ async def get_session_detail(session_id: str, profile: Optional[str] = None):
         # clients resolve them to whichever gateway happened to be active.
         session["profile"] = _serving_profile(profile)
         session["is_default_profile"] = session["profile"] == "default"
+        from hermes_cli.slack_desktop_sync import availability
+        session["slack_sync"] = bool(session.get("slack_sync"))
+        session["slack_sync_available"] = availability(db, session)
         return session
 
     return await asyncio.to_thread(_with_db, profile, _detail, read_only=True)
@@ -767,23 +773,33 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
         sid = _resolve_session_id(db, session_id)
         if not sid:
             raise HTTPException(status_code=404, detail=_NOT_FOUND)
-        if body.title is None and all(getattr(body, f) is None for f in flags):
+        if "slack_sync" in body.model_fields_set and body.slack_sync is None:
+            raise HTTPException(status_code=400, detail="slack_sync must be a boolean")
+        if body.title is None and body.slack_sync is None and all(getattr(body, f) is None for f in flags):
             raise HTTPException(
                 status_code=400,
                 detail="Nothing to update; provide 'title', 'archived', 'hidden', 'pinned', and/or 'unread'.",
             )
+        result = {"ok": True, "title": None}
         if body.title is not None:
             try:
                 db.set_session_title(sid, body.title or "")
             except ValueError as e:
                 # Title too long, invalid characters, or already in use.
                 raise HTTPException(status_code=400, detail=str(e))
-        result = {"ok": True, "title": None}
         for flag, setter in _RENAME_FLAG_SETTERS:
             value = getattr(body, flag)
             if value is not None:
                 setter(db, sid, value)
                 result[flag] = bool(value)
+        # Keep the sensitive consent toggle last: an invalid title/flag must not
+        # leave mirroring enabled after an otherwise rejected PATCH.
+        if body.slack_sync is not None:
+            from hermes_cli.slack_desktop_sync import set_opt_in
+            try:
+                result["slack_sync"] = set_opt_in(db, sid, body.slack_sync)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
         result["title"] = db.get_session_title(sid) or ""
         return result
 

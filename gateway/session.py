@@ -462,6 +462,21 @@ def build_session_context_prompt(context: SessionContext, *, redact_pii: bool = 
     return "\n".join(lines)
 
 
+def _receiving_slack_bot_user_id(source: SessionSource) -> Optional[str]:
+    """Identity authenticated by the live receiving adapter, not the message sender/token.
+
+    A route reconstructed from an old transcript has no transport reference and
+    remains untrusted for Desktop mirroring rather than borrowing today's bot.
+    """
+    if source.platform != Platform.SLACK or not source.scope_id:
+        return None
+    adapter_ref = getattr(source, "_transport_adapter_ref", None)
+    adapter = adapter_ref() if callable(adapter_ref) else None
+    identities = getattr(adapter, "_team_bot_user_ids", None)
+    bot_user_id = identities.get(source.scope_id) if isinstance(identities, dict) else None
+    return bot_user_id if isinstance(bot_user_id, str) and bot_user_id else None
+
+
 # /model override keys safe to persist; ``api_key``/``api_mode`` must NEVER reach sessions.json.
 PERSISTABLE_MODEL_OVERRIDE_KEYS = ("model", "provider", "base_url")
 
@@ -533,6 +548,9 @@ class SessionEntry:
     # "default" spelled out). The key namespace only says where the turn RUNS; after a restart this is
     # what says which bot may deliver to it. None = unknown (row predates the field, or standalone).
     transport_profile: Optional[str] = None
+    # Bot authenticated by the receiving Slack adapter when this route was minted.
+    # Absent on legacy/recovered routes: never infer historical trust from today's token.
+    receiving_bot_user_id: Optional[str] = None
 
     # Fields (de)serialized verbatim, in wire order (``from_dict`` reads them with
     # ``data.get(name, <dataclass default>)``), split around the three ISO-datetime/token keys.
@@ -564,6 +582,8 @@ class SessionEntry:
             result["model_override"] = sanitize_model_override(self.model_override)
         if self.transport_profile:
             result["transport_profile"] = self.transport_profile
+        if self.receiving_bot_user_id:
+            result["receiving_bot_user_id"] = self.receiving_bot_user_id
         if self.origin:
             result["origin"] = self.origin.to_dict()
         return result
@@ -595,6 +615,7 @@ class SessionEntry:
         plain = {n: data.get(n, defaults[n]) for n in cls._PLAIN_FIELDS + cls._RESET_FIELDS}
         plain["expiry_finalized"] = data.get("expiry_finalized", data.get("memory_flushed", False))
         transport_profile = data.get("transport_profile")
+        receiving_bot_user_id = data.get("receiving_bot_user_id")
         return cls(
             session_key=session_key, session_id=session_id,
             created_at=datetime.fromisoformat(data["created_at"]),
@@ -605,6 +626,8 @@ class SessionEntry:
             active_turn_token=token, active_turn_started_at=started_at,
             model_override=sanitize_model_override(data.get("model_override")),
             transport_profile=transport_profile if isinstance(transport_profile, str) and transport_profile else None,
+            receiving_bot_user_id=(receiving_bot_user_id if isinstance(receiving_bot_user_id, str)
+                                   and receiving_bot_user_id else None),
             **plain,
         )
 
@@ -1035,6 +1058,7 @@ class SessionStore(
             chat_type=source.chat_type, was_auto_reset=decision.reset_reason is not None,
             auto_reset_reason=decision.reset_reason, reset_had_activity=decision.reset_had_activity,
             prev_session_id=decision.prev_session_id, transport_profile=transport_profile_of(source),
+            receiving_bot_user_id=_receiving_slack_bot_user_id(source),
         )
         with self._lock:
             current = self._entries.get(session_key)
@@ -1141,6 +1165,7 @@ class SessionStore(
             session_key=session_key, session_id=session_id, created_at=now, updated_at=now,
             origin=old_entry.origin, platform=old_entry.platform, chat_type=old_entry.chat_type,
             transport_profile=old_entry.transport_profile, **fields,
+            receiving_bot_user_id=old_entry.receiving_bot_user_id,
         )
         self._entries[session_key] = new_entry
         self._save()

@@ -568,6 +568,10 @@ export interface SessionInfo {
    *  explicitly marked unread or a response arrived after it was last read.
    *  Undefined against a backend predating the flag; treat as read. */
   unread?: boolean
+  /** Opt-in Desktop→original Slack thread delivery (server-owned, off by default). */
+  slack_sync?: boolean
+  /** Server-verified original Slack destination for this conversation. */
+  slack_sync_available?: boolean
   preview: null | string
   source: null | string
   started_at: number

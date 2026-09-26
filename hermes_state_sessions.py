@@ -244,7 +244,7 @@ _INHERIT_PARENT_META_SQL = (
 _FORK_EDGE_EXCLUSION_SQL = "".join(
     f"\n                       AND COALESCE({_sql_json_extract('model_config', f'$.{marker}')}, '')"
     "\n                           != parent_session_id"
-    for marker in ("_delegate_from", "_branched_from")
+    for marker in ("_delegate_from", "_branched_from", "_reset_from")
 )
 _INHERIT_PARENT_ROUTING_SQL = (
     "UPDATE sessions\n                       SET "
@@ -252,6 +252,8 @@ _INHERIT_PARENT_ROUTING_SQL = (
         "user_id", "session_key", "chat_id", "chat_type", "thread_id", "display_name", "origin_json",
         "transport_profile",
     ))
+    + ",\n                       slack_sync = (SELECT p.slack_sync FROM sessions p WHERE p.id = sessions.parent_session_id)"
+    + ",\n                       slack_sync_revoking = (SELECT p.slack_sync_revoking FROM sessions p WHERE p.id = sessions.parent_session_id)"
     + "\n                     WHERE id = ? AND parent_session_id IS NOT NULL\n"
     "                       AND EXISTS (\n"
     "                           SELECT 1 FROM sessions p\n"
@@ -1050,7 +1052,7 @@ class SessionSessionsMixin:
             merged = dict(s)
             for key in (
                 "id", "ended_at", "end_reason", "message_count", "tool_call_count", "title", "last_active",
-                "preview", "model", "system_prompt", "cwd", "git_branch", "git_repo_root",
+                "preview", "model", "system_prompt", "cwd", "git_branch", "git_repo_root", "slack_sync",
             ):
                 if key in tip_row:
                     merged[key] = tip_row[key]

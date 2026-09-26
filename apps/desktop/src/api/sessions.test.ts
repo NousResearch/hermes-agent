@@ -19,6 +19,7 @@ const {
   getSession,
   setSessionArchived,
   setSessionPinnedRemote,
+  setSessionSlackSyncRemote,
   setSessionUnreadRemote,
   listSidebarSessions
 } = await import('./sessions')
@@ -158,6 +159,53 @@ describe('setSessionArchived profile scoping', () => {
 })
 
 describe('setSessionPinnedRemote / setSessionUnreadRemote profile scoping', () => {
+  it('writes the Slack opt-in explicitly to the owning profile', async () => {
+    hermesApi.mockResolvedValue({ ok: true } as never)
+    vi.mocked(client.capabilityScoped).mockReturnValue({ connectionId: 'local', profile: 'poweronline' })
+    await setSessionSlackSyncRemote('slack-session', true, { connectionId: 'local', profile: 'poweronline' })
+    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+      method: 'PATCH',
+      path: '/api/sessions/slack-session',
+      connectionId: 'local',
+      profile: 'poweronline',
+      body: { slack_sync: true, profile: 'poweronline' }
+    })
+  })
+  it('pins the Slack opt-in PATCH to its exact owning connection', async () => {
+    hermesApi.mockResolvedValue({ ok: true } as never)
+    vi.mocked(client.capabilityScoped).mockReturnValue({ connectionId: 'remote-a', profile: 'poweronline' })
+    await setSessionSlackSyncRemote('slack-session', true, { connectionId: 'remote-a', profile: 'poweronline' })
+    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+      method: 'PATCH',
+      path: '/api/sessions/slack-session',
+      connectionId: 'remote-a',
+      profile: 'poweronline',
+      body: { slack_sync: true, profile: 'poweronline' }
+    })
+  })
+  it('keeps a local Slack opt-in pinned locally while a remote connection is active', async () => {
+    hermesApi.mockResolvedValue({ ok: true } as never)
+    vi.mocked(client.getApiRequestConnection).mockReturnValue('remote-active')
+    vi.mocked(client.getApiRequestProfile).mockReturnValue('remote-profile')
+    vi.mocked(client.capabilityScoped).mockReturnValue({ profile: 'local-profile' })
+
+    await setSessionSlackSyncRemote('local-session', true, { connectionId: 'local', profile: 'local-profile' })
+
+    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+      method: 'PATCH',
+      connectionId: 'local',
+      profile: 'local-profile',
+      body: { slack_sync: true, profile: 'local-profile' }
+    })
+  })
+  it('rejects an unpinned Slack write instead of falling back to the active remote', async () => {
+    vi.mocked(client.getApiRequestConnection).mockReturnValue('remote-active')
+    vi.mocked(client.getApiRequestProfile).mockReturnValue('remote-profile')
+    vi.mocked(client.capabilityScoped).mockReturnValue({ profile: 'local-profile' })
+
+    await expect(setSessionSlackSyncRemote('local-session', true, { profile: 'local-profile' })).rejects.toThrow()
+    expect(hermesApi).not.toHaveBeenCalled()
+  })
   it('carries the owning profile in the pin PATCH body', async () => {
     hermesApi.mockResolvedValue({ ok: true } as never)
 

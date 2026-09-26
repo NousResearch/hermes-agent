@@ -591,7 +591,29 @@ def _agent_visible_path(path: Path) -> str:
         from tools.terminal_tool import _ensure_terminal_env_bridged
         _ensure_terminal_env_bridged()
         from tools.credential_files import to_agent_visible_cache_path
-        return to_agent_visible_cache_path(str(path))
+        host_str = str(path)
+        translated = to_agent_visible_cache_path(host_str)
+        if translated != host_str:
+            return translated
+        # No-op translation: the file lives outside the mounted cache roots.
+        # Under a container backend the host path is unreachable inside the
+        # sandbox, so stage the file into the bind-mounted attachments dir
+        # and return the container-visible copy (#103147).
+        if os.environ.get("TERMINAL_ENV", "local") not in ("docker", "ssh", "singularity", "modal", "daytona", "vercel_sandbox"):
+            return host_str
+        try:
+            from hermes_constants import get_hermes_dir
+            import shutil
+            attachments_dir = get_hermes_dir("attachments", "attachments")
+            attachments_dir.mkdir(parents=True, exist_ok=True)
+            dest = attachments_dir / path.name
+            # Deduplicate: if a same-name file already exists and is byte-identical, skip the copy.
+            if not dest.exists() or dest.read_bytes() != path.read_bytes():
+                shutil.copy2(str(path), str(dest))
+            staged_translated = to_agent_visible_cache_path(str(dest))
+            return staged_translated if staged_translated != str(dest) else str(dest)
+        except Exception:
+            return host_str
     except Exception:
         return str(path)
 

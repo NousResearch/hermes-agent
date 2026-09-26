@@ -32,7 +32,7 @@ export function registerNativeNotifications({ getMainWindow, focusWindow }: Noti
     const icon = typeof payload?.icon === 'string' && payload.icon.trim() ? payload.icon.trim() : undefined
 
     const notification = new Notification({
-      title: payload?.title || 'Hermes',
+      title: payload?.title || 'Agent Czesiek',
       body: payload?.body || '',
       silent: Boolean(payload?.silent),
       ...(icon ? { icon } : {}),

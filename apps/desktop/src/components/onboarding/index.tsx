@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { setupCopy } from '@/app/jarvis/setup-copy'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Input } from '@/components/ui/input'
@@ -30,14 +31,7 @@ import {
 import type { ModelOptionProvider, OAuthProvider } from '@/types/hermes'
 
 import { DocsLink, FlowPanel, Status } from './flow'
-import {
-  FeaturedProviderRow,
-  FireworksProviderRow,
-  LocalModelsProviderRow,
-  OpenRouterProviderRow,
-  ProviderRow,
-  sortProviders
-} from './providers'
+import { KeyProviderRow, LocalModelsProviderRow, OpenRouterProviderRow, ProviderRow, sortProviders } from './providers'
 
 export {
   FeaturedProviderRow,
@@ -69,20 +63,19 @@ export interface ApiKeyOption {
   short?: string
 }
 
-// Curated order mirrors CANONICAL_PROVIDERS: Fireworks sits #2 overall (after
-// Nous Portal OAuth), ahead of OpenRouter and the rest of the key catalog.
+// Own API keys lead setup; OpenRouter is the initial selection.
 const API_KEY_OPTIONS: ApiKeyOption[] = [
-  {
-    id: 'fireworks',
-    name: 'Fireworks AI',
-    envKey: 'FIREWORKS_API_KEY',
-    docsUrl: 'https://app.fireworks.ai/settings/users/api-keys'
-  },
   {
     id: 'openrouter',
     name: 'OpenRouter',
     envKey: 'OPENROUTER_API_KEY',
     docsUrl: 'https://openrouter.ai/keys'
+  },
+  {
+    id: 'fireworks',
+    name: 'Fireworks AI',
+    envKey: 'FIREWORKS_API_KEY',
+    docsUrl: 'https://app.fireworks.ai/settings/users/api-keys'
   },
   {
     id: 'openai',
@@ -413,7 +406,7 @@ function Header() {
   )
 }
 
-export const FEATURED_ID = 'nous'
+export const FEATURED_ID = 'openai-codex'
 const SHOW_ALL_KEY = 'hermes-onboarding-show-all-v1'
 
 const readShowAll = () => {
@@ -440,7 +433,7 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
   const [showAll, setShowAll] = useState(readShowAll)
   // Which key-form option to preselect when we flip to 'apikey' mode. The
   // OpenRouter row selects its key; the generic link lands on the first option.
-  const [apiKeyInitialEnv, setApiKeyInitialEnv] = useState<string | undefined>(undefined)
+  const [apiKeyInitialEnv, setApiKeyInitialEnv] = useState<string | undefined>('OPENROUTER_API_KEY')
 
   const openKeyForm = (envKey?: string) => {
     setApiKeyInitialEnv(envKey)
@@ -481,11 +474,8 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
   const select = (p: OAuthProvider) => void startProviderOAuth(p, ctx)
   const featured = ordered.find(p => p.id === FEATURED_ID) ?? null
   const rest = featured ? ordered.filter(p => p.id !== FEATURED_ID) : ordered
-  // Collapse the secondary providers behind a disclosure whenever Nous Portal
-  // is present to anchor the choice — otherwise show the full list. The
-  // Fireworks/OpenRouter key rows always live behind the disclosure, so the
-  // toggle is warranted even when there are no other OAuth providers.
-  const collapsible = Boolean(featured)
+  // Keep alternative providers available without crowding the primary choices.
+  const collapsible = true
   const showRest = !collapsible || showAll
 
   // "Run models locally" leaves the picker for Settings -> Providers ->
@@ -506,20 +496,25 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
   return (
     <div className="grid gap-2">
       <div className="grid max-h-[60dvh] gap-2 overflow-y-auto p-1">
-        {featured ? <FeaturedProviderRow onSelect={select} provider={featured} /> : null}
+        <OwnApiHeading />
+        <OpenRouterProviderRow onClick={() => openKeyForm('OPENROUTER_API_KEY')} />
+        {featured ? <ProviderRow onSelect={select} provider={featured} /> : null}
+        <KeyProviderRow
+          onClick={() => openKeyForm('GEMINI_API_KEY')}
+          pitch={t.jarvisOnboarding.voice.geminiKeyHint}
+          title="Gemini API"
+        />
         {/* The no-account path: everything runs on this machine. Shipped
             behind the --local launch flag. (Fireworks moved into the
             expanded list on main.) */}
         {$localModelsEnabled.get() ? <LocalModelsProviderRow onClick={openLocalModels} /> : null}
         {showRest ? (
           <>
-            {/* Fireworks leads the expanded list, matching CANONICAL_PROVIDERS
-                (Nous → Fireworks), but stays hidden until the user opens it. */}
-            <FireworksProviderRow onClick={() => openKeyForm('FIREWORKS_API_KEY')} />
-            {rest.map(p => (
-              <ProviderRow key={p.id} onSelect={select} provider={p} />
-            ))}
-            <OpenRouterProviderRow onClick={() => openKeyForm('OPENROUTER_API_KEY')} />
+            {rest
+              .filter(p => p.id !== 'nous')
+              .map(p => (
+                <ProviderRow key={p.id} onSelect={select} provider={p} />
+              ))}
           </>
         ) : null}
       </div>
@@ -544,6 +539,18 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
           {t.onboarding.haveApiKey}
         </Button>
       </div>
+    </div>
+  )
+}
+
+function OwnApiHeading() {
+  const { locale } = useI18n()
+  const copy = setupCopy[locale]
+
+  return (
+    <div className="mb-2 px-3">
+      <h3 className="font-semibold">{copy.ownApi}</h3>
+      <p className="mt-1 text-sm text-(--ui-text-secondary)">{copy.apiHint}</p>
     </div>
   )
 }

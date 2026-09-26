@@ -14,7 +14,19 @@ import {
   validateProviderCredential
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
-import { Check, ChevronLeft, ChevronRight, KeyRound, Loader2, RefreshCw, ShieldLock, Sparkles, Volume2, X, Zap } from '@/lib/icons'
+import {
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  KeyRound,
+  Loader2,
+  RefreshCw,
+  ShieldLock,
+  Sparkles,
+  Volume2,
+  X,
+  Zap
+} from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { startManualOnboarding } from '@/store/onboarding'
@@ -33,6 +45,7 @@ import { withCoordinatorPrompt } from './coordinator-prompt'
 import { ChoiceCard, choiceRadioKeyHandler } from './onboarding-choice-card'
 import { ComputerStep, type ComputerStepProps } from './onboarding-computer'
 import { ConnectionsStep } from './onboarding-connections'
+import { PersonalityStep } from './onboarding-personality'
 import {
   approvalConfigMode,
   dismissJarvisOnboarding,
@@ -61,6 +74,8 @@ import { WelcomeStep } from './onboarding-welcome'
 import { OPENROUTER_ENV_KEY, type OpenRouterConnectResult } from './openrouter-connect'
 import { OPENROUTER_PROVIDER_SLUG } from './openrouter-presets'
 import { OpenRouterQuickConnect } from './openrouter-quick-connect'
+import { withPersonality } from './personality'
+import { setupCopy } from './setup-copy'
 
 /**
  * Product default (docs/product/AI_EVOLUTION_JARVIS_DESIGN.md §2): a first
@@ -71,7 +86,12 @@ import { OpenRouterQuickConnect } from './openrouter-quick-connect'
  */
 function usePolishFirstRun(scope: JarvisOnboardingProps['scope']) {
   const { configLoadError, isLoadingConfig, locale, setLocale } = useI18n()
-  const fresh = useMemo(() => readJarvisOnboardingState(undefined, normalizeJarvisOnboardingScope(scope)) === null, [scope])
+
+  const fresh = useMemo(
+    () => readJarvisOnboardingState(undefined, normalizeJarvisOnboardingScope(scope)) === null,
+    [scope]
+  )
+
   const sawLoad = useRef(false)
   const applied = useRef(false)
 
@@ -217,13 +237,18 @@ export function JarvisOnboarding({
   onDismiss,
   scope: rawScope
 }: JarvisOnboardingProps) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const copy = t.jarvisOnboarding
+  const guide = setupCopy[locale]
   usePolishFirstRun(rawScope)
   const scope = useMemo(() => normalizeJarvisOnboardingScope(rawScope), [rawScope])
   const scopeKey = useMemo(() => jarvisOnboardingScopeKey(scope), [scope])
   const loadedState = useMemo(() => readJarvisOnboardingState(undefined, scope), [scope])
-  const [state, setState] = useState<JarvisOnboardingState>(() => loadedState ?? initialJarvisOnboardingState(initialStep))
+
+  const [state, setState] = useState<JarvisOnboardingState>(
+    () => loadedState ?? initialJarvisOnboardingState(initialStep)
+  )
+
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
   const [providers, setProviders] = useState<ProviderOption[]>([])
   const [loading, setLoading] = useState(true)
@@ -274,23 +299,36 @@ export function JarvisOnboarding({
     )
   }
 
-  useEffect(
-    () => () => {
+  // Lifecycle tracking is not reactive state mirroring; StrictMode reruns setup.
+  // eslint-disable-next-line no-restricted-syntax
+  useEffect(() => {
+    mounted.current = true
+
+    return () => {
       mounted.current = false
       loadToken.current += 1
       requestToken.current += 1
-    },
-    []
-  )
+    }
+  }, [])
 
   const loadInitialState = useCallback(
     (token: number, loadScope: JarvisOnboardingScope, loadScopeKey: string) => {
-      const loadStillCurrent = () => mounted.current && loadToken.current === token && scopeKeyRef.current === loadScopeKey
+      const loadStillCurrent = () =>
+        mounted.current && loadToken.current === token && scopeKeyRef.current === loadScopeKey
 
       setLoading(true)
-      void Promise.all([
-        Promise.resolve().then(() => loadConfig(loadScope)),
-        Promise.resolve().then(() => loadModelOptions(loadScope))
+      let timeout: ReturnType<typeof setTimeout>
+
+      const deadline = new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(copy.errors.config)), 15_000)
+      })
+
+      void Promise.race([
+        Promise.all([
+          Promise.resolve().then(() => loadConfig(loadScope)),
+          Promise.resolve().then(() => loadModelOptions(loadScope))
+        ]),
+        deadline
       ])
         .then(([cfg, options]) => {
           if (!loadStillCurrent()) {
@@ -332,6 +370,8 @@ export function JarvisOnboarding({
           }
         })
         .finally(() => {
+          clearTimeout(timeout)
+
           if (loadStillCurrent()) {
             setLoading(false)
           }
@@ -565,7 +605,11 @@ export function JarvisOnboarding({
 
       setProviders(nextProviders)
 
-      if (!match || match.authenticated === false || (match.models.length > 0 && !match.models.includes(modelAtRequest))) {
+      if (
+        !match ||
+        match.authenticated === false ||
+        (match.models.length > 0 && !match.models.includes(modelAtRequest))
+      ) {
         setAccessStatus('failed')
         setAccessMessage(match?.name ? copy.errors.providerUnavailable : copy.errors.model)
 
@@ -615,7 +659,9 @@ export function JarvisOnboarding({
 
     setProviders(nextProviders)
 
-    return Boolean(match && match.authenticated !== false && (match.models.length === 0 || match.models.includes(modelName)))
+    return Boolean(
+      match && match.authenticated !== false && (match.models.length === 0 || match.models.includes(modelName))
+    )
   }
 
   const assertModelAssignmentResult = (result: ModelAssignmentResponse | { ok: boolean }) => {
@@ -709,7 +755,10 @@ export function JarvisOnboarding({
       }
 
       if (modelWritten) {
-        await rollbackModelAssignment({ provider: snapshotOptions.provider, model: snapshotOptions.model }, requestScope)
+        await rollbackModelAssignment(
+          { provider: snapshotOptions.provider, model: snapshotOptions.model },
+          requestScope
+        )
         currentAfterRollback = currentAfterRollback && stillCurrent()
       }
 
@@ -760,7 +809,11 @@ export function JarvisOnboarding({
       }
 
       nextConfig = setNested(nextConfig, 'approvals.mode', approvalConfigMode(approvalsMode))
-      nextConfig = setNested(nextConfig, 'custom_prompt', withCoordinatorPrompt(snapshotConfig.custom_prompt))
+      nextConfig = setNested(
+        nextConfig,
+        'custom_prompt',
+        withCoordinatorPrompt(withPersonality(snapshotConfig.custom_prompt, stateRef.current.selections?.personality))
+      )
 
       assertModelAssignmentResult(await saveModel({ provider: providerAtRequest, model: modelAtRequest }, requestScope))
       modelWritten = true
@@ -905,16 +958,28 @@ export function JarvisOnboarding({
   }
 
   const isLastStep = currentIndex === JARVIS_ONBOARDING_STEPS.length - 1
+  const informational = currentStep === 'welcome' || currentStep === 'access'
+  const optional = ['profile', 'voice', 'connections'].includes(currentStep)
+
+  const stepLabel = (step: JarvisOnboardingStep) =>
+    step === 'profile' ? guide.personality : step === 'engine' ? guide.ownApi : copy.steps[step]
 
   const nextDisabled =
-    loading ||
+    (loading && ['engine', 'model', 'approvals'].includes(currentStep)) ||
     (currentStep === 'engine' && !selectedProvider) ||
     (currentStep === 'model' && configurationStatus !== 'passed') ||
-    (currentStep === 'access' && !state.completedSteps.includes('access')) ||
     (currentStep === 'approvals' && !approvalsMode)
 
   return (
-    <Dialog modal onOpenChange={open => { if (!open) { close() } }} open>
+    <Dialog
+      modal
+      onOpenChange={open => {
+        if (!open) {
+          close()
+        }
+      }}
+      open
+    >
       <DialogContent
         aria-labelledby="jarvis-onboarding-title"
         bodyClassName="grid max-h-[calc(100vh-2rem)] gap-4 overflow-y-auto bg-(--ui-bg-elevated) p-4 text-(--ui-text-primary) sm:max-h-[calc(100vh-3rem)] sm:p-6 lg:grid-cols-[17rem_minmax(0,1fr)]"
@@ -951,7 +1016,7 @@ export function JarvisOnboarding({
                     <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-(--ui-bg-tertiary) text-xs">
                       {done ? <Check className="size-3.5" /> : index + 1}
                     </span>
-                    <span>{copy.steps[step]}</span>
+                    <span>{stepLabel(step)}</span>
                   </button>
                 </li>
               )
@@ -965,7 +1030,10 @@ export function JarvisOnboarding({
               <p className="text-xs text-(--ui-text-tertiary)">
                 {copy.progress(currentIndex + 1, JARVIS_ONBOARDING_STEPS.length)}
               </p>
-              <h2 className="mt-1 text-xl font-semibold tracking-normal">{copy.steps[currentStep]}</h2>
+              <h2 className="mt-1 text-xl font-semibold tracking-normal">{stepLabel(currentStep)}</h2>
+              <p className="mt-2 text-sm text-(--ui-accent)">
+                {informational ? guide.information : optional ? guide.optional : guide.required}
+              </p>
             </div>
             <div className="flex items-center gap-2">
               {loading ? <Loader2 className="size-5 animate-spin text-(--ui-accent)" /> : null}
@@ -983,16 +1051,23 @@ export function JarvisOnboarding({
           <div className="min-h-0 overflow-y-auto pr-1">
             {currentStep === 'welcome' ? <WelcomeStep copy={copy.welcome} /> : null}
             {currentStep === 'profile' ? (
-              <ProfileStep activeLabel={copy.profile.active} body={copy.profile.body} title={copy.profile.title} />
+              <PersonalityStep
+                onChange={personality => persistState(updatedState(state, { selections: { personality } }))}
+                value={state.selections?.personality}
+              />
             ) : null}
             {currentStep === 'engine' ? (
               <EngineStep
                 body={copy.engine.body}
                 copy={copy.engine}
+                onOtherProviders={openSecureProviderSetup}
                 onSelect={chooseProvider}
+                otherProvidersLabel={guide.alternatives}
                 providers={providers}
                 quickConnect={
-                  providers.some(item => item.slug === OPENROUTER_PROVIDER_SLUG && item.authenticated !== false) ? null : (
+                  providers.some(
+                    item => item.slug === OPENROUTER_PROVIDER_SLUG && item.authenticated !== false
+                  ) ? null : (
                     <OpenRouterQuickConnect
                       deps={{
                         loadOptions: () => loadModelOptions(scope),
@@ -1079,10 +1154,26 @@ export function JarvisOnboarding({
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-3 border-t border-(--ui-stroke-tertiary) pt-4">
+            {loading ? <p className="w-full text-sm text-(--ui-text-secondary)">{guide.loading}</p> : null}
+            {nextDisabled && !loading ? (
+              <p className="w-full text-sm text-(--ui-text-secondary)">
+                {currentStep === 'model' ? guide.checkModel : guide.chooseProvider}
+              </p>
+            ) : null}
+            {saveError && !loading ? (
+              <Button onClick={() => loadInitialState(++loadToken.current, scope, scopeKey)} variant="secondary">
+                {guide.retry}
+              </Button>
+            ) : null}
             <div className="min-h-5 text-sm text-red-300" role="alert">
               {saveError}
             </div>
             <div className="flex flex-wrap items-center gap-2">
+              {optional ? (
+                <Button onClick={goNext} variant="text">
+                  {guide.skip}
+                </Button>
+              ) : null}
               <button
                 className="min-h-11 rounded-md px-2 text-sm text-(--ui-text-tertiary) underline-offset-4 transition hover:text-(--ui-text-primary) hover:underline focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-[#00B7FF]/50"
                 onClick={close}
@@ -1090,7 +1181,13 @@ export function JarvisOnboarding({
               >
                 {copy.actions.finishLater}
               </button>
-              <Button className="min-h-11" disabled={currentIndex === 0} onClick={goBack} type="button" variant="outline">
+              <Button
+                className="min-h-11"
+                disabled={currentIndex === 0}
+                onClick={goBack}
+                type="button"
+                variant="outline"
+              >
                 <ChevronLeft className="size-4" />
                 {copy.actions.back}
               </Button>
@@ -1139,20 +1236,12 @@ async function defaultProviderConfigurationCheck({
   return { ok: true }
 }
 
-function ProfileStep({ activeLabel, body, title }: { activeLabel: string; body: string; title: string }) {
-  return (
-    <div className="grid gap-4">
-      <p className="text-lg font-semibold">{title}</p>
-      <p className="max-w-2xl text-sm leading-6 text-(--ui-text-secondary)">{body}</p>
-      <div className="rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-bg-tertiary) p-4 text-sm text-(--ui-text-tertiary)">{activeLabel}</div>
-    </div>
-  )
-}
-
 function EngineStep({
   body,
   copy,
   onSelect,
+  onOtherProviders,
+  otherProvidersLabel,
   providers,
   quickConnect,
   selected,
@@ -1161,6 +1250,8 @@ function EngineStep({
   body: string
   copy: JarvisOnboardingCopy['engine']
   onSelect: (slug: string) => void
+  onOtherProviders: () => void
+  otherProvidersLabel: string
   providers: ProviderOption[]
   /** The OpenRouter fast path, shown until OpenRouter is connected. */
   quickConnect?: ReactNode
@@ -1177,20 +1268,27 @@ function EngineStep({
           {quickConnect}
         </div>
       ) : null}
+      <Button onClick={onOtherProviders} variant="secondary">
+        {otherProvidersLabel}
+      </Button>
       <div className="grid gap-2 sm:grid-cols-2">
         {providers.length === 0 ? <p className="text-sm text-(--ui-text-secondary)">{copy.noProviders}</p> : null}
         {providers.map(provider => (
           <button
             className={cn(
               'min-h-16 rounded-md border p-3 text-left focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-[#00B7FF]/50',
-              selected === provider.slug ? 'border-[#00B7FF] bg-[#00B7FF]/12' : 'border-(--ui-stroke-tertiary) bg-(--ui-bg-tertiary)'
+              selected === provider.slug
+                ? 'border-[#00B7FF] bg-[#00B7FF]/12'
+                : 'border-(--ui-stroke-tertiary) bg-(--ui-bg-tertiary)'
             )}
             key={provider.slug}
             onClick={() => onSelect(provider.slug)}
             type="button"
           >
             <span className="block text-sm font-medium">{provider.name}</span>
-            <span className="mt-1 block text-xs text-(--ui-text-tertiary)">{copy.modelCount(provider.models.length)}</span>
+            <span className="mt-1 block text-xs text-(--ui-text-tertiary)">
+              {copy.modelCount(provider.models.length)}
+            </span>
           </button>
         ))}
       </div>
@@ -1239,7 +1337,13 @@ function ModelStep({
         ))}
       </select>
       <div className="flex flex-wrap items-center gap-3">
-        <Button className="min-h-11" disabled={checking || !selected} onClick={onCheck} type="button" variant="secondary">
+        <Button
+          className="min-h-11"
+          disabled={checking || !selected}
+          onClick={onCheck}
+          type="button"
+          variant="secondary"
+        >
           {checking ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
           {checkLabel}
         </Button>
@@ -1288,7 +1392,10 @@ function LiveKeyPanel({
   }
 
   return (
-    <div className="grid gap-2 rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-bg-tertiary) p-4" data-live-key={mode}>
+    <div
+      className="grid gap-2 rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-bg-tertiary) p-4"
+      data-live-key={mode}
+    >
       <p className="text-sm font-semibold text-(--ui-text-primary)">{label}</p>
       <p className="text-sm text-(--ui-text-secondary)">{hint}</p>
       <div className="flex min-w-0 gap-2">

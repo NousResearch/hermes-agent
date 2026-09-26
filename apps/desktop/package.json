@@ -1,6 +1,6 @@
 {
   "name": "hermes",
-  "productName": "AI Evolution Jarvis",
+  "productName": "Agent Czesiek",
   "private": true,
   "version": "0.17.5",
   "description": "AI Evolution Jarvis, powered by Hermes Agent.",
@@ -196,7 +196,7 @@
   "build": {
     "electronVersion": "40.10.2",
     "appId": "pl.aievolution.jarvis",
-    "productName": "AI Evolution Jarvis",
+    "productName": "Agent Czesiek",
     "executableName": "AI Evolution Jarvis",
     "protocols": [
       {
@@ -242,7 +242,7 @@
       "entitlements": "electron/entitlements.mac.plist",
       "entitlementsInherit": "electron/entitlements.mac.inherit.plist",
       "extendInfo": {
-        "CFBundleDisplayName": "AI Evolution Jarvis",
+        "CFBundleDisplayName": "Agent Czesiek",
         "CFBundleExecutable": "AI Evolution Jarvis",
         "CFBundleName": "AI Evolution Jarvis",
         "NSAudioCaptureUsageDescription": "AI Evolution Jarvis uses audio capture for voice conversations.",
@@ -317,8 +317,8 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "perMachine": false,
-      "shortcutName": "AI Evolution Jarvis",
-      "uninstallDisplayName": "AI Evolution Jarvis",
+      "shortcutName": "Agent Czesiek",
+      "uninstallDisplayName": "Agent Czesiek",
       "warningsAsErrors": false,
       "createDesktopShortcut": "always",
       "createStartMenuShortcut": true,

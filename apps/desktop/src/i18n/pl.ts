@@ -18,7 +18,7 @@ const PL_PLURAL = (count: number | string, one: string, few: string, many: strin
 export const pl = defineLocale({
   sessionImport: {
     title: 'Kontynuuj z innej aplikacji',
-    subtitle: 'Przenieś rozmowę do Hermesa i wróć do miejsca, w którym skończyłeś.',
+    subtitle: 'Przenieś rozmowę do Agenta Cześka i wróć do miejsca, w którym skończyłeś.',
     action: 'Importuj sesję',
     readingFrom: 'Odczyt z',
     connectedComputer: 'podłączonego komputera',
@@ -36,7 +36,7 @@ export const pl = defineLocale({
     more: 'Wczytaj więcej sesji',
     messages: 'wiadomości',
     choose: 'Rozmowa warta kontynuowania',
-    chooseHelp: 'Wybierz sesję, aby przeczytać jej historię przed przeniesieniem do Hermesa.',
+    chooseHelp: 'Wybierz sesję, aby przeczytać jej historię przed przeniesieniem do Agenta Cześka.',
     previewLoading: 'Otwieranie podglądu',
     previewError: 'Podgląd niedostępny',
     previewHelp: 'Źródło mogło zostać przeniesione lub zmienione. Odśwież listę i spróbuj ponownie.',
@@ -112,19 +112,19 @@ export const pl = defineLocale({
   },
 
   boot: {
-    ready: 'Hermes Desktop jest gotowy',
+    ready: 'Agent Czesiek Desktop jest gotowy',
     desktopBootFailedWithMessage: message => `Uruchomienie aplikacji nie powiodło się: ${message}`,
     steps: {
       connectingGateway: 'Łączenie z bramą desktopową',
-      loadingSettings: 'Wczytywanie ustawień Hermesa',
+      loadingSettings: 'Wczytywanie ustawień Agenta Cześka',
       loadingSessions: 'Wczytywanie ostatnich sesji',
-      retryingRemoteBackend: 'Ponowne łączenie ze zdalnym backendem Hermesa…',
+      retryingRemoteBackend: 'Ponowne łączenie ze zdalnym backendem Agenta Cześka…',
       startingDesktopConnection: 'Nawiązywanie połączenia z aplikacją',
-      startingHermesDesktop: 'Uruchamianie Hermes Desktop…'
+      startingHermesDesktop: 'Uruchamianie Agent Czesiek Desktop…'
     },
     errors: {
-      backgroundExited: 'Proces działający w tle Hermesa zakończył działanie.',
-      backgroundExitedDuringStartup: 'Proces działający w tle Hermesa zakończył działanie podczas uruchamiania.',
+      backgroundExited: 'Proces działający w tle Agenta Cześka zakończył działanie.',
+      backgroundExitedDuringStartup: 'Proces działający w tle Agenta Cześka zakończył działanie podczas uruchamiania.',
       backendStopped: 'Backend zatrzymany',
       desktopBootFailed: 'Uruchomienie aplikacji nie powiodło się',
       gatewayConnectionLost: 'Utracono połączenie z bramą',
@@ -134,7 +134,7 @@ export const pl = defineLocale({
       ipcBridgeUnavailable: 'Mostek IPC aplikacji desktopowej jest niedostępny.'
     },
     failure: {
-      title: 'Nie udało się uruchomić Hermesa',
+      title: 'Nie udało się uruchomić Agenta Cześka',
       description:
         'Brama działająca w tle nie wystartowała. Wypróbuj jeden z poniższych kroków naprawczych. Żaden z nich nie usuwa Twoich czatów ani ustawień.',
       remoteTitle: 'Wymagane logowanie do zdalnej bramy',
@@ -183,9 +183,9 @@ export const pl = defineLocale({
     copyDetailFailed: 'Nie udało się skopiować szczegółów powiadomienia',
     backendOutOfDateTitle: 'Nieaktualny backend',
     backendOutOfDateMessage:
-      'Twój backend Hermesa jest starszy niż ta wersja aplikacji i może działać nieprawidłowo. Zaktualizuj go, aby je zsynchronizować.',
+      'Twój backend Agenta Cześka jest starszy niż ta wersja aplikacji i może działać nieprawidłowo. Zaktualizuj go, aby je zsynchronizować.',
     installMethodUnsupportedTitle: 'Nieobsługiwana metoda instalacji',
-    updateHermes: 'Zaktualizuj Hermesa',
+    updateHermes: 'Zaktualizuj Agenta Cześka',
     updateReadyTitle: 'Aktualizacja gotowa',
     updateReadyMessage: count =>
       `Dostępne ${PL_PLURAL(count, 'jest', 'są', 'jest')} ${count} ${PL_PLURAL(count, 'nowa zmiana', 'nowe zmiany', 'nowych zmian')}.`,
@@ -205,7 +205,7 @@ export const pl = defineLocale({
       diskFull: 'Dysk pełny — zwolnij miejsce i spróbuj ponownie.',
       gatewayAuthFailed: 'Uwierzytelnienie bramy nie powiodło się — sprawdź API_SERVER_KEY.',
       methodNotAllowed:
-        'Backend aplikacji odrzucił to żądanie (405 Method Not Allowed). Spróbuj zrestartować Hermes Desktop.',
+        'Backend aplikacji odrzucił to żądanie (405 Method Not Allowed). Spróbuj zrestartować Agent Czesiek Desktop.',
       microphonePermission: 'Odmówiono dostępu do mikrofonu.',
       openaiRejectedApiKey: 'OpenAI odrzuciło klucz API.',
       openaiRejectedApiKeyWithStatus: status => `OpenAI odrzuciło klucz API (${status} invalid_api_key).`,
@@ -239,8 +239,8 @@ export const pl = defineLocale({
       approveAction: 'Zatwierdź',
       rejectAction: 'Odrzuć',
       inputTitle: 'Wymagana odpowiedź',
-      inputBody: 'Hermes czeka na Twoją odpowiedź.',
-      turnDoneTitle: 'Hermes skończył',
+      inputBody: 'Agent Czesiek czeka na Twoją odpowiedź.',
+      turnDoneTitle: 'Agent Czesiek skończył',
       turnDoneBody: '',
       turnErrorTitle: 'Tura nie powiodła się',
       backgroundDoneTitle: 'Zadanie w tle zakończone',
@@ -481,7 +481,7 @@ export const pl = defineLocale({
       }
     },
     openRouterConnect: {
-      hint: 'Wklej klucz OpenRouter: jeden klucz daje GPT, Claude, Gemini, DeepSeek i Hermesa. Zostaje na tym komputerze.',
+      hint: 'Wklej klucz OpenRouter: jeden klucz daje GPT, Claude, Gemini, DeepSeek i Agenta Cześka. Zostaje na tym komputerze.',
       label: 'Klucz API OpenRouter',
       submit: 'Połącz',
       connecting: 'Łączę…',
@@ -522,7 +522,7 @@ export const pl = defineLocale({
           gpt: 'GPT — uniwersalny',
           claude: 'Claude — praca i kod',
           gemini: 'Gemini — szybki',
-          hermes: 'Hermes — open source',
+          hermes: 'Agent Czesiek — open source',
           free: 'Darmowy model'
         },
         noPresets: 'OpenRouter nie zwrócił jeszcze pasujących modeli. Odśwież listę modeli w menu modelu.'
@@ -588,6 +588,7 @@ export const pl = defineLocale({
       }
     },
     views: {
+      prompts: 'Moje prompty',
       jarvis: 'Pulpit',
       tasks: 'Zadania',
       agents: 'Agenci',
@@ -603,9 +604,9 @@ export const pl = defineLocale({
       profile: 'Profil'
     },
     surfaceDescriptions: {
-      tasks: 'Zaplanowana i aktywna praca pozostaje obsługiwana przez istniejące powierzchnie zadań Hermesa.',
-      memory: 'Pamięć korzysta z prawdziwych ustawień i dostawców pamięci Hermesa.',
-      tools: 'Narzędzia korzystają z istniejących powierzchni narzędzi i danych dostępowych Hermesa.',
+      tasks: 'Zaplanowana i aktywna praca pozostaje obsługiwana przez istniejące powierzchnie zadań Agenta Cześka.',
+      memory: 'Pamięć korzysta z prawdziwych ustawień i dostawców pamięci Agenta Cześka.',
+      tools: 'Narzędzia korzystają z istniejących powierzchni narzędzi i danych dostępowych Agenta Cześka.',
       settings: 'Zaawansowane ustawienia pozostają dostępne przez istniejącą powierzchnię ustawień i paletę poleceń.',
       profile: 'Profile pozostają zarządzane przez istniejącą powierzchnię profili.'
     }
@@ -823,11 +824,11 @@ export const pl = defineLocale({
     },
     profile: {
       active: 'Aktywny profil',
-      body: 'Ta konfiguracja dotyczy aktywnego profilu Hermesa w tym oknie.',
+      body: 'Ta konfiguracja dotyczy aktywnego profilu Agenta Cześka w tym oknie.',
       title: 'Profil'
     },
     engine: {
-      body: 'Wybierz dostawcę z listy zgłoszonej przez działający backend Hermesa.',
+      body: 'Wybierz dostawcę z listy zgłoszonej przez działający backend Agenta Cześka.',
       modelCount: count => `${count} ${count === 1 ? 'model' : count < 5 ? 'modele' : 'modeli'}`,
       noProviders: 'Żaden dostawca nie jest jeszcze gotowy. Otwórz bezpieczną konfigurację dostawcy i wróć tutaj.',
       quickStartTitle: 'Najszybszy start: OpenRouter + DeepSeek V4.1 Flash',
@@ -860,7 +861,7 @@ export const pl = defineLocale({
       title: 'Głos'
     },
     access: {
-      body: 'Sekrety zostają w istniejącej ścieżce setup/config Hermesa. Otwórz setup, jeśli trzeba, a potem odśwież walidację tutaj przed przejściem dalej.',
+      body: 'Sekrety zostają w istniejącej ścieżce setup/config Agenta Cześka. Otwórz setup, jeśli trzeba, a potem odśwież walidację tutaj przed przejściem dalej.',
       opened: 'Bezpieczna konfiguracja została otwarta. Wróć tutaj po zapisaniu danych dostępowych i sprawdź dostęp.',
       secureAction: 'Otwórz bezpieczną konfigurację dostawcy',
       title: 'Dostępy',
@@ -868,7 +869,7 @@ export const pl = defineLocale({
       validated: 'Dostęp dostawcy jest skonfigurowany'
     },
     computer: {
-      body: 'Wybierz, jak dużo Agent Czesiek może robić na tym komputerze. Każdy poziom włącza prawdziwe narzędzia Hermesa i możesz to zmienić w każdej chwili w Narzędziach.',
+      body: 'Wybierz, jak dużo Agent Czesiek może robić na tym komputerze. Każdy poziom włącza prawdziwe narzędzia Agenta Cześka i możesz to zmienić w każdej chwili w Narzędziach.',
       grant: 'Nadaj uprawnienia',
       grantFailed: 'Nie udało się uruchomić prośby o uprawnienia.',
       modes: {
@@ -912,9 +913,9 @@ export const pl = defineLocale({
     approvals: {
       balanced: 'Zrównoważony',
       balancedHint:
-        'Hermes używa smart approvals dla rutynowych bezpiecznych akcji i nadal pyta przy wrażliwych operacjach.',
+        'Agent Czesiek używa smart approvals dla rutynowych bezpiecznych akcji i nadal pyta przy wrażliwych operacjach.',
       strict: 'Ścisły',
-      strictHint: 'Hermes pyta przed operacjami wymagającymi jawnej zgody.',
+      strictHint: 'Agent Czesiek pyta przed operacjami wymagającymi jawnej zgody.',
       title: 'Zgody'
     },
     errors: {
@@ -924,7 +925,7 @@ export const pl = defineLocale({
         'Ten dostawca nie jest jeszcze gotowy. Połącz go przez bezpieczną konfigurację dostawcy i spróbuj ponownie.',
       recovery: 'Automatyczny rollback się nie udał; sprawdź ustawienia modelu i konfiguracji przed ponowną próbą',
       rollbackSnapshot:
-        'Nie można bezpiecznie zapisać onboardingu. Odśwież i spróbuj ponownie, aby Hermes najpierw potwierdził obecny model.',
+        'Nie można bezpiecznie zapisać onboardingu. Odśwież i spróbuj ponownie, aby Agent Czesiek najpierw potwierdził obecny model.',
       save: 'Nie udało się zapisać onboardingu.',
       toolsets: names =>
         `Konfiguracja jest zapisana, ale tych narzędzi nie udało się przełączyć: ${names}. Dokończ to w Narzędziach.`
@@ -1169,7 +1170,7 @@ export const pl = defineLocale({
     exportConfig: 'Eksportuj konfigurację',
     importConfig: 'Importuj konfigurację',
     resetToDefaults: 'Przywróć domyślne',
-    resetConfirm: 'Przywrócić wszystkie ustawienia do domyślnych wartości Hermesa?',
+    resetConfirm: 'Przywrócić wszystkie ustawienia do domyślnych wartości Agenta Cześka?',
     exportFailed: 'Eksport nie powiódł się',
     resetFailed: 'Przywracanie nie powiodło się',
     nav: {
@@ -1229,7 +1230,7 @@ export const pl = defineLocale({
         agentTargetLocal: (profile, dir) => `Instaluje się w backendzie ${profile} (${dir})`,
         agentTargetRemote: profile => `Instaluje się w podłączonym backendzie ${profile}`,
         catalogPinned: (name, sha) =>
-          `Pozycja katalogu Hermesa „${name}” — komponent agenta instaluje się z przejrzanego commita${sha ? ` ${sha}` : ''}, a nie z czubka gałęzi.`,
+          `Pozycja katalogu Agenta Cześka „${name}” — komponent agenta instaluje się z przejrzanego commita${sha ? ` ${sha}` : ''}, a nie z czubka gałęzi.`,
         reviewedHeading: 'Przejrzana pozycja katalogu',
         reviewedIntro:
           'Ta pozycja została sprawdzona przez człowieka na przypiętym commicie. Nadal możesz obejrzeć dokładny kod poniżej.',
@@ -1316,7 +1317,7 @@ export const pl = defineLocale({
       otpField: 'Klucz aplikacji uwierzytelniającej',
       otpPlaceholder: 'Sekret Base32 lub link otpauth://',
       otpHint:
-        'To „klucz konfiguracyjny”, który strona pokazuje przy włączaniu 2FA. Gdy go zapiszesz, Hermes sam generuje kody.',
+        'To „klucz konfiguracyjny”, który strona pokazuje przy włączaniu 2FA. Gdy go zapiszesz, Agent Czesiek sam generuje kody.',
       twoFactorBadge: '2FA auto',
       deleteTitle: 'Usunąć tę pozycję?',
       deleteDescription: label => `„${label}” zostanie usunięta. Tej operacji nie można cofnąć.`,
@@ -1327,12 +1328,12 @@ export const pl = defineLocale({
           'Zainstalowane menedżery haseł są wykrywane automatycznie. Agent poprosi Cię o odblokowanie jednego z nich, gdy pierwszy raz będzie potrzebował z niego danych logowania (raz na sesję); w pamięci zostaje tylko token sesji, a agent nigdy nie widzi Twojego hasła głównego ani żadnych danych logowania.',
         toggleFailed: 'Nie udało się zaktualizować menedżera haseł',
         notInstalled: name =>
-          `Nie wykryto. Zainstaluj narzędzie wiersza poleceń ${name} i zaloguj się w nim; Hermes wykryje je automatycznie.`,
-        disabledDesc: 'Wykryty, ale wyłączony dla Hermesa.',
+          `Nie wykryto. Zainstaluj narzędzie wiersza poleceń ${name} i zaloguj się w nim; Agent Czesiek wykryje je automatycznie.`,
+        disabledDesc: 'Wykryty, ale wyłączony dla Agenta Cześka.',
         lockedDesc:
           'Wykryty. Agent poprosi o odblokowanie, gdy będzie potrzebował danych logowania — możesz też odblokować teraz.',
         unlockedDesc:
-          'Odblokowany na tę sesję. Blokuje się automatycznie po 30 minutach bezczynności lub przy zamknięciu Hermesa.',
+          'Odblokowany na tę sesję. Blokuje się automatycznie po 30 minutach bezczynności lub przy zamknięciu Agenta Cześka.',
         statusLocked: 'Zablokowany',
         statusNotDetected: 'Nie wykryto',
         statusOff: 'Wyłączony',
@@ -1352,7 +1353,7 @@ export const pl = defineLocale({
       intro: 'Powiadomienia systemowe (nie komunikaty w aplikacji). Osobno dla każdego urządzenia.',
       enableAll: 'Włącz powiadomienia',
       enableAllDesc: 'Wyłączenie wycisza wszystkie poniższe powiadomienia.',
-      focusedHint: 'Alerty o zakończeniu pojawiają się tylko wtedy, gdy Hermes działa w tle.',
+      focusedHint: 'Alerty o zakończeniu pojawiają się tylko wtedy, gdy Agent Czesiek działa w tle.',
       push: {
         title: 'Wysyłaj też na telefon (ntfy)',
         description:
@@ -1374,11 +1375,11 @@ export const pl = defineLocale({
         },
         input: {
           label: 'Wymagana odpowiedź',
-          description: 'Hermes zadał pytanie albo potrzebuje hasła lub sekretu.'
+          description: 'Agent Czesiek zadał pytanie albo potrzebuje hasła lub sekretu.'
         },
         turnDone: {
           label: 'Odpowiedź gotowa',
-          description: 'Tura zakończyła się, gdy Hermes był w tle.'
+          description: 'Tura zakończyła się, gdy Agent Czesiek był w tle.'
         },
         turnError: {
           label: 'Tura nie powiodła się',
@@ -1394,11 +1395,11 @@ export const pl = defineLocale({
         },
         plugin: {
           label: 'Powiadomienia wtyczek',
-          description: 'Wtyczka desktopowa wysłała powiadomienie, gdy Hermes był w tle.'
+          description: 'Wtyczka desktopowa wysłała powiadomienie, gdy Agent Czesiek był w tle.'
         }
       },
       test: 'Wyślij powiadomienie testowe',
-      testTitle: 'Hermes',
+      testTitle: 'Agent Czesiek',
       testBody: 'Powiadomienia działają.',
       testSent:
         'Wysłano test. Jeśli nic się nie pojawi, sprawdź systemowe uprawnienia do powiadomień oraz tryb skupienia / Nie przeszkadzać.',
@@ -1418,7 +1419,7 @@ export const pl = defineLocale({
       advanced: 'Zaawansowane'
     },
     searchPlaceholder: {
-      about: 'O Hermes Desktop',
+      about: 'O Agent Czesiek Desktop',
       config: 'Szukaj w ustawieniach...',
       gateway: 'Połączenie z bramą...',
       keys: 'Szukaj kluczy API...',
@@ -1434,7 +1435,7 @@ export const pl = defineLocale({
       title: 'Wygląd',
       intro: 'Tylko dla aplikacji desktopowej. Tryb to jasność; motyw to paleta i oprawa czatu.',
       colorMode: 'Tryb kolorów',
-      colorModeDesc: 'Wybierz stały tryb albo pozwól Hermesowi podążać za ustawieniem systemu.',
+      colorModeDesc: 'Wybierz stały tryb albo pozwól Agentowi Cześkowi podążać za ustawieniem systemu.',
       toolViewTitle: 'Wyświetlanie wywołań narzędzi',
       toolViewDesc: 'Tryb produktowy ukrywa surowe dane narzędzi; techniczny pokazuje pełne wejście i wyjście.',
       reasoningCollapsedTitle: 'Domyślnie zwijaj tok myślenia',
@@ -1486,14 +1487,14 @@ export const pl = defineLocale({
       introSplashTitle: 'Ekran powitalny',
       introSplashDesc: 'Logotyp i zachęta pokazywane na pustym czacie.',
       reactionsTitle: 'Reakcje na wiadomości',
-      reactionsDesc: 'Reakcje emoji w stylu iMessage — reaguj na wiadomości, a Hermes może reagować na Twoje.',
+      reactionsDesc: 'Reakcje emoji w stylu iMessage — reaguj na wiadomości, a Agent Czesiek może reagować na Twoje.',
       tipsTitle: 'Wskazówki w aplikacji',
       tipsDesc:
-        'Mały dymek wskazujący fragment aplikacji, pokazywany czasem w trakcie bezczynności oraz przez Hermesa, gdy to pomaga. Każda wskazówka pojawia się raz.',
+        'Mały dymek wskazujący fragment aplikacji, pokazywany czasem w trakcie bezczynności oraz przez Agenta Cześka, gdy to pomaga. Każda wskazówka pojawia się raz.',
       tipsReset: (count: number) =>
         `Pokaż ponownie ${count} ${PL_PLURAL(count, 'wskazówkę', 'wskazówki', 'wskazówek')}`,
       toursTitle: 'Przewodniki',
-      toursDesc: 'Pozwól Hermesowi oprowadzić Cię po aplikacji, przyciemniając ekran i podświetlając każdy krok.',
+      toursDesc: 'Pozwól Agentowi Cześkowi oprowadzić Cię po aplikacji, przyciemniając ekran i podświetlając każdy krok.',
       composerPopoutTitle: 'Pływający edytor wiadomości',
       composerPopoutDesc: 'Pozwala wyciągnąć edytor wiadomości z jego doku. Wyłącz, aby pozostał zakotwiczony na dole.',
       vibeHeartsTitle: 'Serduszka',
@@ -1529,9 +1530,9 @@ export const pl = defineLocale({
       pet: {
         title: 'Zwierzak',
         intro:
-          'Adoptuj animowaną maskotkę petdex, która unosi się nad aplikacją i reaguje na to, co robi Hermes — biega, gdy działają narzędzia, świętuje sukcesy i dąsa się przy błędach.',
+          'Adoptuj animowaną maskotkę petdex, która unosi się nad aplikacją i reaguje na to, co robi Agent Czesiek — biega, gdy działają narzędzia, świętuje sukcesy i dąsa się przy błędach.',
         restartHint:
-          'Zwierzaki wymagają szybkiego restartu — działająca aplikacja wystartowała przed dodaniem tej funkcji. Zamknij i otwórz Hermesa ponownie, a potem wróć tutaj.',
+          'Zwierzaki wymagają szybkiego restartu — działająca aplikacja wystartowała przed dodaniem tej funkcji. Zamknij i otwórz Agenta Cześka ponownie, a potem wróć tutaj.',
         on: 'Wł.',
         off: 'Wył.',
         scaleTitle: 'Rozmiar',
@@ -1761,11 +1762,11 @@ export const pl = defineLocale({
       timezone: 'Identyfikator strefy czasowej IANA. Puste oznacza strefę systemową.',
       browser: {
         useRealProfile:
-          'Przeglądanie lokalne korzysta z Twoich prawdziwych logowań. Hermes kopiuje profil Twojej domyślnej przeglądarki (ciasteczka, logowania, preferencje) do zarządzanej migawki i steruje nią przy użyciu dołączonego Chromium — Twój aktywny profil nigdy nie jest otwierany bezpośrednio, a kopia jest z niego odświeżana przy każdym uruchomieniu. Pozwala też agentowi otworzyć na żądanie lokalną sesję z prawdziwym profilem, nawet gdy skonfigurowany jest chmurowy backend przeglądarki. Obsługiwane są tylko przeglądarki oparte na Chromium (Chrome, Edge, Brave, Brave Origin, Chromium); inna przeglądarka domyślna kończy się czytelnym komunikatem o błędzie. Domyślnie wyłączone.'
+          'Przeglądanie lokalne korzysta z Twoich prawdziwych logowań. Agent Czesiek kopiuje profil Twojej domyślnej przeglądarki (ciasteczka, logowania, preferencje) do zarządzanej migawki i steruje nią przy użyciu dołączonego Chromium — Twój aktywny profil nigdy nie jest otwierany bezpośrednio, a kopia jest z niego odświeżana przy każdym uruchomieniu. Pozwala też agentowi otworzyć na żądanie lokalną sesję z prawdziwym profilem, nawet gdy skonfigurowany jest chmurowy backend przeglądarki. Obsługiwane są tylko przeglądarki oparte na Chromium (Chrome, Edge, Brave, Brave Origin, Chromium); inna przeglądarka domyślna kończy się czytelnym komunikatem o błędzie. Domyślnie wyłączone.'
       },
       agent: {
         imageInputMode: 'Określa, jak załączniki graficzne są wysyłane do modelu.',
-        maxTurns: 'Górny limit tur z wywołaniami narzędzi, po którym Hermes przerywa uruchomienie.'
+        maxTurns: 'Górny limit tur z wywołaniami narzędzi, po którym Agent Czesiek przerywa uruchomienie.'
       },
       terminal: {
         cwd: 'Domyślny katalog projektu dla pracy narzędzi i terminala.',
@@ -1779,9 +1780,9 @@ export const pl = defineLocale({
       codeExecution: {
         mode: 'Jak ściśle wykonywanie kodu jest ograniczone do bieżącego projektu.'
       },
-      fileReadMaxChars: 'Maksymalna liczba znaków, jaką Hermes może odczytać w jednym żądaniu pliku.',
+      fileReadMaxChars: 'Maksymalna liczba znaków, jaką Agent Czesiek może odczytać w jednym żądaniu pliku.',
       approvals: {
-        mode: 'Jak Hermes traktuje polecenia wymagające wyraźnej zgody.',
+        mode: 'Jak Agent Czesiek traktuje polecenia wymagające wyraźnej zgody.',
         timeout: 'Jak długo prośby o zgodę czekają, zanim wygasną.'
       },
       security: {
@@ -1833,7 +1834,7 @@ export const pl = defineLocale({
       },
       updates: {
         nonInteractiveLocalChanges:
-          'Gdy Hermes aktualizuje się z poziomu aplikacji (bez pytania w terminalu), zachowaj lokalne zmiany w kodzie (stash) albo je odrzuć (discard). Aktualizacje z terminala zawsze pytają.'
+          'Gdy Agent Czesiek aktualizuje się z poziomu aplikacji (bez pytania w terminalu), zachowaj lokalne zmiany w kodzie (stash) albo je odrzuć (discard). Aktualizacje z terminala zawsze pytają.'
       }
     }),
     about: {
@@ -1841,21 +1842,21 @@ export const pl = defineLocale({
       version: value => `Wersja ${value}`,
       versionUnavailable: 'Wersja niedostępna',
       productTitle: 'Agent Czesiek',
-      poweredBy: 'Powered by Hermes Agent — Nous Research',
+      poweredBy: 'Powered by Agent Czesiek Agent — Nous Research',
       attributionDesc:
-        'Ten desktopowy shell produktu działa na silniku Hermes Agent i zachowuje widoczną atrybucję Hermesa.',
-      hermesLink: 'Repozytorium Hermes Agent',
+        'Ten desktopowy shell produktu działa na silniku Agent Czesiek Agent i zachowuje widoczną atrybucję Agenta Cześka.',
+      hermesLink: 'Repozytorium Agent Czesiek Agent',
       nousLink: 'Nous Research',
-      licenseNotice: 'Hermes Agent jest rozpowszechniany na licencji MIT.',
+      licenseNotice: 'Agent Czesiek Agent jest rozpowszechniany na licencji MIT.',
       licenseLink: 'Licencja MIT',
       bundleOutOfSync: 'Nieaktualna wersja aplikacji',
       bundleOutOfSyncDesc:
-        'Środowisko Hermesa zostało zaktualizowane, ale sama aplikacja desktopowa to wciąż starsza kompilacja — nowe funkcje interfejsu (np. Bot Mode) będą niedostępne, dopóki się nie zaktualizuje. Uruchom poniższą aktualizację, aby przebudować aplikację. Jeśli to nie usunie tego ostrzeżenia, zainstaluj ją ponownie z najnowszego instalatora.',
+        'Środowisko Agenta Cześka zostało zaktualizowane, ale sama aplikacja desktopowa to wciąż starsza kompilacja — nowe funkcje interfejsu (np. Bot Mode) będą niedostępne, dopóki się nie zaktualizuje. Uruchom poniższą aktualizację, aby przebudować aplikację. Jeśli to nie usunie tego ostrzeżenia, zainstaluj ją ponownie z najnowszego instalatora.',
       bundleOutOfSyncAction: 'Pobierz instalator',
       bundleSwapPending: 'Zrestartuj, aby dokończyć aktualizację',
       bundleSwapPendingDesc:
-        'Zaktualizowana aplikacja jest już zainstalowana — Hermes musi się tylko zrestartować, aby ją wczytać. Czaty i ustawienia pozostają nienaruszone.',
-      bundleSwapPendingAction: 'Zrestartuj Hermesa',
+        'Zaktualizowana aplikacja jest już zainstalowana — Agent Czesiek musi się tylko zrestartować, aby ją wczytać. Czaty i ustawienia pozostają nienaruszone.',
+      bundleSwapPendingAction: 'Zrestartuj Agenta Cześka',
       updates: 'Aktualizacje',
       checkNow: 'Sprawdź teraz',
       checking: 'Sprawdzanie…',
@@ -1873,7 +1874,7 @@ export const pl = defineLocale({
       lastChecked: age => `Ostatnio sprawdzono ${age}`,
       justNowSuffix: ' · przed chwilą',
       automaticUpdates: 'Automatyczne aktualizacje',
-      automaticUpdatesDesc: 'Hermes automatycznie sprawdza aktualizacje w tle i informuje, gdy któraś jest gotowa.',
+      automaticUpdatesDesc: 'Agent Czesiek automatycznie sprawdza aktualizacje w tle i informuje, gdy któraś jest gotowa.',
       branchCommit: (branch, commit) => `Gałąź ${branch} · Commit ${commit}`,
       never: 'nigdy',
       justNow: 'przed chwilą',
@@ -1890,7 +1891,7 @@ export const pl = defineLocale({
       searchPlaceholder: 'Szukaj…',
       noResults: 'Nie znaleziono wyników',
       systemDefault: 'Domyślne systemu',
-      loading: 'Wczytywanie konfiguracji Hermesa...',
+      loading: 'Wczytywanie konfiguracji Agenta Cześka...',
       emptyTitle: 'Nie ma czego konfigurować',
       emptyDesc: 'Ta sekcja nie ma ustawień do zmiany.',
       failedLoad: 'Nie udało się wczytać ustawień',
@@ -1924,7 +1925,7 @@ export const pl = defineLocale({
     quickEntry: {
       enabledTitle: 'Szybkie wpisywanie',
       enabledDesc:
-        'Wywołaj mały edytor wiadomości z dowolnego miejsca globalnym skrótem i wyślij polecenie bez otwierania Hermesa.',
+        'Wywołaj mały edytor wiadomości z dowolnego miejsca globalnym skrótem i wyślij polecenie bez otwierania Agenta Cześka.',
       shortcutTitle: 'Skrót szybkiego wpisywania',
       shortcutDesc: 'Wymaga co najmniej jednego modyfikatora, np. CommandOrControl+Shift+Space.',
       active: 'Skrót jest aktywny.',
@@ -1955,7 +1956,7 @@ export const pl = defineLocale({
     connections: {
       title: 'Zarejestrowane bramy',
       intro:
-        'Zarządzaj tym urządzeniem i każdą bramą Hermesa, do której może dotrzeć przez połączenie zdalne, SSH lub Cloud.',
+        'Zarządzaj tym urządzeniem i każdą bramą Agenta Cześka, do której może dotrzeć przez połączenie zdalne, SSH lub Cloud.',
       stagedNote:
         'Bramy przełączasz w Sesjach. Profile, czaty, komunikatory i zadania cron pozostają przy swojej bramie; praca na innych bramach trwa dalej.',
       launchModeTitle: 'Przy starcie wracaj do Sesji na ostatnio używanej bramie',
@@ -1987,10 +1988,10 @@ export const pl = defineLocale({
       kindRemote: 'Zdalna brama',
       kindCloud: 'Hermes Cloud',
       kindSsh: 'SSH',
-      kindLocalDesc: 'Środowisko Hermesa zarządzane przez tę aplikację.',
-      kindRemoteDesc: 'Brama Hermesa osiągalna przez HTTP(S) — w sieci lokalnej, przez Tailscale lub internet.',
+      kindLocalDesc: 'Środowisko Agenta Cześka zarządzane przez tę aplikację.',
+      kindRemoteDesc: 'Brama Agenta Cześka osiągalna przez HTTP(S) — w sieci lokalnej, przez Tailscale lub internet.',
       kindCloudDesc: 'Hostowana instancja wykryta na Twoim koncie Hermes Cloud.',
-      kindSshDesc: 'Instalacja Hermesa dostępna przez SSH.',
+      kindSshDesc: 'Instalacja Agenta Cześka dostępna przez SSH.',
       labelTitle: 'Nazwa',
       labelDesc:
         'Wymagana. Pokazywana wszędzie, gdzie pojawia się ta instancja; musi być unikalna (np. „Homelab”, „Laptop służbowy”).',
@@ -1999,7 +2000,7 @@ export const pl = defineLocale({
       sshHostTitle: 'Host SSH',
       headersTitle: 'Dodatkowe nagłówki bramy',
       headersDesc:
-        'Wysyłane z każdym żądaniem HTTP i WebSocket do tej bramy — na potrzeby proxy dostępowych, takich jak Cloudflare Access (CF-Access-Client-Id / CF-Access-Client-Secret). Wartości są przechowywane w postaci zaszyfrowanej. Nagłówki, którymi zarządza Hermes (Authorization, Cookie, Host…), są ignorowane.',
+        'Wysyłane z każdym żądaniem HTTP i WebSocket do tej bramy — na potrzeby proxy dostępowych, takich jak Cloudflare Access (CF-Access-Client-Id / CF-Access-Client-Secret). Wartości są przechowywane w postaci zaszyfrowanej. Nagłówki, którymi zarządza Agent Czesiek (Authorization, Cookie, Host…), są ignorowane.',
       headerValuePlaceholder: 'Wartość',
       headerValueSaved: 'Zapisano — zostaw puste, aby zachować',
       headerAdd: 'Dodaj nagłówek',
@@ -2041,15 +2042,15 @@ export const pl = defineLocale({
       title: 'Połączenie z bramą',
       envOverride: 'nadpisane przez env',
       intro:
-        'Domyślnie lokalnie. Użyj trybu zdalnego, gdy ta aplikacja ma sterować backendem Hermesa gdzie indziej. Połączenia z bramami są przypisane do maszyny; profile są wykrywane z bram, z którymi się łączysz.',
+        'Domyślnie lokalnie. Użyj trybu zdalnego, gdy ta aplikacja ma sterować backendem Agenta Cześka gdzie indziej. Połączenia z bramami są przypisane do maszyny; profile są wykrywane z bram, z którymi się łączysz.',
       envOverrideTitle: 'Tą sesją aplikacji sterują zmienne środowiskowe.',
       envOverrideDesc:
         'Usuń HERMES_DESKTOP_REMOTE_URL i HERMES_DESKTOP_REMOTE_TOKEN, aby korzystać z zapisanego ustawienia poniżej.',
       modeTitle: 'Tryb połączenia',
       localTitle: 'Brama lokalna',
-      localDesc: 'Uruchamia prywatny backend Hermesa na localhoście. To ustawienie domyślne, działa też offline.',
+      localDesc: 'Uruchamia prywatny backend Agenta Cześka na localhoście. To ustawienie domyślne, działa też offline.',
       remoteTitle: 'Brama zdalna',
-      remoteDesc: 'Łączy tę powłokę desktopową ze zdalnym backendem Hermesa.',
+      remoteDesc: 'Łączy tę powłokę desktopową ze zdalnym backendem Agenta Cześka.',
       remoteAuthHint:
         'Hostowane bramy używają OAuth albo nazwy użytkownika i hasła; bramy samodzielnie hostowane mogą używać tokenu sesji.',
       cloudTitle: 'Hermes Cloud',
@@ -2134,9 +2135,9 @@ export const pl = defineLocale({
       enterUrlFirst: 'Najpierw wpisz adres zdalny.',
       restartingTitle: 'Ponowne uruchamianie połączenia z bramą',
       savedTitle: 'Zapisano ustawienia bramy',
-      restartingMessage: 'Hermes Desktop połączy się ponownie z użyciem zapisanych ustawień — okno pozostaje otwarte.',
+      restartingMessage: 'Agent Czesiek Desktop połączy się ponownie z użyciem zapisanych ustawień — okno pozostaje otwarte.',
       savedMessage: 'Zapisano na następny start.',
-      connectedTo: (baseUrl, version) => `Połączono z ${baseUrl}${version ? ` · Hermes ${version}` : ''}`,
+      connectedTo: (baseUrl, version) => `Połączono z ${baseUrl}${version ? ` · Agent Czesiek ${version}` : ''}`,
       reachableTitle: 'Zdalna brama jest osiągalna',
       signedOutTitle: 'Wylogowano',
       signedOutMessage: 'Wyczyszczono sesję zdalnej bramy.',
@@ -2148,7 +2149,7 @@ export const pl = defineLocale({
       saveFailed: 'Nie udało się zapisać ustawień bramy',
       sshTitle: 'Połącz przez SSH',
       sshDesc:
-        'Hermes jest uruchamiany na zdalnej maszynie przez SSH i tunelowany do tej aplikacji — nie musisz nic sam startować ani wystawiać. Wymaga działającego dostępu SSH na kluczach do hosta.',
+        'Agent Czesiek jest uruchamiany na zdalnej maszynie przez SSH i tunelowany do tej aplikacji — nie musisz nic sam startować ani wystawiać. Wymaga działającego dostępu SSH na kluczach do hosta.',
       sshTrustHint: 'Pierwszy przedstawiony klucz hosta jest przyjmowany i przypinany; późniejsze zmiany są odrzucane.',
       sshHostTitle: 'Host',
       sshHostDesc: 'user@host albo alias Host z ~/.ssh/config.',
@@ -2163,25 +2164,25 @@ export const pl = defineLocale({
       sshPortDesc: 'Puste = 22 albo port z ~/.ssh/config.',
       sshKeyTitle: 'Plik klucza',
       sshKeyDesc: 'Ścieżka do klucza prywatnego. Puste = ssh-agent albo ~/.ssh/config.',
-      sshHermesPathTitle: 'Ścieżka do Hermesa (opcjonalna)',
+      sshHermesPathTitle: 'Ścieżka do Agenta Cześka (opcjonalna)',
       sshHermesPathDesc: 'Pełna ścieżka do zdalnego pliku wykonywalnego hermes. Puste = wykrywanie automatyczne.',
       sshHermesPathPlaceholder: 'wykryj automatycznie',
       sshTestConnection: 'Testuj SSH',
       sshConnect: 'Połącz',
       sshButtonsHint: 'Zapisz zadziała przy następnym uruchomieniu. Połącz łączy ponownie od razu.',
-      sshReachable: (host, platform) => `Osiągalny: ${host} (${platform}) — znaleziono Hermesa`,
+      sshReachable: (host, platform) => `Osiągalny: ${host} (${platform}) — znaleziono Agenta Cześka`,
       sshIncompleteHost: 'Wpisz host SSH przed połączeniem.',
       sshErrUnreachable: 'Nie udało się połączyć z tym hostem przez SSH. Sprawdź host, port i swoją sieć.',
       sshErrAuth:
-        'Uwierzytelnianie SSH nie powiodło się. Wczytaj klucz do ssh-agenta (ssh-add) albo ustaw IdentityFile w ~/.ssh/config — Hermes uruchamia ssh nieinteraktywnie.',
+        'Uwierzytelnianie SSH nie powiodło się. Wczytaj klucz do ssh-agenta (ssh-add) albo ustaw IdentityFile w ~/.ssh/config — Agent Czesiek uruchamia ssh nieinteraktywnie.',
       sshErrHostKey:
         'Klucz hosta ZMIENIŁ SIĘ od ostatniego połączenia. Sprawdź, czy tak miało być, a potem uruchom ssh-keygen -R <host> i połącz ponownie.',
       sshErrNotInstalled:
-        'Hermes nie jest zainstalowany na zdalnym hoście. Zainstaluj go tam (curl -fsSL https://hermes-agent.nousresearch.com/install.sh | sh) albo podaj ścieżkę do Hermesa.',
+        'Agent Czesiek nie jest zainstalowany na zdalnym hoście. Zainstaluj go tam (curl -fsSL https://hermes-agent.nousresearch.com/install.sh | sh) albo podaj ścieżkę do Agenta Cześka.',
       sshErrPlatform:
-        'Nieobsługiwana platforma zdalna. Tryb SSH w Hermes Desktop obsługuje zdalne hosty z systemami Linux, macOS i Windows.',
+        'Nieobsługiwana platforma zdalna. Tryb SSH w Agent Czesiek Desktop obsługuje zdalne hosty z systemami Linux, macOS i Windows.',
       sshErrTimeout: 'Przekroczono czas połączenia SSH. Host może być nieosiągalny lub uśpiony.',
-      sshErrUpdateRequired: 'Zaktualizuj Hermesa na zdalnym hoście przed połączeniem przez SSH z aplikacji.',
+      sshErrUpdateRequired: 'Zaktualizuj Agenta Cześka na zdalnym hoście przed połączeniem przez SSH z aplikacji.',
       sshErrUnknown: 'Połączenie SSH nie powiodło się.'
     },
     keys: {
@@ -2267,7 +2268,7 @@ export const pl = defineLocale({
       noOutput: 'Brak wyjścia.',
       deepLinkTitle: 'Dodać serwer MCP?',
       deepLinkDescription:
-        'Link poprosił o dodanie tego serwera MCP do Hermesa. Sprawdź dokładną konfigurację poniżej — pochodzi ona z linku, a nie od Hermesa.',
+        'Link poprosił o dodanie tego serwera MCP do Agenta Cześka. Sprawdź dokładną konfigurację poniżej — pochodzi ona z linku, a nie od Agenta Cześka.',
       deepLinkStdioWarning:
         'Ten serwer uruchamia na Twojej maszynie lokalny proces poniższym poleceniem. Kontynuuj tylko wtedy, gdy ufasz jego źródłu.',
       deepLinkConfirm: 'Dodaj serwer',
@@ -2332,7 +2333,7 @@ export const pl = defineLocale({
       serverRunning: 'Działa',
       runtimeInstalled: 'Zainstalowano środowisko llama.cpp',
       runtimeInstalledDetail: (tag, backend) =>
-        `Kompilacja ${tag}, backend ${backend}. Hermes sam uruchamia serwer i nim zarządza.`,
+        `Kompilacja ${tag}, backend ${backend}. Agent Czesiek sam uruchamia serwer i nim zarządza.`,
       installTitle: 'Zainstaluj lokalne środowisko',
       installDetail:
         'Pobiera silnik wnioskowania llama.cpp (kilkaset MB). Pobrane modele działają w całości na tej maszynie — bez konta, nic nie opuszcza Twojego komputera.',
@@ -2385,7 +2386,7 @@ export const pl = defineLocale({
       updating: 'Aktualizowanie silnika…',
       upToDateTitle: 'Silnik aktualny',
       upToDateDetail: (tag, backend) =>
-        `Działa llama.cpp ${tag} (${backend}) — najnowsza kompilacja dostarczana z Hermesem.`,
+        `Działa llama.cpp ${tag} (${backend}) — najnowsza kompilacja dostarczana z Agentem Cześkiem.`,
       updateToast: next =>
         `Dostępna jest nowsza kompilacja lokalnego silnika (${next}). Zaktualizuj w Ustawieniach → Modele lokalne.`,
       activeDetail: 'Nowe czaty używają tego modelu — wczyta się przy pierwszej wysłanej wiadomości',
@@ -2450,7 +2451,7 @@ export const pl = defineLocale({
       connectAccount: 'Połącz konto',
       haveApiKey: 'Masz zamiast tego klucz API?',
       intro:
-        'Zaloguj się subskrypcją — nie musisz kopiować klucza API. Hermes przeprowadzi logowanie w przeglądarce za Ciebie, tutaj w aplikacji.',
+        'Zaloguj się subskrypcją — nie musisz kopiować klucza API. Agent Czesiek przeprowadzi logowanie w przeglądarce za Ciebie, tutaj w aplikacji.',
       connected: 'Połączono',
       collapse: 'Zwiń',
       connectAnother: 'Połącz innego dostawcę',
@@ -2471,7 +2472,7 @@ export const pl = defineLocale({
       noKeysMatch: 'Żaden dostawca nie pasuje do wyszukiwania.',
       localEndpoint: {
         title: 'Lokalny / własny endpoint',
-        description: 'Wskaż Hermesowi dowolny endpoint zgodny z OpenAI (Zyphra, vLLM, llama.cpp, Ollama itp.).'
+        description: 'Wskaż Agentowi Cześkowi dowolny endpoint zgodny z OpenAI (Zyphra, vLLM, llama.cpp, Ollama itp.).'
       },
       loading: 'Wczytywanie dostawców...'
     },
@@ -2598,7 +2599,7 @@ export const pl = defineLocale({
         failedSave: 'Nie udało się zapisać ustawienia prawdziwego profilu',
         prompt: {
           title: 'Pozostań zalogowany na swoich stronach',
-          body: 'Pozwól Hermesowi przeglądać sieć z migawką Twojego domyślnego profilu przeglądarki, aby strony otwierały się już zalogowane.',
+          body: 'Pozwól Agentowi Cześkowi przeglądać sieć z migawką Twojego domyślnego profilu przeglądarki, aby strony otwierały się już zalogowane.',
           bulletSnapshot: 'Ciasteczka i logowania są kopiowane do zarządzanej migawki.',
           bulletLiveProfile: 'Twój aktywny profil przeglądarki nigdy nie jest otwierany bezpośrednio.',
           bulletLocal: 'Nic nie opuszcza tego komputera.',
@@ -2678,7 +2679,7 @@ export const pl = defineLocale({
       halfDesktopHint: 'ta aplikacja, tak samo dla każdego profilu',
       halfAgent: 'Agent',
       halfAgentIn: (profile: string) => `Agent w profilu ${profile}`,
-      defaultProfile: 'Hermes (domyślny)',
+      defaultProfile: 'Agent Czesiek (domyślny)',
       kindAgent: 'Agent',
       kindDesktop: 'Aplikacja',
       kindBoth: 'Agent + aplikacja',
@@ -2696,7 +2697,7 @@ export const pl = defineLocale({
       loadFailed: 'Nie udało się wczytać wtyczek agenta',
       toggleFailed: (name: string) => `Nie udało się przełączyć ${name}`,
       legacyBackend:
-        'Ten backend jest starszy niż przełączniki wtyczek adresowane kluczem — zaktualizuj Hermesa, aby zarządzać nimi tutaj.',
+        'Ten backend jest starszy niż przełączniki wtyczek adresowane kluczem — zaktualizuj Agenta Cześka, aby zarządzać nimi tutaj.',
       portableBadge: 'przenośna',
       catalogTitle: 'Katalog wtyczek',
       catalogBrowse: 'Przeglądaj',
@@ -2704,7 +2705,7 @@ export const pl = defineLocale({
       catalogHint:
         'Kliknij „+ Dodaj do tego agenta” przy dowolnej wtyczce — sprawdzone pozycje instalują się w wybranym profilu z przypiętego commita. Dołączone wtyczki agent+aplikacja oferują obie części.',
       alreadyInstalled: (name: string) => `${name} jest już zainstalowana w tym profilu.`,
-      catalogProvenance: (sha: string) => `Zainstalowano z katalogu Hermesa${sha ? ` z przypięcia ${sha}` : ''}.`,
+      catalogProvenance: (sha: string) => `Zainstalowano z katalogu Agenta Cześka${sha ? ` z przypięcia ${sha}` : ''}.`,
       pinnedProvenance: (sha: string) =>
         `Przypięta do commita ${sha}. Aktualizacje są odrzucane, dopóki nie zostanie zainstalowana ponownie z nowym przypięciem.`,
       pinnedBadge: (sha: string) => `przypięta @ ${sha}`,
@@ -2787,7 +2788,7 @@ export const pl = defineLocale({
     loadFailed: 'Nie udało się wczytać grafu pamięci',
     loading: 'Ładowanie…',
     emptyTitle: 'Nic jeszcze nie wyuczono',
-    emptyDesc: 'Gdy Hermes zbuduje umiejętności i wspomnienia do Twojej pracy, pojawią się tutaj.',
+    emptyDesc: 'Gdy Agent Czesiek zbuduje umiejętności i wspomnienia do Twojej pracy, pojawią się tutaj.',
     share: 'Udostępnij mapę',
     shareHint:
       'Skopiuj kod, aby udostępnić tę mapę, albo wklej kod, aby ją wczytać. Zawiera tylko układ, bez treści Twojej pamięci i umiejętności.',
@@ -2869,7 +2870,7 @@ export const pl = defineLocale({
       placeholder: 'Szukaj zwierzaków…',
       loading: 'Wczytywanie galerii petdex…',
       error: 'Nie udało się połączyć z galerią petdex.',
-      staleBackend: 'Zrestartuj Hermesa, aby korzystać ze zwierzaków — backend jest starszy niż ta funkcja.',
+      staleBackend: 'Zrestartuj Agenta Cześka, aby korzystać ze zwierzaków — backend jest starszy niż ta funkcja.',
       empty: 'Brak pasujących zwierzaków.',
       turnOff: 'Wyłącz',
       turnOn: 'Włącz',
@@ -2896,8 +2897,8 @@ export const pl = defineLocale({
       hatchComposing: 'Składanie w całość…',
       hatchSaving: 'Już prawie…',
       namePlaceholder: 'Nazwij swojego zwierzaka',
-      staleBackend: 'Zaktualizuj Hermesa, aby generować zwierzaki.',
-      backgroundHint: 'Możesz to zamknąć — Hermes powiadomi Cię, gdy skończy.',
+      staleBackend: 'Zaktualizuj Agenta Cześka, aby generować zwierzaki.',
+      backgroundHint: 'Możesz to zamknąć — Agent Czesiek powiadomi Cię, gdy skończy.',
       slowProviderHint: 'To może potrwać kilka minut',
       remix: 'Przerób',
       remixConfirmTitle: 'Przerobić tę wersję?',
@@ -2933,7 +2934,7 @@ export const pl = defineLocale({
     },
     nav: {
       newChat: { title: 'Nowa sesja', detail: 'Rozpocznij nową sesję' },
-      settings: { title: 'Ustawienia', detail: 'Skonfiguruj Hermes Desktop' },
+      settings: { title: 'Ustawienia', detail: 'Skonfiguruj Agent Czesiek Desktop' },
       skills: { title: 'Możliwości', detail: 'Umiejętności, narzędzia, serwery MCP i wtyczki' },
       messaging: { title: 'Komunikatory', detail: 'Skonfiguruj Telegram, Slack, Discord i inne' },
       artifacts: { title: 'Artefakty', detail: 'Przeglądaj wygenerowane wyniki' }
@@ -2955,11 +2956,11 @@ export const pl = defineLocale({
     noSessions: 'Nie ma jeszcze sesji.',
     gatewayRunning: 'Brama komunikatorów działa',
     gatewayStopped: 'Brama komunikatorów zatrzymana',
-    hermesActiveSessions: (version, count) => `Hermes ${version} · Aktywne sesje: ${count}`,
+    hermesActiveSessions: (version, count) => `Agent Czesiek ${version} · Aktywne sesje: ${count}`,
     restartGateway: 'Zrestartuj bramę',
     openBrowser: 'Otwórz przeglądarkę',
     gatewayRestartFailed: 'Restart bramy nie powiódł się.',
-    updateHermes: 'Zaktualizuj Hermesa',
+    updateHermes: 'Zaktualizuj Agenta Cześka',
     reloadWindow: 'Przeładuj okno',
     actionRunning: 'w trakcie',
     actionDone: 'gotowe',
@@ -3110,11 +3111,11 @@ export const pl = defineLocale({
     telegramQr: {
       title: 'Wybierz sposób podłączenia swojego bota Telegrama',
       subtitle:
-        'Obie opcje podłączają bota, którym zarządzasz, i zapisują jego dane dostępowe wyłącznie w tej instalacji Hermesa.',
+        'Obie opcje podłączają bota, którym zarządzasz, i zapisują jego dane dostępowe wyłącznie w tej instalacji Agenta Cześka.',
       quickSetup: 'Szybka konfiguracja',
       recommended: 'Zalecane',
       quickHelp:
-        'Zeskanuj kod QR i potwierdź w Telegramie. Hermes utworzy bota i automatycznie wykryje Twój identyfikator użytkownika Telegrama.',
+        'Zeskanuj kod QR i potwierdź w Telegramie. Agent Czesiek utworzy bota i automatycznie wykryje Twój identyfikator użytkownika Telegrama.',
       createWithQr: 'Utwórz przez QR',
       starting: 'Uruchamianie…',
       replaceWarning:
@@ -3397,7 +3398,7 @@ export const pl = defineLocale({
     deleteDescMid: ' oraz skasuje jego katalog ',
     deleteDescSuffix: '. Tej operacji nie można cofnąć.',
     deleting: 'Usuwanie...',
-    createDesc: 'Profile to niezależne środowiska Hermesa: osobna konfiguracja, umiejętności i SOUL.md.',
+    createDesc: 'Profile to niezależne środowiska Agenta Cześka: osobna konfiguracja, umiejętności i SOUL.md.',
     nameLabel: 'Nazwa',
     cloneFrom: 'Klonuj z',
     cloneFromNone: 'Brak (pusty)',
@@ -3441,7 +3442,7 @@ export const pl = defineLocale({
         `${count} nieprzypiętych zaplanowanych ${PL_PLURAL(count, 'zadanie działa', 'zadania działają', 'zadań działa')} nadal na modelu, z którym ${PL_PLURAL(count, 'zostało utworzone', 'zostały utworzone', 'zostały utworzone')}. Przypnij ${PL_PLURAL(count, 'je', 'je', 'je')} albo ustaw cron.model, aby to zmienić.`,
       detailMore: (names, remaining) => `${names} i jeszcze ${remaining}`,
       review: 'Przejrzyj zaplanowane zadania',
-      saveFailed: 'Hermes nie zapisał tej zmiany modelu.',
+      saveFailed: 'Agent Czesiek nie zapisał tej zmiany modelu.',
       confirmTitle: 'Ostrzeżenie o wyborze modelu',
       confirmDetail: 'Potwierdź tylko wtedy, gdy akceptujesz ten kompromis.',
       confirmAction: 'Potwierdź',
@@ -3502,7 +3503,7 @@ export const pl = defineLocale({
     everyHourAt: minute => `Co godzinę o :${minute}`,
     newCron: 'Nowe zadanie cron',
     emptyDescNew:
-      'Zaplanuj polecenie uruchamiane według wyrażenia cron. Hermes je wykona i dostarczy wyniki do wybranego miejsca.',
+      'Zaplanuj polecenie uruchamiane według wyrażenia cron. Agent Czesiek je wykona i dostarczy wyniki do wybranego miejsca.',
     emptyDescSearch: 'Spróbuj szerszego zapytania.',
     emptyTitleNew: 'Nie ma jeszcze zaplanowanych zadań',
     emptyTitleSearch: 'Brak dopasowań',
@@ -3777,8 +3778,8 @@ export const pl = defineLocale({
       removeFromSidebar: 'Ukryj w pasku bocznym',
       createFailed: 'Nie udało się utworzyć projektu',
       staleBackend:
-        'Zaktualizuj backend Hermesa, aby tworzyć projekty — Twój backend jest starszy niż ta aplikacja (Ustawienia → Aktualizacje → Backend).',
-      deleteConfirm: 'To usuwa zapisany projekt z Hermesa. Pliki, repozytoria git i worktree pozostają nietknięte.',
+        'Zaktualizuj backend Agenta Cześka, aby tworzyć projekty — Twój backend jest starszy niż ta aplikacja (Ustawienia → Aktualizacje → Backend).',
+      deleteConfirm: 'To usuwa zapisany projekt z Agenta Cześka. Pliki, repozytoria git i worktree pozostają nietknięte.',
       startWork: 'Nowe worktree',
       newWorktreeTitle: 'Nowe worktree',
       newWorktreeDesc: 'Nazwij gałąź dla tego worktree.',
@@ -3788,7 +3789,7 @@ export const pl = defineLocale({
       baseBranchNone: 'Nie znaleziono gałęzi',
       startWorkFailed: 'Nie udało się utworzyć worktree',
       worktreeStaleBackend:
-        'Zaktualizuj backend Hermesa, aby tworzyć worktree przez to połączenie zdalne — jest starszy niż API worktree gita.',
+        'Zaktualizuj backend Agenta Cześka, aby tworzyć worktree przez to połączenie zdalne — jest starszy niż API worktree gita.',
       worktreeProjectLabel: 'Projekt',
       worktreeProjectPlaceholder: 'Szukaj projektów…',
       worktreeProjectNone: 'Brak projektów z katalogiem',
@@ -3883,12 +3884,12 @@ export const pl = defineLocale({
   composer: {
     message: 'Wiadomość',
     wakingProfile: profile => `Budzę profil ${profile}…`,
-    placeholderStarting: 'Uruchamianie Hermesa...',
-    placeholderReconnecting: 'Ponowne łączenie z Hermesem…',
+    placeholderStarting: 'Uruchamianie Agenta Cześka...',
+    placeholderReconnecting: 'Ponowne łączenie z Agentem Cześkiem…',
     placeholderFollowUp: 'Wyślij wiadomość uzupełniającą',
     newSessionPlaceholders: [
       'Co budujemy?',
-      'Daj Hermesowi zadanie',
+      'Daj Agentowi Cześkowi zadanie',
       'Co Ci chodzi po głowie?',
       'Opisz, czego potrzebujesz',
       'Za co się bierzemy?',
@@ -3956,7 +3957,7 @@ export const pl = defineLocale({
       'composer.history': 'przełączaj dymek / historię'
     },
     attachUrlTitle: 'Załącz adres URL',
-    attachUrlDesc: 'Hermes pobierze stronę i dołączy ją jako kontekst tej tury.',
+    attachUrlDesc: 'Agent Czesiek pobierze stronę i dołączy ją jako kontekst tej tury.',
     urlPlaceholder: 'https://example.com/wpis',
     urlHintPre: 'Podaj pełny adres URL, np. ',
     attach: 'Załącz',
@@ -4200,7 +4201,7 @@ export const pl = defineLocale({
       createPr: 'Utwórz PR',
       openPr: 'Otwórz PR',
       ghMissing: 'Zainstaluj GitHub CLI (gh) i zaloguj się, aby otwierać PR-y',
-      agentShip: 'Poproś Hermesa o otwarcie PR-a',
+      agentShip: 'Poproś Agenta Cześka o otwarcie PR-a',
       agentShipUnavailable: 'Czat, do którego należą te zmiany, nie jest widoczny na ekranie.',
       agentShipPrompt:
         'Przejrzyj bieżące zmiany, zatwierdź je czytelną wiadomością w konwencji conventional commits, wypchnij gałąź i otwórz pull requesta.',
@@ -4219,9 +4220,9 @@ export const pl = defineLocale({
       fetch: 'Pobieranie…',
       pull: 'Już prawie…',
       pydeps: 'Kończenie…',
-      update: 'Aktualizowanie Hermesa…',
+      update: 'Aktualizowanie Agenta Cześka…',
       rebuild: 'Przebudowa aplikacji desktopowej…',
-      restart: 'Restartowanie Hermesa…',
+      restart: 'Restartowanie Agenta Cześka…',
       done: 'Aktualizacja zakończona',
       manual: 'Zaktualizuj z terminala',
       guiSkew: 'Zaktualizuj aplikację desktopową',
@@ -4231,15 +4232,15 @@ export const pl = defineLocale({
     checkFailedTitle: 'Nie udało się sprawdzić aktualizacji',
     tryAgain: 'Spróbuj ponownie',
     notAvailableTitle: 'Aktualizacja niedostępna',
-    unsupportedMessage: 'Ta wersja Hermesa nie potrafi zaktualizować się z poziomu aplikacji.',
+    unsupportedMessage: 'Ta wersja Agenta Cześka nie potrafi zaktualizować się z poziomu aplikacji.',
     connectionRetry: 'Sprawdź połączenie i spróbuj ponownie.',
     latestBody: 'Masz najnowszą wersję.',
     latestBodyBackend: 'Backend działa na najnowszej wersji.',
     allSetTitle: 'Wszystko gotowe',
     availableTitle: 'Dostępna nowa aktualizacja',
-    availableBody: 'Nowa wersja Hermesa jest gotowa do instalacji.',
+    availableBody: 'Nowa wersja Agenta Cześka jest gotowa do instalacji.',
     availableTitleBackend: 'Dostępna aktualizacja backendu',
-    availableBodyBackend: 'Nowsza wersja podłączonego backendu Hermesa jest gotowa do instalacji.',
+    availableBodyBackend: 'Nowsza wersja podłączonego backendu Agenta Cześka jest gotowa do instalacji.',
     availableBodyNoChangelog:
       'Nowsza wersja jest gotowa. Dla tego typu instalacji informacje o wydaniu są niedostępne.',
     updateNow: 'Aktualizuj teraz',
@@ -4247,29 +4248,29 @@ export const pl = defineLocale({
     moreChanges: count => `+ jeszcze ${count} ${PL_PLURAL(count, 'zmiana', 'zmiany', 'zmian')} w zestawie.`,
     manualTitle: 'Zaktualizuj z terminala',
     manualBody:
-      'Hermesa zainstalowano z wiersza poleceń, więc aktualizacje też tam się odbywają. Wklej to do swojego terminala:',
-    manualPickedUp: 'Hermes użyje nowej wersji przy następnym uruchomieniu.',
+      'Agenta Cześka zainstalowano z wiersza poleceń, więc aktualizacje też tam się odbywają. Wklej to do swojego terminala:',
+    manualPickedUp: 'Agent Czesiek użyje nowej wersji przy następnym uruchomieniu.',
     guiSkewTitle: 'Zaktualizuj aplikację desktopową',
     guiSkewBody:
-      'Backend został zaktualizowany, ale pakiet tej aplikacji desktopowej pozostał bez zmian. Zaktualizuj lub zainstaluj ponownie aplikację Hermes (Twój AppImage / .deb / .rpm), aby je zrównać.',
+      'Backend został zaktualizowany, ale pakiet tej aplikacji desktopowej pozostał bez zmian. Zaktualizuj lub zainstaluj ponownie aplikację Agent Czesiek (Twój AppImage / .deb / .rpm), aby je zrównać.',
     copy: 'Kopiuj',
     copied: 'Skopiowano',
     done: 'Gotowe',
     applyingBody:
-      'Aktualizator Hermesa przejmuje kontrolę we własnym oknie i po zakończeniu sam otwiera Hermesa ponownie. Nie otwieraj Hermesa samodzielnie w trakcie aktualizacji.',
+      'Aktualizator Agenta Cześka przejmuje kontrolę we własnym oknie i po zakończeniu sam otwiera Agenta Cześka ponownie. Nie otwieraj Agenta Cześka samodzielnie w trakcie aktualizacji.',
     applyingBodyBackend:
-      'Zdalny backend instaluje aktualizację i zrestartuje się. Hermes połączy się ponownie automatycznie, gdy wróci.',
-    applyingClose: 'To okno zamknie się na czas aktualizacji, a potem Hermes otworzy się sam.',
+      'Zdalny backend instaluje aktualizację i zrestartuje się. Agent Czesiek połączy się ponownie automatycznie, gdy wróci.',
+    applyingClose: 'To okno zamknie się na czas aktualizacji, a potem Agent Czesiek otworzy się sam.',
     errorTitle: 'Aktualizacja nie została ukończona',
     errorBody: 'Spokojnie — nic nie zostało utracone. Możesz spróbować ponownie od razu.',
-    blockerTitle: 'Zamknąć lokalne podglądy, aby zaktualizować Hermesa?',
+    blockerTitle: 'Zamknąć lokalne podglądy, aby zaktualizować Agenta Cześka?',
     blockerBody:
-      'Hermes musi zatrzymać te lokalne podglądy przed aktualizacją. To nie zmieni ani nie usunie Twoich plików.',
-    foreignBlockerTitle: 'Zamknij inne procesy, aby zaktualizować Hermesa',
+      'Agent Czesiek musi zatrzymać te lokalne podglądy przed aktualizacją. To nie zmieni ani nie usunie Twoich plików.',
+    foreignBlockerTitle: 'Zamknij inne procesy, aby zaktualizować Agenta Cześka',
     foreignBlockerBody:
-      'Hermes nie może bezpiecznie zamknąć tych procesów automatycznie. Zamknij aplikację, terminal lub usługę, do której należy każdy z nich, a potem ponów aktualizację.',
+      'Agent Czesiek nie może bezpiecznie zamknąć tych procesów automatycznie. Zamknij aplikację, terminal lub usługę, do której należy każdy z nich, a potem ponów aktualizację.',
     mixedBlockerBody:
-      'Hermes może zamknąć wymienione poniżej lokalne podglądy. Pozostałe procesy trzeba zamknąć ręcznie, zanim aktualizacja będzie mogła kontynuować.',
+      'Agent Czesiek może zamknąć wymienione poniżej lokalne podglądy. Pozostałe procesy trzeba zamknąć ręcznie, zanim aktualizacja będzie mogła kontynuować.',
     closePreviewsAndUpdate: 'Zamknij podglądy i zaktualizuj',
     closePreviewsAndCheckAgain: 'Zamknij podglądy i sprawdź ponownie',
     localPreview: 'Lokalny podgląd',
@@ -4303,7 +4304,7 @@ export const pl = defineLocale({
       skipped: 'Pominięto',
       failed: 'Niepowodzenie'
     },
-    oneTimeTitle: 'Hermes wymaga jednorazowej instalacji',
+    oneTimeTitle: 'Agent Czesiek wymaga jednorazowej instalacji',
     unsupportedDesc: platform =>
       `Automatyczna instalacja przy pierwszym uruchomieniu nie jest jeszcze dostępna na ${platform}. Otwórz terminal, uruchom poniższe polecenie, a potem uruchom aplikację ponownie. Kolejne uruchomienia pominą ten krok.`,
     installCommand: 'Polecenie instalacyjne',
@@ -4311,24 +4312,24 @@ export const pl = defineLocale({
     viewDocs: 'Zobacz dokumentację instalacji',
     installTo: 'Zostanie zainstalowane w',
     retryAfterRun: 'Uruchomiłem je — ponów',
-    setupChoiceTitle: 'Skonfiguruj Hermes Desktop',
+    setupChoiceTitle: 'Skonfiguruj Agent Czesiek Desktop',
     setupChoiceDesc:
-      'Połącz tę aplikację z bramą Hermesa, którą już masz, albo zainstaluj Hermesa lokalnie na tym komputerze.',
-    connectExistingTitle: 'Połącz z istniejącym Hermesem',
+      'Połącz tę aplikację z bramą Agenta Cześka, którą już masz, albo zainstaluj Agenta Cześka lokalnie na tym komputerze.',
+    connectExistingTitle: 'Połącz z istniejącym Agentem Cześkiem',
     connectExistingShort: 'Połącz z istniejącym',
     connectExistingDesc:
       'Użyj zdalnego backendu z tokenem sesji albo logowaniem w przeglądarce. Instalacja lokalna nie zostanie uruchomiona.',
-    installLocalTitle: 'Zainstaluj Hermesa lokalnie',
-    installLocalDesc: 'Pobiera Hermesa, tworzy jego środowisko Pythona i uruchamia backend na tym komputerze.',
-    localStartUnavailable: 'Nie udało się rozpocząć instalacji lokalnej. Zrestartuj Hermes Desktop i spróbuj ponownie.',
-    remoteSetupTitle: 'Połącz z istniejącym Hermesem',
+    installLocalTitle: 'Zainstaluj Agenta Cześka lokalnie',
+    installLocalDesc: 'Pobiera Agenta Cześka, tworzy jego środowisko Pythona i uruchamia backend na tym komputerze.',
+    localStartUnavailable: 'Nie udało się rozpocząć instalacji lokalnej. Zrestartuj Agent Czesiek Desktop i spróbuj ponownie.',
+    remoteSetupTitle: 'Połącz z istniejącym Agentem Cześkiem',
     remoteSetupDesc:
-      'Wpisz adres swojej bramy. Hermes Desktop wykryje, czy potrzebny jest token, czy logowanie w przeglądarce.',
+      'Wpisz adres swojej bramy. Agent Czesiek Desktop wykryje, czy potrzebny jest token, czy logowanie w przeglądarce.',
     remoteUrlTitle: 'Adres bramy',
-    remoteUrlDesc: 'Użyj bazowego adresu bramy Hermesa, razem z https:// przy połączeniu zdalnym.',
+    remoteUrlDesc: 'Użyj bazowego adresu bramy Agenta Cześka, razem z https:// przy połączeniu zdalnym.',
     remoteUrlPlaceholder: 'https://gateway.example.com/hermes',
     probing: 'Wykrywanie uwierzytelniania bramy...',
-    probeError: 'Nie udało się połączyć z tą bramą Hermesa.',
+    probeError: 'Nie udało się połączyć z tą bramą Agenta Cześka.',
     identityProvider: 'swojego dostawcę tożsamości',
     authTitle: 'Uwierzytelnianie',
     authNeedsOauth: provider => `Zaloguj się przez ${provider} przed testem tej bramy.`,
@@ -4348,12 +4349,12 @@ export const pl = defineLocale({
     applyRemote: 'Zastosuj i połącz ponownie',
     backToSetup: 'Wstecz',
     failedTitle: 'Instalacja nie powiodła się',
-    settingUpTitle: 'Konfigurowanie Hermes Agent',
+    settingUpTitle: 'Konfigurowanie Agent Czesiek Agent',
     finishingTitle: 'Kończenie',
     failedDesc:
-      'Jeden z kroków instalacji zawiódł. Na Windowsie może się to zdarzyć, gdy działa inna instancja CLI lub aplikacji Hermesa. Zatrzymaj wszystkie działające instancje Hermesa i spróbuj ponownie. Pełny zapis znajdziesz w szczegółach poniżej albo w logu aplikacji.',
+      'Jeden z kroków instalacji zawiódł. Na Windowsie może się to zdarzyć, gdy działa inna instancja CLI lub aplikacji Agenta Cześka. Zatrzymaj wszystkie działające instancje Agenta Cześka i spróbuj ponownie. Pełny zapis znajdziesz w szczegółach poniżej albo w logu aplikacji.',
     activeDesc:
-      'To jednorazowa konfiguracja. Instalator Hermesa pobiera zależności i konfiguruje Twoją maszynę. Kolejne uruchomienia pominą ten krok.',
+      'To jednorazowa konfiguracja. Instalator Agenta Cześka pobiera zależności i konfiguruje Twoją maszynę. Kolejne uruchomienia pominą ten krok.',
     progress: (completed, total) => `Ukończono ${completed} z ${total} kroków`,
     currentStage: stage => ` -- teraz: ${stage}`,
     fetchingManifest: 'Pobieranie manifestu instalatora...',
@@ -4371,10 +4372,10 @@ export const pl = defineLocale({
   },
 
   onboarding: {
-    headerTitle: 'Skonfigurujmy Twojego agenta Hermes',
+    headerTitle: 'Skonfigurujmy Twojego agenta Agent Czesiek',
     headerDesc: 'Podłącz dostawcę modeli, aby zacząć rozmawiać. Większość opcji wymaga jednego kliknięcia.',
-    preparingInstall: 'Hermes kończy instalację. Przy pierwszym uruchomieniu zwykle zajmuje to mniej niż minutę.',
-    starting: 'Uruchamianie Hermesa…',
+    preparingInstall: 'Agent Czesiek kończy instalację. Przy pierwszym uruchomieniu zwykle zajmuje to mniej niż minutę.',
+    starting: 'Uruchamianie Agenta Cześka…',
     lookingUpProviders: 'Wyszukiwanie dostawców...',
     collapse: 'Zwiń',
     otherProviders: 'Inni dostawcy',
@@ -4382,7 +4383,7 @@ export const pl = defineLocale({
     chooseLater: 'Wybiorę dostawcę później',
     recommended: 'Zalecane',
     connected: 'Połączono',
-    featuredPitch: 'Jedna subskrypcja, ponad 300 czołowych modeli — zalecany sposób korzystania z Hermesa',
+    featuredPitch: 'Jedna subskrypcja, ponad 300 czołowych modeli — zalecany sposób korzystania z Agenta Cześka',
     fireworksPitch: 'Bezpośrednie API modeli — czołowe modele hostowane przez Fireworks',
     localModelsTitle: 'Uruchamiaj modele lokalnie',
     localModelsPitch: 'Bez konta — pobierz model i uruchom go na tej maszynie',
@@ -4402,7 +4403,7 @@ export const pl = defineLocale({
       local: {
         short: 'własny hosting',
         description:
-          'Wskaż Hermesowi lokalny lub samodzielnie hostowany endpoint zgodny z OpenAI (vLLM, llama.cpp, Ollama itp.).'
+          'Wskaż Agentowi Cześkowi lokalny lub samodzielnie hostowany endpoint zgodny z OpenAI (vLLM, llama.cpp, Ollama itp.).'
       }
     },
     backToSignIn: 'Wróć do logowania',
@@ -4415,7 +4416,7 @@ export const pl = defineLocale({
     update: 'Aktualizuj',
     flowSubtitles: {
       pkce: 'Otwiera przeglądarkę, abyś się zalogował, a potem wraca tutaj',
-      device_code: 'Otwiera stronę weryfikacji w przeglądarce — Hermes połączy się automatycznie',
+      device_code: 'Otwiera stronę weryfikacji w przeglądarce — Agent Czesiek połączy się automatycznie',
       external: 'Zaloguj się raz w terminalu, a potem wróć do rozmowy'
     },
     startingSignIn: provider => `Rozpoczynanie logowania do ${provider}...`,
@@ -4428,12 +4429,12 @@ export const pl = defineLocale({
     pickDifferentProvider: 'Wybierz innego dostawcę',
     signInWith: provider => `Zaloguj się przez ${provider}`,
     openedBrowser: provider => `Otworzyliśmy ${provider} w Twojej przeglądarce.`,
-    authorizeThere: 'Autoryzuj tam Hermesa.',
+    authorizeThere: 'Autoryzuj tam Agenta Cześka.',
     copyAuthCode: 'Skopiuj kod autoryzacyjny i wklej go poniżej.',
     pasteAuthCode: 'Wklej kod autoryzacyjny',
     reopenAuthPage: 'Otwórz ponownie stronę autoryzacji',
     autoBrowser: provider =>
-      `Otworzyliśmy ${provider} w Twojej przeglądarce. Autoryzuj tam Hermesa, a połączenie nastąpi automatycznie — nic nie musisz kopiować ani wklejać.`,
+      `Otworzyliśmy ${provider} w Twojej przeglądarce. Autoryzuj tam Agenta Cześka, a połączenie nastąpi automatycznie — nic nie musisz kopiować ani wklejać.`,
     reopenSignInPage: 'Otwórz ponownie stronę logowania',
     waitingAuthorize: 'Czekam, aż autoryzujesz...',
     externalPending: provider =>
@@ -4549,7 +4550,7 @@ export const pl = defineLocale({
       updateInProgress: 'Aktualizacja w toku',
       commitsBehind: (count, branch) =>
         `${count} ${PL_PLURAL(count, 'commit', 'commity', 'commitów')} w tyle za ${branch}`,
-      desktopVersion: version => `Hermes Desktop v${version}`,
+      desktopVersion: version => `Agent Czesiek Desktop v${version}`,
       backendVersion: version => `Backend v${version}`,
       clientLabel: version => `klient v${version}`,
       connectionSsh: host => `SSH: ${host}`,
@@ -4703,7 +4704,7 @@ export const pl = defineLocale({
     binaryTitle: 'To wygląda na plik binarny',
     binaryBody: label => `Podgląd ${label} może pokazać nieczytelny tekst.`,
     largeTitle: 'Ten plik jest duży',
-    largeBody: (label, size) => `${label} ma ${size}. Hermes pokaże tylko pierwsze 512 KB.`,
+    largeBody: (label, size) => `${label} ma ${size}. Agent Czesiek pokaże tylko pierwsze 512 KB.`,
     previewAnyway: 'Pokaż mimo to',
     truncated: 'Pokazano pierwsze 512 KB.',
     noInlineTitle: 'Brak podglądu w aplikacji',
@@ -4745,11 +4746,11 @@ export const pl = defineLocale({
         'Ten adres wskazuje na maszynę, na której działa Twój agent, a nie na tę. Panel przeglądarki ładuje strony lokalnie, więc zdalny serwer deweloperski wymaga przekierowania portu albo osiągalnej nazwy hosta.',
       failedToLoad: 'Nie udało się wczytać podglądu',
       tryAgain: 'Spróbuj ponownie',
-      restarting: 'Hermes się restartuje...',
-      askRestart: 'Poproś Hermesa o restart serwera',
-      lookingRestart: taskId => `Hermes szuka serwera podglądu do zrestartowania (${taskId})`,
+      restarting: 'Agent Czesiek się restartuje...',
+      askRestart: 'Poproś Agenta Cześka o restart serwera',
+      lookingRestart: taskId => `Agent Czesiek szuka serwera podglądu do zrestartowania (${taskId})`,
       restartingTitle: 'Restartowanie serwera podglądu',
-      restartingMessage: 'Hermes pracuje w tle. Postęp śledź w konsoli podglądu.',
+      restartingMessage: 'Agent Czesiek pracuje w tle. Postęp śledź w konsoli podglądu.',
       startRestartFailed: message => `Nie udało się rozpocząć restartu serwera: ${message}`,
       restartFailed: 'Restart serwera nie powiódł się',
       hideConsole: 'Ukryj konsolę podglądu',
@@ -4761,16 +4762,16 @@ export const pl = defineLocale({
       reload: 'Przeładuj stronę',
       address: 'Adres',
       addressPlaceholder: 'Wpisz adres',
-      blankPageBody: 'Wpisz adres powyżej, aby przeglądać, albo poproś Hermesa o otwarcie strony.',
-      finishedRestarting: message => `Hermes zakończył restart serwera podglądu${message ? `: ${message}` : ''}`,
+      blankPageBody: 'Wpisz adres powyżej, aby przeglądać, albo poproś Agenta Cześka o otwarcie strony.',
+      finishedRestarting: message => `Agent Czesiek zakończył restart serwera podglądu${message ? `: ${message}` : ''}`,
       failedRestarting: message => `Restart serwera nie powiódł się: ${message}`,
       unknownError: 'nieznany błąd',
       restartedTitle: 'Zrestartowano serwer podglądu',
       reloadingNow: 'Przeładowuję teraz podgląd.',
       restartFailedTitle: 'Restart podglądu nie powiódł się',
-      restartFailedMessage: 'Hermesowi nie udało się zrestartować serwera.',
+      restartFailedMessage: 'Agentowi Cześkowi nie udało się zrestartować serwera.',
       stillWorking:
-        'Hermes nadal pracuje, ale wynik restartu jeszcze nie dotarł. Polecenie serwera może działać na pierwszym planie.',
+        'Agent Czesiek nadal pracuje, ale wynik restartu jeszcze nie dotarł. Polecenie serwera może działać na pierwszym planie.',
       workspaceReloading: 'Przestrzeń robocza się zmieniła, przeładowuję podgląd',
       fileChanged: url => `Plik się zmienił, przeładowuję podgląd: ${url}`,
       filesChanged: (count, url) => `Zmian w plikach: ${count}, przeładowuję podgląd: ${url}`,
@@ -4882,7 +4883,7 @@ export const pl = defineLocale({
     thread: {
       loadingSession: 'Wczytywanie sesji',
       showEarlier: 'Pokaż wcześniejsze wiadomości',
-      loadingResponse: 'Hermes wczytuje odpowiedź',
+      loadingResponse: 'Agent Czesiek wczytuje odpowiedź',
       loadingLocalModel: model => `Wczytywanie ${model} do pamięci`,
       processingPrompt: 'Przetwarzanie polecenia',
       resumeWhenBackgroundDone: count =>
@@ -4947,7 +4948,7 @@ export const pl = defineLocale({
       attachingFile: 'Załączanie…'
     },
     approval: {
-      gatewayDisconnected: 'Brama Hermesa nie jest połączona',
+      gatewayDisconnected: 'Brama Agenta Cześka nie jest połączona',
       sendFailed: 'Nie udało się wysłać odpowiedzi o zgodzie',
       run: 'Uruchom',
       command: 'Polecenie',
@@ -4958,12 +4959,12 @@ export const pl = defineLocale({
       reject: 'Odrzuć',
       alwaysTitle: 'Zawsze zezwalać na to polecenie?',
       alwaysDescription: pattern =>
-        `To doda wzorzec „${pattern}” do Twojej stałej listy dozwolonych (~/.hermes/config.yaml). Hermes nie zapyta ponownie o takie polecenia — ani w tej sesji, ani w przyszłych.`,
+        `To doda wzorzec „${pattern}” do Twojej stałej listy dozwolonych (~/.hermes/config.yaml). Agent Czesiek nie zapyta ponownie o takie polecenia — ani w tej sesji, ani w przyszłych.`,
       alwaysAllow: 'Zezwalaj zawsze'
     },
     clarify: {
       notReady: 'Prośba o doprecyzowanie nie jest jeszcze gotowa',
-      gatewayDisconnected: 'Brama Hermesa nie jest połączona',
+      gatewayDisconnected: 'Brama Agenta Cześka nie jest połączona',
       sendFailed: 'Nie udało się wysłać doprecyzowania',
       loadingQuestion: 'Wczytywanie pytania…',
       other: 'Inne (wpisz własną odpowiedź)',
@@ -4998,7 +4999,7 @@ export const pl = defineLocale({
       envRequired: 'Najpierw uzupełnij wymagane dane dostępowe',
       sendFailed: 'Nie udało się wysłać odpowiedzi konfiguracji MCP',
       reloadFailed: 'Serwer zapisany, ale przeładowanie narzędzi MCP nie powiodło się — wczytają się w kolejnej sesji',
-      gatewayDisconnected: 'Brama Hermesa nie jest połączona'
+      gatewayDisconnected: 'Brama Agenta Cześka nie jest połączona'
     },
     tool: {
       copyCode: 'Kopiuj kod',
@@ -5107,15 +5108,15 @@ export const pl = defineLocale({
   },
 
   prompts: {
-    gatewayDisconnected: 'Brama Hermesa nie jest połączona',
+    gatewayDisconnected: 'Brama Agenta Cześka nie jest połączona',
     sudoSendFailed: 'Nie udało się wysłać hasła sudo',
     secretSendFailed: 'Nie udało się wysłać sekretu',
     sudoTitle: 'Hasło administratora',
     sudoDesc:
-      'Hermes potrzebuje Twojego hasła sudo, aby uruchomić polecenie z podwyższonymi uprawnieniami. Trafia ono wyłącznie do Twojego lokalnego agenta.',
+      'Agent Czesiek potrzebuje Twojego hasła sudo, aby uruchomić polecenie z podwyższonymi uprawnieniami. Trafia ono wyłącznie do Twojego lokalnego agenta.',
     sudoPlaceholder: 'hasło sudo',
     secretTitle: 'Wymagany sekret',
-    secretDesc: 'Hermes potrzebuje danych dostępowych, aby kontynuować.',
+    secretDesc: 'Agent Czesiek potrzebuje danych dostępowych, aby kontynuować.',
     secretPlaceholder: 'wartość sekretu',
     vaultUnlockSendFailed: 'Nie udało się wysłać hasła głównego',
     vaultUnlockTitle: name => `Odblokuj ${name}`,
@@ -5127,7 +5128,7 @@ export const pl = defineLocale({
     vaultSaveSendFailed: 'Nie udało się zapisać danych logowania',
     vaultSaveTitle: site => `Zapisać Twoje dane logowania do ${site}?`,
     vaultSaveDesc: origin =>
-      `Hermes trafił na stronę logowania pod adresem ${origin} i nie ma do niej danych. Wpisz je tutaj raz; zostaną zaszyfrowane na tej maszynie i wpisane na stronie, a model nigdy nie zobaczy hasła.`,
+      `Agent Czesiek trafił na stronę logowania pod adresem ${origin} i nie ma do niej danych. Wpisz je tutaj raz; zostaną zaszyfrowane na tej maszynie i wpisane na stronie, a model nigdy nie zobaczy hasła.`,
     vaultSaveIdentifierLabel: 'E-mail lub nazwa użytkownika',
     vaultSaveIdentifierPlaceholder: 'ty@example.com',
     vaultSavePasswordPlaceholder: 'Hasło',
@@ -5137,10 +5138,10 @@ export const pl = defineLocale({
     vaultCodeSendFailed: 'Nie udało się wysłać kodu',
     vaultCodeTitle: site => `Kod weryfikacyjny do ${site}`,
     vaultCodeDesc: site =>
-      `${site} prosi o kod jednorazowy (SMS, e-mail albo aplikacja uwierzytelniająca). Wpisz go tutaj, a Hermes wpisze go na stronie; model nigdy go nie zobaczy.`,
+      `${site} prosi o kod jednorazowy (SMS, e-mail albo aplikacja uwierzytelniająca). Wpisz go tutaj, a Agent Czesiek wpisze go na stronie; model nigdy go nie zobaczy.`,
     vaultCodeLabel: 'Kod',
     vaultCodeFootnote:
-      'Wskazówka: zapisz klucz aplikacji uwierzytelniającej razem z tym logowaniem w Ustawieniach → Hasła i logowania, a Hermes będzie wpisywał kody za Ciebie.',
+      'Wskazówka: zapisz klucz aplikacji uwierzytelniającej razem z tym logowaniem w Ustawieniach → Hasła i logowania, a Agent Czesiek będzie wpisywał kody za Ciebie.',
     vaultCodeSkip: 'Pomiń',
     vaultCodeConfirm: 'Wpisz kod'
   },
@@ -5200,8 +5201,8 @@ export const pl = defineLocale({
     sessionExportFailed: 'Nie udało się wyeksportować sesji',
     imageSaved: 'Zapisano obraz',
     downloadStarted: 'Rozpoczęto pobieranie',
-    restartToUseSaveImage: 'Zrestartuj Hermes Desktop, aby korzystać z zapisywania obrazów.',
-    restartToSaveImages: 'Zrestartuj Hermes Desktop, aby zapisywać obrazy',
+    restartToUseSaveImage: 'Zrestartuj Agent Czesiek Desktop, aby korzystać z zapisywania obrazów.',
+    restartToSaveImages: 'Zrestartuj Agent Czesiek Desktop, aby zapisywać obrazy',
     imageDownloadFailed: 'Pobieranie obrazu nie powiodło się',
     openImage: 'Otwórz obraz',
     downloadImage: 'Pobierz obraz',
@@ -5233,14 +5234,14 @@ export const pl = defineLocale({
       },
       skills: {
         title: 'Naucz raz',
-        text: 'Umiejętności to katalogi z instrukcjami, które Hermes wczytuje, gdy praca tego wymaga.'
+        text: 'Umiejętności to katalogi z instrukcjami, które Agent Czesiek wczytuje, gdy praca tego wymaga.'
       },
       messaging: {
-        title: 'Hermes poza biurkiem',
+        title: 'Agent Czesiek poza biurkiem',
         text: 'Podłącz Telegram, Discord, Slack i inne — ten sam agent, ta sama pamięć.'
       },
       artifacts: {
-        title: 'Wszystko, co stworzył Hermes',
+        title: 'Wszystko, co stworzył Agent Czesiek',
         text: 'Obrazy, pliki i linki ze wszystkich sesji, zindeksowane w jednym miejscu.'
       },
       cron: {
@@ -5253,7 +5254,7 @@ export const pl = defineLocale({
       },
       profiles: {
         title: 'Profile są osobne',
-        text: 'Każdy to własny Hermes — własne klucze, własna pamięć, własne sesje.'
+        text: 'Każdy to własny Agent Czesiek — własne klucze, własna pamięć, własne sesje.'
       },
       'composer-mentions': {
         title: 'Załączaj i wydawaj polecenia',

@@ -568,6 +568,7 @@ export interface Translations {
       }
     }
     views: {
+      prompts: string
       jarvis: string
       tasks: string
       agents: string

@@ -492,6 +492,10 @@ export const frOverrides = {
     backendOutOfDateTitle: 'Backend obsolète',
     backendOutOfDateMessage:
       'Votre backend Hermes est plus ancien que cette version du desktop et peut ne pas fonctionner correctement. Mettez-le à jour pour les aligner.',
+    desktopOutOfDateTitle: 'Application Hermes obsolète',
+    desktopOutOfDateMessage:
+      "Cette application Hermes est plus ancienne que le backend auquel elle est connectée et peut ne pas fonctionner correctement. Effectuez la mise à jour de l'application pour les aligner.",
+    updateDesktopApp: "Mettre à jour l'application",
     installMethodUnsupportedTitle: "Méthode d'installation non prise en charge",
     updateHermes: 'Mettre à jour Hermes',
     updateReadyTitle: 'Mise à jour prête',
@@ -3541,7 +3545,17 @@ export const frOverrides = {
       gatewayUnreachable: gateway => `${gateway} · inaccessible`,
       onGateway: (name, gateway) => `${name} · ${gateway}`,
       switchTo: (name, gateway) => `Basculer vers ${name} sur ${gateway}`,
-      deleteOn: gateway => ` sur ${gateway}`
+      deleteOn: gateway => ` sur ${gateway}`,
+      localDevice: 'Cet appareil (backend local — installe Hermes s’il manque, sinon ouvre une nouvelle session)',
+      switchDeviceTitle: 'Basculer vers cet appareil ?',
+      switchDeviceDesc:
+        'Cela ouvre une nouvelle session sur cet ordinateur. La conversation en cours reste sur l’autre gateway.',
+      switchDeviceConfirm: 'Basculer',
+      installDeviceTitle: 'Basculer vers cet appareil ?',
+      installDeviceDesc:
+        'Hermes sera installé localement, puis une nouvelle session s’ouvrira sur cet ordinateur. Rien n’est installé tant que vous ne confirmez pas.',
+      installDeviceConfirm: 'Installer localement',
+      connectExistingInstead: 'Connecter un existant à la place'
     },
     status: {
       unread: (count: number) => (count === 1 ? '1 session non lue' : `${count} sessions non lues`),
@@ -4045,6 +4059,7 @@ export const frOverrides = {
       branchFrom: 'Branche',
       rename: 'Renommer',
       archive: 'Archiver',
+      unarchive: 'Restaurer',
       newWindow: 'Nouvelle fenêtre',
       openInTerminal: 'Ouvrir dans le terminal',
       hideTabBar: "Masquer la barre d'onglets",
@@ -4450,7 +4465,7 @@ export const frOverrides = {
       copyFailure: 'Impossible de copier le critère dans le presse-papiers',
       continuationFailed: "Impossible de soumettre la poursuite de l'objectif",
       continuationQueued: 'Objectif repris — poursuite en attente de la fin du tour actuel',
-      continuationBusy: 'Objectif repris — session occupée, utilisez /interrupt pour poursuivre',
+      continuationBusy: "Objectif repris — session occupée, arrêtez d'abord la réponse en cours (bouton Stop ou Échap) pour poursuivre",
       controlUnavailable: msg => `Commandes de session indisponibles : ${msg}`,
       dismissError: "Masquer l'erreur",
       add: 'Ajouter'
@@ -4599,9 +4614,12 @@ export const frOverrides = {
     moreChanges: count =>
       `+ ${count} ${count === 1 ? 'changement supplémentaire inclus' : 'changements supplémentaires inclus'}.`,
     manualTitle: 'Mise à jour depuis votre terminal',
+    manualUnavailableTitle: 'Mise à jour impossible ici',
     manualBody:
       "Vous avez installé Hermes depuis la ligne de commande, les mises à jour s'y effectuent donc aussi. Collez ceci dans votre terminal :",
     manualPickedUp: 'Hermes prendra en compte la nouvelle version au prochain lancement.',
+    manualBodyBackend: 'Le backend Hermes est géré en dehors de cette app. Exécutez ceci sur le serveur qui l’héberge :',
+    manualPickedUpBackend: 'Le backend chargera la nouvelle version une fois la mise à jour terminée.',
     guiSkewTitle: "Mettre à jour l'application de bureau",
     guiSkewBody:
       "Le backend a été mis à jour, mais ce package d'application de bureau ne l'a pas été. Mettez à jour ou réinstallez l'application de bureau Hermes (votre AppImage / .deb / .rpm) pour qu'elle corresponde.",
@@ -4798,6 +4816,7 @@ export const frOverrides = {
     replaceCurrent: 'Remplacer la valeur actuelle',
     pasteApiKey: 'Collez votre clé API',
     localApiKeyPlaceholder: 'Clé API (facultatif — uniquement si votre point de terminaison en requiert une)',
+    localModelNamePlaceholder: 'Nom du modèle (ex. command-a-plus-05-2026)',
     couldNotSave: "Impossible d'enregistrer l'identifiant.",
     connecting: 'Connexion',
     update: 'Mettre à jour',
@@ -4951,6 +4970,7 @@ export const frOverrides = {
       search: 'Rechercher des modèles',
       noModels: 'Aucun modèle trouvé',
       editModels: 'Modifier les modèles…',
+      followDefault: 'Utiliser le modèle par défaut des Réglages',
       refreshModels: 'Actualiser les modèles',
       fast: 'Rapide'
     },
@@ -5086,7 +5106,8 @@ export const frOverrides = {
         title: 'Utilisation du contexte',
         tokenSummary: (used, max) => `${used} / ${max} jetons`
       },
-      session: 'Session',
+      focusedSince: 'Focalisé depuis',
+      focusedSinceTitle: 'Temps depuis que cette conversation est au premier plan — pas la durée d’un tour',
       yoloOn: 'YOLO activé — approbation automatique des commandes dangereuses. Shift+clic pour basculer globalement.',
       yoloOff: 'YOLO désactivé. Shift+clic pour basculer globalement.',
       modelNone: 'aucun',
@@ -5949,6 +5970,8 @@ export const frOverrides = {
     deleteFailed: 'Échec de la suppression',
     archived: 'Archivé',
     archiveFailed: "Échec de l'archivage",
+    restored: 'Restauré',
+    unarchiveFailed: 'Échec de la restauration',
     cwdChangeFailed: 'Échec du changement de répertoire de travail',
     cwdStagedTitle: "Répertoire de travail en attente d'application",
     cwdStagedMessage: 'Redémarrez le backend desktop pour appliquer les modifications de cwd à cette session active.',

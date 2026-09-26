@@ -125,10 +125,21 @@ vi.mock('@/store/windows', async importOriginal => {
 
 // SessionActionsMenu open behavior is covered in session-actions-menu.test.tsx
 // against the real component. Stub it here so this file stays focused on the
-// row chrome.
+// row chrome (handoff avatar tip, etc.) — but record the props so the row's
+// own state plumbing (e.g. the archived flag, #98813) is still asserted.
+const menuProps = vi.hoisted(() => vi.fn())
+
 vi.mock('./session-actions-menu', () => ({
-  SessionActionsMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  SessionContextMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>
+  SessionActionsMenu: (props: { children?: React.ReactNode }) => {
+    menuProps(props)
+
+    return <>{props.children}</>
+  },
+  SessionContextMenu: (props: { children?: React.ReactNode }) => {
+    menuProps(props)
+
+    return <>{props.children}</>
+  }
 }))
 
 vi.mock('./use-profile-prewarm', () => ({
@@ -259,6 +270,22 @@ describe('SidebarSessionRow', () => {
 
       expect(screen.queryByRole('tooltip')).toBeNull()
     })
+  })
+
+  // The Archived view reuses the row menu, and the menu needs the row's
+  // archived state to label its shared verb Unarchive (#98813).
+  it('forwards the archived state to the row menu', () => {
+    menuProps.mockClear()
+    renderRow(makeSession({ archived: true, title: 'Archived row' }))
+
+    expect(menuProps).toHaveBeenCalledWith(expect.objectContaining({ archived: true }))
+  })
+
+  it('forwards the non-archived state to the row menu', () => {
+    menuProps.mockClear()
+    renderRow(makeSession({ title: 'Live row' }))
+
+    expect(menuProps).toHaveBeenCalledWith(expect.objectContaining({ archived: false }))
   })
 })
 

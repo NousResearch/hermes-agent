@@ -240,9 +240,10 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
 
       // A bare detached+hidden powershell spawn silently dies before -File
       // processing (console-subsystem init failure — see
-      // wrapHandoffForDetachedConsole). Route through `cmd start` so the
-      // script gets its own minimized console and survives our exit. The
-      // wrapper cmd.exe exits immediately, so child.pid is NOT the script's
+      // wrapHandoffForDetachedConsole). Spawn the cmd wrapper non-detached
+      // so windowsHide gives it a hidden console that `start /b` shares with
+      // PowerShell; the script still outlives us. The wrapper cmd.exe exits
+      // immediately, so child.pid is NOT the script's
       // pid — the script claims the update marker itself with its own $PID
       // as its first action, and a relaunched Desktop parks on that.
       const wrappedArgs: string[] = [
@@ -269,7 +270,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
           ...sourceUpdateEnvironment(updateRoot, deps.hermesHome),
           HERMES_UPDATE_STARTED_AT: String(updateStartedAt)
         },
-        detached: true,
+        detached: wrapped.detached,
         stdio: 'ignore'
       })
 

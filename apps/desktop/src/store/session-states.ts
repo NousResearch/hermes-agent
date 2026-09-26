@@ -34,11 +34,14 @@ import { resolveRememberedActivePane, workspaceScopeKey } from '@/components/pan
 import type { WorkspaceMode } from '@/contrib/types'
 import type { ChatMessage } from '@/lib/chat-messages'
 import type { ErrorSurface } from '@/lib/error-surface'
+import { tileFocusStampOnFocusChange } from '@/lib/session-timer-since'
 import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
 import type { SessionInfo } from '@/types/hermes'
 
 import { dropStatusDrawersForProfile, migrateStatusDrawersForProfile } from './composer-status-drawer'
+import { registryConnectionKind } from './connection-registry-state'
+import { dialedGatewayModeFor } from './gateway'
 import { dropPreviewTabsForProfile, migratePreviewTabsForProfile, setPreviewScope } from './preview'
 import { dropPreviewArtifactsForProfile, migratePreviewArtifactsForProfile } from './preview-status'
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
@@ -61,7 +64,8 @@ import {
   setActiveSessionStoredIdRotation,
   setAwaitingResponse,
   setBusy,
-  setSessions
+  setSessions,
+  setTileSessionFocusStartedAt
 } from './session'
 import { secondaryProfileOwnerForEvent } from './session-event-provenance'
 import { $focusedTreePaneId } from './session-focus'
@@ -1096,7 +1100,16 @@ function parseTileList(value: unknown): StoredTile[] {
           const raw = t as SessionTile
 
           return {
-            anchor: typeof raw.anchor === 'string' ? raw.anchor : undefined,
+            // #108679: a tile whose anchor is its OWN pane id is
+            // self-referential — the re-dock target can never exist (the
+            // pane is not in the tree at adoption time), so the dock falls
+            // through to an arbitrary same-placement neighbor instead of the
+            // recorded layout. Rewrite it to the workspace anchor at load,
+            // the same surface an anchorless tile re-docks against.
+            anchor:
+              typeof raw.anchor === 'string' && raw.anchor !== `${TILE_PANE_PREFIX}${raw.storedSessionId}`
+                ? raw.anchor
+                : undefined,
             before: typeof raw.before === 'string' || raw.before === null ? raw.before : undefined,
             dir: raw.dir,
             ownerProfile: typeof raw.ownerProfile === 'string' ? normalizeProfileKey(raw.ownerProfile) : undefined,
@@ -1379,6 +1392,31 @@ function syncPreviewScope() {
 $activeSessionId.subscribe(syncPreviewScope)
 syncPreviewScope()
 
+/** The mode of the backend that serves `owner`: the route's own `mode`, else
+ *  its registry connection's kind, else the socket already dialed for it (a
+ *  bare profile rides the primary or its own pool secondary). Null = unknown. */
+function ownerConnectionMode(owner: SessionOwnerScope): 'local' | 'remote' | null {
+  if (!owner) {
+    return null
+  }
+
+  if (typeof owner === 'string') {
+    return dialedGatewayModeFor(null, owner)
+  }
+
+  if (owner.mode) {
+    return owner.mode
+  }
+
+  const kind = registryConnectionKind(owner.connectionId)
+
+  if (kind) {
+    return kind === 'local' ? 'local' : 'remote'
+  }
+
+  return dialedGatewayModeFor(owner.connectionId, owner.profile)
+}
+
 /**
  * Whether the connection that OWNS `sessionId` is remote — never the ambient
  * `$connection`. A session tied to a registered secondary connection (Bot
@@ -1386,18 +1424,13 @@ syncPreviewScope()
  * window currently shows; its RPCs already route to their own owner via
  * `requestForSessionProfile`, but a caller that instead reads ambient mode to
  * decide image.attach vs image.attach_bytes ships a client-local path to a
- * remote backend that can't resolve it (#94640). A bare profile name (no
- * connectionId) is a pool profile of the ambient connection, so ambient mode
- * still applies there.
+ * remote backend that can't resolve it (#94640, #120730). Only an owner whose
+ * backend is still unknown falls back to ambient mode.
  */
 export function isSessionRemote(sessionId: null | string | undefined): boolean {
-  const owner = knownOwnerForSession(sessionId)
+  const mode = ownerConnectionMode(knownOwnerForSession(sessionId)) ?? $connection.get()?.mode
 
-  if (owner && typeof owner === 'object' && owner.mode) {
-    return owner.mode === 'remote'
-  }
-
-  return $connection.get()?.mode === 'remote'
+  return mode === 'remote'
 }
 
 /**
@@ -2479,6 +2512,17 @@ export const $focusedSessionState = computed([$focusedRuntimeId, $sessionStates]
 export const selectionHomesToWorkspace = (selected: null | string, tiles: readonly SessionTile[]): boolean =>
   !(selected && tiles.some(t => t.storedSessionId === selected))
 
+// Statusbar timer: stamp "focused since" for non-primary tiles so they share
+// the primary's contract instead of the row's durable started_at (#103123).
+// Primary focus leaves the stamp alone; the next tile focus re-stamps.
+function stampTileSessionFocus(focused: null | string) {
+  const stamp = tileFocusStampOnFocusChange(focused, $selectedStoredSessionId.get(), Date.now())
+
+  if (stamp) {
+    setTileSessionFocusStartedAt(stamp)
+  }
+}
+
 // Bringing a finished session to the front clears its green dot. Keyed on the
 // FOCUSED session, not the selected one: a tile is never $selectedStoredSessionId,
 // and a tile tab click goes through activateTreePane rather than focusOpenSession,
@@ -2491,7 +2535,11 @@ $focusedStoredSessionId.listen(focused => {
     markSessionRead(focused)
     ackStoredSessionId(focused)
   }
+
+  stampTileSessionFocus(focused)
 })
+
+stampTileSessionFocus($focusedStoredSessionId.get())
 
 // Cold-start restore is the one selection change that is NOT a navigation: the
 // route already pointed at the primary session before the window loaded, and

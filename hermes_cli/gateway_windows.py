@@ -717,7 +717,11 @@ def _spawn_detached(script_path: Path | None = None, home: Path | None = None) -
     """
     _assert_windows()
     argv, working_dir, env_overlay = _build_gateway_argv(home)
-    env = {**os.environ, **env_overlay}
+    from tools.environments.local import served_profile_child_env
+    # home=None is this process's own gateway, not a forced jump to the default root.
+    # served_profile_child_env overlays that home's secrets instead of os.environ.copy().
+    target = home if home is not None else _hermes_home()
+    env = {**served_profile_child_env(target_home=target, inherit_credentials=True), **env_overlay}
 
     # Stray print()/native stderr goes to a sidecar log; real gateway logs still land in gateway.log
     # via the logging FileHandler.
@@ -754,6 +758,13 @@ def _stdin_is_interactive(*, isatty: bool, console_mode_ok: bool | None) -> bool
     isatty must be confirmed by GetConsoleMode accepting the handle (#113977). ``console_mode_ok`` is
     None where that fact does not exist (not Windows) and isatty alone decides."""
     return isatty and console_mode_ok is not False
+
+
+def _stdout_isatty() -> bool:
+    """The question is printed to stdout. When stdout is captured, nobody sees it. Desktop update
+    hand-offs before #122234 captured each step's stdout while leaving it the console's stdin, so a
+    prompt there waited forever for an answer to a question nobody saw."""
+    return sys.stdout is not None and sys.stdout.isatty()
 
 
 def _stdin_console_mode_ok() -> bool | None:
@@ -1592,7 +1603,7 @@ def start() -> None:
             from hermes_cli.setup import is_interactive_stdin, is_noninteractive, prompt_yes_no
 
             print("✗ Gateway service is not installed")
-            if is_noninteractive() or not _stdin_is_interactive(
+            if is_noninteractive() or not _stdout_isatty() or not _stdin_is_interactive(
                 isatty=is_interactive_stdin(), console_mode_ok=_stdin_console_mode_ok()
             ):
                 start_on_login = False

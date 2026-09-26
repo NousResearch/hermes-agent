@@ -167,16 +167,20 @@ def _is_member_candidate(plugin_dir: Path) -> bool:
     return read_python_declaration(plugin_dir).is_member
 
 
-def enabled_plugin_dirs(*, proposed_home=None, enabled=None, disabled=None,
-                        installing: Path | None = None, skip_invalid_secondary: bool = False) -> list[Path]:
-    """Resolve the effective plugin selection without filtering dependency declarations."""
+def enabled_plugin_entries(*, proposed_home=None, enabled=None, disabled=None,
+                           installing: Path | None = None,
+                           skip_invalid_secondary: bool = False) -> list[tuple[Path, str, Path]]:
+    """``(home plugins dir, selection key, plugin dir)`` for every selected plugin, in config order.
+
+    The key is what the home's config names, so a caller can edit that home's selection.
+    """
     from pm.plugins_state import _is_directory, enabled_plugins_ordered
 
     selection = enabled_plugins_ordered(
         proposed_home=proposed_home, enabled=enabled, disabled=disabled, installing=installing,
         skip_invalid_secondary=skip_invalid_secondary,
     )
-    members = []
+    entries = []
     for plugins_dir, names in selection.items():
         for name in names:
             relative = Path(name)
@@ -187,17 +191,36 @@ def enabled_plugin_dirs(*, proposed_home=None, enabled=None, disabled=None,
             if not proposed and not _is_directory(plugin_dir):
                 plugin_dir = paths.repo_root() / "plugins" / relative
             if proposed or _is_directory(plugin_dir):
-                members.append(plugin_dir)
-    return list(dict.fromkeys(members))
+                entries.append((plugins_dir, name, plugin_dir))
+    return entries
+
+
+def enabled_plugin_dirs(*, proposed_home=None, enabled=None, disabled=None,
+                        installing: Path | None = None, skip_invalid_secondary: bool = False) -> list[Path]:
+    """Resolve the effective plugin selection without filtering dependency declarations."""
+    entries = enabled_plugin_entries(proposed_home=proposed_home, enabled=enabled, disabled=disabled,
+                                     installing=installing, skip_invalid_secondary=skip_invalid_secondary)
+    return list(dict.fromkeys(plugin_dir for _plugins_dir, _name, plugin_dir in entries))
 
 
 def enabled_member_dirs(*, proposed_home=None, enabled=None, disabled=None) -> list[Path]:
-    """Keep every selected member or refuse an incompatible selection."""
+    """Keep every selected member or refuse an incompatible selection.
+
+    A member whose requires_hermes rejects the running version sits out instead: the
+    verdict is only as good as our version identity (an untagged source checkout reads
+    as an older release), the loader skips that plugin anyway, and the member rejoins
+    as soon as the verdict flips. Enabling one is still refused at admission.
+    """
     selected = enabled_plugin_dirs(proposed_home=proposed_home, enabled=enabled, disabled=disabled,
                                    skip_invalid_secondary=proposed_home is None)
     members = []
     for path in selected:
+        # Per plugin: with none selected, PM must not import the application's manifest module.
+        from hermes_cli.plugins_manifest import requires_hermes_error
+
         declaration = read_python_declaration(path)
+        if requires_hermes_error(declaration.manifest):
+            continue
         reason = manifest_version_error(declaration.manifest, path.name)
         if reason:
             raise InstallError("venv", reason)

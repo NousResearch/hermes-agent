@@ -38,8 +38,8 @@ def transition(tmp_path):
     # Deliberately incompatible: a cached OLD_API-only PM cannot prepare this tree.
     (root / "pm/__init__.py").write_text(
         "from hermes_cli.probe import event\n"
-        "def sync_venv(*, explicit, project_root):\n"
-        "    assert explicit\n"
+        "def sync_venv(*, explicit, project_root, evict_incompatible_plugins):\n"
+        "    assert explicit and evict_incompatible_plugins\n"
         "    event('prepare')\n"
     )
     (root / "pm/receipt.py").write_text(

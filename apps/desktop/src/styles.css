@@ -446,12 +446,16 @@
       'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
     /* Key caps always use the native UI face — never theme typography overrides. */
     --dt-font-kbd: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
-    /* Menlo/Monaco first — Apple's native monospace faces — so code/diff read
-       in the system mono on macOS, with SF Mono and bundled Courier Prime as
-       fallbacks. */
+    /* JetBrains Mono first — the face we bundle (@font-face above) and the
+       terminal's primary — so code/diff match the terminal on every platform
+       instead of drifting to a system Cascadia Code where it's installed. The
+       extra Linux mono fallbacks preserve Latin Extended glyphs (#61392:
+       Vietnamese and other non-Latin diacritics) as monospace when a theme
+       display font does not cover them. */
     --dt-font-mono:
-      Menlo, Monaco, 'SF Mono', 'Courier Prime', monospace, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol',
-      'Noto Color Emoji', emoji;
+      'JetBrains Mono', 'Cascadia Code', 'Cascadia Mono', 'DejaVu Sans Mono', 'Liberation Mono', 'Noto Sans Mono',
+      'Noto Mono', 'SF Mono', ui-monospace, Menlo, Consolas, monospace, 'Apple Color Emoji', 'Segoe UI Emoji',
+      'Segoe UI Symbol', 'Noto Color Emoji', emoji;
     --dt-base-size: 1rem;
     --dt-line-height: 1.5;
     --dt-letter-spacing: 0;
@@ -1674,6 +1678,21 @@ body.guest-pointer-lock :is(webview, iframe) {
   text-align: start;
 }
 
+/* Keyed on the UI language, not installed fonts: PingFang/YaHei ship on every
+   Mac/Windows box and would restyle Latin text for everyone. CJK-first is what
+   makes shared codepoints (…—“”) render full-width. */
+[data-slot='composer-rich-input']:lang(zh) {
+  font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', var(--dt-font-sans);
+}
+
+[data-slot='composer-rich-input']:lang(zh-hant) {
+  font-family: 'PingFang TC', 'Microsoft JhengHei', 'Noto Sans CJK TC', var(--dt-font-sans);
+}
+
+[data-slot='composer-rich-input']:lang(ja) {
+  font-family: 'Hiragino Sans', 'Yu Gothic UI', 'Noto Sans CJK JP', var(--dt-font-sans);
+}
+
 /* Appearance → Text direction. An explicit RTL/LTR choice stamps dir on the
    markdown root, each user line block and both composers; the first-strong
    plaintext vote is exactly what the reader overrode, so it steps aside and
@@ -2392,6 +2411,10 @@ button[data-slot='aui_msg-reactions'] svg {
 .tool-ticker {
   height: var(--conversation-line-height);
   overflow: hidden;
+  /* clip beats hidden when an ancestor opacity stacking context would
+     otherwise let the transformed reel paint old rows through the window. */
+  overflow: clip;
+  isolation: isolate;
 }
 
 .tool-ticker__reel {
@@ -3578,12 +3601,31 @@ button[data-slot='aui_msg-reactions'] svg {
 
    CanvasTTY grammar: four edge strips + four larger corner targets, each with
    its native resize cursor and each preserving the opposite edge. Deliberately
-   invisible chrome: no glyph or border over whatever app is below the HUD. */
+   invisible chrome: no glyph or border over whatever app is below the HUD.
+
+   Invisible chrome that is ALWAYS hit-testable is a dead zone: an idle HUD is
+   just the bar, the window hands every other point to the app underneath, and
+   the only thing left answering the cursor was this frame — a thin invisible
+   ring that swallowed clicks and drags aimed at the app behind it (#108793).
+   So the frame rides the band's engagement gates: while the HUD is being used
+   (caret in the composer — data-hud-typing, stamped live by useHudGlass — or a
+   held band waiting on an answer) its edges may be grabbed; an in-flight
+   resize keeps its own handle live via data-hud-grabbing, because pointer
+   capture routes the moves to the handle that started the drag. Solid-input
+   hosts (X11) never hand the window away in the first place, so their frame
+   stays live unconditionally. */
 [data-hud-shell] [data-hud-resize] {
   position: absolute;
   z-index: 20;
-  pointer-events: auto;
+  pointer-events: none;
   touch-action: none;
+}
+
+[data-hud-shell][data-hud-typing] [data-hud-resize],
+[data-hud-shell][data-hud-held] [data-hud-resize],
+[data-hud-shell][data-hud-input='solid'] [data-hud-resize],
+[data-hud-shell] [data-hud-resize][data-hud-grabbing] {
+  pointer-events: auto;
 }
 
 [data-hud-shell] [data-hud-resize='n'] {

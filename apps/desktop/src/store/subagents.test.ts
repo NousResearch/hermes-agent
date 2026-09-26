@@ -167,6 +167,17 @@ describe('subagent store', () => {
     expect($subagentsBySession.get().s2).toHaveLength(1)
   })
 
+  it('creates and clears a session id that collides with an object prototype key', () => {
+    expect(() =>
+      upsertSubagent('toString', { goal: 'proto', status: 'running', subagent_id: 'a1', task_index: 0 })
+    ).not.toThrow()
+    expect($subagentsBySession.get().toString).toHaveLength(1)
+
+    clearSessionSubagents('toString')
+
+    expect(Object.hasOwn($subagentsBySession.get(), 'toString')).toBe(false)
+  })
+
   // Regression test for #64015: still-RUNNING background subagents must survive
   // the per-turn wipe that previously dropped them at message.start. The fix
   // replaces clearSessionSubagents() with pruneFinishedSessionSubagents() at

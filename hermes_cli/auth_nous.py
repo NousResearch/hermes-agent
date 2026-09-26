@@ -1327,7 +1327,11 @@ def _pool_first_oauth_status(
                         "logged_in": True, "auth_store": str(_auth_file_path()),
                         "last_refresh": getattr(entry, "last_refresh", None),
                         "auth_mode": auth_mode,
-                        "source": f"pool:{getattr(entry, 'label', 'unknown')}", "api_key": api_key}
+                        "source": f"pool:{getattr(entry, 'label', 'unknown')}", "api_key": api_key,
+                        # The host this entry's key belongs to, so a caller never pairs it with
+                        # another provider default (#121486).
+                        "base_url": str(getattr(entry, "runtime_base_url", None)
+                                        or getattr(entry, "base_url", None) or "").rstrip("/")}
             if on_pool_miss is not None and (degraded := on_pool_miss()):
                 return degraded
     except Exception:
@@ -1338,7 +1342,7 @@ def _pool_first_oauth_status(
             "logged_in": True, "auth_store": str(_auth_file_path()),
             "last_refresh": creds.get("last_refresh"),
             "auth_mode": creds.get("auth_mode"), "source": creds.get("source"),
-            "api_key": creds.get("api_key")}
+            "api_key": creds.get("api_key"), "base_url": creds.get("base_url") or ""}
     except AuthError as exc:
         return {"logged_in": False, "auth_store": str(_auth_file_path()), "error": str(exc)}
 

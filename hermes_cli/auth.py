@@ -1398,6 +1398,7 @@ _PROVIDER_ALIASES: Dict[str, str] = {
     "lmstudio": "lmstudio", "lm-studio": "lmstudio", "lm_studio": "lmstudio",
     "chatgpt": "openai-codex", "chatgpt-codex": "openai-codex",
     # Local server aliases — route through the generic custom provider
+    "local": "custom",
     "ollama": "custom", "ollama_cloud": "ollama-cloud",
     "vllm": "custom", "llamacpp": "custom",
     "llama.cpp": "custom", "llama-cpp": "custom"}
@@ -1947,10 +1948,15 @@ def get_codex_auth_status() -> Dict[str, Any]:
     """Status snapshot for Codex auth (pool first, then legacy provider state).
 
     Read-only by contract: status/doctor must never adopt, refresh or persist a credential (#68004)."""
-    return _pool_first_oauth_status(
+    status = _pool_first_oauth_status(
         "openai-codex", is_expiring=_codex_access_token_is_expiring, auth_mode="chatgpt",
         resolve=lambda: resolve_codex_runtime_credentials(read_only=True),
         on_pool_miss=_codex_pool_rate_limited_status)
+    if str(status.get("source") or "").startswith("pool:"):
+        # Pool rows keep the canonical URL; the chat route may send this key to model.base_url.
+        from hermes_cli.auth_codex import _codex_pool_route_base_url
+        status["base_url"] = _codex_pool_route_base_url(status.get("base_url"))
+    return status
 
 
 def get_xai_oauth_auth_status() -> Dict[str, Any]:

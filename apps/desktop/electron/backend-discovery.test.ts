@@ -86,6 +86,49 @@ test('no backend record spawns exactly one backend', async () => {
   assert.equal(spawns, 1)
 })
 
+/**
+ * `serve --isolated` is another client's backend (Desktop SSH mode from a
+ * different machine). It is live, loopback and serves a valid token, but it is
+ * not this host's shared backend: attaching to it strands this app on
+ * whatever code that client started, across our own updates.
+ */
+test('an isolated serve record is never attached; startup spawns its own backend', async () => {
+  const isolatedOnly = JSON.stringify([{ ...JSON.parse(LEDGER)[0], isolated: true }])
+  let spawns = 0
+
+  const setup = await runPrimaryBackendStartup({
+    assertCurrentAttempt: () => {},
+    attachHostBackend: () =>
+      attachToHostBackend({ isolated: false, ledgerPath: '/ledger.json' }, attachDeps(isolatedOnly)),
+    connectRemote: async () => ({ mode: 'remote' }),
+    ensureLocalRuntime: async backend => backend,
+    prepareLocalBackend: () => {
+      spawns += 1
+
+      return { label: 'spawned' }
+    },
+    resolveRemote: async () => null,
+    waitForDecision: async () => 'continue-local' as const,
+    waitForLocalStart: async () => undefined
+  })
+
+  assert.equal(setup.kind, 'local')
+  assert.equal(spawns, 1)
+})
+
+test('an ordinary serve is still attached when an isolated one is newer', async () => {
+  const [ordinary] = JSON.parse(LEDGER)
+
+  const ledger = JSON.stringify([
+    ordinary,
+    { ...ordinary, isolated: true, pid: 5150, port: 61_000, registered_at: ordinary.registered_at + 1 }
+  ])
+
+  const attached = await attachToHostBackend({ isolated: false, ledgerPath: '/ledger.json' }, attachDeps(ledger))
+
+  assert.equal(attached?.pid, 4711)
+})
+
 /** A record that fails validation is not a backend: fall through to spawning. */
 test('a record whose backend rejects the session token does not attach', async () => {
   const attached = await attachToHostBackend(

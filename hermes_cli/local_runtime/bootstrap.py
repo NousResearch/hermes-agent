@@ -35,7 +35,7 @@ def _detect_gpu_vendor() -> str | None:
     with suppress(OSError, subprocess.TimeoutExpired):
         out = subprocess.run(
             [smi, "--query-gpu=name", "--format=csv,noheader"],
-            capture_output=True, text=True, timeout=10)
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
         if out.returncode == 0 and out.stdout.strip():
             return "nvidia " + out.stdout.strip().splitlines()[0]
     return None

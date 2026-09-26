@@ -926,3 +926,30 @@ registry.register(
     handler=_execute_code_handler, check_fn=check_sandbox_requirements, emoji="🐍",
     max_result_size_chars=100_000,
 )
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+import platform  # noqa: F401,E402
+import socket  # noqa: F401,E402
+import sys  # noqa: F401,E402
+
+DEFAULT_KERNEL_MODE = "session"
+
+KERNEL_MODES = ("per-call", "session")  # legacy compat constant
+
+
+_PLUGIN_COMPAT_LAZY = {
+    'thread_scoped_silence': ('agent.thread_scoped_output', 'thread_scoped_silence'),
+}
+
+
+def __getattr__(name):  # PEP 562 — lazy so no import cycles
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----

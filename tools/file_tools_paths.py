@@ -272,6 +272,16 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | Pu
                    lambda: _resolve_base_dir(task_id, container_paths=container_paths), container_paths)
 
 
+def _resolve_entry_for_task(filepath: str, task_id: str = "default") -> Path | PurePosixPath:
+    """``_resolve_path_for_task`` for an operation on the directory entry itself (delete,
+    rename): the parent is resolved, but a symlink in the last component is kept, since
+    resolving it aims the operation at the file the link points to."""
+    parent, name = os.path.split(filepath)
+    if name in ("", ".", "..") or (not parent and name.startswith("~")):
+        return _resolve_path_for_task(filepath, task_id)
+    return _resolve_path_for_task(parent or ".", task_id) / name
+
+
 
 def _path_resolution_warning(filepath: str, resolved: Path | PurePosixPath, task_id: str = "default") -> str | None:
     """Warn when a RELATIVE path resolved OUTSIDE the task's workspace root (the

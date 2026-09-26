@@ -28,7 +28,8 @@ from tools.file_operations_common import DEFAULT_READ_LIMIT, count_conflict_bloc
 from tools import file_state
 from agent.redact import _is_secret_file_arg, redact_sensitive_text
 from tools.file_tools_paths import (
-    _expand_tilde, _path_resolution_warning, _resolve_base_dir, _resolve_path_for_task)
+    _expand_tilde, _path_resolution_warning, _resolve_base_dir, _resolve_entry_for_task,
+    _resolve_path_for_task)
 from tools.file_tools_write_guards import (
     _READ_DEDUP_STATUS_MESSAGE, _check_approval_required_write, _check_binary_document_write,
     _check_cross_profile_path, _check_protected_instruction_write, _check_sensitive_path,
@@ -150,22 +151,26 @@ _V4A_SINGLE_HEADER_RE = re.compile(r'^(\*\*\*\s*(Update|Add|Delete)\s+File:\s*)(
 _V4A_MOVE_HEADER_RE = re.compile(r'^(\*\*\*\s*Move\s+File:\s*)(.+?)\s*->\s*(.+)$', re.MULTILINE)
 
 
-def _rewrite_v4a_patch_paths_for_host(patch: str, path_to_resolved: dict, file_ops) -> str:
+def _rewrite_v4a_patch_paths_for_host(patch: str, path_to_resolved: dict, path_to_entry: dict,
+                                      file_ops) -> str:
     """Rewrite V4A file headers to the resolved host paths (host backends only).
 
     The shell layer must patch the SAME files ``patch_tool`` resolved for
     locking/staleness, not re-resolve a relative header against its own cwd
-    (which can differ — the git-worktree cwd bug).
+    (which can differ — the git-worktree cwd bug). Delete and Move headers take
+    ``path_to_entry``: they act on a symlink itself, never on its target.
     """
     if not _file_ops_uses_host_paths(file_ops):
         return patch
 
-    def _res(raw: str) -> str:
+    def _res(raw: str, entry: bool = False) -> str:
         raw = raw.strip()
-        return path_to_resolved.get(raw) or raw
+        return (path_to_entry if entry else path_to_resolved).get(raw) or raw
 
-    patch = _V4A_SINGLE_HEADER_RE.sub(lambda m: f"{m.group(1)}{_res(m.group(3))}", patch)
-    return _V4A_MOVE_HEADER_RE.sub(lambda m: f"{m.group(1)}{_res(m.group(2))} -> {_res(m.group(3))}", patch)
+    patch = _V4A_SINGLE_HEADER_RE.sub(
+        lambda m: f"{m.group(1)}{_res(m.group(3), entry=m.group(2) == 'Delete')}", patch)
+    return _V4A_MOVE_HEADER_RE.sub(
+        lambda m: f"{m.group(1)}{_res(m.group(2), entry=True)} -> {_res(m.group(3), entry=True)}", patch)
 
 
 def _is_blocked_device_path(path: str) -> bool:
@@ -750,10 +755,11 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
 
 # ── Shared write/patch plumbing ──────────────────────────────────────────
 
-def _resolve_or_none(filepath: str, task_id: str) -> str | None:
-    """Task-resolved path string, or None when resolution fails for any reason."""
+def _resolve_or_none(filepath: str, task_id: str, *, entry: bool = False) -> str | None:
+    """Task-resolved path string, or None when resolution fails for any reason.
+    ``entry``: keep a symlink in the last component (``_resolve_entry_for_task``)."""
     try:
-        return str(_resolve_path_for_task(filepath, task_id))
+        return str((_resolve_entry_for_task if entry else _resolve_path_for_task)(filepath, task_id))
     except Exception:
         return None
 
@@ -917,13 +923,14 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
         return tool_error(str(e))
 
 
-def _collect_v4a_header_paths(patch: str) -> tuple[list[str], list[str]] | str:
+def _collect_v4a_header_paths(patch: str) -> tuple[list[str], list[str], list[str]] | str:
     """Extract every path named in V4A headers, rejecting ``..`` traversal.
 
-    Returns ``(all_paths, content_write_paths)`` or a tool_error string. Header
-    paths come from patch CONTENT (more attacker-influenceable than ``path=``,
-    which keeps its legitimate ``..`` use). Move headers check BOTH endpoints;
-    only Update/Add write text and feed the binary-document guard.
+    Returns ``(all_paths, content_write_paths, entry_paths)`` or a tool_error
+    string. Header paths come from patch CONTENT (more attacker-influenceable
+    than ``path=``, which keeps its legitimate ``..`` use). Move headers check
+    BOTH endpoints; only Update/Add write text and feed the binary-document
+    guard; Delete and Move act on the directory entry (``entry_paths``).
     """
     from tools.path_security import has_traversal_component
 
@@ -931,6 +938,7 @@ def _collect_v4a_header_paths(patch: str) -> tuple[list[str], list[str]] | str:
     headers += [(g, False) for m in _V4A_MOVE_HEADER_RE.finditer(patch) for g in (m.group(2), m.group(3))]
     paths: list[str] = []
     content_paths: list[str] = []
+    entry_paths: list[str] = []
     for raw, writes_text in headers:
         v4a_path = raw.strip()
         if has_traversal_component(v4a_path):
@@ -940,9 +948,8 @@ def _collect_v4a_header_paths(patch: str) -> tuple[list[str], list[str]] | str:
                 "path in '*** Update File:' / '*** Add File:' / "
                 "'*** Delete File:' / '*** Move File:' headers.")
         paths.append(v4a_path)
-        if writes_text:
-            content_paths.append(v4a_path)
-    return paths, content_paths
+        (content_paths if writes_text else entry_paths).append(v4a_path)
+    return paths, content_paths, entry_paths
 
 
 def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
@@ -956,12 +963,14 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
     """
     _paths_to_check = [path] if path else []
     _content_write_paths = list(_paths_to_check)
+    _entry_paths: list[str] = []
     if mode == "patch" and patch:
         collected = _collect_v4a_header_paths(patch)
         if isinstance(collected, str):
             return collected
         _paths_to_check += collected[0]
         _content_write_paths += collected[1]
+        _entry_paths = collected[2]
     precheck_err = _write_precheck_error(_paths_to_check, _content_write_paths, task_id, cross_profile)
     if precheck_err:
         return tool_error(precheck_err)
@@ -970,8 +979,9 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         # overlapping multi-file patches can't deadlock (every caller locks in
         # the same order). An unresolvable path is simply not locked.
         _path_to_resolved: dict[str, str] = {_p: _resolve_or_none(_p, task_id) for _p in _paths_to_check}
+        _path_to_entry: dict[str, str] = {_p: _resolve_or_none(_p, task_id, entry=True) for _p in _entry_paths}
         with ExitStack() as _locks:
-            for _r in sorted({_r for _r in _path_to_resolved.values() if _r}):
+            for _r in sorted({_r for _r in (*_path_to_resolved.values(), *_path_to_entry.values()) if _r}):
                 _locks.enter_context(file_state.lock_path(_r))
             stale_warnings = _edit_warnings(_paths_to_check, _path_to_resolved, task_id)
             file_ops = _get_file_ops(task_id)
@@ -988,7 +998,8 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             elif mode == "patch":
                 if not patch:
                     return tool_error("patch content required")
-                result = file_ops.patch_v4a(_rewrite_v4a_patch_paths_for_host(patch, _path_to_resolved, file_ops))
+                result = file_ops.patch_v4a(
+                    _rewrite_v4a_patch_paths_for_host(patch, _path_to_resolved, _path_to_entry, file_ops))
             else:
                 return tool_error(f"Unknown mode: {mode}")
 
@@ -998,7 +1009,8 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             if not result_dict.get("error"):
                 # Report the ABSOLUTE path(s) actually patched so a wrong-cwd
                 # mismatch is visible instead of silently landing elsewhere.
-                _resolved_modified = [_path_to_resolved.get(_p) or _p for _p in _paths_to_check]
+                _resolved_modified = [_path_to_entry.get(_p) or _path_to_resolved.get(_p) or _p
+                                      for _p in _paths_to_check]
                 result_dict["files_modified"] = _resolved_modified
                 if len(_resolved_modified) == 1:
                     result_dict["resolved_path"] = _resolved_modified[0]

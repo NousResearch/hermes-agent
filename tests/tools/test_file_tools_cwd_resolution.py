@@ -301,3 +301,52 @@ def test_v4a_patch_applies_to_resolved_workspace_not_backend_cwd(
     assert (workspace / "target.py").read_text() == "WORKSPACE_PATCHED\n"
     # The decoy (backend cwd) was left untouched.
     assert (decoy / "target.py").read_text() == "DECOY_ORIGINAL\n"
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("header", [
+    "*** Delete File: local.yaml",
+    "*** Move File: local.yaml -> old.yaml",
+    "*** Update File: local.yaml\n@@\n-shared: true\n+shared: false\n*** Move File: local.yaml -> old.yaml",
+])
+def test_v4a_delete_and_move_act_on_a_symlink_not_its_target(_isolated_cwd, monkeypatch, header):
+    """Delete and Move act on the directory entry. Resolving a symlinked header to its
+    target deleted or renamed the real file and left the link dangling; an Update still
+    edits the target's content through the link. The contract holds whatever the move
+    primitive allows: the target is never deleted or moved, and the link is never lost."""
+    import json
+
+    from tools.environments.local import LocalEnvironment
+    from tools.file_operations import ShellFileOperations
+    from tools.registry import registry
+
+    workspace, _decoy = _isolated_cwd
+    task_id = "sess-v4a-link"
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+    monkeypatch.setattr(ft, "_file_ops_cache", {})
+    terminal_tool.register_task_env_overrides(task_id, {"cwd": str(workspace)})
+    env = LocalEnvironment(cwd=str(workspace))
+    monkeypatch.setattr(ft, "_get_file_ops", lambda task_id="default": ShellFileOperations(env))
+    target, link = workspace / "base.yaml", workspace / "local.yaml"
+    target.write_text("shared: true\n")
+    link.symlink_to("base.yaml")
+
+    out = json.loads(registry.dispatch(
+        "patch", {"mode": "patch", "patch": f"*** Begin Patch\n{header}\n*** End Patch\n"}, task_id=task_id))
+
+    assert target.is_file() and not target.is_symlink()
+    assert target.read_text() == ("shared: false\n" if "Update" in header else "shared: true\n")
+    if "Move" not in header:
+        assert out.get("success"), out
+        assert not os.path.lexists(link)
+        assert str(link) in out["files_modified"]
+        return
+    # A Move renames the link itself; a no-clobber move primitive may refuse a symlink
+    # source instead, which leaves it in place. It ends up under exactly one name.
+    moved = os.path.lexists(workspace / "old.yaml")
+    assert moved != os.path.lexists(link)
+    kept = workspace / "old.yaml" if moved else link
+    assert kept.is_symlink() and os.readlink(kept) == "base.yaml"
+    if moved:
+        assert out.get("success"), out
+        assert str(link) in out["files_modified"]

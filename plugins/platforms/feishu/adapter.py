@@ -2729,21 +2729,21 @@ class FeishuAdapter(BasePlatformAdapter):
         return await cache_image_from_url(image_url, ext=ext)
 
     async def _download_remote_document(self, file_url: str, *, default_ext: str, preferred_name: str) -> tuple[str, str]:
-        from gateway.platforms.base import _ssrf_redirect_guard
+        from gateway.platforms.base import _read_httpx_body_with_limit, _ssrf_redirect_guard
         from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
         if not is_safe_url(file_url):
             raise ValueError(f"Blocked unsafe URL (SSRF protection): {file_url[:80]}")
         async with create_ssrf_safe_async_client(
             timeout=30.0, follow_redirects=True, event_hooks={"response": [_ssrf_redirect_guard]},
         ) as client:
-            response = await client.get(
-                file_url, headers={"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)", "Accept": "*/*"},
-            )
-            response.raise_for_status()
-            # Snapshot headers + body inside the context so pooled connections fully release.
-            # See #18451.
-            content_type_hdr = str(response.headers.get("Content-Type", ""))
-            body = response.content
+            async with client.stream(
+                "GET", file_url, headers={"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)", "Accept": "*/*"},
+            ) as response:
+                response.raise_for_status()
+                # Snapshot headers + body inside the context so pooled connections fully release.
+                # See #18451.
+                content_type_hdr = str(response.headers.get("Content-Type", ""))
+                body = await _read_httpx_body_with_limit(response, media_type="document")
         filename = self._derive_remote_filename(
             file_url, content_type=content_type_hdr, default_name=preferred_name, default_ext=default_ext,
         )

@@ -108,3 +108,41 @@ def test_undo_returns_prefill_with_target_text(server, session_with_history):
     assert all("_row_id" in message for message in s["history"])
 
 
+def test_compute_host_undo_rewinds_durable_history_the_parent_never_saw(server, db, session_with_history):
+    sid, session_key, session, _agent = session_with_history
+    session["agent"] = None
+    session["history"] = []
+    session["_compute_host_active"] = True  # turns ran on the compute host; this process saw none
+
+    response = _call(server, "command.dispatch", session_id=sid, name="undo", arg="")
+
+    assert response["result"]["type"] == "prefill"
+    assert response["result"]["message"] == "question 3"
+    assert [message["content"] for message in db.get_messages_as_conversation(session_key)
+            if message["role"] == "user"] == ["question 1", "question 2"]
+
+
+def test_compute_host_session_undo_rewinds_durable_history(server, db, session_with_history):
+    sid, session_key, session, _agent = session_with_history
+    session["agent"] = None
+    session["history"] = []
+    session["_compute_host_active"] = True  # turns ran on the compute host; this process saw none
+
+    response = _call(server, "session.undo", session_id=sid)
+
+    assert response["result"]["removed"] > 0
+    assert [message["content"] for message in db.get_messages_as_conversation(session_key)
+            if message["role"] == "user"] == ["question 1", "question 2"]
+
+
+def test_compute_host_retry_replays_from_durable_history(server, db, session_with_history):
+    sid, session_key, session, _agent = session_with_history
+    session["agent"] = None
+    session["history"] = []
+    session["_compute_host_active"] = True  # turns ran on the compute host; this process saw none
+
+    response = _call(server, "command.dispatch", session_id=sid, name="retry", arg="")
+
+    assert response["result"] == {"type": "send", "message": "question 3"}
+    assert [message["content"] for message in db.get_messages_as_conversation(session_key)
+            if message["role"] == "user"] == ["question 1", "question 2"]

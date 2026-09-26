@@ -556,6 +556,28 @@ def _session_db(session: dict):
         yield None if db is _WORKDIR_DB_OPEN_FAILED else db
 
 
+def _refresh_idle_hosted_history(session: dict) -> None:
+    """Reload an idle compute-host session's model history from SessionDB before a rewind.
+
+    Under turn isolation the compute host writes each turn's rows; this process never sees
+    them, so ``history`` still holds whatever resume/create seeded (often nothing). Rewinding
+    that copy reports "no user messages" or cuts the wrong turn although the rows are on
+    disk. Loads the same projection a cold resume gives the model (the tip's active rows,
+    ancestors excluded, so an edit can't resurrect a compacted prefix). Caller holds
+    ``history_lock`` and has already refused a running turn.
+    """
+    if session.get("running") or not session.get("_compute_host_active"):
+        return
+    session_key = str(session.get("session_key") or "").strip()
+    if not session_key:
+        return
+    with _session_db(session) as db:
+        if db is None:
+            raise RuntimeError("session database is unavailable")
+        raw_history, _display, _prefix = _load_resume_transcript(db, session_key, model_history_only=True)
+    session["history"] = canonicalize_replay_history(raw_history)
+
+
 def _rewind_active_session_history(
     session: dict, user_ordinal: int, *, require_retryable: bool = False) -> tuple[list[dict], dict, int]:
     """Rewind one canonical user turn while retaining carrier scaffolding. Caller holds ``history_lock``. Persistent

@@ -200,7 +200,7 @@ def prune_old_snapshots() -> List[str]:
 def _prune_old(keep: int, protect: Optional[Set[str]] = None) -> List[str]:
     """Delete regular snapshots beyond the newest *keep*; returns deleted ids. Ids in *protect* are never deleted —
     rollback() uses this so the mandatory pre-rollback safety snapshot cannot evict the snapshot being restored.
-    Stale ``.rollback-staging-*`` dirs (crashed rollback) are cleaned up on every call."""
+    Stale ``.rollback-staging-*`` dirs (crashed rollback) are cleaned up on every call; ``.rollback-unrestored-*`` is kept on purpose."""
     protect = protect or set()
     backups = _backups_dir()
     if not backups.exists():
@@ -230,7 +230,7 @@ def _read_manifest(snap_dir: Path) -> Dict[str, Any]:
 
 
 def _is_restorable(child: Path) -> bool:
-    """A real snapshot dir with a tarball (excludes ``.rollback-staging-*``)."""
+    """A real snapshot dir with a tarball (excludes ``.rollback-staging-*`` and retained ``.rollback-unrestored-*``)."""
     return bool(child.is_dir() and _ID_RE.match(child.name) and (child / _ARCHIVE_NAME).exists())
 
 

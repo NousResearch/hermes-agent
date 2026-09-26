@@ -19,6 +19,7 @@ from typing import NoReturn
 
 from hermes_cli.config import get_hermes_home  # noqa: F401  (re-exported; patched via update_cmd)
 from hermes_cli import update_handoff as _update_handoff
+from hermes_cli import update_progress
 from hermes_cli.update_cmd_common import _best_effort
 # Captured BEFORE a checkout swap: parent transport/lifecycle never imports new code.
 from hermes_cli.update_completion import run_completion
@@ -1182,6 +1183,7 @@ def _handle_update_called_process_error(
         print(f"⚠ {stage}: {e}")
         print("→ Falling back to ZIP download...")
         print()
+        update_progress.step("Download and swap update")
         _update_via_zip(
             args, had_desktop_app_before_update=had_desktop_app_before_update,
             target_sha=target_sha, completion_request=completion_request,
@@ -1242,6 +1244,7 @@ def _finish_already_up_to_date(
         completion_request["completion_message"] = (
             "✓ Already up to date!" if _plan.upstream_checked
             else "✓ Up to date with your fork (official repo not checked).")
+    update_progress.step("Install and restart")
     _complete_source_update(completion_request)
 
 
@@ -1260,7 +1263,19 @@ def _apply_pulled_update(
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             sys.exit(1)
         completion_request["expected_sha"] = pinned or observed
+    update_progress.step("Install and restart")
     _complete_source_update(completion_request)
+
+
+def _update_progress_phases(use_zip_update: bool, args) -> tuple[str, ...]:
+    """Fixed phase plan for this run's path so progress renders a determinate
+    ``[k/N]`` sequence (#122691). ``--branch`` runs skip channel resolution."""
+    phases = [] if getattr(args, "branch", None) else ["Resolve update channel"]
+    if use_zip_update:
+        phases += ["Download and swap update", "Install and restart"]
+    else:
+        phases += ["Fetch updates", "Prepare checkout", "Pull update", "Install and restart"]
+    return tuple(phases)
 
 
 def _cmd_update_impl(args, gateway_mode: bool):
@@ -1295,6 +1310,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     completion_request = _source_completion_request(
         opts, _pre_update_plan, pre_update_snapshot_id, _windows_gateway_resume,
         had_desktop_app_before_update, gateway_mode)
+    update_progress.begin(_update_progress_phases(use_zip_update, args))
     branch = _m()._resolve_update_branch(args)
     completion_request["branch"] = branch
     target_ref = f"origin/{branch}"
@@ -1302,6 +1318,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     target_repository = None
     selected_channel = _source_update_channel(args)
     if not getattr(args, "branch", None):
+        update_progress.step("Resolve update channel")
         from hermes_cli.source_releases import resolve_source_target
 
         from copy import deepcopy
@@ -1336,6 +1353,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             target_ref = f"origin/{branch}"
 
     if use_zip_update:
+        update_progress.step("Download and swap update")
         try:
             _update_via_zip(
                 args, had_desktop_app_before_update=had_desktop_app_before_update,
@@ -1371,6 +1389,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # runs and failed restores preserve the stash but nothing ever mentioned it again.
         _m()._warn_orphaned_update_autostashes(git_cmd, _m().PROJECT_ROOT)
 
+        update_progress.step("Fetch updates")
         print("→ Fetching updates...")
         if release_sha:
             fetch_result = _git_run(git_cmd, ["fetch", "--no-tags", "origin", target_ref], network=True)
@@ -1382,6 +1401,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             sys.exit(1)
 
         current_branch = _current_branch_name(git_cmd, check=True)
+        update_progress.step("Prepare checkout")
         _plan = _prepare_checkout_for_update(
             git_cmd, branch, current_branch, is_fork=is_fork, assume_yes=assume_yes,
             gateway_mode=gateway_mode, gw_input_fn=gw_input_fn, switch_branch=opts.switch_branch,
@@ -1402,6 +1422,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # Shallow, exact count unrecoverable — but the tips differ, so there IS an update.
             print("→ Updates available (commit count unknown on this shallow checkout)")
 
+        update_progress.step("Pull update")
         print("→ Pulling updates...")
         pre_pull_sha = _pull_updates(
             git_cmd, branch, _plan.auto_stash_ref, prompt_for_restore=_plan.prompt_for_restore,

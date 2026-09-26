@@ -54,7 +54,12 @@ def zip_update(tmp_path, monkeypatch, isolated_source_completion):
                      "venv/keep", "node_modules/keep", ".env"):
             out.writestr("hermes-agent-main/" + name, "new")
     # Only redirect transport: extraction, staging, dirty recheck and swap run.
-    monkeypatch.setattr("urllib.request.urlretrieve", lambda url, dst: urlretrieve(archive.as_uri(), dst))
+    def _redirect(url, dst, reporthook=None):
+        urlretrieve(archive.as_uri(), dst)
+        if reporthook is not None:
+            size = Path(dst).stat().st_size
+            reporthook(1, size, size)
+    monkeypatch.setattr("urllib.request.urlretrieve", _redirect)
     monkeypatch.setattr(main, "PROJECT_ROOT", root)
     events = []
     token = {"resume_needed": True, "profiles": {}, "unmapped": []}
@@ -295,7 +300,8 @@ def test_atomic_directory_compat_entrypoint(tmp_path):
 
 
 def test_zip_refuses_non_main_before_transport(zip_update, monkeypatch, capsys):
-    monkeypatch.setattr('urllib.request.urlretrieve', lambda *_: pytest.fail('unsupported branch downloaded'))
+    monkeypatch.setattr('urllib.request.urlretrieve',
+                        lambda *_, **_kwargs: pytest.fail('unsupported branch downloaded'))
     before = (zip_update.root / 'payload.txt').read_bytes()
     with pytest.raises(SystemExit) as error:
         update_cmd_zip._update_via_zip(SimpleNamespace(branch='feature'), completion_request={})

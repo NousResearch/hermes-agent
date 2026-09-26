@@ -326,6 +326,7 @@ def _download_and_swap_zip(branch: str, zip_url: str) -> None:
     Two-phase: stage every entry (dirs AND top-level files) beside its target, then swap all in with
     same-filesystem renames, rolling back on failure — one-at-a-time replacement left a mixed, unbootable
     tree on interruption."""
+    from hermes_cli import update_progress
     from hermes_cli.update_cmd import _m
 
     import tempfile
@@ -334,7 +335,11 @@ def _download_and_swap_zip(branch: str, zip_url: str) -> None:
     tmp_dir = tempfile.mkdtemp(prefix="hermes-update-")
     try:
         zip_path = os.path.join(tmp_dir, f"hermes-agent-{branch}.zip")
-        urlretrieve(zip_url, zip_path)
+        # reporthook exposes the transport's byte counts (Content-Length when the
+        # server sends one) for determinate download progress (#122691).
+        urlretrieve(zip_url, zip_path,
+                    reporthook=lambda blocks, blocksize, size: update_progress.byte_progress(
+                        blocks * blocksize, size))
         print("→ Extracting...")
         _extract_zip_safely(zip_path, tmp_dir)
         extracted = _extracted_root(tmp_dir, branch)
@@ -379,6 +384,7 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False,
 
     A supplied commit keeps the archive on the target selected before Git failed.
     """
+    from hermes_cli import update_progress
     from hermes_cli.update_cmd import _m, _complete_source_update
     # The static archive would silently ignore --branch — the exact silent-divergence bug it exists to
     # prevent. Refuse rather than lie.
@@ -406,5 +412,6 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False,
         raise ValueError("ZIP update requires a GitHub owner/repository")
     _download_and_swap_zip(branch, f"https://github.com/{repository}/archive/{ref}.zip")
     completion_request["expected_sha"] = target_sha
+    update_progress.step("Install and restart")
     _complete_source_update(completion_request)
     return True

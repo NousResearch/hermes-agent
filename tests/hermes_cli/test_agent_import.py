@@ -775,3 +775,80 @@ class TestSyncManifest:
         self._run_command(None, None, sync=True, dry_run=True)
         assert snapshot_tree(hermes_home) == before
         assert load_sync_manifest(hermes_home)["agents"]["claude-code"]["digest"] == old_digest
+
+
+# ---------------------------------------------------------------------------
+# MEMORY.md merge budget: the target profile's memory.memory_char_limit
+# (a store written past it makes every later memory add refuse)
+# ---------------------------------------------------------------------------
+
+def long_entry(i: int) -> str:
+    """~47-char unique entry (merge_entries dedupes repeats)."""
+    return f"- alpha entry with enough text to be a long one {i:02d}"
+
+
+class TestMemoryCharLimit:
+
+    def test_merge_stops_at_configured_memory_char_limit(
+            self, profile_env, hermes_home):
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"memory": {"memory_char_limit": 120}}), encoding="utf-8")
+        root = profile_env / ".claude"
+        root.mkdir()
+        (root / "CLAUDE.md").write_text(
+            "\n".join(long_entry(i) for i in range(4)) + "\n", encoding="utf-8")
+        report = run_import("claude-code", root, hermes_home, execute=True)
+        store = (hermes_home / "memories" / "MEMORY.md").read_text(encoding="utf-8")
+        assert len(store.strip()) <= 120
+        item = [i for i in report["items"] if i["kind"] == "claude-md"][0]
+        assert item["memory_char_limit"] == 120
+        assert item["added_entries"] > 0
+        assert item["overflowed_entries"] > 0
+        assert "left out" in item.get("note", "")
+
+
+    def test_default_limit_is_the_memory_tool_default_not_20000(
+            self, profile_env, hermes_home):
+        # 80 unique ~48-char entries (~4K chars joined) all fit the old hardcoded 20,000
+        # budget and poisoned the store: the memory tool refuses every later add at 2,200.
+        root = profile_env / ".claude"
+        root.mkdir()
+        (root / "CLAUDE.md").write_text(
+            "\n".join(long_entry(i) for i in range(80)) + "\n", encoding="utf-8")
+        report = run_import("claude-code", root, hermes_home, execute=True)
+        store = (hermes_home / "memories" / "MEMORY.md").read_text(encoding="utf-8")
+        assert len(store.strip()) <= 2200
+        item = [i for i in report["items"] if i["kind"] == "claude-md"][0]
+        assert item["memory_char_limit"] == 2200
+        assert item["overflowed_entries"] > 0
+
+
+    def test_unusable_profile_config_falls_back_to_default_limit(
+            self, profile_env, hermes_home):
+        (hermes_home / "config.yaml").write_text("{not yaml!!", encoding="utf-8")
+        root = profile_env / ".claude"
+        root.mkdir()
+        (root / "CLAUDE.md").write_text(
+            "\n".join(long_entry(i) for i in range(80)) + "\n", encoding="utf-8")
+        report = run_import("claude-code", root, hermes_home, execute=True)
+        store = (hermes_home / "memories" / "MEMORY.md").read_text(encoding="utf-8")
+        assert len(store.strip()) <= 2200
+        item = [i for i in report["items"] if i["kind"] == "claude-md"][0]
+        assert item["memory_char_limit"] == 2200
+
+
+    def test_all_entries_overflow_reported_as_left_out(
+            self, profile_env, hermes_home):
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"memory": {"memory_char_limit": 120}}), encoding="utf-8")
+        root = profile_env / ".claude"
+        root.mkdir()
+        too_long = "- " + "x" * 200
+        (root / "CLAUDE.md").write_text(too_long + "\n", encoding="utf-8")
+        report = run_import("claude-code", root, hermes_home, execute=True)
+        item = [i for i in report["items"] if i["kind"] == "claude-md"][0]
+        assert item["status"] == "skipped"
+        assert item["added_entries"] == 0
+        assert item["overflowed_entries"] == 1
+        assert "left out" in item["reason"]
+        assert not (hermes_home / "memories" / "MEMORY.md").exists()

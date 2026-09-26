@@ -12,7 +12,8 @@ bootstrap frontend iterates manifest stages and always pairs the flag;
 standalone dispatch is the long-standing contract).
 
 Boundary: the test generates a PowerShell wrapper that defines stub
-functions (New-Object intercepting WScript.Shell, icacls, ie4uinit.exe)
+functions (New-Object intercepting WScript.Shell, icacls, ie4uinit.exe,
+Set-LauncherUserPath)
 and then DOT-SOURCES the real install.ps1 with -Stage desktop — the full
 stage runs in one real PowerShell process against a temp home/install
 dir, with every external effect either fake (compiled external bootstrap python)
@@ -130,6 +131,10 @@ function ie4uinit.exe {
 # Load the definitions, then execute the real stage dispatcher.
 . $InstallerPath -InstallDir $InstallDir -HermesHome $HermesHome
 function Get-BootstrapPython { return $env:FAKE_BOOT_PY }
+# Replace only the registry publication edge, never mutate the actual user PATH.
+function Set-LauncherUserPath([string]$binDir) {
+    Add-Content -Path $env:ICACLS_LOG -Value "user-path $binDir"
+}
 Invoke-StageByName 'desktop'
 exit $LASTEXITCODE
 '''
@@ -224,8 +229,8 @@ def test_desktop_stage_uses_pm_sync_and_product_cli(tmp_path: Path) -> None:
     runs the CURRENT path: the shared completion tail (source_completion.py
     --desktop, the same call `hermes update` makes) builds the products; the produced
     artifact is probed, ACL-granted, and shortcut-ed — with icacls,
-    ie4uinit.exe, and WScript.Shell intercepted in the wrapper boundary so
-    nothing outside the temp dirs is touched."""
+    ie4uinit.exe, WScript.Shell and the user PATH write intercepted in the
+    wrapper boundary so nothing outside the temp dirs is touched."""
     powershell = shutil.which("powershell")
     if not powershell:
         pytest.skip("Windows PowerShell is required")
@@ -288,6 +293,9 @@ def test_desktop_stage_uses_pm_sync_and_product_cli(tmp_path: Path) -> None:
     ), icacls_lines
     # 5. icon-cache bust hit the intercepted ie4uinit.exe stub.
     assert any(line.startswith("ie4uinit.exe") for line in icacls_lines), icacls_lines
+    # User PATH publication hit the stub, never the real HKCU registry value.
+    assert any(line.startswith("user-path ") and line.endswith("hermes-home\\bin")
+               for line in icacls_lines), icacls_lines
     # 6. shortcut creation went through the intercepted WScript.Shell stub:
     #    logged, pointing at the produced exe, and NOT written to any real
     #    known folder.

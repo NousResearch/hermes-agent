@@ -18504,6 +18504,43 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
             process_registry.completion_queue.get_nowait()
 
 
+def test_notification_poller_drops_heartbeat_when_busy(monkeypatch):
+    """A stale process heartbeat must not re-enter the model while a turn is live."""
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    emitted = []
+    sess = _session(running=True)
+    server._sessions["sid_busy_heartbeat"] = sess
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: emitted.append(a))
+
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    isolated_queue.put({
+        "type": "heartbeat",
+        "session_id": "proc_stale_heartbeat",
+        "seq": 4,
+        "command": "codex exec",
+        "elapsed": 480,
+        "interval": 120,
+        "output": "",
+    })
+
+    stop = threading.Event()
+    stop.set()
+    try:
+        server._notification_poller_loop(stop, "sid_busy_heartbeat", sess)
+        assert isolated_queue.empty()
+        status_calls = [call for call in emitted if call[0] == "status.update"]
+        assert len(status_calls) == 1
+        assert "still running" in status_calls[0][2]["text"]
+    finally:
+        server._sessions.pop("sid_busy_heartbeat", None)
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+
+
 def test_session_save_writes_under_hermes_home_with_system_prompt(monkeypatch, tmp_path):
     """TUI /save (session.save RPC) must snapshot under the Hermes profile
     home — not the project/workspace CWD — and include the system prompt,

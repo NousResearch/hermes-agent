@@ -123,5 +123,63 @@ def test_cleanup_terminal_temp_cache(tmp_path, monkeypatch):
     assert not (root / "hermes_bg_dead1.log").exists()
 
 
+def test_cleanup_terminal_temp_cache_removes_symlink_to_dir(tmp_path, monkeypatch):
+    """A symlink-to-directory entry is an artifact like any other: rmtree no-ops on a
+    symlink (and silently counts it removed), so the sweep must unlink it, not rmtree it."""
+    import time
+
+    from tools.environments import local as local_mod
+
+    root = tmp_path / "cache" / "terminal"
+    root.mkdir(parents=True)
+    monkeypatch.setattr(local_mod, "_default_terminal_temp_dir", lambda: root)
+
+    target = tmp_path / "real_target"
+    target.mkdir()
+    (target / "data.txt").write_text("hi")
+
+    link = root / "link_to_dir"
+    link.symlink_to(target, target_is_directory=True)
+    old = time.time() - 100 * 3600
+    os.utime(link, (old, old), follow_symlinks=False)
+
+    removed = local_mod.cleanup_terminal_temp_cache(max_age_hours=24)
+    assert removed == 1
+    assert not link.exists()          # the symlink itself is gone
+    assert target.exists()            # the pointed-to directory is untouched
+    assert (target / "data.txt").exists()
+
+
+def test_cleanup_terminal_temp_cache_removes_dangling_symlink(tmp_path, monkeypatch):
+    """A link whose target is gone is reclaimed too: stat() cannot age it.
+
+    The sweep ages entries with ``stat()``, which follows the link — so a dangling entry
+    raised and was skipped before it could ever be classified, leaving the link in the
+    cache forever. The link's own mtime is the only age available for it.
+    """
+    import time
+
+    from tools.environments import local as local_mod
+
+    root = tmp_path / "cache" / "terminal"
+    root.mkdir(parents=True)
+    monkeypatch.setattr(local_mod, "_default_terminal_temp_dir", lambda: root)
+
+    target = tmp_path / "real_target"
+    target.mkdir()
+    link = root / "link_dangling"
+    link.symlink_to(target, target_is_directory=True)
+    old = time.time() - 100 * 3600
+    os.utime(link, (old, old), follow_symlinks=False)  # age the LINK, not its target
+    target.rmdir()  # the entry now dangles
+    assert link.is_symlink() and not link.exists()
+
+    removed = local_mod.cleanup_terminal_temp_cache(max_age_hours=24)
+
+    assert removed == 1
+    assert not link.is_symlink(), "the dangling symlink itself is gone"
+    assert (root / "link_dangling").exists() is False
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))

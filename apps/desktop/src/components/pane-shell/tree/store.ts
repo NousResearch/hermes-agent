@@ -8,7 +8,7 @@ import { atom, computed, type ReadableAtom } from 'nanostores'
 
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '@/app/layout-constants'
 import { setPluginEnabled } from '@/contrib/plugins-store'
-import { $registryVersion, registry } from '@/contrib/registry'
+import { registry } from '@/contrib/registry'
 import { translateNow } from '@/i18n'
 import { LAYOUT_KEYS } from '@/lib/layout-persistence'
 import { Codecs } from '@/lib/persisted'
@@ -847,21 +847,6 @@ export function shownPanesInGroup(group: { panes: readonly string[] }): string[]
   })
 }
 
-/** How many zones currently show a MAIN tile (a chat, a page, a preview). A
- *  count, not a list, so it notifies only when a main zone appears or goes —
- *  every TreeGroup reads it, and a sash drag rewrites the tree once per frame.
- *  Registry-versioned because a freshly adopted session tile is in the tree
- *  before its contribution registers `placement: 'main'`. */
-export const $mainTileZoneCount = computed(
-  [$layoutTree, $hiddenTreePanes, $registryVersion],
-  (tree: LayoutNode | null) =>
-    tree
-      ? groupLeafIds(tree).filter(id =>
-          shownPanesInGroup({ panes: findGroup(tree, id)?.panes ?? [] }).some(isMainStripPane)
-        ).length
-      : 0
-)
-
 /** Is this zone showing a tab strip right now? The store's adapter over the
  *  shared resolver — TreeGroup answers the same question from its own render
  *  inputs, so the toggle command and the strip on screen cannot disagree about
@@ -875,8 +860,7 @@ export function tabStripVisibleForGroup(group: GroupNode): boolean {
     isCollapsePane,
     mode: group.tabStrip,
     paneFor: (id: string) => registered.find(c => c.id === id),
-    shown,
-    siblingMainZone: $mainTileZoneCount.get() > (shown.some(isMainStripPane) ? 1 : 0)
+    shown
   })
 }
 

@@ -695,6 +695,19 @@ export function ChatBar({
       return
     }
 
+    // PageUp/PageDown: the composer is a single-line contentEditable — these
+    // keys have no text-editing purpose, and letting their default bubble to
+    // the browser's scroll-the-nearest-scrollable-ancestor behavior breaks the
+    // chat layout in the desktop pane tree (large blank area, sidebar pushed
+    // off-screen — #49978). Swallow the default here; the global
+    // conversation.scrollPageUp/Down keybind turns the intent into an
+    // explicit, focused-transcript page instead.
+    if (event.key === 'PageUp' || event.key === 'PageDown') {
+      event.preventDefault()
+
+      return
+    }
+
     // macOS Chinese IME (and some 3rd-party IMEs on Windows) emit Enter with
     // keyCode 229 (legacy VK_PROCESSKEY) while isComposing is already false.
     // The compositionend has fired but the keydown still carries 229, signalling

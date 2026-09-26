@@ -1870,12 +1870,22 @@ def _gui_surface_toolsets(platform: str) -> set[str]:
 def _with_session_toolsets(selection, platform: str | None) -> list[str]:
     """*selection* plus what the session carries whatever its config says (the client surface's
     toolsets when *platform* is given; the ones its PROFILE's role reserves, from the backend-written
-    profile.yaml under the session's home override), minus toolsets reserved for another role."""
+    profile.yaml under the session's home override), minus toolsets reserved for another role.
+
+    The fold-in happens after ``_get_platform_tools`` already subtracted ``agent.disabled_toolsets``,
+    so the same subtraction is applied to the fold-in itself — otherwise ``disabled_toolsets:
+    [project]`` is a no-op on desktop/TUI, the only surfaces where the client toolsets exist
+    (#54433). ``desktop_ui`` is kept regardless: it is the client's own control surface, not a
+    model toolset."""
     from toolsets import profile_role_toolsets
     granted, denied = profile_role_toolsets()
     surface = _gui_surface_toolsets(platform) if platform is not None else set()
     kept = [name for name in selection if name not in denied]
-    return [*kept, *sorted((surface | granted) - set(kept))]
+    fold_in = (surface | granted) - set(kept)
+    disabled = set(_load_disabled_toolsets() or [])
+    if disabled:
+        fold_in -= disabled - {"desktop_ui"}
+    return [*kept, *sorted(fold_in)]
 
 
 def _tui_notice(text: str) -> None:
@@ -2114,8 +2124,10 @@ def _current_profile_name() -> str:
 
 
 # Monotonic GUI<->backend contract version: the desktop refuses a backend reporting less (or none) with a
-# one-click "update to align" prompt; bump whenever the desktop's backend contract changes. v2 file.attach;
-# v3 approvals.mode RPCs + session.info reconciliation; v4 session.create fast=false = explicit normal tier;
+# one-click "update to align" prompt. The desktop also warns in the reverse direction: a backend reporting
+# MORE than the GUI's required value means the GUI build predates this backend (e.g. a long-running app
+# across a backend update) and should be updated. Bump whenever the desktop's backend contract changes.
+# v2 file.attach; v3 approvals.mode RPCs + session.info reconciliation; v4 session.create fast=false = explicit normal tier;
 # v5 ws_max_size >16 MiB file.attach frames; v6 plugins.manage rows carry the canonical registry key;
 # v7 blocking prompts are JSON-RPC server->client requests (`srq-<n>` frames, `open_requests` replay) — a v6
 # backend still emits `<kind>.request` notifications the renderer no longer listens for.

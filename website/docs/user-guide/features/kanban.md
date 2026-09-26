@@ -191,6 +191,10 @@ chars, must start with alphanumeric. Uppercase input is auto-downcased.
 Anything else (slashes, spaces, dots, `..`) is rejected at the CLI layer
 so path-traversal tricks can't name a board.
 
+A slug that is well-formed but names no board is refused with an error — by the
+CLI, the dashboard, and every `kanban_*` tool (whose error lists the boards that
+exist); none of them silently creates an empty board for a typo.
+
 ### Managing boards from the dashboard
 
 `hermes dashboard` → Kanban tab shows a board switcher at the top as soon

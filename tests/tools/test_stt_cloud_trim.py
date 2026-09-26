@@ -21,6 +21,7 @@ Contract under test:
 
 import shutil
 import struct
+import subprocess
 import sys
 import types
 import wave
@@ -164,11 +165,25 @@ class TestProviderGating:
 # ============================================================================
 
 class TestCloudTrimSettings:
-    def test_defaults(self):
-        enabled, threshold, keep = _cloud_trim_settings({})
+    @pytest.mark.parametrize("threshold_value", [None, -40, "-55"])
+    def test_defaults(self, tmp_path, monkeypatch, threshold_value):
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+        from tools.transcription_tools import _load_stt_config
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        # Exercise the real merged config used by the cloud dispatcher, not
+        # just a hand-built dict that could hide a stale numeric default.
+        (tmp_path / "config.yaml").write_text("stt:\n  enabled: true\n", encoding="utf-8")
+        enabled, threshold, keep = _cloud_trim_settings(_load_stt_config())
         assert enabled is True
         assert threshold == _CLOUD_TRIM_THRESHOLD_DB_DEFAULT
+        assert threshold == DEFAULT_CONFIG["stt"]["cloud_trim_threshold_db"]
         assert keep == _CLOUD_TRIM_KEEP_MS_DEFAULT
+        value = "null" if threshold_value is None else threshold_value
+        (tmp_path / "config.yaml").write_text(
+            f"stt:\n  cloud_trim_threshold_db: {value}\n", encoding="utf-8")
+        _, threshold, _ = _cloud_trim_settings(_load_stt_config())
+        assert threshold == (None if threshold_value is None else int(threshold_value))
 
     def test_disable(self):
         enabled, _, _ = _cloud_trim_settings({"cloud_trim_silence": False})
@@ -228,18 +243,25 @@ class TestTrimFallbacks:
              patch("tools.transcription_audio._find_ffprobe_binary", return_value=None):
             assert _trim_silence_for_cloud_stt(wav, {}) is None
 
-    def test_ffmpeg_failure_returns_none_and_cleans_up(self, tmp_path):
+    @pytest.mark.parametrize("error", [
+        subprocess.CalledProcessError(1, "ffmpeg"),
+        subprocess.TimeoutExpired("ffmpeg", 120),
+    ])
+    def test_ffmpeg_failure_returns_none_and_cleans_up(self, tmp_path, error):
         wav = _write_wav(tmp_path / "a.wav", [("tone", 1)])
-        import subprocess as sp
+        work_dir = tmp_path / "trim-work"
+        work_dir.mkdir()
 
         def probe(path):
             return 60.0  # past the short-clip gate so the encode is attempted
 
         with patch("tools.transcription_audio._find_ffmpeg_binary", return_value="/bin/ffmpeg"), \
              patch("tools.transcription_audio._probe_audio_duration", side_effect=probe), \
+             patch("tools.transcription_audio.tempfile.mkdtemp", return_value=str(work_dir)), \
              patch("tools.transcription_audio.subprocess.run",
-                   side_effect=sp.CalledProcessError(1, "ffmpeg")):
+                   side_effect=error):
             assert _trim_silence_for_cloud_stt(wav, {}) is None
+        assert not work_dir.exists()
 
     def test_unprobeable_source_returns_none(self, tmp_path):
         wav = _write_wav(tmp_path / "a.wav", [("tone", 1)])
@@ -253,7 +275,8 @@ class TestTrimFallbacks:
 
 @pytest.mark.skipif(not _HAS_FFMPEG, reason="ffmpeg/ffprobe not installed")
 class TestTrimE2E:
-    def test_long_pauses_are_collapsed(self, tmp_path):
+    @pytest.mark.parametrize("threshold", [None, -40, "-55"])
+    def test_long_pauses_are_collapsed(self, tmp_path, threshold):
         # 2s speech + 6s silence + 2s speech + 4s trailing silence = 14s,
         # ~10s of it silence. The trim must save well over 10%.
         wav = _write_wav(
@@ -261,7 +284,7 @@ class TestTrimE2E:
             [("tone", 2), ("silence", 6), ("tone", 2), ("silence", 4)],
         )
         from tools.transcription_audio import _probe_audio_duration
-        trimmed = _trim_silence_for_cloud_stt(wav, {})
+        trimmed = _trim_silence_for_cloud_stt(wav, {"cloud_trim_threshold_db": threshold})
         assert trimmed is not None
         try:
             original = _probe_audio_duration(wav)

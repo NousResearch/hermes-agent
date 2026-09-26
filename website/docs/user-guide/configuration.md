@@ -2418,7 +2418,7 @@ stt:
   provider: "local"            # "local" | "groq" | "openai" | "mistral" | "xai" | "elevenlabs" | "deepinfra" | ...
   language: "en"               # GLOBAL language hint for every provider (per-provider language wins); set "" for auto-detect
   cloud_trim_silence: true     # trim long pauses with ffmpeg before uploading to a cloud provider (default: true)
-  cloud_trim_threshold_db: -40 # audio quieter than this counts as silence
+  cloud_trim_threshold_db: null # digital silence only; numeric dB gating is opt-in
   cloud_trim_keep_ms: 300      # how much of each pause survives the trim (keeps natural pacing)
   # prompt: "Hermes, Teknium, Nous Research, kanban"   # Static vocabulary hint (see below)
   local:
@@ -2452,7 +2452,11 @@ Provider behavior:
 - `groq` uses Groq's Whisper-compatible endpoint and reads `GROQ_API_KEY`. Pass `stt.groq.language` (or the global `HERMES_LOCAL_STT_LANGUAGE` env var) to skip auto-detection and reduce latency.
 - `openai` uses the OpenAI speech API and reads `VOICE_TOOLS_OPENAI_KEY`.
 
-Cloud providers (groq, openai, mistral, xai, elevenlabs, deepinfra) get a **pre-upload silence trim** by default when `ffmpeg` is installed: long pauses in a voice note are collapsed client-side before the file uploads, keeping `cloud_trim_keep_ms` of each pause so natural pacing survives. Shorter audio means faster uploads, lower per-audio-minute billing, and fewer silence hallucinations from the remote model. Clips shorter than 12 seconds skip the trim entirely (savings can't matter there, and several providers bill a per-request minimum anyway). The trim is best-effort — if ffmpeg is missing, the trim fails, the clip is mostly silence, or trimming would save less than ~10%, the original file is uploaded untouched. Set `stt.cloud_trim_silence: false` to always upload the original (e.g. when transcribing music or ambient audio through a cloud provider). Command-type and plugin providers never get trimmed audio.
+Cloud providers (groq, openai, mistral, xai, elevenlabs, deepinfra) get a **pre-upload silence trim** by default when `ffmpeg` and `ffprobe` are installed. With `cloud_trim_threshold_db: null` (or the key omitted), only digital silence — runs of exact zero decoded samples on every channel — is collapsed, keeping `cloud_trim_keep_ms` of each pause. Quiet nonzero audio is not classified as silence. This is **not voice activity detection**: noise, codec residue, and room tone are retained, so many recordings will see no savings. No normalization or adaptive amplitude threshold is applied; a loud transient can make even a relative threshold unsafe for subsequent quiet content.
+
+Numeric `cloud_trim_threshold_db` values retain the previous dB-gating behavior. **An existing explicit `-40` remains in effect and can still delete quiet speech**; remove that setting or set it to `null` to use the conservative default. Choose a numeric threshold only if you accept that risk for your recordings.
+
+Clips shorter than 12 seconds skip trimming. Processing remains one ffmpeg encode (120-second timeout) and two duration probes (30 seconds each), without an additional analysis pass or model. Missing tools, processing errors/timeouts, a near-empty output, or savings below ~10% cause the original file to be used. Command-type and plugin providers never get trimmed audio. Trimming still re-encodes the retained audio to mono AAC; it is not lossless and does not guarantee transcription accuracy. Any returned timestamps refer to the **shortened upload**, not the original recording; there is no timestamp remapping. Set `stt.cloud_trim_silence: false` when original timing or untrimmed audio is required.
 
 An explicitly selected `stt.provider` is honored strictly — if it's unavailable, transcription errors with guidance to run `hermes tools` rather than switching providers. Only when no provider has ever been selected does Hermes auto-detect in this order: `local` → `groq` → `openai`.
 

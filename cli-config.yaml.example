@@ -1626,7 +1626,7 @@ stt:
   # Collapses pauses with ffmpeg client-side; clips under 12s skip the trim, and
   # on any failure the original uploads untouched.
   # cloud_trim_silence: true   # set false to always upload the original audio
-  # cloud_trim_threshold_db: -40  # audio quieter than this counts as silence
+  # cloud_trim_threshold_db: null  # digital silence only; numeric dB thresholds can cut quiet speech
   # cloud_trim_keep_ms: 300    # how much of each pause survives (keeps natural pacing)
   # Optional static transcription prompt: vocabulary/context hints for
   # prompt-capable backends. Composition is deterministic: this config value

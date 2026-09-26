@@ -1135,9 +1135,9 @@ def _cmd_repair_prompts(db, args):
 
     cleared = []
     for finding in findings:
-        db.update_system_prompt(finding["id"], None)
-        if finding["clear_pin"]:
-            db.update_session_tool_names(finding["id"], None)
+        db.clear_system_prompt_for_rebuild(
+            finding["id"], clear_tool_names=finding["clear_pin"],
+        )
         cleared.append(finding["id"])
 
     if as_json:

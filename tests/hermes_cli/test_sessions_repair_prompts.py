@@ -122,6 +122,23 @@ def test_reduced_surface_left_alone_memory_only_pin_cleared(db, monkeypatch, cap
     assert not (memory_row["tool_names"] or "")
 
 
+def test_prompt_and_memory_pin_clear_roll_back_together_on_failure(db, monkeypatch):
+    target = db.create_session("atomic-repair", "telegram", system_prompt=DEGRADED)
+    db.update_session_tool_names(target, _pin("memory"))
+
+    def _fail_gc(_conn):
+        raise RuntimeError("forced repair settlement failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(db, "_delete_unreferenced_system_prompts", _fail_gc)
+        with pytest.raises(RuntimeError, match="forced repair settlement failure"):
+            db.clear_system_prompt_for_rebuild(target, clear_tool_names=True)
+
+    row = db.get_session(target)
+    assert row["system_prompt"] == DEGRADED
+    assert _repair_prompts_pin_names(row) == ["memory"]
+
+
 def test_positional_target_clears_memory_pin_when_prompt_is_already_null(db, monkeypatch):
     target = db.create_session("target-null", "telegram")
     db.update_session_tool_names(target, _pin("memory"))

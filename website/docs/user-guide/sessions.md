@@ -684,7 +684,8 @@ hermes sessions repair-prompts --json
 # Non-interactive automation: apply and report the ids actually cleared
 hermes sessions repair-prompts --apply --json
 
-# Explicit operator override for one session (id or unique prefix)
+# Explicit destructive override for one session (id or unique prefix).
+# This clears the stored prompt even when it is healthy.
 hermes sessions repair-prompts SESSION_ID --apply
 ```
 

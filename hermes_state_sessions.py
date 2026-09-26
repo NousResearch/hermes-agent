@@ -673,6 +673,25 @@ class SessionSessionsMixin:
             self._delete_unreferenced_system_prompts(conn)
         self._execute_write(_do)
 
+    def clear_system_prompt_for_rebuild(
+        self, session_id: str, *, clear_tool_names: bool = False,
+    ) -> None:
+        """Atomically clear a stored prompt and, when requested, its tools[] pin for a fresh rebuild."""
+        def _do(conn):
+            if clear_tool_names:
+                conn.execute(
+                    "UPDATE sessions SET system_prompt_hash = NULL, system_prompt = NULL, "
+                    "tool_names = NULL WHERE id = ?",
+                    (session_id,),
+                )
+            else:
+                conn.execute(
+                    "UPDATE sessions SET system_prompt_hash = NULL, system_prompt = NULL WHERE id = ?",
+                    (session_id,),
+                )
+            self._delete_unreferenced_system_prompts(conn)
+        self._execute_write(_do)
+
     def update_session_model(
         self, session_id: str, model: str, provider: Optional[str] = None, *,
         base_url: Optional[str] = None, api_mode: Optional[str] = None,

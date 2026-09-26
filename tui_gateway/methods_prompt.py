@@ -356,6 +356,10 @@ def _row_ids_of(messages) -> set:
 def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids):
     """Rewind/regenerate cut under ``history_lock``: ``(err, survivor_fields)``; the fields
     are the client rowId-rebind payload."""
+    try:
+        _refresh_idle_hosted_history(session)
+    except Exception as exc:
+        return _err(rid, 5008, f"could not load durable history for edit: {exc}"), {}
     history = _history_without_ephemeral_scaffolding(session.get("history", []))
     ordinal, cut_index, err = _resolve_truncation_ordinal(rid, sid, session, params, history)
     if err is not None:

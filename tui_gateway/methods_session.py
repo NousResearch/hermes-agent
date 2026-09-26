@@ -1869,6 +1869,10 @@ def _(rid, params: dict, session: dict) -> dict:
     with session["history_lock"]:
         if session.get("running"):
             return busy
+        try:
+            _refresh_idle_hosted_history(session)
+        except Exception as exc:
+            return _err(rid, 5008, f"undo: {exc}")
         history = _history_without_ephemeral_scaffolding(session.get("history", []))
         # Truncate from the last *real* user turn (not a timeline marker / compaction handoff).
         from agent.context_compressor import user_originated_turn_view

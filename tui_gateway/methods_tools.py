@@ -166,6 +166,10 @@ def _rewind_prelude(rid, session, cmd: str, empty_msg: str):
     """Under history_lock: re-check busy, then (history, user_indices, None) or (None, None, error)."""
     if busy := _busy_error(rid, session, cmd):
         return None, None, busy
+    try:
+        _refresh_idle_hosted_history(session)
+    except Exception as exc:
+        return None, None, _err(rid, 5008, f"{cmd}: {exc}")
     history, user_indices = _user_turn_indices(session)
     if not user_indices:
         return None, None, _err(rid, 4018, empty_msg)

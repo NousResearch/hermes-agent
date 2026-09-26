@@ -761,6 +761,38 @@ def is_job_running(job_id: str, home: Optional[Union[Path, str]] = None) -> bool
         return key in _running_job_ids or key in _running_fire_owners
 
 
+_job_lifecycle_callbacks: List[Callable[[], None]] = []
+_job_lifecycle_callbacks_lock = threading.Lock()
+
+
+def register_job_lifecycle_callback(cb: Callable[[], None]) -> None:
+    """Observers notified whenever the in-flight job count changes (register success,
+    release). The gateway registers a persist hook so ``gateway_state.json``'s
+    ``active_agents`` tracks cron work at every count change, not only at inbound-turn
+    boundaries (#122813). Observer failures never affect job dispatch."""
+    with _job_lifecycle_callbacks_lock:
+        if cb not in _job_lifecycle_callbacks:
+            _job_lifecycle_callbacks.append(cb)
+
+
+def unregister_job_lifecycle_callback(cb: Callable[[], None]) -> None:
+    with _job_lifecycle_callbacks_lock:
+        try:
+            _job_lifecycle_callbacks.remove(cb)
+        except ValueError:
+            pass
+
+
+def _notify_job_lifecycle() -> None:
+    with _job_lifecycle_callbacks_lock:
+        observers = tuple(_job_lifecycle_callbacks)
+    for cb in observers:
+        try:
+            cb()
+        except Exception:
+            logger.debug("job lifecycle observer failed", exc_info=True)
+
+
 def try_register_running_job(job_id: str) -> bool:
     """Atomically add ``job_id`` to the in-flight set; False (caller must skip) if already mid-run.
     Single dedupe owner for ticker + manual runs (the fire claim's 300s TTL is outlived by real
@@ -777,6 +809,7 @@ def try_register_running_job(job_id: str) -> bool:
     from hermes_cli.backend_retirement import retirement
 
     key = _inflight_key(job_id, _remember_inflight_home(_get_hermes_home()))
+    registered = False
     with retirement.work() as admitted, _running_lock:
         if not admitted or key in _running_job_ids:
             return False
@@ -785,7 +818,12 @@ def try_register_running_job(job_id: str) -> bool:
         # can bound. Sentinel is replaced by the real future once ``pool.submit`` returns.
         _running_since[key] = time.time()
         _running_futures[key] = _FUTURE_PENDING
-        return True
+        registered = True
+    if registered:
+        # Outside the lock: observers may do real work (the gateway persists
+        # gateway_state.json); they must never extend the dispatch critical section.
+        _notify_job_lifecycle()
+    return registered
 
 
 def release_running_job(job_id: str, home: Optional[Union[Path, str]] = None) -> None:
@@ -803,6 +841,7 @@ def release_running_job(job_id: str, home: Optional[Union[Path, str]] = None) ->
         _running_allowance_s.pop(key, None)
         _running_futures.pop(key, None)
         _running_worker_pids.pop(key, None)
+    _notify_job_lifecycle()
 
 
 def _inflight_min_allowance_minutes() -> float:

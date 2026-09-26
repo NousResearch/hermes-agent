@@ -163,6 +163,31 @@ platforms:
 Start with a focused set of domains — `climate`, `binary_sensor`, and `alarm_control_panel` cover the most useful automations. Add more as needed. Use `ignore_entities` to suppress noisy sensors like CPU temperature or uptime counters.
 :::
 
+#### Silencing routine events (no extra config needed)
+
+Every watched state change wakes the agent and produces a reply (a persistent notification in HA). To run the agent as a watcher that only speaks when something matters, point the `ha_events` channel's `channel_overrides` at a `[SILENT]`-style system prompt — no code change or special platform option is required:
+
+```yaml
+platforms:
+  homeassistant:
+    enabled: true
+    extra:
+      watch_domains: [climate, binary_sensor]
+      cooldown_seconds: 30
+    channel_overrides:
+      ha_events:
+        system_prompt: |
+          You are the silent watcher for Home Assistant events.
+          For routine state changes reply with exactly [SILENT] and nothing else.
+          Speak up (a short actionable message) only for safety, action needed, or anomalies.
+```
+
+`[SILENT]` responses are dropped by the gateway's standard silence filter (`response_filters`), so nothing is delivered for routine changes. Events remain normal inbound messages: they are admitted through the platform's own trust of system-generated HA sources (`authz_mixin` authorizes `Platform.HOMEASSISTANT` without pairing), they honor the global emergency stop (`hermes pause` still blocks these turns), and they count as real inbound for scale-to-zero.
+
+:::warning Do not mark routine events `internal` from a plugin
+`MessageEvent.internal` is for **in-flight work completions** (background-process notifications, delivery receipts). A routine HA `state_changed` is a *new* turn trigger, not a completion: marking it `internal` exempts it from the pause emergency stop (`_hm_estop_gate` returns early for internal events) while admission already works without it. Keep routine watcher events on the normal admission path and quiet them with `[SILENT]` on the reply side.
+:::
+
 ### Event Formatting
 
 State changes are formatted as human-readable messages based on domain:

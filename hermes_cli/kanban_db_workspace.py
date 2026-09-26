@@ -127,6 +127,53 @@ def _is_managed_scratch_path(p: Path) -> bool:
     return _managed_scratch_path_info(p)[0]
 
 
+def _rmtree_force(wp: Path) -> None:
+    """``rmtree`` that survives directories stripped of their write bit.
+
+    Removing an entry is governed by the write bit on its *parent* directory,
+    so any tool that materialises read-only directories makes a plain
+    ``rmtree(ignore_errors=True)`` raise ``PermissionError`` on the first one,
+    abandon the walk and leave the whole workspace behind — silently, because
+    the errors are ignored. Build tools do this routinely (Pants' local
+    execution root, Bazel's output base, Go's module cache, Cargo's registry
+    sources), so a workspace that ran one is never reaped while one that did
+    not always is.
+
+    Restore the write bit and retry, without ever modifying anything outside
+    the tree being deleted:
+
+    * the failing entry's parent is chmod'ed only when the entry is *inside*
+      ``wp``; when ``wp`` itself cannot be unlinked, that would mean widening
+      the directory holding it (the board's ``workspaces/`` root), so removal
+      is left to fail instead;
+    * the failing path is chmod'ed only when it is a real directory, never a
+      symlink — ``os.chmod`` follows symlinks, so a link pointing out of the
+      workspace would have its target's mode rewritten.
+
+    Anything still undeletable is skipped, keeping this best-effort.
+    """
+    root = os.path.abspath(os.fspath(wp))
+
+    def _retry(func, path, _exc_info):
+        target = os.path.abspath(path)
+        if target != root:
+            try:
+                os.chmod(os.path.dirname(target), 0o700)
+            except OSError:
+                pass
+        if os.path.isdir(target) and not os.path.islink(target):
+            try:
+                os.chmod(target, 0o700)
+            except OSError:
+                pass
+        try:
+            func(path)
+        except OSError:
+            pass
+
+    shutil.rmtree(wp, onerror=_retry)
+
+
 def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
     """Remove a task's scratch workspace dir and kill its stale tmux session.
     Called from :func:`complete_task` after the transaction commits; best-effort
@@ -169,7 +216,7 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
             # See #28818.
             if _is_managed_scratch_path(wp):
                 release_lsp_clients(str(wp))
-                shutil.rmtree(wp, ignore_errors=True)
+                _rmtree_force(wp)
                 _kb._log.debug("Removed scratch workspace: %s", wp)
             else:
                 _kb._log.warning(
@@ -288,7 +335,7 @@ def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> No
             wp = Path(row["workspace_path"])
             if wp.is_dir() and _is_managed_scratch_path(wp):
                 release_lsp_clients(str(wp))
-                shutil.rmtree(wp, ignore_errors=True)
+                _rmtree_force(wp)
                 _kb._log.debug("Deferred cleanup: removed parent %s scratch workspace: %s", parent_id, wp)
     except Exception:
         pass  # best-effort

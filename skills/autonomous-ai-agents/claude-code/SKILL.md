@@ -1,7 +1,7 @@
 ---
 name: claude-code
 description: "Delegate coding to Claude Code CLI (features, PRs)."
-version: 2.2.1
+version: 2.2.2
 author: Hermes Agent + Teknium
 license: MIT
 platforms: [linux, macos, windows]
@@ -18,6 +18,14 @@ Delegate coding tasks to [Claude Code](https://code.claude.com/docs/en/cli-refer
 ## Prerequisites
 
 - **Install:** `npm install -g @anthropic-ai/claude-code`
+- **Claude Desktop Linux beta install:** for Ubuntu 22.04+ / Debian 12+ on x86_64/arm64, prefer Anthropic's official apt repo:
+  ```bash
+  sudo curl -fsSLo /usr/share/keyrings/claude-desktop-archive-keyring.asc https://downloads.claude.ai/claude-desktop/key.asc
+  echo "deb [arch=amd64,arm64 signed-by=/usr/share/keyrings/claude-desktop-archive-keyring.asc] https://downloads.claude.ai/claude-desktop/apt/stable stable main" | sudo tee /etc/apt/sources.list.d/claude-desktop.list
+  sudo apt update
+  sudo apt install claude-desktop
+  ```
+  Launch with `claude-desktop`; the app menu entry is usually **Claude**. Verify with `dpkg -s claude-desktop`, `/usr/share/applications/claude-desktop.desktop`, and `~/.config/Claude/logs/main.log` for `Loaded https://claude.ai`. Electron/Chromium stdout may emit noisy `libva`, `Fontconfig`, or Google GCM `DEPRECATED_ENDPOINT` errors while the app still starts; verify process/log/app state before treating them as fatal.
 - **Auth:** run `claude` once to log in (browser OAuth for Pro/Max, or set `ANTHROPIC_API_KEY`)
 - **Console auth:** `claude auth login --console` for API key billing
 - **SSO auth:** `claude auth login --sso` for Enterprise

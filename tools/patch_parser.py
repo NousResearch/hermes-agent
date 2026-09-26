@@ -358,8 +358,14 @@ def _replace_hunk(content: str, hunk: Hunk, search_pattern: str, replacement: st
     new_content, count, _strategy, error = fuzzy_find_and_replace(content, search_pattern, replacement, replace_all=False)
     if not (error and count == 0):
         return new_content, count, error
-    hint_pos = content.find(hunk.context_hint) if hunk.context_hint else -1
-    if hint_pos != -1:
+    if not hunk.context_hint:
+        return content, 0, error
+    occurrences, ambiguous = _hint_ambiguity(content, hunk.context_hint, " — provide a more unique hint")
+    if ambiguous:
+        # A window around the first of several hint occurrences can hold a different copy of the block.
+        return content, 0, f"{error}; {ambiguous}"
+    if occurrences == 1:
+        hint_pos = content.find(hunk.context_hint)
         window_start = max(0, hint_pos - 500)
         window_end = min(len(content), hint_pos + 2000)
         window_new, count, _strategy, error = fuzzy_find_and_replace(

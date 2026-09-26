@@ -1448,12 +1448,20 @@ def _custom_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]
     if not base_url:
         return None
     model_cfg = _get_model_config_dict()
-    # Try common API key env vars for custom endpoints.
-    api_key = (
-        str(model_cfg.get("api_key", "") or "").strip()
-        or os.getenv("CUSTOM_API_KEY", "")
-        or os.getenv("OPENAI_API_KEY", "")
-        or os.getenv("OPENROUTER_API_KEY", ""))
+    # Same key ladder as the runtime chat path (hermes_cli.runtime_provider): the profile's own
+    # configured key for this endpoint, then CUSTOM_API_KEY, then OPENAI/OPENROUTER/OLLAMA env keys
+    # gated on base_url's host so an unrelated third-party endpoint never receives them
+    # (GHSA-76xc-57q6-vm5m). Lazy import avoids a runtime_provider <-> models circular import.
+    from agent.secret_scope import get_secret_str
+    from hermes_cli.auth import has_usable_secret
+    from hermes_cli.runtime_provider import _host_gated_env_key_candidates
+
+    candidates = [
+        str(model_cfg.get("api_key", "") or "").strip(),
+        get_secret_str("CUSTOM_API_KEY", "").strip(),
+        *_host_gated_env_key_candidates(base_url, ollama=True),
+    ]
+    api_key = next((c for c in candidates if has_usable_secret(c)), "")
     api_mode = "anthropic_messages" if _base_url_looks_like_anthropic_messages(base_url) else None
     return fetch_api_models(api_key, base_url, api_mode=api_mode) or None
 

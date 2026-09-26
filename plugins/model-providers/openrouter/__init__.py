@@ -54,6 +54,15 @@ OPENROUTER_ENDPOINT_PINS: dict[str, tuple[str, tuple[str, ...]]] = {
     base + suffix: (base, tags) for base in _SPEED_TIERED_BASES for suffix, tags in _SPEED_TIER_ENDPOINTS.items()
 }
 
+# ``@preset/<slug>`` is a FULL server-side routing pin, authored by the user in OpenRouter's
+# control plane and referenced verbatim on the wire (see hermes_cli/models_validate.py
+# _parse_openrouter_preset — the whole id, suffix included, goes to OpenRouter). A request-level
+# ``provider`` body takes precedence over that policy, so sending both lets a leftover
+# ``provider_routing`` block silently reroute a preset off the endpoint it pins — with the control
+# plane still reading back "correct" (#94589). Same shape as the Nous profile, which drops
+# caller prefs outright: the pin is the stronger, more specific intent.
+_OPENROUTER_PRESET_MARKER = "@preset/"
+
 
 class OpenRouterProfile(ProviderProfile):
     """OpenRouter aggregator — provider preferences, reasoning config passthrough."""
@@ -126,6 +135,9 @@ class OpenRouterProfile(ProviderProfile):
         if sticky_key:
             body["session_id"] = sticky_key
         prefs = context.get("provider_preferences")
+        if _OPENROUTER_PRESET_MARKER in (context.get("model") or ""):
+            # The preset IS the pin; a request-level body would override it (#94589).
+            prefs = None
         pin = OPENROUTER_ENDPOINT_PINS.get(context.get("model") or "")
         # The tier pin owns ``only`` (ignore/sort/... still apply) — except on the BASE slug, where the pin
         # merely keeps default routing off flex/fast and an explicit user ``only`` is the stronger intent.

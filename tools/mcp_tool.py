@@ -15,6 +15,7 @@ import importlib
 import importlib.util
 import inspect
 import logging
+import math
 import os
 import sys
 import threading
@@ -234,6 +235,12 @@ _DEFAULT_CONNECT_TIMEOUT = 60    # seconds for initial connection per server
 _MAX_RECONNECT_RETRIES = 5
 _MAX_INITIAL_CONNECT_RETRIES = 3 # retries for the very first connection attempt
 _MAX_BACKOFF_SECONDS = 60
+# Base delay of the reconnect ladder (doubles per attempt, capped at _MAX_BACKOFF_SECONDS). 1s
+# recovers fast from a one-off blip, but an endpoint whose outages arrive in multi-minute bursts
+# (e.g. 503 storms from a shared SaaS backend) exhausts the whole ladder inside the burst and
+# parks; a larger per-server ``reconnect_backoff`` spreads the same attempts across the burst so
+# one lands after it clears.
+_DEFAULT_RECONNECT_BACKOFF = 1.0
 _RECYCLED_RECONNECT_TIMEOUT = 15.0
 # Parked servers (tools deregistered) self-probe on this cadence: nothing else can revive them.
 _PARKED_RETRY_INTERVAL = 300
@@ -251,6 +258,26 @@ _MCP_LOOP_DRAIN_TIMEOUT = 3.0
 _JSONRPC_METHOD_NOT_FOUND = -32601
 # nextCursor pagination cap so a forever-cursor cannot spin discovery (50 pages = thousands).
 _MCP_LIST_MAX_PAGES = 50
+
+
+def _resolve_reconnect_backoff(server_name: str, config: dict) -> float:
+    """Return the reconnect-ladder base delay (seconds) for ``server_name``.
+
+    Reads ``reconnect_backoff`` from the server's config, clamped to
+    [_DEFAULT_RECONNECT_BACKOFF, _MAX_BACKOFF_SECONDS]. Invalid values warn and fall back to the
+    default rather than killing the run task."""
+    raw = config.get("reconnect_backoff", _DEFAULT_RECONNECT_BACKOFF)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = None
+    # ``float()`` accepts nan/inf; reject them explicitly rather than relying on how they happen
+    # to fall through min()/max().
+    if value is None or not math.isfinite(value):
+        logger.warning("MCP server '%s': invalid reconnect_backoff %r in config, using default %.0fs",
+                       server_name, raw, _DEFAULT_RECONNECT_BACKOFF)
+        return _DEFAULT_RECONNECT_BACKOFF
+    return min(max(_DEFAULT_RECONNECT_BACKOFF, value), float(_MAX_BACKOFF_SECONDS))
 
 
 async def _paginate_full_list(list_method, items_attr: str, server_name: str,

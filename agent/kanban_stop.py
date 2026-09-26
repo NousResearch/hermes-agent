@@ -8,10 +8,14 @@ instead of exiting.
 
 from __future__ import annotations
 
+import logging
 import os
+from contextlib import suppress
 from typing import Any, Iterable, Optional
 
 from agent.delegation_context import owned_kanban_task
+
+logger = logging.getLogger(__name__)
 
 
 # Every tool that ends this worker's responsibility for the card, not just the two that
@@ -60,6 +64,38 @@ def session_called_kanban_terminal(messages: Iterable[dict] | None) -> bool:
     return False
 
 
+def _kanban_scoping_expired(task_id: str) -> bool:
+    """True when the env-scoped task is terminal on the board or the pinned run
+    has already ended — the worker session has outlived its kanban task, and the
+    stop nudge must not pretend the card is still running (t_bdd69e28, port of
+    PR #91). Unknown freshness (missing task row, board I/O error) fails open
+    toward the legacy nudge: a reminder is never silenced on a guess.
+    """
+    from hermes_cli import kanban_db as _kb
+    from hermes_cli import kanban_db_connect as _kbc
+
+    raw_run = (os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
+    try:
+        run_id = int(raw_run) if raw_run else None
+    except ValueError:
+        run_id = None
+    try:
+        conn = _kbc.connect()
+        try:
+            info = _kb.get_scoping_freshness(conn, task_id, run_id)
+        finally:
+            with suppress(Exception):
+                conn.close()
+    except Exception:
+        logger.debug("kanban stop nudge: scoping freshness read failed", exc_info=True)
+        return False
+    if info is None:
+        return False
+    if _kb.task_is_terminal(info["status"]):
+        return True
+    return run_id is not None and info.get("run_ended_at") is not None
+
+
 def build_kanban_stop_nudge(
     *,
     messages: Iterable[dict] | None = None,
@@ -74,6 +110,14 @@ def build_kanban_stop_nudge(
         or attempts >= max_attempts
         or session_called_kanban_terminal(messages)
     ):
+        return None
+
+    # Wake-Guard (t_bdd69e28, PR #91): an env-scoped worker whose task is terminal
+    # on the board (or whose pinned run already ended) must not be reminded to
+    # hand off — the card is no longer its responsibility. An explicit task_id
+    # keeps the caller's semantics and is never second-guessed here.
+    env_tid = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    if task_id is None and env_tid and _kanban_scoping_expired(env_tid):
         return None
 
     tid = (task_id or os.environ.get("HERMES_KANBAN_TASK") or "").strip() or "this task"

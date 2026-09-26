@@ -61,6 +61,37 @@ def _record_kanban_budget_exhausted(
         from hermes_cli import kanban_db_dispatch as _kbd
         _conn = _kbc.connect()
         try:
+            # Wake-Guard (t_bdd69e28, port of PR #91): a worker session that has
+            # outlived its kanban task (card terminal on the board, or the pinned
+            # run already ended) must not append a ``timed_out`` failure record —
+            # there is no live worker accounting left to advance. Unknown
+            # freshness (missing rows, read errors) keeps the legacy record and
+            # logs the failed proof distinctly, never guessing.
+            _env_task = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+            if _env_task and kanban_task == _env_task:
+                _raw_run = (os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
+                try:
+                    _run_id = int(_raw_run) if _raw_run else None
+                except ValueError:
+                    _run_id = None
+                try:
+                    _info = _kb.get_scoping_freshness(_conn, _env_task, _run_id)
+                except Exception:
+                    logger.debug(
+                        "budget-exhausted record: scoping freshness read failed for %s",
+                        kanban_task, exc_info=True,
+                    )
+                    _info = None
+                if _info is not None and (
+                    _kb.task_is_terminal(_info["status"])
+                    or (_run_id is not None and _info.get("run_ended_at") is not None)
+                ):
+                    logger.info(
+                        "Skipping budget-exhausted failure record for %s: worker scoping "
+                        "is expired (task terminal on board or pinned run ended); no live "
+                        "worker accounting to advance", kanban_task,
+                    )
+                    return
             _kbd._record_task_failure(
                 _conn,
                 kanban_task,

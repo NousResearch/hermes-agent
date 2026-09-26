@@ -186,6 +186,35 @@ def _reject_delegated_child_mutation(tool_name: str) -> None:
             "configured Kanban orchestrator must perform board mutations.")
 
 
+def _env_scoping_expired() -> bool:
+    """True when this process's ``HERMES_KANBAN_TASK`` scoping has expired: the
+    task is terminal on the board, or the pinned ``HERMES_KANBAN_RUN_ID`` has
+    already ended. The worker session has outlived its card and must neither
+    act as the card's owner nor keep it alive (t_bdd69e28, port of PR #91).
+    Unknown freshness (missing task row, board I/O error) fails open toward the
+    legacy behavior: scoping is never declared expired on a guess.
+    """
+    env_tid = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    if not env_tid:
+        return False
+    raw_run = (os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
+    try:
+        run_id = int(raw_run) if raw_run else None
+    except ValueError:
+        run_id = None
+    try:
+        with _board(None, quiet_close=True) as (kb, conn):
+            info = kb.get_scoping_freshness(conn, env_tid, run_id)
+            if info is None:
+                return False
+            if kb.task_is_terminal(info["status"]):
+                return True
+            return run_id is not None and info.get("run_ended_at") is not None
+    except Exception:
+        logger.debug("kanban tools: scoping freshness read failed for %s", env_tid, exc_info=True)
+        return False
+
+
 def _default_task_id(arg: Optional[str]) -> Optional[str]:
     """``task_id`` arg or the dispatcher's env var. A delegate child or an
     in-process cron job must never inherit the worker's task id implicitly."""
@@ -193,7 +222,14 @@ def _default_task_id(arg: Optional[str]) -> Optional[str]:
         return arg
     if _is_delegated_child_context() or not _is_dispatcher_owned_worker():
         return None
-    return os.environ.get("HERMES_KANBAN_TASK") or None
+    env_tid = os.environ.get("HERMES_KANBAN_TASK")
+    # Wake-Guard (t_bdd69e28, PR #91): expired scoping resolves to no task — a
+    # worker whose card is terminal/ended must not have new calls attributed to
+    # it, and args-less calls must fail with "task_id is required" instead of
+    # silently acting on a dead card.
+    if env_tid and _env_scoping_expired():
+        return None
+    return env_tid or None
 
 
 def _require_task_id(args: dict) -> str:
@@ -233,6 +269,12 @@ def _enforce_worker_task_ownership(tid: str) -> None:
     """
     env_tid = os.environ.get("HERMES_KANBAN_TASK")
     if env_tid and tid != env_tid:
+        if _env_scoping_expired():
+            raise _Reject(
+                f"worker task scoping is EXPIRED: task {env_tid} is terminal on the board "
+                f"(or its pinned run ended), so this session is no longer an active worker "
+                f"and may not mutate {tid}. Hand off via kanban_comment, or have the "
+                f"dispatcher/owner rebind or restart this lane.")
         raise _Reject(
             f"worker is scoped to task {env_tid}; refusing to mutate {tid}. Use kanban_comment "
             f"to hand off information to other tasks, or kanban_create to spawn follow-up work.")
@@ -524,6 +566,13 @@ def heartbeat_current_worker_from_env() -> bool:
     tid = os.environ.get("HERMES_KANBAN_TASK")
     now = time.monotonic()
     if not tid or (now - _auto_heartbeat_last_attempt) < _AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS:
+        return False
+    # Wake-Guard (t_bdd69e28, PR #91): expired scoping (terminal card / ended
+    # run) must not keep receiving claim extensions. Checked after the
+    # rate-limit window so the common no-write path stays DB-free; the window
+    # is not stamped on an expired skip.
+    if _env_scoping_expired():
+        logger.debug("auto-heartbeat: scoping expired for %s; skipping", tid)
         return False
     if _is_delegated_child_context():
         # An in-process delegate child's activity is not the worker's liveness; checked before
@@ -862,6 +911,13 @@ def _handle_heartbeat(args: dict, **kw) -> str:
     tid = _worker_guard("kanban_heartbeat", args)
     from hermes_cli import kanban_db_dispatch as kbd
     with _board(args.get("board")) as (kb, conn):
+        # Wake-Guard (t_bdd69e28, PR #91): a terminal card has nothing left to
+        # keep alive — no claim extension, no heartbeat event.
+        task = kb.get_task(conn, tid)
+        if task is not None and kb.task_is_terminal(task.status):
+            raise _Reject(
+                f"kanban_heartbeat: task {tid} is terminal (status={task.status}); "
+                "nothing to keep alive on a closed card")
         # The dispatcher pins HERMES_KANBAN_CLAIM_LOCK at spawn; the default
         # claimer covers locally-driven workers that bypassed the dispatcher.
         kb.heartbeat_claim(conn, tid, claimer=os.environ.get("HERMES_KANBAN_CLAIM_LOCK"))
@@ -1036,8 +1092,12 @@ def _handle_create(args: dict, **kw) -> str:
     with _board(args.get("board")) as (kb, conn):
         from gateway.session_context import get_session_env
         from tools.async_delegation import _current_origin_session_id
+        # Wake-Guard (t_bdd69e28, PR #91): an expired scoping (terminal card /
+        # ended run) must not attribute new cards to the dead task — neither as
+        # creator nor as project provenance.
         self_tid = (os.environ.get("HERMES_KANBAN_TASK")
-                    if _is_dispatcher_owned_worker() else None)
+                    if _is_dispatcher_owned_worker()
+                    and not _env_scoping_expired() else None)
         self_task = kb.get_task(conn, self_tid) if self_tid else None
         # The worker/API runtime may be transient; the owning task's origin is durable.
         # The ambient id is the request-scoped ContextVar binding, not the process-global

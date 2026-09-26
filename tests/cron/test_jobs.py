@@ -1764,6 +1764,36 @@ class TestJobsJsonIdKeyedMap:
         assert json.loads(JOBS_FILE.read_text(encoding="utf-8"))["jobs"] == []
         assert type(bad_jobs).__name__ in caplog.text
 
+    def test_unlocked_reader_repair_does_not_revert_a_concurrent_update(
+        self, tmp_cron_dir, monkeypatch
+    ):
+        """A lock-free reader's repair must not save its stale snapshot over a writer that
+        landed after the reader parsed the file."""
+        import json
+        import cron.jobs as jobs_mod
+        from cron.jobs import JOBS_FILE, update_job
+
+        job = create_job(prompt="keep me", schedule="every 1h", name="racer")
+        payload = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
+        payload["jobs"].append(None)
+        JOBS_FILE.write_text(json.dumps(payload), encoding="utf-8")
+
+        real_parse = jobs_mod._parse_jobs_file
+        raced = []
+
+        def parse_then_race(path):
+            parsed = real_parse(path)
+            if not raced:
+                raced.append(True)
+                update_job(job["id"], {"enabled": False})
+            return parsed
+
+        monkeypatch.setattr(jobs_mod, "_parse_jobs_file", parse_then_race)
+        list_jobs(include_disabled=True)
+
+        on_disk = json.loads(JOBS_FILE.read_text(encoding="utf-8"))["jobs"]
+        assert [j["enabled"] for j in on_disk] == [False]
+
 
 
 

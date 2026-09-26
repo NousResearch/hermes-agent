@@ -1358,8 +1358,8 @@ export function useGatewayBoot({
         // Full peers use the source/profile Electron pinned before loading.
         // Bounded like the reconnect path (#93454): a wedged main-process
         // round-trip must not hang "Starting Hermes…" forever. Initial boot
-        // rides out a full backend cold spawn, so it gets the shared 45s
-        // backend-boot budget, not the 20s reconnect budget.
+        // rides out a full backend cold spawn, so it gets the shared
+        // announce-covering boot budget, not the 20s reconnect budget.
         const conn = await withTimeout(
           getWindowBackend(true),
           BACKEND_BOOT_WAIT_TIMEOUT_MS,

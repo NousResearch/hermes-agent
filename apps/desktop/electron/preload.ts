@@ -15,8 +15,9 @@ const translucencySupport = ipcRenderer.sendSync('hermes:translucency:support')
 const hudWindowing = ipcRenderer.sendSync('hermes:hud:windowing')
 const hudNativeDrag = hudWindowing?.nativeDrag === true
 
-const launchFlags: { localModels?: boolean; guestOnboarding?: boolean; skipIntro?: boolean } | undefined =
-  ipcRenderer.sendSync('hermes:feature-flags')
+const launchFlags:
+  | { localModels?: boolean; guestOnboarding?: boolean; skipIntro?: boolean; portAnnounceTimeoutMs?: number }
+  | undefined = ipcRenderer.sendSync('hermes:feature-flags')
 
 // Local, sanitized skin payload for the first renderer theme paint. This does
 // not wait on `gateway.ready`, so an unreachable remote primary cannot force
@@ -37,6 +38,10 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   // Launch-flag fact: skip the first-run film (HERMES_SKIP_INTRO=1 or
   // --skip-intro). Rehearsal aid for the guided chat behind it.
   skipIntro: launchFlags?.skipIntro === true,
+  // Main's resolved port-announce deadline, env override included. The
+  // renderer's boot wait (src/lib/with-timeout.ts) is sized from it.
+  portAnnounceTimeoutMs:
+    typeof launchFlags?.portAnnounceTimeoutMs === 'number' ? launchFlags.portAnnounceTimeoutMs : undefined,
   getConnection: (profile, opts) => ipcRenderer.invoke('hermes:connection', profile, opts),
   // Registry-scoped backend resolution: { connectionId, profile } → descriptor.
   getConnectionFor: payload => ipcRenderer.invoke('hermes:connection:for', payload),

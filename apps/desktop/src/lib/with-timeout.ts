@@ -1,12 +1,19 @@
+import { resolveRendererBootWaitMs } from '../../../shared/src/desktop-boot-budget'
+
 /** Shared budget for any renderer await that rides out a primary backend
  * cold boot (initial getConnection(), the registry restore's descriptor
- * wait). Matches the main-process spawn budget
- * (DEFAULT_BACKEND_READY_TIMEOUT_MS in electron/backend-health.ts): a
- * healthy cold boot publishes well within this; anything longer means the
- * backend is not coming and the caller should fail instead of hanging.
- * Reconnect-class awaits against an already-spawned backend use the shorter
- * RECONNECT_ATTEMPT_TIMEOUT_MS below instead. */
-export const BACKEND_BOOT_WAIT_TIMEOUT_MS = 45_000
+ * wait). Covers main's default cold-start chain (desktop-boot-budget.ts):
+ * port announce, health poll, and a margin for the work around them, so the
+ * IPC is still in flight when a slow but healthy backend publishes. The bound
+ * stays finite so a dead or wedged backend ends in the recovery overlay
+ * instead of spinning. Main answers the announce deadline it resolved
+ * (HERMES_DESKTOP_PORT_ANNOUNCE_TIMEOUT_MS included) through preload before
+ * this module loads, so an override stretches both sides; no bridge falls
+ * back to the default. Reconnect-class awaits against an already-spawned
+ * backend use the shorter RECONNECT_ATTEMPT_TIMEOUT_MS below instead. */
+export const BACKEND_BOOT_WAIT_TIMEOUT_MS = resolveRendererBootWaitMs(
+  typeof window === 'undefined' ? undefined : window.hermesDesktop?.portAnnounceTimeoutMs
+)
 
 // desktop.getConnection() / getConnectionFor() / revalidateConnection() /
 // resolveGatewayWsUrl() are IPC round-trips into the main process with no

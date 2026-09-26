@@ -60,6 +60,14 @@ export {
   DATA_URL_READ_MAX_MAX_MB,
   DATA_URL_READ_MIN_MAX_MB
 } from './data-url-read-max'
+export {
+  BOOT_CONNECT_MARGIN_MS,
+  DEFAULT_BACKEND_READY_TIMEOUT_MS,
+  DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS,
+  MIN_PORT_ANNOUNCE_TIMEOUT_MS,
+  resolvePortAnnounceTimeoutMs,
+  resolveRendererBootWaitMs
+} from './desktop-boot-budget'
 export { compactNumber } from './format'
 export { type FuzzyMatch, fuzzyRank, fuzzyScore, fuzzyScoreMulti, type RankedItem } from './fuzzy'
 export * from './gateway-events'

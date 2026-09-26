@@ -365,6 +365,10 @@ declare global {
       /** Launch flag: skip the first-run film (HERMES_SKIP_INTRO=1 or
        *  --skip-intro) so a fresh HERMES_HOME lands on the guided chat. */
       skipIntro?: boolean
+      /** Main's resolved port-announce deadline (default or
+       *  HERMES_DESKTOP_PORT_ANNOUNCE_TIMEOUT_MS), so the renderer boot wait
+       *  covers it. */
+      portAnnounceTimeoutMs?: number
       setTranslucency?: (payload: TranslucencyState) => void
       setKeepAwake?: (on: boolean) => void
       minimizeToTray?: {

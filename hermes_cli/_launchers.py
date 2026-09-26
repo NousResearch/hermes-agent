@@ -379,13 +379,122 @@ def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
     return None
 
 
+def _first_token(line: str) -> Path | None:
+    """First whitespace-delimited token of *line*, honoring one quote pair.
+
+    The published launchers always carry the interpreter as the first token
+    (quoted only when the path holds spaces), so full shell lexing — which
+    would also eat Windows backslashes as escapes — is the wrong tool."""
+    text = line.strip()
+    if not text:
+        return None
+    if text[0] in "\"'":
+        end = text.find(text[0], 1)
+        if end == -1:
+            return None
+        return Path(text[1:end])
+    return Path(text.split(None, 1)[0])
+
+
+def _launcher_python(target: Path) -> Path | None:
+    """Embedded interpreter of an existing launcher, else None.
+
+    Fail-open: an unrecognized layout republishes exactly as before."""
+    try:
+        data = Path(target).read_bytes()
+    except OSError:
+        return None
+    line: str | None = None
+    suffix = Path(target).suffix.lower()
+    if suffix == ".exe":
+        # distlib native launcher: loader stub, "#!<python> -I" shebang, zip.
+        # Anchor on the archive start: the shebang is the last #! line before
+        # it. (The stub itself can carry an earlier #! inside a UTF-16 message,
+        # and even a stray PK signature, so neither a prefix split nor the
+        # first match is reliable.)
+        idx = data.find(b"PK\x03\x04")
+        if idx == -1:
+            return None
+        start = data.rfind(b"#!", 0, idx)
+        if start == -1:
+            return None
+        end = data.find(b"\n", start, idx)
+        if end == -1:
+            return None
+        try:
+            line = data[start + 2:end].decode("utf-8").strip()
+        except UnicodeDecodeError:
+            return None
+    else:
+        try:
+            text = data.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            return None
+        lines = text.splitlines()
+        if suffix == ".cmd":
+            # "@echo off", then '"<python>" -I -c "<code>" %*'. The file's
+            # own \r\n pair gains a translated extra \r on Windows writes,
+            # so the command may sit past a blank line — never assume its index.
+            line = next((entry for entry in lines[1:] if entry.strip()), None)
+            if line is None:
+                return None
+        else:
+            # POSIX shell wrapper: "#!/bin/sh", then "exec <python> -I -c ...".
+            line = next((entry for entry in lines if entry.startswith("exec ")), None)
+            if line is None:
+                return None
+            line = line.removeprefix("exec ")
+    try:
+        return _first_token(line)
+    except (ValueError, OSError):
+        return None
+
+
+def _kept_shared_launcher(name: str, local: Path, store: Path) -> Path | None:
+    """Existing checkout launcher already bound outside this root's store.
+
+    Checkout launchers are shared by every HERMES_HOME; a launch under one
+    data root must never repoint them at another root's interpreter (#123238):
+    once that root is deleted, every hermes breaks. Keep the file when it
+    execs a live interpreter outside *store*. Missing launchers, dead
+    interpreters and same-store repins still publish."""
+    candidates = [local / name] if not _is_windows() else [local / f"{name}.exe", local / f"{name}.cmd"]
+    for target in candidates:
+        try:
+            present = target.is_file() or target.is_symlink()
+        except OSError:
+            continue
+        if not present:
+            continue
+        python = _launcher_python(target)
+        if python is None or not python.is_file():
+            continue
+        try:
+            foreign = not python.resolve().is_relative_to(store.resolve())
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if foreign:
+            return target
+    return None
+
+
 def ensure_install_launchers(repo_root: Path, out_dir: Path) -> list[str]:
     """Publish exact-install commands; conveniences follow them across Python repins."""
     root = Path(repo_root).resolve()
     local = root / ".hermes" / "bin"
     local.mkdir(parents=True, exist_ok=True)
-    written = [str(path) for name in WINDOWS_BIN_LAUNCHERS
-               if (path := stage_launcher(name, root, local)) is not None]
+    store = store_root(root)
+    written = []
+    for name in WINDOWS_BIN_LAUNCHERS:
+        # ponytail: one guard here covers every caller (launch, sync, repair,
+        # install); per-home outputs below stay unguarded. Upgrade to a stamped
+        # owning store if shared checkouts ever need cross-home repins.
+        kept = _kept_shared_launcher(name, local, store)
+        if kept is not None:
+            written.append(str(kept))
+            continue
+        if (path := stage_launcher(name, root, local)) is not None:
+            written.append(str(path))
     if Path(out_dir).resolve() == local:
         return written
     if len(written) != len(WINDOWS_BIN_LAUNCHERS):

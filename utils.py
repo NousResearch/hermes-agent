@@ -413,13 +413,15 @@ def atomic_yaml_write(path: Union[str, Path], data: Any, *, default_flow_style: 
     _atomic_write(path, _write, prefix=f".{path.stem}_", mode=_mode_for_write(path, create_mode))
 
 
-def _roundtrip_load(path: Path):
+def _roundtrip_load(path: Path, text: "str | None" = None):
     """``(yaml_rt, CommentedMap)``: a ruamel round-trip loader keeping quotes/Unicode with 2-space
-    indents, plus *path* loaded through it (empty map when missing/blank)."""
+    indents, plus *text* (else *path*) loaded through it (empty map when missing/blank)."""
     from ruamel.yaml.comments import CommentedMap
 
     yaml_rt = yaml.roundtrip_yaml()
-    data = yaml_rt.load(path.read_text(encoding="utf-8")) if path.exists() else None
+    if text is None and path.exists():
+        text = path.read_text(encoding="utf-8")
+    data = yaml_rt.load(text) if text is not None else None
     return yaml_rt, data if isinstance(data, CommentedMap) else CommentedMap(data or {})
 
 
@@ -501,7 +503,8 @@ def _rt_value(value: Any) -> Any:
 
 
 def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict, *,
-                               extra_content_on_create: "str | None" = None) -> None:
+                               extra_content_on_create: "str | None" = None,
+                               document_text: "str | None" = None) -> None:
     """Persist a full config-state dict while preserving comments and ordering.
 
     THE writer for ``config.yaml`` (every production caller reaches it through
@@ -512,7 +515,8 @@ def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict, *,
     *new_state* are deleted ("explicit absence": ``cfg.pop(k)`` + save removes ``k`` from disk).
     ``extra_content_on_create`` (commented example blocks) is appended only when the file is
     being created — re-appending it on every rewrite is how the stock boilerplate replaced
-    users' own comments (#92554).
+    users' own comments (#92554). ``document_text`` is the whole new file as the user wrote it
+    (the dashboard's YAML editor): its comments and order are the ones to keep, not the old file's.
     """
     from ruamel.yaml.comments import CommentedMap, CommentedSeq
     from hermes_cli.config import require_readable_config_before_write
@@ -522,8 +526,8 @@ def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict, *,
 
     mkdir_under_hermes_home(path.parent)
     require_readable_config_before_write(path)
-    creating = not path.exists() or not path.read_text(encoding="utf-8").strip()
-    yaml_rt, existing = _roundtrip_load(path)
+    creating = document_text is None and (not path.exists() or not path.read_text(encoding="utf-8").strip())
+    yaml_rt, existing = _roundtrip_load(path, document_text)
 
     def _unchanged(current: Any, value: Any) -> bool:
         # ``True == 1`` in Python; a bool↔int flip is a real change for YAML readers.

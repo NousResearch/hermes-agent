@@ -2046,7 +2046,8 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
     return loaded
 
 
-def atomic_config_write(config_path: Path, data: Dict[str, Any], *, extra_content_on_create: Optional[str] = None) -> None:
+def atomic_config_write(config_path: Path, data: Dict[str, Any], *, extra_content_on_create: Optional[str] = None,
+                        document_text: Optional[str] = None) -> None:
     """THE ``config.yaml`` writer: fail-closed (``require_readable_config_before_write``) and
     comment-preserving (ruamel round-trip merge of *data* onto the on-disk document). Every code
     path that persists a config.yaml — ``save_config``, ``config set``, migrations, plugin
@@ -2055,7 +2056,8 @@ def atomic_config_write(config_path: Path, data: Dict[str, Any], *, extra_conten
     from utils import atomic_roundtrip_yaml_save
 
     _refuse_failed_read(config_path, data)
-    atomic_roundtrip_yaml_save(config_path, data, extra_content_on_create=extra_content_on_create)
+    atomic_roundtrip_yaml_save(
+        config_path, data, extra_content_on_create=extra_content_on_create, document_text=document_text)
 
 
 def load_config() -> Dict[str, Any]:
@@ -2438,12 +2440,15 @@ def _commented_sections_for_save(normalized: Dict[str, Any]) -> Optional[str]:
 
 def save_config(
     config: Dict[str, Any], *, strip_defaults: bool = True,
-    preserve_keys: Optional[Set[Tuple[str, ...]]] = None, merge_existing: bool = False):
+    preserve_keys: Optional[Set[Tuple[str, ...]]] = None, merge_existing: bool = False,
+    document_text: Optional[str] = None):
     """Save configuration to ~/.hermes/config.yaml.
     Schema defaults are not written unless the user explicitly set them (the path exists in the
     raw config before normalisation), so config.yaml is never contaminated with defaults that
     would hide future default changes. ``merge_existing`` deep-merges the on-disk raw config
-    under *config* so partial callers cannot drop sections they omitted."""
+    under *config* so partial callers cannot drop sections they omitted. ``document_text`` is
+    the whole file as the user wrote it, *config* its parse (the dashboard's YAML editor): every
+    setting it names is user-set, and its comments and key order are kept."""
     with _CONFIG_LOCK:
         if is_managed():
             managed_error("save configuration")
@@ -2472,10 +2477,12 @@ def save_config(
 
         if strip_defaults:
             # ``_strip_default_values`` always preserves ``_config_version`` itself.
-            effective_preserve_keys = _explicit_config_paths(_raw_for_paths) | set(preserve_keys or ())
+            user_written = config if document_text is not None else _raw_for_paths
+            effective_preserve_keys = _explicit_config_paths(user_written) | set(preserve_keys or ())
             normalized = _strip_default_values(normalized, DEFAULT_CONFIG, preserve_keys=effective_preserve_keys)
 
-        atomic_config_write(config_path, normalized, extra_content_on_create=_commented_sections_for_save(normalized))
+        atomic_config_write(config_path, normalized, extra_content_on_create=_commented_sections_for_save(normalized),
+                            document_text=document_text)
         _secure_file(config_path)
         _RAW_CONFIG_CACHE.pop(str(config_path), None)
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)

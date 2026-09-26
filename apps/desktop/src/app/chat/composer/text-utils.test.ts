@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { blobDedupeKey, detectTrigger, extractClipboardImageBlobs } from './text-utils'
+import { blobDedupeKey, detectTrigger, extractClipboardImageBlobs, pastedFileClipboardPaths } from './text-utils'
 
 describe('detectTrigger', () => {
   it('detects a bare slash trigger with an empty query', () => {
@@ -260,5 +260,58 @@ describe('blobDedupeKey', () => {
     const file = new File([], 'a.png', { type: 'image/png', lastModified: 42 })
 
     expect(blobDedupeKey(file)).toBe('file:a.png:0:image/png:42')
+  })
+})
+
+describe('pastedFileClipboardPaths', () => {
+  const clipboardWith = (flavors: Record<string, string>) =>
+    ({
+      getData: (type: string) => flavors[type] ?? '',
+      items: []
+    }) as unknown as DataTransfer
+
+  it('decodes file:// URLs from the uri-list into absolute paths', () => {
+    expect(pastedFileClipboardPaths(clipboardWith({ 'text/uri-list': 'file:///home/me/report%20copy.pdf\n' }))).toEqual([
+      '/home/me/report copy.pdf'
+    ])
+  })
+
+  it('reads the plain-text fallback (Windows/WSLg copies without a uri-list)', () => {
+    expect(pastedFileClipboardPaths(clipboardWith({ 'text/plain': 'file:///C:/Users/me/spec.md' }))).toEqual([
+      '/C:/Users/me/spec.md'
+    ])
+  })
+
+  it('accepts the file://localhost/ spelling and ignores foreign hosts', () => {
+    const clipboard = clipboardWith({
+      'text/uri-list': 'file://localhost/home/me/a.txt\nfile://server/share/b.txt'
+    })
+
+    expect(pastedFileClipboardPaths(clipboard)).toEqual(['/home/me/a.txt'])
+  })
+
+  it('dedupes the same file listed in both flavors', () => {
+    const clipboard = clipboardWith({
+      text: 'file:///home/me/a.txt',
+      'text/uri-list': 'file:///home/me/a.txt'
+    })
+
+    expect(pastedFileClipboardPaths(clipboard)).toEqual(['/home/me/a.txt'])
+  })
+
+  it('ignores web URLs, non-file schemes, and bare paths — links stay links', () => {
+    const clipboard = clipboardWith({
+      text: 'https://example.com/doc\n/home/me/plain.txt\nftp:///x\nfile://\n'
+    })
+
+    expect(pastedFileClipboardPaths(clipboard)).toEqual([])
+  })
+
+  it('returns multiple files in clipboard order', () => {
+    const clipboard = clipboardWith({
+      'text/uri-list': 'file:///home/me/b.pdf\nfile:///home/me/a.csv'
+    })
+
+    expect(pastedFileClipboardPaths(clipboard)).toEqual(['/home/me/b.pdf', '/home/me/a.csv'])
   })
 })

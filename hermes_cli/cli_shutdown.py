@@ -302,29 +302,45 @@ def _wait_for_oneshot_background_completions(cli) -> None:
 
 
 def _finalize_single_query(cli) -> None:
-    """Close one-shot CLI resources after releasing the active-session lease.
+    """Settle the session, then release its lease, then linger as a bystander.
 
-    Release order is the point of this routine: by the time finalize runs, every turn
-    of the run (main turn, kanban goal loop, notify-completion follow-ups) has
-    finished, and none of the remaining steps — the bounded linger for
-    notify_on_complete children, the durable flush, cleanup — runs a turn. The lease
-    means "a turn may run on this session", so it is released FIRST; holding it
-    through the linger let an alive-but-idle one-shot keep refusing new deliveries
-    ("Refused active session") for minutes after its turn had ended (#118826).
+    Three phases, in this order:
+
+    1. **Session-owned settlement** — the durable flush (transcript retry, token
+       drain, ``end_session``) and the finalize hook. These are the only steps that
+       may still write session-owned state, and the flush's ``end_session`` setter
+       checks only ``id = ? AND ended_at IS NULL`` — no owner fence — so they must
+       complete while this process still owns the session. (The order was load-
+       bearing from the start: #88583 wired the flush ahead of teardown so nothing
+       later can lose the turn.)
+    2. **Ownership handoff** — release the active-session lease. By this point every
+       turn of the run (main turn, kanban goal loop, notify-completion follow-ups)
+       has finished and every session-owned write has landed, so a waiting delivery
+       may acquire and resume the session immediately: releasing only at process
+       exit let an alive-but-idle one-shot refuse deliveries for the whole exit
+       linger (bounded, minutes) after its turn had ended (#118826 / #122770).
+    3. **Process-only work, lease-free** — the bounded linger for notify_on_complete
+       children (pipe drain, the boundary the one-shot path itself declares "NOT
+       part of the spawner's delivery", #113608) and resource teardown. Neither
+       touches session rows, so they need no ownership.
+
+    Releasing between settlement and the linger is what prevents the handoff race:
+    a successor that acquires and reopens the session can never receive this
+    process's stale ``cli_close`` end-stamp, because phase 1 has already run it.
     """
     from cli import _flush_one_shot_session_store, _notify_single_query_session_finalize, _run_cleanup, _wait_for_oneshot_background_completions
-    cli._release_active_session()
-    # Order matters: linger for spawned background work BEFORE any teardown (the
-    # parent owns those children's stdout pipes); then the durable flush, since
-    # memory-provider shutdown inside _run_cleanup can issue aux-LLM calls and
-    # nothing after it may fail in a way that loses the turn.
-    for step, what in (
-        (_wait_for_oneshot_background_completions, "background completion wait"),
-        (_flush_one_shot_session_store, "session store flush"),
-    ):
+    try:
         try:
-            step(cli)
+            _flush_one_shot_session_store(cli)
         except Exception:
-            logger.debug("one-shot %s failed", what, exc_info=True)
-    _notify_single_query_session_finalize(cli)
+            logger.debug("one-shot session store flush failed", exc_info=True)
+        _notify_single_query_session_finalize(cli)
+    finally:
+        # Even a failed settlement must not pin the lease: the failure mode to avoid
+        # at all costs is a dead-ish process holding ownership, not a dangling row.
+        cli._release_active_session()
+    try:
+        _wait_for_oneshot_background_completions(cli)
+    except Exception:
+        logger.debug("one-shot background completion wait failed", exc_info=True)
     _run_cleanup(notify_session_finalize=False)

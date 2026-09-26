@@ -233,6 +233,14 @@ def list_providers() -> list[ProviderProfile]:
     return result
 
 
+def bundled_provider_profiles() -> list[ProviderProfile]:
+    """The profiles shipped with hermes-agent, from the process-wide layer only: unlike
+    :func:`list_providers` the answer never depends on which profile home is bound."""
+    if not _discovered:
+        _discover_providers()
+    return [p for name, p in _REGISTRY.items() if _SOURCES.get(name) == "bundled"]
+
+
 def _home_layer(*, force_stamp_check: bool = False) -> _HomeLayer:
     """The layer for the home bound right now, importing plugin dirs it has not seen yet."""
     layer, home, key = _bound_home_layer()

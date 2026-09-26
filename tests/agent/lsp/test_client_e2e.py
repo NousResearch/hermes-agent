@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from contextlib import suppress
 from pathlib import Path
 
 import pytest
@@ -153,6 +154,7 @@ async def test_cancelled_start_terminates_spawned_server(tmp_path: Path):
 
 
 @pytest.mark.platforms("linux")
+@pytest.mark.live_system_guard_bypass
 @pytest.mark.asyncio
 async def test_cancelled_start_hard_kills_sigterm_ignoring_descendant(tmp_path: Path):
     """A launcher exiting on SIGTERM must not let an ignoring server child escape cleanup."""
@@ -167,16 +169,28 @@ async def test_cancelled_start_hard_kills_sigterm_ignoring_descendant(tmp_path: 
     try:
         # Generous deadlines: CI runners under load took >3 s here (PR-blocking flake).
         ready_deadline = asyncio.get_running_loop().time() + 15.0
-        while not child_pid_file.exists():
+        while child is None:
+            if child_pid_file.exists():
+                try:
+                    child = psutil.Process(int(child_pid_file.read_text(encoding="utf-8")))
+                except (ValueError, psutil.NoSuchProcess):
+                    # write_text() creates the file before filling it, and the
+                    # process may disappear between reading and inspection.
+                    child = None
             assert asyncio.get_running_loop().time() < ready_deadline
-            await asyncio.sleep(0.01)
-        child = psutil.Process(int(child_pid_file.read_text(encoding="utf-8")))
+            if child is None:
+                await asyncio.sleep(0.01)
 
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(start, timeout=0.05)
 
         deadline = asyncio.get_running_loop().time() + 15.0
-        while child.is_running() and child.status() != psutil.STATUS_ZOMBIE:
+        while True:
+            try:
+                if not child.is_running() or child.status() == psutil.STATUS_ZOMBIE:
+                    break
+            except psutil.NoSuchProcess:
+                break
             assert asyncio.get_running_loop().time() < deadline
             await asyncio.sleep(0.01)
         assert client.state == "error"
@@ -185,8 +199,11 @@ async def test_cancelled_start_hard_kills_sigterm_ignoring_descendant(tmp_path: 
         if not start.done():
             start.cancel()
             await asyncio.gather(start, return_exceptions=True)
-        if child is not None and child.is_running():
-            child.kill()
+        if child is not None:
+            # The production cleanup may reap the descendant between a liveness
+            # check and SIGKILL; best-effort test cleanup must tolerate that race.
+            with suppress(psutil.NoSuchProcess):
+                child.kill()
 
 
 @pytest.mark.asyncio

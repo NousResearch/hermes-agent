@@ -2012,3 +2012,44 @@ class TestCompatibleProvidersMalformedLegacyKey:
 
         assert names == ["legacy"]
         assert not [r for r in caplog.records if "custom_providers is a" in r.getMessage()]
+
+
+class TestFailedMigrationRetries:
+    """A failed ladder step must not be stamped over and lost (#120628)."""
+
+    def test_failed_step_stops_stamp_and_retries_next_run(self, tmp_path, monkeypatch):
+        import hermes_cli.config_migrations as mig
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump({"_config_version": 44}), encoding="utf-8")
+
+        def _boom(results, quiet):
+            raise ImportError(
+                "cannot import name '_configurable_keys' from 'hermes_cli.tools_config'")
+
+        original = mig.MIGRATIONS
+        patched = tuple(
+            (ver, _boom) if ver == 45 else (ver, fn)
+            for ver, fn in original)
+        assert any(ver == 45 for ver, _ in patched)
+        # Plain assignment with try/finally: monkeypatch.undo() would also undo the
+        # hermetic-HOME fixture's own patches and migrate the wrong directory.
+        mig.MIGRATIONS = patched
+        try:
+            with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+                results = migrate_config(interactive=False, quiet=True)
+                assert results["migrations_failed"] == [45]
+                assert any("v45" in w for w in results["warnings"])
+                raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+                # Stops just below the lowest failure so v45 retries next run.
+                assert raw["_config_version"] == 44
+        finally:
+            mig.MIGRATIONS = original
+
+        # Transient cause gone: the next run retries v45 and stamps latest.
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            results2 = migrate_config(interactive=False, quiet=True)
+            assert not results2.get("migrations_failed")
+            raw2 = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            assert raw2["_config_version"] == DEFAULT_CONFIG["_config_version"]

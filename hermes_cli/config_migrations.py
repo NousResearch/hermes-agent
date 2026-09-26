@@ -785,6 +785,9 @@ def run_migrations(
                 # ladder (config loading itself fails otherwise). Loud, not silent.
                 warning = f"config migration to v{target_ver} failed and was skipped: {exc}"
                 results.setdefault("warnings", []).append(warning)
+                # Remember WHICH step failed: migrate_config() stamps from this list, so a
+                # skipped step is retried next run instead of stamped over and lost for good.
+                results.setdefault("migrations_failed", []).append(target_ver)
                 # Quiet callers (profile creation, unattended update) discard ``results`` and
                 # migrate_config still stamps the latest version, so without a log line the
                 # skipped step vanishes for good.

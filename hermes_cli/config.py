@@ -1404,8 +1404,14 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     results["config_added"].extend(field["key"] for field in get_missing_config_fields())
 
     if current_ver < latest_ver and not floor_refused:
+        # run_migrations() catches per step and continues, so a step may have been skipped.
+        # Stamping latest_ver over it retires it permanently (the ladder is gated on the
+        # on-disk version), so stop just below the lowest failure and let it retry next run.
+        # ponytail: later successful steps re-run too; per-step resume when migrations grow side effects.
+        failed = [v for v in (results.get("migrations_failed") or []) if isinstance(v, int)]
+        stamp_ver = max(current_ver, min(failed) - 1) if failed else latest_ver
         config = read_raw_config()
-        config["_config_version"] = latest_ver
+        config["_config_version"] = stamp_ver
         _persist_migration(config)
 
     missing_skill_config = get_missing_skill_config_vars()

@@ -886,6 +886,10 @@ class OpenAICompatRoutesMixin:
                     # opencode and the Vercel AI SDK render as a thinking block.
                     await response.write(_sse_frame(_chunk({"reasoning_content": delta[1]})))
                 elif isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__status__":
+                    # Same opt-out: an OpenAI SDK turns any named frame into a chunk with
+                    # ``choices=None``, and status frames fire exactly during provider retries.
+                    if not self._tool_progress_events:
+                        continue
                     await response.write(_sse_frame(delta[1], event="hermes.status"))
                 elif isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__approval__":
                     await response.write(_sse_frame(delta[1], event="approval.request"))

@@ -24,6 +24,14 @@ logger = logging.getLogger(__name__)
 OMIT_TEMPERATURE = object()
 
 
+def _is_anthropic_messages_base(url: str) -> bool:
+    """True when *url* is an Anthropic Messages inference base (no ``/models``)."""
+    import urllib.parse
+
+    path = urllib.parse.urlparse((url or "").strip().lower()).path.rstrip("/")
+    return path.endswith(("/anthropic", "/anthropic/v1"))
+
+
 def _profile_user_agent() -> str:
     """Return a ``hermes-cli/<version>`` UA string, with a stable fallback.
 
@@ -359,7 +367,9 @@ class ProviderProfile:
              pass base_url unconditionally — falling back to the profile
              default when the user configured nothing — so equality with
              self.base_url means "not customised" and must not shadow
-             models_url.
+             models_url. An Anthropic Messages inference base
+             (``.../apps/anthropic``) is not a catalog: appending ``/models``
+             404s, so it is ignored and steps 2-3 run.
           2. self.models_url  (explicit override — use when the models
              endpoint differs from the inference base URL, e.g. OpenRouter
              exposes a public catalog at /api/v1/models while inference is
@@ -376,6 +386,10 @@ class ProviderProfile:
         if not self.supports_model_listing:
             return None
         caller_base = (base_url or "").strip()
+        # Inference-only. Token Plan sets ALIBABA_TOKEN_PLAN_BASE_URL to
+        # .../apps/anthropic so chat uses Messages; that host has no /models.
+        if _is_anthropic_messages_base(caller_base):
+            caller_base = ""
         effective_base = caller_base or self.base_url
         custom_base = bool(caller_base) and (
             caller_base.rstrip("/") != (self.base_url or "").rstrip("/")

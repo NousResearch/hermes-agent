@@ -1117,7 +1117,13 @@ export function LocalFilePreview({
     (target.binary || target.large || state.binary || (state.byteSize ?? 0) > TEXT_PREVIEW_MAX_BYTES)
   ) {
     const binary = target.binary || state.binary
-    const size = target.byteSize || state.byteSize
+    // The printed size must be the one the gate refused on. The pane's own read
+    // (`state`) is newer than the target's metadata, which is captured when the
+    // tab is opened; preferring the target printed a size that contradicted the
+    // gate whenever the file outgrew the limit after the tab was opened
+    // ("suggestions.json is 129 KB" for a 3.4 MB file). The target is the only
+    // source when the refusal happened before any read (target.large/binary).
+    const size = state.byteSize ?? target.byteSize
 
     return (
       <PreviewEmptyState

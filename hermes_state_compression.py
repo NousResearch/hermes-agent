@@ -9,7 +9,7 @@ import json
 import logging
 import sqlite3
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from hermes_state_common import (
     _BOUNDARY_END_REASONS, _COMPRESSION_LOCK_ROW_SQL as _LOCK_ROW_SQL, _ENDED_ROW_SQL, _ended_by_compression,
@@ -488,7 +488,8 @@ class SessionCompressionMixin:
             "DELETE FROM compression_locks WHERE session_id = ? AND holder = ?",
             (session_id, holder))
 
-    def _session_turn_lease_key_on_conn(self, conn, session_id: str) -> str:
+    def _session_turn_lease_key_on_conn(self, conn, session_id: str, *,
+                                        status_deadline: Optional[float] = None) -> str:
         """Walk compression parents on ``conn`` to the conversation lease key. Must share
         the connection of the lease INSERT/UPDATE/DELETE: a failed lookup must not yield a
         child id the write then persists. Markers bind to ``parent_session_id``. Lock
@@ -502,12 +503,22 @@ class SessionCompressionMixin:
             return dict(row) if row else None
 
         current = _row(session_id)
+        if status_deadline is not None and current is None:
+            raise ValueError("session missing")
         seen = {session_id}
         while current:
+            if status_deadline is not None and (len(seen) > 100 or time.monotonic() >= status_deadline):
+                raise ValueError("turn status lineage budget exhausted")
             parent_id = current.get("parent_session_id")
-            if not parent_id or parent_id in seen or self._is_explicit_fork_child_row(current, include_reset=True):
+            if not parent_id or self._is_explicit_fork_child_row(current, include_reset=True):
+                break
+            if parent_id in seen:
+                if status_deadline is not None:
+                    raise ValueError("cyclic turn status lineage")
                 break
             parent = _row(parent_id)
+            if parent is None and status_deadline is not None:
+                raise ValueError("incomplete turn status lineage")
             if not parent or parent.get("end_reason") != "compression":
                 break
             seen.add(parent_id)
@@ -521,6 +532,62 @@ class SessionCompressionMixin:
             return session_id
         with self._read_ctx() as conn:
             return self._session_turn_lease_key_on_conn(conn, session_id)
+
+    def get_session_turn_statuses(self, session_ids: Sequence[str]) -> Dict[str, Optional[bool]]:
+        """Read-only batch status for sessions in this DB's profile.
+
+        True means an unexpired live holder, False means no effective lease, and
+        None means missing/indeterminate. Never returns a holder or claims a lease.
+        At most 100 IDs and 100 ancestry steps per ID; a read snapshot keeps the
+        lineage and lease rows coherent. The 0.5s work budget is cooperative,
+        NOT a wall-clock bound: connection checkout, the fallback writer lock,
+        SQLite busy waits, and even individual statements may block beyond it.
+        In particular, do not call this synchronously from a latency-sensitive
+        request path expecting a 0.5s timeout. For a bounded caller, run the
+        read in an independently owned, capacity-limited background worker and
+        return unknown on the caller's deadline; that worker may still be running
+        and must own its DB handle until it exits. Never close its connection on
+        the timeout or start unlimited abandoned workers. After a late wait,
+        remaining results stay unknown. Treat None as potentially active.
+        """
+        from hermes_state import _compression_lock_holder_process_is_dead
+        ids = list(session_ids)
+        if len(ids) > 100:
+            raise ValueError("turn status batch exceeds 100 session IDs")
+        if not all(isinstance(sid, str) for sid in ids):
+            raise ValueError("turn status session IDs must be strings")
+        statuses: Dict[str, Optional[bool]] = {sid: None for sid in ids}
+        if not ids:
+            return statuses
+        deadline = time.monotonic() + 0.5
+        now = time.time()
+        try:
+            with self._read_ctx() as conn:
+                # BEGIN is a read transaction even on the fallback writer handle;
+                # ROLLBACK below closes only our snapshot, never modifies a row.
+                conn.execute("BEGIN")
+                try:
+                    for sid in statuses:
+                        if not sid or time.monotonic() >= deadline:
+                            continue
+                        try:
+                            key = self._session_turn_lease_key_on_conn(
+                                conn, sid, status_deadline=deadline)
+                            row = conn.execute(
+                                "SELECT holder, expires_at FROM session_turn_leases WHERE conversation_id = ?",
+                                (key,)).fetchone()
+                            if time.monotonic() >= deadline:
+                                continue
+                            statuses[sid] = bool(row and float(row["expires_at"]) > now and
+                                                 not _compression_lock_holder_process_is_dead(row["holder"]))
+                        except (sqlite3.Error, ValueError, TypeError):
+                            # Never turn an incomplete lookup into a false-safe inactive result.
+                            continue
+                finally:
+                    conn.execute("ROLLBACK")
+        except (sqlite3.Error, RuntimeError):
+            return {sid: None for sid in statuses}
+        return statuses
 
     def try_acquire_session_turn_lease(
         self, session_id: str, holder: str, *, ttl_seconds: float = 300.0, patience_s: Optional[float] = None,

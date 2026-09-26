@@ -2183,6 +2183,17 @@ class CLITuiMixin:
         # the TUI and CLI (Copilot round-9 review on #19835). ``super``/``win``/``windows`` configs silently
         # fall back to the default here since prompt_toolkit has no super modifier — log a warning so users
         # notice the TUI/CLI split instead of a silent mismatch (round-11).
+        #
+        # ``pt_key_to_sequence`` starts out as a local fallback (behaviorally identical to
+        # ``hermes_cli.voice.pt_key_to_sequence`` for the ctrl-only default below) and is only
+        # replaced once the config-dependent imports have actually succeeded. Previously the real
+        # function was imported inside this same ``try`` as ``load_config()``, so an exception
+        # raised before that import line (e.g. a broken config.yaml) left it unbound and crashed
+        # ``return pt_key_to_sequence(...)`` below with ``UnboundLocalError`` instead of falling
+        # back to Ctrl+B (#101757).
+        def pt_key_to_sequence(pt_key: str) -> tuple:
+            return (pt_key,)
+
         _raw_key: object = "ctrl+b"
         try:
             from hermes_cli.config import load_config

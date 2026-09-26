@@ -29,7 +29,9 @@ def _validate(model, provider="openrouter", api_models=FAKE_API_MODELS, **kw):
         "used_fallback": False,
     }
     with patch("hermes_cli.models.fetch_api_models", return_value=api_models), \
-         patch("hermes_cli.models.probe_api_models", return_value=probe_payload):
+         patch("hermes_cli.models.probe_api_models", return_value=probe_payload), \
+         patch("hermes_cli.models.fetch_openrouter_endpoint_slugs",
+               return_value=kw.pop("endpoint_slugs", None)):
         return validate_requested_model(model, provider, **kw)
 
 
@@ -641,6 +643,178 @@ class TestValidateOpenRouterVariantSuffixes:
         assert result["accepted"] is True
         assert result["recognized"] is True
         assert result.get("corrected_model") is None
+
+
+class TestValidateOpenRouterProviderPinSuffixes:
+    """OpenRouter provider-pin suffixes (`model:wafer`, `model:deepinfra/fp4`)
+    are wire-valid but never listed in /models (only `:free`/`:batch` SKUs and
+    the `:nitro`-family modifiers appear there). Validation must verify the
+    suffix against the model's public endpoints API, accept valid pins
+    verbatim, reject unknown pins naming the available provider slugs, and
+    keep the pre-existing generic reject when the endpoints API is
+    unreachable — a typo must not pass just because the probe failed."""
+
+    _LISTING = ["z-ai/glm-5.3-flash", "x-ai/grok-4.6"]
+    _SLUGS = ["deepinfra/fp4", "wafer", "z-ai/fp8"]
+
+    @pytest.fixture(autouse=True)
+    def _clear_slugs_cache(self):
+        """The process-lifetime slug cache would leak between tests."""
+        import hermes_cli.models as _m
+
+        cache = _m._openrouter_endpoint_slugs_cache
+        cache.clear()
+        yield
+        cache.clear()
+
+    def _validate(self, model, slugs=_SLUGS, api_models=None):
+        return _validate(model, "openrouter", api_models=api_models or self._LISTING,
+                         endpoint_slugs=slugs)
+
+    def test_provider_pin_accepted_verbatim(self):
+        result = self._validate("z-ai/glm-5.3-flash:wafer")
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result.get("corrected_model") is None
+        assert result["message"] is None
+
+    def test_provider_pin_with_quantization_tag_accepted(self):
+        result = self._validate("z-ai/glm-5.3-flash:deepinfra/fp4")
+        assert result["accepted"] is True
+        assert result.get("corrected_model") is None
+
+    def test_provider_pin_case_insensitive(self):
+        result = self._validate("z-ai/glm-5.3-flash:WAFER")
+        assert result["accepted"] is True
+        assert result.get("corrected_model") is None
+
+    def test_unknown_pin_rejected_with_available_pins(self):
+        result = self._validate("z-ai/glm-5.3-flash:wafre")
+        assert result["accepted"] is False
+        assert ":wafer" in result["message"]
+        assert "wafre" in result["message"]
+
+    def test_pin_listing_truncated_for_wide_models(self):
+        result = self._validate("z-ai/glm-5.3-flash:wafre", slugs=[f"prov{i}" for i in range(12)])
+        assert result["accepted"] is False
+        assert "and 4 more" in result["message"]
+
+    def test_unreachable_endpoints_api_keeps_generic_reject(self):
+        """No endpoints data → fall through to the pre-existing verdict path;
+        a guessed suffix must not be soft-accepted on a failed probe."""
+        result = self._validate("z-ai/glm-5.3-flash:bogus", slugs=None)
+        assert result["accepted"] is False
+
+    def test_pin_on_unknown_base_rejected(self):
+        result = self._validate("x-ai/notreal-model:wafer")
+        assert result["accepted"] is False
+
+    def test_pin_base_case_insensitive(self):
+        """Catalog stores canonical casing; a differently-cased base id must
+        still reach the pin verdict instead of the generic reject."""
+        result = self._validate("Z-AI/GLM-5.3-FLASH:wafer")
+        assert result["accepted"] is True
+        assert result.get("corrected_model") is None
+
+    def test_non_openrouter_provider_unaffected(self):
+        result = _validate(
+            "z-ai/glm-5.3-flash:wafer", "groq", api_models=["z-ai/glm-5.3-flash"],
+        )
+        assert result["accepted"] is False
+
+    def test_catalog_fallback_pin_accepted(self):
+        """Gateway path: /models unreachable → curated catalog validates the
+        base id and the endpoints API still verifies the pin."""
+        with patch("hermes_cli.models.fetch_api_models", return_value=None), \
+             patch("hermes_cli.models.provider_model_ids",
+                   return_value=["z-ai/glm-5.3-flash"]), \
+             patch("hermes_cli.models.fetch_openrouter_endpoint_slugs",
+                   return_value=self._SLUGS):
+            result = validate_requested_model(
+                "z-ai/glm-5.3-flash:wafer",
+                "openrouter",
+                base_url="https://openrouter.ai/api/v1",
+            )
+        assert result["accepted"] is True
+        assert result.get("corrected_model") is None
+
+
+class TestOpenRouterEndpointsProbeTransport:
+    """The HTTP probe itself, via the real transport (not by stubbing
+    fetch_openrouter_endpoint_slugs). Pins the URL shape: the vend/model
+    separator must stay literal — the endpoints route 404s on %2F."""
+
+    def test_url_keeps_model_id_separator(self):
+        from hermes_cli.models import fetch_openrouter_endpoint_slugs
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"data": {"endpoints": [{"tag": "wafer"}, {"tag": "deepinfra/fp4"}]}}'
+
+        with patch("hermes_cli.models._urlopen_model_catalog_request",
+                   return_value=_Resp()) as mock_urlopen:
+            slugs = fetch_openrouter_endpoint_slugs("z-ai/glm-5.3-flash")
+
+        req = mock_urlopen.call_args[0][0]
+        # %2F would 404 against the live API (verified); the separator stays.
+        assert req.full_url == "https://openrouter.ai/api/v1/models/z-ai/glm-5.3-flash/endpoints"
+        assert slugs == ["deepinfra/fp4", "wafer"]
+
+    def test_non_string_tag_skipped(self):
+        """A malformed (non-string) tag must not become a bogus slug."""
+        from hermes_cli.models import fetch_openrouter_endpoint_slugs
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"data": {"endpoints": [{"tag": "wafer"}, {"tag": {"bad": 1}}]}}'
+
+        with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_Resp()):
+            slugs = fetch_openrouter_endpoint_slugs("vendor/malformed-tag-model")
+
+        assert slugs == ["wafer"]
+
+
+class TestOpenRouterSlugSuffixParser:
+    """hermes_constants.openrouter_slug_suffix: pure suffix parsing shared by
+    the modifier and provider-pin paths."""
+
+    def test_modifier_suffix(self):
+        from hermes_constants import openrouter_slug_suffix
+
+        assert openrouter_slug_suffix("x-ai/grok-4:nitro") == "nitro"
+
+    def test_provider_pin_with_slash(self):
+        from hermes_constants import openrouter_slug_suffix
+
+        assert openrouter_slug_suffix("z-ai/glm-5.3-flash:deepinfra/fp4") == "deepinfra/fp4"
+
+    def test_no_suffix(self):
+        from hermes_constants import openrouter_slug_suffix
+
+        assert openrouter_slug_suffix("z-ai/glm-5.3-flash") is None
+
+    def test_empty_suffix(self):
+        from hermes_constants import openrouter_slug_suffix
+
+        assert openrouter_slug_suffix("z-ai/glm-5.3-flash:") is None
+
+    def test_variant_base_still_excludes_free_sku(self):
+        from hermes_constants import openrouter_variant_base
+
+        assert openrouter_variant_base("x-ai/grok-4:NITRO") == "x-ai/grok-4"
+        assert openrouter_variant_base("thinkingmachines/inkling:free") is None
 
 
 class TestValidateRequestedModelNousPortalRecommendations:

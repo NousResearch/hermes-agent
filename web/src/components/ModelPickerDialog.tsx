@@ -12,7 +12,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router";
 import { cn, themedBody } from "@/lib/utils";
-import { queryMatchesProviderOnly } from "@/lib/model-picker-filter";
+import { queryMatchesProviderOnly, verbatimModelId } from "@/lib/model-picker-filter";
 import { fuzzyRank, modelSearchText } from "@hermes/shared";
 import { errorMessage } from "@/lib/api-error";
 
@@ -250,6 +250,14 @@ export function ModelPickerDialog(props: Props) {
     [models, trimmedQuery, queryMatchesSelectedProviderOnly],
   );
 
+  // A typed id that looks like `vendor/model[:suffix]` but matches nothing in
+  // the catalog gets a verbatim row (OpenRouter provider pins never appear in
+  // /models — see model-picker-filter.ts).
+  const verbatimModel = useMemo(
+    () => verbatimModelId(selectedProvider, trimmedQuery),
+    [selectedProvider, trimmedQuery],
+  );
+
   const canConfirm = !!selectedProvider && !!selectedModel && !applying;
 
   const applySelection = async (
@@ -400,6 +408,7 @@ export function ModelPickerDialog(props: Props) {
             provider={selectedProvider}
             models={filteredModels}
             allModels={models}
+            verbatimModel={verbatimModel}
             selectedModel={selectedModel}
             currentModel={currentModel}
             currentProviderSlug={currentProviderSlug}
@@ -572,6 +581,7 @@ function ModelColumn({
   provider,
   models,
   allModels,
+  verbatimModel,
   selectedModel,
   currentModel,
   currentProviderSlug,
@@ -581,6 +591,8 @@ function ModelColumn({
   provider: ModelOptionProvider | null;
   models: { model: string; positions: number[] }[];
   allModels: string[];
+  /** Typed id matching no catalog entry — rendered as a verbatim row, or null. */
+  verbatimModel: string | null;
   selectedModel: string;
   currentModel: string;
   currentProviderSlug: string;
@@ -605,7 +617,26 @@ function ModelColumn({
         </div>
       )}
 
-      {models.length === 0 ? (
+      {verbatimModel && (
+        <ListItem
+          active={verbatimModel === selectedModel}
+          onClick={() => onSelect(verbatimModel)}
+          onDoubleClick={() => onConfirm(verbatimModel)}
+          className="px-3 py-1.5 text-xs font-mono border-b border-border"
+        >
+          <Check
+            className={`h-3 w-3 shrink-0 ${
+              verbatimModel === selectedModel ? "text-primary" : "text-transparent"
+            }`}
+          />
+          <span className="flex-1 truncate">{verbatimModel}</span>
+          <span className="italic text-muted-foreground shrink-0">
+            use verbatim — not in catalog
+          </span>
+        </ListItem>
+      )}
+
+      {models.length === 0 && !verbatimModel ? (
         <div className="p-4 text-xs text-muted-foreground italic">
           {allModels.length
             ? "no models match your filter"

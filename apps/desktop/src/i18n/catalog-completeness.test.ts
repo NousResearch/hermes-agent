@@ -7,9 +7,15 @@ import { esOverrides } from './es'
 import { frOverrides } from './fr'
 import type { Locale } from './types'
 
-// Locales that shipped fully translated. They are `defineLocale` overlays like
-// ja/ru, so an English key added later falls back to English instead of
-// failing typecheck; these checks keep the translated copy structurally sound.
+// Locales whose catalog covers the whole English key set today, so no English
+// is visible in the UI. Every locale in the repo is a `defineLocale` overlay
+// (fr/de/es included, not just ja/ru), which means an English key added to
+// en.ts later falls back to English for all of them equally instead of
+// failing typecheck — that fallback is what makes these checks necessary
+// rather than optional. Being listed here asserts only "fully translated as
+// of this commit"; it is deliberately not a promise that a future key can
+// never need a fallback. Adding a locale here also requires it to be a
+// registered `Locale`, so the list cannot drift away from types.ts.
 const COMPLETE_LOCALES = ['fr', 'de', 'es', 'cs'] as const satisfies readonly Locale[]
 const completeOverrides = { fr: frOverrides, de: deOverrides, es: esOverrides, cs: csOverrides }
 

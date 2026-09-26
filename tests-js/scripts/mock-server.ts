@@ -35,6 +35,9 @@ import { writeEnvFile, writeMockProviderConfig } from './mock-provider-config.ts
 export const MOCK_REPLY = 'Hello from the mock inference server! The full boot chain is working.'
 
 export interface MockServerOptions {
+  /** Plain-text provider reply for renderer control-token E2E coverage. */
+  textReply?: string
+
   /** Choose distinct replies from the latest input without replaying history. */
   replyForPrompt?: (prompt: string) => string
 
@@ -897,7 +900,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             return
           }
 
-          const reply = options.replyForPrompt?.(userText) ?? MOCK_REPLY
+          const reply = options.textReply ?? options.replyForPrompt?.(userText) ?? MOCK_REPLY
 
           if (stream) {
             const holdThisStream = Boolean(

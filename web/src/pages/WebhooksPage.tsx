@@ -115,9 +115,17 @@ export default function WebhooksPage() {
         if (st.exit_code !== 0 && st.exit_code !== null) {
           setRestartMessage(null);
           setRestartNeeded(true);
-          setRestartError(`Gateway restart failed with exit ${st.exit_code}.`);
+          setRestartError(
+            t.webhooks.restartFailedExit.replace(
+              "{exit}",
+              String(st.exit_code),
+            ),
+          );
           showToast(
-            `Gateway restart failed (exit ${st.exit_code}) — restart manually`,
+            t.webhooks.restartFailedManual.replace(
+              "{exit}",
+              String(st.exit_code),
+            ),
             "error",
           );
         } else {
@@ -131,7 +139,11 @@ export default function WebhooksPage() {
       }
     }
     setRestartMessage(null);
-  }, [showToast]);
+  }, [
+    showToast,
+    t.webhooks.restartFailedExit,
+    t.webhooks.restartFailedManual,
+  ]);
 
   const handleRestart = useCallback(async () => {
     setRestarting(true);
@@ -139,7 +151,7 @@ export default function WebhooksPage() {
       await api.restartGateway();
       setRestartNeeded(false);
       setRestartError(null);
-      setRestartMessage("Gateway restarting…");
+      setRestartMessage(t.webhooks.restartPending);
       showToast(t.webhooks.gatewayRestarting, "success");
       setTimeout(() => void loadWebhooks(), 4000);
       void watchRestartOutcome();
@@ -150,7 +162,14 @@ export default function WebhooksPage() {
     } finally {
       setRestarting(false);
     }
-  }, [loadWebhooks, showToast, watchRestartOutcome, t.webhooks.gatewayRestarting, t.webhooks.restartFailed]);
+  }, [
+    loadWebhooks,
+    showToast,
+    watchRestartOutcome,
+    t.webhooks.gatewayRestarting,
+    t.webhooks.restartFailed,
+    t.webhooks.restartPending,
+  ]);
 
   const handleEnableWebhooks = useCallback(async () => {
     setEnabling(true);
@@ -160,7 +179,7 @@ export default function WebhooksPage() {
       const result = await api.enableWebhooks();
       await loadWebhooks();
       if (result.restart_started) {
-        setRestartMessage("Webhooks enabled; gateway restarting…");
+        setRestartMessage(t.webhooks.enableRestartPending);
         showToast(t.webhooks.enabledRestarting, "success");
         setTimeout(() => void loadWebhooks(), 4000);
         void watchRestartOutcome();
@@ -168,7 +187,9 @@ export default function WebhooksPage() {
         const detail = result.restart_error ? `: ${result.restart_error}` : ".";
         setRestartMessage(null);
         setRestartNeeded(true);
-        setRestartError(`Gateway restart failed${detail}`);
+        setRestartError(
+          t.webhooks.restartFailedDetail.replace("{detail}", detail),
+        );
         showToast(
           t.webhooks.enabledRestartFailed.replace("{detail}", detail),
           "error",
@@ -182,7 +203,16 @@ export default function WebhooksPage() {
     } finally {
       setEnabling(false);
     }
-  }, [loadWebhooks, showToast, watchRestartOutcome, t.webhooks.enableFailed, t.webhooks.enabledRestartFailed, t.webhooks.enabledRestarting]);
+  }, [
+    loadWebhooks,
+    showToast,
+    watchRestartOutcome,
+    t.webhooks.enableFailed,
+    t.webhooks.enabledRestartFailed,
+    t.webhooks.enabledRestarting,
+    t.webhooks.enableRestartPending,
+    t.webhooks.restartFailedDetail,
+  ]);
 
   const resetForm = useCallback(() => {
     setName("");
@@ -519,8 +549,7 @@ export default function WebhooksPage() {
             <div className="flex items-start gap-2 text-sm">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
               <span>
-                {restartError ??
-                  "Webhooks are enabled, but the gateway still needs a restart before the receiver can come online."}
+                {restartError ?? t.webhooks.needRestartHint}
               </span>
             </div>
             <Button
@@ -542,18 +571,17 @@ export default function WebhooksPage() {
           className="flex items-center gap-2 text-muted-foreground"
         >
           <Webhook className="h-4 w-4" />
-          Subscriptions ({subscriptions.length})
+          {t.webhooks.subscriptionsHeading.replace("{count}", String(subscriptions.length))}
         </H2>
 
         <p className="text-xs text-muted-foreground -mt-1">
-          Subscription changes hot-reload once the webhook receiver is running.
-          Disabled subscriptions reject incoming events.
+          {t.webhooks.subscriptionsHint}
         </p>
 
         {subscriptions.length === 0 && (
           <Card>
             <CardContent className="py-8 text-center text-sm text-muted-foreground">
-              No webhook subscriptions yet.
+              {t.webhooks.empty}
             </CardContent>
           </Card>
         )}

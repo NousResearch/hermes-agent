@@ -34,6 +34,7 @@ import type {
   TelegramOnboardingStartResponse,
   WhatsAppOnboardingStartResponse,
 } from "@/lib/api";
+import type { Translations } from "@/i18n/types";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
@@ -41,22 +42,41 @@ import { errorMessage } from "@/lib/api-error";
 
 // State → badge mapping. The backend emits a small, fixed vocabulary plus
 // whatever the live gateway runtime reports (connected/disconnected/fatal).
-const STATE_BADGE: Record<
-  string,
-  { tone: "success" | "warning" | "destructive" | "secondary" | "outline"; label: string }
-> = {
-  connected: { tone: "success", label: "Connected" },
-  pending_restart: { tone: "warning", label: "Restart to apply" },
-  gateway_stopped: { tone: "warning", label: "Gateway stopped" },
-  startup_failed: { tone: "destructive", label: "Start failed" },
-  disconnected: { tone: "warning", label: "Disconnected" },
-  not_configured: { tone: "outline", label: "Not configured" },
-  disabled: { tone: "secondary", label: "Disabled" },
-  fatal: { tone: "destructive", label: "Error" },
+type ChannelStateTone =
+  | "success"
+  | "warning"
+  | "destructive"
+  | "secondary"
+  | "outline";
+
+const STATE_BADGE: Record<string, ChannelStateTone> = {
+  connected: "success",
+  pending_restart: "warning",
+  gateway_stopped: "warning",
+  startup_failed: "destructive",
+  disconnected: "warning",
+  not_configured: "outline",
+  disabled: "secondary",
+  fatal: "destructive",
 };
 
-function stateBadge(state: string) {
-  return STATE_BADGE[state] ?? { tone: "outline" as const, label: state };
+// State labels are UI chrome, so they come from the translation table; the
+// tone map stays static. Unknown states render their raw key.
+function stateBadge(state: string, t: Translations) {
+  const labels: Record<string, string> = {
+    connected: t.channels.stateConnected,
+    pending_restart: t.channels.statePendingRestart,
+    gateway_stopped: t.channels.stateGatewayStopped,
+    startup_failed: t.channels.stateStartupFailed,
+    disconnected: t.channels.stateDisconnected,
+    not_configured: t.channels.stateNotConfigured,
+    disabled: t.channels.stateDisabled,
+    fatal: t.channels.stateFatal,
+  };
+  return {
+    tone: (STATE_BADGE[state] ?? "outline") as ChannelStateTone,
+    label: labels[state] ?? state,
+  };
 }
 
 const TELEGRAM_USER_ID_RE = /^\d+$/;
@@ -67,12 +87,20 @@ const SLACK_TOKEN_PREFIXES: Record<string, string> = {
   SLACK_APP_TOKEN: "xapp-",
 };
 
-function validateMessagingEnvField(field: MessagingPlatformEnvVar, value: string): string | null {
+function validateMessagingEnvField(
+  field: MessagingPlatformEnvVar,
+  value: string,
+  fallbackBotFatherMessage: string | null,
+): string | null {
   const trimmed = value.trim();
   if (!trimmed) return null;
 
-  if (field.key === "TELEGRAM_BOT_TOKEN" && !TELEGRAM_BOT_TOKEN_RE.test(trimmed)) {
-    return "Paste the complete token from @BotFather (for example, 123456789:ABC…).";
+  if (
+    field.key === "TELEGRAM_BOT_TOKEN" &&
+    !TELEGRAM_BOT_TOKEN_RE.test(trimmed) &&
+    fallbackBotFatherMessage
+  ) {
+    return fallbackBotFatherMessage;
   }
 
   if (field.key === "TELEGRAM_ALLOWED_USERS") {
@@ -209,7 +237,11 @@ export default function ChannelsPage() {
     }
     const nextFieldErrors: Record<string, string> = {};
     editing.env_vars.forEach((field) => {
-      const message = validateMessagingEnvField(field, draftEnv[field.key] || "");
+      const message = validateMessagingEnvField(
+        field,
+        draftEnv[field.key] || "",
+        t.channels.botFatherTokenInvalid,
+      );
       if (message) nextFieldErrors[field.key] = message;
     });
     if (Object.keys(nextFieldErrors).length > 0) {
@@ -397,8 +429,8 @@ export default function ChannelsPage() {
                 className="font-mondwest text-display text-base tracking-wider"
               >
                 {editing.id === "telegram"
-                  ? "Use your own Telegram bot"
-                  : `Configure ${editing.name}`}
+                  ? t.channels.telegramOwnBotTitle
+                  : t.channels.configureChannel.replace("{name}", editing.name)}
               </h2>
               {editing.docs_url && (
                 <a
@@ -407,7 +439,9 @@ export default function ChannelsPage() {
                   rel="noopener noreferrer"
                   className="mt-1 inline-flex items-center gap-1 text-xs text-primary hover:underline"
                 >
-                  {editing.id === "telegram" ? "BotFather guide" : "Setup guide"}
+                  {editing.id === "telegram"
+                    ? t.channels.botFatherGuide
+                    : t.channels.setupGuide}
                   <ExternalLink className="h-3 w-3" />
                 </a>
               )}
@@ -416,22 +450,11 @@ export default function ChannelsPage() {
             <div className="grid gap-4 overflow-y-auto overscroll-contain p-4 sm:p-5">
               {editing.id === "telegram" && (
                 <div className="grid gap-3 text-sm text-muted-foreground">
-                  <p>
-                    Connect a bot you already own, or create one in Telegram before
-                    filling in this form.
-                  </p>
+                  <p>{t.channels.telegramIntro}</p>
                   <ol className="grid list-decimal gap-1.5 ps-5">
-                    <li>
-                      Open <span className="text-foreground">@BotFather</span>, send
-                      <code className="mx-1 font-courier text-xs">/newbot</code>, and
-                      follow its prompts.
-                    </li>
-                    <li>Copy the complete bot token BotFather gives you.</li>
-                    <li>
-                      Message <span className="text-foreground">@userinfobot</span> to
-                      find your numeric Telegram user ID, then add it below for
-                      immediate access.
-                    </li>
+                    <li>{t.channels.telegramStep1}</li>
+                    <li>{t.channels.telegramStep2}</li>
+                    <li>{t.channels.telegramStep3}</li>
                   </ol>
                   <div className="flex flex-wrap gap-x-4 gap-y-2 text-xs">
                     <a
@@ -440,7 +463,7 @@ export default function ChannelsPage() {
                       rel="noopener noreferrer"
                       className="inline-flex items-center gap-1 text-primary hover:underline"
                     >
-                      Open @BotFather <ExternalLink className="h-3 w-3" />
+                      {t.channels.openBotFather} <ExternalLink className="h-3 w-3" />
                     </a>
                     <a
                       href="https://t.me/userinfobot"
@@ -540,7 +563,9 @@ export default function ChannelsPage() {
       {/* Platform list */}
       <div className="grid gap-3">
         {platforms.map((platform) => {
-          const badge = stateBadge(platform.state);
+          const catalogKey = platform.id.replace(/_/g, "") as keyof typeof t.channels.catalog;
+          const localized = t.channels.catalog[catalogKey];
+          const badge = stateBadge(platform.state, t);
           const busy = togglingId === platform.id;
           const StateIcon =
             platform.state === "connected"
@@ -567,12 +592,12 @@ export default function ChannelsPage() {
                     <div className="flex flex-col gap-0.5 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-mondwest normal-case text-sm font-medium">
-                          {platform.name}
+                          {localized?.name ?? platform.name}
                         </span>
                         <Badge tone={badge.tone}>{badge.label}</Badge>
                       </div>
                       <span className="text-xs text-muted-foreground">
-                        {platform.description}
+                        {localized?.desc ?? platform.description}
                       </span>
                       {platform.error_message && (
                         <span className="text-xs text-destructive">
@@ -815,7 +840,10 @@ function WhatsAppOnboardingPanel({
         if (st.exit_code !== 0 && st.exit_code !== null) {
           onRestartNeeded();
           showToast(
-            `Gateway restart failed (exit ${st.exit_code}) — restart manually`,
+            t.webhooks.restartFailedManual.replace(
+              "{exit}",
+              String(st.exit_code),
+            ),
             "error",
           );
         }
@@ -920,7 +948,7 @@ function WhatsAppOnboardingPanel({
         <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
           <div className="grid gap-1.5">
             <span className="text-xs uppercase tracking-[0.12em] text-muted-foreground">
-              Mode
+              {t.channels.modeLabel}
             </span>
             <div className="flex flex-wrap gap-2">
               <Button
@@ -929,7 +957,7 @@ function WhatsAppOnboardingPanel({
                 onClick={() => setMode("bot")}
                 disabled={phase === "waiting" || phase === "applying"}
               >
-                Bot
+                {t.channels.modeBot}
               </Button>
               <Button
                 size="sm"
@@ -937,12 +965,14 @@ function WhatsAppOnboardingPanel({
                 onClick={() => setMode("self-chat")}
                 disabled={phase === "waiting" || phase === "applying"}
               >
-                Self-chat
+                {t.channels.modeSelfChat}
               </Button>
             </div>
           </div>
           <div className="grid min-w-0 flex-1 gap-1.5">
-            <Label htmlFor="whatsapp-allowed-users">Allowed WhatsApp numbers</Label>
+            <Label htmlFor="whatsapp-allowed-users">
+              {t.channels.allowedWhatsAppNumbers}
+            </Label>
             <Input
               id="whatsapp-allowed-users"
               value={allowedUsers}
@@ -1221,7 +1251,10 @@ function TelegramOnboardingPanel({
         if (st.exit_code !== 0 && st.exit_code !== null) {
           onRestartNeeded();
           showToast(
-            `Gateway restart failed (exit ${st.exit_code}) — restart manually`,
+            t.webhooks.restartFailedManual.replace(
+              "{exit}",
+              String(st.exit_code),
+            ),
             "error",
           );
         }
@@ -1292,8 +1325,7 @@ function TelegramOnboardingPanel({
           Choose how to connect your Telegram bot
         </span>
         <span className="text-xs text-muted-foreground">
-          Both options connect a bot you control and save its credentials only to
-          this Hermes installation.
+          {t.channels.telegramBothOptionsHint}
         </span>
       </div>
 
@@ -1301,13 +1333,12 @@ function TelegramOnboardingPanel({
         <div className="grid content-start gap-3 sm:pe-4">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs font-medium uppercase text-foreground">
-              Quick setup
+              {t.channels.telegramQuickSetup}
             </span>
-            <Badge tone="success">recommended</Badge>
+            <Badge tone="success">{t.channels.telegramRecommended}</Badge>
           </div>
           <p className="text-xs text-muted-foreground">
-            Scan a QR code and confirm in Telegram. Hermes creates the bot and
-            detects your Telegram user ID automatically.
+            {t.channels.telegramQuickSetupHint}
           </p>
           <Button
             size="sm"
@@ -1316,17 +1347,18 @@ function TelegramOnboardingPanel({
             disabled={phase !== "idle"}
             prefix={phase === "starting" ? <Spinner /> : <QrCode className="h-4 w-4" />}
           >
-            {phase === "starting" ? "Starting…" : "Create with QR"}
+            {phase === "starting"
+              ? t.channels.telegramStarting
+              : t.channels.telegramCreateWithQr}
           </Button>
         </div>
 
         <div className="grid content-start gap-3 border-t border-border pt-4 sm:border-t-0 sm:ps-4 sm:pt-0">
           <span className="text-xs font-medium uppercase text-foreground">
-            Use your own bot
+            {t.channels.telegramOwnBot}
           </span>
           <p className="text-xs text-muted-foreground">
-            Create a bot with @BotFather, or connect one you already have, by
-            entering its token and choosing who can use it.
+            {t.channels.telegramOwnBotHint}
           </p>
           <Button
             size="sm"
@@ -1336,7 +1368,7 @@ function TelegramOnboardingPanel({
             disabled={phase !== "idle"}
             prefix={<Bot className="h-4 w-4" />}
           >
-            Manual setup
+            {t.channels.telegramManualSetup}
           </Button>
         </div>
       </div>

@@ -321,6 +321,11 @@ export interface Translations {
     perDayAvg: string;
     acrossModels: string;
     inOut: string;
+    hiddenTitle: string;
+    hiddenBody1: string;
+    hiddenBody2: string;
+    hiddenBody3: string;
+    configLink: string;
   };
 
   // ── Models page ──
@@ -349,6 +354,13 @@ export interface Translations {
     addPreset?: string;
     saving?: string;
     save?: string;
+    settingsHeading: string;
+    appliesToNewSessions: string;
+    auxiliaryTasksHeading: string;
+    ctxUnit: string;
+    outUnit: string;
+    auxOverridesSummary: string;
+    auxAllAuto: string;
   };
 
   // ── Logs page ──
@@ -360,6 +372,7 @@ export interface Translations {
     component: string;
     lines: string;
     noLogLines: string;
+    filterAll: string;
   };
 
   // ── Cron page ──
@@ -441,6 +454,12 @@ export interface Translations {
       needsHomeChannel?: string;
       noneConfigured?: string;
     };
+    jobsTab: string;
+    blueprintsTab: string;
+    savedChanges: string;
+    defaultJobLabel: string;
+    noToolsetsAvailable: string;
+    noSkillsForProfile: string;
   };
 
   // ── Plugins page ──
@@ -498,6 +517,9 @@ export interface Translations {
     catalogConfirmInstallNote?: string;
     catalogRequiresEnv?: string;
     removedFromCatalog?: string;
+    catalogToolsChip: string;
+    catalogHooksChip: string;
+    catalogMiddlewareChip: string;
   };
 
   // ── Profiles page ──
@@ -941,6 +963,19 @@ export interface Translations {
     revokeDescription: string;
     revokeDescriptionPlain: string;
     revoke: string;
+    pendingHeading: string;
+    noPendingRequests: string;
+    approvedHeading: string;
+    noApprovedUsers: string;
+    minutesAgo: string;
+    clearPendingConfirm: string;
+    clearedToast: string;
+    clearFailed: string;
+    approvedToast: string;
+    approveFailed: string;
+    revokeFailed: string;
+    revokedToast: string;
+    clearPending: string;
   };
 
   // ── Profile builder page ──
@@ -1013,6 +1048,13 @@ export interface Translations {
     enable: string;
     disable: string;
     endpoint: string;
+    catalogHeading: string;
+    catalogIntro: string;
+    catalogEmpty: string;
+    setupNotes: string;
+    authBadge: string;
+    sourceLink: string;
+    disabledBadge: string;
   };
 
   // ── Files page ──
@@ -1040,6 +1082,7 @@ export interface Translations {
     deleteFolderDescription: string;
     deleteFileDescription: string;
     create: string;
+    chooseFiles: string;
   };
 
   // ── Webhooks page ──
@@ -1047,6 +1090,9 @@ export interface Translations {
     loadFailed: string;
     gatewayRestarting: string;
     restartFailed: string;
+    restartFailedExit: string;
+    restartFailedManual: string;
+    restartFailedDetail: string;
     enabledRestarting: string;
     enabledRestartFailed: string;
     enableFailed: string;
@@ -1076,10 +1122,150 @@ export interface Translations {
     log: string;
     enabled: string;
     disabled: string;
+    subscriptionsHeading: string;
+    subscriptionsHint: string;
+    empty: string;
+    needRestartHint: string;
+    restartPending: string;
+    enableRestartPending: string;
   };
 
   // ── Channels page ──
   channels: {
+    catalog: {
+      telegram: {
+        name: string;
+        desc: string;
+      };
+      discord: {
+        name: string;
+        desc: string;
+      };
+      slack: {
+        name: string;
+        desc: string;
+      };
+      mattermost: {
+        name: string;
+        desc: string;
+      };
+      matrix: {
+        name: string;
+        desc: string;
+      };
+      whatsapp: {
+        name: string;
+        desc: string;
+      };
+      signal: {
+        name: string;
+        desc: string;
+      };
+      bluebubbles: {
+        name: string;
+        desc: string;
+      };
+      homeassistant: {
+        name: string;
+        desc: string;
+      };
+      email: {
+        name: string;
+        desc: string;
+      };
+      sms: {
+        name: string;
+        desc: string;
+      };
+      dingtalk: {
+        name: string;
+        desc: string;
+      };
+      feishu: {
+        name: string;
+        desc: string;
+      };
+      googlechat: {
+        name: string;
+        desc: string;
+      };
+      wecom: {
+        name: string;
+        desc: string;
+      };
+      wecomcallback: {
+        name: string;
+        desc: string;
+      };
+      weixin: {
+        name: string;
+        desc: string;
+      };
+      qqbot: {
+        name: string;
+        desc: string;
+      };
+      yuanbao: {
+        name: string;
+        desc: string;
+      };
+      apiserver: {
+        name: string;
+        desc: string;
+      };
+      webhook: {
+        name: string;
+        desc: string;
+      };
+      a2a: {
+        name: string;
+        desc: string;
+      };
+      buzz: {
+        name: string;
+        desc: string;
+      };
+      photon: {
+        name: string;
+        desc: string;
+      };
+      irc: {
+        name: string;
+        desc: string;
+      };
+      line: {
+        name: string;
+        desc: string;
+      };
+      msgraphwebhook: {
+        name: string;
+        desc: string;
+      };
+      teams: {
+        name: string;
+        desc: string;
+      };
+      ntfy: {
+        name: string;
+        desc: string;
+      };
+      raft: {
+        name: string;
+        desc: string;
+      };
+      relay: {
+        name: string;
+        desc: string;
+      };
+      simplex: {
+        name: string;
+        desc: string;
+      };
+      whatsappcloud: {
+        name: string;
+        desc: string;
+      };
+    },
     loadFailed: string;
     nothingToSave: string;
     fieldRequired: string;
@@ -1096,6 +1282,37 @@ export interface Translations {
     telegramSavedRestarting: string;
     telegramRestartFailed: string;
     telegramRestartFailedDetail: string;
+    stateConnected: string;
+    statePendingRestart: string;
+    stateGatewayStopped: string;
+    stateStartupFailed: string;
+    stateDisconnected: string;
+    stateNotConfigured: string;
+    stateDisabled: string;
+    stateFatal: string;
+    modeLabel: string;
+    modeBot: string;
+    modeSelfChat: string;
+    allowedWhatsAppNumbers: string;
+    telegramQuickSetup: string;
+    telegramRecommended: string;
+    telegramQuickSetupHint: string;
+    telegramCreateWithQr: string;
+    telegramStarting: string;
+    telegramOwnBot: string;
+    telegramOwnBotHint: string;
+    telegramManualSetup: string;
+    telegramBothOptionsHint: string;
+    telegramOwnBotTitle: string;
+    configureChannel: string;
+    botFatherGuide: string;
+    setupGuide: string;
+    telegramIntro: string;
+    telegramStep1: string;
+    telegramStep2: string;
+    telegramStep3: string;
+    openBotFather: string;
+    botFatherTokenInvalid: string;
   };
 
   // ── Kanban ──

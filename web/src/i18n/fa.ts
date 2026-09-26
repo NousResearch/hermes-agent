@@ -291,6 +291,14 @@ export const fa = defineLocale({
     perDayAvg: "میانگین در روز",
     acrossModels: "در {count} مدل",
     inOut: "{input} ورودی / {output} خروجی",
+    hiddenTitle: "تحلیل توکن‌ها پنهان است",
+    hiddenBody1:
+      "تحلیل‌های توکن، هزینه و روزانهٔ این صفحه یک تخمین اشکال‌زداییِ محلی است. فقط پاسخ‌های موفق عامل اصلی با بلوک usage قابل استفاده را می‌شمارد و فراخوانی‌های کمکی (فشرده‌سازی متن، ساخت عنوان، بینایی، جست‌وجوی نشست، استخراج وب، تأییدهای هوشمند، مسیریابی MCP، دسترسی LLM افزونه‌ها) و همچنین تلاش‌های مجدد و جانشینِ سمت ارائه‌دهنده را بی‌سروصدا کنار می‌گذارد. نوشتن‌های کش اصلاً شمرده نمی‌شوند.",
+    hiddenBody2:
+      "روی مدل‌های با ترافیک کمکی سنگین (Kimi K2.6، MiniMax M2.7) جمع محلی می‌تواند ۱۰ تا ۱۰۰ برابر کمتر از صورتحساب ارائه‌دهنده باشد. پنهان‌کردن این اعداد امن‌تر از آن است که authoritative به نظر برسند.",
+    hiddenBody3:
+      "برای مصرف و صورتحساب واقعی، داشبورد ارائه‌دهندهٔ خود (OpenRouter، Anthropic و غیره) را ببینید. برای فعال‌کردن دوبارهٔ همین تخمین محلی، مقدار",
+    configLink: "را در «پیکربندی» تنظیم کنید",
   },
 
   models: {
@@ -317,6 +325,13 @@ export const fa = defineLocale({
     addPreset: "افزودن پیش‌فرض",
     saving: "در حال ذخیره…",
     save: "ذخیره",
+    settingsHeading: "تنظیمات مدل",
+    appliesToNewSessions: "روی نشست‌های جدید اعمال می‌شود",
+    auxiliaryTasksHeading: "وظایف کمکی",
+    ctxUnit: "{count} کانتکست",
+    outUnit: "{count} خروجی",
+    auxOverridesSummary: "{count} سفارشی · {rest} خودکار",
+    auxAllAuto: "{count} وظیفه · همه خودکار",
   },
 
   logs: {
@@ -327,6 +342,7 @@ export const fa = defineLocale({
     component: "جزء",
     lines: "خطوط",
     noLogLines: "خط گزارشی یافت نشد",
+    filterAll: "همه",
   },
 
   cron: {
@@ -404,6 +420,12 @@ export const fa = defineLocale({
     fieldProfile: "پروفایل",
     allProfiles: "همه پروفایل‌ها",
     defaultOption: "پیش‌فرض",
+    jobsTab: "کارها",
+    blueprintsTab: "الگوها",
+    savedChanges: "تغییرات ذخیره شد",
+    defaultJobLabel: "کار زمان‌بندی‌شده",
+    noToolsetsAvailable: "مجموعه ابزاری موجود نیست.",
+    noSkillsForProfile: "برای این پروفایل مهارتی نصب نشده است.",
   },
 
   profiles: {
@@ -511,6 +533,9 @@ export const fa = defineLocale({
     versionBadge: "نسخه",
     showInSidebar: "نمایش در نوار کناری",
     hideFromSidebar: "پنهان کردن از نوار کناری",
+    catalogToolsChip: "{count} ابزار",
+    catalogHooksChip: "{count} قلاب",
+    catalogMiddlewareChip: "{count} میان‌افزار",
   },
 
   skills: {
@@ -1109,6 +1134,19 @@ export const fa = defineLocale({
     revokeDescriptionPlain:
       "دسترسی این کاربر قطع خواهد شد. این کار قابل بازگشت نیست.",
     revoke: "لغو دسترسی",
+    pendingHeading: "درخواست‌های در انتظار ({count})",
+    noPendingRequests: "درخواست جفت‌سازی در انتظاری وجود ندارد",
+    approvedHeading: "کاربران تأییدشده ({count})",
+    noApprovedUsers: "کاربر تأییدشده‌ای وجود ندارد",
+    minutesAgo: "{count} دقیقه پیش",
+    clearPendingConfirm: "همه درخواست‌های جفت‌سازی در انتظار پاک شوند؟",
+    clearedToast: "{count} درخواست در انتظار پاک شد",
+    clearFailed: "پاک‌سازی درخواست‌های در انتظار ناموفق بود: {error}",
+    approvedToast: "تأیید شد: «{name}»",
+    approveFailed: "تأیید درخواست جفت‌سازی ناموفق بود: {error}",
+    revokeFailed: "لغو دسترسی ناموفق بود: {error}",
+    revokedToast: "لغو شد: «{name}»",
+    clearPending: "پاک‌سازی درخواست‌های در انتظار",
   },
 
   profileBuilder: {
@@ -1180,6 +1218,13 @@ export const fa = defineLocale({
     enable: "فعال",
     disable: "غیرفعال",
     endpoint: "نقطه پایانی:",
+    catalogHeading: "کاتالوگ ({count})",
+    catalogIntro: "سرورهای MCP تأییدشدهٔ Nous را مرور کنید و با یک کلیک نصبشان کنید.",
+    catalogEmpty: "موردی در کاتالوگ موجود نیست.",
+    setupNotes: "نکات راه‌اندازی",
+    authBadge: "احراز هویت: {type}",
+    sourceLink: "منبع ↗",
+    disabledBadge: "غیرفعال",
   },
 
   files: {
@@ -1206,12 +1251,18 @@ export const fa = defineLocale({
     deleteFolderDescription: "این کار پوشه و همه محتویات آن را حذف می‌کند.",
     deleteFileDescription: "این کار فایل را حذف می‌کند.",
     create: "ساخت",
+    chooseFiles: "انتخاب فایل‌ها",
   },
 
   webhooks: {
     loadFailed: "بارگذاری وب‌هوک‌ها ناموفق بود",
     gatewayRestarting: "دروازه در حال راه‌اندازی دوباره…",
     restartFailed: "راه‌اندازی دوباره ناموفق بود: {error}",
+    restartFailedExit:
+      "راه‌اندازی دوباره دروازه با کد خروج {exit} ناموفق بود.",
+    restartFailedManual:
+      "راه‌اندازی دوباره دروازه ناموفق بود (کد خروج {exit}) — به‌صورت دستی راه‌اندازی کنید",
+    restartFailedDetail: "راه‌اندازی دوباره دروازه ناموفق بود{detail}",
     enabledRestarting: "وب‌هوک‌ها فعال شدند؛ دروازه در حال راه‌اندازی دوباره…",
     enabledRestartFailed:
       "وب‌هوک‌ها فعال شدند؛ راه‌اندازی دوباره دروازه ناموفق بود{detail}",
@@ -1247,9 +1298,151 @@ export const fa = defineLocale({
     log: "گزارش",
     enabled: "فعال شد: «{name}»",
     disabled: "غیرفعال شد: «{name}»",
+    subscriptionsHeading: "اشتراک‌ها ({count})",
+    subscriptionsHint:
+      "تغییرات اشتراک‌ها به‌محض اجرای دریافت‌کنندهٔ وب‌هوک به‌صورت زنده اعمال می‌شوند. اشتراک‌های غیرفعال رویدادهای ورودی را رد می‌کنند.",
+    empty: "هنوز اشتراک وب‌هوکی وجود ندارد.",
+    needRestartHint:
+      "وب‌هوک‌ها فعال‌اند، اما دریافت‌کننده باید دروازه دوباره راه‌اندازی شود تا آنلاین شود.",
+    restartPending: "دروازه در حال راه‌اندازی دوباره…",
+    enableRestartPending: "وب‌هوک‌ها فعال شدند؛ دروازه در حال راه‌اندازی دوباره…",
   },
 
   channels: {
+    catalog: {
+      telegram: {
+        name: "Telegram",
+        desc: "هرمس را از دایرکت‌ها، گروه‌ها و تاپیک‌های تلگرام اجرا کنید.",
+      },
+      discord: {
+        name: "Discord",
+        desc: "هرمس را به دایرکت‌ها، کانال‌ها و رشته‌های گفتگوی دیسکورد وصل کنید.",
+      },
+      slack: {
+        name: "Slack",
+        desc: "هرمس را از طریق Socket Mode در اسلک به کار ببرید. شناسه‌های اعضای مجاز را اضافه کنید تا ربات‌های متصل بتوانند پاسخ دهند.",
+      },
+      mattermost: {
+        name: "Mattermost",
+        desc: "هرمس را به کانال‌ها و پیام‌های مستقیم مترمست وصل کنید.",
+      },
+      matrix: {
+        name: "Matrix",
+        desc: "هرمس را در اتاق‌ها و پیام‌های مستقیم ماتریکس به کار ببرید.",
+      },
+      whatsapp: {
+        name: "WhatsApp",
+        desc: "هرمس را از طریق پل داخلی واتس‌اپ با اتصال مبتنی بر QR به کار ببرید.",
+      },
+      signal: {
+        name: "Signal",
+        desc: "اتصال از طریق پل REST سیگنال‌کلی (signal-cli).",
+      },
+      bluebubbles: {
+        name: "BlueBubbles (iMessage)",
+        desc: "استفاده از هرمس در آی‌مسیج از طریق سرور BlueBubbles.",
+      },
+      homeassistant: {
+        name: "Home Assistant",
+        desc: "خانه هوشمندتان را با هرمس کنترل کنید.",
+      },
+      email: {
+        name: "Email",
+        desc: "با هرمس از طریق صندوق پستی IMAP/SMTP گفت‌وگو کنید.",
+      },
+      sms: {
+        name: "SMS (Twilio)",
+        desc: "ارسال و دریافت پیامک از طریق تویلیو (Twilio).",
+      },
+      dingtalk: {
+        name: "DingTalk",
+        desc: "هرمس را به گروه‌های دینگ‌تاک (钉钉) وصل کنید.",
+      },
+      feishu: {
+        name: "Feishu / Lark",
+        desc: "هرمس را داخل فی‌شو / لارک به کار ببرید.",
+      },
+      googlechat: {
+        name: "Google Chat",
+        desc: "هرمس را از طریق Cloud Pub/Sub به گوگل چت وصل کنید.",
+      },
+      wecom: {
+        name: "WeCom (group bot)",
+        desc: "ربات گروهی وی‌کام (WeCom) فقط برای ارسال، از طریق وب‌هوک.",
+      },
+      wecomcallback: {
+        name: "WeCom (app)",
+        desc: "یکپارچه‌سازی دوسویه وی‌کام از طریق اپ کال‌بک.",
+      },
+      weixin: {
+        name: "Weixin / WeChat (Personal)",
+        desc: "اتصال یک حساب شخصی وی‌چت از طریق iLink Bots تنسنت.",
+      },
+      qqbot: {
+        name: "QQ Bot",
+        desc: "هرمس را به یک ربات QQ از پلتفرم باز QQ وصل کنید.",
+      },
+      yuanbao: {
+        name: "Yuanbao (元宝)",
+        desc: "اتصال به یوان‌بائو (元宝) تنسنت.",
+      },
+      apiserver: {
+        name: "API server",
+        desc: "هرمس را به‌صورت API سازگار با OpenAI برای ابزارهایی مانند Claude Code عرضه کنید.",
+      },
+      webhook: {
+        name: "Webhooks",
+        desc: "دریافت رخدادها از گیت‌هاب، گیت‌لب و سایر منابع وب‌هوک.",
+      },
+      a2a: {
+        name: "A2A",
+        desc: "نیازی به بسته اضافی نیست (فقط کتابخانه استاندارد).",
+      },
+      buzz: {
+        name: "Buzz",
+        desc: "نیازمند باینری buzz CLI است (https://github.com/block/buzz).",
+      },
+      photon: {
+        name: "iMessage via Photon",
+        desc: "استفاده از هرمس در آی‌مسیج از طریق پل مدیریت‌شده Photon Spectrum.",
+      },
+      irc: {
+        name: "IRC",
+        desc: "هرمس را در کانال‌های IRC به کار ببرید.",
+      },
+      line: {
+        name: "LINE",
+        desc: "هرمس را از طریق LINE Messaging API به کار ببرید.",
+      },
+      msgraphwebhook: {
+        name: "Microsoft Graph Webhook",
+        desc: "دریافت رخدادهای مایکروسافت گراف از طریق اشتراک وب‌هوک.",
+      },
+      teams: {
+        name: "Microsoft Teams",
+        desc: "هرمس را به دایرکت‌ها، کانال‌ها و جلسات تیمز وصل کنید.",
+      },
+      ntfy: {
+        name: "ntfy",
+        desc: "دریافت اعلان‌های ntfy و پاسخ به آن‌ها از هرمس.",
+      },
+      raft: {
+        name: "Raft",
+        desc: "یکپارچه‌سازی Raft برای هرمس.",
+      },
+      relay: {
+        name: "Relay (experimental)",
+        desc: "اتصال از طریق پل رله هرمس.",
+      },
+      simplex: {
+        name: "SimpleX Chat",
+        desc: "هرمس را در شبکه SimpleX Chat به کار ببرید.",
+      },
+      whatsappcloud: {
+        name: "WhatsApp Cloud API",
+        desc: "هرمس از طریق WhatsApp Cloud API متا، بدون پل محلی.",
+      },
+    },
     loadFailed: "بارگذاری کانال‌ها ناموفق بود: {error}",
     nothingToSave: "چیزی برای ذخیره نیست — دست‌کم یک فیلد را پر کنید.",
     fieldRequired: "{field} الزامی است",
@@ -1266,5 +1459,42 @@ export const fa = defineLocale({
     telegramSavedRestarting: "تلگرام ذخیره شد؛ دروازه در حال راه‌اندازی دوباره…",
     telegramRestartFailed: "تلگرام ذخیره شد؛ راه‌اندازی دوباره دروازه ناموفق بود: {error}",
     telegramRestartFailedDetail: "تلگرام ذخیره شد؛ راه‌اندازی دوباره دروازه ناموفق بود{detail}",
+    stateConnected: "متصل",
+    statePendingRestart: "برای اعمال، راه‌اندازی دوباره",
+    stateGatewayStopped: "دروازه متوقف است",
+    stateStartupFailed: "شروع ناموفق بود",
+    stateDisconnected: "قطع شده",
+    stateNotConfigured: "پیکربندی نشده",
+    stateDisabled: "غیرفعال",
+    stateFatal: "خطا",
+    modeLabel: "حالت",
+    modeBot: "بات",
+    modeSelfChat: "گفتگو با خود",
+    allowedWhatsAppNumbers: "شماره‌های واتس‌اپ مجاز",
+    telegramQuickSetup: "راه‌اندازی سریع",
+    telegramRecommended: "پیشنهادشده",
+    telegramQuickSetupHint:
+      "یک کد QR اسکن کنید و در تلگرام تأیید کنید. Hermes بات را می‌سازد و شناسهٔ کاربری تلگرام شما را خودکار تشخیص می‌دهد.",
+    telegramCreateWithQr: "ساخت با QR",
+    telegramStarting: "در حال شروع…",
+    telegramOwnBot: "بات خودتان",
+    telegramOwnBotHint:
+      "با @BotFather باتی بسازید یا باتی که از قبل دارید را با واردکردن توکن آن و انتخاب اینکه چه کسی بتواند از آن استفاده کند، متصل کنید.",
+    telegramManualSetup: "راه‌اندازی دستی",
+    telegramBothOptionsHint:
+      "هر دو گزینه باتی تحت کنترل شما را متصل می‌کنند و اطلاعات ورود آن را فقط در همین نصب Hermes ذخیره می‌کنند.",
+    telegramOwnBotTitle: "استفاده از بات تلگرام خودتان",
+    configureChannel: "پیکربندی {name}",
+    botFatherGuide: "راهنمای BotFather",
+    setupGuide: "راهنمای راه‌اندازی",
+    telegramIntro:
+      "باتی که از قبل دارید را متصل کنید، یا پیش از پرکردن این فرم، در تلگرام یکی بسازید.",
+    telegramStep1: "@BotFather را باز کنید، دستور /newbot را بفرستید و مراحل آن را دنبال کنید.",
+    telegramStep2: "توکن کامل باتی که BotFather می‌دهد را کپی کنید.",
+    telegramStep3:
+      "برای یافتن شناسهٔ عددی تلگرام خود به @userinfobot پیام بدهید، سپس آن را برای دسترسی فوری در پایین اضافه کنید.",
+    openBotFather: "باز کردن @BotFather",
+    botFatherTokenInvalid:
+      "توکن کامل را از @BotFather بچسبانید (مثلاً 123456789:ABC…).",
   },
 });

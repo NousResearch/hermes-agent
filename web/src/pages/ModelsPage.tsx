@@ -432,12 +432,12 @@ function ModelCard({
               )}
               {caps.context_window && caps.context_window > 0 && (
                 <span className="text-xs text-text-secondary">
-                  {compactNumber(caps.context_window)} ctx
+                  {t.models.ctxUnit.replace("{count}", compactNumber(caps.context_window))}
                 </span>
               )}
               {caps.max_output_tokens && caps.max_output_tokens > 0 && (
                 <span className="text-xs text-text-secondary">
-                  {compactNumber(caps.max_output_tokens)} out
+                  {t.models.outUnit.replace("{count}", compactNumber(caps.max_output_tokens))}
                 </span>
               )}
             </div>
@@ -990,9 +990,9 @@ function ModelSettingsPanel({
       <CardHeader className="min-w-0 pb-3">
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
           <Settings2 className="h-4 w-4 shrink-0 text-muted-foreground" />
-          <CardTitle className="text-sm">Model Settings</CardTitle>
+          <CardTitle className="text-sm">{t.models.settingsHeading}</CardTitle>
           <span className="max-w-full min-w-0 text-xs text-text-secondary [overflow-wrap:anywhere]">
-            applies to new sessions
+            {t.models.appliesToNewSessions}
           </span>
         </div>
       </CardHeader>
@@ -1028,13 +1028,15 @@ function ModelSettingsPanel({
             <div className="flex items-center gap-2 mb-0.5">
               <Cpu className="h-3 w-3 text-text-tertiary" />
               <span className="text-display text-xs font-medium tracking-wider">
-                Auxiliary tasks
+                {t.models.auxiliaryTasksHeading}
               </span>
             </div>
             <div className="text-xs font-mono text-text-secondary truncate">
               {auxOverrideCount > 0
-                ? `${auxOverrideCount} override${auxOverrideCount > 1 ? "s" : ""} · ${AUX_TASKS.length - auxOverrideCount} auto`
-                : `${AUX_TASKS.length} tasks · all auto`}
+                ? t.models.auxOverridesSummary
+                    .replace("{count}", String(auxOverrideCount))
+                    .replace("{rest}", String(AUX_TASKS.length - auxOverrideCount))
+                : t.models.auxAllAuto.replace("{count}", String(AUX_TASKS.length))}
             </div>
           </div>
           <Button

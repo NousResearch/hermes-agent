@@ -39,10 +39,17 @@ import type { ManagedFileEntry, ManagedFilesResponse } from "@/lib/api";
 import { PluginSlot } from "@/plugins";
 import { errorMessage } from "@/lib/api-error";
 
-const DATE_FORMAT = new Intl.DateTimeFormat(undefined, {
-  dateStyle: "medium",
-  timeStyle: "short",
-});
+// Locale-aware formatter keyed to the dashboard's selected UI locale (not the
+// ambient browser locale): a Persian (fa-IR) UI renders dates with the Persian
+// (Jalali) calendar and Persian digits, matching the visible surface language.
+// Other locales keep their default calendar via the bare locale tag.
+const getDateFormat = (locale?: string) =>
+  new Intl.DateTimeFormat(locale ? locale.split("-")[0] : undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+    calendar: locale?.toLowerCase().startsWith("fa") ? "persian" : undefined,
+    numberingSystem: locale?.toLowerCase().startsWith("fa") ? "arabext" : undefined,
+  });
 
 function joinPath(base: string, name: string): string {
   const cleanName = name.trim().replace(/^[\\/]+/, "");
@@ -78,7 +85,7 @@ function transferHasFiles(event: ReactDragEvent<HTMLElement>): boolean {
 }
 
 export default function FilesPage() {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const { toast, showToast } = useToast();
   const { setAfterTitle, setEnd } = usePageHeader();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -359,7 +366,7 @@ export default function FilesPage() {
           </span>
         </span>
         <span className="hidden shrink-0 text-xs font-semibold uppercase tracking-[0.08em] text-text-tertiary sm:block">
-          Choose files
+          {t.files.chooseFiles}
         </span>
       </button>
 
@@ -421,7 +428,7 @@ export default function FilesPage() {
                 </button>
                 <span className="text-xs tabular-nums text-text-secondary">{formatBytes(entry.size)}</span>
                 <span className="truncate text-xs text-text-secondary">
-                  {Number.isFinite(entry.mtime) ? DATE_FORMAT.format(entry.mtime * 1000) : "-"}
+                  {Number.isFinite(entry.mtime) ? getDateFormat(locale).format(entry.mtime * 1000) : "-"}
                 </span>
                 <span className="flex justify-end gap-1">
                   {entry.is_directory ? (

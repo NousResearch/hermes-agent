@@ -403,6 +403,25 @@ def test_zero_collected_across_run_fails_and_says_so(tmp_path: Path) -> None:
     assert "NOT a pass" in proc.stdout
 
 
+def test_zero_collected_guard_shows_per_file_evidence(tmp_path: Path) -> None:
+    """When the zero-collected guard fires, the per-file pytest output is shown.
+
+    The guard's message tells the developer to "check the per-file output
+    above for the real error" — so the evidence must actually be there. A
+    file whose tests were ALL deselected exits rc=5, which the runner
+    deliberately converts to a per-file pass (platform-gated files); that
+    conversion also removed it from ``failures``, so the guard's most
+    common trigger (a -k/-m filter matching nothing) printed NO evidence
+    for its own advice to point at.
+    """
+    probe_dir = _make_probe_dir(tmp_path)
+    proc = _run_runner(probe_dir, "-k", "zzz_matches_nothing")
+    assert proc.returncode == 1, proc.stdout
+    # The per-file pytest output (with the deselected count) is present.
+    assert "test_flagprobe.py" in proc.stdout, proc.stdout
+    assert "deselected" in proc.stdout, proc.stdout
+
+
 
 
 @pytest.mark.parametrize("form,expected", [

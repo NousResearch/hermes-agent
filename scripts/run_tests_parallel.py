@@ -502,6 +502,22 @@ def _run_one_file(
 _FLAKY_RESULTS: List[Tuple[Path, str]] = []
 _flaky_lock = threading.Lock()
 
+# Last pytest output of files that ran but collected nothing (rc=5, the
+# "no tests collected" exit). Those files are deliberately counted as
+# per-file passes (platform-gated suites), so their output never reaches
+# ``failures`` — yet the run-level zero-collected guard's advice is to
+# "check the per-file output above", which without this map points at
+# nothing. The guard prints these tails; the map holds only the most
+# recent attempt per file (the retry's output overwrites the first's).
+_NO_EVIDENCE_TAILS: Dict[Path, str] = {}
+_no_evidence_lock = threading.Lock()
+
+
+def _record_no_evidence_tail(file: Path, output: str) -> None:
+    """Remember a file's pytest tail when it collected zero tests."""
+    with _no_evidence_lock:
+        _NO_EVIDENCE_TAILS[file] = output
+
 
 def _run_one_file_once(
     file: Path,
@@ -604,6 +620,10 @@ def _run_one_file_once(
         # Tolerated here; the RUN-level guard in main() still fails when
         # NOTHING was collected across every file, so a broken invocation
         # (venv without pytest, -k that matches nothing) can't report green.
+        # Remember this file's pytest tail so that guard can show the
+        # "N deselected"/collection-error evidence it tells the developer
+        # to look for — the rc=5→0 conversion keeps it out of ``failures``.
+        _record_no_evidence_tail(file, output)
         rc = 0
     summary = _parse_pytest_summary(output)
     crash = _describe_interpreter_crash(rc, output) if rc != 0 else None
@@ -1440,6 +1460,21 @@ def main() -> int:
             "  Common causes: the selected venv has no pytest; a -k/-m filter "
             "matched nothing; or collection errored in every file."
         )
+        # Point at evidence, don't just promise it: a fully-deselected or
+        # erroring file exits rc=5, which is converted to a per-file pass
+        # above (platform-gated files) and therefore never reaches
+        # ``failures`` — without this tail, the guard's "check the per-file
+        # output above" advice points at nothing. Print each file's pytest
+        # tail so a -k that matched nothing shows its "N deselected" line
+        # and a collection error shows its traceback.
+        for file in files:
+            tail = _NO_EVIDENCE_TAILS.get(file)
+            if not tail:
+                continue
+            rel = _format_file(file, repo_root)
+            print(f"  --- {rel} (pytest tail) ---")
+            for line in tail.rstrip().splitlines()[-30:]:
+                print(f"  {line}")
         print("  Check the per-file output above for the real error.")
 
     # Flaky files: failed once, passed on the automatic retry. Green, but

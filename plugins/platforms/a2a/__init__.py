@@ -4,7 +4,6 @@ five outbound client tools of the ``a2a`` toolset through the public PluginConte
 from __future__ import annotations
 
 import logging
-import os
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +33,18 @@ def validate_config(config) -> bool:
 
 
 def is_connected(config) -> bool:
-    """'Connected' when explicitly enabled (the gateway only instantiates enabled platforms)."""
+    """'Connected' when explicitly enabled (the gateway only instantiates enabled platforms).
+
+    ``A2A_PORT`` resolves through the shared scope-aware reader. A bare ``os.getenv`` hands every
+    secondary profile the DEFAULT profile's port under multiplexing, so each of them instantiates
+    an inbound server, the first one binds and every other profile dies with ``bind_failed``.
+    """
     extra = getattr(config, "extra", {}) or {}
-    return bool(extra.get("enabled")) or bool(os.getenv("A2A_PORT"))
+    if extra.get("enabled"):
+        return True
+    from gateway.platforms._shared import env_is_connected
+
+    return env_is_connected("A2A_PORT")(config)
 
 
 def interactive_setup() -> None:

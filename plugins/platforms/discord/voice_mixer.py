@@ -3,11 +3,13 @@ from __future__ import annotations
 """Continuous PCM mixer for Discord voice. discord.py allows one AudioSource per VoiceClient;
 :class:`VoiceMixer` IS that source: installed once per guild, never stops, and every 20 ms sums its
 children (looping ambient bed + one-shot speech that ducks the bed) clamped to int16. ``read`` runs on
-discord.py's sender thread while children change on the asyncio loop, hence the Lock. Outgoing only."""
+discord.py's sender thread while children change on the asyncio loop, hence the Lock. Outgoing only.
+:class:`PCMStream` carries streaming-TTS speech that grows while the LLM is still generating; it plays
+standalone via :class:`PCMStreamSource` or over the bed as a mixer child."""
 
 import logging
 import threading
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Callable, List, Optional
 
 import discord
 
@@ -75,6 +77,163 @@ class MixerChild:
         return samples
 
 
+# ── Streaming speech (streaming TTS, #60671) ──────────────────────────────────────────────────────
+# After the producer falls behind, hold silence until this much is buffered. TTS sharing a GPU with the
+# LLM still generating the reply can run slower than real time (measured 1.4x on a DGX Spark): resuming
+# after a few frames turned that into ~20 stutters per reply, 0.5 s turns it into a few short pauses.
+_RESUME_AFTER_UNDERRUN_BYTES = BYTES_PER_MS * 500
+_COMPACT_AFTER_BYTES = 1 << 20  # drop consumed bytes once this much has been read
+# Starved this long before reporting "not speaking" (1.5 s): re-buffer pauses mid-reply keep the owner's
+# echo gate closed (reopening it let the bot's own voice leak back in as garbled transcripts), while a
+# real gap such as a tool call still opens it so the user can talk.
+_QUIET_AFTER_FRAMES = 75
+
+
+class PCMStream:
+    """Thread-safe FIFO for speech that arrives while the LLM is still generating. ``feed`` (asyncio
+    thread) converts provider PCM (s16le, any rate, mono/stereo) to Discord's 48 kHz stereo;
+    ``next_frame`` (sender thread) yields 20 ms frames, silence while the producer is behind so
+    playback survives the gap between sentences, and None once closed and drained or cancelled.
+    ``on_speaking(bool)`` reports audible/quiet transitions (always ending on False) so the owner can
+    mute capture only while speech plays; ``on_finished`` fires exactly once. Both run on whichever
+    thread causes them; ``on_speaking`` holds the stream lock so transitions stay ordered."""
+
+    def __init__(self, sample_rate: int, channels: int, *, lead: bytes = b"",
+                 on_speaking: Optional[Callable[[bool], None]] = None,
+                 on_finished: Optional[Callable[[], None]] = None):
+        # discord.py's own dependency (audioop-lts on 3.13+); imported here so a broken install makes
+        # begin_streaming_tts decline (whole-file fallback) instead of breaking the module import.
+        import audioop  # noqa: PLC0415
+        if channels not in (1, 2) or int(sample_rate) <= 0:
+            raise ValueError(f"unsupported PCM stream format: {sample_rate} Hz x {channels} ch")
+        self._audioop, self._rate, self._channels = audioop, int(sample_rate), int(channels)
+        self._ratecv_state = None
+        self._carry = b""  # trailing partial sample when a network chunk splits one
+        self._lock = threading.Lock()
+        self._buf, self._pos = bytearray(lead), 0
+        self._closed = self._cancelled = self._starved = self._finished = self._speaking = False
+        self._quiet_frames = 0
+        self._on_speaking, self._on_finished = on_speaking, on_finished
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled
+
+    def feed(self, chunk: bytes) -> None:
+        """Convert and append one provider chunk; ignored after close/cancel."""
+        if self._closed or not chunk:
+            return
+        data = self._carry + chunk
+        cut = len(data) - len(data) % (SAMPLE_WIDTH * self._channels)
+        data, self._carry = data[:cut], data[cut:]
+        if not data:
+            return
+        if self._rate != SAMPLE_RATE:
+            data, self._ratecv_state = self._audioop.ratecv(
+                data, SAMPLE_WIDTH, self._channels, self._rate, SAMPLE_RATE, self._ratecv_state)
+        if self._channels == 1:
+            data = self._audioop.tostereo(data, SAMPLE_WIDTH, 1, 1)
+        with self._lock:
+            if not self._closed:
+                self._buf += data
+
+    def close(self) -> None:
+        """End of input: what's buffered still plays, then ``next_frame`` returns None."""
+        with self._lock:
+            self._closed = True
+
+    def cancel(self) -> None:
+        """Drop buffered audio immediately (barge-in, abort, playback torn down). Idempotent."""
+        with self._lock:
+            self._cancelled = self._closed = True
+            self._buf, self._pos = bytearray(), 0
+            self._set_speaking_locked(False)
+        self._finish()
+
+    def next_frame(self) -> Optional[bytes]:
+        """One 20 ms 48 kHz stereo s16le frame, or None when the stream is over."""
+        with self._lock:
+            avail = len(self._buf) - self._pos
+            if self._cancelled or (self._closed and avail <= 0):
+                self._set_speaking_locked(False)
+                frame = None
+            elif not self._closed and (avail < FRAME_SIZE or (self._starved and avail < _RESUME_AFTER_UNDERRUN_BYTES)):
+                self._starved = True
+                self._quiet_frames += 1
+                if self._quiet_frames >= _QUIET_AFTER_FRAMES:
+                    self._set_speaking_locked(False)
+                return SILENCE_FRAME
+            else:
+                self._starved, self._quiet_frames = False, 0
+                self._set_speaking_locked(True)
+                frame = bytes(self._buf[self._pos:self._pos + FRAME_SIZE])
+                self._pos += len(frame)
+                if self._pos >= _COMPACT_AFTER_BYTES:
+                    del self._buf[:self._pos]
+                    self._pos = 0
+                # Closed with a partial tail: pad it so the final word isn't cut mid-frame.
+                return frame + b"\x00" * (FRAME_SIZE - len(frame))
+        self._finish()
+        return None
+
+    def _set_speaking_locked(self, speaking: bool) -> None:
+        if speaking == self._speaking:
+            return
+        self._speaking = speaking
+        if self._on_speaking is not None:
+            try:
+                self._on_speaking(speaking)
+            except Exception:
+                logger.debug("PCMStream on_speaking callback failed", exc_info=True)
+
+    def _finish(self) -> None:
+        with self._lock:
+            if self._finished:
+                return
+            self._finished = True
+        if self._on_finished is not None:
+            try:
+                self._on_finished()
+            except Exception:
+                logger.debug("PCMStream on_finished callback failed", exc_info=True)
+
+
+class PCMStreamSource(discord.AudioSource):
+    """Standalone ``discord.AudioSource`` over a :class:`PCMStream` (no mixer); returning b"" at
+    the end of the stream stops discord.py's player."""
+
+    def __init__(self, stream: PCMStream):
+        self.stream = stream
+
+    def is_opus(self) -> bool:  # pragma: no cover - trivial
+        return False
+
+    def read(self) -> bytes:
+        frame = self.stream.next_frame()
+        return b"" if frame is None else frame
+
+    def cleanup(self) -> None:  # discord.py calls this however playback ends (drained, stop(), error)
+        self.stream.cancel()
+
+
+class PCMStreamChild:
+    """:class:`VoiceMixer` speech child over a :class:`PCMStream`: silent frames while the producer
+    is behind keep the bed ducked between sentences; None once the stream ends."""
+
+    __slots__ = ("stream", "gain")
+
+    def __init__(self, stream: PCMStream, *, gain: float = 1.0):
+        self.stream, self.gain = stream, float(gain)
+
+    def read_frame(self) -> "Optional[np.ndarray]":
+        frame = self.stream.next_frame()
+        if frame is None:
+            return None
+        np = _require_numpy()
+        samples = np.frombuffer(frame, dtype=np.int16).astype(np.float32)
+        return samples * self.gain if self.gain != 1.0 else samples
+
+
 class VoiceMixer(discord.AudioSource):
     """Continuous ``discord.AudioSource`` mixing N children: :meth:`set_ambient` installs the
     looping idle bed, :meth:`play_speech` layers a one-shot clip over it (ducking the bed).
@@ -109,10 +268,17 @@ class VoiceMixer(discord.AudioSource):
         """Layer a one-shot speech clip over the ambient bed (ducks ambient)."""
         if not pcm:
             return
+        self._add_speech(MixerChild(
+            pcm, gain=self._speech_gain if gain is None else float(gain), fade_in_ms=fade_in_ms,
+        ))
+
+    def play_speech_stream(self, stream: PCMStream, *, gain: Optional[float] = None) -> None:
+        """Layer streaming speech over the bed; it stays ducked until the stream ends."""
+        self._add_speech(PCMStreamChild(stream, gain=self._speech_gain if gain is None else float(gain)))
+
+    def _add_speech(self, child) -> None:
         with self._lock:
-            self._speech.append(MixerChild(
-                pcm, gain=self._speech_gain if gain is None else float(gain), fade_in_ms=fade_in_ms,
-            ))
+            self._speech.append(child)
             self._speech_active = True
             self._duck_release_left = 0
             if self._ambient is not None:
@@ -126,8 +292,9 @@ class VoiceMixer(discord.AudioSource):
     def stop_speech(self) -> None:
         """Drop any in-flight speech immediately and release the duck."""
         with self._lock:
-            self._speech.clear()
+            dropped, self._speech = self._speech, []
             self._begin_duck_release_locked()
+        _cancel_streams(dropped)
 
     def _begin_duck_release_locked(self) -> None:
         self._speech_active = False
@@ -173,7 +340,15 @@ class VoiceMixer(discord.AudioSource):
         with self._lock:
             self._closed = True
             self._ambient = None
-            self._speech.clear()
+            dropped, self._speech = self._speech, []
+        _cancel_streams(dropped)
+
+
+def _cancel_streams(children) -> None:
+    """End the streams of dropped streaming children so their owners see playback stop."""
+    for child in children:
+        if isinstance(child, PCMStreamChild):
+            child.stream.cancel()
 
 
 def decode_to_pcm(path: str, *, timeout: float = 30.0) -> Optional[bytes]:

@@ -1258,6 +1258,11 @@ class TurnRunner:
         agent.tool_complete_callback = ctx.native_tool_complete_callback if ctx._native_slack_task_cards else None
         agent.step_callback = ctx._step_callback_sync if ctx._hooks_ref.loaded_hooks else None
         agent.stream_delta_callback = stream_delta_cb
+        # End of each model response → streaming TTS speaks its last sentence at once. TTS only: the
+        # text stream consumer reads None as a tool boundary, so this can't ride stream_delta_callback.
+        stts = (getattr(ctx, "streaming_tts_consumer_holder", None) or [None])[0]
+        agent.stream_flush_callback = (
+            (lambda: stts.on_delta(None) if ctx._run_still_current() else None) if stts is not None else None)
         agent.interim_assistant_callback = interim_assistant_cb if want_interim_messages else None
         agent.status_callback, agent.notice_callback = ctx._status_callback_sync, self._notice_callback_sync
         agent.notice_clear_callback = None  # sends can't be retracted
@@ -1296,6 +1301,7 @@ class TurnRunner:
             agent.tool_complete_callback = None
             # Keep diagnostic observers installed; concrete sinks veto display.
             agent.stream_delta_callback = None
+            agent.stream_flush_callback = None
             agent.interim_assistant_callback = None
             agent.thinking_progress = False
         ctx.agent_holder[0] = agent  # interrupt support

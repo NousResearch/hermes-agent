@@ -12,6 +12,7 @@ from __future__ import annotations
 import pytest
 
 from gateway.status import (
+    _gateway_identity_from_argv as argv_identity,
     gateway_spawn_intent_subcommand as spawn_intent,
     looks_like_gateway_command_line as matches,
     looks_like_gateway_runtime_command_line as matches_runtime,
@@ -163,5 +164,103 @@ ATOMIC_DESKTOP = (
 def test_accepts_atomic_desktop_gateway():
     assert matches(ATOMIC_DESKTOP) is True
     assert matches_runtime(ATOMIC_DESKTOP) is True
+
+
+# The launcher the live gateway actually runs under. Its operand IS the hermes CLI entrypoint, so
+# identity must come from argv: ``_read_process_cmdline`` space-joins the operand into the trailing
+# argv and the string matcher refuses every ``-c`` wrapper on purpose (#107002). Only argv can tell
+# "this process IS hermes" apart from "this process will spawn one later".
+LAUNCHER_OPERAND = (
+    "import os, sys, runpy; sys.path.insert(0, '/repo'); import hermes_bootstrap; "
+    "from hermes_cli.main import main\n"
+    "sys.argv[0] = re.sub(r'(-script\\.pyw|\\.exe)?$', '', sys.argv[0])\n"
+    "sys.exit(main())"
+)
+RUNPY_OPERAND = (
+    "import os, sys, runpy; os.environ.pop('PYTHONPATH', None); import hermes_bootstrap; "
+    "runpy.run_module('hermes_cli.main', run_name='__main__', alter_sys=True)"
+)
+# ``_spawn_gateway_restart_watcher``'s own operand: polls ``_pid_exists`` then Popen()s sys.argv[2:].
+WATCHER_OPERAND = "import time, subprocess, sys; time.sleep(1); subprocess.Popen(sys.argv[2:])"
+
+
+def test_launcher_inline_source_is_gateway_identity():
+    """The installed launcher (``.hermes/bin/hermes``) runs the CLI from the operand itself."""
+    assert argv_identity(["/usr/bin/python3", "-I", "-c", LAUNCHER_OPERAND, "gateway", "run"]) == "run"
+    # bare ``hermes gateway`` defaults to run, as in the string matcher
+    assert argv_identity(["/usr/bin/python3", "-I", "-c", LAUNCHER_OPERAND, "gateway"]) == "run"
+    # ...and the string path still refuses it: this recognition is argv-only, not a loosened matcher
+    assert matches('python -I -c "{}" gateway run'.format(LAUNCHER_OPERAND)) is False
+
+
+def test_launcher_runpy_form_is_gateway_identity():
+    """``hermes_cli._launchers.runtime_command()`` builds the same process with runpy."""
+    argv = ["/usr/bin/python3", "-I", "-c", RUNPY_OPERAND, "gateway", "run"]
+    assert argv_identity(argv) == "run"
+    assert matches('python -I -c "{}" gateway run'.format(RUNPY_OPERAND)) is False
+
+
+def test_restart_watcher_operand_is_not_identity():
+    """The watcher's own operand is the poll-and-spawn script, so it is not the hermes entrypoint."""
+    assert argv_identity(["/usr/bin/python3", "-c", WATCHER_OPERAND, "4242"]) is None
+    assert argv_identity(["/usr/bin/python3", "-c", WATCHER_OPERAND]) is None
+
+
+def test_nested_watcher_with_launcher_trailing_argv_is_not_identity():
+    """A correct launcher bootstrap sitting in the watcher's TRAILING argv proves nothing about the
+    watcher: that argv is the command the watcher will spawn LATER. Reading it made the updater's
+    post-relaunch liveness poll vouch for the watcher instead of a gateway (#107002)."""
+    watcher = [
+        "/usr/bin/python3", "-c", WATCHER_OPERAND, "4242",
+        "/usr/bin/python3", "-I", "-c", LAUNCHER_OPERAND, "gateway", "run",
+    ]
+    assert argv_identity(watcher) is None
+    assert argv_identity([*watcher[:4], "/usr/bin/python3", "-I", "-c", RUNPY_OPERAND, "gateway",
+                          "restart"]) is None
+
+
+def test_plain_python_dash_c_is_not_identity():
+    """An inline program that names no hermes entrypoint is not a gateway, whatever its argv."""
+    assert argv_identity(["/usr/bin/python3", "-c", "import os; print(os.getpid())"]) is None
+    assert argv_identity(["/usr/bin/python3", "-c", "import os", "gateway", "run"]) is None
+    # no inline source at all -> argv has no verdict (the string path decides those)
+    assert argv_identity(["/usr/bin/python3", "-m", "hermes_cli.main", "gateway", "run"]) is None
+    assert argv_identity(None) is None
+
+
+@pytest.mark.parametrize(
+    "selector",
+    [
+        ["-p", "work"],
+        ["--profile", "work"],
+        ["--profile=work"],
+    ],
+)
+def test_named_profile_launcher_is_gateway_identity(selector):
+    """``hermes_cli.gateway._gateway_run_args_for_profile()`` appends the profile selector BEFORE
+    ``gateway run``, so a named-profile launcher's trailing argv starts with ``-p`` / ``--profile``
+    rather than ``gateway``. Those selectors are stripped anywhere in argv, exactly as the string
+    matcher does."""
+    argv = ["/usr/bin/python3", "-I", "-c", LAUNCHER_OPERAND, *selector, "gateway", "run"]
+    assert argv_identity(argv) == "run"
+    # the runpy launcher shape too, and the selector is value-consuming: a profile NAMED "gateway"
+    runpy = ["/usr/bin/python3", "-I", "-c", RUNPY_OPERAND, *selector, "gateway", "run"]
+    assert argv_identity(runpy) == "run"
+    named_gateway = ["/usr/bin/python3", "-I", "-c", LAUNCHER_OPERAND, "-p", "gateway", "gateway",
+                     "run"]
+    assert argv_identity(named_gateway) == "run"
+
+
+def test_launcher_argv_without_subcommand_is_run():
+    """Bare ``hermes gateway`` defaults to run, profile selector or not -- and the profile token
+    must not be mistaken for the subcommand, nor a sibling such as ``gateway status`` accepted."""
+    assert argv_identity(["/usr/bin/python3", "-I", "-c", LAUNCHER_OPERAND, "gateway"]) == "run"
+    assert argv_identity(["/usr/bin/python3", "-I", "-c", LAUNCHER_OPERAND, "-p", "work",
+                          "gateway"]) == "run"
+    assert argv_identity(["/usr/bin/python3", "-I", "-c", LAUNCHER_OPERAND, "--profile=work",
+                          "gateway"]) == "run"
+    assert argv_identity(["/usr/bin/python3", "-I", "-c", LAUNCHER_OPERAND, "-p", "work",
+                          "gateway", "status"]) is None
+    assert argv_identity(["/usr/bin/python3", "-I", "-c", LAUNCHER_OPERAND, "-p", "work"]) is None
 
 

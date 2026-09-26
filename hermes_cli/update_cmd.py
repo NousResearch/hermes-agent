@@ -565,15 +565,30 @@ def _source_update_channel(args=None, *, channel=None, branch_explicit=False) ->
     return resolve_update_channel(config, _m().PROJECT_ROOT)
 
 
+_PM_WORKSPACE_GUIDANCE = (
+    "✗ Not a git repository — this hermes runs a PM environment's workspace\n"
+    "  snapshot, which deliberately has no .git. The install itself is healthy;\n"
+    "  re-running the installer is not the fix.\n"
+    "  Update from the checkout that owns this environment instead: run the\n"
+    "  hermes of your install (the one first on your default PATH), not this\n"
+    "  environment's venv."
+)
+
+
 def _pm_workspace_guidance(root: Path) -> str | None:
     """PM-workspace guidance for a .git-less *root*, or ``None`` when it is another tree.
 
     A committed PM environment's venv imports ``hermes_cli`` from the generation's
     ``workspace/`` snapshot — a build copy that deliberately carries no ``.git``
-    (#122627). Both git gates below would then report the generic "not a git
-    repository, please reinstall" advice against a healthy install. The install key
-    is a one-way hash of the owning checkout, so it cannot be re-derived here; the
-    generation is recognized by its shape under PM's installs root instead.
+    (#122627). Both git gates below would then fail it with their generic
+    .git-less advice (the check gate's "cannot check for updates" error and the
+    apply gate's "please reinstall" text) against a healthy install. The
+    automated redirect in ``update_owning_install.retarget_to_owning_install``
+    does not fire here: ``owning_install_root()`` requires the code at
+    ``<owner>/hermes_cli/main.py``, while a PM environment's venv imports it from
+    ``<generation>/workspace/hermes_cli/main.py``. The install key is a one-way
+    hash of the owning checkout, so it cannot be re-derived here; the generation
+    is recognized by its shape under PM's installs root instead.
     """
     if root.name != "workspace":
         return None
@@ -587,19 +602,19 @@ def _pm_workspace_guidance(root: Path) -> str | None:
 
         key_dir = generation.parent.parent
         key = key_dir.name
-        if (key_dir.parent != installs_root() or len(key) != 16
-                or any(c not in "0123456789abcdef" for c in key)):
+        # Resolve both sides: PROJECT_ROOT is realpath'd (symlinks collapsed) while
+        # installs_root() keeps the raw HERMES_HOME spelling, so an unresolved
+        # comparison silently misses whenever the two spellings differ.
+        if (
+            key_dir.parent.resolve() != installs_root().resolve()
+            or len(key) != 16
+            or any(c not in "0123456789abcdef" for c in key)
+        ):
             return None
-    except Exception:
+    except Exception as exc:
+        logger.debug("PM workspace detection failed: %s", exc)
         return None
-    return (
-        "✗ Not a git repository — this hermes runs a PM environment's workspace\n"
-        "  snapshot, which deliberately has no .git. The install itself is healthy;\n"
-        "  re-running the installer is not the fix.\n"
-        "  Update from the checkout that owns this environment instead: run the\n"
-        "  hermes of your install (the one first on your default PATH), not this\n"
-        "  environment's venv."
-    )
+    return _PM_WORKSPACE_GUIDANCE
 
 
 def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False, channel=None):
@@ -1135,18 +1150,25 @@ def _begin_update_receipt_and_plan(args):
 
 
 def _prepare_git_command() -> tuple[bool, list, bool]:
-    """Return ``(use_zip_update, git_cmd, is_fork)``; ``sys.exit(1)`` when not a git repo
-    on a non-Windows host (Windows falls back to ZIP: broken git file I/O, AV, NTFS filters)."""
+    """Return ``(use_zip_update, git_cmd, is_fork)``.
+
+    ``sys.exit(1)`` for a PM environment's workspace on every host (the ZIP swap
+    would replace the generation's code), and for any other non-git tree on a
+    non-Windows host (Windows falls back to ZIP: broken git file I/O, AV, NTFS
+    filters)."""
     git_dir = _m().PROJECT_ROOT / ".git"
     use_zip_update = not git_dir.exists()
-    if use_zip_update and sys.platform != "win32":
+    if use_zip_update:
+        # Gate before the platform split: on Windows _update_via_zip would swap the
+        # source ZIP over PROJECT_ROOT itself, clobbering the PM workspace.
         pm_guidance = _pm_workspace_guidance(_m().PROJECT_ROOT)
         if pm_guidance is not None:
             print(pm_guidance)
             sys.exit(1)
-        print("✗ Not a git repository. Please reinstall:")
-        print("  curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash")
-        sys.exit(1)
+        if sys.platform != "win32":
+            print("✗ Not a git repository. Please reinstall:")
+            print("  curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash")
+            sys.exit(1)
 
     git_cmd = _base_git_cmd()
     if sys.platform == "win32" and git_dir.exists():

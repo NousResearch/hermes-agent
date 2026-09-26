@@ -3,9 +3,10 @@
 A committed PM environment's venv imports ``hermes_cli`` from the generation's
 ``workspace/`` snapshot — a build copy that deliberately carries no ``.git``. Before
 this fix both git gates (``_cmd_update_check`` and ``_prepare_git_command``) reported
-the generic "Not a git repository. Please reinstall" advice, which points users at a
-healthy install. These tests pin the PM-workspace guidance and the unchanged generic
-message for every other .git-less tree.
+generic .git-less advice, which points users at a healthy install; on Windows the
+apply gate did not even consult the guidance and fell through to the ZIP swap that
+clobbers the workspace. These tests pin the PM-workspace guidance and the unchanged
+generic message for every other .git-less tree.
 """
 
 from __future__ import annotations
@@ -48,6 +49,7 @@ def test_prepare_git_command_reports_pm_workspace_instead_of_reinstall(
     assert "install.sh" not in out
 
 
+@pytest.mark.platforms("posix")  # generic trees fall back to ZIP (no exit) on Windows
 def test_prepare_git_command_keeps_generic_reinstall_advice_for_other_trees(
     monkeypatch, tmp_path, capsys
 ):
@@ -126,3 +128,21 @@ def test_guidance_rejects_non_hex_install_key(monkeypatch, tmp_path):
 
 def test_guidance_rejects_non_workspace_name(tmp_path):
     assert update_cmd._pm_workspace_guidance(tmp_path) is None
+
+
+def test_guidance_survives_symlinked_installs_root_spelling(monkeypatch, tmp_path):
+    """A symlinked HERMES_HOME spelling of installs_root must still match.
+
+    ``PROJECT_ROOT`` is realpath'd while ``installs_root()`` keeps the raw
+    ``HERMES_HOME`` spelling, so the comparison has to resolve both sides or the
+    gate silently misses for dotfiles-managed homes.
+    """
+    workspace, installs = _make_pm_workspace(tmp_path)
+    linked = tmp_path / "hermes-home-link"
+    linked.symlink_to(installs)
+    monkeypatch.setattr("pm.environments.installs_root", lambda: linked)
+
+    assert (
+        update_cmd._pm_workspace_guidance(workspace)
+        == update_cmd._PM_WORKSPACE_GUIDANCE
+    )

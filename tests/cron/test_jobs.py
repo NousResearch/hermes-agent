@@ -1718,6 +1718,23 @@ class TestJobsJsonIdKeyedMap:
         assert isinstance(on_disk["jobs"], list)
         assert [j["id"] for j in on_disk["jobs"]] == ["goodjob1"]
 
+    def test_non_dict_list_entries_do_not_stop_healthy_jobs_firing(self, tmp_cron_dir):
+        """A junk entry in the canonical list shape must not abort the due scan for its
+        healthy siblings (it used to raise on every tick, so no job fired)."""
+        import json
+        from cron.jobs import JOBS_FILE
+
+        job = create_job(prompt="keep me", schedule="every 1h", name="survivor")
+        payload = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
+        payload["jobs"][0]["next_run_at"] = (_hermes_now() - timedelta(seconds=5)).isoformat()
+        payload["jobs"] += [None, "i am not a job", 42]
+        JOBS_FILE.write_text(json.dumps(payload), encoding="utf-8")
+
+        assert [j["id"] for j in get_due_jobs()] == [job["id"]]
+        assert [j["id"] for j in list_jobs(include_disabled=True)] == [job["id"]]
+        on_disk = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
+        assert [j["id"] for j in on_disk["jobs"]] == [job["id"]]
+
 
 
 

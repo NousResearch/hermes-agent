@@ -409,6 +409,8 @@ class TrajectoryCompressor:
     def _summary_prompt(self, content: str) -> str:
         return f"""Summarize the following agent conversation turns concisely. This summary will replace these turns in the conversation history.
 
+CRITICAL: Write the summary in the SAME LANGUAGE as the conversation turns below. If the turns are in Arabic, write the summary in Arabic. If in English, write in English. If mixed, match the dominant language. Never translate — preserve the original language so nuance and dialect are not lost.
+
 Write the summary from a neutral perspective describing what the assistant did and learned. Include:
 1. What actions the assistant took (tool calls, searches, file operations)
 2. Key information or results obtained

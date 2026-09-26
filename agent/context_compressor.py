@@ -4149,6 +4149,7 @@ use. If none appear, omit this section entirely.]
 
 Target ~{summary_budget + (_LEAN_SESSION_LOG_BUDGET_TOKENS if _session_log_section else 0)} tokens. Be CONCRETE — include file paths, command outputs, error messages, line numbers, and specific values. Avoid vague descriptions like "made some changes" — say exactly what changed.
 {_temporal_anchoring_rule}
+{_section["language"]}Sections and headings follow that language; only quoted literal values stay verbatim.
 Write only the summary body. Do not include any preamble or prefix."""
 
     def _on_summary_failure(

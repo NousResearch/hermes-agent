@@ -3165,7 +3165,9 @@ export const frOverrides = {
     actions: count => `${count} actions`,
     logFile: 'Fichier journal',
     logLevel: 'Niveau',
-    logSearchPlaceholder: 'Filtrer les lignes du journal...',
+    logSearchPlaceholder: 'Rechercher dans les journaux…',
+    logTop: 'Aller au début',
+    logBottom: 'Aller à la fin',
     maintenance: {
       runOps: 'Diagnostiques',
       doctor: 'Exécuter le diagnostic',
@@ -6078,6 +6080,8 @@ export const frOverrides = {
   },
   ui: {
     search: {
+      logs: 'Rechercher dans les journaux…',
+      matches: count => `${count} ${count === 1 ? 'résultat' : 'résultats'}`,
       clear: 'Effacer la recherche'
     },
     pagination: {

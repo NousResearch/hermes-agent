@@ -33,10 +33,14 @@ export type McpLogSource = 'agent' | 'stdio'
 
 export function McpLogs({
   emptyLabel,
+  onMatchCountChange,
+  query,
   server,
   source
 }: {
   emptyLabel: string
+  onMatchCountChange: (count: number) => void
+  query: string
   server: null | string
   source: McpLogSource
 }) {
@@ -60,5 +64,5 @@ export function McpLogs({
     })
   }, [server, source, activeProfile])
 
-  return <LogTail emptyLabel={emptyLabel} lines={lines} />
+  return <LogTail emptyLabel={emptyLabel} lines={lines} onMatchCountChange={onMatchCountChange} query={query} />
 }

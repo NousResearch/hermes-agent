@@ -1886,6 +1886,9 @@ export const ja = defineLocale({
     actionStartedWaiting: 'アクションが開始されました。ステータスを待機中...',
     loadingStatus: 'ステータスを読み込み中...',
     recentLogs: '最近のログ',
+    logTop: 'ログの先頭',
+    logBottom: 'ログの末尾',
+    logSearchPlaceholder: 'ログ行を検索…',
     noLogs: 'ログはまだ読み込まれていません。',
     days: count => `${count}日`,
     statSessions: 'セッション',
@@ -4189,7 +4192,9 @@ export const ja = defineLocale({
 
   ui: {
     search: {
-      clear: '検索をクリア'
+      clear: '検索をクリア',
+      logs: 'ログを検索…',
+      matches: count => `${count} 件一致`
     },
     pagination: {
       label: 'ページング',

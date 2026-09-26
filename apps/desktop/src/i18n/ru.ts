@@ -1988,6 +1988,8 @@ export const ru = defineLocale({
     actionStartedWaiting: 'Действие запущено, ожидание статуса...',
     loadingStatus: 'Загрузка статуса...',
     recentLogs: 'Последние записи журнала',
+    logTop: 'В начало журнала',
+    logBottom: 'В конец журнала',
     noLogs: 'Журналы ещё не загружены.',
     days: count => `${count}д`,
     statSessions: 'Сеансы',
@@ -2009,7 +2011,7 @@ export const ru = defineLocale({
     actions: count => `${count} ${RU_NOUN(count, 'действие', 'действия', 'действий')}`,
     logFile: 'Файл журнала',
     logLevel: 'Уровень',
-    logSearchPlaceholder: 'Фильтр строк журнала...',
+    logSearchPlaceholder: 'Поиск по строкам журнала...',
     maintenance: {
       runOps: 'Диагностика',
       doctor: 'Запустить doctor',
@@ -4255,7 +4257,9 @@ export const ru = defineLocale({
 
   ui: {
     search: {
-      clear: 'Очистить поиск'
+      clear: 'Очистить поиск',
+      logs: 'Поиск в журналах…',
+      matches: count => `${count} совпад.`
     },
     pagination: {
       label: 'пагинация',

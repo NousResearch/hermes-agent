@@ -1516,6 +1516,9 @@ export const ar = defineLocale({
     actionStartedWaiting: 'بدأ الإجراء، جار الانتظار...',
     loadingStatus: 'جار تحميل الحالة',
     recentLogs: 'السجلات الأخيرة',
+    logTop: 'أعلى السجل',
+    logBottom: 'أسفل السجل',
+    logSearchPlaceholder: 'البحث في سطور السجل...',
     noLogs: 'لا توجد سجلات',
     days: count => `${count} يوم`,
     statSessions: 'الجلسات',
@@ -3667,7 +3670,9 @@ export const ar = defineLocale({
   },
   ui: {
     search: {
-      clear: 'مسح البحث'
+      clear: 'مسح البحث',
+      logs: 'البحث في السجلات…',
+      matches: count => `${count} ${count === 1 ? 'تطابق' : 'تطابقات'}`
     },
     pagination: {
       label: 'ترقيم الصفحات',

@@ -2131,6 +2131,9 @@ export const zhHant = defineLocale({
     actionStartedWaiting: '動作已啟動，等待狀態…',
     loadingStatus: '正在載入狀態…',
     recentLogs: '最近記錄',
+    logTop: '記錄頂端',
+    logBottom: '記錄底端',
+    logSearchPlaceholder: '搜尋記錄行…',
     noLogs: '尚未載入記錄。',
     days: count => `${count} 天`,
     statSessions: '工作階段',
@@ -4327,7 +4330,9 @@ export const zhHant = defineLocale({
 
   ui: {
     search: {
-      clear: '清除搜尋'
+      clear: '清除搜尋',
+      logs: '搜尋記錄…',
+      matches: count => `${count} 個相符項目`
     },
     pagination: {
       label: '分頁',

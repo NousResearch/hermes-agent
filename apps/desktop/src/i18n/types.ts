@@ -2414,6 +2414,8 @@ export interface Translations {
     logFile: string
     logLevel: string
     logSearchPlaceholder: string
+    logTop: string
+    logBottom: string
     maintenance: {
       runOps: string
       doctor: string
@@ -4614,6 +4616,8 @@ export interface Translations {
   ui: {
     search: {
       clear: string
+      logs: string
+      matches: (count: number) => string
     }
     pagination: {
       label: string

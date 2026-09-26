@@ -3148,7 +3148,9 @@ export const esOverrides = {
     actions: count => `${count} acciones`,
     logFile: 'Archivo de registro',
     logLevel: 'Nivel',
-    logSearchPlaceholder: 'Filtrar líneas de registro…',
+    logSearchPlaceholder: 'Buscar en los registros…',
+    logTop: 'Ir al inicio',
+    logBottom: 'Ir al final',
     maintenance: {
       runOps: 'Diagnóstico',
       doctor: 'Ejecutar diagnóstico',
@@ -6057,6 +6059,8 @@ export const esOverrides = {
   },
   ui: {
     search: {
+      logs: 'Buscar en los registros…',
+      matches: count => `${count} ${count === 1 ? 'coincidencia' : 'coincidencias'}`,
       clear: 'Limpiar búsqueda'
     },
     pagination: {

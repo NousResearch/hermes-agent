@@ -21,7 +21,7 @@ from utils import base_url_host_matches
 logger = logging.getLogger("hermes_cli.model_switch")
 
 # Aggregators whose full catalogs (70+ models) must stay visible: never capped by max_models.
-_UNCAPPED_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen", "opencode-go"})
+_UNCAPPED_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen", "opencode-go", "commandcode"})
 
 
 def _save_discovered_models_to_config(
@@ -956,7 +956,7 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
             model_ids = _live_or_curated_ids(cp.slug, b.curated, merge_models_dev=False,
                                              non_blocking=b.non_blocking_catalogs)
         b.add_builtin_row(
-            cp.slug, cp.label, cp.slug == b.current_provider, model_ids, "canonical", uncapped_ok=False)
+            cp.slug, cp.label, cp.slug == b.current_provider, model_ids, "canonical")
 
 
 def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:

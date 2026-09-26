@@ -589,6 +589,73 @@ def _prepend_hermes_bin_dir(existing_path: str) -> str:
     return _prepend_missing_path_entries(existing_path, [bin_dir] if bin_dir else [])
 
 
+def _package_own_path_dirs(names: list[str]) -> list[str]:
+    """The packages' OWN PATH dirs (recorded env only, no composed deps), in
+    dependents-first order — the requested package before its dependencies.
+
+    ``pm.env_for`` composes each package with its whole dependency chain; the
+    per-package fact env holds only the package's own entries, which is what
+    lets a caller impose an ordering. Missing or uninstalled packages
+    contribute nothing.
+    """
+    from pm.install import _installed_location, _lockfile
+    from pm.registry import get_package, walk
+    from pm.store import current_target
+
+    own: list[str] = []
+    for name in reversed(walk(list(names))):  # walk is deps-first; dependents lead
+        try:
+            package = get_package(name)
+            location = _installed_location(package, _lockfile(), current_target())
+        except Exception:
+            continue
+        if location is None:
+            continue
+        facts, store = location
+        diff = facts.env_for(package.name, store.root)
+        dirs = diff.get("PATH") or []
+        if isinstance(dirs, str):
+            dirs = [dirs]
+        own.extend(str(d) for d in dirs)
+    return own
+
+
+def _dependents_first_path_dirs(names: list[str], dirs: list) -> list:
+    """Reorder composed pm PATH dirs so the named packages' own bin dirs
+    resolve before their dependencies' (#123333).
+
+    On Windows node bundles its own npm shims, so whenever a dependency's dir
+    precedes the pinned store npm, every ``npm ci`` / ``npm install`` run from
+    a Hermes terminal dies with EBADENGINE under engine-strict — a failure that
+    looks like a repo problem rather than a PATH-ordering one. ``pm.env_for``
+    is supposed to compose dependents-first, but that contract lives in a
+    single ``reversed()`` inside ``compose_env``; this pins the ordering at the
+    consumer as well. Dirs not attributable to the named packages keep their
+    composed relative order; on any resolution failure the input order wins.
+    """
+    try:
+        own = _package_own_path_dirs(list(names))
+    except Exception:
+        return list(dirs)
+
+    ordered: list = []
+    seen: set = set()
+
+    def _add(entry) -> None:
+        if not isinstance(entry, Path):
+            entry = Path(entry)
+        if entry in seen:
+            return
+        seen.add(entry)
+        ordered.append(entry)
+
+    for raw in own:
+        _add(raw)
+    for entry in dirs:
+        _add(entry)
+    return ordered
+
+
 def _managed_runtime_path_entries() -> list[str]:
     """Return existing Hermes-managed runtime dirs for the terminal subshell PATH.
 
@@ -599,7 +666,9 @@ def _managed_runtime_path_entries() -> list[str]:
 
     - the pm store's node/npm entries — installed to satisfy the desktop and
       browser toolchain. ``tools/browser_tool.py`` already does this for its own
-      subprocesses; the agent's shell deserves the same.
+      subprocesses; the agent's shell deserves the same. The pinned npm's own
+      dir is ordered before node's: node bundles an npm that would otherwise
+      shadow it (#123333).
     - ``$HERMES_HOME/bin`` — the managed ``uv``. ``install.sh`` writes it there
       and nothing has ever put that directory on PATH, so an install whose only
       uv is the managed one looks uv-less to both the agent and the model.
@@ -614,6 +683,7 @@ def _managed_runtime_path_entries() -> list[str]:
 
         env = pm.env_for("npm", base_env={"PATH": ""})
         managed = [Path(d) for d in env.get("PATH", "").split(os.pathsep) if d]
+        managed = _dependents_first_path_dirs(["npm"], managed)
         candidates = [*managed, get_hermes_home() / "bin"]
         return [str(d) for d in candidates if d.is_dir()]
     except Exception:

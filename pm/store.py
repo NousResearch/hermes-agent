@@ -260,12 +260,17 @@ def merge_tree(src: Path, dst: Path) -> None:
         item.replace(target)
 
 
-def tree_digest(root: Path) -> str:
+def tree_digest(root: Path, *, modes: bool = False) -> str:
     """Deterministic sha256 over a directory tree: walk every file, sort
     by posix relpath, hash `relpath\\0<content>` per entry. No mtimes, no
     mode bits. Symlinks contribute their LINK TARGET TEXT (os.readlink),
     not the target's bytes — the link is the data. Directory symlinks and
     junctions are not followed.
+
+    *modes* also hashes each entry's kind (link or file) and owner execute
+    bit, as git records them: a plugin publication baseline must see a
+    ``chmod +x`` or a file swapped for a link whose target text equals its
+    bytes, or publishing over the tree silently reverts that change.
 
     ``__pycache__`` directories are skipped: CPython writes .pyc caches
     into them the first time the staged interpreter runs (uv venv/uv sync
@@ -292,7 +297,10 @@ def tree_digest(root: Path) -> str:
     for rel, path in files:
         digest.update(rel.encode("utf-8"))
         digest.update(b"\0")
-        if path.is_symlink() or is_junction(path):
+        link = path.is_symlink() or is_junction(path)
+        if modes:
+            digest.update(b"l" if link else b"x" if path.lstat().st_mode & stat.S_IXUSR else b"f")
+        if link:
             digest.update(os.readlink(path).encode("utf-8"))
         else:
             with open(path, "rb") as f:

@@ -19,14 +19,25 @@ def _pc():
     return plugins_cmd
 
 
-def _remove_plugin_core(target: Path) -> None:
-    """Remove one plugin and its metadata without splitting their state."""
+def _remove_plugin_core(target: Path, *, expected_digest: str | None = None) -> bool:
+    """Remove one plugin and its metadata without splitting their state. *expected_digest*
+    (``tree_digest(modes=True)``) is the tree the caller decided on: one that changed since is put
+    back and kept instead (``False``), because the change was never considered."""
+    from pm.store import tree_digest
+
     if target.name not in _pc()._read_install_metadata():
+        if expected_digest is not None and tree_digest(target, modes=True) != expected_digest:
+            return False
         _pc().rmtree_readonly(target)
-        return
+        return True
     staging = Path(tempfile.mkdtemp(prefix=f".{target.name}.remove-", dir=target.parent))
     backup = staging / "plugin"
     os.replace(target, backup)
+    # Checked once detached: a write to the old path can no longer land after the check.
+    if expected_digest is not None and tree_digest(backup, modes=True) != expected_digest:
+        os.replace(backup, target)
+        _pc().rmtree_readonly(staging, ignore_errors=True)
+        return False
     try:
         _pc()._update_install_record(target.name, lambda _current: None)
     except Exception:
@@ -40,6 +51,7 @@ def _remove_plugin_core(target: Path) -> None:
         _pc().rmtree_readonly(staging, ignore_errors=True)
         raise
     _pc().rmtree_readonly(staging)
+    return True
 
 
 def cmd_remove(name: str) -> None:

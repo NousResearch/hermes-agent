@@ -36,7 +36,9 @@ def publish_plugin(staged: Path, target: Path, old_metadata: dict, new_metadata:
     sync_venv(explicit=True, plugins=StagedUpdate({
         "staged": str(staged.resolve()), "target": str(target.absolute()),
         "old_metadata": old_metadata, "new_metadata": new_metadata,
-        "target_digest": target_digest if target_digest is not None else (tree_digest(target) if target.exists() else None),
+        "target_digest": target_digest if target_digest is not None else (
+            tree_digest(target, modes=True) if target.exists() else None),
+        "target_modes": True,
     }))
 
 
@@ -125,7 +127,7 @@ def update_plugin(
             if feed.get("min_hermes"):
                 pc._check_manifest_version({"requires_hermes": feed["min_hermes"]}, target.name)
     refuse_if_installed_removed(target.name, target)
-    before = carry_user_files.digest if carry_user_files is not None else tree_digest(target)
+    before = carry_user_files.digest if carry_user_files is not None else tree_digest(target, modes=True)
     with tempfile.TemporaryDirectory(prefix=".update-", dir=target.parent) as directory:
         staged = Path(directory) / "plugin"
         try:
@@ -182,10 +184,10 @@ def update_plugin(
             pc._scan_plugin_tree(staged, source, force=False)
             pc._copy_example_files(staged, pc._console())
             _refresh_declared_dependencies(target, staged, manifest, interactive=interactive)
-            if tree_digest(target) != before:
+            if tree_digest(target, modes=True) != before:
                 raise pc.PluginOperationError("Plugin files changed while preparing the update; retry.")
             record["revision"] = revision
-            if new_target == target and tree_digest(staged) == before:
+            if new_target == target and tree_digest(staged, modes=True) == before:
                 return output
             publish_plugin(
                 staged,

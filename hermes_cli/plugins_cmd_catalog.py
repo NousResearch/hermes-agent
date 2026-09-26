@@ -286,17 +286,20 @@ def refuse_if_installed_removed(name: str, plugin_dir) -> None:
 
 
 _PRESERVE_SKIP = ("__pycache__", CATALOG_SIDECAR)
-# What Hermes imports, runs or reads as the plugin's declaration: code, manifests, MCP/dependency
-# metadata and the Desktop/skills/sidecar surfaces. Without the installed revision to compare with, an
-# old copy of any of these is the old version's, not the user's.
-_CODE_SUFFIXES = (".py", ".js", ".mjs", ".cjs")
+# What Hermes imports, runs or reads as the plugin's declaration: code and scripts (any executable file
+# too), manifests, MCP/dependency metadata and the Desktop/skills/sidecar surfaces. Without the installed
+# revision to compare with, an old copy of any of these is the old version's, not the user's.
+_CODE_SUFFIXES = frozenset({".py", ".pyw", ".js", ".mjs", ".cjs", ".ts", ".mts", ".cts", ".sh", ".bash", ".zsh",
+                            ".fish", ".ps1", ".psm1", ".bat", ".cmd", ".rb", ".pl"})
 _REVISION_FILES = frozenset({"plugin.yaml", "plugin.yml", "plugin.json", "mcp.json", "pyproject.toml",
                              "package.json", "package-lock.json", "uv.lock"})
 _REVISION_DIRS = frozenset({"desktop", "skills", "sidecar", "node_modules"})
 
 
-def _revision_owned(rel: Path) -> bool:
-    return rel.suffix in _CODE_SUFFIXES or rel.as_posix() in _REVISION_FILES or rel.parts[0] in _REVISION_DIRS
+def _revision_owned(root: Path, rel: Path) -> bool:
+    mode = (root / rel).lstat().st_mode
+    return (rel.suffix.lower() in _CODE_SUFFIXES or rel.as_posix() in _REVISION_FILES
+            or rel.parts[0] in _REVISION_DIRS or (stat.S_ISREG(mode) and bool(mode & stat.S_IXUSR)))
 
 
 def _local_changes(target: Path) -> Optional[tuple[list[str], list[str]]]:
@@ -462,7 +465,7 @@ def _carry_user_files(old: Path, new: Path, local: Optional[list[str]], backup: 
             if not _same_entry(src, dst):
                 set_aside.append(str(rel))
             continue
-        if clash or (local is None and _revision_owned(rel)):
+        if clash or (local is None and _revision_owned(old, rel)):
             set_aside.append(str(rel))
             continue
         for up in reversed(list(rel.parents)[:-1]):
@@ -486,7 +489,7 @@ class _UserFileCarry:
 
     def __init__(self, target: Path, backup: Path):
         from pm.store import tree_digest
-        self.digest = tree_digest(target)
+        self.digest = tree_digest(target, modes=True)
         changes = _local_changes(target)
         self.local, self.modified = changes if changes is not None else (None, [])
         self.target, self.backup, self.set_aside = target, backup, []
@@ -655,8 +658,13 @@ def repin_catalog_plugin(
             _admit_and_save_plugin_sets(
                 enabled, disabled, action=f"Rename plugin '{target.name}' to '{installed_name}'",
                 plugin=installed_name)
-        _remove_plugin_core(target)
-        warnings.append(f"Plugin renamed itself from '{target.name}' to '{installed_name}'; the old directory was removed.")
+        if _remove_plugin_core(target, expected_digest=carry.digest):
+            warnings.append(
+                f"Plugin renamed itself from '{target.name}' to '{installed_name}'; the old directory was removed.")
+        else:
+            warnings.append(
+                f"Plugin renamed itself from '{target.name}' to '{installed_name}'; the old directory changed during "
+                f"the update and was kept at {target}. Move your files over, then `hermes plugins remove {target.name}`.")
     return RepinResult(entry.sha, True, installed_name, warnings)
 
 

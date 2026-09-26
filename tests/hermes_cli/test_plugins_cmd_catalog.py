@@ -469,6 +469,81 @@ def test_update_refuses_when_the_plugin_writes_after_its_files_were_classified(w
     assert (target / "late.json").read_text() == "{}"
 
 
+@pytest.mark.platforms("posix")  # symlinks and the execute bit
+@pytest.mark.parametrize("via", ["url", "catalog"])
+@pytest.mark.parametrize("edit", ["execute-bit", "file-to-link"])
+def test_update_refuses_when_an_entry_mode_or_kind_changes_before_publication(world, tmp_path, monkeypatch, via,
+                                                                            edit):
+    """The publication baseline is the tree as classified, including what the byte digest cannot see: a
+    ``chmod +x``, or a file swapped for a link whose target text equals its bytes, must refuse the update
+    instead of being published over."""
+    from hermes_cli import plugins_transaction as tx
+
+    _src, target, release = _installed_subdir_plugin(tmp_path, monkeypatch, via)
+    (target / "notes").write_text("x")
+    release()
+    publish = tx.publish_plugin
+
+    def plugin_changes_then_publish(*args, **kwargs):
+        if edit == "execute-bit":
+            (target / "notes").chmod(0o755)
+        else:
+            (target / "notes").unlink()
+            (target / "notes").symlink_to("x")
+        return publish(*args, **kwargs)
+
+    monkeypatch.setattr(tx, "publish_plugin", plugin_changes_then_publish)
+    result = pc.dashboard_update_user_plugin("sub-plugin")
+
+    assert result["ok"] is False and "retry" in result["error"]
+    assert "version: 1.0.0" in (target / "plugin.yaml").read_text()
+    if edit == "execute-bit":
+        assert (target / "notes").stat().st_mode & 0o100
+    else:
+        assert os.readlink(target / "notes") == "x"
+
+
+def test_repin_rename_keeps_the_old_tree_when_it_changed_after_classification(world, monkeypatch):
+    """A manifest rename publishes under the new name, then removes the old directory. A file the live plugin
+    wrote there after its files were classified was never considered, so that directory is kept, not deleted."""
+    from hermes_cli import plugins_transaction as tx
+
+    target = cat.install_catalog_entry(pc_cat.get_live_catalog_entry("cat-plugin"), force=False)[0]
+    repo = world["repo"]
+    (repo / "plugin.yaml").write_text("name: cat-plugin-v2\nversion: 2.0.0\ndescription: d\n")
+    world["state"]["pin"] = _commit(repo, "rename")
+    publish = tx.publish_plugin
+
+    def plugin_writes_then_publish(*args, **kwargs):
+        (target / "late.json").write_text("{}")
+        return publish(*args, **kwargs)
+
+    monkeypatch.setattr(tx, "publish_plugin", plugin_writes_then_publish)
+    result = pc.dashboard_update_user_plugin("cat-plugin")
+
+    assert result["ok"] and (world["plugins_dir"] / "cat-plugin-v2" / "plugin.yaml").is_file()
+    assert (target / "late.json").read_text() == "{}"
+    assert any("kept" in w for w in result["warnings"])
+
+
+@pytest.mark.platforms("posix")  # the execute bit
+def test_carry_without_the_installed_revision_does_not_resurrect_removed_scripts(tmp_path):
+    """Without the installed revision, what the new version no longer ships is carried only when it cannot be
+    the old version's code: scripts and executables go to the backup, not into the new tree."""
+    old, new, backup = tmp_path / "old", tmp_path / "new", tmp_path / "backup"
+    old.mkdir()
+    new.mkdir()
+    for name, mode in (("setup.sh", 0o755), ("install.ps1", 0o644), ("run-me", 0o755), ("notes.txt", 0o644)):
+        (old / name).write_text("#!/bin/sh\n")
+        (old / name).chmod(mode)
+
+    set_aside = cat._carry_user_files(old, new, None, backup)
+
+    assert sorted(set_aside) == ["install.ps1", "run-me", "setup.sh"]
+    assert sorted(p.name for p in new.iterdir()) == ["notes.txt"]
+    assert (backup / "setup.sh").stat().st_mode & 0o100
+
+
 def test_repin_keeps_a_wholly_ignored_data_dir_in_a_git_checkout(world):
     """``git status --ignored=matching`` reports an ignored dir as ONE ``data/`` entry; its files must
     still be carried into the re-pinned tree."""

@@ -109,6 +109,8 @@ class StagedPlugin:
         self.configs = selection_snapshot()
         self.target = Path(plugin["target"]).absolute()
         self.staged = Path(plugin["staged"]).resolve()
+        # ``target_modes``: the baseline also covers entry kind and execute bit (tree_digest(modes=True)).
+        self.target_modes = bool(plugin.get("target_modes"))
         if (not self.target.resolve().is_relative_to(dependency_home_root().resolve())
                 or self.target.parent.name != "plugins" or self.target.is_symlink()
                 or self.staged == self.target.resolve() or self.staged.is_relative_to(self.target.resolve())
@@ -127,7 +129,7 @@ class StagedPlugin:
         self.new_record = plugin["new_metadata"].get(self.target.name)
         if self.new_record is None:
             raise ValueError("Plugin publication omitted its install metadata record.")
-        self.target_digest = tree_digest(self.target) if self.target.exists() else None
+        self.target_digest = tree_digest(self.target, modes=self.target_modes) if self.target.exists() else None
         if self.target_digest != plugin["target_digest"]:
             raise ValueError("Plugin files changed while preparing the update; retry.")
         sources = member_sources(enabled_plugin_dirs(installing=self.target))
@@ -158,7 +160,7 @@ class StagedPlugin:
                 raise ValueError("Plugin install metadata changed while preparing the update; retry.")
             metadata[self.target.name] = self.new_record
             proposed = (json.dumps(metadata, indent=2, sort_keys=True) + "\n").encode()
-            current = tree_digest(self.target) if self.target.exists() else None
+            current = tree_digest(self.target, modes=self.target_modes) if self.target.exists() else None
             if current != self.target_digest:
                 raise ValueError("Plugin files changed while preparing the update; retry.")
             backup = self.target.parent / f".previous-{uuid.uuid4().hex}"

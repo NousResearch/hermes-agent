@@ -14,7 +14,7 @@ from typing import Any, Callable, List, Optional, Tuple
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.delegation_context import is_dispatcher_owned_worker_context
-from agent.interrupt_control import interrupt_issuer
+from agent.interrupt_control import interrupted_during_api_call_reason
 from agent.turn_failure_copy import exit_reason_failure, stamp_failure
 from agent.context_compressor import _DB_PERSISTED_MARKER
 from agent.message_content import flatten_message_text
@@ -160,15 +160,12 @@ def _resolve_budget_fallback(
             try:
                 final_response = agent._handle_max_iterations(messages, api_call_count)
             except InterruptedError:
-                # Same surfacing as an interrupted loop API call (handle_api_interrupt):
-                # the turn is interrupted, so the pending interrupt message is returned
-                # for requeue instead of being cleared behind a fallback summary.
+                # The turn ends interrupted, so the pending interrupt message is returned
+                # for requeue instead of being cleared behind a fallback summary. A redirect
+                # also ends it: the budget is spent, so there is no loop to restart into.
                 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
                 interrupted = True
-                _issuer = interrupt_issuer(agent)
-                _turn_exit_reason = (
-                    f"interrupted_during_api_call({_issuer})" if _issuer else "interrupted_during_api_call"
-                )
+                _turn_exit_reason = interrupted_during_api_call_reason(agent)
                 final_response = f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}{time.time() - _summary_start:.1f}s elapsed)."
 
     # A kanban worker must record a terminal outcome whether or not a fallback path

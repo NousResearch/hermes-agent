@@ -97,6 +97,11 @@ class MessageEvent:
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
 
+    def absorb_reply_expected(self, other: "MessageEvent") -> None:
+        """One turn now answers *other* too: an addressed message wins, then an unknown one."""
+        if self.reply_expected is not True and other.reply_expected is not False:
+            self.reply_expected = other.reply_expected
+
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
         return self.allow_gateway_control and (self.text or "").lstrip().startswith("/")

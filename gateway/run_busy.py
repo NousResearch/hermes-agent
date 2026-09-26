@@ -644,9 +644,12 @@ class GatewayBusySessionMixin:
         if turn.event is not None and turn.event is not event:
             turn.event.reply_anchor_override = anchor
             turn.event.ledger_message_id = inbound_id
+            turn.event.absorb_reply_expected(event)
         if turn.ctx is not None:
             turn.ctx.event_message_id = anchor
             turn.ctx.inbound_message_id = inbound_id
+            if turn.event is not None:
+                turn.ctx.reply_expected = turn.event.reply_expected
         return True
 
     async def _interrupt_running_agent_for_busy_event(self, event: MessageEvent, adapter, running_agent) -> None:

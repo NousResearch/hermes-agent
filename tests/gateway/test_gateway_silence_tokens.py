@@ -195,6 +195,7 @@ async def test_queued_human_turn_also_gets_the_visible_fallback():
         stream_consumer_holder=[None],
         mute_notification_reply=False,
         persist_user_display_kind=None,
+        reply_expected=None,
         source=_source(),
         _status_thread_metadata=None,
         event_message_id=None,
@@ -227,20 +228,25 @@ async def test_queued_terminal_turn_owns_the_silence_verdict(monkeypatch, tmp_pa
         run_generation=1, _interrupt_depth=0, history=[], _status_thread_metadata=None,
         context_prompt=None, result_holder=[None])
     pending_event = SimpleNamespace(source=_source(), message_id="43", channel_prompt=None,
-                                    message_type=None, internal=True, metadata={})
+                                    message_type=None, internal=True, metadata={}, reply_expected=True)
 
     merged = await gateway_run.GatewayRunner._run_agent_queued_followup(
         runner, turn_ctx, adapter=None, pending="hi again", pending_event=pending_event,
         response="resp", result={"interrupted": True, "messages": []}, stream_task=None)
 
-    assert runner._run_agent.await_args.kwargs["persist_user_display_kind"] == "internal_notification"
+    followup = runner._run_agent.await_args.kwargs
+    assert followup["persist_user_display_kind"] == "internal_notification"
+    assert followup["reply_expected"] is True
+    assert followup["persist_user_display_metadata"]["reply_expected"] is True
     assert merged["queued_terminal_display_kind"] == "internal_notification"
+    assert merged["queued_terminal_reply_expected"] is True
 
-    def _result(terminal_kind):
+    def _result(terminal_kind, terminal_reply_expected=None):
         return {
             "final_response": "[SILENT]", "tools": [], "history_offset": 0, "last_prompt_tokens": 0,
             "api_calls": 1, "failed": False, "queued_terminal_inbound_id": "43",
             "queued_terminal_display_kind": terminal_kind,
+            "queued_terminal_reply_expected": terminal_reply_expected,
             "messages": [{"role": "user", "content": "x"}, {"role": "assistant", "content": "[SILENT]"}],
         }
 
@@ -255,6 +261,24 @@ async def test_queued_terminal_turn_owns_the_silence_verdict(monkeypatch, tmp_pa
     response = await runner._handle_message_with_agent(
         _event(internal=True), _source(), "agent:main:telegram:group:-1001:12345", 1)
     assert response and not is_intentional_silence_response(response)
+    # Unaddressed opener, addressed terminal turn: visible fallback.
+    runner = _runner(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(return_value=_result(None, True))
+    response = await runner._handle_message_with_agent(
+        _event(reply_expected=False), _source(), "agent:main:telegram:group:-1001:12345", 1)
+    assert response and not is_intentional_silence_response(response)
+
+
+@pytest.mark.parametrize("opener, absorbed, merged", [
+    (False, True, True), (False, None, None), (True, False, True), (False, False, False),
+])
+def test_one_turn_answering_several_messages_is_addressed_if_any_was(opener, absorbed, merged):
+    """A merged pending message answers both texts, so an addressed one keeps the fallback."""
+    from gateway.platforms.base import merge_pending_message_event
+
+    pending = {"k": _event(reply_expected=opener)}
+    merge_pending_message_event(pending, "k", _event(reply_expected=absorbed), merge_text=True)
+    assert pending["k"].reply_expected is merged
 
 
 @pytest.mark.asyncio

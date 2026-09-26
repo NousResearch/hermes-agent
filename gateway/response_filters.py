@@ -128,6 +128,12 @@ def silence_allowed(display_kind: Any, reply_expected: Optional[bool] = None) ->
     return is_machinery_display_kind(display_kind) or reply_expected is False
 
 
+def reply_expected_metadata(reply_expected: Optional[bool]) -> dict:
+    """The persisted user row's ``reply_expected`` key, only when the adapter knew; crash recovery
+    reads it back to judge a silence marker as the live turn did."""
+    return {} if reply_expected is None else {"reply_expected": reply_expected}
+
+
 def is_partial_silence_marker(text: Any) -> bool:
     """True while streamed ``text`` could still resolve to a silence marker.
 

@@ -25,7 +25,9 @@ from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
 from gateway.platforms.event import MessageEvent
-from gateway.response_filters import display_kind_for_event, is_machinery_display_kind
+from gateway.response_filters import (
+    display_kind_for_event, is_machinery_display_kind, reply_expected_metadata, silence_allowed,
+)
 from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
@@ -1527,7 +1529,6 @@ class GatewayTurnMixin:
         logging, resume-pending clear, empty-response normalization, and identity-guarded
         post-compression session_id propagation. Returns
         ``(response, _intentional_silence, agent_messages)``."""
-        from gateway.response_filters import silence_allowed
         from gateway.run import (
             _is_gateway_hidden_reasoning_incomplete_turn, _normalize_empty_agent_response,
             _sanitize_gateway_final_response, _should_clear_resume_pending_after_turn,
@@ -1541,14 +1542,15 @@ class GatewayTurnMixin:
         # A queued (/queue) chain's TERMINAL turn owns the silence verdict, not the event that
         # opened the chain: an internal follow-up may go silent, a human one must not.
         _silence_kind = agent_result.get("queued_terminal_display_kind", persist_user_display_kind)
-        if _intentional_silence and not silence_allowed(_silence_kind, reply_expected):
+        _silence_reply_expected = agent_result.get("queued_terminal_reply_expected", reply_expected)
+        if _intentional_silence and not silence_allowed(_silence_kind, _silence_reply_expected):
             logger.warning(
                 "silence marker rejected on a user turn: platform=%s chat=%s",
                 _platform_name, source.chat_id or "unknown",
             )
             _intentional_silence = False
             response = _UNEXPECTED_SILENCE_REPLY
-        elif _intentional_silence and reply_expected is False:
+        elif _intentional_silence and not is_machinery_display_kind(_silence_kind):
             logger.debug(
                 "silence marker suppressed on an unaddressed turn: platform=%s chat=%s",
                 _platform_name, source.chat_id or "unknown",
@@ -2209,11 +2211,10 @@ class GatewayTurnMixin:
                 persist_user_message=prepared.persist_user_message,
                 persist_user_timestamp=prepared.persist_user_timestamp,
                 persist_user_display_kind=prepared.persist_user_display_kind,
-                reply_expected=getattr(event, "reply_expected", None),
+                reply_expected=event.reply_expected,
                 persist_user_display_metadata={
                     "gateway_input_owner": prepared.persistence_owner,
-                    "reply_expected": getattr(event, "reply_expected", None),
-                    **diagnostic_metadata(event)},
+                    **reply_expected_metadata(event.reply_expected), **diagnostic_metadata(event)},
                 message_type=event.message_type,
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
             )
@@ -2242,7 +2243,7 @@ class GatewayTurnMixin:
                 agent_result, source, history, session_entry, session_key,
                 _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
                 persist_user_display_kind=prepared.persist_user_display_kind,
-                reply_expected=getattr(event, "reply_expected", None),
+                reply_expected=event.reply_expected,
             )
             response = self._hmwa_prepend_reasoning(agent_result, response, source, _intentional_silence)
             _footer_line = self._hmwa_runtime_footer_line(agent_result, source, _turn_seconds)
@@ -3104,7 +3105,7 @@ class GatewayTurnMixin:
 
         # The one-slot progress/holder containers shared with the callbacks are TurnContext defaults.
         turn_ctx = TurnContext(
-            source=source, reply_expected=turn_params.pop("reply_expected", None), message=message, AIAgent=AIAgent, session_key=session_key,
+            source=source, message=message, AIAgent=AIAgent, session_key=session_key,
             run_generation=run_generation, _cleanup_progress=_cleanup_progress,
             _run_still_current=self._run_still_current_fn(session_key, run_generation),
             progress_queue=queue.Queue() if disp.needs_progress_queue else None,
@@ -3737,8 +3738,7 @@ class GatewayTurnMixin:
         )
         # Same silence predicate as the normal path, else this branch leaks the literal marker.
         if self._is_intentional_silence(_delivery_result, first_response):
-            from gateway.response_filters import silence_allowed
-            if silence_allowed(turn_ctx.persist_user_display_kind, getattr(turn_ctx, "reply_expected", None)):
+            if silence_allowed(turn_ctx.persist_user_display_kind, turn_ctx.reply_expected):
                 logger.info(
                     "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
                     session_key or "?",
@@ -3841,6 +3841,7 @@ class GatewayTurnMixin:
         # Queued Discord turns carry the same routing note as first turns; persist the authored text.
         next_persist_message = None
         next_display_kind = display_kind_for_event(pending_event)
+        next_reply_expected = pending_event.reply_expected if pending_event is not None else None
         # See #60671.
         if pending_event is not None:
             next_source = getattr(pending_event, "source", None) or source
@@ -3917,7 +3918,9 @@ class GatewayTurnMixin:
                 channel_prompt=next_channel_prompt, message_type=next_message_type,
                 persist_user_message=next_persist_message,
                 persist_user_display_kind=next_display_kind,
-                persist_user_display_metadata=diagnostic_metadata(pending_event) or None,
+                reply_expected=next_reply_expected,
+                persist_user_display_metadata={
+                    **reply_expected_metadata(next_reply_expected), **diagnostic_metadata(pending_event)} or None,
             )
         except asyncio.CancelledError:
             await _run_followup_processing_hook(
@@ -3941,6 +3944,7 @@ class GatewayTurnMixin:
                 **merged,
                 "queued_terminal_inbound_id": next_inbound_id,
                 "queued_terminal_display_kind": next_display_kind,
+                "queued_terminal_reply_expected": next_reply_expected,
                 "queued_terminal_notification_category": (
                     (pending_event.metadata or {}).get("notification_category", "result")
                     if pending_event is not None and pending_event.internal else "result"),

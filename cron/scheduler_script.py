@@ -314,10 +314,35 @@ def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str
     return path, None
 
 
+def _posix_managed_python_invocation(python_exe: str) -> tuple[str, dict[str, str]]:
+    """POSIX managed-install interpreter for cron ``.py`` scripts (#123440).
+
+    ``sys.executable`` under the PM runtime is the bare store Python: the sanitizer
+    strips PYTHONPATH and the store ships no third-party packages, so the script dies
+    importing Hermes modules or ``ruamel.yaml``. The committed environment's own
+    interpreter carries its site-packages via ``pyvenv.cfg`` — and, unlike a
+    PYTHONPATH overlay of the dependency site, it leaves every child the script
+    spawns on its own clean environment (a helper on another interpreter must not
+    import this tree's compiled extensions first).
+    """
+    if os.name == "nt":
+        return python_exe, {}
+    from cron import scheduler_worker_env
+
+    repo = Path(__file__).resolve().parents[1]
+    managed = scheduler_worker_env.managed_runtime_python(repo)
+    if managed is None or Path(managed).resolve() == Path(python_exe).resolve():
+        return python_exe, {}
+    # The repo pin is the worker's own #112729 remedy: a stale editable mapping
+    # must not leave ``import cron`` dead on the venv interpreter either.
+    return str(managed), {"PYTHONPATH": str(repo)}
+
+
 def _script_argv(path: Path) -> tuple[Optional[list[str]], dict[str, str], Optional[str]]:
     """``(argv, env_overlay, error)`` for a validated script. Interpreter by extension — the
     shebang is deliberately NOT honoured (small, auditable surface): ``.sh``/``.bash`` → bash,
-    else ``sys.executable`` (Windows uv-venv overlay gets the .pth bootstrap)."""
+    else ``sys.executable`` (Windows uv-venv overlay gets the .pth bootstrap; a POSIX
+    managed install runs the committed environment's interpreter)."""
     if path.suffix.lower() in {".sh", ".bash"}:
         # which() finds Git Bash on Windows; None there → clear error instead of a "[WinError 2]".
         _bash = shutil.which("bash") or ("/bin/bash" if os.path.isfile("/bin/bash") else None)
@@ -331,6 +356,7 @@ def _script_argv(path: Path) -> tuple[Optional[list[str]], dict[str, str], Optio
     python_exe, env_overlay = _windows_cron_python_invocation(sys.executable)
     if env_overlay:
         return _windows_cron_bootstrap_argv(python_exe, env_overlay, str(path)), env_overlay, None
+    python_exe, env_overlay = _posix_managed_python_invocation(python_exe)
     return [python_exe, str(path)], env_overlay, None
 
 

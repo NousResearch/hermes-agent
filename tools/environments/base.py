@@ -605,6 +605,13 @@ class BaseEnvironment(ABC):
         is drained (head/tail window) instead of holding the full output in memory (#64435).
         See #94285.
         """
+        # A yield armed BEFORE this command started targets an EARLIER tool call: the tool-worker
+        # tid is pooled and reused, so a bit no consumer took (a tool that does not yield, a
+        # hand-off that lost the race with its own tool call) would otherwise move THIS command to
+        # the background and report a user message that never came. A yield only ever applies to a
+        # command that was already running when the message arrived.
+        if yield_handler is not None:
+            consume_yield(threading.current_thread().ident)
         self._before_execute()
 
         exec_command, sudo_stdin = self._prepare_command(command)

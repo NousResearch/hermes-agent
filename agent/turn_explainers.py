@@ -238,6 +238,10 @@ class TurnExplainersMixin:
         failure time. A later success on the same identity (any spelling) removes the entry.
         No-op when the per-turn state dict is not initialised (tool dispatched outside ``run_conversation``).
         """
+        if tool_name == "skill_manage":
+            from agent.skill_mutation_verifier import record_skill_mutation_result
+            record_skill_mutation_result(self, args, result, is_error)
+            return
         if tool_name not in _FILE_MUTATING_TOOLS:
             return
         state = getattr(self, "_turn_failed_file_mutations", None)

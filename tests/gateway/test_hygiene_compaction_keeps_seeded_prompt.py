@@ -48,13 +48,10 @@ def test_seeded_hygiene_agent_keeps_the_stored_prompt_at_the_commit_boundary():
     assert agent._cached_system_prompt is STORED
     assert built == []
 
-
-def test_seed_without_a_stored_prompt_persists_empty_not_the_reduced_build():
-    agent, built = _agent()
-    assert _seed_hygiene_system_prompt(agent, None) is False
-
-    assert _rebuild(agent) == ""
-    assert built == []
+    empty, built_empty = _agent()
+    assert _seed_hygiene_system_prompt(empty, None) is False
+    assert _rebuild(empty) == ""
+    assert built_empty == []
 
 
 def test_live_agent_compaction_still_rebuilds():

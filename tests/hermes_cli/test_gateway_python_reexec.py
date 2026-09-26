@@ -9,6 +9,8 @@ under any other interpreter re-execs before the heavy gateway.run imports bind.
 """
 
 from pathlib import Path
+import sys
+import types
 
 import pytest
 
@@ -111,11 +113,61 @@ def test_reexec_plan_noop_for_console_script_trampolines(tmp_path):
     assert plan is None
 
 
+class _GatewayRunStub(types.ModuleType):
+    """Stand-in for the heavy gateway.run module.
+
+    PEP 562 __getattr__ fires on the `from gateway.run import start_gateway`
+    fetch itself, so a test can prove the re-exec guard sits ABOVE the import:
+    if the import ever happens first (guard deleted, or slid below it), the
+    fetch records access and the raised ImportError fails the run loudly.
+    """
+
+    accessed = False
+
+    def __getattr__(self, name):
+        type(self).accessed = True
+        raise ImportError(f"gateway.run.{name} bound before the re-exec guard fired")
+
+
+def test_run_gateway_reexecs_before_heavy_imports(monkeypatch):
+    """Placement contract: run_gateway() must fire the interpreter guard BEFORE
+    `from gateway.run import start_gateway` binds.
+
+    Driving the helper directly proves the re-exec mechanics but nothing about
+    where the call sits — deleting `run_gateway`'s guard line, or sliding it
+    below the heavy import, must fail this test. Host-agnostic on purpose: the
+    guard is stubbed to fire and the heavy module replaced by _GatewayRunStub,
+    so the ordering is exercised on every lane (the real-guard end to end is
+    pinned on the Windows runner by the test below).
+    """
+    fired = {}
+
+    def fake_guard(*args, **kwargs):
+        fired["guard"] = True
+        raise SystemExit(0)
+
+    # neutralize the pre-guard lifecycle guards so we isolate the re-exec path
+    for name in ("_guard_official_docker_root_gateway", "_attach_to_host_gateway_or_guard",
+                 "_guard_supervised_gateway_conflict", "_guard_existing_gateway_process_conflict"):
+        monkeypatch.setattr(gateway, name, lambda *a, **k: None)
+    monkeypatch.setattr(gateway, "_reexec_gateway_under_committed_python", fake_guard)
+    stub = _GatewayRunStub("gateway.run")
+    monkeypatch.setitem(sys.modules, "gateway.run", stub)
+
+    with pytest.raises(SystemExit) as exc:
+        gateway.run_gateway()
+
+    assert exc.value.code == 0
+    assert fired["guard"], "the interpreter guard never fired"
+    assert stub.accessed is False, "gateway.run was imported before the re-exec guard"
+
+
 @pytest.mark.platforms("windows")
-def test_run_gateway_reexecs_before_heavy_imports(monkeypatch, tmp_path):
-    """The guard runs before gateway.run is imported and re-execs (SystemExit via the
-    Windows spawn-and-exit contract) under the committed interpreter with the reexec
-    marker set, so the child cannot loop."""
+def test_run_gateway_reexecs_end_to_end_under_committed_python(monkeypatch, tmp_path):
+    """The real guard, through the real run_gateway() call site, on the platform
+    the bug lives on: a launcher-shaped boot under the wrong interpreter re-execs
+    (SystemExit via the Windows spawn-and-exit contract) under the committed
+    interpreter with the reexec marker set, before the heavy import binds."""
     project = tmp_path / "project"
     venv = project / "venv"
     scripts = venv / "Scripts"
@@ -146,11 +198,14 @@ def test_run_gateway_reexecs_before_heavy_imports(monkeypatch, tmp_path):
     for name in ("_guard_official_docker_root_gateway", "_attach_to_host_gateway_or_guard",
                  "_guard_supervised_gateway_conflict", "_guard_existing_gateway_process_conflict"):
         monkeypatch.setattr(gateway, name, lambda *a, **k: None)
+    stub = _GatewayRunStub("gateway.run")
+    monkeypatch.setitem(sys.modules, "gateway.run", stub)
 
     with pytest.raises(SystemExit) as exc:
-        gateway._reexec_gateway_under_committed_python()
+        gateway.run_gateway()
 
     assert exc.value.code == 0
+    assert stub.accessed is False, "gateway.run was imported before the re-exec guard"
     assert calls["argv"][0] == str(venv_python)
     assert calls["argv"][1:3] == ["-m", "hermes_cli.main"]
     assert calls["env"][gateway._GATEWAY_PYTHON_REEXEC_ENV] == "1"

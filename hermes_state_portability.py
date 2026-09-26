@@ -15,6 +15,7 @@ from agent.skill_commands import SKILL_SCAFFOLD_SQL_LIKE
 from utils import safe_json_loads
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_ids import new_session_id
+from hermes_state_titles import fit_title
 from hermes_state_common import SCHEMA_SQL, _PREVIEW_RAW_SUBQUERY_SQL, _shape_preview, _sql_session_last_active
 
 # Pre-split logger identity so log filtering/capture is unchanged.
@@ -150,6 +151,10 @@ class SessionPortabilityMixin:
         obey the same contract as ordinary transcript imports.
         """
         session_id = new_session_id(hex_len=12)
+        # The row is inserted directly, past the title writer: fit the foreign log's first line
+        # under MAX_TITLE_LENGTH here, or every later title write naming this row (a rename that
+        # keeps the text, a branch's "#2" lineage title) is refused as too long.
+        title = self.sanitize_title(fit_title(title, self.MAX_TITLE_LENGTH))
         normalized, errors = self._validate_import_payload([
             {"id": session_id, "source": origin["tool"], "title": title,
              "cwd": cwd, "messages": messages}])
@@ -164,7 +169,8 @@ class SessionPortabilityMixin:
             # title while giving unrelated conversations with the same text room.
             item = normalized[0]
             if conn.execute("SELECT 1 FROM sessions WHERE title = ?", (title,)).fetchone():
-                item["session"]["title"] = f"{title} ({session_id[-12:]})"
+                suffix = f" ({session_id[-12:]})"
+                item["session"]["title"] = fit_title(title, self.MAX_TITLE_LENGTH - len(suffix)) + suffix
             self._import_session_row(conn, item["session"], item["messages"], session_id)
             conn.execute("UPDATE sessions SET origin_json = ?, profile_name = ? WHERE id = ?",
                          (json.dumps({"imported_from": origin}), profile, session_id))

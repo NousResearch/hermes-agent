@@ -2564,6 +2564,16 @@ class TestTitleLineage:
         """With no existing sessions, base title is returned as-is."""
         assert db.get_next_title_in_lineage("my project") == "my project"
 
+    def test_next_title_of_a_title_at_the_cap_stays_writable(self, db):
+        """The " #N" suffix must not push a lineage title past MAX_TITLE_LENGTH."""
+        base = "x" * db.MAX_TITLE_LENGTH
+        db.create_session("s1", "cli")
+        db.set_session_title("s1", base)
+        for sid in ("s2", "s3"):
+            db.create_session(sid, "cli")
+            assert db.set_session_title(sid, db.get_next_title_in_lineage(base))
+        assert db.get_session_title("s2") != db.get_session_title("s3")
+
 
 
 

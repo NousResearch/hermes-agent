@@ -2730,15 +2730,30 @@ def run_one_job(
             logger.error("Job '%s': %s", job["id"], error)
             claim = job.get("fire_claim")
             owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
+            # The dispatch failure is a job failure like any other: it must open an
+            # incident and leave through the job's failure lane (#123401). Without
+            # this the outage is silent — no cron_incidents row, no ping — while
+            # executions.db keeps piling up failed rows.
+            delivery_error = None
+            delivery_outcome = "failed"
+            try:
+                delivery_error, delivery_outcome = _deliver_crash_failure(
+                    job, error, adapters=adapters, loop=loop)
+            except Exception as notice_exc:
+                logger.error(
+                    "Dispatch-failure notice failed for job %s: %s", job["id"], notice_exc)
             try:
                 mark_job_run(
                     job["id"],
                     False,
                     error,
+                    delivery_error=delivery_error,
                     **({"expected_fire_owner": owner} if owner else {}),
                 )
             finally:
-                finish_execution(execution_id, success=False, error=error)
+                finish_execution(
+                    execution_id, success=False, error=error,
+                    delivery_outcome=delivery_outcome)
             return True
     if extra_prompt is None:
         # Gateway-forwarded manual run stamps its prompt on the job via trigger_job; the fire that

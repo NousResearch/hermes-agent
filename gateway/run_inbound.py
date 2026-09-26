@@ -1811,7 +1811,7 @@ class GatewayInboundMixin:
     def _schedule_plugin_message_injection(
         self, *, session_key: str, content: str, plugin_id: str,
         idempotency_key: str | None = None, idle_only: bool = False,
-        enabled_toolsets: list[str] | None = None,
+        enabled_toolsets: list[str] | None = None, owner_home: str | None = None,
     ) -> bool:
         """Schedule a plugin-triggered turn on the live gateway loop (thread-safe)."""
         from gateway.run import safe_schedule_threadsafe
@@ -1820,6 +1820,8 @@ class GatewayInboundMixin:
             return False
 
         if idempotency_key is not None:
+            from hermes_constants import get_process_hermes_home, hermes_home_key
+            owner_home = hermes_home_key(owner_home or get_process_hermes_home())
             if not isinstance(idempotency_key, str) or not 0 < len(idempotency_key) <= 200:
                 return False
             try:
@@ -1827,7 +1829,8 @@ class GatewayInboundMixin:
                 from gateway.plugin_injection_ledger import claim
                 if not ledger_enabled():
                     return False  # no durable final-response outcome to report
-                admission = claim(plugin_id, idempotency_key, session_key, content)
+                admission = claim(plugin_id, idempotency_key, session_key, content,
+                                  owner_home=owner_home)
             except (OSError, ValueError):
                 logger.warning("Plugin injection key admission failed: plugin=%s", plugin_id,
                                exc_info=True)
@@ -1837,7 +1840,8 @@ class GatewayInboundMixin:
 
         coro = self._dispatch_plugin_message_injection(
             session_key=session_key, content=content, plugin_id=plugin_id,
-            **({"idempotency_key": idempotency_key} if idempotency_key is not None else {}),
+            **({"idempotency_key": idempotency_key, "owner_home": owner_home}
+               if idempotency_key is not None else {}),
             **({"idle_only": idle_only} if idle_only else {}),
             **({"enabled_toolsets": enabled_toolsets} if enabled_toolsets is not None else {}),
             **({"notice_already_sent": True} if idempotency_key is not None
@@ -1855,7 +1859,7 @@ class GatewayInboundMixin:
                 coro.close()
                 if idempotency_key is not None:
                     from gateway.plugin_injection_ledger import release_scheduled
-                    release_scheduled(plugin_id, idempotency_key, admission)
+                    release_scheduled(plugin_id, idempotency_key, admission, owner_home=owner_home)
                 logger.warning("Plugin message injection scheduling failed", exc_info=True)
                 return False
             self._background_tasks.add(future)
@@ -1868,7 +1872,7 @@ class GatewayInboundMixin:
             if future is None:
                 if idempotency_key is not None:
                     from gateway.plugin_injection_ledger import release_scheduled
-                    release_scheduled(plugin_id, idempotency_key, admission)
+                    release_scheduled(plugin_id, idempotency_key, admission, owner_home=owner_home)
                 return False
 
         def _log_result(completed) -> None:
@@ -1891,16 +1895,21 @@ class GatewayInboundMixin:
         self, *, session_key: str, content: str, plugin_id: str,
         idempotency_key: str | None = None, idle_only: bool = False,
         enabled_toolsets: list[str] | None = None,
-        notice_already_sent: bool = False,
+        notice_already_sent: bool = False, owner_home: str | None = None,
     ) -> bool:
         """Route a plugin-triggered turn through the session's live adapter."""
+        if idempotency_key is not None:
+            from hermes_constants import get_process_hermes_home, hermes_home_key
+            owner_home = hermes_home_key(owner_home or get_process_hermes_home())
+
         def _accepting() -> bool:
             return getattr(self, "_running", False) and not getattr(self, "_draining", False)
 
         def _mark(state: str, error: str | None = None) -> None:
             if idempotency_key is not None:
                 from gateway.plugin_injection_ledger import advance
-                advance(plugin_id, idempotency_key, state, error=error)
+                advance(plugin_id, idempotency_key, state, error=error,
+                        owner_home=owner_home)
 
         if not _accepting():
             _mark("refused", "gateway unavailable")
@@ -1911,7 +1920,8 @@ class GatewayInboundMixin:
             return False
         if idempotency_key is not None:
             from gateway.plugin_injection_ledger import bind_session
-            if not bind_session(plugin_id, idempotency_key, entry.session_id):
+            if not bind_session(plugin_id, idempotency_key, entry.session_id,
+                                owner_home=owner_home):
                 _mark("refused", "session generation changed")
                 return False
 
@@ -1985,7 +1995,8 @@ class GatewayInboundMixin:
                 "hermes_plugin_id": plugin_id, "hermes_plugin_injection": True,
                 "gateway_session_key": session_key, "gateway_session_id": entry.session_id,
                 "gateway_session_strict": True,
-                **({"plugin_injection_key": idempotency_key} if idempotency_key is not None else {}),
+                **({"plugin_injection_key": idempotency_key,
+                    "plugin_injection_owner_home": owner_home} if idempotency_key is not None else {}),
                 **({"plugin_injection_toolsets": enabled_toolsets} if enabled_toolsets is not None else {}),
             },
         )
@@ -2004,18 +2015,22 @@ class GatewayInboundMixin:
 
     def _schedule_plugin_session_notice(
         self, *, session_key: str, content: str, plugin_id: str, idempotency_key: str,
+        owner_home: str | None = None,
     ) -> bool:
         """Schedule one durable post-turn notice in the injection's original session."""
         from gateway.run import safe_schedule_threadsafe
         loop = getattr(self, "_gateway_loop", None)
         if not getattr(self, "_running", False) or loop is None or loop.is_closed():
             return False
+        from hermes_constants import get_process_hermes_home, hermes_home_key
+        owner_home = hermes_home_key(owner_home or get_process_hermes_home())
         try:
             from gateway.delivery_ledger import ledger_enabled
             from gateway.plugin_injection_ledger import claim_notice
             if not ledger_enabled():
                 return False
-            admission = claim_notice(plugin_id, idempotency_key, session_key, content)
+            admission = claim_notice(plugin_id, idempotency_key, session_key, content,
+                                     owner_home=owner_home)
         except Exception:
             logger.warning("Plugin session notice admission failed: plugin=%s", plugin_id, exc_info=True)
             return False
@@ -2024,7 +2039,7 @@ class GatewayInboundMixin:
 
         coro = self._dispatch_plugin_session_notice(
             session_key=session_key, content=content, plugin_id=plugin_id,
-            idempotency_key=idempotency_key)
+            idempotency_key=idempotency_key, owner_home=owner_home)
         try:
             current_loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -2035,7 +2050,7 @@ class GatewayInboundMixin:
             except Exception:
                 coro.close()
                 from gateway.plugin_injection_ledger import release_notice_claim
-                release_notice_claim(plugin_id, idempotency_key)
+                release_notice_claim(plugin_id, idempotency_key, owner_home=owner_home)
                 return False
             self._background_tasks.add(future)
             future.add_done_callback(self._background_tasks.discard)
@@ -2046,27 +2061,28 @@ class GatewayInboundMixin:
                 log_level=logging.WARNING)
             if future is None:
                 from gateway.plugin_injection_ledger import release_notice_claim
-                release_notice_claim(plugin_id, idempotency_key)
+                release_notice_claim(plugin_id, idempotency_key, owner_home=owner_home)
                 return False
         return True
 
     async def _dispatch_plugin_session_notice(
         self, *, session_key: str, content: str, plugin_id: str, idempotency_key: str,
+        owner_home: str | None = None,
     ) -> bool:
         """Ledger and deliver a notice through the session's current Telegram bot."""
         from gateway.plugin_injection_ledger import mark_notice, state
 
         def refuse() -> bool:
-            mark_notice(plugin_id, idempotency_key, "refused")
+            mark_notice(plugin_id, idempotency_key, "refused", owner_home=owner_home)
             return False
 
         def defer() -> bool:
-            mark_notice(plugin_id, idempotency_key, "deferred")
+            mark_notice(plugin_id, idempotency_key, "deferred", owner_home=owner_home)
             return False
 
         if not getattr(self, "_running", False) or getattr(self, "_draining", False):
             return defer()
-        receipt = state(plugin_id, idempotency_key)
+        receipt = state(plugin_id, idempotency_key, owner_home=owner_home)
         if (receipt is None or receipt["session_key"] != session_key
                 or receipt["state"] != "turn_complete"
                 or receipt.get("delivery_state") != "delivered"
@@ -2098,7 +2114,7 @@ class GatewayInboundMixin:
                 thread_id=source.thread_id, content=content,
                 adapter_profile=getattr(adapter, "_owner_profile", None))
             recorded = True
-            mark_notice(plugin_id, idempotency_key, "ledgered")
+            mark_notice(plugin_id, idempotency_key, "ledgered", owner_home=owner_home)
             await asyncio.to_thread(mark_attempting, obligation_id)
             event = MessageEvent(
                 text="[Plugin session notice]", message_type=MessageType.TEXT,
@@ -2116,7 +2132,7 @@ class GatewayInboundMixin:
                 from gateway.delivery_ledger import mark_failed
                 await asyncio.to_thread(mark_failed, obligation_id, "notice_send_failed")
             elif not recorded:
-                mark_notice(plugin_id, idempotency_key, "deferred")
+                mark_notice(plugin_id, idempotency_key, "deferred", owner_home=owner_home)
             logger.warning("Plugin session notice dispatch failed: plugin=%s session=%s",
                            plugin_id, session_key, exc_info=True)
             return False

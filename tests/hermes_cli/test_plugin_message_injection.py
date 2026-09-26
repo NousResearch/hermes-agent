@@ -161,6 +161,7 @@ def test_gateway_injection_passes_host_owned_plugin_identity(tmp_path, monkeypat
         session_key="agent:main:telegram:dm:42",
         content="[system] wake up",
         plugin_id="notify-plugin",
+        owner_home=manager.scope_key,
     )
 
 

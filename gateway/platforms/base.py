@@ -4168,7 +4168,8 @@ class BasePlatformAdapter(ABC):
                 from gateway.plugin_injection_ledger import advance
                 await asyncio.to_thread(
                     advance, plugin_id, injection_key, "turn_complete",
-                    obligation_id=obligation_id)
+                    obligation_id=obligation_id,
+                    owner_home=(event.metadata or {}).get("plugin_injection_owner_home"))
             await asyncio.to_thread(mark_attempting, obligation_id)
             return obligation_id
         except Exception:
@@ -4484,7 +4485,8 @@ class BasePlatformAdapter(ABC):
                     advance, plugin_id, injection_key,
                     "turn_complete" if getattr(event, "_heartbeat_execution_started", False) else "refused",
                     error=None if getattr(event, "_heartbeat_execution_started", False)
-                    else "turn did not start")
+                    else "turn did not start",
+                    owner_home=(event.metadata or {}).get("plugin_injection_owner_home"))
             # A muted diagnostic wake ran for the session; its reply is not presented. The
             # policy read binds the routed profile; delivery itself stays in the launch scope.
             with self._media_delivery_scope(event.source):
@@ -4567,7 +4569,8 @@ class BasePlatformAdapter(ABC):
                 from gateway.plugin_injection_ledger import advance
                 await asyncio.to_thread(
                     advance, event.metadata["hermes_plugin_id"],
-                    event.metadata["plugin_injection_key"], "cancelled")
+                    event.metadata["plugin_injection_key"], "cancelled",
+                    owner_home=event.metadata.get("plugin_injection_owner_home"))
             expected = asyncio.current_task() in self._expected_cancelled_tasks
             await self._run_processing_hook(
                 "on_processing_complete", event,
@@ -4578,7 +4581,8 @@ class BasePlatformAdapter(ABC):
                 from gateway.plugin_injection_ledger import advance
                 await asyncio.to_thread(
                     advance, event.metadata["hermes_plugin_id"],
-                    event.metadata["plugin_injection_key"], "turn_failed", error=type(e).__name__)
+                    event.metadata["plugin_injection_key"], "turn_failed", error=type(e).__name__,
+                    owner_home=event.metadata.get("plugin_injection_owner_home"))
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
             _thread_metadata = (await self._notify_turn_error(event, e)) or _thread_metadata

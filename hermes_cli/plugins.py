@@ -667,7 +667,7 @@ class PluginContext:
             return None
         try:
             from gateway.plugin_injection_ledger import state
-            return state(self.plugin_id, idempotency_key)
+            return state(self.plugin_id, idempotency_key, owner_home=self._manager.scope_key)
         except Exception:
             logger.warning("injection_status: status lookup failed for plugin %s", self.plugin_id,
                            exc_info=True)
@@ -1319,7 +1319,11 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
     def inject_gateway_message(self, **kwargs: Any) -> bool:
         """Submit a plugin-triggered turn to the live gateway."""
         registered = self._gateway_message_injector
-        return registered is not None and bool(registered[1](**kwargs))
+        if registered is None:
+            return False
+        if "plugin_id" in kwargs:
+            kwargs["owner_home"] = self.scope_key
+        return bool(registered[1](**kwargs))
 
     def send_gateway_notice(self, **kwargs: Any) -> bool:
         """Submit a session-bound post-turn notice to the live gateway owner."""
@@ -1327,7 +1331,10 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         if registered is None:
             return False
         scheduler = getattr(registered[0], "_schedule_plugin_session_notice", None)
-        return callable(scheduler) and bool(scheduler(**kwargs))
+        if not callable(scheduler):
+            return False
+        kwargs["owner_home"] = self.scope_key
+        return bool(scheduler(**kwargs))
 
     @property
     def has_tui_message_injector(self) -> bool:

@@ -949,3 +949,118 @@ def test_dead_notice_scheduler_reclaims_only_before_delivery_ledger(tmp_path, mo
                 notice_owner_started_at=1 WHERE idempotency_key='evt_notice_crash'
         """)
     assert claim() == "existing"  # ledger now owns recovery; never send twice
+
+@pytest.mark.asyncio
+async def test_keyed_injection_is_scoped_to_immutable_profile_manager_owner(tmp_path, monkeypatch):
+    """Two profile managers may reuse a plugin key across A→B→A and a restart."""
+    from dataclasses import replace
+    from gateway import plugin_injection_ledger as ledger
+
+    launch = tmp_path / "launch"
+    home_a, home_b = tmp_path / "profile-a", tmp_path / "profile-b"
+    for home in (launch, home_a, home_b):
+        home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    manager_a = PluginManager(scope_key=str(home_a))
+    manager_b = PluginManager(scope_key=str(home_b))
+    entry_a = _entry()
+    entry_b = replace(entry_a, session_key="agent:main:telegram:dm:43", session_id="session-43",
+                      origin=replace(entry_a.origin, chat_id="43", user_id="43"))
+    adapter_a, adapter_b = _RoutingAdapter(), _RoutingAdapter()
+    for adapter in (adapter_a, adapter_b):
+        adapter.send = AsyncMock(return_value=SendResult(success=True))
+        adapter.set_message_handler(AsyncMock(return_value=None))
+    runner_a, runner_b = _runner(entry_a, adapter_a), _runner(entry_b, adapter_b)
+    for runner in (runner_a, runner_b):
+        runner._gateway_loop = asyncio.get_running_loop()
+        runner._thread_metadata_for_source = MagicMock(return_value=None)
+    manager_a.set_gateway_message_injector(runner_a, runner_a._schedule_plugin_message_injection)
+    manager_b.set_gateway_message_injector(runner_b, runner_b._schedule_plugin_message_injection)
+    request_a = dict(session_key=entry_a.session_key, content="Question A",
+                     plugin_id="notify-plugin", idempotency_key="same-key", idle_only=True)
+    request_b = dict(session_key=entry_b.session_key, content="Question B",
+                     plugin_id="notify-plugin", idempotency_key="same-key", idle_only=True)
+
+    assert manager_a.inject_gateway_message(**request_a)
+    await asyncio.gather(*runner_a._background_tasks, return_exceptions=True)
+    assert manager_b.inject_gateway_message(**request_b)
+    await asyncio.gather(*runner_b._background_tasks, return_exceptions=True)
+    assert ledger.state("notify-plugin", "same-key", owner_home=manager_a.scope_key)["session_id"] == "session-42"
+    assert ledger.state("notify-plugin", "same-key", owner_home=manager_b.scope_key)["session_id"] == "session-43"
+    assert ledger.state("notify-plugin", "same-key") is None  # launch scope sees neither
+    context_a = PluginContext(PluginManifest(name="notify-plugin", key="notify-plugin", source="user"), manager_a)
+    context_b = PluginContext(PluginManifest(name="notify-plugin", key="notify-plugin", source="user"), manager_b)
+    with patch.object(PluginContext, "_gateway_injection_allowed", return_value=True):
+        assert context_a.injection_status("same-key")["session_id"] == "session-42"
+        assert context_b.injection_status("same-key")["session_id"] == "session-43"
+    state_a = ledger.state("notify-plugin", "same-key", owner_home=home_a)["state"]
+    ledger.advance("notify-plugin", "same-key", "turn_failed", owner_home=home_b)
+    assert ledger.state("notify-plugin", "same-key", owner_home=home_a)["state"] == state_a
+    assert manager_a.inject_gateway_message(**request_a)  # A replay after B, no second turn
+    assert not runner_a._background_tasks
+    assert ledger.bind_session("notify-plugin", "same-key", "session-99",
+                               owner_home=manager_a.scope_key) is False
+    assert ledger.state("notify-plugin", "same-key", owner_home=manager_b.scope_key)["session_id"] == "session-43"
+
+    # A restarted manager has the same immutable principal and sees its old row.
+    restarted_a = PluginManager(scope_key=str(home_a))
+    restarted_a.set_gateway_message_injector(runner_a, runner_a._schedule_plugin_message_injection)
+    assert restarted_a.inject_gateway_message(**request_a)
+    assert not runner_a._background_tasks
+    assert ledger.claim("notify-plugin", "deferred", entry_a.session_key, "retry",
+                        owner_home=manager_a.scope_key) == "new"
+    ledger.advance("notify-plugin", "deferred", "deferred", owner_home=manager_a.scope_key)
+    assert ledger.claim("notify-plugin", "deferred", entry_a.session_key, "retry",
+                        owner_home=restarted_a.scope_key) == "retry"
+    assert ledger.state("notify-plugin", "deferred", owner_home=manager_b.scope_key) is None
+
+
+def test_legacy_unscoped_injection_row_is_quarantined(tmp_path, monkeypatch):
+    import sqlite3
+    from gateway import plugin_injection_ledger as ledger
+
+    home = tmp_path / "launch"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    with sqlite3.connect(home / "state.db") as conn:
+        conn.execute("""CREATE TABLE plugin_injections (
+            plugin_id TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+            session_key TEXT NOT NULL, content_sha256 TEXT NOT NULL,
+            state TEXT NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL,
+            PRIMARY KEY (plugin_id, idempotency_key))""")
+        conn.execute("""INSERT INTO plugin_injections VALUES
+            ('notify-plugin', 'old-key', 'old-session', 'hash', 'dispatched', 1, 1)""")
+    assert ledger.state("notify-plugin", "old-key") is None
+    ledger.advance("notify-plugin", "old-key", "turn_complete")
+    with sqlite3.connect(home / "state.db") as conn:
+        assert conn.execute("SELECT state FROM plugin_injections_legacy").fetchone()[0] == "dispatched"
+    with pytest.raises(ValueError, match="unscoped legacy"):
+        ledger.claim("notify-plugin", "old-key", "new-session", "new request")
+
+
+def test_profile_scoped_notice_ids_and_updates_do_not_alias(tmp_path, monkeypatch):
+    from gateway import delivery_ledger as delivery
+    from gateway import plugin_injection_ledger as injection
+
+    launch, home_a, home_b = (tmp_path / name for name in ("launch", "a", "b"))
+    for home in (launch, home_a, home_b):
+        home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    managers = (PluginManager(scope_key=str(home_a)), PluginManager(scope_key=str(home_b)))
+    session_key = "agent:main:telegram:dm:42"
+    delivery.record_obligation(obligation_id="answer", session_key=session_key,
+                               platform="telegram", chat_id="42", thread_id=None, content="Answer")
+    delivery.mark_delivered("answer")
+    for manager in managers:
+        owner = manager.scope_key
+        assert injection.claim("notify-plugin", "same", session_key, "Question", owner_home=owner) == "new"
+        assert injection.bind_session("notify-plugin", "same", "session-42", owner_home=owner)
+        injection.advance("notify-plugin", "same", "turn_complete", obligation_id="answer", owner_home=owner)
+        assert injection.claim_notice("notify-plugin", "same", session_key, "Notice", owner_home=owner) == "new"
+    first, second = (injection.state("notify-plugin", "same", owner_home=m.scope_key) for m in managers)
+    assert first["notice_obligation_id"] != second["notice_obligation_id"]
+    injection.mark_notice("notify-plugin", "same", "deferred", owner_home=managers[0].scope_key)
+    assert injection.state("notify-plugin", "same", owner_home=managers[1].scope_key)["notice_state"] == "queued"
+    injection.release_notice_claim("notify-plugin", "same", owner_home=managers[1].scope_key)
+    assert injection.state("notify-plugin", "same", owner_home=managers[0].scope_key)["notice_state"] == "deferred"
+    assert injection.state("notify-plugin", "same", owner_home=managers[1].scope_key)["notice_state"] is None

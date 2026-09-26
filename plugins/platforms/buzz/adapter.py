@@ -531,6 +531,10 @@ class BuzzAdapter(BasePlatformAdapter):
         # Channel messages must @mention the agent unless disabled; DMs always dispatch.
         _rm_cfg = _setting_or("BUZZ_REQUIRE_MENTION", extra, "require_mention", True)
         self.require_mention = str(_rm_cfg).strip().lower() not in ("false", "0", "no", "off")
+        # Channels that answer without being addressed even while require_mention is on
+        # (parity with Discord's DISCORD_FREE_RESPONSE_CHANNELS). Env csv > extra list/csv; empty = none.
+        _free_raw = _split_csv(_setting_or("BUZZ_FREE_RESPONSE_CHANNELS", extra, "free_response_channels", []))
+        self._free_response_channels: set = {c.strip() for c in _free_raw if isinstance(c, str) and c.strip()}
         self._reply_to_mode: str = _reply_to_mode(config, extra)
         # Inbound transport: "auto" (WebSocket with poll fallback), "websocket" (required), "poll".
         _transport_raw = _scoped_platform_setting("BUZZ_TRANSPORT", extra, "transport")
@@ -1524,7 +1528,7 @@ class BuzzAdapter(BasePlatformAdapter):
         reply_to_is_own = bool(reply_meta is not None and reply_meta[0] == self._self_pubkey)
         # Channels dispatch only when addressed (@mention or p-tag) or replying to us (Signal/WhatsApp parity),
         # unless require_mention is off. DMs always dispatch.
-        if not is_dm and self.require_mention and not self._is_addressed(event) and not reply_to_is_own:
+        if not is_dm and self._mention_required(channel_id) and not self._is_addressed(event) and not reply_to_is_own:
             return
         # Adapter-level allow-list (gateway also applies it centrally); empty = no filter.
         if self._allowed_pubkeys and pubkey not in self._allowed_pubkeys:
@@ -1608,6 +1612,11 @@ class BuzzAdapter(BasePlatformAdapter):
         if self._display_name:
             patterns.append(rf"(?<![\w@])@{re.escape(self._display_name.lower())}" + r"(?=$|[\s,;.!?:)\]}])")
         return any(re.search(p, lowered) for p in patterns)
+
+    def _mention_required(self, channel_id: str) -> bool:
+        """Whether a channel message must address the agent to dispatch: ``require_mention`` applies unless the
+        channel is listed in ``free_response_channels`` (Discord ``DISCORD_FREE_RESPONSE_CHANNELS`` parity)."""
+        return self.require_mention and channel_id not in self._free_response_channels
 
     def _is_addressed(self, event: dict) -> bool:
         """True when a group event carries an explicit text or p-tag address."""
@@ -1867,6 +1876,7 @@ _YAML_BRIDGE = (  # (extra key, env var, kind) for apply_yaml_bridge
     ("home_channel", "BUZZ_HOME_CHANNEL", "str"), ("transport", "BUZZ_TRANSPORT", "str"),
     ("poll_interval", "BUZZ_POLL_INTERVAL", "str"),
     ("channels", "BUZZ_CHANNELS", "csv"), ("allowed_users", "BUZZ_ALLOWED_USERS", "csv"),
+    ("free_response_channels", "BUZZ_FREE_RESPONSE_CHANNELS", "csv"),
     ("reaction_only_users", "BUZZ_REACTION_ONLY_USERS", "csv"), ("allow_all_users", "BUZZ_ALLOW_ALL_USERS", "lower"),
     ("require_mention", "BUZZ_REQUIRE_MENTION", "lower"), ("reply_in_thread", "BUZZ_REPLY_IN_THREAD", "lower"),
     ("reply_to_mode", "BUZZ_REPLY_TO_MODE", "lower"),

@@ -1236,6 +1236,7 @@ Any service with an OpenAI-compatible API works. Some popular options:
 | Provider | Base URL | Notes |
 |----------|----------|-------|
 | [Together AI](https://together.ai) | `https://api.together.xyz/v1` | Cloud-hosted open models |
+| [CoreWeave Serverless Inference](https://docs.wandb.ai/inference) | `https://api.inference.wandb.ai/v1` | Formerly W&B Inference; see the [setup recipe](#coreweave-serverless-inference) |
 | [Groq](https://groq.com) | `https://api.groq.com/openai/v1` | Ultra-fast inference |
 | [DeepSeek](https://deepseek.com) | `https://api.deepseek.com/v1` | DeepSeek models |
 | [Fireworks AI](https://fireworks.ai) | `https://api.fireworks.ai/inference/v1` | Fast open model hosting |
@@ -1465,9 +1466,9 @@ You can also select named custom providers from the interactive `hermes model` m
 
 ---
 
-### Cookbook: Together AI, Groq, Perplexity
+### Cookbook: Together AI, CoreWeave, Groq, Perplexity {#cookbook-together-ai-groq-perplexity}
 
-The cloud providers listed in [Other Compatible Providers](#other-compatible-providers) all speak OpenAI's REST dialect, so they wire up the same way under the `providers:` dict. Three worked recipes follow. Each drops into `~/.hermes/config.yaml` and the matching API key goes in `~/.hermes/.env`.
+The cloud providers listed in [Other Compatible Providers](#other-compatible-providers) all speak OpenAI's REST dialect, so they wire up the same way under the `providers:` dict. Each recipe drops into `~/.hermes/config.yaml` and the matching API key goes in `~/.hermes/.env`.
 
 #### Together AI
 
@@ -1500,6 +1501,45 @@ Switch models mid-session:
 ```
 
 Together's `/v1/models` endpoint works, so `hermes model` can auto-discover available models.
+
+#### CoreWeave Serverless Inference
+
+[CoreWeave Serverless Inference](https://docs.wandb.ai/inference) (formerly W&B Inference) uses the W&B API endpoint and API keys. Configure it as a named custom provider:
+
+```yaml
+# ~/.hermes/config.yaml
+providers:
+  coreweave:
+    api: https://api.inference.wandb.ai/v1
+    key_env: WANDB_API_KEY
+    transport: chat_completions
+    # Optional: attribute usage to a W&B team/project.
+    # extra_headers:
+    #   OpenAI-Project: your-team/your-project
+
+model:
+  default: zai-org/GLM-5.3-Flash
+  provider: custom:coreweave
+```
+
+```bash
+# ~/.hermes/.env
+WANDB_API_KEY=your-wandb-api-key
+```
+
+Merge these entries into your existing config, then start a new session. Use a model ID from the [current model list](https://docs.wandb.ai/inference/models). `hermes model` can discover models from the endpoint's `/models` API. To switch within a session:
+
+```text
+/model custom:coreweave:zai-org/GLM-5.3-Flash
+```
+
+The `coreweave` name above is your saved endpoint's name; `custom:coreweave` selects that entry without installing a provider plugin. A `wandb` entry in models.dev supplies metadata but does not by itself register `provider: wandb` with Hermes's runtime.
+
+Keep the optional `OpenAI-Project` header under this provider's `extra_headers`, so it is scoped to the configured endpoint. See [per-provider request options](/user-guide/configuring-models#per-provider-request-options).
+
+:::note Auxiliary project attribution
+Use [v2026.9.21](https://github.com/NousResearch/hermes-agent/releases/tag/v2026.9.21) or later for auxiliary request headers. It includes [#113969](https://github.com/NousResearch/hermes-agent/pull/113969), which preserves named-provider headers for synchronous and asynchronous auxiliary clients; v2026.9.14 omitted them. Keep auxiliary requests on this provider's configured endpoint. To use a different endpoint, select a separate named provider with its own headers instead of overriding this entry's URL. Sending the project header is separate from verifying the resulting usage in your W&B project.
+:::
 
 #### Groq
 
@@ -1547,7 +1587,7 @@ Perplexity's Agent API (`api: https://api.perplexity.ai/v1` with `api_mode: code
 
 #### Multiple providers in one config
 
-The three recipes compose — use all of them together and switch per turn with `/model custom:<name>:<model>`:
+These recipes compose — combine providers and switch per turn with `/model custom:<name>:<model>`:
 
 ```yaml
 providers:

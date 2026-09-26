@@ -100,6 +100,11 @@ def transition(subject_id: str, broker_id: str, new_state: str, **fields) -> dic
         case["state"] = new_state
         for key, value in fields.items():
             case[key] = value
+        # human_task_reason describes the active parked state, not permanent case history.
+        # Do not surface caller-supplied or stale human-only metadata after the case enters
+        # any operational/non-human state.
+        if new_state != "human_task_queued":
+            case.pop("human_task_reason", None)
         stamp = now()
         case.setdefault("history", []).append({"at": stamp, "from": old, "to": new_state})
         ledger[broker_id] = case

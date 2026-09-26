@@ -35,11 +35,14 @@ def test_sessions_repair_that_fails_exits_nonzero(monkeypatch, capsys):
     (["archive"], ["archive", "--source", "cli", "--yes"]),
     (["prune", "--never-active", "--older-than", "not-a-duration"],
      ["prune", "--never-active", "--older-than", "2d", "--yes"]),
+    (["export", "exports", "--format", "md"], ["export", "exports", "--format", "md", "--older-than", "90"]),
+    (["export", "out.jsonl", "--session-id", "no-such-session"], ["export", "out.jsonl"]),
 ])
-def test_refused_bulk_action_exits_nonzero_where_the_valid_form_exits_zero(monkeypatch, refused, accepted):
+def test_refused_bulk_action_exits_nonzero_where_the_valid_form_exits_zero(monkeypatch, tmp_path, refused, accepted):
     from hermes_state import SessionDB
 
     SessionDB().close()
+    monkeypatch.chdir(tmp_path)
 
     assert _run_cli(monkeypatch, accepted) == 0
     assert _run_cli(monkeypatch, refused) != 0

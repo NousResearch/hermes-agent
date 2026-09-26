@@ -328,7 +328,7 @@ def _cmd_export(db, args):
             filters = build_prune_filters(args)
         except ValueError as e:
             print(f"Error: {e}")
-            return
+            return 1
         # A backup includes protected rows; prune's keep rules must not omit them.
         filters["archived"] = None
         filters["include_pinned"] = True
@@ -366,7 +366,8 @@ def _cmd_export(db, args):
         return False
 
     def _collect_sessions():
-        """--session-id / filters / bare export -> redacted session dicts, or None after printing an error."""
+        """--session-id / filters / bare export -> redacted session dicts, None after a dry-run preview,
+        or an exit code after printing an error."""
         def _one(session_id):
             return _redact(db.export_session(session_id, **projection))
         if args.session_id:
@@ -375,8 +376,7 @@ def _cmd_export(db, args):
                 return None
             data = _one(resolved) if resolved else None
             if not data:
-                _not_found(args.session_id)
-                return None
+                return _not_found(args.session_id)
             return [data]
         if filters:
             candidates = db.list_prune_candidates(**filters)
@@ -386,7 +386,8 @@ def _cmd_export(db, args):
                 return None
             return [s for s in (_one(row["id"]) for row in candidates) if s]
         if args.dry_run:
-            return print("--dry-run requires at least one filter.")
+            print("--dry-run requires at least one filter.")
+            return 1
         if _too_large():
             return None
         return [_redact(s) for s in db.export_all(source=None, **projection)]
@@ -435,8 +436,10 @@ def _export_flat(kind, args, collect):
     unusable, message, render = _FLAT_EXPORTERS[kind]
     if unusable(args):
         print(message)
-        return
+        return 1
     sessions = collect()
+    if isinstance(sessions, int):
+        return sessions
     if sessions is not None:
         from hermes_cli.session_export import default_save_filename
         name = (default_save_filename(sessions[0].get("id", ""), args.format) if len(sessions) == 1
@@ -454,13 +457,13 @@ def _export_trace(db, args, filters):
         session_id = rows[0].get("id") if rows else None
         if not session_id:
             print("No session found to export. Pass --session-id.")
-            return
+            return 1
     from agent.trace_upload import TraceRedactionError, build_trace_jsonl, upload_session_trace
     redact_trace = not getattr(args, "no_redact", False)
     if getattr(args, "upload", False):
         if not session_id:
             print("--upload exports one session: pass --session-id (or drop filters to use the most recent).")
-            return
+            return 1
         resolved = db.resolve_session_id(session_id)
         db.close()
         print(upload_session_trace(resolved, cwd="", redact=redact_trace, private=not getattr(args, "public", False)))
@@ -484,7 +487,7 @@ def _export_trace(db, args, filters):
             jsonl = _render_trace(ids[0])
             if not jsonl:
                 print(f"No transcript to export for session '{ids[0]}'.")
-                return
+                return 1
             args.output = _output_file_in_dir(args.output, f"{ids[0]}.trace.jsonl")
             _write_output(args.output, jsonl, f"Exported 1 session trace to {args.output}")
         else:
@@ -499,6 +502,7 @@ def _export_trace(db, args, filters):
             print(f"Exported {exported} session trace(s) to {out_dir}")
     except TraceRedactionError:
         print("Redaction failed; refusing to export unredacted trace content.")
+        return 1
 
 
 def _export_markdown(db, args, filters, redact):
@@ -506,7 +510,7 @@ def _export_markdown(db, args, filters, redact):
     from hermes_cli.session_export_md import append_manifest_entry, write_session_markdown
     if args.output == "-":
         print("Markdown/QMD export writes files; stdout (-) is only supported with --format jsonl.")
-        return
+        return 1
     output_dir = _export_dir(args.output)
 
     def _export_one(session_id: str, *, include_lineage: bool = False):
@@ -526,17 +530,17 @@ def _export_markdown(db, args, filters, redact):
         return data, path, snapshots
     if args.delete_after_verified and not args.yes:
         print("--delete-after-verified requires --yes.")
-        return
+        return 1
     if args.delete_after_verified and not args.session_id:
         print("--delete-after-verified is only supported with --session-id.")
-        return
+        return 1
     lineage_is_logical = getattr(args, "lineage", "single") == "logical"
     if args.session_id:
         return _export_markdown_single(db, args, _export_one, output_dir, lineage_is_logical)
     if not filters:
         print("Refusing bulk export without a filter. Pass --session-id or "
               "at least one filter (e.g. --older-than 90, --source telegram).")
-        return
+        return 1
     candidates = db.list_prune_candidates(**filters)
     if args.dry_run:
         return _print_dry_run_preview(candidates, filters)
@@ -567,10 +571,10 @@ def _export_markdown_single(db, args, export_one, output_dir, lineage_is_logical
             )
         except FileExistsError as e:
             print(f"Export already exists: {e}. Pass --force to overwrite.")
-            return
+            return 1
         if not data or not exported_path:
             print(f"Session '{target_id}' disappeared during export; nothing was deleted.")
-            return
+            return 1
         exported_items.append((data, exported_path, snapshots))
     message_count = sum(len(data.get("messages") or []) for data, _path, _ in exported_items)
     n = len(exported_items)
@@ -585,7 +589,7 @@ def _export_markdown_single(db, args, export_one, output_dir, lineage_is_logical
         ok, reason = verify_export_file(exported_path, data)
         if not ok:
             print(f"Export verification failed; not deleting session '{data.get('id')}': {reason}")
-            return
+            return 1
         expected_messages.update(snapshots)
     try:
         if not db.delete_session(
@@ -594,10 +598,10 @@ def _export_markdown_single(db, args, export_one, output_dir, lineage_is_logical
         ):
             print(f"Exported, but session '{resolved_session_id}' was not deleted because its history or delegate set "
                   "changed after export.")
-            return
+            return 1
     except SessionActiveWriteGuardError as exc:
         print(f"Exported, but not deleted: {exc}")
-        return
+        return 1
     delegates = len(delete_target_ids) - 1
     delegate_suffix = f" and {delegates} delegate session{'' if delegates == 1 else 's'}" if delegates else ""
     print(f"Deleted exported session '{resolved_session_id}'{delegate_suffix}.")

@@ -17,6 +17,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+import uuid
 from collections import deque
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FuturesTimeout
@@ -259,6 +260,20 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
 
 class A2AAdapter(BasePlatformAdapter):
     """Inbound A2A server adapter."""
+
+    # Outbound A2A is one SSE stream per task, so every frame can be written straight into it:
+    # declare native streaming and let the gateway's stream consumer hand each interim frame to
+    # send_stream_frame. Editing is off because this adapter has no edit_message (the edit
+    # transport could never work here). Contract + resolution order live in
+    # gateway/stream_consumer_transport.py -> _resolve_native_streaming / _native_push.
+    SUPPORTS_MESSAGE_EDITING = False
+    SUPPORTS_NATIVE_STREAMING = True
+
+    # Live outbound streams: context_id -> {handler, task_id, artifact_id, req_id}.
+    # send_stream_frame runs on the gateway event loop while keepalive writes the same wfile
+    # from an HTTP worker thread -- see the lock in _sse_write.
+    _live_streams: Dict[str, dict] = {}
+    _sse_write_lock = threading.Lock()
 
     def __init__(self, config, **kwargs):
         super().__init__(config=config, platform=Platform("a2a"))
@@ -569,7 +584,9 @@ class A2AAdapter(BasePlatformAdapter):
             finally:
                 self._pop_pending(task_id)
         self.tasks.set_state(task_id, protocol.STATE_WORKING)
-        return None, {"task_id": task_id, "context_id": context_id, "peer": peer, "future": fut, "created_iso": rec["created_iso"], "started": time.time()}
+        return None, {"task_id": task_id, "context_id": context_id, "peer": peer, "future": fut,
+                      "artifact_id": uuid.uuid4().hex,
+                      "created_iso": rec["created_iso"], "started": time.time()}
 
     def _forward_to_profile(self, agent: dict, peer: str, context_id: str, framed_text: str) -> tuple[str, str]:
         """Forward a routed task to another local profile via ``hermes chat``. First contact creates a
@@ -677,18 +694,24 @@ class A2AAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _sse_write(handler, chunk: str) -> None:
-        handler.wfile.write(chunk.encode("utf-8"))
-        handler.wfile.flush()
+        # Serialised: keepalive writes from an HTTP worker thread, stream frames write from the
+        # gateway event loop. Interleaved writes would corrupt the SSE framing.
+        with A2AAdapter._sse_write_lock:
+            handler.wfile.write(chunk.encode("utf-8"))
+            handler.wfile.flush()
 
     @classmethod
     def _keepalive(cls, handler):
         return lambda: cls._sse_write(handler, ": keepalive\n\n")
 
-    def _emit_terminal(self, handler, task_id: str, context_id: str, state: str, reply: str, req_id: Any = None) -> None:
+    def _emit_terminal(self, handler, task_id: str, context_id: str, state: str, reply: str,
+                       req_id: Any = None, artifact_id: Optional[str] = None) -> None:
         """Emit the final artifact/status events and the closure marker. ``req_id`` threads into the
-        JSON-RPC SSE envelope (§9.4)."""
+        JSON-RPC SSE envelope (§9.4).  ``artifact_id`` reuses the id the progressive frames used so
+        the terminal REPLACES the last streamed frame instead of adding a second artifact (two
+        artifacts would make the receiver concatenate the whole reply twice)."""
         completed = bool(reply) and state == protocol.STATE_COMPLETED
-        events = ([protocol.artifact_update(task_id, context_id, reply)] if completed else []) + [
+        events = ([protocol.artifact_update(task_id, context_id, reply, artifact_id=artifact_id)] if completed else []) + [
             protocol.status_update(task_id, context_id, state, "" if completed else reply)]
         for ev in events:
             self._sse_write(handler, protocol.sse_data(ev, req_id))
@@ -708,9 +731,19 @@ class A2AAdapter(BasePlatformAdapter):
             submitted = protocol.build_task(task_id, context_id, protocol.STATE_SUBMITTED, created_at=pending["created_iso"])
             self._sse_write(handler, protocol.sse_data(protocol.stream_task(submitted), req_id))
             self._sse_write(handler, protocol.sse_data(protocol.status_update(task_id, context_id, protocol.STATE_WORKING), req_id))
-            state, reply = self._finalize_task(pending, *self._await_reply(pending, keepalive=self._keepalive(handler)))
-            pending = None
-            self._emit_terminal(handler, task_id, context_id, state, reply, req_id=req_id)
+            # Register the stream BEFORE waiting: the gateway's stream consumer hands each interim
+            # frame to send_stream_frame, which needs somewhere to write. That is what turns the
+            # reply into a growing artifact instead of one artifact at the very end.
+            artifact_id = pending.get("artifact_id") or uuid.uuid4().hex
+            self._live_streams[context_id] = {"handler": handler, "task_id": task_id,
+                                              "artifact_id": artifact_id, "req_id": req_id}
+            try:
+                state, reply = self._finalize_task(pending, *self._await_reply(pending, keepalive=self._keepalive(handler)))
+                pending = None
+                self._emit_terminal(handler, task_id, context_id, state, reply, req_id=req_id,
+                                    artifact_id=artifact_id)
+            finally:
+                self._live_streams.pop(context_id, None)
         except (BrokenPipeError, ConnectionResetError):
             if pending is not None:
                 self._finalize_task(pending, protocol.STATE_FAILED, "[client disconnected]")
@@ -837,6 +870,40 @@ class A2AAdapter(BasePlatformAdapter):
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         return None
+
+    def supports_native_streaming(self, *, chat_type: Optional[str] = None,
+                                  metadata: Optional[Dict[str, Any]] = None) -> bool:
+        """Native streaming holds for every A2A context: each task owns its own SSE stream."""
+        del chat_type, metadata
+        return True
+
+    async def send_stream_frame(self, text: str, *, finalize: bool = False,
+                                chat_id: Optional[str] = None,
+                                reply_to: Optional[str] = None, **kwargs) -> bool:
+        """Write one progressive frame of a running task into its live SSE stream.
+
+        ``text`` is the CUMULATIVE reply so far (the gateway's contract -- the same as WeCom's
+        send_stream_frame). Returns False when there is no live stream to write to, so the caller
+        falls back to the ordinary send() path (see _native_push).
+
+        Completing the task is deliberately NOT done here. Declaring native streaming means the
+        notify-bearing send() never fires for a streamed turn, but the gateway still calls
+        on_processing_complete, which resolves the pending future with
+        event._streamed_final_response -- so the terminal artifactUpdate emitted by _emit_terminal
+        carries the authoritative text, and the artifact id above makes it replace the last
+        progressive frame rather than adding a second copy of the reply.
+        """
+        del reply_to, kwargs
+        context_id = str(chat_id or "")
+        live = self._live_streams.get(context_id) if context_id else None
+        if live is None:
+            logger.debug("A2A: no live stream for context %s (finalize=%s)", context_id, finalize)
+            return False
+        if text:
+            self._sse_write(live["handler"], protocol.sse_data(
+                protocol.artifact_update(live["task_id"], context_id, text,
+                                         artifact_id=live["artifact_id"]), live.get("req_id")))
+        return True
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": f"a2a:{chat_id}", "type": "dm"}

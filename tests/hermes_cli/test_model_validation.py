@@ -66,7 +66,7 @@ class TestNormalizeProvider:
         assert normalize_provider("glm") == "zai"
         assert normalize_provider("kimi") == "kimi-coding"
         assert normalize_provider("moonshot") == "kimi-coding"
-        assert normalize_provider("step") == "stepfun"
+        assert normalize_provider("step") == "stepfun-plan"
         assert normalize_provider("github-copilot") == "copilot"
 
 

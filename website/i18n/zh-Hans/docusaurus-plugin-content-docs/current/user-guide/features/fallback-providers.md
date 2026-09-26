@@ -61,7 +61,8 @@ fallback_model:
 | DeepSeek | `deepseek` | `DEEPSEEK_API_KEY` |
 | NVIDIA NIM | `nvidia` | `NVIDIA_API_KEY`（可选：`NVIDIA_BASE_URL`） |
 | GMI Cloud | `gmi` | `GMI_API_KEY`（可选：`GMI_BASE_URL`） |
-| StepFun | `stepfun` | `STEPFUN_API_KEY`（可选：`STEPFUN_BASE_URL`） |
+| StepFun | `stepfun`、`stepfun-plan` | `STEPFUN_API_KEY`（可选：`STEPFUN_BASE_URL`、`STEPFUN_STEP_PLAN_BASE_URL`） |
+| StepFun（国内） | `stepfun-cn`、`stepfun-plan-cn` | `STEPFUN_CN_API_KEY`（可选：`STEPFUN_CN_BASE_URL`、`STEPFUN_CN_STEP_PLAN_BASE_URL`） |
 | Ollama Cloud | `ollama-cloud` | `OLLAMA_API_KEY` |
 | Google AI Studio | `gemini` | `GOOGLE_API_KEY`（别名：`GEMINI_API_KEY`） |
 | xAI（Grok） | `xai`（别名 `grok`） | `XAI_API_KEY`（可选：`XAI_BASE_URL`） |
@@ -78,7 +79,8 @@ fallback_model:
 | Alibaba / DashScope | `alibaba` | `DASHSCOPE_API_KEY` |
 | Alibaba Coding Plan | `alibaba-coding-plan` | `ALIBABA_CODING_PLAN_API_KEY`（回退到 `DASHSCOPE_API_KEY`） |
 | Kimi / Moonshot（中国） | `kimi-coding-cn` | `KIMI_CN_API_KEY` |
-| StepFun | `stepfun` | `STEPFUN_API_KEY` |
+| StepFun | `stepfun`、`stepfun-plan` | `STEPFUN_API_KEY` |
+| StepFun（国内） | `stepfun-cn`、`stepfun-plan-cn` | `STEPFUN_CN_API_KEY` |
 | Tencent TokenHub | `tencent-tokenhub` | `TOKENHUB_API_KEY` |
 | Microsoft Foundry | `azure-foundry` | `AZURE_FOUNDRY_API_KEY` + `AZURE_FOUNDRY_BASE_URL` |
 | LM Studio（本地） | `lmstudio` | `LM_API_KEY`（本地可不填）+ `LM_BASE_URL` |

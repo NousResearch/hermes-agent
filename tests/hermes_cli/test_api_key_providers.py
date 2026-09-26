@@ -12,6 +12,7 @@ from hermes_cli.auth import (
     AuthError,
     KIMI_CODE_BASE_URL,
     STEPFUN_STEP_PLAN_INTL_BASE_URL,
+    STEPFUN_STD_INTL_BASE_URL,
     _resolve_kimi_base_url,
 )
 from hermes_cli.copilot_auth import _try_gh_cli_token
@@ -71,7 +72,7 @@ class TestResolveProvider:
         assert resolve_provider("moonshot") == "kimi-coding"
 
     def test_alias_step(self):
-        assert resolve_provider("step") == "stepfun"
+        assert resolve_provider("step") == "stepfun-plan"
 
     def test_alias_minimax_underscore(self):
         assert resolve_provider("minimax_cn") == "minimax-cn"
@@ -224,7 +225,23 @@ class TestResolveApiKeyProviderCredentials:
         creds = resolve_api_key_provider_credentials("stepfun")
         assert creds["provider"] == "stepfun"
         assert creds["api_key"] == "stepfun-secret-key"
-        assert creds["base_url"] == STEPFUN_STEP_PLAN_INTL_BASE_URL
+        assert creds["base_url"] == STEPFUN_STD_INTL_BASE_URL
+
+        plan = resolve_api_key_provider_credentials("stepfun-plan")
+        assert plan["api_key"] == "stepfun-secret-key"
+        assert plan["base_url"] == STEPFUN_STEP_PLAN_INTL_BASE_URL
+
+    def test_resolve_stepfun_cn_needs_the_china_key(self, monkeypatch):
+        """A China id must not authenticate with the international key — it would 401."""
+        monkeypatch.setenv("STEPFUN_API_KEY", "intl-key")
+        monkeypatch.delenv("STEPFUN_CN_API_KEY", raising=False)
+        # Same posture as minimax-cn: no key resolves to empty, never to the other region's key.
+        assert resolve_api_key_provider_credentials("stepfun-cn")["api_key"] == ""
+
+        monkeypatch.setenv("STEPFUN_CN_API_KEY", "china-key")
+        creds = resolve_api_key_provider_credentials("stepfun-cn")
+        assert creds["api_key"] == "china-key"
+        assert creds["base_url"] == "https://api.stepfun.com/v1"
 
 
 # =============================================================================

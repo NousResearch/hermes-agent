@@ -2280,6 +2280,17 @@ def _summary_text(agent, response, **normalize_kwargs) -> str:
         return ""
     normalized = agent._get_transport().normalize_response(response, **normalize_kwargs)
     if normalized.tool_calls:
+        # A kanban worker answers the summary request the way its guidance tells it to end a turn:
+        # with a terminal board call. Its answer is that call's hand-off text; discarding it left
+        # the "couldn't generate a summary" fallback instead. A fork turn (background review, side
+        # question) inherits the worker's task but is not the worker, so it keeps the discard.
+        from agent.delegation_context import owned_kanban_task
+        from agent.kanban_stop import terminal_handoff_text
+
+        if owned_kanban_task() and not getattr(agent, "_turn_origin", None):
+            handoff = terminal_handoff_text(normalized.tool_calls)
+            if handoff:
+                return handoff
         # No summary path executes tool calls; log so a tool-only response that falls into the
         # empty-summary retry is diagnosable.
         logger.warning("Iteration summary emitted tool calls; discarding them")

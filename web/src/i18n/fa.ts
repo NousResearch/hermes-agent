@@ -556,6 +556,8 @@ export const fa = defineLocale({
       "~/projects/some-sdk  (با read_file / search_files خوانده می‌شود)",
     hubSearchPlaceholder: "جستجوی مرکز مهارت‌ها (GitHub، رسمی، جامعه)…",
     connectingHubs: "در حال اتصال به مرکزهای مهارت…",
+    editAria: "ویرایش {name}",
+    openAria: "باز کردن {name}",
     hubDirLabel: "فایل یا پوشهٔ محلی",
     hubBrowseEmpty:
       "برای مرور مهارت‌های قابل نصب از منابع متصل، در مرکز بالا جستجو کنید.",
@@ -1321,6 +1323,15 @@ export const fa = defineLocale({
       "اطلاعات سیستم و گزارش‌ها را در یک سرویس پیست عمومی بارگذاری می‌کند و پیوندهایی برای ارسال به تیم هرمس برمی‌گرداند. پیست‌ها پس از ۶ ساعت خودکار حذف می‌شوند.",
     shareUploadFailures: "برخی گزارش‌ها بارگذاری نشدند: {errors}",
     noHooksConfigured: "هیچ هوک پوسته‌ای پیکربندی نشده است.",
+    actionRunning: "در حال اجرا",
+    actionDone: "انجام شد",
+    actionExit: "کد خروج {code}",
+    logStarting: "در حال شروع…",
+    memoryStatusReady: "آماده",
+    memoryStatusNeedsConfig: "نیازمند پیکربندی",
+    memoryStatusUnavailable: "در دسترس نیست",
+    memoryStatusMissing: "نصب نشده",
+    copyLinkAria: "کپی پیوند {name}",
   },
 
   mcp: {

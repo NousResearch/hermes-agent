@@ -33,8 +33,13 @@ def delegated_child_context(session_id: str | None = None) -> Iterator[None]:
     token = _DELEGATED_CHILD_CONTEXT.set(True)
     try:
         from gateway.session_context import scoped_current_session_id  # lazy: it calls is_delegated_child_context()
+        # Lazy (relay_runtime is heavy and would risk an import cycle at module load).
+        # The child inherited the parent's mid-callback relay markers via copy_context();
+        # reset them so its own LLM/tool calls are Relay-managed and reach the ATOF log
+        # rather than being treated as nested execution and bypassing Relay.
+        from agent.relay_runtime import new_execution_root
 
-        with scoped_current_session_id(session_id):
+        with new_execution_root(), scoped_current_session_id(session_id):
             yield
     finally:
         _DELEGATED_CHILD_CONTEXT.reset(token)

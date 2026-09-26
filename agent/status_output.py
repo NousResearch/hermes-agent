@@ -126,17 +126,26 @@ class StatusOutputMixin:
 
         When compression is explicitly disabled (compression.enabled: false), long sessions can grow past
         the model context window with no compression to shrink them (#89297). Surface an actionable warning
-        so the user knows to run /compact or enable compression.
+        so the user knows to run /compact or enable compression. When the flag was flipped off after init
+        by an embedding host (config still enabled), the copy must stay neutral instead (#123500).
         """
         _warn_key = ("uncompressed_ctx_overflow", context_length)
         if getattr(self, "_last_ctx_overflow_warn", None) != _warn_key:
             self._last_ctx_overflow_warn = _warn_key
-            self._emit_warning(
-                f"⚠️ Session context (~{preflight_tokens:,} tokens) exceeds the model "
-                f"context window (~{context_length:,} tokens) with compression disabled "
-                f"(compression.enabled: false). Use /compact to compress history or "
-                f"enable compression in config.yaml."
-            )
+            if getattr(self, "compression_enabled_from_config", None) is False:
+                self._emit_warning(
+                    f"⚠️ Session context (~{preflight_tokens:,} tokens) exceeds the model "
+                    f"context window (~{context_length:,} tokens) with compression disabled "
+                    f"(compression.enabled: false). Use /compact to compress history or "
+                    f"enable compression in config.yaml."
+                )
+            else:
+                self._emit_warning(
+                    f"⚠️ Session context (~{preflight_tokens:,} tokens) exceeds the model "
+                    f"context window (~{context_length:,} tokens) with auto-compression "
+                    f"disabled for this session. Start a new session, or compress history "
+                    f"from the application hosting this session."
+                )
 
     def _clear_context_overflow_warn(self) -> None:
         """Reset the blocked-overflow warning dedup so it can re-fire on the next blocked turn."""

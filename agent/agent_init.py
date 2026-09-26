@@ -1994,7 +1994,11 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
     if callable(_bind_session_state):
         with suppress(Exception):
             _bind_session_state(session_db=session_db, session_id=agent.session_id)
+    # Snapshot what config said at init: compression_enabled has a second writer
+    # (embedding hosts set it programmatically after constructing the agent), and the
+    # uncompressed-overflow copy must not blame config.yaml for a flip it did not make.
     agent.compression_enabled = cs.enabled
+    agent.compression_enabled_from_config = cs.enabled
     agent.compression_in_place = cs.in_place
     _cc = agent.context_compressor
     # Micro-compaction has no pre-compress checkpoint hook; suppress it while the gate is

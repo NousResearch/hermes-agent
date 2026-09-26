@@ -161,6 +161,22 @@ def _get_service_pids(all_profiles: bool = False) -> set:
                             **_CAPTURE_TEXT,
                         )
                         pid = int(show.stdout.strip())
+                        # System-manager scope crosses user boundaries: on a shared host, another
+                        # user's (or root's) hermes-gateway unit is not OUR running gateway, and
+                        # counting it made ``gateway status``/``cron status`` report "running"
+                        # (#105719). Scope its MainPID to the invoking uid. The ``--user`` manager
+                        # is per-user by construction, and ``all_profiles=True`` stays over-inclusive
+                        # on purpose — those PIDs are only ever protected from the kill sweep
+                        # (#41403, #73626), never targeted.
+                        if (
+                            pid > 0
+                            and not all_profiles
+                            and "--user" not in scope_args
+                        ):
+                            my_uid = _invoking_uid()
+                            owner = _proc_owner_uid(pid)
+                            if my_uid is not None and (owner is None or owner != my_uid):
+                                continue
                         if pid > 0:
                             pids.add(pid)
                     except (ValueError, subprocess.TimeoutExpired):
@@ -545,6 +561,24 @@ def _append_unique_pid(pids: list[int], pid: int | None, exclude_pids: set[int])
         pids.append(pid)
 
 
+def _invoking_uid() -> int | None:
+    """Invoking user's uid on POSIX; None where uid scoping does not apply (Windows)."""
+    if is_windows():
+        return None
+    try:
+        return os.geteuid()
+    except AttributeError:  # pragma: no cover — POSIX always provides geteuid
+        return None
+
+
+def _proc_owner_uid(pid: int) -> int | None:
+    """Owner uid of a live process via ``/proc`` stat; None when unavailable (macOS/BSD, dead pid)."""
+    try:
+        return os.stat(f"/proc/{pid}").st_uid
+    except OSError:
+        return None
+
+
 def _iter_proc_cmdlines(exclude_pids: set[int]):
     """Yield ``(pid, cmdline)`` from ``/proc`` (Docker without procps); raises if /proc is unusable."""
     my_pid = os.getpid()
@@ -562,10 +596,38 @@ def _iter_proc_cmdlines(exclude_pids: set[int]):
         yield pid, cmdline.replace("\x00", " ")
 
 
+def _parse_ps_uid_line(line: str) -> tuple[int, int | None, str] | None:
+    """``(pid, uid, command)`` from one ``ps -o pid=,uid=,command=`` line; uid None when unparseable."""
+    stripped = line.strip()
+    if not stripped or "grep" in stripped:
+        return None
+    parts = stripped.split(None, 2)
+    if len(parts) < 2:
+        return None
+    try:
+        pid = int(parts[0])
+    except ValueError:
+        return None
+    try:
+        uid: int | None = int(parts[1])
+    except ValueError:
+        uid = None
+    command = parts[2] if len(parts) > 2 else ""
+    return pid, uid, command or None
+
+
 def _scan_gateway_pids(
     exclude_pids: set[int], all_profiles: bool = False, include_restart_managers: bool = False
 ) -> list[int]:
-    """Best-effort process-table scan for gateway PIDs (backs up a stale/missing PID file; ``--all`` sweeps)."""
+    """Best-effort process-table scan for gateway PIDs (backs up a stale/missing PID file; ``--all`` sweeps).
+
+    POSIX scoped to the invoking uid (upstream #105719): a ``gateway run`` command line is not proof of
+    ownership — every user on a shared host runs the same argv, and the pre-fix scan let ``hermes
+    gateway status``/``hermes cron status`` count (and ``gateway stop``/uninstall SIGTERM) other users'
+    gateways. An indeterminate owner (``/proc`` unreadable, ps without a ``uid=`` column) keeps the
+    legacy include rather than blinding the health check; every normally-visible foreign process is
+    filtered. Windows has no uid analog here (per-session process model) and is unchanged.
+    """
     # Exclude the entire ancestor chain so the CLI process that invoked this scan (e.g. ``hermes gateway
     # status``) is never mistaken for a running gateway. See #13242.
     exclude_pids = exclude_pids | _get_ancestor_pids()
@@ -605,7 +667,19 @@ def _scan_gateway_pids(
         return (not hermes_home_assignments(command_lc)
                 or command_line_names_hermes_home(command_lc, current_home_lc))
 
-    def _consider(pid: int, command: str) -> None:
+    my_uid = _invoking_uid()
+
+    def _owned_by_invoking_user(pid: int, owner_uid: int | None = None) -> bool:
+        """Shared-host scoping (#105719): only count processes owned by the invoking uid. An
+        indeterminate owner keeps the legacy include — see the ``_scan_gateway_pids`` docstring."""
+        if my_uid is None:
+            return True
+        owner = owner_uid if owner_uid is not None else _proc_owner_uid(pid)
+        return owner is None or owner == my_uid
+
+    def _consider(pid: int, command: str, owner_uid: int | None = None) -> None:
+        if not _owned_by_invoking_user(pid, owner_uid):
+            return
         matches_runtime = looks_like_gateway_command_line(command) or (
             include_restart_managers and looks_like_gateway_runtime_command_line(command)
         )
@@ -632,13 +706,24 @@ def _scan_gateway_pids(
 
             if not _found_via_proc:
                 # ``-Aww`` not ``-A eww``: BSD/macOS ps rejects ``e``; ``-ww`` = unlimited width.
-                result = subprocess.run(["ps", "-Aww", "-o", "pid=,command="], timeout=10, **_CAPTURE_TEXT)
+                # ``uid=`` carries the owner so the invoking-uid scope works where /proc does not
+                # exist (macOS/BSD). If a ps variant rejects the uid column, fall back to the
+                # legacy two-column format (indeterminate owner -> legacy include).
+                result = subprocess.run(["ps", "-Aww", "-o", "pid=,uid=,command="], timeout=10, **_CAPTURE_TEXT)
                 if result.returncode != 0:
-                    return []
-                for line in result.stdout.split("\n"):
-                    parsed = _parse_ps_line(line)
-                    if parsed is not None:
-                        _consider(*parsed)
+                    result = subprocess.run(["ps", "-Aww", "-o", "pid=,command="], timeout=10, **_CAPTURE_TEXT)
+                    if result.returncode != 0:
+                        return []
+                    for line in result.stdout.split("\n"):
+                        parsed = _parse_ps_line(line)
+                        if parsed is not None:
+                            _consider(*parsed)
+                else:
+                    for line in result.stdout.split("\n"):
+                        parsed = _parse_ps_uid_line(line)
+                        if parsed is not None:
+                            pid, uid, command = parsed
+                            _consider(pid, command, owner_uid=uid)
     except (OSError, subprocess.TimeoutExpired):
         return []
 

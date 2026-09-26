@@ -262,3 +262,248 @@ class TestGetServicePidsAllProfiles:
             pids = gateway_mod._get_service_pids(all_profiles=True)
 
         assert pids == {123}
+
+
+# ---------------------------------------------------------------------------
+# Shared-host user scoping (upstream #105719): the scan must not count other
+# users' gateways. See ``_scan_gateway_pids`` / ``_get_service_pids``.
+# ---------------------------------------------------------------------------
+
+_FOREIGN_UID = 19999
+
+
+def _stat_with_proc_owners(owners: dict[int, int]):
+    """os.stat side_effect: faked ``/proc/<pid>`` dir owners, real stat otherwise."""
+
+    def _stat(path, *args, **kwargs):
+        path_str = str(path)
+        marker = "/proc/"
+        if path_str.startswith(marker) and path_str[len(marker):].isdigit():
+            pid = int(path_str[len(marker):])
+            if pid in owners:
+                result = os.stat_result(
+                    (0o40755, 123, 456, 1, owners[pid], owners[pid], 0, 0, 0, 0)
+                )
+                return result
+        return _real_stat(path, *args, **kwargs)
+
+    return _stat
+
+
+_real_stat = os.stat
+
+
+@pytest.mark.linux_only
+class TestScanUserScoping:
+    """_scan_gateway_pids only reports gateways owned by the invoking uid (#105719)."""
+
+    def test_proc_scan_filters_other_users_gateway(self):
+        my_uid = os.geteuid()
+        my_pid = 12345
+        foreign_pid = 22222
+        _isdir, _listdir, _open = _fake_proc_dir({
+            my_pid: _GATEWAY_CMD,
+            foreign_pid: _GATEWAY_CMD,  # same argv, different user
+        })
+
+        with (
+            patch("os.path.isdir", side_effect=_isdir),
+            patch("os.listdir", side_effect=_listdir),
+            patch("builtins.open", side_effect=_open),
+            patch("os.stat", side_effect=_stat_with_proc_owners({
+                my_pid: my_uid, foreign_pid: _FOREIGN_UID,
+            })),
+            patch("hermes_cli.gateway._get_ancestor_pids", return_value=set()),
+            patch("subprocess.run") as mock_ps,
+        ):
+            pids = gateway_mod._scan_gateway_pids(set(), all_profiles=True)
+
+        assert pids == [my_pid]
+        mock_ps.assert_not_called()
+
+    def test_ps_fallback_filters_other_users_gateway(self):
+        my_uid = os.geteuid()
+        rows = (
+            f"  {12345}  {my_uid} {_GATEWAY_CMD}\n"
+            f"  {22222}  {_FOREIGN_UID} {_GATEWAY_CMD}\n"
+        )
+
+        def _run_side_effect(args, **kwargs):
+            assert args[:2] == ["ps", "-Aww"]
+            return MagicMock(returncode=0, stdout=rows, stderr="")
+
+        with (
+            patch("os.path.isdir", return_value=False),
+            patch("subprocess.run", side_effect=_run_side_effect),
+            patch("hermes_cli.gateway._get_ancestor_pids", return_value=set()),
+        ):
+            pids = gateway_mod._scan_gateway_pids(set(), all_profiles=True)
+
+        assert pids == [12345]
+
+    def test_ps_fallback_first_call_uses_uid_column(self):
+        """The invoking-uid scope needs the owner even where /proc does not exist (macOS/BSD)."""
+        calls: list[list[str]] = []
+
+        def _run_side_effect(args, **kwargs):
+            calls.append(list(args))
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with (
+            patch("os.path.isdir", return_value=False),
+            patch("subprocess.run", side_effect=_run_side_effect),
+            patch("hermes_cli.gateway._get_ancestor_pids", return_value=set()),
+        ):
+            assert gateway_mod._scan_gateway_pids(set()) == []
+
+        assert calls[0][:4] == ["ps", "-Aww", "-o", "pid=,uid=,command="]
+
+    def test_ps_fallback_legacy_format_keeps_legacy_include(self):
+        """A ps without a uid column falls back to the legacy format; unstatable
+        pids keep the legacy include (documented fail-open, see docstring)."""
+        rows = f"  {12345} {_GATEWAY_CMD}\n"
+        outputs = iter([
+            MagicMock(returncode=1, stdout="", stderr="ps: bad format\n"),
+            MagicMock(returncode=0, stdout=rows, stderr=""),
+        ])
+
+        def _stat_no_proc(path, *args, **kwargs):
+            path_str = str(path)
+            if path_str.startswith("/proc/") and path_str[len("/proc/"):].isdigit():
+                raise FileNotFoundError(path_str)
+            return _real_stat(path, *args, **kwargs)
+
+        with (
+            patch("os.path.isdir", return_value=False),
+            patch("subprocess.run", side_effect=lambda args, **k: next(outputs)),
+            patch("os.stat", side_effect=_stat_no_proc),
+            patch("hermes_cli.gateway._get_ancestor_pids", return_value=set()),
+        ):
+            pids = gateway_mod._scan_gateway_pids(set(), all_profiles=True)
+
+        assert pids == [12345]
+
+
+class TestServicePidsUserScoping:
+    """_get_service_pids default scope only adopts system-manager units owned by
+    the invoking uid; the all_profiles protection sweep stays over-inclusive."""
+
+    def test_system_scope_foreign_uid_unit_excluded(self):
+        my_uid = os.geteuid()
+
+        def _run_side_effect(args, **kwargs):
+            args_list = list(args)
+            if "--user" in args_list:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            cmd_str = " ".join(str(a) for a in args_list[:4])
+            if "list-units" in cmd_str:
+                return MagicMock(
+                    returncode=0,
+                    stdout="hermes-gateway.service loaded active running\n",
+                    stderr="",
+                )
+            if "show" in cmd_str and "MainPID" in cmd_str:
+                return MagicMock(returncode=0, stdout="456\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with (
+            patch("hermes_cli.gateway.is_macos", return_value=False),
+            patch("hermes_cli.gateway.supports_systemd_services", return_value=True),
+            patch("subprocess.run", side_effect=_run_side_effect),
+            patch("os.stat", side_effect=_stat_with_proc_owners({456: _FOREIGN_UID})),
+        ):
+            pids = gateway_mod._get_service_pids(all_profiles=False)
+
+        assert pids == set()
+
+    def test_system_scope_own_uid_unit_kept(self):
+        my_uid = os.geteuid()
+
+        def _run_side_effect(args, **kwargs):
+            args_list = list(args)
+            if "--user" in args_list:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            cmd_str = " ".join(str(a) for a in args_list[:4])
+            if "list-units" in cmd_str:
+                return MagicMock(
+                    returncode=0,
+                    stdout="hermes-gateway.service loaded active running\n",
+                    stderr="",
+                )
+            if "show" in cmd_str and "MainPID" in cmd_str:
+                return MagicMock(returncode=0, stdout="456\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with (
+            patch("hermes_cli.gateway.is_macos", return_value=False),
+            patch("hermes_cli.gateway.supports_systemd_services", return_value=True),
+            patch("subprocess.run", side_effect=_run_side_effect),
+            patch("os.stat", side_effect=_stat_with_proc_owners({456: my_uid})),
+        ):
+            pids = gateway_mod._get_service_pids(all_profiles=False)
+
+        assert pids == {456}
+
+    def test_user_scope_unit_needs_no_uid_proof(self):
+        """``systemctl --user`` is per-user by construction; its MainPID is adopted
+        even when /proc cannot confirm the owner (race, hidepid)."""
+
+        def _run_side_effect(args, **kwargs):
+            args_list = list(args)
+            if "--user" not in args_list:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            cmd_str = " ".join(str(a) for a in args_list)
+            if "list-units" in cmd_str:
+                return MagicMock(
+                    returncode=0,
+                    stdout="hermes-gateway.service loaded active running\n",
+                    stderr="",
+                )
+            if "show" in cmd_str and "MainPID" in cmd_str:
+                return MagicMock(returncode=0, stdout="789\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        def _stat_never_finds(path, *args, **kwargs):
+            path_str = str(path)
+            if path_str.startswith("/proc/") and path_str[len("/proc/"):].isdigit():
+                raise FileNotFoundError(path_str)
+            return _real_stat(path, *args, **kwargs)
+
+        with (
+            patch("hermes_cli.gateway.is_macos", return_value=False),
+            patch("hermes_cli.gateway.supports_systemd_services", return_value=True),
+            patch("subprocess.run", side_effect=_run_side_effect),
+            patch("os.stat", side_effect=_stat_never_finds),
+        ):
+            pids = gateway_mod._get_service_pids(all_profiles=False)
+
+        assert pids == {789}
+
+    def test_all_profiles_fleet_sweep_stays_overinclusive(self):
+        """all_profiles=True is a protection-only set (#41403/#73626): foreign-uid
+        system units stay included so the kill sweep never reclassifies them."""
+
+        def _run_side_effect(args, **kwargs):
+            args_list = list(args)
+            if "--user" in args_list:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            cmd_str = " ".join(str(a) for a in args_list[:4])
+            if "list-units" in cmd_str:
+                return MagicMock(
+                    returncode=0,
+                    stdout="hermes-gateway-alice.service loaded active running\n",
+                    stderr="",
+                )
+            if "show" in cmd_str and "MainPID" in cmd_str:
+                return MagicMock(returncode=0, stdout="456\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with (
+            patch("hermes_cli.gateway.is_macos", return_value=False),
+            patch("hermes_cli.gateway.supports_systemd_services", return_value=True),
+            patch("subprocess.run", side_effect=_run_side_effect),
+            patch("os.stat", side_effect=_stat_with_proc_owners({456: _FOREIGN_UID})),
+        ):
+            pids = gateway_mod._get_service_pids(all_profiles=True)
+
+        assert pids == {456}

@@ -631,6 +631,50 @@ def _migrate_to_46(results: Dict[str, Any], quiet: bool) -> None:
         f"  ✓ Turned off MCP servers the profile editor had marked disabled: {names}.")
 
 
+#: Toolset names removed from the registry after lists could have saved them: `messaging` was
+#: dropped with its agent-callable send_message tool (#47856 — outbound platform messaging is
+#: per-platform composites now), `moa` when MoA presets became selectable virtual models
+#: (#46081). Kept as an explicit set, never "anything the registry rejects": plugin toolsets
+#: and MCP server names are valid on a saved list but not discoverable at migration time.
+_REMOVED_TOOLSETS = frozenset({"messaging", "moa"})
+
+
+def _migrate_to_47(results: Dict[str, Any], quiet: bool) -> None:
+    # 46 → 47: saved toolset lists predate the removal of the `messaging` and `moa` toolsets.
+    # The resolver drops unknown names and startup warns "Unknown toolsets: messaging, moa"
+    # for them, so pruning is behavior-neutral — it only stops the warning and keeps the
+    # saved list meaning what it says. An emptied platform list stays an explicit empty list
+    # (still authoritative, per the platform-toolsets reader), matching pre-migration behavior.
+    config = read_raw_config()
+    pruned_names: set = set()
+    pruned_surfaces: List[str] = []
+    platform_toolsets = _dict_at(config, "platform_toolsets")
+    for platform, toolsets in platform_toolsets.items():
+        if not isinstance(toolsets, list):
+            continue
+        kept = [ts for ts in toolsets if str(ts) not in _REMOVED_TOOLSETS]
+        if len(kept) != len(toolsets):
+            pruned_names.update(str(ts) for ts in toolsets if str(ts) in _REMOVED_TOOLSETS)
+            platform_toolsets[platform] = kept
+            pruned_surfaces.append(f"platform_toolsets.{platform}")
+    top_toolsets = config.get("toolsets")
+    if isinstance(top_toolsets, list):
+        kept = [ts for ts in top_toolsets if str(ts) not in _REMOVED_TOOLSETS]
+        if len(kept) != len(top_toolsets):
+            pruned_names.update(str(ts) for ts in top_toolsets if str(ts) in _REMOVED_TOOLSETS)
+            config["toolsets"] = kept
+            pruned_surfaces.append("toolsets")
+    if not pruned_surfaces:
+        return
+    removed = ", ".join(sorted(pruned_names))
+    surfaces = ", ".join(sorted(pruned_surfaces))
+    _commit(
+        config, results, quiet,
+        f"pruned removed toolsets ({removed}) from {surfaces}",
+        f"  ✓ Pruned the removed '{removed}' toolset(s) from {surfaces} — "
+        "they no longer exist, so this only silences the startup warning.")
+
+
 #: Registry of (target_version, step), strictly ascending; simple default-flip steps are
 #: declared inline via _rewrite_stale_default / _rewrite_key partials. Later steps observe
 #: earlier steps' writes via read_raw_config() (filesystem state). v12 is the support floor:
@@ -754,6 +798,8 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (45, _migrate_to_45),
     # 45 → 46: legacy editor `disabled: true` on MCP servers becomes `enabled: false` (see _migrate_to_46).
     (46, _migrate_to_46),
+    # 46 → 47: saved toolset lists predate the removal of the `messaging`/`moa` toolsets (see _migrate_to_47).
+    (47, _migrate_to_47),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or

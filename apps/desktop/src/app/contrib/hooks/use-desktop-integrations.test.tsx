@@ -841,5 +841,25 @@ describe('useDesktopIntegrations', () => {
       unmount()
       dropSessionState('runtime-999')
     })
+
+    it('does not route to a bare runtime id when no source knows the binding', () => {
+      const fire = withFocusSession()
+
+      const { rerender } = renderWithRuntimeMap(new Map())
+
+      // No window-map binding, no mirror binding, and no session row: the id is
+      // a bare runtime id. Navigating to it would route to a session that does
+      // not exist under that key and strand the user on an empty chat.
+      fire('runtime-unbound')
+
+      expect(navigate).not.toHaveBeenCalled()
+
+      // ...but a real stored id for a session this window never opened is
+      // still routable: the row list vouches for it even with no map binding.
+      rerender({ sessions: [{ id: 'stored-unopened' } as SessionInfo] })
+      fire('stored-unopened')
+
+      expect(navigate).toHaveBeenCalledWith(sessionRoute('stored-unopened'))
+    })
   })
 })

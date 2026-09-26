@@ -295,7 +295,22 @@ export function useDesktopIntegrations({
       if (sessionId) {
         // Reloads and runtime recovery can leave only the shared mirror bound.
         const viaLocalMap = storedSessionIdForNotification(sessionId, runtimeIdByStoredSessionId.current)
-        const storedId = viaLocalMap !== sessionId ? viaLocalMap : (storedSessionIdForRuntimeId(sessionId) ?? sessionId)
+        const viaMirror = storedSessionIdForRuntimeId(sessionId)
+        const translated = viaLocalMap !== sessionId ? viaLocalMap : viaMirror
+
+        // No binding anywhere: the id may still BE a stored id (a notification
+        // for a session this window never opened). Only trust it when a known
+        // source vouches for it — a session row, a tile, or a Bot scope.
+        // Otherwise this is a bare runtime id, and routing to it navigates to a
+        // session that does not exist under that key, stranding the user on an
+        // empty chat (see lib/session-ids.ts). Focus the window and stop.
+        const known = translated != null || sessions.some(session => sessionMatchesStoredId(session, sessionId))
+
+        if (!known) {
+          return
+        }
+
+        const storedId = translated ?? sessionId
 
         // A notification reveals a tab; it must not reclassify a Bot chat.
         const scope =
@@ -315,7 +330,7 @@ export function useDesktopIntegrations({
     })
 
     return () => unsubscribe?.()
-  }, [locationPathname, navigate, runtimeIdByStoredSessionId])
+  }, [locationPathname, navigate, runtimeIdByStoredSessionId, sessions])
 
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onNotificationAction?.(({ actionId, sessionId }) => {

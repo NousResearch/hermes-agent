@@ -2296,6 +2296,28 @@ def _warn_paid_lane_once(model: str) -> None:
     )
 
 
+def _openrouter_env_key_is_dead(api_key: str) -> bool:
+    """Only veto the exact environment credential already quarantined by the pool."""
+    try:
+        from hermes_cli.auth import read_credential_pool
+        from agent.credential_persistence import fingerprint_secret_value
+
+        fingerprint = fingerprint_secret_value(api_key)
+        return any(
+            isinstance(row, dict)
+            and row.get("source") == "env:OPENROUTER_API_KEY"
+            and row.get("last_status") == "dead"
+            and (row.get("access_token") == api_key
+                 or (not row.get("access_token") and row.get("secret_fingerprint") == fingerprint))
+            for row in read_credential_pool("openrouter")
+        )
+    except Exception:
+        # A failed lookup is not evidence that this key is dead. Keep the
+        # pre-existing environment fallback for unavailable/malformed stores.
+        logger.debug("Auxiliary client: could not inspect OpenRouter dead-key state", exc_info=True)
+        return False
+
+
 def _try_openrouter(explicit_api_key: Optional[Union[str, Callable[[], str]]] = None, model: str = None,
                     explicit_base_url: Optional[str] = None) -> Tuple[Optional[OpenAI], Optional[str]]:
     free_only, cfg_model = _aux_openrouter_settings()
@@ -2325,6 +2347,9 @@ def _try_openrouter(explicit_api_key: Optional[Union[str, Callable[[], str]]] = 
         # Exhausted pool: fall through to OPENROUTER_API_KEY rather than fail.
         logger.debug("Auxiliary client: OpenRouter pool exhausted, trying OPENROUTER_API_KEY")
     or_key = explicit_api_key or _scoped_key_env("OPENROUTER_API_KEY")
+    if or_key and not explicit_api_key and _openrouter_env_key_is_dead(or_key):
+        logger.debug("Auxiliary client: skipping terminally dead OpenRouter environment key")
+        return None, None
     if not or_key:
         _mark_provider_unhealthy(
             "openrouter", ttl=60, reason=_describe_openrouter_unavailable(or_model), level=logging.DEBUG)

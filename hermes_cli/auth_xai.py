@@ -53,6 +53,10 @@ def _xai_oauth_state_from_store(auth_store: Dict[str, Any]) -> Optional[Dict[str
         access_token, refresh_token = _token_pair(entry)
         if not access_token or not refresh_token:
             continue
+        # Raw-store fallback must not resurrect a grant the pool quarantined.
+        # Exhaustion and other nonterminal states retain their existing behavior.
+        if entry.get("last_status") == "dead":
+            continue
         merged = dict(state or {})
         merged["tokens"] = {
             "access_token": access_token, "refresh_token": refresh_token,

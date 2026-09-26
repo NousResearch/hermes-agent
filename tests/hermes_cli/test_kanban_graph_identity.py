@@ -53,3 +53,26 @@ def test_parent_tenant_is_inherited_at_creation_boundary(tmp_path, monkeypatch):
         with pytest.raises(ValueError, match="unknown parent"):
             kb.create_task(conn, title="invalid", parents=["missing"])
         assert kb.get_task(conn, unscoped).tenant is None
+
+
+def test_issue_root_keeps_delivery_contract_while_children_are_local_only(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    with kbc.connect_closing() as conn:
+        source = "github:Luiquri/Meetit:issue:258:intake"
+        root = kb.create_task(
+            conn, title="fix(rate-limit): apply issue", triage=True,
+            assignee="meetitcoordinator", idempotency_key=source,
+            completion_contract="Luiquri/Meetit",
+        )
+        children = decompose_triage_task(
+            conn, root, root_assignee="meetitcoordinator",
+            children=[{"title": "implementation artifact", "assignee": "meetitexecution"}],
+        )
+        assert children
+        root_task = kb.get_task(conn, root)
+        child_task = kb.get_task(conn, children[0])
+        assert root_task.completion_contract == "Luiquri/Meetit"
+        assert root_task.idempotency_key == source
+        assert child_task.completion_contract == "local-only"
+        assert child_task.idempotency_key is None

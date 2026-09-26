@@ -114,6 +114,90 @@ def test_decompose_with_fanout_creates_children(kanban_home):
     assert c1.assignee == "engineer"
 
 
+def test_issue_delivery_root_context_reaches_decomposer_prompt(kanban_home):
+    source = "github:acme/repo:issue:258:intake"
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="fix(rate-limit): implement issue", triage=True,
+            assignee="meetitcoordinator", idempotency_key=source,
+            completion_contract="acme/repo",
+        )
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "separate local implementation from integration",
+        "tasks": [{"title": "implement artifact", "body": "Return local commit and evidence.",
+                   "assignee": "engineer", "parents": []}],
+    })
+    captured = {}
+    patches = _patch_list_profiles(["meetitcoordinator", "engineer"])
+    for p in patches:
+        p.start()
+    try:
+        def fake_call(*args, **kwargs):
+            captured.update(kwargs)
+            return llm_payload, ""
+
+        with patch.object(decomp, "_call_aux", side_effect=fake_call):
+            outcome = decomp.decompose_task(tid, author="meetitcoordinator")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert "integration/delivery root" in captured["system"]
+    assert "local-only artifact task" in captured["system"]
+    assert source in captured["user"]
+    assert "Completion contract: acme/repo" in captured["user"]
+    with kbc.connect() as conn:
+        root = kb.get_task(conn, tid)
+        child = kb.get_task(conn, outcome.child_ids[0])
+    assert root.assignee == "meetitcoordinator"
+    assert root.completion_contract == "acme/repo"
+    assert child.completion_contract == "local-only"
+
+
+def test_single_issue_delivery_root_is_owned_by_orchestrator(kanban_home):
+    source = "github:acme/repo:issue:259:intake"
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="fix(rate-limit): implement issue", triage=True,
+            assignee="engineer", idempotency_key=source,
+            completion_contract="acme/repo",
+        )
+
+    captured = {}
+    patches = _patch_list_profiles(["meetitcoordinator", "engineer"])
+    for p in patches:
+        p.start()
+    try:
+        def fake_call(*args, **kwargs):
+            captured.update(kwargs)
+            return jsonlib.dumps({
+                "fanout": False, "rationale": "one unit", "title": "Integrate rate limit",
+                "body": "Apply the reviewed change and verify it.", "assignee": "engineer",
+            }), ""
+
+        with patch.object(decomp, "_call_aux", side_effect=fake_call), patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={"kanban": {"orchestrator_profile": "meetitcoordinator"}},
+        ):
+            outcome = decomp.decompose_task(tid, author="meetitcoordinator")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert source in captured["user"]
+    with kbc.connect() as conn:
+        root = kb.get_task(conn, tid)
+    assert root is not None
+    assert root.assignee == "meetitcoordinator"
+    assert root.completion_contract == "acme/repo"
+    assert root.body is not None
+    assert "Integration and delivery ownership" in root.body
+
+
 def test_decompose_fanout_children_inherit_root_assignee_when_unrouted(kanban_home):
     """Unrouted children fall back to the ROOT task's assignee, not
     the decomposer's active profile (#114294). The active profile here is ``private``

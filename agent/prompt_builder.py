@@ -344,6 +344,30 @@ KANBAN_GUIDANCE = (
     "own run; board tasks are for cross-agent handoffs that outlive one API loop."
 )
 
+# Opt-in per board (board.json ``decision_log``): lets the board owner follow a run decision by decision.
+KANBAN_DECISION_LOG_GUIDANCE = (
+    "\n\n## Decision log (enabled on this board)\n\n"
+    "The board owner follows your run through this card's comment thread. Each time you make a decision that shapes "
+    "the outcome (how you read the task, the approach, a tool or library choice, a scope cut, dropping a lead, a "
+    "trade-off), post it with `kanban_comment` right when you make it, not batched at the end:\n"
+    "`decision: <what you chose>`\n"
+    "`considered: <alternatives and why they lost>`\n"
+    "`because: <the evidence>`\n"
+    "`sources: <URLs, file paths, commands or card ids you relied on>`\n"
+    "Keep each comment short and factual. Skip routine steps such as reading a file or running a known command. "
+    "Never put secrets, tokens or raw PII in a comment."
+)
+
+
+def kanban_worker_guidance() -> str:
+    """KANBAN_GUIDANCE plus the decision-log addendum when the worker's board enables it."""
+    from hermes_cli.kanban_db import get_current_board, read_board_metadata
+
+    if read_board_metadata(get_current_board()).get("decision_log"):
+        return KANBAN_GUIDANCE + KANBAN_DECISION_LOG_GUIDANCE
+    return KANBAN_GUIDANCE
+
+
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
     "You MUST use your tools to take action — do not describe what you would do or plan to do without actually doing "

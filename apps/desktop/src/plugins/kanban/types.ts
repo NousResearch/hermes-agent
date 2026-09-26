@@ -151,6 +151,8 @@ export interface BoardMeta {
   /** First-class Project the board is scoped to (id) + resolved name. */
   project_id?: null | string
   project_name?: null | string
+  /** Workers on this board comment each decision (choice, alternatives, sources). */
+  decision_log?: boolean
 }
 
 /** POST /boards/{slug}/export — the archive the backend wrote. */

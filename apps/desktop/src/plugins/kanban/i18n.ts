@@ -184,6 +184,8 @@ type KanbanMessages = {
   deleteBoardConfirm: string
   boardArchived: (path: string) => string
   boardSettingsFor: (name: string) => string
+  decisionLog: string
+  decisionLogHint: string
   name: string
   boardNamePlaceholder: string
   slug: (slug: string) => string
@@ -399,6 +401,9 @@ export const en: KanbanMessages = {
   deleteBoardConfirm: 'The board is archived, not erased — its tasks and attachments stay on disk and can be restored.',
   boardArchived: path => `Board archived to ${path}`,
   boardSettingsFor: name => `Board settings — ${name}`,
+  decisionLog: 'Decision log',
+  decisionLogHint:
+    'Workers comment each decision as they make it: what they chose, what they considered, and the sources. Applies to runs that start after saving.',
   name: 'Name',
   boardNamePlaceholder: 'Board name',
   slug: slug => `slug: ${slug}`,
@@ -612,6 +617,9 @@ const ja: KanbanMessages = {
   deleteBoardConfirm: 'ボードは消去されずアーカイブされます。タスクと添付ファイルはディスクに残り、復元できます。',
   boardArchived: path => `ボードを ${path} にアーカイブしました`,
   boardSettingsFor: name => `ボード設定 — ${name}`,
+  decisionLog: '判断ログ',
+  decisionLogHint:
+    'ワーカーが判断のたびに、選んだ内容・検討した代替案・根拠となる情報源をコメントします。保存後に開始する実行から適用されます。',
   name: '名前',
   boardNamePlaceholder: 'ボード名',
   slug: slug => `slug: ${slug}`,
@@ -823,6 +831,8 @@ const zh: KanbanMessages = {
   deleteBoardConfirm: '面板会被归档而非清除，其任务和附件仍保留在磁盘上，可以恢复。',
   boardArchived: path => `面板已归档至 ${path}`,
   boardSettingsFor: name => `面板设置 — ${name}`,
+  decisionLog: '决策日志',
+  decisionLogHint: '工作者每做一个决策就发表评论：选择了什么、考虑过哪些方案以及依据的来源。对保存后开始的运行生效。',
   name: '名称',
   boardNamePlaceholder: '面板名称',
   slug: slug => `slug: ${slug}`,
@@ -1033,6 +1043,8 @@ const zhHant: KanbanMessages = {
   deleteBoardConfirm: '面板會被封存而非清除，其任務和附件仍保留在磁碟上，可以還原。',
   boardArchived: path => `面板已封存至 ${path}`,
   boardSettingsFor: name => `面板設定 — ${name}`,
+  decisionLog: '決策日誌',
+  decisionLogHint: '工作者每做一個決策就發表留言：選擇了什麼、考慮過哪些方案以及依據的來源。對儲存後開始的執行生效。',
   name: '名稱',
   boardNamePlaceholder: '面板名稱',
   slug: slug => `slug: ${slug}`,

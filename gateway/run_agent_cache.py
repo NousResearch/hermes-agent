@@ -31,6 +31,36 @@ _OVERRIDE_APPLY_KEYS = (
     "provider", "requested_provider", "api_key", "base_url", "api_mode", "credential_pool", "capabilities", "max_tokens",
 )
 
+# Override fields that may fall through to the already-resolved runtime value when blank; see
+# _blank_override_keeps_runtime for when that is allowed.
+_BLANK_MEANS_ABSENT_KEYS = frozenset({"api_key", "base_url"})
+
+
+def _is_blank(val: Any) -> bool:
+    """``None``, ``""`` or whitespace-only: the override recorded no value for this field."""
+    return val is None or (isinstance(val, str) and not val.strip())
+
+
+def _blank_override_keeps_runtime(override: dict, runtime_kwargs: dict) -> bool:
+    """Whether a blank override api_key/base_url may keep the value already in ``runtime_kwargs``.
+
+    Only when ``runtime_kwargs`` were resolved for the override's own provider AND the override
+    does not name another endpoint (its base_url is blank or equal to the resolved one). A bare-
+    custom session's first /model switch records ``api_key=""`` before any key was ever read;
+    the turn's own resolution for that same endpoint holds the real key. In every other case (a
+    channel override's provider, or an override pointing at a different host) the resolved key
+    belongs to another route and must not travel to the override's endpoint."""
+    o_prov, r_prov = override.get("provider"), runtime_kwargs.get("provider")
+    if not (isinstance(o_prov, str) and isinstance(r_prov, str)):
+        return False
+    if not o_prov.strip() or o_prov.strip().lower() != r_prov.strip().lower():
+        return False
+    o_url, r_url = override.get("base_url"), runtime_kwargs.get("base_url")
+    if _is_blank(o_url):
+        return True
+    return (isinstance(o_url, str) and isinstance(r_url, str)
+            and o_url.strip().rstrip("/") == r_url.strip().rstrip("/"))
+
 
 def _first_agent(entry: Any) -> Any:
     """Unwrap a cache entry (``(agent, sig, ...)`` tuple or bare agent) to its agent."""
@@ -201,10 +231,15 @@ class GatewayAgentCacheMixin:
         if not override:
             return model, runtime_kwargs
         model = override.get("model", model)
+        # Decided before the loop: it compares against the runtime as resolved, not as overlaid.
+        keep_blank = _blank_override_keeps_runtime(override, runtime_kwargs)
         for key in _OVERRIDE_APPLY_KEYS:
             val = override.get(key)
-            if val is not None:
-                runtime_kwargs[key] = val
+            if val is None:
+                continue
+            if keep_blank and key in _BLANK_MEANS_ABSENT_KEYS and _is_blank(val):
+                continue
+            runtime_kwargs[key] = val
         # request_overrides reflects the switched-to provider; apply whenever the override recorded
         # it (even as None) so switching to a provider without configured overrides clears a stale
         # value left by the default provider's runtime resolution.

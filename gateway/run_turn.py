@@ -181,6 +181,7 @@ class GatewayTurnMixin:
             _credential_pool_for_provider, _get_channel_override, _resolve_gateway_model,
             _resolve_runtime_agent_kwargs, _resolve_runtime_agent_kwargs_for_provider,
         )
+        from gateway.run_agent_cache import _is_blank
         skey = self._resolve_session_key_or_none(source, session_key)
         # Every exit path starts clean: the /model-override fast path returns before the pop below,
         # and hygiene/inbound callers resolve without a turn runner consuming the stash — a stale
@@ -201,7 +202,8 @@ class GatewayTurnMixin:
                 )
             }
             override_runtime["capabilities"] = dict(override_runtime["capabilities"] or {})
-            if override_runtime.get("api_key"):
+            # Whitespace-only counts as no key, as in _apply_session_model_override.
+            if override_runtime.get("api_key") and not _is_blank(override_runtime.get("api_key")):
                 if override_runtime.get("credential_pool") is None:
                     override_runtime["credential_pool"] = _credential_pool_for_provider(override.get("provider"))
                 logger.debug(

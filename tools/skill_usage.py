@@ -144,9 +144,10 @@ def activity_count(record: Dict[str, Any]) -> int:
 
 # --- Provenance — which skills are agent-created (and thus eligible for curation) ---
 def _read_bundled_names() -> Set[str]:
-    """Built-in names: ``.bundled_manifest`` ("name:hash" per line) plus the curator suppression list, which
-    only ever records built-ins; a pruned built-in whose manifest entry an older sync cleaned after the
-    catalog dropped it is still not agent-authored (#95415). Empty if both are missing/unreadable."""
+    """Built-in names: ``.bundled_manifest`` records (v1 plain, v2 ``name:hash``, v3 ``name:mode[:hash]``)
+    plus the curator suppression list, which only ever records built-ins; a pruned built-in whose
+    manifest entry an older sync cleaned after the catalog dropped it is still not agent-authored
+    (#95415). Empty if both are missing/unreadable."""
     lines = _read_lines(_skills_dir() / ".bundled_manifest", "Failed to read bundled manifest: %s")
     return {n for n in (line.split(":", 1)[0].strip() for line in lines) if n} | read_suppressed_names()
 
@@ -633,6 +634,13 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
         return False, f"skill '{skill_name}' not found"
     if is_external_skill_path(skill_dir):
         return False, _external_read_only_message(skill_name)
+    # Linked bundled skills retain an external source of truth. Curation must not mutate it.
+    if skill_dir.is_symlink():
+        return False, (
+            f"{skill_name!r} is a symlinked skill (real content at {skill_dir.resolve()}). "
+            "It is managed externally; remove the symlink manually if needed."
+        )
+
     # Flatten under the skill NAME, not the directory name: `mlops/training/accelerate` is the skill
     # `huggingface-accelerate`, and restore/list/purge all key on the name.
     dest = _archive_dir() / skill_name

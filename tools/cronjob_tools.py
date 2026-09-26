@@ -375,9 +375,9 @@ def _latest_job_output_excerpt(job_id: str, max_chars: int = 2000) -> Optional[s
     """Excerpt of the job's most recent saved output file for the background completion
     block (parent sees what the job produced). Never raises."""
     try:
-        from cron.jobs import get_cron_output_dir
+        from cron.jobs import job_output_dir
 
-        out_dir = get_cron_output_dir() / job_id
+        out_dir = job_output_dir(job_id)
         files = sorted(out_dir.glob("*.md"))
         if not files:
             return None
@@ -387,6 +387,9 @@ def _latest_job_output_excerpt(job_id: str, max_chars: int = 2000) -> Optional[s
         if len(text) > max_chars:
             text = text[:max_chars] + f"\n… (truncated; full output: {files[-1]})"
         return text
+    except ValueError as exc:
+        logger.debug("job output excerpt skipped for unsafe job id: %s", exc)
+        return None
     except Exception:
         return None
 

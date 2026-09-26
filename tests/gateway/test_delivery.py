@@ -402,3 +402,35 @@ def test_local_delivery_writes_non_ascii_on_windows_codepage(tmp_path, monkeypat
     written = Path(result["path"]).read_text(encoding="utf-8")
     assert "完了 ✅ café" in written
     assert "日次レポート" in written
+
+
+@pytest.mark.parametrize("job_id", ["../escape", "..", ".", "a/b", "a\\b",
+                                    ".. .", "... ", "a\x00b", "a\nb", "a" * 300])
+def test_deliver_local_rejects_path_escape_job_id(tmp_path, monkeypatch, job_id):
+    """A caller-supplied job_id must never become a path component outside the
+    delivery output dir, including the Windows trailing-dot/space collapse
+    ('.. .' resolves as '..' there) and control characters."""
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    router = DeliveryRouter(GatewayConfig())
+    with pytest.raises(ValueError, match="Invalid delivery job id"):
+        router._deliver_local("x", job_id=job_id, job_name=None, metadata=None)
+
+
+@pytest.mark.parametrize("job_id", ["", "  ", None])
+def test_deliver_local_blank_job_id_falls_back_to_misc(tmp_path, monkeypatch, job_id):
+    """Empty/blank/missing job ids land in the shared 'misc' dir."""
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    router = DeliveryRouter(GatewayConfig())
+    result = router._deliver_local("x", job_id=job_id, job_name=None, metadata=None)
+    assert Path(result["path"]).parent == tmp_path / "cron" / "output" / "misc"
+
+
+@pytest.mark.parametrize("job_id", ["../escape", "..", ".", "a/b", "a\\b",
+                                    ".. .", "... ", "a\x00b", "a\nb", "a" * 300])
+def test_save_full_output_rejects_path_escape_job_id(tmp_path, monkeypatch, job_id):
+    """_save_full_output embeds job_id inside the audit filename — a separator
+    turns it into an arbitrary subpath of the cron output root."""
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    router = DeliveryRouter(GatewayConfig())
+    with pytest.raises(ValueError, match="Invalid delivery job id"):
+        router._save_full_output("x", job_id)

@@ -27,7 +27,7 @@ except ImportError:  # pragma: no cover - non-Windows
     msvcrt = None
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, safe_path_component
 from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM, FIRE_CLAIM_SKEW_SECONDS, FIRE_CLAIM_TTL_SECONDS
 from cron.env_settings import cron_env_setting
 from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Collection
@@ -408,16 +408,16 @@ def fire_claim_fence(job_id: str, *, expected_owner: str):
 _IMMUTABLE_JOB_FIELDS = frozenset({"id"})
 
 
-def _job_output_dir(job_id: str) -> Path:
+def job_output_dir(job_id: str) -> Path:
     """Resolve a job's output directory, rejecting any path-escape attempt (``..``, absolute
     paths, separators): only a single safe path component is accepted."""
-    text = str(job_id or "").strip()
-    if (
-        not text or text in {".", ".."} or "/" in text or "\\" in text
-        or Path(text).is_absolute() or Path(text).drive
-    ):
-        raise ValueError(f"Invalid cron job id for output path: {job_id!r}")
+    text = safe_path_component(job_id, what="cron job id for output path")
     return _current_cron_store().output_dir / text
+
+
+# Public since tools/ and cron/ both consume it; keep the private alias for
+# in-tree and plugin callers that predated the rename.
+_job_output_dir = job_output_dir
 
 
 def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
@@ -2263,13 +2263,18 @@ def remove_job(job_id: str) -> bool:
         if len(jobs) == original_len:
             return False
         # Resolve BEFORE saving so a legacy unsafe ID fails closed without a half-applied removal.
-        job_output_dir = _job_output_dir(canonical_id)
+        # An id too unsafe to resolve has no resolvable output dir: skip cleanup but still
+        # remove the record, or the poisoned entry could never be deleted through the API.
+        try:
+            out_dir = job_output_dir(canonical_id)
+        except ValueError:
+            out_dir = None
         save_jobs(jobs, removed_ids={canonical_id})
         marker = _self_removal_delivery.get()
         if marker is not None and marker.job_id == canonical_id:
             marker.removed = True
-        if job_output_dir.exists():
-            shutil.rmtree(job_output_dir)
+        if out_dir is not None and out_dir.exists():
+            shutil.rmtree(out_dir)
         try:
             from cron.notepad import clear_notepad
             clear_notepad(canonical_id)
@@ -3328,14 +3333,14 @@ def _prune_job_output(job_output_dir: Path, keep: int) -> int:
 def save_job_output(job_id: str, output: str):
     """Save job output to file."""
     ensure_dirs()
-    job_output_dir = _job_output_dir(job_id)
-    _ensure_cron_dir(job_output_dir)
-    _secure_dir(job_output_dir)
-    output_file = job_output_dir / f"{_hermes_now().strftime('%Y-%m-%d_%H-%M-%S')}.md"
+    out_dir = job_output_dir(job_id)
+    _ensure_cron_dir(out_dir)
+    _secure_dir(out_dir)
+    output_file = out_dir / f"{_hermes_now().strftime('%Y-%m-%d_%H-%M-%S')}.md"
     atomic_write_text(output_file, output, tmp_prefix=".output_", mode=0o600)
     _secure_file(output_file)
     # Bound per-job output growth so long-running deploys don't fill the disk (#52383).
-    _prune_job_output(job_output_dir, _cron_output_keep())
+    _prune_job_output(out_dir, _cron_output_keep())
     return output_file
 
 

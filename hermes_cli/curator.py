@@ -223,6 +223,11 @@ def _set_pin(args, pinned: bool) -> int:
     if not skill_usage.is_agent_created(skill):
         print(f"curator: '{skill}' is bundled or hub-installed — {not_agent}")
         return 1
+    # set_pinned writes a record for ANY name (archived skills have no dir and stay writable), so a
+    # typo would report success while the real skill stays unpinned.
+    if skill_usage._find_skill_dir(skill) is None:
+        print(f"curator: skill '{skill}' not found")
+        return 1
     if not skill_usage.set_pinned(skill, pinned):
         print("curator: " + not_eligible.replace("{skill}", skill))
         return 1

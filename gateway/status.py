@@ -588,6 +588,33 @@ def command_line_runs_inline_source(tokens: list[str]) -> bool:
     return inline_source_flag_index(tokens) is not None
 
 
+def _runtime_launcher_entry_argv(tokens: list[str]) -> list[str] | None:
+    """Trailing argv of a Hermes runtime-launcher process (``hermes_cli._launchers.runtime_command``).
+
+    The launcher starts Hermes as ``python -I -c <bootstrap> <entry argv…>`` where the bootstrap runs
+    the entry module IN PLACE (``runpy.run_module(…, alter_sys=True)`` after ``import hermes_bootstrap``),
+    so the argv following that program IS this process's own subcommand: ``python -I -c <bootstrap>
+    gateway run --replace`` really is a gateway -- the form the Windows updater's post-update relaunch
+    spawns (``hermes_cli.gateway._gateway_run_args_for_profile``). Every OTHER inline source keeps the
+    #107002 rule: the detached restart watcher (``… -c <watcher> <old_pid> … -m hermes_cli.main gateway
+    run``) hides a FUTURE spawn in its trailing argv, which must never be read as this process's identity.
+
+    Command lines reach us space-joined from argv, so this one-source program arrives split across many
+    tokens, and only the tail it emits (``alter_sys=True)`` last) marks where the entry argv begins.
+    Marker checks against the launcher's own emitted format -- never a loose ``-c`` test.
+    """
+    index = inline_source_flag_index(tokens)
+    if index is None:
+        return None
+    for position in range(index, len(tokens)):
+        if "alter_sys=True" not in tokens[position]:
+            continue
+        program = " ".join(tokens[index : position + 1])
+        if "runpy.run_module(" in program and "hermes_bootstrap" in program:
+            return tokens[position + 1 :]
+    return None
+
+
 def _gateway_command_subcommand(command: str | None) -> str | None:
     """Hermes gateway lifecycle subcommand from a command line, or None. No loose substring matches
     (``"gateway" in cmdline`` also matched ``gateway status`` / ``python -m tui_gateway``): needs a
@@ -609,8 +636,23 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     # ``python -c <src> … -m hermes_cli.main gateway run``: the trailing argv belongs to the program
     # the inline source will spawn later, not to this process (#107002). Case-preserving tokens:
     # the operand-taking ``-X``/``-W``/``-Q`` must not be conflated with ``-q``/``-b``.
+    launcher_bootstrap = False
     if command_line_runs_inline_source(cased_tokens):
-        return None
+        # …with ONE exception: Hermes's own runtime launcher starts Hermes as ``python -I -c
+        # <bootstrap> <entry argv…>`` and the bootstrap runs the entry module IN PLACE, so the
+        # trailing argv IS this process's own subcommand. That is the form the Windows updater's
+        # post-update relaunch spawns (``gateway._gateway_run_args_for_profile`` →
+        # ``gateway run --replace``); refusing it made the updater blind to the gateway it had just
+        # respawned -- its liveness probe "found no stable gateway process" while the respawned
+        # gateway was alive and serving, and the next update's preflight then failed on the lock.
+        source_index = inline_source_flag_index(cased_tokens)
+        launcher_argv = None if source_index is None else _runtime_launcher_entry_argv(cased_tokens)
+        if launcher_argv is None:
+            return None
+        cased_tokens = [cased_tokens[0], *launcher_argv]
+        tokens = [t.lower() for t in cased_tokens]
+        basenames = [t.rsplit("/", 1)[-1] for t in tokens]
+        launcher_bootstrap = True
     # The launchd job's osascript wrapper (gateway_launchd.launchd_program_arguments) carries the gateway argv
     # inside one AppleScript string; the gateway itself is its child and is matched on its own command line.
     if basenames[0] == "osascript":
@@ -627,8 +669,11 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     if any(b in ("hermes-gateway", "hermes-gateway.exe") for b in basenames):
         return "run"
     joined = " ".join(tokens)
-    if "hermes_cli.main" not in joined and "hermes_cli/main.py" not in joined and not any(
-        b in ("hermes", "hermes.exe") for b in basenames
+    # A runtime-launcher process names its entry point in the bootstrap source, not in argv.
+    if not launcher_bootstrap and (
+        "hermes_cli.main" not in joined and "hermes_cli/main.py" not in joined and not any(
+            b in ("hermes", "hermes.exe") for b in basenames
+        )
     ):
         return None
     # Drop --profile X / -p X / --profile=X / -p=X (consumes a VALUE of "gateway" too).

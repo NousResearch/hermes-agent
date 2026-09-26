@@ -129,8 +129,8 @@ class _CatalogBackend:
 
         entry = _catalog_entry(name)
         _check_declared(name, entry, env)
-        return mcp_oauth.start(name, cfg=card_install_config(entry), env=env,
-                               on_commit=lambda: _save_env(env))
+        cfg, secret_env = _split_setup_env(entry, card_install_config(entry), env)
+        return mcp_oauth.start(name, cfg=cfg, env=env, on_commit=lambda: _save_env(secret_env))
 
     def install(self, name: str, env: Dict[str, str]) -> List[str]:
         """Probe the entry's in-memory configuration with ephemeral credentials; save both only
@@ -138,18 +138,12 @@ class _CatalogBackend:
         previous configuration."""
         from agent.secret_scope import (
             current_secret_scope, current_secret_scope_home, reset_secret_scope, set_secret_scope)
-        from hermes_cli.mcp_catalog import _inline_non_secret_value, card_install_config
+        from hermes_cli.mcp_catalog import card_install_config
         from hermes_cli.mcp_config import _probe_single_server, _save_mcp_server
 
         entry = _catalog_entry(name)
         _check_declared(name, entry, env)
-        cfg = card_install_config(entry)
-        # `.env` is secrets-only: non-secret values (hostnames, client ids, workspace names) are
-        # inlined into the server block, the same split `install_entry` makes for the terminal path.
-        secret_names = {spec.name for spec in (entry.auth.env or []) if spec.secret}
-        for key, value in env.items():
-            if key not in secret_names and value:
-                cfg = _inline_non_secret_value(cfg, key, value)
+        cfg, secret_env = _split_setup_env(entry, card_install_config(entry), env)
         # The merged scope keeps the bound scope's home stamp: dropping it would
         # reopen the env fallthrough under a routed profile with multiplex off.
         token = set_secret_scope(
@@ -161,7 +155,7 @@ class _CatalogBackend:
             reset_secret_scope(token)
         if not _save_mcp_server(name, cfg):
             raise RuntimeError(f"'{name}' was rejected: suspicious command/args configuration")
-        _save_env({k: v for k, v in env.items() if k in secret_names})
+        _save_env(secret_env)
         return tools
 
     def enable(self, name: str) -> None:
@@ -190,6 +184,20 @@ def _check_declared(name: str, entry: Any, env: Dict[str, str]) -> None:
         if key not in declared:
             raise ValueError(f"'{name}' does not declare the environment variable {key}")
         validate_env_var_name_for_write(key)
+
+
+def _split_setup_env(entry: Any, cfg: dict, env: Dict[str, str]) -> Tuple[dict, Dict[str, str]]:
+    """``(cfg, secret_env)`` for a card install. `.env` is secrets-only: non-secret values
+    (hostnames, client ids, workspace names) are inlined into the server block, the same split
+    `install_entry` makes for the terminal path, and only the secret specs go to `.env`. Shared by
+    the plain and the OAuth install so the two paths cannot drift apart."""
+    from hermes_cli.mcp_catalog import _inline_non_secret_value
+
+    secret_names = {spec.name for spec in (entry.auth.env or []) if spec.secret}
+    for key, value in env.items():
+        if key not in secret_names and value:
+            cfg = _inline_non_secret_value(cfg, key, value)
+    return cfg, {k: v for k, v in env.items() if k in secret_names}
 
 
 def _save_env(env: Dict[str, str]) -> None:

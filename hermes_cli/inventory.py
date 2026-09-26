@@ -237,6 +237,53 @@ def build_model_options_payload(
         refresh=refresh, probe_custom_providers=refresh, probe_current_custom_provider=not refresh,
         non_blocking_catalogs=not refresh,
     )
+    current_antigravity = ctx.current_provider == "google-antigravity"
+    capabilities = None
+    try:
+        from agent.transports.antigravity_cli import AntigravityClient
+        from hermes_cli.runtime_provider import get_antigravity_runtime_config
+        runtime_config = get_antigravity_runtime_config()
+        binary = runtime_config.get("binary")
+        client = AntigravityClient(None if binary in {None, "", "auto"} else binary)
+        should_probe = current_antigravity or include_unconfigured
+        if not should_probe:
+            try:
+                client.executable
+                should_probe = True
+            except Exception:
+                pass
+        if should_probe:
+            capabilities = client.probe(timeout=2.0)
+    except Exception:
+        capabilities = None
+    # The provider registry contains a metadata-only Antigravity definition so
+    # model switching can resolve it. Replace that static row with the live CLI
+    # inventory; otherwise the picker sees the empty registry row first.
+    payload["providers"] = _without_slug(payload["providers"], "google-antigravity")
+    if current_antigravity or include_unconfigured or (capabilities is not None and capabilities.available):
+        available = bool(capabilities is not None and capabilities.available)
+        authenticated = bool(capabilities is not None and capabilities.authenticated)
+        version = ".".join(map(str, capabilities.version)) if capabilities and capabilities.version else ""
+        warning = "" if authenticated else (capabilities.message if capabilities else "Antigravity CLI not found")
+        runtime_models = ["auto", *(capabilities.models if capabilities is not None else ())]
+        runtime_models = list(dict.fromkeys(runtime_models))
+        payload["providers"].append({
+            "slug": "google-antigravity",
+            "name": "Google Antigravity",
+            "is_current": current_antigravity,
+            "is_user_defined": False,
+            "models": runtime_models,
+            "total_models": len(runtime_models),
+            "source": "local-runtime",
+            "authenticated": authenticated,
+            "auth_type": "external_runtime",
+            "key_env": "",
+            "warning": warning,
+            "runtime_status": {"installed": available, "version": version,
+                               "authentication": "authenticated" if authenticated else "authentication_required"},
+            "capabilities": {model: {"reasoning": True} for model in runtime_models},
+            "featured_models": runtime_models,
+        })
     if not refresh:
         _prewarm_pricing_async(payload["providers"], current_provider=ctx.current_provider,
                                current_base_url=ctx.current_base_url)

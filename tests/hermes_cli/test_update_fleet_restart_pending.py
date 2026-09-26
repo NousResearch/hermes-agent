@@ -655,16 +655,16 @@ def test_startup_warn_discharged_when_multiplexer_covers_owed_profiles(monkeypat
     assert update_cmd._pending_fleet_restart_needed() is False
 
 
-@pytest.mark.parametrize("supervisor", ["desktop", "launchd"])
+@pytest.mark.parametrize("supervisor", ["desktop", "desktop-ssh", "launchd", "systemd"])
 def test_startup_warn_discharged_when_inventory_holds_supervised_serve(monkeypatch, capsys, supervisor):
     """A supervised serve/dashboard row in the marker's inventory is its supervisor's to
     restart (#115090 for receipts, #111494 for the Desktop backend) — it must not make the
     gateway warning permanently undischargeable once every gateway serves the pulled SHA.
 
-    Only ``desktop`` and ``launchd`` are parametrized: those are the two supervisor values the
-    inventory writer can actually put on a serve/dashboard row (``update_inventory``'s ledger
-    pass emits exactly launchd, desktop or manual-serve). The systemd/windows-service/service
-    members of ``_SUPERVISOR_OWNED_SERVE_BACKENDS`` only ever appear on gateway rows.
+    ``desktop``, ``desktop-ssh``, ``launchd`` and ``systemd`` are the supervisor values the inventory
+    writer can put on a serve/dashboard row (``update_inventory``'s ledger pass; ``systemd`` for a
+    unit-backed backend). ``windows-service``/``service`` come from the same gateway PID classifier
+    and are covered by the set membership.
     """
     disk_sha = "e" * 40
     update_cmd._write_fleet_restart_pending_marker(

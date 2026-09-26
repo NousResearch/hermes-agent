@@ -247,9 +247,9 @@ _SUPERVISED_SERVE_BACKENDS = frozenset(
 )
 # Backends whose supervisor restarts the process without any updater bookkeeping. ``manual-serve``
 # is excluded: it owes a durable handoff (``defer_manual_serve``) before it stops counting.
-# ``systemd``/``windows-service``/``service`` mirror ``_SUPERVISED_SERVE_BACKENDS`` for parity only —
-# the inventory writer classifies a serve/dashboard row as exactly launchd, desktop, desktop-ssh or manual-serve
-# (``update_inventory._collect_ledger_runtimes``); those three are set for gateway rows alone.
+# ``update_inventory._collect_ledger_runtimes`` classifies a serve/dashboard row as launchd (loaded
+# job), desktop, desktop-ssh, systemd (the gateway PID classifier, or a ``hermes-serve*`` /
+# ``hermes-dashboard*`` cgroup unit), windows-service / service (gateway PID classifier) or manual-serve.
 _SUPERVISOR_OWNED_SERVE_BACKENDS = _SUPERVISED_SERVE_BACKENDS - {"manual-serve"}
 
 
@@ -1057,9 +1057,10 @@ _DESKTOP_SERVE_SKIP_REASON = (
     "desktop app owns and respawns this serve backend;"
     " the recovery pass must not restart it out from under its supervisor"
 )
-# NOT a claim that no supervisor exists: a systemd-launched serve sets neither HERMES_SPAWN
-# nor HERMES_PARENT_PID ("manual-serve"). Unit-backed serves are recovered by the fresh
-# child's systemd pass; survivors reported by _surviving_pre_update_serve_runtimes.
+# Shared by ``manual-serve`` and ``systemd`` serve/dashboard rows: the inventory classifies a unit-backed
+# backend ``systemd`` from its cgroup (``_ledger_serve_supervisor``), but the fresh child's systemd pass
+# recovers ``hermes-serve*`` units only (``update_restart_recovery._UNIT_RE``); a ``hermes-dashboard*``
+# unit and a manual serve are left running and reported by _surviving_pre_update_serve_runtimes.
 _SERVE_SKIP_REASON = (
     "no per-profile relaunch command reaches a serve/dashboard runtime; recovered by the fresh"
     " systemd unit pass when it owns a hermes-serve* unit, else left running for explicit"

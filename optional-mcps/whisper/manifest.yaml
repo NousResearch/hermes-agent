@@ -1,0 +1,47 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: whisper
+description: Give any AI agent a real, routable IPv6 identity - keyless verify/RDAP, and a full control plane + /128 egress with a key.
+source: https://github.com/whisper-sec/whisper-hermes
+
+# The whisper CLI is a single static binary already on PATH once installed;
+# there is nothing to clone or bootstrap here (same shape as an npx/uvx
+# server - see the n8n manifest's note on omitting `install:` for those).
+# Install the CLI first: curl -fsSL https://get.whisper.online | sh
+transport:
+  type: stdio
+  command: whisper
+  args:
+    - mcp
+
+# Two-tier by design (Postel's law: liberal in what we accept). The key is
+# OPTIONAL - the keyless tools (verify/RDAP) work with no credential at all,
+# so leaving this blank at install time is a fully supported, useful state.
+# Setting a key unlocks the other six tools (register/list/policy/logs/
+# revoke/egress-config); each of those returns a clear "add your key"
+# message instead of failing if called without one.
+auth:
+  type: api_key
+  env:
+    - name: WHISPER_API_KEY
+      prompt: "Whisper API key (optional - unlocks agent registration, policy, logs, and /128 egress; leave blank to use only the keyless verify/RDAP tools)"
+      required: false
+      secret: true
+
+# Leave default_enabled unset (like linear/unreal-engine): every tool here is
+# self-gating at runtime rather than destructive-by-default, so the
+# install-time checklist starts fully checked and users prune from there.
+
+post_install: |
+  Keyless tools (whisper_verify, whisper_rdap) work immediately - no key
+  needed. To unlock the control plane and /128 egress (whisper_register,
+  whisper_list, whisper_policy, whisper_logs, whisper_revoke,
+  whisper_egress_config), get a key at https://whisper.online and re-run:
+
+    hermes mcp configure whisper
+
+  Prerequisite: the whisper CLI on PATH - curl -fsSL https://get.whisper.online | sh
+
+  Start a new Hermes session to load the tools.

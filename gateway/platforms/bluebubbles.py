@@ -63,7 +63,7 @@ _PAGINATION_SUFFIX_RE = re.compile(r"\s*\(\d+/\d+\)$")
 _ADDRESS_RE = re.compile(r"^\+\d+")
 
 _GUID_CACHE_SIZE = 500  # LRU cap for resolved chat-GUID lookups
-_LOCAL_HOSTS = {"0.0.0.0", "127.0.0.1", "localhost", "::"}
+_LOCAL_HOSTS = {"0.0.0.0", "127.0.0.1", "localhost", "::", "::1"}
 
 
 def _redact(text: str) -> str:
@@ -251,12 +251,18 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
     @property
     def _webhook_url(self) -> str:
-        """External webhook URL for BlueBubbles registration (local binds → localhost). In
-        shared-listener mode it is the default listener's ``/p/<profile>/`` URL."""
+        """External webhook URL for BlueBubbles registration. In shared-listener mode it is the
+        default listener's ``/p/<profile>/`` URL.
+
+        Loopback/wildcard binds register the IPv4 literal, NOT the ``localhost`` name. The
+        listener binds IPv4 (``127.0.0.1``), but Node — which the BlueBubbles server runs on —
+        resolves ``localhost`` to IPv6 ``::1`` first on macOS, so every webhook POST fails with
+        ``ECONNREFUSED ::1:<port>`` and inbound messages are silently dropped.
+        """
         shared = getattr(self, "_shared_ingress_url", None)
         if shared:
             return shared
-        host = "localhost" if self.webhook_host in _LOCAL_HOSTS else self.webhook_host
+        host = "127.0.0.1" if self.webhook_host in _LOCAL_HOSTS else self.webhook_host
         return f"http://{host}:{self.webhook_port}{self.webhook_path}"
 
     def _webhook_register_url_with(self, password_param: str) -> str:

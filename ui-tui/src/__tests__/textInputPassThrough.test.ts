@@ -29,6 +29,8 @@ describe('shouldPassThroughToGlobalHandler', () => {
     expect(
       shouldPassThroughToGlobalHandler('', key({ ctrl: true, return: true }), parseVoiceRecordKey('ctrl+enter'))
     ).toBe(true)
+    expect(shouldPassThroughToGlobalHandler('v', key({ ctrl: true }), parseVoiceRecordKey('ctrl+v'))).toBe(true)
+    expect(shouldPassThroughToGlobalHandler('v', key({ meta: true }), parseVoiceRecordKey('alt+v'))).toBe(true)
   })
 
   it('keeps the legacy default pass-through when no custom key is provided', () => {

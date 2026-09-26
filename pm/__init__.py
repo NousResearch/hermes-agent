@@ -31,7 +31,7 @@ _EXPORTS = {
         "prepare_tools",
     ),
     "pm.operations": ("environment_python", "python_tool"),
-    "pm.extras": ("available", "ensure_import", "install_hint"),
+    "pm.extras": ("available", "ensure_import", "extra_supported", "install_hint"),
     "pm.lock": ("Facts", "Lockfile"),
     "pm.package": ("InstallError", "Package", "Runner", "compose_env"),
     "pm.registry": ("all_packages", "get_package", "register", "walk"),

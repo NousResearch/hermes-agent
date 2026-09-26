@@ -33,15 +33,21 @@ class TestMatrixEncryptedDropWarning:
         return fake_client
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("mode, hint", [
-        ("off", "set MATRIX_E2EE_MODE=optional"),
+    @pytest.mark.parametrize("mode, installable, hint", [
+        ("off", True, "set MATRIX_E2EE_MODE=optional"),
+        # Where python-olm can never install (#62401), enabling E2EE would only park Matrix.
+        ("off", False, "Proxy Mode"),
         # Degraded optional mode: the install/enable advice is wrong; point at the setup failure.
-        ("optional", "E2EE mode is optional but the decryptor was not set up"),
+        ("optional", True, "E2EE mode is optional but the decryptor was not set up"),
     ])
     async def test_absorb_sync_warns_once_per_room_for_encrypted_events_without_crypto(
-        self, caplog, mode, hint
+        self, caplog, monkeypatch, mode, installable, hint
     ):
         """Encrypted events with no decryptor must fail loud, once per room (#131778)."""
+        import plugins.platforms.matrix.adapter as matrix_mod
+        from pm.extras import install_hint
+
+        monkeypatch.setattr(matrix_mod, "_e2ee_installable", lambda: installable)
         adapter = _make_adapter()
         adapter._closing = False
         adapter._e2ee_mode = mode
@@ -64,7 +70,9 @@ class TestMatrixEncryptedDropWarning:
         warnings = [r.getMessage() for r in caplog.records if "encrypted" in r.getMessage()]
         assert len(warnings) == 1
         assert "!enc:example.org" in warnings[0] and hint in warnings[0]
-        assert (mode == "off") == ("pip install" in warnings[0])
+        # The install advice is pm's command, and only where it can help.
+        assert (mode == "off" and installable) == (install_hint("matrix") in warnings[0])
+        assert "pip install" not in warnings[0]
 
     @pytest.mark.asyncio
     async def test_absorb_sync_no_encrypted_warning_when_crypto_attached(self, caplog):

@@ -54,11 +54,21 @@ _PLATFORMS = [
 ]
 
 
+def _matrix_unsupported() -> bool:
+    """Hide Matrix exactly where pm refuses its extra: [tool.hermes.extras-platforms] is the one
+    authority for which extra installs where (today: not on native Windows; use WSL)."""
+    try:
+        from pm.extras import extra_supported
+        return not extra_supported("matrix", importable=lambda _anchor: False)
+    except Exception:
+        return sys.platform == "win32"
+
+
 def _all_platforms(catalog: bool = False) -> list[dict]:
     """Built-in ``_PLATFORMS`` plus registry plugin platforms (same dict shape, source in
     ``_registry_entry``). Plugins are discovered here (idempotent) so the setup menu works without a
     running gateway; user-installed ones still need ``plugins.enabled`` (untrusted code). Matrix is
-    hidden on Windows: python-olm has no wheel or native build (use WSL). ``catalog`` (the pick menus)
+    hidden where its extra cannot install (``_matrix_unsupported``). ``catalog`` (the pick menus)
     appends the catalog platforms nothing loaded provides yet (``_catalog_platform``): picking one
     installs it first. Status summaries leave it off: a row that is not installed is no progress."""
     try:
@@ -67,7 +77,7 @@ def _all_platforms(catalog: bool = False) -> list[dict]:
     except Exception as e:
         _gw().logger.debug("plugin discovery failed during platform enumeration: %s", e)
 
-    hide_matrix = sys.platform == "win32"
+    hide_matrix = _matrix_unsupported()
     platforms = [dict(p) for p in _gw()._PLATFORMS if not (hide_matrix and p.get("key") == "matrix")]
     by_key = {p["key"]: p for p in platforms}
 

@@ -640,11 +640,26 @@ def launchd_install(force: bool = False, *, start_now: bool = True):
         print("  hermes gateway status             # Check status")
         return
 
-    try:
-        _gw()._launchctl_bootstrap(_gw()._launchd_domain(), plist_path, label, timeout=30)
-    except subprocess.CalledProcessError as e:
-        _gw()._launchd_degrade_or_raise(e, "launchctl bootstrap")
-        return
+    if force:
+        old_pid = _gw()._launchctl_supervised_pid(label)
+        domain = _gw()._launchd_domain()
+        subprocess.run(
+            ["launchctl", "bootout", f"{domain}/{label}"],
+            check=False, timeout=90, **_gw()._CAPTURE_TEXT)
+        budget = _launchd_reload_budget()
+        if old_pid is not None:
+            _gw()._wait_for_pid_exit(old_pid, budget)
+        deadline = time.monotonic() + budget
+        if not _gw()._retry_launchctl_bootstrap_until_registered(domain, plist_path, label, deadline=deadline):
+            print("⚠ launchd bootstrap failed after drain wait — service may be unloaded")
+            print("  Run: hermes gateway install --force again or check launchd-reload.log")
+            sys.exit(1)
+    else:
+        try:
+            _gw()._launchctl_bootstrap(_gw()._launchd_domain(), plist_path, label, timeout=30)
+        except subprocess.CalledProcessError as e:
+            _gw()._launchd_degrade_or_raise(e, "launchctl bootstrap")
+            return
 
     print()
     print("✓ Service installed and loaded!")

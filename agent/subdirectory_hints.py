@@ -13,6 +13,7 @@ from typing import Dict, Any, Optional, Set
 
 from agent.prompt_builder import _read_text_with_timeout, _scan_context_content, _truncate_content
 from agent.search_policy import SEARCH_PRUNE_DIR_NAMES
+from hermes_cli._subprocess_compat import IS_WINDOWS, split_command_line
 
 logger = logging.getLogger(__name__)
 
@@ -89,12 +90,26 @@ _NAV_COMMANDS = frozenset({"cd", "pushd"})
 _SHELL_OPERATORS = frozenset({"&&", "||", "|", ";", "&", ";;", "|&", "(", ")"})
 
 
+def _strip_one_quote_layer(token: str) -> str:
+    """Drop one layer of matching outer quotes — what ``posix=True`` would have removed."""
+    if len(token) >= 2 and token[0] == token[-1] and token[0] in ("'", '"'):
+        return token[1:-1]
+    return token
+
+
 def _nav_targets(cmd: str) -> list:
-    """Operands of `cd` / `pushd` that begin a shell segment. `cd -` and bare `cd` yield nothing."""
-    lexer = shlex.shlex(cmd, posix=True, punctuation_chars=True)
+    """Operands of `cd` / `pushd` that begin a shell segment. `cd -` and bare `cd` yield nothing.
+
+    ``posix=False`` on Windows: POSIX lexing treats every backslash as an escape, so
+    ``cd backend\\scripts`` arrived as ``backendscripts`` and the directory was never
+    discovered. Operator splitting is identical either way; only quote removal differs,
+    which ``_strip_one_quote_layer`` restores. Same rule as
+    ``hermes_cli._subprocess_compat.split_command_line``. See #78293.
+    """
+    lexer = shlex.shlex(cmd, posix=not IS_WINDOWS, punctuation_chars=True)
     lexer.whitespace_split = True
     try:
-        tokens = list(lexer)
+        tokens = [_strip_one_quote_layer(t) for t in lexer] if IS_WINDOWS else list(lexer)
     except ValueError:
         return []
     targets, segment_start = [], True
@@ -177,7 +192,9 @@ class SubdirectoryHintTracker:
     def _extract_paths_from_command(self, cmd: str, candidates: Set[Path]):
         """Extract path-like tokens (contain / or .; not flags or URLs) from a shell command."""
         try:
-            tokens = shlex.split(cmd)
+            # Windows-safe: POSIX shlex eats backslashes, so `backend\scripts\build.py`
+            # arrived as `backendscriptsbuild.py` and resolved to nothing (#78293).
+            tokens = split_command_line(cmd)
         except ValueError:
             tokens = cmd.split()
         # `cd backend && ls`: a bare directory name has no `/` or `.`, so the generic filter below drops
@@ -187,7 +204,12 @@ class SubdirectoryHintTracker:
         for target in _nav_targets(cmd):
             self._add_path_candidate(target, candidates)
         for token in tokens:
-            if token.startswith(("-", "http://", "https://", "git@")) or ("/" not in token and "." not in token):
+            # A separator counts as path-like: on Windows ``pytest tests\unit`` carries no "/"
+            # and no ".", so the directory was dropped even once tokenizing preserved it.
+            separators = ("/", "\\") if IS_WINDOWS else ("/",)
+            if token.startswith(("-", "http://", "https://", "git@")) or not (
+                any(sep in token for sep in separators) or "." in token
+            ):
                 continue
             self._add_path_candidate(token, candidates)
 

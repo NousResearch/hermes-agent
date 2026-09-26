@@ -115,6 +115,7 @@ jinja2 = false
 sounddevice = false
 alibabacloud-dingtalk = false
 dingtalk-stream = false
+pilk = false
 
 [manifest]
 overrides = [

@@ -230,6 +230,42 @@ const AgentMessageNote: FC<{ text: string }> = ({ text }) => {
   )
 }
 
+// Scheduled cron deliveries ("[Cronjob \"<name>\" output — scheduled job, not
+// the user. …]" + the job's output; cron/scheduler_delivery.py) arrive on the
+// user role because the recipient's review turn runs on them, but they are
+// harness plumbing, not the human speaking — render them as a compact timeline
+// notice with the job's output one click away, like the two families above.
+export const CRONJOB_DELIVERY_RE =
+  /^\[Cronjob "([^"\n]{1,120})" output — scheduled job, not the user\.[^\]]*\]\s*([\s\S]*)$/u
+
+const CronjobDeliveryNote: FC<{ text: string }> = ({ text }) => {
+  const match = CRONJOB_DELIVERY_RE.exec(text)
+  const name = (match?.[1] || 'scheduled job').trim()
+  const output = (match?.[2] || '').trim()
+
+  return (
+    <div
+      className="flex max-w-[min(86%,44rem)] flex-col gap-0.5 self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60"
+      data-slot="aui_cronjob-note"
+    >
+      <span className="flex items-center justify-center gap-1.5">
+        <Codicon className="text-muted-foreground/55" name="watch" size="0.75rem" />
+        <span className="wrap-anywhere">Scheduled job: {name}</span>
+      </span>
+      {output && (
+        <details className="self-center">
+          <summary className="cursor-pointer select-none text-center text-muted-foreground/45 hover:text-muted-foreground/70">
+            show output
+          </summary>
+          <div className="mt-1 max-w-[36rem] rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2 text-left text-[0.75rem] leading-5 text-foreground/85">
+            <UserMessageText text={output} />
+          </div>
+        </details>
+      )}
+    </div>
+  )
+}
+
 const ProcessNotificationNote: FC<{ text: string }> = ({ text }) => {
   const body = text.replace(/^\[IMPORTANT:\s*/, '').replace(/\]$/, '')
   const newline = body.indexOf('\n')
@@ -371,6 +407,20 @@ export const UserMessage: FC<{
         data-slot="aui_user-message-root"
       >
         <AgentMessageNote text={messageText.trim()} />
+      </MessagePrimitive.Root>
+    )
+  }
+
+  // Scheduled-job delivery, not a human prompt — compact timeline notice, the
+  // job's output collapsed behind a disclosure (see CRONJOB_DELIVERY_RE).
+  if (CRONJOB_DELIVERY_RE.test(messageText.trim())) {
+    return (
+      <MessagePrimitive.Root
+        className="flex w-full min-w-0 flex-col items-stretch pb-(--conversation-turn-gap)"
+        data-role="user"
+        data-slot="aui_user-message-root"
+      >
+        <CronjobDeliveryNote text={messageText.trim()} />
       </MessagePrimitive.Root>
     )
   }

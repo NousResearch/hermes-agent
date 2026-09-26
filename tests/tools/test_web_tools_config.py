@@ -329,6 +329,22 @@ class TestBackendSelection:
              patch("agent.web_search_registry._keyless_tier_enabled", return_value=False):
             assert _get_backend() == "firecrawl"
 
+    def test_fallback_skips_openai_native_marker_with_codex_credentials(self):
+        """Codex OAuth makes the marker discoverable, but never able to service a
+        client-side call, so an unconfigured backend must fall through to the
+        normal default ladder instead of selecting it."""
+        from plugins.web.openai_native.provider import OpenAINativeWebSearchProvider
+        from tools.web_tools import _get_backend
+
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch("tools.web_tools._is_tool_gateway_ready", return_value=False), \
+             patch("tools.web_tools._ddgs_package_importable", return_value=False), \
+             patch("tools.web_tools._list_registered_web_providers",
+                   return_value=[OpenAINativeWebSearchProvider()]), \
+             patch("plugins.web.openai_native.provider.has_codex_credentials", return_value=True), \
+             patch("agent.web_search_registry._keyless_tier_enabled", return_value=False):
+            assert _get_backend() == "firecrawl"
+
     def test_invalid_config_is_returned_verbatim(self):
         """Strict selection: web.backend=nonexistent is returned as-is so the
         dispatch path raises the honest selection-naming error — never

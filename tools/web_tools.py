@@ -127,8 +127,14 @@ def _get_backend() -> str:
             return backend
 
     # Plugin-contributed providers (built-ins are covered above); probe the held object directly.
+    # Marker providers that require a transport-level swap can opt out because this
+    # ladder resolves a backend for a client-side tool call.
     for provider in _list_registered_web_providers():
-        if provider.name not in _LEGACY_WEB_BACKENDS and _probe(provider, "is_available"):
+        if (
+            provider.name not in _LEGACY_WEB_BACKENDS
+            and getattr(provider, "AUTODETECT", True)
+            and _probe(provider, "is_available")
+        ):
             return provider.name
 
     return _keyless_backend() or "firecrawl"  # default (backward compat)

@@ -1349,7 +1349,7 @@ def create_profile(
             if stripped:
                 logger.info("profile %s: cloned without messaging channels %s", canon, stripped)
         _finish_profile_layout(staging, no_skills=no_skills, clone_all=clone_all, description=description)
-        os.rename(staging, profile_dir)
+        _publish_staging_dir(staging, profile_dir)
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise
@@ -1374,6 +1374,39 @@ def _clone_staging_dir(profile_dir: Path) -> Path:
     elif staging.is_dir():
         shutil.rmtree(staging, ignore_errors=True)
     return staging
+
+
+_PUBLISH_RETRY_DELAYS = (0.1, 0.25, 0.5, 1.0)
+
+
+def _publish_staging_dir(staging: Path, profile_dir: Path) -> None:
+    """Move the staged profile tree into place, surviving transient file locks.
+
+    On Windows ``os.rename`` of a directory fails with ``PermissionError`` (WinError 5)
+    while another process -- indexer, antivirus, editor file watcher -- holds a freshly
+    copied file open, and the lock can outlast a short retry budget, so retry with backoff
+    and then fall back to copying: channel credentials were already stripped from the
+    staging tree, so a half-visible target is safe for the multiplexer to adopt.
+    """
+    # ponytail: fixed retry budget, then a non-atomic copy fallback; a genuine (non-
+    # transient) denial pays the ~2 s budget before failing, and FileExistsError from a
+    # concurrent same-name create is re-raised without cleanup so we never delete a
+    # directory we did not create.
+    for delay in _PUBLISH_RETRY_DELAYS:
+        try:
+            os.rename(staging, profile_dir)
+            return
+        except PermissionError:
+            time.sleep(delay)
+    logger.info("profile publish: rename of %s stayed denied, copying instead", staging.name)
+    try:
+        shutil.copytree(staging, profile_dir, symlinks=True)
+    except FileExistsError:
+        raise
+    except BaseException:
+        shutil.rmtree(profile_dir, ignore_errors=True)
+        raise
+    shutil.rmtree(staging, ignore_errors=True)
 
 
 def _finish_profile_layout(profile_dir: Path, *, no_skills: bool, clone_all: bool,

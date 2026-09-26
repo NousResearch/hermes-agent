@@ -101,6 +101,7 @@ def test_flush_fails_closed_when_row_cannot_be_recreated(monkeypatch):
         turn3 = turn2 + [{"role": "assistant", "content": "c"}]
         assert agent._flush_messages_to_session_db(turn3, turn2) is True
         assert [r["content"] for r in db.get_messages("sess-gone")] == ["a", "b", "c"]
+        assert agent._session_row_replay_pending is None
 
         # The heal recreates the row but its single retry write fails (lock/lease/disk): the next
         # flush finds a live row (no FK, no heal) and must still replay the history prefix.

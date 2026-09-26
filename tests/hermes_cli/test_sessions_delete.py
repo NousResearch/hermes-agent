@@ -16,6 +16,9 @@ def test_sessions_delete_accepts_unique_id_prefix(monkeypatch, capsys):
         def get_session(self, session_id):
             return {"id": session_id, "pinned": 0}
 
+        def session_turn_lease_holder(self, session_id):
+            return None
+
         def delete_session(self, session_id, **kwargs):
             captured["deleted"] = session_id
             return True

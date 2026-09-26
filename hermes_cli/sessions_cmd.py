@@ -576,6 +576,13 @@ def _cmd_delete(db, args):
     resolved_session_id = db.resolve_session_id(args.session_id)
     if not resolved_session_id:
         return _not_found(args.session_id)
+    # Refuse while a turn owns the conversation (#123583): pulling the row out from under a live
+    # agent makes its next flush fail the FK and silently drop that turn's transcript.
+    from hermes_state_compression import active_turn_lease_detail
+    _lease_holder = db.session_turn_lease_holder(resolved_session_id)
+    if _lease_holder:
+        print(active_turn_lease_detail(resolved_session_id, _lease_holder))
+        return 1
     # The delete is honored (explicit id), but a pin is a "keep" flag: say so instead of silently destroying it.
     _pinned_note = " (this session is PINNED)" if (db.get_session(resolved_session_id) or {}).get("pinned") else ""
     if not args.yes:

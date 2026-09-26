@@ -54,6 +54,18 @@ def _cooldown_row(exists: bool, cooldown_until, error) -> Dict[str, Any]:
             "cooldown_until": float(cooldown_until) if cooldown_until is not None else None, "error": error}
 
 
+def active_turn_lease_detail(session_id: str, holder: str) -> str:
+    """One phrasing for every delete surface that refuses a row a turn still owns.
+
+    Kept next to :meth:`SessionCompressionMixin.session_turn_lease_holder` so the CLI, the web
+    router and the API server cannot drift into three different explanations of the same refusal.
+    """
+    return (
+        f"Session '{session_id}' has an active turn ({holder}); "
+        "wait for it to finish, or interrupt it, then retry."
+    )
+
+
 def _claim_lease_row(conn, table: str, key_col: str, key: str, holder: str, now: float, expires_at: float,
                      stale) -> Tuple[bool, Optional[str]]:
     """Single-transaction lease claim: DELETE a stale holder's row (``stale(holder,
@@ -630,6 +642,35 @@ class SessionCompressionMixin:
                 "DELETE FROM session_turn_leases WHERE conversation_id = ? AND holder = ?",
                 (conversation_id, holder))
         self._execute_write(_do)
+
+    def session_turn_lease_holder(self, session_id: str) -> Optional[str]:
+        """Holder of a *live* turn lease for ``session_id``'s conversation, or None.
+
+        "Live" mirrors the reclaim rule in :meth:`try_acquire_session_turn_lease` — a row counts
+        only while it has not expired AND its holder process is not provably gone — so a crashed
+        holder can never block a caller that could equally have reclaimed the lease itself.
+        Guard use only (refusing a destructive delete while a turn owns the conversation);
+        admission still goes through the acquire paths above.
+        """
+        if not session_id:
+            return None
+        from hermes_state import _compression_lock_holder_process_is_dead
+        now = time.time()
+        with self._read_ctx() as conn:
+            conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
+            row = conn.execute(
+                "SELECT holder, expires_at FROM session_turn_leases WHERE conversation_id = ?",
+                (conversation_id,)).fetchone()
+        if row is None:
+            return None
+        try:
+            expires_at = float(row["expires_at"])
+        except (TypeError, ValueError, IndexError):
+            return None
+        if expires_at <= now:
+            return None
+        holder = str(row["holder"] or "")
+        return None if _compression_lock_holder_process_is_dead(holder) else holder
 
     def get_compression_lock_holder(self, session_id: str) -> Optional[str]:
         """Current (non-expired) holder for ``session_id``, or None. Diagnostic only."""

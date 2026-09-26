@@ -3206,6 +3206,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if err:
             return err
         db = await self._ensure_session_db_async()
+        # Refuse while a turn owns the conversation: deleting the row under a live agent makes
+        # its next flush fail the FK and silently drop that turn's transcript (#123583).
+        from hermes_state_compression import active_turn_lease_detail
+        holder = await asyncio.to_thread(db.session_turn_lease_holder, session_id)
+        if holder:
+            return _error_response(
+                active_turn_lease_detail(session_id, holder), 409, code="session_active_turn")
         deleted = await asyncio.to_thread(db.delete_session, session_id)
         return web.json_response({"object": "hermes.session.deleted", "id": session_id, "deleted": bool(deleted)})
 

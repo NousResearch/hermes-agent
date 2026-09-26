@@ -1300,6 +1300,79 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertTrue(captured["request"].request_body.reply_in_thread)
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_send_reply_honors_flat_reply_config(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig(extra={"reply_in_thread": False}))
+        captured = {}
+
+        class _MessageAPI:
+            def reply(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_flat_reply"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content="final result",
+                    reply_to="om_parent",
+                    metadata={"thread_id": "omt-thread"},
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertFalse(captured["request"].request_body.reply_in_thread)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_without_anchor_honors_flat_reply_config(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig(extra={"reply_in_thread": False}))
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_flat_create"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content="final result",
+                    metadata={"thread_id": "omt-thread"},
+                )
+            )
+
+        self.assertTrue(result.success)
+        request = captured["request"]
+        self.assertEqual(request.receive_id_type, "chat_id")
+        self.assertEqual(request.request_body.receive_id, "oc_chat")
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_send_uses_post_for_every_chunk_of_multi_chunk_markdown(self):
         """Regression for #26841: when a long Markdown message is split
         across multiple chunks, every chunk must go out as

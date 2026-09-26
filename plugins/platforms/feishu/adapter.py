@@ -1298,6 +1298,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._settings = self._load_settings(config.extra or {})
         self._apply_settings(self._settings)
         self._client: Optional[Any] = None
+        self._cot_client: Optional[Any] = None
         # Adapter-owned pool for blocking SDK calls, recreated on demand: a torn-down default
         # executor can no longer wedge sends with "Executor shutdown has been called".
         # See issue #10849.
@@ -1563,11 +1564,25 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_thread_loop = None
         self._loop = None
         self._event_handler = None
+        if self._cot_client is not None:
+            await self._cot_client.close()
+            self._cot_client = None
         self._shutdown_sdk_executor()
         self._persist_seen_message_ids()
         await self._release_app_lock()
         self._mark_disconnected()
         logger.info("[Feishu] Disconnected")
+
+    async def start_native_cot(
+        self, chat_id: str, origin_message_id: str | None, mode: str, input_preview: str = ""
+    ) -> Any:
+        from plugins.platforms.feishu.cot import FeishuCOTClient
+
+        if self._cot_client is None:
+            self._cot_client = FeishuCOTClient(self._app_id, self._app_secret, self._domain_name)
+        return await self._cot_client.start(
+            chat_id, origin_message_id, mode, input_preview=input_preview
+        )
 
     async def _teardown_ws_thread(self, ws_client: Any, ws_thread_loop: Any) -> None:
         """CLOSE frame → cancel the WS thread's tasks → wait for the thread future."""
@@ -3728,16 +3743,17 @@ class FeishuAdapter(BasePlatformAdapter):
         self, *, chat_id: str, msg_type: str, payload: str, reply_to: Optional[str], metadata: Optional[Dict[str, Any]],
     ) -> Any:
         thread_id = (metadata or {}).get("thread_id")
+        reply_in_thread = bool(thread_id) and self.config.extra.get("reply_in_thread", True) is not False
         effective_reply_to = reply_to or ((metadata or {}).get("reply_to_message_id") if thread_id else None)
         if effective_reply_to:
             body = self._build_reply_message_body(
-                content=payload, msg_type=msg_type, reply_in_thread=bool(thread_id), uuid_value=str(uuid.uuid4()),
+                content=payload, msg_type=msg_type, reply_in_thread=reply_in_thread, uuid_value=str(uuid.uuid4()),
             )
             request = self._build_reply_message_request(effective_reply_to, body)
             return await self._run_blocking(self._client.im.v1.message.reply, request)
-        if thread_id:
+        if reply_in_thread:
             # reply→create fallback inside a topic: thread_id as receive_id keeps it in the topic.
-            receive_id, receive_id_type = thread_id, "thread_id"
+            receive_id, receive_id_type = str(thread_id), "thread_id"
         elif chat_id.startswith("feishu_user_id:"):
             receive_id, receive_id_type = chat_id.split(":", 1)[1], "user_id"
         else:

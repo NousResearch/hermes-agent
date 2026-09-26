@@ -615,6 +615,15 @@ The lifecycle plus the load-bearing reference details (workspace kinds, delivera
 
 **Worker session names.** A worker's session is titled after its card (`Fix the swap modal`, or `Kanban task <id>` when the board row can't be read) at spawn, so `hermes sessions` and session search show the card, not a model's guess. Workers never make the auxiliary `title_generation` model call that names interactive sessions; a manual `/title` in a worker session still wins.
 
+### Exact-head PR-CI completion gate
+
+`kanban_complete` is a **terminal transition**: once a task is `done` the dispatcher moves on and no worker is retained to fix a broken PR. So when a run published a pull request, the kernel refuses to mark the task done on the worker's say-so — completion evidence is **machine-verified green CI at the PR's exact head SHA** (see #91230 on self-report audits, #84254 on in-context post-publication validation, and #52311 on acceptance-criteria gates at `kanban_complete`):
+
+- A published PR is detected from the `kanban_complete(published_pr="https://github.com/OWNER/REPO/pull/N")` argument — preferred — or, failing that, from the first GitHub PR URL in the handoff text (`summary`/`result`). Omitting the argument does **not** bypass the gate.
+- On completion, the gate snapshots the PR via `gh api`: the PR's current head SHA, check runs reported for that exact SHA, and legacy commit statuses. Required checks must conclude `success` at that head; optional or rerun jobs with conclusions like `skipped` or `neutral` do not veto required-check success.
+- Anything else is a non-success and rejects the completion with a classification and per-run receipts: `failure` (a check concluded `failure` — fix, push, and call `kanban_complete` again), `pending` (checks still running — wait and retry, or `kanban_block`), `infra` (cancelled / timed_out / stale / action_required runs, or `gh` itself failing — re-run or block; never done), `missing` (no check runs **and** no commit statuses at the head). Rejections keep the task `running`/actionable; they are never a silent pass.
+- Tasks whose contract is intentionally local-only (the handoff publishes no PR) are the documented escape hatch and are **not** gated.
+
 ### Pinning extra skills to a specific task
 
 Sometimes a single task needs specialist context the assignee profile doesn't carry by default — a translation job that needs the `translation` skill, a review task that needs `github-code-review`, a security audit that needs `security-pr-audit`. Rather than editing the assignee's profile every time, attach the skills directly to the task.

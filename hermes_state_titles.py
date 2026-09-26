@@ -131,6 +131,71 @@ class SessionTitlesMixin:
         ValueError on conflict or validation failure."""
         return self._set_session_title(session_id, title, source=self.TITLE_SOURCE_USER)
 
+    def refresh_auto_title(self, session_id: str, title: Optional[str], *, source: str) -> bool:
+        """Refresh an existing automatic title without crossing provenance boundaries.
+
+        Equal-authority refreshes and ``derived`` to ``llm`` upgrades are allowed;
+        user/legacy titles and higher-authority automatic titles are left untouched.
+        The read and write share one exact-value compare-and-swap transaction, so a
+        concurrent user rename wins.
+        """
+        title = self.sanitize_title(title)
+        if title is None:
+            return False
+        if source not in (self.TITLE_SOURCE_DERIVED, self.TITLE_SOURCE_LLM):
+            raise ValueError(f"invalid automatic title source: {source!r}")
+        automatic_sources = (self.TITLE_SOURCE_DERIVED, self.TITLE_SOURCE_LLM)
+        new_rank = self._title_rank(source)
+
+        def _do(conn):
+            current = conn.execute(
+                "SELECT title, title_source, hidden FROM sessions WHERE id = ?", (session_id,),
+            ).fetchone()
+            if current is None or current["title_source"] not in automatic_sources:
+                return 0
+            # Automatic refresh is a separate write path from ``_set_session_title`` but
+            # must preserve the same provenance-blind canonical Bot Chat identity guard.
+            if (
+                (current["title"] or "") == self.CANONICAL_BOT_CHAT_TITLE
+                and bool(current["hidden"])
+                and title != self.CANONICAL_BOT_CHAT_TITLE
+            ):
+                return 0
+            if self._title_rank(current["title_source"]) > new_rank:
+                return 0
+            conflict = conn.execute(
+                "SELECT id, title_source, hidden FROM sessions WHERE title = ? AND id != ?",
+                (title, session_id),
+            ).fetchone()
+            if conflict:
+                conflict_id = conflict["id"]
+                if title == self.CANONICAL_BOT_CHAT_TITLE and bool(conflict["hidden"]):
+                    return 0
+                if self._is_compression_ancestor(
+                    conn, ancestor_id=conflict_id, descendant_id=session_id
+                ):
+                    ancestor_source = conflict["title_source"]
+                    if (
+                        ancestor_source not in automatic_sources
+                        or self._title_rank(ancestor_source) > new_rank
+                    ):
+                        return 0
+                    cleared = conn.execute(
+                        "UPDATE sessions SET title = NULL, title_source = NULL "
+                        "WHERE id = ? AND title IS ? AND title_source IS ?",
+                        (conflict_id, title, ancestor_source),
+                    ).rowcount
+                    if cleared != 1:
+                        return 0
+                else:
+                    raise ValueError(f"Title '{title}' is already in use by session {conflict_id}")
+            return conn.execute(
+                "UPDATE sessions SET title = ?, title_source = ? WHERE id = ? AND title IS ? AND title_source IS ?",
+                (title, source, session_id, current["title"], current["title_source"]),
+            ).rowcount
+
+        return self._execute_write(_do) > 0
+
     def set_auto_title(self, session_id: str, title: str, *, source: str) -> bool:
         """Set an automatic title; False (untouched) when a higher-authority title holds the row."""
         if source not in (self.TITLE_SOURCE_DERIVED, self.TITLE_SOURCE_LLM):

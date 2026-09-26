@@ -14,6 +14,7 @@ import sqlite3
 import stat
 import sys
 import tempfile
+import time
 import zipfile
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -24,6 +25,13 @@ from utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+_RESTORE_STALL_SECONDS = 10.0
+
+
+class _RestoreStalled(RuntimeError):
+    """The live destination prevented the SQLite page restore from advancing."""
+
 
 def _foreign_db_holder_pids(db_path: Path) -> Optional[List[int]]:
     """PIDs of OTHER processes holding *db_path* or its WAL/SHM open.
@@ -112,7 +120,9 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
 
     dst_conn: Optional[sqlite3.Connection] = None
     try:
-        dst_conn = sqlite3.connect(str(dst))
+        # The progress callback below owns the entire lock budget. Avoid an
+        # extra implicit five-second busy wait before each SQLite operation.
+        dst_conn = sqlite3.connect(str(dst), timeout=0.0)
         try:
             # Force a WAL checkpoint so the backup starts from a clean
             # state rather than writing on top of a deep WAL.
@@ -121,7 +131,23 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
             pass
         src_conn = sqlite3.connect(read_only_db_uri(src), uri=True)
         try:
-            src_conn.backup(dst_conn)
+            # sqlite3.backup() retries SQLITE_BUSY/LOCKED forever regardless of
+            # connect(timeout=...). A live writer can hold the destination lock
+            # while /snapshot restore or hermes import waits without a deadline.
+            last_progress = time.monotonic()
+            fewest_remaining = None
+
+            def on_progress(status: int, remaining: int, _total: int) -> None:
+                nonlocal last_progress, fewest_remaining
+                if status not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED) and (
+                    fewest_remaining is None or remaining < fewest_remaining
+                ):
+                    fewest_remaining = remaining
+                    last_progress = time.monotonic()
+                elif time.monotonic() - last_progress >= _RESTORE_STALL_SECONDS:
+                    raise _RestoreStalled("SQLite restore made no progress for 10 seconds")
+
+            src_conn.backup(dst_conn, pages=256, progress=on_progress, sleep=0.1)
         finally:
             src_conn.close()
         dst_conn.close()
@@ -132,6 +158,13 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
         except Exception:
             pass
         return True
+    except _RestoreStalled as exc:
+        logger.warning("SQLite safe restore stalled for %s -> %s: %s", src, dst, exc)
+        if dst_conn is not None:
+            dst_conn.close()
+        # A busy destination is live. Never run the unlink+move fallback:
+        # even a same-process untracked SQLite handle may own the write lock.
+        return False
     except Exception as exc:
         logger.warning("SQLite safe restore failed for %s -> %s: %s", src, dst, exc)
         # Release our own handle on *dst* before the fallback: on Windows an

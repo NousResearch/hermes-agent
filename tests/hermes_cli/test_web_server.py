@@ -4372,6 +4372,92 @@ class TestPluginAPIAuth:
         assert resp.status_code == 401
 
 
+class TestPluginAPISecretScopeProductionMount:
+    """#120310: a plugin API handler's ``get_secret()`` must resolve the *requested*
+    profile's credentials under multi-profile hosting, verified through the REAL mount
+    path — discovery → import → ``_mount_plugin_api_routes()`` (which attaches
+    ``_plugin_route_secret_scope``) → a live request against ``app`` — not a hand-built
+    ``include_router``. The dedicated ``test_plugin_api_secret_scope.py`` suite proves the
+    dependency in isolation; this closes the actual reported surface end-to-end and pins
+    that the launch profile and a ``?profile=`` request read distinct secrets, that the
+    request profile does not leak back into the launch profile, and that an unknown
+    profile is rejected in the dependency before the handler runs.
+    """
+
+    _PROBE_KEY = "EXAMPLE_PLUGIN_PROBE_KEY"
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, monkeypatch, _isolate_hermes_home, _install_example_plugin):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        import hermes_state
+        from hermes_constants import get_hermes_home
+        from hermes_cli import profiles
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        default_home = get_hermes_home()
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", default_home / "state.db")
+
+        # Anchor the named-profiles root to the isolated home so ``?profile=workerb``
+        # resolves inside the test sandbox (mirrors test_web_server_skills_profiles).
+        profiles_root = default_home / "profiles"
+        monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
+        monkeypatch.setattr(profiles, "_get_profiles_root", lambda: profiles_root)
+
+        # Named profile B: a live profile (``.env`` is both an identity marker and the
+        # secret source) with its OWN value for the probe key.
+        worker_home = profiles_root / "workerb"
+        worker_home.mkdir(parents=True, exist_ok=True)
+        (worker_home / ".env").write_text(f"{self._PROBE_KEY}=sk-workerb\n", encoding="utf-8")
+
+        # Launch profile A: an env-only credential (systemd ``Environment=`` style), frozen
+        # into the launch scope when multi-profile hosting activates.
+        monkeypatch.setenv(self._PROBE_KEY, "sk-launch-a")
+
+        import tui_gateway.launch_profile_policy as lpp
+        from agent.secret_scope import is_multiplex_active, set_multiplex_active
+
+        monkeypatch.setattr(lpp, "_snapshot", None)  # freeze the launch env fresh
+        self._previous_multiplex = is_multiplex_active()
+        lpp.activate_multi_profile_hosting()  # freezes os.environ + flips multiplex on
+
+        self.client = TestClient(app)
+        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+        try:
+            yield
+        finally:
+            set_multiplex_active(self._previous_multiplex)
+
+    def _probe(self, profile=None):
+        params = {"profile": profile} if profile is not None else None
+        return self.client.get("/api/plugins/example/whoami", params=params)
+
+    def test_launch_and_requested_profile_read_distinct_secrets(self):
+        # No ``?profile=`` → the launch profile's frozen env-only credential.
+        resp = self._probe()
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "key": "sk-launch-a"}
+
+        # ``?profile=workerb`` → that profile's own credential, through the real mount.
+        resp = self._probe("workerb")
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "key": "sk-workerb"}
+
+        # Back to the launch profile: the request scope reset, so B never leaks into A.
+        resp = self._probe()
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "key": "sk-launch-a"}
+
+    def test_unknown_profile_rejected_before_handler(self):
+        # The dependency raises HTTPException(404) before the handler runs, so this is a
+        # 404 — NOT the handler's folded ``{"ok": False}`` no-data contract.
+        resp = self._probe("ghost")
+        assert resp.status_code == 404
+
+
 class TestDashboardPluginManifestExtensions:
     """Tests for the extended plugin manifest fields (tab.override,
     tab.hidden, slots) read by _discover_dashboard_plugins()."""

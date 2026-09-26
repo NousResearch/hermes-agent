@@ -367,7 +367,7 @@ hermes status [--all] [--deep]
 ## `hermes cron`
 
 ```bash
-hermes cron <list|create|edit|pause|resume|run|remove|status|tick>
+hermes cron <list|create|edit|pause|resume|run|remove|status|notepad|tick>
 ```
 
 | 子命令 | 说明 |
@@ -380,6 +380,7 @@ hermes cron <list|create|edit|pause|resume|run|remove|status|tick>
 | `run` | 在下次调度器 tick 时触发任务。 |
 | `remove` | 删除调度任务。 |
 | `status` | 检查 cron 调度器是否正在运行。 |
+| `notepad <job_id> [get\|set\|delete\|list] [key] [value]` | 读写任务的持久化记事本——一个跨运行保留、绑定到该任务的键值存储。默认执行 `list`。 |
 | `tick` | 运行到期任务一次后退出。 |
 
 ## `hermes kanban`

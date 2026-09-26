@@ -753,7 +753,7 @@ hermes status [--all] [--deep]
 ## `hermes cron`
 
 ```bash
-hermes cron <list|create|edit|pause|resume|run|remove|status|runs|incidents|doctor|tick>
+hermes cron <list|create|edit|pause|resume|run|remove|status|runs|incidents|notepad|doctor|tick>
 ```
 
 | Subcommand | Description |
@@ -766,6 +766,7 @@ hermes cron <list|create|edit|pause|resume|run|remove|status|runs|incidents|doct
 | `run` | Trigger a job on the next scheduler tick. |
 | `remove` | Delete a scheduled job. |
 | `status` | Check whether the cron scheduler is running. |
+| `notepad <job_id> [get\|set\|delete\|list] [key] [value]` | Read/write a job's durable notepad — a persistent key-value store scoped to that job, carried across runs. Defaults to `list`. |
 | `doctor` | Read-only fleet health check: failed runs, failed deliveries, overdue/missing `next_run_at`, missing scripts or workdirs. Exits non-zero when issues are found. |
 | `tick` | Run due jobs once and exit. |
 

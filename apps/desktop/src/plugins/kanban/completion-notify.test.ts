@@ -780,6 +780,21 @@ describe('unseen badge', () => {
     expect(m.$kanbanUnseen.get()).toBe(0)
   })
 
+  it('returning to a visible window clears every viewed board', async () => {
+    const doc = stubDocument('hidden')
+    const m = await loadModule()
+    m.bindCompletionNotify(makeRest(() => 100) as never)
+
+    m.markBoardViewing('local', 'a')
+    m.markBoardViewing('local', 'b')
+    await m.onKanbanEventsFrame('a', [ev(101, 'completed')])
+    await m.onKanbanEventsFrame('b', [ev(101, 'completed')])
+    expect(m.$kanbanUnseen.get()).toBe(2)
+
+    doc.set('visible')
+    expect(m.$unseenByBoard.get()).toEqual({})
+  })
+
   it('scope isolation: cursor and counts are per (connection, board)', async () => {
     let latest = 100
     const m = await loadModule()

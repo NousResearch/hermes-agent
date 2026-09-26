@@ -38,6 +38,7 @@ it('the Kanban nav row counts unseen events on the active connection', () => {
   expect(count.get()).toBe(0)
   $unseenByBoard.set({ [cursorKey('local', 'ops')]: 2, [cursorKey('local', 'research')]: 1 })
   expect(count.get()).toBe(3)
+  expect(nav.countLabel?.(3)).toBe('3 unseen task updates')
 })
 
 it('opening the board page clears that board, not the others', async () => {
@@ -53,4 +54,9 @@ it('opening the board page clears that board, not the others', async () => {
   })
 
   expect($unseenByBoard.get()).toEqual({ [cursorKey('local', 'research')]: 1 })
+
+  // Switching boards inside the mounted page (the in-page switcher sets the
+  // slug; the route does not remount) clears the newly opened board too.
+  act(() => $boardSlug.set('research'))
+  expect($unseenByBoard.get()).toEqual({})
 })

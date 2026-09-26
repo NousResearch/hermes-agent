@@ -510,35 +510,43 @@ def _persist_branch_seed(session: dict) -> None:
             _workdir_reraise_disk_full(exc, "branch seed persist failed")
 
 
-def _submit_row_target_key(session: dict, db) -> str:
-    """The session row THIS turn's durable user row must land in: the agent's live id when it has
+def _submit_row_target_key(session: dict) -> str:
+    """The session row an off-turn submit write must use: the live ``agent.session_id`` when it has
     rotated off ``session_key``, else ``session_key`` itself.
 
     The turn's own transcript is flushed under ``agent.session_id`` (``_db_flush_write``), while an
-    off-turn write has only ``session_key`` to go on — and those two diverge for the whole of a turn
-    that starts after a rotation: a lease-wait re-resolve (``turn_facade_lease``), a compression
-    publish, or an adopted continuation tip all move ``agent.session_id`` while ``session_key`` is
-    re-anchored only at TURN END (``_absorb_turn_result`` -> ``_sync_session_key_after_compress``).
-    Writing the submit row to the stale key splits one turn's rows across two sessions: the user row
-    in the parent, every tool row and the final text in the child (#123545, evidence A + B).
-    Prefer the live id so this row lands where the rest of the turn will. ``resolve_resume_session_id``
-    is the same lineage walk the lease admission uses, so a rotation that has not reached
-    ``agent.session_id`` yet still resolves here.
+    off-turn write only has ``session_key`` to go on — and those diverge for the whole of a turn that
+    begins after the agent's session rotated: a compression publish, an adopted continuation tip, or a
+    lease-wait re-resolve all move ``agent.session_id`` while ``session_key`` is re-anchored only at
+    TURN END (``_absorb_turn_result`` -> ``_sync_session_key_after_compress``). Writing the submit row
+    to the stale key splits one turn's rows across two sessions: the user row in the parent, every tool
+    row and the final text in the child (#123545, evidence A + B).
+
+    The live id IS the authority — it is the value the turn will flush under — so it wins whenever it
+    is set. Do NOT re-resolve through the lineage here: ``resolve_resume_session_id`` returns the
+    deepest node that has MESSAGES, so the freshly-minted child of a just-published rotation resolves
+    back to the parent and the fix would no-op exactly when it is needed. The choice is made ONCE here
+    and recorded on the staged dict (``_session_id``) so every later addresser of that row — the
+    @-expansion rewrite, the queue merge, the drain deactivation — reads the same key instead of
+    re-deriving one that a rotation can invalidate mid-turn.
     """
-    key = str(session.get("session_key") or "")
-    if not key or db is None:
-        return key
     live = str(getattr(session.get("agent"), "session_id", None) or "")
-    if live == key:
-        return key
-    resolver = getattr(type(db), "resolve_resume_session_id", None)
-    if not callable(resolver):
-        return live
-    try:
-        return str(resolver(db, key) or live or key)
-    except Exception:
-        logger.debug("submit-row lineage resolve failed; using the live agent session id", exc_info=True)
-        return live or key
+    key = str(session.get("session_key") or "")
+    return live or key
+
+
+# Wire-sanitizer-safe key carrying the session the submit row was actually written under. Mirrors
+# ``_DB_PERSISTED_MARKER``'s contract (leading underscore, stripped from provider payloads).
+_SUBMIT_ROW_SESSION_KEY = "_submit_row_session_id"
+
+
+def _submit_row_owner_key(staged: Any, session: dict) -> str:
+    """The session id a staged submit row lives under: recorded at write time, else the current best."""
+    if isinstance(staged, dict):
+        recorded = str(staged.get(_SUBMIT_ROW_SESSION_KEY) or "")
+        if recorded:
+            return recorded
+    return _submit_row_target_key(session)
 
 
 def _write_submit_user_row(session: dict, text: Any, display_kind: str | None,
@@ -563,16 +571,19 @@ def _write_submit_user_row(session: dict, text: Any, display_kind: str | None,
     with _session_db(session) as db:
         if db is None:
             return None
+        target = _submit_row_target_key(session)
         try:
             staged["_row_id"] = db.append_message(
-                _submit_row_target_key(session, db), "user", content=text, display_kind=display_kind,
-                timestamp=staged["timestamp"],
+                target, "user", content=text, display_kind=display_kind, timestamp=staged["timestamp"],
                 message_uid=stamp_message_uid(staged),  # the live dict the turn adopts carries the row's uid
                 display_metadata=staged.get("display_metadata"))
         except Exception as exc:
             _workdir_reraise_disk_full(exc, "submit-time user row persist failed")
             return None
     staged[_DB_PERSISTED_MARKER] = True
+    # Record the owning session so every later addresser of THIS row (the @-expansion rewrite, the
+    # queue merge, the drain deactivation) finds it by the same key even if a rotation lands mid-turn.
+    staged[_SUBMIT_ROW_SESSION_KEY] = target
     return staged
 
 
@@ -606,11 +617,12 @@ def _adopt_submit_user_row(session: dict, agent, persist_user_message: Any, text
             if db is None:
                 return
             try:
-                # The row landed under the same key ``_write_submit_user_row`` targeted; addressing it by the
-                # rotated-away ``session_key`` would miss that row's session_id and silently skip the rewrite
-                # (the UPDATE is qualified by session_id), leaving the transcript replaying the raw keystrokes.
+                # Address the row where it was actually WRITTEN (``_write_submit_user_row`` recorded it);
+                # a rotated-away ``session_key`` would miss that row's session_id and silently skip the
+                # rewrite, leaving the transcript replaying the raw keystrokes.
                 db.set_user_message_content(
-                    _submit_row_target_key(session, db), staged["_row_id"], _durable_content(persist_user_message))
+                    _submit_row_owner_key(staged, session), staged["_row_id"],
+                    _durable_content(persist_user_message))
             except Exception:
                 logger.debug("submit-time user row update failed; the turn writes its own row", exc_info=True)
                 return

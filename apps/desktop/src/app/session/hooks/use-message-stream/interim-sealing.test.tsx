@@ -228,6 +228,20 @@ describe('useMessageStream interim text sealing', () => {
     expect(texts[0]).toBe('partial answer continued')
   })
 
+  it('starts a fresh bubble after an uncompleted prior stream', async () => {
+    mountStream()
+    await start()
+    await delta('first answer')
+
+    // A transport gap can lose the terminal frame. The next backend turn
+    // must not append its deltas to this abandoned stream bubble.
+    await start()
+    await delta('second answer')
+    await complete('second answer')
+
+    expect(assistantMessages()).toEqual(['first answer', 'second answer'])
+  })
+
   it('appends a distinct previewed final after a message.start reset instead of overwriting the interim', async () => {
     mountStream()
     await start()

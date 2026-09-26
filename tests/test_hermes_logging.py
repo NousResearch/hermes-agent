@@ -1,8 +1,10 @@
 """Tests for hermes_logging — centralized logging setup."""
+import errno
 import importlib.util
 import io
 import logging
 import os
+import shutil
 import stat
 import sys
 import threading
@@ -753,6 +755,179 @@ def test_eio_after_successful_reopen_still_names_the_path_once(tmp_path, capsys)
         assert err.count(str(path)) == 1
     finally:
         handler.close()
+
+
+def _record(msg, args=(), home=None):
+    record = logging.LogRecord("agent.t", logging.INFO, __file__, 0, msg, args, None)
+    if home is not None:
+        record.hermes_home = str(home)
+    return record
+
+
+def _file_handler(path, handler_cls=None):
+    handler = (handler_cls or hermes_logging._ManagedRotatingFileHandler)(
+        str(path), maxBytes=1024 * 1024, backupCount=1, encoding="utf-8",
+    )
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    return handler
+
+
+def _stream_raising(err, *ops):
+    """An in-memory stream whose *ops* raise ``OSError(err)`` with no filename, like a device error."""
+
+    def fail(*_a, **_kw):
+        raise OSError(err, os.strerror(err))
+
+    return type("_FailingStream", (io.StringIO,), {op: fail for op in ops})
+
+
+def _stream_fault(err, *ops):
+    def arrange(tmp_path):
+        path = tmp_path / "agent.log"
+        handler = _file_handler(path)
+        real_open, sick = handler._builtin_open, _stream_raising(err, *ops)
+        handler.stream.close()
+        handler.stream = sick()
+        handler._builtin_open = lambda *_a, **_kw: sick()  # the reopen hits the same fault
+
+        def restore():
+            handler._builtin_open = real_open
+
+        return (lambda msg: handler.handle(_record(msg))), path, restore, handler.close
+
+    return arrange
+
+
+def _reopen_refused(tmp_path):
+    path = tmp_path / "agent.log"
+    handler = _file_handler(path)
+    real_open = handler._builtin_open
+
+    def refuse(*_a, **_kw):
+        raise OSError(errno.EACCES, os.strerror(errno.EACCES), str(path))
+
+    handler.stream.close()
+    handler.stream = None
+    handler._builtin_open = refuse
+
+    def restore():
+        handler._builtin_open = real_open
+
+    return (lambda msg: handler.handle(_record(msg))), path, restore, handler.close
+
+
+def _log_dir_replaced_by_a_file(tmp_path):
+    # The open stream would keep writing to the unlinked inode with no notice.
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    path = log_dir / "agent.log"
+    handler = _file_handler(path)
+    handler.handle(_record("before"))
+    shutil.rmtree(log_dir)
+    log_dir.write_text("not a directory\n", encoding="utf-8")
+
+    def restore():
+        log_dir.unlink()
+        log_dir.mkdir()
+
+    return (lambda msg: handler.handle(_record(msg))), path, restore, handler.close
+
+
+def _routed_profile_home_removed(tmp_path):
+    # A removed named profile home is never recreated by logging; its records wait for the home.
+    root = tmp_path / ".hermes"
+    gone = root / "profiles" / "gone"
+    for directory in (root / "logs", gone):
+        directory.mkdir(parents=True)
+    existing = _file_handler(root / "logs" / "agent.log")
+    router = hermes_logging._ProfileRoutingFileHandler(existing, [root, gone])
+    existing.close()
+    gone.rmdir()
+    return (
+        (lambda msg: router.handle(_record(msg, home=gone))),
+        gone.resolve() / "logs" / "agent.log",
+        gone.mkdir,
+        router.close,
+    )
+
+
+@pytest.mark.parametrize("arrange", [
+    _stream_fault(errno.ENOSPC, "flush"),
+    _stream_fault(errno.EIO, "flush"),
+    _stream_fault(errno.ESTALE, "seek", "tell"),
+    _reopen_refused,
+    _log_dir_replaced_by_a_file,
+    _routed_profile_home_removed,
+], ids=[
+    "enospc-on-flush", "eio-on-flush", "estale-on-rollover-check", "eacces-on-reopen",
+    "log-dir-replaced-by-a-file", "routed-profile-home-removed",
+])
+def test_a_failing_log_destination_is_named_once_and_resumes_when_it_recovers(
+    tmp_path, capsys, arrange,
+):
+    """Any error from the handler's own destination pauses it with one notice naming the path,
+    not a traceback per queued record, and the next record after the fault clears lands there."""
+    emit, path, restore, close = arrange(tmp_path)
+    try:
+        for i in range(20):
+            emit(f"lost {i}")
+        err = capsys.readouterr().err
+        assert "--- Logging error ---" not in err
+        assert err.count("hermes_logging:") == 1 and err.count(f"{path} unavailable") == 1
+
+        restore()
+        emit("recovered")
+        assert "recovered" in path.read_text(encoding="utf-8")
+    finally:
+        close()
+
+
+@pytest.mark.parametrize("drops_stream_after_write, middle, expected", [
+    (False, "write", (2, 0)),
+    (True, "write", (2, 0)),
+    (False, "record-arg-error", (1, 1)),
+], ids=["written-record", "stream-closed-after-each-write", "record-arg-error"])
+def test_a_paused_log_destination_re_arms_only_after_a_record_reaches_it(
+    tmp_path, capsys, drops_stream_after_write, middle, expected,
+):
+    """outage, outage, <middle>, outage, outage -> (notices, tracebacks). A written record re-arms
+    the notice even on a handler that closes its stream after every write (Windows' concurrent
+    handler). A record arg that raises OSError about another file is foreign code: it keeps its
+    traceback, does not pause the destination and, having written nothing, does not re-arm it."""
+    disk = {"full": False}
+
+    class _Disk(io.StringIO):
+        def write(self, text):
+            if disk["full"]:
+                raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+            return super().write(text)
+
+    class _Handler(hermes_logging._ManagedRotatingFileHandler):
+        def _open(self):
+            return _Disk()
+
+        def flush(self):
+            super().flush()
+            if drops_stream_after_write and self.stream is not None:
+                self.stream.close()
+                self.stream = None
+
+    class _ArgReadingAnotherFile:
+        def __str__(self):
+            raise OSError(errno.ENOENT, os.strerror(errno.ENOENT), str(tmp_path / "elsewhere.txt"))
+
+    path = tmp_path / "agent.log"
+    path.touch()
+    handler = _file_handler(path, _Handler)
+    try:
+        for step in ["outage", "outage", middle, "outage", "outage"]:
+            disk["full"] = step == "outage"
+            args = (_ArgReadingAnotherFile(),) if step == "record-arg-error" else (step,)
+            handler.handle(_record("%s", args))
+    finally:
+        handler.close()
+    err = capsys.readouterr().err
+    assert (err.count(f"{path} unavailable"), err.count("--- Logging error ---")) == expected
 
 
 class TestSafeStderr:

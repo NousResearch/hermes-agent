@@ -2515,11 +2515,17 @@ def _resolve_hermes_argv() -> list[str]:
     search, batch shims fall back to the module form) only when ``hermes_cli``
     is not importable. The module argv must win over PATH: a PATH-first lookup
     lets an attacker-planted ``hermes`` shadow the running install (#111569).
+    The module argv only wins when a fresh CHILD resolves it too: under the
+    launcher bootstrap the parent's repo path lives solely in its own
+    ``sys.path``, so ``-m`` spawns died with ModuleNotFoundError (2026-09-25
+    fleet paralysis) — ``child_hermes_module_argv`` falls back to the same
+    install's launcher-form argv in that case.
     Mirrors ``gateway.run._resolve_hermes_bin``; local because ``hermes_cli``
     sits below ``gateway`` in the dependency order.
     """
-    import importlib.util
     import shutil
+
+    from hermes_cli._launchers import child_hermes_module_argv
 
     env_bin = os.environ.get("HERMES_BIN", "").strip()
     if env_bin:
@@ -2530,11 +2536,9 @@ def _resolve_hermes_argv() -> list[str]:
             return _hermes_path_argv(resolved_env_bin)
         return _module_hermes_argv()
 
-    try:
-        if importlib.util.find_spec("hermes_cli") is not None:
-            return _module_hermes_argv()
-    except Exception:
-        pass
+    child_argv = child_hermes_module_argv()
+    if child_argv is not None:
+        return child_argv
 
     hermes_bin = _safe_which_no_cwd("hermes") if _kb._IS_WINDOWS else shutil.which("hermes")
     if hermes_bin:

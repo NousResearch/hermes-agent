@@ -875,14 +875,11 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
     # The running install first (same trust order as gateway.run._resolve_hermes_bin): the
     # scheduler lives in the long-running gateway, so a PATH-first lookup would hand delivery
     # to whatever `hermes` PATH names — another install, or a planted one — instead of this one.
-    try:
-        import importlib.util as _ilu
-        found = _ilu.find_spec("hermes_cli") is not None
-    except Exception:
-        found = False
-    if found:
-        argv = [sys.executable, "-m", "hermes_cli.main"]
-    else:
+    # The module argv only wins when a fresh child resolves it too (launcher-bootstrap fix).
+    from hermes_cli._launchers import child_hermes_module_argv
+
+    argv = child_hermes_module_argv()
+    if argv is None:
         hermes_bin = shutil.which("hermes")
         if not hermes_bin:
             return ("Hermes could not deliver this result to Bot Chat: the `hermes` command was not found. "

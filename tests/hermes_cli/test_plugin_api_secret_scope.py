@@ -125,12 +125,17 @@ def test_plugin_route_resolves_env_only_launch_credential_under_multiplexing(tmp
         prefix="/api/plugins/example",
         dependencies=[Depends(_plugin_route_secret_scope)],
     )
-    lpp._snapshot = None  # freeze the launch env fresh, capturing the env-only key
+    # ``_snapshot`` and the multiplex flag are process-global launch-policy controls;
+    # capture the entry state and restore it so this test stays order-independent and
+    # can't leak a frozen launch env or a flipped multiplex flag into whatever runs
+    # next. ``monkeypatch.setattr`` records the pre-test ``_snapshot`` and restores it
+    # at teardown (same guard the adjacent test_web_server_launch_env_freeze.py uses).
+    monkeypatch.setattr(lpp, "_snapshot", None)  # freeze the launch env fresh, capturing the env-only key
+    previous_multiplex = is_multiplex_active()
     try:
         lpp.activate_multi_profile_hosting()  # freezes os.environ + flips multiplex on
         resp = _client(app).get("/api/plugins/example/whoami")
     finally:
-        set_multiplex_active(False)
-        lpp._snapshot = None
+        set_multiplex_active(previous_multiplex)
     assert resp.status_code == 200
     assert resp.json() == {"ok": True, "key": "sk-env-only"}

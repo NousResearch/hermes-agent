@@ -1,6 +1,8 @@
 """Persist acceptance with the same ownership snapshot as the terminal write."""
 from __future__ import annotations
 
+import json
+
 from hermes_cli.kanban_db_connect import write_txn
 from hermes_cli.kanban_pr_acceptance import _PR, collect_acceptance
 
@@ -8,6 +10,24 @@ from hermes_cli.kanban_pr_acceptance import _PR, collect_acceptance
 def _snapshot(conn, task_id):
     row = conn.execute("SELECT current_run_id, status, completion_contract FROM tasks WHERE id=?", (task_id,)).fetchone()
     return tuple(row) if row else None
+
+
+def _historical_published_pr(conn, task_id, contract):
+    """Return latest valid run receipt for this task's bound PR contract."""
+    rows = conn.execute(
+        "SELECT metadata FROM task_runs WHERE task_id=? AND metadata IS NOT NULL ORDER BY id DESC",
+        (task_id,),
+    )
+    for row in rows:
+        try:
+            metadata = json.loads(row["metadata"])
+        except (TypeError, json.JSONDecodeError):
+            continue
+        published_pr = metadata.get("published_pr") if isinstance(metadata, dict) else None
+        match = _PR.fullmatch(published_pr) if isinstance(published_pr, str) else None
+        if match and (contract == published_pr or contract == match[1]):
+            return published_pr
+    return None
 
 
 def prepare_acceptance(conn, task_id, expected_run_id, metadata):
@@ -20,6 +40,8 @@ def prepare_acceptance(conn, task_id, expected_run_id, metadata):
     if status not in {"running", "ready", "blocked", "review"} or (expected_run_id is not None and run_id != expected_run_id):
         return False
     published_pr = metadata.get("published_pr") if isinstance(metadata, dict) else None
+    if published_pr is None:
+        published_pr = _historical_published_pr(conn, task_id, contract)
     match = _PR.fullmatch(published_pr) if isinstance(published_pr, str) else None
     # Publication binds once. Retrying cannot replace the task's PR with a green sibling.
     if match and contract == match[1]:

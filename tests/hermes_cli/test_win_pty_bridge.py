@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -35,6 +36,40 @@ from hermes_cli.win_pty_bridge import PtyUnavailableError, WinPtyBridge
 # and then filters with ``-m platforms("windows")``. A file-local skipif alias matched
 # the grep (so the file was listed) but carried no marker, so every test below
 # was deselected — the lane looked like it covered ConPTY and ran none of it.
+
+
+# ``WinPtyBridge.spawn`` opens the ConPTY at 80 columns by default.
+_DEFAULT_PTY_COLS = 80
+
+# CSI (``ESC [ … final``), OSC (``ESC ] … BEL``) and two-byte escapes. A ConPTY
+# frames its output with these even for a one-line child.
+_ANSI_RE = re.compile(rb"\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07]*\x07|[@-Z\\-_])")
+
+
+def _unwrapped(raw: bytes, cols: int = _DEFAULT_PTY_COLS) -> bytes:
+    """Strip ANSI framing and undo the ConPTY's hard line wrap.
+
+    A PTY is a *terminal*: any line longer than the console width is broken by
+    a real CRLF inserted mid-token, so a needle longer than ``cols`` never
+    appears verbatim in the raw stream no matter how correct the child was.
+    Matching the raw bytes therefore pins the terminal geometry rather than the
+    behaviour under test — which is how ``test_cwd_is_respected`` failed the
+    moment pywinpty was installed and the test could run at all: the child
+    echoed the right directory, and a tmp_path 88 characters long arrived split
+    as ``…test_cwd_is_respe\\r\\ncted0``.
+
+    The rejoin is wrap-aware rather than a blanket newline strip: only a
+    segment that filled the width exactly is glued to its successor, so genuine
+    line breaks in multi-line output are preserved and cannot be concatenated
+    into a false match.
+    """
+    segments = _ANSI_RE.sub(b"", raw).replace(b"\r\n", b"\n").split(b"\n")
+    out = bytearray()
+    for index, segment in enumerate(segments):
+        out.extend(segment)
+        if index < len(segments) - 1 and len(segment) != cols:
+            out.extend(b"\n")
+    return bytes(out)
 
 
 def _read_until(bridge: WinPtyBridge, needle: bytes, timeout: float = 10.0) -> bytes:
@@ -341,7 +376,10 @@ class TestWinPtyBridgeEnv:
             cwd=str(tmp_path),
         )
         try:
-            # Path is case-insensitive on Windows; compare lowercased.
+            # Path is case-insensitive on Windows; compare lowercased. The
+            # comparison runs over _unwrapped() because a tmp_path is routinely
+            # longer than the PTY's 80-column width, and the terminal breaks it
+            # with a real CRLF mid-path — see _unwrapped's docstring.
             needle_resolved = str(tmp_path.resolve()).lower().encode()
             deadline = time.monotonic() + 5.0
             buf = bytearray()
@@ -350,9 +388,9 @@ class TestWinPtyBridgeEnv:
                 if chunk is None:
                     break
                 buf.extend(chunk)
-                if needle_resolved in bytes(buf).lower():
+                if needle_resolved in _unwrapped(bytes(buf)).lower():
                     break
-            assert needle_resolved in bytes(buf).lower(), (
+            assert needle_resolved in _unwrapped(bytes(buf)).lower(), (
                 f"cwd {tmp_path!s} not echoed by child; got {bytes(buf)!r}"
             )
         finally:

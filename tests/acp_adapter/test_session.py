@@ -424,6 +424,50 @@ class TestPersistence:
 
 
 
+    def test_restore_failure_records_and_exposes_reason(self, manager):
+        """Robustness: a rebuild failure during restore records the real reason
+        (so the server can surface it) instead of a bare None → 'not found'."""
+        state = manager.create_session(cwd="/work")
+        sid = state.session_id
+        state.history.append({"role": "user", "content": "hello"})  # empty sessions stay ephemeral
+        manager.save_session(sid)
+        with manager._lock:
+            del manager._sessions[sid]
+        with patch.object(
+            manager, "_make_agent",
+            side_effect=RuntimeError("No LLM provider configured"),
+        ):
+            restored = manager.get_session(sid)
+        assert restored is None
+        assert "No LLM provider configured" in (manager.last_restore_error(sid) or "")
+
+    def test_successful_restore_clears_prior_reason(self, manager):
+        """A clean restore clears any stale recorded failure reason."""
+        state = manager.create_session(cwd="/work")
+        sid = state.session_id
+        state.history.append({"role": "user", "content": "hello"})  # empty sessions stay ephemeral
+        manager.save_session(sid)
+        manager._restore_errors[sid] = "stale failure"
+        with manager._lock:
+            del manager._sessions[sid]
+        restored = manager.get_session(sid)
+        assert restored is not None
+        assert manager.last_restore_error(sid) is None
+
+    def test_restore_error_registry_is_bounded(self, manager):
+        """The failure registry evicts oldest entries beyond the cap, so
+        long-lived processes with many failed session ids can't grow it
+        without bound; a repeated failure re-ranks that id as newest."""
+        cap = manager._RESTORE_ERRORS_MAX
+        for i in range(cap + 10):
+            manager._record_restore_error(f"sid-{i}", "boom")
+        assert len(manager._restore_errors) == cap
+        assert manager.last_restore_error("sid-9") is None  # oldest evicted
+        assert manager.last_restore_error(f"sid-{cap + 9}") == "boom"
+        # A repeat failure refreshes recency instead of duplicating the entry.
+        manager._record_restore_error("sid-10", "boom again")
+        assert len(manager._restore_errors) == cap
+        assert next(reversed(manager._restore_errors)) == "sid-10"
 
 
     def test_only_restores_acp_sessions(self, manager):

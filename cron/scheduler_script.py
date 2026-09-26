@@ -131,16 +131,27 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
             interpreter = sibling
 
     from hermes_cli._launchers import resolve_store_python
-    from pm.environments import selected_venv, site_packages as dependency_site
+    from pm.environments import committed_venv, site_packages as dependency_site
 
     repo = Path(__file__).resolve().parents[1]
     managed_python = resolve_store_python(repo)
     if managed_python is not None:
         # A packaged caller may hand us the old venv launcher; select bytes
         # from the install record rather than interpreting relocated pyvenv.cfg.
-        dependencies = dependency_site(selected_venv(repo))
-
-        return str(managed_python), {"PYTHONPATH": os.pathsep.join([str(repo), str(dependencies)])}
+        #
+        # ``committed_venv``, not ``selected_venv``: with no generation recorded the
+        # latter falls back to ``base_venv`` and answers the leftover pre-PM
+        # ``<root>/venv``, which is built for whichever interpreter created it. Overlaying
+        # that on the managed store Python loads a cp311 ``pydantic_core`` on 3.14 and
+        # every script dies with ``No module named 'pydantic_core._pydantic_core'`` — the
+        # cron sibling of the gateway crash in #122183/#123650. With no generation
+        # committed this install provisioned no tree, so overlay none: the child keeps
+        # the interpreter it was handed instead of borrowing a foreign ABI.
+        environment = committed_venv(repo)
+        pythonpath = [str(repo)]
+        if environment is not None:
+            pythonpath.append(str(dependency_site(environment)))
+        return str(managed_python), {"PYTHONPATH": os.pathsep.join(pythonpath)}
 
     cfg = _read_windows_pyvenv_cfg(venv_dir)
     home = cfg.get("home", "")

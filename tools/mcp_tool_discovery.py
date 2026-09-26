@@ -893,8 +893,9 @@ def get_mcp_server_instructions() -> list[dict]:
     The MCP spec lets a server describe how its tools are meant to be used ("call
     resolve-library-id before query-docs") and says clients MAY add it to the system prompt.
     The text is server-authored and lands in the cached prompt, so it goes through the shared
-    context threat scanner (a finding withholds that server's instructions; its tools still work).
-    Reads cached state; never connects."""
+    context threat scanner (a finding withholds that server's instructions; its tools still work)
+    and the ``mcp.max_description_chars`` cap. Reads cached state; never connects."""
+    from tools.mcp_tool_schema import truncate_mcp_text
     from tools.threat_patterns import scan_for_threats
 
     current_scope = _core._mcp_registry_scope()
@@ -914,7 +915,7 @@ def get_mcp_server_instructions() -> list[dict]:
                            name, ", ".join(findings), instructions)
             continue
         rows.append({"server": name,
-                     "instructions": instructions,
+                     "instructions": truncate_mcp_text(instructions, f"MCP server '{name}' instructions"),
                      "tool_names": list(getattr(server, "_registered_tool_names", None) or [])})
     return rows
 

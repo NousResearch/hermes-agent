@@ -41,6 +41,44 @@ def _scan_mcp_description(server_name: str, tool_name: str, description: str) ->
     return findings
 
 
+# Per-string ceiling on server-authored prose that lands in every request: tool descriptions
+# (part of the frozen ``tools[]``) and ``InitializeResult.instructions`` (system prompt). A
+# server that ships whole manuals in a description costs the user on every turn, and none of it
+# is under the user's control. Same default and scope as Claude Code's
+# ``CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH``; ``mcp.max_description_chars`` overrides, 0 = unlimited.
+_DEFAULT_MAX_DESCRIPTION_CHARS = 2048
+_TRUNCATION_MARKER = "… [truncated by Hermes: {total} chars, mcp.max_description_chars={cap}]"
+_truncation_warned: set[str] = set()
+
+
+def mcp_max_description_chars() -> int:
+    """``mcp.max_description_chars`` from config (0 = unlimited); a non-integer or negative value
+    warns and falls back to the default rather than silently running unbounded."""
+    try:
+        from hermes_cli.config import load_config
+        raw = (load_config().get("mcp") or {}).get("max_description_chars", _DEFAULT_MAX_DESCRIPTION_CHARS)
+    except Exception:
+        return _DEFAULT_MAX_DESCRIPTION_CHARS
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        logger.warning("mcp.max_description_chars=%r is not a non-negative integer; using %d",
+                       raw, _DEFAULT_MAX_DESCRIPTION_CHARS)
+        return _DEFAULT_MAX_DESCRIPTION_CHARS
+    return raw
+
+
+def truncate_mcp_text(text: str, label: str, cap: int | None = None) -> str:
+    """Clamp server-authored prose to the cap with an explicit marker (the model sees that it is
+    reading a prefix, and the user sees which knob to raise). ``label`` names the source for the
+    once-per-label log line."""
+    cap = mcp_max_description_chars() if cap is None else cap
+    if not cap or len(text) <= cap:
+        return text
+    if label not in _truncation_warned:
+        _truncation_warned.add(label)
+        logger.info("%s: %d chars exceeds mcp.max_description_chars=%d; truncated", label, len(text), cap)
+    return text[:cap].rstrip() + _TRUNCATION_MARKER.format(total=len(text), cap=cap)
+
+
 _EMPTY_OBJECT_SCHEMA = {"type": "object", "properties": {}}
 
 
@@ -186,9 +224,10 @@ def mcp_prefixed_tool_name(server_name: str, tool_name: str) -> str:
 def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     """Convert an MCP ``Tool`` (``.input_schema``, or ``.inputSchema`` before mcp 2.0) to a
     ``registry.register(schema=...)`` dict."""
+    description = strip_unicode_tags(mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}")
     return {
         "name": mcp_prefixed_tool_name(server_name, mcp_tool.name),
-        "description": strip_unicode_tags(mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}"),
+        "description": truncate_mcp_text(description, f"MCP server '{server_name}' tool '{mcp_tool.name}' description"),
         "parameters": _normalize_mcp_input_schema(mcp_field(mcp_tool, "input_schema", "inputSchema")),
     }
 

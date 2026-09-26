@@ -88,12 +88,13 @@ describe('PendingApprovalStack', () => {
     // the description. The card must show what would actually run.
     setRequest('<terminal> (plugin approval rule)', undefined, { requestId: 'apr-synth' })
     // setRequest stamps a generic description; overwrite with the plugin one.
-    $approvalRequest.get() && setApprovalRequest({
-      command: '<terminal> (plugin approval rule)',
-      description: 'Plugin requires approval for terminal: run\npwd',
-      requestId: 'apr-synth',
-      sessionId: 'sess-1'
-    })
+    $approvalRequest.get() &&
+      setApprovalRequest({
+        command: '<terminal> (plugin approval rule)',
+        description: 'Plugin requires approval for terminal: run\npwd',
+        requestId: 'apr-synth',
+        sessionId: 'sess-1'
+      })
     render(<PendingApprovalStack />)
 
     expect(screen.getByText(/Plugin requires approval for terminal: run/)).toBeTruthy()

@@ -310,7 +310,9 @@ describe('useDesktopIntegrations', () => {
     })
 
     it('keeps remembering a /branch child: source, not parenthood, is the discriminator', () => {
-      const sessions = [session({ id: 'branch-child', parent_session_id: 'parent-session', profile: 'default', source: 'tui' })]
+      const sessions = [
+        session({ id: 'branch-child', parent_session_id: 'parent-session', profile: 'default', source: 'tui' })
+      ]
 
       render({ locationPathname: '/branch-child', profileReady: true, routedSessionId: 'branch-child', sessions })
 

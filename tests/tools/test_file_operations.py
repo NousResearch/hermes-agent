@@ -803,3 +803,53 @@ class TestEscapeNativeToolArg:
         assert node_cmds, f"no node command captured in: {commands}"
         assert "'C:/Users/alice/app/main.js'" in node_cmds[0]
         assert "/c/Users" not in node_cmds[0]
+
+
+class TestMoveFileNeverOverwrites:
+    """``move_file`` refuses anything already at ``dst``. Regression: a plain ``mv``
+    replaced an existing file or symlink, and moved the source INTO an existing
+    directory (clobbering ``dir/<name>``), then reported success."""
+
+    @pytest.mark.parametrize("kind", ["file", "directory", "dangling_symlink"])
+    def test_existing_destination_is_refused_and_left_intact(self, tmp_path, kind):
+        src, dst = tmp_path / "notes.txt", tmp_path / "dst"
+        src.write_text("scratch\n")
+        if kind == "file":
+            dst.write_text("precious\n")
+        elif kind == "directory":
+            dst.mkdir()
+            (dst / "notes.txt").write_text("precious\n")
+        else:
+            dst.symlink_to(tmp_path / "absent")
+        ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
+
+        result = ops.move_file(str(src), str(dst))
+
+        assert "already exists" in (result.error or "")
+        assert src.read_text() == "scratch\n"
+        if kind == "dangling_symlink":
+            assert dst.is_symlink() and not dst.exists()
+        else:
+            assert (dst / "notes.txt" if kind == "directory" else dst).read_text() == "precious\n"
+
+    def test_destination_created_right_before_the_rename_survives(self, tmp_path):
+        """A writer that creates ``dst`` after every check, immediately before the
+        mutation, must lose: no-clobber has to be the primitive's own property, not a
+        test that precedes it. Shell functions shadow the mutation commands and create
+        ``dst`` first; only they write "precious", so ``dst`` holding it proves the hook
+        fired."""
+        src, dst = tmp_path / "notes.txt", tmp_path / "dst"
+        src.write_text("scratch\n")
+        env = LocalEnvironment(cwd=str(tmp_path))
+        # Fires once: the backend wrapper's own bookkeeping may call ``mv`` afterwards.
+        hook = "".join(f"{cmd}() {{ unset -f mv link; echo precious > '{dst}'; command {cmd} \"$@\"; }}; "
+                       for cmd in ("mv", "link"))
+        execute = env.execute
+        env.execute = lambda command, **kw: execute(hook + command, **kw)
+        ops = ShellFileOperations(env, cwd=str(tmp_path))
+
+        result = ops.move_file(str(src), str(dst))
+
+        assert dst.read_text() == "precious\n"
+        assert src.read_text() == "scratch\n"
+        assert "already exists" in (result.error or "")

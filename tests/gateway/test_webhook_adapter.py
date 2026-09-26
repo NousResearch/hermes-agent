@@ -478,6 +478,31 @@ class TestPayloadFilters:
         assert captured[0].raw_message["body"] == "PAY BILLS"
 
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("policy,script_body,expected", [
+        ("ignore", "raise SystemExit(1)", 200),
+        ("retry", "raise SystemExit('private failure details')", 503),
+        ("retry", "print('[SILENT]')", 200),
+    ])
+    async def test_durable_processor_failures_retry_but_intentional_silence_does_not(self, tmp_path, monkeypatch, policy, script_body, expected):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        scripts = tmp_path / "scripts"
+        scripts.mkdir()
+        (scripts / "persist.py").write_text(script_body)
+        adapter = _make_adapter(routes={"durable": {"secret": _INSECURE_NO_AUTH,
+            "script": "persist.py", "script_failure_policy": policy, "prompt": "{script_output}"}})
+        adapter.handle_message = AsyncMock()
+        async with TestClient(TestServer(_create_app(adapter))) as client:
+            response = await client.post("/webhooks/durable", json={"eventId": "event-1"})
+            assert response.status == expected
+            body = await response.json()
+            assert "private failure details" not in json.dumps(body)
+            if expected == 503:
+                assert response.headers["Retry-After"] == "15"
+                assert body["status"] == "retryable"
+        adapter.handle_message.assert_not_awaited()
+
+
 # ===================================================================
 # HTTP handling
 # ===================================================================

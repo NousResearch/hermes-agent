@@ -217,6 +217,8 @@ class WebhookAdapter(BasePlatformAdapter):
                                  f"exclusive: deliver_only pushes the rendered template as a message, cron_job fires "
                                  f"an existing cron job (which handles its own delivery).")
         validate_coalesce_config(name, route)
+        if route.get("script_failure_policy", "ignore") not in {"ignore", "retry"}:
+            raise ValueError(f"[webhook] Route '{name}' has invalid script_failure_policy")
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         self._reload_dynamic_routes()
@@ -614,9 +616,16 @@ class WebhookAdapter(BasePlatformAdapter):
             if script:
                 # Shells out (up to its timeout) — worker thread so the loop isn't blocked; to_thread
                 # copies contextvars so the profile scope follows.
-                keep, transformed_payload = await asyncio.to_thread(
-                    self._route_processor.run_route_script, script, payload,
-                    preserve_silenced_payload=route_config.get("discussion_actions") is True)
+                from gateway.platforms.webhook_filters import RouteScriptFailure
+                script_options = {"preserve_silenced_payload": route_config.get("discussion_actions") is True}
+                if route_config.get("script_failure_policy") == "retry":
+                    script_options["retry_on_failure"] = True
+                try:
+                    keep, transformed_payload = await asyncio.to_thread(
+                        self._route_processor.run_route_script, script, payload, **script_options)
+                except RouteScriptFailure:
+                    return web.json_response({"status": "retryable", "reason": "script_failed", "route": route_name},
+                                             status=503, headers={"Retry-After": "15"})
                 if not keep:
                     if route_config.get("discussion_actions") is True and transformed_payload:
                         from gateway.platforms.webhook_actions import retire

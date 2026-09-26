@@ -18,6 +18,10 @@ DEFAULT_SCRIPT_TIMEOUT_SECONDS = 30
 _MISSING = object()
 
 
+class RouteScriptFailure(RuntimeError):
+    """A route opted into retrying an unsuccessful processor invocation."""
+
+
 def _stringify_filter_value(value: Any) -> str:
     return "" if value is _MISSING else json.dumps(value, sort_keys=True) if isinstance(value, (dict, list)) else str(value)
 
@@ -166,7 +170,8 @@ class WebhookRouteProcessor:
             return False
         return all(self.filter_matches(spec, payload, event_type, headers) for spec in filters)
 
-    def run_route_script(self, script_value: Any, payload: dict, *, preserve_silenced_payload: bool = False) -> tuple[bool, Optional[dict]]:
+    def run_route_script(self, script_value: Any, payload: dict, *, preserve_silenced_payload: bool = False,
+                         retry_on_failure: bool = False) -> tuple[bool, Optional[dict]]:
         """Run a route script and return (should_continue, transformed_payload).
 
         Non-zero exit, empty/``[SILENT]`` stdout, or a ``[SILENT]``/``__hermes_ignore__`` flag drops the
@@ -175,6 +180,8 @@ class WebhookRouteProcessor:
         path, error = _resolve_script_path(script_value)
         if error or path is None:
             logger.warning("[webhook] script ignored webhook: %s", error)
+            if retry_on_failure:
+                raise RouteScriptFailure("route processor unavailable")
             return False, None
         is_shell = path.suffix.lower() in {".sh", ".bash"}
         interpreter = sys.executable
@@ -186,6 +193,8 @@ class WebhookRouteProcessor:
                 interpreter = _find_bash()
             except RuntimeError as exc:
                 logger.warning("[webhook] script ignored webhook: %s", exc)
+                if retry_on_failure:
+                    raise RouteScriptFailure("route interpreter unavailable") from None
                 return False, None
         try:
             from tools.environments.local import build_subprocess_env
@@ -196,9 +205,13 @@ class WebhookRouteProcessor:
             )
         except subprocess.TimeoutExpired:
             logger.warning("[webhook] script timed out: %s", path)
+            if retry_on_failure:
+                raise RouteScriptFailure("route processor timed out") from None
             return False, None
         except Exception as exc:
             logger.warning("[webhook] script execution failed: %s", exc)
+            if retry_on_failure:
+                raise RouteScriptFailure("route processor failed to start") from None
             return False, None
         stdout, stderr = (result.stdout or "").strip(), (result.stderr or "").strip()
         try:
@@ -212,6 +225,8 @@ class WebhookRouteProcessor:
             # started" signature (WSL stub, missing shebang target) and must reach errors.log.
             level = logging.WARNING if not stdout and not stderr else logging.INFO
             logger.log(level, "[webhook] script ignored webhook path=%s code=%s stderr=%s", path.name, result.returncode, stderr[:200])
+            if retry_on_failure:
+                raise RouteScriptFailure("route processor returned a failure")
         if result.returncode != 0 or not stdout or stdout == "[SILENT]":
             return False, None
         try:

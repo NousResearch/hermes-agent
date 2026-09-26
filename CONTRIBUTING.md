@@ -225,10 +225,10 @@ See [Package management](website/docs/reference/package-management.md) for PM co
 ```
 hermes-agent/
 ├── run_agent.py              # AIAgent facade (~1.5k LOC) — the turn loop lives in agent/conversation_loop.py + agent/turn_*.py
-├── cli.py                    # HermesCLI class — interactive CLI orchestrator (~4.6k LOC + hermes_cli/cli_*_mixin.py)
+├── cli.py                    # HermesCLI class — interactive CLI orchestrator (~1.9k LOC + hermes_cli/cli_*_mixin.py)
 ├── model_tools.py            # Tool orchestration (thin layer over tools/registry.py)
 ├── toolsets.py               # Tool groupings and presets (hermes-cli, hermes-telegram, etc.)
-├── hermes_state.py           # SessionDB facade (~1.4k LOC); implementation in hermes_state_*.py (21 siblings) — FTS5 search, session titles
+├── hermes_state.py           # SessionDB facade (~1.7k LOC); implementation in hermes_state_*.py (29 siblings) — FTS5 search, session titles
 ├── batch_runner.py           # Parallel batch processing for trajectory generation
 │
 ├── agent/                    # Agent internals (extracted modules)
@@ -271,18 +271,21 @@ hermes-agent/
 │   ├── browser_tool.py           # Browser automation (facade + browser_tool_*.py siblings)
 │   ├── session_search_tool.py    # Search past conversations with FTS5 + anchored windows
 │   ├── cronjob_tools.py          # Scheduled task management
-│   ├── skill_tools.py            # Skill search, load, manage
+│   ├── skills_tool.py            # skills_list / skill_view (progressive disclosure)
+│   ├── skill_manager_tool.py     # Create, edit, delete skills
 │   └── environments/             # Terminal execution backends
 │       ├── base.py                   # BaseEnvironment ABC
 │       ├── local.py, docker.py, ssh.py, singularity.py, modal.py, daytona.py
 │
 ├── gateway/                  # Messaging gateway
-│   ├── run.py                    # GatewayRunner facade (~5.5k LOC); phases in run_*.py (startup, inbound, turn, busy, ...)
+│   ├── run.py                    # GatewayRunner facade (~6.2k LOC); phases in run_*.py (startup, inbound, turn, busy, ...)
 │   ├── slash_commands_*.py       # Gateway slash command handler mixins
 │   ├── config.py                 # Platform configuration resolution
 │   ├── session.py                # Session store, context prompts, explicit resets (+ session_*.py siblings)
-│   └── platforms/                # Platform adapters
-│       ├── telegram.py, discord_adapter.py, slack.py, whatsapp.py
+│   └── platforms/                # Adapter base class + core adapters (api_server, webhook, signal, ...)
+│
+├── plugins/platforms/        # Bundled platform plugins (plugin.yaml + adapter.py each)
+│   ├── telegram/, discord/, slack/, whatsapp/, matrix/, ...
 │
 ├── scripts/                  # Installer and bridge scripts
 │   ├── install.sh                # Linux/macOS installer

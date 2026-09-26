@@ -13,6 +13,7 @@ import re
 from typing import Any, Dict, Optional
 
 from agent.provider_projection import splice_provider_projection
+from agent.text_tool_calls import salvage_text_tool_calls, strip_tool_call_markup
 from agent.trajectory import has_incomplete_scratchpad
 from agent.turn_truncation import (
     CODEX_FALLBACK_ACTIVATED, continue_codex_incomplete, normalize_response_for_agent, partial_result,
@@ -134,6 +135,40 @@ def normalize_model_response(
 
     if assistant_message.content is not None and not isinstance(assistant_message.content, str):
         assistant_message.content = _coerce_content_text(assistant_message.content)
+
+    # Text-serialized tool-call salvage: some backends' chat templates intermittently fail to
+    # lift the model's native tool-call markup into ``tool_calls`` and emit it as text — on
+    # interleaved-reasoning models, into the REASONING channel. The turn then looks like a
+    # clean text answer with zero tool calls and the loop ends mid-task
+    # (``turn_final_response`` promotes the reasoning and reports "complete"). Repairing the
+    # message here, before the caller dispatches on ``assistant_message.tool_calls``, lets the
+    # ordinary tool round run it with no other plumbing. Salvage refuses unless every name is
+    # a tool offered this turn and every block is closed, so it cannot invent a call.
+    if not assistant_message.tool_calls:
+        _salvaged = salvage_text_tool_calls(
+            content=assistant_message.content,
+            reasoning=agent._extract_reasoning(assistant_message),
+            valid_names=getattr(agent, "valid_tool_names", None),
+        )
+        if _salvaged:
+            logger.warning(
+                "Salvaged %d text-serialized tool call(s) the provider failed to parse "
+                "(%s) — resuming the tool loop instead of ending the turn "
+                "(model=%s provider=%s finish_reason=%s)",
+                len(_salvaged), ", ".join(c.function.name for c in _salvaged),
+                agent.model, agent.provider, finish_reason,
+            )
+            agent._emit_diagnostic_status(
+                f"↻ Recovered {len(_salvaged)} tool call"
+                + ("s" if len(_salvaged) > 1 else "")
+                + " the provider sent as text"
+            )
+            assistant_message.tool_calls = _salvaged
+            assistant_message.content = strip_tool_call_markup(assistant_message.content)
+            # Keep the row self-consistent: a message carrying tool_calls must not also claim
+            # the provider's original "stop".
+            assistant_message.finish_reason = "tool_calls"
+            finish_reason = "tool_calls"
 
     # Agent-as-provider projection: splice the provider-agent's own tool work in as
     # call/result rows before this turn's assistant message; no-op for ordinary providers.

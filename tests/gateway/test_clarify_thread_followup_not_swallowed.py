@@ -38,6 +38,7 @@ SESSION_KEY = "agent:main:slack:dm:D123:1111.2222"
 class _StubAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="test"), Platform.SLACK)
+        self.sent_messages = []
 
     async def connect(self, *, is_reconnect: bool = False):
         return True
@@ -46,6 +47,13 @@ class _StubAdapter(BasePlatformAdapter):
         pass
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
+        self.sent_messages.append(
+            {
+                "chat_id": chat_id,
+                "content": content,
+                "reply_to": reply_to,
+            }
+        )
         return SendResult(success=True, message_id="m1")
 
     async def get_chat_info(self, chat_id):
@@ -255,6 +263,56 @@ async def test_native_multi_select_bad_comma_list_keeps_clarify_pending():
     assert still is not None
     assert not still.event.is_set()
     assert still.response is None
+    _clear_clarify_state()
+
+
+@pytest.mark.asyncio
+async def test_unique_abbreviated_choice_resumes_waiting_clarify():
+    """A unique fragment resolves to the original canonical choice label."""
+    _clear_clarify_state()
+    from tools import clarify_gateway as cm
+
+    adapter = _StubAdapter()
+    runner = _make_runner(adapter)
+    entry = cm.register(
+        "cl-unique-fragment",
+        SESSION_KEY,
+        "Pick a retry policy",
+        ["Add re-entry button only (Recommended)", "Add automatic retry"],
+    )
+
+    result = await _dispatch(runner, _event("re-entry button only"))
+
+    assert result == ""
+    assert entry.event.is_set()
+    assert entry.response == "Add re-entry button only (Recommended)"
+    assert adapter.sent_messages == []
+    _clear_clarify_state()
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_abbreviation_keeps_prompt_and_sends_retry_hint():
+    """Ambiguous fragments never guess and give the user a visible retry path."""
+    _clear_clarify_state()
+    from tools import clarify_gateway as cm
+
+    adapter = _StubAdapter()
+    runner = _make_runner(adapter)
+    entry = cm.register(
+        "cl-ambiguous-fragment",
+        SESSION_KEY,
+        "Pick a retry policy",
+        ["Add re-entry button only", "Add re-entry button and retry"],
+    )
+
+    result = await _dispatch(runner, _event("re-entry button"))
+
+    assert result == ""
+    assert not entry.event.is_set()
+    assert entry.response is None
+    assert len(adapter.sent_messages) == 1
+    assert "more specific" in adapter.sent_messages[0]["content"]
+    assert adapter.sent_messages[0]["reply_to"] == "msg1"
     _clear_clarify_state()
 
 

@@ -35,8 +35,25 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-// The backend accepted the restart POST and then went down for the restart
-// itself: every poll refused — the exact window #123111 reports.
+// A backend that is down for the restart itself: polls refuse until `healthy`
+// attempts in, then answer — the exact window #123111 reports. The status
+// endpoint 404s for an action the (new) registry never saw and errors while
+// the backend is down, so a REFUSAL is "no answer", not a terminal verdict.
+const backendDownUntil = (healthyAt: number) => {
+  let polls = 0
+
+  getActionStatus.mockImplementation(async () => {
+    polls += 1
+
+    if (polls < healthyAt) {
+      throw new Error('fetch failed')
+    }
+
+    return { name: 'gateway-restart', running: true, exit_code: null, pid: 4242, lines: [] }
+  })
+}
+
+// A permanently dead backend: every poll for the whole window is refused.
 const refusedBackend = () => getActionStatus.mockRejectedValue(new Error('fetch failed'))
 
 // A replacement process whose in-memory action registry never saw this action
@@ -45,8 +62,8 @@ const freshProcess = () =>
   getActionStatus.mockResolvedValue({ name: 'gateway-restart', running: false, exit_code: null, pid: null, lines: [] })
 
 describe('runGatewayRestart during the restart window (#123111)', () => {
-  it('resolves success when the status poll is refused mid-restart', async () => {
-    refusedBackend()
+  it('resolves success when the status poll is refused mid-window, then answers', async () => {
+    backendDownUntil(4)
 
     const outcome = runGatewayRestart()
 
@@ -64,6 +81,18 @@ describe('runGatewayRestart during the restart window (#123111)', () => {
     await expect(outcome).resolves.toBe(true)
   })
 
+  it('fails when the poll window is refused end to end — the restart never confirmed', async () => {
+    refusedBackend()
+
+    const outcome = runGatewayRestart()
+
+    await settlePollWindow()
+    // Draining the whole budget with zero answered polls must NOT resolve
+    // success: the callers' failure banners stay up and the user sees the
+    // failure toast instead of a cleared banner over a down gateway.
+    await expect(outcome).resolves.toBe(false)
+  })
+
   it('still surfaces a real failure: a recorded non-zero exit', async () => {
     getActionStatus.mockResolvedValue({ name: 'gateway-restart', running: false, exit_code: 1, pid: null, lines: [] })
 
@@ -73,8 +102,8 @@ describe('runGatewayRestart during the restart window (#123111)', () => {
     await expect(outcome).resolves.toBe(false)
   })
 
-  it('hands reconnection to the gateway reconnect owner after the restart', async () => {
-    refusedBackend()
+  it('hands reconnection to the gateway reconnect owner after a confirmed restart', async () => {
+    backendDownUntil(4)
     const handler = vi.fn()
     const off = registerGatewayReconnect(handler)
 
@@ -107,8 +136,8 @@ describe('runGatewayRestart during the restart window (#123111)', () => {
 })
 
 describe('watchGatewayRestartOutcome (backend-spawned restart)', () => {
-  it('resolves true across a refused poll window and reconnects', async () => {
-    refusedBackend()
+  it('resolves true across a refused-then-answered poll window and reconnects', async () => {
+    backendDownUntil(4)
     const handler = vi.fn()
     const off = registerGatewayReconnect(handler)
 
@@ -121,6 +150,15 @@ describe('watchGatewayRestartOutcome (backend-spawned restart)', () => {
     } finally {
       off()
     }
+  })
+
+  it('resolves false when the poll window is refused end to end', async () => {
+    refusedBackend()
+
+    const outcome = watchGatewayRestartOutcome()
+
+    await settlePollWindow()
+    await expect(outcome).resolves.toBe(false)
   })
 
   it('resolves false on a recorded non-zero exit', async () => {

@@ -36,6 +36,7 @@ from tools.approval_floors import (
 )
 from tools.approval_gateway_wait import _await_gateway_decision
 from tools.approval_prompt import _present_with_selected_transport, _transport_choice, prompt_dangerous_approval
+from tools.approval_reasons import ApprovalReason, reason_for_outcome
 from tools.approval_smart import _smart_verdict
 
 logger = logging.getLogger(__name__)
@@ -523,12 +524,14 @@ def _denied(message: str, *, pattern_key: str, description: str, outcome: str, n
     one-line human reading of the same outcome (see ``_USER_SUMMARIES``)."""
     return {"approved": False, "message": message, "pattern_key": pattern_key,
             "description": description, "outcome": outcome, "user_consent": False,
-            "user_summary": _user_summary(outcome, noun), **extra}
+            "user_summary": _user_summary(outcome, noun),
+            "reason_code": reason_for_outcome(outcome), **extra}
 
 
 def _blocked(message: str, *, pattern_key: str, description: str) -> dict:
     """Non-interactive block (cron / -q / unattended / no-human): no consent keys."""
-    return {"approved": False, "message": message, "pattern_key": pattern_key, "description": description}
+    return {"approved": False, "message": message, "pattern_key": pattern_key,
+            "description": description, "reason_code": ApprovalReason.POLICY_BLOCKED}
 
 
 def _user_approved(session_key: str, description: str) -> dict:
@@ -559,6 +562,7 @@ def _pending_result(spec, session_key: str, *, command: str, description: str,
     if not spec.pending_keys:
         return {
             "approved": False, "pattern_key": pattern_key, "status": "approval_required",
+            "reason_code": ApprovalReason.APPROVAL_REQUIRED,
             "command": command, "description": description,
             "message": (f"⚠️ This action is potentially dangerous ({description}). "
                         f"Asking the user for approval.\n\n**Target:**\n```\n{command}\n```"),
@@ -566,6 +570,7 @@ def _pending_result(spec, session_key: str, *, command: str, description: str,
     body = body or f"**Command:**\n```\n{command}\n```"
     result = {
         "approved": False, "pattern_key": pattern_key, "status": "pending_approval",
+        "reason_code": ApprovalReason.APPROVAL_REQUIRED,
         "approval_pending": True, "command": command, "description": description,
         "message": (
             f"⚠️ {description}. Asking the user for approval.\n\n{body}\n\n"
@@ -784,6 +789,7 @@ def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: st
         # Unattended programmatic platforms (webhook/msgraph_webhook/ api_server): respect unattended_mode
         # config. Resolves instantly — never a pending approval nobody can answer (#37284, #87509).
         "approved": False,
+        "reason_code": ApprovalReason.SMART_DENIED,
         "message": (f"BLOCKED by smart approval: {description}. The command was assessed as genuinely "
                     f"dangerous. Do NOT retry.{_denial_breaker_addendum(session_key)}"),
         "smart_denied": True,

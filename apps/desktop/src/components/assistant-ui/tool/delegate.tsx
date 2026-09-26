@@ -20,6 +20,7 @@ import { openSessionInNewWindow } from '@/store/windows'
 
 import {
   type DelegateRow,
+  delegateCostLabel,
   delegateRowsFromCall,
   type DelegateRowStatus,
   isDelegateRowLive,
@@ -80,7 +81,15 @@ function DelegateRowView({ row }: { row: DelegateRow }) {
 
   const meta = [
     row.model ? displayModelName(row.model) : '',
-    !live && row.durationSeconds ? formatDurationSeconds(row.durationSeconds) : ''
+    !live && row.durationSeconds ? formatDurationSeconds(row.durationSeconds) : '',
+    row.toolCount !== undefined ? `${row.toolCount} tools` : '',
+    row.inputTokens !== undefined || row.outputTokens !== undefined
+      ? `${(row.inputTokens ?? 0) + (row.outputTokens ?? 0)} tokens`
+      : '',
+    delegateCostLabel(row.costUsd, row.costStatus) ?? '',
+    row.schemaValid === false ? 'schema invalid' : row.schemaValid === true ? 'schema valid' : '',
+    row.schemaRetries ? `${row.schemaRetries} schema retry` : '',
+    row.truncated ? 'truncated' : ''
   ].filter(Boolean)
 
   // Only a child that reported its own session id has somewhere to go.

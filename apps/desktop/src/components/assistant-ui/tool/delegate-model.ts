@@ -1,5 +1,5 @@
 import { firstStringField, normalize } from '@/lib/text'
-import type { SubagentProgress, SubagentStatus } from '@/store/subagents'
+import type { SubagentCostStatus, SubagentProgress, SubagentStatus } from '@/store/subagents'
 
 import { numberValue, parseMaybeObject } from './fallback-model'
 
@@ -12,13 +12,21 @@ import { numberValue, parseMaybeObject } from './fallback-model'
 export interface DelegateRow {
   /** Latest relayed activity, oldest → newest. The card tickers the tail. */
   activity: string[]
+  costStatus?: SubagentCostStatus
+  costUsd?: number
   durationSeconds?: number
   goal: string
   id: string
+  inputTokens?: number
   model?: string
+  outputTokens?: number
+  schemaRetries?: number
+  schemaValid?: boolean
   /** The child's own session id, when it reported one — opens its window. */
   sessionId?: string
   status: DelegateRowStatus
+  toolCount?: number
+  truncated?: boolean
 }
 
 /**
@@ -30,6 +38,24 @@ export interface DelegateRow {
 export type DelegateRowStatus = SubagentStatus | 'dispatched'
 
 const field = (record: Record<string, unknown>, key: string): string => firstStringField(record, [key])
+
+const parsedCostStatus = (value: unknown): SubagentCostStatus | undefined =>
+  value === 'actual' || value === 'estimated' || value === 'included' || value === 'unknown' ? value : undefined
+
+export function delegateCostLabel(costUsd: number | undefined, status?: SubagentCostStatus): string | undefined {
+  if (status === 'unknown') return 'cost unavailable'
+  if (costUsd === undefined) return undefined
+  const value = `$${costUsd.toFixed(4)}`
+  if (status === 'estimated') return `estimated ${value}`
+  if (status === 'included') return 'included'
+  return value
+}
+
+function resultToolCount(entry: Record<string, unknown>): number | undefined {
+  const direct = numberValue(entry.tool_count)
+  if (direct !== null) return direct
+  return Array.isArray(entry.tool_trace) ? entry.tool_trace.length : undefined
+}
 
 /** The goals a `delegate_task` call dispatched, in task order. */
 export function delegateGoals(args: unknown): string[] {
@@ -89,13 +115,23 @@ export function delegateRowsFromCall(args: unknown, result: unknown, toolCallId 
     const entry = finished[index]
     const summary = entry ? field(entry, 'summary') : ''
 
+    const entryTokens = entry ? parseMaybeObject(entry.tokens) : {}
+
     return {
       activity: summary ? [summary] : [],
+      costStatus: entry ? parsedCostStatus(entry.cost_status) : undefined,
+      costUsd: entry ? numberValue(entry.cost_usd) ?? undefined : undefined,
       durationSeconds: entry ? (numberValue(entry.duration_seconds) ?? undefined) : undefined,
       goal,
       id: `${toolCallId}:${index}`,
+      inputTokens: entry ? numberValue(entry.input_tokens) ?? numberValue(entryTokens.input) ?? undefined : undefined,
       model: entry ? field(entry, 'model') || undefined : undefined,
-      status: entry ? settledRowStatus(field(entry, 'status')) : idle
+      outputTokens: entry ? numberValue(entry.output_tokens) ?? numberValue(entryTokens.output) ?? undefined : undefined,
+      schemaRetries: entry ? numberValue(entry.schema_retries) ?? undefined : undefined,
+      schemaValid: entry && typeof entry.schema_valid === 'boolean' ? entry.schema_valid : undefined,
+      status: entry ? settledRowStatus(field(entry, 'status')) : idle,
+      toolCount: entry ? resultToolCount(entry) : undefined,
+      truncated: entry ? entry.truncated === true : undefined
     }
   })
 }
@@ -103,12 +139,20 @@ export function delegateRowsFromCall(args: unknown, result: unknown, toolCallId 
 function fromSubagent(live: SubagentProgress, fallbackId: string, fallbackGoal: string): DelegateRow {
   return {
     activity: live.stream.map(entry => entry.text).filter(Boolean),
+    costStatus: live.costStatus,
+    costUsd: live.costUsd ?? undefined,
     durationSeconds: live.durationSeconds,
     goal: live.goal || fallbackGoal,
     id: live.id || fallbackId,
+    inputTokens: live.inputTokens,
     model: live.model,
+    outputTokens: live.outputTokens,
+    schemaRetries: live.schemaRetries,
+    schemaValid: live.schemaValid,
     sessionId: live.sessionId,
-    status: live.status
+    status: live.status,
+    toolCount: live.toolCount,
+    truncated: live.truncated
   }
 }
 

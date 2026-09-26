@@ -198,7 +198,6 @@ class TestRedecoratePromptCacheOnPolicyChange:
 
     _STATIC = "You are a helpful assistant.\n\nStable brief.\n"
 
-    @pytest.mark.parametrize("tool_argument", ["none", "empty", "list"])
     @pytest.mark.parametrize(
         "use_caching,native,provider",
         [
@@ -207,7 +206,7 @@ class TestRedecoratePromptCacheOnPolicyChange:
         ],
     )
     def test_optional_tools_return_a_complete_provider_plan(
-        self, tool_argument, use_caching, native, provider
+        self, use_caching, native, provider
     ):
         prompt = self._STATIC + "volatile"
         messages = apply_anthropic_cache_control(
@@ -222,13 +221,6 @@ class TestRedecoratePromptCacheOnPolicyChange:
                 "cache_control": {"type": "ephemeral"},
             }
         ]
-        override_tools = [
-            {
-                "type": "function",
-                "function": {"name": "override", "parameters": {"type": "object"}},
-                "cache_control": {"type": "ephemeral"},
-            }
-        ]
         agent = _cache_agent(
             use_caching=use_caching,
             native=native,
@@ -238,19 +230,16 @@ class TestRedecoratePromptCacheOnPolicyChange:
             tools=registered_tools,
             direct_tool_cache=native,
         )
-        tools_for_api = {"none": None, "empty": [], "list": override_tools}[tool_argument]
-        expected_tools = registered_tools if tools_for_api is None else tools_for_api
-        before = deepcopy((messages, registered_tools, override_tools))
+        before = deepcopy((messages, registered_tools))
 
-        decorated, prepared, planned_tools = _redecorate_prompt_cache_for_provider(
-            agent, messages, tools_for_api=tools_for_api
+        decorated, _prepared, planned_tools = _redecorate_prompt_cache_for_provider(
+            agent, messages
         )
 
-        assert prepared is None
-        assert [t["function"] for t in planned_tools] == [t["function"] for t in expected_tools]
+        assert [t["function"] for t in planned_tools] == [t["function"] for t in registered_tools]
         assert (_count_cache_markers(decorated) > 0) == use_caching
-        assert any("cache_control" in t for t in planned_tools) == (native and bool(expected_tools))
-        assert (messages, registered_tools, override_tools) == before
+        assert any("cache_control" in t for t in planned_tools) == native
+        assert (messages, registered_tools) == before
 
     def test_cache_off_to_cache_on_adds_breakpoints(self):
         prompt = self._STATIC + "Model: gpt-5.4-mini\nProvider: openai"

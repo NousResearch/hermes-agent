@@ -371,6 +371,19 @@ class TimelineNotification(str):
                    "diagnostic" if diagnostic_process_event(event) else "result")
 
 
+class ProcessHeartbeatNotification(str):
+    """A queued CLI heartbeat retains its process identity until its turn starts."""
+
+    def __new__(cls, text: str, event: dict):
+        instance = super().__new__(cls, text)
+        instance.event = {
+            "type": "heartbeat",
+            "session_id": event.get("session_id"),
+            "started_at": event.get("started_at"),
+        }
+        return instance
+
+
 def _delegation_attribution_line(evt: dict) -> "str | None":
     """One-line provenance for a subagent-owned process event, else None. Such a process
     outlives the child and lands in the PARENT conversation, which would otherwise see an

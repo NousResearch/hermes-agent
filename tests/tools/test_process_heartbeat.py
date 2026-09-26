@@ -12,7 +12,7 @@ import time
 import pytest
 
 import tools.process_registry as pr
-from tools.process_registry import ProcessRegistry
+from tools.process_registry import ProcessRegistry, ProcessSession
 
 
 def _drain(q: "queue.Queue") -> list:
@@ -80,3 +80,37 @@ def test_terminal_dispatch_heartbeat_implies_notify_and_refuses_foreground(monke
     bg = json.loads(dispatch({"command": "sleep 1", "background": True, "heartbeat": 120}))
     assert "error" not in bg or not bg["error"]
     assert captured["heartbeat"] == 120 and captured["notify_on_complete"] is True
+
+
+def test_queued_heartbeats_do_not_replay_after_process_exit():
+    registry = ProcessRegistry()
+    session = ProcessSession(
+        id="proc_heartbeat_exit", command="long task", task_id="owner",
+        started_at=time.time(), notify_on_complete=True,
+    )
+    registry._running[session.id] = session
+
+    def heartbeat(seq):
+        return {
+            "type": "heartbeat", "session_id": session.id, "session_key": "",
+            "task_id": "owner", "started_at": session.started_at, "seq": seq,
+            "interval": 60, "elapsed": seq * 60, "command": session.command,
+        }
+
+    registry.completion_queue.put(heartbeat(1))
+    assert [evt["type"] for evt, _ in registry.drain_notifications()] == ["heartbeat"]
+
+    registry.completion_queue.put(heartbeat(2))
+    registry.completion_queue.put(heartbeat(3))
+    registry._finish_exited(session, -15)
+
+    drained = registry.drain_notifications()
+    assert [evt["type"] for evt, _ in drained] == ["completion"]
+    assert drained[0][0]["session_id"] == session.id
+
+    # A recycled process id must not revive an old queued heartbeat.
+    registry._running[session.id] = ProcessSession(
+        id=session.id, command="new task", started_at=session.started_at + 1,
+    )
+    registry.completion_queue.put(heartbeat(4))
+    assert registry.drain_notifications() == []

@@ -759,9 +759,19 @@ def _cron_schedule(
     if not _ensure_croniter():
         raise ValueError(f"{missing_croniter} Install with: pip install croniter")
     try:
-        croniter(expr)
+        it = croniter(expr)
     except Exception as e:
         raise ValueError(f"Invalid {invalid_label} '{display}': {e}")
+    # Syntactically valid is not enough: '0 0 30 2 *' parses but no date ever matches, and the
+    # first next-run computation would surface croniter's bare "failed to find next date".
+    try:
+        it.get_next(datetime)
+    except Exception as e:
+        if type(e).__name__ != "CroniterBadDateError":
+            raise
+        raise ValueError(
+            f"Invalid {invalid_label} '{display}': no calendar date ever matches it "
+            "(e.g. February 30 or April 31) — check the day-of-month and month fields") from None
     return {"kind": "cron", "expr": expr, "display": display}
 
 

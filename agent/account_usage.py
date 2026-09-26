@@ -647,9 +647,96 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     return _snapshot("openrouter", "credits_api", windows, details)
 
 
+_NANO_GPT_BASE = "https://nano-gpt.com/api"
+
+
+def _fetch_nano_gpt_account_usage(
+    base_url: Optional[str] = None, api_key: Optional[str] = None,
+) -> Optional[AccountUsageSnapshot]:
+    """NanoGPT subscription quota + prepaid balance. Documented API endpoints:
+    ``GET {base}/v1/subscription/usage`` (weekly token allowance, daily images,
+    period end) and ``POST {base}/check-balance`` (USD balance). Auth is the
+    plain ``NANOGPT_API_KEY`` bearer. Fail-open → None."""
+    token = str(api_key or "").strip()
+    if not token:
+        return None
+    base = (base_url or _NANO_GPT_BASE).strip().rstrip("/")
+    # base_url carries the inference host (…/api/v1); the billing API lives above it.
+    if base.endswith("/v1"):
+        base = base[:-3]
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    try:
+        with httpx.Client(timeout=15.0, follow_redirects=True) as client:
+            sub = (client.get(f"{base}/v1/subscription/usage", headers=headers).json() or {})
+            balance = (client.post(f"{base}/check-balance", headers=headers, json={}).json() or {})
+    except Exception:
+        logger.debug("nano-gpt ▸ /usage subscription/balance fetch failed (fail-open)", exc_info=True)
+        return None
+
+    if not sub.get("active"):
+        return _snapshot("nano-gpt", "subscription_usage_api", [], [],
+                         unavailable_reason="No active NanoGPT subscription on this key.")
+
+    windows: list[AccountUsageWindow] = []
+    weekly = sub.get("weeklyInputTokens")
+    if isinstance(weekly, dict):
+        used_pct = weekly.get("percentUsed")
+        reset_at = _parse_dt(weekly.get("resetAt") / 1000.0 if _is_num(weekly.get("resetAt")) else weekly.get("resetAt"))
+        limits = sub.get("limits") if isinstance(sub.get("limits"), dict) else {}
+        allowance = limits.get("weeklyInputTokens")
+        if _is_num(weekly.get("used")) and _is_num(allowance) and float(allowance) > 0:
+            # The plan allowance is the true denominator: past the cap (allowOverage) the server
+            # clamps remaining to 0 — used/(used+remaining) would pin at exactly 100% — and
+            # percentUsed is a 0–1 fraction that stalls at 1.0. used/allowance still reads 100.03%.
+            windows.append(AccountUsageWindow(
+                label="Weekly token limit",
+                used_percent=float(weekly["used"]) / float(allowance) * 100.0,
+                reset_at=reset_at,
+            ))
+        elif _is_num(weekly.get("used")) and _is_num(weekly.get("remaining")) and float(weekly["used"]) + float(weekly["remaining"]) > 0:
+            total = float(weekly["used"]) + float(weekly["remaining"])
+            windows.append(AccountUsageWindow(
+                label="Weekly token limit", used_percent=float(weekly["used"]) / total * 100.0, reset_at=reset_at,
+            ))
+        elif _is_num(used_pct):
+            # percentUsed is a 0–1 fraction (56.1M/60M tokens → 0.934), never a percent.
+            windows.append(AccountUsageWindow(
+                label="Weekly token limit", used_percent=min(float(used_pct) * 100.0, 100.0), reset_at=reset_at,
+            ))
+    daily_images = sub.get("dailyImages")
+    if isinstance(daily_images, dict) and _is_num(daily_images.get("percentUsed")):
+        used, remaining = daily_images.get("used"), daily_images.get("remaining")
+        label = "Daily images"
+        if _is_num(used) and _is_num(remaining):
+            # The allowance (used + remaining) is the natural unit; plans may vary it.
+            label += f" ({int(float(used))}/{int(float(used) + float(remaining))})"
+        # percentUsed is a 0–1 fraction, not a percent — scale it (used/remaining preferred
+        # when present: it stays exact if the server ever reports >100% here).
+        if _is_num(used) and _is_num(remaining) and float(used) + float(remaining) > 0:
+            pct = float(used) / (float(used) + float(remaining)) * 100.0
+        else:
+            pct = min(float(daily_images["percentUsed"]) * 100.0, 100.0)
+        windows.append(AccountUsageWindow(
+            label=label, used_percent=pct,
+            reset_at=_parse_dt(daily_images.get("resetAt") / 1000.0 if _is_num(daily_images.get("resetAt")) else daily_images.get("resetAt")),
+        ))
+
+    details: list[str] = []
+    usd = balance.get("usd_balance")
+    if isinstance(usd, str) or _is_num(usd):
+        try:
+            details.append(f"Balance: ${float(usd):,.2f}")
+        except (TypeError, ValueError):
+            pass
+    if sub.get("allowOverage"):
+        details.append("Overage billed to balance when the weekly allowance runs out")
+    return _snapshot("nano-gpt", "subscription_usage_api", windows, details)
+
+
 _USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[AccountUsageSnapshot]]] = {
     "openai-codex": _fetch_codex_account_usage, "anthropic": _fetch_anthropic_account_usage,
     "openrouter": _fetch_openrouter_account_usage,
+    "nano-gpt": _fetch_nano_gpt_account_usage,
 }
 
 

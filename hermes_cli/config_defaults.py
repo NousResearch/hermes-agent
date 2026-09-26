@@ -49,6 +49,8 @@ DEFAULT_CONFIG = {
         # $HERMES_HOME/terminal-sessions/<terminal-id>, so bare -c/--continue resumes THIS
         # terminal's session (tmux/kitty/wezterm pane, tty). false = resume globally most-recent.
         "terminal_continue": True,
+        # Cross-surface ownership handoff: off | idle | always.
+        "takeover": "off",
     },
     "agent": {
         # Turn cap. null = unlimited (default; caps caused silent mid-task truncation). Positive int

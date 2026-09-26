@@ -284,6 +284,42 @@ _CLOUD_PLACEHOLDER_MARKERS = frozenset({"Mobile Documents", "CloudStorage"})
 _DATA_SINK_EXECUTABLES = frozenset(
     {"grep", "egrep", "fgrep", "rg", "ag", "ack", "journalctl", "sqlite3", "psql"}
 )
+_INTERPRETER_NAME_RE = re.compile(
+    r"^(?:python(?:[23](?:\.\d+)*)?|pypy[23]?|ipython|perl|ruby|node|bun|deno)(?:\.exe)?$",
+    re.IGNORECASE,
+)
+_INTERPRETER_EXEC_FLAGS = frozenset({"-c", "-e", "--eval", "eval"})
+
+# Strict allowlist: inline interpreter code is arbitrary execution by default.
+# Only provably benign display/print shapes without imports, subprocesses, or filesystem access are masked.
+_BENIGN_PRINT_RE = re.compile(
+    r"^\s*(?:print|console\.log|warn|puts|say)\s*\(.*\)\s*$",
+    re.DOTALL,
+)
+_RISKY_PAYLOAD_MARKERS = frozenset({
+    "import", "__import__", "eval", "exec", "open", "system", "popen",
+    "spawn", "unlink", "delete", "remove", "rmdir", "rmtree", "kill",
+    "subprocess", "require", "process", "shutil", "fs", "child_process",
+})
+
+
+def _is_benign_inline_payload(payload: list[str]) -> bool:
+    """Allowlist check for interpreter -c/-e arguments.
+
+    Returns True only if the entire payload is a harmless print/display
+    expression without imports, filesystem mutations, or subprocess calls.
+    """
+    if not payload:
+        return False
+    joined = " ".join(payload).strip()
+    if not _BENIGN_PRINT_RE.match(joined):
+        return False
+    for word in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", joined.lower()):
+        if word in _RISKY_PAYLOAD_MARKERS:
+            return False
+    return True
+
+
 # Argument shapes that smuggle execution back INTO a data sink (command/process substitution, psql
 # `\!`). Any hit disables masking for the whole segment — fail closed to the plain regex verdict.
 _UNSAFE_DATA_ARG_MARKERS = ("`", "$(", "<(", ">(", "\\!")
@@ -745,6 +781,22 @@ def _mask_data_sink_arguments(text: str) -> str:
                     rebuilt.extend(segment[: index + 1])
                     rebuilt.extend("arg" for _ in arguments)
                     continue
+            # Inline interpreter execution: only mask if payload provably matches a benign display allowlist
+            if index is not None and _INTERPRETER_NAME_RE.match(Path(segment[index]).name):
+                flag_idx = None
+                for i in range(index + 1, len(segment)):
+                    if segment[i] in _INTERPRETER_EXEC_FLAGS:
+                        flag_idx = i
+                        break
+                    if not segment[i].startswith("-"):
+                        break
+                if flag_idx is not None and flag_idx + 1 < len(segment):
+                    payload = segment[flag_idx + 1 :]
+                    if _is_benign_inline_payload(payload):
+                        changed = True
+                        rebuilt.extend(segment[: flag_idx + 1])
+                        rebuilt.extend("arg" for _ in payload)
+                        continue
             rebuilt.extend(segment)
         lines_out.append(" ".join(rebuilt))
     return "\n".join(lines_out) if changed else text

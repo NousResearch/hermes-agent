@@ -2,11 +2,11 @@
 
 ``tts.providers.<name>: {type: command, command: "piper -f {output_path} < {input_path}"}``
 (and the ``stt.`` twin): ``{placeholders}`` are shell-quoted for their surrounding quote
-context, ``{{``/``}}`` stay literal. Owns the quote-aware rendering, the idle-timeout
+context, ``{{``/``}}`` stay literal.  Owns the quote-aware rendering, the idle-timeout
 process runner and the generic ``<section>.providers.<name>`` readers, re-imported by
-``tts_tool``/``transcription_tools`` under their historical private names. TTS placeholders:
+``tts_tool``/``transcription_tools`` under their historical private names.  TTS placeholders:
 ``{input_path}``/``{text_path}``, ``{output_path}``, ``{format}``, ``{voice}``, ``{model}``,
-``{speed}``. Built-in provider names always win over a same-named ``providers`` entry.
+``{speed}``.  Built-in provider names always win over a same-named ``providers`` entry.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import os
 import queue
 import re
 import shlex
+import signal
 import subprocess
 import tempfile
 import threading
@@ -83,6 +84,9 @@ def _signal_process_tree(psutil: Any, proc: subprocess.Popen, method: str) -> No
     """Apply ``terminate``/``kill`` to *proc* and all descendants (best effort)."""
     try:
         parent = psutil.Process(proc.pid)
+    except psutil.NoSuchProcess:
+        return
+    try:
         for child in parent.children(recursive=True):
             try:
                 getattr(child, method)()
@@ -90,7 +94,7 @@ def _signal_process_tree(psutil: Any, proc: subprocess.Popen, method: str) -> No
                 pass
         getattr(parent, method)()
     except psutil.NoSuchProcess:
-        return
+        pass
     except Exception:
         getattr(proc, method)()
 
@@ -106,18 +110,44 @@ def terminate_command_process_tree(proc: subprocess.Popen) -> None:
         except Exception:
             proc.kill()
         return
+    # Prefer os.killpg to signal the entire process group at once.  The caller
+    # (run_command_provider) creates processes with start_new_session=True, so the
+    # launcher is both session leader and PGID leader.  Even if the launcher has
+    # already exited, orphaned workers remain in the original PGID until they
+    # explicitly call setsid().  os.killpg reaches them; walking the process tree
+    # via psutil misses them because psutil.Process(parent_pid) raises
+    # NoSuchProcess once the launcher is gone, and children() returns an empty
+    # list after reparenting.
+    try:
+        pgid = os.getpgid(proc.pid)
+    except (ProcessLookupError, OSError):
+        pgid = None
+    if pgid is not None and pgid == proc.pid:
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except (ProcessLookupError, OSError):
+            return
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                pass
+        return
+    # Fallback for non-group-leaders: walk the process tree via psutil.
     try:
         import psutil  # type: ignore
     except ImportError:
         psutil = None
     # Without psutil only the shell itself is signalled (children may survive).
-    signal = ((lambda m: getattr(proc, m)()) if psutil is None
-              else (lambda m: _signal_process_tree(psutil, proc, m)))
-    signal("terminate")
+    signal_fn = ((lambda m: getattr(proc, m)()) if psutil is None
+                 else (lambda m: _signal_process_tree(psutil, proc, m)))
+    signal_fn("terminate")
     try:
         proc.wait(timeout=2)
     except subprocess.TimeoutExpired:
-        signal("kill")
+        signal_fn("kill")
 
 
 def command_env_passthrough(config: Dict[str, Any]) -> list:
@@ -137,7 +167,7 @@ def run_command_provider(
 ) -> subprocess.CompletedProcess:
     """Run a command-provider shell command with process-tree idle cleanup.
     ``timeout`` is an IDLE timeout, reset whenever the command emits output — a slow-but-alive
-    provider survives, a silently stalled one is killed. Child env is scrubbed of Hermes secrets
+    provider survives, a silently stalled one is killed.  Child env is scrubbed of Hermes secrets
     while propagating delegated-child lineage markers."""
     from agent.delegation_context import delegated_child_subprocess_env
     from tools.environments.local import hermes_subprocess_env
@@ -146,7 +176,7 @@ def run_command_provider(
         value = os.environ.get(key)
         if value is not None:
             scrubbed[key] = value
-    # Own process group so the whole tree can be signalled on idle timeout. Lossy UTF-8 decode:
+    # Own process group so the whole tree can be signalled on idle timeout.  Lossy UTF-8 decode:
     # locale-mismatched bytes must not raise in the reader threads.
     group = ({"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)} if os.name == "nt"
              else {"start_new_session": True})

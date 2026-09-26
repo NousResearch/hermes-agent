@@ -333,5 +333,48 @@ class TestCLI:
         assert titlesB == ["Task B"]
         assert titlesD == []
 
+    def test_boards_list_counts_not_stamped_by_kanban_db_pin(self, tmp_path):
+        # #123733 (per-board counts): a dispatched worker's shell carries the
+        # dispatcher-pinned HERMES_KANBAN_DB; `boards list` must still count each
+        # board from its own DB instead of stamping the pinned board's numbers
+        # on every row.
+        env = {"HERMES_HOME": str(tmp_path)}
+        assert _cli(["boards", "create", "projA"], env_extra=env).returncode == 0
+        assert _cli(["boards", "create", "projB"], env_extra=env).returncode == 0
+        assert _cli(["--board", "projA", "create", "A1", "--assignee", "dev"], env_extra=env).returncode == 0
+        assert _cli(["--board", "projA", "create", "A2", "--assignee", "dev"], env_extra=env).returncode == 0
+        assert _cli(["--board", "projB", "create", "B1", "--assignee", "dev"], env_extra=env).returncode == 0
+
+        pinned_db = tmp_path / "kanban" / "boards" / "proja" / "kanban.db"
+        assert pinned_db.exists()
+        r = _cli(["boards", "list", "--json"], env_extra={**env, "HERMES_KANBAN_DB": str(pinned_db)})
+        assert r.returncode == 0, r.stderr
+        totals = {b["slug"]: sum(b["counts"].values()) for b in json.loads(r.stdout)}
+        assert totals["proja"] == 2
+        assert totals["projb"] == 1  # fails while the pin hijacks every board's counts
+
+    def test_boards_list_counts_correct_under_delegated_marker(self, tmp_path):
+        # Same as above but with the delegated-child marker a real worker shell
+        # carries, so the per-board reads also exercise the fenced (read-only)
+        # connection taken on the pinned board.
+        env = {"HERMES_HOME": str(tmp_path)}
+        assert _cli(["boards", "create", "projA"], env_extra=env).returncode == 0
+        assert _cli(["boards", "create", "projB"], env_extra=env).returncode == 0
+        assert _cli(["--board", "projA", "create", "A1", "--assignee", "dev"], env_extra=env).returncode == 0
+        assert _cli(["--board", "projB", "create", "B1", "--assignee", "dev"], env_extra=env).returncode == 0
+        assert _cli(["--board", "projB", "create", "B2", "--assignee", "dev"], env_extra=env).returncode == 0
+
+        pinned_db = tmp_path / "kanban" / "boards" / "proja" / "kanban.db"
+        worker_env = {
+            **env,
+            "HERMES_KANBAN_DB": str(pinned_db),
+            "HERMES_DELEGATED_CHILD_CONTEXT": str(tmp_path),
+        }
+        r = _cli(["boards", "list", "--json"], env_extra=worker_env)
+        assert r.returncode == 0, r.stderr
+        totals = {b["slug"]: sum(b["counts"].values()) for b in json.loads(r.stdout)}
+        assert totals["proja"] == 1
+        assert totals["projb"] == 2  # fails while the pin hijacks every board's counts
+
 
 

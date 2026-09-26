@@ -789,6 +789,15 @@ class GatewayBusySessionMixin:
                 return True
             return False  # base adapter queues silently behind the active turn
 
+        # Same plugin hook as the cold path: plugins must see every MessageEvent exactly once
+        # (contract in hermes_cli/plugins.py:135). This path used to skip it entirely, so a
+        # plugin's decision — an authorization approve/deny arriving while the session was
+        # already running, say — was silently lost and its text fell through to the model
+        # instead. Same semantics as the cold path: skip → dropped, rewrite → new text.
+        event = await self._hm_pre_gateway_dispatch_hook(event, event.source)
+        if event is None:
+            return True  # handled here: a plugin dropped (or rewrote away) this message
+
         # Same authorization gate as the cold path, else unauthorized users in shared threads
         # inject messages into a session they don't own.
         from gateway.run import _AGENT_PENDING_SENTINEL

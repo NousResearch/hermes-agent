@@ -6,10 +6,10 @@ import { applyHudResetBounds, defaultHudBounds, normalizeHudResizeBounds } from 
 
 test('defaultHudBounds restores the standard centered bottom layout', () => {
   assert.deepEqual(defaultHudBounds({ x: 0, y: 25, width: 1440, height: 875 }), {
-    x: 410,
-    y: 508,
-    width: 620,
-    height: 320
+    x: 360,
+    y: 148,
+    width: 720,
+    height: 720
   })
 })
 
@@ -23,7 +23,7 @@ test('defaultHudBounds fits the default layout to a small work area', () => {
 })
 
 test('defaultHudBounds keeps the spawn fallback when no display is available', () => {
-  assert.deepEqual(defaultHudBounds(), { x: undefined, y: undefined, width: 620, height: 320 })
+  assert.deepEqual(defaultHudBounds(), { x: undefined, y: undefined, width: 720, height: 720 })
 })
 
 test('applyHudResetBounds restores the resize lock and reports native failure', () => {
@@ -69,8 +69,8 @@ test('normalizeHudResizeBounds rounds finite geometry and clamps the HUD minimum
   assert.deepEqual(normalizeHudResizeBounds({ x: 10.4, y: -20.6, width: 100, height: 80 }), {
     x: 10,
     y: -21,
-    width: 380,
-    height: 160
+    width: 480,
+    height: 520
   })
 })
 

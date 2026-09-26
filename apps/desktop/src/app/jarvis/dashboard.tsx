@@ -361,6 +361,7 @@ export function JarvisDashboard({
           aria-expanded={activityOpen}
           aria-label={copy.showActivity}
           className="absolute right-4 top-4 z-20 min-h-11"
+          data-jarvis-activity-toggle
           onClick={() => setActivityOpen(open => !open)}
           ref={activityToggleRef}
           size="sm"

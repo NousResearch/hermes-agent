@@ -201,6 +201,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     },
     {
       className: 'group/tool',
+      hidden: true,
       // Hover + held ⌘/Ctrl morphs the glyph into its reset form (see
       // LayoutGlyph) — the mod-click telegraphs itself before it happens.
       icon: <LayoutGlyph modHeld={modHeld} />,

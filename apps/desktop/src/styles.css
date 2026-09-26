@@ -2994,7 +2994,8 @@ button[data-slot='aui_msg-reactions'] svg {
    Widgets on the shared shell (components/chat/widget-shell.ts →
    `--ui-widget-surface-background`) and any chat-surface card are matched on
    their class, so new ones inherit this without touching the list. */
-[data-hud-shell] [data-slot='composer-bounds']
+[data-hud-shell]
+  [data-slot='composer-bounds']
   :is(
     [data-slot='clarify-inline'],
     [data-slot='tool-block'],
@@ -3554,4 +3555,76 @@ html:has([data-hud-shell]) [data-slot='popover-content'] {
 
 [data-hud-shell] [data-slot='composer-bounds'] *::-webkit-scrollbar {
   display: none;
+}
+
+/* Agent Czesiek focus HUD: a quiet white room for the orb. The real composer
+   remains mounted at the bottom, but secondary transcript and glass layers
+   step out so the visual state of the assistant owns the surface. */
+[data-hud-shell] {
+  --jarvis-hero-size: min(500px, 74vw, calc(100vh - 126px));
+  border: 1px solid rgb(208 219 232 / 0.88);
+  border-radius: 30px;
+  background: radial-gradient(circle at 50% 40%, rgb(30 167 255 / 0.1), transparent 45%), #fff !important;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.92),
+    0 24px 64px rgb(25 55 90 / 0.14);
+}
+
+[data-hud-orb-stage] {
+  position: absolute;
+  inset: 10px 0 88px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+
+[data-hud-shell] .hud-focus-orb .jarvis-core__state,
+[data-hud-shell] [data-hud-glass],
+[data-hud-shell] [data-slot='composer-bounds'] {
+  display: none !important;
+}
+
+[data-hud-shell] [data-testid='jarvis-home-hero'] {
+  display: none !important;
+}
+
+[data-hud-shell] [data-jarvis-activity-toggle] {
+  display: none !important;
+}
+
+[data-hud-shell] [data-testid='jarvis-dashboard'] > main > :has(> .jarvis-core),
+[data-hud-shell] [data-testid='jarvis-dashboard'] > main > :has([data-testid='jarvis-voice-controls']) {
+  display: none !important;
+}
+
+[data-hud-shell] [data-chat-surface] {
+  position: absolute !important;
+  inset: 0 !important;
+  z-index: 1;
+}
+
+[data-hud-shell] [data-slot='composer-dock'],
+[data-hud-shell] [data-slot='composer-dock'][data-popped-out],
+[data-hud-shell][data-hud-edge] [data-slot='composer-dock'] {
+  top: auto !important;
+  right: 18px !important;
+  bottom: 18px !important;
+  left: 18px !important;
+  width: auto !important;
+  max-width: 620px !important;
+  margin-inline: auto !important;
+}
+
+[data-hud-shell] [data-slot='composer-surface'] {
+  border-color: rgb(192 208 226 / 0.92) !important;
+  border-radius: 22px !important;
+  background: rgb(255 255 255 / 0.94) !important;
+  box-shadow: 0 10px 30px rgb(32 76 120 / 0.12) !important;
+}
+
+@media (max-height: 580px) {
+  [data-hud-shell] {
+    --jarvis-hero-size: min(360px, 62vh, 68vw);
+  }
 }

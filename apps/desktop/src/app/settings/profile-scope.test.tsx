@@ -55,6 +55,23 @@ describe('SettingsProfileScope', () => {
     expect($settingsScopeOverride.get()).toBeNull()
   })
 
+  // Visual exclusivity: the screenshot showed BOTH chips rendering as active
+  // simultaneously. The active class on the chip is `bg-(--ui-bg-tertiary)`;
+  // exactly one chip may carry it after a click.
+  it('marks exactly one chip as active after a chip click', () => {
+    $profiles.set([profile('default', true), profile('bobby')])
+
+    const { container } = render(<SettingsProfileScope />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'bobby' }))
+
+    const activeChips = Array.from(container.querySelectorAll('button')).filter(button =>
+      button.className.includes('bg-(--ui-bg-tertiary)')
+    )
+    expect(activeChips).toHaveLength(1)
+    expect(activeChips[0]?.textContent).toBe('bobby')
+  })
+
   // #89190/#89162 class: after opening a Bot Mode chat, the ACTIVE profile is
   // the bot's — so with no override the settings pages silently edit the bot's
   // config. The target must be stated (accented) whenever it isn't the default

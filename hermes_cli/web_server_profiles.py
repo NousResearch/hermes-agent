@@ -227,7 +227,9 @@ def _write_profile_mcp_servers(profile_dir: Path, servers: List["MCPServerCreate
         elif not mcp:
             # Don't leave the stray empty key we just created in the new profile's config.
             cfg.pop("mcp_servers", None)
-            save_config(cfg)
+            # Declare the pop to the G1 guard so it doesn't re-preserve a stale mcp_servers
+            # map from the parent profile's raw dict.
+            save_config(cfg, removed_keys={"mcp_servers"})
     return written
 
 

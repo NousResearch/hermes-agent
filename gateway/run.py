@@ -3252,6 +3252,83 @@ async def _dispose_unused_adapter(adapter: "BasePlatformAdapter | None") -> None
 # Max seconds between platform reconnect retries (primary watcher and secondary profiles share it).
 _RECONNECT_BACKOFF_CAP = 300
 
+# Seconds continuously in the reconnect queue before NEEDS_ATTENTION. Retrying never stops (transient
+# outages must self-heal); this only makes a permanently-failing loop loud. 0 disables.
+_RECONNECT_ATTENTION_AFTER_SECONDS = _float_env("HERMES_RECONNECT_ATTENTION_AFTER_SECONDS", 7200)
+
+# Auto-recovery cadence for cross-profile credential-lock conflicts (#65176):
+# how long a losing gateway waits between cheap holder-liveness probes before
+# attempting reconnect. Keep slow — the probe exists only to detect holder
+# exit, not to hammer the lock (which would churn adapters and fds).
+_LOCK_CONFLICT_RECHECK_SECONDS = _float_env(
+    "HERMES_LOCK_CONFLICT_RECHECK_SECONDS", 120
+)
+
+
+def _extract_lock_holder_pid(message: str) -> Optional[int]:
+    """Extract the holder gateway's PID from a cross-profile lock-conflict
+    error message (OOF-3 format, see gateway/status.py).
+
+    Message shape: "Telegram bot token already in use by the 'default'
+    profile gateway (PID 16352). Stop that gateway first (...)". Returns
+    None when the message does not carry a PID (treat as unknown holder —
+    caller falls back to plain deferred retries without liveness probing).
+    """
+    if not message:
+        return None
+    m = re.search(r"\(PID\s+(\d+)\)", message)
+    if not m:
+        return None
+    try:
+        pid = int(m.group(1))
+    except ValueError:
+        return None
+    return pid if pid > 0 else None
+
+
+def _pid_alive(pid: Optional[int]) -> bool:
+    """Cheap cross-platform process-liveness probe for a lock holder.
+
+    Uses stdlib only: os.kill(pid, 0) on POSIX; OpenProcess + GetExitCodeProcess
+    on Windows (no external process spawn). Unknown PIDs (None/<=0) count as
+    alive so the caller keeps deferring instead of racing a half-parsed
+    message; permission-denied answers count as alive (process exists).
+    """
+    if pid is None or pid <= 0:
+        return True  # unknown holder — keep deferring
+    if os.name == "nt":
+        import ctypes
+        import ctypes.wintypes as wt
+
+        SYNCHRONIZE = 0x00100000
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = kernel32.OpenProcess(
+            SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, False, wt.DWORD(pid)
+        )
+        if not handle:
+            # 87 (ERROR_INVALID_PARAMETER) => no such process; anything else
+            # (5 access denied etc.) => treat as alive.
+            return kernel32.GetLastError() != 87
+        try:
+            exit_code = wt.DWORD(0)
+            if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return exit_code.value == STILL_ACTIVE
+            return True  # cannot tell — assume alive
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return True
+
+
 def _reconnect_backoff(attempt: int) -> int:
     """Exponential reconnect backoff: 30s, 60s, 120s, ... capped at 5 min."""
     return min(30 * (2 ** (attempt - 1)), _RECONNECT_BACKOFF_CAP)

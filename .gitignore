@@ -311,11 +311,5 @@ native/fts5_cjk/*.so
 # Disposable profile created by scripts/probe_active_session_exclusivity.py
 .probe-home/
 
-# Bundle/build scratch roots (scripts/bundles/, scripts/build/frontend-common.mjs)
-.build/
-.cache/
-
-# PM lockfile advisory lock; kept in place so waiting writers share its inode
-/pm/.lock.json.lock
-
-apps/desktop/.dist-build*
+# Agent QA report debris (2026-09-20): untracked files hard-block the parked-branch update guard
+qa-reports/

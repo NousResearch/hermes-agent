@@ -51,7 +51,8 @@ def _mint(command: str, label: str) -> tuple[str, Optional[float]]:
 
     try:
         completed = subprocess.run(
-            command, shell=True, capture_output=True, text=True, errors="replace", timeout=_MINT_TIMEOUT_SECONDS,
+            command, shell=True, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=_MINT_TIMEOUT_SECONDS,
             env=served_profile_child_env(inherit_credentials=True),
         )
     except subprocess.TimeoutExpired as exc:

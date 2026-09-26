@@ -718,7 +718,8 @@ class GatewayAdapterLifecycleMixin:
 
     async def _reconnect_failed_platform(self, platform, now: float) -> None:
         """One watcher pass for a queued platform: gate, attempt, and record the outcome."""
-        from gateway.run import _dispose_unused_adapter, _platform_has_bot_credential
+        from gateway.run import (_dispose_unused_adapter, _platform_has_bot_credential,
+    _extract_lock_holder_pid, _pid_alive, _LOCK_CONFLICT_RECHECK_SECONDS)
         info = self._failed_platforms.get(platform)
         # None: removed concurrently since the caller's snapshot. Paused needs /platform resume.
         if info is None or info.get("paused"):
@@ -726,6 +727,34 @@ class GatewayAdapterLifecycleMixin:
         self._flag_reconnect_needs_attention(platform, info, now)
         if now < info["next_retry"]:
             return  # not time yet
+        # Cross-profile lock-conflict deferral (auto-recovery, #65176):
+        # a platform that lost the credential lock to ANOTHER live
+        # profile gateway is parked on a slow cadence, NOT removed
+        # from the queue. Before each adapter churn we cheaply probe
+        # the holder's PID; while it lives we re-arm and keep waiting
+        # (no adapter construction, no fd churn). The moment the
+        # holder exits, the normal connect path below runs and the
+        # platform recovers without any manual intervention.
+        if info.get("lock_conflict"):
+            if _pid_alive(info.get("holder_pid")):
+                info["next_retry"] = now + _LOCK_CONFLICT_RECHECK_SECONDS
+                logger.info(
+                    "Reconnect %s: credential still held by profile "
+                    "gateway (PID %s), deferring %ds",
+                    platform.value, info.get("holder_pid"),
+                    _LOCK_CONFLICT_RECHECK_SECONDS,
+                )
+                return
+            logger.info(
+                "Reconnect %s: lock holder (PID %s) exited — attempting "
+                "auto-recovery now",
+                platform.value, info.get("holder_pid"),
+            )
+            # Clear the deferral markers so a failure below reverts to
+            # normal backoff handling; the branch above re-parks with
+            # a fresh holder PID if the lock is contested again.
+            info["lock_conflict"] = False
+            info["holder_pid"] = None
         platform_config = info["config"]
         attempt = info["attempts"] + 1
         # Empty-token primary configs can never reconnect; drop them so multiplex setups
@@ -761,6 +790,47 @@ class GatewayAdapterLifecycleMixin:
                 # failed reconnects at the 300s backoff cap (#37011).
                 await _dispose_unused_adapter(adapter)
                 del self._failed_platforms[platform]
+            elif (
+                adapter.has_fatal_error
+                and (adapter.fatal_error_code or "").endswith("_lock")
+                and "already in use by the" in (adapter.fatal_error_message or "")
+                and "profile gateway" in (adapter.fatal_error_message or "")
+            ):
+                # Live cross-profile credential conflict: the same bot
+                # token is held by ANOTHER profile's still-running
+                # gateway. Retrying can never succeed while the holder
+                # lives (#65176 forbids eviction), and looping every
+                # 30s..300s forever is pure background churn — park
+                # the platform on a slow liveness-probe cadence
+                # instead (flag needs_attention for visibility).
+                # Stale-holder lock failures keep their retryable
+                # behavior (#54167): their message has no "profile
+                # gateway" attribution. Auto-recovery: the platform
+                # stays queued and reconnects automatically as soon
+                # as the conflicting holder's process exits.
+                self._update_platform_runtime_status(
+                    platform.value,
+                    platform_state="needs_attention",
+                    error_code=adapter.fatal_error_code,
+                    error_message=adapter.fatal_error_message,
+                    needs_attention=True,
+                )
+                holder_pid = _extract_lock_holder_pid(
+                    adapter.fatal_error_message or ""
+                )
+                info["lock_conflict"] = True
+                info["holder_pid"] = holder_pid
+                info["next_retry"] = (
+                    time.monotonic() + _LOCK_CONFLICT_RECHECK_SECONDS
+                )
+                logger.warning(
+                    "%s credential held by another profile gateway "
+                    "(PID %s) — will auto-recover when it exits "
+                    "(liveness re-check every %ds)",
+                    platform.value, holder_pid,
+                    _LOCK_CONFLICT_RECHECK_SECONDS,
+                )
+                await _dispose_unused_adapter(adapter)
             else:
                 # Retryable failures retry at the cap forever (never auto-pause). Same fd-leak dispose.
                 backoff = self._bump_reconnect_backoff(

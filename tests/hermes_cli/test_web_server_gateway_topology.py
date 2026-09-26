@@ -5,13 +5,14 @@ added to ``/api/status``: profile enumeration, single vs multiplex vs multiple
 gateway detection, and per-platform port resolution.
 """
 
+from pathlib import Path
+
 import pytest
 
 from hermes_cli import web_server
-from hermes_cli.web_server import (
-    _collect_profile_gateway_topology,
-    _profile_platform_ports,
-)
+import gateway.status as _gw_status
+import hermes_cli.web_server_gateway as _web_server_gateway
+from hermes_cli.web_server_gateway import _collect_profile_gateway_topology, _profile_platform_ports
 
 
 # ---------------------------------------------------------------------------
@@ -58,7 +59,7 @@ def _patch_topology(monkeypatch, homes, running, runtimes):
     import hermes_cli.profiles as profiles_mod
     import gateway.status as status_mod
 
-    monkeypatch.setattr(profiles_mod, "profiles_to_serve", lambda multiplex: homes)
+    monkeypatch.setattr(profiles_mod, "profiles_to_serve", lambda multiplex, **kw: homes)
     monkeypatch.setattr(
         profiles_mod, "_check_gateway_running",
         lambda home: next(n for n, h in homes if h == home) in running,
@@ -70,6 +71,20 @@ def _patch_topology(monkeypatch, homes, running, runtimes):
 
 
 class TestCollectProfileGatewayTopology:
+    def test_running_standalone_profile_is_in_topology(self, tmp_path, monkeypatch):
+        from hermes_cli import profiles
+
+        root = tmp_path / ".hermes"
+        solo = root / "profiles" / "solo"
+        solo.mkdir(parents=True)
+        (solo / "config.yaml").write_text("gateway:\n  standalone: true\n")
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(root))
+        monkeypatch.setattr(profiles, "_check_gateway_running", lambda home: home == solo)
+        topo = _collect_profile_gateway_topology()
+        assert "solo" in topo["profiles"]
+        assert [g["profile"] for g in topo["gateways"]] == ["solo"]
+
     def test_no_gateways_running(self, tmp_path, monkeypatch):
         homes = [("default", tmp_path / "d"), ("coder", tmp_path / "c")]
         _patch_topology(monkeypatch, homes, running=set(), runtimes={})
@@ -111,7 +126,7 @@ class TestCollectProfileGatewayTopology:
         )
         identities = {tmp_path / "d": (100, 111), tmp_path / "c": (200, 222)}
         monkeypatch.setattr(
-            web_server,
+            _web_server_gateway,
             "_profile_gateway_writer_identity",
             lambda home, runtime: identities.get(home),
         )
@@ -180,12 +195,35 @@ class TestCollectProfileGatewayTopology:
             monkeypatch, homes, running={"coder"}, runtimes=runtimes
         )
         monkeypatch.setattr(
-            web_server,
+            _web_server_gateway,
             "_profile_gateway_writer_identity",
             lambda home, runtime: (200, 222),
         )
         topo = _collect_profile_gateway_topology()
         assert set(topo["profile_platforms"].get("coder", {})) == {"signal"}
+
+    def test_a_stale_platform_entry_reports_no_port(self, tmp_path, monkeypatch):
+        # The live case: a Feishu entry left "connected" by a gateway process from a week earlier
+        # (the platform has since been removed) put its port into ``gateways[].ports`` beside the
+        # ports the live gateway really binds. Ports follow the same writer-identity ownership as
+        # the platform map: a port the current process does not bind is not reported.
+        homes = [("default", tmp_path / "d")]
+        runtimes = {
+            "default": {
+                "platforms": {
+                    "api_server": {"state": "connected", "writer_pid": 200, "writer_start_time": 222},
+                    "feishu": {"state": "connected", "writer_pid": 34105, "writer_start_time": 178945520374},
+                }
+            },
+        }
+        _patch_topology(monkeypatch, homes, running={"default"}, runtimes=runtimes)
+        monkeypatch.setattr(
+            _web_server_gateway,
+            "_profile_gateway_writer_identity",
+            lambda home, runtime: (200, 222),
+        )
+        topo = _collect_profile_gateway_topology()
+        assert set(topo["gateways"][0]["ports"]) == {"api_server"}
 
     def test_no_live_process_means_no_aggregation(self, tmp_path, monkeypatch):
         # When the record's PID doesn't validate against a live gateway
@@ -204,7 +242,7 @@ class TestCollectProfileGatewayTopology:
         }
         _patch_topology(monkeypatch, homes, running={"coder"}, runtimes=runtimes)
         monkeypatch.setattr(
-            web_server,
+            _web_server_gateway,
             "_profile_gateway_writer_identity",
             lambda home, runtime: None,
         )
@@ -253,7 +291,7 @@ class TestStatusEndpointTopology:
 
     def test_status_includes_full_topology_on_loopback(self, monkeypatch):
         monkeypatch.setattr(
-            web_server, "_collect_profile_gateway_topology",
+            _web_server_gateway, "_collect_profile_gateway_topology",
             lambda: {
                 "profiles": ["default", "coder"],
                 "gateway_mode": "single",
@@ -269,9 +307,9 @@ class TestStatusEndpointTopology:
         assert data["gateways"] == [{"profile": "default", "ports": {}}]
 
     def test_status_preserves_secondary_profile_platform_errors(self, monkeypatch):
-        monkeypatch.setattr(web_server, "get_running_pid_cached", lambda: 123)
+        monkeypatch.setattr(_gw_status, "get_running_pid_cached", lambda: 123)
         monkeypatch.setattr(
-            web_server,
+            _gw_status,
             "read_runtime_status",
             lambda path=None: {
                 "gateway_state": "running",
@@ -286,7 +324,7 @@ class TestStatusEndpointTopology:
             },
         )
         monkeypatch.setattr(
-            web_server,
+            _web_server_gateway,
             "_load_configured_gateway_platforms",
             lambda: {"telegram"},
         )
@@ -299,9 +337,9 @@ class TestStatusEndpointTopology:
         assert platforms["reviewer:discord"]["error_code"] == "duplicate_credential"
 
     def test_status_rejects_malformed_namespaced_platform_key(self, monkeypatch):
-        monkeypatch.setattr(web_server, "get_running_pid_cached", lambda: 123)
+        monkeypatch.setattr(_gw_status, "get_running_pid_cached", lambda: 123)
         monkeypatch.setattr(
-            web_server,
+            _gw_status,
             "read_runtime_status",
             lambda path=None: {
                 "gateway_state": "running",
@@ -311,7 +349,7 @@ class TestStatusEndpointTopology:
             },
         )
         monkeypatch.setattr(
-            web_server,
+            _web_server_gateway,
             "_load_configured_gateway_platforms",
             lambda: {"telegram"},
         )
@@ -327,9 +365,9 @@ class TestStatusEndpointTopology:
         # validated against the key grammar. A config-load failure must not
         # let malformed keys from a process-local JSON file reach the public
         # endpoint.
-        monkeypatch.setattr(web_server, "get_running_pid_cached", lambda: 123)
+        monkeypatch.setattr(_gw_status, "get_running_pid_cached", lambda: 123)
         monkeypatch.setattr(
-            web_server,
+            _gw_status,
             "read_runtime_status",
             lambda path=None: {
                 "gateway_state": "running",
@@ -346,7 +384,7 @@ class TestStatusEndpointTopology:
             raise RuntimeError("config unreadable")
 
         monkeypatch.setattr(
-            web_server, "_load_configured_gateway_platforms", _boom
+            _web_server_gateway, "_load_configured_gateway_platforms", _boom
         )
 
         resp = self.client.get("/api/status")
@@ -363,9 +401,9 @@ class TestStatusEndpointTopology:
         # names are lowercased directory names; the Platform enum accepts
         # them). A valid ``reviewer:foo-bar`` fatal entry must survive the
         # public filter.
-        monkeypatch.setattr(web_server, "get_running_pid_cached", lambda: 123)
+        monkeypatch.setattr(_gw_status, "get_running_pid_cached", lambda: 123)
         monkeypatch.setattr(
-            web_server,
+            _gw_status,
             "read_runtime_status",
             lambda path=None: {
                 "gateway_state": "running",
@@ -378,7 +416,7 @@ class TestStatusEndpointTopology:
             },
         )
         monkeypatch.setattr(
-            web_server,
+            _web_server_gateway,
             "_load_configured_gateway_platforms",
             lambda: {"telegram"},
         )
@@ -396,9 +434,9 @@ class TestStatusEndpointTopology:
         # them in as <profile>:<platform> so NAS health monitoring sees them.
         import hermes_cli.profiles as profiles_mod
 
-        monkeypatch.setattr(web_server, "get_running_pid_cached", lambda: 123)
+        monkeypatch.setattr(_gw_status, "get_running_pid_cached", lambda: 123)
         monkeypatch.setattr(
-            web_server,
+            _gw_status,
             "read_runtime_status",
             lambda path=None: {
                 "gateway_state": "running",
@@ -412,7 +450,7 @@ class TestStatusEndpointTopology:
             },
         )
         monkeypatch.setattr(
-            web_server,
+            _web_server_gateway,
             "_load_configured_gateway_platforms",
             lambda: {"telegram"},
         )
@@ -420,7 +458,7 @@ class TestStatusEndpointTopology:
             profiles_mod, "get_active_profile_name", lambda: "default"
         )
         monkeypatch.setattr(
-            web_server, "_collect_profile_gateway_topology",
+            _web_server_gateway, "_collect_profile_gateway_topology",
             lambda: {
                 "profiles": ["default", "lead-gen-outreach"],
                 "gateway_mode": "multiple",
@@ -472,9 +510,9 @@ class TestStatusEndpointTopology:
         # profile's failures into it would misattribute state.
         import hermes_cli.profiles as profiles_mod
 
-        monkeypatch.setattr(web_server, "get_running_pid_cached", lambda: 123)
+        monkeypatch.setattr(_gw_status, "get_running_pid_cached", lambda: 123)
         monkeypatch.setattr(
-            web_server,
+            _gw_status,
             "read_runtime_status",
             lambda path=None: {
                 "gateway_state": "running",
@@ -482,7 +520,7 @@ class TestStatusEndpointTopology:
             },
         )
         monkeypatch.setattr(
-            web_server,
+            _web_server_gateway,
             "_load_configured_gateway_platforms",
             lambda: {"telegram"},
         )
@@ -490,7 +528,7 @@ class TestStatusEndpointTopology:
             profiles_mod, "get_active_profile_name", lambda: "default"
         )
         monkeypatch.setattr(
-            web_server, "_collect_profile_gateway_topology",
+            _web_server_gateway, "_collect_profile_gateway_topology",
             lambda: {
                 "profiles": ["default", "coder"],
                 "gateway_mode": "multiple",
@@ -512,7 +550,7 @@ class TestStatusEndpointTopology:
         # Hermes Cloud Portal reads /api/status over the network (a gated bind)
         # to render the profile list, so they must survive the auth gate.
         monkeypatch.setattr(
-            web_server, "_collect_profile_gateway_topology",
+            _web_server_gateway, "_collect_profile_gateway_topology",
             lambda: {
                 "profiles": ["default", "coder"],
                 "gateway_mode": "multiplex",

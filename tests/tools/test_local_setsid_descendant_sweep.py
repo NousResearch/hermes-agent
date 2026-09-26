@@ -17,6 +17,8 @@ from types import SimpleNamespace
 
 import pytest
 
+pytestmark = pytest.mark.platforms("linux")
+
 from tools.environments.local import LocalEnvironment
 
 
@@ -146,3 +148,29 @@ def test_kill_process_survives_psutil_snapshot_failure(monkeypatch):
     # escalation path completed despite the snapshot failure.
     assert killpg_calls[0] == (67890, signal.SIGTERM)
     assert (67890, 0) in killpg_calls
+
+
+def test_kill_process_never_killpgs_the_callers_own_group(monkeypatch):
+    """A spawner that skipped ``setsid`` leaves the child in OUR process group (the Darwin
+    gateway's posix_spawn shim, #107029): ``killpg`` there would SIGKILL the gateway itself.
+    Teardown must go by PID and never signal the group."""
+    pytest.importorskip("psutil")
+
+    env = object.__new__(LocalEnvironment)
+    killed = []
+    proc = SimpleNamespace(
+        pid=12345,
+        poll=lambda: 0,
+        wait=lambda timeout=None: 0,
+        kill=lambda: killed.append(12345),
+    )
+    killpg_calls = []
+
+    monkeypatch.setattr(os, "getpgid", lambda _pid: 67890)
+    monkeypatch.setattr(os, "getpgrp", lambda: 67890)
+    monkeypatch.setattr(os, "killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)))
+
+    env._kill_process(proc)
+
+    assert killpg_calls == []
+    assert killed == [12345]

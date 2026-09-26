@@ -16,7 +16,7 @@ approval:
   prompt_smart_deny: "      الاختيار [o/D]: "
   smart_deny_once_inputs: "o,once"
   smart_deny_deny_inputs: "d,deny"
-  timeout:         "      ⏱ انتهت المهلة - يتم رفض الأمر"
+  timeout:         "      ⏱ لا توجد إجابة خلال {waited} — لم يتم تنفيذ الأمر. اطلب مرة أخرى لإعادة المحاولة، أو ارفع الحد: hermes config set approvals.timeout {suggested}"
   allowed_once:    "      ✓ مسموح مرة واحدة"
   allowed_session: "      ✓ مسموح لهذه الجلسة"
   allowed_always:  "      ✓ أُضيف إلى قائمة السماح الدائمة"
@@ -109,6 +109,9 @@ gateway:
     switch_failed:         "أُنشئ الفرع لكن تعذّر التبديل إليه."
     branched_one:          "⑂ تم التفريع إلى **{title}** (نُسخت {count} رسالة)\nالأصل: `{parent}`\nالفرع: `{new}`\nاستخدم `/resume` للعودة إلى الأصل."
     branched_many:         "⑂ تم التفريع إلى **{title}** (نُسخت {count} رسالة)\nالأصل: `{parent}`\nالفرع: `{new}`\nاستخدم `/resume` للعودة إلى الأصل."
+    branched_thread_one:   "⑂ تم التفريع إلى **{title}** في سلسلة جديدة (تم نسخ {count} رسالة)\nالسلسلة: {thread}\nالأصل: `{parent}` — تبقى هذه المحادثة عليه\nالفرع: `{new}`\nاستخدم `/branch --here` للتفريع في هذه المحادثة."
+    branched_thread_many:  "⑂ تم التفريع إلى **{title}** في سلسلة جديدة (تم نسخ {count} رسائل)\nالسلسلة: {thread}\nالأصل: `{parent}` — تبقى هذه المحادثة عليه\nالفرع: `{new}`\nاستخدم `/branch --here` للتفريع في هذه المحادثة."
+    thread_fallback:       "تعذر إنشاء سلسلة هنا، لذا حل الفرع محل جلسة هذه المحادثة."
 
   commands:
     usage:                 "الاستخدام: `/commands [page]`"
@@ -202,7 +205,7 @@ gateway:
       blocked:             "محجوبة؛ تحتاج إلى انتباه"
       review_requested:    "أُحيلت للمراجعة؛ اكتمل التنفيذ"
       changes_requested:   "طلبت المراجعة تغييرات (BLOCK)؛ التنفيذ غير معتمد"
-      block_loop_detected: "أُحيلت إلى الفرز بعد تكرار الحجب؛ تحتاج إلى قرار"
+      block_loop_detected: "أُحيلت إلى الفرز بعد تكرار الحجب؛ تحتاج إلى اهتمام بالتنسيق"
       status_default:      "تغيّرت الحالة"
       status_joiner:       "، "
       message:             "[kanban] المهمة {task_id} {status}.\nالعنوان: {title}\nالمُكلَّف: @{assignee}\nاللوحة: {board}\n\nراجع النتيجة أو قرّر الخطوة التالية."
@@ -343,6 +346,7 @@ gateway:
     last_activity:         "**آخر نشاط:** {timestamp}"
     model:                 "**النموذج:** `{model}`"
     model_provider:        "**النموذج:** `{model}` ({provider})"
+    free_tier:             "Nous · الخطة المجانية · nous/welcome · /login لتسجيل الدخول"
     context:               "**السياق:** {used} / {total} ({pct}%)"
     context_used:          "**السياق:** ~{used} رمزًا"
     tokens:                "**رموز API التراكمية (تُعاد كل استدعاء):** {tokens}"
@@ -388,7 +392,7 @@ gateway:
     not_git_repo:            "✗ ليس مستودع git — لا يمكن التحديث."
     hermes_cmd_not_found:    "✗ تعذّر تحديد موقع أمر `hermes`. Hermes يعمل، لكن أمر التحديث لم يجد الملف التنفيذي على PATH أو عبر مُفسّر Python الحالي. جرّب تشغيل `hermes update` يدويًا في طرفيتك."
     start_failed:            "✗ فشل بدء التحديث: {error}"
-    starting:                "⚕ جارٍ بدء تحديث Hermes… سأبثّ التقدّم هنا."
+    starting:                "☤ جارٍ بدء تحديث Hermes… سأبثّ التقدّم هنا."
 
   usage:
     rate_limits:              "⏱️ **حدود المعدّل:** {state}"

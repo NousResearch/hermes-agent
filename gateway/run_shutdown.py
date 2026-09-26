@@ -414,6 +414,10 @@ class GatewayShutdownMixin:
 
     def _scale_to_zero_should_arm(self) -> bool:
         """Whether to start the idle watcher (D1/D11/§3.4(1))."""
+        import math
+
+        if math.isinf(self._scale_to_zero_idle_timeout_seconds()):
+            return False  # explicit 0/negative timeout disables (#120457)
         from gateway.scale_to_zero import messaging_is_relay_only_or_absent, scale_to_zero_enabled, should_arm
         return should_arm(
             enabled=scale_to_zero_enabled(),

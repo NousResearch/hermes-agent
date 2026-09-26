@@ -2157,7 +2157,8 @@ DEFAULT_CONFIG = {
         # (HERMES_SCALE_TO_ZERO env stamp) AND messaging is relay-only/absent AND a wakeUrl is
         # registered, the relay transport goes dormant so the platform (e.g. Fly autostop) can
         # suspend the machine; it wakes on the wakeUrl poke. Enablement is the Labs toggle, never a
-        # config key. 0/negative = default.
+        # config key. 0/negative disables the idle path (never idle — use this
+        # when a messaging bridge needs its long-lived connection, #120457).
         "scale_to_zero": {"idle_timeout_minutes": 2},
         # Auto-resume restart-loop breaker. A supervisor-revived gateway auto-resumes the
         # SIGTERM-interrupted session; if that turn keeps triggering the kill, boots no more than

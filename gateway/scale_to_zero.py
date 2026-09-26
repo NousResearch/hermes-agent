@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import socket
 import time
@@ -54,13 +55,18 @@ def scale_to_zero_enabled(environ: Optional[dict] = None) -> bool:
 
 def parse_idle_timeout_seconds(cfg_value: Any,
                                default_minutes: int = DEFAULT_IDLE_TIMEOUT_MINUTES) -> float:
-    """Coerce ``scale_to_zero.idle_timeout_minutes`` to seconds. Non-numeric / non-positive
-    degrades to the default (never <= 0: instant dormancy)."""
+    """Coerce ``scale_to_zero.idle_timeout_minutes`` to seconds. Missing or
+    non-numeric degrades to the default. An explicit non-positive number (0 or
+    negative) DISABLES the idle path (returns inf, so ``is_idle`` never fires):
+    messaging bridges need a long-lived connection, and 0 must mean "stay up"
+    (#120457)."""
     try:
         minutes = float(cfg_value)
     except (TypeError, ValueError):
-        minutes = 0.0
-    return (float(default_minutes) if minutes <= 0 else minutes) * 60.0
+        return float(default_minutes) * 60.0
+    if minutes <= 0:
+        return math.inf
+    return minutes * 60.0
 
 
 def messaging_is_relay_only_or_absent(platforms: Iterable[Any]) -> bool:

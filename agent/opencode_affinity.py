@@ -57,16 +57,23 @@ def opencode_transport(provider: Optional[str], model: Optional[str], base_url: 
     return api_mode, normalize_opencode_base_url(provider, api_mode, url)
 
 
-def is_opencode_target(provider: Optional[str], base_url: Optional[str]) -> bool:
+def is_opencode_target(
+    provider: Optional[str],
+    base_url: Optional[str],
+    requested_provider: Optional[str] = None,
+) -> bool:
     """True when *provider* or *base_url* addresses the OpenCode relay.
 
-    Matches the built-in opencode-zen/go providers, custom
+    Matches the built-in opencode-zen/go providers, resolved or requested custom
     ``opencode-<family>-*`` providers, and any base_url hosted on opencode.ai.
     """
     try:
         from hermes_cli.models import opencode_provider_family
 
-        if opencode_provider_family(provider) is not None:
+        if any(
+            opencode_provider_family(candidate) is not None
+            for candidate in (provider, requested_provider)
+        ):
             return True
     except Exception:
         pass
@@ -93,13 +100,14 @@ def opencode_session_headers(
     provider: Optional[str],
     base_url: Optional[str],
     session_id: Optional[str] = None,
+    requested_provider: Optional[str] = None,
 ) -> dict[str, str]:
     """Return ``{"x-opencode-session": <key>}`` for OpenCode targets, else ``{}``.
 
     OpenCode targets always get a key: when no conversation/session key resolves, an
     ephemeral ``oneshot-<hex>`` value is generated (OpenCode Go rejects requests without
     the header, #105841)."""
-    if not is_opencode_target(provider, base_url):
+    if not is_opencode_target(provider, base_url, requested_provider):
         return {}
     key = resolve_affinity_key(session_id)
     if not key:
@@ -133,13 +141,14 @@ def merge_session_affinity_headers(
     provider: Optional[str],
     base_url: Optional[str],
     session_id: Optional[str] = None,
+    requested_provider: Optional[str] = None,
 ) -> dict[str, Any]:
     """Merge the affinity header(s) into ``kwargs["extra_headers"]`` (in place).
 
     Existing per-request headers win, so a caller-pinned value is preserved.
     Targets with neither source configured are left untouched.
     """
-    headers = opencode_session_headers(provider, base_url, session_id)
+    headers = opencode_session_headers(provider, base_url, session_id, requested_provider)
     headers.update(custom_provider_session_affinity_headers(base_url, session_id))
     if headers:
         existing = kwargs.get("extra_headers")

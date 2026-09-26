@@ -17,7 +17,7 @@ import random
 import shutil
 import tempfile
 import time
-import yaml
+import hermes_yaml as yaml
 import logging
 import asyncio
 from pathlib import Path
@@ -572,7 +572,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
 
     async def process_entry_async(self, entry: Dict[str, Any]) -> Tuple[Dict[str, Any], TrajectoryMetrics]:
         """Compress one JSONL entry's ``conversations``; attach metrics when compressed."""
-        if "conversations" not in entry:
+        if not isinstance(entry, dict) or "conversations" not in entry:
             return entry, TrajectoryMetrics()
         compressed_trajectory, metrics = await self.compress_trajectory_async(entry["conversations"])
         result = dict(entry, conversations=compressed_trajectory)

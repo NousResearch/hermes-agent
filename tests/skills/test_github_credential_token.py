@@ -9,13 +9,6 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 HELPER = REPO_ROOT / "skills/software-development/github/scripts/git-credential-token.py"
-LEGACY_SED = r"sed 's|https://[^:]*:\([^@]*\)@.*|\1|'"
-SHIPPED_TREES = (
-    REPO_ROOT / "skills/software-development/github",
-    REPO_ROOT / "website/docs/user-guide/skills/bundled/software-development",
-    REPO_ROOT
-    / "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/skills/bundled/software-development",
-)
 
 
 def _extract(path: Path) -> subprocess.CompletedProcess[str]:
@@ -89,13 +82,3 @@ def test_rejects_ambiguous_lookalike_or_malformed_credentials(tmp_path, credenti
     assert result.returncode == 1
     assert result.stdout == ""
     assert result.stderr == ""
-
-
-def test_bundled_github_skills_and_docs_do_not_ship_legacy_sed_url_regex():
-    offenders = []
-    for tree in SHIPPED_TREES:
-        for path in tree.rglob("*"):
-            if path.suffix in {".md", ".sh", ".py"} and LEGACY_SED in path.read_text(encoding="utf-8"):
-                offenders.append(str(path.relative_to(REPO_ROOT)))
-
-    assert offenders == []

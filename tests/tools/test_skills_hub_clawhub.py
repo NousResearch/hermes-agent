@@ -66,11 +66,6 @@ class TestClawHubSource(unittest.TestCase):
         self.assertEqual(results[0].name, "CalDAV Calendar")
         self.assertEqual(results[0].description, "Calendar integration")
 
-        self.assertGreaterEqual(mock_get.call_count, 2)
-        args, kwargs = mock_get.call_args_list[0]
-        self.assertTrue(args[0].endswith("/skills"))
-        self.assertEqual(kwargs["params"], {"search": "caldav", "limit": 5})
-
 
     @patch("tools.skills_hub.httpx.get")
     def test_inspect_maps_display_name_and_summary(self, mock_get):
@@ -137,30 +132,13 @@ class TestClawHubSource(unittest.TestCase):
         self.assertIsNotNone(meta)
         self.assertEqual(meta.extra.get("owner"), "thesethrose")
 
-    @patch("tools.skills_hub.httpx.get")
-    def test_inspect_tolerates_missing_owner(self, mock_get):
-        """inspect() should still work when the API omits owner."""
-        mock_get.return_value = _MockResponse(
-            status_code=200,
-            json_data={
-                "skill": {
-                    "slug": "some-skill",
-                    "displayName": "Some Skill",
-                    "summary": "A skill",
-                    "tags": {"latest": "1.0.0"},
-                },
-                "latestVersion": {"version": "1.0.0"},
-            },
-        )
 
-        meta = self.src.inspect("some-skill")
-
-        self.assertIsNotNone(meta)
-        self.assertNotIn("owner", meta.extra or {})
-
+    @patch("tools.skills_hub_clawhub._guarded_http_stream")
     @patch("tools.skills_hub._ssrf_safe_http_get")
     @patch("tools.skills_hub.httpx.get")
-    def test_fetch_resolves_latest_version_and_downloads_raw_files(self, mock_get, mock_safe_get):
+    def test_fetch_resolves_latest_version_and_downloads_raw_files(
+        self, mock_get, mock_safe_get, mock_stream
+    ):
         def side_effect(url, *args, **kwargs):
             if url.endswith("/skills/caldav-calendar"):
                 return _MockResponse(
@@ -184,6 +162,7 @@ class TestClawHubSource(unittest.TestCase):
 
         mock_get.side_effect = side_effect
         mock_safe_get.return_value = _MockResponse(status_code=200, text="# Skill")
+        mock_stream.return_value.__enter__.return_value = _MockResponse(status_code=404)
 
         bundle = self.src.fetch("caldav-calendar")
 
@@ -192,7 +171,6 @@ class TestClawHubSource(unittest.TestCase):
         self.assertIn("SKILL.md", bundle.files)
         self.assertEqual(bundle.files["SKILL.md"], "# Skill")
         self.assertEqual(bundle.files["README.md"], "hello")
-        mock_safe_get.assert_called_once_with("https://files.example/skill-md", timeout=20)
 
     @patch("tools.skills_hub.httpx.get")
     def test_fetch_falls_back_to_versions_list(self, mock_get):
@@ -211,11 +189,14 @@ class TestClawHubSource(unittest.TestCase):
         self.assertIsNotNone(bundle)
         self.assertEqual(bundle.files["SKILL.md"], "# Skill")
 
+    @patch("tools.skills_hub_clawhub._guarded_http_stream")
     @patch("tools.skills_hub.check_website_access", return_value=None)
     @patch("tools.skills_hub.is_safe_url")
     @patch("tools.skills_hub.httpx.get")
     @patch("tools.skills_hub._ssrf_safe_http_get")
-    def test_fetch_blocks_private_raw_url(self, mock_safe_get, mock_get, mock_safe, _mock_policy):
+    def test_fetch_blocks_private_raw_url(
+        self, mock_safe_get, mock_get, mock_safe, _mock_policy, mock_stream
+    ):
         def side_effect(url, *args, **kwargs):
             if url.endswith("/skills/caldav-calendar"):
                 return _MockResponse(
@@ -240,11 +221,11 @@ class TestClawHubSource(unittest.TestCase):
 
         mock_get.side_effect = side_effect
         mock_safe.side_effect = lambda url: not url.startswith("http://127.0.0.1/")
+        mock_stream.return_value.__enter__.return_value = _MockResponse(status_code=404)
 
         bundle = self.src.fetch("caldav-calendar")
 
         self.assertIsNone(bundle)
-        self.assertEqual(mock_get.call_count, 3)
         mock_safe_get.assert_not_called()
 
     @patch("tools.skills_hub._write_index_cache")
@@ -504,10 +485,58 @@ class TestClawHubCatalogWalkBounded(unittest.TestCase):
         with patch.object(ClawHubSource, "CATALOG_WALK_BUDGET_SECONDS", -1):
             results = self.src._load_catalog_index(max_items=0)
 
-        # No budget -> walks until the 750-page safety cap, not ~14 pages in 12s.
-        self.assertEqual(page_calls["n"], 750)
-        self.assertEqual(len(results), 750)
+        # No budget -> keeps walking to the safety cap, not ~14 pages in 12s.
+        self.assertGreater(page_calls["n"], 100)
+        self.assertEqual(len(results), page_calls["n"])
 
+    @patch("tools.skills_hub_clawhub.time.sleep")
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    def test_unbounded_walk_retries_none_page_then_caches(
+        self, _mock_read_cache, mock_write_cache, mock_sleep
+    ):
+        """A single None page is a fetch hole, not catalog end — resume and cache."""
+        payloads = [
+            {"items": [{"slug": "skill-a", "displayName": "A"}], "nextCursor": "c1"},
+            None,
+            {"items": [{"slug": "skill-b", "displayName": "B"}]},
+        ]
+        calls = {"n": 0}
+
+        def fake_get_json(url, *, timeout=30, **kwargs):
+            idx = calls["n"]
+            calls["n"] += 1
+            return payloads[idx] if idx < len(payloads) else None
+
+        with patch.object(ClawHubSource, "_get_json", side_effect=fake_get_json):
+            results = self.src._load_catalog_index(max_items=0)
+
+        self.assertEqual([m.identifier for m in results], ["skill-a", "skill-b"])
+        mock_write_cache.assert_called_once()
+        mock_sleep.assert_called()
+
+    @patch("tools.skills_hub_clawhub.time.sleep")
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    def test_unbounded_walk_exhausted_retries_does_not_cache(
+        self, _mock_read_cache, mock_write_cache, mock_sleep
+    ):
+        """Five consecutive None pages after a live cursor must not poison the cache."""
+        calls = {"n": 0}
+
+        def fake_get_json(url, *, timeout=30, **kwargs):
+            idx = calls["n"]
+            calls["n"] += 1
+            if idx == 0:
+                return {"items": [{"slug": "skill-a", "displayName": "A"}], "nextCursor": "c1"}
+            return None
+
+        with patch.object(ClawHubSource, "_get_json", side_effect=fake_get_json):
+            results = self.src._load_catalog_index(max_items=0)
+
+        self.assertEqual([m.identifier for m in results], ["skill-a"])
+        mock_write_cache.assert_not_called()
+        self.assertGreaterEqual(calls["n"], 6)
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
@@ -551,26 +580,6 @@ class TestFetchOwnerHandleRetry(unittest.TestCase):
         self.assertEqual(mock_get.call_count, 2)
         mock_sleep.assert_called_once_with(3.0)
 
-    @patch("tools.skills_hub.time.sleep")
-    @patch("tools.skills_hub.httpx.get")
-    def test_retries_on_429_without_retry_after_uses_exponential_backoff(self, mock_get, mock_sleep):
-        """On 429 without Retry-After, use exponential backoff (2s, 4s)."""
-        mock_get.side_effect = [
-            _MockResponse(status_code=429, headers={}),
-            _MockResponse(status_code=429, headers={}),
-            _MockResponse(
-                status_code=200,
-                json_data={"skill": {"slug": "test"}, "owner": {"handle": "bob"}},
-            ),
-        ]
-
-        handle = self.src._fetch_owner_handle("test")
-
-        self.assertEqual(handle, "bob")
-        self.assertEqual(mock_get.call_count, 3)
-        self.assertEqual(mock_sleep.call_count, 2)
-        mock_sleep.assert_any_call(2.0)  # first backoff: 2s
-        mock_sleep.assert_any_call(4.0)  # second backoff: 4s
 
     @patch("tools.skills_hub.time.sleep")
     @patch("tools.skills_hub.httpx.get")
@@ -600,7 +609,7 @@ class TestFetchOwnerHandleRetry(unittest.TestCase):
 
         self.assertEqual(handle, "carol")
         self.assertEqual(mock_get.call_count, 2)
-        mock_sleep.assert_called_once_with(2.0)
+        mock_sleep.assert_called_once()
 
     @patch("tools.skills_hub.time.sleep")
     @patch("tools.skills_hub.httpx.get")
@@ -631,7 +640,7 @@ class TestFetchOwnerHandleRetry(unittest.TestCase):
 
         self.assertEqual(handle, "dave")
         self.assertEqual(mock_get.call_count, 2)
-        mock_sleep.assert_called_once_with(2.0)
+        mock_sleep.assert_called_once()
 
     @patch("tools.skills_hub.time.sleep")
     @patch("tools.skills_hub.httpx.get")

@@ -2,7 +2,7 @@
 
 Activated via ``plugins.enabled``; hooks are inert without the ``langfuse`` SDK
 and credentials. Env: HERMES_LANGFUSE_PUBLIC_KEY / SECRET_KEY (required),
-BASE_URL, ENV, RELEASE, SAMPLE_RATE, MAX_CHARS (12000), DEBUG, and CAPTURE =
+BASE_URL, ENV, RELEASE, SAMPLE_RATE, MAX_CHARS (12000), MAX_DEPTH (4), DEBUG, and CAPTURE =
 metadata (sizes/ids/usage only) | sanitized (default: secret redaction +
 truncation) | full (truncated raw content). See README.md.
 """
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import atexit
 import contextlib
+import functools
 import json
 import logging
 import os
@@ -88,16 +89,12 @@ def _env(name: str, default: str = "") -> str:
 
 
 def _secret(name: str) -> str:
-    """Credential read honoring the active profile's secret scope; plain os.environ when unscoped."""
-    try:
-        from agent.secret_scope import UnscopedSecretError, get_secret
-        try:
-            return (get_secret(name) or "").strip()
-        except UnscopedSecretError:
-            pass
-    except Exception:
-        pass
-    return _env(name)
+    """Credential read through the profile secret scope. A scope-less multiplex caller raises
+    (``UnscopedSecretError``): that is a spawn-site bug, and reading ``os.environ`` instead would
+    ship this profile's traces with the DEFAULT profile's keys."""
+    from agent.secret_scope import get_secret
+
+    return (get_secret(name) or "").strip()
 
 
 def _debug(message: str) -> None:
@@ -387,16 +384,33 @@ def _normalize_payload(value: Any, *, tool_name: str = "", args: Any = None) -> 
     return normalized
 
 
+@functools.lru_cache(maxsize=8)
+def _resolve_max_depth(configured_depth: str) -> int:
+    """Parse ``HERMES_LANGFUSE_MAX_DEPTH``; an invalid value warns ONCE per distinct value.
+    Cached on the raw string (not at import) so a long-lived process still picks up a changed
+    env var, while a bad value no longer logs one warning per captured prompt/tool payload."""
+    try:
+        max_depth = int(configured_depth)
+        if max_depth < 0:
+            raise ValueError
+        return max_depth
+    except ValueError:
+        logger.warning("Invalid HERMES_LANGFUSE_MAX_DEPTH=%r; use a non-negative integer. Falling back to 4.", configured_depth)
+        return 4
+
+
 def _safe_value(value: Any, *, max_chars: Optional[int] = None, depth: int = 0,
-                parse_json_strings: bool = False) -> Any:
+                parse_json_strings: bool = False, max_depth: Optional[int] = None) -> Any:
     max_chars = max_chars if max_chars is not None else int(_env("HERMES_LANGFUSE_MAX_CHARS", "12000") or "12000")
-    if depth > 4:
+    if max_depth is None:
+        max_depth = _resolve_max_depth(_env("HERMES_LANGFUSE_MAX_DEPTH", "4") or "4")
+    if depth > max_depth:
         return "<max-depth>"
     if value is None or isinstance(value, (int, float, bool)):
         return value
     if isinstance(value, bytes):
         return {"type": "bytes", "len": len(value)}
-    recurse = lambda v, d: _safe_value(v, max_chars=max_chars, depth=d, parse_json_strings=parse_json_strings)  # noqa: E731
+    recurse = lambda v, d: _safe_value(v, max_chars=max_chars, depth=d, parse_json_strings=parse_json_strings, max_depth=max_depth)  # noqa: E731
     if isinstance(value, str):
         parsed = _maybe_parse_json_string(value) if parse_json_strings else value
         return recurse(parsed, depth) if parsed is not value else _truncate_text(value, max_chars)
@@ -637,9 +651,11 @@ def _finalize_all_traces() -> None:
             _end_children(state, include_subagents=True)
             _end_root(state, f"atexit finalize for {key}")
     if states:
-        # atexit runs unscoped; flush every profile's client, not just the launch profile's.
-        for client in (_get_langfuse(), *_LANGFUSE_CLIENT_BY_HOME.values()):
-            if client is not _INIT_FAILED:
+        # atexit runs with NO profile scope, so it must never build a client (a credential read
+        # here raises UnscopedSecretError under multiplex and would skip every flush). Flush only
+        # the clients that settled during the run — the launch profile's slot plus one per home.
+        for client in (_LANGFUSE_CLIENT, *_LANGFUSE_CLIENT_BY_HOME.values()):
+            if client is not None and client is not _INIT_FAILED:
                 _flush(client)
 
 

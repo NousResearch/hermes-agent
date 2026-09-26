@@ -95,6 +95,8 @@ interface PaneChrome extends PaneSizing {
    *  (artifacts/skills/plugin pages) are not tab-able surfaces. The flag is
    *  live: the workspace contribution re-registers it on route changes. */
   headerVeto?: boolean
+  /** Page-owned controls in the panel's normal tab-header space. */
+  headerContent?: () => React.ReactNode
   /** A lead NODE for this pane's TAB, rendered before the label. A session
    *  pane (main workspace + tiles) passes its live `SessionStatusDot` here so
    *  the tab and the sidebar row render status/color from the ONE primitive
@@ -111,6 +113,13 @@ interface PaneChrome extends PaneSizing {
    *  whole panes area, so the label subscribes for itself instead. Absent, or
    *  returning nothing, falls back to `title`. */
   tabTitle?: () => React.ReactNode
+  /** The STRING form of the tab label for the non-React readers of `title` —
+   *  the zone menu's Show/Hide rows and the drag ghost chip. `title` is
+   *  sampled once at `register` (for bundled panes: module import, before the
+   *  locale has loaded), so a pane whose label follows the locale supplies
+   *  this and the readers resolve it at menu-open / drag-start time. Absent,
+   *  they fall back to `title`. */
+  tabTitleText?: () => string
 }
 
 export const paneChrome = (c: Contribution | undefined) => (c?.data ?? {}) as PaneChrome

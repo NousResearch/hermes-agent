@@ -138,9 +138,11 @@ def apply_migration(
     if not issues:
         return unchanged
 
+    from hermes_yaml import ROUNDTRIP_YAML_WIDTH
     yaml = YAML(typ="rt")
+    yaml.width = ROUNDTRIP_YAML_WIDTH
     yaml.preserve_quotes = True
-    with config_path.open("r", encoding="utf-8") as fh:
+    with config_path.open("r", encoding="utf-8-sig") as fh:
         doc = yaml.load(fh)
     if doc is None:
         return unchanged

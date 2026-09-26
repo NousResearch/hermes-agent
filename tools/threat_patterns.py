@@ -80,13 +80,28 @@ _PATTERNS: List[Tuple[str, str, str]] = [
 
     # ── Persistence / SSH backdoor (strict scope — memory + skills) ──
     (r'authorized_keys', "ssh_backdoor", "strict"),
-    (r'\$HOME/\.ssh|\~/\.ssh', "ssh_access", "strict"),
+    # Write-verb gated like the *_config_mod rules: a bare path match blocked ordinary docs
+    # ("check $HOME/.ssh is chmod 700"). ``>>?`` covers a leading redirect with no verb word;
+    # ``open(`` covers the scripted-write shape; chmod/chown/sed/truncate/rm/touch/curl/wget/git
+    # mutate the directory without an obvious copy verb.
+    (r'(?:\b(?:echo|cat|cp|mv|dd|tee|install|printf|rsync|scp|ln|append|add|write'
+     r'|sed|chmod|chown|truncate|rm|touch|curl|wget|git)\b|\bopen\s*\(|>>?)'
+     r'[^\n]{0,512}(?:\$HOME/\.ssh|~/\.ssh)', "ssh_access", "strict"),
     (r'\$HOME/\.hermes/\.env|\~/\.hermes/\.env', "hermes_env", "strict"),
     (rf'{_MODIFY}(?:AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules)', "agent_config_mod", "strict"),
     (rf'{_MODIFY}\.hermes/(config\.yaml|SOUL\.md)', "hermes_config_mod", "strict"),
 
     # ── Hardcoded secrets ────────────────────────────────────────────
-    (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*["\'][A-Za-z0-9+/=_-]{20,}', "hardcoded_secret", "strict"),
+    # The lookahead skips a value that is itself an environment-variable NAME
+    # (SHOUTY_SNAKE, ≥2 underscore-separated segments): ENV_PASSWORD =
+    # "MYPLUGIN_APP_PASSWORD" says where the credential lives, it does not embed
+    # one (#116221). Scoped case-sensitive on purpose — the pattern compiles with
+    # IGNORECASE and a lowercase snake value is the password-passphrase shape
+    # ("correct_horse_battery_staple"); requiring an underscore segment keeps
+    # underscore-free all-caps credentials (AWS AKIA…, base32) matched.
+    (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*["\']'
+     r'(?!(?-i:[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)["\'])'
+     r'[A-Za-z0-9+/=_-]{20,}', "hardcoded_secret", "strict"),
 ]
 
 # Invisible / bidirectional unicode used in injection attacks (aligned with skills_guard.py

@@ -27,7 +27,7 @@ def _fmt_age(ts: Any) -> str:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    from tools.checkpoint_manager import store_status
+    from tools.checkpoint_maintenance import store_status
 
     info = store_status()
     base = info["base"]
@@ -64,7 +64,7 @@ def _print_archives(archives) -> None:
 
 
 def cmd_prune(args: argparse.Namespace) -> int:
-    from tools.checkpoint_manager import prune_checkpoints, store_status
+    from tools.checkpoint_maintenance import prune_checkpoints, store_status
 
     delete_orphans = not args.keep_orphans
 
@@ -135,7 +135,8 @@ def _confirmed(args: argparse.Namespace, prompt: str) -> bool:
 
 
 def cmd_clear(args: argparse.Namespace) -> int:
-    from tools.checkpoint_manager import CHECKPOINT_BASE, clear_all, store_status
+    from tools.checkpoint_manager import CHECKPOINT_BASE
+    from tools.checkpoint_maintenance import clear_all, store_status
 
     info = store_status()
     if info["total_size_bytes"] == 0 and not Path(CHECKPOINT_BASE).exists():
@@ -160,7 +161,7 @@ def cmd_clear(args: argparse.Namespace) -> int:
 
 
 def cmd_clear_legacy(args: argparse.Namespace) -> int:
-    from tools.checkpoint_manager import clear_legacy, store_status
+    from tools.checkpoint_maintenance import clear_legacy, store_status
 
     info = store_status()
     legacy = info.get("legacy_archives", [])
@@ -180,6 +181,9 @@ def cmd_clear_legacy(args: argparse.Namespace) -> int:
 
     result = clear_legacy()
     print(f"Deleted {result['deleted']} archive(s), reclaimed {_fmt_bytes(result['bytes_freed'])}.")
+    if result["errors"]:
+        print(f"Could not delete {result['errors']} archive(s) (see logs).")
+        return 2
     return 0
 
 

@@ -11,6 +11,7 @@ import { computePalette, memoryInkFor, resolveRgb, rgba } from './color'
 import { RING_OUTER, TILT, ZOOM_MAX, ZOOM_MIN } from './constants'
 import { clamp, distToSegmentSq, fitScale, fitViewport, nodeRadius } from './geometry'
 import { NodeContextMenu, type NodeMenuTarget } from './node-context-menu'
+import { shouldIgnorePlaybackHotkey } from './playback-hotkey'
 import { drawScene, drawScramble } from './render'
 import { decodeShareCode, encodeShareCode, ShareCodeError } from './share-code'
 import { ShareControls } from './share-controls'
@@ -228,7 +229,16 @@ export function StarMap({
 
   const memById = useMemo(() => {
     const m = new Map<string, MemoryCard>()
-    graph.memory.forEach((card, i) => m.set(`memory:${card.source}:${i}`, card))
+    // A node id carries the card's fingerprint (agent.learning_graph.memory_node_id) so an edit
+    // still names the card the user clicked after the list shifts. An imported or older graph
+    // has no fingerprint, so key both shapes or the tooltip/body lookup misses every card.
+    graph.memory.forEach((card, i) => {
+      m.set(`memory:${card.source}:${i}`, card)
+
+      if (card.fingerprint) {
+        m.set(`memory:${card.source}:${i}:${card.fingerprint}`, card)
+      }
+    })
 
     return m
   }, [graph.memory])
@@ -445,17 +455,11 @@ export function StarMap({
   )
 
   // Spacebar toggles playback (unless typing, or the play button itself is
-  // focused — that already handles Space natively, so skip to avoid a double).
+  // focused — that already handles Space natively, so skip to avoid a double;
+  // same for focused context-menu items, which Radix renders as divs).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.code !== 'Space' && e.key !== ' ') {
-        return
-      }
-
-      const el = document.activeElement
-      const tag = el?.tagName
-
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'BUTTON' || (el as HTMLElement | null)?.isContentEditable) {
+      if (shouldIgnorePlaybackHotkey(e, document.activeElement)) {
         return
       }
 

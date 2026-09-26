@@ -54,6 +54,9 @@ class HandlerRegistry:
             return fn
         return dec
 
+    def names(self) -> set[str]:
+        return {name for name, _ in self._pending}
+
     def profile_scoped(self, fn):
         """Drop-in for server.py's ``@_profile_scoped`` (applied at install)."""
         fn._hermes_profile_scoped = True
@@ -66,7 +69,7 @@ class HandlerRegistry:
             real = rebind(fn, g)
             if getattr(fn, "_hermes_profile_scoped", False):
                 real = server._profile_scoped(real)
-            server._methods[name] = real
+            server.register_method(name, real)
 
 
 _PLUMBING = {"HandlerRegistry", "method", "_profile_scoped", "register", "rebind", "logger"}

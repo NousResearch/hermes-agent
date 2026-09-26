@@ -2163,11 +2163,12 @@ class GatewayTurnMixin:
         _msg_start_time = time.time()
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
         logger.info(
-            "inbound message: platform=%s user=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r",
+            "inbound message: platform=%s user=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r internal=%s",
             _platform_name, source.user_name or source.user_id or "unknown",
             source.chat_id or "unknown", (event.text or "")[:80].replace("\n", " "),
             getattr(event, "reply_to_message_id", None),
             (getattr(event, "reply_to_text", None) or "")[:80].replace("\n", " "),
+            bool(getattr(event, "internal", False)),
         )
 
         resolved = await self._hmwa_resolve_session(event, source)

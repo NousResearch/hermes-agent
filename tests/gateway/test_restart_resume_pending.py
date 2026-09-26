@@ -1317,3 +1317,74 @@ async def test_startup_boot_sends_still_run_when_they_finish_quickly(monkeypatch
     runner._claim_pending_obligations.assert_awaited_once()
     runner._redeliver_claimed_obligations.assert_awaited_once()
 
+
+def _make_prepare_turn_doubles(*, message, display_kind, entries):
+    """Drive ``TurnRunner._prepare_turn_message`` with test doubles (no gateway needed)."""
+    from types import SimpleNamespace
+
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.turn_context import TurnContext
+
+    ctx = TurnContext(
+        source=SimpleNamespace(),
+        message=message,
+        session_key="resume-session",
+        history=[],
+        persist_user_display_kind=display_kind,
+    )
+    runner = SimpleNamespace(
+        session_store=SimpleNamespace(_entries=entries),
+        _delivery_adapter_for=lambda source: SimpleNamespace(interactive_resume=True),
+    )
+    return TurnRunner(runner, ctx), ctx
+
+
+class TestResumeBlankSafetyNet:
+    """Regression for #120963: the startup auto-resume synthetic event (empty text,
+    internal) must never reach the model as a blank user message — even when the
+    in-memory ``resume_pending`` lookup misses or was cleared mid-flight."""
+
+    def test_blank_self_injected_turn_gets_recovery_note_without_resume_entry(self):
+        """The incident path: entry lookup misses, so ``resume_pending`` is False."""
+        from gateway.response_filters import INTERNAL_NOTIFICATION_DISPLAY_KIND
+
+        turn, ctx = _make_prepare_turn_doubles(
+            message="",
+            display_kind=INTERNAL_NOTIFICATION_DISPLAY_KIND,
+            entries={},
+        )
+        turn._prepare_turn_message([])
+        assert isinstance(ctx.message, str) and ctx.message.strip(), (
+            "blank synthetic resume text reached the model path unmodified"
+        )
+
+    def test_blank_real_user_turn_is_left_alone(self):
+        """Caption-less image turns (real inbound, no machinery kind) are untouched."""
+        turn, ctx = _make_prepare_turn_doubles(
+            message="",
+            display_kind=None,
+            entries={},
+        )
+        turn._prepare_turn_message([])
+        assert ctx.message == ""
+
+    def test_resume_pending_entry_still_takes_primary_branch(self):
+        """The normal path (fresh ``resume_pending`` entry) keeps working."""
+        from types import SimpleNamespace
+
+        from gateway.response_filters import INTERNAL_NOTIFICATION_DISPLAY_KIND
+
+        entry = SimpleNamespace(
+            resume_pending=True,
+            resume_reason="restart_timeout",
+            last_resume_marked_at=time.time(),
+        )
+        turn, ctx = _make_prepare_turn_doubles(
+            message="",
+            display_kind=INTERNAL_NOTIFICATION_DISPLAY_KIND,
+            entries={"resume-session": entry},
+        )
+        turn._prepare_turn_message([])
+        assert ctx.message.strip()
+        assert "restart" in ctx.message
+

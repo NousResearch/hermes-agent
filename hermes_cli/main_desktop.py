@@ -1419,6 +1419,23 @@ def _launch_installed_macos_desktop_app() -> bool:
 
 def cmd_gui(args: argparse.Namespace):
     """Build and launch the native Electron desktop GUI."""
+    # Handle launcher subcommand first
+    gui_subcommand = getattr(args, "gui_subcommand", None)
+    if gui_subcommand == "launcher":
+        from hermes_cli.subcommands.gui_launcher import install_launcher, uninstall_launcher
+
+        action = getattr(args, "action", None)
+        if action == "install":
+            cwd = Path(args.cwd).expanduser().resolve() if args.cwd else None
+            success = install_launcher(cwd=cwd, name=args.name)
+            sys.exit(0 if success else 1)
+        elif action == "uninstall":
+            success = uninstall_launcher(name=args.name)
+            sys.exit(0 if success else 1)
+        else:
+            print("Usage: hermes desktop launcher [install|uninstall] [--cwd PATH] [--name NAME]")
+            sys.exit(1)
+
     from hermes_cli.main import PROJECT_ROOT
     from hermes_cli.source_build import prepare_source_dependencies, source_build_env
     desktop_dir = PROJECT_ROOT / "apps" / "desktop"

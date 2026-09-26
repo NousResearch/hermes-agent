@@ -1,10 +1,12 @@
 """Gateway runtime status helpers: PID/lock/marker files under ``{HERMES_HOME}`` (one set per
 home/profile) that tell whether the gateway daemon is running."""
 
+import ast
 import asyncio
 import contextlib
 import copy
 import hashlib
+import io
 import json
 import logging
 import math
@@ -16,6 +18,7 @@ import subprocess
 import sys
 import threading
 import time
+import tokenize
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -588,50 +591,494 @@ def command_line_runs_inline_source(tokens: list[str]) -> bool:
     return inline_source_flag_index(tokens) is not None
 
 
-def _gateway_command_subcommand(command: str | None) -> str | None:
-    """Hermes gateway lifecycle subcommand from a command line, or None. No loose substring matches
-    (``"gateway" in cmdline`` also matched ``gateway status`` / ``python -m tui_gateway``): needs a
-    Hermes entrypoint plus the ``gateway`` subcommand, or a gateway-dedicated entrypoint. Tokenizes
-    quote-aware (Windows paths with spaces); ``--profile``/``-p`` selectors are stripped anywhere in
-    argv since ``_apply_profile_override`` removes them before argparse."""
-    if not command:
+def _nested_inline_source_start(cased_tokens: list[str], flag_index: int) -> int:
+    """First nested Python -c command carried as data, or len(tokens).
+
+    A restart watcher can carry a complete future inline launcher after its own source. Only that
+    later interpreter owns the second -c; source text and install paths before it must never be
+    mistaken for a child-program boundary.
+    """
+    for index in range(flag_index + 2, len(cased_tokens)):
+        basename = cased_tokens[index].lower().rsplit("/", 1)[-1].removesuffix(".exe")
+        if basename.startswith(("python", "pypy")) and inline_source_flag_index(
+            cased_tokens[index:]
+        ) is not None:
+            return index
+    return len(cased_tokens)
+
+
+def _hermes_argv0(value: str) -> bool:
+    normalized = value.replace("\\", "/").lower()
+    basename = normalized.rsplit("/", 1)[-1]
+    return basename in ("hermes", "hermes.exe", "hermes-gateway", "hermes-gateway.exe") or (
+        normalized.endswith("/hermes_cli/main.py")
+    )
+
+
+def _looks_like_python_interpreter(value: str) -> bool:
+    """Whether value names a Python/PyPy interpreter, not merely another -c runtime."""
+    basename = value.replace("\\", "/").lower().rsplit("/", 1)[-1].removesuffix(".exe")
+    for stem in ("pythonw", "python", "pypyw", "pypy"):
+        if not basename.startswith(stem):
+            continue
+        suffix = basename[len(stem):]
+        return not suffix or re.fullmatch(r"\d+(?:\.\d+)*(?:t)?", suffix) is not None
+    return False
+
+
+def _python_inline_source_flag_index(cased_tokens: list[str]) -> int | None:
+    """Inline-source flag index after recovering a flattened interpreter path with spaces.
+
+    psutil returns argv parts, but _read_process_cmdline joins them with spaces. On Windows that
+    can turn "C:/Program Files/Python/python.exe" into two tokens before shlex sees it. Recover
+    only an interpreter-looking path fragment before the first option; arbitrary command prefixes
+    are not treated as Python launchers.
+    """
+    if not cased_tokens:
+        return None
+
+    if _looks_like_python_interpreter(cased_tokens[0]):
+        return inline_source_flag_index(cased_tokens)
+
+    # A split executable path must have started as a path, not an arbitrary wrapper command.
+    if "/" not in cased_tokens[0]:
+        return None
+    for index in range(1, len(cased_tokens)):
+        token = cased_tokens[index]
+        if token.startswith("-"):
+            break
+        if not _looks_like_python_interpreter(token):
+            continue
+        relative = inline_source_flag_index(cased_tokens[index:])
+        return index + relative if relative is not None else None
+    return None
+
+
+def _runtime_bootstrap_source_matches(source: str) -> bool:
+    """Whether source is the executable bootstrap emitted by runtime_command()."""
+    if len(source) > 32_768:
+        return False
+    try:
+        tree = ast.parse(source)
+    except (MemoryError, RecursionError, SyntaxError, ValueError):
+        return False
+
+    imported_bootstrap = any(
+        isinstance(statement, ast.Import)
+        and any(alias.name == "hermes_bootstrap" for alias in statement.names)
+        for statement in tree.body
+    )
+    if not imported_bootstrap or not tree.body:
+        return False
+
+    statement = tree.body[-1]
+    call = statement.value if isinstance(statement, ast.Expr) else None
+    return bool(
+        isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and isinstance(call.func.value, ast.Name)
+        and call.func.value.id == "runpy"
+        and call.func.attr == "run_module"
+        and len(call.args) == 1
+        and isinstance(call.args[0], ast.Constant)
+        and call.args[0].value == "hermes_cli.main"
+        and any(
+            keyword.arg == "run_name"
+            and isinstance(keyword.value, ast.Constant)
+            and keyword.value.value == "__main__"
+            for keyword in call.keywords
+        )
+        and any(
+            keyword.arg == "alter_sys"
+            and isinstance(keyword.value, ast.Constant)
+            and keyword.value.value is True
+            for keyword in call.keywords
+        )
+    )
+
+
+def _literal_sys_argv_from_source(source: str) -> list[str] | None:
+    """Literal argv from the exact relaunch/redirector program shapes Hermes emits.
+
+    This is process-identity authority, so merely finding a later runpy call is insufficient:
+    unreachable code after an exit/raise must not make a foreign inline process look like the
+    gateway.  The supported producers are intentionally small and stable: import sys/runpy,
+    optional checkout-path insertion, literal sys.argv rebinding, then runpy as the terminal
+    top-level action.
+    """
+    if len(source) > 32_768:
         return None
     try:
-        raw_tokens = shlex.split(command, posix=False)
-    except ValueError:
-        raw_tokens = command.split()
-    # Strip surrounding quotes, normalize slashes + case per token.
+        tree = ast.parse(source)
+    except (MemoryError, RecursionError, SyntaxError, ValueError):
+        return None
+
+    body = tree.body
+    if len(body) not in {3, 4}:
+        return None
+
+    imports = body[0]
+    if not (
+        isinstance(imports, ast.Import)
+        and len(imports.names) == 2
+        and {alias.name for alias in imports.names} == {"sys", "runpy"}
+        and all(alias.asname is None for alias in imports.names)
+    ):
+        return None
+
+    index = 1
+    if len(body) == 4:
+        path_stmt = body[index]
+        path_call = path_stmt.value if isinstance(path_stmt, ast.Expr) else None
+        if not (
+            isinstance(path_call, ast.Call)
+            and isinstance(path_call.func, ast.Attribute)
+            and path_call.func.attr == "insert"
+            and isinstance(path_call.func.value, ast.Attribute)
+            and path_call.func.value.attr == "path"
+            and isinstance(path_call.func.value.value, ast.Name)
+            and path_call.func.value.value.id == "sys"
+            and len(path_call.args) == 2
+            and isinstance(path_call.args[0], ast.Constant)
+            and path_call.args[0].value == 0
+            and isinstance(path_call.args[1], ast.Constant)
+            and isinstance(path_call.args[1].value, str)
+            and not path_call.keywords
+        ):
+            return None
+        index += 1
+
+    argv_stmt = body[index]
+    if not (
+        isinstance(argv_stmt, ast.Assign)
+        and len(argv_stmt.targets) == 1
+        and isinstance(argv_stmt.targets[0], ast.Attribute)
+        and isinstance(argv_stmt.targets[0].value, ast.Name)
+        and argv_stmt.targets[0].value.id == "sys"
+        and argv_stmt.targets[0].attr == "argv"
+    ):
+        return None
+    try:
+        value = ast.literal_eval(argv_stmt.value)
+    except (MemoryError, RecursionError, TypeError, ValueError):
+        return None
+    if not isinstance(value, (list, tuple)) or not value or not all(
+        isinstance(part, str) for part in value
+    ):
+        return None
+    argv = list(value)
+
+    launch_stmt = body[index + 1]
+    call = launch_stmt.value if isinstance(launch_stmt, ast.Expr) else None
+
+    # When hermes_bootstrap refreshes dependencies from an existing python -c launcher,
+    # relaunch_command() preserves sys.argv[0] == "-c" and terminally execs that launcher's
+    # original source. This is still the same in-process gateway, but only when the exec literal
+    # is itself one of Hermes' supported inline launcher producers.
+    if argv[0] == "-c":
+        if not (
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id == "exec"
+            and len(call.args) == 1
+            and isinstance(call.args[0], ast.Constant)
+            and isinstance(call.args[0].value, str)
+            and not call.keywords
+            and _relaunch_exec_source_is_hermes(call.args[0].value)
+        ):
+            return None
+        return argv
+
+    if not _hermes_argv0(argv[0]):
+        return None
+    if not (
+        isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and isinstance(call.func.value, ast.Name)
+        and call.func.value.id == "runpy"
+        and call.func.attr in {"run_module", "run_path"}
+        and len(call.args) == 1
+        and isinstance(call.args[0], ast.Constant)
+        and isinstance(call.args[0].value, str)
+        and any(
+            keyword.arg == "run_name"
+            and isinstance(keyword.value, ast.Constant)
+            and keyword.value.value == "__main__"
+            for keyword in call.keywords
+        )
+    ):
+        return None
+
+    target = call.args[0].value.replace("\\", "/").lower()
+    if call.func.attr == "run_module":
+        if target != "hermes_cli.main":
+            return None
+    elif not _hermes_argv0(target):
+        return None
+    return argv
+
+def _python_c_sys_argv(
+    raw_tokens: list[str], cased_tokens: list[str], flag_index: int, source_end: int
+) -> list[str] | None:
+    """Recover literal argv from the outer Hermes redirector/relaunch Python -c source.
+
+    Process-table APIs flatten argv, so reconstruct progressively until a real Python program parses.
+    AST inspection requires a top-level literal sys.argv assignment followed by an executed Hermes
+    run_module/run_path call; marker text inside strings or nested future commands cannot donate
+    identity.
+    """
+    for end in range(flag_index + 2, source_end + 1):
+        source = " ".join(raw_tokens[flag_index + 1:end]).strip()
+        if len(source) >= 2 and source[0] == source[-1] and source[0] in {"'", '"'}:
+            source = source[1:-1]
+        argv = _literal_sys_argv_from_source(source)
+        if argv is not None:
+            return argv
+    return None
+
+
+def _runtime_bootstrap_argv(
+    raw_tokens: list[str], cased_tokens: list[str], flag_index: int, source_end: int
+) -> list[str] | None:
+    """Lifecycle argv after an actually executed runtime_command bootstrap."""
+    for end in range(flag_index + 2, source_end + 1):
+        source = " ".join(raw_tokens[flag_index + 1:end]).strip()
+        if len(source) >= 2 and source[0] == source[-1] and source[0] in {"'", '"'}:
+            source = source[1:-1]
+        if _runtime_bootstrap_source_matches(source):
+            return cased_tokens[end:source_end]
+    return None
+
+
+_PUBLISHED_LAUNCHER_MARKERS = (
+    "import os, re, sys",
+    "os.environ.pop('pythonhome', none)",
+    "from hermes_constants import get_default_hermes_root",
+    "import hermes_bootstrap",
+    "from hermes_cli.main import main",
+    "sys.argv[0] = re.sub",
+    "sys.exit(main())",
+)
+
+
+def _source_marker_starts_are_code(source: str, marker_positions: list[int]) -> bool:
+    """True when every producer marker starts in code, never inside a string/comment.
+
+    Flattened process listings can destroy indentation and make the real generated launcher
+    unparsable by AST. Lexing still preserves whether marker text came from executable source
+    or inert data, so the fallback can stay tolerant of flattening without accepting a quoted copy
+    of the launcher as process identity.
+    """
+    line_offsets = [0]
+    for line in source.splitlines(keepends=True):
+        line_offsets.append(line_offsets[-1] + len(line))
+
+    def _absolute(position: tuple[int, int]) -> int:
+        row, column = position
+        return line_offsets[row - 1] + column
+
+    excluded: list[tuple[int, int]] = []
+    try:
+        for token in tokenize.generate_tokens(io.StringIO(source).readline):
+            if token.type in {tokenize.STRING, tokenize.COMMENT}:
+                excluded.append((_absolute(token.start), _absolute(token.end)))
+    except (IndentationError, tokenize.TokenError):
+        return False
+
+    return all(
+        not any(start <= position < end for start, end in excluded)
+        for position in marker_positions
+    )
+
+
+def _published_launcher_source_matches(source: str) -> bool:
+    """Match the generated launcher program in order, with main() as its terminal action."""
+    stripped = source.strip()
+    cursor = 0
+    marker_positions: list[int] = []
+    for marker in _PUBLISHED_LAUNCHER_MARKERS:
+        match = re.search(re.escape(marker), stripped[cursor:], flags=re.IGNORECASE)
+        if match is None:
+            return False
+        position = cursor + match.start()
+        marker_positions.append(position)
+        cursor += match.end()
+    # The generated program itself starts with this import. A marker set copied into later data or
+    # a dead wrapper is not the published launcher, even if a flattened listing loses indentation.
+    if not marker_positions or marker_positions[0] != 0:
+        return False
+    if not stripped.lower().endswith("sys.exit(main())"):
+        return False
+
+    # When argv boundaries preserve the source (for example a quoted Windows command line), AST
+    # parsing is authoritative. Flattened process listings can lose indentation and fail AST
+    # parsing, so the fallback lexes the flattened program and accepts only markers still in code.
+    try:
+        tree = ast.parse(source)
+    except (MemoryError, RecursionError, SyntaxError, ValueError):
+        return _source_marker_starts_are_code(stripped, marker_positions)
+
+    imports_bootstrap = any(
+        isinstance(statement, ast.Import)
+        and any(alias.name == "hermes_bootstrap" for alias in statement.names)
+        for statement in tree.body
+    )
+    imports_main = any(
+        isinstance(statement, ast.ImportFrom)
+        and statement.module == "hermes_cli.main"
+        and any(alias.name == "main" for alias in statement.names)
+        for statement in tree.body
+    )
+    if not imports_bootstrap or not imports_main or not tree.body:
+        return False
+
+    final = tree.body[-1]
+    call = final.value if isinstance(final, ast.Expr) else None
+    if not (
+        isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and isinstance(call.func.value, ast.Name)
+        and call.func.value.id == "sys"
+        and call.func.attr == "exit"
+        and len(call.args) == 1
+        and not call.keywords
+    ):
+        return False
+    inner = call.args[0]
+    return (
+        isinstance(inner, ast.Call)
+        and isinstance(inner.func, ast.Name)
+        and inner.func.id == "main"
+        and not inner.args
+        and not inner.keywords
+    )
+
+
+def _decoded_published_launcher_source(source: str) -> str | None:
+    """Decode the exact Windows command-file fallback wrapper around _launcher_script."""
+    if len(source) > 128_000:
+        return None
+    try:
+        tree = ast.parse(source)
+    except (MemoryError, RecursionError, SyntaxError, ValueError):
+        return None
+    if len(tree.body) != 2:
+        return None
+
+    import_stmt, exec_stmt = tree.body
+    if not (
+        isinstance(import_stmt, ast.Import)
+        and len(import_stmt.names) == 1
+        and import_stmt.names[0].name == "base64"
+        and import_stmt.names[0].asname is None
+        and isinstance(exec_stmt, ast.Expr)
+        and isinstance(exec_stmt.value, ast.Call)
+        and isinstance(exec_stmt.value.func, ast.Name)
+        and exec_stmt.value.func.id == "exec"
+        and len(exec_stmt.value.args) == 1
+        and not exec_stmt.value.keywords
+    ):
+        return None
+
+    decode_call = exec_stmt.value.args[0]
+    if not (
+        isinstance(decode_call, ast.Call)
+        and isinstance(decode_call.func, ast.Attribute)
+        and isinstance(decode_call.func.value, ast.Name)
+        and decode_call.func.value.id == "base64"
+        and decode_call.func.attr == "b64decode"
+        and len(decode_call.args) == 1
+        and not decode_call.keywords
+        and isinstance(decode_call.args[0], ast.Constant)
+        and isinstance(decode_call.args[0].value, str)
+    ):
+        return None
+
+    try:
+        import base64
+        decoded = base64.b64decode(
+            decode_call.args[0].value, validate=True
+        ).decode("utf-8")
+    except (UnicodeDecodeError, ValueError):
+        return None
+    return decoded if _published_launcher_source_matches(decoded) else None
+
+
+
+def _relaunch_exec_source_is_hermes(source: str) -> bool:
+    """Whether relaunch_command's exec literal replays a supported Hermes inline launcher."""
+    return (
+        _runtime_bootstrap_source_matches(source)
+        or _published_launcher_source_matches(source)
+        or _decoded_published_launcher_source(source) is not None
+    )
+
+def _published_inline_bootstrap_argv(
+    raw_tokens: list[str], cased_tokens: list[str], flag_index: int, source_end: int
+) -> list[str] | None:
+    """Lifecycle argv after the generated launcher, direct or Windows command-file fallback."""
+    # Native/POSIX process listings flatten the generated multiline source. Indentation is
+    # unavailable for an AST parse, so match the producer fingerprint in order and require the
+    # terminal main() call before treating the following tokens as argv.
+    for position in range(flag_index + 1, source_end):
+        if "sys.exit(main())" not in cased_tokens[position].lower():
+            continue
+        source = " ".join(cased_tokens[flag_index + 1:position + 1])
+        if _published_launcher_source_matches(source):
+            return cased_tokens[position + 1:source_end]
+
+    # Windows can publish a .cmd fallback whose -c source is a base64/exec wrapper. Reconstruct
+    # progressive prefixes because _read_process_cmdline joins argv and loses the source boundary.
+    for end in range(flag_index + 2, source_end + 1):
+        source = " ".join(raw_tokens[flag_index + 1:end]).strip()
+        if len(source) >= 2 and source[0] == source[-1] and source[0] in {"'", '"'}:
+            source = source[1:-1]
+        if _decoded_published_launcher_source(source) is not None:
+            return cased_tokens[end:source_end]
+    return None
+
+
+def _hermes_inline_bootstrap_argv(
+    raw_tokens: list[str], cased_tokens: list[str], flag_index: int, source_end: int
+) -> list[str] | None:
+    """Lifecycle argv after either Hermes-owned generated in-process bootstrap."""
+    runtime = _runtime_bootstrap_argv(raw_tokens, cased_tokens, flag_index, source_end)
+    if runtime is not None:
+        return runtime
+    return _published_inline_bootstrap_argv(
+        raw_tokens, cased_tokens, flag_index, source_end
+    )
+
+
+def _gateway_command_subcommand_from_tokens(
+    raw_tokens: list[str], *, hermes_entrypoint_inferred: bool = False
+) -> str | None:
+    """Canonical gateway subcommand parser once an argv boundary is known."""
     cased_tokens = [t.strip("\"'").replace("\\", "/") for t in raw_tokens]
     tokens = [t.lower() for t in cased_tokens]
     if not tokens:
         return None
     basenames = [t.rsplit("/", 1)[-1] for t in tokens]
-    # ``python -c <src> … -m hermes_cli.main gateway run``: the trailing argv belongs to the program
-    # the inline source will spawn later, not to this process (#107002). Case-preserving tokens:
-    # the operand-taking ``-X``/``-W``/``-Q`` must not be conflated with ``-q``/``-b``.
-    if command_line_runs_inline_source(cased_tokens):
-        return None
-    # The launchd job's osascript wrapper (gateway_launchd.launchd_program_arguments) carries the gateway argv
-    # inside one AppleScript string; the gateway itself is its child and is matched on its own command line.
+
+    # The launchd osascript wrapper carries a future gateway argv inside AppleScript; its child is
+    # matched on its own process command line.
     if basenames[0] == "osascript":
         return None
-    # Gateway-dedicated entrypoints carry no subcommand to inspect.
     if any(t == "gateway/run.py" or t.endswith("/gateway/run.py") for t in tokens):
         return "run"
-    # Atomic Hermes' bundled desktop runner shares HERMES_HOME with the CLI; without this,
-    # `gateway run --replace` does not recognise it as a running gateway, skips the
-    # terminate-and-scoped-lock-handoff path, and collides with its still-held scoped locks
-    # (e.g. the Discord bot-token lock). See #22418.
     if any(b == "desktop-gateway.py" for b in basenames):
         return "run"
     if any(b in ("hermes-gateway", "hermes-gateway.exe") for b in basenames):
         return "run"
+
     joined = " ".join(tokens)
-    if "hermes_cli.main" not in joined and "hermes_cli/main.py" not in joined and not any(
-        b in ("hermes", "hermes.exe") for b in basenames
+    if not hermes_entrypoint_inferred and (
+        "hermes_cli.main" not in joined
+        and "hermes_cli/main.py" not in joined
+        and not any(b in ("hermes", "hermes.exe") for b in basenames)
     ):
         return None
-    # Drop --profile X / -p X / --profile=X / -p=X (consumes a VALUE of "gateway" too).
+
     filtered: list[str] = []
     skip_next = False
     for token in tokens:
@@ -641,11 +1088,62 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
             skip_next = True
         elif not token.startswith(("--profile=", "-p=")):
             filtered.append(token)
-    for i, token in enumerate(filtered):
-        if token == "gateway":
-            # Bare `hermes gateway` defaults to `run`.
-            return filtered[i + 1] if i + 1 < len(filtered) else "run"
+    for index, token in enumerate(filtered):
+        if token != "gateway":
+            continue
+        neighbor = filtered[index + 1] if index + 1 < len(filtered) else "run"
+        # Flattened embedded list literals can expose a bare gateway followed by punctuation.
+        # That is data residue, never a lifecycle subcommand.
+        if re.fullmatch(r"[a-z][a-z0-9-]*", neighbor):
+            return neighbor
     return None
+
+
+def _gateway_command_subcommand(command: str | None) -> str | None:
+    """Hermes gateway lifecycle subcommand from a command line, or None.
+
+    Inline-source processes are fail-closed unless they match a Hermes-owned in-process launcher.
+    This preserves the restart-watcher boundary from #107002 while accepting both current launcher
+    families that #122495/#123463 exercise.
+    """
+    if not command:
+        return None
+    try:
+        raw_tokens = shlex.split(command, posix=False)
+    except ValueError:
+        raw_tokens = command.split()
+    cased_tokens = [t.strip("\"'").replace("\\", "/") for t in raw_tokens]
+    if not cased_tokens:
+        return None
+
+    flag_index = _python_inline_source_flag_index(cased_tokens)
+    if flag_index is not None:
+        # Keep inspection inside this interpreter's source region. A restart watcher can carry a
+        # second Python -c launcher as trailing data; only that child may claim its markers.
+        source_end = _nested_inline_source_start(cased_tokens, flag_index)
+
+        embedded_argv = _python_c_sys_argv(raw_tokens, cased_tokens, flag_index, source_end)
+        if embedded_argv is not None:
+            return _gateway_command_subcommand_from_tokens(
+                embedded_argv, hermes_entrypoint_inferred=True
+            )
+
+        bootstrap_argv = _hermes_inline_bootstrap_argv(
+            raw_tokens, cased_tokens, flag_index, source_end
+        )
+        if bootstrap_argv is not None:
+            return _gateway_command_subcommand_from_tokens(
+                bootstrap_argv, hermes_entrypoint_inferred=True
+            )
+        return None
+
+    # Non-Python -c runtimes remain fail-closed. Before inline launchers became acceptable this
+    # broad detection only rejected extra processes; now letting such a command fall through to
+    # the normal Hermes substring/argv parser could manufacture identity.
+    if inline_source_flag_index(cased_tokens) is not None:
+        return None
+
+    return _gateway_command_subcommand_from_tokens(raw_tokens)
 
 
 def gateway_spawn_intent_subcommand(command: str | None) -> str | None:
@@ -669,7 +1167,11 @@ def gateway_spawn_intent_subcommand(command: str | None) -> str | None:
     except ValueError:
         raw_tokens = command.split()
     cased_tokens = [t.strip("\"'").replace("\\", "/") for t in raw_tokens]
-    flag_index = inline_source_flag_index(cased_tokens)
+    flag_index = _python_inline_source_flag_index(cased_tokens)
+    if flag_index is None:
+        # Spawn intent may still inspect a non-Python wrapper's trailing argv, but it never grants
+        # process identity; _gateway_command_subcommand above remains fail-closed for that process.
+        flag_index = inline_source_flag_index(cased_tokens)
     if flag_index is None:
         return None
     # Skip the interpreter, its options, ``-c`` and the source literal; then try every suffix —

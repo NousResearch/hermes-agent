@@ -70,8 +70,8 @@
   font-size: 0.72rem;
   letter-spacing: 0.15em;
   text-transform: uppercase;
-  /* #a8860a is only 3.5:1 on white. #6E4F00 clears 4.5:1; dark mode overrides. */
-  color: #6e4f00;
+  /* #a8860a was only 3.5:1 on white; dark mode overrides. */
+  color: var(--ifm-color-primary-darker);
   margin: 0 0 0.5rem;
 }
 
@@ -157,7 +157,7 @@
 [data-theme="light"] .versionPill {
   border-color: rgba(29, 78, 216, 0.45);
   background: rgba(29, 78, 216, 0.08);
-  color: #1d4ed8;
+  color: var(--plugin-catalog-link);
 }
 
 .starPill {
@@ -565,7 +565,7 @@
 [data-theme="light"] .miniStars,
 [data-theme="light"] .starPill,
 [data-theme="light"] .starPill:hover {
-  color: #8a6d00;
+  color: var(--ifm-color-primary-darker);
 }
 
 .miniDesc {

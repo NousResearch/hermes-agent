@@ -208,3 +208,46 @@ def test_populated_platforms_produce_no_empty_list_warning():
     cfg = {"cli": ["hermes-cli"], "telegram": ["hermes-telegram"]}
     warnings = validate_platform_toolsets(cfg, _is_valid)
     assert warnings == []
+
+
+# --- known_plugin_toolsets: plugin toolsets register after config validation runs ---
+
+def test_declared_plugin_toolset_is_not_flagged_unknown():
+    """A plugin toolset registers only after plugins load — long after this validation runs.
+
+    `known_plugin_toolsets` is the config's own record (written by the `hermes tools` save flow)
+    that the name is legitimate, so it must not be reported as unknown.
+    """
+    cfg = {"cli": ["a2a", "hermes-cli"]}
+    known = {"cli": ["a2a"]}
+    warnings = validate_platform_toolsets(cfg, _is_valid, known_plugin_toolsets=known)
+    assert not any("a2a" in w for w in warnings)
+
+
+def test_declared_plugin_toolset_counts_as_a_valid_toolset():
+    """It must also satisfy the zero-valid-toolsets net, or silencing one warning fires another."""
+    warnings = validate_platform_toolsets({"cli": ["a2a"]}, _is_valid, known_plugin_toolsets={"cli": ["a2a"]})
+    assert warnings == []
+
+
+def test_plugin_toolset_declared_for_another_platform_still_warns():
+    """Per-platform scoping: one platform's plugin names must not mask another's typo."""
+    cfg = {"cli": ["hermes-cli"], "discord": ["a2a"]}
+    warnings = validate_platform_toolsets(cfg, _is_valid, known_plugin_toolsets={"cli": ["a2a"]})
+    assert any("unknown toolset 'a2a'" in w and "'discord'" in w for w in warnings)
+
+
+def test_omitting_known_plugin_toolsets_preserves_existing_behavior():
+    """Default None must behave exactly as before this parameter existed."""
+    assert (validate_platform_toolsets({"cli": ["a2a"]}, _is_valid)
+            == validate_platform_toolsets({"cli": ["a2a"]}, _is_valid, known_plugin_toolsets=None))
+    assert any("unknown toolset 'a2a'" in w for w in validate_platform_toolsets({"cli": ["a2a"]}, _is_valid))
+
+
+@pytest.mark.parametrize("known", [None, {}, {"cli": None}, {"cli": "a2a"}, {"cli": 42}, "nonsense", []])
+def test_malformed_known_plugin_toolsets_never_raises(known):
+    """Config is user-edited YAML: any shape must degrade to 'not declared', never crash migration."""
+    warnings = validate_platform_toolsets({"cli": ["a2a"]}, _is_valid, known_plugin_toolsets=known)
+    # The legacy single-string shape is the one that legitimately suppresses the warning.
+    expected_suppressed = known == {"cli": "a2a"}
+    assert any("unknown toolset 'a2a'" in w for w in warnings) is not expected_suppressed

@@ -809,6 +809,10 @@ DEFAULT_CONFIG = {
         # steer mode: false hides only the "Steered into current run" bubble; steering itself still
         # happens.
         "busy_steer_ack_enabled": True,
+        # Issue #26024: per-mode acknowledgement message overrides.
+        # Each template may contain a single {status_detail} placeholder.
+        # Whitespace-only override suppresses that one mode silently.
+        "busy_ack_templates": {},  # {interrupt|queue|steer: "template ..."}
         # Classic CLI multiline beyond Alt+Enter: Ctrl+J newline, trailing backslash+Enter
         # continues, Shift+Enter reported distinctly. False restores the c-j submit fallback for
         # POSIX PTYs whose plain Enter arrives as LF.

@@ -1897,6 +1897,17 @@ display:
   # Toggle at runtime with /busy <interrupt|queue|steer>.
   busy_input_mode: interrupt
 
+  # Issue #26024: operator-configurable busy-acknowledgement messages.
+  # Override the per-mode ack text the gateway sends when a new message
+  # arrives while a session is busy. Each template may contain a single
+  # {status_detail} placeholder. Unset (default) preserves historical strings.
+  # A whitespace-only override suppresses that one mode silently.
+  # busy_ack_templates:
+  #   interrupt: "⚡ Interrupting current task{status_detail}. I'll respond shortly."
+  #   queue:     "⏳ Queued for the next turn{status_detail}."
+  #   steer:     "⏩ Steered into current run{status_detail}."
+  busy_ack_templates: {}
+
   # Background process notifications (gateway/messaging only).
   # Controls how chatty the process watcher is when you use
   # terminal(background=true, notify_on_complete=true) from Telegram/Discord/etc.

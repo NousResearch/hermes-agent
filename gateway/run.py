@@ -2056,6 +2056,15 @@ def _bridge_config_to_env(_cfg: dict) -> None:
     if (isinstance(_display_cfg, dict) and "busy_steer_ack_enabled" in _display_cfg
             and "HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED" not in os.environ):
         os.environ["HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED"] = str(_display_cfg["busy_steer_ack_enabled"])
+    _busy_ack_templates_cfg = _display_cfg.get("busy_ack_templates") if isinstance(_display_cfg, dict) else None
+    if _busy_ack_templates_cfg:
+        try:
+            from tools.busy_ack_templates import ENV_VAR_TEMPLATES as _BUSY_ACK_ENV_VAR, encode_templates_for_env as _busy_ack_encode
+            _encoded = _busy_ack_encode(_busy_ack_templates_cfg)
+            if _encoded is not None:
+                os.environ[_BUSY_ACK_ENV_VAR] = _encoded
+        except Exception as _busy_ack_err:
+            logger.debug("Failed to bridge display.busy_ack_templates to env: %s", _busy_ack_err)
     _tz_cfg = _cfg.get("timezone", "")
     if _tz_cfg and isinstance(_tz_cfg, str):
         os.environ["HERMES_TIMEZONE"] = _tz_cfg.strip()

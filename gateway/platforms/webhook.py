@@ -753,36 +753,53 @@ class WebhookAdapter(BasePlatformAdapter):
                     self._seen_deliveries.pop(delivery_id, None)
 
             source_thread_id = str(route_config.get("source_thread_id") or "") or None
-            if route_config.get("source_new_thread"):
-                create_thread = getattr(target_adapter, "create_handoff_thread", None)
-                if not callable(create_thread):
-                    rollback_dispatch()
-                    return _json_error("Unable to create isolated source thread", 503)
-                try:
-                    source_thread_id = await create_thread(
-                        str(route_config["source_chat_id"]),
-                        str(route_config.get("source_thread_name") or f"Hermes — {route_name}"))
-                except Exception:
-                    source_thread_id = None
-                if not source_thread_id:
-                    rollback_dispatch()
-                    return _json_error("Unable to create isolated source thread", 503)
             source = SessionSource(
                 platform=source_platform, chat_id=str(route_config["source_chat_id"]),
                 chat_name=str(route_config.get("source_chat_name") or f"webhook/{route_name}"),
                 chat_type=str(route_config.get("source_chat_type") or "dm"),
                 user_id=str(route_config["source_user_id"]),
                 user_name=str(route_config.get("source_user_name") or route_name),
-                thread_id=str(source_thread_id) if source_thread_id else None,
+                thread_id=source_thread_id,
                 profile=profile if isinstance(profile, str) else None)
+            created_thread_id = None
+            if route_config.get("source_new_thread"):
+                create_thread = getattr(target_adapter, "create_handoff_thread", None)
+                if not callable(create_thread):
+                    rollback_dispatch()
+                    return _json_error("Unable to create isolated source thread", 503)
+                # The name may template payload fields (``{title}``) so each delivery gets a
+                # descriptive thread; unresolved keys fall back to the route default.
+                title = self._render_prompt(str(route_config.get("source_thread_name") or ""), payload,
+                                            event_type, route_name).strip()
+                if not title or _TEMPLATE_KEY_RE.search(title):
+                    title = f"Hermes — {route_name}"
+                title = title[:100]
+                try:
+                    created_thread_id = await create_thread(source.chat_id, title)
+                except Exception:
+                    created_thread_id = None
+                if not created_thread_id:
+                    rollback_dispatch()
+                    return _json_error("Unable to create isolated source thread", 503)
+                from gateway.slash_commands_branch_thread import branch_dest_source
+                # Key the event exactly like a message later typed in that thread (Discord keys
+                # in-thread messages on the thread's own id), so follow-ups continue this session.
+                source = branch_dest_source(source, parent_id=source.chat_id,
+                                            thread_id=str(created_thread_id), title=title)
+                # Discord only answers un-mentioned follow-ups in threads it has participated in.
+                threads = getattr(target_adapter, "_threads", None)
+                if threads is not None and callable(getattr(threads, "mark_async", None)):
+                    await threads.mark_async(str(created_thread_id))
             event = MessageEvent(
                 text=prompt, message_type=message_type, source=source, raw_message=payload,
                 message_id=None, media_urls=media_urls or [], media_types=media_types or [])
             task = asyncio.create_task(target_adapter.handle_message(event))
             self._background_tasks.add(task)
             task.add_done_callback(self._background_tasks.discard)
-            return web.json_response({"status": "accepted", "route": route_name, "event": event_type,
-                                      "delivery_id": delivery_id}, status=202)
+            body = {"status": "accepted", "route": route_name, "event": event_type, "delivery_id": delivery_id}
+            if created_thread_id:
+                body["thread_id"] = str(created_thread_id)  # lets the caller link or follow the new thread
+            return web.json_response(body, status=202)
         self._spawn_agent_run(payload, prompt, delivery_id, now, route_config=route_config, route_name=route_name,
                               profile=profile, event_type=event_type)
         return web.json_response({"status": "accepted", "route": route_name, "event": event_type,

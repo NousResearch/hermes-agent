@@ -218,3 +218,77 @@ async def test_unavailable_source_or_unsupported_media_never_caches_or_dispatche
     target.handle_message.assert_not_called()
     assert not adapter._seen_deliveries
     assert not adapter._background_tasks
+
+
+@pytest.mark.asyncio
+async def test_new_discord_thread_is_keyed_like_a_follow_up_and_returned():
+    """A route-created Discord thread must bind the session a message typed later in that thread
+    reads (Discord keys in-thread messages on the thread's own id), and the bot must count as a
+    participant so un-mentioned follow-ups are answered."""
+    from gateway.session import build_session_key
+
+    adapter = _make_adapter({"voice-build": {
+        "secret": "INSECURE_NO_AUTH", "prompt": "{message}",
+        "source_platform": "discord", "source_chat_id": "900", "source_chat_type": "group",
+        "source_user_id": "7", "source_new_thread": True, "source_thread_name": "Voice: {title}",
+    }})
+    received, marked, names = [], [], []
+
+    class Threads:
+        async def mark_async(self, thread_id):
+            marked.append(thread_id)
+
+    class Target:
+        _running = True
+        _threads = Threads()
+
+        async def create_handoff_thread(self, chat_id, name):
+            names.append((chat_id, name))
+            return "555"
+
+        async def handle_message(self, event):
+            received.append(event)
+
+    target = Target()
+    adapter.gateway_runner = SimpleNamespace(
+        _authorization_adapter=lambda platform, profile: target if platform is Platform.DISCORD else None)
+    async with TestClient(TestServer(_create_app(adapter))) as client:
+        response = await client.post("/webhooks/voice-build", json={"message": "fix it", "title": "Speaker cards"})
+        assert response.status == 202
+        assert (await response.json())["thread_id"] == "555"
+    await asyncio.gather(*adapter._background_tasks)
+
+    assert names == [("900", "Voice: Speaker cards")]
+    assert marked == ["555"]
+    event = received[0]
+    follow_up = SessionSource(platform=Platform.DISCORD, chat_id="555", chat_type="thread", user_id="7",
+                              thread_id="555", parent_chat_id="900")
+    assert build_session_key(event.source) == build_session_key(follow_up)
+
+
+@pytest.mark.asyncio
+async def test_unresolved_thread_name_template_falls_back_to_route_name():
+    adapter = _make_adapter({"voice-build": {
+        "secret": "INSECURE_NO_AUTH", "prompt": "{message}",
+        "source_platform": "discord", "source_chat_id": "900", "source_chat_type": "group",
+        "source_user_id": "7", "source_new_thread": True, "source_thread_name": "Voice: {title}",
+    }})
+    names = []
+
+    class Target:
+        _running = True
+
+        async def create_handoff_thread(self, chat_id, name):
+            names.append(name)
+            return "556"
+
+        async def handle_message(self, event):
+            pass
+
+    target = Target()
+    adapter.gateway_runner = SimpleNamespace(
+        _authorization_adapter=lambda platform, profile: target if platform is Platform.DISCORD else None)
+    async with TestClient(TestServer(_create_app(adapter))) as client:
+        assert (await client.post("/webhooks/voice-build", json={"message": "x"})).status == 202
+    await asyncio.gather(*adapter._background_tasks)
+    assert names == ["Hermes — voice-build"]

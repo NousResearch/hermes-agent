@@ -349,8 +349,15 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
     async def _create_chat_for_handle(self, address: str, message: str) -> SendResult:
         """Create a new chat by sending the first message to *address*."""
-        return await self._post_message(
-            "/api/v1/chat/new", {"addresses": [address], "message": message, "tempGuid": _temp_guid()})
+        payload: Dict[str, Any] = {"addresses": [address], "message": message, "tempGuid": _temp_guid()}
+        # A brand-new chat has no message history, so a method-less request is
+        # exactly the shape the server routes to its legacy AppleScript path —
+        # the cold-start form of the stall the text-send routing below repairs.
+        # The server's createChat dispatches on ``method`` ("private-api" →
+        # createWithPrivateApi), so pin it under the same live gate as text sends.
+        if self._private_api_enabled and self._helper_connected:
+            payload["method"] = "private-api"
+        return await self._post_message("/api/v1/chat/new", payload)
 
     # --- Text sending ---
 
@@ -376,8 +383,18 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                     return await self._create_chat_for_handle(chat_id, chunk)
                 return SendResult(success=False, error=f"BlueBubbles chat not found for target: {chat_id}")
             payload: Dict[str, Any] = {"chatGuid": guid, "tempGuid": _temp_guid(), "message": chunk}
-            if reply_to and self._private_api_enabled and self._helper_connected:
-                payload.update(method="private-api", selectedMessageGuid=reply_to, partIndex=0)
+            # Route every text send through the Private API when it is live, not only
+            # replies: the server defaults a method-less request to its legacy
+            # AppleScript path, which stalls (30 s ReadTimeout, nothing delivered) on
+            # helper-only setups — cron delivery, send_message and any other
+            # non-reply send (#122949). Every outbound text-bearing endpoint takes the
+            # same ``method`` discriminator server-side (sendTextRules, sendAttachmentRules,
+            # createChat's createRules); _create_chat_for_handle and _send_attachment
+            # apply the identical gate below, so no send shape is left on the fallback.
+            if self._private_api_enabled and self._helper_connected:
+                payload["method"] = "private-api"
+                if reply_to:
+                    payload.update(selectedMessageGuid=reply_to, partIndex=0)
             if not (last := await self._post_message("/api/v1/message/text", payload)).success:
                 return last
         return last
@@ -402,6 +419,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             data: Dict[str, str] = {"chatGuid": guid, "name": fname, "tempGuid": uuid.uuid4().hex}
             if is_audio_message:
                 data["isAudioMessage"] = "true"
+            # The attachment endpoint takes the same ``method`` discriminator as
+            # text (server sendAttachmentRules; absent → AppleScript fallback),
+            # so route media through the private API under the same live gate —
+            # otherwise helper-only setups stall on attachments while the
+            # caption riding them (sent via send() below) is routed.
+            if self._private_api_enabled and self._helper_connected:
+                data["method"] = "private-api"
             res = await self.client.post(self._api_url("/api/v1/message/attachment"), data=data, timeout=120,
                                          files={"attachment": (fname, payload, "application/octet-stream")})
             res.raise_for_status()

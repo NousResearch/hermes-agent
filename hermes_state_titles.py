@@ -13,10 +13,18 @@ from hermes_state_common import _COMPRESSION_CHILD_SQL, escape_like as _escape_l
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
 
-# ASCII controls (keeping \t \n \r for the whitespace collapse), then zero-width,
-# bidi override, object-replacement and interlinear-annotation code points.
+# ASCII controls (keeping \t \n \r for the whitespace collapse); zero-width
+# SEPARATORS become spaces (_TITLE_SEPARATOR_RE, #93968) while the remaining
+# zero-width/bidi/object-replacement/interlinear-annotation code points are deleted.
 _TITLE_CONTROL_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
-_TITLE_INVISIBLE_RE = re.compile(r'[\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\ufffc\ufff9-\ufffb]')
+_TITLE_INVISIBLE_RE = re.compile(r'[\u200c-\u200f\u202a-\u202e\u2060-\u2069\ufffc\ufff9-\ufffb]')
+# Zero-width spaces (U+200B, and U+FEFF mid-string) are word separators in text
+# pasted from web pages and chat apps; line/paragraph separators (U+2028/U+2029)
+# are whitespace the same way. Converting them to a real space before the
+# whitespace collapse keeps the visible word gap instead of gluing words
+# together (#93968). Joiners and directional marks (U+200C-U+200F, U+202A+)
+# stay in the delete set: they are format controls, not separators.
+_TITLE_SEPARATOR_RE = re.compile(r'[\u200b\ufeff\u2028\u2029]')
 _NUMBERED_TITLE_RE = re.compile(r'^(.*?) #(\d+)$')
 
 
@@ -32,13 +40,13 @@ class SessionTitlesMixin:
 
     @staticmethod
     def sanitize_title(title: Optional[str]) -> Optional[str]:
-        """Strip control/zero-width/bidi chars (and lone surrogates sqlite3 cannot bind),
-        collapse whitespace, normalize empty to None. ValueError past MAX_TITLE_LENGTH."""
+        """Strip control chars, turn zero-width separators into spaces, collapse whitespace,
+        normalize empty to None. ValueError past MAX_TITLE_LENGTH."""
         from hermes_state import SessionDB
         if not title:
             return None
         cleaned = _TITLE_INVISIBLE_RE.sub('', _TITLE_CONTROL_RE.sub('', _sanitize_surrogates(title)))
-        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        cleaned = re.sub(r'\s+', ' ', _TITLE_SEPARATOR_RE.sub(' ', cleaned)).strip()
         if not cleaned:
             return None
         if len(cleaned) > SessionDB.MAX_TITLE_LENGTH:

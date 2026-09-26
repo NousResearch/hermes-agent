@@ -36,6 +36,7 @@ pub enum ScriptSource {
     DevCheckout,
     Bundled,
     Downloaded,
+    InstalledCheckout,
 }
 
 /// What flavor of script (Windows .ps1 vs Unix .sh).
@@ -129,6 +130,32 @@ pub async fn resolve(
     Ok(ResolvedScript {
         path: dest,
         source: ScriptSource::Downloaded,
+        commit: pin.commit.clone(),
+        branch: pin.branch.clone(),
+    })
+}
+
+/// Resolves the installer that was checked out by the repository stage.
+///
+/// A branch-following Hermes Setup binary starts with today's installer so it
+/// can create the checkout, but an older release may have a different staged
+/// installer protocol. Once the repository stage has materialized that
+/// release, subsequent stages must use the release's own script and manifest.
+pub fn resolve_installed_checkout(
+    kind: ScriptKind,
+    install_root: &Path,
+    pin: &Pin,
+) -> Result<ResolvedScript> {
+    let path = install_root.join("scripts").join(kind.filename());
+    if !path.is_file() {
+        return Err(anyhow!(
+            "checked-out release has no installer script at {}",
+            path.display()
+        ));
+    }
+    Ok(ResolvedScript {
+        path,
+        source: ScriptSource::InstalledCheckout,
         commit: pin.commit.clone(),
         branch: pin.branch.clone(),
     })
@@ -321,5 +348,28 @@ mod tests {
         assert!(is_valid_commit("02d26981d3d4ad50e142399b8476f59ad5953ff0"));
         assert!(!is_valid_commit("main"));
         assert!(!is_valid_commit("release/1.2.3"));
+    }
+
+    #[test]
+    fn resolve_installed_checkout_uses_the_release_script_and_keeps_the_pin() {
+        let root = std::env::temp_dir().join(format!(
+            "hermes-install-script-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let script = root.join("scripts").join("install.sh");
+        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+        std::fs::write(&script, b"#!/usr/bin/env bash\n").unwrap();
+        let pin = Pin {
+            commit: None,
+            branch: Some("main".to_string()),
+        };
+
+        let resolved = resolve_installed_checkout(ScriptKind::Sh, &root, &pin).unwrap();
+
+        assert_eq!(resolved.path, script);
+        assert_eq!(resolved.source, ScriptSource::InstalledCheckout);
+        assert_eq!(resolved.branch.as_deref(), Some("main"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

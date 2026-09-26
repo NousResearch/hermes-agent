@@ -837,26 +837,22 @@ function Invoke-PhaseInstallGui {
     $proof = Join-Path $ProofRoot $(if ($Mode -eq "install") { "install-gui" } else { "update-gui-installer" })
     New-Item -ItemType Directory -Path $proof -Force | Out-Null
 
-    # The production installer binary comes from the website. Pair its script
-    # input with the source revision it will materialize. A branch-following
-    # installer can otherwise run today's install.ps1 against OLD, whose tree
-    # legitimately lacks helpers added later (for example
-    # apps/desktop/scripts/ensure-rolldown-binding.mjs). The bootstrap's public
-    # dev-source seam changes only script resolution. The GUI binary and cloned
-    # source remain the real artifacts under test.
+    # The production installer binary comes from the website. Feed its current
+    # installer script through the public dev-source seam while serve.git still
+    # materializes OLD: the bootstrap must switch to OLD's staged protocol after
+    # its repository stage rather than assuming today's dependency layout.
     $bootstrapRoot = Join-Path $WorkRoot "bootstrap-source-$Mode"
     $bootstrapScripts = Join-Path $bootstrapRoot "scripts"
     New-Item -ItemType Directory -Path $bootstrapScripts -Force | Out-Null
     $installScript = Join-Path $bootstrapScripts "install.ps1"
-    (Invoke-Git @("-C", $RepoRoot, "show", "$ExpectedSha`:scripts/install.ps1")) -join "`n" |
-        Set-Content -LiteralPath $installScript -Encoding UTF8
+    Copy-Item (Join-Path $RepoRoot "scripts\install.ps1") $installScript -Force
     Copy-Item $installScript (Join-Path $proof "bootstrap-install-script.ps1") -Force
-    $scriptBlob = Invoke-Git @("-C", $RepoRoot, "rev-parse", "$ExpectedSha`:scripts/install.ps1")
+    $scriptBlob = Invoke-Git @("-C", $RepoRoot, "rev-parse", "HEAD:scripts/install.ps1")
     @(
-        "source_commit=$ExpectedSha"
+        "source_commit=HEAD"
         "script_blob=$scriptBlob"
     ) | Set-Content -LiteralPath (Join-Path $proof "bootstrap-install-script.txt") -Encoding ASCII
-    Write-Host "  bootstrap script is scripts/install.ps1 from $ExpectedLabel ($ExpectedSha)"
+    Write-Host "  bootstrap script is current scripts/install.ps1; checkout target is $ExpectedLabel ($ExpectedSha)"
 
     $setupExe = Join-Path $WorkRoot "Hermes-Setup.exe"
     if (-not (Test-Path -LiteralPath $setupExe)) {

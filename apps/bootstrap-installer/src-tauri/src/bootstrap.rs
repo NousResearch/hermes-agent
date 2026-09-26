@@ -546,12 +546,22 @@ async fn run_bootstrap(
         ScriptSource::DevCheckout => "dev checkout",
         ScriptSource::Bundled => "bundled",
         ScriptSource::Downloaded => "downloaded",
+        ScriptSource::InstalledCheckout => "installed checkout",
     };
     emit_log(&format!(
         "[bootstrap] script {} via {}",
         script.path.display(),
         source_note
     ));
+
+    // The repository stage always clones into this location. Once it succeeds,
+    // the checked-out release becomes the authoritative source for its own
+    // remaining staged installer protocol.
+    let hermes_home = args
+        .hermes_home
+        .clone()
+        .unwrap_or_else(|| crate::paths::hermes_home().to_string_lossy().into_owned());
+    let install_root = PathBuf::from(&hermes_home).join("hermes-agent");
 
     // 2. Fetch manifest
     //
@@ -617,8 +627,15 @@ async fn run_bootstrap(
         },
     );
 
-    // 3. Iterate stages.
-    for stage in &manifest.stages {
+    // 3. Iterate stages. The repository stage may replace the remaining stage
+    // protocol with the one shipped by the checked-out release.
+    let mut script = script;
+    let mut manifest_args = manifest_args;
+    let mut stages = manifest.stages.clone();
+    let mut stage_index = 0;
+    let mut switched_to_checkout = false;
+    while stage_index < stages.len() {
+        let stage = &stages[stage_index];
         // Skip Stage-Desktop unless explicitly requested. install.ps1 may
         // or may not include it in the manifest depending on the flag we
         // pass, but if it slipped in, gate client-side too.
@@ -795,6 +812,90 @@ async fn run_bootstrap(
                         error: None,
                     },
                 );
+                if !switched_to_checkout && stage.name.eq_ignore_ascii_case("repository") {
+                    let checked_out_script = install_script::resolve_installed_checkout(
+                        kind,
+                        &install_root,
+                        &pin,
+                    )
+                    .map_err(|e| {
+                        let msg = format!("resolve checked-out install script failed: {e:#}");
+                        emit_event(
+                            &app,
+                            BootstrapEvent::Failed {
+                                stage: Some(stage.name.clone()),
+                                error: msg.clone(),
+                            },
+                        );
+                        anyhow!(msg)
+                    })?;
+                    emit_log(&format!(
+                        "[bootstrap] switching to checked-out installer script {}",
+                        checked_out_script.path.display()
+                    ));
+
+                    let checked_out_manifest_args = build_pin_args(&checked_out_script);
+                    let mut checked_out_manifest_args_full = vec!["-Manifest".to_string()];
+                    checked_out_manifest_args_full.extend(checked_out_manifest_args.clone());
+                    if args.include_desktop {
+                        checked_out_manifest_args_full.push("-IncludeDesktop".to_string());
+                    }
+                    let mut checked_out_manifest_cancel_rx = None;
+                    let checked_out_manifest_result = run_install_script(
+                        &app,
+                        &checked_out_script.path,
+                        &checked_out_manifest_args_full,
+                        args.hermes_home.as_deref(),
+                        &mut checked_out_manifest_cancel_rx,
+                        Some("__manifest__".to_string()),
+                    )
+                    .await?;
+                    if checked_out_manifest_result.exit_code != Some(0) {
+                        let err = format!(
+                            "checked-out installer manifest failed: exit {:?}\n{}",
+                            checked_out_manifest_result.exit_code,
+                            crate::events::strip_ansi(checked_out_manifest_result.stderr.trim())
+                        );
+                        emit_event(
+                            &app,
+                            BootstrapEvent::Failed {
+                                stage: Some(stage.name.clone()),
+                                error: err.clone(),
+                            },
+                        );
+                        return Err(anyhow!(err));
+                    }
+                    let checked_out_manifest: Manifest = powershell::parse_manifest(
+                        &checked_out_manifest_result.stdout,
+                    )
+                    .ok_or_else(|| {
+                        let err = format!(
+                            "checked-out installer manifest produced no parseable JSON payload\n{}",
+                            truncate(&checked_out_manifest_result.stdout, 4000)
+                        );
+                        emit_event(
+                            &app,
+                            BootstrapEvent::Failed {
+                                stage: Some(stage.name.clone()),
+                                error: err.clone(),
+                            },
+                        );
+                        anyhow!(err)
+                    })?;
+                    emit_event(
+                        &app,
+                        BootstrapEvent::Manifest {
+                            stages: checked_out_manifest.stages.clone(),
+                            protocol_version: checked_out_manifest.protocol_version,
+                        },
+                    );
+                    script = checked_out_script;
+                    manifest_args = checked_out_manifest_args;
+                    stages = checked_out_manifest.stages;
+                    stage_index = 0;
+                    switched_to_checkout = true;
+                    continue;
+                }
             }
             Some(frame) => {
                 let err = frame
@@ -821,16 +922,8 @@ async fn run_bootstrap(
                 return Err(anyhow!(err));
             }
         }
+        stage_index += 1;
     }
-
-    // 4. Resolve install_root. install.ps1 doesn't (yet) report this back
-    // explicitly; we infer it from $HermesHome which Stage-Repository clones
-    // the repo INTO at $HermesHome\hermes-agent. Mirrors hermes_constants.
-    let hermes_home = args
-        .hermes_home
-        .clone()
-        .unwrap_or_else(|| crate::paths::hermes_home().to_string_lossy().into_owned());
-    let install_root = PathBuf::from(&hermes_home).join("hermes-agent");
 
     // Marker publish is terminal for this run: a write failure must emit Failed
     // so the UI leaves the progress state (it does not poll get_bootstrap_status).

@@ -10,8 +10,12 @@ picking "Nous Subscription" for search wrote ``web.search_backend:
 promote the toolset-level selection (``web.backend: nous``). Search and
 extract picks are independent surfaces, so the managed pick clears only the
 chosen capability's pin and preserves the other one — pinning it to the
-previous shared vendor when it had none, so the promotion does not silently
-flip the other capability. Vendor picks keep writing their capability key.
+previous shared vendor when it had none, but only when that vendor can serve
+the capability (a search-only vendor such as brave-free stays unpinned and
+falls through the registry ladder). A toolset-level managed pick (no
+``capability``) governs the whole toolset and clears BOTH pins — that is the
+repair path for configs corrupted by the pre-fix write. Vendor picks keep
+writing their capability key.
 """
 
 import pytest
@@ -43,21 +47,19 @@ def client_and_home(monkeypatch, _isolate_hermes_home):
 
 
 def _seed_web(home, web_cfg):
-    """Write a ``web`` config shape the endpoint must start from (the live-bug
+    """Write a ``web`` config shape through the real config writer (the live-bug
     regressions start from a NON-empty web section)."""
-    import yaml
+    from hermes_cli.config import load_config, save_config
 
-    path = home / "config.yaml"
-    cfg = (yaml.safe_load(path.read_text()) or {}) if path.exists() else {}
+    cfg = load_config()
     cfg["web"] = {**(cfg.get("web") or {}), **web_cfg}
-    path.write_text(yaml.safe_dump(cfg))
+    save_config(cfg)
 
 
 def _web_section(home):
-    import yaml
+    from hermes_cli.config import load_config
 
-    cfg = yaml.safe_load((home / "config.yaml").read_text()) or {}
-    return cfg.get("web") or {}
+    return load_config().get("web") or {}
 
 
 def _pick(client, provider, capability=None):
@@ -80,8 +82,8 @@ def test_managed_search_pick_clears_the_live_firecrawl_pin(client_and_home):
 
     web = _web_section(home)
     assert web["backend"] == "nous"
-    assert "search_backend" not in web
-    assert "use_gateway" not in web
+    assert not web.get("search_backend")
+    assert not web.get("use_gateway")
 
     from tools.web_tools import _get_search_backend
 
@@ -99,7 +101,7 @@ def test_managed_pick_keeps_the_other_capability_vendor_pin(client_and_home):
 
     web = _web_section(home)
     assert web["backend"] == "nous"
-    assert "search_backend" not in web
+    assert not web.get("search_backend")
     assert web["extract_backend"] == "exa"
 
     from tools.web_tools import _get_extract_backend
@@ -119,7 +121,7 @@ def test_managed_pick_pins_the_previous_shared_vendor_for_the_other_capability(c
 
     web = _web_section(home)
     assert web["backend"] == "nous"
-    assert "search_backend" not in web
+    assert not web.get("search_backend")
     assert web["extract_backend"] == "tavily"
 
 
@@ -136,7 +138,7 @@ def test_managed_extract_pick_clears_the_live_pin_and_keeps_search_vendor(client
 
     web = _web_section(home)
     assert web["backend"] == "nous"
-    assert "extract_backend" not in web
+    assert not web.get("extract_backend")
     assert web["search_backend"] == "perplexity"
 
     from tools.web_tools import _get_extract_backend, _get_search_backend
@@ -154,5 +156,77 @@ def test_vendor_capability_pick_still_writes_only_its_capability_key(client_and_
 
     web = _web_section(home)
     assert web["search_backend"] == "firecrawl"
-    assert "backend" not in web
-    assert "extract_backend" not in web
+    assert not web.get("backend")
+    assert not web.get("extract_backend")
+
+
+def test_toolset_level_managed_pick_clears_stale_pins(client_and_home):
+    """The corrupted shape this PR exists to repair, healed through the
+    toolset-level pick: a managed selection without ``capability`` routes
+    through the shared ``_write_provider_config`` writer, which must clear BOTH
+    per-capability pins — the dispatchers resolve a pin FIRST and read it as a
+    DIRECT vendor selection, so a stale pin keeps outranking the ``nous``
+    selection just written and the user never reaches the managed route."""
+    client, home = client_and_home
+    _seed_web(home, {"search_backend": "firecrawl", "extract_backend": "firecrawl"})
+
+    resp = _pick(client, "Nous Subscription")
+    assert resp.status_code == 200
+
+    web = _web_section(home)
+    assert web["backend"] == "nous"
+    assert not web.get("search_backend")
+    assert not web.get("extract_backend")
+
+    from tools.web_tools import _get_search_backend, _managed_web_search
+
+    assert _managed_web_search() is True
+    assert _get_search_backend() == "perplexity"
+
+
+def test_managed_pick_does_not_pin_a_search_only_vendor_for_extract(client_and_home):
+    """The sibling-preservation pin must respect capabilities: brave-free is
+    search-only, so a managed search pick riding ``web.backend: brave-free``
+    must NOT write ``extract_backend: brave-free`` — the GUI badge would name a
+    vendor the registry falls through. Leaving it unpinned lets extract resolve
+    through the managed route (gateway-serviced Firecrawl) honestly."""
+    client, home = client_and_home
+    _seed_web(home, {"backend": "brave-free"})
+
+    resp = _pick(client, "Nous Subscription", capability="search")
+    assert resp.status_code == 200
+
+    web = _web_section(home)
+    assert web["backend"] == "nous"
+    assert not web.get("extract_backend")
+
+    from tools.web_tools import _get_extract_backend
+
+    assert _get_extract_backend() == "firecrawl"
+
+
+def test_alternating_managed_picks_settle_both_capabilities_on_the_managed_route(client_and_home):
+    """A capability pin is a PRESERVATION mechanism for a capability the user
+    has not explicitly picked — not a preference that survives an explicit
+    managed pick of that capability. Walk both directions: pick 1 preserves
+    extract on the shared vendor; pick 2 is an explicit managed extract pick,
+    so extract joins search on the managed route and nothing resurrects a pin."""
+    client, home = client_and_home
+    _seed_web(home, {"backend": "tavily", "search_backend": "firecrawl"})
+
+    resp = _pick(client, "Nous Subscription", capability="search")
+    assert resp.status_code == 200
+    web = _web_section(home)
+    assert web["extract_backend"] == "tavily"
+
+    resp = _pick(client, "Nous Subscription", capability="extract")
+    assert resp.status_code == 200
+    web = _web_section(home)
+    assert web["backend"] == "nous"
+    assert not web.get("extract_backend")
+    assert not web.get("search_backend")
+
+    from tools.web_tools import _get_extract_backend, _get_search_backend
+
+    assert _get_search_backend() == "perplexity"
+    assert _get_extract_backend() == "firecrawl"

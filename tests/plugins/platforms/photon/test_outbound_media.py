@@ -30,7 +30,9 @@ def _capture_sidecar(adapter: PhotonAdapter) -> List[Tuple[str, Dict[str, Any]]]
     """Replace ``_sidecar_call`` with a recorder that returns a fixed id."""
     calls: List[Tuple[str, Dict[str, Any]]] = []
 
-    async def _fake_call(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    async def _fake_call(
+        path: str, body: Dict[str, Any], timeout: float = 30.0
+    ) -> Dict[str, Any]:
         calls.append((path, body))
         return {"ok": True, "messageId": "msg-123"}
 

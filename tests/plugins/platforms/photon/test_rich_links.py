@@ -30,7 +30,9 @@ def _make_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:
 def _capture_sidecar(adapter: PhotonAdapter) -> List[Tuple[str, Dict[str, Any]]]:
     calls: List[Tuple[str, Dict[str, Any]]] = []
 
-    async def _fake_call(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    async def _fake_call(
+        path: str, body: Dict[str, Any], timeout: float = 30.0
+    ) -> Dict[str, Any]:
         calls.append((path, body))
         return {"ok": True, "messageId": "msg-123"}
 
@@ -130,7 +132,9 @@ async def test_direct_url_only_send_falls_back_to_plain_send(
     adapter = _make_adapter(monkeypatch)
     calls: List[Tuple[str, Dict[str, Any]]] = []
 
-    async def _fake_call(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    async def _fake_call(
+        path: str, body: Dict[str, Any], timeout: float = 30.0
+    ) -> Dict[str, Any]:
         calls.append((path, body))
         if path == "/send-richlink":
             raise RuntimeError("richlink unsupported")

@@ -90,7 +90,9 @@ async def test_send_with_retry_uses_structured_retryable_flag(
     async def _fake_sleep(delay: float) -> None:
         sleeps.append(delay)
 
-    async def _fake_sidecar_call(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    async def _fake_sidecar_call(
+        path: str, body: Dict[str, Any], timeout: float = 30.0
+    ) -> Dict[str, Any]:
         nonlocal calls
         calls += 1
         if calls == 1:

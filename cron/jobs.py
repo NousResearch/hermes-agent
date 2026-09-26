@@ -1353,8 +1353,10 @@ def load_jobs() -> List[Dict[str, Any]]:
         raise RuntimeError(f"Cron database corrupted and unrepairable: {e}") from e
 
     # Accept the canonical dict, or a bare list (auto-repair); any other top-level shape is
-    # corruption.
+    # corruption. Repair details are logged only by the locked pass (an unlocked pass re-runs
+    # under the lock below), so each warning is emitted once per repair.
     repair = "had invalid control characters" if _strict_retry else None
+    notes: List[str] = []
     if isinstance(data, dict):
         jobs = data.get("jobs", [])
         if isinstance(jobs, dict):
@@ -1362,16 +1364,14 @@ def load_jobs() -> List[Dict[str, Any]]:
             # _peek_jobs_unlocked deliberately does NOT flatten, so saves never merge against it.
             skipped = [k for k, v in jobs.items() if not isinstance(v, dict)]
             if skipped:
-                logger.warning(
-                    "Skipping %d non-dict entr%s in id-keyed jobs map: %s",
+                notes.append("Skipping %d non-dict entr%s in id-keyed jobs map: %s" % (
                     len(skipped), "y" if len(skipped) == 1 else "ies",
-                    ", ".join(map(repr, skipped)))
+                    ", ".join(map(repr, skipped))))
             jobs = [{**v, "id": v.get("id") or k} for k, v in jobs.items() if isinstance(v, dict)]
             repair = "id-keyed jobs map flattened to list"
         elif not isinstance(jobs, list):
-            logger.warning(
-                "Replacing invalid jobs.json 'jobs' field (%s) with an empty list",
-                type(jobs).__name__)
+            notes.append("Replacing invalid jobs.json 'jobs' field (%s) with an empty list"
+                         % type(jobs).__name__)
             jobs = []
             repair = "invalid jobs field replaced with list"
     elif isinstance(data, list):
@@ -1380,16 +1380,14 @@ def load_jobs() -> List[Dict[str, Any]]:
     else:
         raise RuntimeError(
             f"Cron database corrupted: expected {{'jobs': [...]}}, got {type(data).__name__}")
-    if isinstance(jobs, list) and not all(isinstance(j, dict) for j in jobs):
+    junk = [j for j in jobs if not isinstance(j, dict)]
+    if junk:
         # Every reader and the due scan index records as dicts: one junk entry would crash the
         # whole tick and freeze every healthy sibling job, so skip it like the id-keyed map does.
         # Types only: the raw values are arbitrary file content and must not reach the logs.
-        junk = [j for j in jobs if not isinstance(j, dict)]
-        if getattr(_jobs_lock_state, "depth", 0):  # unlocked passes re-run below under the lock
-            logger.warning(
-                "Skipping %d non-object entr%s in jobs.json (types: %s)",
-                len(junk), "y" if len(junk) == 1 else "ies",
-                ", ".join(sorted({type(j).__name__ for j in junk})))
+        notes.append("Skipping %d non-object entr%s in jobs.json (types: %s)" % (
+            len(junk), "y" if len(junk) == 1 else "ies",
+            ", ".join(sorted({type(j).__name__ for j in junk}))))
         jobs = [j for j in jobs if isinstance(j, dict)]
         repair = repair or "non-object entries dropped"
     # Persist even an empty result, or an all-junk store repeats the repair on every tick.
@@ -1399,6 +1397,8 @@ def load_jobs() -> List[Dict[str, Any]]:
             # (the shrink-merge only restores missing ids), so re-read and repair under the lock.
             with _jobs_lock():
                 return load_jobs()
+        for note in notes:
+            logger.warning("%s", note)
         save_jobs(jobs)
         logger.warning("Auto-repaired jobs.json (%s)", repair)
     _record_load_stamp(pre_read_stamp)

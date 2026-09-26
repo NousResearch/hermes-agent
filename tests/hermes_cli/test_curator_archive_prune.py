@@ -54,6 +54,10 @@ def test_purge_ages_an_archive_from_when_it_was_archived(tmp_path, monkeypatch):
     skill_usage.record_created("old-helper", agent_created=True)
     ok, msg = skill_usage.archive_skill("old-helper")
     assert ok, msg
+    # A stale archived_at (left by a manual un-archive + re-archive) must not beat the fresh mtime.
+    usage = skill_usage.load_usage()
+    usage["old-helper"]["archived_at"] = "2000-01-01T00:00:00+00:00"
+    assert skill_usage.save_usage(usage)
 
     assert curator_cli._cmd_purge(_ns(days=30, dry_run=False, yes=True)) == 0
     assert (tmp_path / "skills" / ".archive" / "old-helper" / "SKILL.md").is_file()

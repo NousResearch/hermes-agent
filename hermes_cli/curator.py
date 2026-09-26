@@ -440,11 +440,12 @@ def _cmd_purge(args) -> int:
     cutoff = time.time() - ttl_days * 86400
 
     def _archived_ts(p: Path) -> float:
-        # Prefer the usage record's archived_at: archives made before archive_skill stamped the
-        # dir mtime still carry the skill's last-edit mtime and would be purged at once.
+        # The NEWER of the record's archived_at and the dir mtime: archives made before
+        # archive_skill stamped the mtime carry the skill's last-edit mtime, and a stale
+        # archived_at survives a manual un-archive + re-archive. Never purge before either says so.
         rec = skill_usage.get_record(p.name)
         at = skill_usage._parse_iso_timestamp(rec.get("archived_at")) if rec.get("state") == skill_usage.STATE_ARCHIVED else None
-        return at.timestamp() if at else p.stat().st_mtime
+        return max(at.timestamp(), p.stat().st_mtime) if at else p.stat().st_mtime
 
     candidates = sorted(
         p for p in archive_root.iterdir() if p.is_dir() and _archived_ts(p) < cutoff)

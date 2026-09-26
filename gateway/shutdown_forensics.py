@@ -230,13 +230,26 @@ def _systemd_timeout_stop_us(unit_name: str) -> Optional[int]:
     for flag in (["--user"], []):
         try:
             result = subprocess.run(
-                ["systemctl", *flag, "show", unit_name, "--property=TimeoutStopUSec"],
+                ["systemctl", *flag, "show", unit_name,
+                 "--property=LoadState,TimeoutStopUSec"],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2.0,
             )
         except (subprocess.TimeoutExpired, OSError):
             continue
-        # Output: "TimeoutStopUSec=1min 30s" or "TimeoutStopUSec=90000000"
-        for line in result.stdout.splitlines() if result.returncode == 0 else ():
+        lines = result.stdout.splitlines() if result.returncode == 0 else ()
+        # #124076: systemctl answers a 'show' query for a unit the manager has
+        # NOT loaded with the DEFAULT TimeoutStopUSec (90s) plus
+        # LoadState=not-found — a user-manager probe would shadow the real
+        # value in the system manager. Fall through unless the unit is
+        # actually loaded in the probed manager. A missing LoadState line
+        # (bare systemctl output) keeps the historical behaviour.
+        load_state = next((ln.split("=", 1)[1].strip() for ln in lines
+                           if ln.startswith("LoadState=")), None)
+        if load_state is not None and load_state != "loaded":
+            # Not loaded in this manager — its TimeoutStopUSec is the DEFAULT
+            # (90s), not the unit's real value; keep probing the other one.
+            continue
+        for line in lines:
             if line.startswith("TimeoutStopUSec="):
                 value = line.split("=", 1)[1].strip()
                 timeout_us = int(value) if value.isdigit() else parse_systemd_duration_to_us(value)

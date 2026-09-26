@@ -324,6 +324,33 @@ def test_update_scans_the_user_files_it_carries(world, tmp_path, monkeypatch, vi
     assert "version: 1.0.0" in (target / "plugin.yaml").read_text()
 
 
+def test_url_subdir_reclone_revalidates_carried_files_before_publication(world, tmp_path, monkeypatch):
+    """The URL re-clone admits the fresh clone (scan, portable-package check) before the carry; the
+    tree the user's files were carried into must pass both gates again."""
+    from hermes_cli import plugins_cmd_install as install_cmd
+
+    _src, target, release = _installed_subdir_plugin(tmp_path, monkeypatch, "url")
+    (target / "server.js").write_text('console.log("mine")\n')
+    release()
+    scans, portable_checks = [], []
+
+    def scan_gate(tree, *_args, **_kwargs):
+        scans.append((Path(tree) / "server.js").exists())
+
+    def portable_gate(_plugin_name, tree):
+        portable_checks.append((Path(tree) / "server.js").exists())
+        if portable_checks[-1]:
+            raise pc.PluginOperationError("carried server.js failed final admission")
+
+    monkeypatch.setattr(pc, "_scan_plugin_tree", scan_gate)
+    monkeypatch.setattr(install_cmd, "_refuse_unavailable_portable_plugin", portable_gate)
+    result = pc.dashboard_update_user_plugin("sub-plugin")
+
+    assert result["ok"] is False and "carried server.js failed final admission" in result["error"]
+    assert scans == [False, True] and portable_checks == [False, True]
+    assert (target / "server.js").is_file() and "version: 1.0.0" in (target / "plugin.yaml").read_text()
+
+
 @pytest.mark.platforms("posix")  # symlink creation needs privileges on Windows
 @pytest.mark.parametrize("via", ["url", "catalog"])
 def test_update_backs_up_a_repointed_shipped_symlink(world, tmp_path, monkeypatch, via):

@@ -58,10 +58,13 @@ def _reclone_plugin_update(target: Path, source: str, previous_revision: object)
     carry = _UserFileCarry(
         target, _pc()._plugins_dir().parent / "plugins-backup" / f"{target.name}-{previous[:8] or 'old'}")
 
-    def carry_and_rescan(_manifest, tree: Path) -> None:
-        # The installer scanned the fresh clone before this hook; what the carry adds must pass the same scan.
+    def carry_and_rescan(manifest, tree: Path) -> None:
+        # The installer admitted the fresh clone before this hook (scan, portable-package check); what the
+        # carry adds must pass the same gates.
+        from hermes_cli.plugins_cmd_install import _refuse_unavailable_portable_plugin
         carry(tree)
         _pc()._scan_plugin_tree(tree, source, force=True)
+        _refuse_unavailable_portable_plugin(str(manifest.get("name") or target.name), tree)
 
     new_target, _manifest, _name = _pc()._install_plugin_core(
         source, force=True, before_swap=carry_and_rescan, replaces=(target, carry.digest))

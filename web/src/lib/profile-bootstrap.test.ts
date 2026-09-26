@@ -4,6 +4,7 @@ import {
   dashboardServingProfile,
   initialProfileScope,
   shouldAdoptActiveProfile,
+  shouldReassertProfileParam,
 } from "./profile-bootstrap";
 
 afterEach(() => {
@@ -59,4 +60,32 @@ describe("initialProfileScope precedence", () => {
     vi.stubGlobal("window", { __HERMES_DASHBOARD_PROFILE__: "served" });
     expect(initialProfileScope(new URLSearchParams("resume=s1"), "")).toBe("served");
   });
+});
+
+describe("shouldReassertProfileParam", () => {
+  // The root path renders `<Navigate to="/sessions" replace />` and nothing else.
+  // Writing ?profile= into the location there replaces the URL out from under that
+  // navigate: on a cold load the replace lands first, the already-mounted
+  // <Navigate> never fires again, and the dashboard parks on /?profile=… with an
+  // empty page until the user reloads by hand. The effect re-runs on /sessions.
+  it("never rewrites the location on the redirect-only root path", () => {
+    expect(shouldReassertProfileParam("/", "default", null)).toBe(false);
+    expect(shouldReassertProfileParam("/", "default", "")).toBe(false);
+    expect(shouldReassertProfileParam("/", "default", "other")).toBe(false);
+    expect(shouldReassertProfileParam("/", "", null)).toBe(false);
+  });
+
+  it.each([
+    ["a bare nav link", "/skills", "default", null, true],
+    ["a nav link that dropped the param", "/config", "review", "", true],
+    ["an in-app scope switch", "/profiles", "review", "default", true],
+    ["an already-synced URL", "/skills", "default", "default", false],
+    ["the dashboard's own profile with no param", "/skills", "", null, false],
+    ["a matching empty param", "/skills", "", "", false],
+  ])(
+    "%s (%s?profile=%s, scope=%s)",
+    (_label, pathname, profile, urlProfile, expected) => {
+      expect(shouldReassertProfileParam(pathname, profile, urlProfile)).toBe(expected);
+    },
+  );
 });

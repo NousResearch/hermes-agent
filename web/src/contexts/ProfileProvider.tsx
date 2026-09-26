@@ -12,6 +12,7 @@ import {
   dashboardInitialProfile,
   initialProfileScope,
   shouldAdoptActiveProfile,
+  shouldReassertProfileParam,
 } from "@/lib/profile-bootstrap";
 
 /**
@@ -69,10 +70,10 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
   }, [urlProfile]);
 
   // Re-assert ?profile= after navigations that dropped it (bare nav links).
-  // Runs on every pathname/profile change; no-ops when already in sync.
+  // Runs on every pathname/profile change; no-ops when already in sync, and skips
+  // the root path (see shouldReassertProfileParam — it races the /sessions redirect).
   useEffect(() => {
-    const inUrl = searchParams.get("profile") ?? "";
-    if ((profile || "") === inUrl) return;
+    if (!shouldReassertProfileParam(pathname, profile, searchParams.get("profile"))) return;
     setSearchParams(
       (prev) => {
         const next = new URLSearchParams(prev);

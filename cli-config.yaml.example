@@ -259,7 +259,10 @@ model:
 #     key_cmd: "databricks auth token -p MY-PROFILE"
 
 # Named provider overrides (optional)
-# Use this for per-provider request timeouts, non-stream stale timeouts,
+# Set ``enabled: false`` to keep a built-in or custom provider out of auth
+# discovery, runtime selection, and model pickers even when stale credentials
+# remain. Missing/true preserves the existing behavior.
+# Use this section for per-provider request timeouts, non-stream stale timeouts,
 # and per-model exceptions.
 # Applies to the primary turn client on every api_mode (OpenAI-wire, native
 # Anthropic, and Anthropic-compatible providers), the fallback chain, and
@@ -281,6 +284,8 @@ model:
 #   ollama-local:
 #     request_timeout_seconds: 300   # Longer timeout for local cold-starts
 #     stale_timeout_seconds: 900     # Explicitly re-enable stale detection on local endpoints
+#   copilot:
+#     enabled: false                 # Skip credential probe + suppress startup warnings
 #   anthropic:
 #     request_timeout_seconds: 30    # Fast-fail cloud requests
 #     models:

@@ -864,14 +864,15 @@ _LOCAL_BYPASS_CLOUD_HOSTS = ("openrouter.ai", "anthropic.com", "openai.com")
 
 
 def _raise_if_provider_disabled(requested_provider: str) -> None:
-    """Honour ``providers.<name>.enabled: false`` for built-ins too (the custom lookup gate only
-    covers custom blocks); a typed error lets the fallback chain advance."""
-    full_cfg = _config_mod.load_config()
-    provs_cfg = full_cfg.get("providers") if isinstance(full_cfg, dict) else None
-    block = provs_cfg.get(requested_provider) if isinstance(provs_cfg, dict) else None
-    if isinstance(block, dict) and not _config_mod.is_provider_enabled(block):
-        raise ValueError(f"provider {requested_provider!r} is disabled in config "
-                         f"(providers.{requested_provider}.enabled: false)")
+    """Fail before every runtime rung when a provider is disabled.
+
+    This remains a configuration ``ValueError``, rather than an auth failure,
+    so a fallback chain cannot silently override an explicit disable policy.
+    """
+    if not auth_mod._is_provider_enabled(requested_provider):
+        raise ValueError(
+            f"provider {requested_provider!r} is disabled in config "
+            f"(providers.{requested_provider}.enabled: false)")
 
 
 def _raise_if_local_alias_missing_endpoint(requested_provider: str, explicit_base_url: Optional[str]) -> None:

@@ -705,14 +705,15 @@ def _configured_custom_provider_ids() -> set[str]:
     """Return routable custom-provider IDs configured by the user."""
     ids = {"custom"}
     try:
-        from hermes_cli.config import load_config
+        from hermes_cli.config import is_provider_enabled, load_config
         from hermes_cli.providers import custom_provider_slug
 
         config = load_config()
         providers = config.get("providers", {})
         if isinstance(providers, dict):
             ids.update(custom_provider_slug(str(entry.get("name") or key), str(key))
-                       for key, entry in providers.items() if isinstance(entry, dict))
+                       for key, entry in providers.items()
+                       if isinstance(entry, dict) and is_provider_enabled(entry))
         legacy = config.get("custom_providers", [])
         if isinstance(legacy, list):
             ids.update(
@@ -725,6 +726,10 @@ def _configured_custom_provider_ids() -> set[str]:
 def _provider_has_credentials(pid: str) -> bool:
     try:
         from hermes_cli.auth import get_auth_status, has_usable_secret
+        from hermes_cli.config import is_provider_id_enabled
+
+        if not is_provider_id_enabled(pid):
+            return False
 
         if pid == "custom":
             return bool((_get_custom_base_url() or "").strip())
@@ -740,6 +745,8 @@ def _provider_has_credentials(pid: str) -> bool:
 def list_available_providers() -> list[dict[str, str]]:
     """``{id, label, aliases, authenticated}`` for every provider usable with ``provider:model``,
     derived from :data:`CANONICAL_PROVIDERS` (shared with ``hermes model`` and ``/model``)."""
+    from hermes_cli.config import is_provider_id_enabled
+
     aliases_for: dict[str, list[str]] = {}
     for alias, canonical in _PROVIDER_ALIASES.items():
         aliases_for.setdefault(canonical, []).append(alias)
@@ -749,7 +756,8 @@ def list_available_providers() -> list[dict[str, str]]:
             "label": _PROVIDER_LABELS.get(pid, pid),
             "aliases": aliases_for.get(pid, []),
             "authenticated": _provider_has_credentials(pid)}
-        for pid in [p.slug for p in CANONICAL_PROVIDERS] + ["custom"]]
+        for pid in [p.slug for p in CANONICAL_PROVIDERS] + ["custom"]
+        if is_provider_id_enabled(pid)]
 
 
 def parse_model_input(

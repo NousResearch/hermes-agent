@@ -76,10 +76,12 @@ def provider_has_credentials(provider: str) -> bool:
     store login, or a usable credential-pool entry. ``custom``/``custom:*`` targets only come out
     of the ladder when the user declared them in config, so they count as authenticated."""
     from hermes_cli.auth import get_auth_status, has_usable_secret
-    from hermes_cli.config import get_env_value_prefer_dotenv
+    from hermes_cli.config import get_env_value_prefer_dotenv, is_provider_id_enabled
 
     pid = (provider or "").strip().lower()
     if not pid:
+        return False
+    if not is_provider_id_enabled(pid):
         return False
     if pid == "custom" or pid.startswith("custom:"):
         return True

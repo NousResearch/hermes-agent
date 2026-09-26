@@ -56,6 +56,17 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
             "switch to the requested branch first (auto-stashing any "
             "uncommitted changes).")
     update_parser.add_argument(
+        "--ref",
+        default=None,
+        metavar="TAG_OR_SHA",
+        help=(
+            "Pin this checkout to a git tag or commit (detached HEAD) "
+            "instead of tracking a branch tip. Mutually exclusive with "
+            "--branch. Branch names are not pins; use --branch to follow "
+            "a branch."
+        ),
+    )
+    update_parser.add_argument(
         "--switch-branch", action="store_true", default=False,
         help="With updates.parked_branch_strategy: update_in_place configured, "
             "override it for this run: switch to the update target and update "

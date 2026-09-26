@@ -98,6 +98,7 @@ export interface Translations {
       config: string;
       cron: string;
       documentation: string;
+      files?: string;
       keys: string;
       logs: string;
       models: string;
@@ -105,6 +106,11 @@ export interface Translations {
       plugins: string;
       sessions: string;
       skills: string;
+      mcp?: string;
+      channels?: string;
+      webhooks?: string;
+      pairing?: string;
+      system?: string;
     };
     modelToolsSheetSubtitle: string;
     modelToolsSheetTitle: string;

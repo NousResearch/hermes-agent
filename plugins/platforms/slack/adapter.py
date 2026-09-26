@@ -866,6 +866,14 @@ def _resolve_slack_proxy_url() -> Optional[str]:
     return proxy_url
 
 
+def _slack_ts_seconds(ts: Any) -> Optional[float]:
+    """A Slack ts ("1787365409.908499") as epoch seconds; None when absent or malformed."""
+    try:
+        return float(ts)
+    except (TypeError, ValueError):
+        return None
+
+
 def _slack_dedup_ttl_seconds() -> float:
     """Dedup window for Socket Mode replays (override: ``SLACK_DEDUP_TTL_SECONDS``).
     Slack replays un-acked events on reconnect, sometimes minutes later, so the window must span the
@@ -1066,6 +1074,8 @@ class SlackAdapter(BasePlatformAdapter):
         self._dedup = MessageDeduplicator(ttl_seconds=_slack_dedup_ttl_seconds())
         # ts of messages already routed to the agent, so later edits don't re-trigger a reply.
         self._processed_message_ts: Dict[str, float] = {}
+        # Slack ts at or below which that map cannot vouch: it starts empty here, evicts when full.
+        self._processed_message_ts_floor = time.time()
         # approval / clarify message_ts (or (team_id, ts)) → resolved; blocks double-clicks.
         # Bounded: never-clicked prompts would otherwise leak forever.
         self._approval_resolved: Dict[Any, bool] = {}
@@ -3594,7 +3604,10 @@ class SlackAdapter(BasePlatformAdapter):
         self._processed_message_ts[ts] = time.time()
         if len(self._processed_message_ts) > self._PROCESSED_MESSAGE_TS_MAX:
             newest = sorted(self._processed_message_ts.items(), key=lambda item: item[1])
+            evicted = newest[: -self._PROCESSED_MESSAGE_TS_MAX]
             self._processed_message_ts = dict(newest[-self._PROCESSED_MESSAGE_TS_MAX :])
+            evicted_s = [s for s in (_slack_ts_seconds(t) for t, _ in evicted) if s is not None]
+            self._processed_message_ts_floor = max([self._processed_message_ts_floor, *evicted_s])
 
     @staticmethod
     def _event_team_id(event: dict, body: Optional[dict] = None) -> str:
@@ -4226,6 +4239,13 @@ class SlackAdapter(BasePlatformAdapter):
         edited = updated_message.get("edited")
         edited_ts = str(edited.get("ts") or "") if isinstance(edited, dict) else ""
         outer_event_ts = str(event.get("ts") or "")
+        if self._change_replays_unvouched_message(
+                event, updated_message, original_message_ts, edited_ts):
+            logger.debug(
+                "[Slack] Ignoring message_changed for ts=%s: the processed-ts map cannot vouch "
+                "for it (restart or eviction) and the change is not a new user edit",
+                original_message_ts)
+            return None
         changed_event_ts = (
             str(event.get("event_ts") or edited_ts or "")
             or (outer_event_ts if outer_event_ts != original_message_ts else "")
@@ -4237,6 +4257,29 @@ class SlackAdapter(BasePlatformAdapter):
         if changed_event_ts:
             normalized_event["_slack_changed_event_ts"] = changed_event_ts
         return normalized_event
+
+    def _change_replays_unvouched_message(
+            self, event: dict, message: dict, message_ts: str, edited_ts: str) -> bool:
+        """True when a ``message_changed`` would re-drive a message the processed-ts map cannot
+        vouch for: posted before this adapter started (the map is empty after a restart) or
+        not after an evicted claim. Slack emits these changes on its own (thread reply metadata,
+        agent sessions, unfurls, file state) with the text unchanged, and the bot would answer
+        the old message again (#118349). A text change or a new edit is still a user action."""
+        floor = self._processed_message_ts_floor
+        message_s = _slack_ts_seconds(message_ts)
+        if message_s is None or message_s > floor:
+            return False
+        previous = event.get("previous_message")
+        if isinstance(previous, dict) and previous.get("text") != message.get("text"):
+            return False
+        if edited_ts:
+            # A user edit's change carries ``edited.ts`` equal to its own ts; an older
+            # ``edited`` block is a past edit riding along on a metadata update.
+            edited_s = _slack_ts_seconds(edited_ts)
+            change_s = _slack_ts_seconds(event.get("event_ts") or event.get("ts"))
+            if edited_s is None or change_s is None or edited_s >= min(change_s, floor):
+                return False
+        return True
 
     @staticmethod
     def _append_link_unfurls(text: str, slack_attachments: list) -> str:

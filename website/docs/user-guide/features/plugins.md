@@ -935,7 +935,7 @@ else:
 
 **Signature:** `ctx.call_mcp(server: str, tool: str, arguments: dict | None = None, timeout: float = 30) -> dict`
 
-Returns a stable envelope: `{"ok": True, "result": ...}` (plus `structuredContent` when the server provides it) or `{"ok": False, "error": "..."}`. Results over ~64 KB are truncated and flagged with `"truncated": True`.
+Returns a stable envelope: `{"ok": True, "result": ...}` (plus `structuredContent` when the server provides data the text result does not already carry; a copy of the text, including the Python SDK's `{"result": ...}` wrapper, is dropped) or `{"ok": False, "error": "..."}`. Results over ~64 KB are truncated and flagged with `"truncated": True`.
 
 ### Security: default-off, per-server allowlist
 

@@ -280,6 +280,48 @@ class TestContentStructuredArbitration:
         session.call_tool = AsyncMock(return_value=_FakeCallToolResult(content=[_FakeContentBlock("just text")]))
         assert handler({}) == '{"result": "just text"}'
 
+    def test_sdk_wrapped_result_forwards_one_copy(self, _patch_mcp_server):
+        """The Python SDK wraps a non-object return as ``{"result": value}`` and puts the bare
+        value in ``content`` (one block per list item). Taken from a real ``MCPServer`` so the
+        contract follows the SDK: the model gets the value once. A wrapper whose value is NOT
+        what the text says is distinct data and keeps its ``structuredContent``."""
+        from mcp.server import MCPServer
+
+        sdk = MCPServer("wrap")
+
+        @sdk.tool()
+        def text() -> str:
+            return "x" * 5000
+
+        @sdk.tool()
+        def names() -> list[str]:
+            return ["ann", "bob"]
+
+        @sdk.tool()
+        def rows() -> list[dict]:
+            return [{"id": 1}, {"id": 2}]
+
+        session = _patch_mcp_server
+        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
+        for tool in ("text", "names", "rows"):
+            session.call_tool = AsyncMock(return_value=asyncio.run(sdk.call_tool(tool, {})))
+            data = json.loads(handler({}))
+            assert set(data) == {"result"}, (tool, data)
+        assert data["result"].count('"id"') == 2
+        session.call_tool = AsyncMock(return_value=_FakeCallToolResult(
+            content=[_FakeContentBlock("2 names")], structuredContent={"result": ["ann", "bob"]}))
+        assert json.loads(handler({}))["structuredContent"] == {"result": ["ann", "bob"]}
+
+    def test_dedup_never_equates_bool_and_number(self, _patch_mcp_server):
+        """Python's ``1 == True`` must not make a text block look like a copy of a
+        ``structuredContent`` it differs from; that copy would be dropped, and its data lost."""
+        session = _patch_mcp_server
+        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
+        for text, structured in (('{"enabled": 1}', {"enabled": True}), ("0", {"result": False})):
+            session.call_tool = AsyncMock(return_value=_FakeCallToolResult(
+                content=[_FakeContentBlock(text)], structuredContent=structured))
+            assert json.loads(handler({})) == {"result": text, "structuredContent": structured}
+
     def test_whitespace_only_content_falls_back(self, _patch_mcp_server):
         """Whitespace-only text is not usable content — fallback fires."""
         session = _patch_mcp_server

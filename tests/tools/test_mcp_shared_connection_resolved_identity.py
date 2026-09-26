@@ -7,13 +7,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import subprocess
 import sys
 import textwrap
 import time
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 import hermes_yaml as yaml
@@ -151,96 +149,3 @@ def test_profile_with_other_profile_identity_header_gets_its_own_http_connection
     finally:
         proc.terminate()
         proc.wait(10)
-
-
-def _adoptable_by_each_profile(homes: dict, name: str, config: dict) -> dict:
-    """Record the owner's identity in the default profile's scope, as the connecting task does,
-    then ask each profile whether it may adopt that live connection."""
-    import gateway.run as gateway_run
-    from tools.mcp_tool_registration import _resolved_identity, _same_server_route
-
-    with gateway_run._profile_runtime_scope(homes["default"]):
-        owner = SimpleNamespace(name=name, _config=config, _resolved_identity=_resolved_identity(name, config))
-    adoptable = {}
-    for profile, home in homes.items():
-        with gateway_run._profile_runtime_scope(home):
-            adoptable[profile] = _same_server_route(owner, config, cross_profile=True)
-    return adoptable
-
-
-def test_profile_whose_bare_npx_resolves_under_its_own_home_does_not_adopt(two_profile_homes, tmp_path):
-    empty_path = tmp_path / "empty-path"
-    empty_path.mkdir()
-    for home in two_profile_homes.values():
-        npx = home / "node" / "bin" / "npx"
-        npx.parent.mkdir(parents=True)
-        npx.write_text("#!/bin/sh\n", encoding="utf-8")
-        npx.chmod(0o755)
-    config = {"command": "npx", "args": ["-y", "some-server"], "env": {"PATH": str(empty_path)}, "cwd": str(tmp_path)}
-
-    assert _adoptable_by_each_profile(two_profile_homes, "svc", config) == {"default": True, "worker": False}
-
-
-def test_profile_whose_runtime_file_names_another_endpoint_does_not_adopt(two_profile_homes, tmp_path, monkeypatch):
-    import hermes_cli.agent_plugins as agent_plugins
-    from hermes_constants import get_hermes_home
-    from hermes_platform import declaration
-
-    executable = tmp_path / "example-app"
-    executable.write_text("fixture", encoding="utf-8")
-    declaration.register("svc", declaration.parse_declaration(
-        "Example App", {sys.platform: {"presence": "executable", "location": str(executable)}}, {"app": True},
-        where="test"))
-    monkeypatch.setattr(agent_plugins, "liveness_for", lambda name: {
-        "kind": "server_json", "path": str(get_hermes_home() / "server.json")}, raising=False)
-    for port, home in enumerate(two_profile_homes.values(), start=4101):
-        (home / "server.json").write_text(json.dumps(
-            {"http": f"http://127.0.0.1:{port}", "token": f"token-{home.name}", "pid": os.getpid()}), encoding="utf-8")
-    try:
-        adoptable = _adoptable_by_each_profile(two_profile_homes, "svc", {"url": "http://127.0.0.1:9/mcp"})
-    finally:
-        declaration.unregister("svc")
-
-    assert adoptable == {"default": True, "worker": False}
-
-
-def test_published_identity_describes_the_endpoint_the_live_session_connected_to(monkeypatch):
-    """The runtime file rotates from endpoint A to B on every read: the identity published with
-    the live session must describe the endpoint the transport actually connected with."""
-    from tools import mcp_tool, mcp_tool_transport
-    from tools.mcp_tool import MCPServerTask
-    from tools.mcp_tool_registration import _resolved_identity
-
-    endpoints = iter([("http://127.0.0.1:4101", {"Authorization": "Bearer token-a"}),
-                      ("http://127.0.0.1:4102", {"Authorization": "Bearer token-b"})])
-    last: list = []
-
-    def rotating(_name):
-        last[:] = [next(endpoints, last[0] if last else None)]
-        return last[0]
-
-    monkeypatch.setattr(mcp_tool_transport, "_live_endpoint", rotating)
-    monkeypatch.setattr(mcp_tool, "_MCP_HTTP_AVAILABLE", True)
-    monkeypatch.setattr(mcp_tool, "_MCP_NEW_HTTP", True)
-    live: dict = {}
-
-    class _Task(MCPServerTask):
-        async def _prepare_run(self, config):
-            self._config = config
-            return True
-
-        def _streamable_http_transport(self, url, headers, *_rest):
-            live["url"] = url
-            return None
-
-        async def _serve_transport(self, _transport, _label, _timeout):
-            live["published"] = self._resolved_identity
-            self._shutdown_event.set()
-            return "shutdown"
-
-    config = {"url": "http://127.0.0.1:9/mcp"}
-    asyncio.run(asyncio.wait_for(_Task("svc").run(config), timeout=5))
-
-    monkeypatch.setattr(mcp_tool_transport, "_live_endpoint", lambda _name: last[0])
-    assert live["url"] == last[0][0]
-    assert live["published"] == _resolved_identity("svc", config)

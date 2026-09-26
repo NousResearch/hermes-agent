@@ -1863,6 +1863,37 @@ DEFAULT_CONFIG = {
         # Auto-block after this many consecutive non-success attempts (spawn_failed, timed_out,
         # crashed) for the same task/profile. Reassignment resets the streak.
         "failure_limit": 2,
+        # --- Ready-queue admission (hermes_cli/kanban_db_admission.py). Every key
+        # ships INERT: with admission_enabled_at unset the mechanism is off and
+        # every create/promote/unblock path behaves exactly as before. Turning it
+        # on is an operator decision (consent-gated), and it makes the ready lane
+        # refuse new work while the board is deeper than it can drain.
+        # Epoch the mechanism was turned on. Unset/0 = OFF. Set it to the moment
+        # of the decision: cards in 'ready' with admit_state NULL older than this
+        # are the pre-mechanism backlog (reported, never mass-admitted).
+        "admission_enabled_at": None,
+        # Trailing window (hours) the drain rate is measured over.
+        "admission_lookback_window_hours": 168,
+        # Budget = completions in the window x this multiplier (coverage): how
+        # much standing work the board has actually been draining.
+        "admission_cohort_multiplier": 0.55,
+        # A lane may hold at most this % of its own budget...
+        "admission_lane_budget_pct": 4,
+        # ...except an unassigned/open lane, which gets no lane budget (0).
+        "admission_lane_budget_pct_no_lane": 0,
+        # Floor under the derived budget, so a quiet board is not a stopped one.
+        "admission_floor": 20,
+        # Smallest lane budget: floors the % so a 1-card lane can still start.
+        "admission_lane_budget_floor": 4,
+        # >0 pins the global budget outright, ignoring the completion window
+        # (the rollout/step-3 override). Report budget_source=pin_override.
+        "admission_budget_pin": 0,
+        # Priority at/above which a card is exempt as a P0 fault (a broken
+        # substrate that has to be repaired regardless of queue depth).
+        "admission_p0_fault_priority": 2,
+        # Ready-ageing escalation: warn / escalate thresholds in seconds.
+        "admission_ageing_warn_seconds": 1200,
+        "admission_ageing_escalate_seconds": 7200,
         # Worker stdout/stderr log rotation at spawn time (2 MiB + one backup). Raise to keep more
         # early failure evidence from long-running workers.
         "worker_log_rotate_bytes": 2 * 1024 * 1024,

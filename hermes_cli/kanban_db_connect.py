@@ -837,6 +837,11 @@ _LATER_TASK_COLUMNS = (
     ("block_recurrences", "block_recurrences INTEGER NOT NULL DEFAULT 0"),
     # Spawn-time start fingerprint of worker_pid (PID-reuse guard; NULL = legacy row).
     ("worker_started_at", "worker_started_at INTEGER"),
+    # Ready-queue admission (hermes_cli/kanban_db_admission.py): 'admitted' /
+    # 'deferred'; NULL = the pre-mechanism backlog, which is never mass-admitted.
+    ("admit_state", "admit_state TEXT"),
+    # Epoch the card entered the ready population (NULL = pre-mechanism backlog).
+    ("ready_since", "ready_since INTEGER"),
 )
 
 _NOTIFY_SUB_COLUMNS = (
@@ -892,6 +897,22 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     for name, ddl in _LATER_TASK_COLUMNS:
         if name not in cols:
             _add_column_if_missing(conn, "tasks", name, ddl)
+
+    if "ready_since" not in cols:
+        # Ready-queue admission backfill (once, on first add). ``admit_state``
+        # deliberately stays NULL: that NULL is how the pre-mechanism backlog is
+        # identified, and mass-admitting it is what the mechanism must never do.
+        # ``ready_since`` IS derived, from the newest ready-entry event, so
+        # "waiting since" is a column read for cards that entered ready before
+        # the column existed.
+        conn.execute(
+            "UPDATE tasks SET ready_since = ("
+            "  SELECT MAX(e.created_at) FROM task_events e"
+            "   WHERE e.task_id = tasks.id"
+            "     AND e.kind IN ('created', 'promoted', 'unblocked',"
+            "                    'review_reopened', 'changes_requested', 'reclaimed')"
+            ") WHERE status = 'ready' AND ready_since IS NULL"
+        )
 
     # Indexes over additive ``tasks`` columns must be created AFTER the columns
     # exist: ``executescript`` parses each statement against the live schema,

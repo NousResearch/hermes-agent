@@ -732,6 +732,10 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    # Ready-queue admission: 'admitted'/'deferred' (NULL = pre-mechanism backlog).
+    admit_state: Optional[str] = None
+    # Epoch the card entered the ready population (see kanban_db_admission).
+    ready_since: Optional[int] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -762,6 +766,7 @@ _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
     "current_step_key", "max_retries", "session_id", "completion_contract",
+    "admit_state", "ready_since",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -966,7 +971,15 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Ready-queue admission (hermes_cli/kanban_db_admission.py): 'admitted' or
+    -- 'deferred'; NULL only for the pre-mechanism backlog. A deferred card sits
+    -- in 'todo' with the reason on its transition event, never silently dropped.
+    admit_state          TEXT,
+    -- Epoch the card ENTERED the ready population (stamped by the one writer,
+    -- cleared on claim/archive) so "how long has this been waiting" is a column
+    -- read instead of an event replay. NULL for the pre-mechanism backlog.
+    ready_since          INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1260,6 +1273,9 @@ def create_task(
     project_source_task_id: Optional[str] = None,
     creator_task_id: Optional[str] = None,
     completion_contract: Optional[str] = None,
+    admit_reason: Optional[str] = None,
+    admit_origin: Optional[str] = None,
+    report: Optional[dict] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
@@ -1275,6 +1291,13 @@ def create_task(
     in the active profile's projects.db — see ``_resolve_project_link``.
     ``workspace_kind=None`` (omitted) inherits a project-scoped board's project;
     an explicit ``"scratch"`` or ``project_id=""`` is a request for no project.
+    ``admit_reason``: ''normal''/None is an ordinary filing; ``"consent"`` marks
+    an explicitly authorised one and is exempt from ready-queue admission.
+    ``admit_origin``: the card a refusal is handed back to as a comment (see
+    ``kanban_db_admission``); None means a refusal parks the filing on its own
+    card instead. ``report``: optional dict the caller passes to receive the
+    structured outcome (``deduped``/``disposition``/``target``/``admit``) the
+    create surfaces have to expose — see the DISPOSITION_* tokens.
     """
     from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
     from hermes_cli.kanban_pr_acceptance import validate_contract
@@ -1323,6 +1346,15 @@ def create_task(
             "ORDER BY created_at DESC LIMIT 1", (idempotency_key,),
         ).fetchone()
         if row:
+            if report is not None:
+                # A4: the surfaces have to be able to SAY the create was
+                # deduped, not just return the surviving id silently.
+                report.update({
+                    "deduped": True,
+                    "deferred": False,
+                    "disposition": _admission.DISPOSITION_DEDUPED,
+                    "target": row["id"],
+                })
             return row["id"]
 
     now = int(time.time())
@@ -1342,6 +1374,45 @@ def create_task(
             # commit so the dispatcher never sees a half-built graph.
             with write_txn(conn, allow_nested=True):
                 task_status, tenant = initial_task_state(conn, parents, initial_status, triage, tenant)
+                # Ready-queue admission: a card that WOULD land 'ready' is
+                # evaluated by the one predicate BEFORE the row exists, and the
+                # decision is written with the row (status / admit_state /
+                # ready_since) so the INSERT and the transition paths can never
+                # disagree. Refusal parks the card in 'todo' — the demand is
+                # deferred, never dropped, and the reason rides the 'created'
+                # event below. Admission OFF keeps today's behaviour byte for
+                # byte (no admit block, no extra columns set).
+                adm = None
+                admit_state_value = None
+                ready_since_value = None
+                if task_status == "ready":
+                    adm = _admission.decide(
+                        conn, lane=assignee, priority=priority, admit_reason=admit_reason,
+                    )
+                    if not adm.admitted and admit_origin and _task_exists(conn, admit_origin):
+                        # The refusal goes BACK TO ITS ORIGIN as a comment: an
+                        # ordinary filing that names its origin creates no card
+                        # at all, so a full lane cannot accumulate orphans. The
+                        # caller reads ``report['disposition']``; the id
+                        # returned is the card the refusal landed on.
+                        _admission.record_refusal_on_origin(
+                            conn, admit_origin, adm, lane=assignee,
+                            entry_kind="create", title=title,
+                        )
+                        if report is not None:
+                            report.update({
+                                "deduped": False,
+                                "deferred": True,
+                                "disposition": _admission.DISPOSITION_COMMENT_ON_ORIGIN,
+                                "target": admit_origin,
+                                "admit": adm.as_payload(),
+                            })
+                        return admit_origin
+                    if adm.admitted:
+                        admit_state_value, ready_since_value = _admission.ADMITTED, now
+                    else:
+                        task_status = "todo"
+                        admit_state_value = _admission.DEFERRED
                 # Project worktree: fresh dir under the repo + deterministic
                 # branch, instead of the random ``wt/<id>`` worker fallback.
                 if project_obj is not None and workspace_kind == "worktree":
@@ -1359,8 +1430,9 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, completion_contract,
+                        admit_state, ready_since
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1370,6 +1442,7 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
+                        admit_state_value, ready_since_value,
                     ),
                 )
                 for pid in parents:
@@ -1392,6 +1465,14 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
                         "provider_override": provider_override,
+                        # The admission decision rides the transition that made
+                        # it — but only while the mechanism is ON, so a disabled
+                        # board's event stream is unchanged.
+                        **(
+                            {"admit": adm.as_payload()}
+                            if adm is not None and adm.reason != _admission.REASON_DISABLED
+                            else {}
+                        ),
                     },
                 )
                 if task_status == "blocked":
@@ -1415,6 +1496,22 @@ def create_task(
                 # ACK-edge: the originating channel hears a child BLOCK, not just the fan-in.
                 inherit_creator_origin(conn, task_id, creator_task_id, created_at=now)
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
+                if report is not None:
+                    # A4 / spec 3.4: the create surfaces have to be able to SAY
+                    # what happened -- "deduped" is a reported value, not an
+                    # inference the caller makes from an unchanged id.
+                    report.update({
+                        "deduped": False,
+                        "deferred": bool(adm is not None and not adm.admitted),
+                        "disposition": (
+                            _admission.DISPOSITION_PARKED
+                            if adm is not None and not adm.admitted
+                            else _admission.DISPOSITION_CREATED
+                        ),
+                        "target": None,
+                    })
+                    if adm is not None and adm.reason != _admission.REASON_DISABLED:
+                        report["admit"] = adm.as_payload()
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -1996,6 +2093,11 @@ def _json_or_null(obj: Any) -> Optional[str]:
     return json.dumps(obj, ensure_ascii=False) if obj else None
 
 
+def _task_exists(conn: sqlite3.Connection, task_id: str) -> bool:
+    """True when ``task_id`` names a row on this board."""
+    return conn.execute("SELECT 1 FROM tasks WHERE id = ?", (task_id,)).fetchone() is not None
+
+
 def _task_status(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
     """Current ``tasks.status`` for ``task_id``, or ``None`` when no such row."""
     row = conn.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
@@ -2125,7 +2227,9 @@ def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
     return "ready"
 
 
-def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
+def recompute_ready(
+    conn: sqlite3.Connection, failure_limit: int = None, *, report: Optional[dict] = None,
+) -> int:
     """Promote ``todo``/``blocked`` tasks whose parents are all done/archived;
     returns the count. Opens its own IMMEDIATE txn — call OUTSIDE any write txn.
 
@@ -2136,13 +2240,25 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
 
     1. The most recent block event was a worker-initiated ``kanban_block`` — those stay blocked until an
     explicit ``kanban_unblock`` (#28712).
+
+    Landing in ``ready`` goes through the one admission predicate
+    (``kanban_db_admission.admit_to_ready``): a card whose parents finished but
+    whose lane/board is over budget stays exactly where it is with
+    ``admit_state='deferred'`` and is re-evaluated on the next tick, so a
+    deferral lasts until the board drains, not until the next tick. ``report``
+    (optional dict, filled in place) carries ``promoted``/``deferred``/
+    ``deferred_ids`` so a completing parent can tell its children apart instead
+    of reporting a child "running" that is in fact parked.
     """
+    from hermes_cli import kanban_db_admission as _admission
+
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
     promoted = 0
+    deferred: list[str] = []
     with write_txn(conn):
         todo_rows = conn.execute(
-            "SELECT id, status, consecutive_failures, max_retries "
+            "SELECT id, status, consecutive_failures, max_retries, admit_state "
             "FROM tasks WHERE status IN ('todo', 'blocked')"
         ).fetchall()
         for row in todo_rows:
@@ -2170,20 +2286,37 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
                     )
                     if failures >= effective_limit:
                         continue
-                    conn.execute(
-                        "UPDATE tasks SET status = ? "
-                        "WHERE id = ? AND status = 'blocked'", (resume_status, task_id),
+                if resume_status == "ready":
+                    adm = _admission.admit_to_ready(
+                        conn, task_id, entry_kind="dependency_promotion",
+                        from_status=cur_status,
                     )
+                    if not adm.admitted:
+                        deferred.append(str(task_id))
+                        # One event per REFUSAL TRANSITION, not one per tick:
+                        # this runs on every dispatch tick, so only the first
+                        # refusal of an already-deferred card is recorded.
+                        if row["admit_state"] != _admission.DEFERRED:
+                            _append_event(
+                                conn, task_id, "promoted",
+                                {"status": cur_status, "admit": adm.as_payload()},
+                            )
+                        continue
                 else:
-                    conn.execute(
-                        "UPDATE tasks SET status = ? WHERE id = ? AND status = 'todo'",
-                        (resume_status, task_id),
+                    upd = conn.execute(
+                        "UPDATE tasks SET status = ? WHERE id = ? AND status = ?",
+                        (resume_status, task_id, cur_status),
                     )
+                    if upd.rowcount != 1:
+                        continue
                 _append_event(
                     conn, task_id, "promoted",
                     {"status": resume_status} if resume_status != "ready" else None,
                 )
                 promoted += 1
+    if report is not None:
+        report.update({"promoted": promoted, "deferred": len(deferred),
+                       "deferred_ids": deferred})
     return promoted
 
 
@@ -2225,7 +2358,10 @@ def _claim_and_open_run(
            SET status        = 'running',
                claim_lock    = ?,
                claim_expires = ?,
-               started_at    = COALESCE(started_at, ?)
+               started_at    = COALESCE(started_at, ?),
+               -- The wait clock stops at the claim; a re-entry later re-stamps
+               -- it (kanban_db_admission.reenter_ready).
+               ready_since   = NULL
          WHERE id = ?
            AND status = '{source_status}'
            AND claim_lock IS NULL
@@ -2478,6 +2614,10 @@ def release_stale_claims(
             )
             if cur.rowcount != 1:
                 continue
+            if retry_status == "ready":
+                # A reclaim is a re-entry (exempt from admission); stamp the wait
+                # clock so the card's second wait is measured.
+                _admission.reenter_ready(conn, [row["id"]], now=now)
             run_id = _record_reclaim(
                 conn, row["id"], termination,
                 error=f"stale_lock={row['claim_lock']}",
@@ -2725,6 +2865,7 @@ def complete_task(
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
     fire_lifecycle_hook: bool = True, force: bool = False,
+    report: Optional[dict] = None,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
 
@@ -2819,7 +2960,7 @@ def complete_task(
     _flag_phantom_prose_refs(conn, task_id, run_id, summary, result, verified_cards)
     # Success wipes the breaker counter (history stays on the event log).
     _clear_failure_counter(conn, task_id)
-    recompute_ready(conn)  # separate txn so children see ``done``
+    recompute_ready(conn, report=report)  # separate txn so children see ``done``
     _cleanup_workspace(conn, task_id)
     _done_task = get_task(conn, task_id)
     if fire_lifecycle_hook:
@@ -3502,6 +3643,7 @@ def request_changes(
     if not reason:
         return False, "reason is required"
 
+
     with write_txn(conn):
         task_row = conn.execute(
             "SELECT status, assignee, current_run_id FROM tasks WHERE id = ?", (task_id,),
@@ -3530,6 +3672,9 @@ def request_changes(
         new_status = _landing_status_after_parents(conn, task_id)
         # consecutive_failures deliberately PRESERVED: a review transition is
         # not evidence the pathology cleared; only complete_task resets it.
+        # The implementer is re-entering the lane it already held (re-entry, so
+        # exempt), and the landing goes through the one writer below.
+        target = "todo" if new_status == "ready" else new_status
         cur = conn.execute(
             """
             UPDATE tasks
@@ -3538,25 +3683,34 @@ def request_changes(
                    claim_lock = NULL,
                    claim_expires = NULL,
                    worker_pid = NULL, worker_started_at = NULL
-             WHERE id = ? AND status = 'running' AND current_run_id = ?
+            WHERE id = ? AND status = 'running' AND current_run_id = ?
             """,
-            (new_status, implementer, task_id, int(current_run_id)),
+            (target, implementer, task_id, int(current_run_id)),
         )
         if cur.rowcount != 1:
             return False, "task changed during review handoff"
+        adm = None
+        if new_status == "ready":
+            adm = _admission.admit_to_ready(
+                conn, task_id, entry_kind="re-entry_changes_requested", re_entry=True,
+                from_status="todo",
+            )
         run_id = _end_run(
             conn, task_id, outcome="changes_requested", status=new_status, summary=reason,
         )
+        changes_payload: dict[str, Any] = {
+            "reason": reason,
+            "implementer": implementer,
+            "reviewer": reviewer,
+            "status": new_status,
+        }
+        if adm is not None and adm.reason != _admission.REASON_DISABLED:
+            changes_payload["admit"] = adm.as_payload()
         _append_event(
             conn,
             task_id,
             "changes_requested",
-            {
-                "reason": reason,
-                "implementer": implementer,
-                "reviewer": reviewer,
-                "status": new_status,
-            },
+            changes_payload,
             run_id=run_id,
         )
     return True, implementer
@@ -3600,11 +3754,27 @@ def promote_task(
         return True, None
 
     with write_txn(conn):
-        upd = conn.execute(
-            "UPDATE tasks SET status = 'ready' "
-            "WHERE id = ? AND status IN ('todo', 'blocked')", (task_id,),
+        # Admission applies to an operator promotion like any other landing in
+        # the ready population: over budget the card stays where it is, is
+        # marked deferred, and the refusal is recorded on the transition that
+        # was refused (``promoted_manual``) instead of inventing a second event
+        # kind. Retry once the board drains.
+        adm = _admission.admit_to_ready(
+            conn, task_id, entry_kind="manual_promotion", from_status=cur_status,
         )
-        if upd.rowcount != 1:
+        if not adm.admitted:
+            _append_event(conn, task_id, "promoted_manual", {
+                "actor": actor, "reason": reason, "status": cur_status,
+                "admit": adm.as_payload(),
+            })
+            return False, (
+                f"ready-queue admission refused: {adm.reason} "
+                f"(depth {adm.depth}/{adm.budget}, lane "
+                f"{adm.lane or '-'} {adm.lane_depth}/{adm.lane_budget}); "
+                f"the card stays {cur_status!r} and is admitted when the board drains"
+            )
+        if _task_status(conn, task_id) != "ready":
+            # The CAS in admit_to_ready lost to a concurrent status change.
             return False, f"task {task_id} status changed during promotion"
         _append_event(conn, task_id, "promoted_manual", {"actor": actor, "reason": reason})
 
@@ -3646,9 +3816,10 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     when that is where it left off), closing any leaked run first."""
     now = int(time.time())
     with write_txn(conn):
+        cur_status = _task_status(conn, task_id)
         resume_status = (
             _resume_status_from_events(conn, task_id)
-            if _task_status(conn, task_id) == "blocked"
+            if cur_status == "blocked"
             else "ready"
         )
         _reclaim_dangling_run(
@@ -3666,22 +3837,29 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         # resetting them is the amnesia that let cron-unblock <-> re-block loop
         # unbounded; only complete_task clears them. ``consecutive_failures``
         # (the dispatcher's spawn/crash counter) IS reset — a deliberate unblock
-        # is a fresh start for the retry budget.
+        # is a fresh start for the retry budget. An unblock is a RE-ENTRY: it is
+        # exempt from admission (the demand was admitted once), but the landing
+        # still goes through the one writer so the wait clock is stamped.
+        target = "todo" if new_status == "ready" else new_status
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
             "consecutive_failures = 0, last_failure_error = NULL "
-            "WHERE id = ? AND status IN ('blocked', 'scheduled')", (new_status, task_id),
+            "WHERE id = ? AND status IN ('blocked', 'scheduled')", (target, task_id),
         )
         if cur.rowcount != 1:
             return False
-        _append_event(
-            conn, task_id, "unblocked",
-            (
-                {"status": new_status, "resume_status": resume_status}
-                if new_status != "ready" or resume_status != "ready"
-                else None
-            ),
-        )
+        adm = None
+        if new_status == "ready":
+            adm = _admission.admit_to_ready(
+                conn, task_id, entry_kind="re-entry_unblock", re_entry=True,
+                from_status="todo", now=now,
+            )
+        payload: dict[str, Any] = {}
+        if new_status != "ready" or resume_status != "ready":
+            payload = {"status": new_status, "resume_status": resume_status}
+        if adm is not None and adm.reason != _admission.REASON_DISABLED:
+            payload["admit"] = adm.as_payload()
+        _append_event(conn, task_id, "unblocked", payload or None)
         return True
 
 
@@ -3700,7 +3878,11 @@ def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
         review_event = _latest_event(conn, task_id, "review_requested")
         handoff = _json_dict(_row_get(review_event, "payload"))
         implementer = _nonblank_str(handoff.get("implementer"))
-        params: tuple[Any, ...] = (new_status, *((implementer,) if implementer else ()), task_id)
+        # A review round trip is a RE-ENTRY (the demand was admitted when it
+        # first landed); the phase columns are cleared with the card parked in
+        # 'todo' so the landing itself can go through the one writer below.
+        target = "todo" if new_status == "ready" else new_status
+        params: tuple[Any, ...] = (target, *((implementer,) if implementer else ()), task_id)
         cur = conn.execute(
             # consecutive_failures deliberately PRESERVED: review reopen is not
             # a success signal; only complete_task resets the breaker (#35072).
@@ -3712,9 +3894,17 @@ def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
         )
         if cur.rowcount != 1:
             return False
+        adm = None
+        if new_status == "ready":
+            adm = _admission.admit_to_ready(
+                conn, task_id, entry_kind="re-entry_review_reopen", re_entry=True,
+                from_status="todo", now=now,
+            )
         payload: dict[str, Any] = {"status": new_status}
         if implementer:
             payload["implementer"] = implementer
+        if adm is not None and adm.reason != _admission.REASON_DISABLED:
+            payload["admit"] = adm.as_payload()
         _append_event(
             conn, task_id, "review_reopened", payload if payload != {"status": "ready"} else None,
         )
@@ -3898,6 +4088,7 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
         prev_pid, prev_lock, prev_started = row["worker_pid"], row["claim_lock"], row["worker_started_at"]
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
+            "    admit_state = NULL, ready_since = NULL, "
             "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "
             "WHERE id = ? AND status != 'archived'", (task_id,),
         )
@@ -4487,6 +4678,9 @@ from hermes_cli.kanban_db_dispatch import (  # noqa: E402
     _worker_survived_termination,
     _worker_terminal_timeout_env,
 )
+# Ready-queue admission: the single gate/writer for entries into 'ready'
+# (stdlib-only, never imports this module at import time).
+from hermes_cli import kanban_db_admission as _admission  # noqa: E402
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

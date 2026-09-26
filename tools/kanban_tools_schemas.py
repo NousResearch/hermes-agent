@@ -436,8 +436,22 @@ KANBAN_CREATE_SCHEMA = _schema(
         "idempotency_key": _prop("string", (
                 "If a non-archived task with this key already "
                 "exists, return that task's id instead of creating "
-                "a duplicate. Useful for retry-safe automation."
+                "a duplicate. Useful for retry-safe automation. "
+                "The return always carries 'deduped': true|false so "
+                "a silent dedup is impossible."
         )),
+        "admit_reason": {
+            "type": "string",
+            "enum": ["normal", "consent"],
+            "description": (
+                "Why this filing is made. 'consent' marks a filing that "
+                "was explicitly authorised by a human: it is exempt from "
+                "ready-queue admission. Leave unset for ordinary work — "
+                "over budget such a filing parks in 'todo' (or, when it "
+                "names its origin, comes back as a comment on that card) "
+                "instead of piling onto a full ready queue."
+            ),
+        },
         "max_runtime_seconds": _prop("integer", (
                 "Per-task runtime cap. When exceeded, the "
                 "dispatcher SIGTERMs the worker and re-queues the "

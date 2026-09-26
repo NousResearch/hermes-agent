@@ -399,7 +399,8 @@ _TASK_FIELDS = tuple(
     "provider_override completion_contract last_failure_error".split())
 _TASK_SUMMARY_FIELDS = tuple(
     "id title assignee status priority tenant workspace_kind workspace_path project_id created_by "
-    "created_at started_at completed_at current_run_id model_override provider_override".split())
+    "created_at started_at completed_at current_run_id model_override provider_override "
+    "idempotency_key admit_state".split())
 _RUN_FIELDS = tuple("id profile status outcome summary error metadata started_at ended_at".split())
 _COMMENT_FIELDS = ("author", "body", "created_at")
 _EVENT_FIELDS = ("kind", "payload", "created_at", "run_id")
@@ -692,10 +693,12 @@ def _handle_complete(args: dict, **kw) -> str:
         # actually reachable — see _goal_judge_available for why an unavailable judge fails open.
         task = kb.get_task(conn, tid)
         _goal_gate("kanban_complete", task, tid, (summary or result or "").strip())
+        report: dict = {}
         try:
             ok = kb.complete_task(
                 conn, tid, result=result, summary=summary, metadata=metadata,
-                created_cards=created_cards, expected_run_id=_worker_run_id(tid))
+                created_cards=created_cards, expected_run_id=_worker_run_id(tid),
+                report=report)
         except kb.ArtifactPreservationError as artifact_err:
             # Structured rejection — surface the phantom ids so the worker can retry with a corrected list
             # or drop the field. Audit event already landed in the DB. The task itself was NOT mutated (the
@@ -749,6 +752,12 @@ def _handle_complete(args: dict, **kw) -> str:
         # no way to observe what its completion just registered (#117360).
         # Report the card's durable attachment set in the result.
         return _ok(task_id=tid, run_id=run.id if run else None,
+                   # §3.4: a parent must never be told its children are running
+                   # when they are parked behind a full ready queue. Both counts,
+                   # by name, on every completion.
+                   children_promoted=report.get("promoted", 0),
+                   children_deferred=report.get("deferred", 0),
+                   children_deferred_ids=report.get("deferred_ids", []),
                    attachments=[
                        _fields(a, _ATTACHMENT_FIELDS)
                        for a in kb.list_attachments(conn, tid)])
@@ -1050,6 +1059,7 @@ def _handle_create(args: dict, **kw) -> str:
         if project_id is None and workspace_kind is None and workspace_path is None:
             if self_task is not None and self_task.project_id:
                 project_id, project_source_task_id = self_task.project_id, self_task.id
+        report: dict = {}
         new_tid = kb.create_task(
             conn, title=str(title).strip(), body=args.get("body"), assignee=str(assignee),
             parents=tuple(parents), tenant=args.get("tenant") or os.environ.get("HERMES_TENANT"),
@@ -1066,11 +1076,28 @@ def _handle_create(args: dict, **kw) -> str:
             goal_mode=goal_mode, goal_max_turns=_opt_int(args.get("goal_max_turns")),
             completion_contract=args.get("completion_contract"),
             initial_status=str(args.get("initial_status") or "running"),
-            created_by=_persisted_identity(), session_id=session_id)
+            created_by=_persisted_identity(), session_id=session_id,
+            admit_reason=str(args.get("admit_reason") or "") or None,
+            # Filing over budget with an origin named does not create a card: the
+            # refusal is handed back there as a comment (never a silent drop, and
+            # never a phantom id the caller could cite as a created card).
+            admit_origin=(parents[0] if parents else self_tid),
+            report=report,
+        )
+        if report.get("disposition") == "comment_on_origin":
+            return _ok(created=False, deferred=True, task_id=None,
+                       disposition=report["disposition"], target=report.get("target"),
+                       admit=report.get("admit"),
+                       hint=("the ready queue is over budget, so the filing was recorded "
+                             "as a comment on the named origin card instead of creating a card; "
+                             "re-file it when `hermes kanban queue-state` shows headroom"))
         landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)
         wait = [e for e in kb.list_events(conn, new_tid) if e.kind == "dependency_wait"]
         gate = {"gated": True, "gated_by": wait[-1].payload["parent"]} if wait else {"gated": False}
         return _ok(task_id=new_tid, **landed, **gate,
+                   deduped=bool(report.get("deduped")),
+                   disposition=report.get("disposition"),
+                   admit=report.get("admit"),
                    subscribed=_maybe_auto_subscribe(conn, new_tid))
 
 

@@ -690,9 +690,10 @@ SESSION_SEARCH_SCHEMA = {
                 "type": "string",
                 "enum": ["newest", "oldest"],
                 "description": (
-                    "Discovery shape only. Temporal bias on top of FTS5 ranking: omit "
-                    "for relevance-only (exploratory recall), 'newest' for "
-                    "\"where did we leave X\", 'oldest' for \"how did X start\"."
+                    "Discovery shape only. Replaces relevance ranking with pure "
+                    "timestamp order (match quality only breaks ties), so omit it for "
+                    "exploratory recall. 'newest' for \"where did we leave X\", "
+                    "'oldest' for \"how did X start\"."
                 ),
             },
             "detail": {

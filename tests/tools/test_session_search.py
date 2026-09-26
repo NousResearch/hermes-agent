@@ -279,6 +279,22 @@ class TestDiscoverySort:
         first = result["results"][0]
         assert first["session_id"] == "s_oldest"
 
+    def test_sort_replaces_relevance_ranking(self, db):
+        """``sort`` is pure timestamp order, not a bias on relevance: a weak
+        newer match outranks a strong older one (the schema text says so)."""
+        now = int(time.time())
+        db.create_session("s_strong", source="cli")
+        db.append_message("s_strong", role="user", timestamp=now - 3600,
+                          content="zephyr zephyr zephyr zephyr zephyr")
+        db.create_session("s_weak", source="cli")
+        db.append_message("s_weak", role="user", timestamp=now,
+                          content="zephyr " + "unrelated filler words " * 60)
+
+        by_rank = [r["session_id"] for r in db.search_messages("zephyr")]
+        by_time = [r["session_id"] for r in db.search_messages("zephyr", sort="newest")]
+        assert by_rank == ["s_strong", "s_weak"]
+        assert by_time == ["s_weak", "s_strong"]
+
 
 # =========================================================================
 # Scroll shape (session_id + around_message_id)

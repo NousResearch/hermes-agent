@@ -113,7 +113,7 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
     if tenant:
         rpc_body["params"]["tenant"] = tenant
     security.audit("outbound", agent_label, rpc_body["id"], safe_message)
-    protocol.persist_message(ctx, "user", safe_message, rpc_body["id"])
+    protocol.persist_message(ctx, "user", safe_message, rpc_body["id"], peer=agent_label)
     protocol.metrics.outbound_total += 1
     resp = _http_post_json(_rpc_url(base_url, card), rpc_body, headers, timeout)
     if "error" in resp:
@@ -124,7 +124,7 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
     if isinstance(payload, dict):
         reply_ctx = payload.get("contextId", ctx)
         state = (payload.get("status") or {}).get("state", "")
-    protocol.persist_message(reply_ctx, "agent", reply, rpc_body["id"])
+    protocol.persist_message(reply_ctx, "agent", reply, rpc_body["id"], peer=agent_label)
     protocol.metrics.inbound_total += 1
     return reply, reply_ctx, state
 
@@ -211,7 +211,7 @@ def a2a_list(args: dict | None = None, **_: Any) -> str:
         lines.append("No peers configured. Add them under 'a2a_agents' in config.yaml.")
     if convos := protocol.list_conversations():
         lines.append("")
-        lines.append(f"Persisted conversations ({len(convos)}) — recall with a2a_history:")
+        lines.append(f"Persisted conversations ({len(convos)}) — recall with a2a_history(context_id, peer):")
         lines.extend(f"  - {c}" for c in convos[:25])
     m = protocol.metrics.snapshot()
     lines.append("")
@@ -227,7 +227,7 @@ def a2a_history(args: dict, **_: Any) -> str:
     if not context_id:
         return "Error: 'context_id' is required (see a2a_list for known conversations)."
     limit = max(1, min(_coerce_int(args.get("limit") or 50, 50), 200))
-    messages = protocol.load_conversation(context_id, limit=limit)
+    messages = protocol.load_conversation(context_id, limit=limit, peer=str(args.get("peer") or "").strip())
     if not messages:
         return f"No persisted conversation for context '{context_id}'."
     lines = [f"Conversation {context_id} (last {len(messages)} messages):"]
@@ -310,9 +310,10 @@ _TOOLS: dict[str, tuple[Any, str, dict, list[str]]] = {
                  ["agent", "message"]),
     "a2a_list": (a2a_list, "List configured A2A peer agents, persisted A2A conversations, and metrics.", {}, []),
     "a2a_history": (a2a_history,
-                    "Recall a persisted A2A conversation transcript by context_id (survives restarts and "
-                    "context compaction). Use a2a_list to see known context ids.",
+                    "Recall a persisted A2A conversation transcript by exact context_id and peer "
+                    "(survives restarts and compaction). Use a2a_list to see known pairs.",
                     {"context_id": _str("Context id of the conversation to recall."),
+                     "peer": _str("Authenticated sender name (inbound) or configured recipient name (outbound); see a2a_list."),
                      "limit": {"type": "integer", "description": "Max messages to return (default 50, max 200)."}},
                     ["context_id"]),
     "a2a_orchestrate": (a2a_orchestrate,

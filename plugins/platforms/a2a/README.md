@@ -36,7 +36,9 @@ The agent gets five tools:
 - `a2a_discover(url)` — what can this agent do?
 - `a2a_call(agent, message, context_id?)` — send it a task, get the reply.
 - `a2a_list()` — configured peers, saved conversations, metrics.
-- `a2a_history(context_id)` — recall a saved A2A conversation.
+- `a2a_history(context_id, peer)` — recall a saved A2A conversation. Pass the
+  authenticated sender name for inbound traffic or configured recipient name for
+  outbound traffic; legacy unbound transcripts remain readable without `peer`.
 - `a2a_orchestrate(capability, message, mode?)` — fan-out a task to every
   peer advertising a capability (`all` / `first` / `best`).
 
@@ -65,9 +67,36 @@ via `tasks/get`.
   cannot invoke operator slash commands.
 - Outbound text is scrubbed of credential-shaped strings.
 - Push callbacks are SSRF-guarded and HMAC-SHA256 signed (`X-A2A-Signature`).
-- Every exchange is logged to `~/.hermes/a2a_audit.jsonl`.
-- Conversations persist to `~/.hermes/a2a_conversations/` — they survive context
-  compaction and restarts (`a2a_history` recalls them).
+- Every exchange is logged under the executing profile's `a2a_audit.jsonl`.
+- Local gateway conversation IDs and pending final replies are partitioned by
+  routed agent, authenticated peer, and exact A2A context ID. Peers reusing a
+  wire context cannot enter one another's model session or receive one another's
+  final reply. Repeated turns by the same peer/context continue that session.
+- Task retrieval/listing, subscribe, cancellation and push-config operations
+  require the same authenticated peer that created the task (in addition to
+  the served agent/tenant route). Foreign task IDs return not-found, and list
+  totals/artifacts are filtered. A claimed `peer` in JSON-RPC params is ignored.
+  Task ownership is process-local, like task state; restarting the listener
+  does not restore tasks or push registrations.
+- Conversations persist under the executing profile's `a2a_conversations/` —
+  they survive context compaction and restarts (`a2a_history` recalls them
+  from that profile). A configured route to another profile stores the inbound
+  text and reply there, not in the listener owner's home; a missing profile
+  fails without storing the request. Routing is synchronous and requires the
+  target profile to be available. It is not an offline mailbox; task state
+  (`tasks/get`) is process-local and is not guaranteed after a restart.
+- Forwarded model sessions are keyed by target profile, served route, authenticated
+  peer and the exact context ID. Distinct peers cannot resume each other's model
+  session even if they choose the same context ID; unsafe/truncated IDs cannot
+  alias. Older forwarded sessions titled using only a sanitized context are not
+  resumed automatically after this security change. Their existing records remain
+  in the target profile's session store for operator review.
+  New transcripts use a collision-resistant filename keyed by authenticated
+  peer and exact context ID. `a2a_list` shows both values for readback. A
+  concurrent forwarded first contact correlates the target's CLI-reported
+  session ID rather than selecting the newest database row; missing/invalid
+  correlation fails the request. Existing legacy unbound transcripts are not
+  migrated or included in peer-bound reads.
 
 ## Env vars
 
@@ -82,7 +111,7 @@ via `tasks/get`.
 | `A2A_TRUSTED_PEERS` | _(unset)_ | Allow-list of authenticated identities. |
 | `A2A_ALLOW_ALL_USERS` | `false` | Allow any authed peer (dev only). |
 | `A2A_RATE_LIMIT` | `60` | Requests/minute per identity. |
-| `A2A_MAX_PINGPONG_TURNS` | `5` | Anti-loop turn cap per context (max 20). |
+| `A2A_MAX_PINGPONG_TURNS` | `5` | Anti-loop turn cap per authenticated peer, routed agent and exact context (max 20). |
 | `A2A_REPLY_TIMEOUT` | `300` | Seconds to wait for the agent's reply; the orphan sweep never fails a task before this window (floor 300s) or while a request still waits on it. |
 | `A2A_PUSH_SECRET` | bearer token | HMAC secret for push signing. |
 | `A2A_ADVERTISED_TOOLSETS` | all registered | Restrict skills on the Agent Card. |

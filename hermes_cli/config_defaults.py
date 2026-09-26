@@ -2495,6 +2495,15 @@ DEFAULT_CONFIG = {
         # long; it restarts on the next use. Idle Xvnc + Xfce hold ~220 MB, an abandoned browser far more.
         # 0 keeps screens up until stopped.
         "idle_stop_minutes": 30,
+        # Empty uses the local Xvnc socket. Otherwise attach to host:port (IPv6: [host]:port).
+        "remote_endpoint": "",
+        # Prefer HERMES_BOT_DESKTOP_REMOTE_PASSWORD in this profile's .env (env > config).
+        # Empty requires RFB None auth. Never returned by display.status.
+        "remote_password": "",
+        # Allow an SSH-forwarded loopback port only with explicit opt-in.
+        "remote_allow_loopback": False,
+        # Warn once when unencrypted RFB goes to an address outside private/tailnet networks.
+        "remote_warn_public": True,
     },
     "computer_use": {
         # cua-driver's upstream PostHog telemetry defaults ON; Hermes sets
@@ -2706,6 +2715,13 @@ def _base_url(name, prompt_name=None):
 # checklists; category: provider|tool|skill|messaging|setting, advanced=True hides from checklists,
 # tools=[...] lists the model tools the key unlocks.
 OPTIONAL_ENV_VARS = {
+    "HERMES_BOT_DESKTOP_REMOTE_PASSWORD": {
+        "description": "Bot Desktop remote RFB password",
+        "prompt": "Remote RFB password",
+        "url": "",
+        "password": True,
+        "category": "setting",
+    },
     # ── Provider (handled in provider selection, not shown in checklists) ──
     "NOUS_BASE_URL": _base_url("Nous Portal"),
     "HERMES_ANON_API_SECRET": _env(

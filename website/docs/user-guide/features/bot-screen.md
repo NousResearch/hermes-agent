@@ -18,6 +18,24 @@ its own cookies. Screens are work surfaces, not security boundaries: the bots
 share the host's user account, files and network (the same model as other
 hosted-agent products).
 
+You can also configure a remote RFB endpoint for the Screen pane. This provides
+viewing and human takeover, but **does not make that screen the agent's driving
+target**. The built-in `computer_use` refuses to act while a remote endpoint is
+configured because it would drive the gateway host's display. Browser and
+terminal tools are not redirected to the remote screen. Independently configured
+MCP servers, including desktop-control servers, have no target-to-Screen-lease
+mapping and are not fenced by a takeover; unrelated MCP calls remain available.
+Remote status shows the configured endpoint but does not claim it is verified:
+availability is checked when a viewer or thumbnail connects.
+
+Remote authentication supports classic RFB 3.3/3.7/3.8 with security type 2
+(VNC password). An Apple 3.889 banner can negotiate 3.8, but Apple's proprietary
+security types 30/33/35/36 are unsupported and are not planned without a
+security review. Default macOS Screen Sharing therefore cannot authenticate
+unless the user enables **VNC viewers may control screen with password** in
+Screen Sharing > Computer Settings on the **remote host**, so it offers type 2.
+Hermes does not change that host setting.
+
 **Threat model.** The screen's RFB socket, the X display, the browser profile
 and the control-lease file all belong to the gateway's OS user. Any process
 running as that user — another bot on the same host, and the bot's own

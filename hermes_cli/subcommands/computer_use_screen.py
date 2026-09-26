@@ -11,7 +11,11 @@ import sys
 
 def _screen_status(args) -> int:
     from tools.bot_desktop import lease, runtime
-    st = runtime.status()
+    try:
+        st = runtime.status()
+    except ValueError as exc:
+        print(f"Bot Desktop: {exc}")
+        return 1
     if bool(getattr(args, "json", False)):
         print(json.dumps({**st.as_dict(), "lease": lease.public_view(lease.get())}, indent=2, sort_keys=True))
         return 0 if st.running else 1
@@ -25,8 +29,12 @@ def _screen_status(args) -> int:
     if st.running:
         holder = lease.public_view(lease.get())
         who = f"human (viewer {holder['viewer_hash']})" if holder["holder"] == lease.HUMAN else "agent"
-        print(f"Bot Desktop [{st.profile}]: running on DISPLAY {st.display} ({st.geometry}), pid {st.pid}")
-        print(f"  control: {who}   rfb socket: {st.socket}")
+        if st.remote:
+            print(f"Bot Desktop [{st.profile}]: remote screen {st.remote}")
+            print(f"  control: {who}")
+        else:
+            print(f"Bot Desktop [{st.profile}]: running on DISPLAY {st.display} ({st.geometry}), pid {st.pid}")
+            print(f"  control: {who}   rfb socket: {st.socket}")
         print("  View it: Hermes Desktop → Bots → this bot → Screen")
         return 0
     if st.blocker:
@@ -40,7 +48,7 @@ def _screen_start(args) -> int:
     from tools.bot_desktop import runtime
     try:
         st = runtime.start()
-    except RuntimeError as exc:
+    except (ValueError, RuntimeError) as exc:
         print(f"Bot Desktop: {exc}")
         return 1
     print(f"Bot Desktop [{st.profile}]: running on DISPLAY {st.display} ({st.geometry})")
@@ -49,6 +57,11 @@ def _screen_start(args) -> int:
 
 def _screen_stop(args) -> int:
     from tools.bot_desktop import runtime
+    try:
+        runtime.refuse_remote_management()
+    except (ValueError, RuntimeError) as exc:
+        print(f"Bot Desktop: {exc}")
+        return 1
     if runtime.is_supported_host():
         # Same door as display.stop: a human mid-takeover is never yanked by a runbook or a stray
         # `screen stop`; the decision is taken under the lease lock so a takeover cannot race it.
@@ -62,6 +75,11 @@ def _screen_stop(args) -> int:
 
 def _screen_install(args) -> int:
     from tools.bot_desktop import install, runtime
+    try:
+        runtime.refuse_remote_management()
+    except (ValueError, RuntimeError) as exc:
+        print(f"Bot Desktop: {exc}")
+        return 1
     if not runtime.is_supported_host():
         print("Bot Desktop screens run on Linux gateway hosts only.")
         return 1

@@ -9,8 +9,9 @@ Extended KeyEvent 255 is keyboard input — noVNC switches to it as soon as Xvnc
 pseudo-encoding — so it is gated like KeyEvent; SetDesktopSize resizes the bot's framebuffer under the
 agent (Xvnc runs -AcceptSetDesktopSize), so it is gated like input: only the lease holder may send it).
 
-Xvnc runs ``-SecurityTypes None``, so the handshake is fixed-size: 12-byte version, 1-byte security
-choice, then ``ClientInit`` (1 byte). ``ServerInit`` is server→client and never crosses this filter.
+Local Xvnc runs ``-SecurityTypes None``, so its handshake is fixed-size: 12-byte version,
+1-byte security choice, then ``ClientInit`` (1 byte). For remote connections, ``rfb_auth`` completes
+negotiation first and only ClientInit remains. ServerInit never crosses this client-side filter.
 """
 
 from __future__ import annotations
@@ -46,10 +47,10 @@ class RfbClientFilter:
     key or pointer event.
     """
 
-    def __init__(self, allow_input: Callable[[], bool]) -> None:
+    def __init__(self, allow_input: Callable[[], bool], *, authenticated: bool = False) -> None:
         self._allow_input = allow_input
         self._buf = bytearray()
-        self._handshake_left = 12 + 1 + 1  # version + security type + ClientInit(shared flag)
+        self._handshake_left = 1 if authenticated else 12 + 1 + 1  # ClientInit, plus local negotiation
 
     def feed(self, chunk: bytes) -> bytes:
         self._buf += chunk

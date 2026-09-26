@@ -12392,6 +12392,23 @@
             "default": null,
             "title": "Socket"
           },
+          "remote": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Remote"
+          },
+          "verified": {
+            "default": false,
+            "title": "Verified",
+            "type": "boolean"
+          },
           "geometry": {
             "title": "Geometry",
             "type": "string"
@@ -12555,6 +12572,23 @@
             "default": null,
             "title": "Socket"
           },
+          "remote": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Remote"
+          },
+          "verified": {
+            "default": false,
+            "title": "Verified",
+            "type": "boolean"
+          },
           "geometry": {
             "title": "Geometry",
             "type": "string"
@@ -12701,6 +12735,23 @@
             ],
             "default": null,
             "title": "Socket"
+          },
+          "remote": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Remote"
+          },
+          "verified": {
+            "default": false,
+            "title": "Verified",
+            "type": "boolean"
           },
           "geometry": {
             "title": "Geometry",
@@ -12879,6 +12930,23 @@
             ],
             "default": null,
             "title": "Socket"
+          },
+          "remote": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Remote"
+          },
+          "verified": {
+            "default": false,
+            "title": "Verified",
+            "type": "boolean"
           },
           "geometry": {
             "title": "Geometry",

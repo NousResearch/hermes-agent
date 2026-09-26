@@ -798,6 +798,41 @@ test('resolveRequestedPathForIpc resolves relative paths from the trimmed base d
   )
 })
 
+test('resolveRequestedPathForIpc resolves the slash-prefixed drive form MEDIA cards deliver', () => {
+  // The deterministic regression: a MEDIA: link renders to
+  // `#media:%2FC%3A%5CUsers...`, so the value a download/preview button hands
+  // to the resolver is `/C:/Users/...`. `path.resolve` treats that as a rooted
+  // path WITHOUT a drive and lands on `C:\C:\Users\...`, so the gateway 404s
+  // with "File not found" even though the file is there. On Windows the
+  // slash-prefixed drive form must become the native `C:\Users\...`; anywhere
+  // else `/C:/...` is a legitimate POSIX path and must be left alone.
+  const slashPrefixedDrive = '/C:/Users/tester/Downloads/report.zip'
+  const resolved = resolveRequestedPathForIpc(slashPrefixedDrive, { purpose: 'File preview' })
+
+  assert.equal(
+    resolved,
+    path.win32.sep === path.sep ? path.win32.resolve('C:/Users/tester/Downloads/report.zip') : path.resolve(slashPrefixedDrive)
+  )
+
+  if (path.win32.sep === path.sep) {
+    // Bare drive spellings reach the resolver from the same delivery path.
+    assert.equal(
+      resolveRequestedPathForIpc('C:/Users/tester/Downloads/report.zip', { purpose: 'File preview' }),
+      path.win32.resolve('C:/Users/tester/Downloads/report.zip')
+    )
+    assert.equal(
+      resolveRequestedPathForIpc('C:\\Users\\tester\\Downloads\\report.zip', { purpose: 'File preview' }),
+      path.win32.resolve('C:\\Users\\tester\\Downloads\\report.zip')
+    )
+  }
+
+  // A POSIX absolute path keeps its leading slash — never mistaken for a drive.
+  assert.equal(
+    resolveRequestedPathForIpc('/home/tester/report.zip', { purpose: 'File preview' }),
+    path.resolve(path.sep === '\\' ? '\\home\\tester\\report.zip' : '/home/tester/report.zip')
+  )
+})
+
 test('resolveRequestedPathForIpc expands ~ to the home directory', () => {
   assert.equal(resolveRequestedPathForIpc('~', { purpose: 'Directory read' }), path.resolve(os.homedir()))
   assert.equal(

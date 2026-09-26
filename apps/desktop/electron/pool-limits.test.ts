@@ -8,6 +8,15 @@ import {
   POOL_LIMITS_MIN
 } from './pool-limits'
 
+describe('POOL_LIMITS_DEFAULTS', () => {
+  it('defaults to a warm pool that fits a multi-bot roster (#102822)', () => {
+    // The renderer store mirrors this constant by hand; if either side
+    // drifts, prewarm's saturation guard and main's eviction disagree.
+    expect(POOL_LIMITS_DEFAULTS.maxBackends).toBe(8)
+    expect(POOL_LIMITS_DEFAULTS.maxBackends).toBeGreaterThan(3)
+  })
+})
+
 describe('parsePoolLimits', () => {
   it('falls back to defaults for null/empty/corrupt input', () => {
     expect(parsePoolLimits(null)).toEqual(POOL_LIMITS_DEFAULTS)

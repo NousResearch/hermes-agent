@@ -360,3 +360,104 @@ def test_review_budget_still_bounded_by_shared_cap(
 
     # Budget 2 total across both lanes, reservation notwithstanding.
     assert len(res.spawned) == 2
+
+
+# ---------------------------------------------------------------------------
+# 4. The host cap names what it held back (#124392)
+# ---------------------------------------------------------------------------
+
+
+def test_host_cap_buckets_deferred_ready_tasks(
+    kanban_home, all_assignees_spawnable,
+):
+    """A tick blocked by the host cap reports the deferred task ids instead
+    of returning a bare zero-spawn result.
+
+    The cap binds before the ready rows are enumerated, so it cannot
+    attribute a deferral per task at the gate the way the per-profile cap
+    does — the caller fills ``skipped_host_capped`` from the held-back rows
+    on its behalf. Deferred, not dropped: the tasks stay ``ready``.
+    """
+    spawns: list = []
+    with kbc.connect() as conn:
+        claimed = kb.create_task(conn, title="running", assignee="alice")
+        assert kb.claim_task(conn, claimed) is not None
+        ready_ids = [
+            kb.create_task(conn, title=f"ready-{i}", assignee="alice")
+            for i in range(3)
+        ]
+        res = kbd.dispatch_once(
+            conn, spawn_fn=_fake_spawn_factory(spawns), max_in_progress=1,
+        )
+
+    assert not spawns
+    assert sorted(res.skipped_host_capped) == sorted(ready_ids)
+    assert res.skipped_host_capped_deferred is True
+    with kbc.connect() as conn:
+        for task_id in ready_ids:
+            row = kb.get_task(conn, task_id)
+            assert row is not None and row.status == "ready"
+
+
+def test_host_cap_deferral_is_per_tick_not_permanent(
+    kanban_home, all_assignees_spawnable,
+):
+    """Once the running worker finishes, the deferred task dispatches."""
+    spawns: list = []
+    with kbc.connect() as conn:
+        claimed = kb.create_task(conn, title="running", assignee="alice")
+        assert kb.claim_task(conn, claimed) is not None
+        ready_id = kb.create_task(conn, title="ready-0", assignee="alice")
+
+        res1 = kbd.dispatch_once(
+            conn, spawn_fn=_fake_spawn_factory(spawns), max_in_progress=1,
+        )
+        assert res1.skipped_host_capped == [ready_id]
+
+        _set_task_status(conn, claimed, "done")
+        conn.execute(
+            "UPDATE tasks SET claim_lock = NULL WHERE id = ?", (claimed,)
+        )
+        res2 = kbd.dispatch_once(
+            conn, spawn_fn=_fake_spawn_factory(spawns), max_in_progress=1,
+        )
+
+    assert [task_id for task_id, *_ in res2.spawned] == [ready_id]
+    assert res2.skipped_host_capped == []
+    assert res2.skipped_host_capped_deferred is False
+
+
+def test_describe_suppression_names_host_cap(
+    kanban_home, all_assignees_spawnable,
+):
+    """``describe_suppression`` feeds the "dispatcher stuck" warnings; the
+    host cap must appear there as ``host_capped=N`` so the operator is not
+    sent to check profile health for a host-wide concurrency hold."""
+    spawns: list = []
+    with kbc.connect() as conn:
+        claimed = kb.create_task(conn, title="running", assignee="alice")
+        assert kb.claim_task(conn, claimed) is not None
+        for i in range(2):
+            kb.create_task(conn, title=f"ready-{i}", assignee="alice")
+        res = kbd.dispatch_once(
+            conn, spawn_fn=_fake_spawn_factory(spawns), max_in_progress=1,
+        )
+
+    assert kbd.describe_suppression([res]) == "host_capped=2"
+
+
+def test_describe_suppression_silent_when_host_cap_not_binding(
+    kanban_home, all_assignees_spawnable,
+):
+    """A free tick contributes no entry — the stuck warnings must not grow
+    a spurious ``host_capped=0`` line."""
+    spawns: list = []
+    with kbc.connect() as conn:
+        kb.create_task(conn, title="only", assignee="alice")
+        res = kbd.dispatch_once(
+            conn, spawn_fn=_fake_spawn_factory(spawns), max_in_progress=5,
+        )
+
+    assert len(res.spawned) == 1
+    assert res.skipped_host_capped == []
+    assert kbd.describe_suppression([res]) == ""

@@ -19,6 +19,17 @@ const REVIEW_FILE_CAP = 2_000
 const UNTRACKED_LINE_COUNT_CONCURRENCY = 16
 const UNTRACKED_LINE_COUNT_MAX_BYTES = 1024 * 1024
 
+// simple-git 3.x validates a custom binary path against an ASCII whitelist —
+// `isBadArgument` in node_modules/simple-git/dist/cjs/index.js accepts only
+// `/^([a-z]:)?([a-z0-9/.\_~-]+)$/i`. Everything outside it is "restricted": a
+// space in the default `C:\Program Files\Git\...`, the parentheses in
+// `Program Files (x86)`, the accented user name in `C:\Users\João\...`. Without
+// the escape hatch simple-git THROWS on such a path; with it, it console.warns
+// this exact message — the flag only downgrades the throw. Exported so gitFor
+// and its tests share one source of truth.
+export const SIMPLE_GIT_UNSAFE_BINARY_WARN =
+  'Invalid value supplied for custom binary, restricted characters must be removed or supply the unsafe.allowUnsafeCustomBinary option'
+
 // GUI-launched Electron apps on macOS inherit only a minimal PATH (no
 // /opt/homebrew/bin or /usr/local/bin), so `gh` — and the `git` gh shells out
 // to — aren't found. Augment PATH with the resolved gh dir + the common
@@ -46,33 +57,58 @@ function runGh(args, cwd, ghBin): Promise<{ ok: boolean; stdout: string }> {
 
 function gitFor(cwd, gitBin) {
   // `gitBin` is resolved inside the Electron main process from known install
-  // locations or PATH — never renderer/user input. simple-git's custom-binary
-  // validation rejects paths containing spaces (the default Windows install is
-  // `C:\Program Files\Git\cmd\git.exe`), which silently broke the Review pane.
-  // For spaced paths, opt into simple-git's trusted-binary escape hatch instead
-  // of falling back to PATH (often absent in GUI-launched apps, and PATH lookup
-  // could resolve a repo-local git.exe).
+  // locations or PATH — never renderer/user input, and the Windows tuple below is
+  // built there too: `gitBin` is the resolved install/path and the python host is
+  // this process's own interpreter. simple-git's ASCII whitelist accepts
+  // backslashes but rejects every character outside it — the space in the default
+  // `C:\Program Files\Git\cmd\git.exe`, the parentheses in `Program Files (x86)`,
+  // the accent in `C:\Users\João\...` — and without the escape hatch it THROWS
+  // inside the factory, silently breaking the Review pane. Key the hatch on "we
+  // resolved this binary ourselves", not on a `/\s/` guess, which still throws for
+  // every other restricted character. Falling back to PATH instead is not an
+  // option (often absent in GUI-launched apps, and a PATH lookup could resolve a
+  // repo-local git.exe).
   // On Windows the binary tuple is [python.exe, host script]. simple-git has no
   // creationFlags slot; the script spawns the real git with CREATE_NO_WINDOW and
   // forwards argv unchanged.
   const host = windowsGitHost()
   const binary = simpleGitBinary(gitBin, host)
-  const binaryParts = Array.isArray(binary) ? binary : [binary]
-  const unsafe = binaryParts.some(part => /\s/.test(part)) || Boolean(gitBin && /\s/.test(gitBin))
+  const unsafe = Boolean(gitBin) || Array.isArray(binary)
 
-  const git = simpleGit({
-    baseDir: cwd,
-    binary,
-    maxConcurrentProcesses: 4,
-    trimmed: false,
-    ...(unsafe ? { unsafe: { allowUnsafeCustomBinary: true } } : {})
-  })
+  const makeGit = () =>
+    simpleGit({
+      baseDir: cwd,
+      binary,
+      maxConcurrentProcesses: 4,
+      trimmed: false,
+      ...(unsafe ? { unsafe: { allowUnsafeCustomBinary: true } } : {})
+    })
 
-  if (Array.isArray(binary)) {
-    return git.env(noConsoleGitEnv(process.env, gitBin || 'git'))
+  if (!unsafe) {
+    return makeGit()
   }
 
-  return git
+  // With the escape hatch set, simple-git still console.warns that same message on
+  // every factory call — the flag only downgrades the throw to a warning. The
+  // binary was resolved by this process, never supplied by the renderer, so on
+  // Windows (where the standard git lives under a spaced "Program Files") that
+  // warning is pure console spam. Filter exactly that message, for the
+  // synchronous factory call only.
+  const originalWarn = console.warn
+
+  console.warn = (message?: unknown, ...rest: unknown[]) => {
+    if (typeof message !== 'string' || !message.startsWith(SIMPLE_GIT_UNSAFE_BINARY_WARN)) {
+      originalWarn(message, ...rest)
+    }
+  }
+
+  try {
+    const git = makeGit()
+
+    return Array.isArray(binary) ? git.env(noConsoleGitEnv(process.env, gitBin || 'git')) : git
+  } finally {
+    console.warn = originalWarn
+  }
 }
 
 // simple-git reports renames as `old => new` (and `dir/{old => new}/f`); resolve

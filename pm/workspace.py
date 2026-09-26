@@ -82,7 +82,13 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
         files.update(str(p.relative_to(source)) for p in source.glob(pattern))
     files.update(p.name for p in source.glob("*.py"))
 
-    excluded = {".git", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", "release", "uv.lock"}
+    # ``uv.lock`` must NOT be excluded here: the copied package trees include
+    # ``pm/``, whose git-tracked ``pm/uv.lock`` is a build input — `uv lock
+    # --check` inside the generated workspace reads it at ``workspace/pm/uv.lock``
+    # and `hermes pm doctor` crashes with FileNotFoundError without it (#123594).
+    # The workspace ROOT lock is never copied by this loop (only package roots
+    # and top-level metadata files are); the caller seeds it into place.
+    excluded = {".git", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", "release"}
     def ignore(directory, names):
         return [name for name in names if name in excluded or name.startswith(".")
                 or name.endswith(".egg-info") or (Path(directory) / name).is_symlink()]

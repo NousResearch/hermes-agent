@@ -79,6 +79,38 @@ def test_real_build_inputs_stay_in_generated_root(tmp_path, monkeypatch):
     assert not (core / "uv.lock").exists()
 
 
+def test_core_snapshot_keeps_git_tracked_pm_uv_lock(tmp_path):
+    """#123594: `pm/uv.lock` is a git-tracked build input.
+
+    The snapshot's exclusion list used to drop `uv.lock` by basename
+    everywhere, so `workspace/pm/uv.lock` went missing and `uv lock --check`
+    (hermes pm doctor) crashed with FileNotFoundError. The ROOT lock is not the
+    snapshot's to copy — the caller seeds it into the fresh workspace.
+    """
+    core = tmp_path / "core"
+    core.mkdir()
+    (core / "pyproject.toml").write_text(
+        '[project]\nname="core"\nversion="1"\nrequires-python=">=3.11"\n'
+        '[tool.setuptools.packages.find]\ninclude = ["pm", "pm.*"]\n',
+        encoding="utf-8",
+    )
+    (core / "pm").mkdir()
+    (core / "pm" / "__init__.py").write_text("", encoding="utf-8")
+    (core / "pm" / "lock.json").write_text("{}", encoding="utf-8")
+    (core / "pm" / "uv.lock").write_text("# pm member lock\n", encoding="utf-8")
+    (core / "uv.lock").write_text("# root lock (seeded by the caller)\n", encoding="utf-8")
+
+    destination = tmp_path / "snapshot"
+    destination.mkdir()
+    workspace._copy_core_inputs(core, destination)
+
+    # The member's git-tracked lock survives the snapshot (#123594).
+    assert (destination / "pm" / "uv.lock").read_text(encoding="utf-8") == "# pm member lock\n"
+    assert (destination / "pm" / "lock.json").is_file()
+    # The root lock is never the snapshot's to copy.
+    assert not (destination / "uv.lock").exists()
+
+
 def test_repair_replays_saved_in_tree_build_backend(tmp_path):
     import os
     import tomllib

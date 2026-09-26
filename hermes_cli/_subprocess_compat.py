@@ -60,11 +60,12 @@ def run(cmd, **kwargs) -> NoReturn:
 
 
 def harden_git_argv(args: Sequence[str]) -> list[str]:
-    """Copy of subcommand-first git *args* (no leading ``"git"``) with :data:`NO_DRIVER_DIFF_FLAGS`
-    inserted right after a diff-rendering subcommand; other subcommands are returned unchanged.
+    """Copy git *args*, disabling attribute drivers for diff-rendering commands
+    and optional index refresh locks for ``status``.
 
-    Pair with :func:`noninteractive_git_env`: the env layer disables fsmonitor/hooks/pager/editor/
-    credential sinks, this closes the one class (attacker-named attribute drivers) env cannot reach.
+    Pair with :func:`noninteractive_git_env`: the env layer disables optional
+    refreshes and repo-configured executable sinks; argv hardening supplies the
+    command-specific flags that make those protections explicit.
     """
     out = list(args)
     i = 0
@@ -78,7 +79,9 @@ def harden_git_argv(args: Sequence[str]) -> list[str]:
             continue
         if tok in _DIFF_RENDERING_SUBCOMMANDS:
             return out[: i + 1] + list(NO_DRIVER_DIFF_FLAGS) + out[i + 1 :]
-        return out  # first non-option token is a non-diff subcommand
+        if tok == "status":
+            return out[:i] + ["--no-optional-locks"] + out[i:]
+        return out  # first non-option token is another subcommand
     return out
 
 
@@ -333,6 +336,7 @@ def _user_safe_directories(base_env: "Mapping[str, str]") -> list[str]:
             env.pop(key, None)
     env.pop("GIT_CONFIG_COUNT", None)
     env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_OPTIONAL_LOCKS"] = "0"
     values: list[str] = []
     for scope in ("--system", "--global"):
         try:
@@ -375,7 +379,8 @@ def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str,
     """Environment for *internal* git invocations that must never prompt.
 
     Copy of ``base`` (default ``os.environ``) with ``GIT_TERMINAL_PROMPT=0`` (fail instead of
-    prompting), ``GCM_INTERACTIVE=Never`` (no Git Credential Manager dialog), and isolated git
+    prompting), ``GIT_OPTIONAL_LOCKS=0`` (read-only probes never refresh and lock the index),
+    ``GCM_INTERACTIVE=Never`` (no Git Credential Manager dialog), and isolated git
     config: inherited ``GIT_CONFIG_*`` injection, global/system config, pagers, editors, fsmonitor,
     external diff and hooks are all disabled so a user's repo/global config cannot hang or mutate
     Hermes's plumbing calls. ``core.sshCommand`` is pinned to ``ssh -o BatchMode=yes`` so the ssh
@@ -401,6 +406,7 @@ def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str,
     # reading after that point would resolve the user's config to an empty file.
     safe_directories = _user_safe_directories(base if base is not None else os.environ)
     env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_OPTIONAL_LOCKS"] = "0"
     env["GCM_INTERACTIVE"] = "Never"
     # Drop caller-supplied config injection; the GIT_CONFIG_COUNT block is rebuilt below so
     # ambient -c values cannot re-enable pagers, hooks, fsmonitor, editors or credential prompts.

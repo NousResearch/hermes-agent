@@ -49,10 +49,9 @@ class TestHardenGitArgv:
             assert out[0] == sub
             assert out[1:3] == list(NO_DRIVER_DIFF_FLAGS)
 
-    def test_status_is_not_touched(self):
-        # status rejects --no-ext-diff (`unknown option`), so it must pass through.
+    def test_status_gets_no_optional_locks_global_flag(self):
         assert harden_git_argv(["status", "--porcelain=2", "--branch"]) == [
-            "status", "--porcelain=2", "--branch",
+            "--no-optional-locks", "status", "--porcelain=2", "--branch",
         ]
 
     def test_worktree_and_other_subcommands_untouched(self):
@@ -64,10 +63,14 @@ class TestHardenGitArgv:
         assert out == ["-C", "/repo", "diff", *NO_DRIVER_DIFF_FLAGS, "HEAD"]
 
     def test_dash_c_value_is_not_mistaken_for_subcommand(self):
-        # ``-C diff`` is a path; the real subcommand is status → no flags.
-        assert harden_git_argv(["-C", "diff", "status"]) == ["-C", "diff", "status"]
+        # ``-C diff`` is a path; the real subcommand is status.
+        assert harden_git_argv(["-C", "diff", "status"]) == [
+            "-C", "diff", "--no-optional-locks", "status",
+        ]
         # ``-c diff=x`` is a config pair; the real subcommand is status.
-        assert harden_git_argv(["-c", "diff=x", "status"]) == ["-c", "diff=x", "status"]
+        assert harden_git_argv(["-c", "diff=x", "status"]) == [
+            "-c", "diff=x", "--no-optional-locks", "status",
+        ]
 
     def test_config_pair_before_diff_still_hardens(self):
         out = harden_git_argv(["-c", "core.quotePath=false", "diff", "--numstat"])

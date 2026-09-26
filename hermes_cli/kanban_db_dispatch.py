@@ -363,6 +363,16 @@ def _pid_alive(pid: Optional[int]) -> bool:
 # the live PID) but NEVER signalled — missing process identity is refusal, not permission (#99558).
 UNVERIFIED_WORKER_FINGERPRINT = "unverified"
 
+# psutil's macOS ``create_time()`` reading of an *unchanged* live process drifts forward across every
+# sleep/wake by the accumulated sleep (#118326: after 27 min asleep the stale-claim reaper read the
+# drifted fingerprint as a recycled PID, released a live worker's claim, and a duplicate worker spawned
+# beside it). A start-time gap proves recycling only when gross — PID allocation is sequential, so a
+# reused number's start lands minutes-to-hours away (the reasoning #111454 applies to the cron ledger).
+# Claim liveness tolerates the drift; the signalling path (``_pid_recycled``) stays exact so a stranger
+# is never signalled, and a claim wrongly held against a recycled PID is still released once the
+# heartbeat goes stale (#29747 backstop).
+_SAME_WORKER_START_DRIFT_CEILING = 12 * 3600 * 100  # centiseconds; ~ a long overnight sleep
+
 
 def _process_fingerprint(pid: int) -> Optional[str]:
     """Restart-stable identity of a live process: ``"<instantiation epoch>|<start time>"``. The start
@@ -385,12 +395,46 @@ def _worker_alive(pid: Optional[int], started_at) -> bool:
     a fingerprint keeps the existence answer: killing it is the pre-fingerprint behaviour and the row is
     rewritten with a fingerprint on its next spawn. An UNVERIFIED spawn also keeps the existence answer
     (a claim is never released beside a possibly-live worker) but ``_terminate_reclaimed_worker``
-    refuses to signal it."""
+    refuses to signal it. A start-time reading that drifted within ``_SAME_WORKER_START_DRIFT_CEILING``
+    under a macOS sleep/wake (forward) or within the shared read-disagreement tolerance (either
+    direction) is still our worker (#118326) — the epoch half must still match."""
     if not _kb._pid_alive(pid):
         return False
     if started_at == UNVERIFIED_WORKER_FINGERPRINT:
         return True
-    return not _pid_recycled(pid, started_at)
+    return not _pid_recycled(pid, started_at) or _drifted_spawn_still_matches(pid, started_at)
+
+
+def _drifted_spawn_still_matches(pid: int, started_at) -> bool:
+    """Same incarnation despite a start-time reading drift: identical instantiation epoch and either
+    a forward delta within ``_SAME_WORKER_START_DRIFT_CEILING`` (accumulated macOS sleep/wake) or a
+    near-match within the read-disagreement tolerance every other liveness surface already shares
+    (``gateway.status.start_time_fingerprints_match``) — the reaper can read the same live worker's
+    start time ~1 s above OR below the spawn-time reading (#118326). Exact matches and legacy
+    integer fingerprints are decided by ``_pid_recycled`` before this runs; only a live near-match
+    on the same boot is rescued. The signalling path never consults this helper — a drifted
+    stranger is still not signalled."""
+    if not (isinstance(started_at, str) and "|" in started_at):
+        return False
+    current = _process_fingerprint(int(pid))
+    if current is None:
+        return False
+    recorded_epoch, _, recorded_start = started_at.partition("|")
+    current_epoch, _, current_start = current.partition("|")
+    if recorded_epoch != current_epoch:
+        return False
+    try:
+        delta = int(current_start) - int(recorded_start)
+    except ValueError:
+        return False
+    if 0 < delta <= _SAME_WORKER_START_DRIFT_CEILING:
+        return True
+    # A recycled PID re-starts after the recorded worker died, so it reads newer, never older;
+    # only the same live worker can read below its spawn-time record. The negative half is the
+    # cross-process read disagreement, bounded by the shared comparator's tolerance instead of
+    # the 12 h sleep-drift ceiling.
+    from gateway.status import start_time_fingerprints_match
+    return start_time_fingerprints_match(int(recorded_start), int(current_start))
 
 
 def _pid_recycled(pid: Optional[int], started_at) -> bool:
@@ -452,7 +496,10 @@ def _terminate_reclaimed_worker(
     signalled — the worker is gone, which is what the reclaim wanted (``terminated`` = True). An
     UNVERIFIED spawn (fingerprint capture failed) that is still live is never signalled either, but
     it is reported as surviving (``signal_refused``) so the reclaim holds the claim instead of
-    spawning a duplicate beside it."""
+    spawning a duplicate beside it. A live process whose start time only drifted (forward within
+    ``_SAME_WORKER_START_DRIFT_CEILING``, or within the shared read-disagreement tolerance in either
+    direction, #118326) is that same case: never signalled, reported as
+    surviving so the reclaim defers."""
     info: dict[str, Any] = {
         "prev_pid": int(pid) if pid else None,
         "host_local": False,
@@ -475,6 +522,14 @@ def _terminate_reclaimed_worker(
         info["terminated"] = not _kb._pid_alive(pid)
         return info
     if _kb._pid_alive(pid) and _pid_recycled(pid, started_at):
+        if _drifted_spawn_still_matches(pid, started_at):
+            # Exact mismatch on a same-epoch near-match: our own worker after a start-time
+            # reading drift (#118326). Not signalled — and the claim must not be released
+            # beside a live worker either, so report survival: the caller defers
+            # (reclaim_deferred) instead of re-creating the duplicate-spawn the issue is about.
+            info["signal_refused"] = True
+            info["start_time_drifted"] = True
+            return info
         info["terminated"] = True
         info["pid_recycled"] = True
         return info
@@ -494,6 +549,14 @@ def _terminate_reclaimed_worker(
         info["terminated"] = True
         return info
     if _worker_alive(pid, started_at):
+        if _pid_recycled(pid, started_at):
+            # A tolerant "still alive" that fails the exact fingerprint can only be a
+            # drift-rescued near-match: the number is recycled and owned by a stranger now,
+            # so the SIGKILL escalation is not ours to send. Report survival; the claim rides
+            # the heartbeat backstop instead of a signal permission (#118326).
+            info["signal_refused"] = True
+            info["pid_recycled"] = True
+            return info
         if not _sigkill(kill, pid):
             return info
         info["sigkill"] = True
@@ -698,6 +761,11 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
             # Short polling wait — no time.sleep on the write txn.
             _poll_worker_exit(pid, started_at)
             if _worker_alive(pid, started_at):
+                if _pid_recycled(pid, started_at):
+                    # Tolerant liveness here can be a drift-rescued near-match on a number
+                    # already recycled: never escalate to SIGKILL against the exact
+                    # fingerprint. The row settles on a later tick instead.
+                    continue
                 killed = _sigkill(kill, pid)
 
         error = f"elapsed {int(elapsed)}s > limit {limit}s"

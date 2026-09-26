@@ -16,6 +16,7 @@ import contextlib
 import functools
 import json
 import logging
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -43,8 +44,11 @@ def current_instantiation_epoch() -> str:
 
     Stable for the life of PID 1 (a gateway-only respawn keeps honouring an
     in-flight drain) but changes when the machine is recreated: boot_id on a VM
-    reboot, PID 1's start time on ``docker restart``.  ``""`` when neither is
-    readable (non-Linux, no ``/proc``) disables the epoch check — never fail-closed.
+    reboot, PID 1's start time on ``docker restart``.  On Darwin there is no
+    ``/proc``; the boot time (``sysctl kern.boottime``, read in-process via
+    :func:`psutil.boot_time`) is the witness, so a reboot invalidates the epoch
+    there too.  ``""`` when no witness is readable disables the epoch check —
+    never fail-closed.
     """
     boot_id = pid1_start = ""
     with contextlib.suppress(OSError):
@@ -53,7 +57,19 @@ def current_instantiation_epoch() -> str:
         # "<pid> (<comm>) <state> ...": comm may contain spaces/parens, so split on the
         # LAST ')'. starttime is field 22 (1-indexed) = tail index 19.
         pid1_start = Path("/proc/1/stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()[19]
-    return f"{boot_id}:{pid1_start}" if (boot_id or pid1_start) else ""
+    if boot_id or pid1_start:
+        return f"{boot_id}:{pid1_start}"
+    if sys.platform == "darwin":
+        with contextlib.suppress(Exception):
+            # psutil is a pinned core dependency and reads the process/sysctl table
+            # in-process (a fork+exec for ``sysctl -n kern.boottime`` would be the
+            # slow equivalent); psutil.boot_time() is a boot-stable constant.
+            import psutil  # type: ignore
+
+            boottime = int(psutil.boot_time())
+            if boottime > 0:
+                return str(boottime)
+    return ""
 
 
 def drain_request_path(home: Optional[Path] = None) -> Path:

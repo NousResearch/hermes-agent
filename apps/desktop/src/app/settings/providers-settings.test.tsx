@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ConfirmHost } from '@/components/confirm-host'
 import { $confirmRequest } from '@/store/confirm'
+import { $connection } from '@/store/session'
+import { $settingsOwner } from '@/store/settings-scope'
 import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
 
 const listOAuthProviders = vi.fn()
@@ -12,6 +14,7 @@ const getEnvVars = vi.fn()
 const setEnvVar = vi.fn()
 const startManualProviderOAuth = vi.fn()
 const startManualLocalEndpoint = vi.fn()
+const { notify, notifyError } = vi.hoisted(() => ({ notify: vi.fn(), notifyError: vi.fn() }))
 const onboarding = atom({ manual: false })
 
 vi.mock('@/store/profile', () => ({
@@ -34,8 +37,10 @@ vi.mock('@/hermes', () => ({
 vi.mock('@/store/onboarding', () => ({
   $desktopOnboarding: onboarding,
   startManualProviderOAuth: (...args: unknown[]) => startManualProviderOAuth(...args),
-  startManualLocalEndpoint: (reason: null | string) => startManualLocalEndpoint(reason)
+  startManualLocalEndpoint: (...args: unknown[]) => startManualLocalEndpoint(...args)
 }))
+
+vi.mock('@/store/notifications', () => ({ notify, notifyError }))
 
 // Load once at module scope so no test's 15s budget pays the heavy transform
 // + import (the first-test timeout flake under CI load).
@@ -78,8 +83,18 @@ function keyVar(patch: Partial<EnvVarInfo> = {}): EnvVarInfo {
 }
 
 beforeEach(() => {
+  vi.stubGlobal('hermesDesktop', {
+    ...window.hermesDesktop,
+    getConnectionFor: async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
+      ...$connection.get(),
+      connectionId,
+      profile
+    })
+  })
+  $connection.set({ mode: 'local' } as never)
   onboarding.set({ manual: false })
   getEnvVars.mockResolvedValue({})
+  setEnvVar.mockResolvedValue({ ok: true })
   disconnectOAuthProvider.mockResolvedValue({ ok: true, provider: 'nous' })
   listOAuthProviders.mockResolvedValue({
     providers: [provider('nous', true), provider('minimax-oauth', false)]
@@ -88,6 +103,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  vi.unstubAllGlobals()
   $confirmRequest.set(null)
   vi.restoreAllMocks()
   vi.clearAllMocks()
@@ -110,6 +126,58 @@ async function renderProvidersSettings() {
 }
 
 describe('ProvidersSettings', () => {
+  it('drops credential drafts and retargets reads when the Settings gateway changes', async () => {
+    $connection.set({ mode: 'remote', connectionId: 'gateway-a', baseUrl: 'https://a.example' } as never)
+    getEnvVars.mockResolvedValue({ WIDGET_API_KEY: keyVar({ provider: 'widget', provider_label: 'Widget' }) })
+    const { ProvidersSettings } = await import('./providers-settings')
+    const { container } = render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
+
+    await screen.findByText('Widget')
+    expect(getEnvVars).toHaveBeenLastCalledWith($settingsOwner.get())
+    const input = container.querySelector('input[type="password"]')!
+    fireEvent.focus(input)
+    fireEvent.change(input, { target: { value: 'gateway-a-draft' } })
+    expect(input.getAttribute('value')).toBe('gateway-a-draft')
+
+    await act(async () => {
+      $connection.set({ mode: 'remote', connectionId: 'gateway-b', baseUrl: 'https://b.example' } as never)
+    })
+
+    await waitFor(() => expect(getEnvVars).toHaveBeenLastCalledWith($settingsOwner.get()))
+    expect(container.querySelector('input[type="password"]')?.getAttribute('value')).toBe('')
+  })
+
+  it('discards a credential-save failure from a retired gateway owner', async () => {
+    let rejectSave!: (error: Error) => void
+    setEnvVar.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectSave = reject
+        })
+    )
+    $connection.set({ mode: 'remote', connectionId: 'gateway-a', baseUrl: 'https://a.example' } as never)
+    getEnvVars.mockResolvedValue({ WIDGET_API_KEY: keyVar({ provider: 'widget', provider_label: 'Widget' }) })
+    const { ProvidersSettings } = await import('./providers-settings')
+    const { container } = render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
+
+    await screen.findByText('Widget')
+    const ownerA = $settingsOwner.get()
+    const input = container.querySelector('input[type="password"]')!
+    fireEvent.focus(input)
+    fireEvent.change(input, { target: { value: 'gateway-a-draft' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(setEnvVar).toHaveBeenCalledWith('WIDGET_API_KEY', 'gateway-a-draft', ownerA))
+
+    await act(async () => {
+      $connection.set({ mode: 'remote', connectionId: 'gateway-b', baseUrl: 'https://b.example' } as never)
+    })
+    await act(async () => {
+      rejectSave(new Error('old gateway failed'))
+    })
+
+    expect(notifyError).not.toHaveBeenCalled()
+  })
+
   it('reads and saves API keys for the shared Settings target and reloads when it changes', async () => {
     $activeGatewayProfile.set('profile-a')
     $settingsScopeOverride.set('profile-b')
@@ -129,17 +197,15 @@ describe('ProvidersSettings', () => {
     try {
       const { container } = render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
       await screen.findByText('Widget')
-      expect(getEnvVars).toHaveBeenLastCalledWith('profile-b')
+      expect(getEnvVars).toHaveBeenLastCalledWith($settingsOwner.get())
       expect(screen.getByText('Applies to')).toBeTruthy()
       const input = container.querySelector('input[type="password"]')!
       fireEvent.focus(input)
       fireEvent.change(input, { target: { value: 'fixture-key' } })
       fireEvent.click(screen.getByRole('button', { name: 'Save' }))
-      await waitFor(() => expect(setEnvVar).toHaveBeenCalledWith('WIDGET_API_KEY', 'fixture-key', 'profile-b'))
+      await waitFor(() => expect(setEnvVar).toHaveBeenCalledWith('WIDGET_API_KEY', 'fixture-key', $settingsOwner.get()))
       fireEvent.click(screen.getByRole('button', { name: 'profile-a' }))
-      // Back onto the app's active profile: no override is stored, but the
-      // request must still name it (#118432).
-      await waitFor(() => expect(getEnvVars).toHaveBeenLastCalledWith('profile-a'))
+      await waitFor(() => expect(getEnvVars).toHaveBeenLastCalledWith($settingsOwner.get()))
     } finally {
       cleanup()
       $settingsScopeOverride.set(null)
@@ -153,13 +219,14 @@ describe('ProvidersSettings', () => {
 
     try {
       await renderProvidersSettings()
-      expect(getEnvVars).toHaveBeenCalledWith('beta')
-      expect(listOAuthProviders).toHaveBeenCalledWith('beta')
+      const owner = $settingsOwner.get()
+      expect(getEnvVars).toHaveBeenCalledWith(owner)
+      expect(listOAuthProviders).toHaveBeenCalledWith(owner)
       fireEvent.click(await screen.findByText('Nous Portal'))
-      expect(startManualProviderOAuth).toHaveBeenCalledWith('nous', 'beta')
+      expect(startManualProviderOAuth).toHaveBeenCalledWith('nous', owner)
       fireEvent.click(await screen.findByRole('button', { name: 'Remove Nous Portal' }))
       fireEvent.click(await screen.findByRole('button', { name: 'Disconnect' }))
-      await waitFor(() => expect(disconnectOAuthProvider).toHaveBeenCalledWith('nous', 'beta'))
+      await waitFor(() => expect(disconnectOAuthProvider).toHaveBeenCalledWith('nous', owner))
     } finally {
       $settingsScopeOverride.set(null)
     }
@@ -181,8 +248,53 @@ describe('ProvidersSettings', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }))
     })
 
-    await waitFor(() => expect(disconnectOAuthProvider).toHaveBeenCalledWith('nous', 'default'))
+    await waitFor(() => expect(disconnectOAuthProvider).toHaveBeenCalledWith('nous', $settingsOwner.get()))
     expect(listOAuthProviders).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not disconnect the old owner after the confirmation crosses a gateway change', async () => {
+    $connection.set({ mode: 'remote', connectionId: 'gateway-a', baseUrl: 'https://a.example' } as never)
+    await renderProvidersSettings()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove Nous Portal' }))
+    expect(await screen.findByRole('dialog')).toBeTruthy()
+
+    await act(async () => {
+      $connection.set({ mode: 'remote', connectionId: 'gateway-b', baseUrl: 'https://b.example' } as never)
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }))
+
+    expect(disconnectOAuthProvider).not.toHaveBeenCalled()
+  })
+
+  it('discards a disconnect settlement from a retired gateway owner', async () => {
+    let resolveDisconnect!: (value: { ok: boolean; provider: string }) => void
+    disconnectOAuthProvider.mockImplementation(
+      () =>
+        new Promise(resolve => {
+          resolveDisconnect = resolve
+        })
+    )
+    $connection.set({ mode: 'remote', connectionId: 'gateway-a', baseUrl: 'https://a.example' } as never)
+    await renderProvidersSettings()
+    const ownerA = $settingsOwner.get()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove Nous Portal' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Disconnect' }))
+    await waitFor(() => expect(disconnectOAuthProvider).toHaveBeenCalledWith('nous', ownerA))
+
+    await act(async () => {
+      $connection.set({ mode: 'remote', connectionId: 'gateway-b', baseUrl: 'https://b.example' } as never)
+    })
+    await waitFor(() => expect(listOAuthProviders).toHaveBeenCalledWith($settingsOwner.get()))
+
+    await act(async () => {
+      resolveDisconnect({ ok: true, provider: 'nous' })
+    })
+
+    expect(listOAuthProviders.mock.calls.filter(([owner]) => owner === ownerA)).toHaveLength(1)
+    expect(notify).not.toHaveBeenCalled()
+    expect(notifyError).not.toHaveBeenCalled()
   })
 
   it('leaves the account connected when the removal prompt is dismissed', async () => {
@@ -288,6 +400,6 @@ describe('ProvidersSettings', () => {
 
     fireEvent.click(row)
 
-    await waitFor(() => expect(startManualLocalEndpoint).toHaveBeenCalledWith(null))
+    await waitFor(() => expect(startManualLocalEndpoint).toHaveBeenCalledWith(null, $settingsOwner.get()))
   })
 })

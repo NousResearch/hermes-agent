@@ -63,7 +63,7 @@ export const hermesConfigKey = (
 // `profile` scopes both the query key and the fetch. Omitting it still targets
 // the app-wide active profile (`profileScoped(undefined)` fallback), but the
 // cache slot is the active gateway's — not the bare root key.
-export const useHermesConfigRecord = (profile?: ProfileScope) => {
+export const useHermesConfigRecord = (profile?: ProfileScope, enabled = true) => {
   // Reactive read, not a store getter: under the React Compiler a value with
   // no reactive inputs is computed once per component instance, so a
   // getter-based key would freeze on the first gateway and keep serving its
@@ -90,6 +90,7 @@ export const useHermesConfigRecord = (profile?: ProfileScope) => {
 
       return getHermesConfigRecord(profile ?? undefined)
     },
+    enabled,
     staleTime: 0,
     // Keep structural sharing so an unchanged refetch (every consumer mount at
     // staleTime 0, every invalidate) yields the SAME object and consumers'

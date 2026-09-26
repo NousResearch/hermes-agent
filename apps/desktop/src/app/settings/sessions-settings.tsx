@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { restoreListedSession } from '@/app/session/hooks/use-session-actions/utils'
 import { Button } from '@/components/ui/button'
@@ -8,8 +8,8 @@ import {
   deleteSession,
   getHermesConfigRecord,
   listAllProfileSessions,
-  peekConfigReadOrigin,
-  retainConfigReadOrigin,
+  type ProfileScope,
+  profileScopeKey,
   saveHermesConfig,
   setSessionArchived
 } from '@/hermes'
@@ -22,6 +22,7 @@ import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import { applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd } from '@/store/session'
 import { untombstoneSessions } from '@/store/session-removal'
+import { sessionOwnerRouteFromRow } from '@/store/session-request-router'
 import { forgetSessionUnread } from '@/store/session-unread'
 import type { HermesConfigRecord, SessionInfo } from '@/types/hermes'
 
@@ -34,11 +35,24 @@ const DEFAULT_AUTO_ARCHIVE_DAYS = 3
 
 const ARCHIVED_FETCH_LIMIT = 200
 
+function archivedSessionScope(settingsOwner: ProfileScope, session: SessionInfo): ProfileScope {
+  if (settingsOwner && typeof settingsOwner === 'object') {
+    return {
+      ...settingsOwner,
+      connectionOwnerProfile: settingsOwner.profile ?? 'default',
+      profile: session.profile ?? settingsOwner.profile
+    }
+  }
+
+  return sessionOwnerRouteFromRow(session) ?? session.profile
+}
+
 interface SessionsSettingsProps {
+  settingsOwner?: ProfileScope
   subpage?: string
 }
 
-export function SessionsSettings({ subpage }: SessionsSettingsProps = {}) {
+export function SessionsSettings({ settingsOwner, subpage }: SessionsSettingsProps = {}) {
   useSettingDeepLink('sessions', page => subpage === undefined || page === subpage)
 
   if (subpage === 'default-directory') {
@@ -49,39 +63,80 @@ export function SessionsSettings({ subpage }: SessionsSettingsProps = {}) {
     )
   }
 
-  return <ArchivedSessionsSettings includeDefaultDirectory={subpage === undefined} />
+  return <ArchivedSessionsSettings includeDefaultDirectory={subpage === undefined} settingsOwner={settingsOwner} />
 }
 
-function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultDirectory: boolean }) {
+function ArchivedSessionsSettings({
+  includeDefaultDirectory,
+  settingsOwner
+}: {
+  includeDefaultDirectory: boolean
+  settingsOwner?: ProfileScope
+}) {
   const { t } = useI18n()
   const s = t.settings.sessions
   const [sessions, setLocalSessions] = useState<SessionInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [lifetime] = useState(() => new AbortController())
+  const ownerKey = profileScopeKey(settingsOwner)
+  const ownerKeyRef = useRef(ownerKey)
+  ownerKeyRef.current = ownerKey
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  useEffect(() => () => lifetime.abort(), [lifetime])
 
-    try {
-      const result = await listAllProfileSessions(ARCHIVED_FETCH_LIMIT, 0, 'only')
-      setLocalSessions(result.sessions)
-    } catch (err) {
-      notifyError(err, s.failedLoad)
-    } finally {
-      setLoading(false)
-    }
-  }, [s.failedLoad])
+  const ownerIsCurrent = useCallback(
+    (capturedOwnerKey: string) => !lifetime.signal.aborted && ownerKeyRef.current === capturedOwnerKey,
+    [lifetime]
+  )
 
   useEffect(() => {
-    void load()
-  }, [load])
+    let alive = true
+
+    setLoading(true)
+
+    if (settingsOwner === null) {
+      setLocalSessions([])
+      setLoading(false)
+
+      return
+    }
+
+    void listAllProfileSessions(ARCHIVED_FETCH_LIMIT, 0, 'only', 'recent', 'all', {}, settingsOwner)
+      .then(result => {
+        if (alive) {
+          setLocalSessions(result.sessions)
+        }
+      })
+      .catch(err => {
+        if (alive) {
+          notifyError(err, s.failedLoad)
+        }
+      })
+      .finally(() => {
+        if (alive) {
+          setLoading(false)
+        }
+      })
+
+    return () => {
+      alive = false
+    }
+  }, [s.failedLoad, settingsOwner])
 
   const unarchive = useCallback(
     async (session: SessionInfo) => {
+      const actionOwnerKey = ownerKey
+      const actionScope = archivedSessionScope(settingsOwner, session)
       setBusyId(session.id)
 
       try {
-        await setSessionArchived(session.id, false, session.profile)
+        await setSessionArchived(session.id, false, actionScope)
+
+        if (!ownerIsCurrent(actionOwnerKey)) {
+          return
+        }
+
         setLocalSessions(prev => prev.filter(s => s.id !== session.id))
         // Surface it again in the sidebar without waiting for a full refresh, and
         // lift any optimistic eviction so the grouped tree shows it again too.
@@ -90,42 +145,58 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
         triggerHaptic('selection')
         notify({ durationMs: 2_000, kind: 'success', message: s.restored })
       } catch (err) {
-        notifyError(err, s.unarchiveFailed)
+        if (ownerIsCurrent(actionOwnerKey)) {
+          notifyError(err, s.unarchiveFailed)
+        }
       } finally {
-        setBusyId(null)
+        if (ownerIsCurrent(actionOwnerKey)) {
+          setBusyId(null)
+        }
       }
     },
-    [s]
+    [ownerIsCurrent, ownerKey, s, settingsOwner]
   )
 
   const remove = useCallback(
     async (session: SessionInfo) => {
+      const actionOwnerKey = ownerKey
+      const actionScope = archivedSessionScope(settingsOwner, session)
+
       const ok = await confirm({
         confirmLabel: s.deletePermanently,
         destructive: true,
         title: s.deleteConfirm(sessionTitle(session))
       })
 
-      if (!ok) {
+      if (!ok || !ownerIsCurrent(actionOwnerKey)) {
         return
       }
 
       setBusyId(session.id)
 
       try {
-        await deleteSession(session.id, session.profile)
+        await deleteSession(session.id, actionScope)
+
+        if (!ownerIsCurrent(actionOwnerKey)) {
+          return
+        }
+
         // Permanent delete bypasses removeSession, so retire the persisted
         // unread state here too rather than leaving it to rot.
         forgetSessionUnread([session.id, session._lineage_root_id], session.profile)
         setLocalSessions(prev => prev.filter(s => s.id !== session.id))
         triggerHaptic('warning')
       } catch (err) {
-        notifyError(err, s.deleteFailed)
+        if (ownerIsCurrent(actionOwnerKey)) {
+          notifyError(err, s.deleteFailed)
+        }
       } finally {
-        setBusyId(null)
+        if (ownerIsCurrent(actionOwnerKey)) {
+          setBusyId(null)
+        }
       }
     },
-    [s]
+    [ownerIsCurrent, ownerKey, s, settingsOwner]
   )
 
   useDeepLinkHighlight({
@@ -142,7 +213,7 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
     <SettingsContent>
       {includeDefaultDirectory && <DefaultProjectDirSetting />}
 
-      <AutoArchiveSetting />
+      <AutoArchiveSetting settingsOwner={settingsOwner} />
 
       <SectionHeading
         icon={Archive}
@@ -209,7 +280,7 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
 // (sessions.auto_archive in config.yaml + SessionDB.maybe_auto_archive); this
 // just toggles the config keys, so CLI / gateway / Desktop all honour one
 // setting. Pins are exempt on the backend, so pinned chats survive regardless.
-function AutoArchiveSetting() {
+function AutoArchiveSetting({ settingsOwner }: { settingsOwner?: ProfileScope }) {
   const { t } = useI18n()
   const s = t.settings.sessions
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
@@ -225,7 +296,11 @@ function AutoArchiveSetting() {
 
     let alive = true
 
-    void getHermesConfigRecord()
+    if (settingsOwner === null) {
+      return
+    }
+
+    void getHermesConfigRecord(settingsOwner)
       .then(record => {
         if (!alive) {
           return
@@ -244,7 +319,7 @@ function AutoArchiveSetting() {
     return () => {
       alive = false
     }
-  }, [])
+  }, [settingsOwner])
 
   const persist = useCallback(
     async (autoArchive: boolean, archiveDays: number) => {
@@ -258,22 +333,21 @@ function AutoArchiveSetting() {
         auto_archive_days: archiveDays
       }
 
-      // Read the route at save time from the record itself, and carry it onto
-      // the replacement snapshot so the next save still targets the gateway
-      // that served the original GET.
-      const writeScope = peekConfigReadOrigin(config)
-
-      setConfig(retainConfigReadOrigin({ ...config, sessions }, config))
+      const updated = { ...config, sessions }
+      setConfig(updated)
 
       try {
         // Sparse patch: PUT /api/config deep-merges, and echoing the cached
         // snapshot would overwrite keys other surfaces changed since it loaded.
-        await saveHermesConfig({ sessions: { auto_archive: autoArchive, auto_archive_days: archiveDays } }, writeScope)
+        await saveHermesConfig(
+          { sessions: { auto_archive: autoArchive, auto_archive_days: archiveDays } },
+          settingsOwner
+        )
       } catch (err) {
         notifyError(err, s.autoArchiveFailed)
       }
     },
-    [config, s.autoArchiveFailed]
+    [config, s.autoArchiveFailed, settingsOwner]
   )
 
   if (!config) {

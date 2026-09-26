@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { runInTerminal } from '@/app/right-sidebar/store'
 import {
@@ -18,6 +18,7 @@ import { RowButton } from '@/components/ui/row-button'
 import { SearchField } from '@/components/ui/search-field'
 import { Tip } from '@/components/ui/tooltip'
 import { disconnectOAuthProvider, listOAuthProviders } from '@/hermes'
+import type { ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Check, ChevronDown, ChevronRight, KeyRound, Loader2, Terminal, Trash2 } from '@/lib/icons'
 import { normalize } from '@/lib/text'
@@ -26,7 +27,7 @@ import { confirm } from '@/store/confirm'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding, startManualLocalEndpoint, startManualProviderOAuth } from '@/store/onboarding'
-import { $settingsRequestProfile } from '@/store/settings-scope'
+import { $settingsOwner } from '@/store/settings-scope'
 import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
 
 import { isKeyVar, ProviderKeyRows } from './credential-key-ui'
@@ -145,7 +146,7 @@ function OAuthPicker({
   onWantApiKey: () => void
   onWantLocalModels: () => void
   providers: OAuthProvider[]
-  profile?: string
+  profile?: ProfileScope
 }) {
   const { t } = useI18n()
   const p = t.settings.providers
@@ -370,8 +371,10 @@ export function ProvidersSettings({
   view
 }: ProvidersSettingsProps) {
   const { t } = useI18n()
-  const scopeProfile = useStore($settingsRequestProfile)
-  const { rowProps, vars } = useEnvCredentials(scopeProfile)
+  const settingsOwner = useStore($settingsOwner)
+  const settingsOwnerRef = useRef(settingsOwner)
+  settingsOwnerRef.current = settingsOwner
+  const { rowProps, vars } = useEnvCredentials(settingsOwner)
   const [oauthProviders, setOauthProviders] = useState<OAuthProvider[]>([])
   const [openProvider, setOpenProvider] = useState<null | string>(null)
   const [disconnecting, setDisconnecting] = useState<null | string>(null)
@@ -382,14 +385,22 @@ export function ProvidersSettings({
   // they launched from this page — otherwise the cards keep their stale status.
   const onboardingActive = useStore($desktopOnboarding).manual
 
-  const refreshOAuthProviders = useCallback(async () => {
+  const refreshOAuthProviders = useCallback(async (target: ProfileScope) => {
     // OAuth providers are best-effort — a failure here just hides the panel.
-    const { providers } = await listOAuthProviders(scopeProfile)
+    const { providers } = await listOAuthProviders(target)
+
+    if (settingsOwnerRef.current !== target) {
+      return
+    }
+
     setOauthProviders(providers)
-  }, [scopeProfile])
+  }, [])
 
   useEffect(() => {
     let cancelled = false
+
+    setOauthProviders([])
+    setDisconnecting(null)
 
     void (async () => {
       if (onboardingActive) {
@@ -397,7 +408,11 @@ export function ProvidersSettings({
       }
 
       try {
-        const { providers } = await listOAuthProviders(scopeProfile)
+        if (!settingsOwner) {
+          return
+        }
+
+        const { providers } = await listOAuthProviders(settingsOwner)
 
         if (!cancelled) {
           setOauthProviders(providers)
@@ -408,16 +423,17 @@ export function ProvidersSettings({
     })()
 
     return () => void (cancelled = true)
-  }, [onboardingActive, scopeProfile])
+  }, [onboardingActive, settingsOwner])
 
   // External (CLI-managed) providers can't be cleared via the API by design —
   // Hermes never deletes creds another tool owns behind a silent API call.
   // Instead we run the documented removal command in the embedded terminal so
   // the user sees exactly what executes, then return them to chat to watch it.
   async function handleTerminalDisconnect(provider: OAuthProvider) {
+    const target = settingsOwner
     const command = provider.disconnect_command
 
-    if (!command) {
+    if (!command || !target) {
       return
     }
 
@@ -429,7 +445,7 @@ export function ProvidersSettings({
       title: t.settings.providers.removeTerminalConfirm(name, command)
     })
 
-    if (!ok) {
+    if (!ok || settingsOwnerRef.current !== target) {
       return
     }
 
@@ -444,7 +460,12 @@ export function ProvidersSettings({
   }
 
   async function handleDisconnect(provider: OAuthProvider) {
+    const target = settingsOwner
     const name = providerTitle(provider)
+
+    if (!target) {
+      return
+    }
 
     const ok = await confirm({
       confirmLabel: t.settings.providers.disconnect,
@@ -452,14 +473,18 @@ export function ProvidersSettings({
       title: t.settings.providers.removeConfirm(name)
     })
 
-    if (!ok) {
+    if (!ok || settingsOwnerRef.current !== target) {
       return
     }
 
     setDisconnecting(provider.id)
 
     try {
-      const result = await disconnectOAuthProvider(provider.id, scopeProfile)
+      const result = await disconnectOAuthProvider(provider.id, target)
+
+      if (settingsOwnerRef.current !== target) {
+        return
+      }
 
       if (!result?.ok) {
         notifyError(new Error('No stored credentials were removed'), t.settings.providers.failedRemove(name))
@@ -473,15 +498,21 @@ export function ProvidersSettings({
         title: t.settings.providers.removedTitle,
         message: t.settings.providers.removedMessage(name)
       })
-      await refreshOAuthProviders().catch(() => undefined)
+      await refreshOAuthProviders(target).catch(() => undefined)
     } catch (err) {
+      if (settingsOwnerRef.current !== target) {
+        return
+      }
+
       notifyError(err, t.settings.providers.failedRemove(name))
     } finally {
-      setDisconnecting(null)
+      if (settingsOwnerRef.current === target) {
+        setDisconnecting(null)
+      }
     }
   }
 
-  if (!vars) {
+  if (!vars || !settingsOwner) {
     return <SettingsSkeleton search sections={[{ rows: 6 }]} />
   }
 
@@ -506,7 +537,7 @@ export function ProvidersSettings({
     return (
       <SettingsContent>
         <SettingsProfileScope className="mb-5" />
-        <LocalEndpointRow onOpen={reason => startManualLocalEndpoint(reason, scopeProfile)} />
+        <LocalEndpointRow onOpen={reason => startManualLocalEndpoint(reason, settingsOwner ?? undefined)} />
         {keyGroups.length > 0 ? (
           <div className="grid gap-3">
             <SearchField
@@ -543,7 +574,13 @@ export function ProvidersSettings({
   }
 
   if (view === 'custom-endpoints') {
-    return <CustomEndpointsSettings onConfigSaved={onConfigSaved} onMainModelChanged={onMainModelChanged} />
+    return (
+      <CustomEndpointsSettings
+        onConfigSaved={onConfigSaved}
+        onMainModelChanged={onMainModelChanged}
+        scope={settingsOwner}
+      />
+    )
   }
 
   if (view === 'local') {
@@ -562,7 +599,7 @@ export function ProvidersSettings({
         onTerminalDisconnect={provider => void handleTerminalDisconnect(provider)}
         onWantApiKey={() => onViewChange('keys')}
         onWantLocalModels={() => onViewChange('local')}
-        profile={scopeProfile}
+        profile={settingsOwner ?? undefined}
         providers={oauthProviders}
       />
     </SettingsContent>

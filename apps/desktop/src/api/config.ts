@@ -16,7 +16,7 @@ import type {
 
 import { capabilityScoped, hermesApi, type ProfileScope, profileScoped, STARTUP_REQUEST_TIMEOUT_MS } from './client'
 
-type ConfigReadOrigin = { connectionId?: string; priority?: 'foreground'; profile?: string }
+type ConfigReadOrigin = { connectionId?: null | string; priority?: 'foreground'; profile?: string }
 
 const configReadOrigins = new WeakMap<object, ConfigReadOrigin>()
 // Every origin object ever bound, so resolveConfigWriteScope can tell a
@@ -55,7 +55,7 @@ export function retainConfigReadOrigin<T extends object>(next: T, source: object
 export function resolveConfigWriteScope(
   record: object | undefined,
   requestScope?: ProfileScope
-): { connectionId?: string; priority?: 'foreground'; profile?: string } {
+): { connectionId?: null | string; priority?: 'foreground'; profile?: string } {
   if (requestScope && typeof requestScope === 'object') {
     // A captured read origin (the hook's `writeScope`) is already a
     // capabilityScoped() result. Spread it exactly like the WeakMap branch
@@ -84,9 +84,9 @@ export function resolveConfigWriteScope(
   return capabilityScoped(requestScope)
 }
 
-export function getStatus(): Promise<StatusResponse> {
+export function getStatus(profile?: ProfileScope): Promise<StatusResponse> {
   return hermesApi<StatusResponse>({
-    ...profileScoped(),
+    ...capabilityScoped(profile),
     path: '/api/status'
   })
 }
@@ -162,16 +162,16 @@ export function getHermesConfigRecord(
   })
 }
 
-export function getHermesConfigDefaults(): Promise<HermesConfigRecord> {
-  return fetchBoundConfigRecord(undefined, {
+export function getHermesConfigDefaults(profile?: ProfileScope): Promise<HermesConfigRecord> {
+  return fetchBoundConfigRecord(profile, {
     path: '/api/config/defaults',
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
 }
 
-export function getHermesConfigSchema(profile?: null | string): Promise<ConfigSchemaResponse> {
+export function getHermesConfigSchema(profile?: ProfileScope): Promise<ConfigSchemaResponse> {
   return hermesApi<ConfigSchemaResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: '/api/config/schema'
   })
 }
@@ -201,9 +201,9 @@ export function saveHermesConfigRecord(config: HermesConfigRecord, profile?: Pro
   })
 }
 
-export function getEnvVars(profile?: null | string): Promise<Record<string, EnvVarInfo>> {
+export function getEnvVars(profile?: ProfileScope): Promise<Record<string, EnvVarInfo>> {
   return hermesApi<Record<string, EnvVarInfo>>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: '/api/env'
   })
 }
@@ -241,7 +241,7 @@ export function validateProviderCredential(
   apiKey?: string,
   profile?: ProfileScope
 ): Promise<{ ok: boolean; reachable: boolean; message: string; models?: string[]; resolved_base_url?: string }> {
-  return window.hermesDesktop.api<{
+  return hermesApi<{
     ok: boolean
     reachable: boolean
     message: string
@@ -255,19 +255,16 @@ export function validateProviderCredential(
   })
 }
 
-export function getCustomEndpoints(profile?: null | string): Promise<CustomEndpointsResponse> {
+export function getCustomEndpoints(profile?: ProfileScope): Promise<CustomEndpointsResponse> {
   return hermesApi<CustomEndpointsResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: '/api/providers/custom-endpoints'
   })
 }
 
-export function saveCustomEndpoint(
-  endpoint: CustomEndpointUpdate,
-  profile?: null | string
-): Promise<CustomEndpointsResponse> {
+export function saveCustomEndpoint(endpoint: CustomEndpointUpdate, profile?: ProfileScope): Promise<CustomEndpointsResponse> {
   return hermesApi<CustomEndpointsResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: '/api/providers/custom-endpoints',
     method: 'POST',
     body: endpoint
@@ -276,10 +273,10 @@ export function saveCustomEndpoint(
 
 export function validateCustomEndpoint(
   endpoint: CustomEndpointUpdate,
-  profile?: null | string
+  profile?: ProfileScope
 ): Promise<CustomEndpointValidationResponse> {
   return hermesApi<CustomEndpointValidationResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: '/api/providers/custom-endpoints/validate',
     method: 'POST',
     body: endpoint
@@ -288,25 +285,25 @@ export function validateCustomEndpoint(
 
 export function activateCustomEndpoint(
   id: string,
-  profile?: null | string
+  profile?: ProfileScope
 ): Promise<{ ok: boolean; provider: string; model: string }> {
   return hermesApi<{ ok: boolean; provider: string; model: string }>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: `/api/providers/custom-endpoints/${encodeURIComponent(id)}/activate`,
     method: 'POST'
   })
 }
 
-export function deleteCustomEndpoint(id: string, profile?: null | string): Promise<CustomEndpointsResponse> {
+export function deleteCustomEndpoint(id: string, profile?: ProfileScope): Promise<CustomEndpointsResponse> {
   return hermesApi<CustomEndpointsResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: `/api/providers/custom-endpoints/${encodeURIComponent(id)}`,
     method: 'DELETE'
   })
 }
 
 export function listOAuthProviders(profile?: ProfileScope): Promise<OAuthProvidersResponse> {
-  return window.hermesDesktop.api<OAuthProvidersResponse>({
+  return hermesApi<OAuthProvidersResponse>({
     ...capabilityScoped(profile),
     path: '/api/providers/oauth'
   })
@@ -314,10 +311,10 @@ export function listOAuthProviders(profile?: ProfileScope): Promise<OAuthProvide
 
 export function disconnectOAuthProvider(
   providerId: string,
-  profile?: null | string
+  profile?: ProfileScope
 ): Promise<{ ok: boolean; provider: string }> {
   return hermesApi<{ ok: boolean; provider: string }>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: `/api/providers/oauth/${encodeURIComponent(providerId)}`,
     method: 'DELETE'
   })
@@ -338,7 +335,7 @@ export function submitOAuthCode(
   code: string,
   profile?: ProfileScope
 ): Promise<OAuthSubmitResponse> {
-  return window.hermesDesktop.api<OAuthSubmitResponse>({
+  return hermesApi<OAuthSubmitResponse>({
     ...capabilityScoped(profile),
     path: `/api/providers/oauth/${encodeURIComponent(providerId)}/submit`,
     method: 'POST',
@@ -358,7 +355,7 @@ export function pollOAuthSession(
 }
 
 export function cancelOAuthSession(sessionId: string, profile?: ProfileScope): Promise<{ ok: boolean }> {
-  return window.hermesDesktop.api<{ ok: boolean }>({
+  return hermesApi<{ ok: boolean }>({
     ...capabilityScoped(profile),
     path: `/api/providers/oauth/sessions/${encodeURIComponent(sessionId)}`,
     method: 'DELETE'

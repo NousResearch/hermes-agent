@@ -5,6 +5,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import type * as ConfigApi from '@/api/config'
 import { I18nProvider, TRANSLATIONS } from '@/i18n'
+import { $settingsScopeOverride } from '@/store/settings-scope'
 
 import { ModelSettings } from './model-settings'
 
@@ -41,7 +42,10 @@ vi.mock('@/hermes', async () => ({
   getAuxiliaryModels: (profile?: null | string) => getAuxiliaryModels(profile),
   getApiRequestProfile: () => 'default',
   getMoaModels: (profile?: null | string) => getMoaModels(profile),
-  profileScopeKey: (scope?: null | string) => (scope ?? '').trim() || 'default',
+  profileScopeKey: (scope?: null | string | { connectionId?: string | null; profile?: string | null }) =>
+    scope && typeof scope === 'object'
+      ? `${scope.connectionId ?? ''}\u0000${scope.profile ?? ''}`
+      : (scope ?? '').trim() || 'default',
   setModelAssignment: (body: unknown) => setModelAssignment(body),
   getRecommendedDefaultModel: (slug: string) => getRecommendedDefaultModel(slug),
   saveMoaModels: (body: unknown) => saveMoaModels(body),
@@ -64,6 +68,7 @@ vi.mock('../hooks/use-on-profile-switch', () => ({
 }))
 
 beforeEach(() => {
+  $settingsScopeOverride.set(null)
   getGlobalModelInfo.mockResolvedValue({ provider: 'nous', model: 'hermes-4' })
   getGlobalModelOptions.mockResolvedValue({
     providers: [
@@ -92,9 +97,13 @@ afterEach(() => {
   cleanup()
   vi.clearAllMocks()
   profileSwitchHandler = null
+  $settingsScopeOverride.set(null)
 })
 
-function renderModelSettings(scopeProfile?: string) {
+function renderModelSettings(
+  scopeProfile?: string | { connectionId: string; profile: string },
+  onMainModelChanged?: (provider: string, model: string) => void
+) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
   return render(
@@ -102,7 +111,7 @@ function renderModelSettings(scopeProfile?: string) {
     // needs a router context in tests (the app provides HashRouter at root).
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        <ModelSettings scopeProfile={scopeProfile} />
+        <ModelSettings onMainModelChanged={onMainModelChanged} scopeProfile={scopeProfile} />
       </QueryClientProvider>
     </MemoryRouter>
   )
@@ -193,6 +202,21 @@ describe('ModelSettings', () => {
     expect(startManualOnboarding).not.toHaveBeenCalled()
   })
 
+  it('hands provider setup the frozen gateway/profile owner', async () => {
+    const scope = { connectionId: 'remote-a', profile: 'research' }
+    getGlobalModelInfo.mockResolvedValueOnce({ provider: 'anthropic', model: '' })
+    getGlobalModelOptions.mockResolvedValueOnce({
+      providers: [
+        { name: 'Anthropic', slug: 'anthropic', models: [], authenticated: false, auth_type: 'oauth' }
+      ]
+    })
+
+    await renderModelSettings(scope)
+    fireEvent.click(await screen.findByRole('button', { name: 'Set up Anthropic' }))
+
+    expect(startManualProviderOAuth).toHaveBeenCalledWith('anthropic', scope)
+  })
+
   it('replaces the selected provider and model when the active profile changes', async () => {
     getGlobalModelInfo
       .mockResolvedValueOnce({ provider: 'custom', model: 'local-a' })
@@ -278,6 +302,21 @@ describe('ModelSettings', () => {
         base_url: 'http://localhost:11434/v1'
       })
     )
+  })
+
+  it('does not repaint active-model stores when applying a non-active profile model', async () => {
+    $settingsScopeOverride.set('research')
+    const onMainModelChanged = vi.fn()
+
+    await renderModelSettings({ connectionId: 'remote-a', profile: 'research' }, onMainModelChanged)
+
+    const modelSelect = (await screen.findAllByRole('combobox'))[1]
+    fireEvent.click(modelSelect)
+    fireEvent.click(await screen.findByRole('option', { name: 'hermes-4-mini' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }))
+
+    await waitFor(() => expect(setModelAssignment).toHaveBeenCalled())
+    expect(onMainModelChanged).not.toHaveBeenCalled()
   })
 
   it('writes the profile default speed (service_tier) as a sparse patch, never the cached snapshot', async () => {

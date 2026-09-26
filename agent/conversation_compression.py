@@ -1692,21 +1692,13 @@ def _adopt_live_compression_child(
     agent.session_id = child_session_id
     _rebind_session_context(child_session_id)
     agent._session_db_created = True
-    # The agent now owns the child session, so any prompt the parent cached belongs to a
-    # different session row: drop it before the seed below. The turn gates on this slot
-    # (``turn_context``: restore/rebuild runs only while it is None), so a parent prompt left
-    # in place would be sent for the child turn with no identity check at all.
-    agent._cached_system_prompt = None
+    # The turn skips restore/rebuild while this slot is set, so it may hold only the child's own
+    # prompt, and only when that prompt matches the current runtime (otherwise None -> rebuild).
+    from agent.conversation_loop import _stored_prompt_matches_runtime
     child_prompt = child.get("system_prompt")
-    if child_prompt:
-        # The tip's stored bytes are seeded straight into the cache slot the turn gates on
-        # (``turn_context``: restore runs only while it is None), so they must pass the same
-        # runtime-identity check the restore path applies. Route commits no longer NULL the row,
-        # so a tip whose model moved since its last persist still carries the old ``Model:``
-        # trailer; left unseeded, the next restore rebuilds for the current runtime.
-        from agent.conversation_loop import _stored_prompt_matches_runtime
-        if _stored_prompt_matches_runtime(agent, child_prompt):
-            agent._cached_system_prompt = child_prompt
+    agent._cached_system_prompt = (
+        child_prompt if child_prompt and _stored_prompt_matches_runtime(agent, child_prompt) else None
+    )
     agent._last_flushed_db_idx = len(recovered)
     agent._flushed_db_message_session_id = child_session_id
     agent._flushed_db_message_ids = {id(message) for message in recovered if isinstance(message, dict)}

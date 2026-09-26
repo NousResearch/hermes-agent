@@ -33,7 +33,11 @@ def test_micro_rehydration_preserves_merged_live_payload(kind, defrag, tmp_path)
         cc._session_db, cc._session_id = db, "carrier"
         messages = db.get_resume_conversations("carrier")[0]
         result = cc._micro_compact(messages)
-        resumed = db.get_resume_conversations("carrier")[0]
+        resumed, display = db.get_resume_conversations("carrier")
+        if kind != "tool_call":
+            assert sum("LIVE CARRIER PAYLOAD" in str(m.get("content")) for m in display) == 1
+            assert sum("LIVE CARRIER PAYLOAD" in str(m.get("content"))
+                       for m in db.get_messages("carrier", include_compacted=True)) == 1
     finally:
         db.close()
     assert "Fresh rolling facts." in str(result), "must run the selected micro path"

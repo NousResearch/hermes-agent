@@ -184,6 +184,10 @@ class MicroCompactionMixin:
                 entry["content"] = self._render_micro_marker_content(fresh_summary)
             else:
                 # Rehydration absorbed the summary, not the carrier's live payload.
+                if entry.get(_cc()._DB_PERSISTED_MARKER):
+                    # The archived original remains the display copy of this payload.
+                    entry["display_metadata"] = {**(entry.get("display_metadata") or {}),
+                                                 _cc().MODEL_ONLY_DISPLAY_METADATA_KEY: True}
                 entry["content"] = live.get("content")
                 self._merge_summary_into_tail_row(
                     entry, self._with_summary_prefix(fresh_summary), entry["role"], False,
@@ -483,6 +487,9 @@ class MicroCompactionMixin:
                     if message is None:
                         continue
                     message.pop(cc.MICRO_COMPACT_MARKER_KEY, None)
+                    if message.get(cc._DB_PERSISTED_MARKER):
+                        message["display_metadata"] = {**(message.get("display_metadata") or {}),
+                                                       cc.MODEL_ONLY_DISPLAY_METADATA_KEY: True}
                     message.pop(cc._DB_PERSISTED_MARKER, None)
                     cc.drop_stale_api_content(message)
                 retained.append(message)

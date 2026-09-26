@@ -233,9 +233,15 @@ test('built web freshness follows shared sources and build inputs, not mtimes or
   put(icons, 'web/public/favicon.ico', 'icon')
   put(source, 'apps/shared/src/client.ts', 'export const version = 1')
   put(source, 'scripts/build/web.mjs', '// build input')
+  put(source, 'assets/logo.svg', '<svg></svg>')
   await buildWeb({ source, icons, out })
   expect(productCurrent({ source, product: 'web', out })).toBe(true)
   put(source, 'web/node_modules/.tmp/tsbuildinfo', 'generated')
+  expect(productCurrent({ source, product: 'web', out })).toBe(true)
+  // macOS Finder metadata written into hashed input dirs must not invalidate the build (#122632).
+  put(source, 'web/public/.DS_Store', 'finder metadata')
+  put(source, 'apps/shared/src/._client.ts', 'apple double sidecar')
+  put(source, 'assets/.localized', '')
   expect(productCurrent({ source, product: 'web', out })).toBe(true)
   // Install completion rewrites the runtime identity after building products.
   put(source, 'install-stamp.json', '{"builtAt": "later"}')

@@ -1045,7 +1045,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
         self.pause_typing_for_chat(chat_id)
         try:
             # Format BEFORE chunking so the size limit applies to the rendered form.
-            chunks = self._chunk_text(self.format_message(content))
+            formatted = self.format_message(content)
+            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH) if formatted else []
             if not chunks:
                 return SendResult(success=False, error="empty message")
             last_result: Optional[SendResult] = None
@@ -1179,21 +1180,6 @@ class GoogleChatAdapter(BasePlatformAdapter):
             .execute(http=self._new_authed_http())
         )
         return SendResult(success=True, message_id=resp.get("name", message_name))
-
-    def _chunk_text(self, text: str) -> List[str]:
-        chunks: List[str] = []
-        remaining = text
-        while remaining:
-            if len(remaining) <= _MAX_TEXT_LENGTH:
-                chunks.append(remaining)
-                break
-            # Split on a newline near the cutoff when one exists past the midpoint.
-            cut = remaining.rfind("\n", 0, _MAX_TEXT_LENGTH)
-            if cut < _MAX_TEXT_LENGTH // 2:
-                cut = _MAX_TEXT_LENGTH
-            chunks.append(remaining[:cut])
-            remaining = remaining[cut:].lstrip()
-        return chunks
 
     @classmethod
     def format_message(cls, content: str) -> str:

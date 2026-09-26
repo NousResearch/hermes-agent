@@ -467,3 +467,17 @@ class TestCompoundFallback:
             r = ops.read_file(p)
         assert r.error is None and r.content == "1|one\n2|two"
         assert r.total_lines == 2
+
+class TestPatchReplaceExactBytes:
+    def test_patch_replace_preserves_raw_windows_path(self, _ops, tmp_path):
+        ops, _calls = _ops
+        path = tmp_path / "raw_path.py"
+        original = 'def folder():\n\treturn r"C:\\old"\n'
+        old_string = '\treturn r"C:\\old"'
+        new_string = '\treturn r"C:\\temp"'
+        path.write_bytes(original.encode("utf-8"))
+
+        result = ops.patch_replace(str(path), old_string, new_string)
+
+        assert result.success, result.error
+        assert path.read_bytes() == original.replace(old_string, new_string).encode("utf-8")

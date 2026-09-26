@@ -1,0 +1,431 @@
+{
+  "meta": {
+    "schema": 1,
+    "note": "Growable pattern set. Each signal is a scheme mechanic, not a person. weight is a per-hit probability in [0,1] combined via noisy-OR in scan.py. protected_brands maps a distinctive brand token to its VERIFIED official domain(s); a host where the brand appears as a token but the registrable domain isn't official is treated as a lookalike. Only add a brand whose official domain you have verified — a wrong entry makes the scanner vouch for a fake site. Generic-word brands (safe, lens, spark, venus, crypto) are intentionally omitted to avoid false positives."
+  },
+  "signals": [
+    {
+      "id": "seed_phrase_request",
+      "scheme_tag": "credential_theft",
+      "weight": 0.97,
+      "description": "Asks for a wallet seed phrase / private key / recovery words.",
+      "keywords": [
+        "seed phrase",
+        "seed-phrase",
+        "recovery phrase",
+        "private key",
+        "секретная фраза",
+        "сид фраза",
+        "сид-фраза",
+        "приватный ключ",
+        "мнемоническая фраза",
+        "фраза восстановления",
+        "12 слов",
+        "24 слова"
+      ],
+      "regexes": [
+        "\\bseed\\W*phrase\\b",
+        "\\bprivate\\W*key\\b",
+        "\\bсид[\\W_]*фраз"
+      ],
+      "safe_action": "Никогда не вводи и не пересылай seed-фразу или приватный ключ. Настоящие сервисы их не запрашивают — ни поддержка, ни валидация, ни разблокировка.",
+      "safe_action_en": "Never type or forward your seed phrase or private key. No real service — support, verification, or unlock — ever asks for it."
+    },
+    {
+      "id": "wallet_connect_verify",
+      "scheme_tag": "wallet_drainer",
+      "weight": 0.9,
+      "description": "Prompts to connect/verify/sync/validate a wallet via an external link.",
+      "keywords": [
+        "connect your wallet",
+        "validate wallet",
+        "verify your wallet",
+        "sync your wallet",
+        "restore your wallet",
+        "подключи кошелёк",
+        "подтверди кошелёк",
+        "верифицируй кошелёк",
+        "синхронизируй кошелёк",
+        "разблокировать кошелёк",
+        "активируй кошелёк"
+      ],
+      "regexes": [
+        "\\b(connect|verify|validate|sync|restore)\\W+(your\\W+)?wallet\\b"
+      ],
+      "safe_action": "Не подключай кошелёк по ссылке из сообщения. Открой сайт вручную из закладки и проверь адрес домена символ в символ.",
+      "safe_action_en": "Don't connect your wallet from a link in a message. Open the site manually from a bookmark and check the domain character by character."
+    },
+    {
+      "id": "airdrop_claim",
+      "scheme_tag": "fake_airdrop",
+      "weight": 0.78,
+      "description": "Unsolicited airdrop/claim/reward with a link and a deadline.",
+      "keywords": [
+        "claim your airdrop",
+        "claim reward",
+        "you are eligible",
+        "exclusive airdrop",
+        "забери airdrop",
+        "забери дроп",
+        "получи награду",
+        "клейм",
+        "клейми",
+        "ты в аллокации",
+        "розыгрыш призов"
+      ],
+      "regexes": [
+        "\\bclaim\\W+(your\\W+)?(airdrop|reward|tokens?)\\b",
+        "\\bзабер[иь]\\W+(дроп|airdrop|награду)\\b"
+      ],
+      "safe_action": "Незапрошенные «клеймы» почти всегда drainer. Не переходи по ссылке; проверь новость только на официальном канале проекта.",
+      "safe_action_en": "Unsolicited 'claims' are almost always drainers. Don't open the link; verify the news only on the project's official channel."
+    },
+    {
+      "id": "guaranteed_returns",
+      "scheme_tag": "investment_fraud",
+      "weight": 0.72,
+      "description": "Promises fixed/guaranteed profit or doubling of funds.",
+      "keywords": [
+        "guaranteed profit",
+        "guaranteed returns",
+        "double your",
+        "x2 in",
+        "risk-free",
+        "гарантированный доход",
+        "гарантированная прибыль",
+        "удвою",
+        "удвоить депозит",
+        "без риска",
+        "фиксированный процент в день"
+      ],
+      "regexes": [
+        "\\b(guaranteed|фиксированн\\w+)\\W+(profit|return|доход|прибыл)",
+        "\\bx?2\\W+(your|депозит|вложени)"
+      ],
+      "safe_action": "Гарантированной доходности без риска не существует. Чем конкретнее обещанный процент, тем выше вероятность схемы.",
+      "safe_action_en": "Guaranteed risk-free returns don't exist. The more specific the promised percentage, the more likely it's a scheme."
+    },
+    {
+      "id": "advance_fee",
+      "scheme_tag": "advance_fee",
+      "weight": 0.7,
+      "description": "Requests an upfront payment/fee/tax to unlock a larger reward or withdrawal.",
+      "keywords": [
+        "pay a fee to withdraw",
+        "release fee",
+        "unlock fee",
+        "gas fee to receive",
+        "оплати комиссию чтобы вывести",
+        "оплати налог",
+        "оплати страховку",
+        "внеси залог",
+        "предоплата за вывод",
+        "разблокировочный платёж"
+      ],
+      "regexes": [
+        "\\b(pay|send)\\W+(a\\W+)?(fee|tax|deposit)\\W+(to|before)\\W+(withdraw|receive|unlock)"
+      ],
+      "safe_action": "Требование заплатить, чтобы что-то получить — классика. Легитимный вывод не требует предоплаты со стороны получателя.",
+      "safe_action_en": "Being asked to pay in order to receive is a classic. A legitimate withdrawal never requires an upfront payment from the recipient."
+    },
+    {
+      "id": "otp_2fa_request",
+      "scheme_tag": "account_takeover",
+      "weight": 0.9,
+      "description": "Asks the user to share a login code, OTP, SMS code or 2FA code.",
+      "keywords": [
+        "send me the code",
+        "share the code",
+        "verification code",
+        "otp",
+        "one-time code",
+        "продиктуй код",
+        "перешли код",
+        "код из смс",
+        "код подтверждения",
+        "одноразовый код",
+        "код из приложения"
+      ],
+      "regexes": [
+        "\\b(send|share|give|продиктуй|перешл\\w+)\\W+(me\\W+)?(the\\W+)?(код|code)\\b",
+        "\\bкод\\W+(из\\W+)?смс\\b"
+      ],
+      "safe_action": "Код подтверждения — это ключ от аккаунта. Его не запрашивают ни поддержка, ни банк, ни знакомый. Не диктуй и не пересылай.",
+      "safe_action_en": "A verification code is the key to your account. Support, banks, and friends never ask for it. Don't read it out or forward it."
+    },
+    {
+      "id": "fake_support",
+      "scheme_tag": "impersonation",
+      "weight": 0.62,
+      "description": "Claims to be official support/admin/security reaching out first.",
+      "keywords": [
+        "official support",
+        "support team contacted you",
+        "i am an admin",
+        "security department",
+        "техподдержка",
+        "служба поддержки",
+        "я админ",
+        "отдел безопасности",
+        "служба безопасности банка",
+        "модератор проекта"
+      ],
+      "regexes": [
+        "\\b(official|verified)\\W+support\\b",
+        "\\bслужба\\W+безопасности\\b"
+      ],
+      "safe_action": "Поддержка не пишет первой в личку. Закрой диалог и напиши в официальный канал сам, по адресу с сайта.",
+      "safe_action_en": "Support doesn't DM you first. Close the chat and contact the official channel yourself, via the address on the website."
+    },
+    {
+      "id": "urgency_pressure",
+      "scheme_tag": "pressure",
+      "weight": 0.4,
+      "description": "Artificial time pressure or threat of loss to force a fast action.",
+      "keywords": [
+        "within 24 hours",
+        "act now",
+        "last chance",
+        "account will be blocked",
+        "immediately",
+        "срочно",
+        "в течение 24 часов",
+        "аккаунт будет заблокирован",
+        "последний шанс",
+        "немедленно",
+        "иначе потеряешь",
+        "успей до"
+      ],
+      "regexes": [
+        "\\b(в течение|within)\\W+\\d+\\W*(час|hour|min|минут)",
+        "\\b(будет|will\\W+be)\\W+(заблокирован|blocked|suspended)"
+      ],
+      "safe_action": "Спешка — инструмент давления. Возьми паузу: настоящая организация даст время всё проверить.",
+      "safe_action_en": "Urgency is a pressure tool. Take a pause — a real organization gives you time to verify."
+    },
+    {
+      "id": "platform_switch",
+      "scheme_tag": "pressure",
+      "weight": 0.38,
+      "description": "Pushes to move the conversation to DM / another app quickly.",
+      "keywords": [
+        "dm me",
+        "message me on whatsapp",
+        "write me on telegram",
+        "let's continue in private",
+        "напиши в личку",
+        "перейдём в вотсап",
+        "пиши в телеграм",
+        "продолжим в лс",
+        "добавь меня",
+        "напиши мне в"
+      ],
+      "regexes": [
+        "\\b(dm|напиши)\\W+(me\\W+)?(in\\W+)?(private|личк)",
+        "\\bперейд[её]м\\W+в\\b"
+      ],
+      "safe_action": "Увод в приватный канал убирает свидетелей и модерацию. Сам факт срочного перехода в ЛС — сигнал.",
+      "safe_action_en": "Moving to a private channel removes witnesses and moderation. The push to jump into DMs is itself a signal."
+    },
+    {
+      "id": "gift_card_payment",
+      "scheme_tag": "untraceable_payment",
+      "weight": 0.66,
+      "description": "Requests payment in gift cards, top-up codes or crypto to an unknown address.",
+      "keywords": [
+        "gift card",
+        "steam card",
+        "google play card",
+        "itunes code",
+        "подарочная карта",
+        "код пополнения",
+        "оплати картой стим",
+        "перекинь на кошелёк",
+        "пополни счёт"
+      ],
+      "regexes": [
+        "\\b(gift|steam|itunes|google\\W*play)\\W+card\\b",
+        "\\bкод\\W+пополнени"
+      ],
+      "safe_action": "Оплата подарочными картами или переводом на неизвестный кошелёк необратима и непрослеживаема — типичное требование мошенника.",
+      "safe_action_en": "Payment via gift cards or transfers to an unknown wallet is irreversible and untraceable — a typical scammer demand."
+    }
+  ],
+  "url_config": {
+    "shorteners": [
+      "bit.ly",
+      "t.ly",
+      "tinyurl.com",
+      "cutt.ly",
+      "is.gd",
+      "goo.su",
+      "clck.ru",
+      "vk.cc",
+      "surl.li"
+    ],
+    "suspicious_tlds": [
+      "zip",
+      "mov",
+      "top",
+      "xyz",
+      "click",
+      "link",
+      "gift",
+      "loan",
+      "rest",
+      "cfd",
+      "sbs"
+    ],
+    "protected_brands": {
+      "binance": [
+        "binance.com",
+        "binance.us"
+      ],
+      "coinbase": [
+        "coinbase.com"
+      ],
+      "kraken": [
+        "kraken.com"
+      ],
+      "okx": [
+        "okx.com"
+      ],
+      "bybit": [
+        "bybit.com"
+      ],
+      "kucoin": [
+        "kucoin.com"
+      ],
+      "bitget": [
+        "bitget.com"
+      ],
+      "gate": [
+        "gate.com",
+        "gate.io"
+      ],
+      "mexc": [
+        "mexc.com"
+      ],
+      "htx": [
+        "htx.com"
+      ],
+      "gemini": [
+        "gemini.com"
+      ],
+      "bitstamp": [
+        "bitstamp.net",
+        "bitstamp.com"
+      ],
+      "bitfinex": [
+        "bitfinex.com"
+      ],
+      "upbit": [
+        "upbit.com"
+      ],
+      "uniswap": [
+        "uniswap.org"
+      ],
+      "pancakeswap": [
+        "pancakeswap.finance"
+      ],
+      "sushiswap": [
+        "sushi.com"
+      ],
+      "raydium": [
+        "raydium.io"
+      ],
+      "aerodrome": [
+        "aerodrome.finance"
+      ],
+      "jupiter": [
+        "jup.ag"
+      ],
+      "dydx": [
+        "dydx.trade",
+        "dydx.exchange"
+      ],
+      "hyperliquid": [
+        "hyperliquid.xyz"
+      ],
+      "curve": [
+        "curve.finance"
+      ],
+      "balancer": [
+        "balancer.fi"
+      ],
+      "polymarket": [
+        "polymarket.com"
+      ],
+      "kalshi": [
+        "kalshi.com"
+      ],
+      "metamask": [
+        "metamask.io"
+      ],
+      "phantom": [
+        "phantom.app",
+        "phantom.com"
+      ],
+      "trustwallet": [
+        "trustwallet.com"
+      ],
+      "ledger": [
+        "ledger.com"
+      ],
+      "trezor": [
+        "trezor.io"
+      ],
+      "rabby": [
+        "rabby.io"
+      ],
+      "exodus": [
+        "exodus.com"
+      ],
+      "tonkeeper": [
+        "tonkeeper.com"
+      ],
+      "zerion": [
+        "zerion.io"
+      ],
+      "keplr": [
+        "keplr.app"
+      ],
+      "argent": [
+        "argent.xyz"
+      ],
+      "aave": [
+        "aave.com"
+      ],
+      "morpho": [
+        "morpho.org"
+      ],
+      "kamino": [
+        "kamino.finance"
+      ],
+      "marginfi": [
+        "marginfi.com"
+      ],
+      "farcaster": [
+        "farcaster.xyz"
+      ],
+      "warpcast": [
+        "warpcast.com"
+      ],
+      "galxe": [
+        "galxe.com"
+      ],
+      "debank": [
+        "debank.com"
+      ]
+    },
+    "weights": {
+      "shortener": 0.35,
+      "ip_host": 0.55,
+      "punycode": 0.7,
+      "suspicious_tld": 0.4,
+      "lookalike_domain": 0.75,
+      "at_symbol_in_url": 0.6,
+      "many_subdomains": 0.3
+    }
+  }
+}

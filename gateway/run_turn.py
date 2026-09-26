@@ -259,14 +259,30 @@ class GatewayTurnMixin:
                 parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
             )
             if ch:
+                _ch_model = model
                 if ch.model:
                     model = ch.model
                 if ch.provider:
-                    runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(ch.provider, target_model=model or None)
-                    ch_runtime_model = runtime_kwargs.pop("model", None)
-                    # Adopt the provider's bundled model only when the override named none.
-                    if ch_runtime_model and not ch.model:
-                        model = ch_runtime_model
+                    try:
+                        runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(ch.provider, target_model=model or None)
+                    except Exception as exc:
+                        # Same guard as the session /model block above: a static channel override whose
+                        # credentials cannot be resolved must not abort the turn before an agent exists.
+                        # Run this turn on the whole default route — which still walks fallback_providers
+                        # — and say so. The config override is static, so the next turn retries it; the
+                        # override's model goes back with its provider, because sending it to the default
+                        # provider's endpoint is the wrong-model 400 the block above documents.
+                        logger.warning("Channel override provider %s unavailable: %s", ch.provider, exc)
+                        model = _ch_model
+                        if not self._pre_agent_fallback_notice:
+                            from hermes_cli.fallback_config import pre_agent_fallback_notice
+                            self._pre_agent_fallback_notice = pre_agent_fallback_notice(
+                                ch.provider, ch.model, runtime_kwargs.get("provider"), model)
+                    else:
+                        ch_runtime_model = runtime_kwargs.pop("model", None)
+                        # Adopt the provider's bundled model only when the override named none.
+                        if ch_runtime_model and not ch.model:
+                            model = ch_runtime_model
 
         if override and skey:
             model, runtime_kwargs = self._apply_session_model_override(skey, model, runtime_kwargs)

@@ -6,13 +6,14 @@ import base64
 import io
 import itertools
 import logging
+import os
 import shlex
 import tarfile
 import threading
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
-from hermes_constants import get_hermes_home
+from hermes_constants import display_hermes_home, get_hermes_home
 from tools.environments.base import BaseEnvironment, _load_json_store, _save_json_store
 from tools.environments.base_output import _ThreadedProcessHandle
 from tools.environments.file_sync import (
@@ -60,6 +61,103 @@ def _delete_direct_snapshot(task_id: str, snapshot_id: str | None = None) -> Non
         snapshots.pop(key)
     if stale:
         _save_snapshots(snapshots)
+
+
+# The tool layer's real bound on this path: tools/registry.py caps tool error
+# bodies at _MAX_TOOL_ERROR_CHARS = 2048 with a hard mid-word cut plus a
+# "… [truncated]" marker, after terminal_tool prefixes "Failed to execute
+# command: ". Capping the SDK detail at ~200 chars (the SDK's "Token missing"
+# text measures 219) keeps every branch far inside 2048 so the Fix line
+# always survives; the cut keeps whole words only when that retains at least
+# half the cap, otherwise it hard-cuts rather than dropping the message.
+_AUTH_DETAIL_LIMIT = 200
+
+
+def _diagnose_modal_auth_error(exc: BaseException, *,
+                               environ: Optional[Mapping[str, str]] = None,
+                               config_path: Optional[str] = None) -> str:
+    """Turn a bare modal AuthError into a diagnosis naming the credential the
+    SDK actually read. Hermes publishes $HERMES_HOME/.env into os.environ, so
+    MODAL_TOKEN_ID/SECRET there silently beat a ~/.modal.toml profile that
+    `modal token info` (a plain shell) reports as healthy (#47264). The SDK
+    reads its config from MODAL_CONFIG_PATH or ~/.modal.toml, so name that
+    resolved path, never a hardcoded one — and when no config file exists the
+    diagnosis must not present one as the source. environ/config_path are
+    injectable so every branch is testable without touching real env or files.
+    Names/paths only — the tool layer caps and redacts this text; the first
+    line must carry the point."""
+    environ = os.environ if environ is None else environ
+    if config_path is None:
+        config_path = environ.get("MODAL_CONFIG_PATH") or os.path.expanduser("~/.modal.toml")
+    detail = str(exc) or exc.__class__.__name__
+    if len(detail) > _AUTH_DETAIL_LIMIT:
+        # Whole-word trim when it keeps most of the text; hard cut otherwise:
+        # a detail like "Error: " + a 200-char unbroken token would trim back
+        # to "Error:…" and lose every specific, so only trust the word
+        # boundary when it retains at least half the limit (no spaces at all
+        # means rsplit returns the full slice, i.e. the same hard cut).
+        head = detail[:_AUTH_DETAIL_LIMIT].rsplit(" ", 1)[0].rstrip()
+        kept = head if len(head) >= _AUTH_DETAIL_LIMIT // 2 else detail[:_AUTH_DETAIL_LIMIT].rstrip()
+        detail = kept + "…"
+    # Membership test, not truthiness: the SDK decides with
+    # `env_var_key in os.environ` (modal/config.py Config.get), so
+    # MODAL_TOKEN_ID="" IS the credential it read — list by membership.
+    env_set = [v for v in ("MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET") if v in environ]
+    if env_set:
+        # The SDK consults the config file per MISSING half only, so claim
+        # that only when a half is actually missing — with both vars set,
+        # nothing is read from the file. Both wordings stay inside the length
+        # budget pinned by the worst-case test; the no-file sub-case is the
+        # longer tail, so it drops the "(plain shell)" aside to keep a
+        # 60-char path plus a 200-char capped detail under 640.
+        if len(env_set) == 2:
+            source_note = (
+                f"Source: {'/'.join(env_set)} in the environment supplies both "
+                f"halves; nothing is read from {config_path}; `modal token "
+                "info` (plain shell) never sees the env.")
+        else:
+            missing = "MODAL_TOKEN_SECRET" if env_set[0] == "MODAL_TOKEN_ID" else "MODAL_TOKEN_ID"
+            # Say where the SDK LOOKED and whether anything was usable —
+            # never that the half "comes from" the file. Even when the path
+            # exists the SDK may read nothing usable from it (no matching
+            # profile section, no token entry, an unexpanded ~ it never
+            # opens), and a diagnostic path must not parse the user's TOML
+            # to find out which; acquisition claims would repeat the
+            # false-attribution class this diagnosis exists to remove.
+            if Path(config_path).exists():
+                source_note = (
+                    f"Source: {env_set[0]} in the environment; {missing} is not set, "
+                    "so the SDK looks for that half in "
+                    f"{config_path}; `modal token info` (plain shell) never sees the env.")
+            else:
+                # No file at the resolved path: Config.get finds nothing for
+                # the missing half, so client.py::from_env sees a falsy half,
+                # builds no credentials, and raises "Token missing…".
+                # "supplied nothing" is truthful for an absent, unreadable or
+                # unexpanded-~ path alike — the SDK opened none of them.
+                source_note = (
+                    f"Source: {env_set[0]} in the environment; {missing} is not set and "
+                    f"{config_path} supplied nothing, so the SDK built no complete "
+                    "credential pair. `modal token info` never sees the env.")
+        return (
+            f"Modal authentication failed ({detail}).\n"
+            f"{source_note}\n"
+            f"Fix: unset MODAL_TOKEN_ID/MODAL_TOKEN_SECRET in the env Hermes runs "
+            f"in (normally {display_hermes_home()}/.env), or re-run `hermes setup` → "
+            "Terminal → Modal.")
+    if Path(config_path).exists():
+        return (
+            f"Modal authentication failed ({detail}).\n"
+            f"Source: the Modal profile in {config_path} (no MODAL_TOKEN_ID/MODAL_TOKEN_SECRET "
+            "in the environment).\n"
+            "Fix: run `modal token new` to save fresh credentials, or re-run "
+            "`hermes setup` → Terminal → Modal.")
+    return (
+        f"Modal authentication failed ({detail}).\n"
+        f"Source: no Modal credentials found — no MODAL_TOKEN_ID/MODAL_TOKEN_SECRET in the "
+        f"environment, and no config file at {config_path}.\n"
+        "Fix: run `hermes setup` → Terminal → Modal, or `modal token new` to register "
+        "credentials.")
 
 
 def _resolve_modal_image(image_spec: Any) -> Any:
@@ -177,6 +275,12 @@ class ModalEnvironment(BaseEnvironment):
         try:
             try:
                 _create(_resolve_modal_image(restored_snapshot_id or image))
+            except _modal.exception.AuthError:
+                # Auth dies at the first RPC — before any sandbox exists — so the
+                # recorded snapshot was never suspect: re-raise past the
+                # delete-and-retry below (it would silently destroy restore
+                # state) and let the outer AuthError arm translate (#47264).
+                raise
             except Exception as exc:
                 if not restored_snapshot_id:
                     raise
@@ -187,6 +291,17 @@ class ModalEnvironment(BaseEnvironment):
             else:
                 if restored_snapshot_id and restored_from_legacy_key:
                     _store_direct_snapshot(self._task_id, restored_snapshot_id)
+        except _modal.exception.AuthError as exc:
+            # The skip of the delete-and-retry for the initial attempt is the
+            # INNER `except _modal.exception.AuthError: raise` arm's doing
+            # (auth dies at the first RPC, before any sandbox, so the recorded
+            # snapshot is never suspect). This arm only translates the
+            # failure — from the initial attempt or from the base-image retry
+            # — into a diagnosed RuntimeError instead of a bare SDK AuthError,
+            # and stops the worker. Clause before the generic one: AuthError
+            # subclasses Exception.
+            self._worker.stop()
+            raise RuntimeError(_diagnose_modal_auth_error(exc)) from exc
         except Exception:
             self._worker.stop()
             raise

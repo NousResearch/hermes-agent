@@ -199,6 +199,34 @@ def refuse_foreign_owned_venv(project_root: Path) -> None:
                     candidates.append(entry)
                     if entry.name.endswith(".dist-info") and entry.is_dir():
                         candidates.extend(list(entry.iterdir())[:100])
+    # npm workspaces keep state under node_modules (including cache dot-dirs
+    # like .vite) that `npm ci` rewrites in place. A root-owned entry there is
+    # the classic EACCES-rmdir wall: the Python venv scan above does not reach
+    # it, so a root-run install that polluted node_modules would only explode
+    # later, mid-update, with npm's misleading "run as root" advice.
+    node_modules_dirs = [root / "node_modules", *root.glob("*/node_modules"),
+                         *root.glob("apps/*/node_modules")]
+    for nm_dir in node_modules_dirs:
+        if not nm_dir.is_dir():
+            continue
+        candidates.append(nm_dir)
+        for entry in list(nm_dir.iterdir())[:2000]:
+            candidates.append(entry)
+            # Dot-dirs are transform/cache state (e.g. .vite, .cache); sample
+            # one level in because that is where the refused rmdir lands.
+            if entry.name.startswith(".") and entry.is_dir():
+                candidates.extend(list(entry.iterdir())[:500])
+    # The managed Python runtime tree is also rewritten on sync; a root-run
+    # install publishes whole generations as root. Catch those dirs (and the
+    # tree root) so the refusal fires before pip's own inventory walk fails
+    # with EACCES even though the editable import still works.
+    runtime = root / ".hermes-runtime"
+    if runtime.is_dir():
+        candidates.append(runtime)
+        candidates.extend(list(runtime.iterdir())[:200])
+        for gen in runtime.glob("python/generation-*"):
+            candidates.append(gen)
+            candidates.extend(list(gen.iterdir())[:200])
     for path in candidates:
         try:
             owner = path.lstat().st_uid

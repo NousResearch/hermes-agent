@@ -5901,17 +5901,18 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     _refresh_host_gateway_record(runner)
     _log_standalone_profiles_at_boot(runner)
 
-    def _lifecycle_record_startup() -> None:
-        # Report if the previous life died uncleanly (SIGKILL / OOM / VM death), then claim the
-        # sentinel for this life. After the PID-file claim so a --replace loser can't clobber it.
-        from gateway.lifecycle_ledger import record_startup
-        record_startup()
-
     def _start_keepalive() -> None:
         from hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive
         start_nous_auth_keepalive()
 
-    _best_effort(_lifecycle_record_startup, "Lifecycle ledger startup record failed: %s")
+    # Report if the previous life died uncleanly (SIGKILL / OOM / VM death), then claim the sentinel
+    # for this life. After the PID-file claim so a --replace loser can't clobber it. Off the loop:
+    # the record fsyncs the sentinel and, after an unclean death, integrity-checks state.db.
+    try:
+        from gateway.lifecycle_ledger import record_startup_async
+        await record_startup_async()
+    except Exception as exc:
+        logger.debug("Lifecycle ledger startup record failed: %s", exc)
     _best_effort(_start_keepalive, "Nous auth keepalive did not start: %s")
     _ensure_windows_gateway_venv_imports()
 

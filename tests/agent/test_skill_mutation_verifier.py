@@ -31,8 +31,8 @@ def skill(tmp_path, monkeypatch):
 
 def record(agent, args, result=None):
     if result is None:
-        result = skills.skill_manage(action=args.get('action', ''), name=args.get('name', ''),
-                                     **{k: v for k, v in args.items() if k not in {'action', 'name'}})
+        from tools.registry import registry
+        result = registry.dispatch('skill_manage', args)
     parsed = json.loads(result)
     agent._record_file_mutation_result('skill_manage', args, result, bool(parsed.get('error')))
     return parsed
@@ -138,6 +138,18 @@ def test_profile_a_b_a_does_not_clear_another_profiles_failure(agent, tmp_path, 
 def test_empty_batch_error_is_not_silenced(agent, skill):
     record(agent, {'operations': []})
     assert 'skill_manage' in footer(agent)
+
+
+@pytest.mark.parametrize('batch', [False, True])
+def test_categorized_delete_retry_clears_failure_after_directory_disappears(agent, skill, batch):
+    op = {'name': 'sample', 'action': 'delete', 'absorbed_into': 'missing-umbrella'}
+    args = {'operations': [op]} if batch else op
+    assert record(agent, args)['success'] is False
+    assert 'sample' in footer(agent)
+    op.pop('absorbed_into')
+    assert record(agent, args)['success'] is True
+    assert not skill.exists()
+    assert footer(agent) == 'Finished.'
 
 
 def test_malformed_result_does_not_erase_failure(agent, skill):

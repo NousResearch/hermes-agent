@@ -6,7 +6,7 @@ from pathlib import Path
 from agent.tool_dispatch_helpers import _extract_error_preview
 
 
-def _targets(args):
+def _targets(args, receipt=None):
     """Resolve through the tool's own profile/create-dir lookup, not the terminal CWD."""
     from hermes_constants import get_hermes_home
     from tools.skill_manager_tool import _find_skill, _resolve_skill_dir
@@ -32,6 +32,10 @@ def _targets(args):
             found = _find_skill(name)
             directory = Path(found["path"]) if found else _resolve_skill_dir(name, op.get("category"))
             target = directory if action == "delete" else directory / file_path
+            # Deletion destroys discovery's SKILL.md anchor. Its receipt carries
+            # the actual removed directory (also for the sole-op batch form).
+            if action == "delete" and isinstance(receipt, dict) and isinstance(receipt.get("path"), str):
+                target = Path(receipt["path"])
             canonical = os.path.normcase(str(target.resolve()))
             display = target.as_posix()
         except (OSError, ValueError, TypeError, RuntimeError):
@@ -56,7 +60,7 @@ def record_skill_mutation_result(agent, args, result, is_error):
         bool(data.get("error")) or data.get("success") is False))
     if not landed and not failed:
         return
-    targets = list(_targets(args))
+    targets = list(_targets(args, data if landed else None))
     if landed:
         identities = {identity for _, identity in targets}
         for key, info in list(state.items()):

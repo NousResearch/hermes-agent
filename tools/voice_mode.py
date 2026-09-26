@@ -1098,6 +1098,13 @@ def _run_system_player(cmd: List[str]) -> bool:
         rc = proc.returncode
         if rc == 0:
             return True
+        # SIGTERM (-15) means stop_playback() killed us mid-playback — NOT a player
+        # failure. Falling through here would start the next candidate player and
+        # replay the whole file from the top after a barge-in. Return True (playback
+        # was intentionally cut; the file itself played fine up to the cut).
+        if rc == -15 or (proc.stderr is None and rc == 15):
+            logger.info("System player %s terminated by stop_playback (barge-in)", cmd[0])
+            return True
         # e.g. WSL ffplay/aplay with no audio device — fall through to the next player.
         logger.debug("System player %s exited with code %d, trying next", cmd[0], rc)
     except subprocess.TimeoutExpired:

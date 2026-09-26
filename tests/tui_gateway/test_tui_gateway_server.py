@@ -20592,6 +20592,7 @@ def _fake_tts_modules(monkeypatch, *, requirements=True, playback_stops=None, li
 
     def fake_stream(text_queue, stop, done, **_kw):
         started["queue"] = text_queue
+        started["kwargs"] = _kw
         stop.wait(5)
         done.set()
 
@@ -20666,7 +20667,9 @@ def test_tts_stream_begin_and_stop_lifecycle(monkeypatch):
 
 
 def test_tts_stream_begin_barges_in_on_previous_pipeline(monkeypatch):
-    """A new turn's pipeline stops the previous turn's speech (one speaker)."""
+    """Deferred barge-in: a new turn's begin() must NOT stop the previous
+    turn's speech (typing doesn't cut it) — it detaches it; the new pipeline's
+    on_first_audio callback is the thing that cuts it, right before new audio sounds."""
     monkeypatch.setenv("HERMES_VOICE_TTS", "1")
     monkeypatch.setenv("HERMES_VOICE", "0")
     _fake_tts_modules(monkeypatch)
@@ -20675,7 +20678,19 @@ def test_tts_stream_begin_barges_in_on_previous_pipeline(monkeypatch):
     with server._tts_stream_lock:
         first = server._tts_stream_state
     server._tts_stream_begin()
-    assert first is not None and first["stop"].is_set()
+    # Deferred cut: the previous pipeline is parked (detached), still live…
+    assert first is not None and not first["stop"].is_set()
+    with server._tts_stream_lock:
+        assert (first["stop"], first["done"]) in server._detached_pipelines
+    # …and the new pipeline carries the deferred-cut callback.
+    second = server._tts_stream_state
+    assert second is not None and second is not first
+    # The callback must cut exactly the detached pipeline, then stand down.
+    server._cut_detached_pipelines()
+    assert first["stop"].is_set()
+    assert not server._detached_pipelines
+    # A second fire (on_first_audio is once-per-pipeline, but idempotence anyway) is a no-op.
+    server._cut_detached_pipelines()
     server._tts_stream_stop()
 
 

@@ -443,7 +443,9 @@ def _cmd_purge(args) -> int:
         # The NEWER of the record's archived_at and the dir mtime: archives made before
         # archive_skill stamped the mtime carry the skill's last-edit mtime, and a stale
         # archived_at survives a manual un-archive + re-archive. Never purge before either says so.
-        rec = skill_usage.get_record(p.name)
+        # Key by the SKILL.md frontmatter name: older archives were flattened under the directory
+        # name (`accelerate` for `huggingface-accelerate`), which is not the usage-record key.
+        rec = skill_usage.get_record(skill_usage._read_skill_name(p / "SKILL.md", fallback=p.name))
         at = skill_usage._parse_iso_timestamp(rec.get("archived_at")) if rec.get("state") == skill_usage.STATE_ARCHIVED else None
         return max(at.timestamp(), p.stat().st_mtime) if at else p.stat().st_mtime
 

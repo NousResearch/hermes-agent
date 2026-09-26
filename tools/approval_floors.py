@@ -42,6 +42,33 @@ def _match_user_deny_rule(command: str) -> str | None:
     return None
 
 
+def _match_user_deny_rule_in_script(code: str) -> str | None:
+    """``approvals.deny`` for an ``execute_code`` script: the matching glob, or None.
+
+    The script is Python, not a shell command, so the shell-variant projection
+    ``_match_user_deny_rule`` runs is the wrong tool here — and on real script
+    sizes an expensive one (tens of seconds on a 70 KB script). The globs are
+    matched case-insensitively against the whole text and against every
+    stripped line, so ``*git push --force*`` catches the command wherever the
+    script spells it and an anchored ``git push --force*`` still fires on a
+    line that is just that command. Linear in the script size.
+    """
+    try:
+        deny_patterns = _ctx._get_approval_config().get("deny") or []
+    except Exception:
+        return None
+    globs = [p.strip().lower() for p in deny_patterns if isinstance(p, str) and p.strip()]
+    if not globs or not code:
+        return None
+    text = code.lower()
+    candidates = [text, *(line.strip() for line in text.splitlines() if line.strip())]
+    for pattern in globs:
+        for candidate in candidates:
+            if fnmatch.fnmatchcase(candidate, pattern):
+                return pattern
+    return None
+
+
 def _user_deny_block_result(pattern: str) -> dict:
     """Build the standard block result for an ``approvals.deny`` match."""
     return {"approved": False, "user_deny": True, "message": (

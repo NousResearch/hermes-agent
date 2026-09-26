@@ -304,3 +304,37 @@ class TestEvaluateRuntimeDomNodeCrashRetry:
             assert calls == [True]
         finally:
             _stop_supervisor(sup)
+
+
+def test_first_eval_binds_supervisor_to_driver_page(monkeypatch):
+    """Before the supervisor has been on a web page, the first eval asks the driver for its URL
+    once and binds the supervisor to that tab; later evals skip the hop."""
+    import tools.browser_tool as bt
+
+    class _Sup:
+        _web_page_seen = False
+        bound = []
+
+        def bind_driver_page(self, url):
+            self.bound.append(url)
+            self._web_page_seen = True
+            return True
+
+        def evaluate_runtime(self, expression):
+            return {"ok": True, "result": 1, "result_type": "number"}
+
+    sup = _Sup()
+    _patch_supervisor(monkeypatch, sup)
+    from tools import browser_tool_eval_policy as bt_eval_policy
+    monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda task_id: False)
+    hops = []
+
+    def fake_run(task_id, command, args, **kw):
+        hops.append((command, list(args)))
+        return {"success": True, "data": {"url": "https://example.com/b"}}
+
+    monkeypatch.setattr(bt_session, "_run_browser_command", fake_run)
+    assert json.loads(bt._browser_eval("1"))["result"] == 1
+    assert json.loads(bt._browser_eval("1"))["result"] == 1
+    assert sup.bound == ["https://example.com/b"]
+    assert hops == [("get", ["url"])]

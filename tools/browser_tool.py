@@ -1046,6 +1046,12 @@ def _eval_supervisor_fast_path(effective_task_id: str, expression: str) -> Optio
         supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
         if supervisor is None:
             return None
+        if supervisor._web_page_seen is False:
+            # Not yet on the driver's page (bound at session start, before the driver opened its
+            # tab): one CLI hop for the driver's URL picks the exact tab among several web tabs.
+            url = (_session._run_browser_command(effective_task_id, "get", ["url"]).get("data") or {}).get("url")
+            if url:
+                supervisor.bind_driver_page(url)
         sup_result = supervisor.evaluate_runtime(expression)
         if sup_result.get("ok"):
             return _eval_result_or_blocked(

@@ -686,15 +686,6 @@ class EmailAdapter(BasePlatformAdapter):
         return any(_get_secret(name, "").strip().lower() in _TRUTHY
                    for name in ("EMAIL_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS"))
 
-    @staticmethod
-    def _open_access() -> bool:
-        """True when the gateway admits any sender, so a forged From: gains nothing. The gateway's own order:
-        EMAIL_ALLOW_ALL_USERS wins over a list, GATEWAY_ALLOW_ALL_USERS applies only while no list is set."""
-        if _get_secret("EMAIL_ALLOW_ALL_USERS", "").strip().lower() in _TRUTHY:
-            return True
-        return (_get_secret("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in _TRUTHY
-                and not any(_get_secret(name, "").strip() for name in ("EMAIL_ALLOWED_USERS", "GATEWAY_ALLOWED_USERS")))
-
     def _answers_unknown_senders(self) -> bool:
         """True when ``platforms.email.unauthorized_dm_behavior`` opts into ``pair`` or ``decline``."""
         behavior = (self.config.extra or {}).get("unauthorized_dm_behavior")
@@ -731,16 +722,15 @@ class EmailAdapter(BasePlatformAdapter):
         if not granted and not self._answers_unknown_senders():
             logger.debug("[Email] Dropping unauthorized sender at dispatch (unknown senders are ignored): %s", sender_addr)
             return False
-        # Reject spoofed senders (GHSA-rxqh-5572-8m77): short of open access, every grant keys on the attacker-controlled
-        # From:, and a pairing code or decline is mailed back to it, open access or not; fail-closed. Only a granted
-        # sender's drop warns: forged mail from strangers is routine, and the opt-out hint would be wrong advice for it.
+        # Reject spoofed senders (GHSA-rxqh-5572-8m77): every grant keys on the attacker-controlled From:, and a pairing
+        # code or decline is mailed back to it; fail-closed. Open access is no exception: the session and every reply
+        # key on From:, so a forged one lands in that address's conversation and makes the agent mail it. Only a
+        # granted sender's drop warns: forged mail from strangers is routine, and the opt-out hint would be wrong advice.
         if self._require_authenticated_sender and not msg_data.get("sender_authenticated", False):
             if not granted:
                 logger.debug("[Email] Not answering unknown sender with unauthenticated From: %s (%s)",
                              sender_addr, msg_data.get("auth_reason", "no verdict"))
                 return False
-            if self._open_access():
-                return True
             logger.warning("[Email] Dropping sender with unauthenticated From: %s (%s). If your mail server does not "
                            "stamp Authentication-Results, set platforms.email.require_authenticated_sender: false "
                            "(or EMAIL_TRUST_FROM_HEADER=true) to accept the risk.",

@@ -285,7 +285,7 @@ Things to know:
 
 **Test with `/cron run`.** Before waiting for the schedule to trigger, use `/cron run <job_id>` to execute immediately and verify the output looks right.
 
-**Schedule expressions.** Supported formats: relative delays (`30m`), intervals (`every 2h`), standard cron expressions (`0 9 * * *`), and ISO timestamps (`2025-06-15T09:00:00`). Natural language like `daily at 9am` is not supported — use `0 9 * * *` instead.
+**Schedule expressions.** Supported formats: relative delays (`30m`), intervals (`every 2h`), standard cron expressions (`0 9 * * *`), ISO timestamps (`2025-06-15T09:00:00`), and natural day/time phrases like `daily at 9am`, `weekdays at 9am`, or `every monday 9am` (requires the `croniter` package, same as cron expressions).
 
 ---
 

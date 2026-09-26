@@ -228,6 +228,25 @@ class TestUnicodeNormalized:
         expected = 'Line 1 \u2014 with dash\nLine 2 \u201cquoted\u201d text\nLine 3 changed'
         assert new == expected, f"Got {new!r}"
 
+    def test_match_starting_inside_an_expansion_is_not_dropped(self):
+        """A match whose start lands inside a multi-char expansion (em-dash -> '--',
+        ellipsis -> '...') has no direct original position. The inverted-map lookup
+        found none and silently dropped the span, reporting no match for text that is
+        present; bisect snaps the boundary back to the expansion's first char."""
+        content = "well\u2014no"
+        new, count, strategy, err = fuzzy_find_and_replace(content, "-no", "-YES")
+        assert count == 1, f"Expected match, got err={err}"
+        assert strategy == "unicode_normalized"
+        assert new == "well-YES", f"Got {new!r}"
+
+        content = "Wait\u2026really"
+        new, count, strategy, err = fuzzy_find_and_replace(content, "..really", "..now")
+        assert count == 1, f"Expected match, got err={err}"
+        assert strategy == "unicode_normalized"
+        # The mapped span starts at the expansion's first char, so the replacement
+        # covers the ellipsis exactly as the em-dash case covers the em-dash.
+        assert new == "Wait..now", f"Got {new!r}"
+
 
     def test_equal_boundary_inside_expansion_keeps_region_text(self):
         """An edit boundary falling inside a multi-char expansion (em-dash ->

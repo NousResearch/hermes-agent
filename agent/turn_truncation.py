@@ -310,8 +310,26 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
     n = st.length_continue_retries
     _interim_content = getattr(assistant_message, "content", None)
     if not _interim_content and not st.is_stub:
-        # Thinking-only truncation: continuing with thinking ON re-burns the budget.
-        agent._ephemeral_reasoning_off = True
+        # Thinking-only truncation: the visible answer is empty and the text sits in the
+        # thinking channel. Bergung statt Abdrehen — the old one-shot reasoning-off
+        # override muted thinking for the next call and threw the reasoning away (the
+        # answer never reached state.db). Keep thinking ON and return the reasoning text
+        # as the answer instead.
+        _rescued = (agent._extract_reasoning(assistant_message) or "").strip()
+        if _rescued:
+            _interim_msg = agent._build_assistant_message(assistant_message, st.finish_reason)
+            _interim_msg["content"] = _rescued
+            append_message(messages, _interim_msg)
+            agent._session_messages = messages
+            agent._vprint(
+                f"{agent.log_prefix}🧠 No visible answer — the reasoning channel carries the "
+                f"response ({len(_rescued)} chars); returning it and keeping thinking on.",
+                diagnostic=True,
+            )
+            return st.end_turn(
+                _rescued,
+                "Reasoning-only truncated response — reasoning text returned as the answer",
+            )
     if _interim_content:
         interim_msg = agent._build_assistant_message(assistant_message, st.finish_reason)
         interim_msg["_length_continuation_fragment"] = True  # ceiling exit drops these
@@ -343,8 +361,6 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
         agent, messages, st.current_turn_user_idx, finish_reason="length",
         parts=st.truncated_response_parts,
     )
-    # The one-shot reasoning-off override must not leak into the next turn.
-    agent._ephemeral_reasoning_off = False
     agent._vprint(
         f"{agent.log_prefix}⚠️  Not continuing — each attempt would only grow the prompt."
         if filled is not None else
@@ -565,9 +581,9 @@ def continue_codex_incomplete(
     iteration, and the streak restarts from 0, so a second grace call is unreachable).
 
     When ``response`` hit ``max_output_tokens`` with no visible text (reasoning ate the
-    whole budget), the next attempt goes out with reasoning off and a doubled output
-    cap — the same one-shot overrides the chat-completions length path uses — because
-    re-sending the identical budget and effort re-burns the budget identically (#90393)."""
+    whole budget), the next attempt goes out with a doubled output cap and thinking
+    still ON — re-sending the identical budget re-burns it identically (#90393); a
+    reasoning-off override would mute the route for later turns, so it is never sent."""
     from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE
     from agent.turn_response_check import _codex_finish_reason
 
@@ -650,7 +666,8 @@ def continue_codex_incomplete(
                 if not _already_nudged and _last_msg.get("role") == "assistant":
                     append_message(messages, {"role": "user", "content": _CODEX_INCOMPLETE_NUDGE})
         if not interim_has_content and _codex_finish_reason(response) == "incomplete":
-            agent._ephemeral_reasoning_off = True
+            # Thinking stays ON for the retry (no reasoning-off override — it muted the
+            # route for later turns); the doubled output cap is what buys convergence.
             # No configured cap means the provider's own ceiling was hit: the observed
             # output_tokens IS that ceiling, so seed the escalation from it (else 4096).
             usage = getattr(response, "usage", None)

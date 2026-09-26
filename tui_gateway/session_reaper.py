@@ -464,6 +464,28 @@ def _refresh_backend_heartbeat() -> None:
         logger.debug("backend heartbeat refresh failed", exc_info=True)
 
 
+def _prune_stale_backend_heartbeats() -> list[str]:
+    """Drop dead-process heartbeat rows once at backend startup.
+
+    ``SessionDB.prune_stale_heartbeats`` existed without a production caller,
+    so every unclean restart left one permanent row. Keep at least two session
+    TTLs (the same ownership window used by the orphan sweep), three refresh
+    intervals, and five minutes of clock/scheduler slack.
+    """
+    db = _get_db()
+    if db is None:
+        return []
+    max_age = max(300.0, _SESSION_TTL_S * 2.0, _HEARTBEAT_REFRESH_S * 3.0)
+    try:
+        pruned = db.prune_stale_heartbeats(max_age_seconds=max_age)
+        if pruned:
+            logger.info("Pruned %d stale gateway heartbeat row(s)", len(pruned))
+        return pruned
+    except Exception:
+        logger.debug("stale backend heartbeat prune failed", exc_info=True)
+        return []
+
+
 def _start_backend_heartbeat_refresher() -> None:
     """Register this backend and start the refresher thread (once per process). The first refresh writes the row
     synchronously so this process's own sweep sees itself in the heartbeat table. ``_HEARTBEAT_REFRESH_S <= 0``
@@ -473,6 +495,7 @@ def _start_backend_heartbeat_refresher() -> None:
         if _heartbeat_refresher_started:
             return
         _heartbeat_refresher_started = True
+    _prune_stale_backend_heartbeats()
     try:
         _refresh_backend_heartbeat()
     except Exception:

@@ -235,6 +235,28 @@ class TestScheduleStartupOrphanSweep:
         assert server._session_orphan_reaper_enabled() is True
 
 
+class TestBackendHeartbeatCleanup:
+    def test_start_prunes_stale_rows_before_registering_self(self, monkeypatch):
+        calls = []
+
+        class _DB:
+            def prune_stale_heartbeats(self, *, max_age_seconds):
+                calls.append(("prune", max_age_seconds))
+                return ["dead-backend"]
+
+        monkeypatch.setattr(server, "_get_db", lambda: _DB())
+        monkeypatch.setattr(
+            server, "_refresh_backend_heartbeat", lambda: calls.append(("refresh", None))
+        )
+        monkeypatch.setattr(server, "_heartbeat_refresher_started", False)
+        monkeypatch.setattr(server, "_HEARTBEAT_REFRESH_S", 0.0)
+        monkeypatch.setattr(server, "_SESSION_TTL_S", 3600.0)
+
+        server._start_backend_heartbeat_refresher()
+
+        assert calls == [("prune", 7200.0), ("refresh", None)]
+
+
 class TestEntryAndWsWiring:
 
 

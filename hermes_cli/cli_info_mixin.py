@@ -963,6 +963,9 @@ class CLIInfoMixin:
             ]
             tool_summary = f"{len(new_tools)} MCP tool(s) now available" if new_tools else "No MCP tools available"
             change_detail = ". ".join(change_parts) + ". " if change_parts else ""
+            # The persist boundary is the history BEFORE the note: passed the post-append list, the
+            # flush identity-matches the note as history, stamps it durable and never writes it.
+            prior_history = list(self.conversation_history)
             self.conversation_history.append({
                 "role": "user",
                 "content": f"[IMPORTANT: MCP servers have been reloaded. {change_detail}{tool_summary}. The tool list for this conversation has been updated accordingly.]",
@@ -971,7 +974,7 @@ class CLIInfoMixin:
             # Persist now so the session log reflects the refreshed tools list (best-effort).
             if self.agent is not None:
                 try:
-                    self.agent._persist_session(self.conversation_history, self.conversation_history)
+                    self.agent._persist_session(self.conversation_history, prior_history)
                 except Exception:
                     pass
 

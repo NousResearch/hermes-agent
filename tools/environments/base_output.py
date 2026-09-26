@@ -248,17 +248,18 @@ def _pipe_stdin(proc: subprocess.Popen, data: str) -> None:
     thread.start()
 
 
-def _popen_bash(cmd: list[str], stdin_data: str | None = None, **kwargs) -> subprocess.Popen:
+def _popen_bash(cmd: list[str], stdin_data: str | None = None, *, duplex: bool = False, **kwargs) -> subprocess.Popen:
     """Spawn a subprocess with standard stdout/stderr/stdin setup; *stdin_data* is written
-    asynchronously via :func:`_pipe_stdin`. Backends with special Popen needs (e.g. local's
-    ``preexec_fn``) can bypass this and call :func:`_pipe_stdin` directly."""
+    asynchronously via :func:`_pipe_stdin`. ``duplex`` leaves binary stdin/stdout open
+    for a protocol channel and keeps diagnostics out of its frames. Backends with special
+    Popen needs (e.g. local's ``preexec_fn``) can bypass this and call :func:`_pipe_stdin` directly."""
     kwargs.setdefault("creationflags", windows_hide_flags())
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
-        text=True, encoding="utf-8", errors="replace",
+        stderr=subprocess.DEVNULL if duplex else subprocess.STDOUT,
+        stdin=subprocess.PIPE if duplex or stdin_data is not None else subprocess.DEVNULL,
+        **({} if duplex else {"text": True, "encoding": "utf-8", "errors": "replace"}),
         **kwargs)
     if stdin_data is not None:
         _pipe_stdin(proc, stdin_data)

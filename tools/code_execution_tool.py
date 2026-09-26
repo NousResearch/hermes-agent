@@ -193,8 +193,11 @@ def _sandbox_failure_hint(stderr_text: str, enabled_tools=None) -> Optional[str]
 def generate_hermes_tools_module(enabled_tools: List[str],
                                  transport: str = "uds") -> str:
     """Source of the hermes_tools.py stub module for SANDBOX_ALLOWED_TOOLS ∩ *enabled_tools*.
-    ``transport``: ``"uds"`` (local socket client) or ``"file"`` (file RPC, remote backends)."""
-    header = _FILE_TRANSPORT_HEADER if transport == "file" else _UDS_TRANSPORT_HEADER
+    ``transport``: ``"uds"`` (local), ``"file"`` (polling), or ``"remote"`` (stream with pre-run file fallback)."""
+    header = _FILE_TRANSPORT_HEADER if transport in ("file", "remote") else _UDS_TRANSPORT_HEADER
+    if transport == "remote":
+        from tools.code_execution_stream import REMOTE_CLIENT_SOURCE
+        header += REMOTE_CLIENT_SOURCE
     return header + "\n".join(
         f"def {name}({sig}):\n    {doc}\n    return _call({name!r}, {args_expr})\n"
         for name, (sig, doc, args_expr) in sorted(_TOOL_STUBS.items()) if name in set(enabled_tools)
@@ -562,27 +565,30 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
                          sandbox_tools: frozenset, *, timeout: int, max_tool_calls: int,
                          exec_start: float) -> str:
     """Per-call script ship: stage hermes_tools.py + script.py in a fresh remote sandbox dir,
-    serve file-RPC from a polling thread, run, clean up."""
+    serve tool RPC over a stream when supported (else files), run, clean up."""
     sandbox_dir = f"{_env_temp_dir(env)}/hermes_exec_{uuid.uuid4().hex[:12]}"
     quoted_sandbox_dir = shlex.quote(sandbox_dir)
     quoted_rpc_dir = shlex.quote(f"{sandbox_dir}/rpc")
     tool_call_counter, stop_event, rpc_thread = [0], threading.Event(), None
+    stream = None
     try:
-        env.execute(f"mkdir -p {quoted_rpc_dir}", cwd="/", timeout=10)
+        env.execute(f"umask 077; mkdir -p {quoted_rpc_dir}", cwd="/", timeout=10)
         rpc_token = secrets.token_urlsafe(32)
         _ship_file_to_remote(env, f"{sandbox_dir}/hermes_tools.py",
-                             generate_hermes_tools_module(list(sandbox_tools), transport="file"))
+                             generate_hermes_tools_module(list(sandbox_tools), transport="remote"))
         _ship_file_to_remote(env, f"{sandbox_dir}/script.py", code)
-        # Wrapped so the thread inherits the turn's approval context + callbacks
-        # (tools.thread_context) — else sandbox RPC tool calls lose approval routing.
-        # See #30882.
-        rpc_thread = threading.Thread(
-            target=propagate_context_to_thread(_rpc_poll_loop), daemon=True,
-            args=(env, f"{sandbox_dir}/rpc", effective_task_id, [], tool_call_counter,
-                  max_tool_calls, sandbox_tools, stop_event, rpc_token))
-        rpc_thread.start()
+        from tools.code_execution_stream import open_remote_rpc
+        stream = open_remote_rpc(env, sandbox_dir, effective_task_id, tool_call_counter,
+                                 max_tool_calls, sandbox_tools, rpc_token)
+        if stream is None:
+            rpc_thread = threading.Thread(
+                target=propagate_context_to_thread(_rpc_poll_loop), daemon=True,
+                args=(env, f"{sandbox_dir}/rpc", effective_task_id, [], tool_call_counter,
+                      max_tool_calls, sandbox_tools, stop_event, rpc_token))
+            rpc_thread.start()
         env_prefix = (f"HERMES_RPC_DIR={quoted_rpc_dir} HERMES_RPC_TOKEN={shlex.quote(rpc_token)} "
-                      "PYTHONDONTWRITEBYTECODE=1")
+                      "PYTHONDONTWRITEBYTECODE=1 "
+                      f"HERMES_RPC_SOCKET={shlex.quote(stream.endpoint if stream is not None else '')}")
         tz = get_timezone_name()  # routed profile's timezone, not the bridged default's
         if tz:
             env_prefix += f" TZ={shlex.quote(tz)}"
@@ -597,6 +603,8 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
         return _remote_failure(exc, exec_start, tool_call_counter[0])
     finally:
         stop_event.set()
+        if stream is not None:
+            stream.close()
         if rpc_thread is not None:
             rpc_thread.join(timeout=5)
         try:

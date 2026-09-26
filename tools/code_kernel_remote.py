@@ -4,9 +4,9 @@ Remote backends offer one primitive — ``env.execute(cmd)``, run-to-completion
 — so the three things the local kernel gets from owning a child are rebuilt:
 a detached runner (``nohup ... &``, PID recorded, ``kill -0`` probed per cell);
 a file-based CELL protocol in the kernel dir (``cell_req_NNNNNN.json`` /
-``cell_res_NNNNNN.json``), sibling to the unchanged file-based TOOL-RPC protocol
-(req_/res_) whose host-side ``_rpc_poll_loop`` starts per cell with the calling
-thread's context (= per-cell tool authority); and death detection — a failed
+``cell_res_NNNNNN.json``), sibling to TOOL-RPC, served over a duplex stream on capable backends or the
+file-based ``_rpc_poll_loop`` otherwise, with the calling thread's context
+captured per cell; and death detection — a failed
 liveness probe reads as *kernel died: state lost* and the next call respawns,
 never a hung poll (every wait is bounded by the cell timeout).
 
@@ -80,7 +80,16 @@ def main():
             os.remove(req_path)
             last_activity = time.time()
             execution_count += 1
-            payload, _ = run_cell(request, execution_count)
+            # Transport is chosen before this cell is submitted, never after a failure.
+            endpoint = request.get("rpc_socket", "")
+            if endpoint:
+                os.environ["HERMES_RPC_SOCKET"] = endpoint
+            else:
+                os.environ.pop("HERMES_RPC_SOCKET", None)
+            try:
+                payload, _ = run_cell(request, execution_count)
+            finally:
+                os.environ.pop("HERMES_RPC_SOCKET", None)
             res_name = name.replace("cell_req_", "cell_res_")
             tmp = os.path.join(CELLS, res_name + ".tmp")
             with open(tmp, "w", encoding="utf-8") as f:
@@ -211,12 +220,12 @@ def _spawn_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
     q_dir = shlex.quote(kernel_dir)
     kernel = None
     try:
-        _sh(env, f"mkdir -p {q_dir}/cells {q_dir}/rpc")
+        _sh(env, f"umask 077; mkdir -p {q_dir}/cells {q_dir}/rpc")
         rpc_token = secrets.token_urlsafe(32)
         _ship_file_to_remote(env, f"{kernel_dir}/kernel_runner.py", REMOTE_KERNEL_RUNNER_SOURCE.format(
             cell_source=RUNNER_CELL_SOURCE, capture_limit=MAX_STDOUT_BYTES, idle_exit=idle_exit))
         _ship_file_to_remote(env, f"{kernel_dir}/hermes_tools.py",
-                             generate_hermes_tools_module(list(sandbox_tools), transport="file"))
+                             generate_hermes_tools_module(list(sandbox_tools), transport="remote"))
         env_prefix = (f"HERMES_KERNEL_DIR={q_dir} HERMES_RPC_DIR={shlex.quote(kernel_dir + '/rpc')} "
                       f"HERMES_RPC_TOKEN={shlex.quote(rpc_token)} PYTHONDONTWRITEBYTECODE=1 PYTHONPATH={q_dir}")
         started = _sh(env, f"cd {q_dir} && nohup env {env_prefix} python3 kernel_runner.py "
@@ -280,14 +289,14 @@ def _acquire_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
     return kernel, reused, state_reset, state_lost
 
 
-def _run_remote_cell(kernel: RemoteKernel, code: str, timeout: int) -> Tuple[str, Dict[str, Any]]:
+def _run_remote_cell(kernel: RemoteKernel, code: str, timeout: int, *, rpc_endpoint: str = "") -> Tuple[str, Dict[str, Any]]:
     """Ship one cell request and poll for its result: (cell status, payload)."""
     from tools.code_execution_tool import _ship_file_to_remote
     kernel.cell_seq += 1
     seq = f"{kernel.cell_seq:06d}"
     q_cells, q_res = shlex.quote(f"{kernel.kernel_dir}/cells"), shlex.quote(f"cell_res_{seq}.json")
     _ship_file_to_remote(kernel.env, f"{kernel.kernel_dir}/cells/cell_req_{seq}.json.tmp",
-                         json.dumps({"id": seq, "code": code}, ensure_ascii=False))
+                         json.dumps({"id": seq, "code": code, "rpc_socket": rpc_endpoint}, ensure_ascii=False))
     kernel.sh(f"mv {q_cells}/cell_req_{seq}.json.tmp {q_cells}/cell_req_{seq}.json", timeout=10)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -351,19 +360,27 @@ def _run_attached_cell(kernel: RemoteKernel, key: Tuple, code: str, *, env, task
     except Exception:
         pass
     tool_call_counter, stop_event = [0], threading.Event()
-    # Per-cell RPC thread carrying THIS call's approval/session context — the remote analogue
-    # of CellAuthority: authority lives exactly as long as the cell's poll loop.
-    rpc_thread = threading.Thread(
-        target=propagate_context_to_thread(_rpc_poll_loop), daemon=True,
-        args=(env, f"{kernel.kernel_dir}/rpc", task_env_id, [], tool_call_counter,
-              max_tool_calls, sandbox_tools, stop_event, kernel.rpc_token))
-    rpc_thread.start()
+    from tools.code_execution_stream import open_remote_rpc
+    stream = open_remote_rpc(env, kernel.kernel_dir, task_env_id, tool_call_counter,
+                             max_tool_calls, sandbox_tools, kernel.rpc_token)
+    rpc_thread = None
+    if stream is None:
+        # Each cell captures its own approval/session context, for both transports.
+        rpc_thread = threading.Thread(
+            target=propagate_context_to_thread(_rpc_poll_loop), daemon=True,
+            args=(env, f"{kernel.kernel_dir}/rpc", task_env_id, [], tool_call_counter,
+                  max_tool_calls, sandbox_tools, stop_event, kernel.rpc_token))
+        rpc_thread.start()
     cell_status, cell_payload = "no-result", {}
     try:
-        cell_status, cell_payload = _run_remote_cell(kernel, code, timeout)
+        cell_status, cell_payload = _run_remote_cell(
+            kernel, code, timeout, rpc_endpoint=stream.endpoint if stream is not None else "")
     finally:
         stop_event.set()
-        rpc_thread.join(timeout=5)
+        if stream is not None:
+            stream.close()
+        if rpc_thread is not None:
+            rpc_thread.join(timeout=5)
     kernel_info: Dict[str, Any] = {"reused": reused, "remote": True}
     result: Dict[str, Any] = {
         "status": "error", "stdout": cell_payload.get("stdout", ""), "stderr": cell_payload.get("stderr", ""),

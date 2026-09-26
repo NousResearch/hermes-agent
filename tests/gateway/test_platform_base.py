@@ -1143,6 +1143,27 @@ class TestTruncateMessage:
                 "No continuation chunk reopened with language tag"
             )
 
+    @pytest.mark.parametrize("sep", ["\n", "\n\n"], ids=["dense", "blank-lines"])
+    def test_code_split_across_chunks_reassembles_byte_exact(self, sep):
+        """Regression for #54579: the code lines inside the fences, read back across all chunks, equal
+        the original. So a continuation block's first code line keeps its indentation and is not
+        preceded by a blank line, and blank lines that sit at a split survive."""
+        import re
+
+        code = sep.join(f"        value_{i} = compute(item_{i})" for i in range(80)).split("\n")
+        msg = "Intro:\n\n```python\n" + "\n".join(code) + "\n```\n\nDone."
+        for max_length in range(200, 700, 11):
+            chunks = BasePlatformAdapter.truncate_message(msg, max_length)
+            assert len(chunks) > 2
+            got, inside = [], False
+            for chunk in chunks:
+                for line in re.sub(r" \(\d+/\d+\)$", "", chunk).split("\n"):
+                    if line.startswith("```"):
+                        inside = not inside
+                    elif inside:
+                        got.append(line)
+            assert got == code, f"max_length={max_length}"
+
 
 # ---------------------------------------------------------------------------
 # _get_human_delay

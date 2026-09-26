@@ -648,8 +648,25 @@ def _rate_limit_reply(text: str) -> str:
     pool's ``retry after Ns``, ``resets in 4hr``) so a weekly cap is not sold as "wait a moment"
     (#89401). One grammar table with the retry loop: ``agent.retry_utils.RETRY_DELAY_PATTERNS``."""
     from agent.retry_utils import format_reset_window, reset_delay_from_message
+    # The delivery platform is not evidence of the failing upstream: a Discord
+    # chat can carry either a Discord REST error or a model-provider error.
+    discord_source = re.search(r"\bdiscord(?:\s+(?:api|rate)|\.(?:errors|com/api))", text, re.IGNORECASE)
+    model_source = re.search(
+        r"\b(?:codex|openai|anthropic|openrouter|gemini)\b|"
+        r"\b(?:model (?:service|provider)|for (?:this |the )?model)\b",
+        text, re.IGNORECASE,
+    )
+    if discord_source and not model_source:
+        return ("⏱️ Discord is rate-limiting requests. Wait a moment, then use /retry. "
+                "If it persists, check `hermes logs` on the host.")
+    # Conflicting source names are no stronger evidence than an absent source.
+    if not model_source or discord_source:
+        return ("⏱️ An upstream service is rate-limiting requests. Wait a moment, then use /retry. "
+                "Check `hermes logs` on the host to identify the service.")
     seconds = reset_delay_from_message(text) or 0
-    if seconds < 120:
+    if seconds < 120 or not re.search(
+        r"\b(?:quota|usage_limit_reached|usage limit|weekly limit|daily limit)\b", text, re.IGNORECASE,
+    ):
         return "⏱️ The AI model service is rate-limiting requests. Wait a moment, then use /retry."
     return (f"⏱️ The AI model service's usage limit is reached; it resets in {format_reset_window(seconds)}. "
             "Use /retry after that, or /model to switch models.")

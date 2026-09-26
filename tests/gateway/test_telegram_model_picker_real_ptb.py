@@ -41,6 +41,12 @@ def real_ptb(monkeypatch):
 
 # Trimmed from a real ``provider_model_ids("bedrock")`` listing: the same model
 # advertised bare, regionally and globally, across several vendors.
+#
+# Amazon carries enough entries to span THREE pages, so the walk below actually
+# reaches a middle page — the only place ``◀ Prev | n/N | Next ▶`` renders all
+# three navigation buttons. A fixture whose every vendor fits one page let the
+# row-width rule below look satisfied while a real 17-model vendor rendered a
+# row it forbids (#94990 review).
 BEDROCK_IDS = [
     "global.anthropic.claude-opus-5",
     "us.anthropic.claude-opus-5",
@@ -49,6 +55,10 @@ BEDROCK_IDS = [
     "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
     "amazon.nova-lite-v1:0",
     "us.amazon.nova-lite-v1:0",
+    *[f"amazon.nova-{name}-v1:0" for name in (
+        "micro", "pro", "premier", "canvas", "reel", "sonic",
+        "embed-text", "embed-multimodal", "rerank", "act", "sonic-2")],
+    *[f"us.amazon.nova-{name}-v1:0" for name in ("micro", "pro", "premier", "sonic")],
     "openai.gpt-5.6-terra",
     "us.openai.gpt-5.6-terra",
     "moonshot.kimi-k2-thinking",
@@ -61,8 +71,9 @@ def test_every_picker_keyboard_is_a_valid_ptb_keyboard(real_ptb):
 
     Each button must carry non-empty text (Telegram answers
     ``BUTTON_TEXT_INVALID`` and drops the whole message otherwise) and a
-    ``callback_data`` within the 64-byte wire limit, and no rendered row may
-    exceed the two columns the layout promises.
+    ``callback_data`` within the 64-byte wire limit. Model rows keep the two
+    columns the layout promises; the navigation row is the deliberate exception
+    (``◀ Prev | n/N | Next ▶`` is three buttons on any middle page).
     """
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
 
@@ -98,10 +109,50 @@ def test_every_picker_keyboard_is_a_valid_ptb_keyboard(real_ptb):
     for keyboard in keyboards:
         assert keyboard.inline_keyboard, "an empty keyboard is rejected by Telegram"
         for row in keyboard.inline_keyboard:
-            assert 1 <= len(row) <= 2, f"row wider than the layout allows: {row}"
+            assert 1 <= len(row) <= _max_row_width(row), f"row wider than the layout allows: {row}"
             for button in row:
                 assert button.text.strip(), f"blank button text in {keyboard.inline_keyboard}"
                 assert len(str(button.callback_data).encode()) <= 64, button.callback_data
+
+
+def _is_nav_row(row) -> bool:
+    """True for a ``◀ Prev | n/N | Next ▶`` pagination row.
+
+    Its middle button is the inert page counter (``mx:noop``), which no other row
+    carries — so the layout rule can stay strict for model rows while a middle
+    page legitimately renders three buttons.
+    """
+    return any(str(b.callback_data) == "mx:noop" for b in row)
+
+
+def _max_row_width(row) -> int:
+    return 3 if _is_nav_row(row) else 2
+
+
+def test_a_middle_page_renders_prev_counter_and_next(real_ptb):
+    """A vendor big enough for three pages must show all three nav buttons.
+
+    ``_picker_nav_row`` emits Prev only past page 0 and Next only before the last
+    page, so the three-button form exists exclusively on a middle page. A vendor
+    of one page — or two — never reaches it, which is how a two-column assertion
+    could hold over the trimmed fixture while a real 17-model vendor renders a
+    row the rule forbids (#94990 review).
+    """
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+    # 3 pages at 8 models/page: enough for page 1 to have a page on each side.
+    models = [f"amazon.nova-variant-{i}-v1:0" for i in range(17)]
+
+    keyboard, _info = adapter._build_model_keyboard(models, 1, listing=1)
+    rows = keyboard.inline_keyboard
+    nav = [row for row in rows if _is_nav_row(row)]
+    assert len(nav) == 1, f"expected exactly one navigation row, got {len(nav)}"
+    assert [str(b.callback_data) for b in nav[0]] == ["mg:0", "mx:noop", "mg:2"]
+
+    model_rows = [row for row in rows
+                  if any(str(b.callback_data).startswith("mm:") for b in row)]
+    assert model_rows, "a middle page must still render models"
+    for row in model_rows:
+        assert len(row) <= 2, f"model row wider than two columns: {[b.text for b in row]}"
 
 
 @pytest.mark.asyncio

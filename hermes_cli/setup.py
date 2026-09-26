@@ -449,6 +449,7 @@ _TOOL_PROGRESS_HELP = (
     "  off     — Silent, just the final response",
     "  new     — Show tool name only when it changes (less noise)",
     "  all     — Show every tool call with a short preview",
+    "  full    - Show complete redacted tool arguments (gateway only)",
     "  verbose — Full args, results, and debug logs",
     "  log     — Silent in chat; write every tool call to ~/.hermes/logs/tool_calls.log (gateway only)",
 )
@@ -483,7 +484,7 @@ def setup_agent_settings(config: dict):
                   current_mode)
     if not mode and not current_mode:
         print_info("Keeping each platform's default tool progress")
-    elif mode.lower() in {"off", "new", "all", "verbose", "log"}:
+    elif mode.lower() in {"off", "new", "all", "full", "verbose", "log"}:
         config.setdefault("display", {})["tool_progress"] = mode.lower()
         save_config(config)
         print_success(f"Tool progress set to: {mode.lower()}")

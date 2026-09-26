@@ -238,6 +238,20 @@ lsp:
   # clamped to 30 so a sweep can never reap a client mid-operation.
   idle_timeout: 600
 
+  # V8 heap cap (MB) for spawned Node-based language servers
+  # (tsserver, pyright, vue, …). At spawn Hermes sets
+  # `--max-old-space-size=<max_heap_mb>` in the child's NODE_OPTIONS,
+  # REPLACING any inherited value, so the gateway's own heap flag never
+  # leaks into server children and a server on a large workspace hits a
+  # known ceiling instead of Node's default (~4 GiB) while sharing the
+  # host. Raise it for big monorepos where tsserver needs more room;
+  # set 0 to leave the inherited environment untouched (servers then
+  # inherit the parent's NODE_OPTIONS, or Node's default when unset).
+  # Non-Node servers (gopls, rust-analyzer, clangd, …) ignore it.
+  # Verify a running server: `hermes lsp status` reports `max_heap_mb`;
+  # inside the process, `v8.getHeapStatistics().heap_size_limit`.
+  max_heap_mb: 2048
+
   # Per-server overrides (all optional).
   servers:
     pyright:

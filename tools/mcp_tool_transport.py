@@ -12,7 +12,7 @@ from typing import Dict, Optional, Set
 from utils import normalize_proxy_url
 from agent.proxy_bypass import is_loopback_host, should_bypass_proxy
 from agent import runtime_cwd as _runtime_cwd
-from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _describe_http_failure, _handshake_answered_with_unsupported_version, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_http_rejection_recorder, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
+from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _describe_http_failure, _handshake_answered_with_unsupported_version, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_http_rejection_recorder, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group, _wrap_mcp_transport
 from tools.mcp_tool_lifecycle import _filter_mcp_children, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids
 from tools.mcp_tool_common import _core
 from tools import mcp_tool_config as _config
@@ -72,7 +72,7 @@ def _mcp_proxy_mounts(httpx_mod, url: str, ssl_verify, client_cert, server_name:
         if not proxy_url:
             continue
         # verify/cert apply to the CONNECT+TLS leg, so the proxy transport needs its own copy.
-        mounts[f"{scheme}://"] = _make_mcp_body_cap_transport(httpx_mod, httpx_mod.AsyncHTTPTransport(
+        mounts[f"{scheme}://"] = _wrap_mcp_transport(httpx_mod, httpx_mod.AsyncHTTPTransport(
             proxy=proxy_url, verify=ssl_verify, **_present(cert=client_cert)))
     return mounts or None
 
@@ -481,7 +481,7 @@ class MCPServerTransportMixin:
             return _httpx_mod.AsyncClient(
                 follow_redirects=True,
                 timeout=timeout if timeout is not None else _httpx_mod.Timeout(30.0, read=300.0),
-                transport=_make_mcp_body_cap_transport(_httpx_mod, inner_transport),
+                transport=_wrap_mcp_transport(_httpx_mod, inner_transport),
                 **_present(mounts=_mcp_proxy_mounts(_httpx_mod, url, ssl_verify, client_cert, self.name),
                            headers=headers, auth=auth))
         sse_kwargs["httpx_client_factory"] = _sse_client_factory
@@ -510,7 +510,7 @@ class MCPServerTransportMixin:
         client_kwargs: dict = {"follow_redirects": True, "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
                                **({"headers": headers} if headers else {}),
                                "event_hooks": {"response": [_make_http_rejection_recorder(self._http_rejection)]},
-                               "transport": _make_mcp_body_cap_transport(httpx, inner_transport),
+                               "transport": _wrap_mcp_transport(httpx, inner_transport),
                                **_present(mounts=_mcp_proxy_mounts(httpx, url, ssl_verify, client_cert, self.name),
                                           auth=oauth_auth)}
 

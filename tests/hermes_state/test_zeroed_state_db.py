@@ -189,6 +189,93 @@ def test_concurrent_quarantine_no_clobber(tmp_path):
     conn.close()
 
 
+def test_preflight_distinguishes_quarantined_file_from_readonly_file(
+    tmp_path, monkeypatch
+):
+    """A sibling may quarantine state.db after preflight discovers it.
+
+    The stale candidate is no longer read-only: it no longer exists.  A file
+    that remains present and fails the same access check must still be refused.
+    """
+    import os
+    import sqlite3
+    import threading
+
+    import hermes_state as hs
+    import hermes_state_repair as repair
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    db = tmp_path / "state.db"
+    damaged = bytes(4096)
+    db.write_bytes(damaged)
+
+    lagging_at_access = threading.Event()
+    quarantine_complete = threading.Event()
+    lagging_access_complete = threading.Event()
+    deny_existing = threading.Event()
+    real_access = os.access
+    real_quarantine = hs.quarantine_invalid_state_db
+    real_preflight = hs.preflight_db_writability
+
+    def interleaved_access(path, mode):
+        candidate = Path(path)
+        if candidate == db and threading.current_thread().name == "lagging-opener":
+            lagging_at_access.set()
+            assert quarantine_complete.wait(timeout=5)
+            return real_access(path, mode)
+        if candidate == db and deny_existing.is_set():
+            return False
+        return real_access(path, mode)
+
+    def pausing_quarantine(path, *, already_locked=False):
+        quarantined = real_quarantine(path, already_locked=already_locked)
+        if quarantined is not None:
+            quarantine_complete.set()
+            assert lagging_access_complete.wait(timeout=5)
+        return quarantined
+
+    def finishing_preflight(path, **kwargs):
+        try:
+            return real_preflight(path, **kwargs)
+        finally:
+            if threading.current_thread().name == "lagging-opener":
+                lagging_access_complete.set()
+
+    monkeypatch.setattr(hs, "preflight_db_writability", finishing_preflight)
+    monkeypatch.setattr(repair.os, "access", interleaved_access)
+    monkeypatch.setattr(hs, "quarantine_invalid_state_db", pausing_quarantine)
+
+    errors = []
+
+    def open_db():
+        try:
+            handle = hs.SessionDB(db_path=db)
+            handle.close()
+        except Exception as exc:
+            errors.append(exc)
+
+    lagging = threading.Thread(target=open_db, name="lagging-opener")
+    winner = threading.Thread(target=open_db, name="quarantine-opener")
+    lagging.start()
+    assert lagging_at_access.wait(timeout=5)
+    winner.start()
+    lagging.join(timeout=10)
+    winner.join(timeout=10)
+
+    assert not lagging.is_alive()
+    assert not winner.is_alive()
+    assert errors == []
+    backups = list(tmp_path.glob("state.db.zeroed-*.bak"))
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == damaged
+
+    deny_existing.set()
+    with pytest.raises(sqlite3.OperationalError, match="is not writable"):
+        hs.preflight_db_writability(db, db_label="state.db")
+
+
 def test_quarantine_fails_closed_when_lock_held(tmp_path):
     """#68805 review: when the cross-process lock cannot be acquired within
     the timeout, quarantine must FAIL CLOSED — return None without moving

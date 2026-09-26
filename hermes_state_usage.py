@@ -327,10 +327,24 @@ class SessionUsageMixin:
                 and (existing.get("model") != model or existing.get("billing_provider") != billing_provider)
             )
             if first_accounted_route:
+                # model column and model_config must not diverge: resume recombines the row's
+                # model with model_config's provider, so rewriting only the column after a
+                # fallback pinned the session to an impossible (provider, model) pair that 404s
+                # on every reopened turn (#118969). A falsy base_url drops the stale endpoint
+                # key instead of leaving the original route's URL behind.
+                from hermes_state_sessions import _MODEL_CONFIG_ROW_MISSING
+                merged_config = self._merge_model_config_json(conn, session_id, {
+                    "model": model,
+                    "provider": billing_provider,
+                    "base_url": billing_base_url or None,
+                })
                 conn.execute("""UPDATE sessions
                        SET model = ?, billing_provider = ?,
                        billing_base_url = ?, billing_mode = ?
                        WHERE id = ?""", (model, billing_provider, billing_base_url, billing_mode, session_id))
+                if merged_config is not _MODEL_CONFIG_ROW_MISSING:
+                    conn.execute(
+                        "UPDATE sessions SET model_config = ? WHERE id = ?", (merged_config, session_id))
             conn.execute(sql, params)
             if record_model_usage:
                 self._record_model_usage(conn, session_id, **usage)

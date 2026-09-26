@@ -1027,6 +1027,9 @@ group_sessions_per_user: true
 # Uncomment to change the defaults shown; set auto_prune: false to keep every
 # ended session forever (the pre-#54189 behavior).
 # sessions:
+#   # Sort `hermes sessions list` by most recent activity (default) or creation time.
+#   # Accepted values: "last-active", "started". The CLI --sort flag overrides this.
+#   list_sort: "last-active"
 #   auto_prune: true
 #   retention_days: 90
 #   vacuum_after_prune: true

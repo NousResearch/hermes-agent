@@ -7,6 +7,7 @@ import — must run without opening ``SessionDB()``, which a malformed schema pr
 """
 
 import json
+import logging
 import os
 import shutil
 import sqlite3
@@ -15,7 +16,11 @@ from functools import partial
 from pathlib import Path
 
 from hermes_cli.cli_output import print_truncated
+from hermes_cli.config_defaults import SESSION_LIST_SORT_DEFAULT, SESSION_LIST_SORT_VALUES
 from hermes_cli.sessions_cmd_browse import _relative_time, _session_browse_picker
+
+
+logger = logging.getLogger(__name__)
 
 
 def get_hermes_home():
@@ -263,11 +268,27 @@ def _default_exclude(args):
 
 def _cmd_list(db, args):
     from hermes_state_sessions import workspace_key as _ws_key
+    # CLI --sort wins; otherwise use the user's runtime config, then the default.
+    sort_order = getattr(args, "sort", None)
+    sort_source = "--sort"
+    if sort_order is None:
+        from hermes_cli.config import load_config
+        sort_order = load_config().get("sessions", {}).get("list_sort", SESSION_LIST_SORT_DEFAULT)
+        sort_source = "sessions.list_sort"
+    if sort_order not in SESSION_LIST_SORT_VALUES:
+        logger.warning(
+            "Ignoring invalid %s=%r; expected one of %s; using %r",
+            sort_source, sort_order, ", ".join(SESSION_LIST_SORT_VALUES), SESSION_LIST_SORT_DEFAULT,
+        )
+        sort_order = SESSION_LIST_SORT_DEFAULT
     # LIMIT lives in the query, so probe one row past the cap: it is the only way to know the
     # page was cut without a second COUNT query (``--limit 0`` is ``LIMIT 0``: no rows, no probe).
     limit = args.limit
     sessions = db.list_sessions_rich(
-        source=args.source, exclude_sources=_default_exclude(args), limit=limit + 1 if limit > 0 else limit,
+        source=args.source,
+        exclude_sources=_default_exclude(args),
+        limit=limit + 1 if limit > 0 else limit,
+        order_by_last_active=(sort_order == SESSION_LIST_SORT_DEFAULT),
     )
     truncated = limit > 0 and len(sessions) > limit
     sessions = sessions[:limit] if truncated else sessions

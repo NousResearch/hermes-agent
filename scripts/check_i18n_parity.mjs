@@ -272,6 +272,19 @@ function parseObjectLiteral(text) {
     }
   }
 
+  /** After a value leaf, fold any `+ …` binary concatenation continuation
+   *  into it (e.g. a multi-line `"…" +\n "…"` string). The runtime value is
+   *  still one string leaf, so parity only cares that the pieces parse. */
+  function foldConcat() {
+    for (;;) {
+      ws()
+      if (text[i] !== '+') return
+      i++
+      parseValue()
+      skipAsClauses()
+    }
+  }
+
   function parseObj() {
     const out = {}
     i++ // {
@@ -296,6 +309,7 @@ function parseObjectLiteral(text) {
       i++ // :
       out[key] = parseValue()
       skipAsClauses()
+      foldConcat()
       ws()
       if (text[i] === ',') { i++; continue }
       if (text[i] === '}') { i++; return out }
@@ -311,6 +325,7 @@ function parseObjectLiteral(text) {
       if (text[i] === ']') { i++; return out }
       out.push(parseValue())
       skipAsClauses()
+      foldConcat()
       ws()
       if (text[i] === ',') { i++; continue }
       if (text[i] === ']') { i++; return out }
@@ -425,8 +440,12 @@ function checkPair(enFile, locFile, { partial = false } = {}) {
     missing: problems.filter((p) => p.startsWith('missing')).length,
     extra: problems.filter((p) => p.startsWith('extra')).length,
     shape: problems.filter((p) => p.startsWith('shape')).length,
-    // In partial mode missing keys are tolerated (deep-merge locales).
-    problems: partial ? problems.filter((p) => !p.startsWith('missing')) : problems,
+    // In partial mode missing keys are tolerated (deep-merge locales), and
+    // so are extra keys: a translated key with no English counterpart is
+    // unreachable dead weight under deep-merge (lookups are en-shaped), not
+    // a regression. Shape drift still fails — that is the real hazard.
+    // Verbose output still lists both.
+    problems: partial ? problems.filter((p) => !p.startsWith('missing') && !p.startsWith('extra')) : problems,
   }
 }
 

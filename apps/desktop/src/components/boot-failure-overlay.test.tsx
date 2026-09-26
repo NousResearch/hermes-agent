@@ -452,6 +452,7 @@ describe('BootFailureOverlay', () => {
       Object.defineProperty(window, 'location', originalLocation)
       $notifications.set([])
     }
+  })
 
   // The dev-server URL (127.0.0.1:5174) opened in a regular browser fails boot
   // with the IPC-bridge error and browserMode set. The overlay must NOT show

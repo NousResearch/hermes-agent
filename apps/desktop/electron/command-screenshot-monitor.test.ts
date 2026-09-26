@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { type SpawnOptions } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
+import { resolve } from 'node:path'
 
 import { test, vi } from 'vitest'
 

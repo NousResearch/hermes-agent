@@ -327,7 +327,7 @@ function DropdownMenuCheckboxItem({
       {...hoverProps}
     >
       {children}
-      <DropdownMenuPrimitive.ItemIndicator className="ml-auto flex items-center ps-2 text-foreground">
+      <DropdownMenuPrimitive.ItemIndicator className="ms-auto flex items-center ps-2 text-foreground">
         <Codicon name="check" size="0.75rem" />
       </DropdownMenuPrimitive.ItemIndicator>
     </DropdownMenuPrimitive.CheckboxItem>
@@ -359,7 +359,7 @@ function DropdownMenuRadioItem({
       {...hoverProps}
     >
       {children}
-      <DropdownMenuPrimitive.ItemIndicator className="ml-auto flex items-center ps-2 text-foreground">
+      <DropdownMenuPrimitive.ItemIndicator className="ms-auto flex items-center ps-2 text-foreground">
         <Codicon name="check" size="0.75rem" />
       </DropdownMenuPrimitive.ItemIndicator>
     </DropdownMenuPrimitive.RadioItem>
@@ -396,7 +396,7 @@ function DropdownMenuSeparator({ className, ...props }: React.ComponentProps<typ
 function DropdownMenuShortcut({ className, ...props }: React.ComponentProps<'span'>) {
   return (
     <span
-      className={cn('ml-auto text-xs tracking-widest text-muted-foreground', className)}
+      className={cn('ms-auto text-xs tracking-widest text-muted-foreground', className)}
       data-slot="dropdown-menu-shortcut"
       {...props}
     />
@@ -465,7 +465,7 @@ function DropdownMenuSubTrigger({
       {...hoverProps}
     >
       {children}
-      {!hideChevron && <Codicon className="ml-auto text-(--ui-text-tertiary)" name="chevron-right" size="1rem" />}
+      {!hideChevron && <Codicon className="ms-auto text-(--ui-text-tertiary)" name="chevron-right" size="1rem" />}
     </DropdownMenuPrimitive.SubTrigger>
   )
 }

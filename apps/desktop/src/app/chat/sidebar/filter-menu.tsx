@@ -257,7 +257,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
           <DropdownMenuSub>
             <DropdownMenuSubTrigger hideChevron>
               {f.grouping}
-              <span className="ml-auto flex items-center gap-1 ps-4 text-(--ui-text-tertiary)">
+              <span className="ms-auto flex items-center gap-1 ps-4 text-(--ui-text-tertiary)">
                 {groupingLabel}
                 <Codicon name="chevron-right" size="1rem" />
               </span>

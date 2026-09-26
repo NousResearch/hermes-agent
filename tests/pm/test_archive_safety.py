@@ -247,6 +247,52 @@ class TestCollisionsAndClobbering:
 
         assert (dest / "bin" / "gh").is_file()
 
+    def test_finder_metadata_does_not_mask_a_wrapper(self, tmp_path):
+        """macOS drops .DS_Store into any directory Finder browses, so one
+        can appear between extraction and the flatten pass; the payload is
+        still a lone wrapper and must still unwrap."""
+        archive = _tar(
+            tmp_path / "node.tar.gz",
+            {"node-v26.7.0-darwin-arm64/bin/node": b"x"},
+        )
+        dest = tmp_path / "dest"
+        extract(archive, dest)
+        (dest / ".DS_Store").write_bytes(b"\x00\x00metadata")
+
+        flatten_single_dir(dest)
+
+        assert (dest / "bin" / "node").is_file()
+        assert not (dest / ".DS_Store").exists()
+
+    def test_os_metadata_sidecars_are_ignored_too(self, tmp_path):
+        """AppleDouble ._*, .localized, Thumbs.db and Desktop.ini are
+        equally never payload; none may block the hoist or ride along."""
+        archive = _tar(tmp_path / "tool.tar.gz", {"tool-1.0/bin/tool": b"x"})
+        dest = tmp_path / "dest"
+        extract(archive, dest)
+        for name in ("._anything", ".localized", "Thumbs.db", "Desktop.ini"):
+            (dest / name).write_bytes(b"metadata")
+
+        flatten_single_dir(dest)
+
+        assert (dest / "bin" / "tool").is_file()
+        assert list(dest.iterdir()) == [dest / "bin"]
+
+    def test_metadata_cannot_fake_a_wrapper(self, tmp_path):
+        """Ignoring metadata must not loosen anything else: with two real
+        entries the hoist is still refused."""
+        archive = _tar(
+            tmp_path / "two.tar.gz", {"wrapper/bin/tool": b"x", "real/other": b"y"}
+        )
+        dest = tmp_path / "dest"
+        extract(archive, dest)
+        (dest / ".DS_Store").write_bytes(b"")
+
+        flatten_single_dir(dest)
+
+        assert (dest / "wrapper" / "bin" / "tool").is_file()
+        assert (dest / "real" / "other").is_file()
+
 
 class TestStoreIsolation:
     def test_extract_replaces_only_its_own_entry_directory(self, tmp_path):

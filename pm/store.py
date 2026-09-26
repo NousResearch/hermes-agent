@@ -229,10 +229,33 @@ def _zip_symlink(member: str, target: str, dest: Path) -> None:
         link.write_text(target, encoding="utf-8")
 
 
+# Finder and Explorer drop these into any directory they browse, so they can
+# appear between extraction and the flatten pass below. They are never
+# package payload, and must not count as (or block) a top-level entry.
+_OS_METADATA_FILES = frozenset({".DS_Store", ".localized", "Thumbs.db", "Desktop.ini"})
+_APPLE_DOUBLE_PREFIX = "._"
+
+
+def _purge_os_metadata(dest: Path) -> None:
+    for entry in dest.iterdir():
+        if not entry.is_file():
+            continue
+        if entry.name in _OS_METADATA_FILES or entry.name.startswith(
+            _APPLE_DOUBLE_PREFIX
+        ):
+            try:
+                entry.unlink()
+            except OSError:
+                # A metadata file the OS refuses to delete right now (e.g. a
+                # locked Thumbs.db) is inert next to the hoisted layout.
+                pass
+
+
 def flatten_single_dir(dest: Path) -> None:
     """Hoist a lone top-level dir's contents unless it IS the layout
     (bin/, cmd/, lib/...). Refuses on name collisions."""
     keep = {"bin", "cmd", "lib", "libexec", "share", "etc", "usr"}
+    _purge_os_metadata(dest)
     entries = list(dest.iterdir())
     if len(entries) != 1 or not entries[0].is_dir() or entries[0].name in keep:
         return

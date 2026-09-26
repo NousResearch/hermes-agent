@@ -528,6 +528,23 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
     return None
 
 
+def _read_process_argv(pid: int) -> Optional[list[str]]:
+    """Process command line as ARGV, or None. ``_read_process_cmdline`` space-joins these same bytes,
+    so ``python -I -c <bootstrap> gateway run`` reaches a tokenizer as one run-on string; /proc keeps
+    the NUL boundaries and ``psutil`` returns an already-split list."""
+    with contextlib.suppress(OSError):
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+        if raw:
+            argv = [part.decode("utf-8", errors="ignore") for part in raw.split(b"\x00") if part]
+            if argv:
+                return argv
+    with contextlib.suppress(Exception):
+        import psutil  # type: ignore
+        argv = [str(part) for part in psutil.Process(pid).cmdline()]
+        if argv:
+            return argv
+    return None
+
 
 def inline_source_flag_index(tokens: list[str]) -> int | None:
     """Index of the ``-c`` token when *tokens* is an interpreter running INLINE SOURCE, else None.
@@ -586,6 +603,53 @@ def inline_source_flag_index(tokens: list[str]) -> int | None:
 def command_line_runs_inline_source(tokens: list[str]) -> bool:
     """True when *tokens* is an interpreter running INLINE SOURCE (``python -c <src> [args]``)."""
     return inline_source_flag_index(tokens) is not None
+
+
+def _inline_source_is_hermes_entry(src: str) -> bool:
+    """True when an inline-source OPERAND *is* the Hermes CLI entrypoint -- never when it is argv that
+    will spawn one later, which is why only the operand is inspected. The two real shapes: the
+    installed launcher (``.hermes/bin/hermes``, ``from hermes_cli.main import main`` …
+    ``sys.exit(main())``) and ``hermes_cli._launchers.runtime_command()``
+    (``runpy.run_module('hermes_cli.main' …``)."""
+    if not src:
+        return False
+    if "runpy.run_module('hermes_cli.main'" in src:
+        return True
+    return "from hermes_cli.main import main" in src and "main()" in src
+
+
+def _gateway_identity_from_argv(argv: list[str] | None) -> str | None:
+    """Gateway lifecycle subcommand when *argv* is a LIVE hermes CLI process, else None. Only ARGV can
+    answer this for a launcher bootstrap (``python -I -c <bootstrap> gateway run``), which
+    ``_read_process_cmdline`` fragments and ``_gateway_command_subcommand`` refuses by design.
+    Identity needs BOTH halves: the detached restart watcher
+    (``gateway._spawn_gateway_restart_watcher``) shares the ``-c`` shape and carries a real launcher
+    bootstrap in its TRAILING argv, but its own operand is a poll-and-spawn script, so it is refused
+    before that argv is ever read (#107002)."""
+    if not argv:
+        return None
+    index = inline_source_flag_index(argv)
+    if index is None or index + 1 >= len(argv):
+        return None
+    if not _inline_source_is_hermes_entry(argv[index + 1]):
+        return None
+    # The hermes basename was already consumed by the launcher, so only the subcommand is left.
+    # A named-profile launcher (``_gateway_run_args_for_profile``) inserts ``-p <name>`` /
+    # ``--profile[=]<name>`` before ``gateway run``, hiding it: strip those first, as the string
+    # matcher does.
+    filtered: list[str] = []
+    skip_next = False
+    for token in argv[index + 2 :]:
+        if skip_next:
+            skip_next = False
+        elif token in ("--profile", "-p"):
+            skip_next = True
+        elif not token.startswith(("--profile=", "-p=")):
+            filtered.append(token)
+    for i, token in enumerate(filtered):
+        if token == "gateway":
+            return "run" if i + 1 == len(filtered) or filtered[i + 1] in {"run", "restart"} else None
+    return None
 
 
 def _gateway_command_subcommand(command: str | None) -> str | None:
@@ -696,6 +760,8 @@ def looks_like_gateway_runtime_command_line(command: str | None) -> bool:
 
 def _looks_like_gateway_process(pid: int) -> bool:
     """True when the live PID still looks like the Hermes gateway."""
+    if _gateway_identity_from_argv(_read_process_argv(pid)) == "run":
+        return True
     cmdline = _read_process_cmdline(pid)
     return bool(cmdline) and looks_like_gateway_command_line(cmdline)
 
@@ -798,12 +864,18 @@ def _record_matches_live_gateway_pid(
     must also belong to that profile — or serve it as the host multiplexer); unreadable cmdline
     (Windows/EACCES) -> persisted record."""
     live_cmdline = _read_process_cmdline(pid)
-    if not live_cmdline:
-        return _record_looks_like_gateway(record)
-    if not looks_like_gateway_runtime_command_line(live_cmdline):
-        return False
+    # PRE-check only: argv is consulted first because a launcher bootstrap is invisible to the string
+    # path (see ``_gateway_identity_from_argv``); with no verdict the checks below decide as before.
+    argv_identity = _gateway_identity_from_argv(_read_process_argv(pid))
+    if argv_identity is None:
+        if not live_cmdline:
+            return _record_looks_like_gateway(record)
+        if not looks_like_gateway_runtime_command_line(live_cmdline):
+            return False
     if expected_home is not None and _host_gateway_serves_home(pid, expected_home):
         return True
+    if argv_identity is not None and not live_cmdline:
+        return True  # argv proved the launcher shape; there is no string left to profile-match
     return expected_home is None or _command_line_belongs_to_profile(live_cmdline, expected_home)
 
 

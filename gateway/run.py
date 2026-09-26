@@ -419,6 +419,34 @@ _ENDPOINT_UNREACHABLE_MARKERS = (
 _GATEWAY_ENDPOINT_UNREACHABLE_RE = re.compile(
     "(" + "|".join(_ENDPOINT_UNREACHABLE_MARKERS) + ")", re.IGNORECASE)
 
+def _windows_venv_abi_matches(venv_dir: Path) -> bool:
+    """Does *venv_dir* hold packages built for the interpreter running this process?
+
+    Windows ``Lib/site-packages`` carries no minor-version segment, so a leftover dev ``venv``
+    (say CPython 3.11) is indistinguishable from the live environment by existence alone. Splicing
+    it ahead of the bootstrap-selected dependencies shadows compiled extensions with a foreign ABI:
+    the first lazy ``import pydantic`` resolves ``pydantic_core`` to its ``cp311`` .pyd under a 3.14
+    interpreter and every turn dies at client init. The venv's own ``pyvenv.cfg`` records the
+    interpreter it was built for — ``version_info`` (uv) or ``version`` (stdlib venv) — so compare
+    that major.minor against the running interpreter and refuse anything else. An unreadable or
+    versionless config proves nothing: skip the venv rather than risk the ABI mismatch. The launcher
+    already selected the correct dependencies at boot, so skipping is safe.
+    """
+    try:
+        lines = (venv_dir / "pyvenv.cfg").read_text(encoding="utf-8-sig").splitlines()
+    except OSError:
+        return False
+    for line in lines:
+        key, _, value = line.partition("=")
+        if key.strip() not in ("version", "version_info"):
+            continue
+        major, _, rest = value.strip().partition(".")
+        minor, _, _ = rest.partition(".")
+        if major.isdigit() and minor.isdigit():
+            return (int(major), int(minor)) == (sys.version_info.major, sys.version_info.minor)
+    return False
+
+
 def _ensure_windows_gateway_venv_imports() -> None:
     """Make detached Windows gateway runs see the Hermes venv packages.
 
@@ -445,6 +473,12 @@ def _ensure_windows_gateway_venv_imports() -> None:
 
         site_packages = resolved_venv / "Lib" / "site-packages"
         if not site_packages.exists():
+            continue
+        if not _windows_venv_abi_matches(resolved_venv):
+            logger.warning(
+                "Ignoring venv %s: it was built for a different Python than the running %d.%d, "
+                "so its compiled extensions cannot load here", resolved_venv,
+                sys.version_info.major, sys.version_info.minor)
             continue
 
         project_entry = str(project_root)

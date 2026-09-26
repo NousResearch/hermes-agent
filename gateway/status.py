@@ -500,6 +500,110 @@ def get_process_start_time(pid: int) -> Optional[int]:
     return _get_process_start_time(pid)
 
 
+def _psutil_init_boot_time() -> Optional[float]:
+    """psutil's OWN boot reference, captured when psutil was imported in this process.
+
+    ``psutil._psosx.adjust_proc_create_time`` shifts every macOS ``create_time()`` by
+    ``|INIT_BOOT_TIME - boot_time()|`` once the system clock has been updated: a process that imported
+    psutil before the update therefore reports creation times shifted against one that imported after
+    it, for the SAME live process. That shift is what makes a start-time fingerprint recorded by one
+    reader fail to match the read of another (#123811). Undoing it needs the exact constant psutil used,
+    so read it from psutil rather than re-deriving it.
+    """
+    try:
+        import psutil  # type: ignore
+    except Exception:
+        return None
+    for mod_name in ("_psosx", "_psbsd"):
+        init = getattr(getattr(psutil, mod_name, None), "INIT_BOOT_TIME", None)
+        if init:
+            return float(init)
+    return None
+
+
+def get_process_uptime_start_time(pid: int) -> Optional[int]:
+    """Start time of ``pid`` expressed as centiseconds since BOOT: the reference-invariant twin of
+    :func:`get_process_start_time`.
+
+    The absolute form is not safe to compare over time on platforms without ``/proc``. On macOS
+    ``psutil.Process.create_time()`` is an epoch timestamp that two different readers can disagree
+    about by seconds after a ``kern.boottime`` adjustment (psutil compensates with the boot reference
+    it read at its own import), so a recorded absolute start stops matching the live one for the SAME
+    process — which a liveness check then reads as "the PID was recycled". Subtracting the same boot
+    reference the reading was built from leaves the boot-relative start, which no adjustment moves.
+    Linux ``/proc`` field 22 is already boot-relative and is returned unchanged. ``None`` when the
+    start time (or, off Linux, the boot reference) cannot be read: callers must treat that as "cannot
+    certify identity", never as a difference.
+    """
+    start = _get_process_start_time(pid)
+    if start is None:
+        return None
+    if sys.platform == "linux":
+        return int(start)
+    try:
+        import psutil  # type: ignore
+        live_boot = float(psutil.boot_time())
+    except Exception:
+        return None
+    init_boot = _psutil_init_boot_time()
+    shift_cs = 0 if not init_boot else int(round(abs(init_boot - live_boot) * 100))
+    return int(start) - int(round(live_boot * 100)) - shift_cs
+
+
+def _darwin_boot_session_uuid() -> str:
+    """``kern.bootsessionuuid`` — a fresh UUID per boot, unaffected by clock/boottime adjustments."""
+    try:
+        proc = subprocess.run(
+            ["sysctl", "-n", "kern.bootsessionuuid"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True, encoding="utf-8", errors="replace",
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError, TimeoutError):
+        return ""
+    if proc.returncode != 0:
+        return ""
+    return (proc.stdout or "").strip()
+
+
+def host_boot_witness() -> str:
+    """Identity of the CURRENT boot, for pairing with an uptime-relative start.
+
+    A boot-relative start alone does not survive a reboot: the tick value recurs, so a row written
+    before the reboot can match an unrelated process on the same PID. The witness is what makes the
+    pair collision-free, and it must itself be immune to the clock/boottime adjustments that move every
+    absolute timestamp — a witness that moves would turn "the clock was corrected" into "the worker
+    died". Preference order is by that property:
+
+    * Linux: ``boot_id`` (plus the PID-1 start) — regenerated per boot, never adjusted.
+    * macOS: ``kern.bootsessionuuid`` — a fresh UUID per boot session.
+    * Anything else: the boot epoch itself, which a clock step DOES move; callers comparing two
+      ``boottime:`` witnesses must allow :data:`START_TIME_DRIFT_TOLERANCE` (see
+      ``kanban_db_dispatch._witnesses_agree``).
+
+    Empty string means "no witness available", which a caller must read as "cannot certify identity".
+    """
+    try:
+        from gateway.drain_control import current_instantiation_epoch
+        epoch = current_instantiation_epoch()
+    except Exception:
+        epoch = ""
+    if epoch:
+        return str(epoch)
+    if sys.platform == "darwin":
+        session_uuid = _darwin_boot_session_uuid()
+        if session_uuid:
+            return f"bootsession:{session_uuid}"
+    try:
+        import psutil  # type: ignore
+        boot = int(round(float(psutil.boot_time()) * 100))
+    except Exception:
+        return ""
+    return f"boottime:{boot}" if boot > 0 else ""
+
+
 def _read_process_cmdline(pid: int) -> Optional[str]:
     """Process command line as one string: /proc, then psutil, then ``ps``.
 

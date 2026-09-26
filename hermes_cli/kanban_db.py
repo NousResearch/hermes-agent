@@ -1860,6 +1860,8 @@ def store_attachment_bytes(
     dest_path = _collision_free_path(dest_dir, safe_name)
     dest_path.write_bytes(data)
     try:
+        if dest_path.read_bytes() != data:
+            raise OSError("attachment write verification failed: stored bytes differ from input")
         return add_attachment(
             conn, task_id, filename=dest_path.name, stored_path=str(dest_path.resolve()),
             content_type=content_type, size=len(data), uploaded_by=uploaded_by,

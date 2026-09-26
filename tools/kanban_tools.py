@@ -896,11 +896,13 @@ def _handle_comment(args: dict, **kw) -> str:
 def _store_attachment(board, tid, filename, data, content_type) -> str:
     """Store via ``kanban_db.store_attachment_bytes`` (shared size cap, per-task
     dir, metadata row) so agent, dashboard, and CLI surfaces stay in lockstep."""
+    import hashlib
     with _board(board) as (kb, conn):
         att_id = kb.store_attachment_bytes(
             conn, tid, str(filename), data,
             content_type=content_type, uploaded_by="agent", board=board)
-        return _ok(task_id=tid, attachment_id=att_id, size=len(data))
+        return _ok(task_id=tid, attachment_id=att_id, size=len(data),
+                   sha256=hashlib.sha256(data).hexdigest())
 
 
 @_kanban_handler("kanban_attach")
@@ -915,6 +917,11 @@ def _handle_attach(args: dict, **kw) -> str:
         data = base64.b64decode(str(content_b64), validate=True)
     except (binascii.Error, ValueError) as e:
         raise _Reject(f"content_base64 is not valid base64: {e}")
+    import hashlib
+    digest = hashlib.sha256(data).hexdigest()
+    expected = _require_text(args, "expected_sha256")
+    if not isinstance(expected, str) or expected.lower() != digest:
+        raise _Reject("expected_sha256 does not match decoded attachment bytes")
     return _store_attachment(args.get("board"), tid, filename, data, args.get("content_type"))
 
 

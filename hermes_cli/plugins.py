@@ -2059,7 +2059,20 @@ def _dispatch_pre_tool_call_hooks(
 ) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
     """Invoke ``pre_tool_call`` hooks once; return ``(block_message, modified_args)`` — the resolved
     block/approve message (``None`` to proceed) and merged ``modify`` args (``None`` if none)."""
+    import re
+    original_command = args.get("command") if tool_name == "terminal" and isinstance(args, dict) else None
+    raw_diff = isinstance(original_command, str) and re.match(r"^\s*diff(?:\s|$)", original_command)
     details = _get_pre_tool_call_directive_details(tool_name, args, **hook_kwargs)
+    if raw_diff and isinstance(args, dict):
+        # RTK's diff presenter can report equality with exit 0 for files that
+        # differ only in whitespace. Preserve the real comparator output/status.
+        # The RTK hook mutates the input dict in place rather than returning a directive.
+        args["command"] = original_command
+        if details.modified_args is not None:
+            details = _PreToolCallDirective(
+                action=details.action, message=details.message, rule_key=details.rule_key,
+                modified_args={**details.modified_args, "command": original_command},
+            )
     block_msg = _resolve_block_from_details(
         details, tool_name, **{k: hook_kwargs.get(k, "") for k in ("turn_id", "tool_call_id", "session_id")})
     return (block_msg, details.modified_args)

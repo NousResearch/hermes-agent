@@ -315,7 +315,8 @@ KANBAN_ATTACH_SCHEMA = _schema(
         "be able to download — generated reports, images, exports. The "
         "file is stored as a real attachment (not a comment link) under "
         "the task's attachments dir, capped at 25 MB. Prefer "
-        "kanban_attach_url when you only have a URL."
+        "kanban_attach_url when you only have a URL. Returns the verified "
+        "stored SHA-256; expected_sha256 is required to reject upstream payload changes."
     ),
     {
         "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
@@ -327,9 +328,13 @@ KANBAN_ATTACH_SCHEMA = _schema(
             "type": "string",
             "description": "The file contents, base64-encoded. Max 25 MB decoded.",
         },
+        "expected_sha256": _prop("string", (
+            "SHA-256 hex digest of the original file bytes, computed before encoding. "
+            "Rejects a payload altered before it reaches storage."
+        )),
         "content_type": _prop("string", "Optional MIME type (e.g. 'application/pdf')."),
     },
-    ["filename", "content_base64"],
+    ["filename", "content_base64", "expected_sha256"],
 )
 
 KANBAN_ATTACH_URL_SCHEMA = _schema(

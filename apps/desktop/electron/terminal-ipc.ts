@@ -46,6 +46,14 @@ export function terminalLcCtype(
   return platform === 'darwin' ? 'UTF-8' : env.LANG || 'C.UTF-8'
 }
 
+export function scrubBackendPythonEnv(env: Record<string, string | undefined>): void {
+  for (const key of Object.keys(env)) {
+    if (/^(?:CONDA_|_CE_|PYTHONHOME$|PYTHONPATH$|VIRTUAL_ENV$)/i.test(key)) {
+      delete env[key]
+    }
+  }
+}
+
 export function registerTerminalIpc({
   isWindows,
   findOnPath,
@@ -153,6 +161,11 @@ export function registerTerminalIpc({
 
   function terminalShellEnv() {
     const env = { ...process.env }
+
+    // Electron may be launched from Hermes' activated Python environment.
+    // Keep that interpreter-specific state out of the user's shell: conda
+    // hooks otherwise resolve extensions from the wrong Python installation.
+    scrubBackendPythonEnv(env)
 
     // Electron is commonly launched through `npm run dev`; do not leak npm's
     // managed prefix into a user's interactive shell (nvm/proto warn loudly).

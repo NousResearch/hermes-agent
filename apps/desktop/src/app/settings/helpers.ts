@@ -1,3 +1,4 @@
+import { foldPersonalityName } from '@/lib/personalities'
 import { asText, normalize } from '@/lib/text'
 import type { ConfigFieldSchema, HermesConfigRecord, ToolsetInfo } from '@/types/hermes'
 
@@ -247,11 +248,18 @@ function personalityOptions(config: HermesConfigRecord): string[] {
   // the root-level `personalities` block and `agent.personalities` (agent wins on a name
   // clash). Read both so a root-registered persona the CLI/gateway resolve also appears in
   // the dropdown (#123297).
+  // Fold each key the way the runtime does (`available_personalities`:
+  // `str(name).strip().lower()`, dropping the neutral spellings) so a case-variant,
+  // whitespace-padded, or neutral-named block never surfaces a row the runtime can't
+  // resolve, and a root/agent case clash dedupes to one canonical name (#123297).
   const customNames: string[] = []
   for (const key of ['personalities', 'agent.personalities']) {
     const block = getNested(config, key)
-    if (block && typeof block === 'object' && !Array.isArray(block)) {
-      customNames.push(...Object.keys(block as Record<string, unknown>))
+    if (isPlainObject(block)) {
+      for (const name of Object.keys(block)) {
+        const folded = foldPersonalityName(name)
+        if (folded) customNames.push(folded)
+      }
     }
   }
 

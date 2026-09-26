@@ -306,6 +306,28 @@ describe('settings helpers', () => {
         }
       }
     })
+
+    it('folds custom keys like the runtime so only resolvable rows are offered', () => {
+      // The runtime folds each key (`str(name).strip().lower()`) and drops the neutral
+      // spellings; without matching that, the dropdown offers a case-variant duplicate,
+      // a whitespace-padded name, or a neutral name the runtime canonicalises away —
+      // rows the user can pick but that never load the definition shown (#123297).
+      const config: HermesConfigRecord = {
+        personalities: { Catgirl: {}, '  Spaced  ': {}, none: {}, Default: {}, NEUTRAL: {} }
+      } as HermesConfigRecord
+      const opts = enumOptionsFor('display.personality', '', config)!
+
+      // `Catgirl` folds to the built-in `catgirl` (offered once, not twice).
+      expect(opts.filter(o => o === 'catgirl')).toHaveLength(1)
+      expect(opts).not.toContain('Catgirl')
+      // whitespace folded to the canonical key.
+      expect(opts).toContain('spaced')
+      expect(opts).not.toContain('  Spaced  ')
+      // neutral spellings never surface as selectable rows (only the '' sentinel remains).
+      for (const neutral of ['none', 'Default', 'NEUTRAL', 'default', 'neutral']) {
+        expect(opts).not.toContain(neutral)
+      }
+    })
   })
 
   describe('sectionFieldEntries', () => {

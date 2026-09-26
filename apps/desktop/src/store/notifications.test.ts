@@ -1,8 +1,16 @@
-import { beforeEach, expect, test, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
 import { en } from '@/i18n/en'
 
-import { $notifications, clearNotifications, isDiskFullErrorMessage, notifyError } from './notifications'
+import {
+  $notifications,
+  approvalNoticeId,
+  clearNotifications,
+  dismissApprovalNotice,
+  isDiskFullErrorMessage,
+  notify,
+  notifyError
+} from './notifications'
 import { $backendRestartRequest, $routeRequest } from './recovery-requests'
 
 beforeEach(() => {
@@ -140,4 +148,65 @@ test('code-skew 503 unwraps to a restart-required summary, not raw IPC JSON', ()
   expect($notifications.get()[0]?.action?.label).toBe(en.notifications.actions.restartHermes)
   $notifications.get()[0]?.action?.onClick()
   expect($backendRestartRequest.get()).toBe(before + 1)
+})
+
+describe('pinned approval notices', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  test('a pinned notice ignores its duration: it stays until explicitly dismissed', () => {
+    vi.useFakeTimers()
+    notify({ id: 'approval:s1:r1', kind: 'warning', message: 'run ls', pinned: true, durationMs: 40 })
+
+    vi.advanceTimersByTime(5_000)
+    expect($notifications.get().some(item => item.id === 'approval:s1:r1')).toBe(true)
+
+    clearNotifications()
+    expect($notifications.get().some(item => item.id === 'approval:s1:r1')).toBe(false)
+  })
+
+  test('a re-raised approval replaces its notice instead of stacking a duplicate', () => {
+    notify({ id: approvalNoticeId('s1', 'r1'), kind: 'warning', message: 'first', pinned: true })
+    notify({ id: approvalNoticeId('s1', 'r1'), kind: 'warning', message: 'second', pinned: true })
+
+    const matching = $notifications.get().filter(item => item.id === approvalNoticeId('s1', 'r1'))
+    expect(matching).toHaveLength(1)
+    expect(matching[0]?.message).toBe('second')
+  })
+
+  test('approvalNoticeId keys on the session and the queue request id', () => {
+    expect(approvalNoticeId('s1', 'r1')).toBe('approval:s1:r1')
+    expect(approvalNoticeId('s1')).toBe('approval:s1')
+    expect(approvalNoticeId(null)).toBe('approval:')
+  })
+
+  test('dismissApprovalNotice removes exactly one request notice', () => {
+    notify({ id: approvalNoticeId('s1', 'r1'), kind: 'warning', message: 'a', pinned: true })
+    notify({ id: approvalNoticeId('s1', 'r2'), kind: 'warning', message: 'b', pinned: true })
+
+    dismissApprovalNotice('s1', 'r1')
+    expect($notifications.get().some(item => item.id === approvalNoticeId('s1', 'r1'))).toBe(false)
+    expect($notifications.get().some(item => item.id === approvalNoticeId('s1', 'r2'))).toBe(true)
+  })
+
+  test('dismissApprovalNotice without a request id clears the whole session, not other sessions', () => {
+    notify({ id: approvalNoticeId('s1', 'r1'), kind: 'warning', message: 'a', pinned: true })
+    notify({ id: approvalNoticeId('s1', 'r2'), kind: 'warning', message: 'b', pinned: true })
+    notify({ id: approvalNoticeId('s2', 'r1'), kind: 'warning', message: 'c', pinned: true })
+
+    dismissApprovalNotice('s1')
+    expect($notifications.get().some(item => item.id.startsWith('approval:s1'))).toBe(false)
+    expect($notifications.get().some(item => item.id === approvalNoticeId('s2', 'r1'))).toBe(true)
+  })
+
+  test('dismissApprovalNotice without a session hint clears every approval notice, keeps unrelated toasts', () => {
+    notify({ id: approvalNoticeId('s1', 'r1'), kind: 'warning', message: 'a', pinned: true })
+    notify({ id: approvalNoticeId('s2', 'r2'), kind: 'warning', message: 'b', pinned: true })
+    notify({ id: 'unrelated', kind: 'info', message: 'saved', durationMs: 5_000 })
+
+    dismissApprovalNotice()
+    expect($notifications.get().some(item => item.id.startsWith('approval:'))).toBe(false)
+    expect($notifications.get().some(item => item.id === 'unrelated')).toBe(true)
+  })
 })

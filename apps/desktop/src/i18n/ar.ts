@@ -301,6 +301,7 @@ export const ar = defineLocale({
       approvalTitleNamed: session => `مطلوب موافقة — ${session}`,
       approveAction: 'موافقة',
       rejectAction: 'رفض',
+      runAction: 'تشغيل',
       inputTitle: 'مطلوب إدخال',
       inputTitleNamed: session => `مطلوب إدخال — ${session}`,
       inputBody: 'ينتظر Hermes ردّك.',

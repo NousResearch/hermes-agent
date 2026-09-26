@@ -637,6 +637,7 @@ export interface Translations {
       approvalTitleNamed: (session: string) => string
       approveAction: string
       rejectAction: string
+      runAction: string
       inputTitle: string
       inputTitleNamed: (session: string) => string
       inputBody: string

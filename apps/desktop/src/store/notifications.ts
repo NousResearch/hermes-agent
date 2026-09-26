@@ -32,6 +32,12 @@ export interface AppNotification {
   onDismiss?: () => void
   createdAt: number
   placement?: NotificationPlacement
+  /** When set, the notice is never auto-dismissed (its timer is skipped even
+   *  if `durationMs` is set) and is exempt from any feed eviction cap — the
+   *  caller must clear it explicitly once it no longer applies. The
+   *  pending-approval toast uses this so a blocked tool's notice can't slip
+   *  away (or linger past the request) before the user resolves it. */
+  pinned?: boolean
 }
 
 export interface NotificationInput {
@@ -48,6 +54,8 @@ export interface NotificationInput {
   onDismiss?: () => void
   durationMs?: number
   placement?: NotificationPlacement
+  /** See `AppNotification.pinned`. */
+  pinned?: boolean
 }
 
 let notificationCounter = 0
@@ -237,7 +245,8 @@ export function notify(input: NotificationInput): string {
     secondaryAction: input.secondaryAction,
     onDismiss: input.onDismiss,
     createdAt: Date.now(),
-    placement: input.placement ?? defaultPlacement(kind, input.action)
+    placement: input.placement ?? defaultPlacement(kind, input.action),
+    pinned: input.pinned
   }
 
   window.clearTimeout(timers.get(id))
@@ -247,7 +256,8 @@ export function notify(input: NotificationInput): string {
 
   const duration = input.durationMs ?? defaultDuration(kind)
 
-  if (duration > 0) {
+  // Pinned notices are cleared by their owner, never by a timer.
+  if (duration > 0 && !input.pinned) {
     timers.set(
       id,
       window.setTimeout(() => dismissNotification(id), duration)
@@ -302,6 +312,41 @@ export function dismissNotification(id: string) {
   const dismissed = $notifications.get().find(item => item.id === id)
   $notifications.set($notifications.get().filter(item => item.id !== id))
   dismissed?.onDismiss?.()
+}
+
+const APPROVAL_NOTICE_PREFIX = 'approval:'
+
+/** Stable per-request id for a pending approval's durable toast: keys on the
+ *  approval QUEUE id (`request_id`) when present so two queued approvals for
+ *  one session each get their own notice, else the session alone (a
+ *  legacy-shape approval is per-session with one in flight). */
+export function approvalNoticeId(sessionId: string | null | undefined, requestId?: string): string {
+  const key = sessionId ?? ''
+
+  return requestId ? `${APPROVAL_NOTICE_PREFIX}${key}:${requestId}` : `${APPROVAL_NOTICE_PREFIX}${key}`
+}
+
+/** Dismiss the durable approval notice for one request (sessionId+requestId),
+ *  for a whole session, or — with no session hint — every approval notice in
+ *  the feed (the global clear / turn-end path). */
+export function dismissApprovalNotice(sessionId?: string | null, requestId?: string): void {
+  for (const item of $notifications.get()) {
+    if (!item.id.startsWith(APPROVAL_NOTICE_PREFIX)) {
+      continue
+    }
+
+    const key = sessionId ?? ''
+
+    if (sessionId === undefined) {
+      dismissNotification(item.id)
+    } else if (requestId) {
+      if (item.id === `${APPROVAL_NOTICE_PREFIX}${key}:${requestId}`) {
+        dismissNotification(item.id)
+      }
+    } else if (item.id === `${APPROVAL_NOTICE_PREFIX}${key}` || item.id.startsWith(`${APPROVAL_NOTICE_PREFIX}${key}:`)) {
+      dismissNotification(item.id)
+    }
+  }
 }
 
 export function clearNotifications() {

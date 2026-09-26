@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { stubResizeObserver } from '@/test/jsdom'
 
 vi.mock('@/lib/haptics', () => ({ triggerHaptic: vi.fn() }))
-vi.mock('@/store/notifications', () => ({ notify: vi.fn(), notifyError: vi.fn() }))
+vi.mock('@/store/notifications', () => ({ dismissApprovalNotice: vi.fn(), notify: vi.fn(), notifyError: vi.fn() }))
 
 import { PromptOverlays } from '@/components/prompt-overlays'
 import { $gateway } from '@/store/gateway'

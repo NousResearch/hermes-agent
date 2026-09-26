@@ -8,12 +8,16 @@ import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
 import { pendingClarifyToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-clarify'
 import { translateNow } from '@/i18n'
 import { restorePendingClarifyToolCall } from '@/lib/chat-messages'
+import { playApprovalSound } from '@/lib/completion-sound'
 import type { PreviewActAction } from '@/lib/preview-act/act-in-page'
 import type { TourAction, TourStep } from '@/lib/tour'
 import { normalizeChoices, normalizeQuestions, setClarifyRequest, warnDroppedChoices } from '@/store/clarify'
-import type { ScopedServerRequest } from '@/store/gateway'
+import { $gateway, type ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
+import { approvalNoticeId, notify } from '@/store/notifications'
 import {
+  answerApproval,
+  clearApprovalRequest,
   receiveApprovalRequest,
   setSecretRequest,
   setSudoRequest,
@@ -241,6 +245,44 @@ const approval: Handler = ctx => {
   markNeedsInput(ctx)
 
   if (!request.replayed) {
+    // OS notifications can be silently swallowed by macOS (ad-hoc signed
+    // builds never enter the notification registry), so a blocked approval
+    // may otherwise go completely unnoticed while the user is in another
+    // session or another app. The WebAudio cue and the in-app toast need no
+    // macOS permission, so they are the reliable attention channel. The
+    // native notification is still dispatched for builds where it works.
+    playApprovalSound(sessionId || undefined)
+    notify({
+      action: {
+        label: translateNow('notifications.native.runAction'),
+        onClick: () => {
+          // Resolve straight from the toast (like the inline bar's Run):
+          // the renderer might be showing another session, so the inline
+          // approve button may be nowhere on screen.
+          const gateway = $gateway.get()
+
+          void answerApproval(
+            gateway,
+            {
+              requestId: str(p.request_id) || undefined,
+              serverRequestId: request.id,
+              sessionId: sessionId || null
+            },
+            'once'
+          ).then(() => clearApprovalRequest(sessionId, str(p.request_id) || undefined))
+        }
+      },
+      // Stable per-request id + pinned: the notice survives until this
+      // approval resolves — popped by the same `clearApprovalRequest` the
+      // toast action (and every other resolve path) runs, and by the
+      // turn-end / timeout clears — instead of drifting on a timer.
+      id: approvalNoticeId(sessionId || null, str(p.request_id) || undefined),
+      kind: 'warning',
+      message: command || description,
+      pinned: true,
+      title: translateNow('notifications.native.approvalTitle')
+    })
+
     dispatchNativeNotification({
       actions: [
         {

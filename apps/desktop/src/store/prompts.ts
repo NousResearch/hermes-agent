@@ -1,6 +1,7 @@
 import { atom, computed, type ReadableAtom } from 'nanostores'
 
 import { $clarifyRequest, $clarifyRequests } from './clarify'
+import { dismissApprovalNotice } from './notifications'
 import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone } from './runtime-gone'
 import { respondToServerRequest } from './server-requests'
 import { $activeSessionId } from './session'
@@ -144,6 +145,9 @@ const approval = {
     sessionApprovalRevisions.clear()
     $approvalStackSizes.set({})
     $approvalQueues.set({})
+    // Global reset drops every pending approval, so no durable notice may stay
+    // behind either.
+    dismissApprovalNotice()
   },
   set(request: ApprovalRequest) {
     const key = keyFor(request.sessionId)
@@ -199,6 +203,19 @@ const approval = {
 
     if (changed) {
       $approvalQueues.set(next)
+    }
+
+    // The pinned approval toast shares its request's lifecycle: popping the
+    // queue entry dismisses the notice, so a resolved / timed-out / turn-ended
+    // approval can't leave a dead toast behind. The inline bar, native
+    // notification action, toast action, timeout and turn-end clears all
+    // funnel through this one `clear`.
+    if (sessionId === undefined) {
+      dismissApprovalNotice()
+    } else if (requestId) {
+      dismissApprovalNotice(sessionId, requestId)
+    } else {
+      dismissApprovalNotice(sessionId)
     }
   }
 }

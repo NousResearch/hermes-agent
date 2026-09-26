@@ -2028,11 +2028,10 @@ PRECLAIM_PROBE_PROMPT = "Reply with exactly: PROBE_OK"
 
 # In-process cache of probe verdicts, keyed by the full pin (model, provider,
 # profile home). A dead pin shared by a fan-out of cards is resolved once per
-# process instead of re-probed per claim. Only SUCCESS verdicts and STATIC
-# (deterministic) failures are cached: a live-layer failure is transient by
-# definition (quota window, upstream 403), so caching it would pin the card
-# to a stale verdict for the dispatcher's whole lifetime — the next claim
-# re-probes and a healed provider recovers on the very next tick.
+# process instead of re-probed per claim. Only SUCCESS verdicts are cached:
+# any failure — live or static — re-probes on the next claim, so a config fix
+# (installed credential, added env var, ``gcloud auth`` login) takes effect on
+# the very next tick without a dispatcher restart.
 _preclaim_probe_cache: "dict[tuple[Optional[str], Optional[str], str], tuple[bool, str, str]]" = {}
 _PRECLAIM_PROBE_CACHE_MAX = 512
 
@@ -2082,6 +2081,7 @@ def _profile_reachable(
         token = set_hermes_home_override(str(profile_home))
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
+        from hermes_cli.auth import AuthError
 
         try:
             runtime = resolve_runtime_provider(
@@ -2089,8 +2089,15 @@ def _profile_reachable(
                 target_model=model_override or None,
             )
         except Exception as exc:
-            # AuthError (unknown provider / no credentials) and any other
-            # resolve failure: the worker would die at construction.
+            # Unknown-provider typos (``code="invalid_provider"``) and any
+            # other resolve failure are construction-fatal and deterministic:
+            # the worker would die here on every attempt. Other ``AuthError``
+            # shapes are credential STATE, not config — a benched pool key or
+            # a pending ADC login lifts on its own (runtime_provider.py
+            # raises those with no ``code``) — so they ride the live channel,
+            # transient by the same definition as the one-shot child layer.
+            if isinstance(exc, AuthError) and getattr(exc, "code", None) is None:
+                return False, f"preclaim probe: pin credentials not resolvable yet: {exc}", "live"
             return False, f"preclaim probe: pin resolve failed: {exc}", "static"
     finally:
         if token is not None:
@@ -2153,8 +2160,10 @@ def _preclaim_probe_verdict(
     task_id: str, claimed: "Task", profile_home: Optional[str],
 ) -> tuple[bool, str, str]:
     """Cached ``(ok, reason, layer)`` for the card's pin; ``(True, "", "")``
-    = proceed. Live-layer failures are NOT cached (transient by definition —
-    the next claim re-probes); only successes and static-layer failures are.
+    = proceed. Only SUCCESS verdicts are cached: a cached failure would pin
+    the card to a stale verdict across config fixes until a dispatcher
+    restart (reviewer finding 2) — failures re-probe per claim, and Layer 1
+    is local/in-process, so the re-probe is cheap.
     """
     timeout_seconds = _preclaim_probe_timeout()
     if timeout_seconds <= 0:
@@ -2171,7 +2180,7 @@ def _preclaim_probe_verdict(
         claimed.id, pin_key[0], pin_key[1], profile_home or None, timeout_seconds,
     )
     ok, _reason, layer = verdict
-    if ok or layer == "static":
+    if ok:
         if len(_preclaim_probe_cache) >= _PRECLAIM_PROBE_CACHE_MAX:
             _preclaim_probe_cache.clear()
         _preclaim_probe_cache[pin_key] = verdict
@@ -2193,10 +2202,12 @@ def _release_preclaim_probe_failure(
     self-heals and can never trip the breaker or park the card on the
     stamped quota text (``rate_limit_cooldown`` precedes ``blocker_auth``).
 
-    ``layer="static"`` (unknown provider, credentialless resolve):
+    ``layer="static"`` (unknown provider (``code="invalid_provider"``),
+    credentialless resolve, any non-``AuthError`` construction failure):
     deterministic — a retry cannot heal it — so it rides the existing
     spawn-failure path: counter + breaker inherited, ``spawn_failed`` event
-    on the chain.
+    on the chain. A code-less ``AuthError`` (benched key, pending ADC login)
+    is credential STATE and never lands here — it rides ``live`` above.
 
     Both append a ``preclaim_probe_failed`` event so ``hermes kanban tail``
     shows why the card went back."""
@@ -2321,6 +2332,7 @@ def _dispatch_lane_task(
     # whole dispatch tick: any exception in the probe machinery itself fails
     # OPEN and the claim proceeds to spawn exactly as on main.
     if (claimed.model_override or claimed.provider_override) and _preclaim_probe_timeout() > 0:
+        ok, probe_reason, probe_layer = True, "", ""
         try:
             profile_home: Optional[str] = None
             try:
@@ -2330,8 +2342,16 @@ def _dispatch_lane_task(
             except FileNotFoundError:
                 profile_home = None
             except Exception:
-                profile_home = None
-            ok, probe_reason, probe_layer = _preclaim_probe_verdict(task_id, claimed, profile_home)
+                # The resolver crashing is not evidence about the pin. Skip the
+                # probe entirely and let the worker's own startup produce the
+                # honest verdict — probing under the default home would judge
+                # the pin against the WRONG credential set.
+                _kb._log.warning(
+                    "kanban dispatcher: profile home resolution failed for %s; skipping preclaim probe (fail-open)",
+                    claimed.id, exc_info=True,
+                )
+            else:
+                ok, probe_reason, probe_layer = _preclaim_probe_verdict(task_id, claimed, profile_home)
         except Exception:
             _kb._log.warning(
                 "kanban dispatcher: preclaim probe raised for %s; failing open (claim proceeds)",

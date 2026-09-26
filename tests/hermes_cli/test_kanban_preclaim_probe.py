@@ -111,16 +111,51 @@ def test_probe_failure_counts_toward_circuit_breaker(kanban_home):
     assert task.status == "blocked", "second dead-pin failure must trip the breaker"
 
 
+def test_auth_pin_failure_not_cached_and_never_breaker(kanban_home, monkeypatch):
+    """An auth-shaped dead pin with no ``code`` (the credential-state shape:
+    a benched pool key, a pending ADC login — reviewer finding 1) rides the
+    live channel: never cached, never counted toward the breaker, and the
+    card stays claimable so the next tick can re-probe after the cooldown
+    lifts."""
+    calls = {"n": 0}
+
+    def auth_resolve(*args, **kwargs):
+        calls["n"] += 1
+        from hermes_cli.auth import AuthError
+
+        raise AuthError("Anthropic credentials are rate-limited for opus; other models remain available.")
+
+    import hermes_cli.runtime_provider as rp
+
+    monkeypatch.setattr(rp, "resolve_runtime_provider", auth_resolve)
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "0")  # next tick re-claims at once
+    with kbc.connect() as conn:
+        t1 = _pinned_card(conn, title="pin 1")
+        t2 = _pinned_card(conn, title="pin 2")
+        spawns, spawn_fn = _spawn_recorder()
+        res1 = kbd.dispatch_once(conn, spawn_fn=spawn_fn)
+        res2 = kbd.dispatch_once(conn, spawn_fn=spawn_fn)
+        task = kb.get_task(conn, t1)
+    assert calls["n"] == 4, "auth failures must re-probe per claim, never serve a cached verdict"
+    assert res1.preclaim_probe_failed == [t1, t2]
+    assert res2.preclaim_probe_failed == [t1, t2]
+    assert res1.rate_limited == [t1, t2], "code-less AuthError rides the live channel"
+    assert spawns == []
+    assert task.status == "ready" and task.consecutive_failures == 0, "no breaker accumulation for auth-shaped pins"
+
+
 def test_probe_verdict_cached_across_cards(kanban_home, monkeypatch):
-    """A fan-out of same-pinned cards probes ONCE: the second dispatch reads
-    the cached verdict instead of re-probing per claim."""
+    """A fan-out of same-pinned cards probes ONCE — but only for SUCCESS
+    verdicts: failure caching was removed (a stale negative verdict pinned
+    cards across config fixes until a dispatcher restart — reviewer finding
+    2), so two claims = two probes even for the deterministic typo."""
     calls = {"n": 0}
 
     def counting_resolve(*args, **kwargs):
         calls["n"] += 1
         from hermes_cli.auth import AuthError
 
-        raise AuthError(f"Unknown provider '{DEAD_PROVIDER}'.")
+        raise AuthError(f"Unknown provider '{DEAD_PROVIDER}'.", code="invalid_provider")
 
     import hermes_cli.runtime_provider as rp
 
@@ -131,10 +166,37 @@ def test_probe_verdict_cached_across_cards(kanban_home, monkeypatch):
         spawns, spawn_fn = _spawn_recorder()
         res1 = kbd.dispatch_once(conn, spawn_fn=spawn_fn)
         res2 = kbd.dispatch_once(conn, spawn_fn=spawn_fn)
-    assert calls["n"] == 1, "static resolve must run once, then hit the cache"
-    assert res1.preclaim_probe_failed == [t1, t2], "same tick: t2 hits the verdict t1 just cached"
-    assert res2.preclaim_probe_failed == [t1, t2], "next tick: both reuse the cached verdict, zero re-probes"
+    assert calls["n"] == 4, "failure verdicts are never cached: each claim re-probes"
+    assert res1.preclaim_probe_failed == [t1, t2]
+    assert res2.preclaim_probe_failed == [t1, t2]
     assert spawns == []
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, t1)
+    assert task.status == "blocked", "permanent typo still parks via the breaker after two attempts"
+
+
+def test_probe_success_verdict_cached_across_cards(kanban_home, monkeypatch):
+    """Success verdicts stay cached: a fan-out of healthy-pinned cards
+    resolves the pin once per process, keeping the probe off the open path."""
+    calls = {"n": 0}
+
+    def counting_resolve(*args, **kwargs):
+        calls["n"] += 1
+        return {"provider": "openrouter", "api_key": "sk-test", "api_mode": "chat"}
+
+    import hermes_cli.runtime_provider as rp
+
+    monkeypatch.setattr(rp, "resolve_runtime_provider", counting_resolve)
+    monkeypatch.setenv("HERMES_BIN", _write_fake_hermes(kanban_home, "echo PROBE_OK"))
+    with kbc.connect() as conn:
+        t1 = _pinned_card(conn, title="pin 1")
+        t2 = _pinned_card(conn, title="pin 2")
+        spawns, spawn_fn = _spawn_recorder()
+        res1 = kbd.dispatch_once(conn, spawn_fn=spawn_fn)
+        res2 = kbd.dispatch_once(conn, spawn_fn=spawn_fn)
+    assert calls["n"] == 1, "success verdict must run once, then hit the cache"
+    assert spawns == [t1, t2], "both healthy-pinned cards claim and spawn"
+    assert res1.preclaim_probe_failed == [] and res2.preclaim_probe_failed == []
 
 
 def test_disabled_probe_keeps_upstream_behavior(kanban_home, monkeypatch):
@@ -169,6 +231,33 @@ def test_unpinned_card_never_probed(kanban_home, monkeypatch):
         res = kbd.dispatch_once(conn, spawn_fn=spawn_fn)
     assert res.preclaim_probe_failed == []
     assert spawns == [tid]
+
+
+def test_profile_home_resolution_failure_never_judges_pin(kanban_home, monkeypatch):
+    """A crashing profile resolver must not steer the probe at the wrong
+    home (reviewer minor): fail-open — no verdict is formed at all, the
+    claim proceeds, and a dead-under-profile pin is left to the worker's own
+    honest startup failure instead of a wrong-home judgment."""
+    import hermes_cli.profiles as profiles_mod
+
+    def explode(arg):
+        raise RuntimeError("profile resolution is broken on this host")
+
+    monkeypatch.setattr(profiles_mod, "resolve_profile_env", explode)
+    import hermes_cli.runtime_provider as rp
+
+    def dead_pin(*args, **kwargs):
+        from hermes_cli.auth import AuthError
+
+        raise AuthError(f"Unknown provider '{DEAD_PROVIDER}'.")
+
+    monkeypatch.setattr(rp, "resolve_runtime_provider", dead_pin)
+    with kbc.connect() as conn:
+        tid = _pinned_card(conn)
+        spawns, spawn_fn = _spawn_recorder()
+        res = kbd.dispatch_once(conn, spawn_fn=spawn_fn)
+    assert spawns == [tid], "resolver crash must fail open: claim proceeds, no wrong-home verdict"
+    assert res.preclaim_probe_failed == []
 
 
 def _write_fake_hermes(dir_: Path, body: str) -> str:

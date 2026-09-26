@@ -188,6 +188,21 @@ class _ServerRequestRouting:
 
     auto_approve_exec: bool = False
     auto_approve_apply_patch: bool = False
+    prompt_mcp_elicitation_servers: frozenset[str] = frozenset()
+
+
+def _is_empty_confirmation_elicitation(params: dict) -> bool:
+    """Return whether Codex is asking for a binary form confirmation."""
+    if params.get("mode") != "form":
+        return False
+    schema = params.get("requestedSchema")
+    if not isinstance(schema, dict):
+        return False
+    return (
+        schema.get("type") == "object"
+        and schema.get("properties") == {}
+        and schema.get("required") in (None, [])
+    )
 
 
 class CodexThreadResumeError(CodexAppServerError):
@@ -212,6 +227,7 @@ class CodexAppServerSession:
         self, *, cwd: Optional[str] = None, codex_bin: str = "codex",
         codex_home: Optional[str] = None, permission_profile: Optional[str] = None,
         approval_callback: Optional[Callable[..., str]] = None,
+        mcp_elicitation_callback: Optional[Callable[..., str]] = None,
         on_event: Optional[Callable[[dict], None]] = None,
         request_routing: Optional[_ServerRequestRouting] = None,
         client_factory: Optional[Callable[..., CodexAppServerClient]] = None,
@@ -241,6 +257,7 @@ class CodexAppServerSession:
             os.environ.get("HERMES_TERMINAL_SECURITY_MODE", "auto"), "workspace-write"
         )
         self._approval_callback = approval_callback
+        self._mcp_elicitation_callback = mcp_elicitation_callback
         self._on_event = on_event  # Display hook (kawaii spinner ticks etc.)
         self._routing = request_routing or _ServerRequestRouting()
         self._client_factory = client_factory or CodexAppServerClient
@@ -698,10 +715,8 @@ class CodexAppServerSession:
         client.respond(rid, handler(self, params))
 
     def _respond_elicitation(self, params: dict) -> dict:
-        """MCP elicitation: auto-accept our own hermes-tools server (opted in by enabling the runtime;
-        exposes nothing codex's shell can't do); decline others so the user opts in via codex's own flow."""
-        action = "accept" if (params.get("serverName") or "") == HERMES_TOOLS_MCP_SERVER_NAME else "decline"
-        return {"action": action, "content": None, "_meta": None}
+        """Route a Codex MCP confirmation through the configured Hermes policy."""
+        return self._decide_mcp_elicitation(params)
 
     _SERVER_REQUEST_HANDLERS: dict[str, Callable[..., dict]] = {
         "item/commandExecution/requestApproval": lambda self, p: {"decision": self._decide_exec_approval(p)},
@@ -751,6 +766,58 @@ class CodexAppServerSession:
             )
 
         return self._run_approval_callback(self._routing.auto_approve_apply_patch, prompt, "apply_patch")
+
+    def _decide_mcp_elicitation(self, params: dict) -> dict:
+        """Route an MCP confirmation through Hermes' consent UI.
+
+        Codex uses an empty form schema for binary MCP tool-call approval.
+        Only that shape is compatible with Hermes' existing approval UI.
+        URL elicitations and forms requesting user-provided fields remain
+        fail-closed: accepting either without collecting their input would
+        produce a misleading or schema-invalid response.
+        """
+        response = {"action": "decline", "content": None, "_meta": None}
+        raw_server_name = params.get("serverName")
+        if not isinstance(raw_server_name, str) or not raw_server_name.strip():
+            return response
+        server_name = raw_server_name.strip()
+
+        # The internal callback remains separately trusted. It only exposes
+        # Hermes tools that the user already enabled for this runtime.
+        if server_name == HERMES_TOOLS_MCP_SERVER_NAME:
+            return {"action": "accept", "content": None, "_meta": None}
+
+        if server_name not in self._routing.prompt_mcp_elicitation_servers:
+            return response
+        if not _is_empty_confirmation_elicitation(params):
+            return response
+        if self._mcp_elicitation_callback is None:
+            return response
+
+        raw_message = params.get("message")
+        message = (
+            raw_message
+            if isinstance(raw_message, str) and raw_message.strip()
+            else f"Allow MCP server '{server_name}' to perform this action?"
+        )
+        description = (
+            f"Codex requests confirmation for MCP server '{server_name}'."
+        )
+        try:
+            action = self._mcp_elicitation_callback(
+                message,
+                description,
+                surface=f"mcp-elicitation/{server_name}",
+            )
+        except Exception:
+            logger.exception(
+                "MCP elicitation callback raised for server %s", server_name
+            )
+            return response
+
+        if action in {"accept", "decline", "cancel"}:
+            response["action"] = action
+        return response
 
     def _track_pending_file_change(self, note: dict) -> None:
         """Track fileChange items (item/started -> item/completed) so the apply_patch prompt can show the changeset."""

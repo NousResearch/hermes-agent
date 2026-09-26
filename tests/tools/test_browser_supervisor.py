@@ -322,3 +322,39 @@ def test_evaluate_runtime_unserializable_value(chrome_cdp, supervisor_registry):
     out = supervisor.evaluate_runtime("Infinity")
     assert out["ok"] is True
     assert out["result"] == "Infinity"
+
+
+def test_evaluate_runtime_rebinds_after_page_target_closed(chrome_cdp, supervisor_registry):
+    """When the supervisor's page target goes away (its tab closed, work continuing in a new
+    tab), evaluate must not stay pinned to the dead CDP session forever: any failure names the
+    supervisor (so browser_console falls back to the CLI path) and the next calls run in the
+    surviving page."""
+    import urllib.request
+
+    cdp_url, port = chrome_cdp
+    supervisor = supervisor_registry.get_or_start(task_id="pytest-eval-rebind", cdp_url=cdp_url)
+    _fire_on_page(cdp_url, "void 0")
+    time.sleep(0.5)
+    assert supervisor.evaluate_runtime("document.title")["result"] == "Supervisor pytest"
+
+    def _pages():
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/list", timeout=5) as r:
+            return [t for t in json.loads(r.read().decode()) if t.get("type") == "page"]
+
+    old_ids = {t["id"] for t in _pages()}
+    new_url = "data:text/html,<title>replacement-tab</title>"
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/json/new?{new_url}", method="PUT")
+    urllib.request.urlopen(req, timeout=5).read()
+    for target_id in old_ids:
+        urllib.request.urlopen(f"http://127.0.0.1:{port}/json/close/{target_id}", timeout=5).read()
+
+    deadline = time.monotonic() + 30
+    out = {}
+    while time.monotonic() < deadline:
+        out = supervisor.evaluate_runtime("document.title", timeout=3.0)
+        if out.get("ok"):
+            break
+        assert "supervisor" in out["error"].lower(), out
+        time.sleep(0.25)
+    assert out.get("ok") is True, out
+    assert out["result"] == "replacement-tab"

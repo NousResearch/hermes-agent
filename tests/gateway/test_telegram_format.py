@@ -523,6 +523,8 @@ class TestEditMessageStreamingSafety:
         edited_text = adapter._bot.edit_message_text.call_args.kwargs["text"]
         assert len(edited_text) <= adapter.MAX_MESSAGE_LENGTH
 
+        assert result.raw_response["truncated_preview"] is True
+
     @pytest.mark.asyncio
     async def test_saturated_preview_dedups_repeat_oversized_edits(self):
         """Once a mid-stream preview saturates at the truncation cap, further
@@ -564,6 +566,28 @@ class TestEditMessageStreamingSafety:
         # must still go through.
         await adapter.edit_message("123", "456", "y" * 9100, finalize=False)
         assert adapter._bot.edit_message_text.await_count == 3
+
+        assert r1.raw_response["truncated_preview"] is True
+
+    @pytest.mark.asyncio
+    async def test_mid_stream_truncated_preview_not_modified_stays_truncated(self):
+        """"not modified" on a truncated preview must still be flagged (so the consumer never records the
+        unseen tail as visible) and must record the dedup key (so the same edit is not re-sent)."""
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+        adapter._bot = MagicMock()
+        adapter._bot.edit_message_text = AsyncMock(
+            side_effect=Exception("Bad Request: message is not modified")
+        )
+        adapter._bot.send_message = AsyncMock()
+
+        result = await adapter.edit_message("123", "456", "x" * 6000, finalize=False)
+
+        adapter._bot.send_message.assert_not_called()
+        assert result.raw_response["truncated_preview"] is True
+        assert result.raw_response["delivered_prefix"]
+        assert result.message_id == "456"
+        await adapter.edit_message("123", "456", "x" * 6100, finalize=False)
+        assert adapter._bot.edit_message_text.await_count == 1
 
 
 # =========================================================================

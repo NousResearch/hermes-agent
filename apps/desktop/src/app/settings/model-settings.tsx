@@ -192,7 +192,7 @@ function StaleAuxWarning({ applying, onReset, slots, taskLabel }: StaleAuxWarnin
   const names = slots.map(slot => taskLabel(slot.task)).join(', ')
 
   return (
-    <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+    <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-300">
       <AlertTriangle className="size-3.5 shrink-0" />
       <span className="grow">
         {m.staleAuxBefore(slots.length, names)}

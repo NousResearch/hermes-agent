@@ -16,7 +16,7 @@ import { $activeSessionId } from '@/store/session'
 import { PromptOverlays } from './prompt-overlays'
 
 vi.mock('@/lib/haptics', () => ({ triggerHaptic: vi.fn() }))
-vi.mock('@/store/notifications', () => ({ notifyError: vi.fn() }))
+vi.mock('@/store/notifications', () => ({ dismissApprovalNotice: vi.fn(), notifyError: vi.fn() }))
 
 function renderPrompts(sessionId: string | null = 's1') {
   render(

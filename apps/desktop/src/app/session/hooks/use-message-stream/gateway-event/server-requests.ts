@@ -14,7 +14,7 @@ import type { TourAction, TourStep } from '@/lib/tour'
 import { normalizeChoices, normalizeQuestions, setClarifyRequest, warnDroppedChoices } from '@/store/clarify'
 import { $gateway, type ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
-import { notify } from '@/store/notifications'
+import { approvalNoticeId, notify } from '@/store/notifications'
 import {
   answerApproval,
   clearApprovalRequest,
@@ -272,9 +272,14 @@ const approval: Handler = ctx => {
           ).then(() => clearApprovalRequest(sessionId, str(p.request_id) || undefined))
         }
       },
-      durationMs: 0,
+      // Stable per-request id + pinned: the notice survives until this
+      // approval resolves — popped by the same `clearApprovalRequest` the
+      // toast action (and every other resolve path) runs, and by the
+      // turn-end / timeout clears — instead of drifting on a timer.
+      id: approvalNoticeId(sessionId || null, str(p.request_id) || undefined),
       kind: 'warning',
       message: command || description,
+      pinned: true,
       title: translateNow('notifications.native.approvalTitle')
     })
 

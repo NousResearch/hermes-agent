@@ -918,11 +918,46 @@ class TestBrowserExec:
     def test_code_piped_on_stdin(self, tmp_path, monkeypatch):
         cli = _fake_cli(tmp_path, 'code=$(cat)\necho "got:$code"\n')
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        monkeypatch.setattr(bu_cli, "_read_browser_cfg", lambda: {})
         result = json.loads(bu_cli.browser_exec('print("hi")'))
         assert result["success"] is True
         assert result["exit_code"] == 0
-        assert 'got:print("hi")' in result["output"]
+        assert result["output"].strip() == 'got:print("hi")'
         assert "session" not in result
+
+    def test_harness_ipc_timeout_is_20_seconds(self, tmp_path, monkeypatch):
+        cli = tmp_path / "fake-browser-use"
+        cli.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys, types\n"
+            "harness = types.ModuleType('browser_harness')\n"
+            "helpers = types.ModuleType('browser_harness.helpers')\n"
+            "helpers.DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS = 5.0\n"
+            "def cdp(method, session_id=None, _response_timeout=5.0, **params):\n"
+            "    return _response_timeout\n"
+            "helpers.cdp = cdp\n"
+            "harness.helpers = helpers\n"
+            "sys.modules['browser_harness'] = harness\n"
+            "sys.modules['browser_harness.helpers'] = helpers\n"
+            "exec(sys.stdin.read())\n",
+            encoding="utf-8",
+        )
+        cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [str(cli)])
+        monkeypatch.setattr(bu_cli, "_read_browser_cfg", lambda: {"ipc_response_timeout_seconds": 20})
+        raw = bu_cli.browser_exec(
+            "from browser_harness import helpers; print(helpers.cdp('Runtime.evaluate'))"
+        )
+        result = json.loads(raw) if isinstance(raw, str) else raw
+        assert result["success"] is True
+        assert result["output"].strip() == "20.0"
+
+    @pytest.mark.parametrize("value, expected", [
+        (20, 20), (120, 120), (True, None), ("20", None), (4, None), (121, None),
+    ])
+    def test_ipc_timeout_config_is_bounded(self, monkeypatch, value, expected):
+        monkeypatch.setattr(bu_cli, "_read_browser_cfg", lambda: {"ipc_response_timeout_seconds": value})
+        assert bu_cli._configured_ipc_response_timeout() == expected
 
     def test_session_sets_bu_name(self, tmp_path, monkeypatch):
         cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "bu:$BU_NAME"\n')

@@ -405,7 +405,9 @@ DEFAULT_CONFIG = {
         # "off" = force the built-in browser_navigate/browser_click/... tools.
         "backend": "",
         "inactivity_timeout": 120,
-        "command_timeout": 30,  # seconds per browser command (screenshot, navigate, etc.)
+        "command_timeout": 30,  # seconds per built-in browser command (screenshot, navigate, etc.)
+        # Browser Use CLI: max wait for one CDP reply; separate from browser_exec(timeout_s).
+        "ipc_response_timeout_seconds": 5,
         "snapshot_threshold": 15000,  # max chars before snapshot truncate-and-store (min 1000)
         "record_sessions": False,  # auto-record browser sessions as WebM videos
         # headed: visible Chromium window (local); skips per-turn cleanup, idle reaper still applies

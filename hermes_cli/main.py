@@ -1838,6 +1838,14 @@ def cmd_chat(args):
 
     passthrough = {k: getattr(args, k, d) for k, d in _CHAT_PASSTHROUGH}
     if use_tui:
+        # --no-streaming is a classic-CLI-only flag — the TUI uses full-screen
+        # differential rendering where streaming vs batch has negligible UX
+        # impact (tool-call segments and reasoning are always progressive).
+        if getattr(args, "no_streaming", False):
+            print(
+                "Warning: --no-streaming is not supported in TUI mode; ignoring.",
+                file=sys.stderr,
+            )
         _launch_tui(
             passthrough.pop("resume"),
             tui_dev=getattr(args, "tui_dev", False),
@@ -1846,6 +1854,7 @@ def cmd_chat(args):
             accept_hooks=getattr(args, "accept_hooks", False),
             **passthrough,
         )
+        return
 
     _read_query_file(args)
 
@@ -1861,6 +1870,7 @@ def cmd_chat(args):
         "ignore_rules": getattr(args, "ignore_rules", False) or safe_mode,
         "ignore_user_config": getattr(args, "ignore_user_config", False) or safe_mode,
         "compact": getattr(args, "compact", False),
+        "no_streaming": getattr(args, "no_streaming", False),
         **{k: getattr(args, k, d) for k, d in _CHAT_PASSTHROUGH},
     }
     kwargs = {k: v for k, v in kwargs.items() if v is not None}

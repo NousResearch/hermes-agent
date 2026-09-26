@@ -139,6 +139,179 @@ print(json.dumps(results))
             assert "unrecognized arguments" not in entry["stderr"]
 
 
+class TestNoStreamingFlag:
+    """Verify --no-streaming propagation, forwarding, and TUI interaction."""
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["chat", "--no-streaming"],
+            ["--no-streaming", "chat"],
+            ["--no-streaming"],
+        ],
+        ids=["after-chat", "before-chat", "implicit-chat"],
+    )
+    def test_parser_sets_no_streaming_for_every_chat_surface(self, argv):
+        """The real parser preserves the override at every chat flag position."""
+        from hermes_cli._parser import build_top_level_parser
+
+        parser, _subparsers, _chat_parser = build_top_level_parser()
+        args = parser.parse_args(argv)
+        assert args.no_streaming is True
+
+    def test_cmd_chat_forwards_no_streaming_to_cli_main(self, monkeypatch):
+        """cmd_chat passes no_streaming into cli.main() kwargs."""
+        import sys
+        import types
+
+        import hermes_cli.main as main_mod
+        from hermes_cli._parser import build_top_level_parser
+
+        parser, _subparsers, chat_parser = build_top_level_parser()
+        chat_parser.set_defaults(func=main_mod.cmd_chat)
+        args = parser.parse_args(["chat", "--no-streaming"])
+        captured = {}
+        fake_cli = types.ModuleType("cli")
+
+        def fake_main(**kwargs):
+            captured.update(kwargs)
+
+        setattr(fake_cli, "main", fake_main)
+        fake_banner = types.ModuleType("hermes_cli.banner")
+        setattr(fake_banner, "prefetch_update_check", lambda: None)
+        fake_skills_sync = types.ModuleType("tools.skills_sync")
+        setattr(fake_skills_sync, "sync_skills", lambda quiet=True: None)
+
+        monkeypatch.setitem(sys.modules, "cli", fake_cli)
+        monkeypatch.setitem(sys.modules, "hermes_cli.banner", fake_banner)
+        monkeypatch.setitem(sys.modules, "tools.skills_sync", fake_skills_sync)
+        monkeypatch.setattr(main_mod, "_has_any_provider_configured", lambda: True)
+        monkeypatch.setattr(main_mod, "_pin_kanban_board_env", lambda: None)
+        monkeypatch.setattr(main_mod, "_resolve_use_tui", lambda args: False)
+
+        main_mod.cmd_chat(args)
+
+        assert captured.get("no_streaming") is True
+
+    def test_chat_without_no_streaming_omits_attribute(self, monkeypatch):
+        """hermes chat without --no-streaming passes no_streaming=False to cli.main()."""
+        import sys
+        import types
+
+        import hermes_cli.main as main_mod
+        from hermes_cli._parser import build_top_level_parser
+
+        parser, _subparsers, chat_parser = build_top_level_parser()
+        chat_parser.set_defaults(func=main_mod.cmd_chat)
+        args = parser.parse_args(["chat"])
+        captured = {}
+
+        def fake_main(**kwargs):
+            captured.update(kwargs)
+
+        fake_cli = types.ModuleType("cli")
+        setattr(fake_cli, "main", fake_main)
+        fake_banner = types.ModuleType("hermes_cli.banner")
+        setattr(fake_banner, "prefetch_update_check", lambda: None)
+        fake_skills_sync = types.ModuleType("tools.skills_sync")
+        setattr(fake_skills_sync, "sync_skills", lambda quiet=True: None)
+
+        monkeypatch.setitem(sys.modules, "cli", fake_cli)
+        monkeypatch.setitem(sys.modules, "hermes_cli.banner", fake_banner)
+        monkeypatch.setitem(sys.modules, "tools.skills_sync", fake_skills_sync)
+        monkeypatch.setattr(main_mod, "_has_any_provider_configured", lambda: True)
+        monkeypatch.setattr(main_mod, "_pin_kanban_board_env", lambda: None)
+        monkeypatch.setattr(main_mod, "_resolve_use_tui", lambda args: False)
+
+        main_mod.cmd_chat(args)
+
+        # When not explicitly set, no_streaming defaults to False
+        assert captured.get("no_streaming", None) is False
+
+    def test_no_streaming_warns_in_tui_mode(self, monkeypatch, capsys):
+        """When TUI is selected and --no-streaming is passed, a warning is printed."""
+        import sys
+        import types
+
+        import hermes_cli.main as main_mod
+        from hermes_cli._parser import build_top_level_parser
+
+        parser, _subparsers, chat_parser = build_top_level_parser()
+        chat_parser.set_defaults(func=main_mod.cmd_chat)
+        args = parser.parse_args(["chat", "--no-streaming"])
+
+        fake_cli = types.ModuleType("cli")
+        fake_banner = types.ModuleType("hermes_cli.banner")
+        setattr(fake_banner, "prefetch_update_check", lambda: None)
+        fake_skills_sync = types.ModuleType("tools.skills_sync")
+        setattr(fake_skills_sync, "sync_skills", lambda quiet=True: None)
+
+        monkeypatch.setitem(sys.modules, "cli", fake_cli)
+        monkeypatch.setitem(sys.modules, "hermes_cli.banner", fake_banner)
+        monkeypatch.setitem(sys.modules, "tools.skills_sync", fake_skills_sync)
+        monkeypatch.setattr(main_mod, "_has_any_provider_configured", lambda: True)
+        monkeypatch.setattr(main_mod, "_pin_kanban_board_env", lambda: None)
+        monkeypatch.setattr(main_mod, "_resolve_use_tui", lambda args: True)
+        # _launch_tui is called with positional + keyword args
+        monkeypatch.setattr(main_mod, "_launch_tui", lambda *a, **kw: None)
+
+        main_mod.cmd_chat(args)
+
+        captured = capsys.readouterr()
+        assert "not supported in TUI mode" in captured.err
+
+
+    @pytest.mark.parametrize(
+        ("configured", "no_streaming", "expected"),
+        [
+            (True, False, True),
+            (True, True, False),
+            (False, False, False),
+            (False, True, False),
+            (None, False, False),
+        ],
+    )
+    def test_display_streaming_precedence(self, monkeypatch, configured, no_streaming, expected):
+        """The CLI override wins, while an absent override preserves config/default behavior."""
+        import cli as cli_mod
+        from hermes_cli.cli_init_mixin import CLIInitMixin
+
+        display = dict(cli_mod.CLI_CONFIG["display"])
+        if configured is None:
+            display.pop("streaming", None)
+        else:
+            display["streaming"] = configured
+        config = {"display": display}
+        monkeypatch.setattr(cli_mod, "CLI_CONFIG", config)
+        monkeypatch.setattr(cli_mod, "_configure_output_history", lambda **_kwargs: None)
+
+        instance = CLIInitMixin()
+        instance._init_display_options(verbose=None, compact=None, no_streaming=no_streaming)
+
+        assert instance.streaming_enabled is expected
+        assert config["display"].get("streaming") is configured
+
+    def test_no_streaming_override_is_invocation_scoped(self, monkeypatch):
+        """Disabling one instance neither mutates config nor disables the next instance."""
+        import cli as cli_mod
+        from hermes_cli.cli_init_mixin import CLIInitMixin
+
+        display = dict(cli_mod.CLI_CONFIG["display"])
+        display["streaming"] = True
+        config = {"display": display}
+        monkeypatch.setattr(cli_mod, "CLI_CONFIG", config)
+        monkeypatch.setattr(cli_mod, "_configure_output_history", lambda **_kwargs: None)
+
+        disabled = CLIInitMixin()
+        disabled._init_display_options(verbose=None, compact=None, no_streaming=True)
+        unchanged = CLIInitMixin()
+        unchanged._init_display_options(verbose=None, compact=None, no_streaming=False)
+
+        assert disabled.streaming_enabled is False
+        assert unchanged.streaming_enabled is True
+        assert config["display"]["streaming"] is True
+
+
 class TestChatSubparserInheritedValueFlags:
     """Verify -t/--toolsets, -m/--model and --provider survive parent→chat
     subparser dispatch.

@@ -123,6 +123,46 @@ describe('detectBundleSkew', () => {
     })
   })
 
+  // Fix 3: the standalone caller discards `cacheable`, so resolving the
+  // shallow flag here would spawn a rev-parse whose answer is thrown away.
+  // The not-an-ancestor answer is still returned; nothing but merge-base runs.
+  it('spawns no rev-parse when merge-base reports not-an-ancestor', async () => {
+    const { calls, git } = gitAnswering({
+      'merge-base': { code: 1 },
+      'rev-list': { stdout: '1' }
+    })
+
+    expect(await detectBundleSkew(STAMP, git, REPO)).toEqual({
+      desktopCommitsBehind: null,
+      outOfSync: false
+    })
+    expect(calls.map(args => args[0])).toEqual(['merge-base'])
+  })
+
+  // Fix 2: only a resolved object id may fill a git argument. A stamp that is
+  // an option-like or non-hex string never reaches git, so it cannot be
+  // interpreted as an option or an error message.
+  it('spawns no git for a stamp that is not a resolved sha', async () => {
+    const { calls, git } = gitAnswering({
+      'merge-base': { code: 0 },
+      'rev-list': { stdout: '2' }
+    })
+
+    expect(await detectBundleSkew({ commit: '--all', source: 'ci' }, git, REPO)).toEqual({
+      desktopCommitsBehind: null,
+      outOfSync: false
+    })
+    expect(await detectBundleSkew({ commit: 'A'.repeat(40), source: 'ci' }, git, REPO)).toEqual({
+      desktopCommitsBehind: null,
+      outOfSync: false
+    })
+    expect(await detectBundleSkew({ commit: 'a'.repeat(39), source: 'ci' }, git, REPO)).toEqual({
+      desktopCommitsBehind: null,
+      outOfSync: false
+    })
+    expect(calls).toEqual([])
+  })
+
   it('is quiet when git cannot answer the ancestry question at all', async () => {
     const { git } = gitAnswering({
       'merge-base': { code: 128 },
@@ -181,6 +221,7 @@ const NOT_STALE = { desktopCommitsBehind: null, outOfSync: false }
 function gitScripted(options: {
   count?: string
   head?: string | (() => string)
+  lineEnding?: string
   mergeBaseCode?: number | (() => number)
   revListCode?: number | (() => number)
   revParseCode?: number | (() => number)
@@ -200,10 +241,11 @@ function gitScripted(options: {
 
       const head = typeof options.head === 'function' ? options.head() : (options.head ?? 'a'.repeat(40))
       const shallow = typeof options.shallow === 'function' ? options.shallow() : (options.shallow ?? false)
+      const eol = options.lineEnding ?? '\n'
 
       // `git rev-parse --is-shallow-repository HEAD` prints the flag, then the
       // sha, on two lines. Measured against git 2.54, not assumed.
-      return { code, stderr: '', stdout: `${shallow ? 'true' : 'false'}\n${head}\n` }
+      return { code, stderr: '', stdout: `${shallow ? 'true' : 'false'}${eol}${head}${eol}` }
     }
 
     if (args[0] === 'merge-base') {
@@ -596,6 +638,37 @@ describe('createBundleSkewProbe', () => {
     expect(spawnsOf(calls, 'rev-list')).toBe(0)
     // Not cached, so the next call reads HEAD again.
     expect(spawnsOf(calls, 'rev-parse')).toBe(2)
+  })
+
+  // Fix 1: a Windows-hosted git can print CRLF. Splitting the two-line
+  // rev-parse output on '\n' alone leaves a CR on the flag, which used to fail
+  // the shape check and skip the cache. The answer must still be reused.
+  it('caches a result when rev-parse prints CRLF line endings', async () => {
+    const { calls, git } = gitScripted({ count: '2', lineEnding: '\r\n' })
+    const probe = createBundleSkewProbe({ stamp: STAMP, runGit: git, repoRoot: REPO })
+
+    const first = await probe()
+
+    expect(first).toEqual({ desktopCommitsBehind: 2, outOfSync: true })
+
+    const afterFirst = calls.length
+
+    expect(await probe()).toEqual(first)
+
+    // A cached answer, so the second call spawns nothing but rev-parse.
+    expect(calls.slice(afterFirst).map(args => args[0])).toEqual(['rev-parse'])
+    expect(spawnsOf(calls, 'rev-list')).toBe(1)
+  })
+
+  // Fix 2 on the probe path: an invalid stamp is rejected before the HEAD
+  // read, so no git process is spawned and nothing is cached.
+  it('spawns no git for a stamp that is not a resolved sha', async () => {
+    const { calls, git } = gitScripted({ count: '2' })
+    const probe = createBundleSkewProbe({ stamp: { commit: '--all', source: 'ci' }, runGit: git, repoRoot: REPO })
+
+    expect(await probe()).toEqual(NOT_STALE)
+    expect(await probe()).toEqual(NOT_STALE)
+    expect(calls).toEqual([])
   })
 
   it('accepts a 64-character lowercase HEAD sha', async () => {

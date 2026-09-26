@@ -166,6 +166,13 @@ async function answerBundleSkew(
     return { cacheable: false, result: NOT_STALE }
   }
 
+  // Only a resolved object id may fill a git argument. An option-like or
+  // non-hex stamp could otherwise be read by git as a flag or an error message,
+  // so it is rejected here before any git process starts.
+  if (!isResolvedSha(stamp.commit)) {
+    return { cacheable: false, result: NOT_STALE }
+  }
+
   try {
     // Exit 0 = ancestor, 1 = unrelated or diverged, anything else = git could
     // not answer (unknown object, shallow clone, not a repo). Only the first
@@ -185,10 +192,12 @@ async function answerBundleSkew(
     // Exit 1 answers "not an ancestor". In a full clone that is a real answer;
     // in a shallow clone the missing history can produce the same exit, so the
     // shallow case is answered without being cached.
+    //
+    // `shallow` is null only for the standalone detectBundleSkew, which throws
+    // `cacheable` away, so it must not spawn a rev-parse whose only use is the
+    // flag it discards. The probe always passes a resolved flag.
     if (ancestry.code === 1) {
-      const isShallow = shallow ?? (await resolveShallow(runGit, repoRoot))
-
-      return { cacheable: !isShallow, result: NOT_STALE }
+      return { cacheable: shallow === false, result: NOT_STALE }
     }
 
     if (ancestry.code !== 0) {
@@ -217,18 +226,6 @@ async function answerBundleSkew(
   } catch {
     return { cacheable: false, result: NOT_STALE }
   }
-}
-
-/**
- * Whether the repo is shallow, for the standalone `detectBundleSkew` path that
- * has no resolved flag in hand. A git that cannot answer counts as "not
- * shallow": both answers are not-stale, so this only decides whether the
- * not-an-ancestor answer may be reused.
- */
-async function resolveShallow(runGit: RunGit, repoRoot: string): Promise<boolean> {
-  const probe = await runGit(['rev-parse', '--is-shallow-repository'], { cwd: repoRoot })
-
-  return probe.code === 0 && probe.stdout.trim() === 'true'
 }
 
 /** Bound on ONE probe; on expiry it resolves not-stale and aborts git. */
@@ -283,6 +280,13 @@ export function createBundleSkewProbe({
       return NOT_STALE
     }
 
+    // Reject a stamp git would not accept as an object id before the HEAD read,
+    // so an option-like or non-hex commit never reaches a git argument and no
+    // process is spawned.
+    if (!isResolvedSha(stamp.commit)) {
+      return NOT_STALE
+    }
+
     const controller = new AbortController()
     const signaled: RunGit = (args, options) => runGit(args, { ...options, signal: controller.signal })
     const myGeneration = ++generation
@@ -312,7 +316,7 @@ export function createBundleSkewProbe({
         return NOT_STALE
       }
 
-      const [shallowFlag, resolved] = head.stdout.trim().split('\n')
+      const [shallowFlag, resolved] = head.stdout.trim().split(/\r?\n/)
       const headSha = resolved ?? ''
 
       // A sha git did not actually resolve — an error message, an abbreviated or

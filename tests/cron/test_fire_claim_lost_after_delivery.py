@@ -265,3 +265,71 @@ def test_confirmed_claim_loss_mid_run_still_yields(temp_home, monkeypatch):
     assert record["last_status"] is None
     assert record["fire_claim"]["by"] == "replacement:deadbeef"
     assert "discarded" in get_execution(job["execution_id"])["error"]
+
+
+# --- #116164: the claim really changed hands while the notice was already in flight -----------
+
+
+def _steal_claim(job_id: str) -> None:
+    """A sibling fire re-owns the durable claim (fresh ``by`` token, as claim_job_for_fire does)."""
+    from cron.jobs import _with_job, save_jobs
+
+    def re_own(jobs, _i, job):
+        job["fire_claim"] = {**(job.get("fire_claim") or {}), "by": "replacement:deadbeef"}
+        save_jobs(jobs)
+
+    _with_job(job_id, re_own)
+
+
+def _drop_record_from_a_sibling(job_id: str) -> None:
+    """Another process/thread removes the record — no run-local removal marker is set here."""
+    from cron.jobs import remove_job
+
+    sibling = threading.Thread(target=remove_job, args=(job_id,), name="sibling-tick")
+    sibling.start()
+    sibling.join(timeout=5)
+    assert not sibling.is_alive()
+
+
+def _drive_loss_during_delivery(monkeypatch, lose):
+    """Real store, real heartbeat, real ledger; ``lose()`` fires while the notice is in flight."""
+    import cron.scheduler as sched
+
+    job = _claimed_job()
+    delivered = []
+    real_deliver = sched._deliver_result
+
+    def deliver_then_lose(job, content, **kwargs):
+        outcome = real_deliver(job, content, **kwargs)
+        delivered.append(content)
+        lose(job["id"])
+        return outcome
+
+    monkeypatch.setattr(
+        sched, "run_job", lambda *a, **k: (True, "output text", "the report", None))
+    monkeypatch.setattr(sched, "_deliver_result", deliver_then_lose)
+    return sched, job, delivered
+
+
+@pytest.mark.parametrize(
+    "lose",
+    [_steal_claim, _drop_record_from_a_sibling],
+    ids=["claim-re-owned", "record-removed-by-sibling"],
+)
+def test_delivered_run_is_not_overwritten_by_a_post_delivery_ownership_loss(
+    temp_home, monkeypatch, lose,
+):
+    """#116164: the notice reached the channel; the claim dies in the window before the terminal
+    write. Losing the claim may cost the job record (marked == False), but a delivered run must
+    not land in the ledger as ``failed`` / "Fire claim ownership lost before terminal completion."
+    — that misreads a success as a failure in `cron runs`, incidents and health checks."""
+    from cron.executions import get_execution
+
+    sched, job, delivered = _drive_loss_during_delivery(monkeypatch, lose)
+
+    assert sched.run_one_job(job) is True
+
+    assert delivered == ["the report"], "the notice left the process before the claim was lost"
+    row = get_execution(job["execution_id"])
+    assert row["error"] is None, f"delivered run recorded as: {row['error']!r}"
+    assert row["status"] == "completed", row

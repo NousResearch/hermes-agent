@@ -3070,10 +3070,23 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
     marked = self_removal_delivery_allowed(job["id"]) or mark_job_run(
         job["id"], d.success, d.error, **mark_kwargs)
     if fire_owner is not None and not marked:
-        finish_execution(
-            execution_id, success=False,
-            error="Fire claim ownership lost before terminal completion.")
-        return True
+        if d.delivery_attempted and not d.delivery_error:
+            # #116164: a notice that already left the process IS this run's outcome. A refused
+            # owner fence only means the JOB RECORD is no longer ours to mark (the claim was
+            # re-owned, or a sibling tick removed the record) — that window is exactly what the
+            # post-delivery claim check falls through here for. Recording the loss as a failure
+            # turned delivered runs into `failed` ("Fire claim ownership lost before terminal
+            # completion.") in the ledger, incidents and health checks. Log the unmarked
+            # bookkeeping and record the run's real outcome below.
+            logger.warning(
+                "Job '%s': fire claim lost after the notice was delivered; no job record left to "
+                "mark — recording the delivered run's terminal status",
+                job["id"])
+        else:
+            finish_execution(
+                execution_id, success=False,
+                error="Fire claim ownership lost before terminal completion.")
+            return True
     delivery_outcome = _classify_delivery_outcome(
         delivery_error=d.delivery_error,
         delivery_queued=job.get("last_delivery_queued"),

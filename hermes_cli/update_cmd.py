@@ -771,7 +771,8 @@ def _print_update_check_result(behind: int | None, compare_branch: str) -> None:
     print(f"  Run '{recommended_update_command()}' to install.")
 
 
-def _source_completion_request(opts, plan, snapshot_id, windows_resume, desktop, gateway_mode) -> dict:
+def _source_completion_request(opts, plan, snapshot_id, windows_resume, desktop, gateway_mode,
+                               verify_pre_state: dict | None = None) -> dict:
     """Freeze data before mutation; no pre-swap module objects cross the seam."""
     from copy import deepcopy
     current = _completion_receipt._current.get()
@@ -787,6 +788,13 @@ def _source_completion_request(opts, plan, snapshot_id, windows_resume, desktop,
         "sibling_snapshots": deepcopy(_completion_config._LAST_SIBLING_SNAPSHOTS),
         "plan": plan.to_dict() if plan is not None else None,
         "receipt": deepcopy(current.data), "windows_resume": windows_resume,
+        # G3 guard rail (spec §5.1): the post-verify has to run inside the completion
+        # child — after the gateway relaunch and before that child finalizes the
+        # receipt. The parent pops its own receipt the moment this child returns one
+        # (_complete_source_update), so a parent-side record_verification no-ops and
+        # the verification section never reaches the file. JSON-saved pre-state, so
+        # it survives the request.json seam.
+        "verify_pre_state": verify_pre_state,
     }
 
 
@@ -1702,7 +1710,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     completion_request = _source_completion_request(
         opts, _pre_update_plan, pre_update_snapshot_id, _windows_gateway_resume,
-        had_desktop_app_before_update, gateway_mode)
+        had_desktop_app_before_update, gateway_mode, verify_pre_state=_verify_pre_state)
     branch = _m()._resolve_update_branch(args)
     completion_request["branch"] = branch
     target_ref = f"origin/{branch}"
@@ -1863,19 +1871,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
             git_cmd, branch, pre_pull_sha, _plan,
             _windows_gateway_resume=_windows_gateway_resume, completion_request=completion_request)
 
-        # G3 guard rail (spec §5.1 Post-verify): report success only once config
-        # parity, gateway liveness, and MCP fingerprints match the pre-update state.
-        # Seat: AFTER _apply_pulled_update — dep sync and patch restore are done, so the
-        # relaunch below runs the new code against the new deps (resuming any earlier
-        # restarts a gateway whose packages are about to be rewritten: the locked-.pyd
-        # hazard _clear_windows_venv_holders_or_exit exists to prevent).
-        # §5.2 puts the verifier after the relaunch and failure mode D is "the update's
-        # gateway relaunch was never verified", but on the normal path the updater only
-        # resumes the gateway from the atexit safety net at process exit — so take the
-        # resume token here or gateway_liveness can never pass.
-        _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
-        if _verify_pre_state is not None:
+        # G3 guard rail (spec §5.1 Post-verify) seats in the COMPLETION CHILD
+        # (update_completion._verify_after_relaunch), between that child's gateway
+        # relaunch and its receipt finalize: the child resumes the paused gateway and
+        # still holds an open receipt, whereas this parent's receipt is popped as soon
+        # as the child returns. Reaching verify_or_rollback from here still records it
+        # (run 4), but only the child can record it into the file the child writes last.
+        # Fall back to the parent seat only for completion paths that never get one.
+        if _verify_pre_state is not None and not completion_request.get("verify_pre_state"):
             from hermes_cli.update_verification import verify_or_rollback
+            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             if verify_or_rollback(_verify_pre_state, checkout=_repo_root_for_verification()):
                 _finalize_receipt("failed", "post-update verification failed")
                 sys.exit(1)

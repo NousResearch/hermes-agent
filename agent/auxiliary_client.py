@@ -1413,6 +1413,7 @@ class _CodexCompletionsAdapter:
             _chat_messages_to_responses_input,
             _classify_responses_issuer,
             _responses_tools,
+            _role_message_item,
             _wire_model_identity,
             classify_responses_route,
         )
@@ -1485,7 +1486,7 @@ class _CodexCompletionsAdapter:
         resp_kwargs: Dict[str, Any] = {
             # Codex only knows the base slug; strip the Hermes ``-900k`` picker suffix.
             "model": wire_model, "instructions": instructions,
-            "input": input_items or [{"role": "user", "content": ""}], "store": False,
+            "input": input_items or [_role_message_item("user", "")], "store": False,
         }
         # Forward the chat.completions timeout; otherwise a Codex stream can sit behind a
         # dead-looking CLI until the user force-interrupts.

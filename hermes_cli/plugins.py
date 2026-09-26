@@ -816,6 +816,9 @@ class PluginContext:
         ``platform_hint``, ``ensure_deps_fn``) forward to ``PlatformEntry``; unknown keys raise TypeError."""
         from gateway.platform_registry import platform_registry, PlatformEntry
         entry_kwargs.setdefault("plugin_name", self.manifest.name)
+        # Path-derived key so a ``plugins.disabled`` entry written either way matches at connect
+        # time too (the gate only ever saw the manifest at discovery, #68367).
+        entry_kwargs.setdefault("plugin_key", manifest_key(self.manifest))
         entry = PlatformEntry(
             name=name, label=label, adapter_factory=adapter_factory, check_fn=check_fn,
             validate_config=validate_config, required_env=required_env or [],

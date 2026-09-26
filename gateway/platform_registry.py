@@ -11,7 +11,7 @@ import logging
 import sys
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional, Set
 
 from hermes_constants import hermes_home_key
 
@@ -78,6 +78,10 @@ class PlatformEntry:
     setup_fn: Optional[Callable[[], None]] = None  # None = _setup_standard_platform / env display
     source: str = "plugin"  # "builtin" or "plugin"
     plugin_name: str = ""  # owning manifest so ``hermes gateway setup`` can auto-enable it
+    # Path-derived manifest key (``platforms/tlon`` for ``<dir>/plugin.yaml`` named ``tlon-platform``).
+    # ``plugins.disabled`` holds either spelling, so the deny-list check (#68367) needs BOTH this and
+    # ``plugin_name``; empty for entries registered outside ``PluginContext``.
+    plugin_key: str = ""
     allowed_users_env: str = ""  # comma-separated allowed user IDs (_is_user_authorized)
     allow_all_env: str = ""  # truthy "allow everyone" switch
     max_message_length: int = 0  # smart-chunking cap; 0 = no limit
@@ -107,6 +111,39 @@ class PlatformEntry:
     # ``async (pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False)
     # -> {"success": True, "message_id": ...} | {"error": str}``.
     standalone_sender_fn: Optional[Callable[..., Awaitable[dict]]] = None
+
+
+def plugin_platform_disabled(
+    entry: PlatformEntry, *, disabled: Optional[Set[str]] = None
+) -> Optional[str]:
+    """The ``plugins.disabled`` spelling that denies *entry*, else ``None``.
+
+    ``plugins.disabled`` is a deny-list that wins over ``plugins.enabled`` at discovery
+    (``gate_manifest``), but discovery is a one-shot gate: a plugin that was already
+    registered keeps registering its adapter and keeps getting enabled from inherited
+    credentials on every config reload, so ``plugins.disabled`` was not a kill switch for
+    the platform surface (#68367 — two gateways answering the same Tlon DMs). Every other
+    surface re-checks the deny-list at request time; this is the platform check, shared by
+    the env-enable pass and :meth:`PlatformRegistry.create_adapter`.
+
+    Matches the discovery gate's identity set — the path-derived key (``platforms/tlon``)
+    and the manifest name (``tlon-platform``) — plus the registry name, so either spelling
+    a user wrote blocks the connection. Empty identifiers are skipped; builtin entries carry
+    none and are never denied. Pass *disabled* to amortize the config read across a whole
+    enable pass. Fail-open on config errors, like ``_get_disabled_plugins`` itself.
+    """
+    if disabled is None:
+        try:
+            from hermes_cli.plugins_discovery import _get_disabled_plugins
+            disabled = _get_disabled_plugins()
+        except Exception:
+            return None
+    if not disabled:
+        return None
+    for candidate in (entry.plugin_key, entry.plugin_name, entry.name):
+        if candidate and candidate in disabled:
+            return candidate
+    return None
 
 
 class PlatformRegistry:
@@ -358,9 +395,20 @@ class PlatformRegistry:
 
     def create_adapter(self, name: str, config: Any) -> Optional[Any]:
         """Create an adapter instance for *name*; None when no entry exists, deps are missing
-        and cannot be installed, ``validate_config`` fails, or the factory raises."""
+        and cannot be installed, ``validate_config`` fails, or the factory raises — or when the
+        plugin that owns it is in ``plugins.disabled`` (the connect-time kill switch, #68367)."""
         entry = self.get(name)
         if entry is None:
+            return None
+        denied = plugin_platform_disabled(entry)
+        if denied is not None:
+            # Refuse here, not only at discovery: a deny-list entry added while the gateway
+            # runs must stop the next reconnect too, or "disabled" is a lie (#68367).
+            logger.warning(
+                "Platform '%s' not started: its plugin is in plugins.disabled (as %s); "
+                "run `hermes plugins enable %s` to bring it back",
+                entry.label, denied, denied,
+            )
             return None
         def _probe(fn: Callable[[], Any], failure_msg: str) -> bool:
             try:

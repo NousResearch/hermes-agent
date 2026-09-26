@@ -455,6 +455,37 @@ class TestValidate:
                    in i["detail"] for i in rep["issues"])
 
 
+    def test_header_footer_images_resolve_under_any_hash_seed(
+            self, tmp_path: Path):
+        """document.xml's r:id references must be checked against
+        document.xml's OWN relationships. Every part under word/ has its own
+        .rels (document, header1, footer1, ...); keying them by directory let
+        the last one read win, and which one that was followed the per-process
+        hash seed -- a valid document with a header or footer image failed
+        "unresolved-reference" on some runs and passed on others."""
+        from docx.shared import Inches
+        png = tmp_path / "pic.png"
+        make_png(png)
+        doc = Document()
+        doc.add_paragraph("body")
+        doc.add_picture(str(png), width=Inches(0.5))
+        section = doc.sections[0]
+        section.header.paragraphs[0].add_run().add_picture(
+            str(png), width=Inches(0.5))
+        section.footer.paragraphs[0].add_run().add_picture(
+            str(png), width=Inches(0.5))
+        path = tmp_path / "header-footer-images.docx"
+        doc.save(str(path))
+        for seed in range(8):
+            env = dict(os.environ, LC_ALL="C", PYTHONIOENCODING="utf-8",
+                       PYTHONHASHSEED=str(seed))
+            proc = subprocess.run(
+                [sys.executable, str(SCRIPTS / "docx_validate.py"),
+                 str(path)], capture_output=True, env=env)
+            rep = json.loads(proc.stdout.decode("utf-8"))
+            assert rep["ok"] is True, (seed, rep["issues"])
+
+
 class TestNormalize:
     def test_merges_split_runs(self, tmp_path: Path):
         doc = Document()

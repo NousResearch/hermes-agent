@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96"><style>
+g{fill:none;stroke:#ffe6cb;stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round}.a{stroke:#ffbd38}.af{fill:#ffbd38;stroke:none}.spin{transform-origin:32px 32px;animation:spin 6s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}.tw{transform-origin:32px 32px;animation:tw 2s ease-in-out infinite}@keyframes tw{50%{transform:scale(.7)}}@media (prefers-reduced-motion: reduce){*{animation:none!important}}</style>
+<defs><radialGradient id="h" cx=".3" cy=".25" r=".9"><stop offset="0" stop-color="#0d3a36"/><stop offset="1" stop-color="#041c1c"/></radialGradient></defs>
+<rect x="2" y="2" width="92" height="92" rx="24" fill="url(#h)" stroke="#ffe6cb" stroke-opacity=".2" stroke-width="1.5"/>
+<g transform="translate(16 16)"><g class="spin"><path d="M48 22a18 18 0 0 0-31-2"/><path d="M16 11v9h9"/><path d="M16 42a18 18 0 0 0 31 2"/><path d="M48 53v-9h-9"/></g><path class="a tw" d="M32 24l2.5 5.5L40 32l-5.5 2.5L32 40l-2.5-5.5L24 32l5.5-2.5z"/></g></svg>

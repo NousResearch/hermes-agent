@@ -85,6 +85,15 @@ interface ChatSidebarProps {
   className?: string
   onDashboardNewSessionRequest?: () => void
   onSessionTitleChange?: (title: string | null) => void
+  /**
+   * Whether the parent ChatPage has a live PTY attached to the terminal.
+   * Drives whether the model-switch flow shows the "reload to apply" confirm
+   * dialog: with no live PTY a reload would interrupt nothing, so the badge
+   * refreshes inline with a notice instead. Optional (defaults to true) so a
+   * caller with no PTY of its own keeps the always-confirm behavior —
+   * ChatPage is today's only caller and derives this from its own `ptyState`.
+   */
+  ptyActive?: boolean
 }
 
 /** Build the ``session.create`` params for the sidecar session.
@@ -107,7 +116,8 @@ export function ChatSidebar({
   profile,
   className,
   onDashboardNewSessionRequest,
-  onSessionTitleChange
+  onSessionTitleChange,
+  ptyActive = true,
 }: ChatSidebarProps) {
   const navigate = useNavigate()
   // `version` bumps on reconnect (manual button, profile/channel switch) and
@@ -146,6 +156,12 @@ export function ChatSidebar({
   // Short name of a just-saved model awaiting confirm to reload (a fresh chat
   // session is how the running chat adopts it; we confirm before discarding it).
   const [pendingReloadModel, setPendingReloadModel] = useState<string | null>(null)
+  // Same value for reads from callbacks the picker captured BEFORE the save
+  // landed. ModelPickerDialog calls the `onClose` prop it held when the apply
+  // started, so a `pendingReloadModel` read in there still sees the pre-save
+  // value (null) and refreshes the badge early — the exact flip this deferral
+  // exists to prevent. Refs are read at call time, so they cannot go stale.
+  const pendingReloadRef = useRef<string | null>(null)
 
   const refreshEffectiveModel = useCallback(() => {
     void api
@@ -485,6 +501,7 @@ export function ChatSidebar({
           alwaysGlobal
           onApply={async ({ provider, model, confirmExpensiveModel }) => {
             setModelNotice(null)
+            pendingReloadRef.current = null
             setPendingReloadModel(null)
             const result = await api.setModelAssignment(
               {
@@ -498,15 +515,40 @@ export function ChatSidebar({
             // confirm_required => the dialog shows the expensive-model prompt
             // and calls back; don't announce until the user confirms.
             if (!result.confirm_required) {
-              refreshEffectiveModel()
-              // Ask before reloading: applying the model starts a fresh chat.
-              setPendingReloadModel(model.split('/').slice(-1)[0])
+              if (ptyActive) {
+                // Defer the badge refresh + notice until the user resolves
+                // the reload dialog. Refreshing now would flip the sidebar
+                // badge to the new model BEFORE the user has been asked
+                // anything, making Cancel look like a no-op (it isn't —
+                // Cancel keeps the running PTY on its current model, Reload
+                // restarts it on the new one; the model itself is saved in
+                // both cases).
+                pendingReloadRef.current = model.split('/').slice(-1)[0]
+                setPendingReloadModel(pendingReloadRef.current)
+              } else {
+                // No live chat — nothing to interrupt with a reload. The
+                // model is already saved; the next chat will boot from it.
+                refreshEffectiveModel()
+                setModelNotice(
+                  `Model set to ${model}. The next chat will use it; refresh the page to apply it to any running chat.`
+                )
+              }
             }
             return result
           }}
           onClose={() => {
             setModelOpen(false)
-            refreshEffectiveModel()
+            // When onApply already deferred the badge refresh (a reload is
+            // pending), don't refresh here — the reload confirm dialog's Cancel
+            // handler (or a Reload page refresh) will do it. Refreshing now
+            // would flip the badge to the new model before the user has seen
+            // or resolved the dialog, making Cancel look like a no-op.
+            //
+            // Read the ref, not the state: the picker calls this prop as it
+            // held it when the apply began, so state here is a render behind.
+            if (!pendingReloadRef.current) {
+              refreshEffectiveModel()
+            }
           }}
         />
       )}
@@ -514,8 +556,13 @@ export function ChatSidebar({
       <ModelReloadConfirm
         model={pendingReloadModel}
         onCancel={() => {
-          const m = pendingReloadModel
+          const m = pendingReloadRef.current ?? pendingReloadModel
+          pendingReloadRef.current = null
           setPendingReloadModel(null)
+          // Cancel keeps the running PTY on its current model. The model
+          // IS saved, so sync the badge to match — but only now, after
+          // the user has explicitly declined the reload.
+          refreshEffectiveModel()
           setModelNotice(`Model set to ${m}. Run /new or refresh the page to apply it to this chat.`)
         }}
       />

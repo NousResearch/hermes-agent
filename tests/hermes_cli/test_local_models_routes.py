@@ -100,7 +100,7 @@ def test_status_tracks_preset_spill_and_restored_window(client, tmp_path, monkey
                            [(LayerKind.FULL, 4096)] * 32, n_vocab=151936)
     model_id = profile.name
     _write_fake_gguf(bootstrap.models_dir() / f"{model_id}.gguf")
-    monkeypatch.setattr(presets, "read_gguf_header", lambda p: SimpleNamespace(sampling_defaults={}))
+    monkeypatch.setattr(presets, "read_gguf_header", lambda p: SimpleNamespace(sampling_defaults={}, has_unknown_quant_types=False))
     monkeypatch.setattr(presets, "profile_from_gguf", lambda h: profile)
     monkeypatch.setattr(local_models, "_state_endpoint", lambda: {"base_url": "http://127.0.0.1:1/v1"})
 

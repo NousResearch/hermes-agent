@@ -185,6 +185,68 @@ def test_iter_skill_index_files_prunes_skill_support_dirs(tmp_path):
     assert is_excluded_skill_path(package / "SKILL.md") is True
 
 
+def test_iter_skill_index_files_prunes_symlinked_excluded_dirs(tmp_path):
+    """Directory/file symlinks with innocuous names must not resurrect skills
+    living under EXCLUDED_SKILL_DIRS (walk descends via followlinks=True).
+
+    Shapes from the #104344 measurement: dir symlink, symlink chain, nested
+    symlink inside a real skill dir, and file symlink. External links that
+    leave the skills root stay supported; hard links remain undetectable.
+    """
+    ordinary = tmp_path / "tools" / "ordinary"
+    ordinary.mkdir(parents=True)
+    (ordinary / "SKILL.md").write_text("---\nname: ordinary\n---\n", encoding="utf-8")
+
+    archive = tmp_path / "tools" / ".archive" / "old"
+    archive.mkdir(parents=True)
+    (archive / "SKILL.md").write_text("---\nname: archived\n---\n", encoding="utf-8")
+
+    mid = tmp_path / "tools" / ".archive" / "mid"
+    mid.mkdir()
+    (mid / "SKILL.md").write_text("---\nname: mid\n---\n", encoding="utf-8")
+
+    (tmp_path / "tools" / "alias-to-archive").symlink_to(archive)
+    (tmp_path / "tools" / "alias-chain").symlink_to(mid)
+    (mid / "deep").symlink_to(archive)
+
+    nested = tmp_path / "tools" / "nested"
+    nested.mkdir()
+    (nested / "SKILL.md").write_text("---\nname: nested\n---\n", encoding="utf-8")
+    (nested / "alias-inside-skill").symlink_to(archive)
+
+    realdir = tmp_path / "tools" / "realdir"
+    realdir.mkdir()
+    (realdir / "SKILL.md").symlink_to(archive / "SKILL.md")
+
+    external = tmp_path.parent / "external-checkout-skill"
+    external.mkdir(exist_ok=True)
+    (external / "SKILL.md").write_text("---\nname: external\n---\n", encoding="utf-8")
+    (tmp_path / "tools" / "external-link").symlink_to(external)
+
+    found = [p.parent.name for p in iter_skill_index_files(tmp_path, "SKILL.md")]
+
+    assert "alias-to-archive" not in found
+    assert "alias-chain" not in found
+    assert "nested" in found
+    assert "realdir" not in found
+    assert "external-link" in found
+    assert "ordinary" in found
+
+
+def test_build_skills_manifest_excludes_symlinked_excluded_dirs(tmp_path):
+    """The manifest snapshot honors the same resolved-path exclusion."""
+    from agent.prompt_builder import _build_skills_manifest
+
+    archive = tmp_path / "tools" / ".archive" / "old"
+    archive.mkdir(parents=True)
+    (archive / "SKILL.md").write_text("---\nname: archived\n---\n", encoding="utf-8")
+
+    (tmp_path / "tools" / "alias-to-archive").symlink_to(archive)
+
+    manifest = _build_skills_manifest(tmp_path)
+    assert not any("alias-to-archive" in key for key in manifest)
+
+
 def test_iter_skill_index_files_keeps_support_named_categories(tmp_path):
     """A category named scripts/templates/assets/references is still valid."""
     scripts_skill = tmp_path / "scripts" / "bash-helper"

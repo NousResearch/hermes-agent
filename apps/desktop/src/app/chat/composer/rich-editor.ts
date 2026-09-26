@@ -16,6 +16,9 @@ import {
   slashIconElement
 } from '@/components/assistant-ui/directive-text'
 import { referenceKind, referenceRe } from '@/components/assistant-ui/reference-kinds'
+import { syncElementTextDirection } from '@/lib/bidi-direction'
+
+export { syncElementTextDirection }
 
 import { slashCommandMatches, type SlashCommandScanOptions } from './slash-refs'
 
@@ -243,6 +246,7 @@ export function renderComposerContents(target: HTMLElement, text: string, option
   // The other writer that reshapes the editor root: painting a restored draft
   // in clears the marker, clearing back to '' sets it.
   markEditorEmptiness(target)
+  syncElementTextDirection(target, text)
 }
 
 /** Caret range when the selection lives inside `editor`; else null. */
@@ -917,4 +921,6 @@ export function normalizeComposerEditorDom(editor: HTMLElement) {
   if (editor.childNodes.length === 0) {
     editor.appendChild(document.createElement('br'))
   }
+
+  syncElementTextDirection(editor, composerPlainText(editor))
 }

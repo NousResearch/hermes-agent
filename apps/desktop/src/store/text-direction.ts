@@ -5,13 +5,11 @@ import { type Codec, persistentAtom } from '@/lib/persisted'
 /**
  * How chat prose and the composers pick their base direction.
  *
- * - `auto`: each block resolves its own direction from its first strong
- *   character (the `unicode-bidi: plaintext` rules in styles.css). This is the
- *   shipped behavior and adds no attribute to the DOM.
- * - `rtl` / `ltr`: the reader's explicit choice, for text whose first strong
- *   character does not reflect its language — an Arabic paragraph that opens
- *   with a Latin name, or an English one that opens with an Arabic quote. Code
- *   (fenced and inline) and KaTeX stay isolated LTR either way.
+ * - `auto`: each block resolves its own direction from the mixed-script
+ *   resolver (`resolveTextDirection`), not the browser's first-strong vote.
+ *   Forced RTL/LTR still win when the reader picks them.
+ * - `rtl` / `ltr`: the reader's explicit choice. Code (fenced and inline) and
+ *   KaTeX stay isolated LTR either way.
  */
 export type TextDirection = 'auto' | 'ltr' | 'rtl'
 

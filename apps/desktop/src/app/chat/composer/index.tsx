@@ -91,7 +91,8 @@ import {
   deleteSelectionInEditor,
   insertComposerContentsAtCaret,
   normalizeComposerEditorDom,
-  RICH_INPUT_SLOT
+  RICH_INPUT_SLOT,
+  syncElementTextDirection
 } from './rich-editor'
 import { useComposerScope, useComposerSurfaceId } from './scope'
 import { ComposerStatusStack } from './status-stack'
@@ -504,6 +505,7 @@ export function ChatBar({
     normalizeComposerEditorDom(editor)
 
     const nextDraft = sanitizeComposerInput(composerPlainText(editor))
+    syncElementTextDirection(editor, nextDraft)
 
     if (nextDraft !== draftRef.current) {
       draftRef.current = nextDraft

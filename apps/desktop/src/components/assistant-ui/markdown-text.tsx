@@ -8,7 +8,7 @@ import {
   tailBoundedRemend
 } from '@assistant-ui/react-streamdown'
 import type { code as streamdownCode } from '@streamdown/code'
-import { type ComponentProps, memo, type ReactNode, useEffect, useMemo, useState } from 'react'
+import { type ComponentProps, isValidElement, memo, type ReactNode, useEffect, useMemo, useState } from 'react'
 
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
@@ -18,6 +18,7 @@ import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { useMediaImage } from '@/hooks/use-media-image'
 import { detectArtifact } from '@/lib/artifact-detect'
+import { resolveTextDirection } from '@/lib/bidi-direction'
 import { renderMediaTags } from '@/lib/chat-messages/parts'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
@@ -72,6 +73,34 @@ const mathPlugin = createMemoizedMathPlugin({ singleDollarTextMath: true })
 // `delay` fallback shows), so nothing flashes or reflows unexpectedly.
 type CodePlugin = typeof streamdownCode
 let codePluginCache: CodePlugin | null = null
+
+function markdownNodeText(node: ReactNode): string {
+  if (node === null || node === undefined || typeof node === 'boolean') {
+    return ''
+  }
+
+  if (typeof node === 'string' || typeof node === 'number') {
+    return String(node)
+  }
+
+  if (Array.isArray(node)) {
+    return node.map(markdownNodeText).join('')
+  }
+
+  if (isValidElement<{ children?: ReactNode; dir?: string; 'data-ref'?: string; 'data-ref-text'?: string }>(node)) {
+    if (node.type === 'code' || node.props.dir === 'ltr' || node.props['data-ref'] || node.props['data-ref-text']) {
+      return ''
+    }
+
+    return markdownNodeText(node.props.children)
+  }
+
+  return ''
+}
+
+function markdownChildrenDirection(children: ReactNode) {
+  return resolveTextDirection(markdownNodeText(children))
+}
 
 function useCodePlugin(): CodePlugin | null {
   const [plugin, setPlugin] = useState(codePluginCache)
@@ -478,8 +507,8 @@ interface MarkdownTextSurfaceProps {
    *  markup and code are left as rendered. */
   decorateText?: (children: ReactNode) => ReactNode
   /** The reader's explicit Text direction (Appearance). Stamped on the root
-   *  and on list/quote boxes in place of their `dir="auto"`, so every prose
-   *  block follows it; undefined is Auto and leaves the DOM attribute-free. */
+   *  and on prose/list/quote boxes in place of the Auto resolver vote;
+   *  undefined is Auto and lets each block resolve from its visible text. */
   textDirection?: 'ltr' | 'rtl'
 }
 
@@ -547,8 +576,9 @@ function MarkdownParagraph({
   className,
   scratchpad,
   streaming,
+  textDirection,
   ...props
-}: ComponentProps<'p'> & { scratchpad?: boolean; streaming?: boolean }) {
+}: ComponentProps<'p'> & { scratchpad?: boolean; streaming?: boolean; textDirection?: 'ltr' | 'rtl' }) {
   const plain = paragraphPlainText(children)
   const resolved = useResolvedParagraph(scratchpad ? null : plain)
 
@@ -587,7 +617,7 @@ function MarkdownParagraph({
   }
 
   return (
-    <p className={paragraphClass} {...props}>
+    <p className={paragraphClass} {...props} dir={textDirection ?? markdownChildrenDirection(children)}>
       {children}
     </p>
   )
@@ -606,7 +636,6 @@ function MarkdownTextSurface({
   const { status, text } = useMessagePartText()
   // List/quote boxes resolve from content under Auto (see the ul/ol/blockquote
   // notes below); an explicit choice replaces that vote rather than nesting it.
-  const boxDir = textDirection ?? 'auto'
 
   const surfaceContainerProps = useMemo(
     () => (textDirection ? { ...containerProps, dir: textDirection } : containerProps),
@@ -625,23 +654,31 @@ function MarkdownTextSurface({
   const components = useMemo(
     () =>
       ({
-        h1: ({ className, ...props }: ComponentProps<'h1'>) => (
-          <h1 className={cn('my-1 font-semibold', HEADING_SIZES.h1, className)} {...props} />
+        h1: ({ children, className, ...props }: ComponentProps<'h1'>) => (
+          <h1 className={cn('my-1 font-semibold', HEADING_SIZES.h1, className)} {...props} dir={textDirection ?? markdownChildrenDirection(children)}>
+            {children}
+          </h1>
         ),
-        h2: ({ className, ...props }: ComponentProps<'h2'>) => (
-          <h2 className={cn('my-1 font-semibold', HEADING_SIZES.h2, className)} {...props} />
+        h2: ({ children, className, ...props }: ComponentProps<'h2'>) => (
+          <h2 className={cn('my-1 font-semibold', HEADING_SIZES.h2, className)} {...props} dir={textDirection ?? markdownChildrenDirection(children)}>
+            {children}
+          </h2>
         ),
-        h3: ({ className, ...props }: ComponentProps<'h3'>) => (
-          <h3 className={cn('my-1 font-semibold', HEADING_SIZES.h3, className)} {...props} />
+        h3: ({ children, className, ...props }: ComponentProps<'h3'>) => (
+          <h3 className={cn('my-1 font-semibold', HEADING_SIZES.h3, className)} {...props} dir={textDirection ?? markdownChildrenDirection(children)}>
+            {children}
+          </h3>
         ),
-        h4: ({ className, ...props }: ComponentProps<'h4'>) => (
-          <h4 className={cn('my-1 font-semibold', HEADING_SIZES.h4, className)} {...props} />
+        h4: ({ children, className, ...props }: ComponentProps<'h4'>) => (
+          <h4 className={cn('my-1 font-semibold', HEADING_SIZES.h4, className)} {...props} dir={textDirection ?? markdownChildrenDirection(children)}>
+            {children}
+          </h4>
         ),
         p: ({ children, ...props }: ComponentProps<'p'>) =>
           previewOnly ? (
             <p {...props}>{decorateText ? decorateText(children) : children}</p>
           ) : (
-            <MarkdownParagraph {...props} scratchpad={scratchpad} streaming={isStreaming}>
+            <MarkdownParagraph {...props} scratchpad={scratchpad} streaming={isStreaming} textDirection={textDirection}>
               {decorateText ? decorateText(children) : children}
             </MarkdownParagraph>
           ),
@@ -659,12 +696,10 @@ function MarkdownTextSurface({
         // Lists and blockquotes have chrome that sits *beside* the text
         // (markers, the quote border), and that side is driven by the CSS
         // `direction` of the box, which `unicode-bidi: plaintext` never
-        // touches — an RTL list otherwise renders its numbers stranded at
-        // the far left. `dir="auto"` lets the browser resolve the box
-        // direction from content; the plaintext rules in styles.css keep
-        // owning per-line text direction. Inline code carries `dir="ltr"`
-        // (see the `code` override) so it doesn't vote here either, same
-        // contract as the CSS isolate.
+        // touches. Browser `dir="auto"` uses the first strong character, which
+        // misclassifies Arabic list items that start with an English brand
+        // (Alibaba, DeepSeek, OpenAI, ...). Resolve from the visible sentence
+        // instead, ignoring isolated inline code/ref chips.
         // A `> [!NOTE]`/`[!WARNING]`/... blockquote renders as a GFM alert
         // callout; everything else stays a plain quote.
         blockquote: ({ children, className, ...props }: ComponentProps<'blockquote'>) => {
@@ -677,21 +712,25 @@ function MarkdownTextSurface({
           return (
             <blockquote
               className={cn('border-s-2 border-(--ui-stroke-tertiary) ps-3 text-muted-foreground italic', className)}
-              dir={boxDir}
               {...props}
+              dir={textDirection ?? markdownChildrenDirection(children)}
             >
               {children}
             </blockquote>
           )
         },
-        ul: ({ className, ...props }: ComponentProps<'ul'>) => (
-          <ul className={cn('my-1 gap-0', className)} dir={boxDir} {...props} />
+        ul: ({ children, className, ...props }: ComponentProps<'ul'>) => (
+          <ul className={cn('my-1 gap-0', className)} {...props} dir={textDirection ?? markdownChildrenDirection(children)}>
+            {children}
+          </ul>
         ),
-        ol: ({ className, ...props }: ComponentProps<'ol'>) => (
-          <ol className={cn('my-1 gap-0', className)} dir={boxDir} {...props} />
+        ol: ({ children, className, ...props }: ComponentProps<'ol'>) => (
+          <ol className={cn('my-1 gap-0', className)} {...props} dir={textDirection ?? markdownChildrenDirection(children)}>
+            {children}
+          </ol>
         ),
         li: ({ children, className, ...props }: ComponentProps<'li'>) => (
-          <li className={cn('leading-(--dt-line-height)', className)} {...props}>
+          <li className={cn('leading-(--dt-line-height)', className)} {...props} dir={textDirection ?? markdownChildrenDirection(children)}>
             {decorateText ? decorateText(children) : children}
           </li>
         ),
@@ -731,7 +770,7 @@ function MarkdownTextSurface({
           )
         }
       }) as StreamdownTextComponents,
-    [boxDir, decorateText, disableArtifacts, isStreaming, previewOnly, scratchpad]
+    [decorateText, disableArtifacts, isStreaming, previewOnly, scratchpad, textDirection]
   )
 
   if (text.length > MAX_MARKDOWN_CHARS) {

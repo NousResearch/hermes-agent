@@ -222,7 +222,7 @@ def lint_skill(skill_md_path: Path) -> List[LintFinding]:
 
 def format_findings(findings: List[LintFinding]) -> str:
     """Render findings as a newline-joined human-readable block."""
-    return "\n".join(f.format() for f in findings)
+    return "\n".join(f"{f.severity}: {f.rule}: {f.message}" for f in findings)
 
 def has_errors(findings: List[LintFinding]) -> bool:
     return any(f.severity == ERROR for f in findings)

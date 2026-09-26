@@ -4,6 +4,7 @@
 from tools.skill_linter import (
     ERROR,
     WARNING,
+    format_findings,
     lint_content,
     lint_skill,
 )
@@ -217,3 +218,10 @@ def test_oversized_body_flagged_above_budget_and_not_below():
     found = [f for f in lint_content(over) if f.rule == "oversized-body"]
     assert found and found[0].severity == WARNING
     assert "oversized-body" not in _rules(lint_content(under))
+
+
+def test_format_findings_renders_compat_rows():
+    findings = lint_content(CLEAN.replace("name: my-skill", "name: BAD"))
+    rendered = format_findings(findings)
+    assert "error: name-format:" in rendered
+    assert "must be lowercase letters" in rendered

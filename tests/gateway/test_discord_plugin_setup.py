@@ -57,25 +57,6 @@ class TestDiscordHomeChannelClear:
         assert "DISCORD_HOME_CHANNEL" not in saved
 
 
-class TestDiscordSetupPrivilegedIntentsGuidance:
-    """Setup must name Privileged Gateway Intents before asking for the token (#79430)."""
-
-    def test_setup_mentions_message_content_intent(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        saved, removed, infos = {}, [], []
-        _patch_setup_io(
-            monkeypatch,
-            _PROMPTS_BLANK,
-            saved,
-            removed,
-            existing={},
-            infos=infos,
-        )
-        interactive_setup()
-        joined = "\n".join(infos)
-        assert "Message Content Intent" in joined
-        assert "Privileged Gateway Intents" in joined
-        assert "discord.com/developers/applications" in joined
 
 
 

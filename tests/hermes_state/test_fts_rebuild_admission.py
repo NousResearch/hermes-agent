@@ -307,7 +307,6 @@ class TestOrphanedHolderStalenessBreak:
     ):
         """A record naming a live pid must defer even after timeout."""
         import json
-        import os
 
         lock = _lock_file(db.db_path)
         with _rebuild_lock_held_by_other_process(db.db_path) as proc:
@@ -537,7 +536,8 @@ class TestDeferredFtsRetryInProcess:
                 )
                 t0 = time.monotonic()
                 assert gw.retry_deferred_fts_recovery() is False
-                assert time.monotonic() - t0 < 2.0
+                # Budget is 30s; a generous bound still proves it did not wait it out.
+                assert time.monotonic() - t0 < 15.0
                 assert gw._fts_stale is True
                 # Rate limit engaged: an immediate second call is a no-op.
                 assert gw.retry_deferred_fts_recovery() is False

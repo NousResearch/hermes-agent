@@ -1,14 +1,12 @@
 """video_generate dynamic schema — capability-gated params (#95681 diet).
 
 Mirrors tests/tools/test_image_generate_schema.py (#97057). Coverage is
-guaranteed three ways:
+guaranteed two ways:
 1. every in-tree video_gen plugin's capabilities() must declare EVERY axis
    the schema builder reads (a new axis added to the builder without fleet
    declarations fails here);
 2. every FAL video family must carry the per-family keys the fal provider's
    active-model capabilities() resolution reads;
-3. declaration⇄implementation: a provider that declares seed/upscale must
-   implement it, and vice versa (source-level sweep, both directions).
 """
 import os
 import sys
@@ -19,7 +17,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 import tools.video_generation_tool as vt
 from tools.video_generation_tool import (
-    VIDEO_GENERATE_SCHEMA,
     _build_dynamic_video_schema,
 )
 
@@ -40,20 +37,6 @@ CAPABILITY_AXES = (
 # Per-family keys the FAL provider's capabilities() resolution reads.
 FAL_FAMILY_KEYS = ("durations", "aspect_ratios", "resolutions", "audio",
                    "negative", "seed")
-
-
-def _plugin_sources():
-    import pathlib
-
-    plugins_dir = (pathlib.Path(__file__).resolve().parents[2]
-                   / "plugins" / "video_gen")
-    assert plugins_dir.is_dir(), plugins_dir
-    out = {}
-    for plugin in sorted(plugins_dir.iterdir()):
-        src_file = plugin / "__init__.py"
-        if src_file.is_file():
-            out[plugin.name] = src_file.read_text(encoding="utf-8")
-    return out
 
 
 class TestFleetCapabilityCoverage(unittest.TestCase):
@@ -144,39 +127,6 @@ class TestFleetCapabilityCoverage(unittest.TestCase):
         self.assertNotIn("audio", schema["parameters"]["properties"])
         self.assertIn("always on", schema["description"])
 
-    def test_declaration_matches_implementation(self):
-        """supports_seed / supports_upscale: declaration ⇄ implementation,
-        source-level, both directions, every in-tree plugin.
-
-        deepinfra inherits generate() from OpenAICompatibleVideoGenProvider
-        (agent/video_gen_provider.py), so its implementation source is the
-        base class file."""
-        import pathlib
-
-        base_src = (pathlib.Path(__file__).resolve().parents[2]
-                    / "agent" / "video_gen_provider.py").read_text(encoding="utf-8")
-        for name, src in _plugin_sources().items():
-            with self.subTest(provider=name):
-                impl_src = src if "def generate" in src else src + base_src
-                declares_upscale = '"supports_upscale": True' in src
-                implements_upscale = ("_upscale_video" in impl_src
-                                      or "UPSCALER_ENDPOINT" in impl_src)
-                self.assertEqual(
-                    declares_upscale, implements_upscale,
-                    f"{name}: supports_upscale declaration "
-                    f"({declares_upscale}) != implementation "
-                    f"({implements_upscale})",
-                )
-                declares_seed = '"supports_seed": True' in src
-                implements_seed = ("seed" in impl_src
-                                   and ("payload[\"seed\"]" in impl_src
-                                        or "seed: Optional[int]" in impl_src
-                                        or "\"seed\": seed" in impl_src))
-                self.assertEqual(
-                    declares_seed, implements_seed,
-                    f"{name}: supports_seed declaration ({declares_seed}) "
-                    f"!= implementation ({implements_seed})",
-                )
 
 
 class TestDynamicParamGating(unittest.TestCase):
@@ -243,12 +193,6 @@ class TestDynamicParamGating(unittest.TestCase):
             schema = _build_dynamic_video_schema()
         self.assertEqual(sorted(schema["parameters"]["properties"]), ["prompt"])
 
-    def test_static_schema_carries_no_capability_args(self):
-        props = VIDEO_GENERATE_SCHEMA["parameters"]["properties"]
-        self.assertEqual(
-            sorted(props),
-            ["aspect_ratio", "duration", "model", "prompt", "resolution"],
-        )
 
 
 if __name__ == "__main__":

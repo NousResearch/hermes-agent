@@ -24,7 +24,8 @@ from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
 
 @pytest.fixture
-def adapter():
+def adapter(monkeypatch):
+    monkeypatch.setattr("tools.url_safety.is_safe_url", lambda *a, **k: True)
     a = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
     a._bot = MagicMock()
     a._metadata_thread_id = lambda metadata: None

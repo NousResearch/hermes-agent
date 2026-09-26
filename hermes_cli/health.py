@@ -20,10 +20,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import yaml
+from hermes_yaml import safe_load
 
 from hermes_cli import __version__ as HERMES_VERSION
 from hermes_constants import get_hermes_home
+from hermes_cli.managed_scope import get_managed_dir
 from hermes_cli.profiles import get_active_profile_name
 
 _STATUS_RANK = {"healthy": 0, "warning": 1, "critical": 2}
@@ -62,8 +63,10 @@ def _exit_code(status: str) -> int:
 
 
 def _configured_route(config: dict[str, Any] | None) -> tuple[str, str]:
-    # Mirror raw model-key normalization without importing config's mutating
-    # startup graph. Only display identity scalars, never credential containers.
+    # Project only route identity; importing config's effective loader would
+    # back up config.yaml and violate health's read-only contract.
+    # Keep environment references symbolic: expanding arbitrary route strings
+    # into diagnostic output could expose credentials from the process env.
     def display_scalar(value: Any) -> str:
         return str(value).strip() if isinstance(value, (str, int, float, bool)) and value else ""
 
@@ -85,6 +88,59 @@ def _configured_route(config: dict[str, Any] | None) -> tuple[str, str]:
     return provider, model
 
 
+def _effective_route(config: dict[str, Any] | None) -> tuple[str, str]:
+    """Project the managed route using runtime normalization, without config I/O."""
+    def merge_model(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+        merged = base.copy()
+        for key, value in override.items():
+            old = merged.get(key)
+            if isinstance(old, dict) and isinstance(value, dict):
+                merged[key] = merge_model(old, value)
+            elif not (isinstance(old, dict) and value is None):
+                merged[key] = value
+        return merged
+
+    config = config if isinstance(config, dict) else {}
+    managed_dir = get_managed_dir()
+    if managed_dir is None:
+        return _configured_route(config)
+    try:
+        managed = safe_load((managed_dir / "config.yaml").read_text(encoding="utf-8-sig"))
+    except Exception:
+        # Match fail-open managed config reads without printing credential lines.
+        return _configured_route(config)
+    if not isinstance(managed, dict) or not managed:
+        return _configured_route(config)
+
+    # Runtime normalization can stringify malformed identity containers. Health
+    # must never print their contents, which may contain credentials. Sanitize
+    # only display-identity leaves; retain the model section's merge shape.
+    def identity(value: Any) -> Any:
+        return value if isinstance(value, (str, int, float, bool)) else None
+
+    managed = dict(managed)
+    if "provider" in managed:
+        managed["provider"] = identity(managed["provider"])
+    model = managed.get("model")
+    if isinstance(model, dict):
+        model = dict(model)
+        if "provider" in model:
+            model["provider"] = identity(model["provider"])
+        for key in ("default", "model", "name"):
+            if isinstance(model.get(key), dict):
+                nested = model[key]
+                model[key] = {leaf: identity(nested.get(leaf))
+                              for leaf in ("model", "default", "provider")}
+        managed["model"] = model
+
+    from hermes_cli.config_providers import _normalize_root_model_keys
+
+    managed = _normalize_root_model_keys(managed)
+    if isinstance(managed.get("model"), str):
+        managed = {**managed, "model": {"default": managed["model"]}}
+    return _configured_route(merge_model(config, managed))
+
+
 def _read_raw_config(config_path: Path) -> tuple[dict[str, Any] | None, HealthRow | None]:
     """Read config.yaml strictly enough for health exit-code semantics.
 
@@ -97,7 +153,7 @@ def _read_raw_config(config_path: Path) -> tuple[dict[str, Any] | None, HealthRo
     if not config_path.exists():
         return None, None
     try:
-        raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        raw = safe_load(config_path.read_text(encoding="utf-8"))
     except Exception as exc:
         # ``str(MarkedYAMLError)`` includes the offending source line. Never
         # echo it: malformed config may contain credentials and health output
@@ -148,7 +204,7 @@ def _check_profile_config(home: Path) -> tuple[HealthRow, dict[str, Any] | None]
             None,
         )
     config = raw_config if isinstance(raw_config, dict) else None
-    provider, model = _configured_route(config)
+    provider, model = _effective_route(config)
     return (
         HealthRow(
             "profile_config",
@@ -284,6 +340,12 @@ def _read_cron_jobs_read_only(home: Path) -> tuple[list[dict[str, Any]], str, st
         return [], "invalid", _diagnostic_name(exc)
     if isinstance(payload, dict):
         jobs = payload.get("jobs", [])
+        if isinstance(jobs, dict):
+            # Runtime accepts external ID-keyed maps and skips non-object
+            # values. Recognize that recoverable form without persisting it.
+            records = [{**job, "id": job.get("id") or key}
+                       for key, job in jobs.items() if isinstance(job, dict)]
+            return records, "legacy_map", None
         if not isinstance(jobs, list):
             return [], "invalid", "jobs field is not a list"
         if any(not isinstance(job, dict) for job in jobs):
@@ -313,19 +375,20 @@ def _check_cron(home: Path) -> HealthRow:
         detail = f"0 active / 0 total jobs; jobs.json missing{suffix}"
     else:
         detail = f"{active} active / {len(jobs)} total jobs{suffix}"
-    if storage_status == "legacy_list":
+    if storage_status in {"legacy_list", "legacy_map"}:
+        storage_format = "list" if storage_status == "legacy_list" else "ID-keyed map"
         return HealthRow(
             "cron_storage",
             "cron scheduler status",
             "warning",
-            detail + "; legacy jobs.json list format detected",
+            detail + f"; legacy jobs.json {storage_format} format detected",
             "run: hermes cron list to migrate storage format",
         )
     return HealthRow("cron_storage", "cron scheduler status", "healthy", detail)
 
 
 def _check_provider_routing(config: dict[str, Any] | None) -> HealthRow:
-    provider, model = _configured_route(config)
+    provider, model = _effective_route(config)
     if model == "(not set)":
         return HealthRow(
             "provider_routing",

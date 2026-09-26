@@ -43,6 +43,8 @@ export interface PaneMirror<T> {
    *  Per tile so a mirror can offer it for some of its tabs and not others. */
   newTab?: (key: string) => (() => void) | undefined
   render: (key: string) => ReactNode
+  /** Stateful resources must survive the zone's inactive-tab cache eviction. */
+  lifecycleKeepAlive?: (key: string) => boolean
   /** Extra rows at the top of the zone tab menu (see PaneChrome.tabMenuPrefix). */
   tabMenuPrefix?: (key: string) => ((kit: MenuKit) => ReactNode) | undefined
   /** Wrap the tile's TAB (domain context menu — session verbs). */
@@ -87,6 +89,7 @@ export function paneMirror<T>(cfg: PaneMirror<T>): () => void {
             pane: cfg.anchor?.(tile) ?? 'workspace',
             pos: cfg.dir?.(tile) ?? 'right'
           },
+          lifecycleKeepAlive: cfg.lifecycleKeepAlive?.(key),
           minWidth: cfg.minWidth,
           newTab: cfg.newTab?.(key),
           // Every mirrored tile is a full workspace surface docked beside main —

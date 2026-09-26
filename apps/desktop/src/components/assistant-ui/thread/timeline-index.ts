@@ -19,16 +19,29 @@ const requests = new Map<string, Promise<TimelineIndex>>()
 const MAX_CACHED_SESSIONS = 12
 const TTL = 60_000
 
+/** One lookup may advance a partially loaded index by this many pages. */
+const MAX_INDEX_PAGES_PER_LOOKUP = 3
+
 export const timelineIndexKey = (id: string, scope: ProfileScope) => JSON.stringify([id, scope])
 export const cachedTimelineIndex = (key: string) => cache.get(key)
 
-/** One bounded metadata page per request; never fetch tool or assistant bodies. */
-export function fetchTimelineIndex(id: string, scope: ProfileScope): Promise<TimelineIndex> {
+/**
+ * One bounded metadata page per request; never fetch tool or assistant bodies.
+ * A complete index is final only up to the turns that existed when it was
+ * read: `beyondRowId` names a prompt the caller has seen (the live tail's
+ * newest, a jump anchor), and a complete index that does not reach it pages
+ * forward from its own cursor instead of answering from the cache.
+ */
+export function fetchTimelineIndex(id: string, scope: ProfileScope, beyondRowId?: number): Promise<TimelineIndex> {
   const key = timelineIndexKey(id, scope)
   const cached = cache.get(key)
   const previous = cached?.complete && cached.expires <= Date.now() ? undefined : cached
 
-  if (cached?.complete && cached.expires > Date.now()) {
+  if (
+    cached?.complete &&
+    cached.expires > Date.now() &&
+    (beyondRowId === undefined || marksReach(cached.entries, beyondRowId))
+  ) {
     return Promise.resolve(cached)
   }
 
@@ -86,4 +99,58 @@ export function fetchTimelineIndex(id: string, scope: ProfileScope): Promise<Tim
   requests.set(key, request)
 
   return request
+}
+
+/** Marks are chronological, so the greatest id below the anchor is its predecessor. */
+function promptBefore(entries: readonly TimelineEntry[], rowId: number): number | null {
+  let previous: number | null = null
+
+  for (const entry of entries) {
+    if (entry.rowId !== undefined && entry.rowId < rowId) {
+      previous = entry.rowId
+    }
+  }
+
+  return previous
+}
+
+/** Whether the loaded marks reach the anchor, i.e. `promptBefore` is its neighbour. */
+const marksReach = (entries: readonly TimelineEntry[], rowId: number) =>
+  entries.some(entry => entry.rowId !== undefined && entry.rowId >= rowId)
+
+/**
+ * The prompt mark immediately before `rowId` on the shared timeline range — the
+ * same marks the rail draws, so "Show earlier" and the rail page one range
+ * instead of each inventing its own reachability. Pages load oldest-first, so
+ * an anchor past the loaded marks advances the index (cached, coalesced with
+ * the rail's own loadMore) rather than guessing across the gap. Resolves null
+ * only when nothing precedes the anchor, or when the index cannot name it.
+ */
+export async function previousPromptRowId(
+  id: string,
+  scope: ProfileScope,
+  rowId: number | undefined
+): Promise<number | null> {
+  if (rowId === undefined || !Number.isSafeInteger(rowId) || rowId <= 0) {
+    return null
+  }
+
+  let previous: number | null = null
+  let known = -1
+
+  for (let page = 0; page < MAX_INDEX_PAGES_PER_LOOKUP; page++) {
+    const index = await fetchTimelineIndex(id, scope, rowId)
+
+    previous = promptBefore(index.entries, rowId)
+
+    // A complete index that gained nothing cannot name the anchor (an unpersisted
+    // or non-prompt row); stop rather than re-read the tail page.
+    if (previous === null || marksReach(index.entries, rowId) || (index.complete && index.entries.length === known)) {
+      return previous
+    }
+
+    known = index.entries.length
+  }
+
+  return previous
 }

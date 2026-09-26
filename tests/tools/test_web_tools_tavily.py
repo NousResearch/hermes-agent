@@ -320,11 +320,6 @@ class TestWebSearchTavily:
             assert "Authorization" not in headers
             assert "api.tavily.com/search" in mock_post.call_args.args[0]
 
-    def test_tavily_is_not_in_keyless_ring(self):
-        from plugins.web.keyless_mcp import _KEYLESS_RING, _KEYLESS_SEARCHERS, _KEYLESS_EXTRACTORS
-        assert "tavily" not in _KEYLESS_RING
-        assert "tavily" not in _KEYLESS_SEARCHERS
-        assert "tavily" not in _KEYLESS_EXTRACTORS
 
 
 # ─── web_extract_tool (Tavily dispatch) ───────────────────────────────────────

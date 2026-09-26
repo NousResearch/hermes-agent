@@ -113,7 +113,10 @@ CONFIG_SCHEMA = ProviderConfigSchema(
                "Pin which base-context sections the first turn injects: summary, peerRepresentation, peerCard, "
                "aiRepresentation, aiCard. Blank injects all of them; an empty list injects nothing.",
                placeholder='{"sessionStart": ["summary", "peerCard"]}', group="Recall"),
-        _field("initOnSessionStart", "Eager init", KIND_BOOL, "Initialize the session eagerly in tools mode instead of on first tool call.",
+        _field("initOnSessionStart", "Eager init", KIND_BOOL,
+               "Tools mode only: initialize the Honcho session synchronously at session start instead of on the "
+               "first tool call. Blocks agent startup until Honcho answers — keep false for Desktop or a local "
+               "Honcho that may be down; `timeout` caps each call.",
                default="false", group="Recall"),
         # — Limits —
         _field("messageMaxChars", "Message max chars", KIND_NUMBER, "Max chars per message sent to Honcho.",

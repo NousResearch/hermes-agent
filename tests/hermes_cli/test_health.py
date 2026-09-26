@@ -1,8 +1,11 @@
 import json
+import base64
+import hashlib
 import os
 import sqlite3
 import subprocess
 import sys
+import sysconfig
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -309,6 +312,32 @@ def test_collect_health_critical_exit_two_for_non_mapping_config(tmp_path, monke
     assert "must be a mapping/object" in config_row["detail"]
 
 
+@pytest.mark.parametrize("jobs", [
+    {"outer": {"id": "inline", "enabled": True}, "keyed": {"enabled": False}},
+    {"keyed": {"enabled": True}, "junk": "ignored by runtime"},
+    {},
+])
+def test_health_reads_id_keyed_cron_without_repair(tmp_path, monkeypatch, jobs):
+    home = tmp_path / "profile"
+    _write_profile(home)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    jobs_path = home / "cron" / "jobs.json"
+    original = json.dumps({"jobs": jobs}).encode("utf-8")
+    jobs_path.write_bytes(original)
+    before = _file_bytes_under(home)
+    records, storage, error = health_mod._read_cron_jobs_read_only(home)
+    assert records == [{**value, "id": value.get("id") or key}
+                       for key, value in jobs.items() if isinstance(value, dict)]
+    assert storage == "legacy_map"
+    assert error is None
+    result = health_mod.collect_health()
+    cron_row = next(row for row in result["checks"] if row["id"] == "cron_storage")
+    assert cron_row["status"] == "warning"
+    assert "ID-keyed" in cron_row["detail"]
+    assert result["exit_code"] == 1
+    assert _file_bytes_under(home) == before
+
+
 def test_collect_health_reads_legacy_cron_without_mutating(tmp_path, monkeypatch):
     home = tmp_path / "profile"
     _write_profile(home)
@@ -496,17 +525,23 @@ def test_health_process_reports_broken_dependency_without_early_repair(tmp_path)
     repair_marker = tmp_path / "repair-invoked"
     shadow = tmp_path / "shadow"
     shadow.mkdir()
-    (shadow / "yaml.py").write_text(
-        "raise ImportError('deliberately broken yaml')\n", encoding="utf-8"
+    (shadow / "ruamel").mkdir()
+    (shadow / "ruamel" / "__init__.py").write_text("", encoding="utf-8")
+    (shadow / "ruamel" / "yaml.py").write_text(
+        "raise ImportError('deliberately broken ruamel')\n", encoding="utf-8"
     )
     script = f"""
 import pathlib
 import sys
 import hermes_cli._early_recovery as recovery
 recovery._project_root = lambda: pathlib.Path({str(root)!r})
-recovery._run_repair_install = lambda specs, project_root: pathlib.Path({str(repair_marker)!r}).write_text("called")
+def forbidden_lock(project_root):
+    pathlib.Path({str(repair_marker)!r}).write_text("called")
+    raise AssertionError("health attempted dependency repair")
+recovery._claim_recovery_lock = forbidden_lock
 sys.argv = ["hermes", "health", "--json"]
-import hermes_cli.main
+recovery.recover_if_needed(pathlib.Path({str(root)!r}), argv=sys.argv[1:])
+recovery._emit_health_dependency_failure(sys.argv[1:], recovery._probe_broken_packages())
 """
     proc = subprocess.run(
         [sys.executable, "-c", script],
@@ -522,7 +557,7 @@ import hermes_cli.main
     assert payload["status"] == "critical"
     assert payload["exit_code"] == 2
     assert payload["checks"][0]["id"] == "runtime_dependencies"
-    assert "PyYAML" in payload["checks"][0]["detail"]
+    assert "ruamel.yaml" in payload["checks"][0]["detail"]
     assert recovery_marker.read_bytes() == original_marker
     assert not repair_marker.exists()
 
@@ -530,8 +565,10 @@ import hermes_cli.main
 def test_broken_dependency_health_resolves_explicit_and_sticky_profiles(tmp_path):
     shadow = tmp_path / "shadow"
     shadow.mkdir()
-    (shadow / "yaml.py").write_text(
-        "raise ImportError('deliberately broken yaml')\n", encoding="utf-8"
+    (shadow / "ruamel").mkdir()
+    (shadow / "ruamel" / "__init__.py").write_text("", encoding="utf-8")
+    (shadow / "ruamel" / "yaml.py").write_text(
+        "raise ImportError('deliberately broken ruamel')\n", encoding="utf-8"
     )
     user_home = tmp_path / "user"
     hermes_root = user_home / ".hermes"
@@ -614,7 +651,6 @@ def test_health_main_skips_mutating_startup_maintenance(monkeypatch):
     monkeypatch.setattr(main_mod, "_EARLY_CLI_COMMAND", "health")
     monkeypatch.setattr(main_mod, "_cleanup_quarantined_exes", forbidden)
     monkeypatch.setattr(main_mod, "_sweep_stale_bytecode_if_checkout_changed", forbidden)
-    monkeypatch.setattr(main_mod, "_recover_from_interrupted_install", forbidden)
     monkeypatch.setattr(main_mod, "_try_termux_fast_tui_launch", lambda: True)
 
     main_mod.main()
@@ -690,7 +726,8 @@ def test_health_cli_nested_route_displays_only_identity(
                                        ["SECRET_HEALTH_BAD_TYPE"]])
 @pytest.mark.parametrize("location", ["model", "default", "name", "provider",
                                       "nested_model", "nested_provider", "root_provider"])
-def test_health_cli_route_never_stringifies_containers(tmp_path, malformed, location):
+@pytest.mark.parametrize("managed_route", [False, True])
+def test_health_cli_route_never_stringifies_containers(tmp_path, malformed, location, managed_route):
     config: dict = {"model": {"default": "safe-model"}}
     expected_model, expected_provider = "safe-model", "auto"
     if location == "model":
@@ -711,7 +748,8 @@ def test_health_cli_route_never_stringifies_containers(tmp_path, malformed, loca
         if location == "nested_model":
             expected_model, expected_provider = "(not set)", "safe-provider"
     _assert_health_route_process(
-        tmp_path, config, "SECRET_HEALTH_BAD_TYPE", expected_provider, expected_model
+        tmp_path, {} if managed_route else config, "SECRET_HEALTH_BAD_TYPE",
+        expected_provider, expected_model, managed=config if managed_route else None,
     )
 
 
@@ -726,12 +764,143 @@ def test_health_cli_raw_route_precedence(tmp_path, config, provider, model):
     _assert_health_route_process(tmp_path, config, "SECRET_HEALTH_UNUSED", provider, model)
 
 
-def _assert_health_route_process(tmp_path, config, sentinel, provider, model):
+@pytest.mark.parametrize("managed,provider,model", [
+    ({"model": {"provider": "managed-provider", "default": "managed-model"}},
+     "managed-provider", "managed-model"),
+    ({"model": {"provider": "managed-provider", "name": "managed-alias"}},
+     "managed-provider", "managed-alias"),
+    ({"model": {"provider": "managed-provider", "model": "managed-legacy-alias"}},
+     "managed-provider", "managed-legacy-alias"),
+    ({"model": {"default": {"provider": "nested-provider", "model": "nested-model"}}},
+     "nested-provider", "nested-model"),
+    ({"provider": "managed-root", "model": "managed-scalar"},
+     "managed-root", "managed-scalar"),
+])
+def test_health_cli_reports_effective_managed_route_read_only(tmp_path, managed, provider, model):
+    _assert_health_route_process(
+        tmp_path, {"model": {"provider": "user-provider", "default": "user-model"}},
+        "SECRET_HEALTH_UNUSED", provider, model, managed=managed,
+    )
+
+
+@pytest.mark.parametrize("managed_route", [False, True])
+@pytest.mark.parametrize("reference", ["${HEALTH4_ROUTE_MODEL}", "${env:HEALTH4_ROUTE_MODEL}"])
+def test_health_cli_preserves_env_references_without_disclosing_values(tmp_path, managed_route, reference):
+    user = {"model": {"provider": "user-provider", "default": reference}}
+    managed = {"model": {"provider": "managed-provider", "name": reference}} if managed_route else None
+    _assert_health_route_process(
+        tmp_path, user, "SYNTHETIC_PRIVATE_ENV_VALUE",
+        "managed-provider" if managed_route else "user-provider", reference,
+        managed=managed,
+        route_env={"HEALTH4_ROUTE_MODEL": "SYNTHETIC_PRIVATE_ENV_VALUE"},
+    )
+
+
+@pytest.mark.parametrize("override", [[], 0, False, "", None])
+@pytest.mark.parametrize("root_key,root_value,provider", [
+    ("provider", "managed-provider", "managed-provider"),
+    ("base_url", "https://example.invalid", "user-provider"),
+    ("api_base", "https://example.invalid", "user-provider"),
+    ("context_length", 8192, "user-provider"),
+])
+def test_health_managed_root_aliases_use_canonical_normalization(
+    tmp_path, override, root_key, root_value, provider,
+):
+    _assert_health_route_process(
+        tmp_path, {"model": {"provider": "user-provider", "default": "user-model"}},
+        "SECRET_HEALTH_UNUSED", provider, "user-model",
+        managed={"model": override, root_key: root_value},
+    )
+
+
+@pytest.mark.parametrize("override", [False, 0, [], ["not-a-model-scalar"]])
+def test_health_cli_managed_nonmapping_override_clears_user_route(tmp_path, override):
+    _assert_health_route_process(
+        tmp_path, {"model": {"provider": "user-provider", "default": "user-model"}},
+        "SECRET_HEALTH_UNUSED", "auto", "(not set)", managed={"model": override},
+    )
+
+
+def test_health_cli_managed_only_route_with_unrelated_user_config(tmp_path):
+    _assert_health_route_process(
+        tmp_path, {"display": {"interface": "cli"}}, "SECRET_HEALTH_UNUSED",
+        "managed-provider", "managed-model",
+        managed={"model": {"provider": "managed-provider", "default": "managed-model"}},
+    )
+
+
+def test_health_cli_managed_null_default_clears_user_route(tmp_path):
+    _assert_health_route_process(
+        tmp_path, {"model": {"provider": "user-provider", "default": "user-model"}},
+        "SECRET_HEALTH_UNUSED", "user-provider", "(not set)",
+        managed={"model": {"default": None}},
+    )
+
+
+def test_health_cli_managed_provider_replaces_legacy_user_scalar_model(tmp_path):
+    _assert_health_route_process(
+        tmp_path, {"model": "legacy-user-model"},
+        "SECRET_HEALTH_UNUSED", "managed-provider", "(not set)",
+        managed={"model": {"provider": "managed-provider"}},
+    )
+
+
+def test_health_cli_managed_null_does_not_erase_nested_user_model(tmp_path):
+    _assert_health_route_process(
+        tmp_path, {"model": {"default": {"provider": "nested-user", "model": "user-model"}}},
+        "SECRET_HEALTH_UNUSED", "nested-user", "user-model",
+        managed={"model": {"default": None}},
+    )
+
+
+def test_health_cli_managed_empty_scalar_clears_user_default(tmp_path):
+    _assert_health_route_process(
+        tmp_path, {"model": {"provider": "user-provider", "default": "user-model"}},
+        "SECRET_HEALTH_UNUSED", "user-provider", "(not set)",
+        managed={"model": ""},
+    )
+
+
+def test_health_cli_managed_only_route_when_user_config_missing(tmp_path):
+    user_home = tmp_path / "user"
+    home = user_home / ".hermes"
+    _write_profile(home)
+    (home / "config.yaml").unlink()
+    managed_dir = tmp_path / "managed"
+    managed_dir.mkdir()
+    (managed_dir / "config.yaml").write_text(
+        'model:\n  provider: managed-provider\n  name: managed-model\n', encoding="utf-8",
+    )
+    before = {str(p): p.read_bytes() for root in (user_home, managed_dir)
+              for p in root.rglob("*") if p.is_file()}
+    env = {"PATH": os.environ.get("PATH", ""), "HOME": str(user_home),
+           "HERMES_HOME": str(home), "HERMES_MANAGED_DIR": str(managed_dir),
+           "PYTHONDONTWRITEBYTECODE": "1"}
+    proc = subprocess.run(
+        [sys.executable, "-B", "-m", "hermes_cli.main", "health", "--json"],
+        cwd=os.getcwd(), env=env, capture_output=True, text=True, timeout=30,
+    )
+    rows = {row["id"]: row for row in json.loads(proc.stdout)["checks"]}
+    assert proc.returncode == 1, proc.stderr  # Missing user file still warrants a warning.
+    assert rows["profile_config"]["status"] == "warning"
+    assert rows["provider_routing"]["status"] == "healthy"
+    assert "configured route managed-provider/managed-model;" in rows["provider_routing"]["detail"]
+    assert before == {str(p): p.read_bytes() for root in (user_home, managed_dir)
+                      for p in root.rglob("*") if p.is_file()}
+    assert not (home / "backups").exists()
+
+
+def _assert_health_route_process(tmp_path, config, sentinel, provider, model,
+                                 *, managed=None, route_env=None):
     user_home = tmp_path / "user"
     home = user_home / ".hermes"
     _write_profile(home)
     # JSON is valid YAML and preserves deliberately malformed container types.
     (home / "config.yaml").write_text(json.dumps(config), encoding="utf-8")
+    managed_dir = tmp_path / "managed"
+    if managed is not None:
+        managed_dir.mkdir()
+        (managed_dir / "config.yaml").write_text(json.dumps(managed), encoding="utf-8")
 
     def snapshot():
         return {
@@ -753,6 +922,9 @@ finally:
 """
     env = {"PATH": os.environ.get("PATH", ""), "HOME": str(user_home),
            "HERMES_HOME": str(home), "PYTHONDONTWRITEBYTECODE": "1"}
+    if managed is not None:
+        env["HERMES_MANAGED_DIR"] = str(managed_dir)
+    env.update(route_env or {})
     for args in (["--json"], []):
         proc = subprocess.run(
             [sys.executable, "-B", "-c", script, *args], cwd=os.getcwd(), env=env,
@@ -792,6 +964,48 @@ def test_health_cli_e2e_does_not_mutate_profile_home(tmp_path):
         if path.is_file()
     }
     assert after == before
+
+
+def test_health_bootstrap_does_not_mutate_startup_state(tmp_path):
+    home = tmp_path / "profile"
+    _write_profile(home)
+    hermes_tmp = Path(os.environ["TMPDIR"]).resolve()
+    marker = tmp_path / "startup-mutation"
+    script = f"""
+import sys
+from pathlib import Path
+sys.argv = ["hermes", "health", "--json"]
+from hermes_cli import _early_recovery as recovery
+import hermes_cli.venv_sync as venv_sync
+import hermes_constants
+marker = Path({str(marker)!r})
+def forbidden(*_args, **_kwargs):
+    marker.write_text("called", encoding="utf-8")
+    raise AssertionError("health attempted startup mutation")
+recovery._claim_recovery_lock = forbidden
+recovery.restore_interrupted_pull = forbidden
+venv_sync.prepare_launch = forbidden
+hermes_constants.export_scratch_tmp_env = forbidden
+import hermes_cli.main
+"""
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(home)
+    env["TMPDIR"] = str(hermes_tmp)
+    env["HERMES_SCRATCH_DIR"] = str(hermes_tmp)
+    env["PYTHONPATH"] = os.getcwd()
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=os.getcwd(),
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout)["status"] == "healthy"
+    assert not marker.exists()
+    assert not (home / "cache" / "scratch").exists()
 
 
 def test_health_cli_e2e_global_value_options_do_not_enable_file_logging(tmp_path):
@@ -886,3 +1100,233 @@ def test_health_cli_e2e_quiet_healthy_is_silent(tmp_path):
 
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout == ""
+
+
+def _committed_health_generation(*, broken=False):
+    """A real venv selected by PM facts, with the test interpreter's installed packages."""
+    from pm.environments import install_state_dir, runtime_facts_path, site_packages
+
+    root = Path(__file__).resolve().parents[2]
+    state = install_state_dir(root)
+    selected = state / "environments" / "current" / "venv"
+    subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(selected)],
+                   check=True, capture_output=True, timeout=60)
+    site = site_packages(selected)
+    # The selected generation carries a site path; no installs or edits to the live venv.
+    (site / "test-dependencies.pth").write_text(sysconfig.get_paths()["purelib"] + "\n", encoding="utf-8")
+    if not broken:
+        (site / "yaml.py").write_text("raise ImportError('PyYAML is not a core dependency')\n", encoding="utf-8")
+    if broken:
+        package = site / "ruamel"
+        package.mkdir()
+        (package / "__init__.py").write_text("", encoding="utf-8")
+        (package / "yaml.py").write_text("raise ImportError('damaged selected parser')\n", encoding="utf-8")
+    facts = runtime_facts_path(root)
+    facts.write_text(json.dumps({"schema": 1, "packages": {"venv": {"environment": str(selected)}}}),
+                     encoding="utf-8")
+    return state, facts
+
+
+def _health_from_pm_interpreter(home, *, preload_parser=False, poison_parser=False):
+    root = Path(__file__).resolve().parents[2]
+    env = {**os.environ, "HERMES_HOME": str(home), "HOME": str(home.parent),
+           "HERMES_RUNTIME_DIR": str(Path(sys.base_prefix).resolve().parent),
+           "PYTHONPATH": str(root), "PYTHONDONTWRITEBYTECODE": "1"}
+    env.pop("__HERMES_ACTIVATED", None)
+    preload = (
+        f"import sys; sys.path.insert(0, {sysconfig.get_paths()['purelib']!r}); import ruamel.yaml; "
+        if preload_parser else ""
+    )
+    poison = (
+        "import sys, types; "
+        "sys.modules['ruamel'] = types.ModuleType('ruamel'); "
+        "sys.modules['ruamel'].__path__ = []; "
+        "sys.modules['ruamel.yaml'] = types.ModuleType('ruamel.yaml'); "
+        if poison_parser else ""
+    )
+    script = preload + poison + "import sys; sys.argv = ['hermes', 'health', '--json']; import hermes_cli.main"
+    return subprocess.run([getattr(sys, "_base_executable", sys.executable), "-c", script],
+                          cwd=root, env=env, capture_output=True, text=True, timeout=40)
+
+
+def _file_bytes_under(*roots):
+    return {str(path): path.read_bytes() for root in roots for path in root.rglob("*") if path.is_file()}
+
+
+def test_health_does_not_execute_selected_generation_pth_hooks(tmp_path, monkeypatch):
+    from pm.environments import committed_venv, site_packages
+
+    home = tmp_path / "user" / ".hermes"
+    _write_profile(home)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    _committed_health_generation()
+    selected = committed_venv(Path(__file__).resolve().parents[2])
+    assert selected is not None
+    marker = home / "pth-hook-ran"
+    (site_packages(selected) / "side-effect.pth").write_text(
+        f"import pathlib; pathlib.Path({str(marker)!r}).write_text('executed')\n",
+        encoding="utf-8",
+    )
+    before = _file_bytes_under(home)
+    result = _health_from_pm_interpreter(home)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["status"] == "healthy"
+    assert not marker.exists()
+    assert _file_bytes_under(home) == before
+
+
+def test_health_refuses_cross_version_generation_before_loading_site(tmp_path, monkeypatch):
+    from pm.environments import committed_venv, site_packages
+
+    home = tmp_path / "user" / ".hermes"
+    _write_profile(home)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    _committed_health_generation()
+    root = Path(__file__).resolve().parents[2]
+    selected = committed_venv(root)
+    assert selected is not None
+    original_site = site_packages(selected)
+    # A committed generation declares its own interpreter version, not the
+    # launcher's. It must be rejected before executing any of its site hooks.
+    version = f"{sys.version_info.major}.{sys.version_info.minor + 1}.0"
+    cfg = selected / "pyvenv.cfg"
+    lines = cfg.read_text(encoding="utf-8").splitlines()
+    cfg.write_text("\n".join(
+        f"version = {version}" if line.partition("=")[0].strip() == "version" else line
+        for line in lines
+    ) + "\n", encoding="utf-8")
+    selected_site = site_packages(selected)
+    if selected_site != original_site:
+        selected_site.parent.mkdir(parents=True, exist_ok=True)
+        original_site.rename(selected_site)
+    marker = home / "site-hook-ran"
+    (selected_site / "abi-check.pth").write_text(
+        f"import pathlib; pathlib.Path({str(marker)!r}).write_text('unsafe bind')\n",
+        encoding="utf-8",
+    )
+    before = _file_bytes_under(home)
+    result = _health_from_pm_interpreter(home)
+    assert result.returncode == 2, result.stderr
+    assert json.loads(result.stdout)["checks"][0]["id"] == "runtime_dependencies"
+    assert _file_bytes_under(home) == before
+    assert not marker.exists()
+
+
+def test_health_selected_pm_generation_with_pending_publication_is_read_only(tmp_path, monkeypatch):
+    home = tmp_path / "user" / ".hermes"
+    _write_profile(home)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    state, facts = _committed_health_generation()
+    config = home / "config.yaml"
+    prior = config.read_bytes()
+    after = b"model:\n  default: incomplete-new\n"
+    config.write_bytes(after)
+    journal = state / "publication.json"
+    journal.write_text(json.dumps({
+        "kind": "config", "config": str(config), "previous": base64.b64encode(prior).decode(),
+        "config_after": hashlib.sha256(after).hexdigest(),
+        "facts_before": hashlib.sha256(facts.read_bytes()).hexdigest(),
+    }), encoding="utf-8")
+    before = _file_bytes_under(home)
+    result = _health_from_pm_interpreter(home)
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["checks"][0]["status"] == "healthy"
+    assert _file_bytes_under(home) == before
+    assert journal.is_file()
+    assert not (state / ".install.lock").exists()
+    assert not (state / ".recovery.lock").exists()
+
+
+def test_health_probes_broken_selected_generation_not_launcher_cache(tmp_path, monkeypatch):
+    home = tmp_path / "user" / ".hermes"
+    _write_profile(home)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    state, _ = _committed_health_generation(broken=True)
+    before = _file_bytes_under(home)
+    result = _health_from_pm_interpreter(home, preload_parser=True)
+
+    assert result.returncode == 2, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["checks"][0]["id"] == "runtime_dependencies"
+    assert "ruamel.yaml" in payload["checks"][0]["detail"]
+    assert _file_bytes_under(home) == before
+    assert not (state / ".install.lock").exists()
+
+
+def test_health_good_selection_ignores_poisoned_launcher_import(tmp_path, monkeypatch):
+    home = tmp_path / "user" / ".hermes"
+    _write_profile(home)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    _committed_health_generation()
+    before = _file_bytes_under(home)
+    result = _health_from_pm_interpreter(home, poison_parser=True)
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["status"] == "healthy"
+    assert _file_bytes_under(home) == before
+
+
+def test_health_rejects_invalid_recorded_pm_selection_without_recovery(tmp_path, monkeypatch):
+    from pm.environments import runtime_facts_path
+
+    home = tmp_path / "user" / ".hermes"
+    _write_profile(home)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    facts = runtime_facts_path(Path(__file__).resolve().parents[2])
+    facts.parent.mkdir(parents=True)
+    facts.write_text(json.dumps({"packages": {"venv": {"environment": str(tmp_path / "missing")}}}),
+                     encoding="utf-8")
+    before = _file_bytes_under(home)
+    result = _health_from_pm_interpreter(home)
+
+    assert result.returncode == 2, result.stderr
+    assert json.loads(result.stdout)["checks"][0]["id"] == "runtime_dependencies"
+    assert _file_bytes_under(home) == before
+    assert not (facts.parent / ".install.lock").exists()
+
+
+def test_health_canonical_yaml_rejects_duplicate_config_keys(tmp_path):
+    home = tmp_path / "profile"
+    _write_profile(home)
+    (home / "config.yaml").write_text("model: {default: first}\nmodel: {default: second}\n", encoding="utf-8")
+    result = _run_health_cli(home, "--json")
+
+    assert result.returncode == 2, result.stderr
+    payload = json.loads(result.stdout)
+    assert next(row for row in payload["checks"] if row["id"] == "profile_config")["status"] == "critical"
+
+
+@pytest.mark.parametrize("profile_flag", [["--profile", "Coder"], ["--profile=Coder"]])
+def test_broken_dependency_fallback_normalizes_explicit_profile(tmp_path, monkeypatch, capsys, profile_flag):
+    from hermes_cli._early_recovery import _emit_health_dependency_failure
+
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    with pytest.raises(SystemExit) as error:
+        _emit_health_dependency_failure([*profile_flag, "health", "--json"], ["ruamel.yaml"])
+    assert error.value.code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["profile"] == "coder"
+    assert payload["hermes_home"] == str(home / "profiles" / "coder")
+    assert not home.exists()
+
+
+def test_health_broken_dependency_custom_home_uses_custom_profile(tmp_path):
+    home = tmp_path / "user" / "unregistered-hermes"
+    _write_profile(home)
+    shadow = tmp_path / "shadow"
+    (shadow / "ruamel").mkdir(parents=True)
+    (shadow / "ruamel" / "__init__.py").write_text("", encoding="utf-8")
+    (shadow / "ruamel" / "yaml.py").write_text("raise ImportError('damaged')\n", encoding="utf-8")
+    root = Path(__file__).resolve().parents[2]
+    env = {**os.environ, "HOME": str(home.parent), "HERMES_HOME": str(home),
+           "PYTHONPATH": f"{root}{os.pathsep}{shadow}"}
+    env.pop("__HERMES_ACTIVATED", None)
+    script = f"import sys; sys.path.insert(0, {str(shadow)!r}); sys.argv = ['hermes', 'health', '--json']; import hermes_cli.main"
+    result = subprocess.run([sys.executable, "-c", script],
+                            cwd=root, env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 2, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["profile"] == "custom"
+    assert payload["hermes_home"] == str(home)

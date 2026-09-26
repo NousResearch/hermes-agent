@@ -39,10 +39,6 @@ _EXIT_REASON_EXPLANATIONS: Dict[str, str] = {
         "no new content was produced this turn; showing recovered "
         "prior context. Send `continue` to retry."
     ),
-    "interrupted_during_api_call": (
-        "the request was interrupted mid-call before a reply was "
-        "received. Send `continue` to retry."
-    ),
     "redirect_restart_limit_exceeded": (
         "the request was cancelled by a new correction on every attempt, "
         "so the turn stopped instead of retrying forever. Your last "
@@ -70,6 +66,11 @@ _EXIT_REASON_EXPLANATIONS: Dict[str, str] = {
 
 # Parameterised reasons (``max_iterations_reached(3/3)`` …) matched by prefix.
 _EXIT_REASON_PREFIX_EXPLANATIONS = (
+    # ``interrupted_during_api_call(<issuer>)`` names a system watchdog (#112647).
+    ("interrupted_during_api_call", (
+        "the request was interrupted mid-call before a reply was "
+        "received. Send `continue` to retry."
+    )),
     ("max_iterations_reached", (
         "the maximum tool-iteration limit was reached before a "
         "final answer. Send `continue` to keep going, or raise "
@@ -123,10 +124,13 @@ _PERSISTENCE_CAUSE_EXPLANATIONS: Dict[str, str] = {
         "in the log."
     ),
     "deleted_wal": (
-        "the session database was changed or replaced while Hermes was running, so this "
-        "message was not saved (a copy is kept in {home}/sessions/). Stop Hermes "
-        "(`hermes {profile_arg}gateway stop`), run `hermes {profile_arg}doctor`, then start "
-        "it again and send your message once more. Advanced recovery steps are in the log."
+        "another Hermes process still holds an old copy of the session database's write-ahead "
+        "log, so Hermes stopped writing to keep the file safe and this message was not saved (a "
+        "copy is kept in {home}/sessions/). Nothing is lost. Quit every Hermes process on this "
+        "profile (Desktop app, `hermes {profile_arg}gateway stop`, dashboard, cron), run "
+        "`hermes {profile_arg}doctor` — it names any process still holding the log — then start "
+        "Hermes again and send your message once more. Do not run `doctor --fix` or delete "
+        "any state.db files while they run. Guide: {recovery_docs}"
     ),
     "corrupt": (
         "the turn was stopped because the state database "
@@ -252,9 +256,11 @@ class TurnExplainersMixin:
             # Hermes-authored content from later user hand-edits.
             mgr = getattr(self, "_checkpoint_mgr", None)
             if mgr is not None and getattr(mgr, "enabled", False):
-                for _p in landed_paths:
-                    with suppress(Exception):
-                        mgr.record_agent_write(_p)
+                from tools.file_tools_paths import container_backend_for_task
+                if container_backend_for_task(task_id or "default") is None:  # container paths carry no host ledger entry
+                    for _p in landed_paths:
+                        with suppress(Exception):
+                            mgr.record_agent_write(_p)
         if is_error and not landed:
             # Keep the FIRST error per path unless a later success replaces it.
             preview = _extract_error_preview(result)
@@ -368,6 +374,7 @@ class TurnExplainersMixin:
             body = body.format(model=model or "The model")
         if body is None and reason == "session_persistence_failed":
             from hermes_constants import display_hermes_home, profile_cli_selector
+            from hermes_state_errors import STORAGE_RECOVERY_DOCS_URL
 
             # Copy-pasteable, so pin every `hermes` command to the profile whose store failed:
             # a multi-profile backend (Desktop serve) hosts sessions whose state.db is NOT the
@@ -378,6 +385,7 @@ class TurnExplainersMixin:
                 )
                 .replace("{home}", display_hermes_home())
                 .replace("{profile_arg}", profile_cli_selector())
+                .replace("{recovery_docs}", STORAGE_RECOVERY_DOCS_URL)
             )
             if persistence_cause in ("corrupt", "fts_index"):
                 from hermes_constants import get_default_hermes_root

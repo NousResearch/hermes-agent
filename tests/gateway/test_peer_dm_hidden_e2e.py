@@ -177,4 +177,3 @@ def test_peer_dm_reaches_compressed_hidden_bot_chat_e2e(
 
     # No duplicate "Bot Chat" row was minted; the title still lives on the root.
     assert gw.db.get_session_by_title("Bot Chat")["id"] == gw.hidden_id
-

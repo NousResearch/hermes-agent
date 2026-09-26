@@ -101,6 +101,9 @@ gateway:
     switch_failed:         "Branch created but failed to switch to it."
     branched_one:          "⑂ Branched to **{title}** ({count} message copied)\nOriginal: `{parent}`\nBranch: `{new}`\nUse `/resume` to switch back to the original."
     branched_many:         "⑂ Branched to **{title}** ({count} messages copied)\nOriginal: `{parent}`\nBranch: `{new}`\nUse `/resume` to switch back to the original."
+    branched_thread_one:   "⑂ Branched to **{title}** in a new thread ({count} message copied)\nThread: {thread}\nOriginal: `{parent}` — this chat stays on it\nBranch: `{new}`\nUse `/branch --here` to branch in this chat instead."
+    branched_thread_many:  "⑂ Branched to **{title}** in a new thread ({count} messages copied)\nThread: {thread}\nOriginal: `{parent}` — this chat stays on it\nBranch: `{new}`\nUse `/branch --here` to branch in this chat instead."
+    thread_fallback:       "No thread could be created here, so the branch replaced this chat's session."
 
   commands:
     usage:                 "Usage: `/commands [page]`"

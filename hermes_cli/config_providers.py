@@ -57,6 +57,91 @@ _FALSE_WORDS = frozenset({"false", "0", "no", "off"})
 _TRUE_WORDS = frozenset({"true", "1", "yes", "on"})
 
 
+def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Canonicalize the ``model`` section at the single load/save chokepoint.
+    Root-level ``provider``/``base_url``/``context_length`` (older layouts) are moved under
+    ``model`` only when the corresponding ``model.*`` key is empty — never overriding. ``api_base``
+    (the OpenAI-SDK/LiteLLM name users reach for) is an alias for ``base_url``; the runtime reads
+    only ``model.base_url``. A dict-valued ``default``/``model``/``name`` is flattened so no reader
+    sees a nested dict, and the id is canonicalized to ``default``.
+
+    Also aliases ``api_base`` → ``base_url`` (issue #8919). ``api_base`` is the intuitive name OpenAI-SDK /
+    LiteLLM users reach for, and ``hermes config set`` blindly accepts any dotted key — so
+    ``model.api_base`` got written, confirmed, and then silently ignored by the runtime resolver (which
+    reads only ``model.base_url``), causing requests to fall back to OpenRouter. We migrate the alias to the
+    canonical key (fallback-only — never override an explicit ``base_url``) and drop the alias so it can't
+    confuse later loads.
+    Finally, canonicalizes the model-id key to ``model.default`` (issue #34500). The runtime resolver and
+    ~14 other readers select the chat model via ``model.default``; ``model.model`` was already aliased
+    inline at some sites but ``model.name`` was not, so a custom-provider config like ``model: {name: <id>,
+    provider: <custom>}`` resolved to an empty model and the API request went out with ``model=`` (HTTP 400
+    from OpenAI-compatible backends) — while display paths (``hermes status``/``dump``) read ``name`` and
+    *showed* the model, making the failure silent. Normalizing here (the single load/save chokepoint) means
+    every reader, present and future, sees a populated ``default`` and the stale alias is migrated out of
+    config.yaml on the next save. Precedence: ``default`` > ``model`` > ``name`` (never overrides an
+    explicit ``default``, so existing configs are unaffected).
+    """
+    model_in = config.get("model")
+    model_provider = model_in.get("provider") if isinstance(model_in, dict) else None
+    needs_model_work = (model_provider is not None and not isinstance(model_provider, str)) or (
+        isinstance(model_in, dict) and (
+            model_in.get("api_base")
+            or model_in.get("model") or model_in.get("name")
+            or any(isinstance(model_in.get(k), dict) for k in ("default", "model", "name"))))
+    has_root = any(config.get(k) for k in ("provider", "base_url", "context_length", "api_base"))
+    if not has_root and not needs_model_work:
+        return config
+
+    config = dict(config)
+    model = config.get("model")
+    model = dict(model) if isinstance(model, dict) else {"default": model} if model else {}
+    config["model"] = model
+
+    # Flatten ``{provider: <p>, model: <m>}``. The nested provider wins over the merged default
+    # ``"auto"`` (which runtime resolution treats as authoritative) but never over a configured one.
+    for _key in ("default", "model", "name"):
+        _val = model.get(_key)
+        if isinstance(_val, dict):
+            _nested_model = _val.get("model") or _val.get("default")
+            _nested_provider = str(_val.get("provider") or "").strip()
+            model[_key] = str(_nested_model or "").strip()
+            if _nested_provider:
+                _outer_provider = str(model.get("provider") or "").strip()
+                if not _outer_provider or _outer_provider == "auto":
+                    model["provider"] = _nested_provider
+
+    for key in ("provider", "base_url", "context_length"):
+        root_val = config.get(key)
+        if root_val and not model.get(key):
+            model[key] = root_val
+        config.pop(key, None)
+
+    # Provider identity is a string (#117345): an unquoted YAML scalar (``provider: 2``)
+    # loads as int, and downstream readers call ``(provider or "").strip()`` — a gateway
+    # turn dies before the agent runs. Normalize at the load/save chokepoint so every
+    # reader (and the next save, which rewrites config.yaml) heals the persisted value.
+    # Guard on presence: coerce_provider_id(None) is "" — injecting an empty key into
+    # provider-less configs would add churn to config.yaml on the next save.
+    if model.get("provider") is not None:
+        model["provider"] = coerce_provider_id(model.get("provider"))
+
+    for alias_val in (config.get("api_base"), model.get("api_base")):
+        if alias_val and not model.get("base_url"):
+            model["base_url"] = alias_val
+    config.pop("api_base", None)
+    model.pop("api_base", None)
+
+    # ``model``/``name`` are last-resort aliases (in that order), then dropped.
+    alias = model.get("model") or model.get("name")
+    if not model.get("default") and alias:
+        model["default"] = alias
+    if model.get("default"):
+        model.pop("model", None)
+        model.pop("name", None)
+
+    return config
+
+
 def _canonical_api_mode(api_mode: str) -> str:
     """Map alias ``api_mode`` spellings to canonical transport names (unknown pass through)."""
     cleaned = api_mode.strip()
@@ -107,7 +192,8 @@ _CAMEL_ALIASES: Dict[str, str] = {
     "apiKeyEnv": "key_env",  # OpenClaw-compatible + docs variant
     "defaultModel": "default_model",
     "contextLength": "context_length",
-    "rateLimitDelay": "rate_limit_delay"}
+    "rateLimitDelay": "rate_limit_delay",
+    "sessionAffinityHeader": "session_affinity_header"}
 
 
 _KNOWN_PROVIDER_KEYS = {
@@ -117,7 +203,8 @@ _KNOWN_PROVIDER_KEYS = {
     "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env", "key_cmd",
     "api_mode", "transport", "model", "default_model", "models", "models_discovered",
     "context_length", "rate_limit_delay", "request_timeout_seconds", "stale_timeout_seconds",
-    "discover_models", "extra_body", "extra_headers", "capabilities", "ssl_ca_cert", "ssl_verify"}
+    "discover_models", "extra_body", "extra_headers", "capabilities", "ssl_ca_cert", "ssl_verify",
+    "catalog_provider", "session_affinity_header"}
 
 
 def _pick_provider_base_url(entry: Dict[str, Any], provider_key: str) -> str:
@@ -238,6 +325,8 @@ def _normalize_custom_provider_entry(
     api_mode = _stripped("api_mode", "transport")
     _put("api_mode", _canonical_api_mode(api_mode) if api_mode else "")
     _put("model", _stripped("model", "default_model"))
+    # Catalogued vendor whose models this endpoint resells (metadata lookups only, never routing).
+    _put("catalog_provider", _stripped("catalog_provider"))
 
     # ``models_discovered`` marks a mapping auto-discovered by Hermes, not hand-curated.
     models_dict, discovered = _normalize_provider_models(entry.get("models"))
@@ -263,6 +352,7 @@ def _normalize_custom_provider_entry(
 
     # Per-provider extra HTTP headers may carry credentials — never log them downstream.
     _put("extra_headers", normalize_extra_headers(entry.get("extra_headers")))
+    _put("session_affinity_header", _stripped("session_affinity_header"))
     _put("ssl_ca_cert", _stripped("ssl_ca_cert"))
 
     ssl_verify = entry.get("ssl_verify")
@@ -285,7 +375,7 @@ def _custom_provider_entry_to_provider_config(
     for field in (
         "name", "api_key", "key_env", "key_cmd", "models", "models_discovered", "context_length",
         "rate_limit_delay", "discover_models", "extra_body", "extra_headers",
-        "ssl_ca_cert", "ssl_verify"):
+        "session_affinity_header", "ssl_ca_cert", "ssl_verify", "catalog_provider"):
         if field in normalized:
             provider_entry[field] = normalized[field]
     if "model" in normalized:
@@ -321,7 +411,14 @@ def get_compatible_custom_providers(
 
     custom_providers = config.get("custom_providers")
     if custom_providers is not None and not isinstance(custom_providers, list):
-        return []
+        # A malformed legacy value (a string written by an old `config set`) used to empty the
+        # whole view silently — Desktop showed "Custom Endpoints 0" while valid v12+ `providers:`
+        # entries still existed. Skip only the legacy list, and say so.
+        logger.warning(
+            "custom_providers is a %s, expected a list — skipping legacy entries; "
+            "'providers:' entries are still used. Move provider configs to the 'providers:' section.",
+            type(custom_providers).__name__)
+        custom_providers = []
     candidates = [_normalize_custom_provider_entry(e) for e in (custom_providers or [])]
     candidates += providers_dict_to_custom_providers(config.get("providers"))
 
@@ -375,6 +472,25 @@ def _entries_for_route(
         entry_url = normalize_route_base_url(entry.get("base_url"))
         if entry_url and entry_url == target_url:
             yield entry
+
+
+def get_custom_provider_api_mode(
+    base_url: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Canonical ``api_mode`` of the first custom entry serving *base_url*, or ``""``.
+
+    Route identity is the URL, not the host: a Codex proxy on ``127.0.0.1`` declares its wire
+    protocol here and nowhere else, so metadata lookups keyed on the transport read it from the
+    entry instead of guessing from the hostname (#116191).
+    """
+    for entry in _entries_for_route(base_url, custom_providers, config):
+        for field in ("api_mode", "transport"):
+            value = entry.get(field)
+            if isinstance(value, str) and value.strip():
+                return _canonical_api_mode(value)
+    return ""
 
 
 def _route_model_cfg(entry: Dict[str, Any], model: str) -> Optional[Dict[str, Any]]:
@@ -478,6 +594,22 @@ def apply_custom_provider_extra_headers_to_client_kwargs(
     client_kwargs["default_headers"] = merged
 
 
+def get_custom_provider_session_affinity_header(
+    base_url: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None) -> str:
+    """Header NAME declared as ``session_affinity_header`` on the route-matching entry, else "".
+
+    Opt-in per provider (default off): Hermes never ships a session identifier to an endpoint
+    that did not ask for one (#86241).
+    """
+    for entry in _entries_for_route(base_url, custom_providers, config):
+        header = entry.get("session_affinity_header")
+        if isinstance(header, str) and header.strip():
+            return header.strip()
+    return ""
+
+
 def get_custom_provider_context_length(
     model: str,
     base_url: str,
@@ -488,12 +620,14 @@ def get_custom_provider_context_length(
     Before this helper existed, the lookup was duplicated in ``run_agent.py``'s startup path only; every
     other path (notably ``/model`` switch) fell back to the 128K default. See #15779.
     """
-    from hermes_cli.config import get_compatible_custom_providers
+    from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
     if not model or not base_url:
         return None
     if custom_providers is None:
         try:
-            custom_providers = get_compatible_custom_providers(config)
+            # Step 0c now runs for every route with a base_url; the read-only loader skips the
+            # per-call deepcopy load_config() pays (same pattern as get_custom_provider_model_capability).
+            custom_providers = get_compatible_custom_providers(load_config_readonly() if config is None else config)
         except Exception:
             if config is None:
                 return None

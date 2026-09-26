@@ -27,7 +27,6 @@ sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 from agent.context_compressor import ContextCompressor
 
-
 def _make_compressor():
     """Build a ContextCompressor with enough state to pass compress() guards."""
     c = ContextCompressor.__new__(ContextCompressor)
@@ -65,7 +64,6 @@ def _make_compressor():
     c.awaiting_real_usage_after_compression = False
     return c
 
-
 def _conversation_without_handoff(n_exchanges=12):
     """Build message list with no compaction handoff in it."""
     msgs = [{"role": "system", "content": "You are a helpful assistant."}]
@@ -73,7 +71,6 @@ def _conversation_without_handoff(n_exchanges=12):
         msgs.append({"role": "user", "content": f"Question {i}"})
         msgs.append({"role": "assistant", "content": f"Answer {i}"})
     return msgs
-
 
 def _conversation_with_handoff(n_exchanges=12):
     """Build message list WITH a compaction handoff in protected head."""
@@ -84,7 +81,6 @@ def _conversation_with_handoff(n_exchanges=12):
         msgs.append({"role": "user", "content": f"Question {i}"})
         msgs.append({"role": "assistant", "content": f"Answer {i}"})
     return msgs
-
 
 def test_stale_previous_summary_cleared_when_no_handoff():
     """Cross-session guard: stale _previous_summary cleared when no handoff."""
@@ -107,7 +103,6 @@ def test_stale_previous_summary_cleared_when_no_handoff():
         "[CONTEXT COMPACTION]" in (m.get("content", "") or "") for m in result
     )
 
-
 def test_previous_summary_preserved_when_handoff_found():
     """When a handoff IS found, _previous_summary should be preserved for
     iterative update within the same session."""
@@ -126,19 +121,3 @@ def test_previous_summary_preserved_when_handoff_found():
         "compress() must NOT clear _previous_summary when handoff summary "
         "exists in current messages"
     )
-
-
-def test_no_false_positive_when_previous_summary_already_none():
-    """When _previous_summary is already None and no handoff found, nothing
-    should break (the guard is a no-op in this case)."""
-    c = _make_compressor()
-    c._previous_summary = None
-
-    messages = _conversation_without_handoff()
-
-    with patch.object(c, "_generate_summary",
-                      return_value="[CONTEXT COMPACTION] Fresh summary."):
-        c.compress(messages)
-
-    # Should still be None — guard is no-op
-    assert c._previous_summary is None

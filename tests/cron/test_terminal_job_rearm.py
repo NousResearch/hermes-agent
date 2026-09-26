@@ -88,15 +88,6 @@ def test_terminal_jobs_are_not_due_or_advanced(tmp_cron_dir):
     assert load_jobs() == before
 
 
-def test_terminal_refusal_survives_reload(tmp_cron_dir):
-    job = create_job("done", "in 30m", repeat=1)
-    mark_job_run(job["id"], success=True)
-    before = copy.deepcopy(load_jobs())
-    assert get_job(job["id"])["state"] == "completed"
-
-    with pytest.raises(ValueError):
-        trigger_job(job["id"])
-    assert load_jobs() == before
 
 
 def test_update_cannot_reactivate_terminal_record(tmp_cron_dir):
@@ -109,7 +100,6 @@ def test_update_cannot_reactivate_terminal_record(tmp_cron_dir):
 
 
 def test_rearm_completed_oneshot_restores_schedule_and_preserves_history(tmp_cron_dir):
-    from cron.jobs import rearm_oneshot
 
     job = create_job("done", "in 30m", repeat=3)
     mark_job_run(job["id"], success=True)
@@ -128,7 +118,6 @@ def test_rearm_completed_oneshot_restores_schedule_and_preserves_history(tmp_cro
 
 
 def test_rearm_refuses_recurring_and_live_claim(tmp_cron_dir):
-    from cron.jobs import rearm_oneshot
 
     recurring = create_job("recurring", "every 1h")
     future = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()

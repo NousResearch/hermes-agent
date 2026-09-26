@@ -7,12 +7,12 @@ import sys
 from pathlib import Path
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 WORKTREE = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(WORKTREE))
 
-pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="live Windows E2E")
+pytestmark = pytest.mark.platforms("windows")
 
 
 def test_fleet_config_migration_live_windows(tmp_path, monkeypatch):

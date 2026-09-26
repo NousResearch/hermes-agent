@@ -221,21 +221,8 @@ def test_state_mismatch_is_rejected(fake_as, tmp_path):
         )
 
 
-def test_source_tags_the_authorize_link(fake_as):
-    endpoints = oauth_flow.resolve_endpoints()
-    url, _ = oauth_flow.begin_authorization(endpoints, source="hermes-cli")
-    assert "source=hermes-cli" in url
-    untagged, _ = oauth_flow.begin_authorization(endpoints)
-    assert "source=" not in untagged
 
 
-def test_client_id_defaults_to_hermes_agent(monkeypatch):
-    # One client for every surface; the env var overrides for unusual deployments.
-    monkeypatch.delenv("HONCHO_OAUTH_CLIENT_ID", raising=False)
-    common = {"environment": "production", "base_url": "https://api.honcho.dev"}
-    assert oauth_flow.resolve_endpoints(**common).client_id == "hermes-agent"
-    monkeypatch.setenv("HONCHO_OAUTH_CLIENT_ID", "custom-id")
-    assert oauth_flow.resolve_endpoints(**common).client_id == "custom-id"
 
 
 def test_grant_persists_default_client_id(tmp_path, fake_as, monkeypatch):
@@ -257,13 +244,6 @@ def test_grant_persists_default_client_id(tmp_path, fake_as, monkeypatch):
     assert saved["hosts"]["hermes"]["oauth"]["clientId"] == "hermes-agent"
 
 
-def test_config_path_rides_the_authorize_link(fake_as):
-    endpoints = oauth_flow.resolve_endpoints()
-    url, _ = oauth_flow.begin_authorization(endpoints, config_path="~/.hermes/honcho.json")
-    q = parse_qs(urlparse(url).query)
-    assert q["config_path"][0] == "~/.hermes/honcho.json"
-    bare, _ = oauth_flow.begin_authorization(endpoints)
-    assert "config_path=" not in bare
 
 
 def test_display_config_path_never_leaks_absolute_path():

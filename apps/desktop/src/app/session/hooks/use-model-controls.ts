@@ -165,6 +165,13 @@ export function useModelControls({
     }
   }, [])
 
+  // Drop a sticky composer pick so new chats follow Settings → Model again,
+  // without making the user re-apply the default they already have (#107410).
+  const followDefaultModel = useCallback(() => {
+    setCurrentModelSource('default')
+    void refreshCurrentModel()
+  }, [refreshCurrentModel])
+
   // Returns whether the switch was applied so callers can await it before
   // applying follow-up changes. `true` means applied (or deferred/busy-queued
   // for the next turn). `false` means NOT applied — either pending
@@ -286,15 +293,16 @@ export function useModelControls({
           // ONE shared applier for guarded switches (#95293): the same
           // confirm flow the Bots editor routes through — never fork this
           // logic per surface.
-          surfaceModelSwitchConfirm({
-            confirmLabel: t.common.confirm,
+          // Not awaited: `selectModel` answers "was the switch applied NOW",
+          // and that answer only exists once the user answers the dialog.
+          void surfaceModelSwitchConfirm({
             confirmMessage: result.confirm_message,
             failureMessage: copy.modelSwitchFailed,
             finish: finishSwitch,
-            // Staleness guard — the warning can linger while the user picks
-            // a different model or switches sessions. Clicking Confirm must
-            // not clobber the newer choice: bail if the live state no longer
-            // matches the snapshot this notification was created for.
+            // Staleness guard — the session or model can move on while the
+            // dialog is open. Answering it must not clobber the newer choice:
+            // bail (with a notice) if the live state no longer matches the
+            // snapshot this prompt was created for.
             isStale: () =>
               touchesPrimary
                 ? $activeSessionId.get() !== liveSessionId ||
@@ -303,6 +311,7 @@ export function useModelControls({
                 : !liveSessionId ||
                   $sessionStates.get()[liveSessionId]?.model !== prevModel ||
                   $sessionStates.get()[liveSessionId]?.provider !== prevProvider,
+            model: selection.model,
             repaint: () => {
               paintSelection()
               cacheSelection(selection.provider, selection.model)
@@ -333,16 +342,8 @@ export function useModelControls({
         return false
       }
     },
-    [
-      cacheOwnerConnectionId,
-      cacheProfile,
-      copy.modelSwitchFailed,
-      queryClient,
-      requestGateway,
-      t.common.confirm,
-      updateModelOptionsCache
-    ]
+    [cacheOwnerConnectionId, cacheProfile, copy.modelSwitchFailed, queryClient, requestGateway, updateModelOptionsCache]
   )
 
-  return { applySavedMainModel, refreshCurrentModel, selectModel }
+  return { applySavedMainModel, followDefaultModel, refreshCurrentModel, selectModel }
 }

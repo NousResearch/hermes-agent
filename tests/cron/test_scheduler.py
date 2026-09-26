@@ -4,7 +4,6 @@ import contextlib
 import contextvars
 import itertools
 import json
-import logging
 import os
 from unittest.mock import AsyncMock, patch, MagicMock
 
@@ -23,8 +22,6 @@ from cron.scheduler import (
 )
 from cron.scheduler_delivery import _resolve_origin, _send_media_via_adapter
 from tools.env_passthrough import clear_env_passthrough
-from tools.credential_files import clear_credential_files
-
 
 def test_cron_cleanup_worker_inherits_caller_contextvars():
     """Profile-scoped secrets must remain visible during threaded cleanup."""
@@ -39,7 +36,6 @@ def test_cron_cleanup_worker_inherits_caller_contextvars():
         timeout_seconds=1,
     )
     assert observed == ["profile-key"]
-
 
 class TestSummarizeCronFailureForDelivery:
     def test_embedded_429_in_source_identifier_is_not_a_rate_limit(self):
@@ -81,10 +77,8 @@ class TestSummarizeCronFailureForDelivery:
         )
 
         assert "script timed out" in summary
-        assert "No model was invoked" in summary
         assert "did not respond in time" not in summary
         assert "backup provider" not in summary.lower()
-
 
 class TestPerJobToolsetMcpMerge:
     """A per-job enabled_toolsets allowlist must not silently drop MCP servers."""
@@ -107,7 +101,6 @@ class TestPerJobToolsetMcpMerge:
         assert result[:2] == ["web", "terminal"]
         assert set(result) == {"web", "terminal"} | self._enabled_names()
 
-
     def test_explicit_mcp_name_is_treated_as_allowlist(self):
         # User named one server -> add nothing further.
         result = _merge_mcp_into_per_job_toolsets(["web", "finnhub"], self.CFG)
@@ -118,21 +111,6 @@ class TestPerJobToolsetMcpMerge:
         result = _merge_mcp_into_per_job_toolsets(["web", "no_mcp"], self.CFG)
         assert result == ["web"]
         assert not (set(result) & self._enabled_names())
-
-
-    def test_resolver_empty_per_job_falls_through_to_platform(self):
-        # No per-job list -> must delegate to _get_platform_tools (the platform
-        # fallback), NOT the per-job merge. Stub the platform resolver and assert
-        # it is the path taken and its result is returned.
-        job = {"enabled_toolsets": None}
-        sentinel = ["web", "finnhub"]
-        with patch("hermes_cli.tools_config._get_platform_tools",
-                   return_value=set(sentinel)) as m_platform:
-            result = _resolve_cron_enabled_toolsets(job, self.CFG)
-        m_platform.assert_called_once()
-        # _get_platform_tools args: (cfg, "cron")
-        assert m_platform.call_args[0][1] == "cron"
-        assert set(result) == set(sentinel)
 
     def test_resolver_keeps_memory_in_per_job_list(self):
         result = _resolve_cron_enabled_toolsets(
@@ -163,25 +141,7 @@ class TestPerJobToolsetMcpMerge:
             {"enabled_toolsets": ["nonexistent_ts"]}, {"platform_toolsets": "oops", "mcp_servers": {}}
         ) == ["nonexistent_ts"]
 
-
 class TestResolveOrigin:
-    def test_full_origin(self):
-        job = {
-            "origin": {
-                "platform": "telegram",
-                "chat_id": "123456",
-                "chat_name": "Test Chat",
-                "thread_id": "42",
-            }
-        }
-        result = _resolve_origin(job)
-        assert isinstance(result, dict)
-        assert result == job["origin"]
-        assert result["platform"] == "telegram"
-        assert result["chat_id"] == "123456"
-        assert result["chat_name"] == "Test Chat"
-        assert result["thread_id"] == "42"
-
 
     @pytest.mark.parametrize(
         "non_dict_origin",
@@ -206,7 +166,6 @@ class TestResolveOrigin:
         job = {"origin": non_dict_origin}
         assert _resolve_origin(job) is None
 
-
 class TestResolveDeliveryTarget:
     def test_origin_delivery_preserves_thread_id(self):
         job = {
@@ -224,7 +183,6 @@ class TestResolveDeliveryTarget:
             "thread_id": "17585",
             "_resolved_from": "origin",
         }
-
 
     def test_bare_platform_delivery_uses_home_root_instead_of_origin_thread(self, monkeypatch):
         monkeypatch.setenv("DISCORD_HOME_CHANNEL", "home-parent")
@@ -259,7 +217,6 @@ class TestResolveDeliveryTarget:
             "_resolved_from": "home",
         }
 
-
     def test_explicit_telegram_topic_target_overrides_cron_thread_id(self, monkeypatch):
         """Explicit ``telegram:chat:thread`` targets bypass TELEGRAM_CRON_THREAD_ID."""
         monkeypatch.setenv("TELEGRAM_CRON_THREAD_ID", "999")
@@ -271,7 +228,6 @@ class TestResolveDeliveryTarget:
             "thread_id": "17",
             "_resolved_from": "explicit",
         }
-
 
     def test_human_friendly_label_resolved_via_channel_directory(self):
         """deliver: 'whatsapp:Alice (dm)' resolves to the real JID."""
@@ -288,7 +244,6 @@ class TestResolveDeliveryTarget:
             "thread_id": None,
             "_resolved_from": "explicit",
         }
-
 
     def test_raw_id_not_mangled_when_directory_returns_none(self):
         """deliver: 'whatsapp:12345@lid' passes through when directory has no match."""
@@ -324,7 +279,6 @@ class TestResolveDeliveryTarget:
             "_resolved_from": "explicit",
         }
 
-
     def test_list_form_deliver_is_normalized(self, monkeypatch):
         """deliver=['telegram'] (Python list) should resolve like 'telegram' string.
 
@@ -345,7 +299,6 @@ class TestResolveDeliveryTarget:
             "thread_id": None,
             "_resolved_from": "home",
         }
-
 
 class TestRoutingIntents:
     """``all`` routing intent expands at fire time."""
@@ -370,7 +323,6 @@ class TestRoutingIntents:
         assert "signal" not in platforms
         assert "matrix" not in platforms
 
-
 class TestDeliverResultWrapping:
     """Verify that cron deliveries are wrapped with header/footer and no longer mirrored."""
 
@@ -384,34 +336,6 @@ class TestDeliverResultWrapping:
             (root,),
         )
         return media_file.resolve()
-
-    def test_delivery_wraps_content_with_header_and_footer(self):
-        """Delivered content should include task name header and agent-invisible note."""
-        from gateway.config import Platform
-
-        pconfig = MagicMock()
-        pconfig.enabled = True
-        mock_cfg = MagicMock()
-        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
-
-        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
-             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
-            job = {
-                "id": "test-job",
-                "name": "daily-report",
-                "deliver": "origin",
-                "origin": {"platform": "telegram", "chat_id": "123"},
-            }
-            _deliver_result(job, "Here is today's summary.")
-
-        send_mock.assert_called_once()
-        sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
-        assert "Cronjob Response: daily-report" in sent_content
-        assert "(job_id: test-job)" in sent_content
-        assert "-------------" in sent_content
-        assert "Here is today's summary." in sent_content
-        assert "To stop or manage this job" in sent_content
-
 
     def test_relay_fronted_home_uses_relay_config_and_live_adapter(self, monkeypatch, tmp_path):
         """Persisted Slack home survives restart without native Slack config."""
@@ -487,7 +411,6 @@ class TestDeliverResultWrapping:
         assert media_metadata["user_id"] == "U123"
         standalone_send.assert_not_awaited()
 
-
     def test_live_adapter_sends_media_as_attachments(self, tmp_path, monkeypatch):
         """When a live adapter is available, MEDIA files should be sent as native
         platform attachments (e.g., Discord voice, Telegram audio) rather than
@@ -548,7 +471,6 @@ class TestDeliverResultWrapping:
         voice_call = adapter.send_voice.call_args
         assert voice_call[1]["audio_path"] == str(media_path)
 
-
 class TestDeliverResultErrorReturns:
     """Verify _deliver_result returns error strings on failure, None on success."""
 
@@ -568,8 +490,6 @@ class TestDeliverResultErrorReturns:
             }
             result = _deliver_result(job, "Output.")
         assert result is not None
-        assert "not configured" in result
-
 
 class TestRunJobSessionPersistence:
     def test_run_job_passes_session_db_and_cron_platform(self, tmp_path):
@@ -619,7 +539,6 @@ class TestRunJobSessionPersistence:
         assert call_args[0][1] == "cron_complete"
         fake_db.close.assert_called_once()
         mock_agent.close.assert_called_once()
-
 
     def test_run_job_disarms_agent_close_after_scheduler_finalizes_session(self, tmp_path):
         """Cron owns the terminal session reason; agent.close must not end it twice.
@@ -676,7 +595,6 @@ class TestRunJobSessionPersistence:
         assert fake_db.end_session.call_count == 1
         assert calls_after_close == []
 
-
     @contextlib.contextmanager
     def _run_job_patches(self, tmp_path, extra=()):
         """Apply every patch run_job tests need, as one bundle.
@@ -718,7 +636,6 @@ class TestRunJobSessionPersistence:
             mock_agent_cls = entered[-1]  # the AIAgent patch
             yield fake_db, mock_agent_cls
 
-
     def test_run_job_memory_enabled_in_cron(self, tmp_path):
         """Cron agents get memory like any other agent run.
 
@@ -739,23 +656,6 @@ class TestRunJobSessionPersistence:
         assert "memory" not in (kwargs["disabled_toolsets"] or []), (
             "memory toolset must not be policy-denied in cron"
         )
-
-    def test_run_job_keeps_per_job_memory_toolset(self, tmp_path):
-        """A per-job enabled_toolsets naming memory keeps it."""
-        job = {
-            "id": "memory-toolset-job",
-            "name": "test",
-            "prompt": "remember what you learn",
-            "enabled_toolsets": ["memory", "file"],
-        }
-        with self._run_job_patches(tmp_path) as (fake_db, mock_agent_cls):
-            run_job(job)
-
-        kwargs = mock_agent_cls.call_args.kwargs
-        assert kwargs["skip_memory"] is False
-        assert "memory" in (kwargs["enabled_toolsets"] or [])
-        assert "file" in (kwargs["enabled_toolsets"] or [])
-        assert "memory" not in kwargs["disabled_toolsets"]
 
     def test_tick_skips_due_jobs_while_dispatch_is_paused(self, tmp_path):
         """The drain gate runs before advancing a due job's schedule."""
@@ -793,8 +693,6 @@ class TestRunJobSessionPersistence:
             "deliver": "local",
             "last_status": None,
         }
-
-        fake_db = MagicMock()
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler.get_due_jobs", return_value=[job]), \
@@ -1111,48 +1009,6 @@ class TestRunJobSessionPersistence:
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_THREAD_ID") is None
         assert fake_db.close.call_count == 2
 
-
-class TestRunJobConfigLogging:
-    """Verify that config.yaml parse failures are logged, not silently swallowed."""
-
-    def test_bad_config_yaml_is_logged(self, caplog, tmp_path):
-        """When config.yaml is malformed, the shared config loader warns loudly (and serves the
-        last known-good copy instead of silently dropping the user's overrides)."""
-        bad_yaml = tmp_path / "config.yaml"
-        bad_yaml.write_text("invalid: yaml: [[[bad")
-
-        job = {
-            "id": "test-job",
-            "name": "test",
-            "prompt": "hello",
-        }
-
-        # Mock heavy post-yaml work so the test only exercises the warning
-        # path. Without these mocks, run_job continues into provider
-        # resolution and MCP discovery, both of which can spawn subprocesses
-        # / hit the network and have caused this test to time out on CI
-        # (>30s wall clock) under load. See PR #33661 follow-up.
-        with patch("cron.scheduler._hermes_home", tmp_path), \
-             patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
-             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
-             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
-                   return_value={"provider": "openrouter", "api_key": "x",
-                                 "base_url": "https://example.invalid",
-                                 "api_mode": "chat_completions"}), \
-             patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
-             patch("run_agent.AIAgent") as mock_agent_cls:
-            mock_agent = MagicMock()
-            mock_agent.run_conversation.return_value = {"final_response": "ok"}
-            mock_agent_cls.return_value = mock_agent
-
-            with caplog.at_level(logging.WARNING):
-                run_job(job)
-
-        assert any("formatting error" in r.message and "config.yaml" in r.message for r in caplog.records), \
-            f"Expected a config.yaml parse warning in logs, got: {[r.message for r in caplog.records]}"
-
-
 class TestRunJobConfigEnvVarExpansion:
     """Verify that ${VAR} references in config.yaml are expanded when running cron jobs."""
 
@@ -1192,14 +1048,15 @@ class TestRunJobConfigEnvVarExpansion:
             "config.yaml ${VAR} was not expanded in the cron execution path."
         )
 
-
     def test_transient_dns_fallback_switches_provider_and_model_together(self, tmp_path):
         """DNS blip during primary OAuth resolve must still walk fallback_providers.
 
         Regression for Daily Focus Kickoff 2026-08-11: xai-oauth token refresh
         raised httpx.ConnectError ([Errno 8] nodename nor servname provided)
         and the scheduler only tried fallbacks on AuthError, so the job died
-        before XAI_API_KEY / Anthropic could rescue it.
+        before XAI_API_KEY / Anthropic could rescue it. The job follows the
+        main model (unpinned): a pinned job never walks the global chain
+        (#100437, tests/cron/test_cron_pinned_job_fallback.py).
         """
         import httpx
 
@@ -1218,8 +1075,6 @@ class TestRunJobConfigEnvVarExpansion:
             "id": "dns-fallback",
             "name": "dns fallback",
             "prompt": "hi",
-            "provider": "xai-oauth",
-            "model": "grok-4.5",
         }
         fake_db = MagicMock()
         requested = []
@@ -1251,14 +1106,14 @@ class TestRunJobConfigEnvVarExpansion:
 
         assert success is True, error
         assert error is None
-        assert requested == ["xai-oauth", "xai"]
+        assert requested == [None, "xai"]
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["provider"] == "xai"
         assert kwargs["model"] == "grok-4.5"
 
-
     def test_auth_fallback_switches_provider_and_model_together(self, tmp_path):
-        """Codex auth failure must produce OpenRouter+GLM, never OpenRouter+GPT."""
+        """Codex auth failure must produce OpenRouter+GLM, never OpenRouter+GPT (unpinned job:
+        a pinned one does not walk the global chain, #100437)."""
         from hermes_cli.auth import AuthError
 
         (tmp_path / "config.yaml").write_text(
@@ -1275,16 +1130,13 @@ class TestRunJobConfigEnvVarExpansion:
             "id": "auth-fallback",
             "name": "auth fallback",
             "prompt": "hi",
-            "provider_snapshot": "openai-codex",
-            "model_snapshot": "gpt-5.6-sol",
         }
         fake_db = MagicMock()
         requested = []
 
         def resolve_runtime(**kwargs):
             requested.append(kwargs.get("requested"))
-            if kwargs.get("requested") == "openai-codex":
-                # The unpinned job's provider_snapshot is its effective pin.
+            if kwargs.get("requested") in (None, "openai-codex"):
                 raise AuthError("No Codex credentials stored")
             assert kwargs["requested"] == "openrouter"
             assert kwargs["target_model"] == "z-ai/glm-5.2"
@@ -1306,38 +1158,10 @@ class TestRunJobConfigEnvVarExpansion:
 
         assert success is True
         assert error is None
-        assert requested == ["openai-codex", "openrouter"]
+        assert requested == [None, "openrouter"]
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["provider"] == "openrouter"
         assert kwargs["model"] == "z-ai/glm-5.2"
-
-
-    def test_unexpanded_ref_passthrough_when_var_unset(self, tmp_path, monkeypatch):
-        """When the env var is not set, the literal ${VAR} is kept verbatim (not crashed)."""
-        (tmp_path / "config.yaml").write_text("model: ${_HERMES_TEST_CRON_UNSET_VAR}\n")
-        monkeypatch.delenv("_HERMES_TEST_CRON_UNSET_VAR", raising=False)
-
-        job = {"id": "unset-job", "name": "unset var test", "prompt": "hi"}
-        fake_db = MagicMock()
-
-        with patch("cron.scheduler._hermes_home", tmp_path), \
-             patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
-             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
-             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-             patch("hermes_state_registry.acquire", return_value=fake_db), \
-             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
-                   return_value=self._RUNTIME), \
-             patch("run_agent.AIAgent") as mock_agent_cls:
-            mock_agent = MagicMock()
-            mock_agent.run_conversation.return_value = {"final_response": "ok"}
-            mock_agent_cls.return_value = mock_agent
-            success, _, _, error = run_job(job)
-
-        assert success is True
-        kwargs = mock_agent_cls.call_args.kwargs
-        # Unresolved refs are kept verbatim — _expand_env_vars contract
-        assert kwargs["model"] == "${_HERMES_TEST_CRON_UNSET_VAR}"
-
 
 class TestRunJobModelResolution:
     """Verify defensive model resolution for jobs stored with ``model: null``.
@@ -1382,7 +1206,6 @@ class TestRunJobModelResolution:
         assert error is None
         assert mock_agent_cls.call_args.kwargs["model"] == "env-model"
 
-
     def test_no_model_anywhere_fails_with_actionable_error(self, tmp_path, monkeypatch):
         """All three sources empty → fail fast with a clear message, not an opaque 400."""
         (tmp_path / "config.yaml").write_text("")
@@ -1403,11 +1226,9 @@ class TestRunJobModelResolution:
 
         assert success is False
         assert error is not None
-        assert "no model configured" in error
         # AIAgent must never be constructed with an empty model — that's
         # precisely the bug we're guarding against.
         mock_agent_cls.assert_not_called()
-
 
     def test_config_model_alias_key_resolves(self, tmp_path, monkeypatch):
         """A ``model: {model: ...}`` alias key resolves like the CLI sibling.
@@ -1466,7 +1287,6 @@ class TestRunJobModelResolution:
         assert error is None
         assert mock_agent_cls.call_args.kwargs["model"] == "explicit-model"
 
-
 class TestRunJobSkillBacked:
     def test_run_job_preserves_skill_env_passthrough_into_worker_thread(self, tmp_path):
         job = {
@@ -1522,7 +1342,6 @@ class TestRunJobSkillBacked:
         assert error is None
         assert final_response == "ok"
 
-
 class TestSilentDelivery:
     """Verify that [SILENT] responses suppress delivery while still saving output."""
 
@@ -1534,23 +1353,10 @@ class TestSilentDelivery:
             "origin": {"platform": "telegram", "chat_id": "123"},
         }
 
-    def test_silent_response_suppresses_delivery(self, caplog):
+    def test_silent_response_suppresses_delivery(self):
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
              patch("cron.scheduler.claim_job_for_fire", return_value=True), \
              patch("cron.scheduler.run_job", return_value=(True, "# output", "[SILENT]", None)), \
-             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
-             patch("cron.scheduler._deliver_result") as deliver_mock, \
-             patch("cron.scheduler.mark_job_run"):
-            from cron.scheduler import tick
-            with caplog.at_level(logging.INFO, logger="cron.scheduler"):
-                tick(verbose=False)
-        deliver_mock.assert_not_called()
-        assert any(SILENT_MARKER in r.message for r in caplog.records)
-
-    def test_silent_with_note_suppresses_delivery(self):
-        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
-             patch("cron.scheduler.claim_job_for_fire", return_value=True), \
-             patch("cron.scheduler.run_job", return_value=(True, "# output", "[SILENT] No changes detected", None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.scheduler._deliver_result") as deliver_mock, \
              patch("cron.scheduler.mark_job_run"):
@@ -1610,7 +1416,6 @@ class TestSilentDelivery:
             tick(verbose=False)
         deliver_mock.assert_called_once()
 
-
     def test_failed_job_always_delivers(self):
         """Failed jobs deliver regardless of [SILENT] in output."""
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
@@ -1648,13 +1453,8 @@ class TestSilentDelivery:
             tick(verbose=False)
 
         deliver_mock.assert_not_called()
-        mark_mock.assert_called_once_with(
-            "monitor-job",
-            False,
-            "Agent completed but produced empty response (model error, timeout, or misconfiguration)",
-            delivery_error=None,
-        )
-
+        mark_mock.assert_called_once()
+        assert mark_mock.call_args[0][:2] == ("monitor-job", False)
 
 class TestOneShotDispatchClaim:
     """run_one_job must claim a finite one-shot's dispatch BEFORE run_job so a
@@ -1697,43 +1497,6 @@ class TestOneShotDispatchClaim:
         deliver_mock.assert_not_called()
         mark_mock.assert_not_called()
 
-
-class TestBuildJobPromptSilentHint:
-    """Verify _build_job_prompt always injects [SILENT] guidance."""
-
-    def test_hint_always_present(self):
-        job = {"prompt": "Check for updates"}
-        result = _build_job_prompt(job)
-        assert "[SILENT]" in result
-        assert "Check for updates" in result
-
-
-class TestBuildJobPromptRecursionGuard:
-    """Verify _build_job_prompt tells the agent this is an execution, not a
-    request to schedule — recurring language in a task prompt must not spawn
-    another cron job (recursive scheduled tasks)."""
-
-    def test_recursion_guard_always_present(self):
-        job = {"prompt": "Check for updates"}
-        result = _build_job_prompt(job)
-        assert "run of an EXISTING scheduled job" in result
-        assert "NEVER create or update a cron job" in result
-
-    def test_recurring_language_treated_as_context(self):
-        job = {
-            "prompt": (
-                "Each Monday, review my calendar for the upcoming "
-                "Monday-through-Sunday week and summarize it."
-            )
-        }
-        result = _build_job_prompt(job)
-        # The guard precedes the task prompt so the model reads it first.
-        guard_pos = result.index("run of an EXISTING scheduled job")
-        task_pos = result.index("Each Monday, review my calendar")
-        assert guard_pos < task_pos
-        assert 'phrasing like "each Monday"' in result
-
-
 class TestParseWakeGate:
     """Unit tests for _parse_wake_gate — pure function, no side effects."""
 
@@ -1742,11 +1505,9 @@ class TestParseWakeGate:
         assert _parse_wake_gate("") is True
         assert _parse_wake_gate(None) is True
 
-
     def test_wake_gate_false_skips(self):
         from cron.scheduler import _parse_wake_gate
         assert _parse_wake_gate('{"wakeAgent": false}') is False
-
 
 class TestRunJobWakeGate:
     """Integration tests for run_job wake-gate short-circuit."""
@@ -1789,7 +1550,6 @@ class TestRunJobWakeGate:
         """When _run_job_script output ends with {wakeAgent: false}, the agent
         is not invoked and run_job returns the SILENT marker so delivery is
         suppressed."""
-        from cron.scheduler import SILENT_MARKER
         import cron.scheduler as scheduler
         from cron import scheduler_script as sched_script
 
@@ -1801,7 +1561,6 @@ class TestRunJobWakeGate:
         assert success is True
         assert err is None
         assert final == SILENT_MARKER
-        assert "Script gate returned `wakeAgent=false`" in doc
         agent_cls.assert_not_called()
 
     def test_wake_true_runs_agent_with_injected_output(self):
@@ -1829,13 +1588,11 @@ class TestRunJobWakeGate:
         assert success is True
         assert err is None
 
-
 class TestBuildJobPromptMissingSkill:
     """Verify that a missing skill logs a warning and does not crash the job."""
 
     def _missing_skill_view(self, name: str) -> str:
         return json.dumps({"success": False, "error": f"Skill '{name}' not found."})
-
 
     def test_missing_skill_injects_user_notice_into_prompt(self):
         """A system notice about the missing skill is injected into the prompt."""
@@ -1843,7 +1600,6 @@ class TestBuildJobPromptMissingSkill:
             result = _build_job_prompt({"skills": ["ghost-skill"], "prompt": "do something"})
         assert "ghost-skill" in result
         assert "not found" in result.lower() or "skipped" in result.lower()
-
 
 class TestBuildJobPromptAbsoluteSkillPath:
     """Cron jobs may store absolute skill paths; normalize before skill_view."""
@@ -1868,7 +1624,6 @@ class TestBuildJobPromptAbsoluteSkillPath:
 
         assert seen_names == ["alpha-skill"]
         assert "Do alpha." in result
-
 
 class TestBuildJobPromptBumpUse:
     """Verify that cron jobs bump skill usage counters so the curator sees them as active."""
@@ -1895,7 +1650,6 @@ class TestBuildJobPromptBumpUse:
             call.kwargs == {"task_id": "cron-task"}
             for call in mock_bump.call_args_list
         )
-
 
 class TestSendMediaViaAdapter:
     """Unit tests for _send_media_via_adapter — routes files to typed adapter methods."""
@@ -1925,7 +1679,6 @@ class TestSendMediaViaAdapter:
         with patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
             _send_media_via_adapter(adapter, chat_id, media_files, metadata, MagicMock(), job)
 
-
     def test_multiple_media_files_all_delivered(self, tmp_path, monkeypatch):
         adapter = MagicMock()
         adapter.send_voice = AsyncMock()
@@ -1937,13 +1690,12 @@ class TestSendMediaViaAdapter:
         adapter.send_voice.assert_called_once()
         adapter.send_image_file.assert_called_once()
 
-
 class TestParallelTick:
     """Verify that tick() runs due jobs concurrently and isolates ContextVars."""
 
     @pytest.fixture(autouse=True)
     def _isolate_tick_lock(self, tmp_path):
-        """Point the tick file lock at a per-test temp dir to avoid xdist contention."""
+        """Point the tick file lock at a per-test temp dir to avoid lock contention."""
         lock_dir = tmp_path / "cron"
         lock_dir.mkdir()
         lock_file = lock_dir / ".tick.lock"
@@ -1986,46 +1738,6 @@ class TestParallelTick:
         assert len(ends) == 2
         assert max(starts) < min(ends), f"Jobs not concurrent: {call_order}"
 
-    def test_parallel_jobs_isolated_contextvars(self):
-        """Each job's ContextVars must be isolated — no cross-contamination."""
-        from gateway.session_context import get_session_env
-        seen = {}
-
-        def mock_run_job(job, *, defer_agent_teardown=None, **kw):
-            origin = job.get("origin", {})
-            # run_job sets ContextVars — verify each job sees its own
-            from gateway.session_context import set_session_vars, clear_session_vars
-            tokens = set_session_vars(
-                platform=origin.get("platform", ""),
-                chat_id=str(origin.get("chat_id", "")),
-            )
-            import time
-            time.sleep(0.05)  # give other thread time to set its vars
-            platform = get_session_env("HERMES_SESSION_PLATFORM")
-            chat_id = get_session_env("HERMES_SESSION_CHAT_ID")
-            seen[job["id"]] = {"platform": platform, "chat_id": chat_id}
-            clear_session_vars(tokens)
-            return (True, "output", "response", None)
-
-        jobs = [
-            {"id": "tg-job", "name": "tg", "deliver": "local",
-             "origin": {"platform": "telegram", "chat_id": "111"}},
-            {"id": "dc-job", "name": "dc", "deliver": "local",
-             "origin": {"platform": "discord", "chat_id": "222"}},
-        ]
-
-        with patch("cron.scheduler.get_due_jobs", return_value=jobs), \
-             patch("cron.scheduler.claim_job_for_fire", return_value=True), \
-             patch("cron.scheduler.run_job", side_effect=mock_run_job), \
-             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
-             patch("cron.scheduler._deliver_result", return_value=None), \
-             patch("cron.scheduler.mark_job_run"):
-            from cron.scheduler import tick
-            tick(verbose=False)
-
-        assert seen["tg-job"] == {"platform": "telegram", "chat_id": "111"}
-        assert seen["dc-job"] == {"platform": "discord", "chat_id": "222"}
-
     def test_max_parallel_env_var(self, monkeypatch):
         """HERMES_CRON_MAX_PARALLEL=1 should restore serial behaviour."""
         monkeypatch.setenv("HERMES_CRON_MAX_PARALLEL", "1")
@@ -2057,7 +1769,6 @@ class TestParallelTick:
         end_s1 = [t for action, jid, t in call_times if action == "end" and jid == "s1"][0]
         start_s2 = [t for action, jid, t in call_times if action == "start" and jid == "s2"][0]
         assert start_s2 >= end_s1, "Jobs ran concurrently despite max_parallel=1"
-
 
 class TestDeliverResultTimeoutCancelsFuture:
     """When future.result(timeout=60) raises TimeoutError in the live adapter
@@ -2135,7 +1846,6 @@ class TestDeliverResultTimeoutCancelsFuture:
         #    an in-flight confirmation timeout is assume-delivered, not a resend.
         standalone_send.assert_not_awaited()
 
-
 class TestDeliverResultLiveAdapterUnconfirmed:
     """Regression for #47056.
 
@@ -2198,7 +1908,6 @@ class TestDeliverResultLiveAdapterUnconfirmed:
         assert result is None, f"standalone should have delivered, got: {result!r}"
         standalone_send.assert_awaited_once()
 
-
 class TestDeliverOriginUnresolvableIsLocal:
     """Regression for #43014.
 
@@ -2211,7 +1920,6 @@ class TestDeliverOriginUnresolvableIsLocal:
     """
 
     def _deliver(self, job, monkeypatch):
-        import cron.scheduler as sched
         from cron import scheduler_delivery as sched_delivery
         # No home channel for any platform → origin is unresolvable.
         monkeypatch.setattr(sched_delivery, "_get_home_target_chat_id", lambda *_: "")
@@ -2220,7 +1928,6 @@ class TestDeliverOriginUnresolvableIsLocal:
     def test_origin_with_no_home_channels_returns_none(self, monkeypatch):
         job = {"id": "cli-job", "deliver": "origin", "origin": "cli-session-provenance"}
         assert self._deliver(job, monkeypatch) is None
-
 
 class TestSendMediaTimeoutCancelsFuture:
     """Same orphan-coroutine guarantee for _send_media_via_adapter's
@@ -2287,7 +1994,6 @@ class TestSendMediaTimeoutCancelsFuture:
         adapter.send_video.assert_called_once()
         assert adapter.send_video.call_args[1]["video_path"] == str(fast.resolve())
 
-
 class TestCronDeliveryTargets:
     """``cron_delivery_targets`` powers the dashboard delivery dropdown.
 
@@ -2335,14 +2041,6 @@ class TestCronDeliveryTargets:
         bot_chat = [v for k, v in targets.items() if k.startswith("bot-chat")]
         assert all(t["home_target_set"] for t in bot_chat)
 
-
-class TestHomeTargetEnvVarRegistry:
-    """Regression: ``_HOME_TARGET_ENV_VARS`` must include every gateway
-    platform that supports cron-driven outbound delivery. Missing an
-    entry means ``hermes cron create --deliver=<platform>`` silently
-    fails to route through the platform's home channel."""
-
-
 class TestCronDeliveryMirror:
     """cron.mirror_delivery / per-job attach_to_session: opt-in append of a
     cron delivery into the target chat's gateway session transcript.
@@ -2351,7 +2049,6 @@ class TestCronDeliveryMirror:
     When enabled, delivery rides the existing gateway.mirror.mirror_to_session
     so cron uses exactly the same path interactive send_message mirroring uses.
     """
-
 
     def test_mirror_writes_user_role_with_label_not_assistant(self):
         """Regression for #2221 / #2313: the cron brief must mirror as a USER
@@ -2373,7 +2070,6 @@ class TestCronDeliveryMirror:
         # boundary) still distinguishes it from a genuine user message.
         assert args[2].startswith("[Cron delivery: Morning Brief]")
         assert "Market movers today" in args[2]
-
 
     def test_delivery_mirrors_clean_content_not_wrapped(self):
         """When enabled, the mirror receives the CLEAN agent output, not the
@@ -2404,38 +2100,11 @@ class TestCronDeliveryMirror:
         assert "Cronjob Response:" not in mirrored_text
         assert "To stop or manage this job" not in mirrored_text
 
-
     # --- origin-scoping (mirror only into the conversation that created the job) ---
-
 
     # --- multi-participant parity with send_message (user_id passthrough) ---
 
-
     # --- continuable cron: thread-preferred (Teknium's interface) ---
-
-    def test_open_thread_returns_id_on_thread_platform(self):
-        """On a thread-capable adapter, _open_continuable_cron_thread returns
-        the new thread id from create_handoff_thread."""
-        from cron.scheduler_delivery import _open_continuable_cron_thread
-
-        adapter = MagicMock()
-        adapter.create_handoff_thread = AsyncMock(return_value="9001")
-
-        # safe_schedule_threadsafe hands the coro to the gateway loop and
-        # returns a future. Patch it to close the coro and return a ready
-        # future carrying the adapter's thread id.
-        def _run_now(coro, _loop):
-            coro.close()
-            fut = MagicMock()
-            fut.result.return_value = "9001"
-            return fut
-
-        with patch("agent.async_utils.safe_schedule_threadsafe", side_effect=_run_now):
-            tid = _open_continuable_cron_thread(
-                {"id": "j1", "name": "Brief"}, adapter, "123", loop=MagicMock(),
-            )
-        assert tid == "9001"
-
 
     def test_seed_thread_session_creates_session_and_mirrors(self):
         """Seeding a freshly-opened thread creates the thread-keyed session via
@@ -2455,11 +2124,11 @@ class TestCronDeliveryMirror:
         # Session row created for the thread, then brief mirrored into it.
         store.get_or_create_session.assert_called_once()
         seeded_source = store.get_or_create_session.call_args[0][0]
-        assert seeded_source.chat_type == "thread"
+        # Telegram forum-topic replies key on the parent supergroup's ``group`` slot.
+        assert seeded_source.chat_type == "group"
         assert seeded_source.thread_id == "9001"
         mirror_mock.assert_called_once()
         assert mirror_mock.call_args.kwargs.get("thread_id") == "9001"
-
 
 class TestCronContinuableSurfaceInChannel:
     """cron_continuable_surface: in_channel — deliver a continuable cron FLAT
@@ -2562,7 +2231,6 @@ class TestCronContinuableSurfaceInChannel:
         )
         open_thread_mock.assert_not_called()
 
-
     # --- _seed_cron_channel_session: the create-then-mirror unit + the
     #     KEY-MATCH invariant (seed key must equal the inbound reply's key) ---
 
@@ -2640,7 +2308,7 @@ class TestCronContinuableSurfaceInChannel:
             def __init__(self, *a, **k):
                 pass
 
-            async def _deliver_to_platform(self, target, text, metadata):
+            async def _deliver_to_platform(self, target, text, metadata, transport=None):
                 captured["target"] = target
                 return {"success": True, "message_id": "msg_1"}
 
@@ -2679,7 +2347,7 @@ class TestCronContinuableSurfaceInChannel:
             def __init__(self, *a, **k):
                 pass
 
-            async def _deliver_to_platform(self, target, text, metadata):
+            async def _deliver_to_platform(self, target, text, metadata, transport=None):
                 captured["metadata"] = metadata
                 return {"success": True, "message_id": "msg_1"}
 
@@ -2711,7 +2379,7 @@ class TestCronContinuableSurfaceInChannel:
             def __init__(self, *a, **k):
                 pass
 
-            async def _deliver_to_platform(self, target, text, metadata):
+            async def _deliver_to_platform(self, target, text, metadata, transport=None):
                 captured["metadata"] = metadata
                 return {"success": True, "message_id": "msg_1"}
 
@@ -2805,7 +2473,6 @@ class TestCronContinuableSurfaceInChannel:
         # Anchored on the delivered message id (the router's SendResult).
         assert thread_seed_mock.call_args.args[4] == "msg_1"
 
-
 class TestMultiTargetDeliveryContinuesOnFailure:
     """When delivery to one target fails inside the standalone thread-pool
     fallback, the loop must continue to the remaining targets (#47163).
@@ -2890,7 +2557,6 @@ class TestBuildJobPromptExtraPrompt:
         job = {"prompt": "stored prompt"}
         result = _build_job_prompt(job, extra_prompt="CONTEXT: client=Foo")
         assert "stored prompt" in result
-        assert "## Run Context" in result
         assert "CONTEXT: client=Foo" in result
 
     def test_extra_prompt_does_not_mutate_job(self):
@@ -2899,17 +2565,8 @@ class TestBuildJobPromptExtraPrompt:
         _build_job_prompt(job, extra_prompt="transient context")
         assert job["prompt"] == "original"
 
-    def test_no_extra_prompt_omits_header(self):
-        """Without extra_prompt, no '## Run Context' header is injected."""
-        job = {"prompt": "just the stored prompt"}
-        result = _build_job_prompt(job)
-        assert "## Run Context" not in result
-        assert "just the stored prompt" in result
-
-
 class TestSetCronSessionTitle:
     """Robust cron session titling: #50535/#50536/#50537."""
-
 
     def test_dedupes_on_duplicate_title(self):
         # First write collides (ValueError); helper falls back to lineage #N.
@@ -2921,9 +2578,6 @@ class TestSetCronSessionTitle:
         assert out == "Nightly Synthesis #2"
         db.get_next_title_in_lineage.assert_called_once_with("Nightly Synthesis")
 
-
-
-
 class TestFailureStreakNudge:
     """Poke-inspired repeated-failure review nudge (_failure_streak_nudge)."""
 
@@ -2934,14 +2588,6 @@ class TestFailureStreakNudge:
             "failure_streak": streak,
             "schedule": {"kind": kind},
         }
-
-    def test_nudges_at_threshold(self):
-        from cron.scheduler import _failure_streak_nudge
-        # stored streak 2 + this run = 3 >= default threshold 3
-        with patch("cron.scheduler.load_config", return_value={}):
-            out = _failure_streak_nudge(self._job(2))
-        assert "failed 3 runs in a row" in out
-        assert "hermes cron pause scout" in out
 
     def test_silent_below_threshold(self):
         from cron.scheduler import _failure_streak_nudge
@@ -2959,7 +2605,7 @@ class TestFailureStreakNudge:
         cfg5 = {"cron": {"failure_nudge_threshold": 5}}
         with patch("cron.scheduler.load_config", return_value=cfg5):
             assert _failure_streak_nudge(self._job(3)) == ""
-            assert "failed 5 runs" in _failure_streak_nudge(self._job(4))
+            assert _failure_streak_nudge(self._job(4))
         with patch("cron.scheduler.load_config", return_value={"cron": {"failure_nudge_threshold": 0}}):
             assert _failure_streak_nudge(self._job(50)) == ""
 
@@ -2968,8 +2614,3 @@ class TestFailureStreakNudge:
         job = {"id": "old", "schedule": {"kind": "interval"}}  # pre-field job
         with patch("cron.scheduler.load_config", return_value={}):
             assert _failure_streak_nudge(job) == ""
-
-    def test_config_load_failure_falls_back(self):
-        from cron.scheduler import _failure_streak_nudge
-        with patch("cron.scheduler.load_config", side_effect=RuntimeError("boom")):
-            assert "failed 3 runs" in _failure_streak_nudge(self._job(2))

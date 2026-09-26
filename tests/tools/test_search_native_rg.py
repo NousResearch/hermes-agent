@@ -7,14 +7,13 @@ shared, so the two transports must agree on results.
 """
 
 import json
-import sys
 
 import pytest
 
 from tools.environments.local import LocalEnvironment
 from tools.file_operations import ShellFileOperations
 
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="native rg lane is POSIX-only")
+pytestmark = pytest.mark.platforms("posix")  # native rg lane is POSIX-only
 
 
 @pytest.fixture
@@ -60,6 +59,8 @@ def _normalized(result):
 
 
 def test_native_search_never_touches_the_shell_and_matches_shell_results(tree, ops_factory, monkeypatch):
+    if not ops_factory(tree, [])._has_command("rg"):
+        pytest.skip("native search parity requires ripgrep in the search environment")
     cases = [
         dict(pattern="needle", path=str(tree)),
         # (no offset/limit slicing here: rg's parallel walk orders files
@@ -111,4 +112,17 @@ def test_kill_switch_routes_search_back_to_the_shell(tree, ops_factory, monkeypa
     result = ops_factory(tree, calls).search(pattern="needle", path=str(tree))
     assert result.total_count == 4
     assert any(c.startswith("test -e") for c in calls)
-    assert any("pipefail" in c and "rg" in c for c in calls)
+    assert any(c.startswith("set -o pipefail; ") for c in calls)
+
+
+def test_limit_hit_keeps_drained_matches_when_group_kill_is_refused(tree, ops_factory, monkeypatch):
+    """Reaching ``limit`` takes the early-stop branch that TERMs rg's group. macOS answers
+    ``killpg`` with EPERM (not ESRCH) for a zombie-only group; that must not surface as a tool
+    error nor discard the matches already drained (#116855)."""
+    import os
+
+    monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "1")
+    ops = ops_factory(tree, [])
+    monkeypatch.setattr(os, "killpg", lambda pgid, sig: (_ for _ in ()).throw(PermissionError(1, "Operation not permitted")))
+    result = ops.search(pattern="needle", path=str(tree), limit=2)
+    assert not result.error and len(result.matches) == 2, result.to_dict()

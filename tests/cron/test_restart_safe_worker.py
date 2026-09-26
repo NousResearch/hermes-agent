@@ -994,3 +994,27 @@ def test_post_handoff_waiter_failure_records_bookkeeping_without_alert(
     assert len(marks) == 1 and marks[0][0][1] is False
     assert marks[0][0][2].startswith("Restart-safe cron worker failed after handoff: ")
     assert execution_ledger.get_execution(record["id"])["status"] == "failed"
+
+
+def test_external_worker_command_boots_through_dependency_launcher(tmp_path):
+    """The worker must not be a bare store-Python ``-m``. That interpreter has no
+    site-packages until hermes_bootstrap activates the committed environment, so
+    the first import (ruamel) dies before the job script runs."""
+    from cron.scheduler_worker_env import external_worker_command
+    from hermes_cli._launchers import runtime_command
+
+    repo = Path(__file__).resolve().parents[2]
+    payload = tmp_path / "exec.json"
+    ack = tmp_path / "exec.ready"
+    command = external_worker_command(repo, payload, ack)
+
+    assert command == runtime_command(
+        repo,
+        ["--external-worker-file", str(payload), "--ack-file", str(ack)],
+        module="cron.scheduler",
+    )
+    bootstrap = command[command.index("-c") + 1]
+    assert "import hermes_bootstrap" in bootstrap
+    assert "cron.scheduler" in bootstrap
+    assert command[command.index("--external-worker-file") + 1] == str(payload)
+    assert command[command.index("--ack-file") + 1] == str(ack)

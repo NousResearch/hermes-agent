@@ -1363,7 +1363,10 @@ def test_link_tasks_rejects_unowned_running_child_without_recording_edge(kanban_
         child = kb.create_task(conn, title="claimed child")
         assert kb.claim_task(conn, child, claimer="worker") is not None
 
-        with pytest.raises(ValueError, match="child is already running"):
+        with pytest.raises(
+            ValueError,
+            match=r"child is already running — declare parents at kanban_create.*expected_child_run_id",
+        ):
             kb.link_tasks(conn, parent, child)
 
         assert kb.parent_ids(conn, child) == []

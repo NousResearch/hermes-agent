@@ -807,7 +807,16 @@ export function useMessageStream({
               (finalText === existingText || finalText.startsWith(existingText) || existingText.startsWith(finalText))
             )
 
-            if (existing.pending || (!interimBoundaryPending && finalText && existingText === finalText)) {
+            // A bare `error` event (e.g. the agent build failing) already
+            // painted this turn's error card; the turn's terminal error frame
+            // is the same failure, so it settles onto that card.
+            const failureRepeatsErrorCard = Boolean(completionError && existing.error && !existingText)
+
+            if (
+              existing.pending ||
+              failureRepeatsErrorCard ||
+              (!interimBoundaryPending && finalText && existingText === finalText)
+            ) {
               nextMessages = settleAt(index)
             } else if (
               (interimBoundaryPending && (responsePreviewed || responseTransformed)) ||
@@ -978,9 +987,26 @@ export function useMessageStream({
           ? Math.max(1, Math.round((Date.now() - state.turnStartedAt) / 1000))
           : undefined
 
-        const nextMessages = prev.some(m => m.id === streamId)
+        const lastUserIndex = prev.findLastIndex(message => message.role === 'user')
+
+        // The turn's terminal error frame may already have painted this
+        // failure's card; a trailing bare `error` event updates that card.
+        const repeatedCard = state.streamId
+          ? undefined
+          : prev.findLast(
+              (message, index) =>
+                index > lastUserIndex &&
+                message.role === 'assistant' &&
+                !message.hidden &&
+                message.error &&
+                !chatMessageText(message).trim()
+            )
+
+        const targetId = repeatedCard?.id ?? streamId
+
+        const nextMessages = prev.some(m => m.id === targetId)
           ? prev.map(message =>
-              message.id === streamId
+              message.id === targetId
                 ? {
                     ...message,
                     completedAt: occurredAt,

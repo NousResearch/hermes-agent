@@ -171,6 +171,27 @@ def _inside_checkout(candidate: str, checkout_root: Path, original_argv0: str) -
         return False
 
 
+def _is_this_checkout_managed_cli(candidate: str, checkout_root: Path) -> bool:
+    """True when *candidate* is this checkout's PM-managed console script.
+
+    That script lives under ``installs/<key>/environments`` and imports a
+    generated workspace that does not ship ``apps/desktop``. It sits outside
+    the checkout, so the external-primary rule would persist it and the
+    desktop launcher would exit with the GUI source missing.
+    """
+    try:
+        path = Path(candidate).resolve()
+    except OSError:
+        return False
+    try:
+        from pm.environments import install_state_dir
+
+        generations = (install_state_dir(Path(checkout_root)) / "environments").resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return path == generations or generations in path.parents
+
+
 def _resolve_hermes_bin_for_desktop_entry(
     resolve_fn=None,
     checkout_root: Optional[Path] = None,
@@ -202,7 +223,15 @@ def _resolve_hermes_bin_for_desktop_entry(
     # installation. Only rerun the resolver with argv[0] hidden when the primary could actually
     # be checkout-internal (also shortens the window a concurrent reader sees mutated sys.argv).
     primary = resolve_fn()
-    if primary and not _inside_checkout(primary, checkout_root, original_argv0):
+    # A managed-environment console script is outside the checkout but is not a
+    # durable desktop launcher: its workspace has no apps/desktop (#122438).
+    # Fall through to the known-wrapper probe instead of persisting it.
+    if (
+        primary
+        and not _inside_checkout(primary, checkout_root, original_argv0)
+        and not _is_this_checkout_managed_cli(primary, checkout_root)
+        and not _is_this_checkout_managed_cli(primary, module_lexical_root)
+    ):
         return primary
 
     # A primary that is NOT checkout-internal and not the invoking interpreter is an external launcher (e.g.
@@ -224,8 +253,12 @@ def _resolve_hermes_bin_for_desktop_entry(
     # gnome-shell 50.x crashes when hermes.desktop changes while its ShellApp is STARTING (#110885).
     # ``primary is None`` implies ``rerouted is None`` (the rerun only hides argv[0]), so only the
     # probe can still find anything.
-    if primary and rerouted is not None and not _inside_checkout(
-        rerouted, checkout_root, original_argv0
+    if (
+        primary
+        and rerouted is not None
+        and not _inside_checkout(rerouted, checkout_root, original_argv0)
+        and not _is_this_checkout_managed_cli(rerouted, checkout_root)
+        and not _is_this_checkout_managed_cli(rerouted, module_lexical_root)
     ):
         return rerouted
     # A PATH hit inside this checkout is the same launch-context artifact as argv[0]: the

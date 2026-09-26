@@ -476,6 +476,52 @@ def test_exec_never_persists_a_checkout_internal_path_hit(tmp_path, xdg_home, mo
     assert entry2.read_text(encoding="utf-8") == entry.read_text(encoding="utf-8")
 
 
+def test_exec_skips_managed_environment_cli_without_desktop(
+    tmp_path, xdg_home, monkeypatch
+):
+    """A PM-managed console script is outside the checkout but cannot launch Desktop.
+
+    Its generated workspace has no ``apps/desktop``. Treating it as the durable
+    external primary persists ``Exec=`` at that script, and the grid launcher
+    exits with "Desktop GUI source not found". The entry must keep the
+    checkout's installed wrapper instead.
+    """
+    from pm.environments import install_key
+
+    root = _make_project(tmp_path)
+    installs = tmp_path / "installs"
+    monkeypatch.setattr("pm.environments.installs_root", lambda: installs)
+    generation = installs / install_key(root) / "environments" / "gen"
+    workspace = generation / "workspace"
+    workspace.mkdir(parents=True)
+    managed = generation / "bin" / "hermes"
+    managed.parent.mkdir(parents=True)
+    managed.write_text("#!/usr/bin/env bash\nexec true\n", encoding="utf-8")
+    managed.chmod(0o755)
+
+    known_wrapper = tmp_path / ".local" / "bin" / "hermes"
+    known_wrapper.parent.mkdir(parents=True)
+    known_wrapper.write_text(
+        f'#!/usr/bin/env bash\nexec {root / "venv" / "bin" / "python"} {root / "hermes"} "$@"\n',
+        encoding="utf-8",
+    )
+    known_wrapper.chmod(0o755)
+
+    def fake_resolve():
+        return str(managed)
+
+    monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", fake_resolve)
+    _argv0_context(monkeypatch, str(managed))
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
+
+    entry = lde.install_desktop_entry(root)
+    assert entry is not None
+    exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
+
+    assert exec_line == f"{known_wrapper} desktop"
+    assert str(managed) not in exec_line
+
+
 def test_exec_finds_known_wrapper_when_resolver_has_no_candidate(
     tmp_path, xdg_home, monkeypatch
 ):

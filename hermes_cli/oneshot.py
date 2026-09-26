@@ -22,6 +22,7 @@ from gateway.session_context import declare_stateless_channel
 from hermes_cli.fallback_config import get_fallback_chain
 
 _ALL_TOOLSETS = {"all", "*"}
+_NO_TOOLSETS = "none"
 
 # Keys copied from the run result into the ``--usage-file`` report. ``service_tier`` is a
 # billing-audit field: the tier REQUESTED via request_overrides.extra_body (None when unset), so
@@ -167,6 +168,10 @@ def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | No
     normalized = _normalize_toolsets(toolsets)
     if normalized is None:
         return None, None
+    if _NO_TOOLSETS in normalized:
+        if len(normalized) == 1:
+            return [], None
+        return None, "hermes -z: --toolsets none cannot be combined with other toolsets.\n"
 
     try:
         from toolsets import validate_toolset
@@ -246,6 +251,7 @@ def run_oneshot(
     usage_file: Optional[str] = None,
     resume: Optional[str] = None,
     reasoning: object = None,
+    ignore_rules: bool = False,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -305,6 +311,7 @@ def run_oneshot(
                 skills=skills,
                 resume=resume,
                 reasoning=reasoning,
+                ignore_rules=ignore_rules,
                 ledger=bool(usage_file),
             )
         except BaseException as exc:  # noqa: BLE001
@@ -506,6 +513,7 @@ def _run_agent(
     skills: object = None,
     resume: Optional[str] = None,
     reasoning: object = None,
+    ignore_rules: bool = False,
     ledger: bool = False,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn, run one conversation, and return
@@ -554,6 +562,10 @@ def _run_agent(
     toolsets_list = _normalize_toolsets(toolsets)
     if toolsets_list is None and use_config_toolsets:
         toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
+    elif toolsets_list is None:
+        # An explicitly empty list is distinct from an omitted --toolsets flag:
+        # it means the caller requested a genuinely tool-less agent.
+        toolsets_list = []
 
     # Oneshot builds AIAgent directly, bypassing cli.py's MCP background discovery and
     # _init_agent's wait, so the construction-time tool snapshot would miss late MCP servers.
@@ -561,11 +573,12 @@ def _run_agent(
     # Ensure MCP tools are discovered before building the agent. This helper starts discovery if needed
     # (idempotent) and bounded-waits with the larger single-query bound (default 15s) because there is only
     # ONE turn and no between-turns late-binding refresh (#38448).
-    from hermes_cli.mcp_startup import ensure_mcp_discovery_before_agent_build
+    if toolsets_list:
+        from hermes_cli.mcp_startup import ensure_mcp_discovery_before_agent_build
 
-    ensure_mcp_discovery_before_agent_build(logger=logging.getLogger(__name__), single_query=True)
+        ensure_mcp_discovery_before_agent_build(logger=logging.getLogger(__name__), single_query=True)
 
-    skills_prompt = _build_preloaded_skills_prompt(skills)
+    skills_prompt = None if ignore_rules else _build_preloaded_skills_prompt(skills)
 
     # The try spans agent construction (not just ``chat``) so the store is always closed, even when
     # ``AIAgent(...)`` raises — the one-shot exit path hard-exits via os._exit and skips finalizers.
@@ -579,6 +592,8 @@ def _run_agent(
             api_mode=runtime.get("api_mode"),
             model=choice.model,
             enabled_toolsets=toolsets_list,
+            skip_context_files=ignore_rules,
+            skip_memory=ignore_rules,
             quiet_mode=True,
             platform="cli",
             session_db=session_db,

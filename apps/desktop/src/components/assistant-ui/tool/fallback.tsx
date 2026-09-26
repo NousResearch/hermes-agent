@@ -78,6 +78,7 @@ import {
   toolCopyPayload,
   toolEntryDisclosureId,
   type ToolPart,
+  toolPreviewOutcome,
   type ToolStatus,
   type ToolTitleAction
 } from './fallback-model'
@@ -1047,11 +1048,13 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
   // Joined rather than returned as an array: assistant-ui compares selector
   // results with `Object.is` and re-runs them on every store update, so a
   // fresh array would re-render the whole group on every text delta.
+  const hideRuns = useStore($toolViewMode) === 'hidden'
+
   const toolNameKey = useAuiState(state =>
     state.message.parts
       .slice(Math.max(0, startIndex), endIndex + 1)
       .map(part =>
-        part.type === 'tool-call'
+        part.type === 'tool-call' && !(hideRuns && toolPreviewOutcome(part).status === 'error')
           ? (isOnboardingEnabled() && connectorCalls(part.toolName, part.args).length) ||
             mcpTargets(part.toolName, part.args).length
             ? CONNECTION_CARD_KEY
@@ -1062,11 +1065,12 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
   )
 
   const items = useMemo(() => splitRunItems(toolNameKey.split('\u0000')), [toolNameKey])
+  const visibleItems = hideRuns ? items.filter(item => item.kind === 'card') : items
   const rows = Children.toArray(children)
 
   return (
     <ToolEmbedContext.Provider value={false}>
-      {items.map(item =>
+      {visibleItems.map(item =>
         item.kind === 'card' ? (
           <Fragment key={`card:${item.index}`}>{rows[item.index]}</Fragment>
         ) : (

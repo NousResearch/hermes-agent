@@ -157,7 +157,15 @@ def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, An
         try:
             raw_calls = json.loads(raw_calls)
         except json.JSONDecodeError as e:
-            return [], f"tool_call 'calls' is not valid JSON: {e}"
+            from agent.message_sanitization import _repair_tool_call_arguments
+
+            repaired_calls = _repair_tool_call_arguments(raw_calls, "tool_call calls envelope", log_payload=False)
+            if repaired_calls == "{}":
+                repaired_calls = raw_calls
+            try:
+                raw_calls = json.loads(repaired_calls)
+            except json.JSONDecodeError:
+                return [], f"tool_call 'calls' is not valid JSON: {e}"
     if isinstance(raw_calls, dict):
         raw_calls = [raw_calls]
     if not isinstance(raw_calls, list) or not raw_calls:

@@ -858,6 +858,25 @@ def _abandoned_sequential_result(agent, ref: _ToolCallRef, message: str, result_
     return _ManagedToolResult(result=result_cls(message), args=ref.args, middleware_trace=ref.trace, blocked=False, dispatched=True)
 
 
+_DELEGATION_WALL_CAP_FLOOR = 60.0
+
+
+def _delegation_wall_cap(function_name: str) -> float | None:
+    """Wall-clock cap for a delegation-family tool call when no per-call deadline applies.
+    Reads ``delegation.child_timeout_seconds`` (floor 60s); ``None`` (the default) means no
+    cap — a misconfigured/silent exit there is the no-deadline wedge, so opt in via config."""
+    if function_name != "delegate_task":
+        return None
+    try:
+        from tools.delegate_tool import _get_child_timeout
+        raw = _get_child_timeout()
+    except Exception:
+        return None
+    if raw is None:
+        return None
+    return max(float(raw), _DELEGATION_WALL_CAP_FLOOR)
+
+
 def _poll_sequential_future(agent, future, function_name: str, deadline: float | None, started: float, authorization_gate) -> tuple[str, Any]:
     """Wait for the worker in interrupt-poll slices, extending the deadline by human approval
     wait; returns ``("done", result)``, ``("timeout", None)`` or ``("interrupted", None)``.
@@ -880,10 +899,18 @@ def _poll_sequential_future(agent, future, function_name: str, deadline: float |
                 return "done", future.result()
             if agent._interrupt_requested:
                 return "interrupted", None
-            elapsed = int(time.monotonic() - started)
+            elapsed = time.monotonic() - started
+            cap = _delegation_wall_cap(function_name)
+            if cap is not None and elapsed >= cap:
+                logger.warning(
+                    "Tool %s exceeded its %ss wall-clock cap (%.0fs elapsed) — reporting timeout. "
+                    "The worker may still be running; its transcript holds any partial output.",
+                    function_name, cap, elapsed,
+                )
+                return "timeout", None
             if elapsed - _last_heartbeat >= 30:
                 _last_heartbeat = elapsed
-                agent._touch_activity(f"sequential tool running ({elapsed}s): {function_name}")
+                agent._touch_activity(f"sequential tool running ({int(elapsed)}s): {function_name}")
 
 
 def _run_sequential_tool_execution_middleware(
@@ -959,11 +986,13 @@ def _run_sequential_tool_execution_middleware(
                 error_type="tool_interrupted", error_message=f"Tool execution cancelled: {interrupt_reason}",
             )
         else:
-            assert timeout_s is not None  # only reachable when a deadline exists
-            message = f"Error executing tool '{function_name}': timed out after {timeout_s:.1f}s"
-            logger.warning("sequential tool %s timed out after %.1fs", function_name, timeout_s)
+            # ``timeout_s`` is None for deadline-exempt tools (delegate_task, manage_connections), which is
+            # exactly the wall-cap case: the cap came from _delegation_wall_cap, not from a per-call deadline.
+            cap_s = timeout_s if timeout_s is not None else _delegation_wall_cap(function_name)
+            message = f"Error executing tool '{function_name}': timed out after {cap_s:.1f}s"
+            logger.warning("sequential tool %s timed out after %.1fs", function_name, cap_s)
             result_cls, outcome = _ToolTimeoutResult, dict(
-                duration_ms=int(timeout_s * 1000), status="timeout", error_type="tool_timeout", error_message=message,
+                duration_ms=int(cap_s * 1000), status="timeout", error_type="tool_timeout", error_message=message,
             )
         abandoned = True
         if prepared is not None:

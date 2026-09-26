@@ -127,6 +127,8 @@ _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
+# A GFM table separator row (``| --- | :--: |``): pipes, colons, dashes and spaces only.
+_GFM_TABLE_DELIMITER_RE = re.compile(r"^[|\s:\-]+$")
 # --- Media type sets and upload constants ---
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 _AUDIO_EXTENSIONS = {".ogg", ".mp3", ".wav", ".m4a", ".aac", ".flac", ".opus", ".webm"}
@@ -420,6 +422,22 @@ def _strip_markdown_to_plain_text(text: str) -> str:
     plain = re.sub(r"~~([^~\n]+)~~", r"\1", plain)
     plain = re.sub(r"<u>([\s\S]*?)</u>", r"\1", plain)
     return strip_markdown(plain)
+
+
+def _drop_gfm_table_delimiters(content: str) -> str:
+    """Drop GFM table separator rows so a ``post`` payload stops being a table.
+
+    Feishu rejects a table-carrying ``post`` update with 230001 ("content format of the
+    post type is incorrect"), and an existing message cannot be re-typed, so the retry
+    has to stay ``post`` while removing the syntax it refuses (#121108). Without the
+    separator row the remaining pipe rows are plain text, not a table.
+    """
+    kept = [
+        line
+        for line in content.splitlines()
+        if not ("|" in line and "-" in line and _GFM_TABLE_DELIMITER_RE.match(line.strip()))
+    ]
+    return "\n".join(kept)
 
 
 def _coerce_int(value: Any, default: Optional[int] = None, min_value: int = 0) -> Optional[int]:
@@ -1712,9 +1730,21 @@ class FeishuAdapter(BasePlatformAdapter):
             response = await self._run_blocking(self._client.im.v1.message.update, request)
             return self._finalize_send_result(response, "update failed")
 
+        msg_type = ""
         try:
             msg_type, payload = self._build_outbound_payload(content)
             result = await _update(msg_type, payload)
+            if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
+                # Feishu will not re-type an existing message, so a rejected post
+                # update cannot be rescued by switching msg_type: the text retry is
+                # rejected too and the stream consumer re-sends the full reply next
+                # to the frozen preview (#121108). Retry the same ``post`` with the
+                # table syntax dropped, which is the shape the API accepts; plain
+                # text stays as the last resort for messages born as ``text``.
+                flattened = _drop_gfm_table_delimiters(content)
+                if flattened != content:
+                    logger.warning("[Feishu] Invalid post update payload rejected by API; retrying as post without table rows")
+                    result = await _update("post", _build_markdown_post_payload(flattened))
             if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
                 logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
                 result = await _update(

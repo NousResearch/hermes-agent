@@ -700,6 +700,40 @@ def _complete_source_update(request: dict | None) -> None:
         print(f"→ Source subscription moved to {request['channel_retirement']['destination']}")
 
 
+def _has_common_ancestor(git_cmd, merge_ref: str) -> bool:
+    """Whether HEAD and ``merge_ref`` share history, deepening a shallow clone first.
+
+    A ``--depth`` fetch (the documented workaround for the slow-fetch hang, #93759) marks the
+    repository shallow and truncates ``merge_ref`` to the commits that fetch brought. If the
+    truncation cuts below local HEAD, ``merge-base`` reports no common ancestor for a checkout
+    whose history is perfectly intact — and the caller would treat that as orphan divergence and
+    force-reset a branch it had no reason to touch (#123346). So when the clone is shallow and
+    ancestry looks missing, deepen the fetch once and re-test before believing it.
+    """
+    def _merge_base() -> bool:
+        result = _git_run(git_cmd, ["merge-base", "HEAD", merge_ref])
+        return bool(result.returncode == 0 and result.stdout.strip())
+
+    if _merge_base():
+        return True
+    if not _is_shallow(git_cmd):
+        return False  # a complete clone genuinely has no common ancestor
+    print(
+        "  … checkout is shallow and shares no ancestor with "
+        f"{merge_ref} — deepening the fetch to re-test ancestry (a --depth pre-fetch can "
+        "truncate the history this comparison needs)...")
+    _git_run(git_cmd, ["fetch", "--unshallow", "--quiet", merge_ref.split("/", 1)[0]], network=True)
+    if _is_shallow(git_cmd):  # --unshallow is rejected on an already-complete remote ref
+        _git_run(git_cmd, ["fetch", "--quiet", "--depth", "1000000", merge_ref], network=True)
+    return _merge_base()
+
+
+def _is_shallow(git_cmd) -> bool:
+    """Whether this checkout is a shallow clone; False when git cannot say."""
+    result = _git_run(git_cmd, ["rev-parse", "--is-shallow-repository"])
+    return result.returncode == 0 and result.stdout.strip() == "true"
+
+
 def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha, *, target_ref=None) -> None:
     """Fast-forward failed: merge on a custom branch (local commits survive) or reset --hard on the
     same branch after parking the old HEAD behind a rescue ref. ``sys.exit(1)`` on failure."""
@@ -726,9 +760,13 @@ def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha, *, target_r
     # back — an expiring log the user has to know to reach for, in a directory Hermes updates
     # unattended. So park pre_pull_sha behind a rescue ref for BOTH, orphan divergence (no
     # common ancestor: corrupted HEAD, re-init) included.
-    merge_base_result = _git_run(git_cmd, ["merge-base", "HEAD", merge_ref])
-    has_common_ancestor = bool(
-        merge_base_result.returncode == 0 and merge_base_result.stdout.strip())
+    has_common_ancestor = _has_common_ancestor(git_cmd, merge_ref)
+    if has_common_ancestor and _git_run(git_cmd, ["merge", "--ff-only", merge_ref]).returncode == 0:
+        # The only reason we got here was a truncated shallow ref, now deepened: this was a
+        # plain fast-forward all along, so take it instead of resetting a branch that never
+        # diverged (#123346).
+        print(f"  ✓ Fast-forwarded to {merge_ref} after deepening the shallow fetch.")
+        return
     if pre_pull_sha:
         from datetime import datetime as _dt, timezone
         # SHA suffix so two updates in the same second get distinct refs.

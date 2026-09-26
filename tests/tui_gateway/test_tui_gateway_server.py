@@ -12358,8 +12358,8 @@ def test_session_redirect_rpc_drops_queued_duplicate_of_inflight_user():
     assert session["inflight_turn"]["corrections"] == [
         "what about the pricing instead?"
     ]
-    # Self-duplicates of the live original are gone; legitimate follow-up kept.
-    assert session.get("queued_prompt") == {
+    # Self-duplicates of the live original are gone; legitimate follow-up kept (queue identity aside).
+    assert {k: v for k, v in session.get("queued_prompt").items() if not k.startswith("_")} == {
         "text": "unrelated later task",
         "transport": "ws-1",
     }

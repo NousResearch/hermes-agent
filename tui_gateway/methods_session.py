@@ -2219,6 +2219,7 @@ def _correction_method(name: str, verb: str, accepted_status: str, supported, un
         if verb == "redirect" and agent is None and session.get("running"):
             _enqueue_prompt(session, text, current_transport() or _stdio_transport)
             session["last_active"] = time.time()
+            _publish_queue(str(params.get("session_id") or ""), session)
             return _ok(rid, {"status": "queued", "text": text})
         # Compression in flight: queue instead of steering/redirecting. A correction that
         # reaches the provider mid-compression aborts the compression (explicit_interrupt)
@@ -2228,6 +2229,7 @@ def _correction_method(name: str, verb: str, accepted_status: str, supported, un
         if _session_compression_in_flight(session):
             _enqueue_prompt(session, text, current_transport() or _stdio_transport)
             session["last_active"] = time.time()
+            _publish_queue(str(params.get("session_id") or ""), session)
             return _ok(rid, {"status": "queued", "text": text})
         if not supported(agent):
             return _err(rid, 4010, unsupported)
@@ -2235,7 +2237,9 @@ def _correction_method(name: str, verb: str, accepted_status: str, supported, un
         # row (#64578). 'rejected' makes the client queue it as a normal next prompt.
         if verb == "steer" and not session.get("running"):
             return _ok(rid, {"status": "rejected", "text": text})
-        return _apply_correction(rid, session, verb, text, accepted_status)
+        response = _apply_correction(rid, session, verb, text, accepted_status)
+        _publish_queue(str(params.get("session_id") or ""), session)  # accepted corrections scrub queued self-copies
+        return response
 
 
 # Inject text into the next tool result without interrupting (AIAgent.steer(): no new user turn, no role

@@ -19,6 +19,10 @@
     }
   ],
   "messages_omitted": false,
+  "queue": {
+    "items": [],
+    "revision": 0
+  },
   "resumed": "stored-running",
   "running": true,
   "session_id": "rt-running",

@@ -56,8 +56,9 @@ def inject_tui_session_message(*, session_key: str, content: str, plugin_id: str
         running = bool(session.get("running"))
         _enqueue_prompt(session, content, keep_transport)
         session["last_active"] = time.time()
-        if running:
-            return True
+    _publish_queue(sid, session)
+    if running:
+        return True
     rid = f"inject-{uuid.uuid4().hex[:8]}"
     threading.Thread(
         target=_drain_queued_prompt, args=(rid, sid, session),

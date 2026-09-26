@@ -439,6 +439,7 @@ def _run_post_turn_followups(
     if isinstance(steer, str) and steer.strip():
         with session["history_lock"]:
             _enqueue_prompt(session, steer, session.get("transport"))
+        _publish_queue(sid, session)
     if _drain_queued_prompt(rid, sid, session):
         return
     if goal_followup:

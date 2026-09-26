@@ -18,7 +18,8 @@ from __future__ import annotations
 from pydantic import Field
 
 from .base import JsonValue, Payload, WireEnum
-from .common import MessageReaction, SessionLiveInfo, SubagentStatus, ToolLabel, ToolLabelKind, Usage
+from .common import (MessageReaction, SessionLiveInfo, SessionQueueItem, SubagentStatus, ToolLabel, ToolLabelKind,
+                     Usage)
 from .config_free_tier_control import SessionControlSnapshot
 from .registry import event
 
@@ -401,6 +402,27 @@ class SessionControlUpdatePayload(Payload):
 
 
 event("session.control.update", SessionControlUpdatePayload, doc="Persisted goal / loop / heartbeat state changed.")
+
+
+class SessionQueuePayload(Payload):
+    """``methods_session_queue._publish_queue``: the full queue, not a delta."""
+
+    revision: int
+    items: list[SessionQueueItem]
+
+
+event("session.queue", SessionQueuePayload, doc="The session's queued prompts changed; replace the local view.")
+
+
+class SessionQueueChangedPayload(Payload):
+    """``methods_session_queue._publish_queue`` (global): for windows not attached to the session."""
+
+    session_key: str
+    revision: int
+
+
+event("session.queue.changed", SessionQueueChangedPayload,
+      doc="A stored session's queue revision advanced; call session.queue.get to read it.")
 
 
 class BillingStepUpVerificationPayload(Payload):

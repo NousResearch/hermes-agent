@@ -32,7 +32,8 @@ def _session(agent=None, **extra):
 
 def _visible(envelope):
     """Queue envelope without the underscore-internal durable fields a busy accept now rides on it
-    (``_submit_user_row``/``_queued_display_kind``): these tests assert the public envelope shape."""
+    (``_submit_user_row``/``_queued_display_kind``) or its queue identity (``_queue_id``): these tests
+    assert the public envelope shape."""
     return None if envelope is None else {k: v for k, v in envelope.items() if not k.startswith("_")}
 
 
@@ -118,7 +119,7 @@ def test_successful_redirect_drops_queued_duplicate_of_inflight_user(monkeypatch
 
     assert resp["result"]["status"] == "redirected"
     # Self-duplicates of the live original must be gone.
-    assert session.get("queued_prompt") == {
+    assert _visible(session.get("queued_prompt")) == {
         "text": "unrelated later task",
         "transport": "ws-1",
     }
@@ -147,7 +148,7 @@ def test_successful_redirect_preserves_unrelated_queued_followups(monkeypatch):
     resp = server._handle_busy_submit("r1", "sid", session, "correction Q", "ws-1")
 
     assert resp["result"]["status"] == "redirected"
-    assert session.get("queued_prompt") == {
+    assert _visible(session.get("queued_prompt")) == {
         "text": "run this after",
         "transport": "ws-1",
     }

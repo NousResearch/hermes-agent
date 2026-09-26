@@ -3,7 +3,7 @@ receives, SMTP sends. Configured via EMAIL_* env vars or ``platforms.email`` in 
 
 import asyncio
 import email as email_lib
-from datetime import date
+
 from contextlib import contextmanager, suppress
 import imaplib
 import logging
@@ -65,7 +65,10 @@ def _cron_delivery_subject(metadata: Optional[Dict[str, Any]]) -> Optional[str]:
     subject = str(delivery.get("subject") or "").strip()
     if not subject:
         return None
-    delivery_date = str(delivery.get("date") or date.today().isoformat()).strip()
+    delivery_date = str(delivery.get("date") or "").strip()
+    if not delivery_date:
+        from hermes_time import now as _hermes_now
+        delivery_date = _hermes_now().date().isoformat()
     return f"{subject} — {delivery_date}"
 
 

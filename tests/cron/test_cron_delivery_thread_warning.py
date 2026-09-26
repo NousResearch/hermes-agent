@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from types import SimpleNamespace
+from unittest.mock import patch
 
 
 def _prepare(job, target):
@@ -55,3 +56,29 @@ def test_same_conversation_target_without_thread_still_warns(caplog):
 
     assert target is not None
     assert "delivery target lost it" in caplog.text
+
+
+def test_report_policy_metadata_reaches_live_email_route():
+    from cron import scheduler_delivery as delivery
+
+    target = SimpleNamespace(
+        job={"id": "status", "name": "Service status", "email_subject_policy": "report"},
+        platform="email", platform_name="email", thread_id=None,
+        chat_id="user@example.com", runtime_adapter=None, loop=None,
+        notify_delivery=True, origin_target=False, origin={},
+    )
+    observed = {}
+
+    def send_text(_target, _text, _thread, metadata, **_kwargs):
+        observed.update(metadata)
+        return True, False, "message-id"
+
+    with patch.object(delivery, "_live_send_text", side_effect=send_text), \
+         patch.object(delivery, "_seed_live_delivery_sessions"):
+        delivered = delivery._deliver_via_live_adapter(
+            target, "status body", [],
+            delivery_metadata={"hermes_cron_delivery": {"subject": "Service status", "date": "2026-09-26"}},
+            target_errors=[], delivery_errors=[], unverified_targets=[],
+        )
+    assert delivered
+    assert observed["hermes_cron_delivery"]["subject"] == "Service status"

@@ -33,6 +33,19 @@ def test_cron_edit_no_agent_tristate():
     assert parser.parse_args(["cron", "edit", "j"]).no_agent is None
 
 
+def test_email_subject_policy_is_available_on_create_and_edit():
+    parser = _build()
+    created = parser.parse_args([
+        "cron", "create", "every day", "Report", "--email-subject-policy", "report",
+    ])
+    edited = parser.parse_args([
+        "cron", "edit", "job-id", "--email-subject-policy", "legacy",
+    ])
+    assert created.email_subject_policy == "report"
+    assert edited.email_subject_policy == "legacy"
+    assert parser.parse_args(["cron", "edit", "job-id"]).email_subject_policy is None
+
+
 def test_cron_accept_hooks_flag_on_run_and_tick():
     parser = _build()
     # --accept-hooks is suppressed-default; present only when passed.

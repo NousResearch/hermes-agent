@@ -68,13 +68,13 @@ class TestStandaloneDeliverySkipsDuringShutdown:
         send_mock.assert_not_called()
         assert result is not None
 
-    def test_cron_subject_metadata_reaches_standalone_sender(self):
-        """Unwrapped cron output must still carry its job name to the email sender."""
+    def test_legacy_subject_policy_keeps_standalone_email_reply_behavior(self):
+        """Omitting the policy preserves existing standalone email behavior."""
         from cron.scheduler import _deliver_result
 
         job = {
             "id": "daily-health", "name": "Daily Hermes log health check",
-            "deliver": "origin", "origin": {"platform": "email", "chat_id": "grant@example.com"},
+            "deliver": "origin", "origin": {"platform": "email", "chat_id": "user@example.com"},
         }
         from gateway.config import Platform
         pconfig = MagicMock(enabled=True)
@@ -86,6 +86,23 @@ class TestStandaloneDeliverySkipsDuringShutdown:
             _deliver_result(job, "daily report body")
 
         send_mock.assert_called_once()
-        assert send_mock.call_args.kwargs["metadata"] == {
-            "hermes_cron_delivery": {"subject": "Daily Hermes log health check"}
+        assert send_mock.call_args.kwargs["metadata"] == {}
+
+    def test_report_policy_metadata_reaches_standalone_sender(self):
+        from cron.scheduler import _deliver_result
+
+        job = {
+            "id": "daily-health", "name": "Daily service report",
+            "email_subject_policy": "report", "deliver": "origin",
+            "origin": {"platform": "email", "chat_id": "user@example.com"},
         }
+        from gateway.config import Platform
+        cfg = MagicMock(platforms={Platform.EMAIL: MagicMock(enabled=True)})
+        send_mock = AsyncMock(return_value={"success": True})
+        with patch("gateway.config.load_gateway_config", return_value=cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=send_mock), \
+             patch("sys.is_finalizing", return_value=False):
+            _deliver_result(job, "daily report body")
+        metadata = send_mock.call_args.kwargs["metadata"]["hermes_cron_delivery"]
+        assert metadata["subject"] == "Daily service report"
+        assert metadata["date"]

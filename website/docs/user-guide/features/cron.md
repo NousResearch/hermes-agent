@@ -574,6 +574,18 @@ When scheduling jobs, you specify where the output goes:
 
 The agent's final response is automatically delivered to the configured `deliver:` target — the agent does not send messages itself, so there is nothing to call in the cron prompt.
 
+Email cron jobs preserve the existing reply behavior by default. To make a job send each result as a separate report email, set `email_subject_policy` to `report`:
+
+```bash
+hermes cron create "every day" "Summarize the service status" \
+  --deliver email \
+  --name "Service status" \
+  --email-subject-policy report
+hermes cron edit <job_id> --email-subject-policy legacy
+```
+
+The `report` policy uses the job name and the current Hermes-configured local date in the subject and omits reply headers, so a report will not join an existing email conversation. `legacy` retains ordinary email reply/thread handling. This setting is per job, persisted with the job, and affects email targets only. It is also available as the `email_subject_policy` field (`legacy` or `report`) on the `cronjob_manage` tool's `create` and `update` actions. Existing jobs without the field are treated as `legacy`.
+
 Delivered output is secret-redacted on the way out, on every lane: the platform message, the
 session mirror (payload and the job name spliced around it), and a `bot-chat` turn. Credential
 shapes (vendor-prefixed API keys, tokens, `KEY=value` assignments) are masked even when

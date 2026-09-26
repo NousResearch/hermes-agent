@@ -619,6 +619,7 @@ def _action_create(a: Dict[str, Any]) -> str:
             reasoning_effort=a["reasoning_effort"],
             pinned=bool(a["pinned"]),
             failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
+            email_subject_policy=a["email_subject_policy"],
             **({"paused": a["paused"], "paused_reason": a["paused_reason"]}
                if a["paused"] is not False or a["paused_reason"] is not None else {}))
     except CronSchedulerRegistrationError as exc:
@@ -772,6 +773,8 @@ def _update_core_fields(job: Dict[str, Any], a: Dict[str, Any], updates: Dict[st
     if a["reasoning_effort"] is not None:
         # CLI-only lane; update_job validates, empty string clears the pin.
         updates["reasoning_effort"] = a["reasoning_effort"]
+    if a["email_subject_policy"] is not None:
+        updates["email_subject_policy"] = a["email_subject_policy"]
     # Re-validate the EFFECTIVE provider/base_url on EVERY update: a job persisted before
     # this guard may hold an unsafe pair, and editing an unrelated field must not leave it
     # schedulable. Merging this update over the stored job lets an operator remediate.
@@ -922,6 +925,7 @@ def cronjob(
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
     failure_deliver: Optional[Union[str, List[str]]] = None,
+    email_subject_policy: Optional[str] = None,
     task_id: str = None,
     session_id: Optional[str] = None,
     paused: bool = False,
@@ -1014,6 +1018,11 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
                 "type": "string",
                 "description": "Optional override target for FAILURE notices only (same grammar as deliver). When set, engine failure/interruption notices go here instead of the deliver target; 'local' suppresses them entirely (state still recorded in cron list/run history). Use for jobs delivering into shared channels where failure noise is unwanted. Omit = failures follow deliver (default). On update, '' clears."
             },
+            "email_subject_policy": {
+                "type": "string",
+                "enum": ["legacy", "report"],
+                "description": "Per-job email subject behavior. 'legacy' (default) preserves existing reply/thread behavior. 'report' sends a fresh email with job name and current Hermes-local date, without reply headers. Other platforms are unchanged. On update choose either value.",
+            },
             "skills": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -1080,7 +1089,7 @@ def check_cronjob_requirements() -> bool:
 # create/edit --model`, hand-edited jobs) — the agent must not point unattended spend at a
 # different model. Programmatic callers of cronjob() itself retain the parameters.
 _HANDLER_FORWARDED_ARGS = (
-    "job_id", "prompt", "schedule", "name", "repeat", "deliver", "failure_deliver", "skill", "skills", "reason",
+    "job_id", "prompt", "schedule", "name", "repeat", "deliver", "failure_deliver", "email_subject_policy", "skill", "skills", "reason",
     "script", "context_from", "continuity", "enabled_toolsets", "workdir", "no_agent", "attach_to_session",
     "paused_reason", "pinned")
 

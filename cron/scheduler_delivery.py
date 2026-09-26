@@ -1617,7 +1617,8 @@ def _deliver_via_live_adapter(
     partial failures (media, thread fallback) that surface even on success."""
     job = t.job
     route_thread_id, route_metadata, media_metadata = _live_route_metadata(t)
-    route_metadata = {**(route_metadata or {}), **delivery_metadata}
+    email_metadata = delivery_metadata if t.platform_name == "email" else {}
+    route_metadata = {**(route_metadata or {}), **email_metadata}
     delivered = False
     try:
         # Send cleaned text (MEDIA tags stripped) through the gateway's DeliveryRouter so it gets
@@ -1690,7 +1691,8 @@ def _standalone_send(
         # unstarted, and a wait_for wrapper created out here would be left never awaited.
         return await asyncio.wait_for(_send_to_platform(
             t.platform, t.pconfig, t.chat_id, content, thread_id=t.thread_id,
-            media_files=media_files, metadata=delivery_metadata), timeout=send_timeout)
+            media_files=media_files,
+            metadata=delivery_metadata if t.platform_name == "email" else {}), timeout=send_timeout)
 
     def _warned(msg: str) -> tuple[None, str]:
         logger.warning("Job '%s': %s", job["id"], msg)
@@ -1960,7 +1962,14 @@ def _deliver_result(
     # persisted as ``last_delivery_unverified`` so `hermes cron list` shows it.
     unverified_targets: list = []
     task_name = job.get("name", job["id"])
-    delivery_metadata = {"hermes_cron_delivery": {"subject": task_name}}
+    # The existing email reply behavior remains the default. Only an explicit per-job
+    # report policy requests a fresh, dated, unthreaded email.
+    delivery_metadata = {}
+    if job.get("email_subject_policy") == "report":
+        from hermes_time import now as _hermes_now
+        delivery_metadata = {"hermes_cron_delivery": {
+            "subject": task_name, "date": _hermes_now().date().isoformat(),
+        }}
     if wrap_response:
         delivery_content = (
             f"Cronjob Response: {task_name}\n"

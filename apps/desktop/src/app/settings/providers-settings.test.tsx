@@ -125,6 +125,7 @@ describe('ProvidersSettings', () => {
       }))
     )
     getEnvVars.mockResolvedValue({ WIDGET_API_KEY: keyVar({ provider: 'widget', provider_label: 'Widget' }) })
+
     try {
       const { container } = render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
       await screen.findByText('Widget')

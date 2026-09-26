@@ -34,6 +34,7 @@ export function CatalogDetailDialog({
     if (!pageable) {
       return
     }
+
     const index = order.findIndex(entry => entry.id === selectedId)
     onSelect(order[(index + delta + order.length) % order.length].id)
   }
@@ -82,6 +83,7 @@ export function CatalogDetailDialog({
           ) {
             return
           }
+
           event.preventDefault()
           step(event.key === 'ArrowLeft' ? -1 : 1)
         }}

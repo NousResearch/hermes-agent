@@ -192,6 +192,46 @@ class TestCheckpointNotify:
 # Terminal tool schema
 # =========================================================================
 
+
+class TestNotificationOutputIsStripped:
+    """Heartbeat/watch_match text and accounting tails carry raw subprocess bytes; no escape
+    sequence may survive into the notification the surface injects as a user turn."""
+
+    ESC = "\x1b[1t\x1b[c\x1b[?1004h\x1b[?9001h"
+
+    def test_heartbeat_output_carries_no_escape_byte(self):
+        from tools.process_registry_notifications import format_process_notification
+        text = format_process_notification(
+            {"type": "heartbeat", "session_id": "proc_esc", "command": "gh auth refresh",
+             "seq": 2, "interval": 30, "elapsed": 60, "output": self.ESC + " Waiting for browser auth…"})
+        assert "\x1b" not in text
+        assert "Waiting for browser auth" in text
+
+    def test_watch_match_output_carries_no_escape_byte(self):
+        from tools.process_registry_notifications import format_process_notification
+        text = format_process_notification(
+            {"type": "watch_match", "session_id": "proc_esc", "command": "gh auth refresh",
+             "pattern": "code", "output": "First!\n" + self.ESC})
+        assert "\x1b" not in text
+        assert "First!" in text
+
+    def test_escape_only_heartbeat_still_names_the_heartbeat(self):
+        from tools.process_registry_notifications import format_process_notification
+        text = format_process_notification(
+            {"type": "heartbeat", "session_id": "proc_esc", "command": "gh auth refresh",
+             "seq": 3, "interval": 30, "elapsed": 90, "output": self.ESC})
+        assert "\x1b" not in text
+        assert "no new output since the last heartbeat" in text
+
+    def test_accounting_tail_carries_no_escape_byte(self):
+        from tools.process_registry_notifications import _process_accounting_lines
+        lines = _process_accounting_lines(
+            {"unread_completions": [{"session_id": "proc_esc2", "command": "gh x",
+                                     "exit_code": 0, "output_tail": self.ESC + " tail"}]})
+        assert lines and all("\x1b" not in ln for ln in lines)
+        assert any("tail" in ln for ln in lines)
+
+
 class TestTerminalSchema:
 
 

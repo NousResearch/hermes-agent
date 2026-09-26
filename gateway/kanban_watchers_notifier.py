@@ -1,8 +1,15 @@
-"""Kanban notifier: claim terminal task events per subscription and deliver them.
+"""Kanban notifier: collect terminal task events per subscription and deliver them.
 
 ``GatewayKanbanWatchersMixin._kanban_notifier_watcher`` owns the loop and
-the GC cadence; the per-tick claim (``_notifier_collect``) and the
+the GC cadence; the per-tick collect (``_notifier_collect``) and the
 per-subscription delivery (``_KanbanNotification``) live here.
+
+Durability/audit contract: collect is a read-only peek — ``last_event_id``
+moves only after a delivery settles (``advance`` on success), so a crash
+between collect and send re-offers the events on the next tick
+(at-least-once, #120258). ``delivery_obligations`` records session final
+responses only; for passive pings the cursor itself is the checkpoint (an
+event id at or below ``last_event_id`` was delivered).
 """
 
 from __future__ import annotations
@@ -56,7 +63,7 @@ def diagnostic_event(ev) -> bool:
 # reclaimed, runs again, and crashes a second time would only notify on the first crash because the
 # subscription was deleted after the first event. Same shape as the reblock-after-unblock cycle that PR
 # #22941 fixed for `blocked`. Keeping the subscription alive until the task is archived lets the cursor
-# (advanced atomically by claim_unseen_events_for_sub) handle dedup, and any retry-loop event reaches the
+# (advanced only after a delivery settles) handle dedup, and any retry-loop event reaches the
 # user. Per-subscription send-failure counter. Adapter.send raising means the chat is dead (deleted, bot
 # kicked, etc.) — after N consecutive send failures the sub is dropped so we don't spin against a dead chat
 # every 5 seconds forever. A genuinely dead chat still drops, just ~60s later — a fine trade for an
@@ -285,8 +292,21 @@ class _Collector:
         except Exception as _gc_exc:
             logger.debug("kanban notifier: stale-sub GC failed for board %s: %s", slug, _gc_exc)
 
-    def _claim_for_sub(self, conn: Any, slug: str, sub: dict) -> Optional[dict]:
-        """Claim one subscription's unseen events; None when skipped or nothing new."""
+    def _collect_for_sub(self, conn: Any, slug: str, sub: dict) -> Optional[dict]:
+        """Peek one subscription's unseen events; None when skipped or nothing new.
+
+        The cursor is deliberately NOT advanced here (``unseen_events_for_sub``
+        is a read-only peek): it moves only after a delivery settles, via
+        ``_KanbanNotification.advance`` on success. A crash/restart between
+        collect and send therefore re-offers the same events on the next tick
+        (at-least-once, #120258) instead of silently dropping them. A failed
+        delivery's ``rewind`` stays a harmless CAS no-op — the row never left
+        ``old_cursor`` — unless a concurrent reader advanced it, in which
+        case the CAS guard still protects newer progress.
+        # ponytail: peek trades the claim's cross-gateway mutex for crash
+        # safety; two gateways serving one DB may double-ping. Per-sub
+        # ownership (dispatcher lock / notifier_profile) keeps that rare.
+        """
         owner_profile = sub.get("notifier_profile") or None
         platform = (sub.get("platform") or "").lower()
         if platform not in self.active_platforms:
@@ -297,19 +317,20 @@ class _Collector:
         if _adapter_for_subscription(self.runner, Platform(platform), sub, owner_profile or self.notifier_profile) is None:
             _warn_anchorless_thread_sub_once(sub, platform)
             return None
-        old_cursor, cursor, events = _kbn().claim_unseen_events_for_sub(
+        old_cursor = int(sub.get("last_event_id") or 0)
+        cursor, events = _kbn().unseen_events_for_sub(
             conn, task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
             thread_id=sub.get("thread_id") or "", kinds=TERMINAL_KINDS,
         )
         if not events:
             return None
         task = self.kb.get_task(conn, sub["task_id"])
-        logger.debug("kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
+        logger.debug("kanban notifier: collected %d event(s) for %s on board %s cursor %s→%s (peek; advances on delivery)",
                      len(events), sub["task_id"], slug, old_cursor, cursor)
         return {"sub": sub, "old_cursor": old_cursor, "cursor": cursor, "events": events, "task": task, "board": slug}
 
     def collect_board(self, slug: str) -> None:
-        """Claim events on one board, appending delivery dicts to ``deliveries``."""
+        """Collect (peek) events on one board, appending delivery dicts to ``deliveries``."""
         if not self._board_has_subs(slug):
             return
         kb = self.kb
@@ -329,9 +350,9 @@ class _Collector:
                 logger.debug("kanban notifier: board %s has no subscriptions", slug)
             for sub in subs:
                 try:
-                    claimed = self._claim_for_sub(conn, slug, sub)
-                    if claimed is not None:
-                        self.deliveries.append(claimed)
+                    collected = self._collect_for_sub(conn, slug, sub)
+                    if collected is not None:
+                        self.deliveries.append(collected)
                 except Exception as sub_exc:
                     # One bad subscription must not block the rest of the tick.
                     logger.warning("kanban notifier: subscription for %s on board %s failed: %s",
@@ -341,7 +362,7 @@ class _Collector:
 
 
 def _notifier_collect(runner: Any, kb: Any, *, notifier_profile: Optional[str], gc_due: bool, gc_retention_days: int) -> list[dict]:
-    """Claim unseen terminal events for every owned subscription on every board.
+    """Collect (peek) unseen terminal events for every owned subscription on every board.
 
     Each gateway polls only subscriptions owned by profiles whose adapters it
     hosts; legacy rows without a profile stamp are visible only to the process

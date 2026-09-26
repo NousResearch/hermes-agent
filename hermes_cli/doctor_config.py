@@ -317,6 +317,7 @@ def _check_config_file(should_fix: bool, f: Finding) -> None:
 
 def _drift_config_version(f: Finding, should_fix: bool, config_path) -> None:
     from hermes_cli.config import check_config_version, migrate_config
+    from hermes_cli.config_migrations import support_floor_message
     current_ver, latest_ver = check_config_version()
     outdated = (f"Config version outdated (v{current_ver} → v{latest_ver})", "(new settings available)")
     if check_bool(current_ver >= latest_ver, f"Config version up to date (v{current_ver})", outdated):
@@ -326,11 +327,18 @@ def _drift_config_version(f: Finding, should_fix: bool, config_path) -> None:
         return
     try:
         migrate_config(interactive=False, quiet=False)
-        check_ok("Config migrated to latest version")
-        f.fixed += 1
     except Exception as mig_err:
         check_warn(f"Auto-migration failed: {mig_err}")
         f.issues.append("Run 'hermes setup' to migrate config")
+        return
+    # Below the support floor migrate_config() leaves the file untouched rather than raising.
+    after_ver, _ = check_config_version()
+    if after_ver < latest_ver:
+        check_warn(f"Config was not migrated (still v{after_ver})")
+        f.manual_issues.append(support_floor_message())
+        return
+    check_ok("Config migrated to latest version")
+    f.fixed += 1
 
 
 def _drift_stale_root_keys(f: Finding, should_fix: bool, config_path) -> None:

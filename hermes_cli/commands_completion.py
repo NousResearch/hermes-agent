@@ -168,13 +168,70 @@ def _handoff_completions(sub_text: str, sub_lower: str):
             name, partial, name, f"→ {home_name}" if home_name else "send this session here")
 
 
+@_quiet
+def _resume_completions(sub_text: str, sub_lower: str, provider):
+    """``/resume`` — recent session titles and ids supplied by the active CLI."""
+    completed, partial = _split_args(sub_text)
+    if completed or provider is None:
+        return
+    seen: set[str] = set()
+    rows = []
+    for session in provider() or ():
+        if not isinstance(session, Mapping):
+            continue
+        session_id = str(session.get("id") or "").strip()
+        title = str(session.get("title") or "").strip()
+        preview = " ".join(str(session.get("preview") or "").split())
+        metadata = f"{session_id} — {preview}" if preview else session_id
+        for name in (title, session_id):
+            if name and name not in seen:
+                seen.add(name)
+                rows.append((name, metadata))
+    lowered = partial.lower()
+    for name, metadata in rows:
+        if name.lower().startswith(lowered) and name.lower() != lowered:
+            yield _completion(name, partial, name, metadata)
+
+
+@_quiet
+def _rollback_completions(sub_text: str, sub_lower: str, provider):
+    """``/rollback`` — the ``diff`` action and numbered checkpoints."""
+    completed, partial = _split_args(sub_text)
+    if len(completed) > 1:
+        return
+    if not completed:
+        if "diff".startswith(partial.lower()) and partial.lower() != "diff":
+            yield _completion("diff", partial, "diff", "show changes without restoring")
+        if provider is None:
+            return
+        checkpoints = provider() or ()
+        start = 1
+    elif completed[0].lower() == "diff":
+        if provider is None:
+            return
+        checkpoints = provider() or ()
+        start = 1
+    else:
+        return
+    for index, checkpoint in enumerate(checkpoints, start=start):
+        number = str(index)
+        if number.startswith(partial) and number != partial:
+            short_hash = str(checkpoint.get("short_hash") or "") if isinstance(checkpoint, Mapping) else ""
+            reason = str(checkpoint.get("reason") or "") if isinstance(checkpoint, Mapping) else ""
+            metadata = " ".join(part for part in (short_hash, reason) if part)
+            yield _completion(number, partial, number, metadata)
+
+
 # base command -> (handler(sub_text, sub_lower), single_word_only). Single-word handlers only
 # run while the first argument is typed; /tools and /handoff parse multi-word input themselves.
-_DYNAMIC_COMPLETIONS: dict[str, tuple[Callable[..., Any], bool]] = {
-    "/skin": (_skin_completions, True),
-    "/personality": (_personality_completions, True),
-    "/tools": (_tools_completions, False),
-    "/handoff": (_handoff_completions, False)}
+# The optional provider keeps filesystem/database reads outside the generic completer.
+_DYNAMIC_COMPLETIONS: dict[str, tuple[Callable[..., Any], bool, Callable[..., Any] | None]] = {
+    "/skin": (_skin_completions, True, None),
+    "/personality": (_personality_completions, True, None),
+    "/tools": (_tools_completions, False, None),
+    "/handoff": (_handoff_completions, False, None),
+    "/resume": (_resume_completions, True, None),
+    "/rollback": (_rollback_completions, False, None)}
 
 
 def _extract_path_word(text: str) -> str | None:
@@ -272,10 +329,17 @@ class SlashCommandCompleter(Completer):
         self,
         skill_commands_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
         command_filter: Callable[[str], bool] | None = None,
-        skill_bundles_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None) -> None:
+        skill_bundles_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
+        session_provider: Callable[[], Iterable[Mapping[str, Any]]] | None = None,
+        checkpoint_provider: Callable[[], Iterable[Mapping[str, Any]]] | None = None) -> None:
         self._skill_commands_provider = skill_commands_provider
         self._command_filter = command_filter
         self._skill_bundles_provider = skill_bundles_provider
+        self._session_provider = session_provider
+        self._checkpoint_provider = checkpoint_provider
+        self._dynamic_completions = dict(_DYNAMIC_COMPLETIONS)
+        self._dynamic_completions["/resume"] = (_resume_completions, True, session_provider)
+        self._dynamic_completions["/rollback"] = (_rollback_completions, False, checkpoint_provider)
         # Cached project file list for fuzzy @ completions
         self._file_cache: list[str] = []
         self._file_cache_time: float = 0.0
@@ -431,9 +495,12 @@ class SlashCommandCompleter(Completer):
             if self._is_skill_command(base_cmd):
                 yield from self._stacked_skill_completions(text)
                 return
-            handler, single_word = _DYNAMIC_COMPLETIONS.get(base_cmd, (None, False))
+            handler, single_word, provider = self._dynamic_completions.get(base_cmd, (None, False, None))
             if handler is not None and (not single_word or first_arg):
-                yield from handler(sub_text, sub_text.lower())
+                if provider is None:
+                    yield from handler(sub_text, sub_text.lower())
+                else:
+                    yield from handler(sub_text, sub_text.lower(), provider)
             elif first_arg and base_cmd in SUBCOMMANDS and self._command_allowed(base_cmd):
                 yield from _prefix_completions(
                     ((s, None) for s in SUBCOMMANDS[base_cmd]), sub_text)

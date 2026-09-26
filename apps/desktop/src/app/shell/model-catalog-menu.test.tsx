@@ -86,14 +86,14 @@ describe('the current row effort', () => {
     $defaultReasoningEffort.set('ultra')
     renderMenu({ effortPending: true, model: 'gemini-2.5-flash', provider: 'google' })
 
-    const row = (await screen.findByText(/Gemini 2\.5 Flash/i)).closest('[role="menuitem"]')!
+    const row = (await screen.findByText('Gemini 2.5')).closest('[role="menuitem"]')!
 
     expect(row.textContent).not.toContain('Ultra')
     cleanup()
 
     renderMenu({ model: 'gemini-2.5-flash', provider: 'google' })
 
-    const settled = (await screen.findByText(/Gemini 2\.5 Flash/i)).closest('[role="menuitem"]')!
+    const settled = (await screen.findByText('Gemini 2.5')).closest('[role="menuitem"]')!
 
     expect(settled.textContent).toContain('Ultra')
   })
@@ -111,12 +111,15 @@ describe('the reasoning-effort badge (#51833)', () => {
     expect(badge.className).toContain('rounded-sm')
 
     // …as a SIBLING of the truncating model-name span, so it can never read as
-    // part of a differently-named model.
-    const nameSpan = badge.previousElementSibling
+    // part of a differently-named model. The `-flash` variant tag is its own
+    // chip between them (#118083); the name itself stays free of both.
+    const nameSpan = badge.parentElement?.querySelector('.truncate')
 
     expect(nameSpan?.className).toContain('truncate')
     expect(nameSpan?.contains(badge)).toBe(false)
-    expect(nameSpan?.textContent?.toLowerCase()).toContain('gemini 2.5 flash')
+    expect(nameSpan?.textContent?.toLowerCase()).toContain('gemini 2.5')
+    expect(nameSpan?.textContent?.toLowerCase()).not.toContain('flash')
+    expect(nameSpan?.textContent?.toLowerCase()).not.toContain('high')
   })
 
   it('drops the effort badge entirely when the model has no reasoning support', async () => {
@@ -133,7 +136,7 @@ describe('the reasoning-effort badge (#51833)', () => {
 
     renderMenu({ effort: 'high', model: 'gemini-2.5-flash', provider: 'google' })
 
-    await screen.findByText(/Gemini 2\.5 Flash/i)
+    await screen.findByText('Gemini 2.5')
 
     await waitFor(() => {
       expect(screen.queryByText('High')).toBeNull()
@@ -180,7 +183,7 @@ describe('the catalog owns model curation', () => {
 
     renderMenu()
 
-    await screen.findByText(/Gemini 2\.5 Flash/i)
+    await screen.findByText('Gemini 2.5')
     expect(screen.queryByText(/Gemini 3\.1 Pro/i)).toBeNull()
   })
 
@@ -188,7 +191,7 @@ describe('the catalog owns model curation', () => {
     setVisibleModels(new Set([modelVisibilityKey('google', 'gemini-2.5-flash')]))
 
     renderMenu()
-    await screen.findByText(/Gemini 2\.5 Flash/i)
+    await screen.findByText('Gemini 2.5')
 
     const input = screen.getByRole('textbox', { name: 'Search models' })
 

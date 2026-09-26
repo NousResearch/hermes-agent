@@ -27,11 +27,43 @@ describe('model-status-label', () => {
     expect(modelDisplayParts('anthropic/claude-opus-4.8-fast').tag).toBe('Fast')
   })
 
-  it('keeps the model pill to name + Fast; the effort lives on its own pill', () => {
+  it('distinguishes the deepseek-flash alias from its deepseek-v4.1-flash sibling (#118083)', () => {
+    // models.dev carries both ids for the provider: `deepseek-flash` (alias)
+    // and `deepseek-v4.1-flash` (full id). Two distinct ids must never render
+    // as near-identical tagless rows the user reads as one model listed twice.
+    // The `-flash` variant tag splits the pair the same way `-fast` splits
+    // `…-4.8` vs `…-4.8-fast`, and the vendor word fixes the casing gap that
+    // made the alias read "DeepSeek" while its sibling read "Deepseek".
+    expect(modelDisplayParts('deepseek-flash')).toEqual({ name: 'DeepSeek', tag: 'Flash' })
+    expect(modelDisplayParts('deepseek-v4.1-flash')).toEqual({ name: 'DeepSeek V4.1', tag: 'Flash' })
+    // Non-flash siblings stay tagless and distinct from their flash variant.
+    expect(modelDisplayParts('deepseek-v4.1')).toEqual({ name: 'DeepSeek V4.1', tag: '' })
+  })
+
+  it('spells vendor words the way the vendor does, not naive title-case (#118083)', () => {
+    expect(displayModelName('deepseek-chat')).toBe('DeepSeek Chat')
+    expect(displayModelName('zai/glm-5.2-air')).toBe('GLM 5.2 Air')
+    expect(displayModelName('qwen3.6-vl-plus')).toBe('Qwen3.6 Vl Plus')
+  })
+
+  it('keeps the model pill to name + variant tag; the effort lives on its own pill', () => {
     expect(formatModelPillLabel('openai/gpt-5.5', { fastMode: true })).toBe('GPT-5.5 · Fast')
     expect(formatModelPillLabel('anthropic/claude-opus-4.8-fast')).toBe('Opus 4.8 · Fast')
     expect(formatModelPillLabel('openai/gpt-5.5')).toBe('GPT-5.5')
     expect(formatModelPillLabel('')).toBe('No model')
+  })
+
+  it('rides the same variant tags on the pill as the catalog rows (#118083)', () => {
+    // A `-flash` id must render its tag on the composer pill too: without it,
+    // `gemini-2.5-flash` and `gemini-2.5` produce identical pill text, so a
+    // model switch reads as a no-op — the exact look-alike collapse the
+    // catalog-row split exists to prevent, one screen over.
+    expect(formatModelPillLabel('gemini-2.5-flash')).toBe('Gemini 2.5 · Flash')
+    expect(formatModelPillLabel('deepseek-v4.1-flash')).toBe('DeepSeek V4.1 · Flash')
+    expect(formatModelPillLabel('qwen3.8-flash')).toBe('Qwen3.8 · Flash')
+    // The bare models stay tagless — and distinct from their flash variants.
+    expect(formatModelPillLabel('gemini-2.5')).toBe('Gemini 2.5')
+    expect(formatModelPillLabel('deepseek-v4.1')).toBe('DeepSeek V4.1')
   })
 
   describe('currentPickerSelection', () => {

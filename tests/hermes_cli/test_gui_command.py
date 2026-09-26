@@ -833,7 +833,7 @@ def test_gui_launches_even_when_desktop_entry_install_fails(tmp_path, monkeypatc
 def test_desktop_launch_options_normalizes_password_store(raw, expected):
     cfg = {"desktop": {"password_store": raw}}
     with patch("hermes_cli.config.load_config", return_value=cfg):
-        _, _, store, _ = main_desktop._desktop_launch_options()
+        _, _, store, _, _ = main_desktop._desktop_launch_options()
     assert store == expected
 
 
@@ -851,8 +851,58 @@ def test_desktop_launch_options_normalizes_ozone_hint(raw, expected):
     """``desktop.ozone_platform_hint`` normalizes to x11/wayland/auto."""
     cfg = {"desktop": {"ozone_platform_hint": raw}}
     with patch("hermes_cli.config.load_config", return_value=cfg):
-        _, _, _, hint = main_desktop._desktop_launch_options()
+        _, _, _, hint, _ = main_desktop._desktop_launch_options()
     assert hint == expected
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        # Absent key stays ON — the composer must be reachable by
+        # accessibility-driven dictation out of the box (#118083 family:
+        # #118271 / #92607).
+        (None, True),
+        (True, True),
+        (False, False),
+        ("on", True),
+        ("1", True),
+        ("yes", True),
+        ("0", False),
+        ("false", False),
+        ("OFF", False),
+        ("  no  ", False),
+        # Unknown strings don't disable the feature (fail-open, like the
+        # other desktop launch options fail to "auto").
+        ("wibble", True),
+    ],
+)
+def test_desktop_launch_options_normalizes_renderer_accessibility(raw, expected):
+    """``desktop.renderer_accessibility`` defaults to ON; only explicit false words opt out."""
+    cfg = {"desktop": {} if raw is None else {"renderer_accessibility": raw}}
+    with patch("hermes_cli.config.load_config", return_value=cfg):
+        _, _, _, _, renderer_a11y = main_desktop._desktop_launch_options()
+    assert renderer_a11y is expected
+
+
+def test_desktop_environment_bridges_only_the_accessibility_opt_out(monkeypatch):
+    """ON (the default) sets nothing; the opt-out bridges to
+    HERMES_DESKTOP_RENDERER_ACCESSIBILITY=0, and an explicit env var wins."""
+    monkeypatch.delenv("HERMES_DESKTOP_RENDERER_ACCESSIBILITY", raising=False)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"desktop": {}})
+
+    env, _ = main_desktop._desktop_launch_env(_ns())
+    assert "HERMES_DESKTOP_RENDERER_ACCESSIBILITY" not in env
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"desktop": {"renderer_accessibility": False}})
+    env, _ = main_desktop._desktop_launch_env(_ns())
+    assert env["HERMES_DESKTOP_RENDERER_ACCESSIBILITY"] == "0"
+
+    monkeypatch.setenv("HERMES_DESKTOP_RENDERER_ACCESSIBILITY", "0")
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"desktop": {}})
+    env, _ = main_desktop._desktop_launch_env(_ns())
+    assert env["HERMES_DESKTOP_RENDERER_ACCESSIBILITY"] == "0"
 
 
 

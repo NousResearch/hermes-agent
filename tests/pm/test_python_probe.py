@@ -2,6 +2,7 @@
 import hashlib
 import io
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -64,6 +65,25 @@ def test_unexecutable_python_never_replaces_selected_interpreter(python_store):
     assert facts.path.read_bytes() == before
     assert old_binary.read_bytes() == b"previous selected interpreter"
     assert not (root / package.store_entry("candidate", target)).exists()
+
+
+@pytest.mark.platforms("windows")
+def test_native_windows_python_archive_executes_before_selection(python_store):
+    """Exercise a real loader in both the scratch and published locations."""
+    root, lock = python_store
+    target = current_target()
+    executable = Path(sys._base_executable).resolve()
+    files = {"python.exe": executable.read_bytes(), "keep.txt": b"keep layout"}
+    for dll in executable.parent.glob("*.dll"):
+        files[dll.name] = dll.read_bytes()
+    cache_archive(root, lock, target, files)
+    ensure("python", explicit=True)
+    fact = Facts(root / "facts.json").get("python")
+    assert fact["version"] == "candidate"
+    binary = Python().binary(root / fact["entry"], target)
+    completed = subprocess.run([str(binary), "--version"], capture_output=True, timeout=10)
+    assert completed.returncode == 0, completed.stderr
+    assert b"Python" in completed.stdout + completed.stderr
 
 
 def test_cross_target_python_remains_file_only(python_store, monkeypatch):

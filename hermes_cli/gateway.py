@@ -4085,6 +4085,17 @@ def host_multiplexer_serving(profile_name: str | None = None):
         return None
 
 
+def _installation_root_for(home) -> str:
+    """Installation root owning ``home``: ``<root>/profiles/<name>`` maps to ``<root>``, every
+    other home maps to itself (#121352)."""
+    path = Path(str(home)).expanduser()
+    try:
+        path = path.resolve()
+    except OSError:
+        path = Path(os.path.abspath(str(path)))
+    return str(path.parent.parent if path.parent.name == "profiles" else path)
+
+
 def _served_by_another_host_gateway(profile_name: str | None = None):
     """The host gateway serving ``profile_name`` when it is NOT this home's own process.
 
@@ -4097,7 +4108,14 @@ def _served_by_another_host_gateway(profile_name: str | None = None):
         return None
     try:
         from gateway.status import _get_process_hermes_home, _same_hermes_home
-        if _same_hermes_home(gateway.home, _get_process_hermes_home()):
+        process_home = _get_process_hermes_home()
+        if _same_hermes_home(gateway.home, process_home):
+            return None
+        # The host record is HOST-wide, and two tenants on one host each expose a profile
+        # named 'default': another tenant's gateway can never serve this home. Only a
+        # gateway from the SAME installation counts (its root vs this process's root, so
+        # the default home and ``<root>/profiles/<name>`` satellites keep matching) (#121352).
+        if _installation_root_for(gateway.home) != _installation_root_for(process_home):
             return None
     except Exception:
         logger.debug("Host multiplexer home comparison failed", exc_info=True)

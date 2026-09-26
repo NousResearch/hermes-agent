@@ -185,7 +185,13 @@ def _resolve_openrouter_runtime(
         return rp._runtime("openrouter", cfg_api_mode or rp._detect_api_mode_for_url(base_url) or "chat_completions", base_url,
                            api_key, source=source)
     if base_url:
-        pool_result = rp._try_resolve_from_custom_pool(base_url, "custom", cfg_api_mode, provider_name=None)
+        # By URL alone this would pick a same-URL named sibling's pool; resolve only from a pool the
+        # main model's own key (config key for a trusted base_url, else the resolved one) can own.
+        owner_api_key = (cfg_api_key if use_config_base_url else "") or api_key
+        # No own key to match (none configured, none resolved): keep main's URL-only lookup, so the
+        # model's sole same-URL entry still lends it the entry's credential.
+        pool_result = rp._try_resolve_from_custom_pool(base_url, "custom", cfg_api_mode, provider_name=None,
+                                                       owner_api_key=owner_api_key or None)
         if pool_result:
             return pool_result
     # Local no-auth servers get a placeholder key — the OpenAI SDK requires a non-empty string.

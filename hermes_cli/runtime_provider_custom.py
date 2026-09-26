@@ -367,12 +367,18 @@ def is_routable_provider(provider: Optional[str]) -> bool:
 
 
 def _try_resolve_from_custom_pool(
-    base_url: str, provider_label: str, api_mode_override: Optional[str] = None, provider_name: Optional[str] = None
+    base_url: str, provider_label: str, api_mode_override: Optional[str] = None, provider_name: Optional[str] = None,
+    owner_api_key: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Runtime dict from the first credential pool that owns this custom endpoint, else None."""
+    """Runtime dict from the first credential pool that owns this custom endpoint, else None.
+    ``owner_api_key`` (the bare-``custom`` main model's own key) skips a same-URL named entry whose
+    own credential is a different key, so the main model never resolves with a sibling's key."""
     rp = _rp()
     try:
-        raw_keys = list(rp.custom_provider_pool_key_candidates(base_url, provider_name))
+        if owner_api_key is not None:
+            raw_keys = list(rp.custom_provider_pool_key_candidates_for_key(base_url, owner_api_key))
+        else:
+            raw_keys = list(rp.custom_provider_pool_key_candidates(base_url, provider_name))
     except Exception:
         raw_keys = []
     # Order-preserving dedupe of normalized keys.

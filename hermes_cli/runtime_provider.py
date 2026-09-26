@@ -15,9 +15,9 @@ from typing import Any, Callable, Dict, Optional
 logger = logging.getLogger(__name__)
 
 from hermes_cli import auth as auth_mod
-from agent.credential_pool import (  # custom_provider_pool_key_candidates is read via origin by runtime_provider_custom
+from agent.credential_pool import (  # custom_provider_pool_key_candidates(_for_key) are read via origin by runtime_provider_custom
     CredentialPool, PooledCredential, credential_pool_matches_provider, custom_provider_pool_key_candidates,  # noqa: F401
-    load_pool,
+    custom_provider_pool_key_candidates_for_key, load_pool,  # noqa: F401
 )
 from agent.secret_scope import get_secret_str
 from hermes_cli.auth import (  # resolve_external_process_provider_credentials is read via origin by runtime_provider_backends

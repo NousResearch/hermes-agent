@@ -596,6 +596,43 @@ def _get_custom_provider_config(pool_key: str) -> Optional[Dict[str, Any]]:
     return next((entry for norm_name, entry in _iter_custom_providers() if norm_name == suffix), None)
 
 
+def _custom_provider_declares_other_credential(cp_config: Optional[Dict[str, Any]], api_key: str) -> bool:
+    """True when a ``providers:``/``custom_providers:`` entry's own credential is NOT ``api_key``.
+
+    ``key_cmd`` mints its own token, a literal ``api_key`` counts when it differs, and
+    ``key_env``/``api_key_env`` counts when the variable is unset or holds a different value.
+    An entry with no credential, or whose credential resolves to ``api_key`` (``hermes model``
+    writes ``model.api_key: ${VAR}`` beside an entry with ``key_env: VAR``), can share it."""
+    if not cp_config:
+        return False
+    if str(cp_config.get("key_cmd") or "").strip():
+        return True
+    own = str(cp_config.get("api_key") or "").strip()
+    env_var = str(cp_config.get("key_env") or cp_config.get("api_key_env") or "").strip()
+    if not own and env_var:
+        own = str(get_env_prefer_dotenv(env_var) or "").strip()
+        if not own:
+            return True
+    return bool(own) and own != api_key
+
+
+def custom_provider_pool_key_candidates_for_key(base_url: Optional[str], api_key: str) -> List[str]:
+    """Pool keys of the first custom entry on ``base_url`` whose credential can be ``api_key``.
+
+    ``custom_provider_pool_key_candidates(base_url)`` picks the first entry on the URL, which
+    may be a named sibling holding a DIFFERENT key; the bare-``custom`` main model must neither
+    seed its key into that pool nor resolve from it.
+    """
+    normalized_url = _norm_url(base_url)
+    if not normalized_url:
+        return []
+    for norm_name, entry in _iter_custom_providers():
+        if (_norm_url(entry.get("base_url")) == normalized_url
+                and not _custom_provider_declares_other_credential(entry, api_key)):
+            return _pool_keys_for_custom_entry(norm_name, entry)
+    return []
+
+
 def get_pool_strategy(provider: str) -> str:
     """Return the configured selection strategy for a provider."""
     config = _load_config_safe()
@@ -2999,8 +3036,11 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
                 # slug or legacy ``custom:<name>``; accept any candidate, or
                 # seeding is skipped when the pool holds the other identity.
                 # Check if this model's base_url matches our custom provider. See #100413.
+                # A same-URL entry whose own credential is a different key belongs to
+                # another provider and must not receive the model's key.
                 matched_keys = {
-                    str(key).strip().lower() for key in custom_provider_pool_key_candidates(model_base_url)
+                    str(key).strip().lower()
+                    for key in custom_provider_pool_key_candidates_for_key(model_base_url, model_api_key)
                 }
                 if pool_key in matched_keys:
                     seed.upsert("model_config", {

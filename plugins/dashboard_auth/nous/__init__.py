@@ -130,12 +130,12 @@ def _settings() -> dict:
     portal_url = resolve_env_or_cfg("HERMES_DASHBOARD_PORTAL_URL", section.get("portal_url", "")) or _DEFAULT_PORTAL_URL
     if not client_id:
         raise SkipRegistration(
-            "HERMES_DASHBOARD_OAUTH_CLIENT_ID is not set (and dashboard.oauth.client_id "
-            "in config.yaml is empty). The Nous Portal provisions this env var (shape "
-            "'agent:{instance_id}') when it deploys a Hermes Agent instance — set it to "
-            "your provisioned client id (either as an env var or under "
-            "dashboard.oauth.client_id in config.yaml), or pass --insecure to skip the "
-            "OAuth gate entirely.")
+        "HERMES_DASHBOARD_OAUTH_CLIENT_ID is not set (and dashboard.oauth.client_id "
+        "in config.yaml is empty). The Nous Portal provisions this env var (shape "
+        "'agent:{instance_id}') when it deploys a Hermes Agent instance — set it to "
+        "your provisioned client id (either as an env var or under "
+        "dashboard.oauth.client_id in config.yaml), or pass --insecure to skip the "
+        "OAuth gate entirely.", level="warning")
     if not client_id.startswith("agent:"):
         raise SkipRegistration(
             f"HERMES_DASHBOARD_OAUTH_CLIENT_ID={client_id!r} doesn't match the contract "
@@ -165,6 +165,7 @@ import httpx  # noqa: F401,E402
 import os  # noqa: F401,E402
 import secrets  # noqa: F401,E402
 import urllib.parse  # noqa: F401,E402
+
 
 
 _PLUGIN_COMPAT_LAZY = {

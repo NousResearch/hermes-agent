@@ -1440,16 +1440,12 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                             session.output_buffer = ""
                     prev_output_bytes = reply.size
                 if delta:
-                    # A kill that landed after this fetch already published its output
-                    # snapshot: leave the output as the kill reported it (as the PTY reader does).
-                    with session._lock:
-                        if session.exited:
-                            return
-                        session.output_buffer += delta
-                        if len(session.output_buffer) > session.max_output_chars:
-                            session.output_buffer = session.output_buffer[-session.max_output_chars:]
-                    self._check_watch_patterns(session, delta)
-                    self._emit_output(session, delta)
+                    # Same ingest as the local readers: heartbeats diff total_output_chars, which only
+                    # append_output advances. A kill that landed after this fetch already published its
+                    # output snapshot: the chunk is dropped and the output stays as the kill reported it.
+                    self._ingest_output(session, delta, unless_exited=True)
+                    if session.exited:
+                        return
 
                 # Unreadable reply: separate liveness and exit-code reads, as before the combined read.
                 exit_code = reply.exit_code if reply else fallback_exit_code(env, q(pid_path), q(exit_path))

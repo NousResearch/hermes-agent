@@ -390,6 +390,35 @@ def prune_stale_shallow_grafts(repo_root: Path) -> int:
         return 0
 
 
+def heal_shallow_history(repo_root: Path, branch: str, **run_kwargs) -> bool:
+    """Unshallow a stale installer checkout before the updater's bounded fetch.
+
+    A depth-1 install that has fallen far behind ``branch`` cannot complete the
+    plain ``git fetch origin <branch>`` inside the updater's 300s network cap:
+    the server must send the full ancestry of every side branch merged past the
+    shallow boundary, each attempt is killed mid-transfer, and the unshallow
+    step that would make later fetches incremental only ran *after* a
+    successful update — so a stale shallow install could never update at all
+    (#123254). This heals the checkout first, with the same commit-graph-only
+    shape and 900s budget the post-update tag fetch uses, pulling ``branch``
+    along so the bounded fetch that follows is small again.
+
+    Returns whether the checkout was shallow. Raises on fetch failure; the
+    checkout is left exactly as it was, so callers can downgrade the failure
+    to a warning and keep the previous fetch behaviour.
+    """
+    shallow = _shallow_file_path(repo_root) is not None
+    if not shallow:
+        return False
+    subprocess.run(
+        ["git", "fetch", "--quiet", "--unshallow", "--filter=tree:0", "--no-tags",
+         "origin", "refs/tags/v*:refs/tags/v*", branch],
+        cwd=str(repo_root), check=True, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=900, **run_kwargs,
+    )
+    return True
+
+
 def fetch_full_commit_graph(repo_root: Path, **run_kwargs) -> bool:
     """Refresh release tags and fill shallow history before publishing identity.
 

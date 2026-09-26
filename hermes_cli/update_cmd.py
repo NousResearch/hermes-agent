@@ -243,11 +243,38 @@ def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
         # fetch writes to tmp_pack_* and only renames on success. Report as a failed run
         # so every caller's existing stderr path prints one clear line.
         result = subprocess.CompletedProcess(
-            exc.cmd, 124, stdout="",
-            stderr=f"git {args[0]} timed out after {NETWORK_GIT_TIMEOUT_SECONDS}s with no response from the remote")
+            exc.cmd,
+            124,
+            stdout="",
+            stderr=f"git {args[0]} was still running after the {NETWORK_GIT_TIMEOUT_SECONDS}s network limit"
+            f" (slow transfer, not a dead remote — a larger fetch may need `hermes update` again or a manual `git fetch`)",
+        )
         if check:
             raise subprocess.CalledProcessError(124, exc.cmd, output="", stderr=result.stderr) from exc
         return result
+
+
+def _heal_stale_shallow_checkout(repo_root: Path, branch: str) -> None:
+    """Unshallow a stale installer checkout before the bounded fetch (#123254).
+
+    Non-fatal by design: a server or proxy that rejects the unshallow/filter
+    args leaves the checkout as it was, and the update proceeds with the same
+    fetch (and the same 300s cap) as before — the heal can only widen the set
+    of installs that can update.
+    """
+    from hermes_cli.gitlock import heal_shallow_history
+
+    try:
+        if heal_shallow_history(repo_root, branch, **_no_prompt_git_kwargs()):
+            print("  ✓ Fetched full commit history (shallow checkout healed)")
+    except (OSError, subprocess.SubprocessError) as exc:
+        detail = (getattr(exc, "stderr", None) or str(exc)).strip().splitlines()[
+            -1:
+        ] or [type(exc).__name__]
+        print(
+            f"  ⚠ Could not heal the shallow checkout before fetching ({detail[0]}); "
+            "a very stale install may still time out"
+        )
 
 
 def _capture_head_sha(git_cmd, cwd) -> str | None:
@@ -1370,6 +1397,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Surface autostash entries left behind by earlier updates (#63717 problem 6) — parked --keep-stash
         # runs and failed restores preserve the stash but nothing ever mentioned it again.
         _m()._warn_orphaned_update_autostashes(git_cmd, _m().PROJECT_ROOT)
+
+        # Heal a stale shallow checkout first: the bounded fetch below cannot
+        # finish on one (#123254), and the old post-update heal never got the
+        # chance to run because the fetch itself never succeeded.
+        _heal_stale_shallow_checkout(_m().PROJECT_ROOT, branch)
 
         print("→ Fetching updates...")
         if release_sha:

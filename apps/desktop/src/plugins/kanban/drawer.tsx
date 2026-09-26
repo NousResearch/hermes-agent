@@ -1,8 +1,8 @@
 /**
  * Task modal — the desktop port of the dashboard's task detail, Linear-style:
- * a centered two-column dialog (main: diagnostics, description, result,
- * dependencies, comments, activity, runs, log tail; right sidebar: property
- * rows with the inline editors), instead of the old cramped right drawer.
+ * a centered two-column dialog (main: diagnostics, description, result, and the
+ * feed folded by attempt; right sidebar: property rows with the inline editors,
+ * dependency chips carrying their gated-state tone), on the shared Dialog.
  */
 
 import {
@@ -62,6 +62,7 @@ import {
   type DiagnosticAction,
   type KanbanAttachment,
   type KanbanEvent,
+  type KanbanRun,
   type KanbanTaskDetail,
   SEVERITY_TONE,
   type TaskEstimate,
@@ -72,6 +73,8 @@ import {
   Avatar,
   Callout,
   columnLabel,
+  DEP_TONES,
+  depSegment,
   duration,
   errText,
   isLockedTarget,
@@ -633,17 +636,204 @@ function EstimateSection({ id }: { id: string }) {
   )
 }
 
+/** The slice of a board task the drawer's linked cards need. Kept structural so
+ *  the board can hand its own resolver over without another round trip. */
+export interface LinkedCard {
+  assignee?: null | string
+  id: string
+  progress?: null | { done: number; total: number }
+  status: string
+  title: string
+}
+
+/**
+ * One attempt's worth of activity: the events a single run emitted, or the
+ * task-scoped rows that predate any run (``run_id`` null). Every attempt the
+ * board still lists gets a row here, including one that emitted no events — an
+ * attempt that crashed before its first event is exactly what an operator
+ * opens the drawer to find.
+ */
+interface ActivityAttempt {
+  events: KanbanEvent[]
+  key: string
+  run?: KanbanRun
+}
+
+/** Fold-row key for the run-less rows (a promotion, a link change, …). */
+const TASK_SCOPED_ATTEMPT = 'task'
+
+function attemptStart(attempt: ActivityAttempt): number {
+  return attempt.run?.started_at ?? attempt.events[0]?.created_at ?? 0
+}
+
+/**
+ * Group the feed into attempts. ``list_events`` returns created_at ASC, so the
+ * last group is the newest attempt — the one left unfolded by default. Runs
+ * with no events still get a row, so folding never hides an attempt entirely.
+ */
+function buildAttempts(events: KanbanEvent[], runs: KanbanRun[]): ActivityAttempt[] {
+  const attempts = new Map<string, ActivityAttempt>()
+  const runById = new Map(runs.map(run => [String(run.id), run]))
+
+  for (const event of events) {
+    const key = typeof event.run_id === 'number' ? String(event.run_id) : TASK_SCOPED_ATTEMPT
+    const attempt = attempts.get(key) ?? { events: [], key, run: runById.get(key) }
+
+    attempt.events.push(event)
+    attempts.set(key, attempt)
+  }
+
+  for (const run of runs) {
+    const key = String(run.id)
+
+    if (!attempts.has(key)) {
+      attempts.set(key, { events: [], key, run })
+    }
+  }
+
+  return [...attempts.values()].sort((a, b) => attemptStart(a) - attemptStart(b))
+}
+
+/**
+ * The activity feed, folded by attempt. A card retried six times used to render
+ * every event and every run row at once — the height cap only hid them, it kept
+ * none of them off the DOM. Folding each attempt behind one focusable row
+ * leaves a single attempt on screen by default and still accounts for every
+ * event on the card (folded attempts + unfolded events = events).
+ */
+function ActivityFeed({ events, runs, k }: { events: KanbanEvent[]; k: KanbanText; runs: KanbanRun[] }) {
+  const attempts = buildAttempts(events, runs)
+  // null = the operator has not touched the feed yet, so the newest attempt is
+  // the unfolded one; deriving it keeps a late-landing detail query unfolded
+  // instead of freezing the first (empty) render's choice.
+  const [unfolded, setUnfolded] = useState<null | string[]>(null)
+  const open = new Set(unfolded ?? (attempts.length > 0 ? [attempts[attempts.length - 1].key] : []))
+
+  const toggle = (key: string) => {
+    const next = new Set(open)
+
+    if (next.has(key)) {
+      next.delete(key)
+    } else {
+      next.add(key)
+    }
+
+    setUnfolded([...next])
+  }
+
+  return (
+    <ul className="flex flex-col gap-1">
+      {attempts.map((attempt, index) => {
+        const run = attempt.run
+        const events = attempt.events
+        const foldable = events.length > 0
+        const unfoldedHere = foldable && open.has(attempt.key)
+        const failed = ['crashed', 'failed', 'timed_out', 'gave_up'].includes(run?.outcome ?? run?.status ?? '')
+        const started = run?.started_at ?? events[0]?.created_at
+        const note = run?.error ?? run?.summary
+        const spent = duration(run?.started_at, run?.ended_at)
+
+        return (
+          <li className="flex flex-col gap-1" key={attempt.key}>
+            <button
+              aria-expanded={foldable ? unfoldedHere : undefined}
+              aria-label={
+                foldable ? (unfoldedHere ? k.collapse(`#${index + 1}`) : k.expand(`#${index + 1}`)) : undefined
+              }
+              className={cn(
+                'flex items-center gap-2 rounded px-1 py-0.5 text-left text-[0.71rem]',
+                foldable && 'hover:bg-(--chrome-action-hover)'
+              )}
+              data-attempt={attempt.key}
+              data-events={events.length}
+              disabled={!foldable}
+              onClick={foldable ? () => toggle(attempt.key) : undefined}
+              onKeyDown={event => {
+                if (!foldable || !isSubmitEnter(event)) {
+                  return
+                }
+
+                // Swallow Enter so the button's own activation cannot fire too.
+                event.preventDefault()
+                toggle(attempt.key)
+              }}
+              type="button"
+            >
+              {foldable ? (
+                <Codicon
+                  className="shrink-0 text-(--ui-text-tertiary)"
+                  name={unfoldedHere ? 'chevron-down' : 'chevron-right'}
+                  size="0.7rem"
+                />
+              ) : (
+                <span className="w-[0.7rem] shrink-0" />
+              )}
+              <span className="shrink-0 tabular-nums text-(--ui-text-quaternary)">{index + 1}</span>
+              {run && (
+                <Badge size="xs" variant={failed ? 'destructive' : 'muted'}>
+                  {run.outcome ?? run.status}
+                </Badge>
+              )}
+              {run?.profile && <span className="shrink-0 text-(--ui-text-tertiary)">{run.profile}</span>}
+              {spent && <span className="shrink-0 text-(--ui-text-quaternary)">{spent}</span>}
+              {started && <span className="shrink-0 text-(--ui-text-quaternary)">{ago(started)}</span>}
+              <span className="ml-auto shrink-0 tabular-nums text-(--ui-text-quaternary)">{events.length}</span>
+            </button>
+            {note && (
+              <p
+                className={cn(
+                  'line-clamp-1 px-1 text-[0.6875rem]',
+                  run?.error ? 'text-destructive' : 'text-(--ui-text-quaternary)'
+                )}
+              >
+                {note}
+              </p>
+            )}
+            {unfoldedHere && (
+              <ScrollFade deps={events.length} max="7rem">
+                <ul className="flex flex-col gap-1 pl-4">
+                  {events.map(event => {
+                    const { detail: extra, label } = eventText(event, k)
+
+                    return (
+                      <li
+                        className="flex items-baseline gap-2 text-[0.6875rem]"
+                        data-event-id={event.id}
+                        key={event.id}
+                      >
+                        <span className="shrink-0 text-(--ui-text-secondary)">{label}</span>
+                        {extra && (
+                          <span className="min-w-0 truncate text-[0.625rem] text-(--ui-text-quaternary)" title={extra}>
+                            {extra}
+                          </span>
+                        )}
+                        <span className="ml-auto shrink-0 text-(--ui-text-quaternary)">{ago(event.created_at)}</span>
+                      </li>
+                    )
+                  })}
+                </ul>
+              </ScrollFade>
+            )}
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
+
 // Sidebar dependency chips: one wrap of title-labeled buttons per side
 // (Blocked by = parents, Blocks = children). Titles come from the backend's
 // `link_tasks`; ids remain in the tooltip + as the fallback label.
 function LinkChips({
   ids,
   linkTitles,
-  onOpen
+  onOpen,
+  statusOf
 }: {
   ids: string[]
   linkTitles: Map<string, string>
   onOpen: (id: string) => void
+  statusOf?: (id: string) => string | undefined
 }) {
   return (
     <div className="flex flex-wrap gap-1">
@@ -659,6 +849,11 @@ function LinkChips({
               onClick={() => onOpen(linked)}
               type="button"
             >
+              <span
+                aria-hidden
+                className="size-1.5 shrink-0 rounded-full"
+                style={{ backgroundColor: DEP_TONES[depSegment(statusOf?.(linked))] }}
+              />
               {label}
             </button>
           </Tip>
@@ -700,7 +895,11 @@ function FeedTabs({
   ].filter(
     t =>
       t.id === 'comments' ||
-      (t.id === 'activity' ? detail.events.length > 0 : t.id === 'runs' ? detail.runs.length > 0 : hasLog)
+      (t.id === 'activity'
+        ? detail.events.length > 0 || detail.runs.length > 0
+        : t.id === 'runs'
+          ? detail.runs.length > 0
+          : hasLog)
   )
 
   const help = (
@@ -731,27 +930,7 @@ function FeedTabs({
           <CommentComposer onRequeue={onRequeue} onSubmit={onComment} pending={commentPending} running={running} />
         </>
       )}
-      {tab === 'activity' && (
-        <ScrollFade deps={detail.events.length} max="7rem">
-          <ul className="flex flex-col gap-1">
-            {detail.events.map(event => {
-              const { detail: extra, label } = eventText(event, k)
-
-              return (
-                <li className="flex items-baseline gap-2 text-[0.6875rem]" key={event.id}>
-                  <span className="shrink-0 text-(--ui-text-secondary)">{label}</span>
-                  {extra && (
-                    <span className="min-w-0 truncate text-[0.625rem] text-(--ui-text-quaternary)" title={extra}>
-                      {extra}
-                    </span>
-                  )}
-                  <span className="ml-auto shrink-0 text-(--ui-text-quaternary)">{ago(event.created_at)}</span>
-                </li>
-              )
-            })}
-          </ul>
-        </ScrollFade>
-      )}
+      {tab === 'activity' && <ActivityFeed events={detail.events} k={k} runs={detail.runs} />}
       {tab === 'runs' && (
         <ScrollFade max="11rem">
           <ul className="flex flex-col gap-1.5">
@@ -813,18 +992,23 @@ function FeedTabs({
         {help}
       </div>
       {body}
-    </section>
-  )
+    </section>  )
 }
 
 export function TaskDrawer({
   columns,
+  focusLinks,
   id,
+  lookup = () => undefined,
   onClose,
   onOpen
 }: {
   columns: string[]
+  focusLinks?: number
   id: null | string
+  /** Board-wide id → task resolver: the parent/child cards below read their
+   *  status, assignee and progress off the board instead of another fetch. */
+  lookup?: (id: string) => undefined | LinkedCard
   onClose: () => void
   onOpen: (id: string) => void
 }) {
@@ -832,6 +1016,7 @@ export function TaskDrawer({
   const qc = useQueryClient()
   const scope = useKanbanScope()
   const slug = useValue($boardSlug)
+  const linksRef = useRef<HTMLDivElement>(null)
 
   // Socket-invalidated (bindApi); the interval is only the socketless heartbeat.
   const { data: detail, error } = useQuery({
@@ -851,6 +1036,21 @@ export function TaskDrawer({
     queryKey: logKey(scope, slug, id ?? ''),
     refetchInterval: running ? 3_000 : 15_000
   })
+
+
+  // The card menu's "add link / add child" bumps `focusLinks`; scroll the
+  // dependencies section into view once per bump (and only after the fetch has
+  // rendered something to scroll to).
+  const [scrolledPing, setScrolledPing] = useState<null | number>(null)
+
+  useEffect(() => {
+    if (!focusLinks || focusLinks === scrolledPing || !detail) {
+      return
+    }
+
+    setScrolledPing(focusLinks)
+    linksRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [detail, focusLinks, scrolledPing])
 
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: taskKey(scope, slug, id!) })
@@ -931,6 +1131,7 @@ export function TaskDrawer({
   // Linked tasks resolved to titles by the backend (`link_tasks`); absent on
   // older backends, where the chips fall back to short ids.
   const linkTitles = new Map((detail?.link_tasks ?? []).map(linked => [linked.id, linked.title]))
+  const linkStatus = new Map((detail?.link_tasks ?? []).map(linked => [linked.id, linked.status]))
 
   const move = (status: string) => {
     if (!task || status === task.status) {
@@ -1107,14 +1308,26 @@ export function TaskDrawer({
                     }}
                   />
                 </MetaRow>
-                {(detail.links.parents.length > 0 || detail.links.children.length > 0) &&
-                  (['parents', 'children'] as const).map(side =>
-                    detail.links[side].length > 0 ? (
-                      <MetaRow key={side} label={side === 'parents' ? k.blockedBy : k.blocks}>
-                        <LinkChips ids={detail.links[side]} linkTitles={linkTitles} onOpen={onOpen} />
-                      </MetaRow>
-                    ) : null
-                  )}
+                {(detail.links.parents.length > 0 || detail.links.children.length > 0 || !!focusLinks) && (
+                  <div className="flex flex-col gap-4" ref={linksRef}>
+                    {(['parents', 'children'] as const).map(side =>
+                      detail.links[side].length > 0 ? (
+                        <MetaRow key={side} label={side === 'parents' ? k.blockedBy : k.blocks}>
+                          <LinkChips
+                            ids={detail.links[side]}
+                            linkTitles={linkTitles}
+                            onOpen={onOpen}
+                            statusOf={id => lookup(id)?.status ?? linkStatus.get(id)}
+                          />
+                        </MetaRow>
+                      ) : focusLinks ? (
+                        <MetaRow key={side} label={side === 'parents' ? k.blockedBy : k.blocks}>
+                          <span className="text-[0.75rem] text-(--ui-text-quaternary)">—</span>
+                        </MetaRow>
+                      ) : null
+                    )}
+                  </div>
+                )}
                 {task.created_by && <MetaRow label={k.metaCreatedBy}>{task.created_by}</MetaRow>}
                 {ago(task.created_at) && <MetaRow label={k.metaCreated}>{ago(task.created_at)}</MetaRow>}
                 {running && task.worker_pid ? <MetaRow label={k.metaWorkerPid}>{task.worker_pid}</MetaRow> : null}

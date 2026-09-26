@@ -17,12 +17,24 @@ export interface KanbanTask {
   link_counts?: { parents: number; children: number }
   /** N-of-M child completion, or null when the task has no children. */
   progress?: null | { done: number; total: number }
+  /** Parent/child ids, same shape as the drawer's `links`. The card's
+   *  dependency rail needs the parent *ids* to resolve their statuses on the
+   *  board — `link_counts` only says how many there are. */
+  links?: null | { parents: string[]; children: string[] }
   /** Compact diagnostics rollup — present only when a card has warnings. */
   warnings?: null | { count: number; highest_severity?: null | string }
   /** Worker liveness (present on running cards) — drives the arc + run clock. */
   started_at?: null | number
   worker_pid?: null | number
   last_heartbeat_at?: null | number
+  /** Per-card runtime cap (seconds); null/absent = no cap. */
+  max_runtime_seconds?: null | number
+  /** Board-computed "needs triage": the card was unblocked and re-blocked, or
+   *  its worker failed repeatedly — a loop only a human can break. */
+  triage_signal?: boolean
+  /** Last event time (epoch seconds) — the payload's "last touched" clock
+   *  (the tasks table has no updated_at); drives the stale-blocked dot. */
+  last_event_at?: null | number
 }
 
 export interface KanbanColumn {
@@ -83,6 +95,10 @@ export interface KanbanEvent {
   kind: string
   payload: unknown
   created_at: number
+  /** The run that emitted this row — null/absent for task-scoped events (a
+   *  promotion, a link change). Serialized from task_events.run_id; the drawer
+   *  folds the activity feed by it. */
+  run_id?: null | number
 }
 
 export interface KanbanAttachment {

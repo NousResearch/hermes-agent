@@ -458,6 +458,7 @@ function ConfigSettingsInner({
           <ToggleRow
             checked={alwaysExternalLinks}
             description={c.alwaysExternalLinksDesc}
+            id={settingElementId(SETTING_IDS.advanced.alwaysExternalLinks)}
             label={c.alwaysExternalLinksTitle}
             onChange={setAlwaysExternalLinks}
           />

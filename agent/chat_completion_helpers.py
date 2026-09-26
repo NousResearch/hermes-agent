@@ -1956,21 +1956,23 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
     """True when the entry is already unavailable, malformed, locally unusable, or resolves
     to the backend that just failed (falling back to it would loop the failure)."""
     if fb_key in unavailable:
-        logger.debug("Fallback skip: %s previously marked unavailable", fb_key)
+        logger.debug("Fallback entry skipped: previously marked unavailable")
         return True
     if not fb_provider or not fb_model:
         return True
     from agent.fallback_cooldown import _is_entitlement_rejected
     if _is_entitlement_rejected(agent, fb_provider, fb_model):
-        logger.info("Fallback skip: %s/%s was rejected as unentitled for this account", fb_provider, fb_model)
+        logger.info("Fallback entry skipped: route was rejected as unentitled for this account")
         return True
     if _candidate_pool_exhausted(agent, fb_provider, fb_model):
-        logger.warning("Fallback skip: %s/%s credential pool is exhausted (every entry in cooldown)", fb_provider, fb_model)
+        logger.warning("Fallback entry skipped: credential pool is exhausted (every entry in cooldown)")
         return True
     local_skip_reason = _fallback_entry_unavailable_without_network(agent, fb)
     if local_skip_reason:
         unavailable.add(fb_key)
-        logger.warning("Fallback skip: %s/%s is not locally usable (%s); suppressing for this session", fb_provider, fb_model, local_skip_reason)
+        logger.warning(
+            "Fallback entry is not locally usable; suppressing it for this session"
+        )
         return True
     # Identity semantics (axes, shim aliases, credential surfaces, multi-endpoint pools)
     # are owned by agent.backend_identity — do not re-implement comparisons here.
@@ -1981,9 +1983,7 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
         model=getattr(agent, "model", ""), base_url=str(getattr(agent, "base_url", "") or ""))
     fb_ident = BackendIdentity.build(provider=fb_provider, model=fb_model, base_url=(fb.get("base_url") or ""))
     if should_skip_candidate(fb_ident, current_ident):
-        logger.warning(
-            "Fallback skip: chain entry %s/%s resolves to the same backend as the current one (%s)",
-            fb_provider, fb_model, current_ident.base_url or current_ident.provider)
+        logger.warning("Fallback entry resolves to the same backend as the current route; skipping it")
         return True
     return False
 
@@ -2063,10 +2063,27 @@ def _buffer_fallback_notice(agent, notice: str) -> None:
         agent._pending_fallback_notice = [str(pending), notice] if pending else [notice]
 
 
+def notify_fallback_halt(agent, message: str) -> None:
+    """Emit the halt refusal once per enabled window for guard-only fallback paths."""
+    if getattr(agent, "_fallback_halt_notified", False):
+        return
+    agent._fallback_halt_notified = True
+    agent._emit_diagnostic_status(message)
+
+
 def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_at=None) -> bool:
     """Switch to the next fallback model/provider in the chain; False when exhausted. Swaps client,
     model slug and provider in place so the retry loop continues on the new backend; client
     construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
+    from hermes_cli.fallback_config import fallback_halt_active
+
+    halt_active, halt_message = fallback_halt_active()
+    raw_pending = getattr(agent, "_fallback_index", 0) < len(
+        getattr(agent, "_fallback_chain", None) or []
+    )
+    if halt_active and raw_pending:
+        notify_fallback_halt(agent, halt_message)
+        return False
     from agent.fallback_cooldown import _arm_rate_limit_cooldown, switch_deferred_by_reset
     if switch_deferred_by_reset(agent, reason, reset_at):
         return False
@@ -2102,7 +2119,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
             fb_client, _resolved_fb_model = resolve_provider_client(
                 fb_provider, model=fb_model, raw_codex=True, explicit_base_url=fb_base_url_hint, explicit_api_key=fb_api_key_hint, api_mode=fb_api_mode)
             if fb_client is None:
-                logger.warning("Fallback to %s failed: provider not configured", fb_provider)
+                logger.warning("Fallback entry failed: provider not configured")
                 unavailable.add(fb_key)
                 continue
             if fb_provider == "moa":
@@ -2119,7 +2136,9 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
                     from hermes_cli.model_normalize import normalize_model_for_provider
                     fb_model = normalize_model_for_provider(fb_model, fb_provider)
                 except Exception as _norm_err:
-                    logger.warning("Could not normalize fallback model %r for provider %r: %s", fb_model, fb_provider, _norm_err)
+                    logger.warning(
+                        "Could not normalize a fallback route (%s)", type(_norm_err).__name__
+                    )
 
                 fb_base_url = str(fb_client.base_url)
                 from hermes_cli.providers import is_actual_route
@@ -2183,7 +2202,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
         except Exception as e:
             if fb_provider == "nous":
                 unavailable.add(fb_key)
-            logger.error("Failed to activate fallback %s: %s", fb_model, e)
+            logger.error("Failed to activate a fallback entry (%s)", type(e).__name__)
             continue  # try next in chain
 
 

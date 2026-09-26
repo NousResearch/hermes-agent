@@ -3142,6 +3142,7 @@ _AUX_UNHEALTHY_PAYMENT_REASON = "payment / credit error"
 def _mark_provider_unhealthy(
     provider: str, ttl: Optional[float] = None, *, base_url: Optional[str] = None,
     reason: str = _AUX_UNHEALTHY_PAYMENT_REASON, level: int = logging.WARNING,
+    redact_log: bool = False,
 ) -> None:
     """Hide one provider endpoint until the TTL expires. ``reason`` is what the log says and what the
     skip line echoes: absent credentials are an expected state (DEBUG), a confirmed 402 is a fault
@@ -3154,12 +3155,20 @@ def _mark_provider_unhealthy(
     expires_at = time.time() + ttl
     _aux_unhealthy_until[key] = expires_at
     _aux_unhealthy_reason[key] = reason
-    logger.log(
-        level,
-        "Auxiliary: marking %s unhealthy for %ds (%s). "
-        "Subsequent auxiliary calls will skip it until %s.",
-        label, int(ttl), reason, time.strftime("%H:%M:%S", time.localtime(expires_at)),
-    )
+    if redact_log:
+        logger.log(
+            level,
+            "Auxiliary: marking a fallback candidate unhealthy for %ds. "
+            "Subsequent auxiliary calls will skip it until %s.",
+            int(ttl), time.strftime("%H:%M:%S", time.localtime(expires_at)),
+        )
+    else:
+        logger.log(
+            level,
+            "Auxiliary: marking %s unhealthy for %ds (%s). "
+            "Subsequent auxiliary calls will skip it until %s.",
+            label, int(ttl), reason, time.strftime("%H:%M:%S", time.localtime(expires_at)),
+        )
 
 
 def _is_provider_unhealthy(label: str, base_url: Optional[str] = None) -> bool:
@@ -4070,10 +4079,12 @@ def _quarantine_fallback_candidate(
     the next entry. Transient classes get a short hold, payment/quota and dead tokens the long one."""
     _mark_provider_unhealthy(
         fb_provider or fb_label, ttl=fallback_candidate_quarantine_ttl(reason),
-        base_url=base_url, reason=reason or "stale fallback credential")
-    why = f"is out of capacity ({reason})" if reason else "has a stale/unrefreshable credential"
-    logger.warning("Auxiliary %s%s: fallback candidate %s %s (%s) — skipping to next fallback",
-                   task or "call", tag, fb_label, why, fb_err)
+        base_url=base_url, reason=reason or "stale fallback credential", redact_log=True)
+    why = "out of capacity" if reason else "stale/unrefreshable credentials"
+    logger.warning(
+        "Auxiliary %s: fallback candidate has %s (%s) — skipping to the next fallback",
+        task or "call", why, type(fb_err).__name__,
+    )
 
 
 def _plan_fallback_auth_retry(
@@ -4461,6 +4472,12 @@ def _try_main_fallback_chain(
     """Top-level main-agent fallback chain for a ``provider: auto`` auxiliary call: auto tasks honour the
     user's main fallback policy before the built-in discovery chain; read via ``get_fallback_chain`` so
     ``fallback_providers`` and legacy ``fallback_model`` keep the main agent's order."""
+    from hermes_cli.fallback_config import fallback_halt_active
+
+    halt_active, halt_message = fallback_halt_active()
+    if halt_active:
+        logger.warning("Auxiliary %s: %s", task or "call", halt_message)
+        return None, None, ""
     try:
         from hermes_cli.config import load_config_readonly
         from hermes_cli.fallback_config import get_fallback_chain
@@ -4660,6 +4677,16 @@ def _resolve_auto_route(
     routed = _try_main_provider_route(main_provider, main_model, base_url, api_key, api_mode)
     if routed is not None:
         return routed
+    from hermes_cli.fallback_config import fallback_halt_active
+
+    halt_active, halt_message = fallback_halt_active()
+    if halt_active:
+        logger.warning(
+            "Auxiliary %s: %s Under provider:auto, automatic provider discovery and payment "
+            "recovery count as fallback.",
+            task or "call", halt_message,
+        )
+        return None, None, ""
     if task:
         fb_client, fb_model, fb_label = _try_configured_fallback_chain(
             task, main_provider or "auto", reason="main provider unavailable")
@@ -7687,6 +7714,17 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     )
     if reason is None or not (is_auto or is_capacity_error or explicit_auth_with_task_chain):
         return None
+    if is_auto:
+        from hermes_cli.fallback_config import fallback_halt_active
+
+        halt_active, halt_message = fallback_halt_active()
+        if halt_active:
+            logger.warning(
+                "Auxiliary %s%s: %s Under provider:auto, automatic provider discovery and "
+                "payment recovery count as fallback.",
+                task or "call", tag, halt_message,
+            )
+            return None
     if reason == "payment error":
         # Mark the concrete backend (not the "auto" label) unhealthy so later aux calls skip
         # it instead of paying another doomed RTT.

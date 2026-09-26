@@ -40,7 +40,9 @@ from cron.env_settings import cron_env_setting
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import (
     load_config, load_config_readonly)
-from hermes_cli.fallback_config import get_fallback_chain, scoped_fallback_chain
+from hermes_cli.fallback_config import (
+    fallback_halt_active, get_fallback_chain, scoped_fallback_chain,
+)
 from hermes_time import now as _hermes_now, safe_strftime
 from agent.interrupt_compat import request_hard_interrupt
 from agent.delegation_context import (
@@ -131,8 +133,11 @@ def _fallback_chain_phrase(job: Optional[dict] = None) -> str:
     try:
         cfg = load_config() or {}
         chain = get_fallback_chain(cfg)
+        halt_active, halt_message = fallback_halt_active()
     except Exception:
         return "No backup provider succeeded either."
+    if halt_active and chain:
+        return halt_message
     if chain:
         return "No backup provider succeeded either."
     return (
@@ -1750,9 +1755,17 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
             raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
 
         chain = _job_fallback_chain(job, jc.cfg) or []
+        if chain:
+            halt_active, halt_message = fallback_halt_active()
+            if halt_active:
+                logger.warning(
+                    "Job '%s': %s Primary provider error: %s",
+                    job_id, halt_message, type(resolve_exc).__name__,
+                )
+                raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
         logger.warning(
             "Job '%s': primary provider resolve failed (%s: %s), %s",
-            job_id, "auth" if is_auth else "transient network", resolve_exc,
+            job_id, "auth" if is_auth else "transient network", type(resolve_exc).__name__,
             "trying fallback" if chain else (
                 "not falling back: the job is pinned" if _job_route_pinned(job) else "no fallback configured"))
         for entry in chain:
@@ -1786,7 +1799,9 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
                     model, runtime.get("provider"), fb_model)
                 return runtime, fb_model
             except Exception as fb_exc:
-                logger.debug("Job '%s': fallback %s failed: %s", job_id, fb_provider, fb_exc)
+                logger.debug(
+                    "Job '%s': a fallback entry failed (%s)", job_id, type(fb_exc).__name__
+                )
         raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
 
 

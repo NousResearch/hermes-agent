@@ -29,10 +29,10 @@ _LADDER = [
 
 
 _LADDER_REASONS = (
-    "deepseek",
+    "entry[0]",
     "no usable credentials",
-    "kimi",
-    "kimi auth handshake refused",
+    "entry[1]",
+    "RuntimeError",
 )
 
 
@@ -118,3 +118,30 @@ def test_recovered_ladder_does_not_warn(monkeypatch, caplog):
     assert agent.provider == "kimi"
     assert agent._fallback_activated
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def test_refused_init_ladder_never_logs_route_or_exception_values(monkeypatch, caplog):
+    from agent import agent_init
+
+    secret = "CANARY_INIT_SECRET_117816"
+    ladder = [{"provider": "custom", "model": f"model-{secret}"}]
+
+    def _fail(provider, *args, **kwargs):
+        if provider == "custom":
+            raise RuntimeError(f"credential failure {secret}")
+        return (None, None)
+
+    monkeypatch.setattr("agent.auxiliary_client.resolve_provider_client", _fail)
+    monkeypatch.setattr(
+        "hermes_cli.fallback_config.resolve_entry_api_key", lambda entry: None
+    )
+    monkeypatch.setattr(
+        "agent.credential_pool.load_pool", lambda provider: _Pool(True)
+    )
+
+    with caplog.at_level(logging.DEBUG, logger="run_agent"):
+        with pytest.raises(RuntimeError, match="No LLM provider configured"):
+            agent_init._routed_client_kwargs(_agent(), ladder, 60)
+
+    assert "entry[0] (RuntimeError)" in caplog.text
+    assert secret not in caplog.text

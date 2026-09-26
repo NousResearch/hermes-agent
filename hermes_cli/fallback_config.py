@@ -3,13 +3,52 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
+_PROVIDER_SHORTHAND_RE = re.compile(r"^(?:custom:)?[A-Za-z0-9][A-Za-z0-9._-]*$")
+_MODEL_SHORTHAND_RE = re.compile(r"^[A-Za-z0-9@][A-Za-z0-9@._/+:~-]*$")
+
+_FALLBACK_HALT_MESSAGE = (
+    "🛑 Provider fallback is disabled by fallback_policy.halt; "
+    "surfacing the primary failure without switching providers."
+)
+
 
 def _normalized_base_url(value: Any) -> str:
     return value.strip().rstrip("/") if isinstance(value, str) else ""
+
+
+def _parse_string_entry(entry: str) -> dict[str, str] | None:
+    """``"provider:model"`` shorthand → entry dict; None when no provider prefix is present.
+
+    Provider slugs never contain ``:``, so the FIRST colon always separates provider from
+    model — model ids with colons (``qwen/qwen3.6-plus``, ``glm-5.3-flash``) stay intact.
+    """
+    text = str(entry).strip()
+    if "://" in text:
+        return None
+    if text.startswith("custom:"):
+        custom_parts = text.split(":", 2)
+        if len(custom_parts) != 3:
+            return None
+        provider, model = ":".join(custom_parts[:2]), custom_parts[2]
+        sep = ":"
+    else:
+        provider, sep, model = text.partition(":")
+    if not sep:
+        return None
+    provider, model = provider.strip(), model.strip()
+    if (
+        not provider
+        or not model
+        or not _PROVIDER_SHORTHAND_RE.fullmatch(provider)
+        or not _MODEL_SHORTHAND_RE.fullmatch(model)
+    ):
+        return None
+    return {"provider": provider, "model": model}
 
 
 def resolve_entry_api_key(entry: dict[str, Any] | None) -> str | None:
@@ -73,23 +112,98 @@ def pre_agent_fallback_notice(
     return f"⚠️ Provider fallback: {primary_desc} unavailable; using {fallback_desc} for this response."
 
 
+def fallback_halt_active() -> tuple[bool, str]:
+    """Return whether fallback is halted and the shared user-facing refusal text.
 
-def _iter_fallback_entries(raw: Any) -> list[dict[str, Any]]:
-    candidates = [raw] if isinstance(raw, dict) else raw if isinstance(raw, list) else []
-    entries: list[dict[str, Any]] = []
-    for entry in candidates:
+    Fail open when the effective config cannot be read: a config-read failure must not disable
+    recovery for an operator who never successfully enabled ``fallback_policy.halt``.
+    """
+    try:
+        from hermes_cli.config_effective import load_user_config_effective
+
+        policy = load_user_config_effective().get("fallback_policy")
+    except Exception:
+        return False, ""
+    # is_truthy_value, not bare truthiness: YAML `halt: "false"` (quoted) must disable, not enable.
+    from utils import is_truthy_value
+    active = bool(isinstance(policy, dict) and is_truthy_value(policy.get("halt")))
+    return active, _FALLBACK_HALT_MESSAGE if active else ""
+
+
+
+def _parse_fallback_entries(
+    raw: Any, *, warn_empty: bool, source: str = "fallback configuration",
+) -> list[tuple[int, dict[str, Any]]]:
+    """Normalize fallback entries while retaining their source indices for diagnostics.
+
+    Accepted roots are a list of entries or one dict. A bare string root is malformed (and warns)
+    but is still parsed as one ``provider:model`` shorthand for compatibility. ``None`` and an
+    empty list mean no configured fallback and stay quiet. Warnings for dict entries never include
+    entry values because those dicts may carry credentials or authorization headers.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, dict):
+        candidates = [raw]
+    elif isinstance(raw, list):
+        candidates = raw
+    else:
+        logger.warning(
+            "%s has a malformed root (%s) — expected a list of entries or a single dict.",
+            source, type(raw).__name__,
+        )
+        if not isinstance(raw, str):
+            if warn_empty:
+                logger.warning(
+                    "fallback_providers/fallback_model is configured (1 raw entry) but no entry "
+                    "parsed — the effective fallback chain is EMPTY."
+                )
+            return []
+        candidates = [raw]
+    entries: list[tuple[int, dict[str, Any]]] = []
+    for index, entry in enumerate(candidates):
+        if isinstance(entry, str):
+            parsed = _parse_string_entry(entry)
+            if parsed is not None:
+                entries.append((index, parsed))
+            else:
+                logger.warning(
+                    "%s entry[%d] is a malformed string — expected 'provider:model'; "
+                    "entry dropped.", source, index)
+            continue
         if not isinstance(entry, dict):
+            logger.warning(
+                "%s entry[%d] (%s) is malformed — expected a dict or "
+                "'provider:model' string; entry dropped.", source, index, type(entry).__name__)
             continue
         provider = str(entry.get("provider") or "").strip()
         model = str(entry.get("model") or "").strip()
         if not provider or not model:
+            # A dict-shaped entry the user meant to configure: dropping it silently leaves a
+            # chain that looks configured but is empty (#51560, #117806) — fail loud instead.
+            logger.warning(
+                "%s entry[%d] (dict) missing '%s' — entry dropped.",
+                source, index, "provider" if not provider else "model")
             continue
         normalized = {**entry, "provider": provider, "model": model}
         base_url = _normalized_base_url(entry.get("base_url"))
         if base_url:
             normalized["base_url"] = base_url
-        entries.append(normalized)
+        entries.append((index, normalized))
+    if warn_empty and candidates and not entries:
+        logger.warning(
+            "fallback_providers/fallback_model is configured (%d raw entries) but no entry "
+            "parsed — the effective fallback chain is EMPTY.", len(candidates))
     return entries
+
+
+def _iter_fallback_entries(raw: Any) -> list[dict[str, Any]]:
+    """Normalize one source and warn when that source alone has no usable entries."""
+    return [
+        entry for _index, entry in _parse_fallback_entries(
+            raw, warn_empty=True, source="fallback configuration",
+        )
+    ]
 
 
 def _entry_identity(entry: dict[str, Any]) -> tuple[str, str, str]:
@@ -111,12 +225,26 @@ def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
     config = config or {}
     chain: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
+    configured_source = False
     for key in ("fallback_providers", "fallback_model"):
-        for entry in _iter_fallback_entries(config.get(key)):
+        raw = config.get(key)
+        configured_source = configured_source or (
+            raw is not None and not (isinstance(raw, list) and not raw)
+        )
+        for index, entry in _parse_fallback_entries(raw, warn_empty=False, source=key):
             identity = _entry_identity(entry)
-            if identity not in seen:
-                seen.add(identity)
-                chain.append(entry)
+            if identity in seen:
+                logger.warning(
+                    "%s entry[%d] is a duplicate of an earlier route — entry dropped.",
+                    key, index,
+                )
+                continue
+            seen.add(identity)
+            chain.append(entry)
+    if configured_source and not chain:
+        logger.warning(
+            "Fallback configuration has no usable entries — the combined effective fallback chain is EMPTY."
+        )
     return chain
 
 

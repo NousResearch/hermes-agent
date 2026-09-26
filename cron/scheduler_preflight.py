@@ -87,10 +87,15 @@ def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
     """READ-ONLY probe: would provider resolution fail for lack of a key? Mirrors run_job's
     requested-provider computation. Skipped when the job has a fallback chain — auth-fallback may
     legitimately rescue a missing primary key. A pinned job has none (``_job_fallback_chain``), so
-    its missing key blocks even when the global chain is configured."""
+    its missing key blocks even when the global chain is configured. A chain disabled by
+    ``fallback_policy.halt`` cannot rescue the primary and is treated as empty."""
     try:
         if _sched._job_fallback_chain(job, cfg):
-            return None
+            from hermes_cli.fallback_config import fallback_halt_active
+
+            halt_active, _ = fallback_halt_active()
+            if not halt_active:
+                return None
     except Exception:
         return None  # fail-open: never block on a preflight-internal error
 

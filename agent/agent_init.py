@@ -850,8 +850,15 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
     # reach the chain instead of dying at init with a misleading "No LLM provider configured" error. See
     # #17929.
     _explicit = (agent.provider or "").strip().lower()
+    from hermes_cli.fallback_config import fallback_halt_active
+
+    _fallback_chain = _fallback_entries(fallback_model)
+    _halt_active, _halt_message = fallback_halt_active()
+    if _halt_active and _fallback_chain:
+        logger.warning(_halt_message)
+        _fallback_chain = []
     _refused_entries = []
-    for _fb in _fallback_entries(fallback_model):
+    for _fb_index, _fb in enumerate(_fallback_chain):
         _fb_provider = str(_fb["provider"])
         try:
             from hermes_cli.fallback_config import resolve_entry_api_key
@@ -861,17 +868,19 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
                 explicit_base_url=_fb.get("base_url"), explicit_api_key=_fb_explicit_key,
             )
         except Exception as _fb_exc:
-            logger.debug("Init-time fallback entry %s failed: %s", _fb_provider, _fb_exc)
-            # A bare exception (``KeyError()``) stringifies empty; name its type instead.
-            _refused_entries.append((_fb_provider, str(_fb_exc) or type(_fb_exc).__name__))
+            logger.debug(
+                "Init-time fallback entry[%d] failed (%s)",
+                _fb_index, type(_fb_exc).__name__,
+            )
+            _refused_entries.append(f"entry[{_fb_index}] ({type(_fb_exc).__name__})")
             continue
         if _fb_client is None:
             # The router returns None when no credentials are usable for the entry — a skip
             # that leaves no trace otherwise, hiding key-less fallback entries from the log.
             logger.debug(
-                "Init-time fallback entry %s resolved no usable credentials", _fb_provider
+                "Init-time fallback entry[%d] resolved no usable credentials", _fb_index
             )
-            _refused_entries.append((_fb_provider, "no usable credentials"))
+            _refused_entries.append(f"entry[{_fb_index}] (no usable credentials)")
             continue
         agent._fallback_activated = True
         if _fb_provider.strip().lower() == "moa":
@@ -896,10 +905,10 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
         # Neutral wording: the explicit-provider branch below raises the provider-specific
         # missing-credentials message, not the generic "No LLM provider configured" one.
         logger.warning(
-            "Init-time provider resolution failed: primary %r unresolvable (%s); fallback entries refused: %s",
+            "Init-time primary provider %r resolution failed (%s); fallback entries refused: %s",
             agent.provider,
             "credential pool exhausted" if _pool_exhausted else "no usable credentials",
-            "; ".join(f"{_p} ({_r})" for _p, _r in _refused_entries) or "none configured",
+            "; ".join(_refused_entries) or "none configured",
         )
     if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
         # Explicit non-OpenRouter provider with no creds and no usable fallback: fail fast.
@@ -1052,14 +1061,14 @@ def _client_kwargs_from_routed(client, timeout) -> Dict[str, Any]:
 
 
 def _fallback_entries(fallback_model) -> List[Dict[str, Any]]:
-    """Normalize legacy single-dict ``fallback_model`` / list ``fallback_providers``."""
-    if isinstance(fallback_model, dict):
-        fallback_model = [fallback_model]
-    if not isinstance(fallback_model, list):
-        return []
-    return [
-        f for f in fallback_model if isinstance(f, dict) and f.get("provider") and f.get("model")
-    ]
+    """Normalize legacy single-dict ``fallback_model`` / list ``fallback_providers``.
+
+    Delegates to the shared parser (``hermes_cli.fallback_config``) so the agent-side chain and
+    every CLI/gateway/TUI reader accept the same entry shapes — dicts and ``'provider:model'``
+    strings — and warn on (never silently drop) malformed entries (#51560, #117806).
+    """
+    from hermes_cli.fallback_config import _iter_fallback_entries
+    return list(_iter_fallback_entries(fallback_model))
 
 
 def _init_fallback_chain(agent, fallback_model):

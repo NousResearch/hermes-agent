@@ -388,6 +388,24 @@ def test_fallback_runtime_labels_quota_outage_and_bad_credentials_distinctly(mon
     assert absent not in printed[-1]
 
 
+def test_halt_without_usable_cli_chain_keeps_primary_error_wording(monkeypatch, caplog):
+    from hermes_cli.auth import AuthError
+    from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
+
+    monkeypatch.setattr(
+        "hermes_cli.fallback_config.fallback_halt_active",
+        lambda: (True, "fallback halt refusal"),
+    )
+    monkeypatch.setattr("cli._cprint", lambda *args, **kwargs: None, raising=False)
+    shell = CLIAgentSetupMixin.__new__(CLIAgentSetupMixin)
+    setattr(shell, "_fallback_model", [])
+
+    with caplog.at_level("WARNING"):
+        assert shell._resolve_fallback_runtime(AuthError("primary unavailable")) is None
+
+    assert "fallback halt refusal" not in caplog.text
+
+
 def test_ensure_runtime_credentials_records_quota_vs_bad_key(monkeypatch, tmp_path):
     """Kanban workers need this flag: a quota wall at startup is not a worker failure (#117482)."""
     from hermes_cli.auth import AuthError

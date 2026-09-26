@@ -1249,14 +1249,29 @@ class AIAgent(
     _interruptible_api_call = _forward("agent.chat_completion_helpers", "interruptible_api_call")
     _interruptible_streaming_api_call = _forward("agent.chat_completion_helpers", "interruptible_streaming_api_call")
     _try_activate_fallback = _forward("agent.chat_completion_helpers", "try_activate_fallback")
+    _notify_fallback_halt = _forward("agent.chat_completion_helpers", "notify_fallback_halt")
 
     def _has_pending_fallback(self) -> bool:
-        """Whether a fallback provider remains (mirrors ``try_activate_fallback``'s guard) — gates the
-        "trying fallback..." status so we never announce one that won't be attempted.
+        """Whether policy permits attempting a remaining fallback provider.
+
+        ``fallback_policy.halt`` makes a configured chain behave as empty for the whole turn,
+        not merely at the final activation primitive. This is the authoritative guard for any
+        branch that announces or plausibly attempts fallback.
 
         See #17446.
         """
-        return getattr(self, "_fallback_index", 0) < len(getattr(self, "_fallback_chain", None) or [])
+        from hermes_cli.fallback_config import fallback_halt_active
+
+        halt_active, halt_message = fallback_halt_active()
+        raw_pending = getattr(self, "_fallback_index", 0) < len(
+            getattr(self, "_fallback_chain", None) or []
+        )
+        if halt_active and raw_pending:
+            self._notify_fallback_halt(halt_message)
+            return False
+        if not halt_active:
+            self._fallback_halt_notified = False
+        return raw_pending
 
     _restore_primary_runtime = _forward("agent.agent_runtime_helpers", "restore_primary_runtime")
     _try_recover_primary_transport = _forward("agent.agent_runtime_helpers", "try_recover_primary_transport")

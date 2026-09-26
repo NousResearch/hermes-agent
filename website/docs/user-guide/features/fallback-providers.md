@@ -37,7 +37,38 @@ fallback_providers:
     model: anthropic/claude-sonnet-4
 ```
 
-Each entry requires both `provider` and `model`. Entries missing either field are ignored.
+Each entry requires both `provider` and `model`. A compact string shorthand is also accepted —
+`'provider:model'` (the first colon separates the two, so model ids containing colons stay intact):
+
+```yaml
+fallback_providers:
+  - openrouter:anthropic/claude-sonnet-4
+```
+
+Entries that cannot be parsed — a dict missing `provider` or `model`, or a string without a
+`provider:model` prefix — are **dropped with a WARNING in the log**, never silently. If every
+entry is dropped, the log states that the effective chain is EMPTY: a chain that looks configured
+but parses to nothing is exactly how a primary outage becomes a dead session instead of a
+failover (#51560).
+
+### `fallback_policy.halt` — refuse fallback activation
+
+Set `fallback_policy.halt: true` to make Hermes **surface the primary failure instead of
+switching providers**. Use this when falling back would silently move spend onto a paid API
+(e.g. a subscription-backed primary whose usage window resets tomorrow, with metered fallback
+keys configured): with `halt` the chain is never walked, a `🛑 Provider fallback is disabled by
+fallback_policy.halt` refusal is emitted, and the primary's error surfaces through the normal
+terminal path. The gate
+covers both mid-turn activation and pre-agent credential-resolution fallback in interactive CLI,
+one-shot, messaging gateway, TUI/Desktop, and cron runs. It also prevents auxiliary tasks using
+`provider: auto` from switching through task-specific or global chains, built-in provider
+discovery, or payment-recovery routes. Those automatic routes count as fallback even when no
+explicit `fallback_providers` list exists; this is what prevents an unavailable selected route
+from silently moving work onto a metered provider. Explicit non-`auto` auxiliary providers retain
+their normal, separately documented recovery behavior. For cron, a halted configured chain does
+not suppress primary credential preflight, and provider-failure notices say fallback was disabled
+rather than claiming that backups were attempted. If no chain exists, the notice says no backup is
+configured instead. Default is `false` (activate fallback as usual).
 
 When a rate-limit response names its reset time, the primary is benched until exactly then (a provider that says nothing gets the exponential 60 s → 4 h backoff). Optionally, skip the switch when the primary reopens soon:
 
@@ -229,16 +260,16 @@ Hermes uses separate lightweight models for side tasks. Each task has its own pr
 
 ### Auto-Detection Chain
 
-When a task's provider is set to `"auto"` (the default), Hermes first tries the main provider + main model for that auxiliary task. If that route is unavailable or later fails with a capacity-style error, Hermes follows your configured fallback policy and then stops:
+When a task's provider is set to `"auto"` (the default), Hermes first tries the main provider + main model for that auxiliary task. If that route is unavailable or later fails with a capacity-style error, Hermes follows the available automatic fallback sources and then stops:
 
 ```text
 Main provider + main model → auxiliary.<task>.fallback_chain →
-fallback_providers / fallback_model → skip the task (warn)
+fallback_providers / fallback_model → built-in discovery (when eligible) → skip the task (warn)
 ```
 
 A billing or quota failure quarantines only the failed custom endpoint for the auxiliary health cooldown, not every route registered as `custom`. A healthy local endpoint with a different base URL remains eligible for fallback and subsequent auto routing. Aliases for the same custom endpoint share its health state. Built-in providers retain their shared-account health checks.
 
-The task-specific chain is most precise and wins when present. The top-level `fallback_providers` chain is the same policy the main agent uses, so free-only or same-provider fallback rules apply to auxiliary tasks on `auto` as well.
+The task-specific chain is most precise and wins when present. The top-level `fallback_providers` chain is the same policy the main agent uses, so free-only or same-provider fallback rules apply to auxiliary tasks on `auto` as well. `fallback_policy.halt: true` stops before every switch in this sequence, including built-in discovery and payment-recovery switching; an explicit chain is not required for the halt policy to apply.
 
 **Built-in text discovery chain (compression, web extract, title generation, etc.):**
 
@@ -427,7 +458,7 @@ See [Subagent Delegation](./delegation.md) for full configuration details.
 
 ## Cron Job Providers
 
-Unpinned cron jobs inherit your configured `fallback_providers` chain (or legacy `fallback_model`), both when the primary's credentials fail to resolve before the run and when the provider errors mid-run. A job pinned to its own provider, model or endpoint does **not**: if that route fails, the run fails (same-provider [credential pool](../configuration.md#credential-pool-strategies) rotation still applies). This matches how a pinned [delegation](./delegation.md) child behaves. Pin a cron job with `provider` and `model` overrides on the job itself:
+Unpinned cron jobs inherit your configured `fallback_providers` chain (or legacy `fallback_model`), unless `fallback_policy.halt` disables it, both when the primary's credentials fail to resolve before the run and when the provider errors mid-run. A job pinned to its own provider, model or endpoint does **not** inherit the global chain: if that route fails, the run fails (same-provider [credential pool](../configuration.md#credential-pool-strategies) rotation still applies). This matches how a pinned [delegation](./delegation.md) child behaves. Pin a cron job with `provider` and `model` overrides on the job itself:
 
 ```python
 cronjob(

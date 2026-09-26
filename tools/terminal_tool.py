@@ -1218,7 +1218,8 @@ def _run_approval_guards(
     """Run canonical-target floors plus tirith/dangerous-command guards.
 
     ``force`` skips the recoverable approval layer after a human confirmation, but it never
-    bypasses a hardline match discovered only after backend path resolution.
+    bypasses a guard match discovered only after the backend proves a mutation target is a
+    block device.
     """
     try:
         resolved_variants = _resolved_guard_variants(command, env, cwd) if env is not None else []
@@ -1232,9 +1233,15 @@ def _run_approval_guards(
         resolved_approval = _check_all_guards(
             resolved_command, env_type, has_host_access=_docker_has_host_access(config)
         )
-        if not resolved_approval["approved"]:
-            if resolved_approval.get("hardline") or resolved_approval.get("user_deny") or not force:
-                _raise_rejected_approval(resolved_approval, command)
+        if resolved_approval["approved"]:
+            resolved_approval = {
+                "approved": False,
+                "hardline": True,
+                "status": "blocked",
+                "message": "Command denied: mutation target resolves to a block device.",
+                "description": "mutation target resolves to a block device",
+            }
+        _raise_rejected_approval(resolved_approval, command)
 
     if force:
         return _ApprovalVerdict(approved_run=True)

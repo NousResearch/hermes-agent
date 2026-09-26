@@ -36,6 +36,13 @@ logger = logging.getLogger(__name__)
 # Gateway-internal notifications arrive through the same user-role channel as genuine
 # user messages; they are execution metadata and must never become durable memory.
 # Deliberately anchored: a human discussing one of these strings mid-message is valid input.
+#
+# The background-process family is matched by PREFIX, not by the status verb that follows.
+# `_completion_status()` (tools/process_registry_notifications.py) already renders six
+# different verbs and `_REASON_STATUS` is designed to grow, so an alternation of verbs
+# leaks every status added after it was written. The envelope prefix is the stable signal,
+# and it is the same one agent/context_compressor.py classifies on
+# (`_BACKGROUND_PROCESS_NOTIFICATION_PREFIX` / `_SYNTHETIC_USER_ROW_PREFIXES`).
 _INTERNAL_GATEWAY_TURN_RE = re.compile(
     r"^\s*(?:"
     r"\[ASYNC (?:DELEGATION )?(?:BATCH )?COMPLETE[^\]]*\]|"
@@ -43,7 +50,18 @@ _INTERNAL_GATEWAY_TURN_RE = re.compile(
     r"\[CONTEXT SUMMARY\]:?|"
     r"\[PRIOR CONTEXT[^\]]*\]|"
     r"\[Your active task list was preserved across context compression\]|"
-    r"\[IMPORTANT: Background process \d+ matched watch pattern[^\n]*|"
+    # Completion and watch_match envelopes (format_process_notification). Keyed on the
+    # prefix plus the session-id token, never on the status verb that follows it: a bare
+    # prefix would also swallow a genuine "[IMPORTANT: Background process — what does that
+    # mean?]" question, which the existing suite pins as valid user input.
+    r"\[IMPORTANT: Background process [0-9A-Za-z_-]+ |"
+    # Heartbeat envelopes carry no "IMPORTANT:" marker.
+    r"\[Background process [0-9A-Za-z_-]+ heartbeat |"
+    # Batch headers: ProcessNotificationBatch.render, GatewayRunner's coalesced
+    # process completions, and its grouped subagent delegations.
+    r"\[IMPORTANT: \d+ background (?:processes?|subagent delegations?) completed|"
+    # watch_disabled / watch_overflow_tripped / watch_overflow_released.
+    r"\[IMPORTANT: Watch[- ]patterns? (?:disabled for process|overflow:|notifications resumed)[^\n]*|"
     r"A background fan-out of \d+ subagent\(s\) you dispatched earlier has finished\.|"
     r"A background subagent you dispatched earlier has finished\."
     r")",

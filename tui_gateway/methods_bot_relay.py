@@ -52,22 +52,26 @@ def _run_delivery(profile: str, tmp: str, env: dict | None = None, *,
 
 @method("bot_relay.roster.sync")
 def _(rid, params: dict, _root=_relay_root) -> dict:
-    """Replace this gateway's view of agents on OTHER connections → ``{count}`` accepted rows
-    (``agents`` rows ``{profile, handle, connection_id, ...}``; invalid rows are dropped)."""
+    """Replace THIS Desktop's view of agents on OTHER connections → ``{count}`` accepted rows
+    (``agents`` rows ``{profile, handle, connection_id, ...}``; invalid rows are dropped).
+    ``desktop`` is the caller's relay identity: several Desktops may hold a line to one gateway,
+    and each publishes its own registry's ids, so a roster replaces only its own rows."""
     try:
         from tools.bot_relay import write_remote_roster
-        return _ok(rid, {"count": write_remote_roster(_root(), params.get("agents"))})
+        return _ok(rid, {"count": write_remote_roster(_root(), params.get("agents"), params.get("desktop"))})
     except Exception as e:
         return _err(rid, 5090, str(e))
 
 
 @method("bot_relay.outbox.drain")
 def _(rid, params: dict, _root=_relay_root) -> dict:
-    """Claim every pending cross-connection envelope queued here → ``{envelopes}``; claimed
-    envelopes move to ``claimed/`` atomically so concurrent drains can't double-deliver."""
+    """Claim the pending cross-connection envelopes addressed through THIS Desktop (``desktop``,
+    its relay identity) → ``{envelopes}``; claimed envelopes move to ``claimed/`` atomically so
+    concurrent drains can't double-deliver, and an envelope another Desktop addressed stays queued
+    for it — its connection id names a machine only that Desktop's registry can resolve."""
     try:
         from tools.bot_relay import claim_pending_envelopes
-        return _ok(rid, {"envelopes": claim_pending_envelopes(_root())})
+        return _ok(rid, {"envelopes": claim_pending_envelopes(_root(), params.get("desktop"))})
     except Exception as e:
         return _err(rid, 5091, str(e))
 

@@ -196,7 +196,8 @@ def _post_setup_langfuse() -> None:
         return
     try:
         from hermes_cli.plugins_cmd import cmd_enable
-        cmd_enable("observability/langfuse")
+        # raise_on_refusal: {exc} below interpolates the reason, and str(SystemExit(1)) is "1".
+        cmd_enable("observability/langfuse", raise_on_refusal=True)
     except (Exception, SystemExit) as exc:
         _print_warning(f"    Could not enable plugin automatically: {exc}")
         _info_lines("Run manually: hermes plugins enable observability/langfuse")

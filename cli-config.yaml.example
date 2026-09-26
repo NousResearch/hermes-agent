@@ -1001,6 +1001,12 @@ memory:
 # local runtime lease registry cannot be read or locked.
 max_concurrent_sessions: null
 
+# When true, claiming a chat session that is already open in another window/terminal
+# takes over the active session lease instead of refusing. Sibling runtimes on the
+# same gateway are evicted and interrupted. Defaults to false. Can also be set
+# under `session.allow_takeover: true`.
+allow_session_takeover: false
+
 # When true, group/channel chats use one session per participant when the platform
 # provides a user ID. This is the secure default and prevents users in the same
 # room from sharing context, interrupts, and token costs. Set false only if you

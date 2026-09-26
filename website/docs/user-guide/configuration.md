@@ -2582,6 +2582,35 @@ container after `hermes update` restarts the backend) still counts toward the
 cap and still fences its own session id, but it no longer blocks claiming or
 releasing a different session.
 
+### Continuing one chat on another device
+
+A stored session has at most one live owner, so a chat open on your desktop
+refuses the same chat on your phone, tablet or a second terminal:
+`This chat is open in another Hermes window/terminal.` That protects the
+transcript — two owners each reason from their own snapshot of the history and
+append replies that never saw each other.
+
+If your surfaces mirror the same session in real time and you would rather the
+conversation follow you between them, opt in:
+
+```yaml
+allow_session_takeover: true  # default false; newest surface takes the chat over
+```
+
+With it enabled, opening the chat elsewhere **hands it over** instead of being
+refused: the previous owner's lease is replaced, so there is still exactly one
+active lease in the session registry. On the same gateway, sibling runtimes that
+lost the lease are evicted and interrupted on claim.
+
+`session.allow_takeover` is accepted as a nested alternative; the top-level key
+wins when both are set. `max_concurrent_sessions` is unaffected — takeover
+decides *who* owns a chat, never *how many* chats may run. Ownership that cannot
+be proven still fails closed, so a corrupt registry is never silently treated as
+"nobody owns this".
+
+Leave it off if several people share one `$HERMES_HOME`: whoever opens a chat
+last would take it from whoever is using it.
+
 Control whether shared chats keep one conversation per room or one conversation per participant:
 
 ```yaml

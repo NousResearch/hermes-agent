@@ -24,9 +24,11 @@ import pytest
 
 from hermes_cli.active_sessions import (
     MAX_CONCURRENT_SESSIONS,
+    PER_SESSION_EXCLUSIVE_SUBMIT,
     SESSION_NOT_OWNED,
     active_session_registry_snapshot,
     release_active_session,
+    resolve_session_takeover,
     try_acquire_active_session,
 )
 
@@ -202,3 +204,127 @@ def test_the_same_live_session_may_re_acquire_its_own_lease():
     other, refusal = acquire("S", live_id="tab-2")
     assert other is None
     assert refusal.reason == SESSION_NOT_OWNED
+
+
+def test_the_capability_is_advertised_because_the_check_exists():
+    """The flag lives beside the enforcement, so it cannot drift from it."""
+    assert PER_SESSION_EXCLUSIVE_SUBMIT is True
+
+
+class TestOptInSessionTakeover:
+    """``allow_session_takeover``: hand a chat over instead of refusing the second surface.
+
+    The fence above is right by default, but it also refuses the SAME operator's
+    phone when a chat is open on their desktop -- with no way to continue the
+    conversation except closing the original window. Surfaces that mirror one
+    session in real time may reasonably prefer continuity, so this is opt-in
+    policy rather than a relaxed invariant: at most one owner still holds a
+    session, the newest one simply wins.
+    """
+
+    def test_off_by_default_because_relaxing_ownership_must_be_deliberate(self):
+        assert resolve_session_takeover({}) is False
+        assert resolve_session_takeover(None) is False
+
+    def test_reads_both_the_flat_key_and_the_session_block(self):
+        assert resolve_session_takeover({"allow_session_takeover": True}) is True
+        assert resolve_session_takeover({"session": {"allow_takeover": True}}) is True
+        # A YAML hand-edit can land as a string; "false" must not read as truthy.
+        assert resolve_session_takeover({"allow_session_takeover": "true"}) is True
+        assert resolve_session_takeover({"allow_session_takeover": "false"}) is False
+        # The flat key wins when both are present, matching max_concurrent_sessions.
+        assert resolve_session_takeover(
+            {"allow_session_takeover": False, "session": {"allow_takeover": True}}) is False
+
+    def test_reads_object_config_attributes(self):
+        class ObjConfigFlat:
+            allow_session_takeover = True
+
+        class ObjConfigNested:
+            session = {"allow_takeover": True}
+
+        class ObjConfigNestedObj:
+            class Session:
+                allow_takeover = True
+            session = Session()
+
+        assert resolve_session_takeover(ObjConfigFlat()) is True
+        assert resolve_session_takeover(ObjConfigNested()) is True
+        assert resolve_session_takeover(ObjConfigNestedObj()) is True
+
+    def test_second_surface_takes_the_session_over_instead_of_being_refused(self):
+        config = {"allow_session_takeover": True}
+        first, refused = acquire("S", config, surface="desktop")
+        assert first is not None and refused is None
+
+        second, refusal = acquire("S", config, surface="tui")
+        assert second is not None, f"takeover was enabled, yet the handover was refused: {refusal}"
+        assert refusal is None
+
+    def test_takeover_evicts_the_previous_owner_so_there_is_still_one_writer(self):
+        """The invariant that must survive: a handover, not a second writer."""
+        config = {"allow_session_takeover": True}
+        acquire("S", config, surface="desktop")
+        second, _ = acquire("S", config, surface="tui")
+
+        entries = active_session_registry_snapshot()
+        held = [e for e in entries if e["session_id"] == "S"]
+        assert len(held) == 1, "two live leases on one session is the bug this feature must not cause"
+        assert held[0]["lease_id"] == second.lease_id
+        assert held[0]["surface"] == "tui"
+
+    def test_takeover_is_scoped_to_the_session_being_claimed(self):
+        config = {"allow_session_takeover": True}
+        acquire("S1", config)
+        acquire("S2", config)
+        acquire("S1", config)
+        ids = sorted(e["session_id"] for e in active_session_registry_snapshot())
+        assert ids == ["S1", "S2"], "taking S1 over must not disturb an unrelated session"
+
+    def test_capacity_still_refuses_even_with_takeover_enabled(self):
+        """Takeover answers "who owns this chat", never "how many may run"."""
+        config = {"allow_session_takeover": True, "max_concurrent_sessions": 1}
+        assert acquire("S1", config)[0] is not None
+        lease, refusal = acquire("S2", config)
+        assert lease is None
+        assert refusal.reason == MAX_CONCURRENT_SESSIONS
+
+    def test_disabled_takeover_still_refuses_the_second_surface(self):
+        config = {"allow_session_takeover": False}
+        assert acquire("S", config)[0] is not None
+        lease, refusal = acquire("S", config)
+        assert lease is None
+        assert refusal.reason == SESSION_NOT_OWNED
+
+    def test_gateway_config_carries_allow_session_takeover(self):
+        from gateway.config import GatewayConfig
+        gw = GatewayConfig(allow_session_takeover=True)
+        assert gw.allow_session_takeover is True
+        assert gw.to_dict().get("allow_session_takeover") is True
+
+    def test_evict_other_session_leases_clears_sibling(self, monkeypatch):
+        from tui_gateway.session_lifecycle import _evict_other_session_leases
+        from tui_gateway.server import _sessions, _sessions_lock
+        with _sessions_lock:
+            _sessions.clear()
+            _sessions["s1"] = {
+                "session_key": "chat-42",
+                "active_session_lease": object(),
+            }
+            _sessions["s2"] = {
+                "session_key": "chat-42",
+                "active_session_lease": None,
+            }
+            _sessions["s3"] = {
+                "session_key": "chat-unrelated",
+                "active_session_lease": object(),
+            }
+
+        _evict_other_session_leases("s2", "chat-42")
+
+        with _sessions_lock:
+            assert "active_session_lease" not in _sessions["s1"]
+            assert _sessions["s1"].get("_lease_taken_over") is True
+            assert _sessions["s3"].get("active_session_lease") is not None
+            _sessions.clear()
+

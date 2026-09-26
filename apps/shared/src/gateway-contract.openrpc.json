@@ -13368,6 +13368,11 @@
           "per_session_exclusive_submit": {
             "title": "Per Session Exclusive Submit",
             "type": "boolean"
+          },
+          "allow_session_takeover": {
+            "default": false,
+            "title": "Allow Session Takeover",
+            "type": "boolean"
           }
         },
         "required": [

@@ -1531,6 +1531,50 @@ describe('startUpdatePoller', () => {
     expect($updateStatus.get()?.behind).toBe(5)
   })
 
+  it('retries the client version when the initial connection changes before its reply', async () => {
+    let finishFirst!: (value: DesktopVersionInfo) => void
+    let finishCheck!: (value: DesktopUpdateStatus) => void
+
+    const version: DesktopVersionInfo = {
+      appVersion: '0.21.5+2939.g4127d78',
+      electronVersion: '40',
+      nodeVersion: '26',
+      platform: 'darwin',
+      hermesRoot: ''
+    }
+
+    const getVersion = vi.fn()
+      .mockImplementationOnce(() => new Promise<DesktopVersionInfo>(resolve => {
+        finishFirst = resolve
+      }))
+      .mockResolvedValue(version)
+
+    const previous = window.hermesDesktop
+    window.hermesDesktop = { ...previous, getVersion }
+    // Keep the update check pending so its own refresh cannot mask a missing
+    // connection-change retry.
+    checkMock.mockImplementationOnce(() => new Promise<DesktopUpdateStatus>(resolve => {
+      finishCheck = resolve
+    }))
+    $desktopVersion.set(null)
+    setRemote(false)
+
+    try {
+      startUpdatePoller()
+      setRemote(true)
+      finishFirst(version)
+      await vi.advanceTimersByTimeAsync(0)
+
+      expect(getVersion).toHaveBeenCalledTimes(2)
+      expect($desktopVersion.get()?.appVersion).toBe(version.appVersion)
+    } finally {
+      finishCheck({ supported: true, behind: 5, fetchedAt: Date.now() })
+      await vi.advanceTimersByTimeAsync(0)
+      window.hermesDesktop = previous
+      $desktopVersion.set(null)
+    }
+  })
+
   it('polls once per day and never forces past the caches', async () => {
     startUpdatePoller()
     await vi.advanceTimersByTimeAsync(0)

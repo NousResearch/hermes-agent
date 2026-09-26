@@ -17954,7 +17954,12 @@ function showAboutPanelFresh(): void {
 }
 
 ipcMain.handle('hermes:version', async (_event, scope?: { connectionId?: string; profile?: string }) => {
-  const [skew, version] = await Promise.all([detectRendererSkew(), resolveHermesVersion(scope)])
+  // A packaged client's identity comes from its immutable build stamp. Do
+  // not make that label wait for a remote gateway during startup or reconnect.
+  const [skew, version] = await Promise.all([
+    detectRendererSkew(),
+    INSTALL_STAMP ? Promise.resolve('') : resolveHermesVersion(scope)
+  ])
 
   return {
     ...appVersionInfo(INSTALL_STAMP, version, app.getVersion()),

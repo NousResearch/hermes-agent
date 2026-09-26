@@ -623,7 +623,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
 
     return () => ipcRenderer.removeListener('hermes:bootstrap:event', listener)
   },
-  getVersion: () => ipcRenderer.invoke('hermes:version'),
+  getVersion: scope => ipcRenderer.invoke('hermes:version', scope),
   relaunchApp: () => ipcRenderer.invoke('hermes:app:relaunch'),
   getMachineProfile: () => ipcRenderer.invoke('hermes:machine:profile'),
   getRemoteDisplayReason: () => ipcRenderer.invoke('hermes:get-remote-display-reason'),

@@ -5633,6 +5633,9 @@ def _vision_auto_route(
     """Auto-detect order: 1. main provider + model, 2. OpenRouter, 3. Nous Portal, 4. DeepInfra, 5. stop."""
     main_provider = str(runtime.get("provider") or _read_main_provider())
     main_model = str(runtime.get("model") or _read_main_model())
+    # The identity the user actually pointed this session at, captured before any MoA unwrap —
+    # this is what gates the built-in discovery chain below (see _discovery_chain_allowed).
+    selected_main = main_provider
     if main_provider.strip().lower() == "moa":
         # MoA main_model is a preset NAME, not a wire model — unwrap to the preset's aggregator
         # slot. The moa:// facade endpoint belongs to the virtual provider, not the real one.
@@ -5644,6 +5647,12 @@ def _vision_auto_route(
         client, default_model = _vision_main_provider_client(main_provider, main_model, runtime, resolved_model, resolved_api_mode)
         if client is not None:
             return _finalize_vision_client(main_provider, client, default_model, resolved_model, async_mode)
+    # Parity with the text auxiliary route (_discovery_chain_allowed): once the user has selected a
+    # main provider, an unavailable main must not silently widen to guessing another logged-in
+    # provider — that ships the user's image to an account they never pointed this vision request
+    # at (#123998). With no main selected (fresh install / "auto"), the discovery chain still runs.
+    if not _discovery_chain_allowed(selected_main, task="vision"):
+        return None, None, None
     # Aggregators use their dedicated vision model, not the user's main model.
     for candidate in _VISION_AUTO_PROVIDER_ORDER:
         if candidate == main_provider:

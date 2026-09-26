@@ -43,7 +43,7 @@ export function usePanelTitlebar(ref: RefObject<HTMLElement | null>, enabled: bo
     }
 
     const left = Math.min(rect.width, Math.max(0, leftControls.right + 12 - rect.left))
-    const right = Math.min(rect.width - left, Math.max(0, rect.right - rightControls.left + 24))
+    const right = Math.min(rect.width - left, Math.max(0, rect.right - rightControls.left + 12))
     element.style.setProperty('--panel-titlebar-left', `${left}px`)
     element.style.setProperty('--panel-titlebar-right', `${right}px`)
     setBelowControls(minimized || rect.width - left - right < 120)

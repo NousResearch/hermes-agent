@@ -184,7 +184,7 @@ describe('titlebar reservation lifecycle', () => {
 
     rightEdge = 700
     act(chromeChanged)
-    expect(reservation('right')).toBe('124px')
+    expect(reservation('right')).toBe('112px')
   })
 
   it('remeasures through real chat, contributed-page and overlay navigation', () => {

@@ -196,7 +196,9 @@ export function NarrowOverlays() {
                     }
                   }}
                 >
-                  <PaneTabLabel>{pane.title ?? pane.id}</PaneTabLabel>
+                  <PaneTabLabel className="normal-case tracking-normal" title={pane.title ?? pane.id}>
+                    {pane.title ?? pane.id}
+                  </PaneTabLabel>
                 </PaneTab>
               ))}
             </PaneTabStrip>

@@ -213,7 +213,11 @@ class CLIVoiceMixin:
                 return
             self._voice_invalidate()
             stt_model = self._voice_stt_model()
-            if self._voice_stt_provider() == "local":
+            # Import lazily, matching the transcribe_recording import below, to keep
+            # the heavier transcription deps off the CLI's import path.
+            from tools.transcription_tools import is_local_model_loaded
+            cold_local_load = self._voice_stt_provider() == "local" and not is_local_model_loaded(stt_model)
+            if cold_local_load:
                 _cprint(
                     f"{_DIM}Preparing local STT model '{stt_model}' "
                     f"(first use may download it from Hugging Face)...{_RST}")

@@ -414,7 +414,7 @@ def _ls_files_cached(home: str, _index_signature: Optional[Tuple[int, int, int]]
     try:
         r = subprocess.run(
             ["git", "-C", home, "ls-files", "-z"],
-            capture_output=True, text=True, timeout=20,
+            capture_output=True, text=True, errors="surrogateescape", timeout=20,
         )
     except (OSError, subprocess.SubprocessError):
         return frozenset()
@@ -425,10 +425,7 @@ def _ls_files_cached(home: str, _index_signature: Optional[Tuple[int, int, int]]
 
 def _git_tracks(home: Path, rel: str) -> bool:
     """True when ``git`` tracks *rel* (repo-relative, ``/``-separated) inside *home*."""
-    try:
-        return rel.replace("\\", "/") in _git_tracked_index(str(home))
-    except Exception:  # pragma: no cover — never let a cleanup guard break the agent loop
-        return False
+    return rel.replace("\\", "/") in _git_tracked_index(str(home))
 
 
 def _inside_git_worktree(path: Path) -> bool:

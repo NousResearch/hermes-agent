@@ -2070,6 +2070,8 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
     from agent.fallback_cooldown import _arm_rate_limit_cooldown, switch_deferred_by_reset
     if switch_deferred_by_reset(agent, reason, reset_at):
         return False
+    from agent.agent_runtime_helpers import remember_primary_window
+    remember_primary_window(agent)
     cooldown_seconds = _arm_rate_limit_cooldown(agent, reason, reset_at=reset_at)
     while True:
         if agent._fallback_index >= len(agent._fallback_chain):

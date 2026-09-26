@@ -570,6 +570,9 @@ class CLIModelSwitchMixin:
     def _snapshot_model_runtime(self) -> dict:
         """Capture current CLI and agent model runtime for one-turn restore."""
         agent = getattr(self, "agent", None)
+        if agent is not None:
+            from agent.agent_runtime_helpers import remember_primary_window
+            remember_primary_window(agent)
         # ``reasoning_config`` is a mutable dict: deepcopy it so a later in-place edit cannot alias the snapshot.
         return {
             **_runtime_fields(self),

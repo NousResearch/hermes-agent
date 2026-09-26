@@ -652,6 +652,16 @@ class TestPrMergedEscapeHatch:
         return p
 
     @staticmethod
+    def _head(wt):
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=wt, capture_output=True, text=True,
+        ).stdout.strip()
+
+    @staticmethod
+    def _merged_for(sha):
+        return '[{"number": 1, "headRefOid": "%s"}]' % sha
+
+    @staticmethod
     def _stub_gh(tmp_path, monkeypatch, stdout='[{"number": 1}]', exit_code=0):
         gh = tmp_path / "bin" / "gh"
         gh.parent.mkdir(parents=True, exist_ok=True)
@@ -666,7 +676,7 @@ class TestPrMergedEscapeHatch:
             "precondition: cherry must NOT consider this merged — the PR "
             "check is the only thing that can reap it"
         )
-        self._stub_gh(tmp_path, monkeypatch)
+        self._stub_gh(tmp_path, monkeypatch, stdout=self._merged_for(self._head(wt)))
         cli._prune_stale_worktrees(str(git_repo))
         assert not wt.exists(), (
             "clean tree whose branch has a MERGED PR is merged work — reap it"
@@ -693,7 +703,7 @@ class TestPrMergedEscapeHatch:
         wt = self._mk_diverged(git_repo, "hermes-dirty-merged")
         (wt / "uncommitted.txt").write_text("in-flight\n")
         self._age(wt, 100)
-        self._stub_gh(tmp_path, monkeypatch)
+        self._stub_gh(tmp_path, monkeypatch, stdout=self._merged_for(self._head(wt)))
         cli._prune_stale_worktrees(str(git_repo))
         assert wt.exists(), "dirty guard outranks the PR-merged verdict"
 
@@ -701,7 +711,7 @@ class TestPrMergedEscapeHatch:
         self, git_repo, tmp_path, monkeypatch
     ):
         wt = self._mk_diverged(git_repo, "hermes-memo")
-        self._stub_gh(tmp_path, monkeypatch)
+        self._stub_gh(tmp_path, monkeypatch, stdout=self._merged_for(self._head(wt)))
         cache: dict = {}
         assert worktree_ops._worktree_branch_pr_merged(str(wt), cache=cache) is True
         keys = [k for k in cache if k.startswith("pr-merged:")]
@@ -709,6 +719,48 @@ class TestPrMergedEscapeHatch:
         # Break gh: a cached True verdict must not re-consult it.
         self._stub_gh(tmp_path, monkeypatch, stdout="", exit_code=1)
         assert worktree_ops._worktree_branch_pr_merged(str(wt), cache=cache) is True
+
+    def test_reused_branch_with_new_commits_is_not_merged(
+        self, git_repo, tmp_path, monkeypatch
+    ):
+        import cli
+        wt = self._mk_diverged(git_repo, "hermes-reused")
+        merged_head = self._head(wt)
+        (wt / "follow_up.txt").write_text("work the merged PR never saw\n")
+        subprocess.run(["git", "add", "follow_up.txt"], cwd=wt, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "follow-up"], cwd=wt, capture_output=True)
+        self._age(wt, 100)
+        self._stub_gh(tmp_path, monkeypatch, stdout=self._merged_for(merged_head))
+        assert worktree_ops._worktree_branch_pr_merged(str(wt)) is False
+        cli._prune_stale_worktrees(str(git_repo))
+        assert wt.exists(), (
+            "a merged PR on the same branch name does not cover commits made "
+            "after it merged — preserve them"
+        )
+
+    def test_tip_behind_merged_head_is_merged(self, git_repo, tmp_path, monkeypatch):
+        wt = self._mk_diverged(git_repo, "hermes-review-commit")
+        tip = self._head(wt)
+        (wt / "review.txt").write_text("review commit added on the PR\n")
+        subprocess.run(["git", "add", "review.txt"], cwd=wt, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "review"], cwd=wt, capture_output=True)
+        merged_head = self._head(wt)
+        subprocess.run(["git", "reset", "--hard", tip], cwd=wt, capture_output=True)
+        self._stub_gh(tmp_path, monkeypatch, stdout=self._merged_for(merged_head))
+        assert worktree_ops._worktree_branch_pr_merged(str(wt)) is True, (
+            "every local commit is an ancestor of the merged head, so the PR "
+            "carried all of it"
+        )
+
+    def test_merged_head_not_fetched_fails_safe(self, git_repo, tmp_path, monkeypatch):
+        wt = self._mk_diverged(git_repo, "hermes-unfetched")
+        self._stub_gh(tmp_path, monkeypatch, stdout=self._merged_for("f" * 40))
+        assert worktree_ops._worktree_branch_pr_merged(str(wt)) is False
+
+    def test_merged_pr_without_head_sha_fails_safe(self, git_repo, tmp_path, monkeypatch):
+        wt = self._mk_diverged(git_repo, "hermes-no-sha")
+        self._stub_gh(tmp_path, monkeypatch, stdout='[{"number": 1}]')
+        assert worktree_ops._worktree_branch_pr_merged(str(wt)) is False
 
     def test_negative_verdict_not_cached(self, git_repo, tmp_path, monkeypatch):
         wt = self._mk_diverged(git_repo, "hermes-nocache-neg")

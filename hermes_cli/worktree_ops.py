@@ -643,36 +643,60 @@ def _worktree_current_branch(worktree_path: str, timeout: int) -> Optional[str]:
     return branch if branch and branch != "HEAD" else None  # "HEAD" = detached
 
 
+_PR_MERGED_LOOKUP_LIMIT = 100
+
+
+def _tip_in_merged_head(worktree_path: str, head_sha: str, merged_head: object, timeout: int) -> bool:
+    """Whether the local tip is the merged PR's head or an ancestor of it. Fails SAFE -> False.
+
+    A merged PR only vouches for the commits it carried. A head object we never fetched makes
+    ``merge-base --is-ancestor`` fail, which reads as "not proven" and preserves the tree.
+    """
+    if not isinstance(merged_head, str) or not merged_head:
+        return False
+    if merged_head == head_sha:
+        return True
+    result = _git(["merge-base", "--is-ancestor", head_sha, merged_head], worktree_path, timeout=timeout)
+    return result.returncode == 0
+
+
 def _worktree_branch_pr_merged(
     worktree_path: str, timeout: int = 15, cache: Optional[Dict[str, bool]] = None,
 ) -> bool:
-    """Whether the branch's PR is MERGED on GitHub (``gh pr list``). Fails SAFE toward False.
+    """Whether a MERGED GitHub PR carried this tree's tip (``gh pr list``). Fails SAFE toward False.
 
-    Catches rebase-merges whose altered diff defeats ``git cherry``. Memoized on
+    Catches rebase-merges whose altered diff defeats ``git cherry``. A merged PR on the same branch
+    NAME is not enough: a branch reused after its PR merged holds new local commits that PR never
+    saw, so the tip must equal a merged PR's ``headRefOid`` or be its ancestor. Memoized on
     ``(branch, head_sha)``; only True is cached since the PR may merge later without new commits.
     """
     try:
         branch = _worktree_current_branch(worktree_path, timeout)
         if branch is None:
             return False
+        head_sha = _git_out(["rev-parse", "HEAD"], worktree_path, timeout=timeout)
+        if not head_sha:
+            return False
 
-        cache_key = None
-        if cache is not None:
-            sha = _git_out(["rev-parse", "HEAD"], worktree_path, timeout=timeout)
-            if sha:
-                cache_key = f"pr-merged:{branch}:{sha}"
-                if cache.get(cache_key) is True:
-                    return True
+        cache_key = f"pr-merged:{branch}:{head_sha}"
+        if cache is not None and cache.get(cache_key) is True:
+            return True
 
         result = subprocess.run(
-            ["gh", "pr", "list", "--head", branch, "--state", "merged", "--json", "number", "--limit", "1"],
+            ["gh", "pr", "list", "--head", branch, "--state", "merged", "--json", "number,headRefOid",
+             "--limit", str(_PR_MERGED_LOOKUP_LIMIT)],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=worktree_path,
         )
         if result.returncode != 0:
             return False
         prs = json.loads(result.stdout or "[]")
-        merged = isinstance(prs, list) and bool(prs)
-        if merged and cache is not None and cache_key is not None:
+        if not isinstance(prs, list):
+            return False
+        merged = any(
+            _tip_in_merged_head(worktree_path, head_sha, pr.get("headRefOid"), timeout)
+            for pr in prs if isinstance(pr, dict)
+        )
+        if merged and cache is not None:
             cache[cache_key] = True
         return merged
     except Exception:

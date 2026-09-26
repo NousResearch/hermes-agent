@@ -131,7 +131,11 @@ def prepare_iteration(
         try:
             agent.step_callback(api_call_count, _previous_tool_round(messages))
         except Exception as _step_err:
-            logger.debug("step_callback error (iteration %s): %s", api_call_count, _step_err)
+            # WARNING, not DEBUG: this callback is where ACP tool completions are delivered,
+            # so a crash here silently froze the client's tool bubbles (#33023).
+            logger.warning(
+                "step_callback error (iteration %s): %s", api_call_count, _step_err, exc_info=True
+            )
 
     # Tool-calling iterations for the skill nudge; resets whenever skill_manage is used.
     if agent._skill_nudge_interval > 0 and "skill_manage" in agent.valid_tool_names:

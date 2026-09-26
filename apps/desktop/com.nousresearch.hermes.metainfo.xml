@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.nousresearch.hermes</id>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <name>Hermes Desktop</name>
+  <summary>The agent that grows with you</summary>
+
+  <developer id="com.nousresearch">
+    <name>Nous Research</name>
+  </developer>
+
+  <description>
+    <p>
+      Hermes Desktop is a native app for Hermes Agent, an open-source autonomous agent by Nous Research.
+      It learns across sessions, writes its own skills from hard-won experience, and keeps improving them in use.
+      Run it for a week and it knows your projects, your preferences, and how you like things done.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">com.nousresearch.hermes.desktop</launchable>
+
+  <content_rating type="oars-1.1" />
+
+  <url type="bugtracker">https://github.com/NousResearch/hermes-agent/issues</url>
+  <url type="homepage">https://hermes-agent.nousresearch.com/desktop</url>
+  <url type="vcs-browser">https://github.com/NousResearch/hermes-agent</url>
+
+  <screenshots>
+    <screenshot type="default">
+      <image>https://web-assets.nousresearch.com/nousnet-web/img/landing/desktop-preview.b4791dcc492810da.webp</image>
+    </screenshot>
+  </screenshots>
+
+  <releases>
+    <release version="0.21.4" date="2026-09-21">
+      <url type="details">https://github.com/NousResearch/hermes-agent/releases/tag/v2026.9.21</url>
+    </release>
+    <release version="0.21.3" date="2026-09-14">
+      <url type="details">https://github.com/NousResearch/hermes-agent/releases/tag/v2026.9.14</url>
+    </release>
+    <release version="0.21.2" date="2026-09-11">
+      <url type="details">https://github.com/NousResearch/hermes-agent/releases/tag/v2026.9.11</url>
+    </release>
+    <release version="0.21.1" date="2026-09-07">
+      <url type="details">https://github.com/NousResearch/hermes-agent/releases/tag/v2026.9.7</url>
+    </release>
+    <release version="0.21.0" date="2026-08-31">
+      <url type="details">https://github.com/NousResearch/hermes-agent/releases/tag/v2026.8.31</url>
+    </release>
+  </releases>
+</component>

@@ -187,3 +187,56 @@ test('npm configuration name casing does not invalidate a completed install', as
   prepareNodeDependencies({ ...options, env: { ...env, NPM_CONFIG_PREFIX: join(source, 'other-prefix') } })
   expect(existsSync(artifact)).toBe(false)
 }, 30000)
+
+// A fake npm whose version probes die but whose ci succeeds: the Job-Object
+// failure lane from #123933. The version must come from the manifest without
+// a single child spawn, and npm_execpath resolving through a symlink (whose
+// parent holds no manifest) must still find it beside the resolved CLI.
+function fakeNpmTree(source, { manifest }) {
+  const fake = mkdtempSync(join(tmpdir(), 'npm layout with spaces-fake-'))
+  roots.push(fake)
+  const npmRoot = join(fake, 'real/node_modules/npm')
+  mkdirSync(join(npmRoot, 'bin'), { recursive: true })
+  if (manifest) json(join(npmRoot, 'package.json'), { name: 'npm', version: manifest })
+  json(join(fake, 'real/node_modules/semver/package.json'), { name: 'semver', version: '1.0.0', main: 'index.js' })
+  writeFileSync(join(fake, 'real/node_modules/semver/index.js'), 'module.exports = { satisfies: () => true }\n')
+  const spawned = join(source, 'spawned.jsonl')
+  writeFileSync(join(npmRoot, 'bin/npm-cli.js'), [
+    `const { appendFileSync } = require('node:fs')`,
+    `appendFileSync(${JSON.stringify(spawned)}, process.argv[2] + '\\n')`,
+    `if (process.argv[2] === '--version') { console.log('10.8.2'); process.exit(${manifest ? 3 : 0}) }`,
+  ].join('\n'))
+  return { fake, npmRoot, spawned }
+}
+
+test.skipIf(process.platform === 'win32')('the npm version reads from the manifest without a child spawn, through a symlinked npm_execpath', async () => {
+  const { prepareNodeDependencies } = await import('../scripts/build/node-deps.mjs')
+  const source = fixture()
+  const { fake, npmRoot, spawned } = fakeNpmTree(source, { manifest: '10.8.2' })
+  // The symlink sits outside npm's package directory: its parent holds no
+  // manifest, while the resolved CLI's parent does. semver stays resolvable
+  // from the link, as with a real prefix bin symlink.
+  mkdirSync(join(fake, 'real/bin'), { recursive: true })
+  symlinkSync(join(npmRoot, 'bin/npm-cli.js'), join(fake, 'real/bin/npm-cli.js'))
+  mkdirSync(join(source, 'node_modules'))
+  writeFileSync(join(source, 'node_modules/.package-lock.json'), '{"packages": {}}')
+  const options = { source, workspaces: ['web'], reuse: true,
+    env: { ...process.env, npm_config_cache: join(source, '.npm-cache'), npm_execpath: join(fake, 'real/bin/npm-cli.js') } }
+  prepareNodeDependencies(options)
+  prepareNodeDependencies(options)
+  // Both runs reached ci or the reuse short-circuit; no version probe spawned.
+  expect(readFileSync(spawned, 'utf8')).toBe('ci\n')
+}, 30000)
+
+test('an npm layout without a readable manifest falls back to the child version probe', async () => {
+  const { prepareNodeDependencies } = await import('../scripts/build/node-deps.mjs')
+  const source = fixture()
+  const { fake, spawned } = fakeNpmTree(source, { manifest: null })
+  mkdirSync(join(source, 'node_modules'))
+  writeFileSync(join(source, 'node_modules/.package-lock.json'), '{"packages": {}}')
+  const options = { source, workspaces: ['web'], reuse: true,
+    env: { ...process.env, npm_config_cache: join(source, '.npm-cache'), npm_execpath: join(fake, 'real/node_modules/npm/bin/npm-cli.js') } }
+  prepareNodeDependencies(options)
+  // The unresolvable manifest kept the pre-fix behavior: probe first, then ci.
+  expect(readFileSync(spawned, 'utf8')).toBe('--version\nci\n')
+}, 30000)

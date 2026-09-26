@@ -145,20 +145,27 @@ class DaytonaEnvironment(BaseEnvironment):
         # has taken ownership of (opened + unlinked) the staged stdin file.
         state = {"cancelled": False, "staged": None, "dispatched": False}
 
+        def scrub_staged():  # caller holds ``lock``
+            if state["staged"] and not state["dispatched"]:
+                # Uploaded but never dispatched: nothing else will unlink it.
+                # Once dispatched the user shell rm's it before running cmd.
+                with contextlib.suppress(Exception):
+                    sandbox.fs.delete_file(state["staged"])
+                state["staged"] = None
+
         def cancel():
             with lock:
                 state["cancelled"] = True
-                if state["staged"] and not state["dispatched"]:
-                    # Uploaded but never dispatched: nothing else will unlink it.
-                    # Once dispatched the user shell rm's it before running cmd.
-                    with contextlib.suppress(Exception):
-                        sandbox.fs.delete_file(state["staged"])
+                scrub_staged()
                 with contextlib.suppress(Exception):
                     sandbox.stop()
 
         def exec_fn() -> tuple[str, int]:
             command = cmd_string
             if stdin_data is not None:
+                with lock:
+                    if state["cancelled"]:
+                        return ("", 130)
                 remote_stdin = self._staged_stdin_path()
                 sandbox.fs.upload_file(stdin_data.encode("utf-8", "surrogateescape"), remote_stdin)
                 with lock:
@@ -168,6 +175,8 @@ class DaytonaEnvironment(BaseEnvironment):
             shell_cmd = f"bash {'-l ' if login else ''}-c {shlex.quote(command)}"
             with lock:
                 if state["cancelled"]:
+                    # cancel() may have run mid-upload, before ``staged`` was set.
+                    scrub_staged()
                     return ("", 130)
                 state["dispatched"] = True
             response = sandbox.process.exec(shell_cmd, timeout=timeout)

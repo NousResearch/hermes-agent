@@ -348,20 +348,27 @@ class VercelSandboxEnvironment(BaseEnvironment):
         # has taken ownership of (opened + unlinked) the staged stdin file.
         state = {"cancelled": False, "staged": None, "dispatched": False}
 
+        def scrub_staged() -> None:  # caller holds ``lock``
+            if state["staged"] and not state["dispatched"]:
+                # Staged but never dispatched: scrub the payload (may hold a
+                # sudo password). Once dispatched the user shell unlinks it
+                # itself, so kill() sends no extra command.
+                with contextlib.suppress(Exception):
+                    sandbox.write_files([{"path": state["staged"], "content": b"", "mode": 0o600}])
+                state["staged"] = None
+
         def cancel() -> None:
             with lock:
                 state["cancelled"] = True
-                if state["staged"] and not state["dispatched"]:
-                    # Staged but never dispatched: scrub the payload (may hold a
-                    # sudo password) before stopping. Once dispatched the user
-                    # shell unlinks it itself, so kill() sends no extra command.
-                    with contextlib.suppress(Exception):
-                        sandbox.write_files([{"path": state["staged"], "content": b"", "mode": 0o600}])
+                scrub_staged()
                 self._stop_sandbox(sandbox)
 
         def exec_fn() -> tuple[str, int]:
             command = cmd_string
             if stdin_data is not None:
+                with lock:
+                    if state["cancelled"]:
+                        return ("", 130)
                 remote_stdin = self._staged_stdin_path()
                 _retry_vercel_call(
                     "stdin upload",
@@ -377,6 +384,8 @@ class VercelSandboxEnvironment(BaseEnvironment):
                     state["staged"] = remote_stdin
             with lock:
                 if state["cancelled"]:
+                    # cancel() may have run mid-upload, before ``staged`` was set.
+                    scrub_staged()
                     return ("", 130)
                 state["dispatched"] = True
             return _result_parts(sandbox.run_command(

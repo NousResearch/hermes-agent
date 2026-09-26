@@ -8,13 +8,13 @@ from unittest.mock import MagicMock
 import pytest
 
 import plugins.memory.openviking as openviking_module
-from hermes_cli import __version__ as _HERMES_VERSION
+from hermes_cli.version_info import get_version_info
 from plugins.memory.openviking import (
     OpenVikingMemoryProvider,
     _VikingClient,
 )
 
-_EXPECTED_USER_AGENT = f"openviking-memory-hermes/{_HERMES_VERSION}"
+_EXPECTED_USER_AGENT = f"openviking-memory-hermes/{get_version_info().base_version}"
 
 
 def _clear_openviking_tenant_env(monkeypatch):
@@ -1143,7 +1143,7 @@ class _HungThread:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX advisory locks")
+@pytest.mark.platforms("posix")  # POSIX advisory locks
 @pytest.mark.parametrize("owner_run_id", ["dead-owner", ""])
 def test_concurrent_providers_claim_unlocked_pending_owner_once(
     tmp_path,
@@ -1797,7 +1797,7 @@ class TestOpenVikingEnvWriter:
 
         _write_env_vars(env, {"OPENAI_API_KEY": "new"})
 
-        assert env.read_bytes() == b"NAME=caf\xe9\nOPENAI_API_KEY=new\n"
+        assert env.read_bytes() == f"NAME=caf\xe9{os.linesep}OPENAI_API_KEY=new{os.linesep}".encode("latin-1")
 
     def test_plain_env_is_unchanged_apart_from_the_write(self, tmp_path):
         from plugins.memory.openviking import _write_env_vars

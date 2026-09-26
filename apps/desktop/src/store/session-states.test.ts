@@ -10,6 +10,8 @@ import {
   setWorkspaceScope,
   workspaceScopeKey
 } from '@/components/pane-shell/workspace-scope'
+import { $connectionsRegistry } from '@/store/connection-registry-state'
+import { setPrimaryGateway, setPrimaryGatewayConnection } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
   $activeSessionId,
@@ -262,6 +264,24 @@ describe('resetTileRuntimeBindings', () => {
   })
 })
 
+function runtimeBindingDelegate(
+  dropRuntimeBindings: (storedSessionIds: ReadonlySet<string>) => void,
+  invalidateRuntimeBindings: (preserveStoredSessionIds?: ReadonlySet<string>) => void
+): SessionTileDelegate {
+  return {
+    archiveSession: vi.fn(),
+    branchSession: vi.fn(),
+    deleteSession: vi.fn(),
+    executeSlash: vi.fn(),
+    interruptSession: vi.fn(),
+    resumeTile: vi.fn(),
+    submitToSession: vi.fn(),
+    updateSession: vi.fn(),
+    dropRuntimeBindings,
+    invalidateRuntimeBindings
+  }
+}
+
 describe('resetRouteOwnedTileRuntimeBindings', () => {
   afterEach(() => {
     $sessionTiles.set([])
@@ -270,7 +290,7 @@ describe('resetRouteOwnedTileRuntimeBindings', () => {
   it('drops only tiles owned by the reopened route and leaves ambient tiles bound', () => {
     const invalidateRuntimeBindings = vi.fn()
     const dropRuntimeBindings = vi.fn()
-    setSessionTileDelegate({ dropRuntimeBindings, invalidateRuntimeBindings } as unknown as SessionTileDelegate)
+    setSessionTileDelegate(runtimeBindingDelegate(dropRuntimeBindings, invalidateRuntimeBindings))
     $sessionTiles.set([
       {
         ownerRoute: { connectionId: 'local', mode: 'local', profile: 'writer', targetProfile: 'writer' },
@@ -302,7 +322,7 @@ describe('resetRouteOwnedTileRuntimeBindings', () => {
   it('is a no-op when no open tile belongs to the reopened route', () => {
     const invalidateRuntimeBindings = vi.fn()
     const dropRuntimeBindings = vi.fn()
-    setSessionTileDelegate({ dropRuntimeBindings, invalidateRuntimeBindings } as unknown as SessionTileDelegate)
+    setSessionTileDelegate(runtimeBindingDelegate(dropRuntimeBindings, invalidateRuntimeBindings))
     const tiles = [{ runtimeId: 'runtime-ambient', storedSessionId: 'stored-ambient' }]
     $sessionTiles.set(tiles)
 
@@ -943,6 +963,42 @@ describe('dropTilesForProfile', () => {
     )
     expect(mod.$sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['bot-remote'])
   })
+
+  // #108679: a tile record whose anchor is its OWN pane id is
+  // self-referential — the re-dock target can never exist at adoption time,
+  // so the tile falls through to an arbitrary same-placement neighbor
+  // instead of the recorded layout. Loading must rewrite it to the
+  // workspace anchor (the same surface an anchorless tile re-docks against)
+  // while a REAL cross-tile anchor survives the round-trip.
+  it('rewrites a self-anchored tile record to the workspace anchor at load', async () => {
+    window.localStorage.setItem(
+      TILES_KEY,
+      JSON.stringify({
+        default: [
+          // Self-referential: anchor === the tile's own pane id.
+          { anchor: 'session-tile:20260912_080117', storedSessionId: '20260912_080117' },
+          // Legitimate: docked beside another tile.
+          { anchor: 'session-tile:20260912_080117', storedSessionId: '20260912_080118' },
+          // Legitimate: docked beside the workspace.
+          { anchor: 'workspace', storedSessionId: '20260912_080119' }
+        ]
+      })
+    )
+
+    // Storage is read at module load — reset and re-import after seeding it.
+    vi.resetModules()
+
+    const fresh = await import('@/store/session-states')
+    const tiles = fresh.$sessionTiles.get()
+    const byId = new Map(tiles.map(tile => [tile.storedSessionId, tile]))
+
+    // The self-anchor is dropped (the mirror re-docks those tiles against
+    // the workspace by default); the other two anchors round-trip intact.
+    expect(tiles).toHaveLength(3)
+    expect(byId.get('20260912_080117')!.anchor).toBeUndefined()
+    expect(byId.get('20260912_080118')!.anchor).toBe('session-tile:20260912_080117')
+    expect(byId.get('20260912_080119')!.anchor).toBe('workspace')
+  })
 })
 
 describe('releaseSessionTranscript', () => {
@@ -1447,5 +1503,49 @@ describe('isSessionRemote (#94640)', () => {
     setSessions([{ id: 'stored-2', profile: 'loki' } as never])
 
     expect(isSessionRemote('stored-2')).toBe(true)
+  })
+
+  it("reads a connection-tagged row's mode from the registry, not the ambient connection (#120730)", () => {
+    // A row from the unified Sessions list carries connection_id but no mode;
+    // its owner is { connectionId, profile }. The byte-vs-path decision must
+    // come from that connection's registry kind.
+    $connectionsRegistry.set({
+      version: 1,
+      primary: 'local',
+      secureTokenStorage: true,
+      connections: [
+        { id: 'local', kind: 'local', label: 'This Mac', tokenSet: false, tokenPreview: null },
+        { id: 'vps', kind: 'ssh', label: 'VPS', tokenSet: false, tokenPreview: null }
+      ]
+    })
+    setSessions([
+      { id: 'stored-ssh', profile: 'default', connection_id: 'vps' } as never,
+      { id: 'stored-local', profile: 'default', connection_id: 'local' } as never
+    ])
+
+    try {
+      $connection.set({ mode: 'local' } as never)
+      expect(isSessionRemote('stored-ssh')).toBe(true)
+
+      $connection.set({ mode: 'remote' } as never)
+      expect(isSessionRemote('stored-local')).toBe(false)
+    } finally {
+      $connectionsRegistry.set(null)
+    }
+  })
+
+  it('reads a bare-profile owner from the socket that serves it, not the ambient connection (#120730)', () => {
+    // The primary socket serving 'default' is a remote backend while the window
+    // shows a local source: the primary's own mode decides.
+    setPrimaryGateway({} as never, 'default')
+    setPrimaryGatewayConnection({ connectionId: 'vps', mode: 'remote' })
+    $connection.set({ mode: 'local' } as never)
+    setSessions([{ id: 'stored-primary', profile: 'default' } as never])
+
+    try {
+      expect(isSessionRemote('stored-primary')).toBe(true)
+    } finally {
+      setPrimaryGateway(null)
+    }
   })
 })

@@ -336,6 +336,80 @@ def test_eviction_rebuild_restores_the_sessions_saved_tool_order(monkeypatch):
     assert rebuilt.valid_tool_names == set(saved)
 
 
+def test_resume_on_another_surface_restores_the_pinned_tool_bytes(monkeypatch, tmp_path):
+    """One durable session hops gateway -> ``-q --resume``: the new process derives different
+    bytes for the SAME tools (tool_search's per-surface deferred catalog, per-surface dynamic
+    PARAMETERS like delegate_task's, the one-shot footprint pruning skill_manage). tools[] heads
+    every request, so a pin written by the same code hands back exactly what the session sent;
+    one written by other code (``hermes update``) takes the current definitions instead."""
+    from hermes_state import SessionDB
+    from tools import registry as registry_mod
+
+    def _described(name, description, **params):
+        tool = _tool(name)
+        tool["function"]["description"] = description
+        tool["function"]["parameters"] = {"type": "object", "properties": params}
+        return tool
+
+    sent = _agent([])
+    sent.tools = [_tool("read_file"), _described("delegate_task", "delegate", group={"type": "string"}),
+                  _described("skill_manage", "lands in /home/u/.hermes/skills"),
+                  _described("tool_search", "Search 6 additional tools.")]
+    static = {"skill_manage": _described("skill_manage", "lands in the profile's skills dir")["function"]}
+    monkeypatch.setattr(registry_mod.registry, "get_all_entries",
+                        lambda: [types.SimpleNamespace(name=n) for n in ("read_file", "delegate_task", "skill_manage")],
+                        raising=False)
+    monkeypatch.setattr(registry_mod.registry, "get_entry",
+                        lambda name, **kw: types.SimpleNamespace(name=name, schema=static[name]), raising=False)
+    this_surface = [_tool("read_file"), _described("delegate_task", "delegate"),  # drops `group` here
+                    _described("tool_search", "Search 5 additional tools.")]
+    with SessionDB(db_path=tmp_path / "state.db") as db:
+        sent._session_db = db
+        for sid in ("s1", "s2"):
+            db.create_session(sid, source="tui")
+            sent.session_id = sid
+            _mcp_agent.persist_agent_tool_names(sent)
+        # Stored once, like the system prompt: a ~50KB array per session row would bloat state.db.
+        stored = db._conn.execute("SELECT COUNT(*) FROM system_prompts").fetchone()[0]
+
+        resumed = _agent([])
+        resumed.tools, resumed._session_db, resumed.session_id = list(this_surface), db, "s1"
+        _mcp_agent.restore_agent_tool_prefix(resumed, json.loads(db.get_session("s1")["tool_names"]))
+        repinned = db.get_session("s1")["tool_names"]
+
+        # The pin came from other code: every tool built here takes this build's definition.
+        monkeypatch.setattr(_mcp_agent, "tool_pin_version", lambda: "sha-after-hermes-update")
+        updated = _agent([])
+        updated.tools, updated._session_db, updated.session_id = list(this_surface), db, "s2"
+        _mcp_agent.restore_agent_tool_prefix(updated, json.loads(db.get_session("s2")["tool_names"]))
+        upgraded_pin = json.loads(db.get_session("s2")["tool_names"])
+
+    assert json.dumps(resumed.tools) == json.dumps(sent.tools)
+    assert resumed.valid_tool_names == {"read_file", "delegate_task", "skill_manage", "tool_search"}
+    assert stored == 1
+    assert json.loads(repinned)["tools"] == sent.tools  # unchanged pin, no rewrite per hop
+    assert updated.tools == [*this_surface[:2], {"type": "function", "function": {**static["skill_manage"]}},
+                             this_surface[2]]
+    assert upgraded_pin == {"version": "sha-after-hermes-update", "tools": updated.tools}
+
+
+def test_a_pin_never_re_adds_a_tool_this_sessions_config_excludes(monkeypatch):
+    """A pin from a surface where ``terminal`` was allowed must not hand it back where config
+    disables it, nor ``browser_exec`` (host Python) once ``terminal`` is gone. A client-surface
+    tool (``focus_pane``) is still carried: no config choice removed it here."""
+    import model_tools  # noqa: F401  registers the real tools
+
+    monkeypatch.setattr(_mcp_agent, "persist_agent_tool_names", lambda agent: None)
+    pin = {"version": _mcp_agent.tool_pin_version(),
+           "tools": [_tool(n) for n in ("read_file", "terminal", "browser_exec", "focus_pane")]}
+    agent = _agent(["read_file"], enabled=["hermes-cli"], disabled=["terminal"])
+
+    _mcp_agent.restore_agent_tool_prefix(agent, pin)
+
+    assert [t["function"]["name"] for t in agent.tools] == ["read_file", "focus_pane"]
+    assert agent.valid_tool_names == {"read_file", "focus_pane"}
+
+
 def test_reprobe_tool_availability_drops_cached_check_fn_verdicts(monkeypatch):
     """/reload-mcp is the explicit hatch: a cached False must be re-probed."""
     from tools import registry as registry_mod

@@ -20,7 +20,7 @@ import pytest
 from hermes_cli import main_desktop
 
 # Linux-only subject: run on the real Linux host instead of faking sys.platform.
-pytestmark = pytest.mark.linux_only
+pytestmark = pytest.mark.platforms("linux")
 
 
 class TestDesktopLinuxUsernsSandboxAvailable:

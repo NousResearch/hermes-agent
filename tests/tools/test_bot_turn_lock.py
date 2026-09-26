@@ -9,6 +9,10 @@ process, so threads exercise the true kernel-lock semantics.
 
 from __future__ import annotations
 
+try:
+    import fcntl  # POSIX-only; on Windows the module is skipped wholesale
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None
 import json
 import os
 import subprocess
@@ -18,16 +22,7 @@ import time
 
 import pytest
 
-# `fcntl` does not exist on Windows, and an unguarded module-level import here
-# aborts collection for the whole `tests/tools/` directory rather than skipping
-# this one file. Skip before importing it, matching
-# `tests/cli/test_termios_drift_heal.py`. There is nothing to run here anyway:
-# `acquire_turn_lock()` degrades to a no-op contextmanager on Windows (no
-# `fcntl`), so the contention this module asserts on cannot occur.
-if sys.platform == "win32":  # pragma: no cover
-    pytest.skip("bot turn lock contention is POSIX flock-only", allow_module_level=True)
-
-import fcntl
+pytestmark = pytest.mark.platforms("linux")
 
 from tools import bot_mode_dm, bot_relay
 from tools.bot_relay import TurnBusyError, acquire_turn_lock, turn_lock_path

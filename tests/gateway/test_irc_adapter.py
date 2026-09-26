@@ -8,7 +8,7 @@ from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
 # Load plugins/platforms/irc/adapter.py under a unique module name
 # (plugin_adapter_irc) so it cannot collide with other plugin adapters
-# loaded by sibling tests in the same xdist worker.
+# loaded by sibling tests in the same process.
 _irc_mod = load_plugin_adapter("irc")
 
 _parse_irc_message = _irc_mod._parse_irc_message

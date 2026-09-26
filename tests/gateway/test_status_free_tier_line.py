@@ -13,7 +13,6 @@ from hermes_cli import anon_auth
 from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
 from tests.gateway.test_status_command import _make_event, _make_runner, _make_source
 
-
 def _runner():
     source = _make_source()
     entry = SessionEntry(
@@ -25,7 +24,6 @@ def _runner():
         chat_type="dm",
     )
     return _make_runner(entry)
-
 
 def _jwt(**claims) -> str:
     def segment(value):
@@ -41,14 +39,12 @@ def _jwt(**claims) -> str:
     }
     return f"{segment({'alg': 'RS256'})}.{segment(payload)}.sig"
 
-
 def _seed_nous(state: dict) -> None:
     with _auth_store_lock():
         store = _load_auth_store()
         store.setdefault("providers", {})["nous"] = state
         store["active_provider"] = "nous"
         _save_auth_store(store)
-
 
 def _free_tier_state() -> dict:
     return {
@@ -60,7 +56,6 @@ def _free_tier_state() -> dict:
         "inference_base_url": "https://welcome-api.nousresearch.com/v1",
     }
 
-
 def _account_state() -> dict:
     return {
         "auth_method": "oauth_device_code",
@@ -69,12 +64,10 @@ def _account_state() -> dict:
         "expires_at": "2999-01-01T00:00:00+00:00",
     }
 
-
 @pytest.fixture(autouse=True)
 def isolated_auth_store(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared-store"))
     monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
-
 
 @pytest.mark.asyncio
 async def test_status_names_the_free_tier_and_the_slash_command_when_the_free_tier_carries_inference(
@@ -86,7 +79,6 @@ async def test_status_names_the_free_tier_and_the_slash_command_when_the_free_ti
 
     assert anon_auth.FREE_TIER_STATUS_LINE in result
 
-
 @pytest.mark.asyncio
 async def test_status_omits_the_line_for_a_real_account():
     runner = _runner()
@@ -95,7 +87,6 @@ async def test_status_omits_the_line_for_a_real_account():
     result = await runner._handle_message(_make_event("/status"))
 
     assert anon_auth.FREE_TIER_STATUS_LINE not in result
-
 
 @pytest.mark.asyncio
 async def test_a_status_gate_failure_never_breaks_status(monkeypatch):
@@ -112,5 +103,3 @@ async def test_a_status_gate_failure_never_breaks_status(monkeypatch):
     result = await runner._handle_message(_make_event("/status"))
 
     assert result == expected
-
-

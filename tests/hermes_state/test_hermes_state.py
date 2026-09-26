@@ -3339,6 +3339,50 @@ class TestCompressionChainProjection:
         assert tip2_row["preview"].startswith("second conversation continuation")
         assert tip2_row["cwd"] == "/tmp/workspaces/second"
 
+    def test_list_batches_tip_row_fetch_into_one_query(self, db, monkeypatch):
+        """Projection must resolve tip rows for a whole page in one batched
+        query, not one _get_session_rich_row() call per compression root."""
+        import time as _time
+
+        t0 = _time.time() - 7200
+        self._build_compression_chain(db, t0)
+        db.create_session("root2", "cli")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 100, "root2"))
+        db.append_message("root2", "user", "second conversation start")
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason=? WHERE id=?",
+            (t0 + 200, "compression", "root2"),
+        )
+        db.create_session("tip2", "cli", parent_session_id="root2")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 201, "tip2"))
+        db.append_message("tip2", "user", "second continuation")
+        db._conn.commit()
+
+        batch_calls = []
+        single_calls = []
+        original_batch = db._get_session_rich_rows_batch
+        original_single = db._get_session_rich_row
+
+        def counting_batch(session_ids, **kwargs):
+            batch_calls.append(list(session_ids))
+            return original_batch(session_ids, **kwargs)
+
+        def counting_single(session_id, **kwargs):
+            single_calls.append(session_id)
+            return original_single(session_id, **kwargs)
+
+        monkeypatch.setattr(db, "_get_session_rich_rows_batch", counting_batch)
+        monkeypatch.setattr(db, "_get_session_rich_row", counting_single)
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        assert len(sessions) >= 2  # sanity: both chains actually surfaced
+
+        # Two compression roots resolved with exactly one batched call, and
+        # zero single-row calls — not one single-row call per root.
+        assert len(batch_calls) == 1
+        assert set(batch_calls[0]) == {"tip1", "tip2"}
+        assert single_calls == []
+
 
 
 

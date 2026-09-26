@@ -6,7 +6,7 @@ sections survive a provider save, and a managed install refuses the write.
 """
 from __future__ import annotations
 
-import yaml
+import hermes_yaml as yaml
 
 from plugins.memory.holographic import HolographicMemoryProvider
 

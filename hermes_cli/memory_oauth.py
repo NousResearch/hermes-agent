@@ -51,10 +51,10 @@ def _scope_to_profile(profile: Optional[str]):
 @router.post("/{provider}/oauth/start")
 async def start_memory_oauth(provider: str, profile: Optional[str] = None):
     """Begin a provider's zero-CLI OAuth flow (browser + loopback listener); returns immediately, poll status."""
-    flow = _resolve_flow(provider)
     try:
         # The flow resolves its config path eagerly inside this scope; its worker thread outlives it.
         with _scope_to_profile(profile):
+            flow = _resolve_flow(provider)
             return flow.start_loopback_flow_background()
     except HTTPException:
         raise
@@ -65,9 +65,9 @@ async def start_memory_oauth(provider: str, profile: Optional[str] = None):
 @router.get("/{provider}/oauth/status")
 async def memory_oauth_status(provider: str, profile: Optional[str] = None):
     """Poll a provider's OAuth flow: idle | pending | connected | error."""
-    flow = _resolve_flow(provider)
     try:
         with _scope_to_profile(profile):
+            flow = _resolve_flow(provider)
             return flow.get_flow_status()
     except HTTPException:
         raise

@@ -129,6 +129,12 @@ def _relay_compute_host_rpc(message: dict) -> bool:
                             and session.get("_compute_host_turn_id") == params["turn_id"]):
                         session["_compute_host_activity_ns"] = params.get("activity_ns")
         return True  # Internal observation, not a client event or replay entry.
+    if (isinstance(message, dict) and message.get("method") == "event" and isinstance(params, dict)
+            and not params.get("session_id")):
+        # A session-less (global) event the child could not deliver itself: ``write_json`` would drop it
+        # on this process's stdio; fan it out to every connected client like a local broadcast.
+        _broadcast_global_event(str(params.get("type") or ""), params.get("payload"))
+        return True
     if isinstance(message, dict) and isinstance(message.get("id"), str) and message.get("method") not in (None, "event"):
         # A server request minted by the child: remember it against its session until it is answered/withdrawn.
         session = _sessions.get(str((params or {}).get("session_id") or "")) if isinstance(params, dict) else None

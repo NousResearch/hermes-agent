@@ -450,6 +450,18 @@ describe('toChatMessages', () => {
     ])
   })
 
+  // Hermes closes a failed turn with an assistant-role row (agent/turn_failure_copy.py);
+  // painted as the model's reply it read as the assistant refusing the request.
+  it('renders the failed-turn boundary as a Hermes notice, not a model reply', () => {
+    const messages = toChatMessages([
+      { role: 'user', content: 'do the thing', timestamp: 1 },
+      { role: 'assistant', content: 'Your request was not processed.', display_kind: 'failed_turn', timestamp: 2 }
+    ])
+
+    expect(messages.map(message => message.role)).toEqual(['user', 'system'])
+    expect(chatMessageText(messages[1])).toBe('Your request was not processed.')
+  })
+
   // A backend older than this app serves display_metadata as unparsed JSON
   // text. Indexing into that string used to throw and fail the whole resume.
   it.each([
@@ -1161,7 +1173,9 @@ describe('mergeFinalAssistantText', () => {
     expect(result[0]).toMatchObject({ text: 'final answer', timestamp: 12.5, type: 'text' })
   })
 
-  it('removes all text parts and appends the final text', () => {
+  it('preserves pre-tool text and appends the later final response', () => {
+    // These deltas precede the tool call: they belong to an earlier model
+    // response, not to the provisional draft of the final being settled.
     const parts = [
       { type: 'text' as const, text: 'streamed delta 1' },
       { type: 'text' as const, text: 'streamed delta 2' },
@@ -1170,8 +1184,11 @@ describe('mergeFinalAssistantText', () => {
 
     const result = mergeFinalAssistantText(parts, 'final answer')
 
-    expect(result.filter(p => p.type === 'text')).toHaveLength(1)
-    expect(result.filter(p => p.type === 'text')[0]).toMatchObject({ text: 'final answer' })
+    expect(result.filter(p => p.type === 'text').map(p => p.text)).toEqual([
+      'streamed delta 1',
+      'streamed delta 2',
+      'final answer'
+    ])
     expect(result.some(p => p.type === 'tool-call')).toBe(true)
   })
 

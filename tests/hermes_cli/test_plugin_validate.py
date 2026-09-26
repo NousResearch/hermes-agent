@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.plugin_validate import validate_plugin_dir
 from hermes_cli.plugin_validate_desktop import desktop_surface_hits, is_desktop_surface
@@ -78,13 +78,34 @@ BASE_MANIFEST = {
 
 
 def test_requires_hermes_spec_is_validated(tmp_path):
-    manifest = dict(BASE_MANIFEST, requires_hermes=">=0.21")
+    manifest = dict(BASE_MANIFEST, description="café", requires_hermes=">=0.21")
     d = _make_plugin(tmp_path, manifest=manifest)
+    (d / "plugin.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8-sig")
 
     report = validate_plugin_dir(d)
 
     assert report.ok, report.failures
     assert any(name == "requires_hermes" and ok for name, ok, _ in report.checks)
+
+
+def test_config_schema_admits_every_type_the_loader_and_renderer_accept(tmp_path):
+    """A ``type:`` the Desktop settings renderer/loader accept (``secret`` + ``env:``, ``object``) must
+    pass admission — the catalog validator rejecting a documented type blocks pins of plugins that
+    declare a secret setting."""
+    from hermes_cli.plugins_manifest import _CONFIG_SCHEMA_TYPES
+    from hermes_cli.plugins_settings import _FIELD_TYPES
+
+    assert set(_FIELD_TYPES) == set(_CONFIG_SCHEMA_TYPES)
+    schema = {f"k_{t}": {"type": t} for t in _FIELD_TYPES}
+    schema["api_key"] = {"type": "secret", "env": "FIXTURE_API_KEY", "description": "token"}
+    d = _make_plugin(tmp_path, manifest=dict(BASE_MANIFEST, config_schema=schema))
+
+    report = validate_plugin_dir(d)
+
+    assert ("config schema", True, "shape valid") in report.checks, report.failures
+    bad = validate_plugin_dir(_make_plugin(
+        tmp_path / "bad", manifest=dict(BASE_MANIFEST, config_schema={"x": {"type": "mapping"}})))
+    assert [ok for n, ok, _ in bad.checks if n == "config schema"] == [False], bad.checks
 
 
 def test_admission_runs_the_install_scanner(tmp_path):
@@ -271,14 +292,23 @@ class TestDesktopSurface:
             "const clean = html.replace(/<script[\\s\\S]*?<\\/script>/gi, '').replace(/<style[\\s\\S]*?<\\/style>/gi, '')\n"
             "const ratio = total / count / 2\n"
             "el.innerHTML = '<script src=\"https://evil.example/x.js\"></script>'\n"
-            "const tag = document.createElement('script')\n"
+            "const tag = document.createElement('script'); tag.src = 'https://evil.example/x.js'; document.head.append(tag)\n"
+            "const dyn = html.replace(new RegExp(\"<script[\\\\s\\\\S]*?<\\\\/script>\", flags), '')\n"
+            "el.innerHTML = new RegExp('x') && '<script>alert(1)</script>'\n"
+            "el.innerHTML = new RegExp(\"<script src=x></script>\").source\n"
+            "if (new RegExp(\"<script\\\\b\", 'i').test(html)) reject()\n"
         ))
         report = validate_plugin_dir(d)
         failed = {name: detail for name, ok, detail in report.checks if not ok}
         assert "desktop surface" in failed
         assert ":1)" not in failed["desktop surface"]
+        assert ":5)" not in failed["desktop surface"]  # the same sanitiser via the RegExp constructor
+        assert ":8)" not in failed["desktop surface"]  # a RegExp that only TESTS markup
         assert "script injection (desktop/plugin.js:3)" in failed["desktop surface"]
         assert "script injection (desktop/plugin.js:4)" in failed["desktop surface"]
+        assert "script injection (desktop/plugin.js:6)" in failed["desktop surface"]
+        # ``.source`` hands the pattern text back as a string: the constructor is the payload, not a sanitiser.
+        assert "script injection (desktop/plugin.js:7)" in failed["desktop surface"]
 
     def test_prototype_patch_and_chunk_import_fail(self, tmp_path):
         d = self._desktop_plugin(tmp_path, (

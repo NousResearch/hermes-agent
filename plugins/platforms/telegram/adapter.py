@@ -304,7 +304,13 @@ def telegram_deps_present() -> bool:
 
 
 def check_telegram_requirements() -> bool:
-    """Lazy-install python-telegram-bot if missing, then re-import and rebind the module aliases."""
+    """Check if Telegram dependencies are available.
+
+    If python-telegram-bot is missing, attempts to lazy-install it via
+    ``pm.ensure_import("telegram")``. After a successful
+    install, re-imports the SDK and flips ``TELEGRAM_AVAILABLE`` to True
+    so the adapter's class-level type aliases get rebound.
+    """
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
     global InlineKeyboardMarkup, LinkPreviewOptions, Application
     global CommandHandler, CallbackQueryHandler, InlineQueryHandler, TelegramMessageHandler
@@ -312,8 +318,8 @@ def check_telegram_requirements() -> bool:
     if TELEGRAM_AVAILABLE:
         return True
     try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("platform.telegram", prompt=False)
+        from pm import ensure_import as _lazy_ensure
+        _lazy_ensure("telegram")
     except Exception:
         return False
     try:
@@ -476,6 +482,9 @@ class _PollingStallError(RuntimeError):
 class TelegramAdapter(BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
+    # Bound for the per-(chat_id, status_key) status-message cache; FIFO half-trim on overflow.
+    _STATUS_MESSAGE_IDS_MAX = 2000
+
     MAX_MESSAGE_LENGTH = 4096
     supports_code_blocks = True  # MarkdownV2 renders fenced code blocks
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
@@ -544,6 +553,13 @@ class TelegramAdapter(BasePlatformAdapter):
         self._seen_update_ids: dict = {}
         self._inflight_update_ids: dict = {}
         self._update_admission = None
+        # Completed update IDs survive adapter replacement and restarts (update_admission.py).
+        # Resolved now: secondary profiles construct adapters inside their own home scope.
+        from hermes_constants import get_hermes_home
+        self._update_receipt_dir = get_hermes_home()
+        self._update_receipts_loaded: set = set()
+        self._update_receipts_dirty: set = set()
+        self._update_receipt_flush: Optional[asyncio.Task] = None
         self._bot: Optional[Bot] = None
         self._webhook_mode: bool = False
         self._mention_patterns = self._compile_mention_patterns()
@@ -3453,6 +3469,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.warning("[%s] Error during Telegram disconnect: %s", self.name, _redact_telegram_error_text(e))
         self._app = None
         self._bot = None
+        # Land the last completed receipts before a replacement adapter reads them.
+        flush = getattr(self, "_update_receipt_flush", None)
+        if flush is not None and not flush.done():
+            await self._await_disconnect_step(asyncio.shield(flush), _DISCONNECT_STEP_TIMEOUT, "update-receipt flush")
         logger.info("[%s] Disconnected from Telegram", self.name)
 
     def _should_thread_reply(self, reply_to: Optional[str], chunk_index: int) -> bool:
@@ -3808,12 +3828,17 @@ class TelegramAdapter(BasePlatformAdapter):
         if cached_id is not None:
             result = await self.edit_message(chat_id, cached_id, content, finalize=True, metadata=metadata)
             if result.success:
-                if result.message_id:
+                # Only write back if nobody evicted/replaced this key during the await.
+                if result.message_id and self._status_message_ids.get(key) == cached_id:
                     self._status_message_ids[key] = str(result.message_id)
                 return result
             self._status_message_ids.pop(key, None)
         result = await self.send(chat_id, content, metadata=metadata)
         if result.success and result.message_id:
+            if len(self._status_message_ids) >= self._STATUS_MESSAGE_IDS_MAX:
+                # FIFO trim: drop the oldest half to bound memory (mirrors the Slack adapter).
+                for stale in list(self._status_message_ids)[: self._STATUS_MESSAGE_IDS_MAX // 2]:
+                    self._status_message_ids.pop(stale, None)
             self._status_message_ids[key] = str(result.message_id)
         return result
 

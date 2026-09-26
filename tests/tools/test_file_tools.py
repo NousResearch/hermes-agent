@@ -251,7 +251,7 @@ class TestSearchHandler:
 class TestWindowsMsysPathResolution:
     """File tools must translate Git Bash drive paths before Path resolution."""
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_absolute_msys_path_normalized_before_windows_resolve(self, monkeypatch):
         """Windows-only: ``_resolve_path_for_task`` hands the translated path
         to ``ntpath``/``Path``, and only a real Windows ``Path`` renders
@@ -264,7 +264,7 @@ class TestWindowsMsysPathResolution:
         assert str(resolved) == r"C:\Users\Mark\project\app.py"
 
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_container_paths_skip_msys_translation(self, monkeypatch):
         """WSL/docker Linux paths must not be rewritten as Windows drives.
 
@@ -888,6 +888,35 @@ class TestNotFoundCache:
         )
 
 
+
+
+class TestSSHConfigWriteGate:
+    """~/.ssh/config can run commands (ProxyCommand / Match exec), so a write
+    routes through the approval gate and fails closed with nobody to approve.
+    #93201: the gate call once raised TypeError (missing required kwarg)
+    instead of returning an approval decision — drive the real gate end to end."""
+
+    @pytest.fixture()
+    def ssh_config(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        return tmp_path / ".ssh" / "config"
+
+    def test_no_human_present_blocks_and_writes_nothing(self, ssh_config):
+        from tools.file_tools import write_file_tool
+
+        result = json.loads(write_file_tool(str(ssh_config), "Host x\n  ProxyCommand evil\n"))
+        assert "BLOCKED" in result["error"]
+        assert not ssh_config.exists()
+
+    def test_single_query_session_denies_with_the_q_mode_message(self, ssh_config, monkeypatch):
+        monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")  # `hermes chat -q` exports it too
+        from tools.file_tools import write_file_tool
+
+        result = json.loads(write_file_tool(str(ssh_config), "Host x\n  ProxyCommand evil\n"))
+        assert "BLOCKED" in result["error"]
+        assert "single-query" in result["error"]
+        assert not ssh_config.exists()
 
 
 class TestSecretFileReadRedaction:

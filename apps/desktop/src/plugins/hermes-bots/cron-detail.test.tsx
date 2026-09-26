@@ -11,6 +11,7 @@ import type * as HermesSdk from '@hermes/plugin-sdk'
 import { cleanup, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
+import { translateBots } from './i18n-test-helper'
 import type { RoutineJob } from './types'
 
 // Radix calls these on open; jsdom doesn't implement them.
@@ -20,12 +21,12 @@ beforeAll(() => {
   Element.prototype.releasePointerCapture = vi.fn()
 })
 
-const request = vi.fn(async () => ({}))
+const { request } = vi.hoisted(() => ({ request: vi.fn(async () => ({})) }))
 
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const sdk = await importOriginal<typeof HermesSdk>()
 
-  return { ...sdk, host: { ...sdk.host, request } }
+  return { ...sdk, usePluginI18n: () => translateBots, host: { ...sdk.host, request } }
 })
 
 const { RoutineDetailDialog, RoutineRow, routineDetailIssue, routineDetailRows } = await import('./cron')

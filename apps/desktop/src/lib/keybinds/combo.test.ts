@@ -47,6 +47,18 @@ describe('comboFromEvent', () => {
     expect(comboFromEvent(keydown({ code: 'Tab', ctrlKey: true }))).toBe('mod+tab')
     expect(comboFromEvent(keydown({ code: 'Tab', ctrlKey: true, shiftKey: true }))).toBe('mod+shift+tab')
   })
+
+  it('keeps function and special keys available for custom bindings', () => {
+    expect(comboFromEvent(keydown({ code: 'F1', key: 'F1' }))).toBe('f1')
+    expect(comboFromEvent(keydown({ code: 'F12', key: 'F12' }))).toBe('f12')
+    expect(comboFromEvent(keydown({ code: 'F19', key: 'F19' }))).toBe('f19')
+    expect(comboFromEvent(keydown({ code: 'F18', key: 'F18' }))).toBe('f18')
+    expect(comboFromEvent(keydown({ code: 'CapsLock', key: 'CapsLock' }))).toBe('capslock')
+    expect(comboFromEvent(keydown({ code: 'Space', key: ' ', altKey: true }))).toBe('alt+space')
+    expect(comboFromEvent(keydown({ code: 'KeyV', key: 'v', metaKey: true, shiftKey: true }))).toBe('mod+shift+v')
+    expect(comboFromEvent(keydown({ code: 'F18', key: 'F18', metaKey: true, shiftKey: true }))).toBe('mod+shift+f18')
+    expect(comboFromEvent(keydown({ code: 'F13', key: 'F13', altKey: true }))).toBe('alt+f13')
+  })
 })
 
 describe('canonicalizeCombo', () => {
@@ -92,6 +104,9 @@ describe('actionAllowedInInput', () => {
     // (or the pre-#76185 'shift+n') must not fire while the user types N.
     expect(actionAllowedInInput('session.new', 'n')).toBe(false)
     expect(actionAllowedInInput('session.new', 'shift+n')).toBe(false)
+    // Dictation is intentionally bindable without a shipped chord. A user who
+    // assigns a bare/Shift chord expects it to remain reachable from the draft.
+    expect(actionAllowedInInput('composer.dictate', 'shift+d')).toBe(true)
   })
 
   it('leaves text navigation chords with the focused input even when rebound to an allowed action', () => {

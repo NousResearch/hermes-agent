@@ -1186,6 +1186,41 @@ class TestSummaryFallbackToMainModel:
 
 
 
+class TestStreamingClosedFailure:
+    """httpcore / httpx premature stream-close errors are transient transport
+    failures, not generic summary errors (#18458): they get the short
+    cooldown and flag a network failure so compress() preserves the session,
+    instead of the long generic cooldown. Drives the real classifier."""
+
+    def _msgs(self):
+        return [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+    def _fail_on_main(self, err):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="main-model", quiet_mode=True)
+        with patch("agent.context_compressor.call_llm", side_effect=err), \
+             patch("agent.context_compressor.time.monotonic", return_value=1000.0):
+            result = c._generate_summary(self._msgs())
+        assert result is None
+        return c
+
+    @pytest.mark.parametrize("message", [
+        "RemoteProtocolError: incomplete chunked read",
+        "RemoteProtocolError: response ended prematurely",
+    ])
+    def test_premature_stream_close_is_transient_network_failure(self, message):
+        closed = self._fail_on_main(Exception(message))
+        generic = self._fail_on_main(Exception("something unexpected broke"))
+
+        assert closed._last_summary_network_failure is True
+        assert generic._last_summary_network_failure is False
+        # Short transient cooldown, strictly below the generic-failure cooldown.
+        assert 1000.0 < closed._summary_failure_cooldown_until < generic._summary_failure_cooldown_until
+
+
 class TestAuxModelFallbackSurfacedToCallers:
     """When summary_model fails but retry-on-main succeeds, compress() must
     expose the aux-model failure via _last_aux_model_failure_{model,error}

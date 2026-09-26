@@ -11,7 +11,6 @@ DevTools endpoint, so the dock exposes a debugging port and the agent ATTACHES t
 
 from __future__ import annotations
 
-import glob
 import os
 import shutil
 import socket
@@ -47,24 +46,24 @@ def executable() -> Optional[str]:
     explicit = os.environ.get("AGENT_BROWSER_EXECUTABLE_PATH", "").strip()
     if explicit and os.access(explicit, os.X_OK) and not _is_headless_shell(explicit):
         return explicit
-    finders = [_playwright_executable, _system_executable]
+    finders = [_managed_executable, _system_executable]
     if not _is_root() and _userns_restricted():
         finders.reverse()
     return next((exe for find in finders if (exe := find())), None)
 
 
-def _playwright_executable() -> Optional[str]:
-    from tools.browser_tool_install import _chromium_search_roots
-    candidates = sorted(
-        (p for root in _chromium_search_roots() for p in glob.glob(os.path.join(root, "chromium-*", "chrome-linux*", "chrome"))),
-        key=os.path.getmtime, reverse=True)
-    return next((exe for exe in candidates if os.access(exe, os.X_OK)), None)
+def _managed_executable() -> Optional[str]:
+    from hermes_cli.browser_runtime import chromium_executable
+
+    exe = chromium_executable(allow_override=False)
+    return exe if exe and os.access(exe, os.X_OK) and not _is_headless_shell(exe) else None
 
 
 def _is_headless_shell(exe: str) -> bool:
-    """Playwright's ``chrome-headless-shell`` can drive pages but cannot open a window: the official Docker
-    image ships only that build and its boot hook exports it as ``AGENT_BROWSER_EXECUTABLE_PATH``, so
-    trusting the override blindly would pin a windowless binary to the dock's Browser icon."""
+    """Playwright's ``chrome-headless-shell`` can drive pages but cannot open a window. The image's boot
+    hook exports it as ``AGENT_BROWSER_EXECUTABLE_PATH`` (it is the only build the unsuffixed tags carry,
+    and the lighter one everywhere), so trusting that override blindly would pin a windowless binary to
+    the dock's Browser icon."""
     return "headless" in os.path.basename(exe).lower() or "headless_shell" in exe
 
 
@@ -125,7 +124,7 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
     close the browser as a config change and then attach to the port that just died with it.
     """
     try:
-        with open(os.path.join(user_data_dir, "DevToolsActivePort"), encoding="utf-8") as fh:
+        with open(os.path.join(user_data_dir, "DevToolsActivePort"), encoding="utf-8-sig") as fh:
             port_line = fh.readline().strip()
         target = os.readlink(os.path.join(user_data_dir, "SingletonLock"))
     except OSError:
@@ -168,9 +167,17 @@ def _pid_alive(pid: int) -> bool:
 
 
 def env_for_agent(env: dict) -> dict:
-    """Pin agent-browser to the screen's browser identity unless the user pinned their own."""
+    """Pin agent-browser to the screen's browser identity unless the user pinned their own.
+
+    A headless-shell pin is replaced, not kept: the image's boot hook exports one for ordinary browsing,
+    and leaving it would put the agent and the dock on different binaries over one ``--user-data-dir``,
+    where Chromium's singleton swallows the dock's launch into the windowless process. Only runs while a
+    screen is up (:func:`runtime.desktop_env`), so the heavier build is pinned just when it is the point.
+    """
     env.setdefault("AGENT_BROWSER_PROFILE", str(profile_dir()))
     exe = executable()
     if exe:
-        env.setdefault("AGENT_BROWSER_EXECUTABLE_PATH", exe)
+        pinned = env.get("AGENT_BROWSER_EXECUTABLE_PATH", "").strip()
+        if not pinned or _is_headless_shell(pinned):
+            env["AGENT_BROWSER_EXECUTABLE_PATH"] = exe
     return env

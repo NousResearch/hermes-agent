@@ -19,7 +19,6 @@ import pytest
 
 from tools.environments.base import EnvironmentConnectionError
 
-
 @pytest.fixture
 def isolated_env(tmp_path, monkeypatch):
     """Isolated HERMES_HOME + a clean environment cache for terminal_tool."""
@@ -39,7 +38,6 @@ def isolated_env(tmp_path, monkeypatch):
     yield tt
     _clear()
 
-
 def _mock_ssh_unreachable(monkeypatch, stderr="ssh: connect to host unreachable.invalid port 22: Connection refused"):
     """Make every ssh subprocess in the ssh backend fail like a dead host."""
     monkeypatch.setattr("tools.environments.ssh.shutil.which", lambda _x: "/usr/bin/ssh")
@@ -48,14 +46,12 @@ def _mock_ssh_unreachable(monkeypatch, stderr="ssh: connect to host unreachable.
         lambda *a, **k: subprocess.CompletedProcess([], 255, stdout="", stderr=stderr),
     )
 
-
 def _ssh_backend_env(monkeypatch):
     monkeypatch.setenv("TERMINAL_ENV", "ssh")
     monkeypatch.setenv("TERMINAL_SSH_HOST", "unreachable.invalid")
     monkeypatch.setenv("TERMINAL_SSH_USER", "nobody")
     monkeypatch.delenv("TERMINAL_SSH_PORT", raising=False)
     monkeypatch.delenv("TERMINAL_SSH_KEY", raising=False)
-
 
 class TestExceptionClassification:
     """Backends raise EnvironmentConnectionError for connection-class failures."""
@@ -79,7 +75,6 @@ class TestExceptionClassification:
         with pytest.raises(EnvironmentConnectionError):
             SSHEnvironment(host="unreachable.invalid", user="nobody")
 
-
     def test_docker_daemon_timeout_raises_connection_error(self, monkeypatch):
         from tools.environments import docker as docker_env
 
@@ -91,8 +86,6 @@ class TestExceptionClassification:
         monkeypatch.setattr(docker_env.subprocess, "run", _timeout)
         with pytest.raises(EnvironmentConnectionError):
             docker_env._ensure_docker_available()
-
-
 
 class TestDegradedToolResult:
     """terminal_tool returns structured degraded results in warn mode."""
@@ -152,7 +145,6 @@ class TestDegradedToolResult:
         assert r2["exit_code"] == 0
         assert "back" in r2["output"]
 
-
 class TestNonInfrastructureFailuresUntouched:
     def test_nonzero_exit_is_not_degraded(self, isolated_env, monkeypatch):
         monkeypatch.setenv("TERMINAL_ENV", "local")
@@ -166,7 +158,6 @@ class TestNonInfrastructureFailuresUntouched:
             "definitely_not_a_real_command_zzz_42", task_id="t-degraded-notfound"))
         assert r["exit_code"] != 0
         assert r.get("status") != "degraded"
-
 
 class TestFailModePreservesRaiseBehavior:
     def test_fail_mode_returns_error_with_traceback(self, isolated_env, monkeypatch):
@@ -186,5 +177,3 @@ class TestFailModePreservesRaiseBehavior:
 
         r = json.loads(isolated_env.terminal_tool("echo hi", task_id="t-degraded-bogus"))
         assert r["status"] == "degraded"
-
-

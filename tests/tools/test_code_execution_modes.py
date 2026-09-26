@@ -1,558 +1,159 @@
-#!/usr/bin/env python3
-"""Tests for execute_code's strict / project execution modes.
-
-The mode switch controls two things:
-  - working directory: staging tmpdir (strict) vs session CWD (project)
-  - interpreter:       sys.executable (strict) vs active venv's python (project)
-
-Security-critical invariants — env scrubbing, tool whitelist, resource caps —
-must apply identically in both modes. These tests guard all three layers.
-
-Mode is sourced exclusively from ``code_execution.mode`` in config.yaml —
-there is no env-var override. Tests patch ``_load_config`` directly.
-"""
+"""Real interpreter, environment and RPC contracts for both execution modes."""
 
 import json
 import os
 import subprocess
 import sys
-import unittest
-import unittest.mock
-from contextlib import contextmanager
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-os.environ["TERMINAL_ENV"] = "local"
-
-
-@pytest.fixture(autouse=True)
-def _force_local_terminal(monkeypatch):
-    """Mirror test_code_execution.py — guarantee local backend under xdist."""
-    monkeypatch.setenv("TERMINAL_ENV", "local")
-
-
-@pytest.fixture(autouse=True)
-def _fresh_kernel_registry():
-    """Session kernels are always on: dispose them per-test so a lingering
-    kernel child can't outlive the run (hangs pytest at exit) or leak one
-    test's interpreter state into the next."""
-    from tools.code_kernel import shutdown_all_kernels
-
-    shutdown_all_kernels()
-    yield
-    shutdown_all_kernels()
-
-
-from tools.code_execution_env import (
-    _is_usable_python,
-    _python_environment_prefix,
-    _python_prefix_cache,
-    _resolve_child_cwd,
-    _resolve_child_python,
-    _usable_python_cache,
-    _uses_hermes_python_environment,
-)
-from tools.code_execution_tool import (
-    SANDBOX_ALLOWED_TOOLS,
-    build_execute_code_schema,
-    execute_code,
-)
-
-
-@contextmanager
-def _mock_mode(mode):
-    """Context manager that pins code_execution.mode to the given value."""
-    with patch("tools.code_execution_tool._load_config",
-               return_value={"mode": mode}):
-        yield
-
-
-def _mock_handle_function_call(function_name, function_args, task_id=None, user_task=None):
-    """Minimal mock dispatcher reused across tests."""
-    if function_name == "terminal":
-        return json.dumps({"output": "mock", "exit_code": 0})
-    if function_name == "read_file":
-        return json.dumps({"content": "line1\n", "total_lines": 1})
-    return json.dumps({"error": f"Unknown tool: {function_name}"})
-
-
-# ---------------------------------------------------------------------------
-# Mode resolution
-# ---------------------------------------------------------------------------
-
-
-
-# ---------------------------------------------------------------------------
-# Interpreter resolver
-# ---------------------------------------------------------------------------
-
-class TestResolveChildPython(unittest.TestCase):
-    """_resolve_child_python — picks the right interpreter per mode."""
-
-    def test_strict_always_sys_executable(self):
-        """Strict mode never leaves sys.executable, even if venv is set."""
-        with patch.dict(os.environ, {"VIRTUAL_ENV": "/some/venv"}):
-            self.assertEqual(_resolve_child_python("strict"), sys.executable)
-
-    def test_project_with_no_venv_falls_back(self):
-        """Project mode without VIRTUAL_ENV or CONDA_PREFIX → sys.executable."""
-        env = {k: v for k, v in os.environ.items()
-               if k not in {"VIRTUAL_ENV", "CONDA_PREFIX"}}
-        with patch.dict(os.environ, env, clear=True):
-            self.assertEqual(_resolve_child_python("project"), sys.executable)
-
-
-    def test_is_usable_python_accepts_real_python(self):
-        _usable_python_cache.clear()
-        self.assertTrue(_is_usable_python(sys.executable))
-
-    def test_is_usable_python_failure_is_not_cached(self):
-        """A transient probe failure must not stick — the next call retries.
-
-        A sticky cached False would silently pin project mode to
-        sys.executable for the process lifetime.
-        """
-        _usable_python_cache.clear()
-        try:
-            with patch("subprocess.run",
-                       side_effect=subprocess.TimeoutExpired(cmd=[], timeout=5)) as mock_run:
-                self.assertFalse(_is_usable_python("/flaky/python"))
-            self.assertEqual(mock_run.call_count, 1)
-            with patch("subprocess.run") as mock_run:
-                mock_run.return_value = unittest.mock.MagicMock(returncode=0)
-                self.assertTrue(_is_usable_python("/flaky/python"))
-            self.assertEqual(mock_run.call_count, 1,
-                             "probe must be retried after a failure")
-        finally:
-            _usable_python_cache.clear()
-
-
-# ---------------------------------------------------------------------------
-# CWD resolver
-# ---------------------------------------------------------------------------
-
-class TestResolveChildCwd(unittest.TestCase):
-
-    def test_strict_uses_staging_dir(self):
-        self.assertEqual(_resolve_child_cwd("strict", "/tmp/staging"), "/tmp/staging")
-
-    def test_project_without_terminal_cwd_uses_getcwd(self):
-        env = {k: v for k, v in os.environ.items() if k != "TERMINAL_CWD"}
-        with patch.dict(os.environ, env, clear=True):
-            self.assertEqual(_resolve_child_cwd("project", "/tmp/staging"), os.getcwd())
-
-
-    def test_project_stale_record_falls_through_to_override(self):
-        """A recorded directory that no longer exists is skipped; the
-        registered override is the next rung."""
-        import tempfile
-        import tools.terminal_tool as terminal_tool
-
-        with tempfile.TemporaryDirectory() as reg:
-            task_id = "stale-record-test"
-            with patch.dict(os.environ, {"TERMINAL_CWD": "/does/not/exist"}):
-                with patch.object(terminal_tool, "_task_env_overrides", {}, create=False), \
-                     patch.object(terminal_tool, "_session_cwd", {}, create=False):
-                    terminal_tool.register_task_env_overrides(task_id, {"cwd": reg})
-                    terminal_tool.record_session_cwd(task_id, "/deleted/dir/gone")
-                    self.assertEqual(
-                        _resolve_child_cwd("project", "/tmp/staging", task_id=task_id), reg
-                    )
-
-
-# ---------------------------------------------------------------------------
-# Schema description
-# ---------------------------------------------------------------------------
-
-class TestModeAwareSchema(unittest.TestCase):
-
-
-
-
-
-    def test_default_mode_reads_config(self):
-        """build_execute_code_schema() with mode=None reads config.yaml."""
-        with _mock_mode("strict"):
-            desc = build_execute_code_schema()["description"]
-            self.assertIn("temp dir", desc)
-        with _mock_mode("project"):
-            desc = build_execute_code_schema()["description"]
-            self.assertIn("session", desc)
-
-
-# ---------------------------------------------------------------------------
-# Integration: what actually happens when execute_code runs per mode
-# ---------------------------------------------------------------------------
-
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason=(
-        "Assumes POSIX venv layout (bin/python) and symlink creation "
-        "privileges.  execute_code itself works on Windows — these "
-        "integration tests just haven't been ported to the Scripts/"
-        "python.exe layout yet."
-    ),
-)
-class TestExecuteCodeModeIntegration(unittest.TestCase):
-    """End-to-end: verify the subprocess actually runs where we expect."""
-
-    def _run(self, code, mode, enabled_tools=None, extra_env=None):
-        env_overrides = extra_env or {}
-        with _mock_mode(mode):
-            with patch.dict(os.environ, env_overrides):
-                with patch("model_tools.handle_function_call",
-                           side_effect=_mock_handle_function_call):
-                    # reset=True: kernel cwd/interpreter are frozen at spawn
-                    # (like env), so mode-resolution rules are only
-                    # observable on a fresh kernel.
-                    raw = execute_code(
-                        code=code,
-                        task_id=f"test-{mode}",
-                        enabled_tools=enabled_tools or list(SANDBOX_ALLOWED_TOOLS),
-                        reset=True,
-                    )
-        return json.loads(raw)
-
-    def test_strict_mode_runs_in_tmpdir(self):
-        """Strict mode: script's os.getcwd() is a staging tmpdir, never the
-        session cwd. Behavior contract, not a prefix snapshot: the per-call
-        path stages in hermes_sandbox_*, the session kernel in
-        hermes_kernel_* — either satisfies strict mode's isolation promise."""
-        result = self._run("import os; print(os.getcwd())", mode="strict")
-        self.assertEqual(result["status"], "success")
-        cwd = result["output"].strip()
-        self.assertTrue(
-            "hermes_sandbox_" in cwd or "hermes_kernel_" in cwd,
-            f"strict-mode cwd is not a staging tmpdir: {cwd!r}",
-        )
-        self.assertNotEqual(os.path.realpath(cwd), os.path.realpath(os.getcwd()))
-
-
-
-    def test_project_mode_can_still_import_hermes_tools(self):
-        """Regression: hermes_tools still importable from non-tmpdir CWD.
-
-        This is the PYTHONPATH fix — without it, switching to session CWD
-        breaks `from hermes_tools import terminal`.
-        """
-        import tempfile
-        with tempfile.TemporaryDirectory() as td:
-            code = (
-                "from hermes_tools import terminal\n"
-                "r = terminal('echo x')\n"
-                "print(r.get('output', 'MISSING'))\n"
-            )
-            result = self._run(code, mode="project", extra_env={"TERMINAL_CWD": td})
-            self.assertEqual(result["status"], "success")
-            self.assertIn("mock", result["output"])
-
-    def test_strict_mode_can_still_import_hermes_tools(self):
-        """Regression: strict mode's tmpdir CWD still works for imports."""
-        code = (
-            "from hermes_tools import terminal\n"
-            "r = terminal('echo x')\n"
-            "print(r.get('output', 'MISSING'))\n"
-        )
-        result = self._run(code, mode="strict")
-        self.assertEqual(result["status"], "success")
-        self.assertIn("mock", result["output"])
-
-
-# ---------------------------------------------------------------------------
-# SECURITY-CRITICAL regression guards
-#
-# These MUST pass in both strict and project mode. The whole tiered-mode
-# proposition rests on the claim that switching from strict to project only
-# changes CWD + interpreter, not the security posture.
-# ---------------------------------------------------------------------------
-
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason=(
-        "Assumes POSIX venv layout (bin/python) and symlink creation "
-        "privileges.  execute_code itself works on Windows — these "
-        "integration tests just haven't been ported to the Scripts/"
-        "python.exe layout yet."
-    ),
-)
-class TestSecurityInvariantsAcrossModes(unittest.TestCase):
-
-    def _run(self, code, mode):
-        with _mock_mode(mode):
-            with patch("model_tools.handle_function_call",
-                       side_effect=_mock_handle_function_call):
-                raw = execute_code(
-                    code=code,
-                    task_id=f"test-sec-{mode}",
-                    enabled_tools=list(SANDBOX_ALLOWED_TOOLS),
-                )
-        return json.loads(raw)
-
-    def test_api_keys_scrubbed_in_strict_mode(self):
-        code = (
-            "import os\n"
-            "print('KEY=' + os.environ.get('OPENAI_API_KEY', 'MISSING'))\n"
-            "print('TOK=' + os.environ.get('ANTHROPIC_API_KEY', 'MISSING'))\n"
-        )
-        with patch.dict(os.environ, {
-            "OPENAI_API_KEY": "sk-should-not-leak",
-            "ANTHROPIC_API_KEY": "ant-should-not-leak",
-        }):
-            result = self._run(code, mode="strict")
-        self.assertEqual(result["status"], "success")
-        self.assertIn("KEY=MISSING", result["output"])
-        self.assertIn("TOK=MISSING", result["output"])
-        self.assertNotIn("sk-should-not-leak", result["output"])
-        self.assertNotIn("ant-should-not-leak", result["output"])
-
-    def test_api_keys_scrubbed_in_project_mode(self):
-        """CRITICAL: the project-mode default does NOT leak user credentials."""
-        code = (
-            "import os\n"
-            "print('KEY=' + os.environ.get('OPENAI_API_KEY', 'MISSING'))\n"
-            "print('TOK=' + os.environ.get('ANTHROPIC_API_KEY', 'MISSING'))\n"
-            "print('SEC=' + os.environ.get('GITHUB_TOKEN', 'MISSING'))\n"
-        )
-        with patch.dict(os.environ, {
-            "OPENAI_API_KEY": "sk-should-not-leak",
-            "ANTHROPIC_API_KEY": "ant-should-not-leak",
-            "GITHUB_TOKEN": "ghp-should-not-leak",
-        }):
-            result = self._run(code, mode="project")
-        self.assertEqual(result["status"], "success")
-        for needle in ("KEY=MISSING", "TOK=MISSING", "SEC=MISSING"):
-            self.assertIn(needle, result["output"])
-        for leaked in ("sk-should-not-leak", "ant-should-not-leak", "ghp-should-not-leak"):
-            self.assertNotIn(leaked, result["output"])
-
-    def test_secret_substrings_scrubbed_in_project_mode(self):
-        """SECRET/PASSWORD/CREDENTIAL/PASSWD/AUTH filters still apply."""
-        code = (
-            "import os\n"
-            "for k in ('MY_SECRET', 'DB_PASSWORD', 'VAULT_CREDENTIAL', "
-            "'LDAP_PASSWD', 'AUTH_TOKEN'):\n"
-            "    print(f'{k}=' + os.environ.get(k, 'MISSING'))\n"
-        )
-        with patch.dict(os.environ, {
-            "MY_SECRET": "secret-should-not-leak",
-            "DB_PASSWORD": "password-should-not-leak",
-            "VAULT_CREDENTIAL": "cred-should-not-leak",
-            "LDAP_PASSWD": "passwd-should-not-leak",
-            "AUTH_TOKEN": "auth-should-not-leak",
-        }):
-            result = self._run(code, mode="project")
-        self.assertEqual(result["status"], "success")
-        for leaked in ("secret-should-not-leak", "password-should-not-leak",
-                       "cred-should-not-leak", "passwd-should-not-leak",
-                       "auth-should-not-leak"):
-            self.assertNotIn(leaked, result["output"])
-
-    def test_tool_whitelist_enforced_in_strict_mode(self):
-        """A script cannot RPC-call tools outside SANDBOX_ALLOWED_TOOLS."""
-        # execute_code is NOT in SANDBOX_ALLOWED_TOOLS (no recursion)
-        self.assertNotIn("execute_code", SANDBOX_ALLOWED_TOOLS)
-        code = (
-            "import hermes_tools as ht\n"
-            "print('execute_code_available:', hasattr(ht, 'execute_code'))\n"
-            "print('delegate_task_available:', hasattr(ht, 'delegate_task'))\n"
-        )
-        result = self._run(code, mode="strict")
-        self.assertEqual(result["status"], "success")
-        self.assertIn("execute_code_available: False", result["output"])
-        self.assertIn("delegate_task_available: False", result["output"])
-
-    def test_tool_whitelist_enforced_in_project_mode(self):
-        """CRITICAL: project mode does NOT widen the tool whitelist."""
-        code = (
-            "import hermes_tools as ht\n"
-            "print('execute_code_available:', hasattr(ht, 'execute_code'))\n"
-            "print('delegate_task_available:', hasattr(ht, 'delegate_task'))\n"
-        )
-        result = self._run(code, mode="project")
-        self.assertEqual(result["status"], "success")
-        self.assertIn("execute_code_available: False", result["output"])
-        self.assertIn("delegate_task_available: False", result["output"])
-
-
-# ---------------------------------------------------------------------------
-# _python_environment_prefix / _uses_hermes_python_environment
-# ---------------------------------------------------------------------------
-
-class TestPythonEnvironmentPrefix(unittest.TestCase):
-    """Unit tests for the helper that queries sys.prefix of an interpreter."""
-
-    def setUp(self):
-        _python_prefix_cache.clear()
-
-    def tearDown(self):
-        _python_prefix_cache.clear()
-
-    def test_returns_realpath_of_current_interpreter_prefix(self):
-        """Happy path: sys.executable reports its own prefix."""
-        prefix = _python_environment_prefix(sys.executable)
-        self.assertEqual(prefix, os.path.realpath(sys.prefix))
-
-    def test_returns_empty_string_for_nonexistent_path(self):
-        """A path that doesn't exist → OSError → empty string."""
-        result = _python_environment_prefix("/nonexistent/python-does-not-exist")
-        self.assertEqual(result, "")
-
-    def test_returns_empty_string_when_subprocess_times_out(self):
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd=[], timeout=5)):
-            result = _python_environment_prefix("/some/python")
-        self.assertEqual(result, "")
-
-    def test_returns_empty_string_on_nonzero_exit(self):
-        mock_result = unittest.mock.MagicMock()
-        mock_result.returncode = 1
-        mock_result.stdout = ""
-        with patch("subprocess.run", return_value=mock_result):
-            result = _python_environment_prefix("/bad/python")
-        self.assertEqual(result, "")
-
-
-
-    def test_failure_is_not_cached(self):
-        """A transient probe failure must not stick — the next call retries.
-
-        A sticky cached failure would silently drop the hermes root from
-        every subsequent execute_code call in the process.
-        """
-        with patch("subprocess.run",
-                   side_effect=subprocess.TimeoutExpired(cmd=[], timeout=5)) as mock_run:
-            self.assertEqual(_python_environment_prefix("/flaky/python"), "")
-        self.assertEqual(mock_run.call_count, 1)
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = unittest.mock.MagicMock(
-                returncode=0, stdout="/recovered/prefix\n"
-            )
-            result = _python_environment_prefix("/flaky/python")
-        self.assertEqual(mock_run.call_count, 1, "probe must be retried after a failure")
-        self.assertEqual(result, os.path.realpath("/recovered/prefix"))
-
-
-class TestUsesHermesPythonEnvironment(unittest.TestCase):
-    """Unit tests for _uses_hermes_python_environment."""
-
-    def setUp(self):
-        _python_prefix_cache.clear()
-
-    def tearDown(self):
-        _python_prefix_cache.clear()
-
-
-    def test_true_for_current_interpreter_without_probe(self):
-        """sys.executable short-circuits — no subprocess probe on the default path.
-
-        Guards the strict-mode invariant: a flaky probe (timeout under load)
-        must never drop the hermes root for the interpreter Hermes itself runs.
-        """
-        with patch("subprocess.run",
-                   side_effect=subprocess.TimeoutExpired(cmd=[], timeout=5)) as mock_run:
-            self.assertTrue(_uses_hermes_python_environment(sys.executable))
-        mock_run.assert_not_called()
-
-    def test_false_for_different_prefix(self):
-        """An interpreter reporting a different prefix is external."""
-        with patch("tools.code_execution_env._python_environment_prefix",
-                   return_value="/some/other/venv"):
-            self.assertFalse(_uses_hermes_python_environment("/other/python"))
-
-    def test_false_when_prefix_is_empty(self):
-        """If prefix cannot be determined (error path), treat as external."""
-        with patch("tools.code_execution_env._python_environment_prefix",
-                   return_value=""):
-            self.assertFalse(_uses_hermes_python_environment("/bad/python"))
-
-    def test_true_when_prefix_matches_sys_prefix(self):
-        hermes_prefix = os.path.realpath(sys.prefix)
-        with patch("tools.code_execution_env._python_environment_prefix",
-                   return_value=hermes_prefix):
-            self.assertTrue(_uses_hermes_python_environment("/same/env/python"))
-
-
-# ---------------------------------------------------------------------------
-# PYTHONPATH composition — hermes root included only for same-env interpreters
-# ---------------------------------------------------------------------------
-
-class TestPythonPathComposition(unittest.TestCase):
-    """Verify hermes root inclusion in PYTHONPATH depends on env match.
-
-    Patches ``_uses_hermes_python_environment`` directly so these tests are
-    independent of subprocess availability — the unit tests above already
-    cover the detection logic end-to-end.
-    """
-
-    def _capture_pythonpath(self, same_env: bool) -> tuple:
-        """Return (PYTHONPATH, staging_dir) that execute_code passes to the child."""
-        captured = {}
-
-        class _Captured(RuntimeError):
-            pass
-
-        def _fake_popen(cmd, **kwargs):
-            env = kwargs.get("env") or {}
-            captured["PYTHONPATH"] = env.get("PYTHONPATH", "")
-            # cmd is [python, <staging_dir>/script.py] (per-call) or
-            # [python, <staging_dir>/hermes_kernel_runner.py] (session
-            # kernel) — staging dir derivation is identical.
-            captured["staging_dir"] = os.path.dirname(cmd[1])
-            # Abort the spawn after capture: returning a MagicMock proc
-            # would leave the kernel's reader threads spinning on mock
-            # reads and hang the cell wait loop (always-on session
-            # kernels; the pre-kernel version of this helper could get
-            # away with a fake proc because the per-call path only
-            # .wait()ed on it).
-            raise _Captured()
-
-        with patch("tools.code_execution_tool._load_config", return_value={"mode": "strict"}), \
-             patch("model_tools.handle_function_call", side_effect=_mock_handle_function_call), \
-             patch("tools.code_execution_env._uses_hermes_python_environment",
-                   return_value=same_env), \
-             patch("subprocess.Popen", side_effect=_fake_popen):
-            try:
-                execute_code(code="pass", task_id="test-pp",
-                             enabled_tools=[], reset=True)
-            except _Captured:
-                pass  # expected: spawn aborted right after env capture
-            except Exception:
-                pass  # kernel path wraps the abort; capture already happened
-
-        # If execute_code never reached Popen, the capture is empty and any
-        # "X not in PYTHONPATH" assertion downstream would pass vacuously.
-        self.assertIn("PYTHONPATH", captured,
-                      "execute_code never spawned the child process")
-        return captured["PYTHONPATH"], captured["staging_dir"]
-
-    def _hermes_root(self) -> str:
-        import tools.code_execution_tool as _cet
-        tools_dir = os.path.dirname(os.path.abspath(_cet.__file__))
-        return os.path.dirname(tools_dir)
-
-    def test_hermes_root_included_when_same_env(self):
-        """When interpreter is in the Hermes env, hermes root is in PYTHONPATH."""
-        pythonpath, _ = self._capture_pythonpath(same_env=True)
-        parts = pythonpath.split(os.pathsep)
-        self.assertIn(self._hermes_root(), parts,
-                      "hermes root must be in PYTHONPATH for same-env interpreters")
-
-    def test_hermes_root_excluded_when_external_env(self):
-        """When interpreter is external, hermes root must NOT be in PYTHONPATH."""
-        pythonpath, _ = self._capture_pythonpath(same_env=False)
-        parts = pythonpath.split(os.pathsep)
-        self.assertNotIn(self._hermes_root(), parts,
-                         "hermes root must not leak into an external interpreter's PYTHONPATH")
-
-    def test_staging_dir_always_first(self):
-        """The staging tmpdir must always be the first PYTHONPATH entry."""
-        for same_env in (True, False):
-            with self.subTest(same_env=same_env):
-                pythonpath, staging_dir = self._capture_pythonpath(same_env=same_env)
-                parts = pythonpath.split(os.pathsep)
-                self.assertEqual(parts[0], staging_dir,
-                                 "PYTHONPATH must start with the staging tmpdir")
-
-
-if __name__ == "__main__":
-    unittest.main()
+from tests.tools._child_env_fixtures import child_env, project_python, run_code  # noqa: F401
+from tools import code_execution_env as ce
+from tools.code_execution_tool import build_execute_code_schema
+
+
+@pytest.mark.platforms("linux", "macos", "windows")
+@pytest.mark.parametrize("mode", ["strict", "project"])
+@pytest.mark.parametrize("activation", ["VIRTUAL_ENV", "CONDA_PREFIX"])
+def test_selected_interpreter_environment_and_real_rpc(child_env, project_python, monkeypatch, mode, activation):
+    python, prefix = project_python
+    monkeypatch.setenv(activation, str(prefix))
+    repo = Path(__file__).resolve().parents[2]
+    site = Path(sys.prefix) / ("Lib/site-packages" if os.name == "nt" else
+                              f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages")
+    user_lib = child_env / "user-lib"
+    user_lib.mkdir()
+    (user_lib / "user_probe.py").write_text("VALUE = 'user → 雪'\n", encoding="utf-8")
+    witness = child_env / "rpc-witness.txt"
+    witness.write_text("RPC → 雪\n", encoding="utf-8")
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(map(str, [repo, site, repo, user_lib, user_lib])))
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-provider-secret")
+    before = dict(os.environ)
+    result = run_code(f'''
+import importlib.util, json, os, sys
+import hermes_tools, user_probe
+from hermes_tools import read_file
+print(json.dumps({{
+    "executable": sys.executable, "prefix": sys.prefix, "cwd": os.getcwd(),
+    "pythonpath": os.environ["PYTHONPATH"].split(os.pathsep),
+    "sys_path": sys.path,
+    "staging": os.path.dirname(hermes_tools.__file__),
+    "encoding": [os.environ.get("PYTHONIOENCODING"), os.environ.get("PYTHONUTF8")],
+    "essentials": {{k: os.environ.get(k) for k in ("SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT")}},
+    "secret": os.environ.get("OPENAI_API_KEY"),
+    "project": (__import__("project_only_probe").VALUE
+                if importlib.util.find_spec("project_only_probe") else None),
+    "user": user_probe.VALUE, "rpc": read_file({str(witness)!r}),
+}}, ensure_ascii=False))
+''', mode)
+    assert result["encoding"] == ["utf-8", "1"]
+    if os.name == "nt":
+        assert result["essentials"] == {k: before.get(k) for k in result["essentials"]}
+    assert result["secret"] is None
+    assert result["user"] == "user → 雪"
+    assert "RPC → 雪" in result["rpc"]["content"]
+    assert result["rpc"]["total_lines"] == 1
+    expected_python, expected_prefix = (python, prefix) if mode == "project" else (Path(sys.executable), Path(sys.prefix))
+    assert Path(result["executable"]) == expected_python
+    assert Path(result["prefix"]).resolve() == expected_prefix.resolve()
+    assert result["project"] == ("project-only → 雪" if mode == "project" else None)
+    if mode == "project":
+        assert os.path.normcase(str(site)) not in list(map(os.path.normcase, result["sys_path"]))
+    expected_cwd = child_env if mode == "project" else Path(result["staging"])
+    assert Path(result["cwd"]).resolve() == expected_cwd.resolve()
+    controlled = [result["staging"]] + ([str(repo)] if mode == "strict" else [])
+    # macOS: the staging dir is minted under /var/tmp (a symlink to /private/var/tmp) and
+    # `hermes_tools.__file__` reports the resolved path, so compare realpaths.
+    def _canon(path: str) -> str:
+        return os.path.normcase(os.path.realpath(path))
+    assert list(map(_canon, result["pythonpath"])) == list(map(_canon, controlled + [str(user_lib)] * 2))
+    assert dict(os.environ) == before
+
+
+@pytest.mark.platforms("linux", "macos", "windows")
+@pytest.mark.parametrize("mode", ["strict", "project"])
+def test_credential_policy_and_whitelist_in_real_child(child_env, monkeypatch, mode):
+    from tools.env_passthrough import register_env_passthrough
+    blocked = (
+        "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GITHUB_TOKEN", "MY_SECRET",
+        "DB_PASSWORD", "VAULT_CREDENTIAL", "LDAP_PASSWD", "AUTH_TOKEN",
+        "SENTRY_DSN", "SLACK_WEBHOOK", "HOME_APIKEY", "USER_CREDS", "TERM_BEARER",
+        "HERMES_BASE_URL", "HERMES_INTERACTIVE", "BUZZ_PRIVATE_KEY", "RANDOM_UNKNOWN",
+    )
+    allowed = ("HERMES_PROFILE", "HERMES_CONFIG", "HERMES_ENV", "LC_ENV_TEST", "TENOR_API_KEY")
+    for name in blocked + allowed:
+        monkeypatch.setenv(name, "fake-" + name)
+    # Registration is real: a skill cannot tunnel a provider or Buzz credential.
+    register_env_passthrough(["TENOR_API_KEY", "OPENAI_API_KEY", "BUZZ_PRIVATE_KEY"])
+    result = run_code(f'''
+import json, os, hermes_tools
+print(json.dumps({{"env": {{k: os.environ.get(k) for k in {blocked + allowed!r}}},
+                  "recursive": hasattr(hermes_tools, "execute_code"),
+                  "delegation": hasattr(hermes_tools, "delegate_task")}}))
+''', mode, enabled_tools=("read_file", "execute_code", "delegate_task"))
+    assert result["env"] == {**dict.fromkeys(blocked), **{k: "fake-" + k for k in allowed}}
+    assert result["recursive"] is False
+    assert result["delegation"] is False
+
+
+@pytest.mark.parametrize("helper,cache,failed,success", [
+    (ce._is_usable_python, ce._usable_python_cache, False, True),
+    (ce._python_environment_prefix, ce._python_prefix_cache, "", os.path.realpath("recovered-prefix")),
+])
+def test_probe_retries_transient_failure_and_caches_success(helper, cache, failed, success):
+    cache.clear()
+    try:
+        with patch("subprocess.run", side_effect=[
+            subprocess.TimeoutExpired(cmd=[], timeout=5),
+            subprocess.CompletedProcess([], 0, "recovered-prefix\n"),
+        ]) as run:
+            assert helper("probe-python") == failed
+            assert helper("probe-python") == success
+            assert helper("probe-python") == success
+        assert run.call_count == 2
+    finally:
+        cache.clear()
+
+
+@pytest.mark.parametrize("outcome", [
+    OSError("missing interpreter"), subprocess.CompletedProcess([], 1, ""),
+    subprocess.CompletedProcess([], 0, " \n"),
+])
+def test_unknown_prefix_is_not_cached(outcome):
+    ce._python_prefix_cache.clear()
+    with patch("subprocess.run", side_effect=outcome if isinstance(outcome, Exception) else None,
+               return_value=outcome) as run:
+        assert ce._python_environment_prefix("bad-python") == ""
+        assert ce._python_environment_prefix("bad-python") == ""
+    assert run.call_count == 2
+    assert "bad-python" not in ce._python_prefix_cache
+
+
+def test_current_interpreter_needs_no_probe():
+    with patch("subprocess.run", side_effect=AssertionError("unexpected probe")):
+        assert ce._uses_hermes_python_environment(sys.executable)
+
+
+def test_project_without_active_venv_falls_back(child_env):
+    assert ce._resolve_child_python("project") == sys.executable
+
+
+def test_project_stale_cwd_falls_through_then_uses_process_cwd(child_env, monkeypatch):
+    from tools import terminal_tool
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
+    terminal_tool.register_task_env_overrides("stale", {"cwd": str(child_env)})
+    terminal_tool.record_session_cwd("stale", str(child_env / "deleted"))
+    monkeypatch.setenv("TERMINAL_CWD", str(child_env / "missing"))
+    assert ce._resolve_child_cwd("project", "staging", task_id="stale") == str(child_env)
+    assert ce._resolve_child_cwd("project", "staging") == os.getcwd()
+
+
+@pytest.mark.parametrize("mode,description", [("strict", "temp dir"), ("project", "session")])
+def test_mode_schema_matches_config_without_claiming_isolation(mode, description):
+    with patch("tools.code_execution_tool._load_config", return_value={"mode": mode}):
+        text = build_execute_code_schema()["description"].lower()
+    assert description in text
+    assert not any(word in text for word in ("sandbox", "isolated", "cloud"))

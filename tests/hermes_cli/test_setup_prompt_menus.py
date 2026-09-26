@@ -4,7 +4,6 @@ import pytest
 
 from hermes_cli import setup as setup_mod
 
-
 def test_prompt_choice_escape_keeps_default_without_numbered_fallback(monkeypatch):
     monkeypatch.setattr(
         setup_mod,
@@ -19,7 +18,6 @@ def test_prompt_choice_escape_keeps_default_without_numbered_fallback(monkeypatc
     )
 
     assert setup_mod.prompt_choice("Pick one", ["a", "b"], default=1) == 1
-
 
 def test_setup_navigation_escape_cancels_and_left_goes_back():
     state = setup_mod._SetupNavigationState(section_index=1)
@@ -41,9 +39,6 @@ def test_setup_navigation_escape_cancels_and_left_goes_back():
         assert exc_info.value.prompt_index == 1
     finally:
         setup_mod._SETUP_NAVIGATION.reset(token)
-
-
-
 
 def test_setup_steps_move_to_previous_section_or_restart_current_section():
     calls = []
@@ -85,7 +80,6 @@ def test_setup_steps_move_to_previous_section_or_restart_current_section():
         "gateway",
     ]
 
-
 def test_nested_back_reopens_only_the_immediately_previous_prompt():
     shown = []
     attempts = 0
@@ -124,7 +118,6 @@ def test_nested_back_reopens_only_the_immediately_previous_prompt():
         "existing or reauthenticate",
         "auth method",
     ]
-
 
 def test_section_specific_model_setup_can_go_back_from_model_to_provider(
     tmp_path, monkeypatch
@@ -179,7 +172,6 @@ def test_section_specific_model_setup_can_go_back_from_model_to_provider(
 
     assert shown == ["provider", "model", "provider", "model"]
 
-
 def test_prompt_strips_bracketed_paste_markers(monkeypatch):
     monkeypatch.setattr(
         "builtins.input",
@@ -189,7 +181,3 @@ def test_prompt_strips_bracketed_paste_markers(monkeypatch):
     value = setup_mod.prompt("API key")
 
     assert value == "sk-ant-api-key"
-
-
-
-

@@ -10,7 +10,6 @@ import pytest
 
 from hermes_cli.oneshot import _build_preloaded_skills_prompt, _normalize_skills
 
-
 class TestNormalizeSkills:
     def test_none_and_empty(self):
         assert _normalize_skills(None) == []
@@ -22,7 +21,6 @@ class TestNormalizeSkills:
 
     def test_repeated_flags_deduped_order_preserved(self):
         assert _normalize_skills(["b", "a", "b"]) == ["b", "a"]
-
 
 class TestBuildPreloadedSkillsPrompt:
     def test_no_skills_returns_none(self):
@@ -46,4 +44,3 @@ class TestBuildPreloadedSkillsPrompt:
             lambda parsed, **kw: ("PROMPT", ["good"], ["bad"]),
         )
         assert _build_preloaded_skills_prompt(["good", "bad"]) == "PROMPT"
-

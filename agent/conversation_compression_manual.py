@@ -105,8 +105,23 @@ def compress_now(
     if skip_without_window and callable(has_content) and has_content(head) is False:
         return CompressResult("nothing_to_do", before, before, before_tokens, before_tokens, request)
     # An in-place commit archives every durable row under the lease watermark, the kept tail's included, so
-    # it must store the tail again itself. It gets copies because the insert writes row ids onto them.
-    tail_rows = [_fresh_compaction_message_copy(m) for m in tail]
+    # it must store the tail again itself. It gets copies because the insert writes row ids onto them. A copy
+    # keeps its source's row id only while the source is unchanged since it was loaded (marker present): a
+    # resume merge rewrote the row and dropped the marker, and its id no longer bounds what the row holds.
+    tail_rows = []
+    for m in tail:
+        row = _fresh_compaction_message_copy(m)
+        if not m.get(_DB_PERSISTED_MARKER):
+            # A rewritten row's id does not bound the archive, but it and any row a merge
+            # folded into it were still in the compressor's input. Keep them named so the
+            # commit archives those originals instead of cloning them beside the tail.
+            dropped = row.pop("_row_id", None)
+            if isinstance(dropped, int) and not isinstance(dropped, bool) and dropped > 0:
+                absorbed = [*(row.get("_absorbed_row_ids") or ())]
+                if dropped not in absorbed:
+                    absorbed.append(dropped)
+                row["_absorbed_row_ids"] = absorbed
+        tail_rows.append(row)
     try:
         compressed, _ = agent._compress_context(
             head, system_message, approx_tokens=before_tokens, focus_topic=request.focus_topic, force=True,

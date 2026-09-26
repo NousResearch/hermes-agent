@@ -347,7 +347,7 @@ def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Pa
         size = path.stat().st_size
         if max_inline_tokens is not None and size > max_inline_tokens * CHARS_PER_TOKEN:
             return None, _oversized_text_reference_block(ref, path, size // CHARS_PER_TOKEN)
-        text = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8-sig")
     lang = _FENCE_LANGUAGES.get(path.suffix.lower(), "")
     text_tokens = estimate_tokens_rough(text)
     # Check BEFORE building the fenced block: an oversized file is not going to be

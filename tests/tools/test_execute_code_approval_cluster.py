@@ -5,7 +5,7 @@ Covers the canonical fix for issues #4146, #27303, #30882, #33057:
   1. tools.thread_context.propagate_context_to_thread — propagates the agent
      turn's ContextVars AND thread-local approval/sudo callbacks into worker
      threads, and clears the callbacks on teardown.
-  2. Both execute_code RPC threads are wrapped with that helper (source guard).
+  2. Local and remote file-RPC carry the cell's authority in real processes.
   3. tools.approval.check_execute_code_guard — the entry-point guard decision
      matrix (isolated backends, yolo/off, cron-deny, headless-local,
      gateway approve/deny/timeout/missing-notify, smart mode).
@@ -28,6 +28,7 @@ from tools import approval_context
 from tools import approval_smart
 from tools.thread_context import propagate_context_to_thread
 from gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
+from tests.tools._child_env_fixtures import child_env  # noqa: F401
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +87,51 @@ def test_helper_clears_callbacks_on_teardown():
         TT.set_approval_callback(None)
 
 
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("transport", ["local", "remote-file"])
+def test_rpc_carries_authority_to_real_dispatch(child_env, monkeypatch, transport):
+    import time
+    import model_tools
+    from tests.tools._child_env_fixtures import RunToCompletionEnv, run_code
+    from tools import terminal_tool
+    from tools.code_execution_tool import _run_remote_per_call
+
+    witness = child_env / "authority.txt"
+
+    marker = contextvars.ContextVar("rpc-authority", default="missing")
+    seen = []
+    original = model_tools.handle_function_call
+
+    def dispatch(name, args, *pos, **kwargs):
+        seen.append((marker.get(), terminal_tool._get_approval_callback()))
+        return original(name, args, *pos, **kwargs)
+
+    monkeypatch.setattr(model_tools, "handle_function_call", dispatch)
+    code = f"from hermes_tools import read_file\nimport json\nprint(json.dumps(read_file({str(witness)!r})))"
+    try:
+        for turn in ("first", "second"):
+            witness.write_text(f"real RPC payload {turn}\n", encoding="utf-8")
+            callback = object()
+            token = marker.set(turn)
+            terminal_tool.set_approval_callback(callback)
+            try:
+                if transport == "local":
+                    result = run_code(code, reset=(turn == "first"))
+                else:
+                    raw = json.loads(_run_remote_per_call(
+                        RunToCompletionEnv(child_env), "ssh", code, "authority-test",
+                        frozenset({"read_file"}), timeout=30, max_tool_calls=2, exec_start=time.monotonic()))
+                    assert raw["status"] == "success", raw
+                    assert raw["tool_calls_made"] == 1
+                    result = json.loads(raw["output"])
+                assert "content" in result, result
+                assert f"real RPC payload {turn}" in result["content"]
+                assert seen[-1] == (turn, callback)
+            finally:
+                marker.reset(token)
+    finally:
+        terminal_tool.set_approval_callback(None)
+    assert len(seen) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -484,5 +530,3 @@ def test_env_scrub_passthrough_overrides_secret_block():
 # ---------------------------------------------------------------------------
 # 6. Env-scrub diagnosability mitigation (#27303 follow-up)
 # ---------------------------------------------------------------------------
-
-

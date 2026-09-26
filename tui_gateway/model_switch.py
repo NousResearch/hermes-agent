@@ -83,8 +83,10 @@ def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True)
             # launch profile"); single-profile, only its secrets need binding. Once multiplexing is
             # active the override is bound too: an unset override is the "unbound context" signal
             # plugin runtime bindings and per-home slots fail closed on (#118538).
+            # Resolve at call time like the launch state.db handle: a harness that
+            # re-homes the process after import must not read the old home's .env.
             from tui_gateway.launch_profile_policy import launch_secret_scope, launch_terminal_env
-            home = Path(_hermes_home)
+            home = _launch_home()
             secrets = launch_secret_scope(home)
             # No home stamp: this IS the process's own profile, and the stamp exists only to
             # mark a FOREIGN home for serves_routed_profile().
@@ -137,6 +139,15 @@ def _session_profile_runtime_scope(session: dict, *, hydrate_secrets: bool = Tru
         yield
     finally:
         _release_profile_runtime_scope_tokens(scopes)
+
+
+def _session_default_model(session: dict) -> str:
+    """The configured default model of the session's OWN profile. Bare ``_resolve_model()`` reads the
+    LAUNCH profile's config, so a secondary session's reply or first state.db row carried the launch
+    profile's model id."""
+    with _session_profile_runtime_scope({"profile_home": session.get("profile_home") or None},
+                                        hydrate_secrets=False):
+        return _resolve_model()
 
 
 def _restart_completed_failed_agent_build(sid: str, session: dict, failed_ready: threading.Event | None) -> bool:

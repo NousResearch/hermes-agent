@@ -2730,14 +2730,19 @@ def run_one_job(
             logger.error("Job '%s': %s", job["id"], error)
             claim = job.get("fire_claim")
             owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
+            # Past the handoff the worker may have adopted the row, run side effects
+            # and sent its own notice: record bookkeeping only, never a false
+            # "dispatch failed" incident/ping.
+            post_handoff = isinstance(handoff_error, _ExternalWorkerPostHandoffError)
             delivery_error = delivery_outcome = None
             try:
-                # The dispatch failure is a job failure like any other: it must open
-                # an incident and leave through the job's failure lane (#123401).
-                # Without this the outage is silent — no cron_incidents row, no
-                # ping — while executions.db keeps piling up failed rows.
-                delivery_error, delivery_outcome = _deliver_crash_failure(
-                    job, error, adapters=adapters, loop=loop)
+                # A pre-handoff dispatch failure is a job failure like any other: it
+                # must open an incident and leave through the job's failure lane
+                # (#123401). Without this the outage is silent — no cron_incidents
+                # row, no ping — while executions.db keeps piling up failed rows.
+                if not post_handoff:
+                    delivery_error, delivery_outcome = _deliver_crash_failure(
+                        job, error, adapters=adapters, loop=loop)
                 mark_job_run(
                     job["id"],
                     False,
@@ -3418,6 +3423,10 @@ def _wait_for_external_cron_worker_body(
         )
 
 
+class _ExternalWorkerPostHandoffError(RuntimeError):
+    """The waiter failed after the worker was spawned and may own the execution."""
+
+
 def _wait_for_external_cron_worker(
     process: subprocess.Popen,
     *,
@@ -3429,6 +3438,8 @@ def _wait_for_external_cron_worker(
         return _wait_for_external_cron_worker_body(
             process, execution_id=execution_id
         )
+    except Exception as wait_error:
+        raise _ExternalWorkerPostHandoffError(str(wait_error)) from wait_error
     finally:
         if job_id is not None:
             with _running_lock:

@@ -51,6 +51,17 @@ def test_is_destructive_command_treats_cp_as_mutating():
     assert _is_destructive_command("cp .env.local .env") is True
 
 
+
+
+
+
+@pytest.fixture(autouse=True)
+def _mock_plugin_discovery(monkeypatch):
+    # Tool definitions are supplied by these unit fixtures. Scanning every
+    # bundled plugin again for each isolated test home adds no coverage.
+    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+
+
 @pytest.fixture()
 def agent():
     """Minimal AIAgent with mocked OpenAI client and tool loading."""
@@ -4313,6 +4324,77 @@ class TestRunConversation:
         assert result["failure_reason"] == "truncated"
         mock_handle_function_call.assert_not_called()
 
+    def test_clean_eof_stub_gets_distinct_truncation_message(self, agent):
+        """#102766: a clean-EOF partial-stream stub (stream ended with no
+        transport exception and no finish_reason) must not print the same
+        'stream ended before completion' wording used for a genuine
+        network drop — that wording sends the user chasing a network
+        problem a stream_diag log with finish_reason_seen=False would
+        already have ruled out."""
+        from hermes_constants import PARTIAL_STREAM_STUB_ID
+
+        self._setup_agent(agent)
+        bad_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"partial',
+            call_id="c1",
+        )
+        resp = _mock_response(content="", finish_reason="length", tool_calls=[bad_tc])
+        resp.id = PARTIAL_STREAM_STUB_ID
+        resp._clean_eof = True
+        agent.client.chat.completions.create.return_value = resp
+
+        printed = []
+        agent._print_fn = lambda *a, **k: printed.append(" ".join(str(x) for x in a))
+
+        with (
+            patch("run_agent.handle_function_call"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("write the report")
+
+        text = " ".join(printed)
+        assert "server ended the stream without ever sending finish_reason" in text
+        assert "stream ended before completion" not in text
+        # Retries exhausted: the final copy/reason must not blame the network either.
+        assert "Check your network" not in result["final_response"]
+        assert "kept closing the stream" in result["final_response"]
+        assert result["failure_reason"] == "truncated"
+
+    def test_transport_drop_stub_keeps_original_truncation_message(self, agent):
+        """Companion to the clean-EOF test above: a stub NOT tagged
+        _clean_eof (the shape built after a real transport exception) must
+        keep printing the original 'stream ended before completion'
+        wording — issue #102766 asks that this case's existing wording
+        stay as-is, only the clean-EOF case gets new wording."""
+        from hermes_constants import PARTIAL_STREAM_STUB_ID
+
+        self._setup_agent(agent)
+        bad_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"partial',
+            call_id="c1",
+        )
+        resp = _mock_response(content="", finish_reason="length", tool_calls=[bad_tc])
+        resp.id = PARTIAL_STREAM_STUB_ID
+        agent.client.chat.completions.create.return_value = resp
+
+        printed = []
+        agent._print_fn = lambda *a, **k: printed.append(" ".join(str(x) for x in a))
+
+        with (
+            patch("run_agent.handle_function_call"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.run_conversation("write the report")
+
+        text = " ".join(printed)
+        assert "stream ended before completion" in text
+
     def test_truncated_tool_call_retries_once_before_refusing(self, agent):
         """When tool call args are truncated, the agent retries the API call
         (up to 3 times). If a retry succeeds (valid JSON args), tool execution
@@ -6355,7 +6437,7 @@ class TestAnthropicInterruptHandler:
     """_interruptible_api_call must handle Anthropic mode when interrupted."""
 
 
-    def test_interruptible_anthropic_interrupt_never_closes_shared_client(self):
+    def test_interruptible_anthropic_interrupt_never_closes_shared_client(self, agent):
         """#67142: a non-streaming Anthropic interrupt must abort the
         request-local client from the poll thread, never close/rebuild the
         shared _anthropic_client (which raced a live SSL BIO and corrupted an
@@ -6366,18 +6448,8 @@ class TestAnthropicInterruptHandler:
         """
         import time
         from unittest.mock import MagicMock
-        from run_agent import AIAgent
         from agent.chat_completion_helpers import interruptible_api_call
 
-        agent = AIAgent(
-            api_key="test-key",
-            base_url="https://api.anthropic.com",
-            provider="anthropic",
-            model="claude-test",
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True,
-        )
         agent.api_mode = "anthropic_messages"
         agent._interrupt_requested = False
         agent._anthropic_client = MagicMock()

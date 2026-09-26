@@ -18,6 +18,7 @@ Session keys prefer union_id (user_id_alt) over open_id (user_id) for stability.
 
 from __future__ import annotations
 
+from pm import install_hint
 import asyncio
 import collections
 import concurrent.futures
@@ -1217,8 +1218,8 @@ def feishu_deps_present() -> bool:
     if FEISHU_AVAILABLE:
         return True
     try:
-        from tools.lazy_deps import is_available
-        return is_available("platform.feishu")
+        from pm.extras import available
+        return available("feishu")
     except Exception:  # pragma: no cover — defensive
         return False
 
@@ -1227,9 +1228,11 @@ def check_feishu_requirements() -> bool:
     """Ensure Feishu dependencies are installed without importing the SDK."""
     if FEISHU_AVAILABLE:
         return True
-    from tools.lazy_deps import ensure
+
+    from pm import ensure_import
+
     try:
-        ensure("platform.feishu", prompt=False)
+        ensure_import("feishu")
         return True
     except Exception:
         return False
@@ -3063,7 +3066,7 @@ class FeishuAdapter(BasePlatformAdapter):
             ext = Path(cached_path).suffix.lower()
             if ext not in {".txt", ".md"} and media_type not in {"text/plain", "text/markdown"}:
                 return ""
-            content = Path(cached_path).read_text(encoding="utf-8")
+            content = Path(cached_path).read_text(encoding="utf-8-sig")
             display_name = self._display_name_from_cached_path(cached_path)
             return f"[Content of {display_name}]:\n{content}"
         except (OSError, UnicodeDecodeError):
@@ -3527,7 +3530,7 @@ class FeishuAdapter(BasePlatformAdapter):
     # --- Deduplication — seen message ID cache (persistent) ---
     def _load_seen_message_ids(self) -> None:
         try:
-            payload = json.loads(self._dedup_state_path.read_text(encoding="utf-8"))
+            payload = json.loads(self._dedup_state_path.read_text(encoding="utf-8-sig"))
         except FileNotFoundError:
             return
         except (OSError, json.JSONDecodeError):
@@ -4256,8 +4259,9 @@ def _qr_register_inner(*, initial_domain: str, timeout_seconds: int) -> Optional
         print(f"\n  Scan the QR code above, or open this URL directly:\n  {qr_url}")
     else:
         print(f"  Open this URL in Feishu / Lark on your phone:\n\n  {qr_url}\n")
-        from hermes_cli.managed_uv import pip_install_hint
-        print(f"  Tip: {pip_install_hint('qrcode')}  to display a scannable QR code here next time")
+        print("  Tip: from the Hermes environment, run: "
+              f"{install_hint('messaging')} "
+              "to display a scannable QR code here next time")
     print()
     result = _poll_registration(
         device_code=begin["device_code"], interval=begin["interval"],

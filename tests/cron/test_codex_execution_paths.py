@@ -2,14 +2,12 @@ import sys
 import types
 from types import SimpleNamespace
 
-
 sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
 sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 import cron.scheduler as cron_scheduler
 import run_agent
-
 
 def _patch_agent_bootstrap(monkeypatch):
     monkeypatch.setattr(
@@ -27,7 +25,6 @@ def _patch_agent_bootstrap(monkeypatch):
     )
     monkeypatch.setattr("model_tools.check_toolset_requirements", lambda: {})
 
-
 def _codex_message_response(text: str):
     return SimpleNamespace(
         output=[
@@ -41,12 +38,10 @@ def _codex_message_response(text: str):
         model="gpt-5-codex",
     )
 
-
 class _UnauthorizedError(RuntimeError):
     def __init__(self):
         super().__init__("Error code: 401 - unauthorized")
         self.status_code = 401
-
 
 class _FakeOpenAI:
     def __init__(self, **kwargs):
@@ -54,7 +49,6 @@ class _FakeOpenAI:
 
     def close(self):
         return None
-
 
 class _Codex401ThenSuccessAgent(run_agent.AIAgent):
     refresh_attempts = 0
@@ -86,7 +80,6 @@ class _Codex401ThenSuccessAgent(run_agent.AIAgent):
         self._interruptible_api_call = _fake_api_call
         return super().run_conversation(user_message, conversation_history=conversation_history, task_id=task_id)
 
-
 def test_cron_run_job_codex_path_handles_internal_401_refresh(monkeypatch):
     _patch_agent_bootstrap(monkeypatch)
     monkeypatch.setattr("agent.process_bootstrap.OpenAI", _FakeOpenAI)
@@ -116,5 +109,3 @@ def test_cron_run_job_codex_path_handles_internal_401_refresh(monkeypatch):
     assert _Codex401ThenSuccessAgent.refresh_attempts == 1
     assert _Codex401ThenSuccessAgent.last_init["provider"] == "openai-codex"
     assert _Codex401ThenSuccessAgent.last_init["api_mode"] == "codex_responses"
-
-

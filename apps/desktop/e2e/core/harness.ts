@@ -144,6 +144,9 @@ export function coreAppEnv(sandbox: CoreSandbox, extra: Record<string, string> =
     HERMES_DESKTOP_USER_DATA_DIR: sandbox.userDataDir,
     HERMES_DESKTOP_IGNORE_EXISTING: '1',
     HERMES_DESKTOP_HERMES_ROOT: REPO_ROOT,
+    // setup-pm exports an install-scoped interpreter, not a checkout .venv.
+    // The Desktop override must be explicit because the sandbox strips HERMES_*.
+    ...(process.env.HERMES_E2E_PYTHON ? { HERMES_DESKTOP_PYTHON: process.env.HERMES_E2E_PYTHON } : {}),
     HERMES_DESKTOP_APP_NAME: `HermesCoreE2E-${path.basename(sandbox.root)}`,
     HERMES_DESKTOP_SKIP_QUIT_CONFIRM: '1',
     HERMES_DESKTOP_CDP_PORT: 'off',

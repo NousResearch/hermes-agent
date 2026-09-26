@@ -7,8 +7,7 @@ persistence flows exclusively through persist_personality().
 import os
 import pytest
 from unittest.mock import MagicMock, patch
-import yaml
-
+import hermes_yaml as yaml
 
 # ── CLI tests ──────────────────────────────────────────────────────────────
 
@@ -73,7 +72,6 @@ class TestCLIPersonalityNone:
             cli._handle_personality_command("/personality kawaii")
         assert "kawaii" in cli.system_prompt.lower()
 
-
 # ── Gateway tests ──────────────────────────────────────────────────────────
 
 class TestGatewayPersonalityNone:
@@ -114,7 +112,7 @@ class TestGatewayPersonalityNone:
             "display": {"personality": "helpful"},
         }
         config_file = tmp_path / "config.yaml"
-        config_file.write_text(yaml.dump(config_data))
+        config_file.write_text(yaml.safe_dump(config_data))
 
         p1, p2 = self._gateway_env(tmp_path)
         with p1, p2:
@@ -138,7 +136,7 @@ class TestGatewayPersonalityNone:
             }
         }
         config_file = tmp_path / "config.yaml"
-        config_file.write_text(yaml.dump(config_data))
+        config_file.write_text(yaml.safe_dump(config_data))
 
         p1, p2 = self._gateway_env(tmp_path)
         with p1, p2:
@@ -151,9 +149,6 @@ class TestGatewayPersonalityNone:
         with p1, p2:
             assert runner._get_system_prompt_for_channel(None, "c") == "You are helpful."
         assert "helpful" in result.lower()
-
-
-
 
 class TestPersonalityDictFormat:
     """Test dict-format custom personalities with description, tone, style."""
@@ -182,5 +177,3 @@ class TestPersonalityDictFormat:
         with patch("hermes_cli.personality.persist_personality", return_value=True):
             cli._handle_personality_command("/personality coder")
         assert "You are an expert programmer." in cli.system_prompt
-
-

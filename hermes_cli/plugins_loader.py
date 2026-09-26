@@ -370,9 +370,9 @@ class PluginLoaderMixin:
             )
 
     def _warn_python_dependencies(self, manifest: PluginManifest) -> None:
-        """Warn about declared pip dependencies missing at load time. Installing happens at
-        ``hermes plugins install``/``enable`` and after ``hermes update`` (``hermes_cli.plugin_python_deps``)
-        under core constraints; the loader itself never installs — import time is not a consent point.
+        """Report missing dependencies without installing during discovery.
+
+        Plugin admission and PM repair own dependency changes.
         """
         deps = manifest.python_dependencies
         if not deps:
@@ -382,9 +382,9 @@ class PluginLoaderMixin:
         if missing:
             logger.warning(
                 "Plugin %s declares Python dependencies that are not "
-                "installed: %s. Run `hermes plugins enable %s` to install them, "
-                "or install them yourself: pip install %s",
-                key, ", ".join(missing), key, " ".join(f"'{m}'" for m in missing),
+                "installed: %s. For an enabled plugin, run hermes pm repair, "
+                "then restart Hermes. Discovery does not install dependencies.",
+                key, ", ".join(missing),
             )
         else:
             logger.debug("Plugin %s python_dependencies satisfied: %s", key, ", ".join(deps))

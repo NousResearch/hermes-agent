@@ -5,7 +5,6 @@ import pytest
 from hermes_cli.providers import determine_api_mode, host_mandated_api_mode
 from hermes_cli import runtime_provider as rp
 
-
 class TestHostMandatedMetaResponses:
     @pytest.mark.parametrize(
         "url",
@@ -75,7 +74,6 @@ class TestHostMandatedMetaResponses:
         # generic still chat
         assert rp._fallback_api_mode("custom", "https://generic.example.com/v1", "muse-spark-1.2") == "chat_completions"
 
-
 class TestMetaConfigRoundtrip:
     def test_providers_meta_api_mode_roundtrip(self):
         from hermes_cli.config import _normalize_custom_provider_entry
@@ -88,4 +86,3 @@ class TestMetaConfigRoundtrip:
         normalized2 = _normalize_custom_provider_entry(entry2)
         # transport is lifted to api_mode via _normalize path or at least preserved
         assert normalized2.get("api_mode") == "codex_responses" or normalized2.get("transport") == "codex_responses"
-

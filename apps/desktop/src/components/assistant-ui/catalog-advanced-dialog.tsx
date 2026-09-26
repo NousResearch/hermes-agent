@@ -33,8 +33,55 @@ interface CatalogAdvancedDialogProps {
   open: boolean
 }
 
+interface InstallEnvOptions {
+  agentHalf: boolean
+  credentials: Record<string, string>
+  desktopHalf: boolean
+  enable: boolean
+  force: boolean
+  hasDesktopHalf: boolean
+  kind: CatalogAdvancedDialogProps['kind']
+  pin: string
+  targetProfile: string
+}
+
+interface InstallEnv {
+  [name: string]: string
+  force: string
+  target_profile: string
+}
+
+type InstallModalCopy = ReturnType<typeof useI18n>['t']['settings']['plugins']['installModal']
+
 const CAPTION = 'text-[length:var(--conversation-caption-font-size)]'
 const flag = (value: boolean) => (value ? '1' : '0')
+
+function installEnv(options: InstallEnvOptions): InstallEnv {
+  const env = {
+    ...options.credentials,
+    force: flag(options.force),
+    target_profile: options.targetProfile
+  }
+  if (options.kind === 'skill') {
+    return env
+  }
+
+  const pluginEnv: InstallEnv = {
+    ...env,
+    agent_half: flag(options.agentHalf),
+    enable: flag(options.enable)
+  }
+
+  if (options.hasDesktopHalf) {
+    pluginEnv.desktop_half = flag(options.desktopHalf)
+  }
+
+  if (options.pin) {
+    pluginEnv.ref = options.pin
+  }
+
+  return pluginEnv
+}
 
 /** Files view of a GitHub catalog entry at its pin; other hosts get the repository link only. */
 function pluginFilesUrl({ repo, sha, subdir }: CatalogEntry): null | string {
@@ -82,17 +129,17 @@ function CatalogAdvancedForm({ entry, fields, kind, onCancel, onInstall }: Catal
 
   const install = () =>
     onInstall(
-      plugin
-        ? {
-            ...credentials,
-            agent_half: flag(agentHalf),
-            ...(entry.hasDesktopHalf ? { desktop_half: flag(desktopHalf) } : {}),
-            enable: flag(enable),
-            force: flag(force),
-            ...(pinTrimmed ? { ref: pinTrimmed } : {}),
-            target_profile: targetProfile
-          }
-        : { ...credentials, force: flag(force), target_profile: targetProfile }
+      installEnv({
+        agentHalf,
+        credentials,
+        desktopHalf,
+        enable,
+        force,
+        hasDesktopHalf: entry.hasDesktopHalf,
+        kind,
+        pin: pinTrimmed,
+        targetProfile
+      })
     )
 
   const profileSelect = (
@@ -118,63 +165,24 @@ function CatalogAdvancedForm({ entry, fields, kind, onCancel, onInstall }: Catal
       </DialogHeader>
 
       <div className="grid max-h-[60vh] gap-4 overflow-y-auto">
-        {plugin ? (
-          <Section title={m.includesHeading}>
-            <div className="grid gap-2 rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2">
-              <label className="flex items-start gap-3">
-                <Checkbox checked={agentHalf} onCheckedChange={value => setAgentHalf(value === true)} />
-                <span className="font-medium text-foreground">{m.agentLabel}</span>
-              </label>
-              <label className="grid gap-1 pl-7">
-                <span className={cn(CAPTION, 'text-foreground')}>{m.profileLabel}</span>
-                {profileSelect}
-              </label>
-            </div>
-            {entry.hasDesktopHalf ? (
-              <label className="flex items-start gap-3 rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2">
-                <Checkbox checked={desktopHalf} onCheckedChange={value => setDesktopHalf(value === true)} />
-                <span className="font-medium text-foreground">{m.desktopLabel}</span>
-              </label>
-            ) : null}
-            {nothingSelected ? <p className={cn(CAPTION, 'text-destructive')}>{m.selectComponent}</p> : null}
-          </Section>
-        ) : (
-          <label className="grid gap-1">
-            <span className={cn(CAPTION, 'text-foreground')}>{m.profileLabel}</span>
-            {profileSelect}
-          </label>
-        )}
-
-        <div className="grid gap-3">
-          {plugin ? (
-            <label className="flex items-center justify-between gap-3">
-              <span className={cn(CAPTION, 'text-foreground')}>{m.enableAgent}</span>
-              <Switch checked={enable} disabled={!agentHalf} onCheckedChange={setEnable} />
-            </label>
-          ) : null}
-          <label className="flex items-center justify-between gap-3">
-            <span className={cn(CAPTION, 'text-foreground')}>{m.forceReinstall}</span>
-            <Switch checked={force} onCheckedChange={setForce} />
-          </label>
-          {plugin ? (
-            <label className="grid gap-1">
-              <span className={cn(CAPTION, 'text-foreground')}>{m.pinToCommit}</span>
-              <Input
-                aria-invalid={pinInvalid || undefined}
-                aria-label={m.pinToCommit}
-                className="font-mono"
-                disabled={!agentHalf}
-                onChange={event => setPin(event.target.value)}
-                placeholder={m.pinToCommitPlaceholder}
-                spellCheck={false}
-                value={pin}
-              />
-              <span className={cn(CAPTION, pinInvalid ? 'text-destructive' : 'text-(--ui-text-tertiary)')}>
-                {pinInvalid ? m.pinToCommitInvalid : m.pinToCommitHint}
-              </span>
-            </label>
-          ) : null}
-        </div>
+        <InstallControls
+          agentHalf={agentHalf}
+          desktopHalf={desktopHalf}
+          enable={enable}
+          force={force}
+          hasDesktopHalf={entry.hasDesktopHalf}
+          m={m}
+          nothingSelected={nothingSelected}
+          onAgentHalfChange={setAgentHalf}
+          onDesktopHalfChange={setDesktopHalf}
+          onEnableChange={setEnable}
+          onForceChange={setForce}
+          onPinChange={setPin}
+          pin={pin}
+          pinInvalid={pinInvalid}
+          plugin={plugin}
+          profileSelect={profileSelect}
+        />
 
         {entry.repo ? (
           <Section title={m.sourceHeading}>
@@ -232,6 +240,102 @@ function CatalogAdvancedForm({ entry, fields, kind, onCancel, onInstall }: Catal
         </Button>
       </DialogFooter>
     </DialogContent>
+  )
+}
+
+interface InstallControlsProps {
+  agentHalf: boolean
+  desktopHalf: boolean
+  enable: boolean
+  force: boolean
+  hasDesktopHalf: boolean
+  m: InstallModalCopy
+  nothingSelected: boolean
+  onAgentHalfChange: (value: boolean) => void
+  onDesktopHalfChange: (value: boolean) => void
+  onEnableChange: (value: boolean) => void
+  onForceChange: (value: boolean) => void
+  onPinChange: (value: string) => void
+  pin: string
+  pinInvalid: boolean
+  plugin: boolean
+  profileSelect: ReactNode
+}
+
+function InstallControls(props: InstallControlsProps) {
+  const scope = props.plugin ? (
+    <Section title={props.m.includesHeading}>
+      <div className="grid gap-2 rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2">
+        <label className="flex items-start gap-3">
+          <Checkbox
+            checked={props.agentHalf}
+            onCheckedChange={value => props.onAgentHalfChange(value === true)}
+          />
+          <span className="font-medium text-foreground">{props.m.agentLabel}</span>
+        </label>
+        <label className="grid gap-1 pl-7">
+          <span className={cn(CAPTION, 'text-foreground')}>{props.m.profileLabel}</span>
+          {props.profileSelect}
+        </label>
+      </div>
+      {props.hasDesktopHalf ? (
+        <label className="flex items-start gap-3 rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2">
+          <Checkbox
+            checked={props.desktopHalf}
+            onCheckedChange={value => props.onDesktopHalfChange(value === true)}
+          />
+          <span className="font-medium text-foreground">{props.m.desktopLabel}</span>
+        </label>
+      ) : null}
+      {props.nothingSelected ? (
+        <p className={cn(CAPTION, 'text-destructive')}>{props.m.selectComponent}</p>
+      ) : null}
+    </Section>
+  ) : (
+    <label className="grid gap-1">
+      <span className={cn(CAPTION, 'text-foreground')}>{props.m.profileLabel}</span>
+      {props.profileSelect}
+    </label>
+  )
+
+  return (
+    <>
+      {scope}
+      <div className="grid gap-3">
+        {props.plugin ? (
+          <label className="flex items-center justify-between gap-3">
+            <span className={cn(CAPTION, 'text-foreground')}>{props.m.enableAgent}</span>
+            <Switch
+              checked={props.enable}
+              disabled={!props.agentHalf}
+              onCheckedChange={props.onEnableChange}
+            />
+          </label>
+        ) : null}
+        <label className="flex items-center justify-between gap-3">
+          <span className={cn(CAPTION, 'text-foreground')}>{props.m.forceReinstall}</span>
+          <Switch checked={props.force} onCheckedChange={props.onForceChange} />
+        </label>
+        {props.plugin ? (
+          <label className="grid gap-1">
+            <span className={cn(CAPTION, 'text-foreground')}>{props.m.pinToCommit}</span>
+            <Input
+              aria-invalid={props.pinInvalid || undefined}
+              aria-label={props.m.pinToCommit}
+              className="font-mono"
+              disabled={!props.agentHalf}
+              onChange={event => props.onPinChange(event.target.value)}
+              placeholder={props.m.pinToCommitPlaceholder}
+              spellCheck={false}
+              value={props.pin}
+            />
+            <span className={cn(CAPTION, props.pinInvalid ? 'text-destructive' : 'text-(--ui-text-tertiary)')}>
+              {props.pinInvalid ? props.m.pinToCommitInvalid : props.m.pinToCommitHint}
+            </span>
+          </label>
+        ) : null}
+      </div>
+    </>
   )
 }
 

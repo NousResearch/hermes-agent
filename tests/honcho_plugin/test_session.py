@@ -1203,7 +1203,7 @@ class TestInjectionAuditLog:
         path = _provider_with_raw({"logging": value})._injection_log_path
         assert path is not None and path.endswith("injection.log")
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+    @pytest.mark.platforms("posix")  # POSIX file modes
     def test_log_file_is_owner_only(self, tmp_path):
         provider = _provider_with_raw({})
         provider._injection_log_path = str(tmp_path / "injection.log")

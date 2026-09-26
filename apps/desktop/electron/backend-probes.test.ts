@@ -6,7 +6,6 @@
  */
 
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
@@ -17,6 +16,7 @@ import {
   canImportHermesCli,
   DEFAULT_PROBE_TIMEOUT_MS,
   execProbe,
+  PROBE_TIMEOUT_MS,
   resolveProbeTimeoutMs,
   shouldTrustHermesOverride,
   verifyHermesCli
@@ -116,27 +116,15 @@ test('verifyHermesCli returns false when binary does not exist', async () => {
   assert.equal(await verifyHermesCli(ghost), false)
 })
 
-test('verifyHermesCli returns true when --version exits 0', async () => {
-  // Write a tiny script that exits 0 regardless of args, then invoke
-  // it through node. This stands in for a working hermes binary --
-  // verifyHermesCli only cares about the exit code.
-  const scriptPath = path.join(os.tmpdir(), `hermes-probes-ok-${Date.now()}-${process.pid}.cjs`)
-  fs.writeFileSync(scriptPath, 'process.exit(0)\n')
+test('verifyHermesCli accepts an actual zero-exit executable', async (): Promise<void> => {
+  assert.equal(await verifyHermesCli(NODE_BIN), true)
+})
 
-  try {
-    // Use node as the launcher and our script as the "command". Pass
-    // shell:false (default) -- node is a real binary, no shim.
-    // execFileSync passes ['--version'] as args, which node ignores
-    // gracefully (well, it prints its version and exits 0, which is
-    // perfect -- exit code 0 is the only signal we read).
-    assert.equal(await verifyHermesCli(NODE_BIN), true)
-  } finally {
-    try {
-      fs.unlinkSync(scriptPath)
-    } catch {
-      void 0
-    }
-  }
+test('default probe timeout is 15s (not the old 5s death-loop value)', () => {
+  assert.equal(DEFAULT_PROBE_TIMEOUT_MS, 15_000)
+  // Module constant uses process.env at load time; with no override it
+  // matches the default (tests run without HERMES_PROBE_TIMEOUT_MS).
+  assert.equal(PROBE_TIMEOUT_MS, DEFAULT_PROBE_TIMEOUT_MS)
 })
 
 test('resolveProbeTimeoutMs honours HERMES_PROBE_TIMEOUT_MS', () => {

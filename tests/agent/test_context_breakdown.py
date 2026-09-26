@@ -4,7 +4,6 @@ from unittest.mock import MagicMock, patch
 
 from agent.context_breakdown import compute_session_context_breakdown
 
-
 def _make_agent(
     *,
     stable: str = "identity and guidance",
@@ -30,7 +29,6 @@ def _make_agent(
     )
     return agent, {"stable": stable, "context": context, "volatile": volatile}
 
-
 def test_breakdown_includes_major_categories():
     stable = (
         "base guidance\n"
@@ -49,15 +47,12 @@ def test_breakdown_includes_major_categories():
     assert data["context_max"] == 200_000
     assert data["estimated_total"] > 0
 
-
-
 # ── /context renderers (pure functions over the payload) ────────────────────
 
 from agent.context_breakdown import (  # noqa: E402
     render_context_breakdown_lines,
     render_context_grid,
 )
-
 
 def _payload(**overrides):
     base = {
@@ -76,7 +71,6 @@ def _payload(**overrides):
     base.update(overrides)
     return base
 
-
 def test_grid_is_5x20_and_mostly_free():
     rows = render_context_grid(_payload())
     assert len(rows) == 5
@@ -88,23 +82,8 @@ def test_grid_is_5x20_and_mostly_free():
     assert cells.count("■") == 5
     assert cells.count("▣") == 10
 
-
-
-
-
-
-
-
-
-
 def test_breakdown_lines_grid_toggle():
     with_grid = render_context_breakdown_lines(_payload(), grid=True)
     without = render_context_breakdown_lines(_payload(), grid=False)
     assert any("·" in line for line in with_grid[:5])
     assert not any("·" in line for line in without[:2])
-
-
-
-
-
-

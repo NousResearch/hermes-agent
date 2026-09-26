@@ -7,6 +7,7 @@ import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { optimisticAttachmentRef } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { setMutableRef } from '@/lib/mutable-ref'
+import { refreshIfTranscriptStale } from '@/lib/stale-transcript-guard'
 import {
   isVoicePlaybackActive,
   markVoicePlaybackInterrupted,
@@ -17,6 +18,7 @@ import {
   $composerAttachments,
   type ComposerAttachment,
   mainComposerScope,
+  revokeDiscardedAttachmentPreviews,
   terminalContextBlocksFromDraft
 } from '@/store/composer'
 import { $hudMode } from '@/store/hud'
@@ -34,7 +36,9 @@ import {
   touchSessionActivity
 } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
+import type { SessionInfo } from '@/types/hermes'
 
+import { profileScopeForTranscriptSession, resolveActiveTranscriptSession } from '../../../contrib/hooks/use-background-sync'
 import type { ClientSessionState } from '../../../types'
 import { sessionContextDrift } from '../session-context-drift'
 import { resolveSessionProfile } from '../use-session-actions/utils'
@@ -99,6 +103,42 @@ const MAIN_SUBMIT_SCOPE: NonNullable<SubmitPromptDeps['scope']> = {
   setAwaitingResponse,
   setBusy,
   setMessages
+}
+
+export interface ResumedRuntimeBindingDeps {
+  activeSessionIdRef: MutableRefObject<string | null>
+  paneState?: ClientSessionState
+  resumedRuntimeId: string
+  sessions: SessionInfo[]
+  storedSessionId: string
+  updateSessionState: SubmitPromptDeps['updateSessionState']
+}
+
+export function rebindPaneToResumedRuntime({
+  activeSessionIdRef,
+  paneState,
+  resumedRuntimeId,
+  sessions,
+  storedSessionId,
+  updateSessionState
+}: ResumedRuntimeBindingDeps): void {
+  if (
+    paneState?.messages.length &&
+    paneState.storedSessionId &&
+    resolveComposerSessionKey(paneState.storedSessionId, sessions) ===
+      resolveComposerSessionKey(storedSessionId, sessions)
+  ) {
+    const carried: ChatMessage[] = paneState.messages
+
+    updateSessionState(
+      resumedRuntimeId,
+      state => (state.messages.length ? state : { ...state, messages: carried }),
+      storedSessionId
+    )
+  }
+
+  activeSessionIdRef.current = resumedRuntimeId
+  setActiveSessionId(resumedRuntimeId)
 }
 
 /** The prompt submit pipeline, extracted from usePromptActions. */
@@ -394,35 +434,6 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         }
       }
 
-      // Point the pane at a runtime this submit just resumed for its stored
-      // session. ChatView renders the `$sessionStates` slice named by
-      // `$activeSessionId`, while the optimistic row and every stream event
-      // land in the resumed runtime's slice — pinning only the ref left the
-      // chat painting the dead runtime, so the prompt, its reply, and every
-      // later turn stayed invisible until a relaunch (#71733, #117867).
-      // `session.resume` omits messages, so carry the transcript the pane is
-      // showing into the empty slice (same conversation only — lineage-
-      // matched, since compression rotates the tip id) instead of collapsing
-      // the thread to the new prompt until the next refresh.
-      const rebindPaneToResumedRuntime = (sid: string, storedId: string) => {
-        const paneRuntimeId = $activeSessionId.get()
-        const paneState = paneRuntimeId && paneRuntimeId !== sid ? $sessionStates.get()[paneRuntimeId] : undefined
-        const sessions = $sessions.get()
-
-        if (
-          paneState?.messages.length &&
-          paneState.storedSessionId &&
-          resolveComposerSessionKey(paneState.storedSessionId, sessions) ===
-            resolveComposerSessionKey(storedId, sessions)
-        ) {
-          const carried = paneState.messages
-
-          updateSessionState(sid, state => (state.messages.length ? state : { ...state, messages: carried }), storedId)
-        }
-
-        activeSessionIdRef.current = sid
-        setActiveSessionId(sid)
-      }
 
       // Idempotent optimistic insert — re-running with the resolved sessionId
       // after createBackendSessionForSend just overwrites with the same id.
@@ -477,7 +488,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       // After sync rewrites refs, refresh the optimistic message in place so the
       // transcript shows the resolved @file: ref rather than the local path.
-      const rewriteOptimistic = (sid: string) =>
+      // Sync replaces blob: previews with workspace-resolvable refs, so any
+      // blob: URL the rewritten refs no longer retain is this consumer's last
+      // reference — release it (#63682 ownership handoff).
+      const rewriteOptimistic = (sid: string, syncedAttachments: ComposerAttachment[] = attachments) => {
+        revokeDiscardedAttachmentPreviews(attachments, syncedAttachments)
         updateSessionState(
           sid,
           state => ({
@@ -486,8 +501,13 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           }),
           targetStoredSessionId
         )
+      }
 
       const dropOptimistic = (sid: null | string) => {
+        // The optimistic bubble is gone, so its blob: previews die with it —
+        // unless a rejected-submit restore already re-loaded the attachments
+        // into the composer, which re-owns those URLs (#63682 handoff).
+        revokeDiscardedAttachmentPreviews(attachments, usingComposerAttachments ? $composerAttachments.get() : [])
         if (!sid) {
           if (targetIsCurrentView()) {
             scope.setMessages(current => current.filter(m => m.id !== optimisticId))
@@ -666,7 +686,20 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             sessionId = resumed.session_id
 
             if (targetIsCurrentView()) {
-              rebindPaneToResumedRuntime(sessionId, targetStoredSessionId)
+              const paneRuntimeId: string | null = $activeSessionId.get()
+
+              // ChatView renders the state slice named by `$activeSessionId`,
+              // while the resumed turn lands in a new runtime slice. Carry
+              // only a lineage-matched transcript before moving the pane.
+              rebindPaneToResumedRuntime({
+                activeSessionIdRef,
+                paneState:
+                  paneRuntimeId && paneRuntimeId !== sessionId ? $sessionStates.get()[paneRuntimeId] : undefined,
+                resumedRuntimeId: sessionId,
+                sessions: $sessions.get(),
+                storedSessionId: targetStoredSessionId,
+                updateSessionState
+              })
             }
           }
         } catch {
@@ -788,8 +821,55 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // the gateway receives @file: paths that resolve in its workspace.
         // Images keep their inline bounded thumbnail — see optimisticAttachmentRef.
         attachmentRefs = syncedAttachments.map(optimisticAttachmentRef).filter((r): r is string => Boolean(r))
-        rewriteOptimistic(liveSessionId)
+        rewriteOptimistic(liveSessionId, syncedAttachments)
         const text = buildContextText(syncedAttachments)
+
+        // Another Desktop window may own a newer transcript while this one
+        // still shows an open-time snapshot. Refuse the send and refresh
+        // rather than forking the session (#65047).
+        const guardStoredId = targetStoredSessionId ?? selectedStoredSessionIdRef.current
+
+        if (guardStoredId && liveSessionId) {
+          const localSnapshot = updateSessionState(liveSessionId, state => state, targetStoredSessionId)
+
+          const refreshed = await refreshIfTranscriptStale(guardStoredId, localSnapshot.messages, {
+            excludeMessageId: optimisticId,
+            profile: profileScopeForTranscriptSession(
+              resolveActiveTranscriptSession(guardStoredId, liveSessionId)
+            )
+          })
+
+          if (sessionDriftReason()) {
+            return abortForSessionSwitch(liveSessionId)
+          }
+
+          if (refreshed) {
+            updateSessionState(
+              liveSessionId,
+              state => ({
+                ...state,
+                awaitingResponse: false,
+                busy: false,
+                messages: refreshed,
+                pendingBranchGroup: null
+              }),
+              targetStoredSessionId
+            )
+
+            if (targetIsCurrentView()) {
+              scope.setMessages(() => refreshed)
+              notify({
+                kind: 'warning',
+                message: copy.staleSessionBody,
+                title: copy.staleSessionTitle
+              })
+            }
+
+            releaseBusy()
+
+            return false
+          }
+        }
 
         const submitParams = (targetId: string) => ({
           session_id: targetId,

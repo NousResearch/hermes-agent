@@ -15,7 +15,6 @@ from cron.scheduler import run_job
 _RUNTIME = {"api_key": "k", "base_url": "https://example.invalid/v1", "provider": "openrouter",
             "api_mode": "chat_completions"}
 
-
 def _job(**overrides):
     job = {
         "id": "mcpjob", "name": "mcp job", "prompt": "hello", "enabled": True, "state": "scheduled",
@@ -24,7 +23,6 @@ def _job(**overrides):
     }
     job.update(overrides)
     return job
-
 
 def _run(job, tmp_path):
     (tmp_path / "config.yaml").write_text(
@@ -43,7 +41,6 @@ def _run(job, tmp_path):
             result = run_job(job)
         return result, agent_cls.called
 
-
 def _register_notion_in_scope(scope):
     from tools.registry import registry
     registry.register(
@@ -53,7 +50,6 @@ def _register_notion_in_scope(scope):
         handler=lambda a, **k: "{}", scope=scope)
     registry.register_toolset_alias("notion", "mcp-notion")
     return lambda: registry.deregister("mcp__notion__search", scope=scope)
-
 
 def test_requested_mcp_server_owned_by_other_profile_blocks_run(tmp_path):
     from agent.secret_scope import set_multiplex_active
@@ -76,7 +72,6 @@ def test_requested_mcp_server_owned_by_other_profile_blocks_run(tmp_path):
     assert success is False
     assert error is not None and "[blocked_config]" in error and "notion" in error
 
-
 def test_requested_mcp_server_with_tools_runs(tmp_path):
     undo = _register_notion_in_scope(None)
     try:
@@ -87,7 +82,6 @@ def test_requested_mcp_server_with_tools_runs(tmp_path):
 
     assert agent_built is True
     assert success is True and error is None
-
 
 def _park_notion(*, ever_connected: bool, park_reason=None):
     """Install a sessionless ``notion`` run task (tools deregistered, alias still global) the way
@@ -104,7 +98,6 @@ def _park_notion(*, ever_connected: bool, park_reason=None):
     core._servers["notion"] = server
     return lambda: core._servers.pop("notion", None)
 
-
 def test_requested_mcp_server_reconnecting_runs_without_its_tools(tmp_path):
     """A server that connected in this process and is parked/self-probing after a network blip
     is recoverable: the job runs with the tools that did resolve instead of blocking (#112871)."""
@@ -118,7 +111,6 @@ def test_requested_mcp_server_reconnecting_runs_without_its_tools(tmp_path):
     assert agent_built is True
     assert success is True and error is None
 
-
 def test_requested_mcp_server_never_connected_still_blocks(tmp_path):
     """A parked server that never connected here (bad URL, wrong credentials) keeps the block."""
     undo = _park_notion(ever_connected=False)
@@ -131,7 +123,6 @@ def test_requested_mcp_server_never_connected_still_blocks(tmp_path):
     assert agent_built is False
     assert success is False
     assert error is not None and "[blocked_config]" in error and "notion" in error
-
 
 def test_requested_mcp_server_parked_on_permanent_error_blocks(tmp_path):
     """A server that connected once and then parked on a PERMANENT error (revoked credentials,
@@ -147,5 +138,3 @@ def test_requested_mcp_server_parked_on_permanent_error_blocks(tmp_path):
     assert agent_built is False
     assert success is False
     assert error is not None and "[blocked_config]" in error and "notion" in error
-
-

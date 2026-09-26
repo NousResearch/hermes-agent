@@ -136,30 +136,40 @@ class TestFetchApiModels:
 
 
     def test_probe_api_models_tries_v1_fallback(self):
-        class _Resp:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
-            def read(self):
-                return b'{"data": [{"id": "local-model"}]}'
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from threading import Thread
 
         calls = []
 
-        def _fake_urlopen(req, timeout=5.0):
-            calls.append(req.full_url)
-            if req.full_url.endswith("/v1/models"):
-                return _Resp()
-            raise Exception("404")
+        class Catalog(BaseHTTPRequestHandler):
+            def do_GET(self):
+                calls.append(self.path)
+                if self.path == "/v1/models":
+                    body = b'{"data": [{"id": "local-model"}]}'
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                else:
+                    self.send_error(404)
 
-        with patch("hermes_cli.models._urlopen_model_catalog_request", side_effect=_fake_urlopen):
-            probe = probe_api_models("key", "http://localhost:8000")
+            def log_message(self, format, *args):
+                pass
 
-        assert calls == ["http://localhost:8000/models", "http://localhost:8000/v1/models"]
+        with ThreadingHTTPServer(("127.0.0.1", 0), Catalog) as server:
+            worker = Thread(target=server.serve_forever)
+            worker.start()
+            try:
+                base = f"http://127.0.0.1:{server.server_port}"
+                probe = probe_api_models("key", base)
+            finally:
+                server.shutdown()
+                worker.join()
+
+        assert calls == ["/models", "/v1/models"]
         assert probe["models"] == ["local-model"]
-        assert probe["resolved_base_url"] == "http://localhost:8000/v1"
+        assert probe["resolved_base_url"] == base + "/v1"
         assert probe["used_fallback"] is True
 
     def test_probe_api_models_uses_copilot_catalog(self):
@@ -822,6 +832,25 @@ class TestProfileCatalogAuthoritative:
                 "other-vendor/model-a", "relay-owned-catalog", api_key="k")
         assert result["accepted"] is True
         assert result["recognized"] is True
+
+    def test_nebius_relay_base_url_validates_against_relay_listing(self, monkeypatch):
+        """A configured relay base URL must decide Nebius Token Factory validation (#121388)."""
+        relay_base_url = "https://relay.example.invalid/v1"
+        calls = []
+
+        def fetch_relay_models(_api_key, base_url, **_kwargs):
+            calls.append(base_url)
+            return ["relay-only/model"] if base_url == relay_base_url else ["canonical-only/model"]
+
+        monkeypatch.setattr("hermes_cli.models.provider_model_ids", lambda _provider: ["canonical-only/model"])
+        monkeypatch.setattr("hermes_cli.models.fetch_api_models", fetch_relay_models)
+
+        result = validate_requested_model(
+            "relay-only/model", "nebius-token-factory", api_key="k", base_url=relay_base_url)
+
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+        assert calls == [relay_base_url]
 
 
 # -- validate — whitespace in self-hosted / user-configured ids --------------

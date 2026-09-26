@@ -103,7 +103,7 @@ class TestSoulWriteDurability:
         # No temp file left behind in the profile directory.
         assert list(profile_dir.glob("*.tmp")) == []
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+    @pytest.mark.platforms("posix")  # POSIX permission bits
     def test_existing_file_mode_is_preserved(self, client, profile_dir: Path):
         """Profile SOUL.md is created 0644 and never run through
         ``_secure_file``; saving from the dashboard must not change that."""
@@ -117,7 +117,7 @@ class TestSoulWriteDurability:
         mode = stat.S_IMODE(soul.stat().st_mode)
         assert mode == 0o644, f"mode changed to {oct(mode)}"
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+    @pytest.mark.platforms("posix")  # POSIX permission bits
     def test_created_file_mode_is_not_tightened(self, client, profile_dir: Path):
         """The first-ever Save must not leave SOUL.md owner-only.
 

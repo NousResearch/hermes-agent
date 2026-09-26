@@ -28,9 +28,10 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from tests.e2e.core._pending_fixes import known_failure
+from tests.e2e.core._pm_dependencies import select_test_dependencies
 from tests.fakes.providers.catalog_fake import USAGE_IN, USAGE_OUT, CatalogFake, Recorded
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -212,6 +213,7 @@ def write_home(root: Path, model: dict[str, Any], extra_cfg: dict[str, Any] | No
            "agent": {"api_max_retries": 1, "auto_recovery_cycles": 0}, "updates": {"check": False},
            **(extra_cfg or {})}
     (home / ".hermes" / "config.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
+    select_test_dependencies(home / ".hermes", REPO_ROOT)
     return home
 
 

@@ -170,11 +170,11 @@ class Mem0MemoryProvider(MemoryProvider):
         return template.format(vs=self._config.get("oss", {}).get("vector_store", {}).get("provider", default)) if self._mode == "oss" else ""
 
     def _create_backend(self):
-        # Lazy-install the mem0 SDK before the backend imports it (honors security.allow_lazy_installs);
-        # on failure the backend import raises the canonical error, captured below.
+        # Make the pinned mem0 extra importable first; on failure the backend import
+        # raises the canonical error, captured below.
         with suppress(Exception):
-            from tools.lazy_deps import ensure as _lazy_ensure
-            _lazy_ensure("memory.mem0", prompt=False)
+            from pm import ensure_import
+            ensure_import("mem0")
         try:
             from . import _backend
             if self._mode == "oss":

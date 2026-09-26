@@ -32,6 +32,7 @@ import { isDiskFullErrorMessage, notifyError } from '@/store/notifications'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { upsertSubagent } from '@/store/subagents'
 import { $todosBySession, setSessionTodos } from '@/store/todos'
+import { broadcastTranscriptChanged } from '@/store/transcript-sync'
 
 import type { ClientSessionState } from '../../../types'
 
@@ -930,6 +931,13 @@ export function useMessageStream({
       }
 
       scheduleSessionsRefresh()
+
+      if (completedState.storedSessionId) {
+        broadcastTranscriptChanged({
+          messageCount: completedState.messages.length,
+          sessionId: completedState.storedSessionId
+        })
+      }
 
       if (compactedTurnRef.current.delete(sessionId)) {
         shouldHydrate = false

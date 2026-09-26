@@ -28,9 +28,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="POSIX serve-runner path under test"
-)
+pytestmark = pytest.mark.platforms("posix")  # POSIX serve-runner path under test
 
 
 # ---------------------------------------------------------------------------

@@ -20,7 +20,7 @@ from plugins.web.firecrawl.provider import _is_tool_gateway_ready, check_firecra
 from tools.debug_helpers import DebugSession
 from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection, selection_exists
 from tools.url_safety import async_is_safe_url
-from tools.web_tools_rescue import _rescue_eligible, _rescue_search
+from tools.web_tools_rescue import _managed_search_fallback, _rescue_eligible, _rescue_search
 from tools.web_tools_truncate import _effective_char_limit, _trim_results, _truncate_results, convert_base64_images_to_links
 from tools.web_tools_extract import (
     _extract_safe_urls, _merge_in_order, _no_provider_error, _resolve_extract_provider, _result_entry,
@@ -151,9 +151,22 @@ def _keyless_backend() -> Optional[str]:
     return None
 
 
+def _managed_web_search() -> bool:
+    """True when web_search is on the managed Nous route: the stored ``nous`` selection, or a
+    never-configured install whose autodetect lands on the gateway. A stored vendor selection never is."""
+    if _configured_backend("search_backend"):
+        return False
+    selected = read_selection("web")
+    if selected is not None:
+        return selected == NOUS_MANAGED_PROVIDER
+    return _get_backend() == "firecrawl" and not (_has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL")) and _is_tool_gateway_ready()
+
+
 def _get_search_backend() -> str:
-    """Backend for web_search: ``web.search_backend`` (strict, no probe) > ``web.backend`` > autodetect."""
-    return _configured_backend("search_backend") or _get_backend()
+    """Backend for web_search: ``web.search_backend`` (strict, no probe) > ``web.backend`` > autodetect.
+    The managed Nous route serves search from Perplexity (extract stays on Firecrawl); managed Firecrawl
+    is the per-call fallback, see ``_memoized_search``."""
+    return _configured_backend("search_backend") or ("perplexity" if _managed_web_search() else _get_backend())
 
 
 def _get_extract_backend() -> str:
@@ -190,7 +203,7 @@ _BUILTIN_AVAILABILITY = {
     "firecrawl": lambda: check_firecrawl_api_key(),
     "tavily": lambda: _has_env("TAVILY_API_KEY")
     or any(_configured_backend(k) == "tavily" for k in ("backend", "search_backend", "extract_backend")),
-    "perplexity": lambda: _has_env("PERPLEXITY_API_KEY"),
+    "perplexity": lambda: _has_env("PERPLEXITY_API_KEY") or _managed_web_search(),
     "searxng": lambda: _has_env("SEARXNG_URL"),
     "brave-free": lambda: _has_env("BRAVE_SEARCH_API_KEY"),
     "ddgs": lambda: _ddgs_package_importable(),
@@ -226,7 +239,7 @@ def _web_requires_env() -> list[str]:
     Contract: set var -> tool sees it; extras are harmless for the not-logged-in."""
     return [
         "EXA_API_KEY", "PARALLEL_API_KEY", "TAVILY_API_KEY", "PERPLEXITY_API_KEY", "KEENABLE_API_KEY", "FIRECRAWL_API_KEY",
-        "FIRECRAWL_API_URL", "FIRECRAWL_GATEWAY_URL", "TOOL_GATEWAY_DOMAIN", "TOOL_GATEWAY_SCHEME",
+        "FIRECRAWL_API_URL", "FIRECRAWL_GATEWAY_URL", "PERPLEXITY_GATEWAY_URL", "TOOL_GATEWAY_DOMAIN", "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
     ]
 
@@ -328,13 +341,24 @@ def _memoized_search(provider, query: str, limit: int) -> dict:
         fetch_limit = bucket_limit(limit)
         try:
             resp = provider.search(query, fetch_limit)
-        except Exception as exc:  # noqa: BLE001 — candidate for rescue
-            if not _rescue_eligible(provider):
+        except Exception as exc:  # noqa: BLE001 — candidate for fallback / rescue
+            served = _served_after_failure(str(exc), fetch_limit)
+            if served is None:
                 raise
-            return _rescue_search(provider.name, str(exc), query, fetch_limit), True
-        if not resp.get("success") and _rescue_eligible(provider):
-            return _rescue_search(provider.name, str(resp.get("error", "")), query, fetch_limit), True
+            return served, True
+        if not resp.get("success"):
+            served = _served_after_failure(str(resp.get("error", "")), fetch_limit)
+            if served is not None:
+                return served, True
         return resp, False
+
+    def _served_after_failure(error: str, fetch_limit: int) -> Optional[dict]:
+        """Managed Firecrawl for a failed managed Perplexity call, else the one-shot keyless rescue when
+        eligible; None means the vendor's own failure stands."""
+        fallback = _managed_search_fallback(provider, error, query, fetch_limit)
+        if fallback is not None:
+            return fallback
+        return _rescue_search(provider.name, error, query, fetch_limit) if _rescue_eligible(provider) else None
 
     response_data = search_memo.lookup(provider.name, query, limit)
     if response_data is None:

@@ -55,12 +55,13 @@ def test_set_journal_mode_refuses_while_another_process_holds_the_store(
         [
             sys.executable, "-c",
             (
-                "import os,sqlite3,sys,time; "
+                "import os,sqlite3,sys; "
                 "c=sqlite3.connect(sys.argv[1]); c.execute('SELECT 1'); "
-                "print(f'held:{os.getpid()}', flush=True); time.sleep(60)"
+                "print(f'held:{os.getpid()}', flush=True); sys.stdin.readline()"
             ),
             str(db),
         ],
+        stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         text=True,
     )
@@ -71,8 +72,7 @@ def test_set_journal_mode_refuses_while_another_process_holds_the_store(
         # --force never waives a process the scan actually found.
         assert cmd_sessions(_args("delete", force=force)) == 1
     finally:
-        holder.kill()
-        holder.wait()
+        holder.communicate(input="\n", timeout=30)
 
     out = capsys.readouterr().out
     assert f"pid {sqlite_pid}" in out

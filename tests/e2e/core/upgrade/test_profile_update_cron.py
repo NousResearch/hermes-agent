@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -24,12 +25,12 @@ from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade import _install_helpers as I
 
 pytestmark = [
-    pytest.mark.linux_only,
+    pytest.mark.platforms("linux"),
     pytest.mark.skipif(H.sandbox_required_reason() is not None, reason=str(H.sandbox_required_reason())),
 ]
 
 
-PY = str(H.WORKTREE / ".venv" / "bin" / "python")
+PY = sys.executable
 
 
 class World:

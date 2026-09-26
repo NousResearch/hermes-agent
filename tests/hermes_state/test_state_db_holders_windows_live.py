@@ -8,7 +8,7 @@ import pytest
 
 from hermes_state_holders import foreign_state_db_holders, held_store_refusal
 
-pytestmark = pytest.mark.windows_only
+pytestmark = pytest.mark.platforms("windows")
 
 
 def test_restart_manager_finds_real_foreign_state_db_holder(tmp_path):
@@ -86,4 +86,3 @@ def test_restart_manager_finds_foreign_sqlite_sidecar_holder(tmp_path, suffix):
         holder.wait(timeout=30)
 
     assert foreign_state_db_holders(db) == []
-

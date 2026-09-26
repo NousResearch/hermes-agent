@@ -179,7 +179,7 @@ def test_engine_fallback_without_smi_stays_conservative(monkeypatch):
 
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_smi_resolver_uses_wsl_driver_path_when_path_is_empty(monkeypatch):
     """WSL exposes nvidia-smi through the Windows driver directory even
     when a service PATH cannot resolve it."""

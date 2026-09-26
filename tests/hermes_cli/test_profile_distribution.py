@@ -17,6 +17,7 @@ import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -216,7 +217,7 @@ class TestLooksLikeGitUrl:
     def test_accepts_git_sources(self, src):
         assert _looks_like_git_url(src)
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_git_source_removes_read_only_git_metadata(self, tmp_path, monkeypatch):
         origin = tmp_path / "origin"
         subprocess.run(["git", "init", "--quiet", str(origin)], check=True)
@@ -303,13 +304,13 @@ class TestInstall:
         staged = _make_staging_dir(profile_env, "legacy_all")
         # Extra top-level payload not covered by DEFAULT_DIST_OWNED
         (staged / "extra.txt").write_text("bonus\n")
-        (staged / "tools").mkdir()
-        (staged / "tools" / "helper.py").write_text("# helper\n")
+        (staged / "assets").mkdir()
+        (staged / "assets" / "helper.py").write_text("# helper\n")
 
         plan = install_distribution(str(staged), name="legacy_all")
         assert (plan.target_dir / "extra.txt").read_text() == "bonus\n", \
             "omitted distribution_owned must keep copying undeclared files"
-        assert (plan.target_dir / "tools" / "helper.py").exists(), \
+        assert (plan.target_dir / "assets" / "helper.py").exists(), \
             "omitted distribution_owned must keep copying undeclared dirs"
 
     def test_install_allowlist_supports_nested_paths(self, profile_env):
@@ -404,8 +405,10 @@ class TestInstall:
 
     def test_install_enforces_hermes_requires(self, profile_env, monkeypatch):
         # Pin current Hermes version to something well below the requirement
-        import hermes_cli
-        monkeypatch.setattr(hermes_cli, "__version__", "0.1.0", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.version_info.get_version_info",
+            lambda: SimpleNamespace(base_version="0.1.0"),
+        )
 
         mf = DistributionManifest(
             name="future",
@@ -682,21 +685,20 @@ class TestSecurity:
 class TestNestedUserOwnedExcludeNotFiltered:
 
     def test_nested_bin_dir_is_preserved(self, profile_env):
-        """A distribution shipping tools/bin/ must not have tools/bin/ dropped
+        """A distribution shipping assets/bin/ must not have assets/bin/ dropped
         during install even though 'bin' is in USER_OWNED_EXCLUDE."""
         mf = DistributionManifest(
             name="nested_bin",
             version="0.1.0",
-            distribution_owned=list(DEFAULT_DIST_OWNED) + ["tools"],
+            distribution_owned=list(DEFAULT_DIST_OWNED) + ["assets"],
         )
         staged = _make_staging_dir(profile_env, "src", manifest=mf)
-        (staged / "tools" / "bin").mkdir(parents=True)
-        (staged / "tools" / "bin" / "tool.py").write_text("# tool\n")
+        (staged / "assets" / "bin").mkdir(parents=True)
+        (staged / "assets" / "bin" / "tool.py").write_text("# tool\n")
 
         plan = install_distribution(str(staged), name="nested_bin")
-        assert (plan.target_dir / "tools" / "bin").is_dir(), "nested bin/ was dropped"
-        assert (plan.target_dir / "tools" / "bin" / "tool.py").exists()
-
+        assert (plan.target_dir / "assets" / "bin").is_dir(), "nested bin/ was dropped"
+        assert (plan.target_dir / "assets" / "bin" / "tool.py").exists()
 
     def test_top_level_user_owned_still_skipped(self, profile_env):
         """Top-level entries in USER_OWNED_EXCLUDE must still be skipped —
@@ -719,6 +721,23 @@ class TestNestedUserOwnedExcludeNotFiltered:
         # so check that the staged file did NOT land there.
         assert not (plan.target_dir / "logs" / "shipped.log").exists(), \
             "staged logs/ content should not leak into target"
+
+    def test_both_nested_and_top_level_coexist(self, profile_env):
+        """Top-level bin/ filtered, but assets/bin/ kept."""
+        mf = DistributionManifest(
+            name="coexist",
+            version="0.1.0",
+            distribution_owned=list(DEFAULT_DIST_OWNED) + ["assets"],
+        )
+        staged = _make_staging_dir(profile_env, "src", manifest=mf)
+        (staged / "bin").mkdir(exist_ok=True)
+        (staged / "bin" / "top.sh").write_text("# top\n")
+        (staged / "assets" / "bin").mkdir(parents=True)
+        (staged / "assets" / "bin" / "helper.py").write_text("# helper\n")
+
+        plan = install_distribution(str(staged), name="coexist")
+        assert not (plan.target_dir / "bin").exists()
+        assert (plan.target_dir / "assets" / "bin" / "helper.py").exists()
 
 
 
@@ -866,9 +885,7 @@ class TestManifestCrashDurability:
         # No temp file left behind next to the manifest.
         assert list(tmp_path.glob("*.tmp")) == []
 
-    @pytest.mark.skipif(
-        sys.platform == "win32", reason="POSIX permission bits"
-    )
+    @pytest.mark.platforms("posix")  # POSIX permission bits
     def test_existing_file_mode_is_preserved(self, tmp_path):
         import os
         import stat
@@ -882,9 +899,7 @@ class TestManifestCrashDurability:
         mode = stat.S_IMODE(mf.stat().st_mode)
         assert mode == 0o644, f"mode changed to {oct(mode)}"
 
-    @pytest.mark.skipif(
-        sys.platform == "win32", reason="POSIX permission bits"
-    )
+    @pytest.mark.platforms("posix")  # POSIX permission bits
     def test_created_file_mode_is_not_tightened(self, tmp_path):
         """A manifest this function *creates* must not land owner-only.
 

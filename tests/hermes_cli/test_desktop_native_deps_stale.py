@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from hermes_cli import main_desktop
+from hermes_cli import main_desktop, source_build
 
 
 @pytest.fixture
@@ -22,7 +22,9 @@ def packaged(tmp_path, monkeypatch):
     # Executable lookup and the per-OS resources layout are covered natively elsewhere.
     monkeypatch.setattr(main_desktop, "_desktop_packaged_executable", lambda _: dist / "Hermes")
     monkeypatch.setattr(main_desktop, "_renderer_bundle_dir", lambda *_a, **_k: dist)
-    main_desktop._write_desktop_build_stamp(tmp_path, source_mode=False)
+    # The compiler owns receipts now. Hold that independent check current so
+    # this test isolates the packaged native-binary boundary.
+    monkeypatch.setattr(source_build, "source_product_current", lambda *_: True)
     return tmp_path, desktop, pty
 
 

@@ -28,6 +28,21 @@ def _git_ok(git_cmd, args, cwd, **kw) -> bool:
     return _git_stdout(git_cmd, args, cwd, **kw) is not None
 
 
+def _git_run(git_cmd, args, cwd=None, *, check=False):
+    """Run ``git_cmd + args`` and return the CompletedProcess.
+
+    The updater's git runner: capture all output and decode as UTF-8 regardless of the
+    Windows ANSI code page (#52649). ``check=True`` raises on non-zero exit.
+    """
+    return subprocess.run(
+        git_cmd + list(args),
+        cwd=cwd,
+        capture_output=True,
+        text=True, encoding="utf-8", errors="replace",
+        check=check,
+    )
+
+
 def _git_stdout(git_cmd, args, cwd, **kw) -> Optional[str]:
     """Stripped stdout of a successful ``_git_run``; ``None`` on non-zero exit or any exception."""
     from hermes_cli.update_cmd import _git_run
@@ -56,7 +71,7 @@ def _prune_orphan_rescue_refs(
     those objects include a full working-tree snapshot (the autostash orphan commit), which can be multi-GB
     when the tree holds large stray files. See #87694.
     """
-    from hermes_cli.update_cmd import _git_run
+    from hermes_cli.update_cmd_git import _git_run
     with suppress(OSError):
         stale: set[str] = set()
         for kind in ("orphan", "diverged"):
@@ -115,7 +130,7 @@ def _assess_parked_branch_switch(git_cmd: list[str], cwd: Path, current_branch: 
     - (False, "disabled"|"dirty"|"unverifiable") — caller must NOT touch the branch. Dirty is the
       genuinely unsafe case: uncommitted work riding an autostash across branches.
     A config read failure must not disable the safety checks: fall through with the default."""
-    from hermes_cli.update_cmd import _git_run
+    from hermes_cli.update_cmd_git import _git_run
     try:
         from hermes_cli.config import load_config
         _update_cfg = (load_config() or {}).get("updates", {})
@@ -399,7 +414,7 @@ def _portable_git_candidates() -> list:
     profile-scoped HERMES_HOME (``<root>/profiles/<name>``), so a profile-scoped ``hermes update`` must look
     there (monerostar review, #87876).
     """
-    from hermes_cli.update_cmd import get_default_hermes_root, get_hermes_home
+    from hermes_constants import get_default_hermes_root, get_hermes_home
     candidates = []
     with suppress(Exception):
         candidates += [root / "git" / "mingw64" / "libexec" / "git-core" / "git.exe" for root in (get_default_hermes_root(), Path(get_hermes_home()))]
@@ -416,8 +431,9 @@ def _locate_real_git() -> Optional[Path]:
     invoked directly (#87876).
     """
     candidates = [
-        Path(r"C:\Program Files\Git\mingw64\libexec\git-core\git.exe"),
-        Path(r"C:\Program Files (x86)\Git\mingw64\libexec\git-core\git.exe"),
+        Path(base) / "Git" / arch / "libexec" / "git-core" / "git.exe"
+        for base in (r"C:\Program Files", r"C:\Program Files (x86)")
+        for arch in ("clangarm64", "mingw64", "mingw32")
     ] + _portable_git_candidates()
     return next((c for c in candidates if c.exists() and _probe_fork_bomb([str(c)]) is False), None)
 
@@ -444,7 +460,7 @@ def _npm_lockfile_owners(repo_root: Path) -> set[Path]:
     owners = {Path(".")}
     try:
         import json
-        package = json.loads((repo_root / "package.json").read_text(encoding="utf-8"))
+        package = json.loads((repo_root / "package.json").read_text(encoding="utf-8-sig"))
         workspaces = package.get("workspaces", [])
         if isinstance(workspaces, dict):
             workspaces = workspaces.get("packages", [])
@@ -468,7 +484,7 @@ def _discard_lockfile_churn(git_cmd, repo_root):
     lock that is the root or ANY workspace ``package.json`` (reverting it under a dirty ``apps/desktop``
     manifest desyncs spec and lock and every later ``npm ci`` fails, #112378); a nested lock is kept only
     with its sibling manifest. Best-effort."""
-    from hermes_cli.update_cmd import _git_run
+    from hermes_cli.update_cmd_git import _git_run
     with suppress(Exception):
         diff = _git_run(git_cmd, ["diff", "--name-only"], repo_root)
         if diff.returncode != 0:
@@ -506,7 +522,7 @@ def _normalize_managed_eol(git_cmd, repo_root):
     reuses its build-pinned ``install.ps1`` forever — so ``hermes update``, which ships with the checkout
     itself, is the only path left that can fix them. See #67730.
     """
-    from hermes_cli.update_cmd import _git_run
+    from hermes_cli.update_cmd_git import _git_run
     # -c, not config: evaluate the tree as it WOULD look pinned, persisting nothing.
     probe = git_cmd + ["-c", "core.autocrlf=false"]
 

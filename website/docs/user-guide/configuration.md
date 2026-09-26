@@ -2071,6 +2071,7 @@ tool_loop_guardrails:
   loop_caps:
     max_web_searches: 50       # max web_search calls per turn (0 = unlimited)
     max_subagents: 50          # max subagents spawned per turn (0 = unlimited)
+    max_invalid_arguments: 3   # consecutive tool calls with non-object arguments before the turn stops (0 = never)
 ```
 
 `hard_stop_enabled` explicitly enables hard stops on every platform. When it remains `false`, `non_interactive_hard_stop_enabled` still enables them for unattended gateway/cron-style platforms while preserving warning-only behavior for CLI, TUI, Desktop, ACP, subagents, and `api_server` runs (supervised task loops with a live parent or client). Set `non_interactive_hard_stop_enabled: false` to opt an unattended deployment out. See also [Docker / unattended deployments](docker.md).
@@ -2088,6 +2089,8 @@ Separate from the failure-based thresholds above, `loop_caps` sets hard ceilings
 A single `delegate_task` batch counts each task toward `max_subagents` (a batch of 3 spends 3), so the cap tracks real subagents spawned rather than `delegate_task` invocations.
 
 This mirrors Claude Code's per-session WebSearch and subagent caps (v2.1.212), which also default to 200 and reset on `/clear`.
+
+`max_invalid_arguments` bounds a different runaway: a model that keeps emitting tool calls whose arguments are not a JSON object. Those calls never reach a tool, so the failure-based thresholds above never see them. The count is per turn and across tools (alternating tools does not evade it); the model gets a correction from the second rejection, and any call that actually reaches a tool restarts the count.
 
 ### Runtime anti-stall guards
 

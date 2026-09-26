@@ -500,3 +500,58 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     assert halt_text in text_deltas, (
         f"halt message was never streamed; callback only saw {deltas!r}"
     )
+
+
+def test_invalid_arguments_streak_counts_across_tools_and_resets_when_a_call_lands():
+    """Controller invariant (port of Kilo-Org/kilocode#14163): not-a-JSON-object rejections are
+    counted per turn ACROSS tools (alternation cannot evade), warn from the 2nd, halt at the cap
+    regardless of hard_stop_enabled, and any call that reaches a tool restarts the streak."""
+    from agent.tool_guardrails import ToolCallGuardrailConfig, ToolCallGuardrailController
+
+    ctrl = ToolCallGuardrailController(ToolCallGuardrailConfig())  # interactive default: hard stops off
+    assert ctrl.record_invalid_arguments("read_file").action == "allow"
+    warn = ctrl.record_invalid_arguments("web_search")
+    assert (warn.action, warn.code) == ("warn", "invalid_arguments_streak_warning")
+    # A real (even failing) call landed: the streak is over.
+    ctrl.after_call("terminal", {"command": "ls"}, json.dumps({"error": "boom"}), failed=True)
+    assert ctrl.record_invalid_arguments("read_file").action == "allow"
+    ctrl.record_invalid_arguments("web_search")
+    stop = ctrl.record_invalid_arguments("read_file")
+    assert (stop.action, stop.code, stop.count) == ("halt", "invalid_arguments_streak_halt", 3)
+    assert ctrl.halt_decision is stop
+    # Cap 0 disables the stop (warnings stay).
+    off = ToolCallGuardrailController(ToolCallGuardrailConfig.from_mapping({"loop_caps": {"max_invalid_arguments": 0}}))
+    assert [off.record_invalid_arguments("read_file").action for _ in range(6)] == ["allow"] + ["warn"] * 5
+
+
+def test_run_conversation_stops_after_three_consecutive_non_object_tool_arguments():
+    """Loop invariant: a model re-sending arguments that are not a JSON object (alternating tools)
+    gets three attempts, then a controlled stop — not a run to the iteration budget."""
+    agent = _make_agent("web_search", "read_file", max_iterations=40)
+    responses = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call(["web_search", "read_file"][i % 2], '["not", "an", "object"]', f"c{i}")],
+        )
+        for i in range(20)
+    ]
+    responses.append(_mock_response(content="done", finish_reason="stop", tool_calls=None))
+    agent.client.chat.completions.create.side_effect = responses
+
+    with (
+        patch("model_tools.handle_function_call") as mock_hfc,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("look something up")
+
+    assert mock_hfc.call_count == 0  # nothing ever reached a tool
+    assert agent.client.chat.completions.create.call_count == 3
+    assert result["turn_exit_reason"] == "guardrail_halt"
+    assert result["guardrail"]["code"] == "invalid_arguments_streak_halt"
+    tool_contents = [m["content"] for m in result["messages"] if m.get("role") == "tool"]
+    assert len(tool_contents) == 3
+    assert "invalid_arguments_streak_warning" in tool_contents[1]
+    assert "invalid_arguments_streak_halt" in tool_contents[2]

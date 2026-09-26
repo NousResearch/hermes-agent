@@ -1518,6 +1518,7 @@ def _append_batch_results(agent, messages: list, effective_task_id: str, batch: 
             effect_disposition = "none" if blocked else None
             if pc.parse_error is not None:
                 ref.emit_invalid_arguments(agent, r.result)
+                function_result = _observe_invalid_arguments(agent, ref, r.result)
         committed = _commit_tool_result(
             agent, messages, ref, function_result,
             budget=budget, tool_duration=tool_duration, is_error=is_error, blocked=blocked,
@@ -1707,10 +1708,20 @@ def _skip_remaining_sequential(agent, messages: list, remaining, effective_task_
     return _append_skipped_tool_results(agent, messages, remaining, effective_task_id, **skip_kwargs)
 
 
+def _observe_invalid_arguments(agent, ref: _ToolCallRef, parse_error: str) -> str:
+    """Feed a not-a-JSON-object rejection to the loop guardrail (the tool never ran, so the
+    observe → commit pipeline skips it) and return the result to append, with guidance / halt applied."""
+    from agent.tool_guardrails import append_toolguard_guidance
+    decision = agent._tool_guardrails.record_invalid_arguments(ref.name)
+    if decision.should_halt:
+        agent._set_tool_guardrail_halt(decision)
+    return append_toolguard_guidance(parse_error, decision)
+
+
 def _append_invalid_arguments_result(agent, messages: list, ref: _ToolCallRef, parse_error: str) -> bool:
     """Emit + append the parse-error result for a call whose arguments were not a JSON object."""
     ref.emit_invalid_arguments(agent, parse_error)
-    messages.append(make_tool_result_message(ref.name, parse_error, ref.call_id))
+    messages.append(make_tool_result_message(ref.name, _observe_invalid_arguments(agent, ref, parse_error), ref.call_id))
     return _flush_session_db_after_tool_progress(agent, messages, stage=f"invalid tool arguments {ref.name}")
 
 

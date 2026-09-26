@@ -79,6 +79,12 @@ _THRESHOLD_SOURCES: dict[str, tuple[str, str]] = {
 # Per-turn caps on runaway-prone tools (counters reset in reset_for_turn).
 _DEFAULT_MAX_WEB_SEARCHES_PER_TURN = 50
 _DEFAULT_MAX_SUBAGENTS_PER_TURN = 50
+# Consecutive tool calls whose arguments were not a JSON object (the tool never ran). Counted per
+# TURN across tools, so alternating tools or alternating malformed payloads cannot keep the loop
+# alive; any call that reaches a tool clears it. A harness-side rejection has no legitimate retry
+# past the first correction, so this fires regardless of hard_stop_enabled, like the other caps
+# (port of Kilo-Org/kilocode#14163).
+_DEFAULT_MAX_INVALID_ARGUMENTS_PER_TURN = 3
 
 # Interactive surfaces plus bounded supervised task loops (subagent stopped by its parent;
 # api_server has a live client) doing real edit -> re-run work keep the warn-only default.
@@ -104,6 +110,7 @@ class LoopCapConfig:
 
     max_web_searches: int = _DEFAULT_MAX_WEB_SEARCHES_PER_TURN
     max_subagents: int = _DEFAULT_MAX_SUBAGENTS_PER_TURN
+    max_invalid_arguments: int = _DEFAULT_MAX_INVALID_ARGUMENTS_PER_TURN
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any] | None) -> "LoopCapConfig":
@@ -279,6 +286,15 @@ _DECISION_MESSAGES: dict[str, str] = {
         "Blocked delegate_task: this turn has already spawned {count} subagents (limit {cap}). "
         "This looks like a runaway delegation loop. Finish the work with the results you have and answer the user."
     ),
+    "invalid_arguments_streak_halt": (
+        "Stopped {tool_name}: {count} consecutive tool calls this turn carried arguments that were not a JSON "
+        "object, so no tool ran. Stop re-sending malformed calls; emit a single JSON object with the tool's "
+        "declared parameters, or answer without the tool."
+    ),
+    "invalid_arguments_streak_warning": (
+        "{count} consecutive tool calls carried arguments that were not a JSON object (the tool did not run). "
+        "Emit exactly one JSON object with the declared parameters."
+    ),
 }
 
 _IDENTICAL_CALL_NOTICE = (
@@ -335,6 +351,7 @@ class ToolCallGuardrailController:
         self._persisted_result_paths: dict[str, str] = {}
         self._turn_web_search_count = 0
         self._turn_subagent_count = 0
+        self._invalid_arguments_streak = 0
 
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
@@ -379,6 +396,8 @@ class ToolCallGuardrailController:
         if failed is None:
             failed, _ = classify_tool_failure(tool_name, result)
         warnings = self.config.warnings_enabled
+        # This call reached a tool (success or failure): the malformed-arguments streak is over.
+        self._invalid_arguments_streak = 0
 
         if failed:
             # An identical failing call is only a REPLAY if nothing landed in between;
@@ -557,6 +576,23 @@ class ToolCallGuardrailController:
             return self._decide("block", code, tool_name, count, signature, cap=cap)
         setattr(self, count_attr, count + increment)
         return None
+
+    def record_invalid_arguments(self, tool_name: str) -> ToolGuardrailDecision:
+        """Observe a call whose arguments were not a JSON object (nothing ran, so ``after_call`` never sees it).
+
+        Advances the per-turn consecutive streak; warn from the 2nd rejection so the model gets a
+        correction it can act on, halt at ``loop_caps.max_invalid_arguments`` (0 disables the halt)."""
+        self._invalid_arguments_streak += 1
+        count, cap = self._invalid_arguments_streak, self.config.loop_caps.max_invalid_arguments
+        signature = ToolCallSignature.from_call(tool_name, {})
+        if cap and count >= cap:
+            return self._decide("halt", "invalid_arguments_streak_halt", tool_name, count, signature, cap=cap)
+        if self.config.warnings_enabled and count >= 2:
+            message = _DECISION_MESSAGES["invalid_arguments_streak_warning"].format(count=count)
+            if cap:
+                message += f" The turn stops after {cap} in a row."
+            return self._decide("warn", "invalid_arguments_streak_warning", tool_name, count, signature, message=message)
+        return ToolGuardrailDecision(tool_name=tool_name, count=count, signature=signature)
 
 
 def toolguard_synthetic_result(decision: ToolGuardrailDecision) -> str:

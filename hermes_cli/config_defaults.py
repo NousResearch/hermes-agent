@@ -547,6 +547,9 @@ DEFAULT_CONFIG = {
         "loop_caps": {
             "max_web_searches": 50,   # web_search calls per turn
             "max_subagents": 50,      # subagents spawned per turn
+            # consecutive tool calls whose arguments were not a JSON object (nothing ran); any call
+            # that reaches a tool restarts the count
+            "max_invalid_arguments": 3,
         },
     },
 

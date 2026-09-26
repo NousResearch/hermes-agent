@@ -111,6 +111,44 @@ settings are no longer supported. Provider defaults vary; omission does not
 always mean the model maximum. Native protocols that require an output limit
 receive an internal value from Hermes.
 
+### Advisors that return nothing
+
+An advisor call can succeed at the transport level and still carry **no usable
+text**: a reasoning model may spend its entire output budget on hidden
+reasoning and return empty `content` (with `finish_reason: length`), billing
+the call while contributing nothing at all.
+
+MoA treats "no usable text" as a **failed reference**, exactly like a transport
+error: the empty slot is filtered out of the reference blocks handed to the
+aggregator (it is never presented as if it were guidance) and it is disclosed
+by `degraded_reference_policy`:
+
+```yaml
+moa:
+  presets:
+    review:
+      degraded_reference_policy: loud   # default — disclose unavailable advisors
+      # silent — filter them out without a notice
+```
+
+With `loud` (the default), a fan-out where one of two advisors came back empty
+renders `[Reference models unavailable: <slot label>]` in the reference context
+and the aggregator is told a reference is missing rather than being handed an
+empty block. If **every** advisor comes back empty, the aggregator synthesis is
+skipped entirely and the turn proceeds on the acting model's own judgment.
+
+The empty call is still billed, and its tokens still appear in the per-advisor
+metrics an observability plugin receives — flagged with `failed: true` so a
+dashboard does not read it as a successful contribution.
+
+:::tip Preventing empty advisors
+The failure is driven by an output cap interacting with a model's hidden
+reasoning. If your advisors run on reasoning models, set
+`reasoning_effort: none` (or `minimal`) on those slots — the advisors stop
+burning their budget on hidden reasoning, return real text, and answer much
+faster. See [Per-slot reasoning effort](#per-slot-reasoning-effort).
+:::
+
 ### Advisor cadence with `fanout`
 
 By default the advisors run **once per user turn** (`fanout: user_turn`) —

@@ -772,8 +772,11 @@ def _emit_moa_reference_generations(state: TraceState, *, client: Langfuse, refe
         cost_details = {"total": float(cost_usd)} if isinstance(cost_usd, (int, float)) else {}
 
         label = ref.get("label") or "advisor"
+        # ``failed`` rides through when the advisor returned no usable text (empty/blank/
+        # sentinel): its tokens are still billed, so the flag stops a dashboard reading
+        # them as a successful contribution.
         metadata = {"moa_role": "reference", "label": label,
-                    **{k: ref[k] for k in ("provider", "cost_status", "cost_source", "temperature") if ref.get(k) is not None}}
+                    **{k: ref[k] for k in ("provider", "cost_status", "cost_source", "temperature", "failed") if ref.get(k) is not None}}
 
         observation = _start_child_observation(state, name=f"MoA advisor: {label}", as_type="generation", input_value=None,
                                                metadata=metadata, model=ref.get("model"))

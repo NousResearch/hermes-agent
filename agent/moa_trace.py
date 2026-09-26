@@ -64,11 +64,24 @@ def _slot_trace(acct: Any, label: str) -> dict[str, Any]:
 def slot_metrics(acct: Any, label: str, output: Any = None) -> dict[str, Any]:
     """``_slot_trace`` minus ``input_messages`` (the bulk of a record) for
     observability hooks. ``output`` comes from the caller because the
-    privacy-redacted advisor text lives alongside the accounting, not on it."""
+    privacy-redacted advisor text lives alongside the accounting, not on it.
+
+    Adds ``failed``: an advisor that returned no usable text (empty content, blank,
+    or a ``[failed: …]`` / ``[skipped: …]`` sentinel) is excluded from the
+    aggregator's guidance and disclosed as degraded, so a dashboard must not read its
+    (still billed) tokens as a successful contribution. Imported lazily from
+    ``moa_loop`` to keep this module's import graph one-directional.
+    """
     trace = _slot_trace(acct, label)
     trace.pop("input_messages", None)
     if output is not None:
         trace["output"] = output
+    effective = output if output is not None else trace.get("output")
+    try:
+        from agent.moa_loop import _is_failed_reference
+        trace["failed"] = _is_failed_reference(effective)
+    except Exception:  # pragma: no cover - metrics must never break a turn
+        trace["failed"] = False
     return trace
 
 

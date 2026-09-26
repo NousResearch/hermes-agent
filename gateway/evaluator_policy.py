@@ -56,6 +56,11 @@ class SubprocessEvaluatorPolicy:
                 timeout=self._timeout_seconds,
                 check=False,
             )
+            if completed.returncode != 0:
+                raise RuntimeError(
+                    "evaluator policy process exited with code "
+                    f"{completed.returncode}; stdout is not authoritative"
+                )
             result = json.loads(completed.stdout)
         except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
             raise RuntimeError(f"evaluator policy invocation failed: {exc}") from exc

@@ -28,7 +28,12 @@ def main() -> int:
         "issues": [] if passed else [{"message": "required marker is missing"}],
     }
     print(json.dumps(decision, ensure_ascii=False))
-    return 0 if passed else 1
+    # Exit code reports process health only. A "blocked" business decision is
+    # a successful, authoritative evaluation — it must exit 0 like "passed".
+    # Only a process-level failure (crash, timeout, malformed output) is a
+    # nonzero exit; SubprocessEvaluatorPolicy treats that as inconclusive
+    # regardless of what the process printed to stdout before dying.
+    return 0
 
 
 if __name__ == "__main__":

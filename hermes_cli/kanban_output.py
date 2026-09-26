@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import json
+import math
 import sys
 import time
 from typing import Any, Callable, Iterable, Optional
@@ -33,8 +35,35 @@ _RUNS_RUN_FIELDS = (
 _ATTACHMENT_FIELDS = ("id", "filename", "content_type", "size", "uploaded_by", "stored_path", "created_at")
 
 
-def _fmt_ts(ts: Optional[int]) -> str:
-    return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts)) if ts else ""
+def _fmt_ts(ts: Optional[int | float | str]) -> str:
+    """Format epoch or ISO-8601 timestamps without breaking CLI readback.
+
+    Kanban timestamps are normally epoch numbers, but older/imported comment
+    rows can contain ISO-8601 text. Invalid values are display-only failures:
+    return the existing empty representation instead of aborting ``show``.
+    """
+    if ts is None or ts == "":
+        return ""
+    try:
+        if isinstance(ts, str):
+            raw = ts.strip()
+            if not raw:
+                return ""
+            try:
+                timestamp = float(raw)
+            except ValueError:
+                if raw.endswith(("Z", "z")):
+                    raw = raw[:-1] + "+00:00"
+                timestamp = datetime.fromisoformat(raw).timestamp()
+        elif isinstance(ts, bool):
+            return ""
+        else:
+            timestamp = float(ts)
+        if not math.isfinite(timestamp) or not timestamp:
+            return ""
+        return time.strftime("%Y-%m-%d %H:%M", time.localtime(timestamp))
+    except (OverflowError, OSError, TypeError, ValueError):
+        return ""
 
 
 def _print_json(obj: Any, *, ascii: bool = False) -> None:

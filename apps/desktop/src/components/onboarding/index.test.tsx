@@ -5,7 +5,7 @@ import { $desktopOnboarding, type DesktopOnboardingState, type OnboardingContext
 import { makeOAuthProvider } from '@/test/oauth-provider'
 import type { OAuthProvider } from '@/types/hermes'
 
-import { ApiKeyForm, Picker } from '.'
+import { ApiKeyForm, DesktopOnboardingOverlay, Picker } from '.'
 
 function setProviders(providers: OAuthProvider[]) {
   $desktopOnboarding.set({
@@ -153,5 +153,16 @@ describe('ApiKeyForm manual local-model fallback', () => {
         'command-a-plus-05-2026'
       )
     })
+  })
+})
+
+
+describe('DesktopOnboardingOverlay', () => {
+  it('marks its root so context menus portal above the overlay', () => {
+    setProviders([makeOAuthProvider('nous', 'Nous Portal')])
+    $desktopOnboarding.set({ ...$desktopOnboarding.get(), manual: true })
+    render(<DesktopOnboardingOverlay enabled={false} profile="default" requestGateway={ctx.requestGateway} />)
+
+    expect(document.querySelector('[data-slot="onboarding-overlay"]')).not.toBeNull()
   })
 })

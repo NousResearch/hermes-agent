@@ -15,6 +15,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Tip, TipKeybindLabel, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { ContribRender } from '@/contrib/react/boundary'
 import { useI18n } from '@/i18n'
+import { ExternalLink as ExternalLinkAnchor } from '@/lib/external-link'
 import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
 import {
@@ -293,15 +294,14 @@ const StatusbarItemView = memo(function StatusbarItemView({
                     }}
                   >
                     {menuItem.href ? (
-                      <a
+                      <ExternalLinkAnchor
+                        bare
                         className="inline-flex w-full items-center gap-2"
-                        href={menuItem.href}
-                        rel="noreferrer"
-                        target="_blank"
+                        href={menuItem.href} native
                       >
                         {menuItem.icon}
                         <span className="truncate">{menuItem.label}</span>
-                      </a>
+                      </ExternalLinkAnchor>
                     ) : (
                       <>
                         {menuItem.icon}
@@ -331,11 +331,21 @@ const StatusbarItemView = memo(function StatusbarItemView({
   }
 
   if (item.href || item.variant === 'link') {
+    const body = item.href ? (
+      <ExternalLinkAnchor
+        bare
+        className={cn(STATUSBAR_ACTION_CLASS, item.className)}
+        href={item.href} native
+      >
+        {content}
+      </ExternalLinkAnchor>
+    ) : (
+      <span className={cn(STATUSBAR_ACTION_CLASS, item.className)}>{content}</span>
+    )
+
     return (
       <Tip label={tooltipLabel}>
-        <a className={cn(STATUSBAR_ACTION_CLASS, item.className)} href={item.href} rel="noreferrer" target="_blank">
-          {content}
-        </a>
+        {body}
       </Tip>
     )
   }

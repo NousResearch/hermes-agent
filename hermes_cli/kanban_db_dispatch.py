@@ -1345,6 +1345,7 @@ def _record_task_failure(
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
     infrastructure: bool = False,
+    partial_summary: Optional[str] = None,
 ) -> bool:
     """Record a non-success outcome and maybe trip the circuit breaker; every
     non-success path funnels through here so ``consecutive_failures`` stays
@@ -1363,6 +1364,13 @@ def _record_task_failure(
     with ``infrastructure: true`` but ``consecutive_failures`` is left alone and
     the breaker never trips; the card stays retryable and
     :func:`check_respawn_guard` spaces the retries.
+
+    ``partial_summary``: the worker's own account of how far it got, recorded on
+    the closed run and in both terminal events. A worker that dies of budget
+    exhaustion has still done work — its final message is evidence a human (or
+    the next worker) needs. Without this the run row's ``summary`` stayed NULL
+    and that work was silently discarded; the caller owns the extraction, this
+    only carries it through.
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
@@ -1409,8 +1417,11 @@ def _record_task_failure(
                 detail = {"failures": failures, "retry_status": retry_status}
                 if infrastructure:
                     detail["infrastructure"] = True
+                if partial_summary:
+                    detail["partial_summary"] = partial_summary
                 run_id = _kb._end_run(
-                    conn, task_id, outcome=outcome, status=outcome, error=error, metadata=detail,
+                    conn, task_id, outcome=outcome, status=outcome, error=error,
+                    metadata=detail, summary=partial_summary,
                 )
                 _kb._append_event(conn, task_id, outcome, {"error": error, **detail}, run_id=run_id)
             return False
@@ -1433,6 +1444,10 @@ def _record_task_failure(
             "trigger_outcome": outcome,
             "retry_status": retry_status,
         }
+        if partial_summary:
+            # Same reason as the untripped path: the worker's partial work is
+            # evidence even when the breaker gives up on the card.
+            payload["partial_summary"] = partial_summary
         run_id = None
         if end_run:
             # Only the spawn path has an open run to close.
@@ -1444,7 +1459,9 @@ def _record_task_failure(
                     "effective_limit": effective_limit,
                     "limit_source": limit_source,
                     "retry_status": retry_status,
+                    **({"partial_summary": partial_summary} if partial_summary else {}),
                 },
+                summary=partial_summary,
             )
         if force_trip:
             # The caller applied its own bounded policy, so the counter cannot
@@ -2443,9 +2460,39 @@ def _rotate_worker_log(
 
 
 def _module_hermes_argv() -> list[str]:
-    """Interpreter-bound Hermes CLI invocation (``hermes_cli.main`` is the
-    console-script target — there is no top-level ``hermes`` package)."""
-    return [sys.executable, "-m", "hermes_cli.main"]
+    """This install's own Hermes CLI argv, valid from ANY child cwd.
+
+    ``hermes_cli.main`` is the console-script target (there is no top-level
+    ``hermes`` package) and this interpreter is exactly this install — but the
+    bare ``[sys.executable, "-m", "hermes_cli.main"]`` form only imported because
+    ``python -m`` puts the CURRENT WORKING DIRECTORY on ``sys.path[0]``. The
+    dispatcher spawns every worker with ``cwd=<task workspace>`` (see
+    ``_default_spawn``), so that implicit entry is gone and the worker died with
+    ``ModuleNotFoundError: No module named 'hermes_cli'`` before running a single
+    turn (#122299).
+
+    A resolver-side import probe cannot catch that: ``find_spec("hermes_cli")`` in
+    ``_resolve_hermes_argv`` runs in the PARENT, whose ``sys.path`` the launcher
+    prelude already repaired, so it answers a question about the dispatcher while
+    gating a decision about the child.
+
+    ``runtime_command`` is this tree's sanctioned installation-bound launch form and
+    the same one the gateway's own service spawns use
+    (``hermes_cli/gateway.py::_gateway_run_args_for_profile``). Its bootstrap runs
+    under ``-I`` (no user site, no inherited ``PYTHONPATH``/``PYTHONHOME``/
+    ``VIRTUAL_ENV``) and inserts THIS checkout on ``sys.path`` in-process before
+    running the module, so the import survives a foreign cwd, a rotted editable
+    install, ``PYTHONSAFEPATH`` and the subprocess-env factory stripping
+    Hermes-owned PYTHONPATH entries (``tools/environments/local_pythonpath.py``) —
+    none of which a PYTHONPATH prepend can promise.
+
+    The interpreter is still this install's own (PM store Python, else
+    ``sys.executable``), never a PATH lookup, so the ``#111569`` precedence in
+    ``_resolve_hermes_argv`` is unchanged.
+    """
+    from hermes_cli._launchers import runtime_command
+
+    return runtime_command(Path(__file__).resolve().parent.parent)
 
 
 def _absolute_hermes_path(path: str) -> str:
@@ -2509,14 +2556,18 @@ def _hermes_path_argv(path: str) -> list[str]:
 def _resolve_hermes_argv() -> list[str]:
     """Resolve the ``hermes`` invocation as argv for ``Popen``: ``$HERMES_BIN``
     (path-like -> absolute; bare names keep PATH semantics, never a
-    same-directory file), then the running interpreter's ``sys.executable -m
-    hermes_cli.main`` (exactly this install; also covers shim-less cron,
-    systemd ``User=``, launchd), then ``which("hermes")`` (Windows: safe PATH
-    search, batch shims fall back to the module form) only when ``hermes_cli``
-    is not importable. The module argv must win over PATH: a PATH-first lookup
-    lets an attacker-planted ``hermes`` shadow the running install (#111569).
-    Mirrors ``gateway.run._resolve_hermes_bin``; local because ``hermes_cli``
-    sits below ``gateway`` in the dependency order.
+    same-directory file), then this install's own interpreter-bound entry argv
+    (``hermes_cli._launchers.runtime_command`` — exactly this install; also
+    covers shim-less cron, systemd ``User=``, launchd), then ``which("hermes")``
+    (Windows: safe PATH search, batch shims fall back to the module form) only
+    when ``hermes_cli`` is not importable. The install's own form must win over
+    PATH: a PATH-first lookup lets an attacker-planted ``hermes`` shadow the
+    running install (#111569). Mirrors ``gateway.run._resolve_hermes_bin``; local
+    because ``hermes_cli`` sits below ``gateway`` in the dependency order.
+
+    ``find_spec`` here gates only "is this install's own tree available" — it is
+    NOT a claim about the child, which starts in a per-task workspace cwd. The
+    child's import is made unconditional by ``_module_hermes_argv``.
     """
     import importlib.util
     import shutil

@@ -22,9 +22,11 @@ from tools.tts_command_provider import (
     BUILTIN_TTS_PROVIDERS, _get_command_tts_timeout, _get_named_provider_config,
     _is_command_provider_config, command_env_passthrough as _command_provider_env_passthrough,
     render_command_template as _render_command_tts_template)
-from tools.tts_tool_delivery import _origin
+from tools.tts_tool_delivery import _origin, _section
 from tools.tts_tool_local import (
-    _LOCAL_TTS_MODEL_CACHES, _load_kittentts_model_for_config, _load_piper_voice_for_config)
+    _LOCAL_TTS_MODEL_CACHES, _clear_neutts_cache, _load_kittentts_model_for_config,
+    _load_piper_voice_for_config, _neutts_cache_lock, _neutts_warm_cache_enabled,
+    _warm_neutts_cache_for_config)
 from tools.tts_tool_plugins import _lookup_plugin_provider
 
 logger = logging.getLogger("tools.tts_tool")
@@ -42,6 +44,7 @@ _keep_warm_generation = 0
 def _local_tts_warmers() -> Dict[str, Callable[[Dict[str, Any]], Any]]:
     """Provider name → loader populating that engine's cache slot (same key synthesis uses)."""
     return {
+        "neutts": _warm_neutts_cache_for_config,
         "piper": lambda cfg: _load_piper_voice_for_config(cfg)[0],
         "kittentts": lambda cfg: _load_kittentts_model_for_config(cfg)[0]}
 
@@ -96,18 +99,38 @@ def warm_tts_provider(tts_config: Optional[Dict[str, Any]] = None, provider: Opt
         tts_config = _origin()._load_tts_config()
     name = (provider or _origin()._get_provider(tts_config) or "").lower().strip()
     result: Dict[str, Any] = {"provider": name, "warmed": False, "action": "noop"}
+    if name == "neutts" and not _neutts_warm_cache_enabled(_section(tts_config, "neutts")):
+        _clear_neutts_cache("warm_cache_disabled")
+        return result
     warmer = _local_tts_warmers().get(name)
     if warmer is not None:
         cache = _LOCAL_TTS_MODEL_CACHES.get(name, {})
-        before, started = len(cache), time.monotonic()
+        started = time.monotonic()
         try:
-            warmer(tts_config)
+            if name == "neutts":
+                # Synthesis/replacement use this same RLock. Keep both snapshots and warming
+                # within it so a concurrent cache-key swap cannot invalidate the comparison.
+                with _neutts_cache_lock:
+                    cache_before = dict(cache)
+                    warmer(tts_config)
+                    cache_after = dict(cache)
+                cache_unchanged = (
+                    cache_after.keys() == cache_before.keys()
+                    and all(
+                        cache_after[key] is value
+                        for key, value in cache_before.items()
+                    )
+                )
+            else:
+                before = len(cache)
+                warmer(tts_config)
+                cache_unchanged = len(cache) == before
         except Exception as exc:  # engine missing, download failed, bad voice…
             logger.warning("[TTS] warm-up for %s failed: %s", name, exc)
             result.update(action="error", error=str(exc))
             return result
         result.update(
-            warmed=True, action="loaded" if len(cache) > before else "cached",
+            warmed=True, action="cached" if cache_unchanged else "loaded",
             elapsed_ms=int((time.monotonic() - started) * 1000))
         logger.info("[TTS] warm-up %s: %s in %dms", name, result["action"], result["elapsed_ms"])
         return result
@@ -141,8 +164,11 @@ def release_tts_provider(provider: Optional[str] = None) -> Dict[str, Any]:
     released = 0
     for cache_name, cache in _LOCAL_TTS_MODEL_CACHES.items():
         if not name or cache_name == name:
-            released += len(cache)
-            cache.clear()
+            if cache_name == "neutts":
+                released += _clear_neutts_cache("provider_release")
+            else:
+                released += len(cache)
+                cache.clear()
     if released:
         logger.info("[TTS] released %d resident local model(s)", released)
     return {"released": released}

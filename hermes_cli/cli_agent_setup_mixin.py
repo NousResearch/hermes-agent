@@ -229,12 +229,19 @@ class CLIAgentSetupMixin:
         """Re-resolve provider credentials before agent use so key rotation / token
         refresh are picked up without restarting the CLI. False on auth failure."""
         from cli import ChatConsole, logger
-        from hermes_cli.runtime_provider import resolve_runtime_provider, format_runtime_provider_error
+        from hermes_cli.runtime_provider import (
+            check_primary_billing_bench, resolve_runtime_provider, format_runtime_provider_error,
+        )
         _primary_exc = None
         runtime = None
         _model_at_entry = self.model
         self._credentials_rate_limited = False
         try:
+            check_primary_billing_bench(
+                has_fallback=bool(getattr(self, "_fallback_model", None)),
+                requested=self.requested_provider, target_model=self.model or None,
+                explicit_api_key=self._explicit_api_key, explicit_base_url=self._explicit_base_url,
+            )
             # target_model: the ladder's model-keyed rungs (Zen/Go api_mode, Copilot/Nous
             # api_mode) must see the model this CLI will actually send, not config's `default`,
             # or `hermes -m mimo-v2.5 --provider opencode-go` resolves an api_mode/base_url the

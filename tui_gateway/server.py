@@ -2356,15 +2356,27 @@ class _RuntimeFallbackResolution(NamedTuple):
     used_fallback: bool
 
 
-def _resolve_runtime_with_fallback(resolve_kwargs: dict | None = None) -> _RuntimeFallbackResolution:
+def _resolve_runtime_with_fallback(resolve_kwargs: dict | None = None, *,
+                                   runtime_overrides: dict | None = None) -> _RuntimeFallbackResolution:
     """Resolve the primary runtime or one complete provider/model fallback. Provider-only fallback entries
     are skipped so the unavailable primary model can never leak into a different runtime."""
     from hermes_cli.auth import AuthError
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_cli.runtime_provider import check_primary_billing_bench, resolve_runtime_provider
+    resolve_kwargs = resolve_kwargs or {}
+    runtime_overrides = runtime_overrides or {}
+    fallbacks = _load_fallback_model() or []
     try:
-        return _RuntimeFallbackResolution(resolve_runtime_provider(**(resolve_kwargs or {})), None, False)
+        # Persisted key/URL overrides are applied after resolution below. Respect
+        # that caller intent without injecting them into the resolver's pool route.
+        check_primary_billing_bench(
+            has_fallback=bool(fallbacks), requested=resolve_kwargs.get("requested"),
+            target_model=resolve_kwargs.get("target_model"),
+            explicit_api_key=resolve_kwargs.get("explicit_api_key") or runtime_overrides.get("api_key"),
+            explicit_base_url=resolve_kwargs.get("explicit_base_url") or runtime_overrides.get("base_url"),
+        )
+        return _RuntimeFallbackResolution(resolve_runtime_provider(**resolve_kwargs), None, False)
     except AuthError as primary_exc:
-        for entry in _load_fallback_model() or []:
+        for entry in fallbacks:
             fb_provider = str(entry.get("provider") or "").strip() if isinstance(entry, dict) else ""
             fb_model = str(entry.get("model") or "").strip() if isinstance(entry, dict) else ""
             if not fb_provider or not fb_model:
@@ -2416,7 +2428,7 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
             requested_provider = provider_override
         resolve_kwargs = {"requested": requested_provider, "target_model": model or None}
         overrides = {}
-    resolution = _resolve_runtime_with_fallback(resolve_kwargs)
+    resolution = _resolve_runtime_with_fallback(resolve_kwargs, runtime_overrides=overrides)
     if resolution.used_fallback:
         if not resolution.selected_model:
             raise RuntimeError("Auth fallback resolved without a model")

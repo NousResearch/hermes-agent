@@ -700,6 +700,29 @@ def _complete_source_update(request: dict | None) -> None:
         print(f"→ Source subscription moved to {request['channel_retirement']['destination']}")
 
 
+def _repair_shallow_poisoned_ancestry(git_cmd, branch: str, merge_ref: str) -> None:
+    """Re-test ancestry after a ``--depth`` pre-fetch poisoned merge-base (#123346).
+
+    A ``--depth`` fetch (the workaround for the ~300s hang, #93759) lists the fetched
+    tip in ``.git/shallow``: merge-base treats it as rootless, ``merge --ff-only``
+    refuses with "unrelated histories", and the divergence path force-resets the
+    branch although the real history was never rewritten. A full fetch does NOT
+    unshallow (verified: ``--is-shallow-repository`` stays true and merge-base still
+    fails), so the repair fetches with ``--unshallow`` and re-tests. Skipped when the
+    ancestry already resolves (genuine divergence keeps the reconcile path).
+    """
+    if _git_run(git_cmd, ["merge-base", "HEAD", merge_ref]).returncode == 0:
+        return
+    if not _check.is_shallow_repository(git_cmd, _m().PROJECT_ROOT):
+        return
+    unshallow_result = _git_run(git_cmd, ["fetch", "--unshallow", "origin", branch], network=True)
+    if unshallow_result.returncode != 0:
+        return
+    if _git_run(git_cmd, ["merge-base", "HEAD", merge_ref]).returncode == 0:
+        print("  (common ancestor found after a full-depth re-fetch — a --depth pre-fetch "
+              "had poisoned the ancestry comparison; retrying the fast-forward)")
+
+
 def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha, *, target_ref=None) -> None:
     """Fast-forward failed: merge on a custom branch (local commits survive) or reset --hard on the
     same branch after parking the old HEAD behind a rescue ref. ``sys.exit(1)`` on failure."""
@@ -828,7 +851,11 @@ def _pull_updates(
                     _git_run(git_cmd, ["update-ref", f"refs/hermes/pre-release/{pre_pull_sha}", pre_pull_sha], check=True)
                 _git_run(git_cmd, ["checkout", "--detach", merge_ref], check=True)
             elif _git_run(git_cmd, ["merge", "--ff-only", merge_ref]).returncode != 0:
-                _reconcile_diverged_checkout(git_cmd, branch, pre_pull_sha, target_ref=merge_ref)
+                # A --depth pre-fetch poisons merge-base: repair the ancestry first, then
+                # retry the clean fast-forward before parking/resetting the branch (#123346).
+                _repair_shallow_poisoned_ancestry(git_cmd, branch, merge_ref)
+                if _git_run(git_cmd, ["merge", "--ff-only", merge_ref]).returncode != 0:
+                    _reconcile_diverged_checkout(git_cmd, branch, pre_pull_sha, target_ref=merge_ref)
         except KeyboardInterrupt:
             raise  # Ctrl-C reached git too (same process group): the tree may be torn, keep the marker
         except BaseException:

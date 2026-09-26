@@ -33,6 +33,7 @@ import qrcode from 'qrcode-terminal';
 import { matchesAllowedSender, matchesAllowedUser, matchesInboundWhatsAppGroup, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
+import { formatOutgoingMessage as formatForChat, isSelfChatId } from './self_chat_prefix.js';
 import {
   addMentions,
   buildPollPayload,
@@ -164,12 +165,9 @@ function sendWithTimeout(chatId, payload, options = {}, timeoutMs = SEND_TIMEOUT
   );
 }
 
-function formatOutgoingMessage(message) {
-  // In bot mode, messages come from a different number so the prefix is
-  // redundant — the sender identity is already clear.  Only prepend in
-  // self-chat mode where bot and user share the same number.
-  if (WHATSAPP_MODE !== 'self-chat') return message;
-  return REPLY_PREFIX ? `${REPLY_PREFIX}${message}` : message;
+// The prefix only belongs on replies in the self-chat thread; see self_chat_prefix.js.
+function formatOutgoingMessage(message, chatId) {
+  return formatForChat(message, { mode: WHATSAPP_MODE, replyPrefix: REPLY_PREFIX, chatId, user: sock?.user });
 }
 
 function splitLongMessage(message, maxLength = MAX_MESSAGE_LENGTH) {
@@ -597,10 +595,7 @@ async function startSocket() {
           // WhatsApp now uses LID (Linked Identity Device) format: 67427329167522@lid
           // AND classic format: 34652029134@s.whatsapp.net
           // sock.user has both: { id: "number:10@s.whatsapp.net", lid: "lid_number:10@lid" }
-          const myNumber = (sock.user?.id || '').replace(/:.*@/, '@').replace(/@.*/, '');
-          const myLid = (sock.user?.lid || '').replace(/:.*@/, '@').replace(/@.*/, '');
-          const chatNumber = chatId.replace(/@.*/, '');
-          const isSelfChat = (myNumber && chatNumber === myNumber) || (myLid && chatNumber === myLid);
+          const isSelfChat = isSelfChatId(chatId, sock.user);
           emitDebugEvent({
             stage: 'self_chat_check',
             matched: !!isSelfChat,
@@ -843,7 +838,7 @@ app.post('/send', async (req, res) => {
   }
 
   try {
-    const chunks = splitLongMessage(formatOutgoingMessage(message));
+    const chunks = splitLongMessage(formatOutgoingMessage(message, chatId));
     const messageIds = [];
     for (let i = 0; i < chunks.length; i += 1) {
       const { content: payload, options } = buildTextSendPayload(chunks[i], {
@@ -884,7 +879,7 @@ app.post('/edit', async (req, res) => {
 
   try {
     const key = { id: messageId, fromMe: true, remoteJid: chatId };
-    const chunks = splitLongMessage(formatOutgoingMessage(message));
+    const chunks = splitLongMessage(formatOutgoingMessage(message, chatId));
     const messageIds = [];
 
     await sendWithTimeout(chatId, { text: chunks[0], edit: key });

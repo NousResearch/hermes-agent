@@ -638,6 +638,29 @@ def _is_shallow_checkout(git_cmd) -> bool:
     return _git_run(git_cmd, ["rev-parse", "--is-shallow-repository"]).stdout.strip() == "true"
 
 
+def _prefetch_shallow_commit_graph(git_cmd) -> None:
+    """Unshallow a shallow checkout to a commit-only graph before the branch fetch (#123254).
+
+    A shallow install far behind ``origin`` makes the plain ``git fetch origin <branch>``
+    pull almost the whole object graph — every side branch merged since the boundary
+    drags its full ancestry behind it — which cannot finish inside the 300 s network
+    cap, so the update dies before the post-update tail could unshallow the checkout.
+    Running the commit-graph fetch the tail already runs (``--unshallow
+    --filter=tree:0``, 900 s budget) first turns the branch fetch incremental and
+    also removes the shallow-boundary preconditions (#94477). Best-effort: on
+    failure we fall through to the plain fetch and its existing error handling.
+    """
+    if not _is_shallow_checkout(git_cmd):
+        return
+    try:
+        from hermes_cli.gitlock import fetch_full_commit_graph
+        if fetch_full_commit_graph(Path(_m().PROJECT_ROOT), **_no_prompt_git_kwargs()):
+            print("  ✓ Prefetched the shallow commit graph; the branch fetch is now incremental")
+    except (OSError, subprocess.SubprocessError) as exc:
+        detail = (getattr(exc, "stderr", None) or str(exc)).strip().splitlines()[-1:] or [type(exc).__name__]
+        print(f"  ⚠ Could not prefetch the shallow commit graph ({detail[0]}); continuing with the plain fetch")
+
+
 def _tip_shas(git_cmd, target_ref: str) -> tuple[str, str]:
     """``(HEAD sha, <target_ref> sha)`` as printed by rev-parse ("" when unresolvable)."""
     return tuple(_git_run(git_cmd, ["rev-parse", ref]).stdout.strip() for ref in ("HEAD", target_ref))
@@ -1372,6 +1395,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _m()._warn_orphaned_update_autostashes(git_cmd, _m().PROJECT_ROOT)
 
         print("→ Fetching updates...")
+        _prefetch_shallow_commit_graph(git_cmd)
         if release_sha:
             fetch_result = _git_run(git_cmd, ["fetch", "--no-tags", "origin", target_ref], network=True)
         else:

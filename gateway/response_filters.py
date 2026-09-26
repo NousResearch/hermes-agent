@@ -107,8 +107,20 @@ def display_kind_for_event(event: Any) -> str | None:
     A scheduled heartbeat prompt is self-injected too (``_heartbeat_session_id`` is stamped only
     by the gateway poller, never inferred from inbound text), but it deliberately stays
     non-internal so authorization and the emergency stop still apply to it.
+
+    A generic webhook route is the same shape: the adapter builds the event after HMAC
+    auth, and ``source.platform`` is that adapter's enum, not payload text. Leaving it
+    unclassified makes the turn look human, so a bare ``[SILENT]`` is rewritten into the
+    unexpected-silence warning. ``internal`` stays unset, so authorization still runs.
     """
-    if getattr(event, "internal", False) or getattr(event, "_heartbeat_session_id", None):
+    source = getattr(event, "source", None)
+    platform = getattr(source, "platform", None)
+    platform_value = getattr(platform, "value", platform)
+    if (
+        getattr(event, "internal", False)
+        or getattr(event, "_heartbeat_session_id", None)
+        or str(platform_value or "").strip().lower() == "webhook"
+    ):
         return INTERNAL_NOTIFICATION_DISPLAY_KIND
     return None
 

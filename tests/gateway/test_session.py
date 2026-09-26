@@ -91,12 +91,13 @@ class TestBuildSessionContextPrompt:
 
         # Force the Discord IDs block on (it only emits when discord tools load).
         with patch.object(_gs, "_discord_tools_loaded", return_value=True):
-            p1 = _prompt_for("1001")
-            p2 = _prompt_for("2002")
-            p3 = _prompt_for("3003")
+            # Snowflake-length ids: short ones like "1001" collide with the
+            # runner's uid-keyed scratch path that the prompt embeds.
+            ids = ("1286745390127748101", "1286745390127748202", "1286745390127748303")
+            p1, p2, p3 = (_prompt_for(i) for i in ids)
 
         assert p1 == p2 == p3, "system prompt must be stable across message_id"
-        assert "1001" not in p1 and "2002" not in p2 and "3003" not in p3
+        assert not any(i in p1 for i in ids)
 
 
 

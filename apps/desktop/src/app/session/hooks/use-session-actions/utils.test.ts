@@ -1733,6 +1733,50 @@ describe('appendLiveSessionProjection', () => {
       pending: true
     })
   })
+
+  // #121122: switching away mid-turn and back. REST already holds this
+  // turn's partial assistant row (text + tool blocks committed as the turn
+  // progressed) while `inflight` still streams the fuller dump. Appending
+  // the dump paints the turn twice: the frozen partial with its action bar
+  // plus the live copy repeating it. Fold the dump into the tail row.
+  it('folds a still-streaming dump into the same-turn committed partial instead of doubling it', () => {
+    const stored: ChatMessage[] = [
+      msg('1-user', 'user', 'Fais X'),
+      {
+        id: '111-1-assistant',
+        role: 'assistant',
+        parts: [
+          { type: 'tool-call', toolCallId: 'call-1', toolName: 'terminal', result: 'done' },
+          { type: 'text', text: 'Tu as raison. Je les regarde' }
+        ],
+        timestamp: 111,
+        rowId: 13
+      } as ChatMessage
+    ]
+
+    const inflight = {
+      user: 'Fais X',
+      assistant: 'Tu as raison. Je les regarde vraiment cette fois. + more',
+      streaming: true
+    }
+
+    const restored = appendLiveSessionProjection(stored, { session_id: 's1', turn_started_at: 100, inflight })
+
+    const assistants = restored.filter(message => message.role === 'assistant')
+    expect(assistants).toHaveLength(1)
+    expect(assistants[0].id).toBe('assistant-stream-s1')
+    expect(assistants[0].pending).toBe(true)
+    // The committed row's tool structure and row id survive; the fuller live text wins.
+    expect(assistants[0].parts.some(part => part.type === 'tool-call')).toBe(true)
+    expect(assistants[0].rowId).toBe(13)
+    expect(chatMessageText(assistants[0])).toBe('Tu as raison. Je les regarde vraiment cette fois. + more')
+
+    // Without turn_started_at (older runtime) the tail may be the PREVIOUS
+    // turn's answer to a resent prompt: keep both rows rather than drop it.
+    const untimed = appendLiveSessionProjection(stored, { session_id: 's1', inflight })
+
+    expect(untimed.filter(message => message.role === 'assistant')).toHaveLength(2)
+  })
 })
 
 describe('resolveResumedBusy', () => {
@@ -1855,6 +1899,19 @@ describe('removeRepresentedLocalLiveProjection', () => {
     const remaining = removeRepresentedLocalLiveProjection(previous, projection)
 
     expect(remaining.map(message => message.id)).toEqual(['user-old-optimistic', 'assistant-complete', 'user-racing'])
+  })
+
+  it('removes a local stream row whose text has advanced past the activation snapshot', () => {
+    const previous = [
+      msg('user-current', 'user', 'current prompt'),
+      msg('assistant-stream-current', 'assistant', 'partial answer and more', { pending: true })
+    ]
+
+    const projection = runningProjection('current prompt')
+
+    const remaining = removeRepresentedLocalLiveProjection(previous, projection)
+
+    expect(remaining).toEqual([])
   })
 
   it('preserves an ambiguous text-identical local race prompt without a matching stream boundary', () => {

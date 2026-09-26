@@ -264,7 +264,7 @@ _file_ops_cache: dict = {}
 def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
     """Build the terminal environment for *task_id* via the shared ``_create_configured_env``,
     so a file tool that runs before any terminal command still gets the configured backend."""
-    from tools.terminal_tool_config import _is_container_backend
+    from tools.terminal_tool_config import _is_container_backend, coerce_ssh_remote_cwd
     from tools.terminal_tool import (
         _create_configured_env, _get_env_config, _is_unusable_container_cwd,
         _resolve_task_host_cwd, _select_image, get_session_cwd, resolve_task_overrides)
@@ -276,7 +276,7 @@ def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
         recorded_cwd = get_session_cwd(raw_task_id)
     except Exception:
         recorded_cwd = None
-    cwd = overrides.get("cwd") or recorded_cwd or config["cwd"]
+    cwd = coerce_ssh_remote_cwd(overrides.get("cwd") or recorded_cwd or config["cwd"], env_type)
     # Re-apply the container cwd guard: a gateway/TUI/ACP override is a raw HOST
     # path and ``docker run -w <host-path>`` makes search_files & co silently
     # return nothing. Valid in-container overrides (/workspace, /root) pass.
@@ -1134,7 +1134,7 @@ READ_FILE_SCHEMA = {
     # Document formats are stated unconditionally: firecrawl-anydoc is a
     # core dependency (bundled), so its absence is a broken install, not a
     # configuration — the teaching error in read_extract handles that rare
-    # case with the pip-install fix. The ONE dynamic word: "PDF (text
+    # case with the PM repair hint. The ONE dynamic word: "PDF (text
     # layer)" upgrades to "PDF (scanned or text)" when hosted OCR has a
     # route we trust (_read_file_schema_overrides). Scanned-page coverage
     # teaching lives in the response-time NEEDS-OCR warning

@@ -17,7 +17,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
     Codicon: ({ name }: { name: string }) => <span aria-hidden data-icon={name} />,
     ConfirmDialog: () => null,
     CopyButton: () => null,
-    Switch: () => null,
+    ToggleRow: () => null,
     Dialog: () => null,
     DialogContent: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
     DialogDescription: ({ children }: { children?: React.ReactNode }) => <>{children}</>,

@@ -1,5 +1,7 @@
 import type { ConnectionRequestPayload, ToolLabel } from '@hermes/shared'
 
+import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
+
 export type StoredToolCallLabels = Record<string, ToolLabel[]>
 
 export interface ConfigFieldSchema {
@@ -505,6 +507,7 @@ export interface SessionCreateResponse {
   info?: SessionRuntimeInfo
   message_count?: number
   messages?: SessionMessage[]
+  messages_omitted?: boolean
   session_id: string
   stored_session_id?: string
 }
@@ -603,6 +606,7 @@ export type TimelineDisplayMetadata =
     }
   | { display_text: string }
   | { reactions: MessageReaction[] }
+  | { tool_result_metadata: ToolResultMetadata }
 
 /** One emoji reaction on a message. One per author, iOS-Tapback style. */
 export interface MessageReaction {
@@ -835,6 +839,9 @@ export interface StarmapMemoryCard {
   timestamp?: null | number
   title: string
   body: string
+  /** Digest of the card's text, carried in its node id so an edit names this card and not
+   *  whatever now sits at its index. Absent on an imported or pre-fingerprint graph. */
+  fingerprint?: string
 }
 
 export interface StarmapGraph {
@@ -1319,6 +1326,7 @@ export interface PlatformStatus {
 }
 
 export interface StatusResponse {
+  shared_profile_warning?: boolean
   active_sessions: number
   config_path: string
   config_version: number
@@ -1424,13 +1432,28 @@ export interface LocalRuntimeJob {
   kind: 'model-activate' | 'model-download' | 'quickstart' | 'runtime-install'
   target: string
   model_id: string | null
-  status: 'running' | 'done' | 'error'
+  status: 'done' | 'error' | 'paused' | 'running'
   phase: string
   detail: string
   total_bytes: number | null
   done_bytes: number
   percent?: number
+  /** Smoothed transfer rate (bytes/sec) and remaining seconds. Present only
+   * while a download is actually moving — absent when parked or settled, so a
+   * stale speed never reads as the live one. */
+  bytes_per_sec?: number | null
+  eta_seconds?: number | null
   error: string | null
+  /** Which file ranges of the source plan are fetched vs banked — present
+   * while a plan (multi-file or cached+fresh mix) is in flight. */
+  ranges?: Record<string, [number, number][]>
+  /** Control flags: false while the job is in a phase that cannot park
+   * (server start, default assignment, non-download quickstart legs). */
+  can_pause?: boolean
+  can_resume?: boolean
+  /** The backend has accepted a pause request; the status flips when the
+   * downloader actually parks. */
+  pause_requested?: boolean
 }
 
 export interface ActionResponse {

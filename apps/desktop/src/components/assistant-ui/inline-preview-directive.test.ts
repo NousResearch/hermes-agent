@@ -24,7 +24,7 @@ describe('directiveFrameHeight', () => {
 })
 
 describe('withInlineChrome', () => {
-  const prelude = themePrelude({ '--foreground': '#eee' }, 'Inter')
+  const prelude = themePrelude({ '--foreground': '#eee' }, 'Inter', 'dark')
 
   it('puts the theme prelude FIRST so page styles override it', () => {
     const doc = '<html><head><style>body{color:red}</style></head><body><h1>hi</h1></body></html>'
@@ -52,8 +52,24 @@ describe('withInlineChrome', () => {
 })
 
 describe('themePrelude', () => {
+  it.each(['light', 'dark'] as const)('injects the app color scheme %s into the frame document', colorScheme => {
+    expect(themePrelude({}, '', colorScheme)).toContain(`color-scheme:${colorScheme}`)
+  })
+
+  it('puts the injected color scheme where a page declaration overrides it', () => {
+    const doc = '<html><head><style>:root{color-scheme:dark}</style></head><body><h1>hi</h1></body></html>'
+    const framed = withInlineChrome(doc, 'tok', themePrelude({}, '', 'light'))
+
+    // The injected default comes first; the page's own :root rule wins.
+    expect(framed.indexOf('color-scheme:light')).toBeLessThan(framed.indexOf('color-scheme:dark'))
+  })
+
   it('carries resolved tokens, transparent background, and the app font', () => {
-    const prelude = themePrelude({ '--foreground': 'oklch(0.9 0 0)', '--accent': '#7aa2f7' }, 'Inter, sans-serif')
+    const prelude = themePrelude(
+      { '--foreground': 'oklch(0.9 0 0)', '--accent': '#7aa2f7' },
+      'Inter, sans-serif',
+      'dark'
+    )
 
     expect(prelude).toContain('--foreground:oklch(0.9 0 0)')
     expect(prelude).toContain('--accent:#7aa2f7')
@@ -62,7 +78,7 @@ describe('themePrelude', () => {
   })
 
   it('omits the font rule when no font resolved', () => {
-    expect(themePrelude({}, '')).not.toContain('font-family')
+    expect(themePrelude({}, '', 'light')).not.toContain('font-family')
   })
 })
 

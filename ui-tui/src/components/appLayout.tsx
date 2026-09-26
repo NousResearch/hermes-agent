@@ -11,7 +11,7 @@ import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStor
 import { $petBox } from '../app/petFlashStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { usePet } from '../app/usePet.js'
-import { INLINE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
+import { INLINE_MODE, NATIVE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
 import { prevRenderedMsg } from '../domain/blockLayout.js'
 import {
@@ -140,9 +140,10 @@ const PromptPrefix = memo(function PromptPrefix({
 const TranscriptPane = memo(function TranscriptPane({
   actions,
   composer,
+  nativeMode,
   progress,
   transcript
-}: Pick<AppLayoutProps, 'actions' | 'composer' | 'progress' | 'transcript'>) {
+}: Pick<AppLayoutProps, 'actions' | 'composer' | 'progress' | 'transcript'> & { nativeMode: boolean }) {
   const ui = useStore($uiState)
   const petBox = useStore($petBox)
   const railCols = useAmbientRailWidth('left') + useAmbientRailWidth('right')
@@ -152,7 +153,7 @@ const TranscriptPane = memo(function TranscriptPane({
   //    (as long as enough width is left for comfortable reading);
   //  - narrow terminals: keep full width and reserve bottom rows instead, so
   //    the newest lines sit above the pet rather than getting cramped.
-  const useGutter = !!petBox && composer.cols - railCols - petBox.width >= MIN_GUTTER_BODY_COLS
+  const useGutter = !nativeMode && !!petBox && composer.cols - railCols - petBox.width >= MIN_GUTTER_BODY_COLS
   const bodyCols = Math.max(28, (useGutter && petBox ? composer.cols - petBox.width : composer.cols) - railCols)
   const petBandRows = petBox && !useGutter ? petBox.height : 0
 
@@ -180,32 +181,28 @@ const TranscriptPane = memo(function TranscriptPane({
     [transcript.historyItems]
   )
 
-  return (
-    <>
-      <ScrollBox
-        flexDirection="column"
-        flexGrow={1}
-        flexShrink={1}
-        onClick={(e: { cellIsBlank?: boolean }) => {
-          if (e.cellIsBlank) {
-            actions.clearSelection()
-          }
-        }}
-        ref={transcript.scrollRef}
-        stickyScroll
-      >
-        <Box flexDirection="column" paddingX={1}>
-          {transcript.virtualHistory.topSpacer > 0 ? <Box height={transcript.virtualHistory.topSpacer} /> : null}
+  const clearBlankSelection = (e: { cellIsBlank?: boolean }) => {
+    if (e.cellIsBlank) {
+      actions.clearSelection()
+    }
+  }
 
-          {transcript.virtualRows.slice(transcript.virtualHistory.start, transcript.virtualHistory.end).map(row => (
-            <Box flexDirection="column" key={row.key} ref={transcript.virtualHistory.measureRef(row.key)}>
-              {row.msg.role === 'user' && firstUserIdx >= 0 && row.index > firstUserIdx && (
-                <Box marginTop={1}>
-                  <Text color={ui.theme.color.border}>───</Text>
-                </Box>
-              )}
+  const transcriptContent = (
+    <Box flexDirection="column" paddingX={1}>
+      {transcript.virtualHistory.topSpacer > 0 ? <Box height={transcript.virtualHistory.topSpacer} /> : null}
 
-              {row.msg.kind === 'intro' ? (
+      {transcript.virtualRows
+        .slice(transcript.virtualHistory.start, transcript.virtualHistory.end)
+        .map(row => (
+          <Box flexDirection="column" key={row.key} ref={transcript.virtualHistory.measureRef(row.key)}>
+            {row.msg.role === 'user' && firstUserIdx >= 0 && row.index > firstUserIdx && (
+              <Box marginTop={1}>
+                <Text color={ui.theme.color.border}>───</Text>
+              </Box>
+            )}
+
+            {row.msg.kind === 'intro' ? (
+              nativeMode ? null : (
                 <Box flexDirection="column" paddingTop={1}>
                   <Banner maxWidth={Math.max(1, composer.cols - 2)} t={ui.theme} />
 
@@ -218,57 +215,81 @@ const TranscriptPane = memo(function TranscriptPane({
                     />
                   )}
                 </Box>
-              ) : row.msg.kind === 'panel' && row.msg.panelData ? (
-                <Panel sections={row.msg.panelData.sections} t={ui.theme} title={row.msg.panelData.title} />
-              ) : (
-                <MessageLine
-                  cols={bodyCols}
-                  compact={ui.compact}
-                  detailsMode={ui.detailsMode}
-                  detailsModeCommandOverride={ui.detailsModeCommandOverride}
-                  msg={row.msg}
-                  prev={prevRenderedMsg(i => transcript.virtualRows[i]?.msg, row.index, {
-                    commandOverride: ui.detailsModeCommandOverride,
-                    detailsMode: ui.detailsMode,
-                    sections: ui.sections
-                  })}
-                  sections={ui.sections}
-                  t={ui.theme}
-                  timestamps={ui.timestamps}
-                />
-              )}
+              )
+            ) : row.msg.kind === 'panel' && row.msg.panelData ? (
+              <Panel sections={row.msg.panelData.sections} t={ui.theme} title={row.msg.panelData.title} />
+            ) : (
+              <MessageLine
+                cols={bodyCols}
+                compact={ui.compact}
+                detailsMode={ui.detailsMode}
+                detailsModeCommandOverride={ui.detailsModeCommandOverride}
+                msg={row.msg}
+                prev={prevRenderedMsg(i => transcript.virtualRows[i]?.msg, row.index, {
+                  commandOverride: ui.detailsModeCommandOverride,
+                  detailsMode: ui.detailsMode,
+                  sections: ui.sections
+                })}
+                sections={ui.sections}
+                t={ui.theme}
+                timestamps={ui.timestamps}
+              />
+            )}
 
-              {row.index === lastUserIdx && <LiveTodoPanel />}
-            </Box>
-          ))}
+            {row.index === lastUserIdx && <LiveTodoPanel />}
+          </Box>
+        ))}
 
-          {transcript.virtualHistory.bottomSpacer > 0 ? <Box height={transcript.virtualHistory.bottomSpacer} /> : null}
+      {transcript.virtualHistory.bottomSpacer > 0 ? <Box height={transcript.virtualHistory.bottomSpacer} /> : null}
 
-          <StreamingAssistant
-            cols={bodyCols}
-            compact={ui.compact}
-            detailsMode={ui.detailsMode}
-            detailsModeCommandOverride={ui.detailsModeCommandOverride}
-            prevMsg={transcript.historyItems[transcript.historyItems.length - 1]}
-            progress={progress}
-            sections={ui.sections}
-          />
-
-          {/* Narrow terminals: reserve rows so the newest lines sit above the pet. */}
-          {petBandRows > 0 ? <Box height={petBandRows} /> : null}
-        </Box>
-      </ScrollBox>
-
-      <NoSelect flexShrink={0} marginLeft={1}>
-        <TranscriptScrollbar scrollRef={transcript.scrollRef} t={ui.theme} />
-      </NoSelect>
-
-      <StickyPromptTracker
-        messages={transcript.historyItems}
-        offsets={transcript.virtualHistory.offsets}
-        onChange={actions.setStickyPrompt}
-        scrollRef={transcript.scrollRef}
+      <StreamingAssistant
+        cols={bodyCols}
+        compact={ui.compact}
+        detailsMode={ui.detailsMode}
+        detailsModeCommandOverride={ui.detailsModeCommandOverride}
+        prevMsg={transcript.historyItems[transcript.historyItems.length - 1]}
+        progress={progress}
+        sections={ui.sections}
       />
+
+      {/* Narrow terminals: reserve rows so the newest lines sit above the pet. */}
+      {!nativeMode && petBandRows > 0 ? <Box height={petBandRows} /> : null}
+    </Box>
+  )
+
+  return (
+    <>
+      {nativeMode ? (
+        <Box flexDirection="column" flexGrow={1} onClick={clearBlankSelection}>
+          {transcriptContent}
+        </Box>
+      ) : (
+        <ScrollBox
+          flexDirection="column"
+          flexGrow={1}
+          flexShrink={1}
+          onClick={clearBlankSelection}
+          ref={transcript.scrollRef}
+          stickyScroll
+        >
+          {transcriptContent}
+        </ScrollBox>
+      )}
+
+      {!nativeMode && (
+        <NoSelect flexShrink={0} marginLeft={1}>
+          <TranscriptScrollbar scrollRef={transcript.scrollRef} t={ui.theme} />
+        </NoSelect>
+      )}
+
+      {!nativeMode && (
+        <StickyPromptTracker
+          messages={transcript.historyItems}
+          offsets={transcript.virtualHistory.offsets}
+          onChange={actions.setStickyPrompt}
+          scrollRef={transcript.scrollRef}
+        />
+      )}
     </>
   )
 })
@@ -277,9 +298,11 @@ const ComposerPane = memo(function ComposerPane({
   actions,
   composer,
   cursorSnapshotRef,
+  nativeMode,
   status
 }: Pick<AppLayoutProps, 'actions' | 'composer' | 'status'> & {
   cursorSnapshotRef: MutableRefObject<InputCursorSnapshot | null>
+  nativeMode: boolean
 }) {
   const ui = useStore($uiState)
   const isBlocked = useStore($isBlocked)
@@ -333,6 +356,19 @@ const ComposerPane = memo(function ComposerPane({
 
   const endInputDrag = () => inputMouseRef.current?.end()
 
+  const floatingOverlayProps = {
+    cols: composer.cols,
+    compIdx: composer.compIdx,
+    completions: composer.completions,
+    onActiveSessionClose: actions.closeLiveSession,
+    onActiveSessionSelect: actions.activateLiveSession,
+    onModelSelect: actions.onModelSelect,
+    onNewLiveSession: actions.newLiveSession,
+    onNewPromptSession: actions.newPromptSession,
+    onResumeSelect: actions.resumeById,
+    pagerPageSize: composer.pagerPageSize
+  }
+
   return (
     <NoSelect
       flexDirection="column"
@@ -370,24 +406,17 @@ const ComposerPane = memo(function ComposerPane({
 
       <GoalBar cols={Math.max(1, composer.cols - 2)} />
       <LiveAgentsPanel cols={Math.max(1, composer.cols - 2)} />
-      <StatusRulePane at="top" composer={composer} status={status} />
+      <StatusRulePane at="top" composer={composer} nativeMode={nativeMode} status={status} />
       <AmbientDock placement="dock-top" />
 
-      <Box flexDirection="column" marginTop={ui.statusBar === 'top' ? 0 : 1} position="relative">
-        <FloatingOverlays
-          cols={composer.cols}
-          compIdx={composer.compIdx}
-          completions={composer.completions}
-          onActiveSessionClose={actions.closeLiveSession}
-          onActiveSessionSelect={actions.activateLiveSession}
-          onModelSelect={actions.onModelSelect}
-          onNewLiveSession={actions.newLiveSession}
-          onNewPromptSession={actions.newPromptSession}
-          onResumeSelect={actions.resumeById}
-          pagerPageSize={composer.pagerPageSize}
-        />
+      <Box
+        flexDirection="column"
+        marginTop={nativeMode || ui.statusBar === 'top' ? 0 : 1}
+        position={nativeMode ? undefined : 'relative'}
+      >
+        {!nativeMode && <FloatingOverlays {...floatingOverlayProps} />}
 
-        {composer.input === '?' && !composer.inputBuf.length && <HelpHint t={ui.theme} />}
+        {!nativeMode && composer.input === '?' && !composer.inputBuf.length && <HelpHint t={ui.theme} />}
 
         {!isBlocked && (
           <>
@@ -453,10 +482,14 @@ const ComposerPane = memo(function ComposerPane({
         )}
       </Box>
 
+      {nativeMode && <FloatingOverlays {...floatingOverlayProps} nativeMode />}
+
+      {nativeMode && composer.input === '?' && !composer.inputBuf.length && <HelpHint nativeMode t={ui.theme} />}
+
       {!composer.empty && !ui.sid && <Text color={ui.theme.color.muted}>☤ {ui.status}</Text>}
 
       <AmbientDock placement="dock-bottom" />
-      <StatusRulePane at="bottom" composer={composer} status={status} />
+      <StatusRulePane at="bottom" composer={composer} nativeMode={nativeMode} status={status} />
     </NoSelect>
   )
 })
@@ -486,11 +519,12 @@ const JourneyPane = memo(function JourneyPane() {
 const StatusRulePane = memo(function StatusRulePane({
   at,
   composer,
+  nativeMode,
   status
-}: Pick<AppLayoutProps, 'composer' | 'status'> & { at: 'bottom' | 'top' }) {
+}: Pick<AppLayoutProps, 'composer' | 'status'> & { at: 'bottom' | 'top'; nativeMode: boolean }) {
   const ui = useStore($uiState)
 
-  if (ui.statusBar !== at) {
+  if (ui.statusBar === 'off' || (nativeMode ? at !== 'top' : ui.statusBar !== at)) {
     return null
   }
 
@@ -551,7 +585,7 @@ export const AppLayout = memo(function AppLayout({
 
   return (
     <Shell {...shellProps}>
-      <Box flexDirection="column" flexGrow={1} position="relative">
+      <Box flexDirection="column" flexGrow={1} position={NATIVE_MODE ? undefined : 'relative'}>
         <Box flexDirection="row" flexGrow={1}>
           {!overlay.agents && !overlay.journey && <AmbientRail side="left" />}
           {overlay.agents ? (
@@ -564,7 +598,13 @@ export const AppLayout = memo(function AppLayout({
             </PerfPane>
           ) : (
             <PerfPane id="transcript">
-              <TranscriptPane actions={actions} composer={composer} progress={progress} transcript={transcript} />
+              <TranscriptPane
+                actions={actions}
+                composer={composer}
+                nativeMode={NATIVE_MODE}
+                progress={progress}
+                transcript={transcript}
+              />
             </PerfPane>
           )}
           {!overlay.agents && !overlay.journey && <AmbientRail side="right" />}
@@ -589,6 +629,7 @@ export const AppLayout = memo(function AppLayout({
                 actions={actions}
                 composer={composer}
                 cursorSnapshotRef={cursorSnapshotRef}
+                nativeMode={NATIVE_MODE}
                 status={status}
               />
             </PerfPane>
@@ -601,7 +642,7 @@ export const AppLayout = memo(function AppLayout({
           </>
         )}
 
-        {!overlay.agents && <PetPane />}
+        {!overlay.agents && !NATIVE_MODE && <PetPane />}
       </Box>
 
       <ActiveWidgetSlot />

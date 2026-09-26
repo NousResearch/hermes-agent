@@ -415,7 +415,7 @@ def _gateway_intentionally_stopped(profile: Optional[str]) -> bool:
     """
     import json as _json
     try:
-        data = _json.loads((_cron_profile_home(profile)[1] / "gateway_state.json").read_text(encoding="utf-8"))
+        data = _json.loads((_cron_profile_home(profile)[1] / "gateway_state.json").read_text(encoding="utf-8-sig"))
         return isinstance(data, dict) and data.get("desired_state") == "stopped"
     except Exception:
         return False

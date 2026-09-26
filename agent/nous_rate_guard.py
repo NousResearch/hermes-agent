@@ -91,7 +91,7 @@ def nous_rate_limit_remaining(*, anonymous: bool = False) -> Optional[float]:
     """Seconds remaining until reset, or None if not rate-limited (expired state is removed)."""
     path = _state_path(anonymous=anonymous)
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             state = json.load(f)
         remaining = state.get("reset_at", 0) - time.time()
         if remaining > 0:

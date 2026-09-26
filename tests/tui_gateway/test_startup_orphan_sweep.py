@@ -119,6 +119,21 @@ class TestSweepOrphanedSessionRows:
         assert server._sweep_orphaned_session_rows() == []
         assert db.get_session("fresh-branch")["ended_at"] is None
 
+    def test_spares_pinned_idle_row(self, monkeypatch, tmp_path):
+        """Pinned rows are prune-immune (#68035); the startup sweep must match auto-prune."""
+        db = SessionDB(tmp_path / "state.db")
+        stale = time.time() - 8 * 3600
+        _seed_session(db, "pinned-tui", source="tui", last_active=stale)
+        _seed_session(db, "stale-tui", source="tui", last_active=stale)
+        db.set_session_pinned("pinned-tui", True)
+        monkeypatch.setattr(server, "_get_db", lambda: db)
+        monkeypatch.setattr(server, "_SESSION_TTL_S", float(IDLE_S))
+        monkeypatch.setattr(server, "_sessions", {})
+
+        assert server._sweep_orphaned_session_rows() == ["stale-tui"]
+        assert db.get_session("pinned-tui")["ended_at"] is None
+        assert db.get_session("stale-tui")["end_reason"] == "startup_orphan_reap"
+
     def test_spares_live_in_memory_and_gateway_rows(self, monkeypatch, tmp_path):
         db = SessionDB(tmp_path / "state.db")
         stale = time.time() - 8 * 3600

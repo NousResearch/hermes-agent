@@ -31,7 +31,9 @@ logger = logging.getLogger("cron.scheduler")
 RETRY_DELAYS_SECONDS: tuple[int, ...] = (300, 900, 1800)
 
 # Persisted on the job while a retry cycle is active: {"attempt": <1-based count of
-# retries already scheduled>}. Cleared by any run that reached the model.
+# retries already scheduled>, "at": <ISO instant of the pending retry>, "expr": <the cron
+# expression it was planned under>}. Cleared by any run
+# that reached the model.
 STATE_KEY = "unreachable_retry"
 
 
@@ -81,6 +83,16 @@ def clear_state(job: Dict[str, Any]) -> None:
     job.pop(STATE_KEY, None)
 
 
+def is_retry_fire(job: Dict[str, Any], next_run: str) -> bool:
+    """True for the exact ladder instant parked by ``plan_retry`` (off the cron lattice).
+
+    The expression fingerprint keeps a direct ``jobs.json`` schedule edit from inheriting the
+    exception, as in ``cron.quota_hold.is_recovery_fire``.
+    """
+    state = job.get(STATE_KEY) or {}
+    return state.get("at") == next_run and state.get("expr") == (job.get("schedule") or {}).get("expr")
+
+
 def plan_retry(job: Dict[str, Any]) -> bool:
     """Called under the jobs lock AFTER ``_advance_after_run`` computed the schedule's
     natural ``next_run_at`` for a failed, flagged run. Pulls ``next_run_at`` earlier to
@@ -113,7 +125,7 @@ def plan_retry(job: Dict[str, Any]) -> bool:
         clear_state(job)
         return False
     retry_at = retry_dt.isoformat()
-    job[STATE_KEY] = {"attempt": attempt + 1}
+    job[STATE_KEY] = {"attempt": attempt + 1, "at": retry_at, "expr": job["schedule"].get("expr")}
     job["next_run_at"] = retry_at
     if job.get("state") != "paused":
         job["state"] = "scheduled"

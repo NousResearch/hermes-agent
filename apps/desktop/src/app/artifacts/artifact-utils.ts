@@ -1,5 +1,5 @@
 import { mediaTagValues } from '@/lib/chat-messages/parts'
-import { isArtifactFilePath, mediaExternalUrl, resolveMediaDisplaySrc } from '@/lib/media'
+import { isArtifactFilePath, mediaExternalUrl, mediaPathFromMarkdownHref, resolveMediaDisplaySrc } from '@/lib/media'
 import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
 export type ArtifactKind = 'image' | 'file' | 'link'
@@ -56,7 +56,40 @@ const SCREENSHOT_PATH_RE = /Screenshot path:\s*([^\r\n<>]+)/gi
 // scraped heuristically out of prose or a tool payload.
 type PushValue = (value: string, explicit?: boolean) => void
 
+// pip's own traffic, not session output (#52972): terminal output logs every
+// download (`Downloading https://<index>/packages/…/pkg-1.0-py3-none-any.whl`,
+// plus its `.whl.metadata`) and cached files live under pip's cache dir.
+const PIP_CACHE_DIR_RE = /\/(?:\.cache\/pip|library\/caches\/pip|appdata\/local\/pip\/cache)\//
+const WHEEL_RE = /\.whl(?:\.metadata)?$/
+const PACKAGE_INDEX_DIST_RE = /\/packages\/.+\.(?:tar\.gz|tar\.bz2|zip|egg)(?:\.metadata)?$/
+
+function artifactPathForFiltering(value: string): string {
+  if (/^(?:https?|file):\/\//i.test(value)) {
+    try {
+      return decodeURIComponent(new URL(value).pathname).toLowerCase()
+    } catch {
+      // Malformed URL: fall through to plain string normalization.
+    }
+  }
+
+  return value.replace(/\\/g, '/').toLowerCase()
+}
+
+function isPythonPackageDownload(value: string): boolean {
+  const path = artifactPathForFiltering(value)
+
+  return (
+    PIP_CACHE_DIR_RE.test(path) ||
+    WHEEL_RE.test(path) ||
+    (/^https?:\/\//i.test(value) && PACKAGE_INDEX_DIST_RE.test(path))
+  )
+}
+
 function looksLikeArtifact(value: string, explicit = false): boolean {
+  if (!explicit && isPythonPackageDownload(value)) {
+    return false
+  }
+
   if (/^(?:https?:\/\/|data:image\/)/.test(value)) {
     return true
   }
@@ -82,6 +115,12 @@ function artifactSessionTitle(session: SessionInfo): string {
 
 function normalizeValue(value: string): string {
   return value.trim().replace(/[),.;]+$/, '')
+}
+
+// Chat renders file refs as `[label](#media:<encoded path>)`. Decode before
+// classification so the Artifacts page keeps the path, not the href.
+function decodeMediaHrefValue(value: string): string {
+  return mediaPathFromMarkdownHref(value) ?? value
 }
 
 function unquoteMediaValue(value: string): string {
@@ -288,7 +327,7 @@ function collectArtifactsFromText(text: string, pushValue: PushValue): void {
       continue
     }
 
-    const value = match[2] || ''
+    const value = decodeMediaHrefValue(match[2] || '')
 
     if (looksLikeArtifact(value)) {
       pushValue(value)
@@ -322,6 +361,16 @@ function isArtifactProducerTool(name: string): boolean {
   // matching so those artifacts stay visible in history.
   return ARTIFACT_PRODUCER_TOOL_RE.test(name) || name.startsWith('bfl_flux3_')
 }
+
+function isTerminalTool(name: string): boolean {
+  return name === 'terminal'
+}
+
+// Shell-style tools report produced files as free text under generic keys
+// (`output` / `stdout` / `path`). Their values are scanned as prose (MEDIA
+// tags, markdown links, URLs, absolute paths) instead of being treated as a
+// single path value.
+const SHELL_OUTPUT_KEY_RE = /^(?:output|stdout|path)$/i
 
 function explicitToolArtifactKey(keyPath: string, producerTool: boolean): boolean {
   return keyPath
@@ -362,9 +411,10 @@ function collectArtifactsFromMessage(message: SessionMessage, pushValue: PushVal
 
   const name = toolName(message)
   const producerTool = isArtifactProducerTool(name)
+  const terminalTool = isTerminalTool(name)
 
-  if (text && producerTool) {
-    collectMediaValues(text, pushValue)
+  if (text && (producerTool || terminalTool)) {
+    collectArtifactsFromText(text, pushValue)
   }
 
   if (name === 'browser_vision' && text) {
@@ -382,13 +432,44 @@ function collectArtifactsFromMessage(message: SessionMessage, pushValue: PushVal
 
   for (const parsed of payloads) {
     collectStringValues(parsed, 'tool_result', (value, keyPath) => {
-      if (!explicitToolArtifactKey(keyPath, producerTool)) {
+      // Drop bare numeric array indices from the key path *intentionally*:
+      // array-of-results payloads (e.g. `outputs.0.output`) must match via
+      // their non-index segments, and with no index the shell-output/explicit
+      // key tests match the last real segment. Do NOT switch this to
+      // exact-key matching — it would silently stop indexing those shapes.
+      const segments = keyPath
+        .split('.')
+        .filter(segment => segment && !/^\d+$/.test(segment))
+      const shellOutput = terminalTool && segments.some(segment => SHELL_OUTPUT_KEY_RE.test(segment))
+
+      if (!shellOutput && !explicitToolArtifactKey(keyPath, producerTool)) {
+        return
+      }
+
+      if (shellOutput) {
+        // A shell result is free text: scan it for MEDIA tags, markdown
+        // references, URLs and absolute paths rather than treating the
+        // whole value as one path.
+        //
+        // False-positive budget: noisy stdout (`curl -v`, build logs) is
+        // kept from flooding the panel because every candidate is filtered
+        // through `looksLikeArtifact`, which requires a file/image extension
+        // (IMAGE_EXT_RE / FILE_EXT_RE) or an explicit http(s)/data: scheme —
+        // a bare error URL or un-extensioned path fails. Local file display
+        // then resolves existence through the media ladder
+        // (`artifactImageSrc` → `resolveMediaDisplaySrc`), so a candidate
+        // whose file no longer exists is resolved to its fallback rather
+        // than surfaced as a broken artifact.
+        if (value) {
+          collectArtifactsFromText(value, pushValue)
+        }
+
         return
       }
 
       collectMediaValues(value, pushValue)
 
-      const normalized = normalizeValue(value)
+      const normalized = normalizeValue(decodeMediaHrefValue(value))
 
       if (normalized && looksLikeArtifact(normalized)) {
         pushValue(normalized)
@@ -407,7 +488,7 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
     }
 
     collectArtifactsFromMessage(message, (candidate, explicit = false) => {
-      const value = normalizeValue(candidate)
+      const value = normalizeValue(decodeMediaHrefValue(candidate))
 
       if (!value || !looksLikeArtifact(value, explicit)) {
         return

@@ -14,12 +14,17 @@ import sys
 import time as _time
 from pathlib import Path
 from typing import Optional
-from hermes_constants import venv_python_path
 
 from hermes_cli.update_cmd_common import _best_effort
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.update_cmd")
+
+
+def _prepare_updated_checkout(project_root: Path, *, desktop: bool) -> None:
+    """Historical updater hook: never complete inside the pre-swap interpreter."""
+    from hermes_cli._old_updater import stop_for_relaunch
+    stop_for_relaunch(incomplete=True)
 
 
 _PRE_UPDATE_SNAPSHOT_KEEP = 1
@@ -55,6 +60,19 @@ def _load_updates_cfg() -> dict:
     cfg = load_config() or {}
     updates = cfg.get("updates", {}) if isinstance(cfg, dict) else {}
     return updates if isinstance(updates, dict) else {}
+
+
+def _purge_stale_hermes_modules() -> None:
+    """Historical updater hook; module-graph surgery cannot complete an update."""
+    from hermes_cli._old_updater import stop_for_relaunch
+    stop_for_relaunch(incomplete=True)
+
+
+def _reload_updated_runtime_modules() -> None:
+    # Historical updater hook: dependency activation belongs to the next process.
+    from hermes_cli._old_updater import stop_for_relaunch
+
+    stop_for_relaunch()
 
 
 def _print_curator_first_run_notice() -> None:
@@ -235,9 +253,22 @@ def _format_time_ago(iso_ts: str) -> str:
         return "recently"
 
 
+def _reload_process_scan_modules() -> None:
+    """Historical updater hook; scans now run only in fresh completion Python."""
+    from hermes_cli._old_updater import stop_for_relaunch
+    stop_for_relaunch(incomplete=True)
+
+
 def _finish_dashboard_update_cleanup(
     node_failures: list[str], already_restarted_units: "set[str] | None" = None
 ) -> None:
+    """Historical updater hook; do not continue a pre-PM update after the swap."""
+    from hermes_cli._old_updater import stop_for_relaunch
+
+    stop_for_relaunch()
+
+
+def _refresh_dashboard_after_update(*, already_restarted_units: set[str] | None = None) -> None:
     """Refresh managed dashboards or stop stale manual ones after an update.
 
     *already_restarted_units*: systemd unit names (no ``.service``) the fleet-restart loop
@@ -246,14 +277,9 @@ def _finish_dashboard_update_cleanup(
     See #83595.
     """
     from hermes_cli.update_cmd import _m, _record_update_step
-    if node_failures:
-        print()
-        print("  ℹ Leaving running dashboard process(es) untouched because the")
-        print("    Node.js dependency refresh did not complete.")
-        return
+    from hermes_constants import get_hermes_home
 
     try:
-        from hermes_constants import get_hermes_home
         stop_result = _m()._kill_stale_dashboard_processes(
             restart_managed=True, already_restarted_units=already_restarted_units,
             scope_home=str(get_hermes_home()),
@@ -305,30 +331,43 @@ def _read_project_version() -> str | None:
         return None
 
 
+def _checkout_version() -> str | None:
+    """The checkout's runtime identity, computed exactly as ``write_source_stamp`` publishes it.
+
+    pyproject.toml is an inert 0.0.0 on source checkouts; the release a checkout
+    runs is derived from its reachable tags.
+    """
+    from hermes_cli.update_cmd import _m
+    from hermes_cli.version_info import _git_version_info
+    info = _git_version_info(Path(_m().PROJECT_ROOT), include_untracked=True)
+    return info.derived_version if info.commit else None
+
+
 def _update_complete_message(pre_version: str | None) -> str:
     """Completion line with ``vA → vB`` when known; plain when either side is unknown or
     the version did not change.
 
     Ported from PrimeIntellect-ai/prime-agent#630: after a successful self-update, show both versions
     (``v0.19.4 → v0.20.0``) so the user can see what they actually got. Falls back to the plain message when
-    either side is unknown or the version did not change (e.g. several commits landed within one release).
+    either side is unknown or the version did not change.
     """
-    post_version = _read_project_version()
+    def shown(version: str) -> str:
+        # A tagless checkout's identity is ``git.<sha>``, not a release number.
+        return f"v{version}" if version[:1].isdigit() else version
+
+    post_version = _checkout_version()
     if pre_version and post_version and pre_version != post_version:
-        return f"✓ Update complete! (v{pre_version} → v{post_version})"
+        return f"✓ Update complete! ({shown(pre_version)} → {shown(post_version)})"
     if post_version:
-        return f"✓ Update complete! (v{post_version})"
+        return f"✓ Update complete! ({shown(post_version)})"
     return "✓ Update complete!"
 
 
 def _post_update_sqlite_runtime_status():
     """Return whether the interpreter used after update has safe SQLite."""
-    from hermes_cli.update_cmd import _m
-    from hermes_constants import project_venv_dir
     from hermes_cli.sqlite_runtime import probe_sqlite_runtime
-    venv_dir = project_venv_dir(_m().PROJECT_ROOT)
-    python = (venv_python_path(venv_dir, windows=_m()._is_windows()) if venv_dir is not None else Path(sys.executable))
-    info = probe_sqlite_runtime(python)
+    # Completion already runs on PM's selected Python, not the obsolete repo venv.
+    info = probe_sqlite_runtime(Path(sys.executable))
     return info is not None and not info.wal_reset_vulnerable, info
 
 
@@ -366,41 +405,10 @@ def _clear_stale_sqlite_sidecars(db_path: Path) -> None:
 
 
 def _print_update_summary(*, node_failures: list, desktop_build_ok: bool, pre_update_version: str | None) -> bool:
-    """Final banner. A failed Desktop rebuild is non-fatal but must not print ``✓ Update complete!``.
+    """Historical updater hook; old soft-build results cannot establish completion."""
+    from hermes_cli._old_updater import stop_for_relaunch
 
-    See #88251.
-    """
-    from hermes_cli.update_cmd import _post_update_sqlite_runtime_status, _update_complete_message
-    sqlite_runtime_ok, sqlite_info = _post_update_sqlite_runtime_status()
-    if sqlite_info is None:
-        # Grace path: only a POSITIVE vulnerable probe demotes success to partial.
-        sqlite_runtime_ok = True
-    print()
-    if node_failures or not desktop_build_ok or not sqlite_runtime_ok:
-        parts = []
-        if node_failures:
-            parts.append(f"Node.js dependencies for {', '.join(node_failures)} did not refresh")
-        if not desktop_build_ok:
-            parts.append("the desktop app was not rebuilt and is still on the previous build")
-        if parts:
-            print("⚠ Update partially complete — " + "; ".join(parts) + ".")
-        if node_failures:
-            print("  Code and Python deps are updated, but the dashboard/TUI may")
-            print("  be in a mixed state until the Node deps are rebuilt.")
-        if not desktop_build_ok:
-            print("  Run `hermes desktop` to retry the desktop rebuild.")
-        if not sqlite_runtime_ok:
-            for line in _sqlite_partial_completion_lines(sqlite_info.sqlite_version_string):
-                print(line)
-    else:
-        _print_update_completion(_update_complete_message(pre_update_version))
-    # A multi-profile host whose gateway came back standalone on a guard says so here too — the
-    # update summary is the one line operators read (the boot log under s6 is not).
-    with suppress(Exception):
-        from hermes_cli.gateway_multiplex_mode import consume_rewritten_notice, recorded_standalone_warning_lines
-        for line in [*consume_rewritten_notice(), *recorded_standalone_warning_lines()]:
-            print(line)
-    return desktop_build_ok and sqlite_runtime_ok
+    stop_for_relaunch()
 
 
 def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
@@ -412,7 +420,8 @@ def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
     clobbers pages. Holder scan ``None`` proceeds (gateways drained; refusing on unknown would
     disable auto-restore on non-Linux). Raises OSError if the copy fails.
     """
-    from hermes_cli.backup import _foreign_db_holder_pids, verify_sqlite_integrity
+    from hermes_cli.backup import verify_sqlite_integrity
+    from hermes_cli.backup_restore import _foreign_db_holder_pids
     from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
     holders = _foreign_db_holder_pids(state_path)
     if holders:
@@ -566,7 +575,7 @@ def _ensure_fhs_path_guard() -> None:
         if not cfg.is_file():
             continue
         try:
-            existing = cfg.read_text(errors="replace", encoding="utf-8")
+            existing = cfg.read_text(errors="replace", encoding="utf-8-sig")
         except OSError:
             continue
         # Idempotency: any uncommented PATH line referencing /usr/local/bin (install.sh grep).
@@ -588,43 +597,10 @@ def _ensure_fhs_path_guard() -> None:
 
 
 def _ensure_acp_launcher() -> None:
-    r"""Self-heal a ``hermes-acp`` launcher next to ``hermes`` (mirrors install.sh): ACP hosts
-    resolve it on the login-shell PATH but the console script lives in the venv. The shim
-    delegates to the sibling ``hermes acp``, correct for every layout.
-
-    No-op on Windows (install.ps1 stages launchers into ``$HermesHome\bin``, never
-    ``venv\Scripts`` which would shadow the user's python; launcher repair lives in
-    _install_repair) and where it already exists. Unwritable dirs are skipped. Idempotent.
-
-    ``/usr/local/bin`` as non-root) are skipped silently. See #83797.
-    """
+    """Historical export; launcher policy belongs to the launcher owner."""
+    from hermes_cli import _launchers
     from hermes_cli.update_cmd import _m
-    if _m().sys.platform == "win32":
-        return
-    for bin_dir in (Path.home() / ".local" / "bin", Path("/usr/local/bin")):
-        hermes_cmd = bin_dir / "hermes"
-        acp_cmd = bin_dir / "hermes-acp"
-        try:
-            if not (hermes_cmd.is_file() or hermes_cmd.is_symlink()):
-                continue
-            # is_symlink() catches broken symlinks exists() misses; never follow-and-overwrite.
-            # Already present — a console script (pip/pipx install), an earlier shim, or a symlink.
-            # is_symlink() catches broken symlinks that exists() would miss; never follow-and-overwrite (the
-            # #21454 failure mode).
-            if acp_cmd.exists() or acp_cmd.is_symlink():
-                continue
-            shim = (
-                "#!/usr/bin/env bash\n"
-                "# Hermes Agent — ACP launcher (written by `hermes update`).\n"
-                "# ACP hosts (Zed, JetBrains, Buzz) resolve the agent by this\n"
-                "# command name on the login-shell PATH.\n"
-                f'exec "{hermes_cmd}" acp "$@"\n'
-            )
-            acp_cmd.write_text(shim, encoding="utf-8")
-            acp_cmd.chmod(acp_cmd.stat().st_mode | 0o755)
-        except OSError:
-            continue
-        print(f"  ✓ Installed hermes-acp launcher → {acp_cmd}")
+    _launchers.expose_cli(_m().PROJECT_ROOT)
 
 
 _BACKUP_MODE_ALIASES = {
@@ -813,10 +789,7 @@ def _sweep_bytecode_after_update(branch: str) -> None:
     """Clear stale ``__pycache__`` (else gateway restart ImportErrors on names absent from old
     bytecode), re-stamp the fingerprint, refresh the bootstrap cache scripts."""
     from hermes_cli.update_cmd import _m
-    # The update process is still the old Python interpreter process. Run one final cache/module refresh
-    # immediately before lazy backend refresh, which imports newly-pulled modules that may depend on fresh
-    # symbols in hermes_constants or lazy_deps. The dependency install above may also have regenerated
-    # bytecode from build-cache copies — this second sweep catches those stragglers (#60242, #65240).
+    # Timestamp-based .pyc validation can accept old bytecode after the source swap.
     removed = _m()._clear_bytecode_cache(_m().PROJECT_ROOT)
     if removed:
         print(f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}")
@@ -871,27 +844,63 @@ def _sync_profiles_after_update() -> None:
 
 
 def _refresh_cua_driver_after_update() -> None:
-    """cua-driver refresh, no-op unless on PATH; tied to update for a predictable cadence
-    without a per-launch GitHub API call."""
-    refresh_cua_driver = True
-    with _best_effort('Could not read updates.refresh_cua_driver: %s'):
-        refresh_cua_driver = bool(_load_updates_cfg().get("refresh_cua_driver", True))
+    """Reconcile an installed optional package, never a user-selected external binary."""
+    import pm
 
-    if (
-        refresh_cua_driver and sys.platform in ("darwin", "win32", "linux") and shutil.which("cua-driver")
-    ):
-        from hermes_cli.tools_config import install_cua_driver
-        print()
-        print("→ Refreshing cua-driver (Computer Use)...")
-        # require_confirmed_update: install only when check-update positively reports a
-        # newer release (update must stay fast; `computer-use install --upgrade` forces).
-        # Windows defers even confirmed updates (installer may need console/UAC consent).
-        install_cua_driver(upgrade=True, require_confirmed_update=True, show_installer_progress=False)
+    if not _load_updates_cfg().get("refresh_cua_driver", True):
+        return
+    if os.environ.get("HERMES_CUA_DRIVER_CMD", "").strip():
+        return
+    if pm.installed_package("cua-driver", allow_outdated=True) is None:
+        return
+    if sys.platform == "win32":
+        # The scheduled task targets a versioned binary. Selecting a new pin
+        # without re-registering leaves it stale; registration requires UAC.
+        print("\n→ Windows cua-driver refresh deferred (autostart registration requires UAC).")
+        print("  Run `hermes computer-use install --upgrade` in an interactive terminal.")
+        return
+    print("\n→ Preparing pinned cua-driver (Computer Use)...")
+    if sys.platform == "darwin":
+        # PM preserves the signed app; setup validates and registers its new path
+        # with LaunchServices. This path never requests permissions or elevation.
+        from hermes_cli.tools_config_cua import install_cua_driver
+        install_cua_driver(show_installer_progress=False)
+    else:
+        pm.ensure("cua-driver", explicit=True)
+
+
+def _install_default_tools_after_update() -> None:
+    """Give an existing install the optional default PM tools (agent-browser + Chromium).
+
+    A source update re-syncs only the venv, so a tool that became a default after
+    this install was created would never arrive and browser tools would stay
+    missing. The installers' PM stage runs the same selection. Declined packages
+    stay declined (pm/defaults.py). A failed download warns and never fails the update.
+    """
+    import pm
+    from pm.defaults import default_packages
+    from pm.install import lazy_installs_allowed, sealed
+    from pm.lock import Lockfile
+    from pm.paths import lockfile_path
+
+    # Sealed payloads ship their tools; the lazy-install policy (config or the
+    # Docker/test bridge) means the user asked Hermes not to fetch on its own.
+    if sealed() or not lazy_installs_allowed():
+        return
+    for name in default_packages(Lockfile(lockfile_path()).names()):
+        if pm.installed_package(name) is not None:
+            continue
+        print(f"\n→ Installing {name} (browser tools; opt out with `hermes pm install --without {name}`)...")
+        try:
+            pm.ensure(name, explicit=True)
+        except (pm.InstallError, OSError) as exc:
+            print(f"  ⚠ {name} was not installed: {exc}")
+            print(f"    Retry with: hermes pm install {name}")
 
 
 def _print_checkpoint_footprint_notice() -> None:
     """Surface a GB-scale /rollback store the user may not know is on (see the helper's docstring)."""
-    from tools.checkpoint_manager import checkpoint_footprint_notice
+    from tools.checkpoint_maintenance import checkpoint_footprint_notice
     notice = checkpoint_footprint_notice()
     if notice:
         print(f"\n\033[1;33mℹ  {notice}\033[0m")
@@ -911,6 +920,7 @@ def _print_post_update_notices_and_self_heals() -> None:
     """Best-effort notices (FTS optimize, curator) and self-heals (FHS PATH, ACP launcher,
     Windows bin launchers, cua-driver refresh) that run after the summary."""
     from hermes_cli.update_cmd import _m, _print_curator_first_run_notice, _print_curator_recent_run_notice
+    from hermes_cli import _launchers
 
     def _migrate_windows_bin_path() -> None:
         # Windows launchers into the managed bin dir: in-checkout launchers were swept by the
@@ -924,9 +934,10 @@ def _print_post_update_notices_and_self_heals() -> None:
         ('Curator first-run notice failed: %s', _print_curator_first_run_notice),
         ('Curator recent-run notice failed: %s', _print_curator_recent_run_notice),
         ('FHS PATH guard check failed: %s', _ensure_fhs_path_guard),
-        ('hermes-acp launcher self-heal failed: %s', _ensure_acp_launcher),
+        ('CLI launcher exposure failed: %s', lambda: _launchers.expose_cli(_m().PROJECT_ROOT)),
         ('Windows bin launcher migration failed: %s', _migrate_windows_bin_path),
         ('cua-driver refresh failed: %s', _refresh_cua_driver_after_update),
+        ('Default PM tool install failed: %s', _install_default_tools_after_update),
         ('Checkpoint footprint notice failed: %s', _print_checkpoint_footprint_notice),
         ('Plugin compat notice failed: %s', _print_plugin_compat_notice),
         # Legacy HERMES_NEMO_RELAY_ATIF_*/ATOF_* vars produce no traces since the Relay cutover;
@@ -943,12 +954,13 @@ def _migrate_relay_exporter_env() -> None:
 
 
 def _run_post_update_maintenance(
-    *, assume_yes, gateway_mode, pre_update_snapshot_id, had_desktop_app_before_update, node_failures, desktop_build_ok,
-    pre_update_version,
+    *, assume_yes, gateway_mode, pre_update_snapshot_id, had_desktop_app_before_update,
+    pre_update_version, completion_message=None,
 ) -> bool:
-    """Post-pull housekeeping: state.db restore, catalog/skills/profile syncs, config migration,
-    the update summary (verdict returned), and best-effort notices/self-heals. Every step is
-    isolated so none can fail the update."""
+    """Post-build housekeeping and completion, returning the SQLite runtime verdict.
+
+    Ancillary repairs and notices are best-effort; an unsafe runtime withholds success.
+    """
     from hermes_cli.update_cmd import _check_and_apply_config_migration, _m
     # macOS TCC: Desktop bundles are re-signed each update, so old grants can go stale
     # (toggle ON, yet macOS re-prompts with no Allow button). Tell users how to re-grant.
@@ -978,6 +990,17 @@ def _run_post_update_maintenance(
     with _best_effort('Post-update state.db integrity check failed: %s'):
         _verify_and_restore_state_dbs_post_update()
 
+    # Both shallow history and missing tags can hide the release identity.
+    # Refresh them before the completion line and install stamp read it.
+    try:
+        from hermes_cli.gitlock import fetch_full_commit_graph
+        from hermes_cli.update_cmd import _no_prompt_git_kwargs
+        if fetch_full_commit_graph(Path(_m().PROJECT_ROOT), **_no_prompt_git_kwargs()):
+            print("  ✓ Fetched release history (commits only) for version identity")
+    except (OSError, subprocess.SubprocessError) as exc:
+        detail = (getattr(exc, "stderr", None) or str(exc)).strip().splitlines()[-1:] or [type(exc).__name__]
+        print(f"  ⚠ Could not refresh release history ({detail[0]}); the version label may be stale or unknown until the next update")
+
     # Seed the model-catalog cache from the checkout instead of a bot-gated, flaky fetch.
     with _best_effort('Model catalog seed during update failed: %s'):
         from hermes_cli.model_catalog import seed_cache_from_checkout
@@ -995,9 +1018,14 @@ def _run_post_update_maintenance(
         assume_yes=assume_yes, gateway_mode=gateway_mode, pre_update_snapshot_id=pre_update_snapshot_id,
     )
 
-    update_complete = _print_update_summary(
-        node_failures=node_failures, desktop_build_ok=desktop_build_ok, pre_update_version=pre_update_version,
-    )
+    print()
+    update_complete = _print_verified_update_completion(completion_message or _update_complete_message(pre_update_version))
+    # A multi-profile host whose gateway came back standalone on a guard says so here too — the
+    # update summary is the one line operators read (the boot log under s6 is not).
+    with suppress(Exception):
+        from hermes_cli.gateway_multiplex_mode import consume_rewritten_notice, recorded_standalone_warning_lines
+        for line in [*consume_rewritten_notice(), *recorded_standalone_warning_lines()]:
+            print(line)
 
     _print_post_update_notices_and_self_heals()
     return update_complete

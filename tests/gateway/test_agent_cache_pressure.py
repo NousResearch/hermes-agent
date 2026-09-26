@@ -21,7 +21,6 @@ from gateway.agent_cache_pressure import (
     transcript_persistence_caught_up,
 )
 
-
 class TestBoundsResolution:
     """Absent config must stay absent so gateway/run.py keeps its defaults."""
 
@@ -66,7 +65,6 @@ class TestBoundsResolution:
         )
         assert bounds.protect_recent == 0
 
-
 class TestMemoryBudgetResolution:
     @pytest.mark.parametrize("setting", [0, False, None, "off", "none", ""])
     def test_falsy_settings_disable_the_pass(self, setting):
@@ -97,8 +95,7 @@ class TestMemoryBudgetResolution:
 
         assert resolve_memory_high_mb("auto") is None
 
-
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 class TestPressureSignalScope:
     """The budget is the unit's cgroup limit, so the signal must be the unit's anon charge:
     an execute_code kernel in the same cgroup counts even while the gateway itself is small (#110549)."""
@@ -134,7 +131,6 @@ class TestPressureSignalScope:
 
         assert acp.read_anon_rss_mb() == 1_600
 
-
 class TestPersistenceGuard:
     """Soft eviction drops the transcript, so it may only run once the
     transcript is durable. Exercised against the real AIAgent flush."""
@@ -160,7 +156,6 @@ class TestPersistenceGuard:
         agent._session_db_created = True
         return agent
 
-
     def test_unflushed_turn_blocks_eviction_then_flush_unblocks_it(self, tmp_path):
         agent = self._agent(tmp_path, "lagging")
         try:
@@ -183,7 +178,6 @@ class TestPersistenceGuard:
     def test_unknown_shapes_are_treated_as_unsafe(self):
         assert transcript_persistence_caught_up(object()) is False
         assert transcript_persistence_caught_up(None) is False
-
 
 class TestEvictionPlanner:
     def _entries(self, n):
@@ -237,7 +231,6 @@ class TestEvictionPlanner:
             protect_recent=0,
         )
         assert [key for key, _ in plan] == ["s1", "s2"]
-
 
 class TestGatewayPressureSweep:
     """End-to-end against the real GatewayRunner method."""
@@ -360,7 +353,6 @@ class TestGatewayPressureSweep:
         assert runner._sweep_agent_cache_under_pressure() == 0
         assert "s0" in runner._agent_cache
 
-
 class TestConfiguredBoundsReachTheCache:
     """The two existing bounds must be operator-tunable, and must keep their
     built-in values when config.yaml says nothing."""
@@ -413,7 +405,6 @@ class TestConfiguredBoundsReachTheCache:
         assert runner._sweep_idle_cached_agents() == 1
         assert "s-stale" not in runner._agent_cache
 
-
 def _wait_for(predicate, timeout: float = 3.0) -> None:
     """Wait for a background release thread to finish its work."""
     import time as _t
@@ -424,7 +415,6 @@ def _wait_for(predicate, timeout: float = 3.0) -> None:
             return
         _t.sleep(0.02)
     assert predicate(), "background release did not complete in time"
-
 
 class TestSalvageFollowups:
     """Follow-up behaviors added while salvaging PR #80795."""
@@ -458,6 +448,3 @@ class TestSalvageFollowups:
             {"agent": {"agent_cache": {"protect_recent": False}}}
         )
         assert bounds.protect_recent > 0
-
-
-

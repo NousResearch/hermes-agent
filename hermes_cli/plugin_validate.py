@@ -337,7 +337,7 @@ def _run_capability_probe(plugin_dir: Path, manifest: dict) -> Tuple[Optional[di
                     json.dumps(_probe_options(manifest)),
                 ],
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
                 timeout=_PROBE_TIMEOUT,
                 env=env,
             )
@@ -492,11 +492,11 @@ def validate_plugin_dir(plugin_dir: Path) -> ValidationReport:
         )
         return report
 
-    import yaml
+    import hermes_yaml as yaml
 
     try:
         manifest = yaml.safe_load(
-            manifest_file.read_text(encoding="utf-8")
+            manifest_file.read_text(encoding="utf-8-sig")
         )
     except Exception as exc:
         report.add("manifest", False, f"plugin.yaml failed to parse: {exc}")
@@ -539,32 +539,25 @@ def _check_python_dependencies(report: ValidationReport, plugin_dir: Path) -> No
     """Declared deps (pyproject ``[project].dependencies`` or manifest ``python_dependencies``) must be
     well-formed PEP 508 specs the installer will accept; a plugin opting out with
     ``python_runtime: external`` declares none."""
-    from hermes_cli.plugin_python_deps import read_declaration
+    from pm.plugin_declarations import read_python_declaration, unsupported_requirements
 
     try:
-        decl = read_declaration(plugin_dir)
-    except Exception as exc:
+        decl = read_python_declaration(plugin_dir)
+        if decl.external:
+            report.add("python dependencies", True, "external runtime (plugin manages its own)")
+            return
+        urls = unsupported_requirements(decl.requirements)
+        installable = decl.install_requirements
+    except (ValueError, OSError) as exc:
         report.add("python dependencies", False, f"declaration invalid: {exc}")
         return
-    if decl.external:
-        report.add("python dependencies", True, "external runtime (plugin manages its own)")
-        return
-    from hermes_cli.plugin_python_deps import applicable_specs, unsupported_specs
-
-    urls = unsupported_specs(decl.specs)
     if urls:
-        report.warn("python dependencies: direct URL requirement(s) are never auto-installed, users must "
-                    f"install them by hand: {', '.join(urls)}")
-    installable = applicable_specs(decl.specs)
-    rejected = [s for s in installable if not _spec_is_safe(s)]
-    detail = f"{len(installable)} installable from {decl.source}" if decl.source else "none declared"
-    report.add("python dependencies", not rejected,
-               f"unsafe spec(s): {', '.join(rejected)}" if rejected else detail)
+        report.warn("python dependencies: direct URL requirement(s) are not managed by PM; "
+                    f"use a plugin-owned external runtime: {', '.join(urls)}")
+    source = "pyproject" if decl.pyproject is not None else "manifest"
+    detail = f"{len(installable)} requirements from {source}" if decl.requirements else "none declared"
+    report.add("python dependencies", True, detail)
 
-
-def _spec_is_safe(spec: str) -> bool:
-    from tools.lazy_deps import _spec_is_safe as safe
-    return safe(spec)
 
 
 def _check_security_scan(report: ValidationReport, plugin_dir: Path) -> None:

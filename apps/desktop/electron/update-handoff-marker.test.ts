@@ -24,7 +24,7 @@ function markerStartedAt(home: string): number {
 }
 
 function runPosix(installRoot: string, startedAt?: string) {
-  const env = { ...process.env }
+  const env: NodeJS.ProcessEnv = { ...process.env, HERMES_HOME: path.dirname(installRoot) }
 
   if (startedAt === undefined) {
     delete env.HERMES_UPDATE_STARTED_AT
@@ -32,10 +32,14 @@ function runPosix(installRoot: string, startedAt?: string) {
     env.HERMES_UPDATE_STARTED_AT = startedAt
   }
 
-  return spawnSync('/bin/bash', [POSIX_SCRIPT, '--daemonized', '--install-root', installRoot, '--self-test-marker'], {
-    env,
-    encoding: 'utf8'
-  })
+  return spawnSync(
+    '/usr/bin/env',
+    ['bash', POSIX_SCRIPT, '--daemonized', '--install-root', installRoot, '--self-test-marker'],
+    {
+      env,
+      encoding: 'utf8'
+    }
+  )
 }
 
 function assertScriptHandoff(run: (installRoot: string, startedAt?: string) => ReturnType<typeof spawnSync>) {

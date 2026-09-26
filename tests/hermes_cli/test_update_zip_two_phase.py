@@ -20,7 +20,6 @@ import pytest
 from hermes_cli import update_cmd
 from hermes_constants import venv_bin_dir, venv_python_path
 
-
 # ---------------------------------------------------------------------------
 # Two-phase replace
 # ---------------------------------------------------------------------------
@@ -31,7 +30,6 @@ def _live_tree(root: Path, names: dict[str, str]) -> None:
         d.mkdir(parents=True, exist_ok=True)
         (d / "version.txt").write_text(marker)
 
-
 def _stage_all(root: Path, new: Path, names: list[str]) -> list[tuple[str, str]]:
     return [
         (
@@ -40,7 +38,6 @@ def _stage_all(root: Path, new: Path, names: list[str]) -> list[tuple[str, str]]
         )
         for n in names
     ]
-
 
 def test_staging_touches_nothing_live(tmp_path):
     """Phase 1 must not modify the install -- a failure there is a no-op."""
@@ -53,7 +50,6 @@ def test_staging_touches_nothing_live(tmp_path):
     assert (live / "agent" / "version.txt").read_text() == "old"
     assert (live / "tools" / "version.txt").read_text() == "old"
 
-
 def test_commit_swaps_every_entry(tmp_path):
     live, new = tmp_path / "live", tmp_path / "new"
     _live_tree(live, {"agent": "old", "tools": "old"})
@@ -65,7 +61,6 @@ def test_commit_swaps_every_entry(tmp_path):
     assert (live / "tools" / "version.txt").read_text() == "new"
     # No staging/backup litter left behind.
     assert not [p for p in os.listdir(live) if "hermes-update" in p]
-
 
 def test_failed_swap_rolls_back_every_earlier_swap(tmp_path, monkeypatch):
     """The regression: a mid-loop failure must not leave a mixed-version tree.
@@ -103,7 +98,6 @@ def test_failed_swap_rolls_back_every_earlier_swap(tmp_path, monkeypatch):
         f"mixed-version tree after rollback: {versions}"
     )
 
-
 def test_commit_handles_entries_absent_from_the_install(tmp_path):
     """A brand-new top-level dir has no live counterpart to move aside."""
     live, new = tmp_path / "live", tmp_path / "new"
@@ -113,7 +107,6 @@ def test_commit_handles_entries_absent_from_the_install(tmp_path):
     update_cmd._commit_staged_replacements(_stage_all(live, new, ["brand_new"]))
 
     assert (live / "brand_new" / "version.txt").read_text() == "new"
-
 
 def test_staging_clears_leftovers_from_an_interrupted_run(tmp_path):
     live, new = tmp_path / "live", tmp_path / "new"
@@ -128,22 +121,12 @@ def test_staging_clears_leftovers_from_an_interrupted_run(tmp_path):
     assert (live / "agent" / "version.txt").read_text() == "new"
     assert not (live / "agent" / "junk.txt").exists()
 
-
 # ---------------------------------------------------------------------------
 # Shared venv helpers (#76105)
 # ---------------------------------------------------------------------------
 
-
-
 def test_venv_helpers_accept_str_and_path():
     assert venv_python_path("/opt/x/venv") == venv_python_path(Path("/opt/x/venv"))
-
-
-
-
-
-
-
 
 # ---------------------------------------------------------------------------
 # Top-level FILES must be atomic too (#76104 review, C1)
@@ -171,7 +154,6 @@ def test_top_level_files_are_swapped_atomically(tmp_path):
 
     assert (live / "run_agent.py").read_text() == "new"
     assert not [p for p in os.listdir(live) if "hermes-update" in p]
-
 
 def test_file_swap_failure_restores_the_original_file(tmp_path, monkeypatch):
     """A mid-swap failure must not leave a stale-or-corrupt root module."""
@@ -205,7 +187,6 @@ def test_file_swap_failure_restores_the_original_file(tmp_path, monkeypatch):
     assert versions == {"cli.py": "old", "run_agent.py": "old"}, (
         f"mixed/corrupt root modules after rollback: {versions}"
     )
-
 
 def test_failed_staging_leaves_no_orphaned_copies(tmp_path, monkeypatch):
     """#76104 review C2: orphaned staging dirs make the retry we recommend
@@ -248,9 +229,6 @@ def test_failed_staging_leaves_no_orphaned_copies(tmp_path, monkeypatch):
     for n in ("agent", "tools", "gateway"):
         assert (live / n / "version.txt").read_text() == "old"
 
-
-
-
 def test_venv_helpers_honour_an_explicit_platform_verdict():
     """Callers must be able to override the platform check (#76107 CI).
 
@@ -271,9 +249,6 @@ def test_venv_helpers_honour_an_explicit_platform_verdict():
         assert venv_python_path(v, windows=flag).parent == venv_bin_dir(
             v, windows=flag
         )
-
-
-
 
 # ---------------------------------------------------------------------------
 # Crash between "move dst aside" and "move staging in" (Phase 2 review HIGH)
@@ -311,7 +286,6 @@ def test_staging_restores_backup_when_dst_is_missing(tmp_path, monkeypatch):
     update_cmd._commit_staged_replacements(staged)
     assert (live / "agent" / "version.txt").read_text() == "new"
     assert not [p for p in os.listdir(live) if "hermes-update" in p]
-
 
 def test_commit_failure_plus_discard_leaves_no_staging_litter(tmp_path, monkeypatch):
     """Phase-2 failure must not orphan staging copies for unswapped entries.
@@ -353,5 +327,3 @@ def test_commit_failure_plus_discard_leaves_no_staging_litter(tmp_path, monkeypa
     # ...and zero litter of any kind (staging OR backup).
     litter = [p for p in os.listdir(live) if "hermes-update" in p]
     assert litter == [], f"orphaned update litter: {litter}"
-
-

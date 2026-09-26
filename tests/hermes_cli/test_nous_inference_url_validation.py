@@ -28,9 +28,7 @@ from hermes_cli.auth import (
     _validate_nous_inference_url_from_network,
 )
 
-
 class TestValidatorRules:
-
 
     def test_attacker_host_rejected(self, caplog):
         with caplog.at_level(logging.WARNING, logger="hermes_cli.auth"):
@@ -39,8 +37,6 @@ class TestValidatorRules:
                 is None
             )
         assert any("attacker.com" in rec.message for rec in caplog.records)
-
-
 
     def test_default_inference_url_is_in_allowlist(self):
         """Sanity check: DEFAULT_NOUS_INFERENCE_URL must itself validate.
@@ -54,8 +50,6 @@ class TestValidatorRules:
             _validate_nous_inference_url_from_network(DEFAULT_NOUS_INFERENCE_URL)
             == DEFAULT_NOUS_INFERENCE_URL.rstrip("/")
         )
-
-
 
 class TestCallSiteWiring:
     """Verify the validator is actually wired into all auth.py NETWORK call sites.
@@ -84,10 +78,6 @@ class TestCallSiteWiring:
             Path(m.__file__).read_text(encoding="utf-8") for m in (_auth_mod, _nous_mod)
         )
 
-
-
-
-
 class TestEnvOverrideNotGated:
     """The documented dev/staging env-var override must keep working.
 
@@ -98,8 +88,6 @@ class TestEnvOverrideNotGated:
     user running against a non-allowlisted staging host via env is not
     inadvertently broken by this fix.
     """
-
-
 
 class TestHealsPoisonedStoredValue:
     """A stored inference_base_url that is NOT in the allowlist (e.g. a
@@ -165,7 +153,6 @@ class TestHealsPoisonedStoredValue:
             f"got {result['inference_base_url']!r}"
         )
 
-
 class TestEnvOverrideWins:
     """``NOUS_INFERENCE_BASE_URL`` must win over the stored value for the
     URL used to build the inference client / returned to callers.
@@ -223,7 +210,6 @@ class TestEnvOverrideWins:
             "agent_key": "ak-123",
         }
 
-
     def test_no_refresh_env_override_not_persisted(self, monkeypatch):
         """The env override is a runtime overlay: it must never be written
         back into the stored state (auth.json)."""
@@ -239,7 +225,6 @@ class TestEnvOverrideWins:
             "env override leaked into persisted state — it must stay a "
             f"runtime overlay, got {state['inference_base_url']!r}"
         )
-
 
     def test_no_refresh_heals_poisoned_stored_without_env(self, monkeypatch):
         """A poisoned stored staging host (persisted before the allowlist)
@@ -257,12 +242,9 @@ class TestEnvOverrideWins:
             f"no-refresh read path, got {result['base_url']!r}"
         )
 
-
-
 class TestProxyAdapterEnvOverride:
     """The Nous proxy adapter is the second chokepoint: it re-validates the
     base_url returned by resolve_nous_runtime_credentials() against the prod
     allowlist. That re-validation must not clobber a legitimate
     NOUS_INFERENCE_BASE_URL staging override.
     """
-

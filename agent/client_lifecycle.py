@@ -23,8 +23,8 @@ _NO_SOCKETS_SUFFIX = " — no sockets found; in-flight request may keep running 
 
 def _routermint_headers() -> dict:
     """User-Agent RouterMint needs to avoid Cloudflare 1010 blocks."""
-    from hermes_cli import __version__ as _HERMES_VERSION
-    return {"User-Agent": f"HermesAgent/{_HERMES_VERSION}"}
+    from hermes_cli.version_info import get_version_info
+    return {"User-Agent": f"HermesAgent/{get_version_info().base_version}"}
 
 
 def _qwen_portal_headers() -> dict:
@@ -112,6 +112,11 @@ class ClientLifecycleMixin:
             owners = getattr(self, "_process_owner_task_ids", ())
             for process in process_registry.list_sessions():
                 if process["owner_task_id"] in owners and process["status"] == "running":
+                    # An explicitly persisted job (terminal persist_on_release=true) survives
+                    # agent close — session end, compression, error recovery (#41225). The
+                    # user can still stop it on purpose via process_manage kill.
+                    if process.get("persist_on_release"):
+                        continue
                     process_registry.kill_process(
                         process["session_id"], source="agent_close", consume_output=True,
                     )

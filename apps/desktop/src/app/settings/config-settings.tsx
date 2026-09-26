@@ -21,6 +21,7 @@ import {
   setDataUrlReadMaxMb
 } from '@/store/data-url-read-max'
 import { $disableF12, setDisableF12 } from '@/store/disable-f12'
+import { $alwaysExternalLinks, setAlwaysExternalLinks } from '@/store/external-links'
 import { $keepAwake, setKeepAwake } from '@/store/keep-awake'
 import { notify, notifyError } from '@/store/notifications'
 import { normalizeProfileKey } from '@/store/profile'
@@ -51,6 +52,8 @@ import { PoolLimitsSetting } from './pool-limits-setting'
 import { EmptyState, ListRow, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
 import { SettingsProfileScope } from './profile-scope'
 import { QuickEntrySettings } from './quick-entry-settings'
+import { SETTING_IDS, settingElementId } from './settings-manifest'
+import { useSettingDeepLink } from './use-setting-deep-link'
 
 export function ConfigSettings({
   activeSectionId,
@@ -99,6 +102,7 @@ function ConfigSettingsInner({
   const c = t.settings.config
   const keepAwake = useStore($keepAwake)
   const disableF12 = useStore($disableF12)
+  const alwaysExternalLinks = useStore($alwaysExternalLinks)
   // The editable draft is local (debounced autosave watches it), but it's seeded
   // from — and saved back through — the shared config cache, so edits are visible
   // in the MCP/model surfaces and reopening the page doesn't reload-flash.
@@ -302,6 +306,8 @@ function ConfigSettingsInner({
   const [searchParams, setSearchParams] = useSearchParams()
   const targetField = searchParams.get('field')
 
+  useSettingDeepLink(`config:${activeSectionId}`, page => subpage === undefined || page === subpage)
+
   useEffect(() => {
     if (!targetField || !config || !schema) {
       return
@@ -438,14 +444,22 @@ function ConfigSettingsInner({
           <ToggleRow
             checked={keepAwake}
             description={c.keepAwakeDesc}
+            id={settingElementId(SETTING_IDS.advanced.keepAwake)}
             label={c.keepAwakeTitle}
             onChange={setKeepAwake}
           />
           <ToggleRow
             checked={disableF12}
             description={c.disableF12Desc}
+            id={settingElementId(SETTING_IDS.advanced.disableF12)}
             label={c.disableF12Title}
             onChange={setDisableF12}
+          />
+          <ToggleRow
+            checked={alwaysExternalLinks}
+            description={c.alwaysExternalLinksDesc}
+            label={c.alwaysExternalLinksTitle}
+            onChange={setAlwaysExternalLinks}
           />
           <PoolLimitsSetting />
           <QuickEntrySettings />
@@ -561,6 +575,7 @@ function AttachmentSizeSetting() {
         </div>
       }
       description={c.attachmentSizeDesc}
+      id={settingElementId(SETTING_IDS.chat.attachmentSize)}
       title={c.attachmentSizeTitle}
     />
   )

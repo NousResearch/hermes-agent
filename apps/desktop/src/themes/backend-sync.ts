@@ -21,7 +21,7 @@ import { atom } from 'nanostores'
 
 import { readJson, writeJson } from '@/lib/storage'
 
-import { BUILTIN_THEMES } from './presets'
+import { BUILTIN_THEMES, DEFAULT_SKIN_NAME } from './presets'
 import { skinToDesktopTheme } from './skin'
 import { type DesktopTheme, isValidTheme } from './types'
 
@@ -30,6 +30,14 @@ import { type DesktopTheme, isValidTheme } from './types'
 // install. Without it the stored name failed `resolveTheme` on every launch
 // and the app silently painted the default until the next `skin.changed`.
 const BACKEND_THEMES_KEY = 'hermes-desktop-backend-themes-v1'
+
+// Electron reads the active local `display.skin` before it creates the
+// renderer. Seed it alongside the existing cache so an unreachable primary
+// gateway cannot leave a first-time custom skin unknown to the theme registry.
+const localSkinPayload = typeof window === 'undefined' ? null : window.hermesDesktop?.localSkin ?? null
+const localSkin = localSkinPayload?.skin ?? null
+export const localDisplaySkinName = (localSkin?.name ?? '').trim() || null
+export const localDisplaySkinProfile = localDisplaySkinName ? (localSkinPayload?.profile ?? '').trim() || 'default' : null
 
 const readCached = (): Record<string, DesktopTheme> =>
   Object.fromEntries(
@@ -42,6 +50,13 @@ const readCached = (): Record<string, DesktopTheme> =>
 export const $backendThemes = atom<Record<string, DesktopTheme>>(typeof window === 'undefined' ? {} : readCached())
 
 $backendThemes.listen(themes => writeJson(BACKEND_THEMES_KEY, themes))
+
+/** Custom CSS carried by a user skin whose name is `default` or a desktop
+ *  built-in. The palette policy keeps built-in palettes (a user `mono.yaml`
+ *  must not shadow the desktop's hand-tuned mono), but the user's CSS is still
+ *  the skin file's truth — keyed by the name the desktop resolves the skin
+ *  under (`default` → `nous`). Merged into the active theme in context.tsx. */
+export const $backendCustomCSS = atom<Record<string, string>>({})
 
 /** One-shot skin name the ThemeProvider should switch to (it clears this). */
 export const $pendingSkinApply = atom<string | null>(null)
@@ -59,6 +74,7 @@ export function __resetBackendSkinSync(): void {
   lastSynced = null
   $backendThemes.set({})
   $pendingSkinApply.set(null)
+  $backendCustomCSS.set({})
 }
 
 /**
@@ -92,6 +108,25 @@ export function ingestBackendSkin(skin: HermesSkin | undefined | null, { apply }
     if (JSON.stringify(current[name]) !== JSON.stringify(theme)) {
       $backendThemes.set({ ...current, [name]: theme })
     }
+  } else {
+    // Built-in/default-named user skins never shadow the desktop palette, but
+    // their customCSS still belongs to the user's skin file (user skins take
+    // precedence over built-ins with the same name). Carry it separately so
+    // applyTheme can inject it on top of the built-in palette; dropping the
+    // field from the YAML clears the entry so stale rules don't linger.
+    const css = skin?.customCSS?.trim() ?? ''
+    const cssKey = name === 'default' ? DEFAULT_SKIN_NAME : name
+    const current = $backendCustomCSS.get()
+
+    if (css) {
+      if (current[cssKey] !== css) {
+        $backendCustomCSS.set({ ...current, [cssKey]: css })
+      }
+    } else if (current[cssKey]) {
+      const next = { ...current }
+      delete next[cssKey]
+      $backendCustomCSS.set(next)
+    }
   }
 
   if (!apply) {
@@ -108,4 +143,11 @@ export function ingestBackendSkin(skin: HermesSkin | undefined | null, { apply }
     lastSynced = { applied: true, name }
     $pendingSkinApply.set(name)
   }
+}
+
+// This is a boot fallback, not a remote activation. ThemeProvider uses the
+// name only when the desktop has no saved appearance of its own, while this
+// registers the custom palette early enough for that first paint to resolve.
+if (localSkin) {
+  ingestBackendSkin(localSkin, { apply: false })
 }

@@ -76,6 +76,7 @@ class SSHEnvironment(BaseEnvironment):
         if probe_only:
             self._sync_manager = None
             return
+        self._remote_home_detected = False
         self._remote_home = self._detect_remote_home()
         self._ensure_remote_dirs()
         self._sync_manager = FileSyncManager(
@@ -153,6 +154,7 @@ class SSHEnvironment(BaseEnvironment):
             result = self._run_ssh("echo $HOME", timeout=10)
             if result.returncode == 0 and result.stdout.strip():
                 logger.debug("SSH: remote home = %s", result.stdout.strip())
+                self._remote_home_detected = True
                 return result.stdout.strip()
         return "/root" if self.user == "root" else f"/home/{self.user}"
 

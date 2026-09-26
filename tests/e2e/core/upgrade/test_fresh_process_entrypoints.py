@@ -63,7 +63,7 @@ pytestmark = [
 
 PY = sys.executable
 PYPROJECT = tomllib.loads((WORKTREE / "pyproject.toml").read_text(encoding="utf-8"))
-PROJECT_VERSION = PYPROJECT["project"]["version"]
+
 TRACEBACK = "Traceback (most recent call last)"
 
 # Third-party import name -> distribution. A module failing ONLY because one of these is
@@ -81,7 +81,7 @@ _OPTIONAL_IMPORTS = {
     "google_auth_oauthlib": "google-auth-oauthlib", "googleapiclient": "google-api-python-client",
     "honcho": "honcho-ai", "httplib2": "httplib2", "lark_oapi": "lark-oapi", "mautrix": "mautrix",
     "mcp": "mcp", "mem0": "mem0ai", "microsoft_teams": "microsoft-teams-apps", "mistralai": "mistralai",
-    "modal": "modal", "numpy": "numpy", "onnxruntime": "onnxruntime", "openwakeword": "openwakeword",
+    "modal": "modal", "numpy": "numpy", "pyopen_wakeword": "pyopen-wakeword",
     "opentelemetry": "opentelemetry-sdk", "parallel": "parallel-web", "pvporcupine": "pvporcupine",
     "pyasn1": "pyasn1", "qrcode": "qrcode", "sentencepiece": "sentencepiece", "sherpa_onnx": "sherpa-onnx",
     "slack_bolt": "slack-bolt", "slack_sdk": "slack-sdk", "sounddevice": "sounddevice",
@@ -203,6 +203,10 @@ def _shipped_modules() -> tuple[list[dict], set[str]]:
         for f in sorted(pdir.glob("*.py")):
             rel = f.relative_to(WORKTREE).as_posix()
             if f.name.startswith("test_") or f.name == "conftest.py" or f.stem == "__main__":
+                continue
+            # This frozen old-updater shim exits at import time to force a relaunch.
+            # Importing it is neither safe nor an import-graph smoke test.
+            if rel == "hermes_cli/psutil_android.py":
                 continue
             if tracked is not None and rel not in tracked:
                 continue
@@ -456,6 +460,15 @@ def _sandbox_or_skip() -> None:
 # --------------------------------------------------------------------------- (a) import smoke
 
 
+def test_relaunch_shim_is_excluded_only_while_it_exits_on_import():
+    shim = WORKTREE / "hermes_cli" / "psutil_android.py"
+    top_level = ast.parse(shim.read_text(encoding="utf-8")).body
+    assert any(isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+               and isinstance(node.value.func, ast.Name) and node.value.func.id == "stop_for_relaunch"
+               for node in top_level)
+    entries, _ = _shipped_modules()
+    assert "hermes_cli.psutil_android" not in {entry["id"] for entry in entries}
+
 def test_optional_import_table_only_names_optional_or_platform_deps():
     """The tolerance table cannot launder a missing CORE dependency into a skip."""
     core, extras = _requirements()
@@ -523,7 +536,8 @@ def test_every_shipped_module_imports_from_a_clean_first_party_graph(tmp_path):
 
 def _pre_handoff_tag() -> tuple[str, str] | None:
     """Newest release tag whose updater still ran post-pull phases in the pre-pull interpreter."""
-    cp = _git("tag", "--merged", "HEAD", "--sort=-v:refname", "--list", "v20*")
+    cp = _git("for-each-ref", "--merged=HEAD", "--sort=-version:refname",
+              "--format=%(refname:short)", "refs/tags/v20*")
     for tag in cp.stdout.split()[:15] if cp.returncode == 0 else []:
         if _git("cat-file", "-e", f"{tag}:hermes_cli/update_handoff.py").returncode == 0:
             continue
@@ -557,6 +571,21 @@ def test_pre_handoff_updater_stale_graph_imports_post_update_modules(tmp_path):
     if found is None:
         pytest.skip("no pre-hand-off release tag reachable from HEAD (shallow clone without tags?)")
     tag, _purge_file = found
+    old_manifest = _git("show", f"{tag}:pyproject.toml")
+    assert old_manifest.returncode == 0, old_manifest.stderr
+    old_deps = tomllib.loads(old_manifest.stdout)["project"]["dependencies"]
+    # The old updater starts under its installed dependencies, then switches code in place.
+    # The current test environment deliberately lacks PyYAML; provision the legacy direct
+    # requirement in an isolated PM environment rather than mutating the test interpreter.
+    from packaging.requirements import Requirement
+    from pm import ensure_environment
+
+    legacy_yaml = [r for r in old_deps if Requirement(r).name.lower() == "pyyaml"]
+    assert len(legacy_yaml) == 1, f"{tag} no longer declares exactly one PyYAML requirement"
+    legacy_python = ensure_environment(
+        "pre-handoff-updater", [*PYPROJECT["project"]["dependencies"], *legacy_yaml],
+        root=tmp_path / "legacy-deps", explicit=True,
+    )
     pkg_tops = sorted({p.split(".")[0] for p in PYPROJECT["tool"]["setuptools"]["packages"]["find"]["include"]})
     old_entries = [n for n in _git("ls-tree", "--name-only", tag).stdout.split()
                    if n.endswith(".py") or n in pkg_tops]
@@ -578,7 +607,7 @@ def test_pre_handoff_updater_stale_graph_imports_post_update_modules(tmp_path):
     spec_path = tmp_path / "stale-spec.json"
     spec_path.write_text(json.dumps(spec), encoding="utf-8")
     env = isolated_env(tmp_path / "sbx")
-    cp = run([PY, str(runner), str(spec_path)], env=env, cwd=tmp_path, writable=[tmp_path], timeout=600)
+    cp = run([str(legacy_python), str(runner), str(spec_path)], env=env, cwd=tmp_path, writable=[tmp_path], timeout=600)
     assert cp.returncode == 0 and out.exists(), describe(cp)
     report = json.loads(out.read_text(encoding="utf-8"))
     # Non-vacuous: the purge really left root modules cached that lack symbols the new tree defines.
@@ -709,7 +738,9 @@ def test_entrypoint_in_a_fresh_process(case, tmp_path):
     assert not shim_log.exists() or not shim_log.read_text(encoding="utf-8").strip(), (
         f"{case} called a service manager: {shim_log.read_text(encoding='utf-8')}")
     if entry.prints_version:
-        assert PROJECT_VERSION in cp.stdout, describe(cp)
+        from hermes_cli.version_info import get_version_info
+        commit = get_version_info().commit
+        assert commit and commit[:7] in cp.stdout, describe(cp)
     db = hermes_home / "state.db"
     if db.exists():
         assert _db_rows(db, "PRAGMA integrity_check") == [("ok",)], f"{case} left a corrupt state.db"
@@ -764,8 +795,9 @@ def test_serve_announces_ready_and_stops_cleanly_on_sigterm(tmp_path):
             record = json.loads(record_file.read_text(encoding="utf-8"))
             assert record.get("port") == port, record
 
-            # bwrap's own argv also carries these strings: match the interpreter's argv[1] exactly.
-            reaper_proc = next(p for p in psutil.Process(proc.pid).children(recursive=True)
+            # With bwrap the reaper is a child; without it (CI) it is proc itself.
+            root = psutil.Process(proc.pid)
+            reaper_proc = next(p for p in [root, *root.children(recursive=True)]
                                if p.cmdline()[1:2] == [str(reaper)])
             serve = next(p for p in reaper_proc.children() if p.cmdline()[1:3] == ["-m", "hermes_cli.main"])
             descendants = [p.pid for p in serve.children(recursive=True)]

@@ -243,17 +243,18 @@ def test_waiter_prints_the_completion_notification_the_sender_wakes_on(root, cap
     assert bot_mode_dm._delivery_main(["--wait-reply", str(reply_path)]) == 2
 
 
-@pytest.mark.parametrize(("where", "age", "ttl", "withdrawn"), [
-    ("outbox", 1000, "900", True),
-    ("claimed", 1000, "900", False),
-    ("outbox", 1000, "0", False),
-    ("outbox", 10, "900", False),
+@pytest.mark.parametrize(("where", "age", "ttl", "withdrawn", "guidance"), [
+    ("outbox", 1000, "900", True, "NOT delivered"),
+    ("claimed", 1000, "900", False, "check with the recipient"),
+    ("outbox", 1000, "0", False, "do not resend blindly"),
+    ("outbox", 10, "900", False, "do not resend blindly"),
 ], ids=["unclaimed-expired", "claimed", "never-expires", "within-ttl"])
-def test_waiter_gives_up_honestly_about_an_envelope_no_desktop_took(root, capsys, where, age, ttl, withdrawn):
+def test_waiter_gives_up_honestly_about_an_envelope_no_desktop_took(root, capsys, where, age, ttl, withdrawn, guidance):
     """With no Desktop draining this gateway, the envelope sits in the outbox past its TTL by the time the waiter
     gives up, and the next drain only refuses it: "may still be delivered; do not resend" told the sender to drop
     a message that was lost. The waiter now takes such an envelope out itself and says it was NOT delivered. A
-    claimed one may still be answered, and one that may still be picked up is left alone."""
+    claimed one is never re-offered past this point, so its fate is unknown rather than "waiting for the Desktop";
+    one that may still be picked up is left alone."""
     from tools import bot_mode_dm
 
     env = {"id": "e" * 32, "created_at": int(time.time()) - age}
@@ -268,7 +269,7 @@ def test_waiter_gives_up_honestly_about_an_envelope_no_desktop_took(root, capsys
 
     out = capsys.readouterr().out
     assert code == 1
-    assert ("NOT delivered" in out) is withdrawn and ("do not resend blindly" in out) is not withdrawn, out
+    assert guidance in out, out
     assert envelope_file.exists() is not withdrawn
 
 

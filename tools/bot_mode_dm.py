@@ -760,6 +760,14 @@ def _wait_reply_main(reply_path: str, label: str, budget_seconds: str, ttl_secon
         print(f"No reply from {label} within {budget_seconds}s. No Desktop picked the message up before it "
               "expired, so it was NOT delivered; resend it once that machine is reachable.")
         return 1
+    if (Path(reply_path).parent.parent / "claimed" / Path(reply_path).name).exists():  # bot_relay.CLAIMED_DIR
+        # Past this budget the drain never re-offers a claimed envelope, so a reconnect cannot deliver it; only
+        # a delivery still queued in the claiming Desktop's per-target lane can, and nothing here can see or stop
+        # that one. Its fate is unknown: neither "wait for the reconnect" nor "NOT delivered" is true.
+        print(f"No reply from {label} within {budget_seconds}s. A Desktop picked the message up but never "
+              "reported a delivery, and it will not be retried; it may or may not have arrived, so check with "
+              "the recipient before resending.")
+        return 1
     print(f"No reply from {label} within {budget_seconds}s. The message may still be delivered when "
           "the Desktop reconnects; do not resend blindly.")
     return 1
@@ -776,8 +784,9 @@ def _withdraw_expired_envelope(reply_path: str, ttl_seconds: str) -> bool:
     outbox = Path(reply_path).parent.parent / "outbox" / Path(reply_path).name  # bot_relay.OUTBOX_DIR
     try:
         ttl = float(ttl_seconds)
-        created = float(json.loads(outbox.read_text(encoding="utf-8")).get("created_at") or 0)
-        if ttl <= 0 or not created or time.time() - created <= ttl:
+        # Same age as the drain's ``_expire_if_stale``: ``created_at``, else the file's mtime.
+        created = float(json.loads(outbox.read_text(encoding="utf-8-sig")).get("created_at") or outbox.stat().st_mtime)
+        if ttl <= 0 or time.time() - created <= ttl:
             return False
         outbox.unlink()
         return True

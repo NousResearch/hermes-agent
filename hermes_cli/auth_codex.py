@@ -917,12 +917,12 @@ def _pool_entries(auth_store: Dict[str, Any], provider_id: str) -> Optional[List
 
 def _pool_codex_credential() -> Tuple[str, str]:
     """``(access_token, row base_url)`` of the first pool entry with a non-empty access_token that is
-    not in an exhaustion cooldown window, so the caller routes the token to the host that row belongs
-    to; ``("", "")`` when none is usable.
+    not in an exhaustion cooldown window and not terminally ``dead``, so the caller routes the
+    token to the host that row belongs to; ``("", "")`` when none is usable.
 
     Fallback for ``resolve_codex_runtime_credentials`` when the singleton has no creds; reads
     through ``read_credential_pool`` so a profile inherits the global-root pool (#34143)."""
-    from agent.credential_pool import _parse_absolute_timestamp
+    from agent.credential_pool import STATUS_DEAD, _parse_absolute_timestamp
     from hermes_cli.auth import _nonempty_str, read_credential_pool
     try:
         for entry in _codex_pool_dicts(read_credential_pool("openai-codex")):
@@ -931,7 +931,14 @@ def _pool_codex_credential() -> Tuple[str, str]:
             # raw reads as far-future here and as elapsed there, hiding a usable entry (#103349).
             reset_at = _parse_absolute_timestamp(entry.get("last_error_reset_at"))
             in_cooldown = reset_at is not None and reset_at > time.time()
-            if _nonempty_str(token) and not in_cooldown:
+            # DEAD is terminal (revoked / invalidated) and never recovers on its own — the same
+            # row ``_available_entries`` refuses to rotate to. Handing it out here only buys a
+            # guaranteed 401, so fail closed like an empty pool (#123746).
+            if (
+                _nonempty_str(token)
+                and not in_cooldown
+                and entry.get("last_status") != STATUS_DEAD
+            ):
                 return token.strip(), _stripped(entry.get("base_url"))
     except Exception:
         logger.debug("Codex pool fallback lookup failed", exc_info=True)

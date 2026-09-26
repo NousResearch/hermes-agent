@@ -11,6 +11,36 @@ import pytest
 
 
 
+def test_invalid_code_scoped_stamp_falls_back_to_git(tmp_path):
+    """A corrupt code-scoped stamp must not block project detection."""
+    code = tmp_path / "code"
+    home = tmp_path / "home"
+    code.mkdir()
+    home.mkdir()
+    (code / ".git").mkdir()
+    (code / ".install_method").write_bytes(b"\xd0")
+
+    with patch("hermes_cli.config.get_managed_system", return_value=None), \
+         patch("hermes_cli.config.get_hermes_home", return_value=home):
+        from hermes_cli.config import detect_install_method
+        assert detect_install_method(project_root=code) == "git"
+
+
+def test_invalid_home_scoped_stamp_falls_back_to_git(tmp_path):
+    """A corrupt legacy home stamp must not block project detection."""
+    code = tmp_path / "code"
+    home = tmp_path / "home"
+    code.mkdir()
+    home.mkdir()
+    (code / ".git").mkdir()
+    (home / ".install_method").write_bytes(b"\xd0")
+
+    with patch("hermes_cli.config.get_managed_system", return_value=None), \
+         patch("hermes_cli.config.get_hermes_home", return_value=home):
+        from hermes_cli.config import detect_install_method
+        assert detect_install_method(project_root=code) == "git"
+
+
 def test_code_scoped_stamp_wins_over_home_stamp(tmp_path):
     """The stamp next to the running code is authoritative over $HERMES_HOME.
 

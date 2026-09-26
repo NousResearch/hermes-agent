@@ -229,6 +229,13 @@ def listen_address(extra: Dict[str, Any]) -> tuple[str, int]:
     return host, _coerce_port(raw_port, DEFAULT_PORT)
 MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
+# Idle external-memory managers parked between api_server turns, keyed by
+# (gateway_session_key, session_id, provider names) (#120116). Every request
+# builds a fresh agent, which orphans the previous turn's queued async
+# prefetch; reusing the idle manager restores recall injection on continued
+# sessions. Pop-while-in-use: at most one turn holds a manager, so concurrent
+# same-session turns fall back to a fresh one (today's behavior), never share.
+_SESSION_MEMORY_MANAGER_CACHE_MAX_SIZE = 64
 # Send a comment before remote API clients' common 20-second idle deadline.
 # This constant is shared by OpenAI chat/Responses and native session SSE.
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 10.0
@@ -1222,6 +1229,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._session_dbs: Dict[str, Any] = {}  # per-profile-home SessionDB cache
         self._session_db_cache_lock = threading.Lock()
         self._session_db_cache_closed = False
+        # Idle external-memory managers parked between turns (#120116); the
+        # pop/park helpers below own every access (always under the lock).
+        self._session_memory_managers: Dict[tuple, Any] = {}
+        self._session_memory_managers_lock = threading.Lock()
         # Last-known-good model per gateway_session_key ("*" = process-wide; never session_id,
         # which is per request -> unbounded). Recovers a transient empty model resolution.
         self._last_resolved_model: Dict[str, str] = {}
@@ -2318,6 +2329,80 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         model = self._recover_or_record_model(model, runtime_kwargs, gateway_session_key)
         return model, session_override, request_model, request_provider
 
+    @staticmethod
+    def _session_memory_key(
+        session_id: Optional[str], gateway_session_key: Optional[str], manager: Any,
+    ) -> Optional[tuple]:
+        """Cache key for cross-request memory-manager reuse, or None when uncacheable.
+
+        Provider names join the key so a config change (or a turn with memory
+        disabled) never transplants a stale manager; the gateway_session_key
+        keeps per-channel memory scopes (e.g. Honcho per-user) apart.
+        """
+        if not session_id:
+            return None
+        names = tuple(sorted({
+            getattr(p, "name", "") for p in (getattr(manager, "providers", None) or [])}))
+        names = tuple(n for n in names if n)
+        return (gateway_session_key or "", session_id, names) if names else None
+
+    def _take_session_memory_manager(
+        self, session_id: Optional[str], gateway_session_key: Optional[str], manager: Any,
+    ) -> Any:
+        """Pop this session's idle memory manager for a fresh agent (None: none parked).
+
+        Popping (not peeking) keeps at most one turn holding a manager: a
+        concurrent same-session turn misses and builds a fresh one, exactly
+        today's behavior, instead of sharing provider state mid-turn.
+        """
+        key = self._session_memory_key(session_id, gateway_session_key, manager)
+        if key is None:
+            return None
+        with self._session_memory_managers_lock:
+            return self._session_memory_managers.pop(key, None)
+
+    def _park_session_memory_manager(
+        self, agent: Any, session_id: Optional[str], gateway_session_key: Optional[str],
+    ) -> None:
+        """Park a finished turn's memory manager for the session's next turn.
+
+        Keyed by the agent's effective session id so a mid-turn compression
+        rotation is stored under the id the client will continue with (the
+        response header carries it); put-if-absent so a concurrent turn's
+        manager is never clobbered. LRU-capped; evicted managers are shut down
+        best-effort. Never raises.
+        """
+        try:
+            manager = getattr(agent, "_memory_manager", None)
+            if manager is None:
+                return
+            key = self._session_memory_key(
+                getattr(agent, "session_id", None) or session_id, gateway_session_key, manager)
+            if key is None:
+                return
+            with self._session_memory_managers_lock:
+                if key in self._session_memory_managers:
+                    return
+                self._session_memory_managers[key] = manager
+                while len(self._session_memory_managers) > _SESSION_MEMORY_MANAGER_CACHE_MAX_SIZE:
+                    _, evicted = self._session_memory_managers.popitem(last=False)
+                    with suppress(Exception):
+                        evicted.shutdown_all()
+        except Exception:
+            logger.debug("parking session memory manager failed", exc_info=True)
+
+    def _close_session_memory_managers(self) -> None:
+        """Drain the parked-manager cache (adapter disconnect); best-effort, never raises."""
+        try:
+            with self._session_memory_managers_lock:
+                managers = list(self._session_memory_managers.values())
+                self._session_memory_managers.clear()
+        except Exception:
+            return
+        for manager in managers:
+            with suppress(Exception):
+                manager.shutdown_all()
+
     def _create_agent(
         self, ephemeral_system_prompt: Optional[str] = None, session_id: Optional[str] = None,
         stream_delta_callback=None, tool_progress_callback=None, tool_start_callback=None,
@@ -2394,6 +2479,18 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if request_service_tier is not _REQUEST_OPTION_MISSING:
             agent_kwargs["service_tier"] = request_service_tier
         agent = AIAgent(**agent_kwargs)
+        # #120116: hand this session's idle memory manager (with the previous
+        # turn's queued async prefetch) to the fresh agent. Tool schemas were
+        # copied from an identical fresh provider above and dispatch reads
+        # agent._memory_manager dynamically, so the swap is transparent.
+        try:
+            cached_manager = self._take_session_memory_manager(
+                session_id, gateway_session_key, getattr(agent, "_memory_manager", None))
+        except Exception:
+            cached_manager = None
+            logger.debug("session memory manager lookup failed", exc_info=True)
+        if cached_manager is not None and cached_manager is not getattr(agent, "_memory_manager", None):
+            agent._memory_manager = cached_manager
         route_source = (
             "session_model_lock" if confirmed_runtime_lock
             else "session_model_override" if session_override
@@ -4279,6 +4376,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         if bind_declared_conversation:
                             self._bind_declared_conversation(
                                 getattr(agent, "session_id", None) or session_id, gateway_session_key)
+                        # #120116: park the turn's memory manager (with its queued
+                        # async prefetch) for the session's next request.
+                        self._park_session_memory_manager(agent, session_id, gateway_session_key)
                     clear_session_vars(tokens)
         self._activate_admitted_request()
         self._inflight_agent_runs += 1
@@ -4547,6 +4647,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 self._runner = None
         finally:
             self._close_cached_session_dbs()
+            self._close_session_memory_managers()
             self._app = None
         logger.info("[%s] API server stopped", self.name)
 

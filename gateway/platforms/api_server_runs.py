@@ -838,6 +838,8 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
             if run.declared_selected:
                 self._bind_declared_conversation(
                     getattr(agent, "session_id", None) or session_id, run.gateway_session_key)
+            # #120116: park the turn's memory manager for the session's next request.
+            self._park_session_memory_manager(agent, session_id, run.gateway_session_key)
             try:
                 unregister_gateway_notify(run.approval_session_key)
             finally:

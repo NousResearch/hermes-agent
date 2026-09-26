@@ -231,6 +231,10 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     so a tail that failed is retried on the next launch WITHOUT rebuilding
     dependencies that are already current. Old updaters need not write a
     marker (and cannot accidentally clear this obligation).
+    A supervised child never retries that tail: its manager restarts it on
+    every start, so a sticky marker would re-run the tail (and its
+    environment builds) on each boot until the disk fills. The tail stays
+    the CLI's to finish, via ``hermes update`` / ``hermes pm install``.
     Return the store interpreter when this process must restart cleanly.
     """
     import os
@@ -247,6 +251,8 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     if (command_argv(argv)[:1] == ["pm"]
             or _METADATA_FLAGS & set(argv)
             or os.environ.get("HERMES_DISABLE_LAZY_INSTALLS", "").lower() in ("1", "true", "yes")
+            or os.environ.get("HERMES_SUPERVISED_CHILD")
+            or os.environ.get("HERMES_S6_SUPERVISED_CHILD")
             or not (root / ".git").exists()
             or not (root / "pyproject.toml").is_file()):
         return None

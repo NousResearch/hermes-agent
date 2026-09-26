@@ -36,7 +36,7 @@ import {
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
-import { useI18n } from "@/i18n";
+import { countLabel, useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { errorMessage } from "@/lib/api-error";
@@ -418,9 +418,7 @@ function ProviderGroupCard({
             </a>
           )}
           <span className="text-xs text-text-tertiary">
-            {t.env.keysCount
-              .replace("{count}", String(group.entries.length))
-              .replace("{s}", group.entries.length !== 1 ? "s" : "")}
+            {countLabel(t.env.keysCount, group.entries.length)}
           </span>
         </div>
       </ListItem>

@@ -258,6 +258,44 @@ Replying to (quoting) an earlier message gives the agent the quoted text as cont
 
 ---
 
+## Running several profiles on one host
+
+Each Hermes profile runs its own WhatsApp bridge. Two profiles sharing the
+default `bridge_port` (3000) cannot both own it: the second profile finds the
+first profile's bridge and refuses to start.
+
+Give every profile a distinct port under `platforms.whatsapp.extra` in that
+profile's `config.yaml`:
+
+```yaml
+platforms:
+  whatsapp:
+    extra:
+      bridge_port: 3001        # one distinct port per profile
+```
+
+- `bridge_port` must differ per profile. The adapter identifies a bridge by
+  the session directory reported in `/health`; a bridge serving a different
+  profile's session is never adopted and never stopped.
+- Each profile already gets its own session directory by default, so no
+  session configuration is needed for multi-profile setups.
+- If you override `session_path`, use an absolute path and keep it distinct
+  per profile, otherwise the profiles share one WhatsApp login.
+
+When a profile finds a foreign bridge on its port, the profile's WhatsApp
+platform fails to start with:
+
+```
+Port 3000 is already served by a WhatsApp bridge for a different session
+(/home/you/.hermes/profiles/other/platforms/whatsapp/session). Give this
+profile its own port via platforms.whatsapp.extra.bridge_port (one distinct
+bridge_port per profile); nothing on port 3000 was stopped.
+```
+
+Bridges started by an older Hermes version report no session directory;
+the adapter treats them as stale and restarts them once, as with a
+bridge.js update.
+
 ## Troubleshooting
 
 | Problem | Solution |

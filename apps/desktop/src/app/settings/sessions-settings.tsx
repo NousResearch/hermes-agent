@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { restoreListedSession } from '@/app/session/hooks/use-session-actions/utils'
 import { Button } from '@/components/ui/button'
@@ -9,6 +9,7 @@ import {
   getHermesConfigRecord,
   listAllProfileSessions,
   type ProfileScope,
+  profileScopeKey,
   saveHermesConfig,
   setSessionArchived
 } from '@/hermes'
@@ -36,7 +37,11 @@ const ARCHIVED_FETCH_LIMIT = 200
 
 function archivedSessionScope(settingsOwner: ProfileScope, session: SessionInfo): ProfileScope {
   if (settingsOwner && typeof settingsOwner === 'object') {
-    return { ...settingsOwner, profile: session.profile ?? settingsOwner.profile }
+    return {
+      ...settingsOwner,
+      connectionOwnerProfile: settingsOwner.profile ?? 'default',
+      profile: session.profile ?? settingsOwner.profile
+    }
   }
 
   return sessionOwnerRouteFromRow(session) ?? session.profile
@@ -73,6 +78,17 @@ function ArchivedSessionsSettings({
   const [sessions, setLocalSessions] = useState<SessionInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [lifetime] = useState(() => new AbortController())
+  const ownerKey = profileScopeKey(settingsOwner)
+  const ownerKeyRef = useRef(ownerKey)
+  ownerKeyRef.current = ownerKey
+
+  useEffect(() => () => lifetime.abort(), [lifetime])
+
+  const ownerIsCurrent = useCallback(
+    (capturedOwnerKey: string) => !lifetime.signal.aborted && ownerKeyRef.current === capturedOwnerKey,
+    [lifetime]
+  )
 
   useEffect(() => {
     let alive = true
@@ -110,10 +126,17 @@ function ArchivedSessionsSettings({
 
   const unarchive = useCallback(
     async (session: SessionInfo) => {
+      const actionOwnerKey = ownerKey
+      const actionScope = archivedSessionScope(settingsOwner, session)
       setBusyId(session.id)
 
       try {
-        await setSessionArchived(session.id, false, archivedSessionScope(settingsOwner, session))
+        await setSessionArchived(session.id, false, actionScope)
+
+        if (!ownerIsCurrent(actionOwnerKey)) {
+          return
+        }
+
         setLocalSessions(prev => prev.filter(s => s.id !== session.id))
         // Surface it again in the sidebar without waiting for a full refresh, and
         // lift any optimistic eviction so the grouped tree shows it again too.
@@ -122,42 +145,58 @@ function ArchivedSessionsSettings({
         triggerHaptic('selection')
         notify({ durationMs: 2_000, kind: 'success', message: s.restored })
       } catch (err) {
-        notifyError(err, s.unarchiveFailed)
+        if (ownerIsCurrent(actionOwnerKey)) {
+          notifyError(err, s.unarchiveFailed)
+        }
       } finally {
-        setBusyId(null)
+        if (ownerIsCurrent(actionOwnerKey)) {
+          setBusyId(null)
+        }
       }
     },
-    [s, settingsOwner]
+    [ownerIsCurrent, ownerKey, s, settingsOwner]
   )
 
   const remove = useCallback(
     async (session: SessionInfo) => {
+      const actionOwnerKey = ownerKey
+      const actionScope = archivedSessionScope(settingsOwner, session)
+
       const ok = await confirm({
         confirmLabel: s.deletePermanently,
         destructive: true,
         title: s.deleteConfirm(sessionTitle(session))
       })
 
-      if (!ok) {
+      if (!ok || !ownerIsCurrent(actionOwnerKey)) {
         return
       }
 
       setBusyId(session.id)
 
       try {
-        await deleteSession(session.id, archivedSessionScope(settingsOwner, session))
+        await deleteSession(session.id, actionScope)
+
+        if (!ownerIsCurrent(actionOwnerKey)) {
+          return
+        }
+
         // Permanent delete bypasses removeSession, so retire the persisted
         // unread state here too rather than leaving it to rot.
         forgetSessionUnread([session.id, session._lineage_root_id], session.profile)
         setLocalSessions(prev => prev.filter(s => s.id !== session.id))
         triggerHaptic('warning')
       } catch (err) {
-        notifyError(err, s.deleteFailed)
+        if (ownerIsCurrent(actionOwnerKey)) {
+          notifyError(err, s.deleteFailed)
+        }
       } finally {
-        setBusyId(null)
+        if (ownerIsCurrent(actionOwnerKey)) {
+          setBusyId(null)
+        }
       }
     },
-    [s, settingsOwner]
+    [ownerIsCurrent, ownerKey, s, settingsOwner]
   )
 
   useDeepLinkHighlight({

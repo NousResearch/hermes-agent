@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type * as ClientApi from './client'
 import type { SidebarSessionsResponse } from './sessions'
 
 vi.mock('@/lib/gateway-rpc', () => ({ isMissingRestEndpoint: () => false }))
@@ -13,6 +14,7 @@ vi.mock('./client', () => ({
 }))
 
 const client = await import('./client')
+const actualClient = await vi.importActual<typeof ClientApi>('./client')
 
 const {
   deleteSession,
@@ -28,6 +30,7 @@ const hermesApi = vi.mocked(client.hermesApi)
 
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.mocked(client.capabilityScoped).mockImplementation(actualClient.capabilityScoped)
   vi.mocked(client.getApiRequestConnection).mockReturnValue('prometheus')
   vi.mocked(client.getApiRequestProfile).mockReturnValue(null)
 })
@@ -54,6 +57,31 @@ describe('listAllProfileSessions owner scoping', () => {
 })
 
 describe('deleteSession profile scoping', () => {
+  it('carries the captured Settings owner profile through the session helper request', async () => {
+    const connectionOwner = {
+      baseUrl: 'http://127.0.0.1:9001',
+      mode: 'local' as const,
+      token: 'synthetic-source-token'
+    }
+
+    hermesApi.mockResolvedValue({ ok: true } as never)
+    await deleteSession('sess-cross-profile', {
+      connectionId: 'same-id',
+      connectionOwner,
+      connectionOwnerProfile: 'default',
+      profile: 'research'
+    })
+
+    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+      connectionId: 'same-id',
+      connectionOwner,
+      connectionOwnerProfile: 'default',
+      method: 'DELETE',
+      path: '/api/sessions/sess-cross-profile?profile=research',
+      profile: 'research'
+    })
+  })
+
   it('scopes the DELETE to the owning profile in the URL (object owner)', async () => {
     // Regression: the sidebar "All Profiles" delete sent the profile only via
     // request.profile, not in the URL. On a remote gateway with no remoteProfile

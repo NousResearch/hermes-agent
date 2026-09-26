@@ -1450,6 +1450,9 @@ export interface HermesApiRequest {
   // Expected resolved registered route. Electron still resolves the id itself,
   // then rejects if that id now names a different URL/auth/SSH destination.
   connectionOwner?: ConnectionOwner
+  // Profile whose route produced connectionOwner. Session actions may target
+  // an archived row on another profile without changing this source owner.
+  connectionOwnerProfile?: string
   // Expected resolved legacy route, not an address the renderer may dial.
   legacyConnection?: LegacyConnectionOwner
   // Profile whose route produced legacyConnection. Session actions may target

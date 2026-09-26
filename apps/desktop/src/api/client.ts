@@ -192,6 +192,7 @@ export type ProfileScope =
       connectionId?: null | string
       profile?: null | string
       connectionOwner?: ConnectionOwner
+      connectionOwnerProfile?: string
       legacyConnection?: LegacyConnectionOwner
       legacyConnectionProfile?: string
     }
@@ -201,6 +202,7 @@ export function capabilityScoped(scope?: ProfileScope): {
   priority?: 'foreground'
   profile?: string
   connectionOwner?: ConnectionOwner
+  connectionOwnerProfile?: string
   legacyConnection?: LegacyConnectionOwner
   legacyConnectionProfile?: string
 } {
@@ -213,6 +215,7 @@ export function capabilityScoped(scope?: ProfileScope): {
       // An explicit legacy pin must also override hermesApi's ambient registry tag.
       ...(connectionId ? { connectionId } : scope.connectionId === null ? { connectionId: null } : {}),
       ...(scope.connectionOwner ? { connectionOwner: scope.connectionOwner } : {}),
+      ...(scope.connectionOwnerProfile ? { connectionOwnerProfile: scope.connectionOwnerProfile } : {}),
       ...(scope.legacyConnection ? { legacyConnection: scope.legacyConnection } : {}),
       ...(scope.legacyConnectionProfile ? { legacyConnectionProfile: scope.legacyConnectionProfile } : {}),
       priority: 'foreground'

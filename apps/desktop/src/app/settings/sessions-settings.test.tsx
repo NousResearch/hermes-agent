@@ -40,6 +40,7 @@ const archivedMatrixSession = {
 } as SessionInfo
 
 beforeEach(() => {
+  vi.clearAllMocks()
   Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: {} })
   setSessions([])
   setMessagingSessions([])
@@ -105,6 +106,7 @@ describe('SessionsSettings unarchive', () => {
     await waitFor(() =>
       expect(setSessionArchived).toHaveBeenCalledWith('matrix-1', false, {
         ...owner,
+        connectionOwnerProfile: 'default',
         profile: 'research'
       })
     )
@@ -130,9 +132,64 @@ describe('SessionsSettings unarchive', () => {
     await waitFor(() =>
       expect(deleteSession).toHaveBeenCalledWith('matrix-1', {
         ...owner,
+        connectionOwnerProfile: 'default',
         profile: 'research'
       })
     )
+  })
+  it('does not dispatch a confirmed delete after Settings changes owner', async () => {
+    let resolveConfirm!: (value: boolean) => void
+
+    vi.mocked(confirm).mockReturnValueOnce(new Promise(resolve => (resolveConfirm = resolve)))
+
+    const ownerA = {
+      connectionId: 'gateway-a',
+      profile: 'default',
+      connectionOwner: { baseUrl: 'http://127.0.0.1:9001', mode: 'local' as const, token: 'token-a' }
+    }
+
+    const ownerB = {
+      connectionId: 'gateway-b',
+      profile: 'default',
+      connectionOwner: { baseUrl: 'http://127.0.0.1:9002', mode: 'local' as const, token: 'token-b' }
+    }
+
+    const view = render(<SessionsSettings settingsOwner={ownerA} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: en.settings.sessions.deletePermanently }))
+
+    view.rerender(<SessionsSettings settingsOwner={ownerB} />)
+    await act(async () => resolveConfirm(true))
+
+    expect(deleteSession).not.toHaveBeenCalled()
+  })
+
+  it('does not publish a completed unarchive into a replacement owner', async () => {
+    let resolveUnarchive!: (value: { ok: boolean }) => void
+
+    vi.mocked(setSessionArchived).mockReturnValueOnce(new Promise(resolve => (resolveUnarchive = resolve)))
+
+    const ownerA = {
+      connectionId: 'gateway-a',
+      profile: 'default',
+      connectionOwner: { baseUrl: 'http://127.0.0.1:9001', mode: 'local' as const, token: 'token-a' }
+    }
+
+    const ownerB = {
+      connectionId: 'gateway-b',
+      profile: 'default',
+      connectionOwner: { baseUrl: 'http://127.0.0.1:9002', mode: 'local' as const, token: 'token-b' }
+    }
+
+    const view = render(<SessionsSettings settingsOwner={ownerA} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: en.settings.sessions.unarchive }))
+
+    view.rerender(<SessionsSettings settingsOwner={ownerB} />)
+    await act(async () => resolveUnarchive({ ok: true }))
+
+    expect($messagingSessions.get()).toEqual([])
+    expect($sessions.get()).toEqual([])
   })
 })
 

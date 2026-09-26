@@ -1065,8 +1065,22 @@ export async function resolveSettingsProfileConnection(profile, expectedOwner, r
   return connection
 }
 
-export async function resolveRegistryApiConnection(request, connectionId, ensureBackend) {
-  const connection = await ensureBackend(connectionId, request?.profile, request?.passive)
+export async function resolveRegistryApiConnection(request, connectionId, ensureBackend, routeProfile = request?.profile) {
+  if (Object.hasOwn(request, 'connectionOwnerProfile')) {
+    if (!request.connectionOwner || typeof request.connectionOwnerProfile !== 'string') {
+      throw new Error('Backend changed. Reopen Settings for the current connection.')
+    }
+
+    const resolveProfile = profile => ensureBackend(connectionId, profile, request?.passive)
+
+    return resolveSettingsProfileConnection(
+      routeProfile,
+      { connectionOwner: request.connectionOwner, profile: request.connectionOwnerProfile },
+      resolveProfile
+    )
+  }
+
+  const connection = await ensureBackend(connectionId, routeProfile, request?.passive)
 
   if (Object.hasOwn(request, 'connectionOwner')) {
     assertConnectionOwner(request.connectionOwner, connection)
@@ -1098,14 +1112,17 @@ export async function assertLegacyApiRequestOwner(request, routeProfile, ensureB
  * then dispatch to the row's route. The two profiles intentionally differ
  * when Settings is global-remote and an archived row has a profile override. */
 export async function dispatchLegacySessionRequest(request, routeProfile, ensureBackend, dispatch, options = {}) {
-  await assertLegacyApiRequestOwner(
-    request,
-    request?.legacyConnectionProfile ?? routeProfile,
-    ensureBackend,
-    options
-  )
+  let targetConnection
 
-  return dispatch()
+  if (request && Object.hasOwn(request, 'legacyConnection')) {
+    const sourceProfile = request.legacyConnectionProfile ?? routeProfile
+
+    await assertLegacyApiRequestOwner(request, sourceProfile, ensureBackend, options)
+    targetConnection = await ensureBackend(routeProfile, options)
+    await assertLegacyApiRequestOwner(request, sourceProfile, ensureBackend, options)
+  }
+
+  return dispatch(targetConnection)
 }
 
 export interface ProfileApiRequestRoute {

@@ -16578,7 +16578,7 @@ async function interceptSessionRequestForRemote(request) {
 
   const { pathname, searchParams } = parsed
 
-  const dispatchLegacySession = (dispatch: () => Promise<any>, profile = request?.profile) =>
+  const dispatchLegacySession = (dispatch: (connection?: any) => Promise<any>, profile = request?.profile) =>
     dispatchLegacySessionRequest(request, profile, ensureBackend, dispatch, {
       request: { method: request?.method, path: request?.path },
       spawnPriority: spawnPriorityFrom(request?.priority)
@@ -16691,7 +16691,13 @@ async function interceptSessionRequestForRemote(request) {
         ;(body as Record<string, unknown>).profile = ownerScope
       }
 
-      return dispatchLegacySession(() => requestJsonForProfile(profile, pathname, method, body), profile)
+      return dispatchLegacySession(
+        connection =>
+          connection
+            ? fetchJsonForBackend(connection, pathname, { body, method, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS })
+            : requestJsonForProfile(profile, pathname, method, body),
+        profile
+      )
     }
 
     if (globalRemoteActive()) {
@@ -16705,7 +16711,13 @@ async function interceptSessionRequestForRemote(request) {
 
       const body = request.body && typeof request.body === 'object' ? { ...request.body, profile } : { profile }
 
-      return dispatchLegacySession(() => requestJsonForProfile(null, path, method, body), profile)
+      return dispatchLegacySession(
+        connection =>
+          connection
+            ? fetchJsonForBackend(connection, path, { body, method, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS })
+            : requestJsonForProfile(null, path, method, body),
+        profile
+      )
     }
 
     return undefined
@@ -16922,12 +16934,16 @@ async function dispatchRegistryApiRequest(
   // passive read would otherwise inherit its "no warm backend" rejection.
   const spawnPriority = spawnPriorityFrom(request?.priority)
 
-  const connection: any = await resolveRegistryApiConnection(request, registryConnectionId, () =>
-    request?.passive
-      ? ensureRegistryBackend(registryConnectionId, routeProfile, '', { passive: true })
-      : backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile), () =>
-          ensureRegistryBackend(registryConnectionId, routeProfile, '', { spawnPriority })
-        )
+  const connection: any = await resolveRegistryApiConnection(
+    request,
+    registryConnectionId,
+    (_connectionId, profile) =>
+      request?.passive
+        ? ensureRegistryBackend(registryConnectionId, profile, '', { passive: true })
+        : backendDialClaims.run(backendScopeKey(registryConnectionId, profile), () =>
+            ensureRegistryBackend(registryConnectionId, profile, '', { spawnPriority })
+          ),
+    routeProfile
   )
 
   const requestPath = pathForRegistryBackendRequest(request.path, requestProfile, connection)

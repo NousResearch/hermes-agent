@@ -1424,6 +1424,10 @@ class GatewayStartupMixin:
         from gateway.run_heartbeat_restore import restore_heartbeat_watches
         self._start_heartbeat_poller()  # Keep retrying even when the first scan is empty.
         await restore_heartbeat_watches(self)
+        webhook = self.adapters.get(Platform.WEBHOOK)
+        restore_discussion = getattr(webhook, "restore_discussion_actions", None)
+        if callable(restore_discussion):
+            await restore_discussion()
         hook_count = len(self.hooks.loaded_hooks)
         if hook_count:
             logger.info("%s hook(s) loaded", hook_count)

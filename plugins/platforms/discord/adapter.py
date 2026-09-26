@@ -5615,6 +5615,15 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return send_kwargs, view
         return await self._send_prompt(chat_id, metadata, _build, fail_log="send_clarify")
 
+    async def restore_clarify_card(self, clarify_id: str, choices: list, message_id: str) -> bool:
+        """Rebind an existing discussion card after gateway restart without sending it again."""
+        if not self._client or not DISCORD_AVAILABLE:
+            return False
+        view = ClarifyChoiceView(choices, clarify_id, self._allowed_user_ids, self._allowed_role_ids)
+        view.timeout = None
+        self._client.add_view(view, message_id=int(message_id))
+        return True
+
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "", session_key: str = "",
         metadata: Optional[Dict[str, Any]] = None,
@@ -6768,6 +6777,11 @@ def _define_discord_view_classes() -> None:
                 unauth_msg=_UNAUTHORIZED,
             ):
                 return
+            from tools.clarify_gateway import _entries
+            entry = _entries.get(self.clarify_id)
+            if entry and entry.owner_user_id and str(interaction.user.id) != entry.owner_user_id:
+                await interaction.response.send_message(_UNAUTHORIZED, ephemeral=True)
+                return
             display_name = getattr(getattr(interaction, "user", None), "display_name", "user")
             await self._finish(interaction, discord.Color.green(), f"Answered by {display_name}: {choice}", log_edit_failure=True)
             # Round-trip the canonical choice text from the entry, not the button label.
@@ -6783,7 +6797,7 @@ def _define_discord_view_classes() -> None:
                 resolved_text = choice
             try:
                 from tools.clarify_gateway import resolve_gateway_clarify
-                resolved = resolve_gateway_clarify(self.clarify_id, resolved_text)
+                resolved = resolve_gateway_clarify(self.clarify_id, resolved_text, user_id=str(interaction.user.id))
                 logger.info(
                     "Discord clarify button resolved (id=%s, choice=%r, user=%s, ok=%s)",
                     self.clarify_id, resolved_text,
@@ -6798,6 +6812,11 @@ def _define_discord_view_classes() -> None:
                 interaction, resolved_msg="This prompt has already been answered~",
                 unauth_msg=_UNAUTHORIZED,
             ):
+                return
+            from tools.clarify_gateway import _entries
+            entry = _entries.get(self.clarify_id)
+            if entry and entry.owner_user_id and str(interaction.user.id) != entry.owner_user_id:
+                await interaction.response.send_message(_UNAUTHORIZED, ephemeral=True)
                 return
             # Don't pop: the gateway text-intercept needs the entry until the user types.
             try:

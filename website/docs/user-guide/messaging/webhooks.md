@@ -701,3 +701,28 @@ This is the same trust model that applies to everything the agent reads: web pag
 | `WEBHOOK_ENABLED` | Enable the webhook platform adapter | `false` |
 | `WEBHOOK_PORT` | HTTP server port for receiving webhooks | `8644` |
 | `WEBHOOK_SECRET` | Global HMAC secret (used as fallback when routes don't specify their own) | _(none)_ |
+
+
+### Bound discussion controls
+
+A `deliver_only` route may opt into `discussion_actions: true`. Its authenticated
+processor supplies `discussion_action` containing exactly `eventId`, `taskId`,
+`cardId`, and `sourceSessionId` (bounded identifiers, not prompts or logs). The
+existing authorized paired destination session owns the control. Missing or
+ambiguous session ownership refuses interactive delivery rather than guessing.
+
+The control offers **Ask about this task** and **Show decision** through the
+adapter's existing clarification surface (Discord buttons, WhatsApp polls where
+supported). It requests a discussion in that same session; it never approves a
+release, retries engineering or creates another task. Only that session's user
+may answer. The binding lives in existing session metadata, expires after five
+minutes, and a duplicate event does not resend the control or wake a model.
+Restart restores reply interception without resending alerts; Discord rebinds
+its existing card when the stored message ID is available. No mobile task-link
+support is implied. A refused model admission remains recorded as
+`admission_failed`, so it is not misreported as a successful response.
+
+Only one clarification may be active in a destination session. When another
+question is already pending, the alert is delivered as ordinary text rather than
+posting a second poll that could answer the wrong task. Additional platform
+adapters need verified responder-identity plumbing before enabling these controls.

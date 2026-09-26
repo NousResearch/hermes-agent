@@ -109,6 +109,9 @@ def test_will_retry_mirrors_plan_retry_yield(tmp_cron_home):
     assert jm[ur.STATE_KEY]["attempt"] == 1
     assert ur.will_retry(jm) is False, "10m cadence beats the 15m rung: yielded, notice goes out"
 
+    last = create_job("final run", "every 24h", repeat=1)
+    assert ur.will_retry(get_job(last["id"])) is False, "final finite repeat completes the job"
+
 
 def test_reaching_the_model_resets_ladder_and_oneshots_never_retry(tmp_cron_home):
     """Any run that reached the model clears retry state; one-shots (pre-claimed

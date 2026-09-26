@@ -69,10 +69,15 @@ def _is_recurring(job: Dict[str, Any]) -> bool:
 
 def will_retry(job: Dict[str, Any]) -> bool:
     """True iff ``plan_retry`` will park a re-run for this flagged failure, so the scheduler
-    may hold the interim notice: recurring, unpaused, ladder not exhausted, enabled, and the
-    rung strictly before the natural occurrence. Called before ``mark_job_run``."""
+    may hold the interim notice: recurring, unpaused, not on its final finite repeat, ladder
+    not exhausted, enabled, and the rung strictly before the natural occurrence. Called
+    before ``mark_job_run``."""
     if not _is_recurring(job) or job.get("state") == "paused":
         return False
+    repeat = job.get("repeat") or {}
+    times = repeat.get("times")
+    if times and times > 0 and int(repeat.get("completed") or 0) + 1 >= times:
+        return False  # _advance_after_run completes the job; plan_retry never runs
     state = job.get(STATE_KEY) or {}
     attempt = int(state.get("attempt") or 0)
     if attempt >= len(RETRY_DELAYS_SECONDS):

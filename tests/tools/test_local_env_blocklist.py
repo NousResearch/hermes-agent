@@ -102,10 +102,10 @@ PHOTON_SIDECAR_TOKEN RAFT_CHANNEL_TOKEN MSGRAPH_WEBHOOK_CLIENT_STATE MSGRAPH_CLI
 
 @pytest.mark.parametrize("builder", ["foreground", "background", "nonterminal"])
 def test_adapter_and_provider_profile_secrets_never_reach_children(child_env, monkeypatch, builder):
-    from providers import list_providers
+    from providers import bundled_provider_profiles
     from tools.env_passthrough import is_env_passthrough, register_env_passthrough
     secrets = set(ADAPTER_SECRETS)
-    secrets.update(name for profile in list_providers() for name in (profile.env_vars or ()))
+    secrets.update(name for profile in bundled_provider_profiles() for name in (profile.env_vars or ()))
     secrets.discard("CLAUDE_CODE_OAUTH_TOKEN")  # operator's subscription, not Hermes inference
     operator = ["MY_APP_KEY", "DEPLOY_WEBHOOK_SECRET"]  # secret-shaped, but no adapter owns them
     for name in [*secrets, *operator]:
@@ -120,6 +120,46 @@ def test_adapter_and_provider_profile_secrets_never_reach_children(child_env, mo
     # Skill passthrough is what forwards a name into docker/ssh/modal and execute_code children.
     register_env_passthrough(sorted(secrets))
     assert not any(is_env_passthrough(name) for name in secrets)
+
+
+def test_inheriting_child_gets_provider_keys_but_never_adapter_secrets(child_env, monkeypatch):
+    # inherit_credentials is the narrow grant for model-driving CLIs: provider keys only.
+    granted = ["OPENAI_API_KEY", "NOUS_API_KEY", "MY_APP_KEY", "DEPLOY_WEBHOOK_SECRET"]
+    for name in [*ADAPTER_SECRETS, *granted]:
+        monkeypatch.setenv(name, "fake-" + name)
+    observed = observe_child(local.hermes_subprocess_env(inherit_credentials=True),
+                             sorted([*ADAPTER_SECRETS, *granted]))
+    assert observed == {**dict.fromkeys(ADAPTER_SECRETS), **{k: "fake-" + k for k in granted}}
+
+
+def test_runtime_adapter_secret_follows_the_bound_profiles_registry(child_env, monkeypatch):
+    from gateway.platform_registry import PlatformEntry, platform_registry
+    from tools.env_passthrough import is_env_passthrough, register_env_passthrough
+    home_a, home_b = child_env / "hermes", child_env / "profile-b"
+    home_a.mkdir(exist_ok=True)
+    home_b.mkdir()
+    name = "ACME_CHAT_SIGNING_SECRET"  # read by a user adapter; no OPTIONAL_ENV_VARS entry
+    monkeypatch.setenv(name, "fake-secret")
+    monkeypatch.setenv("MY_APP_KEY", "operator")
+    scope_a = platform_registry.current_scope_key()
+    # Registered after the policy module was imported, in profile A only.
+    platform_registry.register(PlatformEntry(name="acme-chat", label="Acme", adapter_factory=lambda c: None,
+                                             check_fn=lambda: True), scope=scope_a)
+
+    def child_sees():
+        return observe_child(local.hermes_subprocess_env(), [name, "MY_APP_KEY"])
+
+    try:
+        assert child_sees() == {name: None, "MY_APP_KEY": "operator"}
+        register_env_passthrough([name])
+        assert not is_env_passthrough(name)
+        monkeypatch.setenv("HERMES_HOME", str(home_b))  # B has no such adapter: operator-owned
+        assert child_sees() == {name: "fake-secret", "MY_APP_KEY": "operator"}
+        monkeypatch.setenv("HERMES_HOME", str(home_a))
+        assert child_sees() == {name: None, "MY_APP_KEY": "operator"}
+    finally:
+        platform_registry.unregister("acme-chat", scope=scope_a)
+    assert child_sees() == {name: "fake-secret", "MY_APP_KEY": "operator"}
 
 
 @pytest.mark.parametrize("builder", ["foreground", "background", "factory", "nonterminal"])

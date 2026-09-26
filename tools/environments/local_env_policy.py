@@ -61,9 +61,11 @@ def _build_provider_env_blocklist() -> frozenset:
         pass
     try:
         # The registry mirror copies env_vars only for api_key profiles, but OAuth
-        # profiles (nous, qwen-oauth) also accept a pasted key under theirs.
-        from providers import list_providers
-        for profile in list_providers():
+        # profiles (nous, qwen-oauth) also accept a pasted key under theirs. Bundled
+        # profiles only: this frozenset is process-wide, and a home's own provider
+        # plugins would freeze the home bound at import into every profile's policy.
+        from providers import bundled_provider_profiles
+        for profile in bundled_provider_profiles():
             blocked.update(profile.env_vars or ())
     except ImportError:
         pass
@@ -109,13 +111,14 @@ def _is_provider_env_blocklisted(name: str) -> bool:
 # Adapters read many secrets straight from the environment without listing them in
 # OPTIONAL_ENV_VARS (TELEGRAM_WEBHOOK_SECRET, WHATSAPP_CLOUD_APP_SECRET, WEIXIN_TOKEN, ...), so
 # the list above never sees them. Match them by shape, like the authorization gates below: an
-# adapter prefix plus a secret suffix, so a new adapter secret needs no second edit.
+# adapter prefix plus a secret suffix, so a new adapter secret needs no second edit. The owners
+# are read per call because plugin adapters register late and per profile.
 _PLATFORM_SECRET_ENV_SUFFIXES = ("_TOKEN", "_SECRET", "_PASSWORD", "_KEY")
 
 
 def _is_platform_secret_env(upper: str) -> bool:
     return upper.endswith(_PLATFORM_SECRET_ENV_SUFFIXES) and any(
-        upper.startswith(prefix + "_") for prefix in _static_gate_env_prefixes())
+        upper.startswith(prefix + "_") for prefix in _platform_gate_env_prefixes())
 
 # First-party platform credentials (``BUZZ_*``, driving the platform-mandated ``buzz``
 # CLI) carved out of the TERMINAL scrub only (``_make_run_env``,
@@ -318,6 +321,7 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     # enumerated here to stay stripped on the inherit_credentials=True path.
     "GATEWAY_RELAY_ID", "GATEWAY_RELAY_SECRET", "GATEWAY_RELAY_DELIVERY_KEY",
     "HASS_TOKEN", "EMAIL_PASSWORD", "HERMES_DASHBOARD_SESSION_TOKEN",
+    "MSGRAPH_CLIENT_SECRET", "MSGRAPH_WEBHOOK_CLIENT_STATE",
     # Remote-compute / infrastructure secrets
     "MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET", "DAYTONA_API_KEY",
 })

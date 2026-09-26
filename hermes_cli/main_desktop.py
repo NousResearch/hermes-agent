@@ -1422,6 +1422,22 @@ def cmd_gui(args: argparse.Namespace):
     from hermes_cli.main import PROJECT_ROOT
     from hermes_cli.source_build import prepare_source_dependencies, source_build_env
     desktop_dir = PROJECT_ROOT / "apps" / "desktop"
+    if getattr(args, "update_all", False):
+        from hermes_cli.desktop_update_request import launch_desktop_update_all
+        incompatible = ("source", "build_only", "force_build", "setup_tcc_identity", "ignore_existing", "hermes_root")
+        if any(getattr(args, name, False) for name in incompatible):
+            print("--update-all uses an existing Desktop build; it cannot be combined with "
+                  "--source, --build-only, --force-build, --setup-tcc-identity, "
+                  "--ignore-existing or --hermes-root.", file=sys.stderr)
+            sys.exit(2)
+        executable = _desktop_packaged_executable(desktop_dir)
+        if executable is None:
+            print("No packaged Desktop app found. Run `hermes desktop` once to build it, "
+                  "then retry `hermes desktop --update-all`.", file=sys.stderr)
+            sys.exit(1)
+        env, flags = _desktop_launch_env(args)
+        command = [*_packaged_desktop_launch_command(executable), *flags]
+        sys.exit(launch_desktop_update_all(command, cwd=desktop_dir, env=env))
     # A bundled install IS the app: no source tree, no build, and the
     # launcher is a sibling of this payload rather than something we
     # produce. Every rung below assembles a checkout build, so the sealed

@@ -501,6 +501,7 @@ import {
   windowOpacityFor,
   windowOpacityOptions
 } from './translucency'
+import { createUpdateAllLaunch, takeUpdateAllLaunchArg } from './update-all-launch'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import {
@@ -645,6 +646,9 @@ const PREVIEW_GUEST_PRELOAD_PATH = path.join(APP_ROOT, 'dist', 'preview-guest-pr
 // next to the connection's latency. Must run before app `ready` — these
 // switches only apply pre-launch. Override with HERMES_DESKTOP_DISABLE_GPU
 // (1/true → always disable, 0/false → keep GPU on).
+const initialUpdateAllRequest = takeUpdateAllLaunchArg(process.argv)
+app.commandLine.removeSwitch('hermes-update-all-request')
+
 const REMOTE_DISPLAY_REASON = detectRemoteDisplay()
 
 if (REMOTE_DISPLAY_REASON) {
@@ -914,7 +918,7 @@ if (INSTALL_STAMP) {
 
 const DESKTOP_PROFILE_CONFIG_PATH: string = path.join(app.getPath('userData'), 'active-profile.json')
 // Only the lock-owning destination may adopt a workspace or start a backend.
-const isPrimaryInstance: boolean = app.requestSingleInstanceLock()
+const isPrimaryInstance: boolean = app.requestSingleInstanceLock({ updateAllRequest: initialUpdateAllRequest })
 
 if (!isPrimaryInstance) {
   app.exit(0)
@@ -14778,6 +14782,8 @@ function createWindow() {
     revealController.reveal()
   }
 
+  mainWindow.webContents.on('did-start-loading', () => updateAllLaunch.rendererGone())
+  mainWindow.webContents.on('render-process-gone', () => updateAllLaunch.rendererGone())
   bindWindowChromeEvents(mainWindow, sendWindowStateChanged)
 
   // Reopen where the user left off. close is the backstop, flushed
@@ -14797,6 +14803,7 @@ function createWindow() {
       mainWindow = null
       // the replacement renderer must register before queued links can be delivered.
       _rendererReadyForDeepLink = false
+      updateAllLaunch.rendererGone()
     }
   })
 
@@ -18315,6 +18322,28 @@ let _rendererReadyForDeepLink = false
 // Set by sendOpenUpdatesRequested() when the renderer cannot hear it yet.
 let _pendingOpenUpdates = false
 
+const updateAllLaunch = createUpdateAllLaunch({
+  deliver: id => {
+    mainWindow.webContents.send('hermes:update-all-requested', id)
+    focusWindow(mainWindow)
+  },
+  reportError: error => {
+    rememberLog(`[updates] update-all launch failed: ${String(error)}`)
+    dialog.showErrorBox('Update all was not started', String(error))
+  }
+})
+
+ipcMain.handle('hermes:update-all-ready', event => {
+  if (event.sender === mainWindow?.webContents) {
+    updateAllLaunch.ready()
+  }
+})
+ipcMain.handle('hermes:update-all-complete', (event, id) => {
+  if (event.sender === mainWindow?.webContents && typeof id === 'string') {
+    updateAllLaunch.complete(id)
+  }
+})
+
 function _extractDeepLink(argv) {
   if (!Array.isArray(argv)) {
     return null
@@ -18449,7 +18478,19 @@ if (!isPrimaryInstance) {
   // routes into the running window and never touches backend machinery.
   app.exit(0)
 } else {
-  app.on('second-instance', (_event, argv) => {
+  app.on('second-instance', (_event, argv, _cwd, additionalData) => {
+    const updateRequest =
+      additionalData &&
+      typeof additionalData === 'object' &&
+      'updateAllRequest' in additionalData &&
+      typeof additionalData.updateAllRequest === 'string'
+        ? additionalData.updateAllRequest
+        : takeUpdateAllLaunchArg(argv)
+
+    if (updateRequest) {
+      void updateAllLaunch.request(updateRequest)
+    }
+
     const url = _extractDeepLink(argv)
 
     if (url) {
@@ -18589,6 +18630,10 @@ app.whenReady().then(() => {
     setApplicationMenu: menu => Menu.setApplicationMenu(menu),
     createWindow
   })
+
+  if (initialUpdateAllRequest) {
+    void updateAllLaunch.request(initialUpdateAllRequest)
+  }
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
   const _coldStartLink = _extractDeepLink(process.argv)

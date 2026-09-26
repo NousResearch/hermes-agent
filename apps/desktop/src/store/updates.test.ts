@@ -740,6 +740,44 @@ describe('applyEverythingUpdate', () => {
     delete (globalThis as unknown as { window?: unknown }).window
   })
 
+  it('cold launch waits for a passive client check, then forces a fresh check before applying', async () => {
+    setRemote(false)
+    $mockConnectionsRegistry.set(registryOf(['local']))
+    let release: (value: DesktopUpdateStatus) => void = () => undefined
+    checkClientMock
+      .mockImplementationOnce(
+        () =>
+          new Promise(resolve => {
+            release = resolve
+          })
+      )
+      .mockResolvedValueOnce(status({ behind: 3, updateAvailable: true }))
+    const passive = checkUpdates()
+    const update = applyEverythingUpdate()
+    await Promise.resolve()
+    release(status({ behind: 0, updateAvailable: false }))
+    await Promise.all([passive, update])
+    expect(checkClientMock.mock.calls.map(([options]) => options.force)).toEqual([false, true])
+    expect(applyClientMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('coalesces simultaneous forced client checks without preventing a later retry', async () => {
+    let release: (value: DesktopUpdateStatus) => void = () => undefined
+    checkClientMock.mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          release = resolve
+        })
+    )
+    const first = checkUpdates({ force: true })
+    const second = checkUpdates({ force: true })
+    expect(second).toBe(first)
+    release(status({ behind: 0 }))
+    await Promise.all([first, second])
+    await checkUpdates({ force: true })
+    expect(checkClientMock).toHaveBeenCalledTimes(2)
+  })
+
   it('gates on multiple targets: remote mode OR a multi-connection registry', () => {
     setRemote(false)
     $mockConnectionsRegistry.set(null)

@@ -17275,31 +17275,29 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             logger.debug("Could not persist active CLI session before close: %s", e)
 
     def _fire_notification(self, title: str, body: str, force: bool = False) -> None:
-        """Best-effort Windows toast notification.
+        """Best-effort desktop notification on the current platform.
 
         Non-blocking and failure-swallowed so it can never interfere with
         the interactive loop or shutdown.
 
+        Dispatches by platform:
+        * Windows  -> WinRT toast (PowerShell WinRT fallback) via the bundled
+                      ``windows_notify.py`` helper, run in its own process so the
+                      WinRT event loop + click-to-focus never block the CLI.
+        * macOS    -> ``osascript display notification`` (Notification Center).
+        * Linux    -> ``notify-send`` (libnotify), with a D-Bus fallback.
+        * other    -> no-op.
+
         By default (``force=False``) the toast is *suppressed* when the Hermes
-        terminal window is already the foreground window — the user is looking
-        at it, so a toast would be pure noise. Pass ``force=True`` for events
-        that demand attention regardless (e.g. an approval request the user may
-        have missed if the terminal is on another desktop).
+        terminal window is already the foreground window — but only on Windows,
+        where we can reliably detect foreground state. Other platforms have no
+        dependable foreground check, so they always notify. Pass ``force=True``
+        for events that demand attention regardless.
         """
-        if sys.platform != "win32":
-            return
         try:
-            # Dispatch to the bundled helper module inside the hermes_cli
-            # package. The original code pointed at a user-level
-            # ``.hermes/scripts/hermes_notify.py`` path that this PR never
-            # creates, so the toast silently never fired on a clean checkout.
             import hermes_cli
 
-            _cli_pkg_dir = os.path.dirname(os.path.abspath(hermes_cli.__file__))
-            _notify_script = os.path.join(_cli_pkg_dir, "windows_notify.py")
-            if not os.path.exists(_notify_script):
-                return
-            if not force:
+            if not force and sys.platform == "win32":
                 try:
                     from hermes_cli.windows_focus import is_hermes_foreground
 
@@ -17307,20 +17305,33 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         return
                 except Exception:
                     pass
-            cmd = [
-                sys.executable, _notify_script,
-                "--title", title,
-                "--body", body,
-                "--pid", str(os.getpid()),
-            ]
-            subprocess.run(cmd, check=False)
+
+            if sys.platform == "win32":
+                # Dispatch to the bundled helper module inside the hermes_cli
+                # package. The original code pointed at a user-level
+                # ``.hermes/scripts/hermes_notify.py`` path that this PR never
+                # creates, so the toast silently never fired on a clean checkout.
+                _cli_pkg_dir = os.path.dirname(os.path.abspath(hermes_cli.__file__))
+                _notify_script = os.path.join(_cli_pkg_dir, "windows_notify.py")
+                if not os.path.exists(_notify_script):
+                    return
+                cmd = [
+                    sys.executable, _notify_script,
+                    "--title", title,
+                    "--body", body,
+                    "--pid", str(os.getpid()),
+                ]
+                subprocess.run(cmd, check=False)
+            else:
+                # Linux / macOS / other: fire-and-forget, in-process, no deps.
+                from hermes_cli.desktop_notify import show_notification
+
+                show_notification(title, body, pid=os.getpid())
         except Exception:
             pass
 
     def _notify_session_ended(self) -> None:
-        """Best-effort Windows toast when the Hermes CLI session ends."""
-        if sys.platform != "win32":
-            return
+        """Best-effort desktop notification when the Hermes CLI session ends."""
         try:
             self._fire_notification("Hermes", "点击回到 Hermes")
         except Exception:

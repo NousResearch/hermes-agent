@@ -4,13 +4,14 @@ import { TRANSLATIONS } from './catalog'
 import { deOverrides } from './de'
 import { esOverrides } from './es'
 import { frOverrides } from './fr'
+import { koOverrides } from './ko'
 import type { Locale } from './types'
 
 // Locales that shipped fully translated. They are `defineLocale` overlays like
 // ja/ru, so an English key added later falls back to English instead of
 // failing typecheck; these checks keep the translated copy structurally sound.
-const COMPLETE_LOCALES = ['fr', 'de', 'es'] as const satisfies readonly Locale[]
-const completeOverrides = { fr: frOverrides, de: deOverrides, es: esOverrides }
+const COMPLETE_LOCALES = ['fr', 'de', 'es', 'ko'] as const satisfies readonly Locale[]
+const completeOverrides = { fr: frOverrides, de: deOverrides, es: esOverrides, ko: koOverrides }
 
 type Leaf = { path: string; value: unknown }
 
@@ -41,7 +42,7 @@ const catalogLeaves = (locale: Locale) =>
 
 const english = catalogLeaves('en')
 
-it.each(['de', 'es', 'fr', 'ja', 'ru', 'zh', 'zh-hant', 'ar'] as const)(
+it.each(['de', 'es', 'fr', 'ja', 'ko', 'ru', 'zh', 'zh-hant', 'ar'] as const)(
   '%s renders localized retirement copy instead of English fallback',
   locale => {
     expect(TRANSLATIONS[locale].updates.discontinuedTitle).not.toBe(TRANSLATIONS.en.updates.discontinuedTitle)

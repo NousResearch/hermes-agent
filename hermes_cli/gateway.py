@@ -19,6 +19,7 @@ import textwrap
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from hermes_cli import setup_platforms  # noqa: F401 — resolved lazily by siblings through the facade
 
 # UV's bundled Python ships a minimal PATH; ensure launchctl/systemctl are discoverable.
@@ -2926,24 +2927,33 @@ def legacy_launchd_labels_for_install(exclude=()) -> list[str]:
 def get_python_path() -> str:
     """Interpreter for generated gateway launchers (Windows cmd/vbs, systemd unit, launchd plist).
 
-    The committed PM store Python is the only answer that is correct independent of who runs the
-    generator; when none is committed, fall back to the checkout's own venv interpreter — NOT the
-    running ``sys.executable``. A launcher generated from inside an activated shell embeds whatever
-    won that shell's PATH, so a newer standalone system Python on PATH ahead of the venv got baked
-    into gateway.cmd/gateway.vbs; the detached gateway then booted under 3.14 against the 3.11 venv's
-    compiled wheels and crash-looped on ``pydantic_core._pydantic_core`` (#123185). The venv ships
-    the interpreter its wheels were built for, making every regenerated launcher self-consistent.
+    The committed PM store Python is the only answer that is correct independent of who runs
+    the generator, on every platform. With none committed the platform families diverge:
+
+    - Windows: fall back to the checkout's own venv interpreter — NOT the running
+      ``sys.executable``. A launcher generated from inside an activated shell embeds whatever
+      won that shell's PATH, so a newer standalone system Python on PATH ahead of the venv got
+      baked into gateway.cmd/gateway.vbs; the detached gateway then booted under 3.14 against
+      the 3.11 venv's compiled wheels and crash-looped on ``pydantic_core._pydantic_core``
+      (#123185). The venv ships the interpreter its wheels were built for, making every
+      regenerated launcher self-consistent. The PATH race and the repair are Windows-specific.
+    - POSIX: keep the running interpreter. systemd/launchd generation honors external
+      ownership exactly like ``_launchers.py`` and ``_prepare_service_launcher()``: the Nix or
+      developer interpreter that installed the service stays its owner. Adopting a stale
+      in-tree ``venv/`` here would silently rewrite the unit to an unmanaged interpreter and
+      break the next gateway boot.
     """
     from hermes_cli._launchers import resolve_store_python
 
     store = resolve_store_python(PROJECT_ROOT)
     if store is not None:
         return str(store)
-    venv = project_venv_dir(PROJECT_ROOT)
-    if venv is not None:
-        candidate = venv_python_path(venv)
-        if candidate.is_file():
-            return str(candidate)
+    if sys.platform == "win32":
+        venv = project_venv_dir(PROJECT_ROOT)
+        if venv is not None:
+            candidate = venv_python_path(venv)
+            if candidate.is_file():
+                return str(candidate)
     return str(sys.executable)
 
 
@@ -4572,20 +4582,26 @@ def _gateway_reexec_plan(target: Path, executable: str, orig_argv: list[str]) ->
     return [str(target), *orig[1:]]
 
 
-def _committed_gateway_interpreter() -> Path | None:
+def _committed_gateway_interpreter(*, is_windows: bool | None = None) -> Path | None:
     """The interpreter this checkout's dependencies were actually installed for, or ``None``.
 
-    This is the launcher-side answer mirrored at boot: PM's committed store Python when one is
-    recorded, else the checkout's own venv interpreter. ``sys.executable`` is deliberately NOT a
-    candidate — on a PATH that puts a newer standalone Python ahead of the venv, the detached
-    gateway is spawned under it and every compiled wheel from the venv fails to import
-    (``pydantic_core._pydantic_core``, #123185).
+    This is the launcher-side answer mirrored at boot. Windows: PM's committed store Python
+    when one is recorded, else the checkout's own venv interpreter. POSIX: the committed store
+    Python only — a developer/Nix runtime booting ``gateway run`` directly must keep its own
+    interpreter, and adopting a stale in-tree ``venv/`` would re-exec the boot onto an
+    unmanaged environment (the ownership rule ``_launchers.py`` follows). ``sys.executable`` is
+    deliberately NOT a candidate on Windows — on a PATH that puts a newer standalone Python
+    ahead of the venv, the detached gateway is spawned under it and every compiled wheel from
+    the venv fails to import (``pydantic_core._pydantic_core``, #123185).
     """
     from hermes_cli._launchers import resolve_store_python
 
     store = resolve_store_python(PROJECT_ROOT)
     if store is not None:
         return store
+    windows = sys.platform == "win32" if is_windows is None else is_windows
+    if not windows:
+        return None
     venv = project_venv_dir(PROJECT_ROOT)
     if venv is None:
         return None
@@ -4598,7 +4614,41 @@ def _committed_gateway_interpreter() -> Path | None:
     return None
 
 
-def _reexec_gateway_under_committed_python() -> None:
+def _flush_reexec_streams(streams) -> None:
+    """Flush the caller's std streams before handing off; tolerate ``None`` streams.
+
+    Legacy console-less ``pythonw.exe`` launchers run with ``sys.stdout``/``sys.stderr``
+    ``None`` (#71671 class) — an unconditional flush there raises AttributeError and kills
+    the recovery before the child starts.
+    """
+    for stream in streams:
+        try:
+            if stream is not None:
+                stream.flush()
+        except Exception:
+            pass
+
+
+def _reexec_spawn_kwargs(env: dict, *, is_windows: bool | None = None) -> dict[str, Any]:
+    """``subprocess.call`` kwargs for the recovery re-exec.
+
+    Windows pairs the console ``python.exe`` child with the hidden-console flag so a
+    console-less ``pythonw.exe`` launcher's recovery neither flashes a console nor violates
+    the ``_resolve_detached_python`` contract (#54220/#56747) — the same single flag
+    ``windows_hide_flags()`` returns, read directly so the decision is testable off-host.
+    The child stays attached (this call waits and forwards its exit status), so no
+    detach/new-process-group bits.
+    """
+    kwargs: dict[str, Any] = {"env": env}
+    windows = sys.platform == "win32" if is_windows is None else is_windows
+    if windows:
+        from hermes_cli._subprocess_compat import _CREATE_NO_WINDOW
+
+        kwargs["creationflags"] = _CREATE_NO_WINDOW
+    return kwargs
+
+
+def _reexec_gateway_under_committed_python(*, is_windows: bool | None = None) -> None:
     """Windows gateway boot: re-exec under the committed interpreter before the heavy imports.
 
     Stale launchers generated before #123185 embed a PATH-race interpreter (a newer standalone
@@ -4607,13 +4657,20 @@ def _reexec_gateway_under_committed_python() -> None:
     nothing can recover it, so the repair must run here, before ``from gateway.run import ...``
     binds any third-party code. No-op when already on the committed interpreter, on non-Windows,
     or when the committed interpreter cannot be resolved — boot then proceeds exactly as before.
+
+    This parent is about to hand the process over to the committed interpreter, so its own
+    startup watchdog (armed by ``hermes_cli.main`` before dispatch) is disarmed first: the
+    long ``subprocess.call()`` wait on the child would otherwise be judged a parked startup
+    deadlock and ``os._exit(75)`` a healthy gateway. The child re-arms through the normal
+    path and disarms at its own event loop.
     """
-    if sys.platform != "win32":
+    windows = sys.platform == "win32" if is_windows is None else is_windows
+    if not windows:
         return
     if os.environ.get(_GATEWAY_PYTHON_REEXEC_ENV):
         return  # already re-executed once: never loop
     try:
-        target = _committed_gateway_interpreter()
+        target = _committed_gateway_interpreter(is_windows=windows)
     except Exception:
         logger.debug("gateway interpreter guard failed to resolve a committed python", exc_info=True)
         return
@@ -4622,17 +4679,16 @@ def _reexec_gateway_under_committed_python() -> None:
     argv = _gateway_reexec_plan(target, sys.executable, sys.orig_argv)
     if argv is None:
         return
+    from hermes_startup_watchdog import disarm_startup_watchdog
+
+    disarm_startup_watchdog()
     env = {**os.environ, _GATEWAY_PYTHON_REEXEC_ENV: "1"}
     logger.warning(
         "Gateway started under %s but this checkout's interpreter is %s; re-execing "
         "(ABI-mismatched imports crash-loop otherwise, #123185)",
         sys.executable, target)
-    sys.stdout.flush()
-    sys.stderr.flush()
-    # os.execv on Windows spawns-and-exits, detaching any console wait on us; subprocess.call
-    # keeps the child on our console instead — matching _early_recovery.relaunch_after_restore's
-    # Windows exec contract (detached runs own a hidden console; foreground runs keep ours).
-    sys.exit(subprocess.call(argv, env=env))
+    _flush_reexec_streams((sys.stdout, sys.stderr))
+    sys.exit(subprocess.call(argv, **_reexec_spawn_kwargs(env, is_windows=windows)))
 
 
 def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, force: bool = False):

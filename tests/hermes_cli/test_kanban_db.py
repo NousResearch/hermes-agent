@@ -10,6 +10,7 @@ import sys
 import time
 import types
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -1545,7 +1546,8 @@ def test_connect_heals_reduced_tasks_schema_seeded_by_external_harness(kanban_ho
 # launchd jobs, and other detached processes routinely run with a stripped
 # $PATH that doesn't include the venv's bin/, so a bare `["hermes", ...]`
 # spawn fails with FileNotFoundError and the task gets stuck. The resolver
-# prefers the interpreter-bound module form (exactly this install; a PATH
+# prefers the interpreter-bound module form (or a source-root-carrying
+# bootstrap command for ``python -I -c`` launchers; exactly this install; a PATH
 # shim could be attacker-planted or belong to another install, #111569) and
 # only falls back to the PATH shim when ``hermes_cli`` is not importable.
 # ---------------------------------------------------------------------------
@@ -1568,6 +1570,129 @@ def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
     assert kbd._resolve_hermes_argv() == ["/opt/hermes/bin/hermes"]
 
 
+
+
+def test_resolve_hermes_argv_bootstrap_source_does_not_leak_bare_interpreter(monkeypatch):
+    """A bootstrap-injected source path must survive the worker's fresh process.
+
+    The gateway wrapper makes ``hermes_cli`` importable by inserting the checkout
+    root into ``sys.path``. Its ``sys.executable`` is still the bare runtime
+    Python, so ``sys.executable -m hermes_cli.main`` loses that path in a child.
+    The resolver must carry the source root into the child command explicitly.
+    """
+    import importlib.util
+    import shutil
+
+    root = Path(kbd.__file__).resolve().parents[1]
+    monkeypatch.delenv("HERMES_BIN", raising=False)
+    monkeypatch.setattr(kbd.sys, "executable", "/bare/hermes-python")
+    monkeypatch.setattr(kbd.sys, "argv", ["-c"])
+    monkeypatch.setattr(kbd.sys, "path", [str(root)])
+    monkeypatch.setattr(shutil, "which", lambda name: "/tmp/planted/hermes")
+
+    spec = importlib.util.find_spec("hermes_cli")
+    assert spec is not None
+    argv = kbd._resolve_hermes_argv()
+
+    assert argv[:3] == ["/bare/hermes-python", "-I", "-c"]
+    assert str(root) in argv[3]
+    assert "hermes_bootstrap" in argv[3]
+    assert "hermes_cli.main" in argv[3]
+
+
+def test_bootstrap_worker_command_reaches_chat_setup_without_inference(tmp_path, monkeypatch):
+    """Exercise the command the dispatcher actually gives to ``Popen``.
+
+    A fresh isolated profile has no provider, so the real worker reaches Hermes'
+    non-interactive provider guard and exits before any inference request. This is
+    stronger than checking ``--version``: the production ``chat -q`` path imports
+    the full dependency graph under ``python -I`` and reaches the chat command.
+    """
+    import hashlib
+    import shlex
+    import sysconfig
+    import types
+
+    root = Path(kbd.__file__).resolve().parents[1]
+    monkeypatch.delenv("HERMES_BIN", raising=False)
+    # Use a no-site launcher so this subprocess starts like PM's bare runtime:
+    # the only third-party imports available after ``-I`` must come from the
+    # dependency path that ``hermes_bootstrap`` activates.
+    runtime = tmp_path / "bare-python"
+    runtime.write_text(
+        "#!/bin/sh\nexec " + shlex.quote(sys.executable) + " -S \"$@\"\n",
+        encoding="utf-8",
+    )
+    runtime.chmod(0o755)
+    runtime_version = subprocess.check_output(
+        [str(runtime), "-I", "-c", "import sys; print('.'.join(map(str, sys.version_info[:3])))"],
+        text=True,
+    ).strip()
+    monkeypatch.setattr(kbd.sys, "executable", str(runtime))
+    monkeypatch.setattr(kbd.sys, "argv", ["-c"])
+    monkeypatch.setattr(kbd.sys, "path", [str(root)])
+    task = cast(kb.Task, types.SimpleNamespace(
+        id="bootstrap-worker-probe",
+        skills=None,
+        model_override=None,
+        provider_override=None,
+        reasoning_effort=None,
+    ))
+    argv = kbd._worker_argv(task, "default", None)
+    assert argv[:3] == [str(runtime), "-I", "-c"]
+    assert argv[-3:] == ["chat", "-q", "work kanban task bootstrap-worker-probe"]
+
+    isolated_home = tmp_path / ".hermes"
+    isolated_home.mkdir()
+    # Give the bare runtime a deterministic PM selection whose site-packages is
+    # the test environment. Without the generated ``import hermes_bootstrap``
+    # this interpreter cannot import ruamel (or the rest of Hermes' dependencies).
+    install_key = hashlib.sha256(str(root.resolve()).encode("utf-8")).hexdigest()[:16]
+    state = isolated_home / "installs" / install_key
+    environment = state / "environments" / "probe" / "venv"
+    environment.mkdir(parents=True)
+    (environment / "pyvenv.cfg").write_text(
+        f"home = {Path(sys.base_prefix)}\nversion = {runtime_version}\n",
+        encoding="utf-8",
+    )
+    runtime_major_minor = ".".join(runtime_version.split(".")[:2])
+    selected_site = environment / "lib" / f"python{runtime_major_minor}" / "site-packages"
+    selected_site.parent.mkdir(parents=True)
+    selected_site.symlink_to(Path(sysconfig.get_paths()["purelib"]).resolve(), target_is_directory=True)
+    (state / "facts.json").write_text(
+        json.dumps({"packages": {"venv": {"environment": str(environment)}}, "schema": 1}),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env.update(
+        HERMES_HOME=str(isolated_home),
+        HOME=str(tmp_path / "home"),
+        HERMES_IGNORE_USER_CONFIG="1",
+        PYTHONNOUSERSITE="1",
+    )
+    # Prevent ambient credentials from turning this verification into a provider
+    # call. The worker must stop at setup, not spend money.
+    for key in list(env):
+        if key.endswith("_API_KEY") or key in {
+            "ANTHROPIC_TOKEN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+            "GOOGLE_APPLICATION_CREDENTIALS", "OPENAI_BASE_URL",
+        }:
+            env.pop(key, None)
+
+    result = subprocess.run(
+        argv,
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=90,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, output
+    assert "Query: work kanban task bootstrap-worker-probe" in output, output
+    assert "Hermes is not connected to any AI provider yet." in output, output
+    assert "ModuleNotFoundError" not in output, output
+    assert "ruamel" not in output.lower(), output
 
 
 def test_resolve_hermes_argv_module_actually_runs():

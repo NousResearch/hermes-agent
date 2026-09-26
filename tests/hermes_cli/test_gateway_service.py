@@ -1841,6 +1841,8 @@ class TestSystemUnitPathRemapping:
     """System units must remap ALL paths from the caller's home to the target user."""
 
     def test_system_unit_has_no_root_paths(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(gateway_cli, "_append_node_dir_for_service", lambda *args: None)
+        monkeypatch.setattr(gateway_cli, "_build_user_local_paths", lambda *args: [])
         root_home = tmp_path / "root"
         root_home.mkdir()
         project = root_home / ".hermes" / "hermes-agent"
@@ -2660,11 +2662,13 @@ class TestRetryLaunchctlBootstrapUntilRegistered:
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
-        monkeypatch.setattr(gateway_cli.time, "sleep", lambda *_a, **_k: None)
+        now = [0.0]
+        monkeypatch.setattr(gateway_cli.time, "monotonic", lambda: now[0])
+        monkeypatch.setattr(gateway_cli.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds))
 
         ok = gateway_cli._retry_launchctl_bootstrap_until_registered(
             self.DOMAIN, self.PLIST, self.LABEL,
-            deadline=gateway_cli.time.monotonic() - 1,  # already expired
+            deadline=1.0,  # Allow a real probe before the fake clock expires.
         )
         assert ok is False
         assert list_calls["n"] >= 1

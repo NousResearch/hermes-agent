@@ -3928,6 +3928,7 @@ from hermes_cli.gateway_launchd import (  # noqa: E402,F401 — facade re-export
     _launchd_error_indicates_unloaded,
     _launchctl_domain_unsupported,
     _LAUNCHCTL_BOOTSTRAP_EIO,
+    _launchctl_remaining_timeout,
     _launchctl_bootstrap,
     _launchd_reload_log_path,
     _append_launchd_reload_log,
@@ -3954,6 +3955,7 @@ from hermes_cli.gateway_launchd import (  # noqa: E402,F401 — facade re-export
     _launchctl_kickstart_current,
     _launchd_bootstrap_and_kickstart,
     _launchd_ok,
+    LaunchdStopError,
     launchd_stop,
     _launchd_kickstart,
     _wait_for_launchd_service_pid,
@@ -3973,6 +3975,12 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.
     """Wait up to ``timeout`` s for the gateway (by gateway.pid, not launchd labels, so multiple
     HERMES_HOMEs work) to exit; SIGKILL it after ``force_after`` s of graceful waiting."""
     from gateway.status import get_process_start_time, get_running_pid
+    original_pid = get_running_pid()
+    if original_pid is None:
+        return True
+    original_start = get_process_start_time(original_pid)
+    if original_start is None:
+        return get_running_pid() is None
     deadline = time.monotonic() + timeout
     force_deadline = (time.monotonic() + force_after) if force_after is not None else None
     force_sent = False
@@ -3982,13 +3990,16 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.
         if pid is None:
             return True  # Process exited cleanly.
 
+        if pid != original_pid or get_process_start_time(pid) != original_start:
+            return False  # Never signal a replacement or an unverified identity.
+
         if force_after is not None and not force_sent and time.monotonic() >= force_deadline:
             # Grace period expired — force-kill the specific PID.
             try:
-                terminate_pid(pid, force=True, expected_start_time=get_process_start_time(pid))
+                terminate_pid(original_pid, force=True, expected_start_time=original_start)
                 print(f"⚠ Gateway PID {pid} did not exit gracefully; sent SIGKILL")
             except (ProcessLookupError, PermissionError, OSError):
-                return True  # Already gone or we can't touch it.
+                return get_running_pid() is None
             force_sent = True
 
         time.sleep(0.3)
@@ -4786,7 +4797,10 @@ def _service_call(backend: str, verb: str, system: bool | None = False) -> None:
     if backend == "windows":
         return getattr(_gw_windows(), verb)()
     if backend == "launchd":
-        return globals()[f"launchd_{verb}"]()
+        result = globals()[f"launchd_{verb}"]()
+        if verb == "stop" and result is False:
+            raise LaunchdStopError("Gateway did not stop")
+        return result
     fn = globals()[f"systemd_{verb}"]
     return fn() if system is None else fn(system=system)
 
@@ -4861,6 +4875,9 @@ def gateway_command(args):
     """Handle gateway subcommands."""
     try:
         return _gateway_command_inner(args)
+    except LaunchdStopError as e:
+        print_error(str(e))
+        sys.exit(1)
     except UserSystemdUnavailableError as e:
         # Actionable message, not a traceback, when the user D-Bus session is unreachable.
         print_error("User systemd not reachable:")

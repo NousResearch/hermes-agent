@@ -374,8 +374,8 @@ def _plugin_provider_enters_picker(pp) -> bool:
 def sync_plugin_provider_catalog() -> int:
     """Admit every registered plugin provider without a built-in row; return how many were added.
 
-    Runs at import and again from ``providers._sync_auth_registry`` whenever a profile is registered
-    after this module was imported. The import-time pass alone observes a *partial* registry: a
+    Runs on the first read of the catalog (:func:`_admit_plugin_rows`) and again from
+    ``providers._sync_auth_registry`` whenever a profile is registered after that. One pass alone can observe a *partial* registry: a
     plugin whose own imports pull ``hermes_cli.models`` in mid-``_discover_providers()``, or a
     profile registered later at runtime, would otherwise never reach the picker, ``hermes model``,
     ``/model`` or the Desktop ``model.options`` list until restart — the catalog twin of the auth
@@ -387,6 +387,8 @@ def sync_plugin_provider_catalog() -> int:
     except Exception:
         return 0
     added = 0
+    # a plugin may append its own row at import; count it, or the pass below would add a duplicate
+    _canonical_slugs.update(entry.slug for entry in list.__iter__(CANONICAL_PROVIDERS))
     for pp in profiles:
         if not _plugin_provider_enters_picker(pp):
             continue
@@ -400,7 +402,122 @@ def sync_plugin_provider_catalog() -> int:
 
 _PROVIDER_LABELS: dict[str, str] = {p.slug: p.label for p in CANONICAL_PROVIDERS}
 _PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named provider
-sync_plugin_provider_catalog()
+
+# Plugin rows are admitted on the first READ of the catalog, never at import: ``list_providers()`` imports every
+# model-provider plugin, and a plugin that imports ``hermes_cli.models`` while it (or this module) is still
+# partially initialised fails with a circular ImportError and loses every provider it registers.
+_plugin_rows_admitted = False
+
+
+def _admit_plugin_rows() -> None:
+    """Run the first :func:`sync_plugin_provider_catalog` pass, unless plugin discovery is mid-flight.
+
+    A read made during discovery comes from a plugin being imported: it gets the catalog as it is,
+    and a later read admits the rows. ``providers._sync_auth_registry`` covers later registrations.
+    """
+    global _plugin_rows_admitted
+    if _plugin_rows_admitted:
+        return
+    try:
+        from providers import discovery_in_progress
+        if discovery_in_progress():
+            return
+    except Exception:
+        pass
+    _plugin_rows_admitted = True
+    sync_plugin_provider_catalog()
+
+
+class _PluginAdmittingList(list):
+    """``CANONICAL_PROVIDERS``: a list whose reads admit plugin rows first (see :func:`_admit_plugin_rows`)."""
+
+    __slots__ = ()
+
+    def __iter__(self):
+        _admit_plugin_rows()
+        return list.__iter__(self)
+
+    def __len__(self):
+        _admit_plugin_rows()
+        return list.__len__(self)
+
+    def __getitem__(self, item):
+        _admit_plugin_rows()
+        return list.__getitem__(self, item)
+
+    def __contains__(self, item):
+        _admit_plugin_rows()
+        return list.__contains__(self, item)
+
+    def __reversed__(self):
+        _admit_plugin_rows()
+        return list.__reversed__(self)
+
+    def __repr__(self):
+        _admit_plugin_rows()
+        return list.__repr__(self)
+
+    def index(self, *args):
+        _admit_plugin_rows()
+        return list.index(self, *args)
+
+    def count(self, item):
+        _admit_plugin_rows()
+        return list.count(self, item)
+
+    def copy(self):
+        _admit_plugin_rows()
+        return list(list.__iter__(self))
+
+
+class _PluginAdmittingDict(dict):
+    """``_PROVIDER_LABELS``: a dict whose reads admit plugin rows first (see :func:`_admit_plugin_rows`)."""
+
+    __slots__ = ()
+
+    def __iter__(self):
+        _admit_plugin_rows()
+        return dict.__iter__(self)
+
+    def __len__(self):
+        _admit_plugin_rows()
+        return dict.__len__(self)
+
+    def __getitem__(self, key):
+        _admit_plugin_rows()
+        return dict.__getitem__(self, key)
+
+    def __contains__(self, key):
+        _admit_plugin_rows()
+        return dict.__contains__(self, key)
+
+    def __repr__(self):
+        _admit_plugin_rows()
+        return dict.__repr__(self)
+
+    def get(self, key, default=None):
+        _admit_plugin_rows()
+        return dict.get(self, key, default)
+
+    def keys(self):
+        _admit_plugin_rows()
+        return dict.keys(self)
+
+    def values(self):
+        _admit_plugin_rows()
+        return dict.values(self)
+
+    def items(self):
+        _admit_plugin_rows()
+        return dict.items(self)
+
+    def copy(self):
+        _admit_plugin_rows()
+        return dict(dict.items(self))
+
+
+CANONICAL_PROVIDERS = _PluginAdmittingList(CANONICAL_PROVIDERS)
+_PROVIDER_LABELS = _PluginAdmittingDict(_PROVIDER_LABELS)
 
 
 # ---------------------------------------------------------------------------

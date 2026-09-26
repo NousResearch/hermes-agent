@@ -8,6 +8,7 @@ Origin module; cohesive clusters live in siblings and are re-imported here so
 
 from __future__ import annotations
 
+import collections.abc
 import contextvars
 import copy
 import gzip
@@ -694,8 +695,30 @@ def ai_gateway_model_ids(*, force_refresh: bool = False) -> list[str]:
 # Provider identity: ``provider:model`` parsing, auto-detection, labels
 # ---------------------------------------------------------------------------
 
-# All provider IDs and aliases valid on the left of the ``provider:model`` syntax.
-_KNOWN_PROVIDER_NAMES: set[str] = set(_PROVIDER_LABELS) | set(_PROVIDER_ALIASES) | {"openrouter", "custom"}
+class _KnownProviderNames(collections.abc.Set):
+    """All provider IDs and aliases valid on the left of the ``provider:model`` syntax.
+
+    A live view over ``_PROVIDER_LABELS`` rather than an import-time copy: plugin providers are admitted to the
+    catalog after import, and a copy taken here would also force plugin discovery while this module is half-built.
+    """
+
+    _EXTRA = frozenset({"openrouter", "custom"})
+
+    @classmethod
+    def _from_iterable(cls, it):  # set operators (``|``, ``&``, ``-``) return a plain set
+        return set(it)
+
+    def __contains__(self, name) -> bool:
+        return name in self._EXTRA or name in _PROVIDER_ALIASES or name in _PROVIDER_LABELS
+
+    def __iter__(self):
+        return iter(set(_PROVIDER_LABELS) | set(_PROVIDER_ALIASES) | self._EXTRA)
+
+    def __len__(self) -> int:
+        return len(set(_PROVIDER_LABELS) | set(_PROVIDER_ALIASES) | self._EXTRA)
+
+
+_KNOWN_PROVIDER_NAMES: collections.abc.Set[str] = _KnownProviderNames()
 
 
 _CONFIG_ERRORS = (ImportError, OSError, RuntimeError, TypeError, ValueError, AttributeError)

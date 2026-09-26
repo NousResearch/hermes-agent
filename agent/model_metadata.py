@@ -26,18 +26,23 @@ from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS
 
 logger = logging.getLogger(__name__)
 
-# Snapshot for callers inspecting this constant; prefix routing queries the registry live.
+# Nothing here may call ``_list_providers()`` at import time: it imports every model-provider plugin, and a
+# plugin that imports ``hermes_cli.models`` (which imports this module) would run while that module is only
+# partially initialised and fail with a circular ImportError. Registry-derived tables are read on use.
 try:
     from providers import list_providers as _list_providers
 except Exception:
     def _list_providers():
         return []
 
-_PROVIDER_PREFIXES: frozenset[str] = frozenset(
-    value.lower()
-    for profile in _list_providers()
-    for value in (profile.name, *profile.aliases)
-)
+
+def __getattr__(name: str):
+    """``_PROVIDER_PREFIXES`` (provider names + aliases, lowercased), read from the registry on access."""
+    if name == "_PROVIDER_PREFIXES":
+        return frozenset(value.lower() for profile in _list_providers() for value in (profile.name, *profile.aliases))
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 _OLLAMA_TAG_PATTERN = re.compile(r"^(\d+\.?\d*b|latest|stable|q\d|fp?\d|instruct|chat|coder|vision|text)", re.IGNORECASE)
 # Tailscale CGNAT (RFC 6598): `ipaddress.is_private` excludes it, yet Ollama
 # reached over Tailscale must count as local (timeout auto-bumps).
@@ -455,14 +460,19 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "ollama.com": "ollama-cloud",
 }
 
-# Auto-extend with provider-profile hostnames not already mapped.
-try:
-    for _pp in _list_providers():
-        _host = _pp.get_hostname()
-        if _host and _host not in _URL_TO_PROVIDER:
-            _URL_TO_PROVIDER[_host] = _pp.name
-except Exception:
-    pass
+
+
+def _url_to_provider_items() -> List[Tuple[str, str]]:
+    """``_URL_TO_PROVIDER`` entries, then provider-profile hostnames it doesn't map (registry read on use)."""
+    mapping = dict(_URL_TO_PROVIDER)
+    try:
+        for profile in _list_providers():
+            host = profile.get_hostname()
+            if host:
+                mapping.setdefault(host, profile.name)
+    except Exception:
+        pass
+    return list(mapping.items())
 
 
 def _infer_provider_from_url(base_url: str) -> Optional[str]:
@@ -471,7 +481,7 @@ def _infer_provider_from_url(base_url: str) -> Optional[str]:
     if parsed is None:
         return None
     host = parsed.netloc.lower() or parsed.path.lower()
-    for url_part, provider in _URL_TO_PROVIDER.items():
+    for url_part, provider in _url_to_provider_items():
         if url_part in host:
             return provider
     return None

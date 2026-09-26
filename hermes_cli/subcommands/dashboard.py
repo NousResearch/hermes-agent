@@ -74,7 +74,12 @@ def build_serve_parser(
 
 
 def build_dashboard_parser(
-    subparsers, *, cmd_dashboard: Callable, cmd_dashboard_register: Callable) -> None:
+    subparsers,
+    *,
+    cmd_dashboard: Callable,
+    cmd_dashboard_register: Callable,
+    cmd_dashboard_credentials: Callable | None = None,
+) -> None:
     """Attach ``dashboard`` (browser UI) and ``serve`` (headless backend the desktop spawns)."""
     dashboard_parser = subparsers.add_parser(
         "dashboard", help="Start the web UI dashboard",
@@ -123,3 +128,15 @@ def build_dashboard_parser(
             "portal. Also settable via HERMES_DASHBOARD_PORTAL_URL. Mainly for "
             "testing against a staging/preview portal.")
     dashboard_register_parser.set_defaults(func=cmd_dashboard_register)
+
+    if cmd_dashboard_credentials is not None:
+        dashboard_credentials_parser = dashboard_subparsers.add_parser(
+            "credentials",
+            help="Change the dashboard username and password",
+            description=(
+                "If credentials are already configured, verify the current password "
+                "before changing the username and password. The password is stored "
+                "only as a scrypt hash."
+            ),
+        )
+        dashboard_credentials_parser.set_defaults(func=cmd_dashboard_credentials)

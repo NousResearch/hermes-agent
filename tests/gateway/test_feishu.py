@@ -100,6 +100,111 @@ class TestFeishuMessageNormalization(unittest.TestCase):
             "Build Failed\nService: payments-api\nBranch: main\nView Logs\nRetry\nActions: View Logs, Retry",
         )
 
+    def test_normalize_interactive_card_exposes_url_fields(self):
+        from plugins.platforms.feishu.adapter import normalize_feishu_message
+
+        normalized = normalize_feishu_message(
+            message_type="interactive",
+            raw_content=json.dumps(
+                {
+                    "card": {
+                        "header": {"title": {"tag": "plain_text", "content": "Daily video"}},
+                        "elements": [
+                            {"tag": "div", "text": {"tag": "plain_text", "content": "Tap through to watch"}},
+                            {
+                                "tag": "action",
+                                "actions": [
+                                    {
+                                        "tag": "button",
+                                        "text": {"tag": "plain_text", "content": "Open video"},
+                                        "url": "https://example.com/video",
+                                    },
+                                    {
+                                        "tag": "button",
+                                        "text": {"tag": "plain_text", "content": "Open article"},
+                                        "href": "https://example.com/article",
+                                    },
+                                ],
+                            },
+                            {
+                                "tag": "div",
+                                "text": {"tag": "plain_text", "content": "Mirror"},
+                                "link": "https://example.com/mirror",
+                            },
+                        ],
+                    }
+                }
+            ),
+        )
+
+        self.assertIn(
+            "Links: https://example.com/video | https://example.com/article | https://example.com/mirror",
+            normalized.text_content,
+        )
+        self.assertEqual(
+            normalized.metadata["links"],
+            [
+                "https://example.com/video",
+                "https://example.com/article",
+                "https://example.com/mirror",
+            ],
+        )
+
+    def test_normalize_interactive_card_ignores_non_url_linkish_fields(self):
+        from plugins.platforms.feishu.adapter import normalize_feishu_message
+
+        normalized = normalize_feishu_message(
+            message_type="interactive",
+            raw_content=json.dumps(
+                {
+                    "card": {
+                        "header": {"title": {"tag": "plain_text", "content": "Safe card"}},
+                        "elements": [
+                            {
+                                "tag": "button",
+                                "text": {"tag": "plain_text", "content": "Callback only"},
+                                "url": "callback-token-123",
+                                "template": "internal-template-secret",
+                            }
+                        ],
+                    }
+                }
+            ),
+        )
+
+        self.assertNotIn("Links:", normalized.text_content)
+        self.assertNotIn("callback-token-123", normalized.text_content)
+        self.assertNotIn("internal-template-secret", normalized.text_content)
+        self.assertEqual(normalized.metadata["links"], [])
+
+    def test_normalize_interactive_card_keeps_links_when_body_is_long(self):
+        from plugins.platforms.feishu.adapter import normalize_feishu_message
+
+        normalized = normalize_feishu_message(
+            message_type="interactive",
+            raw_content=json.dumps(
+                {
+                    "card": {
+                        "header": {"title": {"tag": "plain_text", "content": "Long card"}},
+                        "elements": [
+                            {"tag": "div", "text": {"tag": "plain_text", "content": f"Line {idx}"}}
+                            for idx in range(20)
+                        ]
+                        + [
+                            {
+                                "tag": "button",
+                                "text": {"tag": "plain_text", "content": "Open"},
+                                "url": "https://example.com/important",
+                            }
+                        ],
+                    }
+                }
+            ),
+        )
+
+        self.assertIn("Links: https://example.com/important", normalized.text_content)
+        self.assertEqual(len(normalized.text_content.splitlines()), 12)
+
 class TestFeishuAdapterMessaging(unittest.TestCase):
 
     def test_disconnect_sends_websocket_close_frame(self):

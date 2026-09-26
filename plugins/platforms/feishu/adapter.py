@@ -223,6 +223,7 @@ _WHITESPACE_RE = re.compile(r"\s+")
 _SUPPORTED_CARD_TEXT_KEYS = (
     "title", "text", "content", "label", "value", "name", "summary", "subtitle", "description", "placeholder", "hint",
 )
+_CARD_LINK_KEYS = ("url", "href", "link", "open_url", "default_url", "pc_url", "ios_url", "android_url")
 _RICH_BLOCK_TAGS = {
     "plain_text", "lark_md", "markdown", "note", "div", "column_set", "column", "action", "button", "select_static",
     "date_picker",
@@ -739,13 +740,17 @@ def _normalize_interactive_message(message_type: str, payload: Dict[str, Any]) -
         _find_first_text(card_payload, keys=("title", "summary", "subtitle")),
     )
     actions = _collect_action_labels(card_payload)
+    links = _collect_card_links(card_payload)
     lines = ([title] if title else []) + [line for line in _collect_card_lines(card_payload) if line != title]
     if actions:
         lines.append(f"Actions: {', '.join(actions)}")
+    if links:
+        link_line = f"Links: {' | '.join(links)}"
+        lines = (lines[:11] + [link_line]) if len(lines) >= 12 else (lines + [link_line])
     return FeishuNormalizedMessage(
         raw_type=message_type,
         text_content="\n".join(lines[:12]).strip() or FALLBACK_INTERACTIVE_TEXT,
-        relation_kind="interactive", metadata={"title": title, "actions": actions},
+        relation_kind="interactive", metadata={"title": title, "actions": actions, "links": links},
     )
 
 
@@ -798,6 +803,27 @@ def _collect_action_labels(payload: Any) -> List[str]:
         if label:
             labels.append(label)
     return _unique_lines(labels)
+
+
+def _collect_card_links(payload: Any) -> List[str]:
+    links: List[str] = []
+    for item in _walk_nodes(payload):
+        if not isinstance(item, dict):
+            continue
+        for key in _CARD_LINK_KEYS:
+            link = _normalize_card_link(item.get(key))
+            if link:
+                links.append(link)
+    return _unique_lines(links)
+
+
+def _normalize_card_link(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    normalized = value.strip()
+    if normalized.lower().startswith(("https://", "http://")):
+        return normalized
+    return ""
 
 
 def _collect_text_segments(value: Any, *, in_rich_block: bool) -> List[str]:

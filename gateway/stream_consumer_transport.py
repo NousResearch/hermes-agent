@@ -123,6 +123,49 @@ class StreamTransportMixin:
             except Exception as e:
                 logger.debug("%s preview cleanup failed (%s): %s", label, stale_id, e)
 
+    async def _cleanup_interim_segment_messages(self) -> None:
+        """Best-effort delete of prior segment messages once the turn-final
+        answer has been confirmed delivered (``cfg.cleanup_interim_segments``
+        only; the gateway currently enables this for Telegram only).
+
+        A turn that includes tool calls streams as several distinct platform
+        messages (each tool-call / commentary segment gets its own bubble via
+        ``_end_segment`` / ``_deliver_commentary``), followed by the final
+        prose as its own last message. ``_preview_message_ids`` accumulates
+        every real message id sent across the *whole* run, so once the final
+        answer is on screen, every id in that set other than the current
+        ``_message_id`` is a superseded bubble the user no longer needs.
+
+        Deliberately NOT the same mechanism as ``_try_fresh_final`` (Telegram
+        disabled from that path, #72038 duplicate-display risk): that path
+        re-sends the final text as a brand-new message and deletes the old
+        preview, which can flash two copies of the same answer on screen.
+        This path never re-sends anything — the final message the user
+        already sees was delivered normally — it only deletes bubbles that a
+        *different*, later message has already superseded, so there is no
+        duplicate-display risk.
+
+        Guarded on ``_turn_split_delivery`` (set by ``seal_overflow_heads``,
+        see ``_try_fresh_final``'s identical guard): when a long answer was
+        split across several sealed messages, ``_message_id`` only tracks the
+        *last* continuation, so every earlier sealed head still sitting in
+        ``_preview_message_ids`` is *delivered content*, not a superseded
+        preview. Deleting them here would erase the earlier chunks of the
+        user's answer, leaving only the tail on screen.
+        """
+        if not getattr(self.cfg, "cleanup_interim_segments", False):
+            return
+        if self._turn_split_delivery:
+            return
+        final_id = self._message_id
+        stale_ids = self._preview_message_ids
+        if not stale_ids:
+            return
+        await self._delete_previews(stale_ids, skip=final_id, label="Interim-segment cleanup")
+        # Keep the set consistent with what's actually left on screen so a
+        # caller that inspects it post-run doesn't see ids we just deleted.
+        self._preview_message_ids = {final_id} if final_id else set()
+
     def _resolve_draft_streaming(self) -> bool:
         """cfg.transport "draft"/"auto" → the adapter's supports_draft_streaming probe
         ("draft" logs the downgrade); "edit"/"off" → False."""

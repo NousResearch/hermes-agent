@@ -1803,7 +1803,7 @@ _FALLBACK_REASON_LABELS = {
     FailoverReason.upstream_rate_limit: "upstream model rate limit",
     FailoverReason.overloaded: "provider overloaded",
     FailoverReason.server_error: "provider server error",
-    FailoverReason.timeout: "request timeout",
+    FailoverReason.timeout: "timeout or connection failure",
     FailoverReason.ssl_cert_verification: "TLS certificate verification failed",
     FailoverReason.context_overflow: "context window exceeded",
     FailoverReason.payload_too_large: "request payload too large",
@@ -2059,7 +2059,16 @@ def _rescope_fallback_extra_body(agent, old_model: str, old_provider: str, old_b
 
 def _buffer_fallback_notice(agent, notice: str) -> None:
     """Buffer the switch notice for terminal failure AND retain it as a durable one-shot for
-    _emit_pending_fallback_notice (a successful fallback clears retry chatter)."""
+    _emit_pending_fallback_notice (a successful fallback clears retry chatter).
+
+    Also pushed live, right now, through the same status channel: a fallback (e.g. to a slow
+    local model) can take minutes to produce a reply, and waiting until the turn resolves to
+    say "we switched models" leaves the user staring at a silent gap wondering if anything is
+    happening (#124011 — Telegram/TUI users saw a slow reply with no indication it had dropped
+    to a fallback model). The deferred emit on success/failure below is unchanged so a durable
+    record still lands at turn end even if this live ping never reaches a transport.
+    """
+    agent._emit_diagnostic_status(notice)
     agent._buffer_diagnostic_status(notice)
     pending = getattr(agent, "_pending_fallback_notice", None)
     if isinstance(pending, list):

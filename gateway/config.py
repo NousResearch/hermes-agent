@@ -507,6 +507,14 @@ class StreamingConfig:
     # Currently applied to Telegram only (other platforms ignore the setting). Default 0 disables the
     # fresh-message replacement path; set >0 to opt in.
     fresh_final_after_seconds: float = 0.0
+    # When True, once the turn-final answer is confirmed delivered, best-effort
+    # delete every earlier segment message from this turn (tool-call /
+    # commentary bubbles sent as their own messages) so only the clean final
+    # answer remains. Distinct from fresh_final_after_seconds above: this
+    # never re-sends the final answer, so it can't trigger the "two copies
+    # flash on screen" duplicate-display problem that path was built to
+    # avoid. Telegram only; other platforms ignore it. Default False.
+    cleanup_interim_segments: bool = False
 
     @property
     def globally_enabled(self) -> bool:
@@ -545,6 +553,7 @@ class StreamingConfig:
             buffer_threshold=_coerce_int(data.get("buffer_threshold"), DEFAULT_STREAMING_BUFFER_THRESHOLD),
             cursor=data.get("cursor", DEFAULT_STREAMING_CURSOR),
             fresh_final_after_seconds=_coerce_float(data.get("fresh_final_after_seconds"), 0.0),
+            cleanup_interim_segments=_coerce_bool(data.get("cleanup_interim_segments"), False),
         )
 
 

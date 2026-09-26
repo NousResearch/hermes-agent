@@ -2,7 +2,7 @@ name: hermes-switchyard
 repo: https://github.com/bgrablin/hermes-switchyard
 sha: 22cd6bcc04bc7eb0db61abe1bb86ce45037190dd
 subdir: ""
-description: "Jev-powered Hermes plugin for skill/model routing, typed assess, DOM/Cua computer use, adaptive reasoning effort, and FTS rerank. Disclosure: the default-on adaptive llm_request may send task-presence/length metadata, prior effort, and recent tool status codes to TypeSafe/OpenRouter; it does not send user-message text or tool-result excerpts on that path (disable via adaptive_reasoning_effort false). Separate default-on hosted skill routing can send bounded task text under its data policy (opt down to local_only). Model routing remains advisory."
+description: "Jev-powered Hermes plugin for skill/model routing, typed assess, DOM/Cua computer use, adaptive reasoning effort, and FTS rerank. Disclosure: the default-on adaptive llm_request may send task-presence/length metadata, prior effort, and recent tool status codes to TypeSafe/OpenRouter; it does not send user-message text or tool-result excerpts on that path (disable via adaptive_reasoning_effort false). Separate default-on hosted skill routing sends up to 4,000 characters of each user turn plus skill names/descriptions to the same provider after a local blocklist scan (opt down to local_only). Model routing remains advisory."
 maintainer: bgrablin
 tier: community
 category: tools

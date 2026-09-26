@@ -419,6 +419,30 @@ _ENDPOINT_UNREACHABLE_MARKERS = (
 _GATEWAY_ENDPOINT_UNREACHABLE_RE = re.compile(
     "(" + "|".join(_ENDPOINT_UNREACHABLE_MARKERS) + ")", re.IGNORECASE)
 
+def _windows_gateway_venv_python_version(venv_dir: Path) -> tuple[int, int] | None:
+    """``major.minor`` the venv at *venv_dir* was built for, or None when unrecorded/unreadable.
+
+    Both spellings real venvs use are accepted (``version = 3.11.15``, ``version_info = 3.11``).
+    Callers must compare this against the RUNNING interpreter before putting the tree on ``sys.path``:
+    a venv built for another minor version cannot supply compiled extensions — ``pydantic_core``'s
+    ``_pydantic_core`` raised ModuleNotFoundError under 3.14 while that tree's pure-Python modules
+    imported fine — which crash-looped the gateway's hosted_room_worker five times before it gave up.
+    """
+    try:
+        text = (venv_dir / "pyvenv.cfg").read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        key, _, value = line.partition("=")
+        if key.strip() not in ("version", "version_info"):
+            continue
+        major, _, rest = value.strip().partition(".")
+        minor, _, _ = rest.partition(".")
+        if major.isdigit() and minor.isdigit():
+            return int(major), int(minor)
+    return None
+
+
 def _ensure_windows_gateway_venv_imports() -> None:
     """Make detached Windows gateway runs see the Hermes venv packages.
 
@@ -428,6 +452,17 @@ def _ensure_windows_gateway_venv_imports() -> None:
 
     project_root = Path(__file__).resolve().parent.parent
     candidates: list[Path] = []
+    # PM's SELECTED dependency environment first: it is the tree built FOR this interpreter, and it is
+    # what the rest of the install activates. Preferring it keeps the environment this function
+    # publishes for gateway children (VIRTUAL_ENV/PYTHONPATH) ABI-consistent with the running Python.
+    try:
+        from pm.environments import committed_venv
+
+        selected_environment = committed_venv(project_root)
+    except Exception:
+        selected_environment = None
+    if selected_environment is not None:
+        candidates.append(selected_environment)
     if os.environ.get("VIRTUAL_ENV"):
         candidates.append(Path(os.environ["VIRTUAL_ENV"]))
     candidates.append(project_root / "venv")
@@ -442,6 +477,19 @@ def _ensure_windows_gateway_venv_imports() -> None:
         if venv_key in seen:
             continue
         seen.add(venv_key)
+
+        # Installs migrated from a repo-local ``venv`` to the bundled store Python keep the old venv
+        # on disk (``hermes-agent/venv`` built by uv for 3.11 while the runtime is 3.14). Publishing
+        # it as VIRTUAL_ENV/PYTHONPATH is what handed wrong-ABI site-packages to gateway children.
+        recorded_python = _windows_gateway_venv_python_version(resolved_venv)
+        if recorded_python is not None and recorded_python != tuple(sys.version_info[:2]):
+            logger.debug(
+                "Skipping Windows gateway venv %s: built for Python %s, running %s",
+                resolved_venv,
+                ".".join(str(part) for part in recorded_python),
+                ".".join(str(part) for part in sys.version_info[:2]),
+            )
+            continue
 
         site_packages = resolved_venv / "Lib" / "site-packages"
         if not site_packages.exists():

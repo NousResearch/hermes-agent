@@ -13,12 +13,12 @@
 import { atom, computed } from 'nanostores'
 
 import { registry } from '@/contrib/registry'
+import { readKey, writeKey } from '@/lib/storage'
 
 import { $backendThemes } from './backend-sync'
 import { BUILTIN_THEMES } from './presets'
+import { PROFILE_SKINS_KEY, SKIN_KEY, USER_THEMES_KEY } from './storage-keys'
 import { type DesktopTheme, isValidTheme } from './types'
-
-const USER_THEMES_KEY = 'hermes-desktop-user-themes-v1'
 
 // Marketplace imports stamp their description "VS Code · <publisher.extension>"
 // (see `convertVscodeColorTheme`). This is the one place that convention is read
@@ -27,7 +27,7 @@ const MARKETPLACE_DESC_PREFIX = 'VS Code · '
 
 function readStored(): Record<string, DesktopTheme> {
   try {
-    const raw = window.localStorage.getItem(USER_THEMES_KEY)
+    const raw = readKey(USER_THEMES_KEY)
 
     if (!raw) {
       return {}
@@ -56,7 +56,7 @@ function readStored(): Record<string, DesktopTheme> {
 
 function persist(record: Record<string, DesktopTheme>) {
   try {
-    window.localStorage.setItem(USER_THEMES_KEY, JSON.stringify(record))
+    writeKey(USER_THEMES_KEY, Object.keys(record).length === 0 ? null : JSON.stringify(record))
   } catch {
     // Best-effort: a restricted storage context shouldn't break theming.
   }
@@ -86,7 +86,7 @@ export function installUserTheme(theme: DesktopTheme): DesktopTheme {
 export function removeUserTheme(name: string): void {
   const current = $userThemes.get()
 
-  if (!current[name]) {
+  if (!Object.hasOwn(current, name)) {
     return
   }
 
@@ -94,6 +94,42 @@ export function removeUserTheme(name: string): void {
   delete next[name]
   $userThemes.set(next)
   persist(next)
+
+  if (typeof window !== 'undefined') {
+    try {
+      const rawProfiles = readKey(PROFILE_SKINS_KEY)
+
+      if (rawProfiles) {
+        const parsed: unknown = JSON.parse(rawProfiles)
+
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          const profileSkins = parsed as Record<string, unknown>
+          let changed = false
+
+          for (const [profile, skin] of Object.entries(profileSkins)) {
+            if (skin === name) {
+              delete profileSkins[profile]
+              changed = true
+            }
+          }
+
+          if (changed) {
+            writeKey(PROFILE_SKINS_KEY, JSON.stringify(profileSkins))
+          }
+        }
+      }
+    } catch {
+      // Best-effort profile storage cleanup
+    }
+
+    try {
+      if (readKey(SKIN_KEY) === name) {
+        writeKey(SKIN_KEY, null)
+      }
+    } catch {
+      // Best-effort global storage cleanup
+    }
+  }
 }
 
 export const isUserTheme = (name: string): boolean => Boolean($userThemes.get()[name])

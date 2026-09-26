@@ -358,11 +358,21 @@ def _restore_excluded_subtrees(staged: Path, skills: Path) -> List[str]:
     return failed
 
 
-def _retain_staging(staged: Path) -> Path:
-    """Rename a staging dir that still holds the only copy of unrestored entries out of the prunable prefix."""
-    kept = staged.with_name(_UNRESTORED_PREFIX + staged.name[len(_STAGING_PREFIX):])
-    staged.rename(kept)
-    return kept
+def _retain_staging(staged: Path, unrestored: List[str], reason: str) -> Tuple[bool, str, None]:
+    """Keep a staging dir that still holds the only copy of *unrestored* entries and build rollback()'s failure result.
+    The dir is renamed out of the prunable prefix (unique suffix on a same-second collision). If the rename fails, the
+    original path is reported so recovery never raises out of rollback()."""
+    base = _UNRESTORED_PREFIX + staged.name[len(_STAGING_PREFIX):]
+    kept, n = staged.with_name(base), 1
+    while kept.exists():
+        kept, n = staged.with_name(f"{base}-{n}"), n + 1
+    note = ""
+    try:
+        staged.rename(kept)
+    except OSError as e:
+        logger.warning("Could not retain rollback staging dir %s: %s", staged, e)
+        kept, note = staged, f" (rename failed: {e}; move it before the next curator run or it will be pruned)"
+    return (False, f"{reason} - could not restore {', '.join(sorted(unrestored))}; staged copies kept at {kept}{note}", None)
 
 
 def _unstage(moved: List[Tuple[Path, Path]]) -> List[str]:
@@ -432,9 +442,7 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
     except OSError as e:
         unrestored = _unstage(moved)
         if unrestored:
-            staged = _retain_staging(staged)
-            return (False, f"failed to stage current skills: {e} - could not restore "
-                    f"{', '.join(sorted(unrestored))}; staged copies kept at {staged}", None)
+            return _retain_staging(staged, unrestored, f"failed to stage current skills: {e}")
         shutil.rmtree(staged, ignore_errors=True)
         return (False, f"failed to stage current skills: {e}", None)
 
@@ -456,9 +464,7 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
                 _remove_entry(entry)
         unrestored = _unstage(moved)
         if unrestored:  # Don't claim a clean restore; keep the staging dir for hand recovery.
-            staged = _retain_staging(staged)
-            return (False, f"snapshot extract failed: {e} - could not restore "
-                    f"{', '.join(sorted(unrestored))}; staged copies kept at {staged}", None)
+            return _retain_staging(staged, unrestored, f"snapshot extract failed: {e}")
         shutil.rmtree(staged, ignore_errors=True)
         return (False, f"snapshot extract failed (state restored): {e}", None)
 
@@ -466,9 +472,7 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
     # (top-level ``.git`` is never staged). Then staging is done; the undo handle is the safety snapshot.
     unrestored = _restore_excluded_subtrees(staged, skills)
     if unrestored:
-        staged = _retain_staging(staged)
-        return (False, "snapshot extracted but could not restore excluded entries "
-                f"{', '.join(sorted(unrestored))}; staged copies kept at {staged}", None)
+        return _retain_staging(staged, unrestored, "snapshot extracted but excluded entries were not carried over")
     shutil.rmtree(staged, ignore_errors=True)
 
     # Cron reconciliation failures don't fail the rollback — the skills tree (the main guarantee) is already restored.

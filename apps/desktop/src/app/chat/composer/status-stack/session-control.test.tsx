@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -153,6 +153,48 @@ describe('ComposerStatusStack session-control UI', () => {
     $todosBySession.set({})
     $sessionStates.set({})
     clearQueuedPrompts('stored-1')
+  })
+
+  it('copies complete control text locally and exposes selectable goal details', async () => {
+    const writeClipboard = vi.fn().mockResolvedValue(undefined)
+    const onSubmit = vi.fn()
+    const goal = sampleGoal({ title: 'Build the app\nПроверить результат 🎯' })
+    const loop = sampleLoop()
+    const heartbeat = sampleHeartbeat()
+    vi.stubGlobal('hermesDesktop', { writeClipboard })
+
+    try {
+      $sessionControlBySession.set({
+        [SID]: mockEntry({ snapshot: sampleSnapshot({ goal, loop, heartbeat }) })
+      })
+      renderStack(SID, { onSubmit })
+      fireEvent.click(screen.getByRole('button', { name: /Goal active/ }))
+      fireEvent.click(screen.getByRole('button', { name: /Loop active/ }))
+      fireEvent.click(screen.getByRole('button', { name: /Heartbeat active/ }))
+
+      for (const text of [goal.title, loop.prompt, heartbeat.prompt, ...goal.subgoals]) {
+        const node = screen.getByText(text, { normalizer: value => value })
+        const row = node.closest<HTMLElement>('[data-slot="status-row"]')!
+        fireEvent.click(within(row).getByRole('button', { name: /copy/i }))
+        await waitFor(() => expect(writeClipboard).toHaveBeenLastCalledWith(text))
+      }
+
+      fireEvent.click(screen.getByRole('button', { name: /view details/i }))
+      const dialog = screen.getByRole('dialog')
+
+      for (const text of [goal.title, ...Object.values(goal.contract), goal.gates[0]!.command]) {
+        expect(
+          within(dialog)
+            .getByText(text, { normalizer: value => value })
+            .closest('[data-selectable-text="true"]')
+        ).not.toBeNull()
+      }
+
+      expect(mockRunSessionControlAction).not.toHaveBeenCalled()
+      expect(onSubmit).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   // 1. initial structured hydration on mount; old-gateway/legacy goal remains until supported

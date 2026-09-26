@@ -60,6 +60,18 @@ class TestResetDelayOneTable:
         # Both grammars in one body: the explicit retry-after wins (pool precedence), not the
         # multi-hour quota window.
         ("Rate limited. Retry after 30s; resets in 4hr", 30.0),
+        # OpenAI TPM/RPM 429s declare a relative wait: "Please try again in 30.822s". The unit
+        # is mandatory, so "try again in a moment" (no number+unit) never invents a window.
+        ("Rate limit reached for gpt-6-luna in organization org on tokens per min (TPM): "
+         "Limit 200000, Used 134775, Requested 167965. Please try again in 30.822s.", 30.822),
+        ("Please try again in 2m.", 120.0),
+        ("Please try again in 1h.", 3600.0),
+        ("Please try again in 1500ms", 1.5),
+        ("Please try again in 30 seconds", 30.0),
+        # An explicit retry-after also beats a "try again in" wait (same explicit tier, table order).
+        ("Rate limited. Retry after 30s; please try again in 60s", 30.0),
+        # A short "try again in" throttle beats a long "resets in" quota window.
+        ("Please try again in 30s. Resets in 4hr", 30.0),
     ])
     def test_credential_pool_and_error_context_agree(self, message, seconds):
         """The pooled-credential cooldown and the UI's error context read the same table, so the
@@ -75,4 +87,6 @@ class TestResetDelayOneTable:
         from agent.credential_pool import _normalize_error_context
 
         assert reset_delay_from_message("resets in the future, maybe") is None
+        assert reset_delay_from_message("Please try again in a moment.") is None
+        assert reset_delay_from_message("Please try again later.") is None
         assert "reset_at" not in _normalize_error_context({"message": "resets in the future, maybe"})

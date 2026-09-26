@@ -335,16 +335,30 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if target in self._guid_cache:
             self._guid_cache.move_to_end(target)
             return self._guid_cache[target]
+        # chat/query ignores search/filter params and returns chats newest-first
+        # from `offset`; a DM target can sit past page 1 once SMS/RCS spam fills
+        # the chat table (seen at index ~103 of 500+), so page through (bounded)
+        # instead of probing only the first page. Misses are cached, so this
+        # costs a few REST calls once per target.
+        page_size = 100
+        max_pages = 20  # 2000 chats cap
         with suppress(Exception):
-            payload = await self._api_post("/api/v1/chat/query", {"limit": 100, "offset": 0})
-            for chat in payload.get("data", []) or []:
-                if (chat.get("chatIdentifier") or chat.get("identifier")) != target:
-                    continue
-                if guid := chat.get("guid") or chat.get("chatGuid"):
-                    self._guid_cache[target] = guid
-                    while len(self._guid_cache) > _GUID_CACHE_SIZE:
-                        self._guid_cache.popitem(last=False)
-                return guid
+            for page in range(max_pages):
+                payload = await self._api_post(
+                    "/api/v1/chat/query", {"limit": page_size, "offset": page * page_size})
+                chats = payload.get("data", []) or []
+                if not chats:
+                    break
+                for chat in chats:
+                    if (chat.get("chatIdentifier") or chat.get("identifier")) != target:
+                        continue
+                    if guid := chat.get("guid") or chat.get("chatGuid"):
+                        self._guid_cache[target] = guid
+                        while len(self._guid_cache) > _GUID_CACHE_SIZE:
+                            self._guid_cache.popitem(last=False)
+                    return guid
+                if len(chats) < page_size:
+                    break
         return None
 
     async def _create_chat_for_handle(self, address: str, message: str) -> SendResult:

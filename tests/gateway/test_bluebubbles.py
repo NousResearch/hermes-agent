@@ -583,3 +583,51 @@ class TestBlueBubblesGateBeforeDownload:
         assert response.status == 200
         assert download.await_count == downloads
         assert len(handled) == handled_count
+
+
+class TestBlueBubblesChatGuidResolution:
+    """_resolve_chat_guid must page past the first chat/query page.
+
+    Regression for: BlueBubbles /api/v1/chat/query ignores search/filter params and
+    returns chats newest-first from `offset`; once the chat table fills with SMS/RCS
+    spam, a DM target can sit past the first page (limit=100) and the old single-page
+    lookup returned None -> every send failed with "BlueBubbles chat not found".
+    """
+
+    @pytest.mark.asyncio
+    async def test_pages_past_first_page_and_stops_on_hit(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        calls = []
+
+        async def fake_api_post(path, payload):
+            calls.append(payload)
+            offset = payload.get("offset", 0)
+            limit = payload.get("limit", 100)
+            chats = [
+                {"chatIdentifier": f"106{offset + i}", "guid": f"any;-;106{offset + i}"}
+                for i in range(limit)
+            ]
+            if offset == 100:  # 目标 DM 位于第二页
+                chats[3] = {"chatIdentifier": "+8613421619914", "guid": "any;-;+8613421619914"}
+            return {"data": chats}
+
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+        guid = await adapter._resolve_chat_guid("+8613421619914")
+        assert guid == "any;-;+8613421619914"
+        assert [c["offset"] for c in calls] == [0, 100]  # 翻页到命中即止，不多查
+
+    @pytest.mark.asyncio
+    async def test_result_is_cached_so_repeat_lookup_does_not_requery(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        calls = []
+
+        async def fake_api_post(path, payload):
+            calls.append(payload)
+            return {"data": [{"chatIdentifier": "+8613421619914", "guid": "any;-;+8613421619914"}]}
+
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+        first = await adapter._resolve_chat_guid("+8613421619914")
+        second = await adapter._resolve_chat_guid("+8613421619914")
+        assert first == second == "any;-;+8613421619914"
+        assert len(calls) == 1  # 第二次命中缓存，不再访问 API
+

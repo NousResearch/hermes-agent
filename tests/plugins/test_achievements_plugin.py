@@ -18,6 +18,7 @@ contract: the plugin scans ALL of your sessions, not the first 200.
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import threading
 import time
@@ -333,3 +334,72 @@ def test_scan_sessions_never_opens_a_writable_session_db(plugin_api, tmp_path, m
     assert result.get("error") is None
     assert [s["session_id"] for s in result["sessions"]] == ["s1"]
     assert writable_opens == [], "the achievements scan must attach read-only"
+
+
+def test_content_drops_media_blocks_and_caps_oversized_text(plugin_api):
+    """Media blocks inline their payload as base64 ``data:`` URLs; one photo-heavy message
+    can measure hundreds of MB of text and pin the GIL for minutes inside ``scan_sessions``
+    (#123902). ``_content`` must drop media blocks and cap whatever text survives."""
+    cap = plugin_api.MAX_TEXT_CHARS
+
+    # Plain string content is capped, not passed through wholesale.
+    assert plugin_api._content({"content": "x" * (cap + 50)}) == "x" * cap
+
+    # Media blocks (OpenAI-style image_url / Anthropic-style image, audio, file) are dropped;
+    # text blocks and typeless blocks survive.
+    b64 = "A" * 100_000
+    msg = {
+        "content": [
+            {"type": "text", "text": "look at these photos"},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+            {"type": "image", "source": {"type": "base64", "data": b64}},
+            {"type": "input_audio", "input_audio": {"data": b64}},
+            {"type": "file", "file": {"filename": "report.pdf"}},
+            {"type": "document", "source": {"type": "base64", "data": b64}},
+            {"type": "text", "text": "and a typeless block below"},
+            "bare string block",
+        ]
+    }
+    out = plugin_api._content(msg)
+    assert "look at these photos" in out
+    assert "and a typeless block below" in out
+    assert "bare string block" in out
+    assert "AAAA" not in out, "base64 payloads must never reach the stats text"
+    assert "report.pdf" not in out
+
+    # The joined block text is capped too.
+    long_blocks = [{"type": "text", "text": "y" * (cap // 2 + 10)} for _ in range(4)]
+    assert len(plugin_api._content({"content": long_blocks})) == cap
+
+    # dict-shaped (non-list) content keeps the json.dumps fallback, capped.
+    assert plugin_api._content({"content": {"k": "z" * (cap + 10)}}) == json.dumps(
+        {"k": "z" * (cap + 10)}
+    )[:cap]
+
+
+def test_analyze_messages_skips_inline_image_payloads(plugin_api):
+    """End to end: a message carrying many inline image blocks no longer pushes megabytes
+    through the stats regexes, while text-derived stats keep working (#123902)."""
+    b64 = "QUJDREVG" * 40_000  # ~320 KB per block, far beyond anything the regexes need
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "please analyze these 31 photos"},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+            ]
+            + [{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}} for _ in range(30)],
+        },
+        {"role": "assistant", "content": "error: the upload timed out, retrying"},
+    ]
+
+    stats = plugin_api.analyze_messages("sess-media", "Photo session", messages)
+
+    assert stats["message_count"] == 2
+    assert stats["error_count"] == 1, "text-derived error stats must survive the filter"
+
+    # Pre-fix this input pushed ~10 MB through ~15 regex passes (minutes on the 184 MB
+    # production case in #123902); post-fix the media payload never reaches them.
+    start = time.monotonic()
+    plugin_api.analyze_messages("sess-media", "Photo session", messages)
+    assert time.monotonic() - start < 2.0

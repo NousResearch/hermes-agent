@@ -21,6 +21,10 @@ from hermes_constants import get_hermes_home
 router = APIRouter()
 
 SNAPSHOT_TTL_SECONDS = 120
+# Per-message ceiling for the text fed into the stats regexes. Attachment blocks inline
+# their payload as base64 ``data:`` URLs, so one photo-heavy message can otherwise measure
+# hundreds of MB of text and pin the GIL for minutes (#123902).
+MAX_TEXT_CHARS = 200_000
 _SCAN_LOCK = threading.Lock()
 _SNAPSHOT_CACHE: Optional[Dict[str, Any]] = None
 _SNAPSHOT_CACHE_AT = 0
@@ -256,11 +260,25 @@ def _content(msg: Dict[str, Any]) -> str:
     if content is None:
         return ""
     if isinstance(content, str):
-        return content
+        return content[:MAX_TEXT_CHARS]
+    if isinstance(content, (list, tuple)):
+        # Media blocks carry their payload inline as base64 ``data:`` URLs; the stats below
+        # only ever reason about human/tool text, so drop them instead of feeding hundreds of
+        # MB through ~15 regex passes (#123902).
+        parts: List[str] = []
+        for block in content:
+            if isinstance(block, dict):
+                btype = str(block.get("type", "")).lower()
+                if any(k in btype for k in ("image", "audio", "file", "document")):
+                    continue
+                parts.append(json.dumps(block, ensure_ascii=False))
+            else:
+                parts.append(str(block))
+        return "\n".join(parts)[:MAX_TEXT_CHARS]
     try:
-        return json.dumps(content)
+        return json.dumps(content)[:MAX_TEXT_CHARS]
     except Exception:
-        return str(content)
+        return str(content)[:MAX_TEXT_CHARS]
 
 
 def _count_tool(tool_names: List[str], *needles: str) -> int:

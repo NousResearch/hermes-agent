@@ -263,6 +263,7 @@ class TmuxTui:
         self.tmux("pipe-pane", "-t", "p", f"cat >> {shlex.quote(str(self.transcript_path))}")
         self.pane_pid = int(self.tmux("display", "-p", "-t", "p", "#{pane_pid}").strip())
         self.pane_tty = self.tmux("display", "-p", "-t", "p", "#{pane_tty}").strip()
+        self.server_pid = int(self.tmux("display", "-p", "#{pid}").strip() or 0)
         self.seen: set[int] = set()
 
     # -- tmux ------------------------------------------------------------------------------------
@@ -459,6 +460,7 @@ class TmuxTui:
                 f"elapsed since /exit: {time.monotonic() - t0:.1f}s\n"
                 f"tmux: rc={q.returncode} out={q.stdout.strip()!r} err={q.stderr.strip()!r}\n"
                 f"pane pid {self.pane_pid}: {proc}\n"
+                f"tmux server {self.server_pid}: {_status_fields(self.server_pid)}\n"
                 f"--- frame before /exit ---\n{before}\n"
                 f"--- last {tail} lines of the PTY transcript ---\n{self.transcript_tail(tail)}")
 
@@ -538,7 +540,37 @@ def _proc_state(pid: int) -> str:
         state = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()[0]
     except OSError:
         return "gone (reaped)"
-    return f"state {state} ({'zombie, not reaped yet' if state == 'Z' else 'still running'}): {cmdline(pid)}"
+    return (f"state {state} ({'zombie, not reaped yet' if state == 'Z' else 'still running'}): {cmdline(pid)}\n"
+            f"  {_status_fields(pid)}\n  threads: {_threads(pid)}")
+
+
+def _status_fields(pid: int, keys: tuple[str, ...] = ("State", "PPid", "Threads", "SigPnd", "ShdPnd", "SigBlk",
+                                                      "SigIgn", "SigCgt")) -> str:
+    """Selected ``/proc/<pid>/status`` lines: why a process is not reaped (a zombie leader whose
+    other threads are still exiting, or a parent with SIGCHLD blocked/pending)."""
+    try:
+        lines = Path(f"/proc/{pid}/status").read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        return f"(no status: {exc})"
+    return " ".join(line.replace("\t", "") for line in lines if line.split(":", 1)[0] in keys)
+
+
+def _threads(pid: int) -> str:
+    """``tid:comm:state:wchan`` for every thread of ``pid``."""
+    out = []
+    try:
+        tids = sorted(os.listdir(f"/proc/{pid}/task"), key=int)
+    except OSError as exc:
+        return f"(no tasks: {exc})"
+    for tid in tids:
+        base = f"/proc/{pid}/task/{tid}"
+        try:
+            stat = Path(f"{base}/stat").read_text(encoding="utf-8")
+            wchan = Path(f"{base}/wchan").read_text(encoding="utf-8") or "-"
+        except OSError:
+            continue
+        out.append(f"{tid}:{stat[stat.index('(') + 1:stat.rindex(')')]}:{stat.rsplit(')', 1)[1].split()[0]}:{wchan}")
+    return " ".join(out)
 
 
 def _alive(pid: int) -> bool:

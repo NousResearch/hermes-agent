@@ -62,6 +62,13 @@ def _tool_results(llm: FakeLLMServer) -> list[str]:
     return out
 
 
+def _typed(content) -> object:
+    """What the user typed into a wire user message: the install's first message carries the
+    API-only first-contact onboarding note (``\\n\\n[System note: ...]``, never persisted), which is
+    per-turn context riding the user turn, not a second user turn."""
+    return content.split("\n\n[System note: ", 1)[0] if isinstance(content, str) else content
+
+
 def _visible_once(tui: TmuxTui, needles: list[str]) -> str:
     text = "\n".join(tui.rows())
     bad = {n: text.count(n) for n in needles if text.count(n) != 1}
@@ -111,7 +118,7 @@ def _scenario(root, victim) -> object:
         # The answer is the tool's result, never a persisted user message (the TUI echoes it as a
         # bubble by design; state.db and the next wire request must not grow a user turn).
         users = [c for _s, r, c in tui.messages() if r == "user"]
-        wire_users = [m.get("content") for m in (llm.main_requests()[-1].get("messages") or [])
+        wire_users = [_typed(m.get("content")) for m in (llm.main_requests()[-1].get("messages") or [])
                       if m.get("role") == "user"]
         cells.add("clarify_answer_not_a_user_turn",
                   "" if users == ["pick a colour mq1"] and wire_users == ["pick a colour mq1"]

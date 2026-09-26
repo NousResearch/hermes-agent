@@ -1015,6 +1015,9 @@ def run_import(args) -> Optional[int]:
 # outside state.db, so it is listed explicitly — ``hermes update`` snapshots this set (#15733).
 _QUICK_STATE_FILES = (
     "state.db", "config.yaml", ".env", "auth.json", "cron/jobs.json", "cron/executions.db",
+    # Scheduler state split out of jobs.json (cron/runtime_state.py); a snapshot that took the
+    # definitions without it would restore every job with forgotten run history and repeat progress.
+    "cron/runtime.db",
     "gateway_state.json", "channel_directory.json", "channel_aliases.json", "processes.json",
     "gateway/discord_message_recovery.db",  # Discord reconnect replay ledger
     # Per-profile user stores, destroyed if the update flow replaces the file and the post-update

@@ -2,41 +2,44 @@
 
 ## 1. 主要入口與模組索引
 *   **命令列/UI 進入點** [程式已實作]
-    *   **模組責任**: 處理終端機命令、引數解析，決定啟動單次請求 (oneshot) 或 TUI/Gateway，並處理中斷與生命週期管理。
-    *   **主要輸入/輸出**: CLI 命令與引數 -> 設定環境並觸發 Agent 或子系統，輸出至終端。
-    *   **與其他模組連接**: 處理完引數後，呼叫 `run_agent.py` 啟動 Agent，或讀取 `hermes_state.py` 獲取狀態。
-    *   **檔案路徑與關鍵符號**:
-        *   `cli.py` (`def main` 行 1653, `class HermesCLI` 行 883)
-        *   `hermes_cli/main.py` (`def main` 行 3555)
-
+    *   **模組責任**: 處理終端機命令、引數解析，決定啟動單次請求 (oneshot) 或 TUI/CLI 模式，並處理中斷與生命週期管理。
+    *   **主要輸入/輸出**: CLI 命令與引數 -> 設定環境並觸發 Agent 核心。
+    *   **檔案路徑與關鍵符號**: `cli.py` (`def main`, `class HermesCLI`), `hermes_cli/main.py` (`def main`)
+*   **Gateway / 常駐服務邊界** [程式已實作]
+    *   **模組責任**: 常駐服務模式，處理跨平台串接 (Telegram, WhatsApp, Web, 等)、群組與使用者對話狀態機、並負責非同步訊息接收與分發。
+    *   **主要輸入/輸出**: 從外部 API (Webhook/Polling) 接收請求 -> 透過 `run_turn_runner.py` 啟動對應 Session 的 Agent -> 發送訊息回外部平台。
+    *   **檔案路徑與關鍵符號**: `gateway/run.py` (`def main`), `gateway/stream_dispatch.py` (`def dispatch`), `gateway/run_turn_runner.py`
+*   **排程與自動化 (Cron)** [程式已實作]
+    *   **模組責任**: 背景排程任務觸發 (如定期總結、報告或定期檢查)。
+    *   **主要輸入/輸出**: 時間觸發 -> 初始化特定環境與 Prompt (`scheduler_prompt.py`) -> 執行排程作業腳本。
+    *   **檔案路徑與關鍵符號**: `cron/scheduler.py`
 *   **代理核心 (Agent Core)** [程式已實作]
-    *   **模組責任**: 建立 `AIAgent` 執行個體，管理對話迴圈、呼叫工具 (Tool execution)、委派任務 (Delegation) 以及 Provider (模型) 請求。
-    *   **主要輸入/輸出**: 接收對話 Context (messages) -> 與 API Provider 互動 -> 取得模型回應並決定下一步動作 (回應使用者或呼叫工具)。
-    *   **與其他模組連接**: 處理請求時會讀寫 `hermes_state.py` 保存或讀取紀錄，並在需要時載入工具。
-    *   **檔案路徑與關鍵符號**:
-        *   `run_agent.py` (`class AIAgent` 行 240, `def main` 行 1496, `def _execute_tool_calls` 行 1320)
-
+    *   **模組責任**: 建立 `AIAgent` 執行個體，管理對話迴圈、呼叫工具 (Tool execution)、委派任務 (Delegation) 以及向模型 (Provider) 請求。
+    *   **主要輸入/輸出**: 接收對話 Context (messages) -> 與 API Provider 互動 -> 取得模型回應並決定下一步動作。
+    *   **檔案路徑與關鍵符號**: `run_agent.py` (`class AIAgent`, `def _execute_tool_calls`)
 *   **狀態與持久化 (State & Database)** [程式已實作]
-    *   **模組責任**: 整合對 SQLite 資料庫 (WAL mode) 的操作，涵蓋會話 (Session) 管理、歷史對話 (Messages)、使用量 (Usage)、全文檢索 (FTS5) 與鎖定守衛 (Lockguard)。
-    *   **主要輸入/輸出**: 接收來自 Agent 或 CLI 的儲存/查詢請求 -> 讀寫本機 `state.db` -> 回傳資料行或確認。
-    *   **與其他模組連接**: 被 `run_agent.py`、`cli.py` 等模組直接呼叫來進行記憶狀態同步；藉由多個 Mixin 分別管理不同資料表的狀態。
-    *   **檔案路徑與關鍵符號**:
-        *   `hermes_state.py` (`class SessionDB` 行 451, `class AsyncSessionDB` 行 1648)
-        *   `hermes_state_sessions.py` (`class SessionSessionsMixin` 行 265)
-        *   `hermes_state_messages.py` (`class SessionMessagesMixin` 行 122)
+    *   **模組責任**: 整合對 SQLite 資料庫 (WAL mode) 的讀寫操作，包含會話元資料、歷史對話、全域設定、使用量及 FTS5 全文檢索索引。
+    *   **主要輸入/輸出**: 接收 Agent、Gateway 或 CLI 的儲存與查詢請求 -> 寫入 `state.db`。
+    *   **檔案路徑與關鍵符號**: `hermes_state.py` (`class SessionDB`), 各式 `hermes_state_*.py`
+*   **訊息鏡像與對外送出 (Delivery & Mirror)** [程式已實作]
+    *   **模組責任**: 處理跨平台或外部發送機制的訊息傳遞，並同時將「已發送訊息」鏡像寫回 SQLite 的目標 Session (使 Agent 知悉已發送)。
+    *   **主要輸入/輸出**: 本地產生的訊息 -> 平台適配器發送 -> 調用 state 寫入。
+    *   **檔案路徑與關鍵符號**: `gateway/delivery.py` (`class DeliveryRouter`), `gateway/mirror.py` (`def mirror_to_session`)
 
 ## 2. 高層資料流
-1.  **訊息進入與路由** [程式已實作]: 使用者命令由 `cli.py` 進入，依照傳輸途徑決定路由，初始化環境並實例化 `AIAgent` (`hermes_cli/main.py` -> `run_agent.py`)。
-2.  **執行與結果送出** [程式已實作]: `AIAgent` 將 Context 組裝為提示 (Prompt)，發送給 LLM Provider (`run_agent.py` 內)。若 LLM 返回工具呼叫，由 Agent 攔截於本地執行 (`_execute_tool_calls`)，將結果作為新訊息再度送回 LLM，直到最終結果產出並回傳給傳輸介面。
-3.  **記憶/Context 使用** [程式已實作]: Agent 啟動或處理請求時，透過 `SessionDB` (`hermes_state.py` 內 `_read_ctx` 等方法) 載入特定 Session 的歷史紀錄以建立 Context。
+1.  **訊息進入與路由** [程式已實作]: 使用者命令或訊息可從 `cli.py` (本機端) 進入，或是從 `gateway/run.py` (遠端平台) 進入。Gateway 會根據來源建立或尋找 Session (`_find_session_id`)。
+2.  **執行與結果送出** [程式已實作]: `run_agent.py` 將歷史與新訊息組裝為 Prompt 傳給 LLM。LLM 返回的文字會透過 `gateway/delivery.py` 回傳給外部；若是工具呼叫，由 Agent 在本地執行。
+3.  **記憶/Context 使用** [程式已實作]: Agent 處理時透過 `SessionDB` (`hermes_state.py`) 載入對應會話的歷史。若透過 Cron 或 Gateway 主動發送訊息，會透過 `mirror.py` 把訊息補登入歷史，保持 Context 同步。
 
 ## 3. 持久化位置索引
 *   **主要資料庫 (寫入檔案)** [程式已實作]:
-    *   **位置**: 預設為 `~/.hermes/state.db` (定義於 `hermes_constants.py` 的 `get_hermes_home()` 行 111)。
-    *   **保存狀態類型**: 會話 Metadata (對話標題、設定)、歷史對話 (Messages)、工具使用紀錄、API Token 用量統計、FTS5 檢索索引 (`hermes_state_*.py` 中諸多 `def update*` 或 `def write*` 實作)。
+    *   **位置**: 透過 `hermes_constants.py` 的 `get_hermes_home()` 與 `_get_platform_default_hermes_home()` 動態決定，通常為 `~/.hermes/state.db` (若設定 HERMES_HOME 或在 sudo 環境會改寫路徑)。
+    *   **保存狀態類型**: 會話 Metadata、歷史對話 (Messages)、工具使用紀錄、FTS5 檢索索引。
 *   **記憶體狀態** [程式已實作]:
-    *   **部分佇列與統計區**: Token 用量的統計佇列 (定義於 `hermes_state_usage.py` 的 `_token_writer_loop`) 在批次落盤前只暫時存在於記憶體 (`queue.Queue`) 中。
-*   **其他外掛或技能設定** [推論／未確認/待查]: 對於 `optional-skills` 或 `plugins` 目錄中的擴充套件，是否有在 `state.db` 以外寫入獨立快取或設定檔，目前尚未核實。
+    *   **Token 用量佇列**: `hermes_state_usage.py` 的 `_token_writer_loop` 會將統計數值暫存於 Queue 中批次寫入。
+    *   **Gateway 快取**: 包含 Session Router / Broker 在執行期的路由表，存在於記憶體中 (依賴 `state.db` 來持久化識別碼)。
+*   **其他外掛、Hooks 或設定** [待查]:
+    *   外部模組 (`optional-skills` 等) 是否有在其獨立的目錄產生 artifacts、Cache，或在 Hook 觸發時有其他外部落盤點尚未確認。
 
 ## 4. 後續值得拆開查的問題清單
 *   **Agent 的工具呼叫與防護邊界**：在 `run_agent.py` 內，Tool calls 的執行與 guardrail 控制 (`_execute_tool_calls`, `_set_tool_guardrail_halt`) 流程細節？模型如何與各類本機 Tool 通訊？ (建議先讀 `run_agent.py`)

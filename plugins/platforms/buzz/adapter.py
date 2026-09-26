@@ -491,10 +491,25 @@ def _event_reply_parent_id(event: dict) -> Optional[str]:
 
 
 def _p_tagged(event: dict, pubkey: str) -> bool:
-    """True when the event carries a ``p`` tag equal to *pubkey* (case-insensitive)."""
+    """True when the event carries a pubkey mention equal to *pubkey* (case-insensitive).
+
+    ``buzz messages get`` can expose addressed users either as raw Nostr
+    ``p`` tags or as a normalized top-level mention list, depending on the
+    CLI/backend path.
+    """
+    pubkey = str(pubkey or "").lower()
+    if not pubkey:
+        return False
     tags = event.get("tags")
-    return isinstance(tags, list) and any(
-        isinstance(tag, (list, tuple)) and len(tag) > 1 and tag[0] == "p" and str(tag[1]).lower() == pubkey for tag in tags)
+    if isinstance(tags, list) and any(
+        isinstance(tag, (list, tuple)) and len(tag) > 1 and tag[0] == "p" and str(tag[1]).lower() == pubkey for tag in tags
+    ):
+        return True
+    for field in ("mention_pubkeys", "mentions"):
+        values = event.get(field)
+        if isinstance(values, list) and any(_normalize_user_ref(str(value)) == pubkey for value in values):
+            return True
+    return False
 
 
 # Cap stored parent content snippets (gateway reply injection also clips).
@@ -1530,7 +1545,7 @@ class BuzzAdapter(BasePlatformAdapter):
         if self._allowed_pubkeys and pubkey not in self._allowed_pubkeys:
             if pubkey in self._reaction_only_pubkeys and _p_tagged(event, self._self_pubkey) and self._is_mentioned(content):
                 await self.send_reaction(channel_id, event_id, "👀")
-            logger.debug("Buzz: ignoring message from unauthorized pubkey %s…", pubkey[:8])
+            logger.info("Buzz: ignoring message from unauthorized pubkey %s…", pubkey[:8])
             return
         # Strip a leading @mention (DMs often open with one too) so "@Chip /whoami" is recognized as a command.
         dispatch_text = self._strip_mention(content)

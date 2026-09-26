@@ -19,6 +19,8 @@ from hermes_state_common import (
     escape_like as _escape_like, fts_rebuild_admission, fts_trigram_session_sql, routed_sessions_setting,
 )
 
+from hermes_state_fts import _FTS5_SHADOW_SUFFIXES
+
 # Pre-split logger identity so log filtering/capture is unchanged.
 logger = logging.getLogger("hermes_state")
 
@@ -548,16 +550,26 @@ class SessionSearchMixin:
                     "AND name IN ('messages_fts', 'messages_fts_trigram') AND sql LIKE 'CREATE VIRTUAL TABLE%'"
                 )
                 conn.execute("PRAGMA writable_schema=RESET")
+                # Demote only the exact fts5 shadow names — never an unescaped LIKE
+                # prefix: ``_`` stays a single-character wildcard (``messagesXfts_probe``
+                # matches) and the prefix is wider than the shadow family
+                # (``messages_fts_other`` matches), so unrelated look-alike tables would
+                # be renamed into the trash family and dropped by the teardown drain
+                # (#109748). The exact set also keeps messages_fts_cjk* out: that family
+                # is an independent v23+ index, not part of the demoted legacy layout —
+                # fts5's xRename renames the entire shadow family in one step, so
+                # sweeping the cjk vtable here aborts the loop on the next cjk shadow
+                # entry and drags _config — needed by the vtable constructor — into the
+                # trash family (#103647).
+                demotable = [
+                    f"messages_fts_{suffix}" for suffix in _FTS5_SHADOW_SUFFIXES
+                ] + [
+                    f"messages_fts_trigram_{suffix}" for suffix in _FTS5_SHADOW_SUFFIXES
+                ]
                 for row in conn.execute(
                     "SELECT name FROM sqlite_master WHERE type = 'table' "
-                    "AND (name LIKE 'messages_fts_%' ESCAPE '\\' "
-                    "OR name LIKE 'messages_fts_trigram_%' ESCAPE '\\') "
-                    # messages_fts_cjk* is an independent v23+ index, not part of the
-                    # demoted legacy layout: fts5's xRename renames the entire shadow
-                    # family in one step, so sweeping the cjk vtable here aborts the
-                    # loop on the next cjk shadow entry and drags _config — needed by
-                    # the vtable constructor — into the trash family (#103647).
-                    "AND name NOT LIKE 'messages\\_fts\\_cjk%' ESCAPE '\\'"
+                    f"AND name IN ({','.join('?' for _ in demotable)})",
+                    demotable,
                 ).fetchall():
                     conn.execute(f"ALTER TABLE {row[0]} RENAME TO fts_v22_trash_{row[0]}")
             # Claim the backfill BEFORE the empty v23 tables exist so a crash before

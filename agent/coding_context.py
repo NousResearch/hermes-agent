@@ -145,6 +145,10 @@ _MODE_ALIASES = {
     **dict.fromkeys(("on", "true", "yes", "1", "always"), "on"),
     **dict.fromkeys(("off", "false", "no", "0", "never"), "off"),
 }
+# Canonical modes (auto/focus/on/off) plus their aliases — values that should NOT warn.
+_KNOWN_MODE_VALUES = frozenset({"auto", "focus", "on", "off"}) | frozenset(_MODE_ALIASES)
+# Bogus values we've already warned about (dedupe so we don't spam on every resolve call).
+_warned_unknown_values: set[str] = set()
 
 
 @dataclass(frozen=True)
@@ -192,7 +196,30 @@ def _agent_config_value(config: Optional[dict[str, Any]], key: str, default: Any
 def _coding_mode(config: Optional[dict[str, Any]]) -> str:
     """Normalized ``agent.coding_context`` mode (auto/focus/on/off)."""
     raw = _agent_config_value(config, "coding_context", "auto", readonly=True)
-    return _MODE_ALIASES.get(str(raw).strip().lower(), "auto")
+    normalized = str(raw).strip().lower()
+    
+    # Empty or missing → silent default
+    if not normalized:
+        return "auto"
+    
+    # Known value (canonical or alias) → silent resolution
+    if normalized in _KNOWN_MODE_VALUES:
+        return _MODE_ALIASES.get(normalized, normalized)
+    
+    # Unknown non-empty value → warn once, then fall back to auto
+    if normalized not in _warned_unknown_values:
+        _warned_unknown_values.add(normalized)
+        try:
+            from hermes_cli.config import get_config_path
+            config_path = get_config_path()
+        except Exception:
+            config_path = Path("config.yaml")
+        logger.warning(
+            f"agent.coding_context: unrecognized value {normalized!r} in {config_path}; "
+            f"falling back to 'auto'. Valid values: auto, focus, on, off (plus legacy aliases)."
+        )
+    
+    return "auto"
 
 
 def _resolve_cwd(cwd: Optional[str | Path]) -> Path:

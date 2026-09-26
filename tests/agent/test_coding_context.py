@@ -87,6 +87,96 @@ class TestCodingSelection:
         assert cc.is_coding_context(platform="cli", cwd=tmp_path, config=cfg) is True
 
 
+# ── warning on unrecognized values ──────────────────────────────────────────
+
+class TestCodingContextWarnings:
+    """Unrecognized agent.coding_context values should warn, not silently fall back."""
+
+    def test_unknown_value_warns_and_falls_back(self, caplog):
+        """Bogus values like 'focu' or 'truee' should warn and resolve to 'auto'."""
+        import logging
+        cc._warned_unknown_values.clear()  # Reset dedupe set
+
+        with caplog.at_level(logging.WARNING, logger="hermes.coding_context"):
+            result = cc._coding_mode({"agent": {"coding_context": "focu"}})
+
+        assert result == "auto", "Should fall back to auto"
+        assert len(caplog.records) == 1, "Should emit exactly one warning"
+        assert "focu" in caplog.text, "Warning should mention the bogus value"
+        assert "auto" in caplog.text, "Warning should mention the fallback"
+
+    def test_empty_value_is_silent(self, caplog):
+        """Empty string should resolve to 'auto' without warning."""
+        import logging
+        cc._warned_unknown_values.clear()
+
+        with caplog.at_level(logging.WARNING, logger="hermes.coding_context"):
+            result = cc._coding_mode({"agent": {"coding_context": ""}})
+
+        assert result == "auto"
+        assert len(caplog.records) == 0, "Empty value should NOT warn"
+
+    def test_missing_key_is_silent(self, caplog):
+        """Missing key should resolve to 'auto' without warning."""
+        import logging
+        cc._warned_unknown_values.clear()
+
+        with caplog.at_level(logging.WARNING, logger="hermes.coding_context"):
+            result = cc._coding_mode({"agent": {}})
+
+        assert result == "auto"
+        assert len(caplog.records) == 0, "Missing key should NOT warn"
+
+    def test_boolean_aliases_silent_and_resolve(self, caplog):
+        """Legacy boolean aliases (true/false/yes/1) should resolve without warning."""
+        import logging
+        cc._warned_unknown_values.clear()
+
+        with caplog.at_level(logging.WARNING, logger="hermes.coding_context"):
+            assert cc._coding_mode({"agent": {"coding_context": "true"}}) == "on"
+            assert cc._coding_mode({"agent": {"coding_context": "false"}}) == "off"
+            assert cc._coding_mode({"agent": {"coding_context": "yes"}}) == "on"
+            assert cc._coding_mode({"agent": {"coding_context": "1"}}) == "on"
+
+        assert len(caplog.records) == 0, "Legacy aliases should NOT warn"
+
+    def test_canonical_modes_silent(self, caplog):
+        """Canonical modes (auto/focus/on/off) should resolve without warning."""
+        import logging
+        cc._warned_unknown_values.clear()
+
+        with caplog.at_level(logging.WARNING, logger="hermes.coding_context"):
+            assert cc._coding_mode({"agent": {"coding_context": "auto"}}) == "auto"
+            assert cc._coding_mode({"agent": {"coding_context": "focus"}}) == "focus"
+            assert cc._coding_mode({"agent": {"coding_context": "on"}}) == "on"
+            assert cc._coding_mode({"agent": {"coding_context": "off"}}) == "off"
+
+        assert len(caplog.records) == 0, "Canonical modes should NOT warn"
+
+    def test_dedupe_same_bogus_value_warns_once(self, caplog):
+        """Same bogus value should warn only once per process."""
+        import logging
+        cc._warned_unknown_values.clear()
+
+        with caplog.at_level(logging.WARNING, logger="hermes.coding_context"):
+            cc._coding_mode({"agent": {"coding_context": "typo"}})
+            cc._coding_mode({"agent": {"coding_context": "typo"}})
+            cc._coding_mode({"agent": {"coding_context": "typo"}})
+
+        warning_count = sum(1 for r in caplog.records if "typo" in r.message)
+        assert warning_count == 1, "Should warn exactly once for the same value"
+
+    def test_different_bogus_values_each_warn(self, caplog):
+        """Different bogus values should each warn once."""
+        import logging
+        cc._warned_unknown_values.clear()
+
+        with caplog.at_level(logging.WARNING, logger="hermes.coding_context"):
+            cc._coding_mode({"agent": {"coding_context": "typo1"}})
+            cc._coding_mode({"agent": {"coding_context": "typo2"}})
+
+        warning_count = len(caplog.records)
+        assert warning_count == 2, "Different bogus values should each warn"
 
 
 

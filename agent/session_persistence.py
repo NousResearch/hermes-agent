@@ -321,6 +321,15 @@ def _db_flush_failed(agent, e: Exception, batch_rows: List[Dict[str, Any]], adop
         agent._last_flushed_db_idx = 0
         agent._session_db_created = False
         agent._ensure_db_session()
+        parent_id = agent._parent_session_id
+        if not agent._session_db_created and parent_id and agent._session_db.get_session(parent_id) is None:
+            # Delegate child whose parent was deleted (cascade): the row's own parent FK would reject every
+            # recreate. Create it unparented for this call only; the relay and hooks still use the parent id.
+            agent._parent_session_id = None
+            try:
+                agent._ensure_db_session()
+            finally:
+                agent._parent_session_id = parent_id
         if not agent._session_db_created:
             # Row creation failed too (transient store trouble): don't append into a guaranteed
             # rollback — keep the batch unmarked so the next flush retries the whole thing.

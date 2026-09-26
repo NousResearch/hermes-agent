@@ -1,6 +1,7 @@
 """Tests for the diagnostic reporter (formatting layer)."""
 from __future__ import annotations
 
+from agent.compression_marker import _COMPRESSION_MARKER_RE
 from agent.lsp.reporter import (
     MAX_PER_FILE,
     format_diagnostic,
@@ -44,8 +45,7 @@ def test_truncate_above_limit_appends_marker():
     s = "x" * 10000
     out = truncate(s, limit=200)
     # Non-imitable elision marker (#121548), not the old bare truncation idiom.
-    assert "HERMES-CONTEXT-COMPRESSION" in out
-    assert out.endswith("⟫")
+    assert _COMPRESSION_MARKER_RE.search(out)
     assert len(out) <= 200
 
 

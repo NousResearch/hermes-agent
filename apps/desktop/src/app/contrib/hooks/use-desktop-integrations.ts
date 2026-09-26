@@ -7,6 +7,7 @@ import { commandFocusedPreview } from '@/app/chat/right-rail/preview-nav'
 import { openSession } from '@/app/open-session'
 import { openConnectionDoneLink } from '@/components/assistant-ui/connector-tool'
 import { $diskPluginsScanPending } from '@/contrib/runtime-loader'
+import { getSession } from '@/hermes'
 import { resolveDeepLinkAction } from '@/lib/deeplink-routes'
 import { pathFromHermesDeepLink, resolveHermesOpenPath } from '@/lib/hermes-open-target'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
@@ -28,11 +29,13 @@ import {
   getRememberedSessionId,
   resolveComposerSessionKey,
   sessionBelongsToProfile,
+  sessionMatchesStoredId,
   setRememberedRoute,
   setRememberedSessionId
 } from '@/store/session'
 import { $botChatScopes, $sessionTiles, storedSessionIdForRuntimeId } from '@/store/session-states'
 import { onSessionsChanged } from '@/store/session-sync'
+import { requestSkillInstallFromDeepLink } from '@/store/skill-deeplink-install'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/updates'
 import { isBrowserWindow, isHudWindow, isSecondaryWindow } from '@/store/windows'
 import type { SessionInfo } from '@/types/hermes'
@@ -40,7 +43,9 @@ import type { SessionInfo } from '@/types/hermes'
 import { requestComposerFocus, requestComposerInsert } from '../../chat/composer/focus'
 import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, routeSessionId, sessionRoute } from '../../routes'
 
-type RememberedSession = Pick<SessionInfo, '_lineage_root_id' | 'id' | 'profile'>
+import { resolveRememberedSessionId } from './remembered-session'
+
+type RememberedSession = Pick<SessionInfo, '_lineage_root_id' | 'id' | 'parent_session_id' | 'profile' | 'source'>
 
 interface DesktopIntegrationsParams {
   activeProfile: string
@@ -162,11 +167,22 @@ export function useDesktopIntegrations({
 
         restoredRef.current = true
 
+        // A delegate child (source='subagent') is never a restorable
+        // destination: it is invisible in the sidebar, so resuming one leaves
+        // the app split between the highlighted parent and the child the chat
+        // area shows (#56983). `/branch` children also carry
+        // parent_session_id but ARE user-facing — source, not parenthood, is
+        // the discriminator. A listed row carries its source, so the guard is
+        // synchronous there; an unlisted id resolves by id below.
+        const rowFor = (id: string) => sessions.find(session => sessionMatchesStoredId(session, id))
+
+        const restorableRouteSession = routeSession && rowFor(routeSession)?.source !== 'subagent' ? routeSession : null
+
         if (
           route &&
           route !== NEW_CHAT_ROUTE &&
           !isOverlayView(appViewForPath(route)) &&
-          (!routeSession || sessionBelongsToProfile(sessions, routeSession, activeProfile))
+          (!routeSession || (restorableRouteSession && sessionBelongsToProfile(sessions, routeSession, activeProfile)))
         ) {
           // The user may have started typing on the fresh chat while the
           // backend was still coming up; the composer moves that draft onto
@@ -183,15 +199,36 @@ export function useDesktopIntegrations({
           setRememberedRoute(null, activeProfile)
         }
 
-        if (last && sessionBelongsToProfile(sessions, last, activeProfile)) {
-          announceNewSessionDraftKey(resolveComposerSessionKey(last, sessions))
-          navigate(sessionRoute(last), { replace: true })
+        if (last) {
+          // Fast path: a listed, non-delegate row restores directly, exactly
+          // as before — no by-id fetch on the common cold start.
+          if (rowFor(last)?.source !== 'subagent' && sessionBelongsToProfile(sessions, last, activeProfile)) {
+            announceNewSessionDraftKey(resolveComposerSessionKey(last, sessions))
+            navigate(sessionRoute(last), { replace: true })
+
+            return
+          }
+
+          // Unlisted (or a delegate row that reached a list slice): resolve
+          // the id directly — the by-id endpoint serves delegate children the
+          // list omits. A delegate child repairs to its parent, an orphan or
+          // foreign-profile id clears, and a fetch failure keeps the
+          // remembered value for the next launch instead of discarding it.
+          void resolveRememberedSessionId(last, getSession)
+            .then(remembered => {
+              if (!remembered || !sessionBelongsToProfile(sessions, remembered, activeProfile)) {
+                setRememberedSessionId(null, activeProfile)
+
+                return
+              }
+
+              announceNewSessionDraftKey(resolveComposerSessionKey(remembered, sessions))
+              setRememberedSessionId(remembered, activeProfile)
+              navigate(sessionRoute(remembered), { replace: true })
+            })
+            .catch(() => undefined)
 
           return
-        }
-
-        if (last) {
-          setRememberedSessionId(null, activeProfile)
         }
       } else {
         restoredRef.current = true
@@ -203,8 +240,23 @@ export function useDesktopIntegrations({
     // Session-shaped routes require an explicit matching owner; unresolved and
     // wrong-profile rows must not replace known-safe navigation.
     if (routedSessionId && sessionBelongsToProfile(sessions, routedSessionId, activeProfile)) {
-      setRememberedSessionId(routedSessionId, activeProfile)
-      setRememberedRoute(locationPathname, activeProfile)
+      // A delegate child (source='subagent') is never itself a rememberable
+      // destination: it is invisible in the sidebar, so a restart would resume
+      // an orphan chat while the sidebar highlights its parent (#56983).
+      // `/branch` children also carry parent_session_id but ARE user-facing —
+      // source, not parenthood, is the discriminator.
+      const routedRow = sessions.find(session => sessionMatchesStoredId(session, routedSessionId))
+
+      const rememberedSessionId =
+        routedRow?.source === 'subagent' ? routedRow.parent_session_id || null : routedSessionId
+
+      if (rememberedSessionId) {
+        setRememberedSessionId(rememberedSessionId, activeProfile)
+        setRememberedRoute(
+          rememberedSessionId === routedSessionId ? locationPathname : sessionRoute(rememberedSessionId),
+          activeProfile
+        )
+      }
     } else if (!routedSessionId && !isOverlayView(appViewForPath(locationPathname))) {
       setRememberedRoute(locationPathname, activeProfile)
     }
@@ -312,6 +364,7 @@ export function useDesktopIntegrations({
   //    names toast an error and never fall back to a git-path install.
   //  - plugin/install?… (and legacy plugin-agent/plugin-desktop) → plugin install
   //    modal awaiting explicit confirmation. Never auto-installs.
+  //  - skill/install?identifier=… → confirmation, then the existing hub pipeline
   //  - blueprint/<name>?… → reviewable /blueprint command in the composer
   //  - <plugin>/<path>?… → in-app navigate (e.g. index-network/intent/1)
   //  - open/<path>?… → in-app navigate (generic)
@@ -377,6 +430,16 @@ export function useDesktopIntegrations({
           legacyHint: action.legacyHint
         })
 
+        return
+      }
+
+      if (action.type === 'skill-install') {
+        void requestSkillInstallFromDeepLink(action.identifier)
+
+        return
+      }
+
+      if (payload.kind === 'skill') {
         return
       }
 

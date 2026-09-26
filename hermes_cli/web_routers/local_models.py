@@ -500,6 +500,8 @@ def local_models_status():
     import pm
 
     current = pm.installed_package(binaries.BACKEND_PACKAGES[runtime_backend]) if runtime_backend else None
+    # The pane must list models from the old per-profile layout even while the runtime is off.
+    _quiet(bootstrap.adopt_legacy_models, [], warn="legacy model adoption failed: %r")
     mdir = bootstrap.models_dir()
     running = _state_endpoint()
     # Resident models from the live router ({} when down): Loaded pills + eject. A failed read is never
@@ -528,7 +530,7 @@ def _nvidia_smi_facts() -> dict:
     if not smi_exe:
         return {}
     smi = subprocess.run([smi_exe, "--query-gpu=name,utilization.gpu,memory.used", "--format=csv,noheader,nounits"],
-                         capture_output=True, text=True, timeout=5)
+                         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
     if smi.returncode != 0 or not smi.stdout.strip():
         return {}
     name, util, used_mib = (x.strip() for x in smi.stdout.strip().splitlines()[0].split(","))

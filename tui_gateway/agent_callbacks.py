@@ -202,7 +202,24 @@ def _wire_callbacks(sid: str):
 
     def secret_cb(env_var, prompt, metadata=None):
         pl = {"prompt": prompt, "env_var": env_var, **({"metadata": metadata} if metadata else {})}
-        val = _ask("secret", sid, pl)
+        # One process-global callback, so the closure sid is just the last session wired,
+        # not the owner. Ask the UI session bound by _set_session_context: the same
+        # record whose profile scope the value is saved into. No bound owner: skip.
+        from gateway.session_context import get_session_env
+
+        owner_sid = get_session_env("HERMES_UI_SESSION_ID")
+        # Credential admission is fenced to a live runtime. owner_sid is a ContextVar copied onto
+        # the worker's thread at spawn: a background/btw/preview worker outlives its session, and
+        # the close path's `_clear_pending` cancels only requests ALREADY open — it cannot fence
+        # one created afterward. Without a session here the request would register, wait 300s for
+        # a client that never reconnects, and any late answer would settle into the saver with no
+        # owner to revalidate (andrexibiza P2, #121471). A parked reconnectable record also keeps
+        # `write_json` off the stdio fallback — there is no `session.resume` for a closed sid.
+        if owner_sid and _sessions.get(owner_sid) is None:
+            logger.info("secret prompt for %s refused: its UI session is closed", owner_sid)
+            val = ""
+        else:
+            val = _ask("secret", owner_sid, pl) if owner_sid else ""
         if not val:
             return {"success": True, "stored_as": env_var, "validated": False, "skipped": True, "message": "skipped"}
         from hermes_cli.config import save_env_value_secure
@@ -358,6 +375,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
                              "provider_data_collection", "openrouter_min_coding_score")},
         "model": g("model") or _resolve_model(), "max_iterations": _cfg_max_turns(cfg, 25),
         "enabled_toolsets": g("enabled_toolsets") or _load_enabled_toolsets("tui"),
+        "disabled_toolsets": g("disabled_toolsets") or _load_disabled_toolsets(),
         "quiet_mode": True, "verbose_logging": False,
         "provider_require_parameters": g("provider_require_parameters", False), "session_id": task_id,
         "reasoning_config": g("reasoning_config") or _load_reasoning_config(str(g("model", "") or "")),

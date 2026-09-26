@@ -3,7 +3,8 @@
 ~/.hermes/skills/, tracking each synced skill's origin hash in .bundled_manifest (v2 "name:hash"
 lines; v1 plain names auto-migrate). NEW skills are copied and recorded; EXISTING skills update
 only when bundled changed AND the user copy still matches the origin hash (else user-customized
--> SKIP); user-DELETED skills are not re-added; upstream-REMOVED ones leave the manifest."""
+-> SKIP); user-DELETED skills are not re-added; upstream-REMOVED ones leave the manifest once no active or
+archived copy remains (the entry is that copy's only built-in provenance record)."""
 
 import hashlib
 import logging
@@ -430,9 +431,17 @@ def sync_skills(quiet: bool = False) -> dict:
             _update_existing_skill(st, skill_name, skill_src, dest, bundled_hash)
         else:
             st.skipped += 1  # in manifest but not on disk — user deleted it
-    # Clean manifest entries for skills removed upstream. Skipped when opted out: bundled_skills
+    # Clean manifest entries for skills removed upstream once no copy is left. A dropped built-in still
+    # on disk (active or archived) keeps its entry: it is the only provenance record, and without it the
+    # copy reads as agent-authored ("Learned", editable) (#95415). Skipped when opted out: bundled_skills
     # is only the essential set there, so cleaning would drop tracking for everything else.
-    cleaned = [] if essential_only else sorted(set(st.manifest) - {name for name, _ in bundled_skills})
+    removed = [] if essential_only else sorted(set(st.manifest) - {name for name, _ in bundled_skills})
+    present = set()
+    if removed:  # curator archive is flat: directory name == skill name
+        archive = _skills_dir() / ".archive"
+        present = {_read_skill_name(md, md.parent.name) for md in _iter_active_skill_mds()} | (
+            {p.name for p in archive.iterdir() if p.is_dir()} if archive.is_dir() else set())
+    cleaned = [name for name in removed if name not in present]
     for name in cleaned:
         del st.manifest[name]
     _seed_category_descriptions(

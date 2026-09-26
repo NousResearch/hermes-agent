@@ -1,6 +1,7 @@
 """Live voice session minting (OpenAI Realtime and Gemini Live) (``/api/voice/realtime/*``): the OpenAI key never leaves the
 backend, and the minted session carries the configured model plus the ``ask_jarvis`` bridge."""
 import json
+import ssl
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -106,11 +107,20 @@ def fake_google():
 def test_gemini_session_hands_out_a_one_use_token_with_the_setup_locked_in(client, monkeypatch, fake_google):
     base, received = fake_google
     monkeypatch.setattr(voice_realtime, "GEMINI_API_BASE", base)
+    real_client = voice_realtime.httpx.AsyncClient
+    transport_contexts = []
+
+    def client_with_transport(*args, **kwargs):
+        transport_contexts.append(kwargs.get("verify"))
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(voice_realtime.httpx, "AsyncClient", client_with_transport)
     monkeypatch.setenv("GEMINI_API_KEY", "AIza-never-leaves")
     monkeypatch.setattr(voice_realtime, "load_config", lambda: {
         "voice": {"realtime": {"provider": "gemini", "gemini": {"voice": "Kore"}}}})
 
     resp = client.post("/api/voice/realtime/session")
+    assert isinstance(transport_contexts[-1], ssl.SSLContext)
 
     assert resp.status_code == 200, resp.text
     body = resp.json()

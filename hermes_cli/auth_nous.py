@@ -1328,11 +1328,14 @@ def _nous_device_code_login(
         _poll_for_token, _print_device_code_instructions, _request_device_code,
         _tls_state_from_verify, format_auth_error, refresh_nous_oauth_from_state)
     pconfig = PROVIDER_REGISTRY["nous"]
+    # Same profile-scoped resolvers every other reader in this file uses: a raw os.getenv here
+    # would persist the launch profile's process-wide override as the credential's
+    # portal/inference base URL even when the login runs for a multiplexed secondary (#121339).
     portal_base_url = (
-        portal_base_url or os.getenv("HERMES_PORTAL_BASE_URL") or os.getenv("NOUS_PORTAL_BASE_URL")
+        portal_base_url or _nous_portal_env_override()
         or pconfig.portal_base_url).rstrip("/")
     requested_inference_url = (
-        inference_base_url or os.getenv("NOUS_INFERENCE_BASE_URL")
+        inference_base_url or _nous_inference_env_override()
         or pconfig.inference_base_url).rstrip("/")
     client_id = client_id or pconfig.client_id
     scope = scope or pconfig.scope

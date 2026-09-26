@@ -62,6 +62,56 @@ export const PASTE_PREVIEW_MAX_CHARS = 280;
 
 const NEWLINE_RE = /[\r\n]/;
 
+/**
+ * One paste gesture at a time — the double-tap guard (FR-7 affordance).
+ *
+ * The affordance is a single coarse-pointer button, and a double-tap is the
+ * most common accidental gesture on a touch screen, so the control is
+ * reachable exactly where the accident happens. Nothing downstream of
+ * `runPtyClipboardPaste` is idempotent: two concurrent invocations against the
+ * same deps both resolve, so the same clipboard text is pasted into the
+ * terminal twice, and on the image route `sent-image` is reported twice — the
+ * caller then uploads the clipboard image twice and drives `/image` twice.
+ * Two concurrent `sendBytes("")` pre-flights also race the same reconnect
+ * gate.
+ *
+ * A tap arriving while a paste is in flight is dropped SILENTLY: the user
+ * asked for one paste and got one, so nothing failed and there is nothing to
+ * report (FR-9). Failures are NOT swallowed — `run` still owns the banner
+ * path, and a rejection propagates to the caller exactly as it did before the
+ * guard existed.
+ *
+ * The flag is released in a `finally`, so a rejected clipboard read (or any
+ * other throw) cannot leave the control permanently dead. `onFlightChange`
+ * exists only so the UI can mirror the flag onto `disabled`; the gate itself
+ * never depends on it, so a caller that passes nothing gets a correct guard.
+ *
+ * `true` means this invocation ran to completion; `false` means it was
+ * dropped as a duplicate. The confirm/cancel path uses that to re-show its
+ * prompt instead of discarding a paste the user answered.
+ */
+export function withPasteInFlightGuard(
+  run: (request?: PasteRequest) => Promise<void>,
+  onFlightChange?: (inFlight: boolean) => void,
+): (request?: PasteRequest) => Promise<boolean> {
+  let inFlight = false;
+  const setInFlight = (next: boolean) => {
+    inFlight = next;
+    onFlightChange?.(next);
+  };
+
+  return async (request) => {
+    if (inFlight) return false;
+    setInFlight(true);
+    try {
+      await run(request);
+      return true;
+    } finally {
+      setInFlight(false);
+    }
+  };
+}
+
 function chars(text: string): number {
   return Array.from(text).length;
 }

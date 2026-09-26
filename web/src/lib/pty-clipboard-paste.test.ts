@@ -8,7 +8,9 @@ import {
   formatPasteConfirmation,
   pastePreview,
   runPtyClipboardPaste,
+  withPasteInFlightGuard,
   type PasteDeps,
+  type PasteRequest,
 } from "./pty-clipboard-paste";
 
 function clipboardFile(name = "clipboard.png", type = "image/png"): File {
@@ -731,6 +733,249 @@ describe("B2 adversarial: the image route consults the reconnect gate", () => {
       reason: "socket-closed",
     });
     expect(ws.send).not.toHaveBeenCalled();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The double-tap guard (`withPasteInFlightGuard`).
+//
+// The coarse-pointer paste control is a single button, and a double-tap is
+// the most common accidental gesture on a touch screen, so the control is
+// reachable exactly where it happens. `runPtyClipboardPaste` is not
+// idempotent, so two concurrent invocations against the same deps both resolve
+// and the clipboard lands twice — on the image route, twice through the upload
+// pipeline.
+//
+// The guard lives in this module rather than inside ChatPage's effect so it is
+// testable here, without a browser, and so the gate cannot be reimplemented
+// per-callsite. `makeGuardedPaste` below mirrors the effect's wiring — the
+// outcome handling, the `pendingImageFiles` upload, the confirmation answer —
+// so these tests exercise the real composition, not a stand-in.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("withPasteInFlightGuard (the double-tap defect)", () => {
+  interface GuardedHarness {
+    /** Exactly what the button calls: `mobilePasteRef.current?.()`. */
+    tap(): Promise<boolean>;
+    /** Exactly what the confirm/cancel answers call. */
+    answer(request: PasteRequest): Promise<boolean>;
+    pasteText: ReturnType<typeof vi.fn>;
+    sendBytes: ReturnType<typeof vi.fn>;
+    uploads: string[][];
+    prompts: string[];
+    flight: boolean[];
+  }
+
+  function makeGuardedPaste(
+    stubs: Stubs = {},
+    hooks: {
+      onSentImage?: (files: File[]) => void;
+      onNeedsConfirmation?: (text: string) => void;
+    } = {},
+  ): GuardedHarness {
+    const { deps, pasteText, sendBytes } = makeDeps(stubs);
+    // The effect's `pendingImageFiles`: the files the read reported are the
+    // files the upload pipeline receives.
+    let pendingImageFiles: File[] = [];
+    const readImages = deps.readImages;
+    if (readImages) {
+      deps.readImages = async () => {
+        pendingImageFiles = await readImages();
+        return pendingImageFiles;
+      };
+    }
+    const uploads: string[][] = [];
+    const prompts: string[] = [];
+    const flight: boolean[] = [];
+
+    const run = async (request: PasteRequest = {}) => {
+      const outcome = await runPtyClipboardPaste(deps, request);
+      if (outcome.kind === "sent-image") {
+        if (pendingImageFiles.length) {
+          hooks.onSentImage?.(pendingImageFiles);
+          uploads.push(pendingImageFiles.map((f) => f.name));
+        }
+        return;
+      }
+      if (outcome.kind === "needs-confirmation") {
+        prompts.push(outcome.text);
+        hooks.onNeedsConfirmation?.(outcome.text);
+      }
+    };
+    const guarded = withPasteInFlightGuard(run, (inFlight) =>
+      flight.push(inFlight),
+    );
+
+    return {
+      tap: () => guarded(),
+      answer: (request) => guarded(request),
+      pasteText,
+      sendBytes,
+      uploads,
+      prompts,
+      flight,
+    };
+  }
+
+  it("sends exactly ONCE when a double-tap overlaps, not twice", async () => {
+    // The reproduced defect, verbatim: two concurrent invocations of the same
+    // module call against the same deps, each with a slow clipboard read.
+    const harness = makeGuardedPaste({
+      readText: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return "hello world";
+      },
+    });
+
+    const [first, second] = await Promise.all([
+      harness.tap(),
+      harness.tap(),
+    ]);
+
+    expect(harness.pasteText.mock.calls).toEqual([["hello world"]]);
+    expect(first).toBe(true);
+    // The second tap is a silent no-op, and is told so, so a caller that
+    // cares (the confirm path) can react instead of losing the paste.
+    expect(second).toBe(false);
+    // Exactly one pre-flight on the wire, not two racing the same gate.
+    expect(harness.sendBytes).toHaveBeenCalledTimes(1);
+  });
+
+  it("still sends after a rejected clipboard read — the denial does not stick", async () => {
+    // A denied read must not leave the control dead for the session, and it
+    // must still reach the banner path (FR-9). Note the module absorbs the
+    // rejection itself and reports `permission-denied`, so this pins the
+    // outcome and the follow-up paste; the guard's own release-on-throw is
+    // pinned by the next test, which is the one that can actually regress.
+    let denied = true;
+    const harness = makeGuardedPaste({
+      readText: async () => {
+        if (denied) throw new DOMException("denied", "NotAllowedError");
+        return "second attempt";
+      },
+    });
+
+    // The rejection is NOT swallowed: the caller's banner path depends on the
+    // outcome propagating exactly as it did pre-guard.
+    await expect(harness.tap()).resolves.toBe(true);
+    expect(harness.pasteText).not.toHaveBeenCalled();
+
+    denied = false;
+    await expect(harness.tap()).resolves.toBe(true);
+    expect(harness.pasteText.mock.calls).toEqual([["second attempt"]]);
+  });
+
+  it("releases the flag when the guarded call itself rejects", async () => {
+    // The regression this pins, and the one most likely to come back: if the
+    // flag were cleared only on the success path, ANY throw in the effect's
+    // outcome handling would leave the control permanently dead — the user
+    // could never paste again in that session, with no way to tell why. A
+    // clipboard read is the realistic thrower: `navigator.clipboard.readText`
+    // rejects outright on some platforms, and the caller's own wiring can
+    // throw on top of it.
+    const guarded = withPasteInFlightGuard(async () => {
+      throw new DOMException("denied", "NotAllowedError");
+    });
+
+    await expect(guarded()).rejects.toThrow("denied");
+    // Second tap after the denial: the guard must not still be holding.
+    await expect(guarded()).rejects.toThrow("denied");
+  });
+
+  it("releases the flag on a throw from the caller's own wiring", async () => {
+    // The effect's outcome handling sits inside the guarded call, so a throw
+    // there is the same dead-control hazard — proven through the real
+    // composition, not the bare helper.
+    let boom = true;
+    const harness = makeGuardedPaste(
+      { readText: async () => "line one\nline two" },
+      {
+        onNeedsConfirmation: () => {
+          if (boom) throw new Error("handler exploded");
+        },
+      },
+    );
+
+    await expect(harness.tap()).rejects.toThrow("handler exploded");
+
+    boom = false;
+    await expect(harness.tap()).resolves.toBe(true);
+  });
+
+  it("does not block a user who pastes twice in a row around a confirmation", async () => {
+    // Multi-line → confirm → send, then immediately paste again. The prompt
+    // belongs to a paste that already COMPLETED, so its answer must not be
+    // treated as a duplicate — otherwise the second paste is swallowed by the
+    // first one's prompt.
+    const harness = makeGuardedPaste({ readText: async () => "one\ntwo" });
+
+    // Tap 1: the module returns `needs-confirmation` and the invocation ends,
+    // so the flag is released even though the user has not answered yet.
+    await expect(harness.tap()).resolves.toBe(true);
+    expect(harness.prompts).toEqual(["one\ntwo"]);
+
+    // The confirm answer, sent through the same guarded callback.
+    await expect(
+      harness.answer({ confirmation: "confirm", pendingText: "one\ntwo" }),
+    ).resolves.toBe(true);
+    expect(harness.pasteText.mock.calls).toEqual([["one\ntwo"]]);
+
+    // The user pastes again straight away — not blocked by the first prompt.
+    await expect(harness.tap()).resolves.toBe(true);
+    expect(harness.prompts).toEqual(["one\ntwo", "one\ntwo"]);
+  });
+
+  it("still cancels a pending paste, and the cancel is not a duplicate", async () => {
+    const harness = makeGuardedPaste({ readText: async () => "one\ntwo" });
+    await harness.tap();
+
+    await expect(harness.answer({ confirmation: "cancel" })).resolves.toBe(true);
+    expect(harness.pasteText).not.toHaveBeenCalled();
+  });
+
+  it("uploads the clipboard image ONCE per double-tap, not twice", async () => {
+    // The worse half of the defect: `sent-image` is reported per invocation,
+    // so the caller runs `uploadAndAttachImages` — and therefore the upload
+    // and the `/image` drive — once per tap.
+    const harness = makeGuardedPaste({
+      readImages: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return [clipboardFile("clipboard.png")];
+      },
+    });
+
+    await Promise.all([harness.tap(), harness.tap()]);
+
+    expect(harness.uploads).toEqual([["clipboard.png"]]);
+  });
+
+  it("mirrors the flag to the UI exactly once per real transition", async () => {
+    // The `disabled` mirror is driven from the guard, not from the tap. A
+    // dropped tap must not emit a `false` that would re-enable the control
+    // while a paste is genuinely still running.
+    const harness = makeGuardedPaste({
+      readText: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return "hello world";
+      },
+    });
+
+    await Promise.all([harness.tap(), harness.tap()]);
+
+    expect(harness.flight).toEqual([true, false]);
+    expect(harness.flight.filter(Boolean)).toHaveLength(1);
+  });
+
+  it("gates correctly with no UI mirror attached", async () => {
+    // The button's `disabled` is belt to the guard's braces; a caller that
+    // passes no `onFlightChange` must still get a working gate.
+    const sent: string[] = [];
+    const guarded = withPasteInFlightGuard(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      sent.push("x");
+    });
+
+    await Promise.all([guarded(), guarded()]);
+    expect(sent).toEqual(["x"]);
   });
 });
 

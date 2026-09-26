@@ -768,6 +768,98 @@ describe("ChatPage mobile paste affordance", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// The double-tap guard, at the control itself.
+//
+// The lib-level suite proves `withPasteInFlightGuard` collapses two
+// overlapping invocations into one send. That is the gate; these are the two
+// things only the real component can show: the button actually calls through
+// the guarded callback (so the gate is on the live path, not installed
+// somewhere decorative), and the in-flight state reaches the DOM as
+// `disabled` so the control is honest about being busy.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("ChatPage paste control double-tap guard", () => {
+  function stubPointerCoarse(coarse: boolean) {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      addEventListener() {},
+      matches: query.includes("pointer: coarse") ? coarse : false,
+      media: query,
+      removeEventListener() {},
+    }));
+  }
+
+  /** A clipboard whose read resolves only when the returned resolver is called. */
+  function stubSlowClipboard(text: string) {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const readText = vi.fn(async () => {
+      await gate;
+      return text;
+    });
+    Object.defineProperty(window.navigator, "clipboard", {
+      configurable: true,
+      value: { readText, writeText: vi.fn(async () => {}) },
+    });
+    return { readText, release };
+  }
+
+  async function renderCoarseChat() {
+    stubPointerCoarse(true);
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    return container.querySelector<HTMLButtonElement>('[aria-label="Paste"]');
+  }
+
+  it("marks the control disabled while a paste is in flight", async () => {
+    const clipboard = stubSlowClipboard("hello world");
+    const button = await renderCoarseChat();
+    expect(button).not.toBeNull();
+    expect(button!.disabled).toBe(false);
+
+    await act(async () => {
+      button!.click();
+    });
+
+    // The clipboard read is still pending, so the control is busy and says so.
+    await vi.waitFor(() => expect(button!.disabled).toBe(true));
+
+    await act(async () => {
+      clipboard.release();
+    });
+    // Released when the paste finishes — not left dead.
+    await vi.waitFor(() => expect(button!.disabled).toBe(false));
+  });
+
+  it("sends ONE paste for a double-tap on the real control", async () => {
+    const clipboard = stubSlowClipboard("hello world");
+    const button = await renderCoarseChat();
+
+    await act(async () => {
+      button!.click();
+      button!.click();
+    });
+    // Two taps, one clipboard read: the guard collapsed them before the
+    // clipboard was touched, not after the send. The lib suite pins the
+    // resulting single send; this pins that the button is wired to the
+    // guarded callback at all.
+    expect(clipboard.readText).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      clipboard.release();
+    });
+    await vi.waitFor(() => expect(button!.disabled).toBe(false));
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // QA pass — B2's second half: `driveImageAttach` owns the two raw
 // `ws.send()` calls (`/image <path>` then `\r`), and a lib-level test cannot
 // reach them. The gate is flipped to refusing *between* the two sends, which is

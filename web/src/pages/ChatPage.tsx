@@ -71,6 +71,7 @@ import {
   formatImageUploadError,
   formatPasteConfirmation,
   runPtyClipboardPaste,
+  withPasteInFlightGuard,
   type PasteDeps,
   type PasteFailure,
   type PasteRequest,
@@ -393,10 +394,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     text: string;
   } | null>(null);
   // Filled in by the PTY effect, which owns the terminal/socket refs and the
-  // image-attach pipeline; the paste control only calls through it.
+  // image-attach pipeline; the paste control only calls through it. Resolves
+  // `false` when the invocation was dropped as an in-flight duplicate, so the
+  // confirm path can re-show its prompt instead of losing the paste.
   const mobilePasteRef = useRef<
-    ((request?: PasteRequest) => Promise<void>) | null
+    ((request?: PasteRequest) => Promise<boolean>) | null
   >(null);
+  // Mirrors the effect's in-flight flag so the control can render `disabled`.
+  // This is a UI mirror only — the gate itself lives with the effect's
+  // `pasteDeps` closure, in `withPasteInFlightGuard`.
+  const [pasteInFlight, setPasteInFlight] = useState(false);
 
   const { theme } = useTheme();
   const terminalBg = theme.terminalBackground ?? DEFAULT_TERMINAL_BACKGROUND;
@@ -615,7 +622,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       return;
     }
     setPendingPaste(null);
-    void send({ confirmation: "confirm", pendingText: pending.text });
+    void send({ confirmation: "confirm", pendingText: pending.text }).then(
+      (ran) => {
+        // The guard drops an invocation that arrives while another paste is
+        // in flight. For a tap that is silent-and-correct (the user asked for
+        // one paste and got one), but this is the user answering a prompt we
+        // just cleared — dropping it would discard their paste with no
+        // message at all. Put the prompt back so they can answer again.
+        if (!ran) setPendingPaste(pending);
+      },
+    );
   }, [pendingPaste, t]);
   const cancelPendingPaste = useCallback(() => {
     setPendingPaste(null);
@@ -860,7 +876,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }
       // `empty` and `cancelled` are deliberately banner-free.
     };
-    mobilePasteRef.current = handleMobilePaste;
+    // The double-tap guard lives here, beside the `pasteDeps` closure and
+    // `pendingImageFiles` it protects, rather than in ChatPage state: a second
+    // tap on a coarse-pointer button is the single most common accidental
+    // gesture on a touch screen, and without this both invocations run to
+    // completion (double paste, or a double image upload + `/image`). The
+    // helper is pure, so the gate itself is unit-tested without a browser.
+    mobilePasteRef.current = withPasteInFlightGuard(
+      handleMobilePaste,
+      setPasteInFlight,
+    );
     const handleBrowserPaste = (ev: ClipboardEvent) => {
       const files = imageFilesFromTransfer(ev.clipboardData);
       if (!files.length) return;
@@ -2236,6 +2261,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             <Button
               ghost
               onClick={() => void mobilePasteRef.current?.()}
+              // FR-7 gating is unchanged (coarse pointer + active tab). The
+              // `disabled` mirror of the effect's in-flight flag is belt to
+              // the guard's braces: it stops a second tap reaching the button
+              // at all, and makes the state visible instead of looking dead.
+              disabled={pasteInFlight}
               title={t.chat.paste.button}
               aria-label={t.chat.paste.button}
               className={cn(

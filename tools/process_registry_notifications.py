@@ -7,6 +7,8 @@ import time
 from dataclasses import dataclass
 from contextlib import suppress
 
+from tools.ansi_strip import strip_ansi
+
 _DONE = ("completed", "success")
 _REASON_STATUS = {"lost": "marked lost because the process backend disappeared", "failed_start": "failed to start"}
 
@@ -256,7 +258,7 @@ def _process_accounting_lines(r: dict) -> list:
                      + ". Re-launch in this session anything you still need.")
     for u in r.get("unread_completions") or []:
         lines.append(f"Child's process {u.get('session_id')} `{u.get('command', '')[:100]}` finished (exit code "
-                     f"{u.get('exit_code')}) but the child never read its result; output tail:\n{u.get('output_tail', '')}")
+                     f"{u.get('exit_code')}) but the child never read its result; output tail:\n{strip_ansi(u.get('output_tail', ''))}")
     return lines
 
 
@@ -414,7 +416,7 @@ def format_process_notification(evt: dict) -> "str | None":
         _attribution = f"Handed off to you by a subagent before it finished. Purpose: {evt['handoff_note']}"
     attribution = f"{_attribution}\n" if _attribution else ""
     if evt_type == "heartbeat":
-        _out = evt.get("output") or "(no new output since the last heartbeat)"
+        _out = strip_ansi(evt.get("output") or "") or "(no new output since the last heartbeat)"
         return (
             f"[Background process {_sid} heartbeat #{evt.get('seq', '?')} — still running after "
             f"{_format_age(float(evt.get('elapsed') or 0))} (next in {evt.get('interval', '?')}s; "
@@ -424,7 +426,7 @@ def format_process_notification(evt: dict) -> "str | None":
         _sup = evt.get("suppressed", 0)
         return (
             f"[IMPORTANT: Background process {_sid} matched watch pattern \"{evt.get('pattern', '?')}\".\n"
-            f"{attribution}Command: {_cmd}\nMatched output:\n{evt.get('output', '')}"
+            f"{attribution}Command: {_cmd}\nMatched output:\n{strip_ansi(evt.get('output', ''))}"
             + (f"\n({_sup} earlier matches were suppressed by rate limit)" if _sup else "") + "]")
     _exit = evt.get("exit_code", "?")
     _out = evt.get("output", "")

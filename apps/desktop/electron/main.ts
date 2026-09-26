@@ -307,7 +307,7 @@ import { isAuthWall, resolveLinkTitle } from './link-title-wall'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
 import { notifyLauncherWindowRevealed } from './linux-launcher-ready'
-import { decideNvidiaEglFallback, parseNvidiaDriverMajor } from './linux-nvidia-egl-fallback'
+import { decideNvidiaEglFallback, parseElectronMajor, parseNvidiaDriverMajor } from './linux-nvidia-egl-fallback'
 import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
 import { resolveIpcFileReadPath, resolveMediaRequestPath, resolvePreviewTargetPath } from './local-read-path'
 import { localSkinProfileKey, readLocalSkinPayload } from './local-skin'
@@ -745,6 +745,9 @@ const NVIDIA_EGL_FALLBACK = decideNvidiaEglFallback({
       }
     })()
   ),
+  // #124032: the 580 EGL probe is fixed from Electron 42 on, so the runtime
+  // joins the driver in the decision; unknown runtimes keep the safe fallback.
+  electronMajor: parseElectronMajor(process.versions.electron ?? ''),
   env: process.env,
   platform: process.platform,
   isWsl: IS_WSL,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { decideNvidiaEglFallback, NVIDIA_BROKEN_EGL_MAJOR, parseNvidiaDriverMajor } from './linux-nvidia-egl-fallback'
+import { decideNvidiaEglFallback, ELECTRON_FIXED_EGL_MAJOR, NVIDIA_BROKEN_EGL_MAJOR, parseElectronMajor, parseNvidiaDriverMajor } from './linux-nvidia-egl-fallback'
 
 const LINUX = { env: {}, platform: 'linux' as const, isWsl: false, remoteDisplayReason: null }
 
@@ -88,5 +88,46 @@ describe('decideNvidiaEglFallback', () => {
         env: { HERMES_DESKTOP_NVIDIA_SWIFTSHADER: 'off' }
       }).enable
     ).toBe(false)
+  })
+})
+
+describe('decideNvidiaEglFallback on Electron 42+ (#124032)', () => {
+  it('stays off on driver 580 when the runtime fixed the EGL probe', () => {
+    // Electron 42.11.8 renders NVIDIA 580 hardware-accelerated at ~10% GPU
+    // CPU vs ~539% under SwiftShader; forcing SwiftShader there is pure cost.
+    const decision = decideNvidiaEglFallback({ ...LINUX, driverMajor: 580, electronMajor: 42 })
+
+    expect(decision.enable).toBe(false)
+  })
+
+  it('stays on for Electron 40 and unknown runtimes (safe legacy default)', () => {
+    expect(decideNvidiaEglFallback({ ...LINUX, driverMajor: 580, electronMajor: 40 }).enable).toBe(true)
+    expect(decideNvidiaEglFallback({ ...LINUX, driverMajor: 580, electronMajor: null }).enable).toBe(true)
+    expect(decideNvidiaEglFallback({ ...LINUX, driverMajor: 580 }).enable).toBe(true)
+    expect(ELECTRON_FIXED_EGL_MAJOR).toBe(42)
+  })
+
+  it('the override still forces SwiftShader on fixed runtimes that still fail', () => {
+    const decision = decideNvidiaEglFallback({
+      ...LINUX,
+      driverMajor: 580,
+      electronMajor: 42,
+      env: { HERMES_DESKTOP_NVIDIA_SWIFTSHADER: '1' }
+    })
+
+    expect(decision.enable).toBe(true)
+    expect(decision.reason).toContain('override')
+  })
+})
+
+describe('parseElectronMajor', () => {
+  it('parses the major from process.versions.electron values', () => {
+    expect(parseElectronMajor('42.11.8')).toBe(42)
+    expect(parseElectronMajor('40.10.2')).toBe(40)
+  })
+
+  it('returns null for missing or garbage input', () => {
+    expect(parseElectronMajor('')).toBeNull()
+    expect(parseElectronMajor('not-a-version')).toBeNull()
   })
 })

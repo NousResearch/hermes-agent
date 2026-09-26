@@ -639,7 +639,8 @@ def _note_pinned_skipped(db, filters, action):
     """Tell the user how many pinned rows bulk prune/archive spared (pin = durable keep; only
     `prune --include-pinned` opts in, archive always spares them)."""
     _base = {k: v for k, v in filters.items() if k != "include_pinned"}
-    with_pinned, without = (int(db.count_prune_matches(**_base, include_pinned=flag)) for flag in (True, False))
+    with_pinned, without = (int(db.count_prune_matches(**_base, include_pinned=flag, whole_lineages=action == "prune"))
+                            for flag in (True, False))
     skipped = max(with_pinned - without, 0)
     if not skipped:
         return
@@ -679,14 +680,13 @@ def _cmd_prune_or_archive(db, args, action):
     # Archive flips a compression lineage as a unit, matched through its tip (an old ancestor alone
     # never qualifies); the preview must show the same rows the archive will touch.
     filters["lineage_tips_only"] = not prune
-    # Prune deletes a compression lineage only as a unit; the preview must list the rows it deletes.
-    filters["whole_lineages"] = prune
     if not filters["include_pinned"]:
         _note_pinned_skipped(db, filters, action)
-    candidates = db.list_prune_candidates(**filters)
+    # Prune deletes a compression lineage only as a unit; the preview must list the rows it deletes.
+    candidates = db.list_prune_candidates(**filters, whole_lineages=prune)
     # Archive expands each matched tip to its compression lineage, so a direct-open count would
     # misdescribe its effect.
-    skipped_open = db.count_open_prune_matches(**filters) if prune else 0
+    skipped_open = db.count_open_prune_matches(**filters, whole_lineages=True) if prune else 0
     if skipped_open:
         print(f"Note: {skipped_open} open session{'' if skipped_open == 1 else 's'} also match these filters but "
               "will be skipped because prune only deletes ended sessions. Use `hermes sessions delete <id>` "

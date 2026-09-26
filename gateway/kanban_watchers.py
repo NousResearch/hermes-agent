@@ -28,6 +28,7 @@ from gateway.kanban_watchers_notifier import _KanbanNotification, _notifier_coll
 from gateway.kanban_watchers_dispatcher import (
     _KanbanDispatcher,
     _log_spawn_results,
+    _reread_dispatcher_settings,
     _resolve_dispatcher_settings,
 )
 
@@ -203,9 +204,9 @@ class GatewayKanbanWatchersMixin:
     def _kanban_dispatcher_boot(self) -> Optional[tuple]:
         """Resolve config, kanban_db and the singleton lock; None when the dispatcher must not run.
 
-        Config is read once at boot (restart to apply), except the auto-decompose
-        toggle which is re-read every tick. The env var is an escape hatch to
-        disable without editing YAML.
+        ``dispatch_in_gateway`` and the tick interval are read at boot (restart
+        to change cadence). Concurrency caps are re-read every tick. The env
+        var is an escape hatch to disable without editing YAML.
         """
         try:
             from hermes_cli.config import load_config as _load_config
@@ -297,6 +298,14 @@ class GatewayKanbanWatchersMixin:
                     # takes effect on the next tick, not on restart.
                     _ad_enabled, _ad_per_tick = _resolve_auto_decompose_settings(_load_config)
                     # See #49638.
+                    # Caps too: boot-captured max_in_progress* kept dispatching
+                    # under the old (or absent) limit after an operator edit.
+                    # Interval stays the boot value; only settings fed into
+                    # tick_once are refreshed. A failed re-read keeps the last
+                    # good caps — never silently uncaps.
+                    dispatcher.settings = _reread_dispatcher_settings(
+                        _load_config, _kb, dispatcher.settings,
+                    )
                     if _ad_enabled:
                         await _to_thread_process_service(dispatcher.auto_decompose_tick, _ad_per_tick)
                     results = await _to_thread_process_service(dispatcher.tick_once)

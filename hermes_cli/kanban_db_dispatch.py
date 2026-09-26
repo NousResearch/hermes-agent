@@ -1823,24 +1823,46 @@ def resolve_max_in_progress(configured: Optional[int]) -> Optional[int]:
     return derive_default_max_in_progress()
 
 
-def configured_max_in_progress() -> Optional[int]:
-    """Read ``kanban.max_in_progress`` from config, or None when unset/invalid.
+def _own_explicit_cap(key: str) -> Optional[int]:
+    """This process's explicit ``kanban.<key>`` cap, or None.
 
-    Shared so every dispatch entry point agrees on "explicitly configured": a
-    positive integer wins, anything else falls through to the derived default.
+    A read failure is None (no opinion), not a crash. The board-level scan
+    still runs, so another profile's explicit cap is not dropped just because
+    this profile's file could not be loaded.
     """
     try:
         from hermes_cli.config import load_config_readonly
-        raw = (load_config_readonly() or {}).get("kanban", {}).get("max_in_progress")
+        from hermes_cli.kanban_dispatch_caps import positive_cap
+        kanban = (load_config_readonly() or {}).get("kanban", {})
+        raw = kanban.get(key) if isinstance(kanban, dict) else None
     except Exception:
         return None
-    if raw is None:
-        return None
-    try:
-        ival = int(raw)
-    except (TypeError, ValueError):
-        return None
-    return ival if ival >= 1 else None
+    return positive_cap(raw)
+
+
+def configured_max_in_progress() -> Optional[int]:
+    """Board-level ``kanban.max_in_progress``, or None when nobody set it.
+
+    Explicit values are the most restrictive across the default home and every
+    live profile (see ``kanban_dispatch_caps``), not only this process's
+    config. None falls through to the memory-derived default.
+    """
+    from hermes_cli.kanban_dispatch_caps import explicit_dispatch_caps
+    mip, _per_profile = explicit_dispatch_caps(_own_explicit_cap("max_in_progress"), None)
+    return mip
+
+
+def configured_max_in_progress_per_profile() -> Optional[int]:
+    """Board-level ``kanban.max_in_progress_per_profile``, or None when unset.
+
+    Same cross-profile minimum as :func:`configured_max_in_progress`. None
+    means unlimited — this key has no memory-derived default.
+    """
+    from hermes_cli.kanban_dispatch_caps import explicit_dispatch_caps
+    _mip, per_profile = explicit_dispatch_caps(
+        None, _own_explicit_cap("max_in_progress_per_profile"),
+    )
+    return per_profile
 
 
 def count_running_tasks(conn: sqlite3.Connection) -> int:
@@ -2942,13 +2964,16 @@ def run_daemon(
     while not stop_event.is_set():
         try:
             # Re-resolved every tick (config load is mtime-cached) so operator
-            # edits apply without a restart.
+            # edits apply without a restart. Caps are board-level: the profile
+            # that happens to run this daemon is not the only source.
             max_in_progress = resolve_max_in_progress(configured_max_in_progress())
+            per_profile = configured_max_in_progress_per_profile()
             with contextlib.closing(_kbc.connect()) as conn:
                 res = dispatch_once(
                     conn,
                     max_spawn=max_spawn,
                     max_in_progress=max_in_progress,
+                    max_in_progress_per_profile=per_profile,
                     failure_limit=failure_limit,
                 )
             if on_tick is not None:

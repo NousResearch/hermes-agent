@@ -578,6 +578,10 @@ DEFAULT_CONFIG = {
         # protect_last_n: minimum recent messages kept uncompressed, honoured up to a small count
         # floor; the verbatim tail is otherwise token-bounded and never above 20% of the window.
         "protect_last_n": 20,
+        "max_tail_message_floor": 0,  # cap for the tail floor (0 = default 8; set higher to keep more
+                                      # recent messages verbatim)
+        # A raised floor is opportunistic, not absolute: the tail is token-bounded and never above
+        # 20% of the window; oversized rows don't ride the floor past that (#108647).
         # min_tail_user_messages: REAL (actionable) user messages guaranteed to survive in the tail.
         # 1 = single last-user anchor; raise (e.g. 3) when bulky tool outputs fill the tail budget.
         "min_tail_user_messages": 1,

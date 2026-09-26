@@ -223,8 +223,10 @@ def _db_flush_row(agent, msg: Dict, is_current_turn_user: bool) -> Dict[str, Any
     return row
 
 
-def _db_flush_collect(agent, messages: List[Dict], conversation_history: Optional[List[Dict]]):
-    """Scan for un-flushed messages; returns ``(rows, msgs)`` to write in one transaction."""
+def _db_flush_collect(agent, messages: List[Dict], conversation_history: Optional[List[Dict]],
+                      replay_history: bool = False):
+    """Scan for un-flushed messages; returns ``(rows, msgs)`` to write in one transaction. ``replay_history``
+    (session-row heal) writes the history prefix again instead of stamping it as already durable."""
     seed_ids = _db_flush_seed_ids(agent)
     history_ids = {id(item) for item in (conversation_history or []) if isinstance(item, dict)}
     ov_idx = getattr(agent, "_persist_user_message_idx", None)
@@ -240,12 +242,13 @@ def _db_flush_collect(agent, messages: List[Dict], conversation_history: Optiona
         if not isinstance(msg, dict) or _is_ephemeral_scaffolding(msg) or msg.get(_DB_PERSISTED_MARKER):
             continue
         # Already durable (history copy or caller-seeded): stamp so future flushes skip it.
+        is_history = id(msg) in history_ids
         if (
-            id(msg) in history_ids or id(msg) in seed_ids
+            (is_history and not replay_history) or id(msg) in seed_ids
         ) and not msg.get(_PERSIST_AFTER_ADMISSION_INTERRUPT):
             msg[_DB_PERSISTED_MARKER] = True
             continue
-        if getattr(agent, "_mute_notification_reply", False):
+        if getattr(agent, "_mute_notification_reply", False) and not is_history:
             # Only new rows, never the cached history prefix. Keep evidence/model
             # context intact while transcript pollers omit unsolicited presentation.
             msg["display_kind"] = "hidden"
@@ -420,6 +423,7 @@ class SessionPersistenceMixin:
 
     def _flush_messages_to_session_db_unlocked(
         self, messages: List[Dict], conversation_history: Optional[List[Dict]] = None, _adoption_budget: int = 1,
+        _replay_history: bool = False,
     ):
         """Persist un-flushed messages to SQLite. Dedup is the intrinsic ``_DB_PERSISTED_MARKER`` on each written
         dict — not positional slices (drift after sequence repair) nor an ``id(msg)`` set (address reuse). The
@@ -441,7 +445,7 @@ class SessionPersistenceMixin:
         try:
             if not self._session_db_created:  # retry row creation if the earlier attempt failed transiently
                 self._ensure_db_session()
-            batch_rows, batch_msgs = _db_flush_collect(self, messages, conversation_history)
+            batch_rows, batch_msgs = _db_flush_collect(self, messages, conversation_history, _replay_history)
             _db_flush_write(self, batch_rows, batch_msgs, messages)
             # Markers are now the sole truth; reset the one-shot seed so no id() outlives this flush.
             self._flushed_db_message_ids = set()
@@ -451,10 +455,11 @@ class SessionPersistenceMixin:
             return True
         except Exception as e:
             if _db_flush_failed(self, e, batch_rows, _adoption_budget, messages):
-                # A recreated row lost the history prefix too: the id()-based history shortcut must not skip it.
+                # A recreated row lost the history prefix too: replay it rather than stamping it durable, but keep
+                # the history set so a muted notification turn hides only its own rows.
                 healed = self._last_persistence_error_cause == "session_row_missing"
                 return self._flush_messages_to_session_db_unlocked(
-                    messages, None if healed else conversation_history, _adoption_budget=0)
+                    messages, conversation_history, _adoption_budget=0, _replay_history=healed)
             return False
 
     def _get_messages_up_to_last_assistant(self, messages: List[Dict]) -> List[Dict]:

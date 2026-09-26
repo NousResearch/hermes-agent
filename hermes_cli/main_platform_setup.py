@@ -101,15 +101,24 @@ def _whatsapp_install_bridge(bridge_dir) -> bool:
         print("✓ Bridge dependencies already installed")
         return True
     print("\n→ Installing WhatsApp bridge dependencies (this can take a few minutes)...")
+    import pm
+
     npm = find_node_executable("npm")
-    if not npm:
-        print("  ✗ npm not found on PATH — install Node.js first")
-        return False
     try:
+        env = with_hermes_node_path()
+        if npm is None:
+            env = pm.ensure("npm", explicit=True).env
+            installed = pm.installed_package("npm")
+            if installed is None or installed.binary is None:
+                raise pm.InstallError("npm", "npm binary is missing after preparation")
+            npm = str(installed.binary)
         result = subprocess.run(
             [npm, "install", "--no-fund", "--no-audit", "--progress=false"],
             cwd=str(bridge_dir), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
-            encoding="utf-8", errors="replace", env=with_hermes_node_path())
+            encoding="utf-8", errors="replace", env=env)
+    except (pm.InstallError, OSError) as exc:
+        print(f"  ✗ Bridge dependency preparation failed: {exc}")
+        return False
     except KeyboardInterrupt:
         print("\n  ✗ Install cancelled")
         return False
@@ -128,7 +137,7 @@ def cmd_whatsapp(args):
     _require_tty("whatsapp")
     from hermes_cli.config import get_env_value, save_env_value
     from hermes_constants import find_node_executable, with_hermes_node_path
-    _say("", "⚕ WhatsApp Setup", "=" * 50)
+    _say("", "☤ WhatsApp Setup", "=" * 50)
 
     wa_mode = _whatsapp_choose_mode(get_env_value, save_env_value)
     if wa_mode is None:
@@ -176,9 +185,22 @@ def cmd_whatsapp(args):
     else:
         print("📱 Open WhatsApp on your phone, then scan:")
     _say("", "   Settings → Linked Devices → Link a Device", "─" * 50, "")
+    import pm
+
+    node = find_node_executable("node")
+    if node is None:
+        try:
+            pm.ensure("node", explicit=True)
+            installed = pm.installed_package("node")
+            if installed is None or installed.binary is None:
+                raise pm.InstallError("node", "Node.js binary is missing after preparation")
+            node = str(installed.binary)
+        except pm.InstallError as exc:
+            print(f"  ✗ Node.js preparation failed: {exc}")
+            return
     with contextlib.suppress(KeyboardInterrupt):
         subprocess.run(
-            [find_node_executable("node") or "node", str(bridge_script), "--pair-only", "--session", str(session_dir)],
+            [node, str(bridge_script), "--pair-only", "--session", str(session_dir)],
             cwd=str(bridge_dir), env=with_hermes_node_path())
 
     print()
@@ -192,12 +214,12 @@ def cmd_whatsapp(args):
         _say("  Next steps:", "    1. Start the gateway:  hermes gateway",
              "    2. Send a message to the bot's WhatsApp number",
              "    3. The agent will reply automatically", "",
-             "  Tip: Agent responses are prefixed with '⚕ Hermes Agent'")
+             "  Tip: Agent responses are prefixed with '☤ Hermes Agent'")
     else:
         _say("  Next steps:", "    1. Start the gateway:  hermes gateway",
              "    2. Open WhatsApp → Message Yourself",
              "    3. Type a message — the agent will reply", "",
-             "  Tip: Agent responses are prefixed with '⚕ Hermes Agent'",
+             "  Tip: Agent responses are prefixed with '☤ Hermes Agent'",
              "  so you can tell them apart from your own messages.")
     _say("", "  Or install as a service: hermes gateway install")
 

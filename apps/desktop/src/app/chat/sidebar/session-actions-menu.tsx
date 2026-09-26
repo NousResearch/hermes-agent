@@ -27,6 +27,8 @@ import { Input } from '@/components/ui/input'
 import { renameSession } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
+import { ArchiveOff } from '@/lib/icons'
+import { isSubmitEnter } from '@/lib/ime'
 import { PROFILE_SWATCHES } from '@/lib/profile-color'
 import { exportSession } from '@/lib/session-export'
 import { activeGateway } from '@/store/gateway'
@@ -101,6 +103,9 @@ interface SessionActions {
   pinned?: boolean
   /** Backend-derived read state — drives the Mark as unread/read label. */
   unread?: boolean
+  /** The row is already archived (the sidebar's Archived view): the shared
+   *  archive verb becomes Unarchive and restores the session (#98813). */
+  archived?: boolean
   profile?: string
   onPin?: () => void
   /** Toggle the persisted read-state watermark for this row. */
@@ -186,6 +191,7 @@ function useSessionActions({
   title,
   pinned = false,
   unread = false,
+  archived = false,
   profile,
   onPin,
   onToggleUnread,
@@ -431,8 +437,14 @@ function useSessionActions({
   const dangerItems: ActionItemSpec[] = [
     spec({
       disabled: !onArchive,
-      icon: 'archive',
-      label: r.archive,
+      // Already archived (the Archived view): the same verb restores the row
+      // instead of re-archiving it (#98813). The wiring dispatches the shared
+      // onArchive callback to the restore path based on the row's state. No
+      // unarchive codicon exists, so the restore item carries the ArchiveOff
+      // glyph the Settings → Archived Chats restore button already uses.
+      icon: archived ? undefined : 'archive',
+      iconNode: archived ? <ArchiveOff className="size-3.5" /> : undefined,
+      label: archived ? r.unarchive : r.archive,
       onSelect: () => {
         triggerHaptic('selection')
         onArchive?.()
@@ -695,7 +707,7 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle, prof
           disabled={submitting}
           onChange={event => setValue(event.target.value)}
           onKeyDown={event => {
-            if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+            if (isSubmitEnter(event)) {
               event.preventDefault()
               void submit()
             } else if (event.key === 'Escape') {

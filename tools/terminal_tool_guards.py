@@ -204,19 +204,23 @@ def gateway_lifecycle_block(
         return None
     from cron.lifecycle_guard import (
         _MAX_REFERENCED_SCRIPT_BYTES,
-        contains_gateway_lifecycle_command_or_referenced_script,
+        HOST_INTERPRETER_KILL_REJECTION,
+        contains_host_interpreter_kill,
         contains_launchctl_submit_command,
         lifecycle_scan_root_within_budget,
+        scan_gateway_lifecycle,
     )
     # Keep the specific launchctl diagnostic when this optional pre-scan fits the
     # budget. The full fail-closed guard below still runs when it does not, so
     # oversized roots never reach shlex here.
     if lifecycle_scan_root_within_budget(command) and contains_launchctl_submit_command(command):
         return _blocked_json(
-            "Blocked: launchctl submit/bootstrap registers a persistent "
-            "KeepAlive job and is unsafe from inside the gateway process. "
-            "Use Hermes cron for one-shot delayed work, or install an "
-            "explicit LaunchAgent from a separate shell.",
+            "Blocked: launchctl submit/bootstrap is restricted inside a supervised "
+            "gateway regardless of the job label, to prevent indirect gateway "
+            "restart loops. This guard does not inspect the job's KeepAlive settings "
+            "or determine whether it is independent of Hermes. Perform authorized "
+            "LaunchAgent maintenance from a separate shell outside the gateway, "
+            "not by switching launchctl verbs to bypass this rejection.",
             "error",
         )
     guard_cwd_base = get_session_cwd(session_key)
@@ -225,11 +229,27 @@ def gateway_lifecycle_block(
     guard_cwd = _resolve_command_cwd(
         workdir=workdir, default_cwd=guard_cwd_base, session_key=session_key, env_type=env_type,
     )
-    if contains_gateway_lifecycle_command_or_referenced_script(
+    unsafe, refusal = scan_gateway_lifecycle(
         command,
         cwd=guard_cwd,
         read_remote_script=lambda p: _read_script_for_guard(env, guard_cwd, p, _MAX_REFERENCED_SCRIPT_BYTES),
-    ):
+    )
+    if unsafe and refusal:
+        # Not a lifecycle command: a script the command EXECUTES could not be scanned (budget,
+        # size, device, live SQLite, cloud placeholder). Say so, or the model rewords and retries
+        # the same command in a loop (#113944).
+        return _blocked_json(
+            f"Blocked: the lifecycle guard could not scan this command or referenced script: {refusal}. "
+            "Nothing in the command is known to contain a gateway lifecycle command, but a "
+            "script the command executes must be scannable (a regular text file under 1 MiB) "
+            "before it can run inside the gateway process.",
+            "error",
+        )
+    if unsafe:
+        # Name the ownership-scoped route for image-name kills: the intent is almost always "stop
+        # MY background job", and re-rolling the same over-broad spelling is what takes the gateway down.
+        if lifecycle_scan_root_within_budget(command) and contains_host_interpreter_kill(command):
+            return _blocked_json(HOST_INTERPRETER_KILL_REJECTION, "error")
         return _blocked_json(
             "Blocked: command or referenced script cannot restart, stop, or "
             "uninstall the gateway from inside the gateway process. The gateway would "

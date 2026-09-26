@@ -8,9 +8,12 @@ import inspect
 import json
 import time
 from contextlib import asynccontextmanager
+from functools import partial
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple
-from tools.registry import tool_error
+
+from hermes_platform import declaration
+from tools.registry import invalidate_check_fn_cache, tool_error
 from tools.ansi_strip import strip_unicode_tags
 from tools.mcp_tool_common import _exc_str, _sanitize_error, mcp_field, _core
 from tools import mcp_tool_loop as _loop
@@ -23,6 +26,8 @@ from tools.mcp_tool_errors import _is_auth_error, _is_session_expired_error
 logger = logging.getLogger("tools.mcp_tool")
 _MISSING = object()
 
+declaration.on_change = invalidate_check_fn_cache
+
 _NEEDS_REAUTH_MSG = (
     "MCP server '{s}' requires re-authentication. Run `hermes mcp login {s}` (or delete the tokens file under "
     "~/.hermes/mcp-tokens/ and restart). Do NOT retry this tool — ask the user to re-authenticate.")
@@ -33,13 +38,31 @@ _STDIO_NO_RESPAWN_MSG = (
 _STDIO_DIED_AGAIN_MSG = (
     "MCP server '{s}' respawned its stdio subprocess and it exited again immediately. The server is not starting "
     "cleanly — do NOT retry this tool; ask the user to check the server's command and its stderr log.")
+_STDIO_OUTCOME_UNCERTAIN_MSG = (
+    "MCP server '{s}' lost its stdio subprocess after the tool call began. The operation may have completed, so "
+    "Hermes did not replay it. Do NOT retry automatically; inspect the external state first.")
+_SESSION_OUTCOME_UNCERTAIN_MSG = (
+    "The MCP transport session to '{s}' expired while this write-capable call was in flight, so the outcome is "
+    "UNKNOWN — the operation may or may not have taken effect server-side. It was NOT automatically retried to "
+    "avoid a duplicate side effect. The connection has {state}. Verify whether the operation took effect (e.g. "
+    "with a read-only tool) before re-invoking it.")
+
+
+def _tool_is_read_only(server_name: str, tool_name: str) -> bool:
+    """True only when discovery captured ``readOnlyHint=True`` for the tool. Missing or malformed
+    metadata fails safe to False (treated as write-capable). readOnlyHint is a property of the
+    connection's tools, so it lives under the connection key."""
+    from tools.mcp_tool_scope import _resolve_server_key
+    return _core._tool_read_only_hints.get(_resolve_server_key(server_name), {}).get(tool_name) is True
 
 
 def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
     """Approval gate for write-capable tools on ``trust: untrusted`` servers. None to proceed,
     else a ``tool_error``. Fail-closed: approval-system errors block."""
-    if (_core._server_trust_levels.get(server_name, _core._TRUST_FULL) != _core._TRUST_UNTRUSTED
-            or _core._tool_read_only_hints.get(server_name, {}).get(tool_name) is True):
+    from tools.mcp_tool_scope import _server_key
+    # Trust is the calling profile's own policy (an adopter of a shared connection keeps its own tier).
+    trust = _core._server_trust_levels.get(_server_key(server_name), _core._TRUST_FULL)
+    if trust != _core._TRUST_UNTRUSTED or _tool_is_read_only(server_name, tool_name):
         return None
     try:  # lazy: tools.approval routes the prompt to whichever surface owns the session
         from tools.approval_prompt import request_elicitation_consent
@@ -48,7 +71,7 @@ def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
             f"(no readOnlyHint=true annotation) and may modify external state.",
             f"Server '{server_name}' is configured 'trust: untrusted'. "
             f"Approve to run '{tool_name}' once, or deny to block it.",
-            surface=f"mcp-trust/{server_name}")
+            surface=f"mcp-trust/{server_name}", title=f"MCP server '{server_name}' is asking")
     except Exception as exc:
         logger.error("MCP trust gate: approval check failed for %s.%s: %s", server_name, tool_name, exc, exc_info=True)
         return tool_error(f"MCP tool '{tool_name}' on untrusted server '{server_name}' was blocked: the approval "
@@ -64,12 +87,21 @@ def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
 def _check_circuit_breaker(server_name: str) -> Optional[str]:
     """Open-breaker error, or None when calls may proceed. After the cooldown the breaker is
     half-open: the next call probes; success resets, failure re-bumps and re-arms the cooldown."""
-    failures = _core._server_error_counts.get(server_name, 0)
-    age = time.monotonic() - _core._server_breaker_opened_at.get(server_name, 0.0)
+    from tools.mcp_tool_scope import _resolve_server_key
+    key = _resolve_server_key(server_name)
+    failures = _core._server_error_counts.get(key, 0)
+    age = time.monotonic() - _core._server_breaker_opened_at.get(key, 0.0)
     if failures < _core._CIRCUIT_BREAKER_THRESHOLD or age >= _core._CIRCUIT_BREAKER_COOLDOWN_SEC:
         return None
+    retry_in = max(1, int(_core._CIRCUIT_BREAKER_COOLDOWN_SEC - age))
+    if _core._server_errors_all_application.get(key):
+        # The server answered every time; the calls were rejected. Calling it "unreachable" sent the
+        # model to the user instead of to its own arguments (#11113).
+        return tool_error(f"MCP server '{server_name}' rejected the last {failures} calls (it is reachable; see the "
+                          f"error text those calls returned). Paused for ~{retry_in}s. Do NOT repeat the same call — "
+                          f"fix the arguments/URL/target or use a different approach.")
     return tool_error(f"MCP server '{server_name}' is unreachable after {failures} consecutive failures. "
-                      f"Auto-retry available in ~{max(1, int(_core._CIRCUIT_BREAKER_COOLDOWN_SEC - age))}s. Do NOT retry "
+                      f"Auto-retry available in ~{retry_in}s. Do NOT retry "
                       f"this tool yet — use alternative approaches or ask the user to check the MCP server.")
 
 
@@ -79,6 +111,22 @@ def _acquire_call_server(server_name: str, tool_timeout: float):
     server task to rebuild (probing a dead transport would re-arm the breaker forever)."""
     from tools import mcp_tool_discovery as _discovery  # lazy: discovery -> registration -> handlers cycle
     not_connected = tool_error(f"MCP server '{server_name}' is not connected")
+    from tools.mcp_liveness import unavailable_details
+    details = unavailable_details(server_name)
+    if details is not None:
+        decl, current, sentence = details
+        not_connected = tool_error(
+            sentence,
+            server=server_name,
+            state=current.state,
+            app={
+                "name": decl.name,
+                "version": current.availability.version,
+                "path": current.availability.path,
+            },
+            user_action=current.user_action,
+            retry=current.retry,
+        )
     server = _discovery._get_connected_server_for_call(server_name)
     wait = min(5.0, float(tool_timeout or 5.0))
     if server and (server.session or _loop._wait_for_server_session_ready(server, timeout=wait)):
@@ -99,8 +147,12 @@ def _result_is_error(result) -> bool:
 
 
 def _record_call_outcome(server_name: str, result) -> Any:
-    """Breaker bookkeeping: an error payload from the tool itself still counts as a strike."""
-    (_core._bump_server_error if _result_is_error(result) else _core._reset_server_error)(server_name)
+    """Breaker bookkeeping: an error payload from the tool itself still counts as a strike (#10447),
+    flagged as an application error so the open-breaker message stays truthful."""
+    if _result_is_error(result):
+        _core._bump_server_error(server_name, application=True)
+    else:
+        _core._reset_server_error(server_name)
     return result
 
 
@@ -117,24 +169,23 @@ def _mcp_loop_running() -> bool:
 def _lookup_reconnectable_server(server_name: str, require_loop: bool = False):
     """The registered server object when it can be signalled to reconnect, else None.
     With *require_loop*, also None unless the MCP loop is running (nothing to wait on)."""
+    from tools.mcp_tool_scope import _resolve_server_key
     with _core._lock:
-        srv = _core._servers.get(server_name)
+        srv = _core._servers.get(_resolve_server_key(server_name))
     ok = srv is not None and hasattr(srv, "_reconnect_event") and (_mcp_loop_running() or not require_loop)
     return srv if ok else None
 
 
 def _retry_once(server_name: str, retry_call, op_description: str, what: str):
-    """Re-run ``retry_call`` after a recovery step. Returns the result (closing the breaker)
-    when it is not an error payload; None when the retry raised or errored (caller falls through)."""
+    """Re-run ``retry_call`` after a recovery step. Returns the result when the RPC completed
+    (an application error is still the tool's real answer, and still a breaker strike per #10447);
+    None when the retry raised (caller falls through)."""
     try:
         result = retry_call()
     except Exception as retry_exc:
         logger.warning("MCP %s/%s retry after %s failed: %s", server_name, op_description, what, retry_exc)
         return None
-    if _result_is_error(result):
-        return None
-    _core._reset_server_error(server_name)
-    return result
+    return _record_call_outcome(server_name, result)
 
 
 def _handle_auth_error_and_retry(server_name: str, exc: BaseException, retry_call, op_description: str):
@@ -162,7 +213,8 @@ def _handle_auth_error_and_retry(server_name: str, exc: BaseException, retry_cal
     return _strike(server_name, _NEEDS_REAUTH_MSG.format(s=server_name), needs_reauth=True, server=server_name)
 
 
-def _handle_session_expired_and_retry(server_name: str, exc: BaseException, retry_call, op_description: str):
+def _handle_session_expired_and_retry(server_name: str, exc: BaseException, retry_call, op_description: str,
+                                      *, call_may_have_side_effects: bool = False):
     """Transport reconnect + one retry on session expiry; None to fall through. Skips
     ``handle_401``: the token is valid, only the server-side session is stale.
 
@@ -171,8 +223,31 @@ def _handle_session_expired_and_retry(server_name: str, exc: BaseException, retr
     ``_reconnect_event`` causes the server task's lifecycle loop to tear down the current
     ``streamablehttp_client`` + ``ClientSession`` and rebuild them, reusing the existing OAuth provider
     instance. See #13383.
+
+    At-most-once for writes: a session-expired shape can be synthesized by a proxy AFTER the upstream
+    executed the request, and the transport errors this classifier also matches (``ClosedResourceError``,
+    broken pipe) routinely fire mid-response. With ``call_may_have_side_effects`` the transport is still
+    healed but the call is never re-run; the model gets an ``outcome_uncertain`` error instead (same
+    contract as the mid-call stdio death path). Callers pass True unless the tool is positively read-only.
     """
-    srv = _lookup_reconnectable_server(server_name, require_loop=True) if _is_session_expired_error(exc) else None
+    if not _is_session_expired_error(exc):
+        return None
+    srv = _lookup_reconnectable_server(server_name, require_loop=True)
+    if call_may_have_side_effects:
+        # Even without a signallable server the outcome is still uncertain: a generic "call failed"
+        # would invite the model to re-invoke a write that may already have landed.
+        reconnected = srv is not None and _loop._signal_reconnect_and_wait(
+            server_name, srv, op_description=f"{op_description} (write, no auto-retry)", timeout=15)
+        if reconnected:  # session state failed, not server health: no breaker strike
+            _core._reset_server_error(server_name)
+        else:
+            _core._bump_server_error(server_name)
+        logger.warning("MCP server '%s': %s failed with a session-expired/transport error after the request may "
+                       "have been dispatched; NOT auto-retrying a write-capable tool (reconnect %s).",
+                       server_name, op_description, "succeeded" if reconnected else "failed")
+        return tool_error(_SESSION_OUTCOME_UNCERTAIN_MSG.format(
+            s=server_name, state="been re-established" if reconnected else "not recovered yet"),
+            outcome_uncertain=True, server=server_name)
     if srv is None:
         return None
     logger.info("MCP server '%s': %s failed with session-expired error (%s); signalling transport reconnect "
@@ -187,11 +262,19 @@ def _handle_session_expired_and_retry(server_name: str, exc: BaseException, retr
 class _StdioChildExited(RuntimeError):
     """Stdio subprocess gone when (or while) a call ran. Deliberately NOT a TimeoutError."""
 
+    def __init__(self, message: str, *, in_flight: bool):
+        super().__init__(message)
+        self.in_flight = in_flight
+
 
 def _handle_stdio_child_exited_and_retry(server_name: str, exc: Exception, retry_call, op_description: str):
-    """Respawn a dead stdio child and retry once; None if not our error. Never spawns itself: it
-    sets ``_reconnect_event`` and waits, so spawn frequency stays governed by ``run()``'s
-    rapid-drop budget. Single-shot: a child that dies again reports and stops.
+    """Respawn a dead stdio child; retry once only when it was dead before dispatch.
+
+    A mid-call exit is ambiguous: the server may have applied a side effect before its
+    response pipe disappeared. Reconnect for future calls but never replay that operation.
+    None means this is not our error. This function never spawns itself: it sets
+    ``_reconnect_event`` and waits, so spawn frequency stays governed by ``run()``'s rapid-drop
+    budget. A pre-dispatch retry whose child dies again reports and stops.
 
     Why retrying here cannot hot-cycle respawns: this function never spawns anything. It sets
     ``_reconnect_event`` (one signal, same as before) and waits for the server task to publish a fresh
@@ -203,13 +286,20 @@ def _handle_stdio_child_exited_and_retry(server_name: str, exc: Exception, retry
     reconnected = False
     srv = _lookup_reconnectable_server(server_name)
     if srv is not None:
-        logger.info("MCP server '%s': %s found the stdio subprocess dead (%s); respawning and retrying once.",
-                    server_name, op_description, exc)
+        action = "reconnecting without replay" if exc.in_flight else "respawning and retrying once"
+        logger.info("MCP server '%s': %s found the stdio subprocess dead (%s); %s.",
+                    server_name, op_description, exc, action)
         if _mcp_loop_running():
             reconnected = _loop._signal_reconnect_and_wait(
                 server_name, srv, op_description=op_description, timeout=_core._STDIO_RESPAWN_WAIT_SEC)
         else:  # No MCP loop to wait on (non-async adapters, tests): still request the respawn.
             _loop._signal_reconnect(srv)
+    if exc.in_flight:
+        return _strike(
+            server_name,
+            _STDIO_OUTCOME_UNCERTAIN_MSG.format(s=server_name),
+            outcome_uncertain=True,
+        )
     if not reconnected:
         return _strike(server_name, _STDIO_NO_RESPAWN_MSG.format(s=server_name, t=_core._STDIO_RESPAWN_WAIT_SEC))
     try:
@@ -218,6 +308,12 @@ def _handle_stdio_child_exited_and_retry(server_name: str, exc: Exception, retry
         # Died again right after respawn: broken server; run()'s budget takes it to the park.
         logger.warning("MCP server '%s': %s stdio subprocess exited again right after respawn (%s); not retrying "
                        "further.", server_name, op_description, retry_exc)
+        if retry_exc.in_flight:
+            return _strike(
+                server_name,
+                _STDIO_OUTCOME_UNCERTAIN_MSG.format(s=server_name),
+                outcome_uncertain=True,
+            )
         return _strike(server_name, _STDIO_DIED_AGAIN_MSG.format(s=server_name))
     except Exception as retry_exc:
         logger.warning("MCP %s/%s retry after stdio respawn failed: %s", server_name, op_description, retry_exc)
@@ -253,7 +349,7 @@ def _dispatch(server_name: str, server: Any, op: str, call, tool_timeout: float,
 
 
 @asynccontextmanager
-async def _track_inflight_rpc(server: Any, server_name: str, op: str):
+async def _track_inflight_rpc(server: Any, server_name: str, op: str, *, retry_safe: bool = True):
     """Register the running RPC so teardown can fail it fast. A deliberate teardown
     (``_reconnecting`` set first) turns the cancel into a retryable RuntimeError; external
     cancels propagate unchanged. Doubles without ``_inflight_tasks`` skip tracking.
@@ -261,7 +357,8 @@ async def _track_inflight_rpc(server: Any, server_name: str, op: str):
     Every user-visible request family wraps its RPC in this context (#48069 salvage). If a deliberate
     reconnect/shutdown teardown cancels the task (``_fail_inflight_calls`` sets ``_reconnecting`` first),
     the cancel is converted into a clean retryable RuntimeError instead of a raw CancelledError; external
-    cancels (caller timeout, user interrupt) propagate unchanged.
+    cancels (caller timeout, user interrupt) propagate unchanged. ``retry_safe=False`` (a write-capable
+    ``tools/call``) words the error as outcome-uncertain instead of inviting a replay.
     """
     inflight, task = getattr(server, "_inflight_tasks", None), asyncio.current_task()
     tracked = task is not None and inflight is not None
@@ -271,8 +368,9 @@ async def _track_inflight_rpc(server: Any, server_name: str, op: str):
         yield
     except asyncio.CancelledError:
         if getattr(server, "_reconnecting", False):
-            raise RuntimeError(f"MCP {op} on '{server_name}' was aborted by a reconnect teardown; retry the "
-                               f"request on the rebuilt session") from None
+            advice = ("retry the request on the rebuilt session" if retry_safe else
+                      "the request may already have been dispatched, so verify its effect before re-invoking")
+            raise RuntimeError(f"MCP {op} on '{server_name}' was aborted by a reconnect teardown; {advice}") from None
         raise
     finally:
         if tracked:
@@ -283,12 +381,16 @@ async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str
     """``session.call_tool`` that fails fast when the stdio child is/gets dead: pre-call (a dead
     child must not hold the slot for the full timeout) and mid-call (race against
     ``_watch_stdio_children``). Both raise :class:`_StdioChildExited` for the respawn path, which
-    owns the reconnect signal. callable()/``is True`` because MagicMock attributes are truthy."""
+    owns the reconnect signal; only pre-call failure is safe to replay. callable()/``is True``
+    because MagicMock attributes are truthy."""
     # Fast-fail (#81995): a stdio subprocess that is already dead must not own this call slot — fail
     # immediately instead of waiting out the full tool timeout on a transport nobody will ever answer.
     _stdio_dead = getattr(server, "_stdio_children_dead", None)
     if callable(_stdio_dead) and _stdio_dead() is True:
-        raise _StdioChildExited(f"MCP stdio subprocess for '{server_name}' had already exited when the call was dispatched")
+        raise _StdioChildExited(
+            f"MCP stdio subprocess for '{server_name}' had already exited when the call was dispatched",
+            in_flight=False,
+        )
     _call_coro = server.session.call_tool(tool_name, arguments=args)
     _watch_children = getattr(server, "_watch_stdio_children", None)
     if not (inspect.iscoroutinefunction(_watch_children) and asyncio.iscoroutine(_call_coro)):
@@ -302,8 +404,23 @@ async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str
         done, _pending = await asyncio.wait({rpc_task, watch_task}, return_when=asyncio.FIRST_COMPLETED)
         if watch_task in done and not rpc_task.done():
             rpc_task.cancel()
-            raise _StdioChildExited(f"MCP stdio subprocess for '{server_name}' exited mid-call")
-        return await rpc_task
+            raise _StdioChildExited(
+                f"MCP stdio subprocess for '{server_name}' exited mid-call",
+                in_flight=True,
+            )
+        try:
+            return await rpc_task
+        except Exception as exc:
+            # The SDK usually sees the closed pipe before the 250 ms watcher poll does. On a stdio
+            # server a transport-closure error after dispatch is the same ambiguous mid-call death;
+            # it must not fall through to the session-expired recoverer, which replays the call.
+            _is_http = getattr(server, "_is_http", None)
+            if callable(_is_http) and _is_http() is False and _is_session_expired_error(exc):
+                raise _StdioChildExited(
+                    f"MCP stdio subprocess for '{server_name}' closed its transport mid-call",
+                    in_flight=True,
+                ) from exc
+            raise
     finally:
         watch_task.cancel()
         if not rpc_task.done():
@@ -360,15 +477,8 @@ def _capped_structured_content(result):
     """``structuredContent`` (or None); over the hard cap it degrades to the head+tail
     truncated JSON string (multi-MB JSON flood guard)."""
     # Hard-cap pathological payloads before they propagate (#56059); ordinary large results pass untouched
-    # to the spillover layer.
-    # content and structuredContent are ALTERNATIVES — never both forwarded (ported from
-    # MoonshotAI/kimi-code#3234). Spec-following servers already render their data into content (the
-    # verbatim dual-emit SHOULD, or a faithful human reorganisation), so forwarding both sent the same
-    # information to the model twice. content wins whenever it rendered anything usable; there is no
-    # reliable signal that the structured payload is richer than what the server put in content (semantic
-    # equality misses faithful reorganisations, size ratios misjudge both directions), so no heuristic is
-    # attempted. structuredContent fills in only when the content blocks rendered effectively empty, which
-    # keeps structuredContent-only servers working. Server-level `_meta` is also surfaced (ported from
+    # to the spillover layer. Arbitration against ``content`` lives in _render_call_tool_result.
+    # Server-level `_meta` is also surfaced (ported from
     # MoonshotAI/kimi-code#2596): servers return namespaced metadata there (validated contracts,
     # browser-handoff payloads, ...) that was previously invisible to the agent. Protocol-reserved keys are
     # dropped first (kimi-code#2600) — per the MCP spec's key-name rules a prefix is reserved when a
@@ -384,20 +494,46 @@ def _capped_structured_content(result):
     return _truncate_mcp_text_result(as_json) if len(as_json) > _MCP_HARD_RESULT_CAP_CHARS else structured
 
 
+def _content_dual_emits_structured(result, structured) -> bool:
+    """True when some text block is ``structuredContent`` serialized as JSON — the spec's
+    backwards-compat dual-emit ("a tool that returns structured content SHOULD also return the
+    serialized JSON in a TextContent block"). Compared as parsed JSON so whitespace, indent, key
+    order and ``ensure_ascii`` escaping do not matter; checked per block because the spec puts the
+    copy in *a* block and a server may add a status line next to it. Deterministic equality, not a
+    richness heuristic: a prose summary or a reorganised rendering fails it and keeps its
+    ``structuredContent`` (#115430)."""
+    for block in (result.content or []):
+        text = getattr(block, "text", None)
+        if not text:
+            continue
+        try:
+            if json.loads(text) == structured:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
 def _render_call_tool_result(result, server_name: str) -> str:
-    """Pure: ``CallToolResult`` -> handler JSON. ``content`` and ``structuredContent`` are
-    ALTERNATIVES, never both forwarded (kimi-code#3234): spec-following servers already render
-    their data into content, so forwarding both sent it twice. content wins whenever it rendered
-    anything usable (no richness heuristic is attempted — none is reliable); structuredContent
-    fills in only when the blocks rendered effectively empty, keeping structuredContent-only
-    servers working. ``_meta`` minus reserved keys is always surfaced."""
+    """Pure: ``CallToolResult`` -> handler JSON. ``content`` and ``structuredContent`` are both
+    forwarded, except that a ``structuredContent`` whose JSON also sits verbatim in a text block
+    (the spec's backwards-compat dual-emit; compared as parsed JSON) is dropped, because that copy
+    would reach the model twice (kimi-code#3234). Any other usable text — a status line, a prose
+    summary, a reorganised rendering — keeps ``structuredContent`` alongside it (#115430): the
+    earlier "content wins whenever it rendered anything" rule irreversibly lost servers whose
+    data lived only in ``structuredContent``, while the residual duplicate for a faithful
+    reorganisation costs only tokens, so data-preservation wins. No richness or size heuristic is
+    used. ``structuredContent`` fills ``result`` when the blocks rendered effectively empty
+    (structuredContent-only servers); ``_meta`` minus reserved keys is always surfaced."""
     if mcp_field(result, "is_error", "isError", False):
         return tool_error(_sanitize_error(_truncate_mcp_text_result(_error_result_text(result) or "MCP tool returned an error")))
     text_result, usable_parts = _render_content_blocks(result, server_name)
     structured = _capped_structured_content(result)
     meta = _strip_reserved_meta_keys(mcp_field(result, "meta", "meta"))
-    if structured is not None and usable_parts > 0:
-        structured = None  # drop notices do not count as usable content
+    # A str here is the over-cap truncation stand-in (wire structuredContent is always an object): next to
+    # usable text it would be a second multi-MB copy — the flood #56059 caps — so it only fills an empty result.
+    if structured is not None and usable_parts > 0 and (isinstance(structured, str) or _content_dual_emits_structured(result, structured)):
+        structured = None
     if structured is None and meta is None:
         return json.dumps({"result": text_result}, ensure_ascii=False)
     # Key order is part of the output: "result" leads when there is text, otherwise "_meta" precedes it.
@@ -428,9 +564,12 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         server, error = _acquire_call_server(server_name, tool_timeout)
         if server is None:
             return error
+        # Only a tool annotated readOnlyHint=True is replayed after session expiry; a 401 is always
+        # pre-dispatch so the auth recoverer keeps its retry for every tool.
+        read_only = _tool_is_read_only(server_name, tool_name)
 
         async def _call():
-            async with server._rpc_lock, _track_inflight_rpc(server, server_name, op):
+            async with server._rpc_lock, _track_inflight_rpc(server, server_name, op, retry_safe=read_only):
                 server._pending_call_context = contextvars.copy_context()  # for the elicitation callback
                 try:
                     result = await _call_tool_racing_stdio_death(server, server_name, tool_name, args)
@@ -443,9 +582,10 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         def _on_failure(exc):
             _core._bump_server_error(server_name)
             logger.error("MCP tool %s/%s call failed: %s", server_name, tool_name, exc)
+        session_expired = partial(_handle_session_expired_and_retry, call_may_have_side_effects=not read_only)
         return _dispatch(
             server_name, server, op, _call, tool_timeout,
-            (_handle_stdio_child_exited_and_retry, _handle_auth_error_and_retry, _handle_session_expired_and_retry),
+            (_handle_stdio_child_exited_and_retry, _handle_auth_error_and_retry, session_expired),
             _on_failure, record_outcome=True)
     return _handler
 
@@ -547,10 +687,36 @@ _make_get_prompt_handler = _make_utility_handler(
 
 
 def _make_check_fn(server_name: str):
-    """Connection-alive check; lazy (schema-cache registered) servers count as available."""
-    def _check() -> bool:
+    """Connection-alive check; lazy (schema-cache registered) servers count as available.
+
+    When the server's owner registered an application declaration (`requires.app`), the
+    application must also be present on this host, or the tools are not offered even while a
+    stale connection lingers. With no declaration registered the check is the connection check
+    alone. Returns a plain bool: the registry caches ``bool(fn())``.
+    """
+    from tools.mcp_tool_scope import _resolve_server_key
+
+    def _connected() -> bool:
         with _core._lock:
-            server = _core._servers.get(server_name)
+            key = _resolve_server_key(server_name)
+            server = _core._servers.get(key)
             return ((server is not None and (server.session is not None or server._is_recycled_stdio()))
-                    or server_name in _core._lazy_server_configs)
+                    or key in _core._lazy_server_configs)
+
+    def _check() -> bool:
+        if not _connected():
+            return False
+        return _declared_app_offerable(server_name)
     return _check
+
+
+def _declared_app_offerable(server_name: str) -> bool:
+    """True unless the registered declaration is unavailable on this host. Called only for a
+    connected server, so a reachable loopback port outranks the interactive-session rule."""
+    from hermes_platform import declaration
+    from hermes_platform.resolver.availability import availability
+
+    decl = declaration.lookup(server_name)
+    if decl is None:
+        return True
+    return bool(availability(decl).offerable)

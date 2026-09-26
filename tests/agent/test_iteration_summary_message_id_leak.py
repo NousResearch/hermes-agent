@@ -18,6 +18,7 @@ class _FakeAgent:
     _cached_system_prompt = ""
     ephemeral_system_prompt = ""
     prefill_messages = []
+    _image_rejecting_models = set()
 
     def _should_sanitize_tool_calls(self):
         return False

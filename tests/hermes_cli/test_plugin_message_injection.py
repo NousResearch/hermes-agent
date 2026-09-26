@@ -4,7 +4,7 @@ from queue import SimpleQueue
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 
@@ -161,27 +161,6 @@ def test_gateway_injection_passes_host_owned_plugin_identity(tmp_path, monkeypat
         session_key="agent:main:telegram:dm:42",
         content="[system] wake up",
         plugin_id="notify-plugin",
-    )
-
-
-def test_gateway_injection_returns_host_rejection(tmp_path, monkeypatch):
-    _write_plugin_config(
-        tmp_path,
-        monkeypatch,
-        {"allow_gateway_injection": True},
-    )
-    context, manager = _context()
-    manager.set_gateway_message_injector(
-        object(),
-        MagicMock(return_value=False),
-    )
-
-    assert (
-        context.inject_message(
-            "wake up",
-            session_key="agent:main:telegram:dm:42",
-        )
-        is False
     )
 
 

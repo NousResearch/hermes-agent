@@ -1,9 +1,25 @@
 """Pre-import startup fast paths — THE canonical lightweight helpers.
 
-Imported by ``hermes_cli/main.py`` BEFORE its heavy import wall (config, argparse tree, logging,
-providers). Everything here must stay **stdlib-only and cheap** (os/sys file probes; no yaml, no
-hermes_cli.config, no argparse). Exists so version-printing stops being reimplemented as
-``*_fast()`` copies in main.py that duplicate project-root / container / profile detection.
+This module is imported by ``hermes_cli/main.py`` BEFORE its heavy import
+wall (config, argparse tree, logging, providers). Everything here must stay
+**stdlib-only and cheap** (os/sys file probes; no yaml, no hermes_cli.config,
+no argparse). A guard test (``test_startup_fast_import_weight``) subprocess-
+imports this module and fails if any heavy module sneaks into sys.modules.
+
+Why this module exists (the bug class it kills): version-printing kept being
+reimplemented as ``*_fast()`` copies at the top of main.py, each duplicating
+canonical logic — project-root resolution, container detection, profile
+detection. The copies drifted: eb4040242 changed the canonical output and
+referenced ``PROJECT_ROOT`` inside the fast function, which doesn't exist
+yet on the fast path → the fast path NameError'd on --version and nobody
+noticed. One implementation, imported by both the fast path and the module
+constants, makes that drift structurally impossible; the parity guard test
+would have caught eb4040242 the day it landed.
+
+``hermes_cli/config.py``'s ``get_container_exec_info()`` reads the same
+``.container-mode`` file; keep the file-format assumptions here and there in
+sync (this module deliberately only PROBES existence/typos cheaply and errs
+toward the slow path, which then does the authoritative parse).
 """
 
 from __future__ import annotations
@@ -12,18 +28,24 @@ import os
 import sys
 
 __all__ = [
-    "project_root_str", "ensure_project_root_on_path", "is_termux_env",
-    "is_termux_fast_version_argv", "is_global_fast_version_argv",
-    "is_container_startup_environment", "active_profile_may_override_home",
-    "container_mode_may_be_active", "read_openai_version", "read_install_method",
-    "print_fast_version_info", "try_fast_version",
+    "project_root_str", "normalize_hermes_home_env",
+    "ensure_project_root_on_path",
+    "is_global_fast_version_argv",
+    "is_container_startup_environment",
+    "active_profile_may_override_home",
+    "container_mode_may_be_active",
+    "read_openai_version",
+    "read_install_method",
+    "print_fast_version_info",
+    "try_fast_version",
+    "is_desktop_ssh_backend_argv",
 ]
 
 
 def _read_text(path: str) -> str | None:
     """Read a small text file, or None when it is missing/unreadable."""
     try:
-        with open(path, encoding="utf-8") as handle:
+        with open(path, encoding="utf-8-sig") as handle:
             return handle.read()
     except (OSError, UnicodeDecodeError):
         return None
@@ -34,27 +56,61 @@ def project_root_str() -> str:
     return os.path.realpath(os.path.join(os.path.dirname(__file__), os.pardir))
 
 
+def normalize_hermes_home_env() -> None:
+    """Expand ``~``/``$VAR`` in ``HERMES_HOME`` once, at process entry, and write it back.
+
+    fish does not expand ``~`` inside ``VAR=~/...`` and every shell passes a quoted value
+    through verbatim, so a literal tilde reaches the process. ``Path("~/.hermes")`` is
+    *relative*: the many raw ``os.environ["HERMES_HOME"]`` readers (this fast path, the
+    active_profile probe, profile re-home, the dotenv loader) would each resolve it against
+    cwd and scaffold a full home under ``<cwd>/~/.hermes``. One expansion here gives every
+    reader the same absolute spelling; ``hermes_constants`` expands as well for non-CLI
+    entry points. A relative value that is not tilde/variable-shaped is left alone.
+    """
+    raw = os.environ.get("HERMES_HOME", "")
+    if not raw.strip():
+        return
+    expanded = os.path.expanduser(os.path.expandvars(raw.strip()))
+    if expanded != raw:
+        os.environ["HERMES_HOME"] = expanded
+
+
+def _realpath_or_self(path: str) -> str:
+    """``os.path.realpath`` that survives a deleted cwd.
+
+    A relative ``sys.path`` entry is resolved through ``os.getcwd()``, which raises
+    ``FileNotFoundError`` once the directory the process started in has been removed
+    (a cron delivery child spawned from a reaped scratch workspace, #102941); the CLI
+    then dies before it can parse argv.
+    """
+    try:
+        return os.path.realpath(path)
+    except OSError:
+        return path
+
+
 def ensure_project_root_on_path() -> None:
     """Put the project root at sys.path[0], deduping realpath-equivalents."""
     project_root = project_root_str()
-    normalized_root = os.path.normcase(os.path.realpath(project_root))
+    normalized_root = os.path.normcase(_realpath_or_self(project_root))
     sys.path[:] = [entry for entry in sys.path
-                   if not entry or os.path.normcase(os.path.realpath(entry)) != normalized_root]
+                   if not entry or os.path.normcase(_realpath_or_self(entry)) != normalized_root]
     sys.path.insert(0, project_root)
 
 
-def is_termux_env() -> bool:
-    """Tiny Termux check for pre-import startup shortcuts."""
-    prefix = os.environ.get("PREFIX", "")
-    return bool(os.environ.get("TERMUX_VERSION") or "com.termux/files/usr" in prefix
-                or prefix.startswith("/data/data/com.termux/"))
-
-
-def is_termux_fast_version_argv(argv: list[str]) -> bool:
+def is_global_fast_version_argv(argv: list[str]) -> bool:
     return argv in (["--version"], ["-V"])
 
 
-is_global_fast_version_argv = is_termux_fast_version_argv
+def is_desktop_ssh_backend_argv(argv: list[str]) -> bool:
+    """Is ``argv`` the Desktop client's SSH backend spawn (``serve --ssh-session-token-file``)?
+
+    That child has a fixed identity: Desktop names the remote profile explicitly (or none for
+    the root home) and hands its session token through a 0600 FILE, never the
+    ``HERMES_DASHBOARD_SESSION_TOKEN`` env var the local pool spawn uses. Every reader of
+    "is this process Desktop's backend" needs both shapes; this is the argv half.
+    """
+    return "--ssh-session-token-file" in argv
 
 
 def is_container_startup_environment() -> bool:
@@ -104,7 +160,7 @@ def read_openai_version() -> str | None:
     for base in sys.path:
         version_file = os.path.join(base or os.getcwd(), "openai", "_version.py")
         try:
-            with open(version_file, encoding="utf-8") as handle:
+            with open(version_file, encoding="utf-8-sig") as handle:
                 for line in handle:
                     stripped = line.strip()
                     if not stripped.startswith("__version__"):
@@ -140,9 +196,10 @@ def print_fast_version_info(*, check_updates: bool = True) -> None:
 
         print(format_banner_version_label())
     except Exception:
-        from hermes_cli import __release_date__, __version__
+        from hermes_cli import __release_date__
+        from hermes_cli.version_info import get_version_info
 
-        print(f"Hermes Agent v{__version__} ({__release_date__})")
+        print(f"Hermes Agent v{get_version_info().derived_version} ({__release_date__})")
     print(f"Install directory: {project_root_str()}")
     # Authoritative resolver first (code-scoped stamp → managed → nix → git → pip; also self-heals
     # poisoned shared-home 'docker' stamps); cheap stdlib stamp probe only if it fails.
@@ -164,10 +221,10 @@ def print_fast_version_info(*, check_updates: bool = True) -> None:
     # Synchronous update status — bounded by check_for_updates' own subprocess/network timeouts
     # and its 6-hour cache; any failure prints nothing.
     try:
-        from hermes_cli.banner import UPDATE_AVAILABLE_NO_COUNT, check_for_updates
+        from hermes_cli.source_check import UPDATE_AVAILABLE_NO_COUNT, check_for_updates
         from hermes_cli.config import recommended_update_command
 
-        behind = check_for_updates()
+        behind = check_for_updates(passive=True).get("behind")
         if behind == UPDATE_AVAILABLE_NO_COUNT:
             print(f"Update available — run '{recommended_update_command()}'")
         elif behind and behind > 0:
@@ -182,19 +239,17 @@ def print_fast_version_info(*, check_updates: bool = True) -> None:
 def try_fast_version(argv: list[str] | None = None) -> bool:
     """Handle ``hermes --version`` before the heavy import wall.
 
-    Only ``--version``/``-V`` (``--version`` carries the full output incl. update status), and never
-    when container mode may need to route the command into the container. Termux keeps the
-    HERMES_TERMUX_DISABLE_FAST_CLI escape hatch.
+    Only ``--version``/``-V`` (the ``version`` subcommand was removed —
+    ``--version`` now carries the full output incl. update status), and
+    never when container mode may need to route the command into the
+    container.
     """
     if argv is None:
         argv = sys.argv[1:]
-    is_termux = is_termux_env()
-    if is_termux and os.environ.get("HERMES_TERMUX_DISABLE_FAST_CLI") == "1":
+    if not is_global_fast_version_argv(argv):
         return False
-    if is_termux:
-        if not is_termux_fast_version_argv(argv):
-            return False
-    elif not is_global_fast_version_argv(argv) or container_mode_may_be_active():
+    if container_mode_may_be_active():
         return False
+
     print_fast_version_info()
     return True

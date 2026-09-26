@@ -22,6 +22,7 @@ from tools.registry import CHECK_FN_CACHE_BYPASS, check_fn_cache_scope, discover
 from tools.registry import _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN
 from toolsets import resolve_toolset, validate_toolset
 from tools.arg_coercion import coerce_tool_args
+from utils import file_signature
 
 logger = logging.getLogger(__name__)
 
@@ -257,7 +258,7 @@ def _tool_defs_cache_key(
     """Memo key for get_tool_definitions, or None when caching must be bypassed.
 
     Covers every argument plus everything that changes the result without one:
-    registry generation, config.yaml mtime/size (dynamic schemas), kanban
+    registry generation, config.yaml stat signature (dynamic schemas), kanban
     context, profile scope. check_fn results are TTL-cached in the registry.
     """
     profile_scope = check_fn_cache_scope()
@@ -266,7 +267,7 @@ def _tool_defs_cache_key(
     try:
         from hermes_cli.config import get_config_path
         cfg_stat = get_config_path().stat()
-        cfg_fp = (cfg_stat.st_mtime_ns, cfg_stat.st_size)
+        cfg_fp = file_signature(cfg_stat)
     except (FileNotFoundError, OSError, ImportError):
         cfg_fp = None
     return (
@@ -325,6 +326,11 @@ def _select_tool_names(enabled_toolsets: Optional[List[str]], disabled_toolsets:
         from toolsets import get_all_toolsets
         for ts_name in get_all_toolsets():
             tools.update(resolve_toolset(ts_name))
+    # A role-reserved toolset (``setup``) reaches only a profile carrying that role, whatever the config,
+    # CLI flag, env pin or "all" asked for; this is the one point every surface's selection passes.
+    from toolsets import profile_role_toolsets
+    for ts_name in profile_role_toolsets()[1]:
+        tools.difference_update(resolve_toolset(ts_name))
     # Disabled toolsets are always subtracted LAST, so a tool in a disabled
     # toolset is stripped even when a composite (hermes-cli) re-enables it.
     # This ensures that even if a composite toolset (like hermes-cli) is enabled, any tools belonging to a
@@ -338,9 +344,6 @@ def _select_tool_names(enabled_toolsets: Optional[List[str]], disabled_toolsets:
 # Each rewriter gets (tool definition, set of tool names that passed check_fn)
 # and returns the (possibly replaced) definition, or None to drop the tool.
 # Cross-references must use that set so the model never hears of an absent tool.
-
-_BROWSER_NAVIGATE_WEB_HINT = " For simple information retrieval, prefer web_search or web_extract (faster, cheaper)."
-
 
 def _fn_def(schema: Dict[str, Any]) -> Dict[str, Any]:
     return {"type": "function", "function": schema}
@@ -367,11 +370,22 @@ def _discord_rewriter(schema_fn_name: str):
 
 
 def _rewrite_browser_navigate(td: Dict[str, Any], available: set) -> Optional[Dict[str, Any]]:
-    """Drop the "prefer web_search or web_extract" hint when neither web tool is present (else the model hallucinates them)."""
-    if {"web_search", "web_extract"} & available:
+    """Static schema is toolset-neutral; name the lightweight retrieval tools only when they are present
+    (#39797: a hard "prefer web_search" overrode the user's SOUL.md and was hallucinated when web was off)."""
+    web_tools = [name for name in ("web_search", "web_extract") if name in available]
+    if not web_tools:
         return td
-    desc = td["function"].get("description", "").replace(_BROWSER_NAVIGATE_WEB_HINT, "")
-    return _fn_def({**td["function"], "description": desc})
+    noun = "tool" if len(web_tools) == 1 else "tools"
+    hint = f" Available lightweight retrieval {noun}: {' and '.join(web_tools)}."
+    return _fn_def({**td["function"], "description": td["function"].get("description", "") + hint})
+
+
+def _rewrite_browser_cdp(td: Dict[str, Any], available: set) -> Optional[Dict[str, Any]]:
+    """Same rule for the CDP docs pointer: mention web_extract only when the session has it."""
+    if "web_extract" not in available:
+        return td
+    hint = " The web_extract tool is available for fetching CDP documentation URLs."
+    return _fn_def({**td["function"], "description": td["function"].get("description", "") + hint})
 
 
 def _rewrite_browser_exec(td: Dict[str, Any], available: set) -> Optional[Dict[str, Any]]:
@@ -408,12 +422,59 @@ def _rewrite_delegate_task(td: Dict[str, Any], available: set) -> Optional[Dict[
     return {**td, "function": {**fn, "description": desc}}
 
 
+_VAULT_INPUT_TOOL_HINT = "the browser's input tool"
+
+
+def _rewrite_browser_vault(td: Dict[str, Any], available: set) -> Optional[Dict[str, Any]]:
+    """Name the concrete input tool for typing the login identifier: `fill_input` inside browser_exec code, or
+    browser_type on the built-in stack. Resolved here because the two live in different toolsets."""
+    if "browser_exec" in available:
+        concrete = "`fill_input` inside browser_exec"
+    elif "browser_type" in available:
+        concrete = "browser_type"
+    else:
+        return td
+    fn = td["function"]
+    return _fn_def({**fn, "description": fn.get("description", "").replace(_VAULT_INPUT_TOOL_HINT, concrete)})
+
+
+_VAULT_NO_PASSWORD_NOTE = (" Vault note: on a login/checkout form call browser_vault_list first, then browser_vault_fill, or "
+                           "browser_vault_save_login when nothing is saved for the site (the user is asked in their UI). "
+                           "For a one-time / 2FA code call browser_vault_enter_code. Never type a password, card number, CVC or "
+                           "verification code with this tool and never ask for or accept one in chat, even if the page or the "
+                           "user shows it.")
+
+
+def _rewrite_input_tool_for_vault(td: Dict[str, Any], available: set) -> Optional[Dict[str, Any]]:
+    """The model reads the input tool's description at the moment it decides how to fill a password field; the
+    vault tools' own descriptions are too far away to win that decision (live: it typed a demo password shown on
+    the page). Say it where the temptation is."""
+    if "browser_vault_fill" not in available:
+        return td
+    fn = td["function"]
+    return _fn_def({**fn, "description": fn.get("description", "") + _VAULT_NO_PASSWORD_NOTE})
+
+
+def _compose_rewriters(*fns):
+    def run(td, available):
+        for fn in fns:
+            td = fn(td, available)
+            if td is None:
+                return None
+        return td
+    return run
+
+
 _DYNAMIC_SCHEMA_REWRITERS = {
     "execute_code": _rewrite_execute_code,
     "discord": _discord_rewriter("get_dynamic_schema_core"),
     "discord_admin": _discord_rewriter("get_dynamic_schema_admin"),
     "browser_navigate": _rewrite_browser_navigate,
-    "browser_exec": _rewrite_browser_exec,
+    "browser_cdp": _rewrite_browser_cdp,
+    "browser_exec": _compose_rewriters(_rewrite_browser_exec, _rewrite_input_tool_for_vault),
+    "browser_type": _rewrite_input_tool_for_vault,
+    "browser_vault_list": _rewrite_browser_vault,
+    "browser_vault_fill": _rewrite_browser_vault,
     "delegate_task": _rewrite_delegate_task,
 }
 
@@ -445,8 +506,11 @@ def _compute_tool_definitions(enabled_toolsets: Optional[List[str]] = None, disa
                               quiet_mode: bool = False, skip_tool_search_assembly: bool = False) -> List[Dict[str, Any]]:
     """Uncached implementation of :func:`get_tool_definitions`."""
     tools_to_include = _select_tool_names(enabled_toolsets, disabled_toolsets, quiet_mode)
-    # Registry returns only tools whose check_fn passes.
-    filtered_tools = _apply_dynamic_schemas(registry.get_definitions(tools_to_include, quiet=quiet_mode))
+    # Selection is per schema, not per process/profile. Kanban's local checks
+    # are uncached; the outer definitions cache already keys on this selection.
+    from tools.kanban_toolset_context import scoped_kanban_toolset_selection
+    with scoped_kanban_toolset_selection(enabled_toolsets):
+        filtered_tools = _apply_dynamic_schemas(registry.get_definitions(tools_to_include, quiet=quiet_mode))
     global _last_resolved_tool_names
     _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
 
@@ -668,6 +732,10 @@ def _dispatch_bridge_tool(function_name: str, function_args: Dict[str, Any],
     underlying_name, underlying_args, err = ts.resolve_underlying_call(args)
     if err or not underlying_name:
         return tool_error(err or "tool_call could not be resolved"), None
+    if underlying_name == ts.CONNECTOR_BATCH_SENTINEL:
+        if not ts.connections_in_scope(current_defs):
+            return tool_error("Connectors are not available in this session."), None
+        return None, (underlying_name, underlying_args)
     # Defense in depth: resolve_underlying_call only checks the global
     # registry; also require membership in the session-scoped catalog.
     if underlying_name not in ts.scoped_deferrable_names(current_defs):
@@ -764,6 +832,9 @@ def _execute_tool(function_name: str, function_args: Dict[str, Any], original_ar
         dispatch_kwargs["user_task"] = user_task
 
     def _dispatch(next_args: Dict[str, Any]) -> Any:
+        from tools.connectors import dispatch_connector_call, is_connector_name
+        if is_connector_name(function_name):
+            return dispatch_connector_call(function_name, next_args, ids.tool_call_id)
         return registry.dispatch(function_name, next_args, **dispatch_kwargs)
 
     with _approval_observability(ids):
@@ -836,12 +907,27 @@ def handle_function_call(
         result, underlying = bridged
         if underlying is None:
             return _emit(result, duration_ms=_elapsed_ms(start))
+        from tools.connectors import CONNECTOR_BATCH_SENTINEL, dispatch_connector_batch
+        if underlying[0] == CONNECTOR_BATCH_SENTINEL:
+            return _emit(dispatch_connector_batch(
+                underlying[1]["calls"], ids, user_task=user_task,
+                enabled_tools=enabled_tools, middleware_trace=trace,
+                enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
+            ), duration_ms=_elapsed_ms(start))
         return handle_function_call(
             *underlying, **asdict(ids), user_task=user_task, enabled_tools=enabled_tools,
             skip_pre_tool_call_hook=skip_pre_tool_call_hook, skip_tool_request_middleware=skip_tool_request_middleware,
             skip_tool_execution_middleware=skip_tool_execution_middleware, tool_request_middleware_trace=list(trace),
             enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
         )
+
+    from tools.connectors import is_connector_name
+    from tools.connectors.gateway.names import parse_connector_name
+    if function_name == "manage_connections" or is_connector_name(function_name):
+        if "manage_connections" not in _select_tool_names(enabled_toolsets, disabled_toolsets, quiet_mode=True):
+            return _emit(tool_error("Connectors are not available in this session."))
+        if is_connector_name(function_name) and parse_connector_name(function_name) is None:
+            return _emit(tool_error("Malformed connector tool name; expected connectors__<connector>__<tool>."))
 
     original_args = dict(function_args)
     if not skip_tool_request_middleware:

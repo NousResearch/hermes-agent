@@ -32,27 +32,23 @@ def _pid_alive(pid: int) -> bool:
 
 
 def _state_endpoint() -> dict | None:
-    from hermes_cli.local_runtime.supervisor import state_path
+    from hermes_cli.local_runtime.recovery import is_modern, read_state, recorded_process
 
-    path = state_path()
-    if not path.exists():
-        return None
-    try:
-        state = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
+    state = read_state()
     base_url = state.get("base_url", "")
-    if not base_url:
+    if not isinstance(base_url, str) or not base_url:
         return None
-    # Ownership proof: on the stable port a SECOND install (different HERMES_HOME) can own
-    # 127.0.0.1:18434 with a different api key while this install's state file still points
-    # there. /health is public and answers 200 for ANYONE's server — trusting it sent every
-    # request at a server that 401s our key, silently — so the recorded supervisor pid is the
-    # ONLY tiebreaker: a live pid is ours (healthy, or STARTING — state is written at spawn, and
-    # readiness probes racing the boot must see a configured provider, not missing credentials);
-    # a dead pid is a crashed-without-cleanup leftover, ignored so requests don't blackhole.
-    if not _pid_alive(int(state.get("pid") or 0)):
-        return None
+    if is_modern(state):
+        if recorded_process(state) is None:
+            return None
+    else:
+        # Preserve the legacy endpoint shape, with malformed PID values rejected.
+        try:
+            pid = state.get("pid")
+            if isinstance(pid, bool) or not _pid_alive(int(pid or 0)):
+                return None
+        except (TypeError, ValueError, OverflowError):
+            return None
     return {"base_url": base_url, "api_key": state.get("api_key", "")}
 
 
@@ -140,14 +136,12 @@ def _kick_managed_boot(config: dict | None) -> None:
 
 
 def _boot_in_flight(config: dict | None) -> bool:
-    """True when the managed runtime is enabled and installed (a verified-manifest scan under
-    runtimes_root(), NOT a bare ``server_binary()`` call — that needs an install_dir, and calling
-    it bare once made this gate throw-and-return False forever, disabling the boot wait)."""
+    """True when the managed runtime is enabled and PM holds an installed engine."""
     with suppress(Exception):
         config = _load_config_if_none(config)
         if not ((config or {}).get("local_runtime") or {}).get("enabled"):
             return False
-        from hermes_cli.local_runtime.binaries import manifest_verified, runtimes_root
+        from hermes_cli.local_runtime.binaries import installed_engine
 
-        return any(manifest_verified(m) for m in runtimes_root().glob("*/*/manifest.json"))
+        return installed_engine() is not None
     return False

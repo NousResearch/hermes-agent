@@ -104,7 +104,9 @@ class TestHandleUpdateCommand:
              patch("importlib.util.find_spec", return_value=fake_spec):
             result = _resolve_hermes_bin()
 
-        assert result == [sys.executable, "-m", "hermes_cli.main"]
+        from hermes_cli._launchers import runtime_command
+        import gateway.run as gateway_run
+        assert result == runtime_command(Path(gateway_run.__file__).resolve().parents[1])
 
     @pytest.mark.asyncio
     async def test_resolve_hermes_bin_falls_back_to_path_then_none(self):

@@ -2443,9 +2443,10 @@ def _rotate_worker_log(
 
 
 def _module_hermes_argv() -> list[str]:
-    """Interpreter-bound Hermes CLI invocation (``hermes_cli.main`` is the
-    console-script target — there is no top-level ``hermes`` package)."""
-    return [sys.executable, "-m", "hermes_cli.main"]
+    """Keep the running source installation's bootstrap across workspace changes."""
+    from hermes_cli._launchers import runtime_command
+
+    return runtime_command(Path(__file__).resolve().parents[1])
 
 
 def _absolute_hermes_path(path: str) -> str:

@@ -1545,7 +1545,7 @@ def test_connect_heals_reduced_tasks_schema_seeded_by_external_harness(kanban_ho
 # launchd jobs, and other detached processes routinely run with a stripped
 # $PATH that doesn't include the venv's bin/, so a bare `["hermes", ...]`
 # spawn fails with FileNotFoundError and the task gets stuck. The resolver
-# prefers the interpreter-bound module form (exactly this install; a PATH
+# prefers the installation-bound bootstrap (exactly this install; a PATH
 # shim could be attacker-planted or belong to another install, #111569) and
 # only falls back to the PATH shim when ``hermes_cli`` is not importable.
 # ---------------------------------------------------------------------------
@@ -1562,7 +1562,8 @@ def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
     monkeypatch.delenv("HERMES_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda name: "/tmp/planted/hermes")
     monkeypatch.setattr(kbd, "_safe_which_no_cwd", lambda name: "/tmp/planted/hermes")
-    assert kbd._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
+    from hermes_cli._launchers import runtime_command
+    assert kbd._resolve_hermes_argv() == runtime_command(Path(kbd.__file__).resolve().parents[1])
 
     monkeypatch.setenv("HERMES_BIN", "/opt/hermes/bin/hermes")
     assert kbd._resolve_hermes_argv() == ["/opt/hermes/bin/hermes"]
@@ -1570,15 +1571,8 @@ def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
 
 
 
-def test_resolve_hermes_argv_module_actually_runs():
-    """The fallback module name must be importable + runnable.
-
-    A unit test that pins the literal string is necessary but not
-    sufficient — if `hermes_cli.main` ever loses `if __name__ == "__main__"`
-    handling or its argparse setup, `python -m hermes_cli.main --version`
-    would fail and so would every dispatcher spawn that hits the fallback.
-    Run it as a real subprocess to catch that regression.
-    """
+def test_resolve_hermes_argv_module_actually_runs(tmp_path):
+    """A source-bootstrapped owner can launch a real CLI operation outside its tree."""
     import subprocess
     from hermes_cli import kanban_db_dispatch as kbd
     import shutil
@@ -1588,11 +1582,25 @@ def test_resolve_hermes_argv_module_actually_runs():
         os.environ.pop("HERMES_BIN", None)
         with mock.patch.object(shutil, "which", return_value=None):
             argv = kbd._resolve_hermes_argv()
-    r = subprocess.run(argv + ["--version"], capture_output=True, text=True, timeout=30)
+    workspace = tmp_path / "unrelated-workspace"
+    workspace.mkdir()
+    child_home = tmp_path / "child-home"
+    child_home.mkdir()
+    clean_env = {"PATH": os.defpath, "HOME": str(tmp_path), "HERMES_HOME": str(child_home)}
+    # An isolated developer PM store is an owning installation pointer, not
+    # inherited import/bootstrap state or a worker-specific workaround.
+    if os.environ.get("HERMES_RUNTIME_DIR"):
+        clean_env["HERMES_RUNTIME_DIR"] = os.environ["HERMES_RUNTIME_DIR"]
+    created = subprocess.run(argv + ["kanban", "boards", "create", "launch-probe"],
+                             cwd=workspace, env=clean_env, capture_output=True, text=True, timeout=30)
+    assert created.returncode == 0, created.stderr[:200]
+    r = subprocess.run(argv + ["kanban", "--board", "launch-probe", "list", "--json"],
+                       cwd=workspace, env=clean_env, capture_output=True, text=True, timeout=30)
     assert r.returncode == 0, (
-        f"`{' '.join(argv)} --version` failed (rc={r.returncode}); "
+        f"worker invocation failed from unrelated workspace (rc={r.returncode}); "
         f"stderr={r.stderr[:200]!r}"
     )
+    assert json.loads(r.stdout) == []
 
 
 # ---------------------------------------------------------------------------

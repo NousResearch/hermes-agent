@@ -856,6 +856,11 @@ DEFAULT_CONFIG = {
         # Print a one-line summary of resolved modal prompts (approval/clarify) to scrollback.
         "persist_prompts": True,
         "inline_diffs": True,     # inline diff previews for write_file/patch/skill_manage
+        # The Ink TUI writes OSC 0/1/2 terminal titles (session/model/cwd) as it
+        # runs, which overwrites a tmux/zellij pane or tab name set by the user.
+        # Set false to leave the terminal title untouched (TUI only — the
+        # classic CLI never sets the terminal title).
+        "terminal_title": True,
         # Append a one-line advisory to the final response when a write_file/patch failed this turn
         # and was never superseded by a successful write to the same path (catches "half the
         # parallel patches failed, model claims success").

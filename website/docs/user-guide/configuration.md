@@ -2184,6 +2184,7 @@ display:
   # blocking prompts) so Warp's tab status and notification mailbox track Hermes. No extra keys needed.
   show_reasoning: true    # Show model reasoning/thinking above each response (default: true; toggle with /reasoning show|hide)
   streaming: false        # Stream tokens to terminal as they arrive (real-time output)
+  terminal_title: true    # TUI only: write OSC 0/1/2 terminal tab/window titles. Set false to leave a tmux/zellij pane name untouched
   show_cost: false        # Show estimated $ cost in the CLI status bar
   vim_mode: false         # CLI only: vi/vim keybindings in the input composer (Esc → NORMAL, i → INSERT). The live NORMAL/INSERT/REPLACE mode shows at the right of the status bar. Config-only, read at startup.
   timestamps: false       # When true, prefixes user and assistant labels with timestamps in the CLI / TUI transcript

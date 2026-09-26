@@ -109,6 +109,58 @@ describe('applyDisplay', () => {
     expect(s.sections).toEqual({})
   })
 
+  it('keeps terminal titles disabled until configuration is known (#102608)', () => {
+    expect($uiState.get().terminalTitle).toBe(false)
+  })
+
+  it.each([false, true])('preserves terminal_title=%s across a failed config refresh (#102608)', terminalTitle => {
+    const setBell = vi.fn()
+
+    applyDisplay({ config: { display: { terminal_title: terminalTitle } } }, setBell)
+    applyDisplay(null, setBell)
+
+    expect($uiState.get().terminalTitle).toBe(terminalTitle)
+  })
+
+  it('defaults display.terminal_title on and honors an explicit false (#102608)', () => {
+    const setBell = vi.fn()
+
+    applyDisplay({ config: { display: {} } }, setBell)
+    expect($uiState.get().terminalTitle).toBe(true)
+
+    applyDisplay({ config: { display: { terminal_title: false } } }, setBell)
+    expect($uiState.get().terminalTitle).toBe(false)
+
+    applyDisplay({ config: { display: { terminal_title: true } } }, setBell)
+    expect($uiState.get().terminalTitle).toBe(true)
+  })
+
+  it('uses documented mouse_tracking with legacy tui_mouse fallback', () => {
+    const setBell = vi.fn()
+
+    applyDisplay({ config: { display: { mouse_tracking: false } } }, setBell)
+    expect($uiState.get().mouseTracking).toBe('off')
+
+    applyDisplay({ config: { display: { mouse_tracking: true, tui_mouse: false } } }, setBell)
+    expect($uiState.get().mouseTracking).toBe('all')
+
+    applyDisplay({ config: { display: { tui_mouse: false } } }, setBell)
+    expect($uiState.get().mouseTracking).toBe('off')
+  })
+
+  it('threads mouse_tracking presets through to $uiState', () => {
+    const setBell = vi.fn()
+
+    applyDisplay({ config: { display: { mouse_tracking: 'wheel' } } }, setBell)
+    expect($uiState.get().mouseTracking).toBe('wheel')
+
+    applyDisplay({ config: { display: { mouse_tracking: 'buttons' } } }, setBell)
+    expect($uiState.get().mouseTracking).toBe('buttons')
+
+    applyDisplay({ config: { display: { mouse_tracking: 'all' } } }, setBell)
+    expect($uiState.get().mouseTracking).toBe('all')
+  })
+
   it('parses display.sections into per-section overrides', () => {
     const setBell = vi.fn()
 

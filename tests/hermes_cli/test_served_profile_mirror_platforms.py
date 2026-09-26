@@ -54,6 +54,57 @@ def test_served_profile_projects_the_default_listener_mirrors_with_their_url(ser
     assert "ingress_url" not in profile_platforms_from_multiplexer(live.runtime, "default").get("api_server", {})
 
 
+def test_default_profile_keeps_its_flat_adapters_when_rekeyed(served_root):
+    """The default's own adapters are the record's FLAT keys (only secondaries get the
+    ``<profile>:`` prefix), so re-keying the multiplexer record for ``default`` must keep them:
+    ``/api/status`` used to report ``gateway_platforms: {}`` for the default profile under
+    ``gateway.multiplex_profiles`` while its adapters were connected and delivering (#123088)."""
+    from gateway.status import profile_platforms_from_multiplexer, resolve_gateway_liveness
+    alpha = served_root / "profiles" / "alpha"
+    live = resolve_gateway_liveness(profile_dir=alpha, health_probe=None, use_cache=False)
+    plats = profile_platforms_from_multiplexer(live.runtime, "default")
+    # The default's un-prefixed entries survive the re-key, exactly as a standalone gateway for
+    # "default" would have written them — a live api_server and its own fatal webhook.
+    assert plats["api_server"]["state"] == "connected"
+    assert "listener_base" in plats["api_server"]  # the listener's own entry, never a mirror
+    assert plats["webhook"]["state"] == "fatal"
+    # Nothing is mirrored onto the default and no secondary's entry leaks in.
+    assert all("ingress_url" not in entry for entry in plats.values() if isinstance(entry, dict))
+    assert "telegram" not in plats  # that entry belongs to alpha
+
+
+def test_messaging_card_for_the_default_home_rekeys_by_the_profile_not_the_dirname(tmp_path, monkeypatch):
+    """The multiplexer fold keys on the profile NAME; ``_platform_payloads`` used to pass
+    ``own_home.name`` — the directory basename, ``.hermes`` for the shipped default root or any
+    custom ``HERMES_HOME`` name, equal to the profile id only for secondaries under
+    ``profiles/<name>``. On the default home the fold came back empty and the Channels card read
+    "Restart needed" forever while the multiplexer served its flat-keyed adapters (#123088)."""
+    import gateway.status as status
+    from hermes_cli.web_routers import messaging
+    root = tmp_path / ".hermes"  # the shipped default root's literal name — never equal to "default"
+    root.mkdir()
+    (root / "config.yaml").write_text("gateway: {multiplex_profiles: true}\n", encoding="utf-8")
+    record = {
+        "pid": os.getpid(), "hermes_home": str(root), "gateway_state": "running",
+        "served_profiles": ["default", "route-runner"],
+        "platforms": {"telegram": {"state": "connected"}},
+    }
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    import hermes_constants
+    monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
+    # A launch-service gateway's record fails the own-rung argv check (inline ``-c``), so the card
+    # falls through to the multiplexer rung — mirrored here by an absent own record.
+    monkeypatch.setattr(messaging, "read_runtime_status", lambda *a, **k: None)
+    monkeypatch.setattr(messaging, "multiplexer_liveness_for_profile", lambda home: (os.getpid(), record))
+    monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "hermes gateway run")
+    monkeypatch.setattr(messaging, "_platform_enablement", lambda *a, **k: (True, True, None))
+    entry = {"id": "telegram", "name": "Telegram", "description": "", "docs_url": "", "env_vars": [],
+             "required_env": []}
+    [payload] = messaging._platform_payloads(None, [entry])  # unscoped: the dashboard's own home
+    assert payload["gateway_running"] is True
+    assert payload["state"] == "connected", payload
+
+
 def test_messaging_card_for_a_served_profile_reads_connected_not_restart_needed(served_root, monkeypatch):
     from hermes_cli.web_routers import messaging
     monkeypatch.setattr(messaging, "_platform_enablement", lambda *a, **k: (True, True, None))

@@ -226,7 +226,8 @@ def launchd_program_arguments(command: list[str], stdout_log: Path, stderr_log: 
     executable).
 
     Standard Additions' ``do shell script`` polls WindowServer for a user-cancel event while it waits.
-    That is appropriate for a short interactive script but burns CPU for the gateway's process lifetime.
+    That is appropriate for a short interactive script but, for the gateway's process lifetime, burns CPU
+    and keeps a WindowServer event connection busy (external-display wake stalls ~10s on macOS 27, #123595).
     JXA calling libc ``system()`` waits in the kernel instead while retaining osascript as the responsible
     process. The shell's ``exec`` keeps the gateway in the launchd job's process group, so ``launchctl
     bootout`` / ``kickstart -k`` still deliver SIGTERM to it. stdout/stderr are appended inside the shell

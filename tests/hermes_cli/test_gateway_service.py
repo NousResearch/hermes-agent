@@ -1782,7 +1782,7 @@ class TestProfileArg:
         # The wrapper's own ps line must never be taken for the gateway (stop/status would signal osascript).
         assert status.looks_like_gateway_command_line(" ".join(program_args)) is False
 
-    @pytest.mark.skipif(sys.platform != "darwin", reason="osascript is macOS-only")
+    @pytest.mark.platforms("macos")
     def test_launchd_osascript_wrapper_preserves_process_group_and_exit_status(self, tmp_path):
         """The non-polling JXA wait keeps lifecycle signals and KeepAlive failure semantics intact."""
         stdout_log = tmp_path / "stdout.log"

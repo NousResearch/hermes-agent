@@ -467,6 +467,11 @@ class SkillToggle(BaseModel):
     enabled: bool
     profile: Optional[str] = None
 
+class SkillCategoryToggle(BaseModel):
+    category: Optional[str] = None  # None = uncategorized skills
+    enabled: bool
+    profile: Optional[str] = None
+
 class SkillCreate(BaseModel):
     name: str
     content: str
@@ -480,6 +485,14 @@ class SkillContentUpdate(BaseModel):
 
 class ToolsetToggle(BaseModel):
     enabled: bool
+    profile: Optional[str] = None
+
+class ToolsetGroupToggle(BaseModel):
+    group: str
+    enabled: bool
+    # The desktop renders a curated subset of each group; when provided, only
+    # these members are toggled (validated against the group's effective set).
+    names: Optional[List[str]] = None
     profile: Optional[str] = None
 
 class ToolsetProviderSelect(BaseModel):

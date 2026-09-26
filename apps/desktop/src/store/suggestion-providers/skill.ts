@@ -82,7 +82,9 @@ async function loadIndex(): Promise<SkillIndexEntry[]> {
   const skills = await getSkills()
 
   index = skills
-    .filter(skill => skill.enabled && skill.name.length >= MIN_NAME_LENGTH)
+    // Plugin rows carry qualified names ("/plugin:skill") the slash dispatch
+    // never resolves — they are managed on the Capabilities tab, not here.
+    .filter(skill => skill.enabled && skill.category !== 'plugin' && skill.name.length >= MIN_NAME_LENGTH)
     .map(skill => ({
       name: skill.name,
       pattern: skillPattern(skill.name)

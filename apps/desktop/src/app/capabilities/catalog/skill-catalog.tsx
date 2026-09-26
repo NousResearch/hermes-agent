@@ -22,6 +22,11 @@ interface SkillCatalogProps {
   notice?: ReactNode
   renderInstalledDetail: (skill: SkillInfo) => ReactNode
   renderInstalledAction?: (skill: SkillInfo) => ReactNode
+  /** List-view grouping for installed rows, keyed off the skill (e.g. its
+   *  category). Rows with no skill behind them — the public feed — stay flat. */
+  groupInstalledBy?: (skill: SkillInfo) => string | null
+  /** Rendered above each group's rows in the browser's list view. */
+  renderGroupHeader?: (group: string) => ReactNode
 }
 
 /** Public discovery and the profile's local skills share one browser. Management
@@ -39,7 +44,9 @@ function ScopedSkillCatalog({
   installedPending,
   notice,
   renderInstalledDetail,
-  renderInstalledAction
+  renderInstalledAction,
+  groupInstalledBy,
+  renderGroupHeader
 }: SkillCatalogProps) {
   const { t } = useI18n()
   const h = t.skills.hub
@@ -252,6 +259,15 @@ function ScopedSkillCatalog({
   return (
     <CatalogBrowser
       actions={actions}
+      groupInstalledBy={
+        groupInstalledBy
+          ? entry => {
+              const skill = catalog.skillsById.get(entry.id)
+
+              return skill ? groupInstalledBy(skill) : null
+            }
+          : undefined
+      }
       installedEntries={catalog.entries}
       installedPending={installedPending || identityPending}
       isInstalled={isInstalled}
@@ -288,6 +304,7 @@ function ScopedSkillCatalog({
       onInstall={install}
       onQueryChange={onQueryChange}
       query={query}
+      renderGroupHeader={renderGroupHeader}
       renderInstalledAction={entry => {
         const skill = catalog.skillsById.get(entry.id)
 

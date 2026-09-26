@@ -54,6 +54,11 @@ interface CatalogBrowserProps {
   notice?: ReactNode
   renderInstalledDetail?: (entry: CatalogEntry) => ReactNode
   renderInstalledAction?: (entry: CatalogEntry) => ReactNode
+  /** List view only: entries with a non-null key render as an indented section
+   *  under its renderGroupHeader header; null-key rows (e.g. the public feed)
+   *  stay flat, after the sections. Absent → the flat list, unchanged. */
+  groupInstalledBy?: (entry: CatalogEntry) => string | null
+  renderGroupHeader?: (group: string) => ReactNode
   selectedEntryId?: string | null
 }
 
@@ -119,6 +124,8 @@ export const CatalogBrowser = memo(function CatalogBrowser({
   notice,
   renderInstalledDetail,
   renderInstalledAction,
+  groupInstalledBy,
+  renderGroupHeader,
   selectedEntryId,
   query,
   onQueryChange
@@ -176,6 +183,28 @@ export const CatalogBrowser = memo(function CatalogBrowser({
 
   const pageOrder = sections.length ? sections.flatMap(section => section.entries) : filtered
 
+  // Opt-in list-view sections (skills): keyed rows group under a header,
+  // null-key rows (the public feed) stay flat, after the sections.
+  const listPage = filtered.slice(0, limit)
+  const listSections: [string, CatalogEntry[]][] = []
+  const flatListRows: CatalogEntry[] = []
+
+  if (groupInstalledBy) {
+    const byGroup = new Map<string, CatalogEntry[]>()
+
+    for (const entry of listPage) {
+      const group = groupInstalledBy(entry)
+
+      if (group === null) {
+        flatListRows.push(entry)
+      } else {
+        byGroup.set(group, [...(byGroup.get(group) ?? []), entry])
+      }
+    }
+
+    listSections.push(...Array.from(byGroup.entries()).sort((a, b) => a[0].localeCompare(b[0])))
+  }
+
   const selected = entries.find(entry => entry.id === selectedId) ?? filtered[0]
   const related = selected && (!cardView || detailOpen) ? relatedEntries(filtered, selected, 3) : []
 
@@ -231,6 +260,24 @@ export const CatalogBrowser = memo(function CatalogBrowser({
       onOpen={openEntry}
       onSearch={searchFor}
       onTag={filters.toggleTag}
+    />
+  )
+
+  // Section rows (only when grouped) carry the owner's per-row action, same as
+  // the cards do; flat rows stay plain, as every kind's list is today.
+  const listRow = (entry: CatalogEntry, inSection = false) => (
+    <CatalogListRow
+      action={inSection ? entryAction(entry) : undefined}
+      entry={entry}
+      indent={inSection}
+      installed={isInstalled(entry)}
+      key={entry.id}
+      kind={kind}
+      onCategory={filters.chooseCategory}
+      onOpen={openEntry}
+      onSearch={searchFor}
+      onTag={filters.toggleTag}
+      selected={entry.id === selected.id}
     />
   )
 
@@ -429,19 +476,19 @@ export const CatalogBrowser = memo(function CatalogBrowser({
               >
                 <MasterDetail resizeId="capabilities-split" split="wide">
                   <ListColumn key={`${filterKey}:${deferredQuery}`}>
-                    {filtered.slice(0, limit).map(entry => (
-                      <CatalogListRow
-                        entry={entry}
-                        installed={isInstalled(entry)}
-                        key={entry.id}
-                        kind={kind}
-                        onCategory={filters.chooseCategory}
-                        onOpen={openEntry}
-                        onSearch={searchFor}
-                        onTag={filters.toggleTag}
-                        selected={entry.id === selected.id}
-                      />
-                    ))}
+                    {groupInstalledBy ? (
+                      <>
+                        {listSections.map(([group, rows]) => (
+                          <div className="contents" key={group}>
+                            {renderGroupHeader?.(group)}
+                            {rows.map(entry => listRow(entry, true))}
+                          </div>
+                        ))}
+                        {flatListRows.map(entry => listRow(entry))}
+                      </>
+                    ) : (
+                      listPage.map(entry => listRow(entry))
+                    )}
                     {filtered.length > limit && (
                       <Button onClick={() => setLimit(value => value + PAGE_SIZE)} size="sm" variant="text">
                         {c.more}

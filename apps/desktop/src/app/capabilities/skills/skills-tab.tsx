@@ -1,10 +1,17 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { ArchiveSkillConfirmDialog } from '@/app/learning/archive-skill-confirm-dialog'
 import { CodeEditor } from '@/components/chat/code-editor'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
-import { editLearningNode, getLearningNode, type ProfileScope, profileScopeKey, setSkillEnabled } from '@/hermes'
+import {
+  editLearningNode,
+  getLearningNode,
+  profileScopeKey,
+  setSkillCategoryEnabled,
+  setSkillEnabled,
+  type ProfileScope
+} from '@/hermes'
 import { useI18n } from '@/i18n'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
@@ -12,12 +19,14 @@ import { notify, notifyError } from '@/store/notifications'
 import type { SkillInfo } from '@/types/hermes'
 
 import { DetailPane, ListStripMenu, type ListStripMenuToggle } from '../../master-detail'
+import { prettyName } from '../../settings/helpers'
 import { CatalogAlert } from '../catalog/catalog-alert'
 import { SkillCatalog } from '../catalog/skill-catalog'
 import { UpdateSkillsButton } from '../catalog/update-skills-button'
+import { GroupHeaderRow } from '../primitives'
 
 import { SkillDetail } from './skill-detail'
-import { skillsQueryKey, usageOf } from './skills-data'
+import { categoryFor, skillsQueryKey, usageOf } from './skills-data'
 
 interface SkillsTabProps {
   /** The scope's skill list, straight from the shell's query. */
@@ -131,6 +140,39 @@ function ScopedSkillsTab({
     }
   }
 
+  // Per-category bulk: one backend request per category (a single
+  // skills.disabled write server-side); rows repaint from response names.
+  // Same serialization as applyEnabled — both writes save that one value.
+  async function bulkCategoryApply(category: string, enabled: boolean) {
+    if (mutationBusy.current || installedPending || installedError) {
+      return
+    }
+    mutationBusy.current = true
+    setBusy(true)
+
+    try {
+      const result = await setSkillCategoryEnabled(category === 'general' ? null : category, enabled, profile)
+      const names = new Set(result.names)
+      setSkills(cur => cur?.map(row => (names.has(row.name) ? { ...row, enabled } : row)) ?? cur)
+
+      if (mounted.current) {
+        notify({ kind: 'success', title: t.skills.bulkUpdated(result.names.length), message: '' })
+      }
+    } catch (err) {
+      if (mounted.current) {
+        notifyError(err, t.skills.failedToUpdate(prettyName(category)))
+      }
+    } finally {
+      invalidateSlashCompletions()
+      void queryClient.invalidateQueries({ queryKey: skillsQueryKey(profile), exact: true })
+      mutationBusy.current = false
+
+      if (mounted.current) {
+        setBusy(false)
+      }
+    }
+  }
+
   const controlsDisabled = busy || installedPending || Boolean(installedError)
 
   // Bulk always means the whole profile, never just a search/filter result.
@@ -144,6 +186,45 @@ function ScopedSkillsTab({
         checked,
         true
       )
+  }
+
+  // Per-category menu entries follow the same rule: grouped over the WHOLE
+  // installed list, not the current query's view.
+  const categoryBulkItems = useMemo(() => {
+    const byCategory = new Map<string, SkillInfo[]>()
+    for (const row of skills) {
+      const key = categoryFor(row)
+      byCategory.set(key, [...(byCategory.get(key) ?? []), row])
+    }
+
+    return Array.from(byCategory.entries()).map(([category, rows]) => {
+      const anyEnabled = rows.some(row => row.enabled)
+
+      return {
+        disabled: controlsDisabled,
+        label: anyEnabled
+          ? t.skills.categoryDisableAll(prettyName(category), rows.length)
+          : t.skills.categoryEnableAll(prettyName(category), rows.length),
+        onSelect: () => void bulkCategoryApply(category, !anyEnabled)
+      }
+    })
+  }, [controlsDisabled, skills, t])
+
+  // List-view section header per category. The switch reads and writes the
+  // WHOLE category (any enabled child reads ON; clicking it while on disables
+  // every child) — never the search-filtered rows the browser hands back.
+  function renderGroupHeader(category: string) {
+    const rows = skills.filter(skill => categoryFor(skill) === category)
+
+    return (
+      <GroupHeaderRow
+        busy={controlsDisabled}
+        count={rows.length}
+        enabled={rows.some(skill => skill.enabled)}
+        label={prettyName(category)}
+        onToggle={checked => void bulkCategoryApply(category, checked)}
+      />
+    )
   }
 
   const openSkillEditor = async (name: string) => {
@@ -246,18 +327,21 @@ function ScopedSkillsTab({
                       false,
                       true
                     )
-                }
+                },
+                ...categoryBulkItems
               ]}
               label={t.skills.tabSkills}
               toggle={bulkSwitch}
             />
           </>
         }
+        groupInstalledBy={categoryFor}
         installedPending={installedPending || Boolean(installedError)}
         notice={notice}
         onQueryChange={onQueryChange}
         profile={profile}
         query={query}
+        renderGroupHeader={renderGroupHeader}
         renderInstalledAction={skill => (
           <Switch
             aria-label={skill.name}

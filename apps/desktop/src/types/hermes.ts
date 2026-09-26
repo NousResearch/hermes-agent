@@ -1143,6 +1143,7 @@ export interface ToolsetInfo {
   configured: boolean
   description: string
   enabled: boolean
+  group?: string
   label: string
   name: string
   tools: string[]

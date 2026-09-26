@@ -2934,6 +2934,301 @@ class TestNewEndpoints:
         )
 
 
+    # --- Bulk group/category toggles ---
+
+    def test_toggle_skill_category_disables_and_enables(self, monkeypatch):
+        import tools.skills_tool as skills_tool
+        from hermes_cli.config import load_config
+
+        def _fake_find_all_skills(*, skip_disabled=False, include_gated=False, include_plugin=False):
+            return [
+                {"name": "skill-a", "description": "a", "category": "demo"},
+                {"name": "skill-b", "description": "b", "category": "demo"},
+                {"name": "skill-c", "description": "c", "category": "other"},
+            ]
+
+        monkeypatch.setattr(skills_tool, "_find_all_skills", _fake_find_all_skills)
+
+        resp = self.client.put("/api/skills/toggle-category", json={"category": "demo", "enabled": False})
+        assert resp.status_code == 200
+        assert resp.json()["names"] == ["skill-a", "skill-b"]
+        assert set(load_config()["skills"]["disabled"]) == {"skill-a", "skill-b"}
+
+        resp = self.client.put("/api/skills/toggle-category", json={"category": "demo", "enabled": True})
+        assert resp.status_code == 200
+        assert load_config()["skills"]["disabled"] == []
+
+    def test_toggle_skill_category_unknown_returns_400(self, monkeypatch):
+        import tools.skills_tool as skills_tool
+
+        monkeypatch.setattr(
+            skills_tool,
+            "_find_all_skills",
+            lambda *, skip_disabled=False, include_gated=False, include_plugin=False: [{"name": "skill-a", "description": "a", "category": "demo"}],
+        )
+
+        resp = self.client.put("/api/skills/toggle-category", json={"category": "nope", "enabled": False})
+        assert resp.status_code == 400
+
+    def test_toggle_skill_category_membership_ignores_environment_gating(self, monkeypatch):
+        # Regression: kanban-* skills declare `environments:` — when the Kanban
+        # environment is inactive the default discovery filters them out, and the
+        # category toggle answered 400 "Unknown skill category" for a section the
+        # UI had rendered moments earlier. Membership must come from the
+        # unfiltered (include_gated) discovery.
+        import tools.skills_tool as skills_tool
+
+        calls: list[dict] = []
+
+        def _fake_find_all_skills(*, skip_disabled=False, include_gated=False, include_plugin=False):
+            calls.append({"skip_disabled": skip_disabled, "include_gated": include_gated})
+            return [{"name": "kanban-orchestrator", "description": "a", "category": "devops"}]
+
+        monkeypatch.setattr(skills_tool, "_find_all_skills", _fake_find_all_skills)
+
+        resp = self.client.put("/api/skills/toggle-category", json={"category": "devops", "enabled": False})
+        assert resp.status_code == 200
+        assert resp.json()["names"] == ["kanban-orchestrator"]
+        assert calls and calls[0]["include_gated"] is True
+
+    def test_get_skills_listing_includes_environment_gated(self, monkeypatch):
+        # Regression (same class as the toggle 400): the Capabilities tab renders
+        # its sections FROM this listing, so a gated listing hides the whole
+        # Devops section whenever the Kanban environment goes inactive — while
+        # toggle-category keeps accepting it. The gates are offer-time filters
+        # for the agent; a config surface lists every discoverable skill.
+        import tools.skills_tool as skills_tool
+
+        rows = [
+            {"name": "kanban-orchestrator", "description": "a", "category": "devops",
+             "environments": ["kanban"]},
+            {"name": "github", "description": "b", "category": "github"},
+        ]
+
+        def _fake_find_all_skills(*, skip_disabled=False, include_gated=False, include_plugin=False):
+            return [
+                dict(r) for r in rows
+                if include_gated or skills_tool.skill_matches_environment(r)
+            ]
+
+        monkeypatch.setattr(skills_tool, "skill_matches_environment", lambda fm: False)
+        monkeypatch.setattr(skills_tool, "_find_all_skills", _fake_find_all_skills)
+
+        names = {s["name"] for s in self.client.get("/api/skills").json()}
+        assert {"kanban-orchestrator", "github"} <= names
+
+    def test_get_skills_listing_includes_plugin_skills(self, monkeypatch):
+        # Regression: plugin-registered skills (qualified names, category
+        # "plugin") never reached GET /api/skills, so the Capabilities tab could
+        # neither show nor toggle them. The config surface lists them regardless
+        # of offer-time platform gating, like the disk skills above.
+        import hermes_cli.plugins as plugins_mod
+        import tools.skills_tool as skills_tool
+
+        class _FakeManager:
+            def list_plugin_skill_metadata(self):
+                return [{
+                    "name": "kanban-plugin:board-helper", "description": "d",
+                    "category": "plugin", "frontmatter": {"platforms": ["telegram"]},
+                }]
+
+        monkeypatch.setattr(plugins_mod, "discover_plugins", lambda: None)
+        monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: _FakeManager())
+
+        rows = {s["name"]: s for s in self.client.get("/api/skills").json()}
+        assert rows["kanban-plugin:board-helper"]["category"] == "plugin"
+        # Not provenance "agent": the desktop offers local edit affordances for
+        # agent rows, and a plugin row has no on-disk SKILL.md to edit (404).
+        assert rows["kanban-plugin:board-helper"]["provenance"] == "plugin"
+
+    def test_toggle_plugin_category_membership(self, monkeypatch):
+        # The section switch must cover every row it renders: membership for the
+        # "plugin" category comes from the same discovery source as the listing,
+        # and toggling lands the qualified plugin name in skills.disabled.
+        import hermes_cli.plugins as plugins_mod
+        from hermes_cli.config import load_config
+
+        class _FakeManager:
+            def list_plugin_skill_metadata(self):
+                return [{
+                    "name": "kanban-plugin:board-helper", "description": "d",
+                    "category": "plugin", "frontmatter": {},
+                }]
+
+        monkeypatch.setattr(plugins_mod, "discover_plugins", lambda: None)
+        monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: _FakeManager())
+
+        resp = self.client.put(
+            "/api/skills/toggle-category", json={"category": "plugin", "enabled": False})
+        assert resp.status_code == 200
+        assert "kanban-plugin:board-helper" in resp.json()["names"]
+        assert "kanban-plugin:board-helper" in load_config()["skills"]["disabled"]
+
+    def test_toggle_skill_category_null_includes_literal_general(self, monkeypatch):
+        """Regression: the desktop folds falsy categories AND the literal
+        'general' into one rendered General section, but the toggle matched
+        only `category == None` — a mixed section under-toggled silently, and
+        an all-literal section answered 400 with a dead header. The General
+        bucket is the exact mirror of the client's display rule."""
+        import tools.skills_tool as skills_tool
+
+        monkeypatch.setattr(
+            skills_tool,
+            "_find_all_skills",
+            lambda *, skip_disabled=False, include_gated=False, include_plugin=False: [
+                {"name": "nocat", "description": "a", "category": None},
+                {"name": "fmgeneral", "description": "b", "category": "general"},
+                {"name": "other", "description": "c", "category": "demo"},
+            ],
+        )
+
+        resp = self.client.put("/api/skills/toggle-category", json={"category": None, "enabled": False})
+        assert resp.status_code == 200
+        assert resp.json()["names"] == ["fmgeneral", "nocat"]
+
+    def test_toggle_skill_category_null_alive_on_pure_general_section(self, monkeypatch):
+        """A section rendering only literal-'general' skills must not 400 —
+        the header is alive because the General bucket includes them."""
+        import tools.skills_tool as skills_tool
+
+        monkeypatch.setattr(
+            skills_tool,
+            "_find_all_skills",
+            lambda *, skip_disabled=False, include_gated=False, include_plugin=False: [
+                {"name": "fmgeneral", "description": "b", "category": "general"},
+            ],
+        )
+
+        resp = self.client.put("/api/skills/toggle-category", json={"category": None, "enabled": False})
+        assert resp.status_code == 200
+        assert resp.json()["names"] == ["fmgeneral"]
+
+    def test_toggle_skill_category_null_matches_uncategorized(self, monkeypatch):
+        import tools.skills_tool as skills_tool
+        from hermes_cli.config import load_config
+
+        monkeypatch.setattr(
+            skills_tool,
+            "_find_all_skills",
+            lambda *, skip_disabled=False, include_gated=False, include_plugin=False: [
+                {"name": "categorized", "description": "a", "category": "demo"},
+                {"name": "uncategorized", "description": "b", "category": None},
+            ],
+        )
+
+        resp = self.client.put("/api/skills/toggle-category", json={"category": None, "enabled": False})
+        assert resp.status_code == 200
+        assert resp.json()["names"] == ["uncategorized"]
+        assert load_config()["skills"]["disabled"] == ["uncategorized"]
+
+    def test_toggle_skill_round_trip(self):
+        """PUT /api/skills/toggle persists to skills.disabled (config round-trip)."""
+        resp = self.client.put("/api/skills/toggle", json={"name": "some-skill", "enabled": False})
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "name": "some-skill", "enabled": False}
+
+        from hermes_cli.config import load_config
+        assert "some-skill" in load_config()["skills"]["disabled"]
+
+        resp = self.client.put("/api/skills/toggle", json={"name": "some-skill", "enabled": True})
+        assert resp.status_code == 200
+        assert "some-skill" not in load_config()["skills"]["disabled"]
+
+    def test_toolsets_list_exposes_group(self):
+        listing = {t["name"]: t for t in self.client.get("/api/tools/toolsets").json()}
+        assert listing["web"]["group"] == "web"
+        assert listing["memory"]["group"] == "knowledge"
+
+    def test_toggle_toolset_group_bulk_round_trip(self):
+        """PUT /api/tools/toolsets/bulk flips every toolset in a group via config."""
+        before = {t["name"]: t["enabled"] for t in self.client.get("/api/tools/toolsets").json()}
+        web_names = {n for n in before if n in ("web", "browser", "x_search")}
+
+        resp = self.client.put("/api/tools/toolsets/bulk", json={"group": "web", "enabled": False})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["group"] == "web"
+        assert set(body["names"]) == web_names
+
+        after_disable = {t["name"]: t["enabled"] for t in self.client.get("/api/tools/toolsets").json()}
+        assert all(not after_disable[n] for n in web_names)
+        outside = {n: v for n, v in after_disable.items() if n not in web_names}
+        assert outside == {n: v for n, v in before.items() if n not in web_names}
+
+        resp = self.client.put("/api/tools/toolsets/bulk", json={"group": "web", "enabled": True})
+        assert resp.status_code == 200
+
+        after_enable = {t["name"]: t["enabled"] for t in self.client.get("/api/tools/toolsets").json()}
+        assert all(after_enable[n] for n in web_names)
+
+    def test_toggle_toolset_group_unknown_returns_400(self):
+        resp = self.client.put("/api/tools/toolsets/bulk", json={"group": "nope", "enabled": True})
+        assert resp.status_code == 400
+
+    def test_toggle_toolset_group_preserves_mcp_entries(self):
+        """Bulk group disable keeps MCP-server entries in platform_toolsets.cli."""
+        from hermes_cli.config import load_config, save_config
+
+        config = load_config()
+        cli = config.setdefault("platform_toolsets", {}).setdefault("cli", [])
+        if "web" not in cli:
+            cli.append("web")
+        cli.append("my-mcp-server")
+        save_config(config)
+
+        resp = self.client.put("/api/tools/toolsets/bulk", json={"group": "web", "enabled": False})
+        assert resp.status_code == 200
+
+        saved = load_config()["platform_toolsets"]["cli"]
+        assert "my-mcp-server" in saved
+        assert "web" not in saved
+
+    def test_toggle_toolset_group_writes_only_requested_names(self):
+        """Regression: the desktop renders a CURATED subset of each group, so the
+        bulk write must touch exactly the rows the client shows. A header
+        displaying 3 integrations rows used to silently write 6 — hiding
+        discord/discord_admin/yuanbao with no row left to re-enable them."""
+        from hermes_cli.config import load_config, save_config
+
+        config = load_config()
+        config.setdefault("platform_toolsets", {}).setdefault("discord", []).extend(
+            ["discord", "discord_admin"])
+        config["platform_toolsets"].setdefault("cli", []).append("yuanbao")
+        save_config(config)
+
+        shown = ["cronjob", "homeassistant", "spotify"]
+        resp = self.client.put(
+            "/api/tools/toolsets/bulk",
+            json={"group": "integrations", "enabled": False, "names": shown})
+        assert resp.status_code == 200
+        assert set(resp.json()["names"]) == set(shown)
+
+        after = {t["name"]: t["enabled"] for t in self.client.get("/api/tools/toolsets").json()}
+        assert not any(after[n] for n in shown)
+        assert after["discord"] and after["discord_admin"] and after["yuanbao"]
+
+    def test_toggle_toolset_group_rejects_names_outside_group(self):
+        resp = self.client.put(
+            "/api/tools/toolsets/bulk",
+            json={"group": "web", "enabled": False, "names": ["web", "memory"]})
+        assert resp.status_code == 400
+
+    def test_toggle_toolset_group_config_only_names_persist(self):
+        """A bulk toggle whose names are ALL config-only (stt) must still reach
+        config.yaml: the platform save loop never runs for such a selection,
+        so the config-only branch needs its own persist (regression: the
+        endpoint answered 200 ok while persisting nothing)."""
+        from hermes_cli.config import load_config
+
+        listing = {t["name"]: t for t in self.client.get("/api/tools/toolsets").json()}
+        resp = self.client.put(
+            "/api/tools/toolsets/bulk",
+            json={"group": listing["stt"]["group"], "enabled": False, "names": ["stt"]})
+        assert resp.status_code == 200
+        assert resp.json()["names"] == ["stt"]
+        assert load_config()["stt"]["enabled"] is False
+
     def test_get_toolset_config_returns_provider_matrix(self):
         """GET .../config returns provider rows with structured env_vars."""
         resp = self.client.get("/api/tools/toolsets/tts/config")

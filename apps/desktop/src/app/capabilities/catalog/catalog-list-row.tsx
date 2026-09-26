@@ -1,3 +1,5 @@
+import type { ReactNode } from 'react'
+
 import { Codicon } from '@/components/ui/codicon'
 import { RowButton } from '@/components/ui/row-button'
 import { cn } from '@/lib/utils'
@@ -6,10 +8,15 @@ import { type CatalogEntry, type CatalogKind, catalogLabel } from './catalog-dat
 import { CatalogHeaderMeta, CatalogMetadata } from './catalog-metadata'
 
 interface CatalogListRowProps {
+  /** Rendered after the text, above the row overlay (e.g. a sectioned row's
+   *  on/off switch). Absent keeps the plain row other kinds render. */
+  action?: ReactNode
   entry: CatalogEntry
   kind: CatalogKind
   selected: boolean
   installed: boolean
+  /** Extra left inset for rows nested under a section header. */
+  indent?: boolean
   onOpen: (entry: CatalogEntry) => void
   onCategory: (category: string) => void
   onTag: (tag: string) => void
@@ -17,10 +24,12 @@ interface CatalogListRowProps {
 }
 
 export function CatalogListRow({
+  action,
   entry,
   kind,
   selected,
   installed,
+  indent,
   onOpen,
   onCategory,
   onTag,
@@ -30,6 +39,7 @@ export function CatalogListRow({
     <div
       className={cn(
         'row-hover relative flex w-full min-w-0 items-start gap-3 rounded-md px-2 py-2 text-left',
+        indent && 'pl-5',
         selected && 'bg-(--ui-row-active-background)'
       )}
       data-entry-id={entry.id}
@@ -61,6 +71,7 @@ export function CatalogListRow({
           <CatalogHeaderMeta entry={entry} />
         </span>
       </span>
+      {action != null && <span className="pointer-events-auto relative mt-0.5 shrink-0">{action}</span>}
     </div>
   )
 }

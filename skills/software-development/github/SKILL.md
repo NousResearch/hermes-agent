@@ -1,5 +1,6 @@
 ---
 name: github
+category: github
 description: "GitHub via gh CLI: PRs, issues, reviews, repos, auth."
 version: 2.0.0
 author: Ben Barclay (benbarclay), Hermes Agent

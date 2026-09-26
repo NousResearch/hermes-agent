@@ -201,6 +201,28 @@ class TestGateRedirectsCarryPrefix:
         assert r.headers["location"].startswith("/auth/login")
 
 
+
+def test_login_page_emits_prefix_aware_urls(gated_app_proxied):
+    """The server-rendered page must stay inside the proxy mount, including
+    the password POST whose PKCE cookie is scoped to the same prefix."""
+    from tests.hermes_cli.test_dashboard_auth_password_login import PasswordProvider
+
+    register_provider(PasswordProvider())
+    r = gated_app_proxied.get(
+        "/login",
+        headers={"x-forwarded-prefix": "/hermes"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 200
+    assert 'href="/hermes/auth/login?provider=stub' in r.text
+    assert "fetch(prefix + '/auth/password-login'" in r.text
+    assert 'var prefix = "/hermes";' in r.text
+    assert "url('/hermes/fonts/Collapse-Regular.woff2')" in r.text
+    # Native password login returns an absolute loopback URL. The script may
+    # prefix dashboard-relative paths only, never absolute callback URLs.
+    assert "if (next.charAt(0) === '/')" in r.text
+
+
 # ---------------------------------------------------------------------------
 # /auth/login: the OAuth redirect_uri reflects the proxy prefix
 # ---------------------------------------------------------------------------

@@ -31,10 +31,11 @@ _DEFAULT_HTTP_TIMEOUT = 30.0
 _client_slots: dict[tuple, SingletonSlot] = {}
 _client_slots_lock = threading.Lock()
 
-# honcho.json-derived timeout, keyed PER CONFIG PATH on mtime_ns (-1 = absent) so
-# the per-call staleness check costs one stat(). config.yaml needs no memo:
-# load_config_readonly() is already cached on its files' signatures.
-_honcho_json_timeout_memo: dict[str, tuple[int, float | None]] = {}
+# honcho.json-derived timeout, keyed PER CONFIG PATH on a sha256 of the file bytes
+# (-1 = absent). Not mtime: a rewrite inside one mtime tick (coarse-granularity
+# filesystems) keeps st_mtime_ns and would serve the stale value. config.yaml needs
+# no memo: load_config_readonly() is already cached on its files' signatures.
+_honcho_json_timeout_memo: dict[str, tuple[str | int, float | None]] = {}
 
 
 def _fingerprint_basis(block: dict, key_fn) -> str:
@@ -134,24 +135,24 @@ def _config_yaml_timeout() -> float | None:
 
 
 def _honcho_json_timeout() -> float | None:
-    """Read timeout/requestTimeout from honcho.json (host block wins), memoized on mtime."""
+    """Read timeout/requestTimeout from honcho.json (host block wins), memoized on content."""
     from plugins.memory.honcho.client import _HostLookup, _resolve_optional_float, resolve_config_path
 
     try:
         path = resolve_config_path()
         path_key = str(path)
         try:
-            mtime_ns: int = path.stat().st_mtime_ns
+            digest: str | int = hashlib.sha256(path.read_bytes()).hexdigest()
         except OSError:
-            mtime_ns = -1
+            digest = -1
         memo = _honcho_json_timeout_memo.get(path_key)
-        if memo is not None and memo[0] == mtime_ns:
+        if memo is not None and memo[0] == digest:
             return memo[1]
         timeout = None
-        if mtime_ns != -1:
+        if digest != -1:
             raw, host_block = _ambient_host_block()
             timeout = _resolve_optional_float(*_HostLookup(host_block, raw).vals("timeout", "requestTimeout"))
-        _honcho_json_timeout_memo[path_key] = (mtime_ns, timeout)
+        _honcho_json_timeout_memo[path_key] = (digest, timeout)
         return timeout
     except Exception:
         return None

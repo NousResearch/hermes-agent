@@ -287,6 +287,25 @@ class TestCredentialIdentity:
         assert c1 is not c2
         assert c2.kwargs["timeout"] == 77.0
 
+    def test_timeout_memo_ignores_same_mtime_rewrite(self, tmp_path, monkeypatch):
+        """A rewrite that keeps the SAME mtime (two writes inside one tick on a
+        coarse-mtime filesystem) must still refresh the memoized timeout: the
+        memo keys on content, not mtime."""
+        import os
+
+        cfg_path = tmp_path / "honcho.json"
+        monkeypatch.setattr(client_mod, "resolve_config_path", lambda: cfg_path)
+        monkeypatch.setattr(client_mod, "resolve_active_host", lambda: "hermes")
+
+        cfg_path.write_text(json.dumps({"hosts": {"hermes": {"apiKey": "k", "timeout": 11}}}))
+        st = os.stat(cfg_path)
+        assert client_cache_mod._honcho_json_timeout() == 11.0
+
+        cfg_path.write_text(json.dumps({"hosts": {"hermes": {"apiKey": "k", "timeout": 22}}}))
+        os.utime(cfg_path, ns=(st.st_atime_ns, st.st_mtime_ns))  # same tick as the first write
+        assert os.stat(cfg_path).st_mtime_ns == st.st_mtime_ns
+        assert client_cache_mod._honcho_json_timeout() == 22.0
+
 
 class TestProvenance:
     def test_from_global_config_captures_provenance(self, tmp_path):

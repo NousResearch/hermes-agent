@@ -725,7 +725,14 @@ class TurnRunner:
                 if not ctx._run_still_current():
                     self._drain_progress_queue()
                     return
-                raw = ctx.progress_queue.get_nowait()
+                try:
+                    raw = ctx.progress_queue.get_nowait()
+                except queue.Empty:
+                    # The idle wait MUST stay inside this try body: an exception raised in a
+                    # sibling `except` clause is not caught by the same try, so a cancel landing
+                    # here would skip _drain_progress_on_cancel and lose the queued tool lines.
+                    await asyncio.sleep(0.3)
+                    continue
                 # Drain silently when interrupted: events queued in the window between tool parse
                 # and interrupt processing should not render as bubbles.
                 if self._agent_interrupted():
@@ -749,8 +756,6 @@ class TurnRunner:
                         continue
                 last_edit_ts = time.monotonic()
                 await self._progress_restore_typing(st)
-            except queue.Empty:
-                await asyncio.sleep(0.3)
             except asyncio.CancelledError:
                 await self._drain_progress_on_cancel(st)
                 return

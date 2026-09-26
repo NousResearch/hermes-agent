@@ -374,6 +374,15 @@ that home may claim — anything else lands in the dispatcher's
 `skipped_nonspawnable` bucket instead of spawning, and no longer counts as
 spawnable work for the gateway's wake-up probe.
 
+Projects are home-local for the same reason: the registry a `project=` create
+resolves against is that home's `projects.db`, while the project id travels on
+the shared board — so a card can name a project its creating profile's registry
+has never heard of. The create recovers it from the board instead: the filer's
+own project worktree first, then any other canonical `.worktrees/<task-id>`
+card for that project. When no card carries the id, the card is still created —
+without the link rather than failing the create — and the dropped request is
+reported on the result (`project_link`) and on the card's `created` event.
+
 ### Idempotent create (for automation / webhooks)
 
 ```bash

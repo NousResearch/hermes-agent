@@ -122,3 +122,32 @@ def test_cmd_status_memory_tool_gate_enabled(capsys, monkeypatch):
     assert re.search(r"Memory tool:\s+enabled", captured)
     assert re.search(r"Memory injection:\s+enabled", captured)
     assert re.search(r"User profile:\s+disabled", captured)
+
+
+def test_rerunning_setup_keeps_holographic_settings(monkeypatch):
+    """Re-running the wizard and accepting every offered value must leave the provider's stored
+    settings as they were. Real discovery, real holographic provider, real config.yaml."""
+    import io
+    import sys
+
+    import hermes_yaml as _yaml
+    from hermes_constants import get_hermes_home
+    from plugins.memory.holographic import _load_plugin_config
+
+    stored = {"db_path": str(get_hermes_home() / "facts" / "store.db"),
+              "auto_extract": "true", "default_trust": "0.7"}
+    (get_hermes_home() / "config.yaml").write_text(_yaml.safe_dump(
+        {"memory": {"provider": "holographic"}, "plugins": {"hermes-memory-store": stored}}), encoding="utf-8")
+    names = [name for name, _, _ in memory_setup._get_available_providers()]
+
+    def press_enter(title, items, default=0, **_):
+        return names.index("holographic") if title == "Memory provider setup" else default
+
+    monkeypatch.setattr(memory_setup, "_curses_select", press_enter)
+    monkeypatch.setattr(memory_setup, "_install_dependencies", lambda name: None)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("\n" * 20))
+
+    memory_setup.cmd_setup(SimpleNamespace())
+
+    after = _load_plugin_config()
+    assert {key: after.get(key) for key in stored} == stored

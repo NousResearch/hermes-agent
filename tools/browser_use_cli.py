@@ -221,10 +221,39 @@ def is_browser_use_cli_mode() -> bool:
     unset ``browser.backend`` ("") enables it whenever the PM-managed CLI is installed;
     ``browser.backend: off`` keeps the built-in browser_* tools. Camofox always falls back to the built-in
     tools (Firefox, custom HTTP API, no CDP surface for the harness)."""
+    return browser_use_off_reason() is None
+
+
+def browser_use_off_reason() -> Optional[str]:
+    """Why Browser Use CLI mode is off, or ``None`` when it is active — the ``False`` branches of
+    :func:`is_browser_use_cli_mode` as reason codes: ``camofox`` (always falls back to the built-in
+    tools), ``disabled`` (``browser.backend: off``), ``other_backend`` (a different explicit backend),
+    or ``cli_missing`` (default mode, PM-managed CLI not installed). ``hermes doctor`` keys its row
+    detail on this, so the install remedy is named only when the CLI is actually the problem."""
     if _camofox_active():
-        return False
+        return "camofox"
     backend = get_browser_backend()
-    return backend == _BACKEND_KEY if backend else (is_legacy_browser_use_cloud_config(_read_browser_cfg()) or _find_cli() is not None)
+    if backend:
+        return None if backend == _BACKEND_KEY else ("disabled" if backend == BACKEND_DISABLED else "other_backend")
+    if is_legacy_browser_use_cloud_config(_read_browser_cfg()) or _find_cli() is not None:
+        return None
+    return "cli_missing"
+
+
+def browser_use_unavailable_detail() -> Optional[str]:
+    """``hermes doctor`` row detail for the unavailable ``browser-use`` toolset when the mode is
+    off for a reason other than a missing CLI — ``disabled`` (``browser.backend: off``), Camofox,
+    or another explicit backend — or ``None`` when the standard missing-CLI setup hint applies.
+    Keyed on :func:`browser_use_off_reason`, so an intentional opt-out never reads as a broken
+    install that needs a CLI download."""
+    reason = browser_use_off_reason()
+    if reason == "camofox":
+        return "(browser-use inactive — Camofox mode is active; built-in browser tools in use)"
+    if reason == "disabled":
+        return "(browser-use disabled — browser.backend: off; built-in browser tools in use)"
+    if reason == "other_backend":
+        return f"(browser-use inactive — browser.backend: {get_browser_backend()})"
+    return None
 
 
 def default_downgrade_notice() -> Optional[str]:

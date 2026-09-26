@@ -172,18 +172,45 @@ def _enabled_cli_toolsets_for_doctor() -> set[str] | None:
 # Name the real fix instead (#9516).
 _TOOLSET_SETUP_HINTS: dict[str, str] = {
     "image_gen": "(image generation unavailable — check the provider selection and its key or SDK with 'hermes tools')",
+    "browser-use": "(browser-use CLI missing — install with 'hermes tools post-setup browser_use_cli', then restart the gateway)",
 }
 
 
+# Setup-hinted toolsets whose remedy is never an API key (PM-managed CLI installs: the fix is
+# 'hermes tools post-setup <hook>'). They keep their row hint, but must stay out of the generic
+# "configure missing API keys" summary — that advice cannot resolve them.
+_NON_KEY_SETUP_TOOLSETS = frozenset({"browser-use"})
+
+
 def _setup_gated(item: dict) -> bool:
-    return bool(item.get("missing_vars") or item.get("env_vars") or item.get("name") in _TOOLSET_SETUP_HINTS)
+    if item.get("missing_vars") or item.get("env_vars"):
+        return True
+    name = item.get("name")
+    return name in _TOOLSET_SETUP_HINTS and name not in _NON_KEY_SETUP_TOOLSETS
 
 
 def _missing_api_key_toolsets_for_summary(unavailable: list[dict]) -> list[dict]:
-    """Filter unavailable setup-gated toolsets (missing key OR setup hint) to those enabled for the CLI."""
+    """Filter unavailable setup-gated toolsets (missing key OR setup hint — except hints that
+    can never be a key) to those enabled for the CLI."""
     api_key_unavailable = [item for item in unavailable if _setup_gated(item)]
     enabled_toolsets = _enabled_cli_toolsets_for_doctor()
     return api_key_unavailable if enabled_toolsets is None else [i for i in api_key_unavailable if str(i.get("name") or "") in enabled_toolsets]
+
+
+def _unavailable_toolset_detail(item: dict) -> str:
+    """Detail for an unavailable-toolset row. A missing key names itself; ``browser-use`` is
+    keyed on *why* its mode is off, so the CLI install remedy is named only when the CLI is
+    actually the problem — an intentional opt-out (``browser.backend: off``) or Camofox names
+    itself instead (#122412 review). Everything else uses its setup hint or the generic text."""
+    env_vars = item.get("missing_vars") or item.get("env_vars") or []
+    if env_vars:
+        return f"(missing {', '.join(env_vars)})"
+    name = str(item.get("name") or "")
+    if name == "browser-use":
+        from tools.browser_use_cli import browser_use_unavailable_detail
+        if detail := browser_use_unavailable_detail():
+            return detail
+    return _TOOLSET_SETUP_HINTS.get(name, "(system dependency not met)")
 
 
 @doctor_check()
@@ -516,9 +543,7 @@ def _check_tool_availability(should_fix: bool, f: Finding) -> None:
     for status, label, detail in web_rows:
         (check_ok if status == "ok" else check_warn)(label, detail)
     for item in unavailable:
-        env_vars = item.get("missing_vars") or item.get("env_vars") or []
-        detail = f"(missing {', '.join(env_vars)})" if env_vars else _TOOLSET_SETUP_HINTS.get(item["name"], "(system dependency not met)")
-        check_warn(item["name"], detail)
+        check_warn(item["name"], _unavailable_toolset_detail(item))
     # Only toolsets enabled for the CLI count toward the summary; default-off or
     # disabled toolsets may warn above but must not pollute it.
     api_disabled = _missing_api_key_toolsets_for_summary(unavailable)

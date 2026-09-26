@@ -45,9 +45,13 @@ def test_compaction_does_not_renew_model_switch_note(case):
     agent, messages, db = case
     response = MagicMock()
     response.choices[0].message.content = "## Summary\nFixture work is ongoing."
-    with patch("agent.context_compressor.call_llm", return_value=response) as llm:
+    with patch("agent.context_compressor.call_llm", return_value=response) as llm, patch.object(
+        agent, "commit_memory_session", wraps=agent.commit_memory_session
+    ) as handoff:
         result, _ = compress_context(agent, messages, agent._cached_system_prompt,
                                      approx_tokens=200000, force=True)
+    assert handoff.called
+    assert NOTE not in str(handoff.call_args), "boundary memory handoff must receive clean user text"
     assert llm.called
     boundary = next(i for i, m in enumerate(result) if _SUMMARY_END_MARKER in str(m.get("content")))
     replay = str(result[boundary]["content"]).split(_SUMMARY_END_MARKER)[-1] + str(result[boundary+1:])

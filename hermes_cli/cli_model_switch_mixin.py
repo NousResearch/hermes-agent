@@ -513,19 +513,46 @@ class CLIModelSwitchMixin:
         else:
             self._console_print(f"[dim]{_escape(msg)}[/dim]")
 
-    def _open_model_picker(self, providers: list, current_model: str, current_provider: str, user_provs=None, custom_provs=None) -> None:
-        """Open prompt_toolkit-native /model picker modal."""
-        self._capture_modal_input_snapshot()
-        self._model_picker_state = {
-            "stage": "provider",
-            "providers": providers,
-            "selected": next((i for i, p in enumerate(providers) if p.get("is_current")), 0),
-            "current_model": current_model,
-            "current_provider": current_provider,
-            "user_provs": user_provs,
-            "custom_provs": custom_provs,
-            "filter": ""}
-        self._invalidate(min_interval=0.0)
+    def _open_model_picker(
+        self,
+        providers: list,
+        current_model: str,
+        current_provider: str,
+        user_provs=None,
+        custom_provs=None,
+        on_selected=None,
+    ) -> bool:
+        """Open the prompt_toolkit-native model picker on the app loop.
+
+        With ``on_selected``, a completed pick is dispatched to that callback instead of
+        switching the primary model or writing ``model.*`` config (plugin-owned slot).
+        Plugin callers may arrive from a worker thread, so setup is marshalled onto the
+        prompt_toolkit loop when needed.
+        """
+
+        def _setup_picker() -> None:
+            self._capture_modal_input_snapshot()
+            self._model_picker_state = {
+                "stage": "provider",
+                "providers": providers,
+                "selected": next((i for i, p in enumerate(providers) if p.get("is_current")), 0),
+                "current_model": current_model,
+                "current_provider": current_provider,
+                "user_provs": user_provs,
+                "custom_provs": custom_provs,
+                "on_selected": on_selected,
+                "filter": ""}
+            self._invalidate(min_interval=0.0)
+
+        app = getattr(self, "_app", None)
+        if app is not None and threading.current_thread() is not threading.main_thread():
+            try:
+                app.loop.call_soon_threadsafe(_setup_picker)
+            except Exception:
+                return False
+        else:
+            _setup_picker()
+        return True
 
     def _confirm_expensive_model_switch(self, result) -> bool:
         """Ask for explicit confirmation before applying costly model switches."""
@@ -559,6 +586,24 @@ class CLIModelSwitchMixin:
                 return
             self._apply_model_switch_result(
                 result, persist_global, custom_providers=custom_providers, reasoning_effort=reasoning_effort)
+        except Exception as exc:
+            _cprint(f"  ✗ Model selection failed: {exc}")
+
+    def _confirm_and_dispatch_model_selection(self, result, callback) -> None:
+        """Confirm a plugin-owned selection and dispatch it without switching the primary model.
+
+        Mirrors ``_confirm_and_apply_model_switch_result`` but hands the
+        ``ModelSwitchResult`` to the plugin callback (which may return a message to print)
+        instead of applying it to ``model.*`` configuration.
+        """
+        from cli import _cprint
+        try:
+            if result.success and not self._confirm_expensive_model_switch(result):
+                _cprint("  Model selection cancelled.")
+                return
+            message = callback(result)
+            if message:
+                _cprint(str(message))
         except Exception as exc:
             _cprint(f"  ✗ Model selection failed: {exc}")
 
@@ -758,7 +803,10 @@ class CLIModelSwitchMixin:
                     explicit_provider=provider_data.get("slug"),
                     user_providers=state.get("user_provs"),
                     custom_providers=state.get("custom_provs"))
-                if result.success and _picker_offers_reasoning(provider_data, result.new_model):
+                # Plugin-owned slots never reach _apply_reasoning_after_switch, so an
+                # effort pick there would be silently dropped — skip the stage for them.
+                if (result.success and state.get("on_selected") is None
+                        and _picker_offers_reasoning(provider_data, result.new_model)):
                     # Third step: effort for the picked model (skipped for routes the catalog
                     # marks reasoning-free). Rows come from the canonical level set.
                     state.update(stage="reasoning", switch_result=result, selected=0, _scroll_offset=0)
@@ -784,7 +832,13 @@ class CLIModelSwitchMixin:
         state = self._model_picker_state or {}
         # Capture before close — picker state is cleared on close.
         _picker_custom_provs = state.get("custom_provs")
+        on_selected = state.get("on_selected")
         self._close_model_picker()
+        if on_selected is not None:
+            # Plugin-owned slot: hand the result to the plugin, never the primary model.
+            _run_confirm_and_apply(self, self._confirm_and_dispatch_model_selection,
+                                   result, on_selected)
+            return
         # The effort is appended only when picked: stubs/tests pin the historical arity.
         extra = (reasoning_effort,) if reasoning_effort else ()
         _run_confirm_and_apply(

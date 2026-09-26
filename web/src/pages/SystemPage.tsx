@@ -158,10 +158,12 @@ function ActionLogViewer({
             <Terminal className="h-4 w-4 text-muted-foreground" />
             <span className="font-mono text-sm">{action}</span>
             {running ? (
-              <Badge tone="warning">running</Badge>
+              <Badge tone="warning">{t.system.actionRunning}</Badge>
             ) : (
               <Badge tone={exitCode === 0 ? "success" : "destructive"}>
-                {exitCode === 0 ? "done" : `exit ${exitCode}`}
+                {exitCode === 0
+                  ? t.system.actionDone
+                  : t.system.actionExit.replace("{code}", String(exitCode))}
               </Badge>
             )}
           </div>
@@ -170,7 +172,7 @@ function ActionLogViewer({
           </Button>
         </div>
         <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words bg-background/50 border border-border p-3 text-xs font-mono text-muted-foreground">
-          {lines.length ? lines.join("\n") : "Starting…"}
+          {lines.length ? lines.join("\n") : t.system.logStarting}
         </pre>
       </CardContent>
     </Card>
@@ -185,13 +187,6 @@ const HOOK_EVENTS_FALLBACK = [
   "on_session_start",
   "on_session_end",
 ];
-
-const MEMORY_STATUS_LABEL: Record<MemoryProviderInfo["status"], string> = {
-  ready: "ready",
-  needs_config: "needs setup",
-  unavailable: "unavailable",
-  missing: "missing",
-};
 
 const MEMORY_STATUS_TONE: Record<
   MemoryProviderInfo["status"],
@@ -757,6 +752,7 @@ export default function SystemPage() {
         title={t.system.sharedRestartTitle}
         description={sharedGatewayRestartDescription(sharedGateway ?? [])}
         confirmLabel={t.system.sharedRestartConfirm}
+        cancelLabel={t.common.cancel}
       />
 
       <ConfirmDialog
@@ -775,6 +771,7 @@ export default function SystemPage() {
               )
         }
         confirmLabel={t.system.updateConfirmLabel}
+        cancelLabel={t.common.cancel}
       />
 
       <DeleteConfirmDialog
@@ -1241,7 +1238,13 @@ export default function SystemPage() {
               </span>
               {activeMemoryProvider && (
                 <Badge tone={MEMORY_STATUS_TONE[activeMemoryProvider.status]}>
-                  {MEMORY_STATUS_LABEL[activeMemoryProvider.status]}
+                  {activeMemoryProvider.status === "ready"
+                    ? t.system.memoryStatusReady
+                    : activeMemoryProvider.status === "needs_config"
+                      ? t.system.memoryStatusNeedsConfig
+                      : activeMemoryProvider.status === "unavailable"
+                        ? t.system.memoryStatusUnavailable
+                        : t.system.memoryStatusMissing}
                 </Badge>
               )}
               <Link to="/plugins" className="underline">
@@ -1591,7 +1594,7 @@ export default function SystemPage() {
                     <Button
                       ghost
                       size="icon"
-                      aria-label={`Copy ${label} link`}
+                      aria-label={t.system.copyLinkAria.replace("{name}", label)}
                       onClick={() => void copyToClipboard(url, label)}
                     >
                       {copiedLabel === label ? <Check /> : <Copy />}

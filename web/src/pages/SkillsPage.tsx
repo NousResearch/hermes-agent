@@ -820,7 +820,7 @@ function SkillRow({
         size="icon"
         className="shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 hover:text-foreground"
         title={t.skills?.editSkillMd ?? "Edit SKILL.md"}
-        aria-label={`Edit ${skill.name}`}
+        aria-label={t.skills.editAria.replace("{name}", skill.name)}
         onClick={onEdit}
       >
         <Pencil />
@@ -1319,7 +1319,7 @@ function HubResultCard({
           type="button"
           className="flex-1 min-w-0 text-start"
           onClick={onOpen}
-          aria-label={`Open ${result.name}`}
+          aria-label={t.skills.openAria.replace("{name}", result.name)}
         >
           <div className="flex flex-wrap items-center gap-2 mb-0.5">
             <span className="font-mono-ui text-sm hover:underline">

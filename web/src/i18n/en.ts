@@ -594,6 +594,8 @@ export const en: Translations = {
     hubSearchPlaceholder:
       "Search the skill hub (GitHub, official, community)…",
     connectingHubs: "Connecting to skill hubs…",
+    editAria: "Edit {name}",
+    openAria: "Open {name}",
     hubDirLabel: "Local file or directory",
     hubBrowseEmpty:
       "Search the hub above to browse installable skills from the connected sources.",
@@ -1353,6 +1355,15 @@ export const en: Translations = {
       "Uploads system info + logs to a public paste service and returns links to send the Hermes team. Pastes auto-delete after 6 hours.",
     shareUploadFailures: "Some logs failed to upload: {errors}",
     noHooksConfigured: "No shell hooks configured.",
+    actionRunning: "running",
+    actionDone: "done",
+    actionExit: "exit {code}",
+    logStarting: "Starting…",
+    memoryStatusReady: "ready",
+    memoryStatusNeedsConfig: "needs setup",
+    memoryStatusUnavailable: "unavailable",
+    memoryStatusMissing: "missing",
+    copyLinkAria: "Copy {name} link",
   },
 
   mcp: {

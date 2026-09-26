@@ -611,6 +611,8 @@ export interface Translations {
     hubDirPlaceholder: string;
     hubSearchPlaceholder: string;
     connectingHubs: string;
+    editAria: string;
+    openAria: string;
     hubDirLabel: string;
     hubBrowseEmpty: string;
     hubNoMatches: string;
@@ -1125,6 +1127,15 @@ export interface Translations {
     shareDebugDescription: string;
     shareUploadFailures: string;
     noHooksConfigured: string;
+    actionRunning: string;
+    actionDone: string;
+    actionExit: string;
+    logStarting: string;
+    memoryStatusReady: string;
+    memoryStatusNeedsConfig: string;
+    memoryStatusUnavailable: string;
+    memoryStatusMissing: string;
+    copyLinkAria: string;
     credProviderLabel: string;
     credLabelLabel: string;
     fullBackup: string;

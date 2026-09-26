@@ -4740,8 +4740,8 @@ export const zh = defineLocale({
           body: provider => `${provider} 返回了服务器错误。请稍后重试或切换服务商。`
         },
         timeout: {
-          title: '回复超时',
-          body: provider => `${provider} 未及时响应。请重试以重新发送。`
+          title: '无法连接到 AI 服务',
+          body: provider => `无法连接到 ${provider}，或其未及时响应。请检查网络连接后重试。`
         },
         ssl_cert_verification: {
           title: '安全连接失败',

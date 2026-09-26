@@ -3780,8 +3780,9 @@ export const ja = defineLocale({
             `${provider} がサーバーエラーを返しました。しばらくしてから再試行するか、プロバイダーを切り替えてください。`
         },
         timeout: {
-          title: '応答がタイムアウトしました',
-          body: provider => `${provider} から時間内に応答がありませんでした。再試行してもう一度送信してください。`
+          title: 'AI サービスに接続できません',
+          body: provider =>
+            `${provider} に接続できないか、時間内に応答がありませんでした。インターネット接続を確認してから再試行してください。`
         },
         ssl_cert_verification: {
           title: '安全な接続に失敗しました',

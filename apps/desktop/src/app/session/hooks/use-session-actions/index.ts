@@ -67,6 +67,7 @@ import {
   $activeSessionStoredIdRotation,
   $connection,
   $currentCwd,
+  $currentCwdExplicit,
   $currentFastMode,
   $currentModel,
   $currentProvider,
@@ -86,6 +87,7 @@ import {
   setBusy,
   setCurrentBranch,
   setCurrentCwd,
+  setCurrentCwdExplicit,
   setCurrentCwdTransient,
   setCurrentServiceTier,
   setCurrentUsage,
@@ -358,6 +360,9 @@ async function desktopSessionCreateParams(
     cols: 96,
     source: 'desktop',
     ...(cwd && { cwd }),
+    // #52589: explicit provenance for the shipped cwd — an inherited app-global
+    // workspace must not override the target profile's configured terminal.cwd.
+    ...(cwd && { cwd_explicit: $currentCwdExplicit.get() }),
     ...(profile ? { profile: capturedRoute?.targetProfile || profile } : {}),
     ...(includeComposerSelection
       ? {
@@ -596,6 +601,10 @@ export function useSessionActions({
       setCurrentServiceTier('')
       setYoloActive(false)
       setNewChatWorkspaceTarget(hasWorkspaceTarget ? workspaceTarget : undefined)
+      // #52589 provenance: only a deliberate string workspace target is an explicit
+      // cwd choice. A plain new chat (or a detached `null`) is not — its inherited
+      // launch/project workspace must yield to a named profile's configured cwd.
+      setCurrentCwdExplicit(typeof workspaceTarget === 'string')
 
       if (!hasWorkspaceTarget) {
         // In a project → the repo's default-branch checkout; not in a project →
@@ -788,13 +797,16 @@ export function useSessionActions({
         setNewChatWorkspaceTarget(undefined)
         setActiveSessionId(created.session_id)
         setSelectedStoredSessionId(stored)
-        setSessionStartedAt(Date.now())
+        const runtimeStartedAt = Date.now()
+        setSessionStartedAt(runtimeStartedAt)
         const yoloArmed = $yoloActive.get()
         const runtimeInfo = applyRuntimeInfo(created.info)
 
-        if (runtimeInfo) {
-          updateSessionState(created.session_id, state => ({ ...state, ...runtimeInfo }), stored)
-        }
+        updateSessionState(
+          created.session_id,
+          state => ({ ...state, ...(runtimeInfo ?? {}), runtimeStartedAt }),
+          stored
+        )
 
         // User may have armed YOLO on the new-chat draft before the runtime
         // session existed — apply it to the freshly created session.
@@ -911,6 +923,10 @@ export function useSessionActions({
 
         const cwd =
           options?.cwd === null ? '' : typeof options?.cwd === 'string' ? options.cwd.trim() : resolveNewSessionCwd()
+
+        // #52589 provenance for the tile path: an explicitly-passed cwd is a
+        // deliberate workspace pick; a resolved default is inherited.
+        setCurrentCwdExplicit(typeof options?.cwd === 'string')
 
         // Bot-workspace tabs target an agent profile without switching the
         // window's ambient composer. Do not leak that unrelated session's
@@ -1349,7 +1365,7 @@ export function useSessionActions({
           // un-owned for the life of the session (#71254).
           setWorkspaceCwdOwner(storedSessionId)
           setCurrentBranch(cachedViewState.branch)
-          setSessionStartedAt(Date.now())
+          setSessionStartedAt(cachedViewState.runtimeStartedAt)
 
           try {
             const replay = pendingSessionReplay(cachedRuntimeId)
@@ -1818,7 +1834,8 @@ export function useSessionActions({
       clearNotifications()
       setSelectedStoredSessionId(storedSessionId)
       selectedStoredSessionIdRef.current = storedSessionId
-      setSessionStartedAt(Date.now())
+      const runtimeStartedAt = Date.now()
+      setSessionStartedAt(runtimeStartedAt)
 
       const stored =
         $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
@@ -2159,6 +2176,7 @@ export function useSessionActions({
           state => ({
             // The deferred build reports the session's own effort later (#79807).
             ...markReasoningEffortPending({ ...state, ...(runtimeInfo ?? {}) }),
+            runtimeStartedAt,
             messages: visibleMessagesForView,
             transcriptProvenance,
             busy: resumedRunning,
@@ -2526,6 +2544,7 @@ export function useSessionActions({
 
         const effectiveBranchMessages = responseBranchMessages.length ? responseBranchMessages : branchMessages
         const routedSessionId = branched.stored_session_id ?? branched.session_id
+        const runtimeStartedAt = Date.now()
         const preview = effectiveBranchMessages.map(({ content }) => content).find(Boolean) ?? null
 
         // Record the exact owner and pin its socket THE MOMENT the create
@@ -2573,6 +2592,7 @@ export function useSessionActions({
           branched.session_id,
           state => ({
             ...state,
+            runtimeStartedAt,
             messages: effectiveBranchMessages.map(({ source }) => source),
             busy: false,
             awaitingResponse: false

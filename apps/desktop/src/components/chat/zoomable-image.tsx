@@ -23,7 +23,15 @@ export interface ImageActionCopy {
   savingImage: string
 }
 
-export function ZoomableImage({ className, containerClassName, src, zoomSrc, alt, slot, ...props }: ZoomableImageProps) {
+export function ZoomableImage({
+  className,
+  containerClassName,
+  src,
+  zoomSrc,
+  alt,
+  slot,
+  ...props
+}: ZoomableImageProps) {
   const { t } = useI18n()
   const copy = t.desktop
   // The lightbox and Save action prefer the full-resolution source; the inline
@@ -89,6 +97,7 @@ export function ImageLightbox({
       <DialogContent
         bodyClassName="block overflow-visible p-0"
         className="w-auto max-h-[calc(100vh-12rem)] max-w-[calc(100vw-12rem)] border-0 bg-transparent shadow-none"
+        overlayClassName="bg-black/60"
         showCloseButton={false}
       >
         <div className="group/lightbox relative inline-block">

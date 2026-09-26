@@ -207,10 +207,11 @@ plugin; choose a new exact commit explicitly with
 profile-local install metadata contains no config values, environment values,
 secrets, or capability grants.
 
-The same pin is available in Hermes Desktop: **Skills → Plugins → Install from
-Git** has a *Pin to commit* field that takes the full 40-character SHA, and the
-plugins list shows a `pinned @ <sha8>` badge on every pinned install so a team
-can confirm everyone is running the same commit. `hermes plugins list` prints
+The same agent-plugin pin is available in Hermes Desktop: **Capabilities →
+Plugins → Install from Git** has a *Pin to commit* field that takes the full
+40-character SHA, and **Installed** shows a `pinned @ <sha8>` badge on pinned
+agent plugins. This does not guarantee a pinned standalone desktop-plugin
+install. `hermes plugins list` prints
 the pin in its Source column (`git pinned@<sha8>`). Pins work for private
 repositories too, through the same stored credentials described below.
 
@@ -456,6 +457,25 @@ Ordinary Hermes application updates preserve user plugin directories, including
 wrapper files and external sidecar links. Explicit plugin updates or removals
 can change those files. See [Package management](../../reference/package-management.md)
 and the [plugin authoring guide](../../developer-guide/plugins/index.md#lazy-install-optional-python-dependencies).
+
+### Installed and Browse in Desktop
+
+Open **Capabilities → Plugins**. **Installed** reads the app's desktop-plugin
+registry and the selected profile's actual agent-plugin state, combining both
+halves in one row where appropriate. It is not a list of catalog entries
+assumed to be installed. **Browse** is a native catalog view, not an embedded
+website; it uses the same **Installed / Browse** tabs as Skills, with search
+at the top and the tab switch and actions on one row.
+
+Desktop and the public [Plugin Catalog](/plugins) consume the same CDN
+snapshot, [`/docs/api/plugins.json`](https://hermes-agent.nousresearch.com/docs/api/plugins.json).
+The public alias serves the same data as Desktop's fetch URL,
+`https://nousresearch.github.io/hermes-agent/docs/api/plugins.json`. The docs
+build generates it from `plugin-catalog/*.yaml` and cached star counts. The
+same publish also supplies the removed-entry list used by the installer.
+Browsing does not query GitHub live or fetch source repos;
+the installer retrieves code only as part of the separate install flow.
+
 ### One-click install links (Desktop)
 
 Hermes Desktop registers the `hermes://` URL scheme, so a website, README, or
@@ -466,18 +486,22 @@ hermes://plugin/install?catalog=NAME               # catalog entry, installs the
 hermes://plugin/install?repo=owner/repo            # any git repo
 hermes://plugin/install?repo=owner/repo&enable=1   # enable the agent plugin after install
 hermes://plugin/install?repo=owner/repo&force=1    # replace an existing install
-hermes://plugin/install?catalog=<name>             # reviewed catalog entry at its pinned commit
 ```
 
 The `catalog=<name>` form is what the **Open in Hermes Desktop** button on
 every [Plugin Catalog](./plugin-catalog.md) card uses. Desktop resolves the
-name against the live catalog (the same feed the **Capabilities → Plugins**
-picker shows) and opens the same **reviewed catalog entry** dialog an in-app
+name against the live catalog (the same feed **Capabilities → Plugins → Browse**
+shows) and opens the same **reviewed catalog entry** dialog an in-app
 pick does: the agent half installs at the catalog's pinned commit, never the
 branch tip. The link carries no repo URL, and a name that is not in the
 catalog shows an error toast and nothing else — it is never reinterpreted as a
 git path, so a link cannot smuggle an unreviewed repo behind a
 familiar-looking name.
+
+Use an updated Desktop build for catalog links and the Skills Hub's
+`hermes://skill/install?identifier=...` route. If the app is missing or too old,
+use the card's copyable `hermes plugins install <catalog-name>` command to
+retain catalog resolution.
 
 For a `repo=` link, clicking one opens Hermes and shows a **confirmation dialog** — the repo id,
 a "Before you install" note, and GitHub browse + clone links — then

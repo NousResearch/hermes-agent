@@ -402,6 +402,12 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
             "transport": current_transport() or _stdio_transport,
             "auth_user_id": _transport_auth_user_id(current_transport())}
         _register_session_cwd(_sessions[sid])
+    if session_model_override:
+        # A composer pick rides in as this override and beats model.default for the whole session;
+        # name both so agent.log alone explains which model a new chat runs, and why (#107410).
+        logger.info("session.create %s: model=%s provider=%s source=client override (profile default: %s)",
+                    key, session_model_override["model"], session_model_override.get("provider") or "-",
+                    _session_default_model(_sessions[sid]))
     # No DB row here (drafts left "Untitled" litter): created on the first prompt — except seeded sessions.
     # NOTE: we intentionally do NOT persist a DB row here. Every TUI/desktop launch (and every "New agent" /
     # draft) opens a session here just to paint the composer, so eagerly creating a row left an "Untitled"
@@ -2201,6 +2207,15 @@ def _correction_method(name: str, verb: str, accepted_status: str, supported, un
         # Redirect during the turn-build window (running=True, agent None): queue for the next turn instead of
         # a misleading 4010 the client swallows into a lost follow-up.
         if verb == "redirect" and agent is None and session.get("running"):
+            _enqueue_prompt(session, text, current_transport() or _stdio_transport)
+            session["last_active"] = time.time()
+            return _ok(rid, {"status": "queued", "text": text})
+        # Compression in flight: queue instead of steering/redirecting. A correction that
+        # reaches the provider mid-compression aborts the compression (explicit_interrupt)
+        # — the follow-up kills the turn that would answer it (#61042). Queued here, it
+        # drains when compression finishes (the Discord-gateway contract; mirrors the
+        # interrupt→queue demotion in gateway/run_busy.py for the channel busy path).
+        if _session_compression_in_flight(session):
             _enqueue_prompt(session, text, current_transport() or _stdio_transport)
             session["last_active"] = time.time()
             return _ok(rid, {"status": "queued", "text": text})

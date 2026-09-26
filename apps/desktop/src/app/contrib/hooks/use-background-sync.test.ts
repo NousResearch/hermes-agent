@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { sessionMessagesSignature } from '@/lib/session-signatures'
-import { $changeEventsAvailable, notifySessionsChanged, resetLiveSync } from '@/store/live-sync'
+import { $changeEventsAvailable, notifyProjectsChanged, notifySessionsChanged, resetLiveSync } from '@/store/live-sync'
 import {
   $activeSessionId,
   $selectedStoredSessionId,
@@ -45,11 +45,12 @@ vi.mock('@/hermes', async importOriginal => ({
 
 vi.mock('@/store/projects', async importOriginal => ({
   ...(await importOriginal()),
-  refreshProjectTree: vi.fn(async () => undefined)
+  refreshProjectTree: vi.fn(async () => undefined),
+  refreshProjects: vi.fn(async () => undefined)
 }))
 
 const { getLatestSessionMessages, getOlderSessionMessages } = await import('@/hermes')
-const { refreshProjectTree } = await import('@/store/projects')
+const { refreshProjectTree, refreshProjects } = await import('@/store/projects')
 
 const ACTIVE_RUNTIME_ID = 'runtime-active'
 const ACTIVE_STORED_ID = 'stored-active'
@@ -661,6 +662,17 @@ describe('active transcript refresh', () => {
 
     act(() => notifySessionsChanged())
 
+    await waitFor(() => expect(refreshProjectTree).toHaveBeenCalledTimes(1))
+  })
+
+  it('refreshes the project list + tree on a projects.changed tick — CLI-created projects surface without a manual refresh (#56757)', async () => {
+    $changeEventsAvailable.set(true)
+
+    renderSync(vi.fn(async () => undefined))
+
+    act(() => notifyProjectsChanged())
+
+    await waitFor(() => expect(refreshProjects).toHaveBeenCalledTimes(1))
     await waitFor(() => expect(refreshProjectTree).toHaveBeenCalledTimes(1))
   })
 })

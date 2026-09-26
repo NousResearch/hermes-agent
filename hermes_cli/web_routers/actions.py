@@ -225,7 +225,8 @@ async def update_hermes():
 
     if _dashboard_local_update_managed_externally():
         message = _MANAGED_EXTERNALLY_MESSAGE + " The built-in local updater is disabled here."
-        return _update_refused("dashboard_update_managed_externally", message, "managed outside dashboard")
+        # No runnable command exists here: the outer launcher/image owns updates.
+        return _update_refused("dashboard_update_managed_externally", message, "")
 
     # Shared admission gate: marker-first, then the docker/nix/apt heuristics —
     # one decision with the CLI paths.
@@ -284,7 +285,7 @@ async def check_hermes_update(force: bool = False, profile: Optional[str] = None
             "current_version": get_version_info().derived_version,
             "behind": None,
             "update_available": False, "can_apply": False,
-            "update_command": "managed outside dashboard", "message": _MANAGED_EXTERNALLY_MESSAGE,
+            "update_command": "", "message": _MANAGED_EXTERNALLY_MESSAGE,
         }
 
     install_method = detect_install_method(_server_path("PROJECT_ROOT"))

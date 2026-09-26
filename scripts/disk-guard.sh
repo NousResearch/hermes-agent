@@ -74,7 +74,23 @@ dead_task() { # $1 = task id -> 0 if dead/unknown
 # alone is also insufficient — a process that cd'd into the dir has a bare
 # argv ("sleep 900") that never mentions the path.
 path_in_use() { # $1 = abs path
-  ps -Ao args= 2>/dev/null | grep -Fq -- "$1" && return 0
+  # SELF-MATCH BUG (found 2026-09-25): this used
+  #   ps -Ao args= | grep -Fq -- "$1"
+  # and `grep`'s OWN argv contains "$1", so ps listed it and the grep matched
+  # itself. path_in_use therefore returned "in use" for EVERY path ever passed:
+  # every reclaim class that consults it deleted nothing, and top_reclaimable
+  # filtered out every candidate — which is exactly the "No single reclaimable
+  # path over 100MB" line the operator kept reading on a host that was filling
+  # up. Passing the needle through the ENVIRONMENT keeps it out of argv, so the
+  # scan can no longer see itself.
+  # (Exported, not a command-prefix assignment: a prefix binds only to the
+  # first command of the pipeline -- `ps` -- and awk would see an empty needle,
+  # matching every line and reinstating the same always-in-use bug.)
+  export DG_NEEDLE="$1"
+  ps -Ao args= 2>/dev/null \
+    | awk 'index($0, ENVIRON["DG_NEEDLE"]) { found = 1 } END { exit !found }' \
+    && { unset DG_NEEDLE; return 0; }
+  unset DG_NEEDLE
   [ -n "$(lsof +D "$1" 2>/dev/null | tail -n +2)" ] && return 0
   [ -n "$(lsof -- "$1" 2>/dev/null | tail -n +2)" ] && return 0
   return 1
@@ -299,8 +315,48 @@ reclaim_home_node_modules() {
   log "node_modules: removed $n agent-clone dirs in \$HOME, $(( after - before ))MB"
 }
 
+# --- pytest scratch roots. MEASURED 2026-09-25: the host fell 25Gi -> 16Gi in
+# 25 minutes while this card was open, and the consumer was not any sanctioned
+# scratch root. Every agent pytest run that builds a throwaway hermes-home
+# provisions its OWN 1.8GB Chromium under $TMPDIR/pytest-of-<user>/pytest-N;
+# pytest's own retention keeps the last 3 numbered roots and never accounts for
+# size, so a burst of test runs adds GB/minute and nothing reaps it. reclaim_tmp
+# did not see it (it only ever looked at /private/tmp) and it is not a git
+# checkout, so the node_modules sweep did not either.
+#
+# Liveness, not age, is the predicate: these roots are minutes old by
+# construction, so an age rule either deletes a running test's fixture or never
+# fires. Keep `pytest-current` (the symlink target of the run in progress) and
+# anything a live process holds open; evict the rest.
+reclaim_pytest_roots() {
+  local root base before after n d
+  root=$(user_tmp_root)
+  base="$root/pytest-of-$(id -un)"
+  [ -d "$base" ] || return 0
+  before=$(free_mb); n=0
+  for d in "$base"/pytest-*; do
+    [ -d "$d" ] || continue
+    case "$(basename "$d")" in pytest-current) continue ;; esac
+    [ "$d" -ef "$base/pytest-current" ] && continue
+    path_in_use "$d" && continue
+    rm -rf "$d" 2>/dev/null && n=$((n + 1))
+  done
+  after=$(free_mb)
+  log "pytest roots: removed $n idle roots under $base, $(( after - before ))MB"
+}
+
 before=$(free_gi)
+
+# Library seam: `DISK_GUARD_LIB=1 source disk-guard.sh` defines the reclaim
+# functions and stops, so a proof harness can drive ONE class against its own
+# fixture. Without it a harness can only re-implement the predicate in its own
+# words, which is how prove_disk_guard_node_modules_scope.sh ended up asserting
+# a copy of the selection while the real sweep was missing from the script
+# entirely for a full day.
+[ "${DISK_GUARD_LIB:-0}" = 1 ] && return 0 2>/dev/null
+
 log "free=${before}Gi floor=${FLOOR_GI}Gi target=${RECLAIM_TARGET_GI}Gi"
+
 
 if [ "$RECLAIM" = 1 ]; then
   reclaim_workspaces
@@ -334,6 +390,7 @@ if [ "$RECLAIM" = 1 ]; then
   fi
   reclaim_tmp
   reclaim_home_node_modules
+  reclaim_pytest_roots
   # Target enforcement runs LAST: only after every ordinary class has been
   # reclaimed do we decide whether to escalate.
   reclaim_to_target

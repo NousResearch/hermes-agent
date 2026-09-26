@@ -26,6 +26,7 @@ class CommandDef:
     description: str                   # human-readable description
     category: str                      # "Session", "Configuration", etc.
     aliases: tuple[str, ...] = ()      # alternative names: ("bg",)
+    gateway_aliases: tuple[str, ...] = ()  # messaging-only compatibility names: ("clear",)
     args_hint: str = ""                # argument placeholder: "<prompt>", "[name]"
     subcommands: tuple[str, ...] = ()  # tab-completable subcommands
     cli_only: bool = False             # only available in CLI
@@ -53,7 +54,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("start", "Acknowledge platform start pings without a reply", "Session",
                gateway_only=True, busy_policy="dispatch", busy_handler="start"),
     CommandDef("new", "Start a new session (fresh session ID + history)", "Session",
-               aliases=("reset",), args_hint="[name]",
+               aliases=("reset",), gateway_aliases=("clear",), args_hint="[name]",
                busy_policy="interrupt_then_dispatch", busy_handler="new"),
     CommandDef("topic", "Enable or inspect Telegram DM topic sessions", "Session",
                gateway_only=True, args_hint="[off|help|session-id]"),
@@ -357,6 +358,30 @@ def resolve_command(name: str) -> CommandDef | None:
     return _COMMAND_LOOKUP.get(name.lower().lstrip("/"))
 
 
+def _build_gateway_command_lookup() -> dict[str, CommandDef]:
+    """Gateway-visible names -> CommandDef, including messaging-only aliases."""
+    lookup: dict[str, CommandDef] = {}
+    for cmd in COMMAND_REGISTRY:
+        if cmd.cli_only and not cmd.gateway_config_gate:
+            continue
+        for name in (cmd.name, *cmd.aliases, *cmd.gateway_aliases):
+            lookup[name] = cmd
+    return lookup
+
+
+_GATEWAY_COMMAND_LOOKUP: dict[str, CommandDef] = _build_gateway_command_lookup()
+
+
+def resolve_gateway_command(name: str) -> CommandDef | None:
+    """Resolve a command with messaging-platform semantics (#40123).
+
+    Messaging surfaces have no terminal screen to clear, so the CLI-only
+    ``/clear`` re-maps to ``/new`` there (via ``gateway_aliases``); CLI
+    resolution (``resolve_command``) keeps ``/clear`` as the screen clear.
+    """
+    return _GATEWAY_COMMAND_LOOKUP.get(name.lower().lstrip("/"))
+
+
 def _build_description(cmd: CommandDef) -> str:
     """CLI-facing description including the usage hint."""
     if not cmd.args_hint:
@@ -399,7 +424,7 @@ HELP_SESSION_SUBGROUPS: dict[str, tuple[str, ...]] = {
 # included; their handler checks the gate at runtime.
 GATEWAY_KNOWN_COMMANDS: frozenset[str] = frozenset(
     name for cmd in COMMAND_REGISTRY if not cmd.cli_only or cmd.gateway_config_gate
-    for name in (cmd.name, *cmd.aliases))
+    for name in (cmd.name, *cmd.aliases, *cmd.gateway_aliases))
 
 
 def is_gateway_known_command(name: str | None) -> bool:
@@ -420,22 +445,22 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
 
 def is_interrupt_then_dispatch(command_name: str | None) -> bool:
     """Guard 1 (gateway/platforms/base.py) routes these through the cancel-handoff path."""
-    cmd = resolve_command(command_name) if command_name else None
+    cmd = resolve_gateway_command(command_name) if command_name else None
     return cmd is not None and cmd.busy_policy == "interrupt_then_dispatch"
 
 
 def should_bypass_active_session(command_name: str | None) -> bool:
-    """True for any resolvable slash command: every recognized command is dispatched mid-run
-    (Guard-2 handler or the "busy" catch-all), never queued — gateway.run's safety net discards
-    command text reaching the pending queue, so a queued mid-run /model (or /reasoning, /voice,
-    /insights, /title, /resume, /retry, /undo, /compress, /usage, /reload-mcp, /sethome, /reset)
-    would silently interrupt the agent AND get discarded — a zero-char response. See issue
-    #5057 / PRs #6252, #10370, #4665. ACTIVE_SESSION_BYPASS_COMMANDS remains the subset with
-    explicit Level-2 handlers; the rest fall through to the catch-all.
+    """True for any gateway-resolvable slash command: every recognized command is dispatched
+    mid-run (Guard-2 handler or the "busy" catch-all), never queued — gateway.run's safety net
+    discards command text reaching the pending queue, so a queued mid-run /model (or /reasoning,
+    /voice, /insights, /title, /resume, /retry, /undo, /compress, /usage, /reload-mcp, /sethome,
+    /reset, /clear) would silently interrupt the agent AND get discarded — a zero-char response.
+    See issue #5057 / PRs #6252, #10370, #4665. ACTIVE_SESSION_BYPASS_COMMANDS remains the subset
+    with explicit Level-2 handlers; the rest fall through to the catch-all.
 
     See #10370, #4665, #5057, #6252.
     """
-    return resolve_command(command_name) is not None if command_name else False
+    return resolve_gateway_command(command_name) is not None if command_name else False
 
 
 def _resolve_config_gates() -> set[str]:
@@ -481,7 +506,7 @@ def gateway_help_lines(allowed: Optional[Iterable[str]] = None) -> list[str]:
             continue
         args = f" {cmd.args_hint}" if cmd.args_hint else ""
         # Skip internal aliases like reload_mcp (underscore variant of the name).
-        alias_parts = [f"`/{a}`" for a in cmd.aliases
+        alias_parts = [f"`/{a}`" for a in (*cmd.aliases, *cmd.gateway_aliases)
                        if not (a.replace("-", "_") == cmd.name.replace("-", "_") and a != cmd.name)]
         alias_note = f" (alias: {', '.join(alias_parts)})" if alias_parts else ""
         lines.append(f"`/{cmd.name}{args}` -- {cmd.description}{alias_note}")

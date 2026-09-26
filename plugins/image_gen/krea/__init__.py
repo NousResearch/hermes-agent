@@ -9,9 +9,13 @@ of our IDs) → :data:`DEFAULT_MODEL`. Docs: https://docs.krea.ai/developers/kre
 
 from __future__ import annotations
 
+import base64
 import logging
+import mimetypes
+import os
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import requests
@@ -57,6 +61,10 @@ DEFAULT_RESOLUTION = "1K"  # only resolution Krea currently supports
 # Style refs are objects ({"url", "strength"}); bare URLs get Krea's recommended start (range -2..2).
 _DEFAULT_STYLE_REFERENCE_STRENGTH = 0.6
 _MAX_STYLE_REFERENCES = 10
+_REMOTE_REFERENCE_PREFIXES = ("http://", "https://", "data:")
+# Base64 grows a file by a third and the managed gateway rejects bodies over about 4.5 MB,
+# so all local references together stay under this.
+_MAX_LOCAL_REFERENCE_BYTES = 3 * 1024 * 1024
 _VALID_CREATIVITY = {"raw", "low", "medium", "high"}
 
 # Polling: Krea recommends 2-5s; 2s backing off to 5s (Large ~1min); ceiling = Krea's 3 min tool timeout.
@@ -306,6 +314,34 @@ def _collect_style_refs(
     return deduped[:_MAX_STYLE_REFERENCES]
 
 
+def _inline_local_style_refs(
+    style_refs: List[Any], fail: ErrorFn
+) -> Tuple[List[Any], Optional[Dict[str, Any]]]:
+    """Embed local image files as data URIs; URLs and data URIs pass through unchanged."""
+    from agent.file_safety import raise_if_read_blocked
+
+    inlined: List[Any] = []
+    total_bytes = 0
+    for ref in style_refs:
+        source = ref.get("url") if isinstance(ref, dict) else ref
+        if not isinstance(source, str) or source.lower().startswith(_REMOTE_REFERENCE_PREFIXES):
+            inlined.append(ref)
+            continue
+        path = Path(os.path.expanduser(source))
+        if not path.is_file():
+            return [], fail(f"Style reference image not found: {source}", "invalid_image_url")
+        total_bytes += path.stat().st_size
+        if total_bytes > _MAX_LOCAL_REFERENCE_BYTES:
+            return [], fail(
+                "Local style reference images total over 3 MB; resize them or pass public URLs",
+                "source_too_large")
+        raise_if_read_blocked(str(path))
+        mime = mimetypes.guess_type(path.name)[0] or "image/png"
+        data_uri = f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
+        inlined.append({**ref, "url": data_uri} if isinstance(ref, dict) else data_uri)
+    return inlined, None
+
+
 def _build_payload(
     prompt: str, krea_ar: str, creativity: str, style_refs: List[Any], kwargs: Dict[str, Any]
 ) -> Dict[str, Any]:
@@ -446,6 +482,9 @@ class KreaImageGenProvider(StaticImageGenProvider):
         model_id, meta = _resolve_model(kwargs.get("model"))
         creativity = _resolve_creativity(kwargs.get("creativity"))
         fail = error_factory("krea", aspect, model=model_id, prompt=prompt)
+        style_refs, err = _inline_local_style_refs(style_refs, fail)
+        if err is not None:
+            return err
         payload = _build_payload(prompt, krea_ar, creativity, style_refs, kwargs)
 
         # LoRAs/moodboards are rejected by the managed gateway: fail fast with guidance, not a raw 400.

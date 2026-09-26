@@ -1761,6 +1761,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """Record successful getUpdates I/O for the current generation only; True when accepted."""
         if self._teardown_started or not self._polling_progress_accepting or generation != self._polling_generation:
             return False
+        was_degraded = self._send_path_degraded
         if not self._polling_progress_event.is_set():
             # First confirmed round-trip resolves the "health pending" line both reconnect paths end on.
             # After network-error WARNINGs the line must read as the matching recovery event (#111211).
@@ -1781,6 +1782,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 "connected", platform_state="connected", error_code=None, error_message=None,
             )
         self._send_path_degraded = False
+        if was_degraded:
+            runner = getattr(self, "gateway_runner", None)
+            schedule = getattr(runner, "_schedule_send_path_recovery", None)
+            if callable(schedule):
+                try:
+                    schedule(self, reason="recovered")
+                except Exception:
+                    logger.debug("[%s] Could not schedule send-path recovery sweep", self.name, exc_info=True)
         return True
 
     def _observe_polling_request_result(self, request, generation, result):

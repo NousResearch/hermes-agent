@@ -532,12 +532,10 @@ _MERGED_SUMMARY_DELIMITER = "[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]
 # the handoff boundary (#100818). A cron run's only user turn is the job prompt
 # in the protected head, so compaction leaves it BEFORE the summary — and
 # SUMMARY_PREFIX tells the model to do nothing when no user message follows.
-# Set on a compaction carrier when the in-flight task was merged onto it (the
-# carrier ends the list, so a standalone user row would break alternation).
-# conversation_compression._ensure_compressed_has_user_turn treats it as
-# "intent present" so it does not insert a second copy of the same request.
-_INFLIGHT_REPLAY_MERGED_KEY = "_inflight_replay_merged"
-
+# When the task is merged onto a carrier (the carrier ends the list, so a
+# standalone user row would break alternation), the header right after the
+# summary end marker is what ContextCompressor._has_merged_inflight_replay
+# detects -- from content alone, so it survives SessionDB reload.
 _INFLIGHT_TASK_REPLAY_HEADER = (
     "[STILL IN PROGRESS — this is the active request, restated after the "
     "compaction boundary because it was not finished yet. Continue it; do not "
@@ -4757,8 +4755,6 @@ Write only the summary body. Do not include any preamble or prefix."""
         """
         if not isinstance(message, dict):
             return False
-        if message.get(_INFLIGHT_REPLAY_MERGED_KEY):
-            return True
         if not cls._is_context_summary_message(message):
             return False
         text = _content_text_for_contains(message.get("content"))
@@ -4925,14 +4921,14 @@ Write only the summary body. Do not include any preamble or prefix."""
             # tool rows are exempt), so a user-pinned summary followed by a
             # tool tail still "ends on user": a standalone user row would break
             # the Mistral-style pre-flight check (#58753). Merge onto the
-            # carrier instead and flag it — the carrier's own metadata marks it
-            # synthetic, and without the flag _ensure_compressed_has_user_turn
-            # would insert a second copy of the same request.
+            # carrier instead — its own metadata marks it synthetic, and the
+            # header after its end marker lets _has_merged_inflight_replay
+            # (used by _ensure_compressed_has_user_turn) see intent as present
+            # instead of inserting a second copy of the same request.
             carrier["content"] = _append_text_to_content(
                 carrier.get("content"),
                 "\n\n" + _INFLIGHT_TASK_REPLAY_HEADER + "\n" + task_text,
             )
-            carrier[_INFLIGHT_REPLAY_MERGED_KEY] = True
             drop_stale_api_content(carrier)
             return compressed
 

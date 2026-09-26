@@ -151,6 +151,13 @@ The **Chat** tab embeds the full Hermes TUI (the same interface you get from `he
 
 **Workspace picker:** a fresh chat starts wherever the dashboard process was launched — useless when you are driving Hermes from a phone and want it in `~/code/foo`. The rail's **workspace** selector lists the same directories the Desktop sidebar knows: your explicit projects (`hermes projects`) and every discovered git repository (session-derived plus the `desktop.repo_scan_roots` scan), most recently active first, with an **Other path…** entry for anything else. The choice is remembered per profile and applies to the next **New chat** (a resumed session keeps its own working directory); the rescan button re-walks the discovery roots on the host, so a repo you just cloned over SSH shows up without a restart. A path that no longer exists is refused with an error instead of silently starting in the launch directory. Backed by `GET /api/chat/workspaces` and the `cwd` parameter of the `/api/pty` WebSocket.
 
+**Pasting on touch devices:** with no hardware keyboard, the Chat tab shows a **Paste** control when the browser reports a coarse pointer (a finger, not a mouse). It reads the clipboard through the async Clipboard API and pastes into the TUI, so long commands and pasted code no longer have to be typed. Two behaviours are deliberate:
+
+- A paste containing **more than one line** is shown back to you for confirmation before it is sent. A multi-line paste into a TUI submits each line as its own input, so this keeps a stray log or snippet from executing unattended.
+- A clipboard holding an **image** uploads it and attaches it through `/image`, the same path a desktop paste uses.
+
+The native **long-press → Paste** gesture on the terminal keeps working as before; this control is a second way in, not a replacement. If the clipboard is unavailable (an insecure `http://` origin, or a denied permission), the tab says which, rather than failing silently. Note that the Clipboard API is unavailable over plain HTTP, so a dashboard reached at a LAN address such as `http://192.168.1.10:9119` will report that as the cause.
+
 **Prerequisites:**
 
 - Node.js (same requirement as `hermes --tui`; the TUI bundle is built on first launch)

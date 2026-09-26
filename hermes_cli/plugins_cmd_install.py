@@ -332,7 +332,10 @@ def _install_plugin_core(
         if not python_deps:
             from pm.workspace import enabled_plugin_dirs
 
-            if target.resolve() in enabled_plugin_dirs(installing=target):
+            # Replacing an active plugin requires a tree to replace: a selection entry
+            # whose directory was manually removed is a ghost, not an active plugin,
+            # so a fresh --no-deps install must not be vetoed by it (#122135).
+            if target.exists() and target.resolve() in enabled_plugin_dirs(installing=target):
                 raise _pc().PluginOperationError(
                     "--no-deps cannot replace an active plugin. Retry without --no-deps; "
                     "PM must prepare its dependencies before publication.")

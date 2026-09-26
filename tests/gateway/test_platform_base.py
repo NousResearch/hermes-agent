@@ -236,6 +236,51 @@ class TestExtractMedia:
         media, _ = BasePlatformAdapter.extract_media(content)
         assert media == [(f"{home}/foo.png", False)]
 
+    def test_extract_media_dedupes_same_inode_via_hardlink(self, tmp_path):
+        """Bind-mount / extra-name aliases share an inode but not a path string.
+
+        #29131 only collapsed identical expanded strings, so one PDF named two
+        ways was uploaded twice. First occurrence wins.
+        """
+        real = tmp_path / "chart.pdf"
+        alias = tmp_path / "chart-alias.pdf"
+        real.write_bytes(b"%PDF-1.4\n")
+        try:
+            os.link(real, alias)
+        except OSError:
+            pytest.skip("hard links not available")
+        media, _ = BasePlatformAdapter.extract_media(f"MEDIA:{real}\nMEDIA:{alias}")
+        assert media == [(str(real), False)]
+
+    def test_extract_media_keeps_distinct_copies(self, tmp_path):
+        a = tmp_path / "a.pdf"
+        b = tmp_path / "b.pdf"
+        a.write_bytes(b"%PDF-1.4\n")
+        b.write_bytes(b"%PDF-1.4\n")
+        media, _ = BasePlatformAdapter.extract_media(f"MEDIA:{a}\nMEDIA:{b}")
+        assert media == [(str(a), False), (str(b), False)]
+
+    def test_extract_media_keeps_distinct_files_when_inode_is_zero(self, tmp_path, monkeypatch):
+        """Windows/SMB often report st_ino==0; that must not drop the second file."""
+        import gateway.platforms.base as base
+
+        a = tmp_path / "a.pdf"
+        b = tmp_path / "b.pdf"
+        a.write_bytes(b"%PDF-1.4\n")
+        b.write_bytes(b"%PDF-1.4\n")
+        orig = base.os.stat
+
+        def fake_stat(path, *args, **kwargs):
+            st = orig(path, *args, **kwargs)
+            seq = list(st)
+            seq[1] = 0  # st_ino
+            return os.stat_result(seq)
+
+        monkeypatch.setattr(base.os, "stat", fake_stat)
+        media, _ = BasePlatformAdapter.extract_media(f"MEDIA:{a}\nMEDIA:{b}")
+        assert media == [(str(a), False), (str(b), False)]
+        assert base._media_file_identity(str(a)) == ("path", str(a))
+
     def test_as_document_directive_stripped_from_cleaned_text(self):
         """[[as_document]] is a routing directive — strip it from
         user-visible text just like [[audio_as_voice]]. Callers detect the
@@ -587,6 +632,93 @@ class TestMediaDeliveryDefaultMode:
         os.utime(notes, (old_mtime, old_mtime))
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(notes)) == str(notes.resolve())
+
+    def test_filter_media_collapses_same_inode_via_hardlink(self, tmp_path, monkeypatch):
+        """Two names, one inode: send once. resolve() does not collapse hard links."""
+        self._patch_roots(monkeypatch)
+        real = tmp_path / "chart.pdf"
+        alias = tmp_path / "chart-alias.pdf"
+        real.write_bytes(b"%PDF-1.4\n")
+        try:
+            os.link(real, alias)
+        except OSError:
+            pytest.skip("hard links not available")
+        out = BasePlatformAdapter.filter_media_delivery_paths(
+            [(str(real), False), (str(alias), False)]
+        )
+        assert len(out) == 1
+        assert out[0] == (str(real.resolve()), False)
+
+    def test_filter_media_dedupes_and_reports_rejected_paths(self, tmp_path, monkeypatch):
+        """Upstream's dropped-path reporting and inode dedupe must both survive."""
+        self._patch_roots(monkeypatch)
+        real = tmp_path / "chart.pdf"
+        alias = tmp_path / "chart-alias.pdf"
+        missing = tmp_path / "missing.pdf"
+        real.write_bytes(b"%PDF-1.4\n")
+        try:
+            os.link(real, alias)
+        except OSError:
+            pytest.skip("hard links not available")
+        dropped = []
+        out = BasePlatformAdapter.filter_media_delivery_paths(
+            [(str(real), False), (str(missing), False), (str(alias), False)],
+            dropped=dropped,
+        )
+        assert out == [(str(real.resolve()), False)]
+        assert dropped == [{"path": str(missing), "reason": "not found on this host"}]
+
+    def test_filter_media_keeps_distinct_copies(self, tmp_path, monkeypatch):
+        self._patch_roots(monkeypatch)
+        a = tmp_path / "a.pdf"
+        b = tmp_path / "b.pdf"
+        a.write_bytes(b"%PDF-1.4\n")
+        b.write_bytes(b"%PDF-1.4\n")
+        out = BasePlatformAdapter.filter_media_delivery_paths(
+            [(str(a), False), (str(b), False)]
+        )
+        assert {(p, v) for p, v in out} == {
+            (str(a.resolve()), False),
+            (str(b.resolve()), False),
+        }
+
+    def test_filter_local_collapses_same_inode_via_hardlink(self, tmp_path, monkeypatch):
+        self._patch_roots(monkeypatch)
+        real = tmp_path / "chart.pdf"
+        alias = tmp_path / "chart-alias.pdf"
+        real.write_bytes(b"%PDF-1.4\n")
+        try:
+            os.link(real, alias)
+        except OSError:
+            pytest.skip("hard links not available")
+        out = BasePlatformAdapter.filter_local_delivery_paths([str(real), str(alias)])
+        assert out == [str(real.resolve())]
+
+    def test_filter_media_keeps_distinct_files_when_inode_is_zero(self, tmp_path, monkeypatch):
+        """st_ino==0 must fall back to path identity, not collapse the batch."""
+        import gateway.platforms.base as base
+
+        self._patch_roots(monkeypatch)
+        a = tmp_path / "a.pdf"
+        b = tmp_path / "b.pdf"
+        a.write_bytes(b"%PDF-1.4\n")
+        b.write_bytes(b"%PDF-1.4\n")
+        orig = base.os.stat
+
+        def fake_stat(path, *args, **kwargs):
+            st = orig(path, *args, **kwargs)
+            seq = list(st)
+            seq[1] = 0  # st_ino
+            return os.stat_result(seq)
+
+        monkeypatch.setattr(base.os, "stat", fake_stat)
+        out = BasePlatformAdapter.filter_media_delivery_paths(
+            [(str(a), False), (str(b), False)]
+        )
+        assert {(p, v) for p, v in out} == {
+            (str(a.resolve()), False),
+            (str(b.resolve()), False),
+        }
 
 
     @pytest.mark.parametrize(

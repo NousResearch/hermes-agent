@@ -280,6 +280,49 @@ class TestContentStructuredArbitration:
         session.call_tool = AsyncMock(return_value=_FakeCallToolResult(content=[_FakeContentBlock("just text")]))
         assert handler({}) == '{"result": "just text"}'
 
+    def test_sdk_wrapper_dedup_preserves_value_type_and_list_boundaries(self, _patch_mcp_server):
+        """Real Python-SDK wrappers project the typed value once, never newline-flatten a list."""
+        from mcp.server import MCPServer
+
+        sdk = MCPServer("typed-wrapper")
+
+        @sdk.tool()
+        def count() -> int:
+            return 42
+
+        @sdk.tool()
+        def names() -> list[str]:
+            return ["ann\nbob", "carol"]
+
+        session = _patch_mcp_server
+        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
+        for tool, expected in (("count", 42), ("names", ["ann\nbob", "carol"])):
+            session.call_tool = AsyncMock(return_value=asyncio.run(sdk.call_tool(tool, {})))
+            assert json.loads(handler({})) == {"result": expected}
+
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(
+                content=[_FakeContentBlock("")],
+                structuredContent={"result": ""},
+            )
+        )
+        assert json.loads(handler({})) == {"result": ""}
+
+    def test_sdk_wrapper_dedup_requires_the_whole_content_to_match(self, _patch_mcp_server):
+        """Status text or a JSON type mismatch keeps both representations; no data is guessed away."""
+        session = _patch_mcp_server
+        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
+
+        for content, structured in (
+            ([_FakeContentBlock("2 names")], {"result": ["ann", "bob"]}),
+            ([_FakeContentBlock("1")], {"result": True}),
+        ):
+            session.call_tool = AsyncMock(
+                return_value=_FakeCallToolResult(content=content, structuredContent=structured)
+            )
+            data = json.loads(handler({}))
+            assert data["structuredContent"] == structured
+
     def test_whitespace_only_content_falls_back(self, _patch_mcp_server):
         """Whitespace-only text is not usable content — fallback fires."""
         session = _patch_mcp_server

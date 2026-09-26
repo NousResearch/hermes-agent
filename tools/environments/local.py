@@ -6,6 +6,7 @@ import ntpath
 import os
 import platform
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -15,6 +16,7 @@ import threading
 import time
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 from hermes_constants import get_process_hermes_home
 from tools.environments.base import BaseEnvironment
@@ -427,14 +429,10 @@ def host_gateway_child_env(
 
 
 def _is_routed_home(target_home: "str | Path") -> bool:
-    """True when ``target_home`` is not the process's own (launch) home.
-
-    Same launch-home identity as ``agent.secret_scope.serves_routed_profile()``: under a host that
-    mirrors the served profile into ``HERMES_HOME``, the live env var names the served home and the
-    launch residue would never be stripped from that profile's child env."""
-    from hermes_constants import get_routing_process_hermes_home
+    """True when ``target_home`` is not the process's own (launch) home."""
+    from hermes_constants import get_process_hermes_home
     try:
-        return Path(target_home).resolve() != get_routing_process_hermes_home().resolve()
+        return Path(target_home).resolve() != get_process_hermes_home().resolve()
     except OSError:
         return True
 
@@ -472,6 +470,281 @@ def strip_launch_profile_env(env: dict, target_home: "str | Path | None" = None)
     return strip_profile_gate_env(env)
 
 
+_WINDOWS_POWERSHELL_EXES = frozenset(
+    {"powershell", "powershell.exe", "pwsh", "pwsh.exe"}
+)
+_WINDOWS_ELEVATION_EXES = frozenset(
+    {"gsudo", "gsudo.exe", "sudo", "sudo.exe"}
+)
+_WINDOWS_ELEVATION_VALUE_FLAGS = frozenset(
+    {"-i", "--integrity", "-u", "--user", "--loglevel", "--chdir"}
+)
+_BASH_TOP_LEVEL_PUNCTUATION = frozenset(";&|<>(){}[]#")
+_BASH_UNQUOTED_EXPANSION_CHARS = frozenset("$`*?~\\")
+_POWERSHELL_COMMAND_SWITCH_NAMES = frozenset(
+    {"c", "co", "com", "comm", "comma", "comman", "command", "commandwithargs"}
+)
+_POWERSHELL_FLAG_SWITCH_NAMES = frozenset(
+    {
+        "login",
+        "mta",
+        "nologo",
+        "nol",
+        "noexit",
+        "noe",
+        "noninteractive",
+        "non",
+        "noprofile",
+        "nop",
+        "sta",
+    }
+)
+_POWERSHELL_VALUE_SWITCH_NAMES = frozenset(
+    {
+        "configurationname",
+        "custompipename",
+        "encodedarguments",
+        "executionpolicy",
+        "ep",
+        "inputformat",
+        "inp",
+        "outputformat",
+        "of",
+        "settingsfile",
+        "version",
+        "windowstyle",
+        "workingdirectory",
+        "wd",
+    }
+)
+_POWERSHELL_NON_COMMAND_MODES = frozenset(
+    {"f", "file", "e", "ec", "enc", "encodedcommand"}
+)
+
+
+def _scan_conservative_bash_words(
+    command: str,
+) -> tuple[frozenset[int], bool] | None:
+    """Inspect a simple Bash command without changing its word semantics.
+
+    Return the word indexes containing live ``$``/backtick expansion inside
+    double quotes plus whether the executable word used any quoting. Unquoted
+    Bash expansion, backslashes, globbing, control operators, comments, and
+    malformed quotes are rejected so the later POSIX ``shlex`` pass cannot
+    silently reinterpret them.
+    """
+    quote: str | None = None
+    word_index = -1
+    in_word = False
+    executable_was_quoted = False
+    expanding_words: set[int] = set()
+    index = 0
+
+    while index < len(command):
+        char = command[index]
+
+        if quote == "'":
+            if char == "'":
+                quote = None
+            index += 1
+            continue
+
+        if quote == '"':
+            if char == "\\" and index + 1 < len(command):
+                next_char = command[index + 1]
+                if next_char in '$`"\\':
+                    index += 2
+                    continue
+            if char == '"':
+                quote = None
+            elif char in "$`":
+                expanding_words.add(word_index)
+            index += 1
+            continue
+
+        if char.isspace():
+            in_word = False
+            index += 1
+            continue
+
+        if not in_word:
+            word_index += 1
+            in_word = True
+
+        if char in ("'", '"'):
+            quote = char
+            if word_index == 0:
+                executable_was_quoted = True
+        elif (
+            char in _BASH_TOP_LEVEL_PUNCTUATION
+            or char in _BASH_UNQUOTED_EXPANSION_CHARS
+        ):
+            return None
+        index += 1
+
+    if quote is not None:
+        return None
+    return frozenset(expanding_words), executable_was_quoted
+
+
+def _powershell_command_payload_start(tokens: list[str]) -> int | None:
+    """Locate a real host-level Command switch before script/encoded modes."""
+    index = 1
+    while index < len(tokens):
+        token = tokens[index].lower()
+        if len(token) < 2 or token[0] not in ("-", "/"):
+            return None
+        switch_name = token[1:]
+        if switch_name in _POWERSHELL_COMMAND_SWITCH_NAMES:
+            return index + 1
+        if switch_name in _POWERSHELL_NON_COMMAND_MODES or switch_name == "-":
+            return None
+        if switch_name in _POWERSHELL_FLAG_SWITCH_NAMES:
+            index += 1
+            continue
+        if switch_name in _POWERSHELL_VALUE_SWITCH_NAMES:
+            if index + 1 >= len(tokens):
+                return None
+            index += 2
+            continue
+        return None
+    return None
+
+
+def _quote_windows_powershell_command(command: str) -> str | None:
+    """Safely re-quote a standalone PowerShell invocation for outer Bash.
+
+    Hermes normally wraps local commands in ``bash -c`` and a later ``eval``.
+    Bash otherwise expands PowerShell expressions such as ``$_.Path`` and
+    ``$env:TEMP`` before PowerShell sees them. This recognizes a simple,
+    standalone pwsh/powershell invocation (including when wrapped in gsudo or
+    sudo) and rebuilds each parsed argv token with Bash-safe quoting. Ambiguous
+    shell syntax stays on the existing Bash path unchanged.
+    """
+    stripped = command.strip()
+    if not stripped or "\n" in stripped or "\r" in stripped:
+        return None
+
+    scan = _scan_conservative_bash_words(stripped)
+    if scan is None:
+        return None
+    expanding_words, executable_was_quoted = scan
+
+    try:
+        tokens = shlex.split(stripped, comments=False, posix=True)
+    except ValueError:
+        return None
+    if not tokens:
+        return None
+
+    ps_token_index = 0
+    first_token = ntpath.basename(tokens[0]).lower()
+    if first_token in _WINDOWS_ELEVATION_EXES:
+        i = 1
+        while i < len(tokens):
+            t = tokens[i]
+            t_lower = t.lower()
+            if t_lower in _WINDOWS_ELEVATION_VALUE_FLAGS:
+                i += 2
+                continue
+            if t_lower.startswith("-"):
+                i += 1
+                continue
+            ps_token_index = i
+            break
+        if ps_token_index == 0 or ps_token_index >= len(tokens):
+            return None
+
+    exe_name = ntpath.basename(tokens[ps_token_index]).lower()
+    if exe_name not in _WINDOWS_POWERSHELL_EXES:
+        return None
+
+    rel_command_start = _powershell_command_payload_start(tokens[ps_token_index:])
+    if rel_command_start is None:
+        return None
+    command_start = ps_token_index + rel_command_start
+
+    if expanding_words and (
+        any(word_index < command_start for word_index in expanding_words)
+    ):
+        return None
+
+    rebuilt = [shlex.quote(token) for token in tokens]
+    if executable_was_quoted:
+        escaped_executable = tokens[0].replace("'", "'\"'\"'")
+        rebuilt[0] = f"'{escaped_executable}'"
+    return " ".join(rebuilt)
+
+
+def _normalize_windows_paths_in_command(command: str) -> str:
+    """Normalize Windows backslash and POSIX-drive paths to forward slashes.
+
+    In Git Bash on Windows, terminal commands run inside an ``eval '{escaped}'``
+    block. In Bash word-parsing, unquoted backslashes are treated as escape
+    characters and stripped, corrupting paths such as
+    ``C:\\ProgramData\\MediaFlowLocalDns\\script.ps1`` into
+    ``C:ProgramDataMediaFlowLocalDnsscript.ps1``. Trailing backslashes before
+    closing quotes (e.g. ``"dir\\"``) escape the quote and crash Bash with
+    ``unexpected EOF while looking for matching '"'``.
+
+    Additionally, with ``MSYS_NO_PATHCONV=1``, POSIX drive paths (``/c/...``)
+    passed to native Windows binaries (python, powershell, git, node) are treated
+    literally as ``C:\\c\\...`` or rejected as invalid arguments.
+
+    Windows Win32 APIs (CreateFileW), PowerShell, Python, Node, Git, etc.
+    natively support forward slashes. In Bash, forward slashes are path
+    separators and never treated as escape characters, surviving eval intact.
+    """
+    if not command:
+        return command
+
+    def repl_unquoted(match: re.Match) -> str:
+        return match.group(1) + match.group(2).replace("\\", "/")
+
+    def repl_double_quoted(match: re.Match) -> str:
+        return match.group(1) + '"' + match.group(2).replace("\\", "/") + '"'
+
+    def repl_single_quoted(match: re.Match) -> str:
+        return match.group(1) + "'" + match.group(2).replace("\\", "/") + "'"
+
+    def repl_posix_drive(match: re.Match) -> str:
+        prefix = match.group(1)
+        drive_letter = match.group(2).upper()
+        tail = match.group(3) or ""
+        return f"{prefix}{drive_letter}:{tail}"
+
+    # 1. POSIX drive paths: /c/..., /cygdrive/c/..., /mnt/c/... -> C:/...
+    # Must be preceded by start of line, whitespace, or shell delimiters
+    # and followed by '/' and path characters (never CLI flags like 'cmd /c')
+    posix_pattern = re.compile(
+        r'(^|[\s"\'=,;(])/(?:(?:cygdrive|mnt)/)?([a-zA-Z])(/[^"\'\r\n\t;&|<>(){}`]*)'
+    )
+    cmd = posix_pattern.sub(repl_posix_drive, command)
+
+    # 2. Double-quoted paths containing backslashes:
+    # 2a. Drive paths: "C:\foo\bar" or "C:\foo\bar\"
+    cmd = re.sub(r'(^|[\s=,;(])"([a-zA-Z]:\\[^"\r\n]*)"', repl_double_quoted, cmd)
+    # 2b. Dot-relative paths: ".\foo\bar", "..\foo\bar", ".\dist\"
+    cmd = re.sub(r'(^|[\s=,;(])"(\.{1,2}\\[^"\r\n]*)"', repl_double_quoted, cmd)
+    # 2c. Multi-segment relative directory/path: "cron\output\", "sub\folder\file.txt"
+    cmd = re.sub(r'(^|[\s=,;(])"([a-zA-Z0-9_.~-]+\\[a-zA-Z0-9_.~-]+\\[^"\r\n]*)"', repl_double_quoted, cmd)
+
+    # 3. Single-quoted paths containing backslashes:
+    cmd = re.sub(r"(^|[\s=,;(])'([a-zA-Z]:\\[^'\r\n]*)'", repl_single_quoted, cmd)
+    cmd = re.sub(r"(^|[\s=,;(])'(\.{1,2}\\[^'\r\n]*)'", repl_single_quoted, cmd)
+    cmd = re.sub(r"(^|[\s=,;(])'([a-zA-Z0-9_.~-]+\\[a-zA-Z0-9_.~-]+\\[^'\r\n]*)'", repl_single_quoted, cmd)
+
+    # 4. Unquoted paths containing backslashes (stop at whitespace or shell delimiters)
+    unquoted_drive = re.compile(r'(^|[\s=,;(])([a-zA-Z]:\\[^\s"\'\r\n\t;&|<>(){}`]*)')
+    unquoted_dot_rel = re.compile(r'(^|[\s=,;(])(\.{1,2}\\[^\s"\'\r\n\t;&|<>(){}`]*)')
+    unquoted_multi_rel = re.compile(r'(^|[\s=,;(])([a-zA-Z0-9_.~-]+\\[a-zA-Z0-9_.~-]+\\[^\s"\'\r\n\t;&|<>(){}`]*)')
+
+    cmd = unquoted_drive.sub(repl_unquoted, cmd)
+    cmd = unquoted_dot_rel.sub(repl_unquoted, cmd)
+    cmd = unquoted_multi_rel.sub(repl_unquoted, cmd)
+    return cmd
+
+
 # --- Shell discovery ---
 def _find_bash() -> str:
     """Resolve the shell Hermes runs commands with. Owned by pm (the store
@@ -507,18 +780,36 @@ def _compute_git_bash_bin_dirs() -> list[str]:
         bash = _find_bash()
     except Exception:
         return []
-    parent = os.path.dirname(os.path.dirname(bash))  # bash in <root>\bin or <root>\usr\bin (MinGit)
-    root = os.path.dirname(parent) if os.path.basename(parent).lower() == "usr" else parent
+    # Use ntpath deliberately: tests exercise Windows semantics while running
+    # under a Windows Python process, but the discovered Git Bash path can be
+    # either ``C:\\...`` or MSYS ``/c/...``. os.path.join on Windows would
+    # inject backslashes into the latter and break the shell PATH.
+    import ntpath
+    import posixpath
+
+    is_msys_path = bash.startswith("/") and not bash.startswith("//")
+    pathmod = posixpath if is_msys_path else ntpath
+    parent = pathmod.dirname(pathmod.dirname(bash))  # bash in <root>\bin or <root>\usr\bin (MinGit)
+    root = pathmod.dirname(parent) if pathmod.basename(parent).lower() == "usr" else parent
     subs = ("mingw64/bin", "mingw32/bin", "usr/local/bin", "usr/bin", "bin")
-    dirs = (os.path.join(root, *sub.split("/")) for sub in subs)
+    dirs = (pathmod.join(root, *sub.split("/")) for sub in subs)
     return list(dict.fromkeys(d for d in dirs if os.path.isdir(d)))
 
 
 def _prepend_missing_path_entries(existing_path: str, dirs: list[str]) -> str:
     """Prepend *dirs* missing from *existing_path* (``os.pathsep``); an already-listed
-    dir keeps its position; unchanged input when nothing is missing."""
+    dir keeps its position; unchanged input when nothing is missing.
+
+    Dedup is case-insensitive and trailing-separator-insensitive: without that,
+    ``C:\\Foo\\`` and ``C:\\Foo`` both look distinct to ``in`` and the path can
+    accumulate Windows path variants until MSYS translation explodes the bash
+    session snapshot to 70+ entries (verified 2026-09-11). See issue #108508.
+    """
+    def _norm(p: str) -> str:
+        return p.rstrip("\\/").casefold()
     entries = [e for e in existing_path.split(os.pathsep) if e]
-    missing = [d for d in dirs if d not in entries]
+    seen = {_norm(e) for e in entries}
+    missing = [d for d in dirs if _norm(d) not in seen]
     return os.pathsep.join([*missing, *entries]) if missing else existing_path
 
 
@@ -625,10 +916,10 @@ def _user_local_bin_entries() -> list[str]:
     target. A backend launched by a non-interactive SSH session, systemd or a GUI
     launcher inherits a PATH without it (only the login shell adds it), so CLIs
     installed there were ``command not found`` from the terminal tool (#111778)."""
-    local_bin = Path.home() / ".local" / "bin"
     try:
+        local_bin = Path.home() / ".local" / "bin"
         return [str(local_bin)] if local_bin.is_dir() else []
-    except OSError:
+    except (OSError, RuntimeError):
         # HOME can point at a directory this process may not traverse (CI runs
         # with HOME=/root as an unprivileged user); such a home has no usable
         # ~/.local/bin either.
@@ -666,6 +957,12 @@ def _apply_windows_msys_bash_env_defaults(env: dict) -> None:
     if _IS_WINDOWS:
         env.setdefault("MSYS_NO_PATHCONV", "1")
         env.setdefault("MSYS2_ARG_CONV_EXCL", "*")
+    else:
+        # Do not leak Windows-only MSYS controls into POSIX subprocesses when
+        # the parent environment itself came from Git Bash (or when tests
+        # monkeypatch the platform flag).
+        env.pop("MSYS_NO_PATHCONV", None)
+        env.pop("MSYS2_ARG_CONV_EXCL", None)
 
 
 def _path_env_key(run_env: dict) -> str | None:
@@ -743,10 +1040,18 @@ def _prepend_shell_init(cmd_string: str, files: list[str]) -> str:
 
 
 # --- Process-group teardown (POSIX) ---
+_killpg = getattr(os, "killpg", None)
+_getpgid = getattr(os, "getpgid", None)
+_getpgrp = getattr(os, "getpgrp", None)
+_SIGKILL = getattr(signal, "SIGKILL", signal.SIGTERM)
+
+
 def _wait_for_group_exit(proc, pgid: int, timeout: float) -> bool:
     """Wait until the process group is gone, reaping the wrapper as we go (a dead
     but unreaped group leader still makes ``killpg(pgid, 0)`` succeed).
     POSIX-only; callers are behind the _IS_WINDOWS gate."""
+    if _killpg is None:
+        return True
     deadline = time.monotonic() + timeout
     while True:
         try:
@@ -754,7 +1059,7 @@ def _wait_for_group_exit(proc, pgid: int, timeout: float) -> bool:
         except Exception:
             pass
         try:
-            os.killpg(pgid, 0)  # windows-footgun: ok — POSIX process-group alive probe
+            _killpg(pgid, 0)  # windows-footgun: ok — POSIX process-group alive probe
         except ProcessLookupError:
             return True
         except PermissionError:
@@ -768,12 +1073,14 @@ def _sweep_escaped_descendants(descendants: list, pgid: int) -> None:
     """SIGKILL snapshotted survivors that escaped the process group via ``setsid``
     — after TERM→KILL so in-group members keep their grace; psutil's identity-aware
     Process skips recycled PIDs. POSIX-only (see _IS_WINDOWS gate in caller)."""
+    if _getpgid is None:
+        return
     for child in descendants:
         try:
             if not child.is_running():
                 continue
             try:
-                if os.getpgid(child.pid) == pgid:
+                if _getpgid(child.pid) == pgid:
                     continue  # group-kill already covers it
             except OSError:  # ProcessLookupError / PermissionError included
                 pass
@@ -788,7 +1095,9 @@ def _kill_process_group_posix(proc) -> None:
     init — and we wait on the group, not the wrapper, which can exit before
     grandchildren under load. POSIX-only (_IS_WINDOWS handled by the caller)."""
     try:
-        pgid = os.getpgid(proc.pid)
+        if _getpgid is None:
+            raise ProcessLookupError
+        pgid = _getpgid(proc.pid)
     except ProcessLookupError:
         if (pgid := getattr(proc, "_hermes_pgid", None)) is None:
             raise
@@ -797,15 +1106,15 @@ def _kill_process_group_posix(proc) -> None:
         descendants = psutil.Process(proc.pid).children(recursive=True)
     except Exception:
         descendants = []
-    if pgid == os.getpgrp():
+    if _getpgrp is not None and pgid == _getpgrp():
         # The child shares OUR group (a spawner that skipped setsid — the Darwin gateway's
         # posix_spawn shim, #107029): killpg would signal the caller itself. Tear down by PID.
         _kill_known_pids(proc, descendants)
-    else:
+    elif _killpg is not None:
         try:
-            os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — POSIX only (see _IS_WINDOWS gate in caller)
+            _killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — POSIX only (see _IS_WINDOWS gate in caller)
             if not _wait_for_group_exit(proc, pgid, 1.0):
-                os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX only (see _IS_WINDOWS gate in caller)
+                _killpg(pgid, _SIGKILL)  # windows-footgun: ok — POSIX only (see _IS_WINDOWS gate in caller)
                 _wait_for_group_exit(proc, pgid, 2.0)
                 with contextlib.suppress(subprocess.TimeoutExpired, OSError):
                     proc.wait(timeout=0.2)
@@ -818,6 +1127,8 @@ def _kill_process_group_posix(proc) -> None:
             # must not escape: the caller still owns the output it drained. Signal the known
             # PIDs instead so a live child (a group we may not signal) cannot outlive us.
             _kill_known_pids(proc, descendants)
+    else:
+        _kill_known_pids(proc, descendants)
     _sweep_escaped_descendants(descendants, pgid)
 
 
@@ -861,7 +1172,7 @@ class LocalEnvironment(BaseEnvironment):
             name for name in merged
             if isinstance(name, str) and _matches_terminal_first_party_prefix(name)))
 
-    def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
+    def __init__(self, cwd: str = "", timeout: int = 60, env: dict | None = None):
         super().__init__(cwd=_resolve_local_initial_cwd(cwd), timeout=timeout, env=env)
         self.init_session()
 
@@ -890,17 +1201,31 @@ class LocalEnvironment(BaseEnvironment):
                     env_var != "TERMINAL_TEMP_DIR" or os.path.isdir(candidate)):
                 return _posix(candidate)
         try:
-            cache_dir = _default_terminal_temp_dir()
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            resolved = str(cache_dir)
-            if resolved.startswith("/") and os.access(resolved, os.W_OK | os.X_OK):
-                _prune_terminal_temp_once()
-                return _posix(resolved)
+            if (cache_dir := _default_terminal_temp_dir()) is not None:
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                resolved = str(cache_dir)
+                if resolved.startswith("/") and os.access(resolved, os.W_OK | os.X_OK):
+                    _prune_terminal_temp_once()
+                    return _posix(resolved)
         except Exception:
             pass
         # tempfile's own candidate walk already covers the system temp dir.
         fallback = tempfile.gettempdir()
         return _posix(fallback if fallback.startswith("/") else os.path.abspath(fallback))
+
+    def _prepare_command(self, command: str) -> tuple[str, str | None]:
+        exec_command, sudo_stdin = super()._prepare_command(command)
+        if _IS_WINDOWS:
+            # Normalize Windows backslash paths to forward slashes before
+            # BaseEnvironment places the command inside Bash's eval wrapper,
+            # where unquoted backslashes would be stripped as escape chars.
+            exec_command = _normalize_windows_paths_in_command(exec_command)
+            # Protect PowerShell's own $ expressions before BaseEnvironment
+            # places the command inside Bash's later eval wrapper.
+            protected = _quote_windows_powershell_command(exec_command)
+            if protected is not None:
+                exec_command = protected
+        return exec_command, sudo_stdin
 
     @staticmethod
     def _quote_cwd_for_cd(cwd: str) -> str:
@@ -940,15 +1265,18 @@ class LocalEnvironment(BaseEnvironment):
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
         args = [bash, *(["-l"] if login else []), "-c", cmd_string]
         self._recover_cwd()
+        extra_kwargs: dict[str, Any] = (
+            {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
+        )
         proc = subprocess.Popen(
             args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             start_new_session=True, cwd=self.cwd,
-            **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
-        if not _IS_WINDOWS:
+            **extra_kwargs)
+        if not _IS_WINDOWS and _getpgid is not None:
             with contextlib.suppress(ProcessLookupError):
-                proc._hermes_pgid = os.getpgid(proc.pid)
+                setattr(proc, "_hermes_pgid", _getpgid(proc.pid))
         if stdin_data is not None:
             _pipe_stdin(proc, stdin_data)
         return proc
@@ -966,9 +1294,9 @@ class LocalEnvironment(BaseEnvironment):
         if _IS_WINDOWS:  # already a forced tree kill
             return self._kill_process(proc)
         with contextlib.suppress(OSError):
-            pgid = getattr(proc, "_hermes_pgid", None) or os.getpgid(proc.pid)
-            if pgid != os.getpgrp():  # never our own group (see _kill_process_group_posix)
-                os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX only (_IS_WINDOWS returned above)
+            pgid = getattr(proc, "_hermes_pgid", None) or (_getpgid(proc.pid) if _getpgid else None)
+            if pgid and _getpgrp and pgid != _getpgrp() and _killpg:
+                _killpg(pgid, _SIGKILL)  # windows-footgun: ok — POSIX only (_IS_WINDOWS returned above)
         with contextlib.suppress(OSError):
             proc.kill()
 

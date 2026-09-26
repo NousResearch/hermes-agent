@@ -456,10 +456,12 @@ def _resolved_identity(server_name: str, config: dict) -> str:
     return _identity_digest(list(_stdio_launch(config)))
 
 
-def _same_server_route(server: Any, config: dict, *, cross_profile: bool = False) -> bool:
+def _same_server_route(server: Any, config: dict, *, cross_profile: bool = False,
+                       resolved_identity: str | None = None) -> bool:
     """Whether *server* matches *config*. Across profiles the static config is not enough: OAuth
     tokens live in the owner's token store (never reusable), and secret-source env, the profile
-    identity header and the default cwd resolve per profile, so the adopter's resolution must hash
+    identity header and the default cwd resolve per profile, so the adopter's resolution
+    (*resolved_identity*, computed by the caller outside the registry lock; None refuses) must hash
     to what the owner connected with. Within one profile the connection is the profile's: its
     default cwd resolves in the connection task's own context, never per session."""
     if _connection_identity(getattr(server, "_config", {}) or {}) != _connection_identity(config):
@@ -469,7 +471,7 @@ def _same_server_route(server: Any, config: dict, *, cross_profile: bool = False
     # Identities match, so both sides carry the same normalised auth type.
     recorded = getattr(server, "_resolved_identity", None)
     return (_auth_type(config) != "oauth" and recorded is not None
-            and recorded == _resolved_identity(server.name, config))
+            and resolved_identity is not None and recorded == resolved_identity)
 
 
 def register_connected_into_current_scope(servers: dict) -> int:
@@ -503,6 +505,12 @@ def _register_connected_into_current_scope(servers: dict) -> int:
                    if scope in scopes and _key_name(key) not in servers}
     profile_servers = _config._load_mcp_config() if omitted else {}
 
+    # Resolving what this profile would connect with does PATH lookups, secret-scope reads and
+    # live-endpoint probes: do it once per judged name, before taking the global registry lock.
+    judged = {**{name: profile_servers.get(name) for name in omitted}, **servers}
+    resolved_ids = {name: _resolved_identity(name, config) for name, config in judged.items()
+                    if config is not None and mcp_server_enabled(config)}
+
     with _core._lock:
         stale = []
         for key, scopes in _core._server_tool_scopes.items():
@@ -516,7 +524,8 @@ def _register_connected_into_current_scope(servers: dict) -> int:
             cross_profile = _key_scope(key) != scope
             if (config is None or not mcp_server_enabled(config) or server is None
                     or getattr(server, "session", None) is None
-                    or not _same_server_route(server, config, cross_profile=cross_profile)):
+                    or not _same_server_route(server, config, cross_profile=cross_profile,
+                                              resolved_identity=resolved_ids.get(name))):
                 stale.append(key)
     for key in stale:
         _remove_server_scope(key, scope)
@@ -531,7 +540,8 @@ def _register_connected_into_current_scope(servers: dict) -> int:
             # Any other profile's live connection with the same route AND credentials is shareable.
             shared = [(key, live) for key, live in _core._servers.items()
                       if _key_name(key) == name and getattr(live, "session", None) is not None
-                      and _same_server_route(live, config, cross_profile=True)]
+                      and _same_server_route(live, config, cross_profile=True,
+                                             resolved_identity=resolved_ids.get(name))]
         if not shared:
             continue
         key, server = shared[0]

@@ -1769,8 +1769,14 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_progress_event.set()
         self._polling_last_progress_monotonic = time.monotonic()
         self._polling_network_error_count = 0
+        # Conflict ladder (#82303 / fleett Exp B′): first matching progress may clear the
+        # recovery marker, but never zero `_polling_conflict_count` while count > 0.
+        # getUpdates can succeed between 409s (~5m fleett cadence); zeroing on that
+        # second progress left sticky (1/5) after the finally/marker fix alone.
         if generation == self._polling_conflict_recovery_generation:
             self._polling_conflict_recovery_generation = None
+        elif self._polling_conflict_count > 0:
+            pass  # keep ladder climbing across inter-conflict progress
         else:
             self._polling_conflict_count = 0
         # First proof getUpdates is flowing for this generation: flip a
@@ -2491,12 +2497,19 @@ class TelegramAdapter(BasePlatformAdapter):
             # hasn't expired server-side yet) or our own previous retry's still-expiring session. Without
             # this, each retry starts a new getUpdates session that immediately gets 409'd by the previous
             # one, creating the very conflict we are trying to recover from (#75017).
+            # Leave the marker set across a successful start_polling return: production
+            # getUpdates progress is async afterward. Clearing here (old finally) let
+            # _record_polling_progress take the else branch and zero the ladder, so every
+            # 409 logged as (1/5) forever (#82303). Clear only on failure/abort; success
+            # waits for _record_polling_progress (or a later superseding recovery).
             self._polling_conflict_recovery_generation = expected_generation
+            started_ok = False
             try:
                 await self._start_polling_once(app, drop_pending_updates=True, error_callback=self._polling_error_callback_ref)
                 logger.info(
                     "[%s] Telegram polling restarted after conflict retry %d/%d; health pending getUpdates progress",
                     self.name, self._polling_conflict_count, MAX_CONFLICT_RETRIES)
+                started_ok = True
                 return
             except _PollingLifecycleAbort:
                 return
@@ -2513,7 +2526,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     return
                 # Fall through to fatal on the last retry.
             finally:
-                if self._polling_conflict_recovery_generation == expected_generation:
+                if not started_ok and self._polling_conflict_recovery_generation == expected_generation:
                     self._polling_conflict_recovery_generation = None
         if self._teardown_started:
             return

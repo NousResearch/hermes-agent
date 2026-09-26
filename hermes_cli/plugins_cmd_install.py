@@ -377,7 +377,19 @@ def _install_plugin_core(
             write_catalog_sidecar_record(tmp_target, catalog, installed_revision)
         if allow_removed:
             record["allow_removed"] = True
-        new_metadata = {**old_metadata, plugin_name: record}
+        # Ghost rows (directory manually removed) must not be re-merged into the
+        # sidecar: the next install heals the file instead of carrying them
+        # forward (#122135). Pin retention above already ran on old_metadata, so
+        # a removed-then-reinstalled plugin keeps its pin; only OTHER rows whose
+        # plugins/<name>/ directory is gone are dropped here.
+        stale = sorted(name for name in old_metadata if not (plugins_dir / name).is_dir())
+        if stale:
+            logger.warning(
+                "Dropping stale plugin install metadata for missing directories: %s",
+                ", ".join(stale),
+            )
+        new_metadata = {name: entry for name, entry in old_metadata.items() if name not in stale}
+        new_metadata[plugin_name] = record
         from hermes_cli.plugins_transaction import publish_plugin
 
         try:

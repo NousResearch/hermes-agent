@@ -60,6 +60,27 @@ $script:BoundParams = $PSBoundParameters
 # Under iex, script scope is the caller's session and outlives a run; start
 # each run without the previous run's answer (see Set-LauncherUserPath).
 $script:BinDirOnCallerPath = $null
+
+# --- UTF-8 stdio -----------------------------------------------------------
+# The desktop driver spawns this script without a console (windowsHide) and
+# reads stdout as UTF-8, framing each stage result on one JSON line. A
+# console-less Windows PowerShell 5.1 otherwise falls back to the machine
+# ANSI code page (CP936 on a zh-CN host), so a profile path containing
+# non-ASCII characters is written as invalid UTF-8 and the driver drops the
+# stage with "stdout read error: stream did not contain valid UTF-8".
+# Pin stdout to UTF-8 here, and pass the same encoding to the Python (pm)
+# children that share this pipe. Dot-sourcing loads functions only and must
+# not retarget the caller's console, so this runs for a real invocation.
+if (-not $script:IsDotSourced) {
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    try {
+        [Console]::OutputEncoding = $utf8NoBom
+    } catch {
+        # A detached host can refuse the switch; stdout still writes.
+    }
+    $OutputEncoding = $utf8NoBom
+    $env:PYTHONIOENCODING = "utf-8"
+}
 $RepoUrl = if ($env:HERMES_REPO_URL) { $env:HERMES_REPO_URL } else { "https://github.com/NousResearch/hermes-agent.git" }
 
 # --- BEGIN GENERATED: bootstrap pins (scripts/gen-bootstrap-pins.py) ---

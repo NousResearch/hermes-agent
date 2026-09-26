@@ -493,6 +493,10 @@ _PYTHON_EXCEPTION_LINE_RE = re.compile(
 # a closing quote into the mask turns value corruption into SYNTAX corruption
 # (unterminated quote → shell EOF / SyntaxError).
 _AUTH_HEADER_RE = re.compile(r"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s+)?([^\s\"']+)", re.IGNORECASE)
+# A credential slot holding a template reference (``${VAR}``, ``\${VAR}``, ``$VAR``) is a
+# placeholder, not a secret: masking it corrupts config/template files in read_file and grep
+# output, and real credentials never start with ``$`` (#96529).
+_TEMPLATE_PLACEHOLDER_RE = re.compile(r"^\\?\$(?:\{[A-Za-z_][\w.-]*\}|[A-Za-z_]\w*)$")
 
 # API-key style headers (single opaque value, no scheme word): non-vendor-prefix
 # values would otherwise leak when a curl command is echoed into tool output.
@@ -939,7 +943,9 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         text = _redact_assignments(text, mask_nonreusable=file_read)
 
     if "uthorization" in text or "UTHORIZATION" in text:  # cheapest gate over every casing
-        text = _AUTH_HEADER_RE.sub(lambda m: m.group(1) + (m.group(2) or "") + _mask_token(m.group(3)), text)
+        text = _AUTH_HEADER_RE.sub(
+            lambda m: m.group(0) if _TEMPLATE_PLACEHOLDER_RE.match(m.group(3))
+            else m.group(1) + (m.group(2) or "") + _mask_token(m.group(3)), text)
 
     if ":" in text:
         text = _SECRET_HEADER_RE.sub(lambda m: m.group(1) + _mask_token(m.group(2)), text)

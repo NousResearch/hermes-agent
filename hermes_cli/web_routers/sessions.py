@@ -95,9 +95,9 @@ def _prune_sessions(body: SessionPrune):
             "archived": None if body.include_archived else False,
             **{f: (getattr(body, f) or None) for f in _PRUNE_STR_FILTERS},
             **{f: getattr(body, f) for f in _PRUNE_NUM_FILTERS}}
-        # Same whole-lineage selection prune_sessions applies, so the preview lists what it deletes.
-        skipped_open = db.count_open_prune_matches(**filters, whole_lineages=True)
+        skipped_open = db.count_open_prune_matches(**filters)
         if body.dry_run:
+            # Same whole-lineage selection prune_sessions applies, so the preview lists what it deletes.
             rows = db.list_prune_candidates(**filters, whole_lineages=True)
             return {
                 "ok": True,

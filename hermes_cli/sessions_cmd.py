@@ -687,7 +687,7 @@ def _cmd_prune_or_archive(db, args, action):
     candidates = db.list_prune_candidates(**filters, whole_lineages=prune)
     # Archive expands each matched tip to its compression lineage, so a direct-open count would
     # misdescribe its effect.
-    skipped_open = db.count_open_prune_matches(**filters, whole_lineages=True) if prune else 0
+    skipped_open = db.count_open_prune_matches(**filters) if prune else 0
     if skipped_open:
         print(f"Note: {skipped_open} open session{'' if skipped_open == 1 else 's'} also match these filters but "
               "will be skipped because prune only deletes ended sessions. Use `hermes sessions delete <id>` "

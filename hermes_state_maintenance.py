@@ -256,10 +256,10 @@ class SessionMaintenanceMixin:
         where, params = self._prune_where(older_than_days, source, filters)
         return int(self._read_one(f"SELECT COUNT(*) FROM sessions s WHERE {where}", params)[0])
 
-    def count_open_prune_matches(self, older_than_days: Optional[float] = None, source: str = None, *,
-                                 whole_lineages: bool = False, **filters) -> int:
+    def count_open_prune_matches(self, older_than_days: Optional[float] = None, source: str = None,
+                                 **filters) -> int:
         """Count open sessions a matching prune skips (``ended_at`` guard inverted); visibility-only."""
-        where, params = self._prune_where(older_than_days, source, filters, whole_lineages=whole_lineages)
+        where, params = self._prune_where(older_than_days, source, filters)
         ended_guard = "s.ended_at IS NOT NULL"
         if not where.startswith(ended_guard):
             raise RuntimeError("prune filter lost its ended-session safety guard")

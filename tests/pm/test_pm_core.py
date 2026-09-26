@@ -492,6 +492,65 @@ def test_gc_removes_fetch_cache_archives(pm_env):
         "the live package entry survives gc"
 
 
+def test_gc_dry_run_reports_without_deleting(pm_env, capsys):
+    """The store is writable space; a sweep that deletes on sight destroys
+    entries the user placed by hand. `--dry-run` must show the exact
+    removal list without touching the filesystem — expired partials and
+    superseded generations included, whose collectors unlink/rmtree on
+    sight, so they must not even run."""
+    import os
+    import time
+    from types import SimpleNamespace
+
+    from pm.cli import cmd_gc
+    from pm.download_state import GC_GRACE_SECONDS
+    from pm import paths
+    from pm.install import ensure
+
+    _, runtime, *_ = pm_env
+    ensure("faketool", base_env={})
+    orphan = runtime / "orphan-9.9-nowhere"
+    orphan.mkdir()
+    partial = paths.partials_root() / "deadbeef.part"
+    partial.parent.mkdir(parents=True, exist_ok=True)
+    partial.write_bytes(b"stale bytes")
+    stale = time.time() - GC_GRACE_SECONDS - 60
+    os.utime(partial, (stale, stale))
+    cmd_gc(SimpleNamespace(dry_run=True))
+    out = capsys.readouterr().out
+    assert "would remove orphan-9.9-nowhere" in out
+    assert "generations not scanned" in out
+    assert orphan.is_dir(), "dry run must not delete anything"
+    assert partial.is_file(), "dry run must not collect expired partials"
+
+    cmd_gc(None)
+    assert not orphan.exists()
+    assert not partial.exists(), "a real gc still collects the expired partial"
+
+
+def test_gc_keeps_entries_pinned_in_the_keep_list(pm_env):
+    """A `.gc-keep` pin (one entry name per line, `#` comments) is the
+    safety valve for hand-placed store content; only unpinned orphans
+    sweep."""
+    from pm.cli import cmd_gc
+    from pm.install import ensure
+
+    _, runtime, *_ = pm_env
+    ensure("faketool", base_env={})
+    pinned = runtime / "my-tool"
+    pinned.mkdir()
+    (runtime / ".gc-keep").write_text(
+        "my-tool  # portable CLI placed by hand\n\n# orphans below still sweep\n",
+        encoding="utf-8",
+    )
+    orphan = runtime / "orphan-9.9-nowhere"
+    orphan.mkdir()
+    cmd_gc(None)
+    assert pinned.is_dir(), "an entry pinned in .gc-keep must survive the sweep"
+    assert (runtime / ".gc-keep").is_file()
+    assert not orphan.exists()
+
+
 def test_env_for_never_installs(pm_env):
     from pm import env_for
 

@@ -1,6 +1,7 @@
 """Regression tests for task/session cwd propagation in terminal_tool."""
 
 import json
+import time
 from types import SimpleNamespace
 
 import tools.terminal_tool as terminal_tool
@@ -168,6 +169,83 @@ def test_background_command_prefers_recorded_session_cwd_over_init_time_cwd(monk
     assert len(registry.calls) == 1
     assert registry.calls[0]["cwd"] == "/workspace/live"
     assert registry.calls[0]["session_key"] == task_id
+
+
+def test_background_command_forwards_effective_runtime_deadline(monkeypatch):
+    """A caller timeout becomes an absolute durable deadline on the tracked session."""
+    class FakeEnv:
+        env = {}
+        cwd = "/workspace/live"
+
+    class FakeRegistry:
+        pending_watchers = []
+
+        def __init__(self):
+            self.calls = []
+
+        def spawn_local(self, **kwargs):
+            self.calls.append(kwargs)
+            return SimpleNamespace(id="proc_deadline", pid=1234)
+
+    import tools.process_registry as process_registry_mod
+
+    registry = FakeRegistry()
+    task_id = "deadline-bg"
+    monkeypatch.setattr(terminal_tool, "_active_environments", {task_id: FakeEnv()})
+    monkeypatch.setattr(terminal_tool, "_last_activity", {})
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: _minimal_terminal_config())
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(terminal_tool, "_resolve_container_task_id", lambda value: value or "default")
+    monkeypatch.setattr(
+        terminal_tool, "_check_all_guards",
+        lambda command, env_type, **kwargs: {"approved": True},
+    )
+    monkeypatch.setattr(process_registry_mod, "process_registry", registry)
+
+    before = time.time()
+    result = json.loads(terminal_tool.terminal_tool(
+        command="sleep 1", task_id=task_id, background=True, timeout=17,
+    ))
+
+    assert result["exit_code"] == 0
+    assert len(registry.calls) == 1
+    deadline = registry.calls[0]["runtime_deadline"]
+    assert before + 17 <= deadline <= time.time() + 17
+
+
+def test_background_command_without_timeout_forwards_no_deadline(monkeypatch):
+    class FakeEnv:
+        env = {}
+        cwd = "/workspace/live"
+
+    class FakeRegistry:
+        pending_watchers = []
+
+        def __init__(self):
+            self.calls = []
+
+        def spawn_local(self, **kwargs):
+            self.calls.append(kwargs)
+            return SimpleNamespace(id="proc_daemon", pid=1234)
+
+    import tools.process_registry as process_registry_mod
+
+    registry = FakeRegistry()
+    monkeypatch.setattr(terminal_tool, "_active_environments", {"daemon": FakeEnv()})
+    monkeypatch.setattr(terminal_tool, "_last_activity", {})
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: _minimal_terminal_config())
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(terminal_tool, "_resolve_container_task_id", lambda value: value or "default")
+    monkeypatch.setattr(terminal_tool, "_check_all_guards", lambda *args, **kwargs: {"approved": True})
+    monkeypatch.setattr(process_registry_mod, "process_registry", registry)
+
+    terminal_tool.terminal_tool(command="server", task_id="daemon", background=True)
+
+    assert registry.calls[0]["runtime_deadline"] is None
 
 
 def test_host_local_background_command_bypasses_configured_backend(tmp_path, monkeypatch):

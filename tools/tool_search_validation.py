@@ -14,6 +14,88 @@ from tools.tool_search_catalog import BRIDGE_TOOL_NAMES, _registry_entry
 logger = logging.getLogger("tools.tool_search")
 
 _SCHEMA_LITERAL_KEYS = frozenset({"const", "default", "enum", "example", "examples"})
+_ITEM_ENVELOPE_KEYS = ("item",)
+
+
+def _unwrap_item_envelope(value: Any) -> Tuple[Any, bool]:
+    """Unwrap a single-key dict whose only entry is an ``item`` envelope key.
+
+    Frontier LLMs (Anthropic/Codex/Responses-style tool-call parsing) occasionally emit a
+    JSON-shaped response_item envelope where the schema declares a bare scalar or array
+    element. That is the shape of a tool RESULT item, not of a tool-call argument.
+
+    Nested envelopes (``{"item": {"item": x}}``) collapse to the innermost value; the caller
+    bounds recursion by a depth limit rather than an id-set, because the unwrapped value is a
+    NEW object each step and an id-set would reject it as already-seen.
+    """
+    if not isinstance(value, dict) or len(value) != 1:
+        return value, False
+    [(key, inner)] = value.items()
+    if key not in _ITEM_ENVELOPE_KEYS:
+        return value, False
+    return inner, True
+
+
+_MAX_ENVELOPE_DEPTH = 32
+
+
+def _strip_envelopes(value: Any, depth: int = 0) -> Any:
+    """Iteratively collapse ``{"item": <x>}`` at this level, innermost first."""
+    if depth >= _MAX_ENVELOPE_DEPTH:
+        return value
+    if isinstance(value, dict) and len(value) == 1:
+        unwrapped, did = _unwrap_item_envelope(value)
+        if did:
+            return _strip_envelopes(unwrapped, depth + 1)
+    if isinstance(value, dict):
+        return {k: _strip_envelopes(v, depth + 1) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_strip_envelopes(v, depth + 1) for v in value]
+    return value
+
+
+def _repair_item_envelopes(value: Any) -> Any:
+    """Recursively unwrap every ``{"item": <x>}`` envelope in a tool-call payload.
+
+    Depth-bounded (not id-bounded): the unwrap produces fresh objects each step, so a seen-id
+    set would treat legitimate nested envelopes as already visited. Self-referential input is
+    caught by the depth limit.
+    """
+    return _strip_envelopes(value)
+
+
+def _schema_array_keys(schema: Any) -> frozenset:
+    """Top-level parameter names whose schema declares ``type: array``."""
+    if not isinstance(schema, dict):
+        return frozenset()
+    props = schema.get("properties")
+    if not isinstance(props, dict):
+        return frozenset()
+    return frozenset(
+        name for name, sub in props.items()
+        if isinstance(sub, dict) and sub.get("type") == "array"
+    )
+
+
+def _flatten_single_envelope_lists(value: Any, array_keys: frozenset = frozenset()) -> Any:
+    """Collapse the ``[[...]]`` left behind after unwrapping an array argument's envelope.
+
+    A single-element array whose envelope wrapped the whole array leaves ``{"item": {...}}``
+    unwrapped to a bare dict, which then fails the array schema downstream. Re-wrap those in
+    the one-element list the schema asks for.
+    """
+    if isinstance(value, dict):
+        return {
+            k: ([_flatten_single_envelope_lists(v, array_keys)]
+                if k in array_keys and not isinstance(v, list)
+                else _flatten_single_envelope_lists(v, array_keys))
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        if len(value) == 1 and isinstance(value[0], list):
+            return value[0]
+        return [_flatten_single_envelope_lists(item, array_keys) for item in value]
+    return value
 
 
 def _schema_for_local_validation(node: Any) -> Any:
@@ -71,6 +153,42 @@ def _validation_error(message: str, *, path: str, constraint: str, parameters: A
         hint="Retry tool_call with 'arguments' matching the parameters schema above.")
 
 
+def repair_deferred_call_args(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    """Coerce + unwrap ``{"item": <x>}`` envelopes so dispatch sees the registered shape.
+
+    Public because ``agent/tool_executor._unwrap_tool_search_call`` must dispatch the SAME
+    repaired args it validated; validating a repaired copy while dispatching the original
+    (upstream issue #99270, PR #115020) makes a valid call fail its own schema check.
+    """
+    try:
+        from model_tools import coerce_tool_args
+        candidate_args = coerce_tool_args(name, dict(args))
+    except Exception:
+        logger.debug("Deferred-argument coercion failed for %s", name, exc_info=True)
+        candidate_args = dict(args)
+    schema = {}
+    try:
+        from tools.registry import registry as _registry
+        raw = _registry.get_schema(name)
+        fn = raw.get("function") if isinstance(raw, dict) and raw.get("type") == "function" else raw
+        params = fn.get("parameters") if isinstance(fn, dict) else None
+        if isinstance(params, dict):
+            schema = params
+    except Exception:
+        logger.debug("Deferred-argument schema lookup failed for %s", name, exc_info=True)
+    try:
+        repaired = _flatten_single_envelope_lists(
+            _repair_item_envelopes(candidate_args), _schema_array_keys(schema),
+        )
+        if repaired != candidate_args:
+            logger.debug("tool_call to %r: repaired item-envelope args %r -> %r",
+                         name, candidate_args, repaired)
+            return repaired
+    except Exception:  # pragma: no cover — never block on a repair bug
+        logger.debug("Item-envelope repair failed for %s", name, exc_info=True)
+    return candidate_args
+
+
 def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str]:
     """Validate ``tool_call`` arguments against the deferred tool's schema. Models invoke
     deferred tools "blind" (schema unseen) and omit required args; without this, the opaque
@@ -103,14 +221,9 @@ def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str
         if _schema_has_external_ref(validation_schema):
             logger.debug("Skipping local deferred-argument validation for %s: external $ref", name)
             return None
-        # Validate the repaired shape dispatch will see; copy because coerce_tool_args may
-        # normalize in place (dispatch re-coerces canonically).
-        try:
-            from model_tools import coerce_tool_args
-            candidate_args = coerce_tool_args(name, dict(args))
-        except Exception:
-            logger.debug("Deferred-argument coercion failed for %s", name, exc_info=True)
-            candidate_args = dict(args)
+        # Validate the repaired shape dispatch will see (dispatch re-coerces canonically).
+        candidate_args = repair_deferred_call_args(name, args)
+        repaired_args = candidate_args
         try:
             from jsonschema.exceptions import best_match
             from jsonschema.validators import validator_for

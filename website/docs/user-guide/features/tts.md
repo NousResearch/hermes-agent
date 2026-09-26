@@ -122,7 +122,7 @@ MiniMax TTS selects its region, endpoint, and credential together:
 - If `region` is omitted, `MINIMAX_API_KEY` keeps precedence for backward compatibility. If only `MINIMAX_CN_API_KEY` is configured, Hermes selects `cn`.
 - An explicitly selected region must have its matching credential. Hermes never borrows the other region's key. A `base_url` override does not change the selected credential, and an override pointing at the other region's official endpoint is rejected.
 
-**Speed control**: The global `tts.speed` value applies to all providers by default. Each provider can override it with its own `speed` setting (e.g., `tts.openai.speed: 1.5`). Provider-specific speed takes precedence over the global value. Default is `1.0` (normal speed).
+**Speed control**: The global `tts.speed` value applies to all providers by default. Each provider can override it with its own `speed` setting (e.g., `tts.openai.speed: 1.5`). Provider-specific speed takes precedence over the global value. Default is `1.0` (normal speed). A `speed` the agent passes to the `text_to_speech` tool for one reply (for example "read this slowly") overrides both, including a command provider's own `speed`. The default config already sets `tts.xai.speed: 1.0`, so change the xAI speed there rather than through the global value.
 
 ### Gemini Persona Prompts
 
@@ -367,7 +367,7 @@ Your command template can reference these placeholders. Hermes substitutes them 
 | `{format}`       | `mp3` / `wav` / `ogg` / `flac`                       |
 | `{voice}`        | `tts.providers.<name>.voice`, empty when unset       |
 | `{model}`        | `tts.providers.<name>.model`                         |
-| `{speed}`        | Resolved speed multiplier (provider or global)       |
+| `{speed}`        | Resolved speed multiplier (per-call, provider or global) |
 
 Use `{{` and `}}` for literal braces.
 

@@ -1207,7 +1207,7 @@ tts:
 
 这控制 `text_to_speech` 工具和语音模式中的口语回复（CLI 中的 `/voice tts` 或消息 gateway）。
 
-**速度回退层次：** provider 特定速度（例如 `tts.edge.speed`）→ 全局 `tts.speed` → `1.0` 默认值。设置全局 `tts.speed` 以在所有 provider 上应用统一速度，或按 provider 覆盖以进行精细控制。
+**速度回退层次：** `text_to_speech` 工具的单次调用 `speed` → provider 特定速度（例如 `tts.edge.speed`）→ 全局 `tts.speed` → `1.0` 默认值。设置全局 `tts.speed` 以在所有 provider 上应用统一速度，或按 provider 覆盖以进行精细控制。
 
 ## 显示设置
 

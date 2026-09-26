@@ -204,6 +204,104 @@ def test_repin_keeps_local_files_backs_up_edits_and_follows_manifest_rename(worl
     assert any("plugins-backup" in w for w in result["warnings"]) and any("renamed" in w for w in result["warnings"])
 
 
+@pytest.mark.parametrize("via", ["url", "catalog"])
+def test_update_of_a_subdir_install_keeps_files_the_user_created_or_edited(world, tmp_path, monkeypatch, via):
+    """A subdirectory install carries no ``.git``; both update paths must preserve user config/data."""
+    mono = tmp_path / "mono"
+    src = mono / "plugins" / "sub-plugin"
+    src.mkdir(parents=True)
+    (src / "plugin.yaml").write_text("name: sub-plugin\nversion: 1.0.0\ndescription: d\n")
+    (src / "__init__.py").write_text("def register(ctx):\n    pass\n")
+    (src / "config.yaml.example").write_text("endpoint: default\n")
+    (src / "desktop").mkdir()
+    (src / "desktop" / "plugin.js").write_text("export default { id: \"v1\" }\n")
+    (src / "server.js").write_text("console.log('v1')\n")
+    (src / "dashboard").mkdir()
+    (src / "dashboard" / "manifest.json").write_text("{}")
+    (src / "hooks").mkdir()
+    (src / "hooks" / "run.cjs").write_text("module.exports = 1\n")
+    sp.run(["git", "init", "-q"], cwd=mono, check=True, env=_GIT_ENV)
+    pin = {"sha": _commit(mono, "v1")}
+
+    def entry():
+        return pc_cat.PluginCatalogEntry(
+            name="sub-plugin",
+            repo=mono.as_uri(),
+            sha=pin["sha"],
+            description="d",
+            maintainer="t",
+            subdir="plugins/sub-plugin",
+        )
+
+    monkeypatch.setattr(pc_cat, "load_catalog", lambda catalog_dir=None: [entry()])
+    if via == "catalog":
+        target = cat.install_catalog_entry(entry(), force=False)[0]
+    else:
+        target = pc._install_plugin_core(f"{mono.as_uri()}#plugins/sub-plugin", force=False)[0]
+    assert not (target / ".git").exists()
+
+    (target / "config.yaml").write_text("endpoint: mine\n")
+    (target / "data").mkdir()
+    (target / "data" / "state.json").write_text("{}")
+
+    (src / "plugin.yaml").write_text("name: sub-plugin\nversion: 2.0.0\ndescription: d\n")
+    (src / "config.yaml.example").write_text("endpoint: new-default\n")
+    shutil.rmtree(src / "desktop")
+    (src / "server.js").unlink()
+    shutil.rmtree(src / "dashboard")
+    shutil.rmtree(src / "hooks")
+    pin["sha"] = _commit(mono, "v2")
+    assert pc.dashboard_update_user_plugin("sub-plugin")["ok"] is True
+
+    assert "version: 2.0.0" in (target / "plugin.yaml").read_text()
+    assert (target / "config.yaml").read_text() == "endpoint: mine\n"
+    assert (target / "data" / "state.json").read_text() == "{}"
+    assert not (target / "desktop").exists()
+    assert not (target / "server.js").exists()
+    assert not (target / "dashboard").exists() and not (target / "hooks" / "run.cjs").exists()
+
+
+def test_repin_keeps_a_wholly_ignored_data_dir_in_a_git_checkout(world):
+    """A single ``!! data/`` status entry must preserve every file below that ignored directory."""
+    repo = world["repo"]
+    (repo / ".gitignore").write_text("data/\n.venv/\nnode_modules/\n")
+    world["state"]["pin"] = _commit(repo, "ignore data")
+    target = cat.install_catalog_entry(pc_cat.get_live_catalog_entry("cat-plugin"), force=False)[0]
+    assert (target / ".git").exists()
+
+    (target / "data" / "db").mkdir(parents=True)
+    (target / "data" / "db" / "index.db").write_text("user data")
+    # An ignored venv always holds symlinks (bin/python); it is a reproducible artefact, not user state.
+    (target / ".venv" / "bin").mkdir(parents=True)
+    (target / ".venv" / "bin" / "python").symlink_to("/usr/bin/python3")
+    (target / ".venv" / "pyvenv.cfg").write_text("home = /usr/bin")
+    (target / "node_modules" / "x").mkdir(parents=True)
+    (target / "node_modules" / "x" / "index.js").write_text("module.exports = 1")
+
+    (repo / "__init__.py").write_text("def register(ctx):\n    pass  # v3\n")
+    world["state"]["pin"] = _commit(repo, "v3")
+    assert pc.dashboard_update_user_plugin("cat-plugin")["unchanged"] is False
+
+    assert _head(target) == world["state"]["pin"]
+    assert (target / "data" / "db" / "index.db").read_text() == "user data"
+    # Excluded dependency dirs are not carried at all: a partial copy would be a broken install.
+    assert not (target / ".venv").exists() and not (target / "node_modules").exists()
+
+    # A symlink in the ignored set is never followed into the update: it fails closed, naming the path,
+    # and the live plugin stays at its current revision with its user data.
+    published = world["state"]["pin"]
+    outside = repo.parent / "outside.yaml"
+    outside.write_text("secret")
+    (target / "data" / "link.yaml").symlink_to(outside)
+    (repo / "__init__.py").write_text("def register(ctx):\n    pass  # v4\n")
+    world["state"]["pin"] = _commit(repo, "v4")
+    result = pc.dashboard_update_user_plugin("cat-plugin")
+    assert result["ok"] is False and "data/link.yaml" in result["error"]
+    assert _head(target) == published
+    assert (target / "data" / "link.yaml").is_symlink()
+    assert (target / "data" / "db" / "index.db").read_text() == "user data"
+
+
 def test_kill_list_covers_update_enable_and_load_of_an_installed_plugin(world, tmp_path, monkeypatch):
     """A URL install whose name lands on the kill list AFTER install must stop pulling, cannot be enabled
     and is refused at load; an install made with --allow-removed keeps working."""

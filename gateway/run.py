@@ -419,6 +419,26 @@ _ENDPOINT_UNREACHABLE_MARKERS = (
 _GATEWAY_ENDPOINT_UNREACHABLE_RE = re.compile(
     "(" + "|".join(_ENDPOINT_UNREACHABLE_MARKERS) + ")", re.IGNORECASE)
 
+def _venv_abi_mismatch(venv_dir: Path) -> bool:
+    """True only when ``pyvenv.cfg`` PROVES this venv belongs to another interpreter.
+
+    A leftover pre-PM in-tree venv (3.11) must never be added to a managed store-Python
+    (3.14) process: its site-packages wins the sys.path race below and compiled
+    extensions become unimportable (`No module named 'pydantic_core._pydantic_core'`
+    — a cp311 .pyd cannot load under 3.14). Unreadable/absent metadata stays permissive
+    so every payload that worked before still works.
+    """
+    try:
+        text = (venv_dir / "pyvenv.cfg").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    match = re.search(r"^version_info\s*=\s*(\d+)\.(\d+)", text, re.MULTILINE)
+    if not match:
+        return False
+    return (int(match.group(1)), int(match.group(2))) != (sys.version_info.major,
+                                                          sys.version_info.minor)
+
+
 def _ensure_windows_gateway_venv_imports() -> None:
     """Make detached Windows gateway runs see the Hermes venv packages.
 
@@ -442,6 +462,11 @@ def _ensure_windows_gateway_venv_imports() -> None:
         if venv_key in seen:
             continue
         seen.add(venv_key)
+
+        if _venv_abi_mismatch(resolved_venv):
+            # Leave the managed interpreter's own dependency environment alone; see
+            # _venv_abi_mismatch for the pydantic_core failure this prevents.
+            continue
 
         site_packages = resolved_venv / "Lib" / "site-packages"
         if not site_packages.exists():

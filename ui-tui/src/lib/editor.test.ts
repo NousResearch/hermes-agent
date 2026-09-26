@@ -71,4 +71,13 @@ describe('resolveEditor', () => {
   it('uses notepad.exe on Windows when no env override', () => {
     expect(resolveEditor({ PATH: dir }, 'win32')).toEqual(['notepad.exe'])
   })
+
+  it('resolves editor args with shell:true on win32 (regression: .CMD shims)', () => {
+    // VS Code's `code` is `code.CMD` on Windows. Without shell:true,
+    // spawnSync returns ENOENT because CreateProcess only appends .exe.
+    // This test verifies resolveEditor returns the correct argv; the
+    // shell:true guard lives in openInEditor() where spawnSync is called.
+    const argv = resolveEditor({ EDITOR: 'code --wait', PATH: dir }, 'win32')
+    expect(argv).toEqual(['code', '--wait'])
+  })
 })

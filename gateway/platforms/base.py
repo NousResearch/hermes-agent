@@ -3568,7 +3568,9 @@ class BasePlatformAdapter(ABC):
             result = await self._send_with_retry(
                 chat_id=event.source.chat_id, content=text, reply_to=_reply_anchor_for_event(event),
                 metadata=_mark_notify_metadata(thread_meta))
-            delivery_succeeded = bool(result.success)
+            # Tolerant read: a transport (or a test stub) that returns no SendResult reads as
+            # unconfirmed, exactly like a failed send; the ephemeral path below never touched it.
+            delivery_succeeded = bool(getattr(result, "success", False))
             if eph_ttl > 0 and result.success and result.message_id:
                 self._schedule_ephemeral_delete(event.source.chat_id, result.message_id, eph_ttl)
         finally:
@@ -4059,7 +4061,27 @@ class BasePlatformAdapter(ABC):
                 else:
                     self._release_session_guard(session_key, guard=command_guard)
             raise
+        finally:
+            # The command guard's lifecycle owns anything still parked on it (see the helper).
+            await self._complete_stranded_review_delivery(command_guard)
         await self._drain_pending_after_session_command(session_key, command_guard)
+
+    async def _complete_stranded_review_delivery(self, command_guard: asyncio.Event) -> None:
+        """Complete a review-ownership completion left parked on a reset-like command's guard.
+
+        A turn whose task started under the previous guard but reaches the runner's carrier
+        lookup after /stop, /new or /reset swapped it parks its completion on the COMMAND
+        guard: the command's inline dispatch reads that guard only while its own handler runs,
+        and the turn's task reads the guard it started under. Nobody else reads the command
+        guard before it is released, so the turn's live-turn token would leak for the process
+        lifetime and every later automatic review on the session would be refused as
+        ``live_turn_active``. Completed unconfirmed (the turn was interrupted or its reply
+        never went out), with the usual owner-tagged skip line. Never done from the generic
+        guard release: an outer task legitimately drops a guard that still carries a nested
+        turn's completion which the inline dispatch holds and will take."""
+        stranded = self._take_review_delivery_callback(None, command_guard)
+        if callable(stranded):
+            await self._complete_review_delivery(stranded, delivery_succeeded=False)
 
     async def handle_message(self, event: MessageEvent) -> None:
         """Process an incoming message; returns quickly by spawning a background
@@ -4551,7 +4573,8 @@ class BasePlatformAdapter(ABC):
 
     @staticmethod
     def _take_review_delivery_callback(
-        event: MessageEvent, interrupt_event: Optional[asyncio.Event]) -> Optional[Callable[..., Any]]:
+        event: Optional[MessageEvent], interrupt_event: Optional[asyncio.Event],
+    ) -> Optional[Callable[..., Any]]:
         """Detach THIS turn's review-ownership completion from both carriers (Event first). Taken
         the moment the handler returns: a drain handoff re-uses the session Event, and the
         follow-up turn attaches its own callback there while this turn is still unwinding. An

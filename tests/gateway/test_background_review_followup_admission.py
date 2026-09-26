@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import contextvars
 import threading
 import time
@@ -1556,3 +1557,78 @@ async def test_nested_retry_review_supersedes_the_retracted_outgoing_candidate(
     assert review_admission.owner_tag(profile_key, session_id) in superseded[0]
     assert session_id not in superseded[0]
     assert "first" not in superseded[0]
+
+
+@pytest.mark.asyncio
+async def test_reset_command_guard_swap_does_not_strand_the_turns_review_ownership(
+    monkeypatch,
+):
+    """/stop (like /new and /reset) swaps the session guard for a command-scoped Event while
+    the runner handles it. A turn whose task started under the old guard but reaches the
+    runner's carrier lookup after the swap parks its review-ownership completion on the
+    COMMAND guard: the command's inline dispatch reads that guard only while its own handler
+    runs, and the turn's task reads the guard it started under. The command's lifecycle must
+    complete what it strands, or the session's live-turn token leaks for the process lifetime
+    and every later automatic review is refused as ``live_turn_active``.
+    """
+    monkeypatch.setattr(BasePlatformAdapter, "__abstractmethods__", frozenset())
+    adapter = BasePlatformAdapter(
+        PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM
+    )
+    monkeypatch.setattr(adapter.config, "typing_indicator", False, raising=False)
+    runner = object.__new__(GatewayRunner)
+    session_id = "stop-swap-session"
+    session_key = "stop-swap-key"
+    profile_key = review_admission.current_profile_key()
+    resolving, swapped, parked = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    sends, guards = [], {}
+
+    async def _resolve(event, _source):
+        resolving.set()
+        await swapped.wait()  # /stop lands while the turn is resolving its session
+        return event.source, types.SimpleNamespace(session_id=session_id), session_key
+
+    async def _prepare(*_args):
+        guards["at_park"] = adapter._active_sessions.get(session_key)
+        parked.set()
+        return "stale", []  # no turn: the interrupt made this generation stale
+
+    runner._hmwa_resolve_session = _resolve
+    runner._hmwa_prepare_turn = _prepare
+    runner._delivery_adapter_for = lambda _source: adapter
+
+    async def _handler(event):
+        if (event.text or "").startswith("/stop"):
+            # The busy /stop path: interrupt + ack, never an agent turn.
+            return "stopped"
+        return await runner._handle_message_with_agent(
+            event, event.source, session_key, 1
+        )
+
+    async def _send(chat_id, content, reply_to=None, metadata=None):
+        sends.append(content)
+        if content == "stopped":
+            # The ack is on the wire: the turn resumes and parks its completion meanwhile.
+            swapped.set()
+            await parked.wait()
+        return SendResult(success=True, message_id=f"sent-{len(sends)}")
+
+    adapter.set_message_handler(_handler)
+    adapter.send = _send
+
+    first_guard = asyncio.Event()
+    adapter._active_sessions[session_key] = first_guard
+    task = asyncio.create_task(
+        adapter._process_message_background(_event(text="first"), session_key)
+    )
+    adapter._track_session_task(session_key, task)
+    await resolving.wait()
+
+    await adapter._handle_message_while_active(_event(text="/stop"), session_key)
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    assert sends[0] == "stopped"
+    assert guards["at_park"] is not first_guard, "the turn parked on the command guard"
+    assert adapter._active_sessions == {}
+    assert review_admission.other_live_turn(session_id, None, profile_key) is False

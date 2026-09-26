@@ -1412,25 +1412,28 @@ class CLICommandsMixin:
         if not isinstance(parent_prompt, str) or not parent_prompt:
             with suppress(Exception):
                 parent_prompt = (self._session_db.get_session(parent_session_id) or {}).get("system_prompt")
+        # The title goes in the same transaction; one the row cannot take leaves the branch untitled.
         try:
-            self._session_db.create_session(
+            title_error = self._session_db.create_session_with_title(
                 session_id=new_session_id, source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
-                model=self.model, parent_session_id=parent_session_id, system_prompt=parent_prompt or None,
+                title=branch_title, model=self.model, parent_session_id=parent_session_id,
+                system_prompt=parent_prompt or None,
                 model_config={"max_iterations": self.max_turns, "reasoning_config": self.reasoning_config,
                               "_branched_from": parent_session_id})
         except Exception as e:
             return _cp(f"  Failed to create branch session: {e}")
         _end_current_session(self, "branched")
-        # Best-effort chunked copy (a failed copy still yields a usable branch); the api_content
-        # sidecar lets the branch's first turn replay the parent's exact wire bytes (warm cache).
-        with suppress(Exception):
+        # Best-effort chunked copy (a failed copy still yields a usable branch, and the reply says so);
+        # the api_content sidecar lets the branch's first turn replay the parent's exact wire bytes.
+        copy_error = None
+        try:
             self._session_db.append_messages_batch(new_session_id, [
                 {"role": msg.get("role", "user"), "tool_name": msg.get("tool_name") or msg.get("name"),
                  "api_content": extract_api_content_sidecar(msg),
                  **{k: msg.get(k) for k in _BRANCH_COPY_KEYS}}
                 for msg in self.conversation_history], chunk_rows=500)
-        with suppress(Exception):
-            self._session_db.set_session_title(new_session_id, branch_title)
+        except Exception as e:
+            copy_error = f"History copy incomplete: {e}"
         # Switch to the new session
         self._transfer_session_yolo(self.session_id, new_session_id)
         self.session_id, self.session_start, self._pending_title = new_session_id, now, None
@@ -1439,9 +1442,12 @@ class CLICommandsMixin:
         if self.agent:
             self.agent.session_start = now
         _sync_agent_to_session(self, new_session_id, parent_session_id=parent_session_id, reason="branch")
-        msg_count = len([m for m in self.conversation_history if m.get("role") == "user"])
-        _cp(f"  ⑂ Branched session \"{branch_title}\" ({_plural(msg_count, 'user message')})",
-            f"  Original session: {parent_session_id}", f"  Branch session:   {new_session_id}")
+        # Chunks commit independently: only the durable child can say what was copied.
+        msg_count = sum(m.get("role") == "user" for m in self._session_db.get_messages(new_session_id))
+        named = "" if title_error else f' "{branch_title}"'
+        _cp(f"  ⑂ Branched session{named} ({_plural(msg_count, 'user message')})",
+            f"  Original session: {parent_session_id}", f"  Branch session:   {new_session_id}",
+            *(f"  ⚠ {note}" for note in (title_error, copy_error) if note))
 
     # ---- /worktree ------------------------------------------------------------------------
     def _handle_worktree_command(self, cmd_original: str) -> None:

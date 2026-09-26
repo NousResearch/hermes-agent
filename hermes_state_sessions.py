@@ -300,7 +300,7 @@ class SessionSessionsMixin:
         chat_id: str = None, chat_type: str = None, thread_id: str = None,
         parent_session_id: str = None, cwd: str = None, profile_name: Optional[str] = None,
         git_repo_root: str = None, origin_json: str = None, display_name: str = None,
-        transport_profile: Optional[str] = None,
+        transport_profile: Optional[str] = None, title: Optional[str] = None,
     ) -> None:
         """Upsert a session row, never overwriting what an earlier writer set (the gateway creates a
         bare row before create_session carries the real model/prompt) — the one exception is the
@@ -330,9 +330,13 @@ class SessionSessionsMixin:
         deep links, the fail-closed owner ladder) treat NULL as unowned: the session vanishes from the
         sidebar even though its transcript is intact (#99222). Stores outside the profile tree (explicit
         ``db_path`` in tests, ad-hoc copies) derive nothing and keep NULL — never guess.
+
+        ``title`` (``user`` provenance) is written in the same transaction, so a refused title
+        (ValueError: invalid, or in use) leaves no row behind.
         """
         if not (profile_name or "").strip():
             profile_name = self._own_profile_name()
+        title = self.sanitize_title(title)
         def _do(conn):
             system_prompt_hash = self._store_system_prompt(conn, system_prompt)
             conn.execute(
@@ -391,6 +395,8 @@ class SessionSessionsMixin:
                 self._delete_unreferenced_system_prompts(conn)
             if parent_session_id:
                 self._inherit_parent_session_metadata(conn, session_id)
+            if title:
+                self._write_session_title(conn, session_id, title, self.TITLE_SOURCE_USER)
         # Transcript-critical: a failed row creation aborts the turn.
         self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 
@@ -398,6 +404,17 @@ class SessionSessionsMixin:
         """Create (upsert) a session record. Returns the session_id."""
         self._insert_session_row(session_id, source, **kwargs)
         return session_id
+
+    def create_session_with_title(self, session_id: str, source: str, title: Optional[str], **kwargs) -> Optional[str]:
+        """Create (upsert) a session row with ``title`` in the same transaction. A title the row cannot
+        take (invalid, or held by another session) leaves it untitled instead: the reason is returned,
+        None when nothing was refused. A caller reports only the title the row holds."""
+        try:
+            self.create_session(session_id, source, title=title, **kwargs)
+            return None
+        except ValueError as exc:
+            self.create_session(session_id, source, **kwargs)
+            return str(exc)
 
     def ensure_session(self, session_id: str, source: str = "unknown", model: str = None, **kwargs) -> str:
         """Ensure a session row exists (upsert). Accepts optional kwargs."""

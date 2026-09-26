@@ -112,3 +112,21 @@ async def test_here_or_no_thread_branches_in_place(store, text, adapter):
         # ``--here`` never even asks the platform for a thread.
         assert adapter.calls == ([] if "--here" in text else [("123", "side quest")])
     assert "side quest" in reply
+
+
+@pytest.mark.asyncio
+async def test_branch_reply_names_only_the_title_the_child_row_holds(store):
+    """``/branch <name>`` with a name another session holds: the child is created untitled, and the
+    reply must not claim the name and must say why it was refused."""
+    source = _discord_channel_source()
+    parent = _seed(store, source)
+    store._db.create_session("holder", "discord")
+    store._db.set_session_title("holder", "taken")
+    runner = _runner(store, None)
+
+    reply = await runner._handle_branch_command(MessageEvent(text="/branch taken", source=source))
+
+    child = store.get_or_create_session(source)
+    assert child.session_id != parent.session_id
+    assert store._db.get_session_title(child.session_id) is None
+    assert "**taken**" not in reply and "already in use" in reply

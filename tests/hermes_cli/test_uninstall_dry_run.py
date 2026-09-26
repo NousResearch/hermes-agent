@@ -32,6 +32,7 @@ def test_dry_run_prints_plan_without_mutating(monkeypatch, tmp_path, capsys):
     assert called is False
     assert "Dry run" in output
     assert str(project_root) in output
+    assert "git history" in output
     assert str(hermes_home) in output
     assert project_root.exists()
     assert hermes_home.exists()

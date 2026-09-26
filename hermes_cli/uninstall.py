@@ -700,6 +700,7 @@ def run_uninstall(args):
     print(f"  Config:  {hermes_home / 'config.yaml'}")
     print(f"  Secrets: {hermes_home / '.env'}")
     print(f"  Data:    {hermes_home / 'cron/'}, {hermes_home / 'sessions/'}, {hermes_home / 'logs/'}")
+    print("  The code checkout is deleted with its git history, without backup.")
     print()
 
     if named_profiles:
@@ -775,6 +776,7 @@ def _print_uninstall_dry_run(*, project_root: Path, hermes_home: Path, full_unin
     print("  • Hermes wrapper scripts and Hermes-managed node/npm/npx symlinks")
     print("  • Desktop Chat GUI artifacts")
     print(f"  • Code checkout: {project_root}")
+    print("    (includes its git history, which is not backed up)")
     if not full_uninstall:
         print(f"  • Keep Hermes config/data: {hermes_home}")
     else:

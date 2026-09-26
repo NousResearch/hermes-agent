@@ -213,7 +213,7 @@ def _resolve_worktree_base(repo_root: str, fetch_timeout: float = 5,
     branch's upstream, refreshed; (2) the remote default branch (``origin/HEAD``), refreshed;
     (3) local ``HEAD``. The fetch is skipped when ``FETCH_HEAD`` is younger than
     *freshness_window* s, capped at *fetch_timeout*, and never retried: on failure the cached
-    remote-tracking ref is used (the pre-push stale-base gate backstops genuine staleness).
+    remote-tracking ref is used, and the banner label says it is cached or timed out.
     """
     from hermes_cli._subprocess_compat import noninteractive_git_env
 

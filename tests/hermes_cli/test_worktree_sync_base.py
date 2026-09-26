@@ -164,7 +164,7 @@ class TestResolveWorktreeBaseStartupCost:
         assert len(fetches) == 1, "timeout must not cascade into a second fetch"
         assert elapsed < 5, f"fallback path took {elapsed:.1f}s — must be fast"
         # The cached ref is the clone-time origin/main (pre-advance), which is
-        # still a valid base — staleness is backstopped by the pre-push gate.
+        # still a valid base; the "cached" label above discloses the staleness.
         resolved = _run(["git", "rev-parse", base_ref], clone).stdout.strip()
         assert resolved == stale_local_head
 

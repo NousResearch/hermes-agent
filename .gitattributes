@@ -2,6 +2,15 @@
 web/package-lock.json linguist-generated=true
 uv.lock text eol=lf
 
+# Default every text file to LF, in the index and on checkout. The extension
+# rules below name the common source types, but not extensionless scripts
+# (`hermes`, `scripts/hermes-gateway`, the s6 `run` files under `docker/`),
+# `*.nix`, `*.txt`, `*.jsonl` or `*.patch`. With Git for Windows' default
+# `core.autocrlf=true` those check out as CRLF, which breaks shebang lines and
+# flips any fixture a test compares byte-for-byte. `text=auto` leaves binaries
+# alone; the rules below still win where they differ (`*.ps1` stays CRLF).
+* text=auto eol=lf
+
 # Enforce LF for scripts that run inside Linux containers.
 # Without this, Windows checkout converts to CRLF and breaks `exec` in the
 # container entrypoint with "no such file or directory".

@@ -545,3 +545,47 @@ describe('ChatSidebar event socket reconnect', () => {
     expect(FakeWebSocket.instances).toHaveLength(3)
   })
 })
+
+describe('ChatSidebar model badge', () => {
+  beforeEach(() => {
+    apiMocks.getModelInfo.mockResolvedValue({
+      capabilities: { supports_reasoning: false },
+      model: 'test/model'
+    })
+  })
+
+  it('names the model that is actually answering while a fallback is active', async () => {
+    apiMocks.getModelInfo.mockResolvedValue({
+      active_model: 'backup/model-b',
+      active_model_provider: 'openrouter',
+      capabilities: { supports_reasoning: false },
+      fallback_active: true,
+      model: 'primary/model-a'
+    })
+    const { ChatSidebar } = await import('./ChatSidebar')
+
+    await render(<ChatSidebar channel="chat-1" />)
+
+    await vi.waitFor(() => expect(container.textContent).toContain('model-b'))
+    const marker = container.querySelector('[aria-label="running on a fallback model"]')
+    expect(marker).not.toBeNull()
+    // Tooltip names both: what is answering and what config says.
+    expect(marker?.getAttribute('title')).toContain('model-b')
+    expect(marker?.getAttribute('title')).toContain('model-a')
+  })
+
+  it('keeps the configured model when nothing is substituted', async () => {
+    apiMocks.getModelInfo.mockResolvedValue({
+      active_model: 'primary/model-a',
+      capabilities: { supports_reasoning: false },
+      fallback_active: false,
+      model: 'primary/model-a'
+    })
+    const { ChatSidebar } = await import('./ChatSidebar')
+
+    await render(<ChatSidebar channel="chat-1" />)
+
+    await vi.waitFor(() => expect(container.textContent).toContain('model-a'))
+    expect(container.querySelector('[aria-label="running on a fallback model"]')).toBeNull()
+  })
+})

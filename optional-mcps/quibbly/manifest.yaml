@@ -1,0 +1,42 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: quibbly
+description: 'LinkedIn inbox: conversations, connections, video views, follow-ups, notes, and reply drafts.'
+source: https://quibbly.co/docs/mcp
+
+# Official vendor-hosted remote MCP (URL-only; Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (RFC 9728 protected-resource metadata advertised on the 401
+# WWW-Authenticate header -> AS metadata with registration_endpoint, PKCE
+# S256); Hermes's MCP client + mcp_oauth_manager handle discovery, PKCE,
+# token exchange, and refresh.
+# Needs a Quibbly account (Solo Pro or team plan) with the Quibbly Chrome
+# extension's Inbox on, which syncs the LinkedIn data the tools read.
+
+transport:
+  type: http
+  url: https://server.quibbly.co/mcp
+
+auth:
+  type: oauth
+
+# No exclusions (31 tools). Nothing on this surface sends a LinkedIn
+# message: draft_reply only queues a draft that the user sends by hand in
+# Quibbly. Writes are limited to the user's own drafts, follow-ups, notes,
+# tags, CRM-link/sync markers, personal teleprompter scripts, and
+# short-lived draft attachments.
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - quibbly
+  hosts:
+    - quibbly.co
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  Quibbly (or run `hermes mcp login quibbly`). Approve access,
+  then restart the session so tools load. Tools read the LinkedIn
+  data synced by the Quibbly Chrome extension, so turn Inbox on there.

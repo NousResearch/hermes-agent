@@ -1210,3 +1210,92 @@ def test_local_turn_relays_utf8_reply_under_a_gbk_default_codec(tmp_path, monkey
 
     assert bot_mode_dm._run_local_turn(argv, str(dm_file)) == 0
     assert reply in capsys.readouterr().out
+
+
+def test_the_child_bootstrap_entry_really_reaches_a_generation(tmp_path, monkeypatch):
+    """The FIXED ``__main__`` shape must work at runtime, not just parse.
+
+    ``scripts/check_bare_script_activation.py`` is a static check: it can see that
+    a child imports ``hermes_bootstrap`` and puts the repo root on ``sys.path``,
+    but not that those two steps actually make a dependency importable. That gap
+    is not hypothetical — an ``__main__`` that imported the bootstrap WITHOUT the
+    ``sys.path`` insert shipped on ``tools/neutts_synth.py``, passed every static
+    check, and still died on ``numpy`` at runtime, because ``sys.path[0]`` is the
+    script's own directory and the narrow ``except ModuleNotFoundError`` swallowed
+    the miss.
+
+    So execute both shapes under an interpreter stripped of site-packages and
+    assert the fixed one puts the committed generation on ``sys.path`` while the
+    decorative one does not. Same hermetic PM state as the invariant above.
+    """
+    from pm.environments import install_state_dir, runtime_facts_path, site_packages
+
+    repo_root = Path(bot_mode_dm.__file__).resolve().parents[1]
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    environment = install_state_dir(repo_root) / "environments" / "child-entry" / "venv"
+    selected = site_packages(environment)
+    selected.mkdir(parents=True)
+    (environment / "pyvenv.cfg").write_text("home = test", encoding="utf-8")
+    runtime_facts_path(repo_root).write_text(json.dumps({
+        "schema": 1, "packages": {"venv": {"environment": str(environment)}}}), encoding="utf-8")
+
+    # A real child under tools/ derives the repo root from its own __file__.
+    fixed = "\n".join([
+        "import sys",
+        "from pathlib import Path",
+        "sys.path.insert(0, str(Path(__file__).resolve().parent.parent))",
+        "try:",
+        "    import hermes_bootstrap  # noqa: F401",
+        "except ModuleNotFoundError as exc:",
+        "    if exc.name != 'hermes_bootstrap':",
+        "        raise",
+        f"print('REACHED', {str(selected)!r} in sys.path)",
+    ])
+    # Same body with no sys.path insert: hermes_bootstrap is then unimportable
+    # (the repo root is not on the path), the narrow except swallows the miss, and
+    # no generation is ever selected.
+    decorative = "\n".join([
+        "import sys",
+        "try:",
+        "    import hermes_bootstrap  # noqa: F401",
+        "except ModuleNotFoundError as exc:",
+        "    if exc.name != 'hermes_bootstrap':",
+        "        raise",
+        f"print('REACHED', {str(selected)!r} in sys.path)",
+    ])
+
+    # No PYTHONPATH: a real child spawned as `python tools/foo.py` has sys.path[0]
+    # = tools/ and nothing else pointing at the repo root. Injecting it here would
+    # make the decorative shape pass and the test would prove nothing.
+    env = {**os.environ, "HERMES_HOME": str(tmp_path / "home")}
+    env.pop("PYTHONPATH", None)
+
+    # Run each shape as a REAL script inside tools/, exactly as the spawn does.
+    # `python -c` is not a stand-in: it inherits the test venv's own site-packages
+    # (where hermes_bootstrap is importable through the editable install), so
+    # hermes_bootstrap resolves and BOTH shapes "pass" — the test would prove
+    # nothing. A script under tools/ gets sys.path[0] = tools/ and no repo root,
+    # which is the condition the sys.path insert exists to fix.
+    results = {}
+    for name, body in (("fixed", fixed), ("decorative", decorative)):
+        script = repo_root / "tools" / f"_child_entry_probe_{name}.py"
+        script.write_text(body, encoding="utf-8")
+        try:
+            result = subprocess.run(
+                [sys.executable, "-S", str(script)],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=300, env=env, cwd=str(repo_root),
+            )
+        finally:
+            script.unlink(missing_ok=True)
+        results[name] = (result.stdout, result.stderr)
+
+    assert "REACHED True" in results["fixed"][0], (
+        "the FIXED __main__ shape did not put the committed generation on sys.path "
+        f"under a store-like interpreter: {results['fixed']}"
+    )
+    assert "REACHED False" in results["decorative"][0], (
+        "the DECORATIVE __main__ shape reached the generation anyway — this test "
+        "can no longer tell a working child entry from a broken one, so it proves "
+        f"nothing: {results['decorative']}"
+    )

@@ -207,7 +207,7 @@ def _toggle_suppressed_name(skill_name: str, *, add: bool) -> None:
     (names.add if add else names.discard)(skill_name)
     try:
         atomic_write_text(_skills_dir() / ".curator_suppressed", "\n".join(sorted(names)) + ("\n" if names else ""),
-                          tmp_prefix=".curator_suppressed_")
+                          tmp_prefix=".curator_suppressed_", newline="")  # LF state file
     except Exception as e:
         logger.debug("Failed to write curator suppression list: %s", e, exc_info=True)
 
@@ -381,7 +381,8 @@ def save_usage(data: Dict[str, Dict[str, Any]]) -> bool:
     """Write the usage map atomically; True when it committed."""
     path = _usage_file()
     try:
-        atomic_write_text(path, json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False), tmp_prefix=".usage_")
+        atomic_write_text(path, json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False), tmp_prefix=".usage_",
+                          newline="")  # LF usage ledger, no CRLF on Windows
         return True
     except Exception as e:
         logger.debug("Failed to write %s: %s", path, e, exc_info=True)

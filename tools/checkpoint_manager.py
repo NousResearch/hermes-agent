@@ -276,7 +276,8 @@ def _save_ledger(store: Path, dir_hash: str, ledger: Dict[str, Dict]) -> None:
         path = _ledger_path(store, dir_hash)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(ledger), encoding="utf-8")
+        # newline="": the ledger is a byte-compared state file — keep it LF on Windows too.
+        tmp.write_text(json.dumps(ledger), encoding="utf-8", newline="")
         tmp.replace(path)
     except OSError:
         logger.debug("Failed to save agent-write ledger for %s", dir_hash, exc_info=True)

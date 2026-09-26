@@ -231,5 +231,6 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
             print(f"  = {lock_name} (official optional provenance backfilled)")
     if backfilled:  # atomic: a mid-write crash must not wipe provenance (reader resets bad JSON)
         atomic_write_text(ss._skills_dir() / ".hub" / "lock.json", tmp_prefix=".lock_",
-                          content=json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+                          content=json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                          newline="")  # LF state file, no CRLF on Windows
     return backfilled

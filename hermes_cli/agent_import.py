@@ -400,7 +400,9 @@ class AgentImporter:
                     shutil.copy2(destination, backup)
                     details["backup"] = str(backup)
                 step = "write merged"
-                atomic_write_text(destination, ENTRY_DELIMITER.join(merged) + ("\n" if merged else ""))
+                # newline="": same bytes as MemoryStore._write_file — LF-canonical memory store.
+                atomic_write_text(destination, ENTRY_DELIMITER.join(merged) + ("\n" if merged else ""),
+                                  newline="")
             except OSError as exc:
                 return f"Could not {step} memory file: {exc}"
             return None

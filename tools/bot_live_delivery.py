@@ -186,6 +186,7 @@ def _next_sequence(root: Path) -> int:
                    for candidate in root.glob("*.json")
                    if (record := _scan_read(candidate)) is not None), default=0)
     sequence = max(persisted, scanned) + 1
+    # No newline="": the payload is bare digits, so no translation can occur either way.
     atomic_write_text(counter, str(sequence), mode=0o600, fsync_dir=True)
     return sequence
 

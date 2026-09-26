@@ -262,7 +262,8 @@ def rmtree_readonly(path: Union[str, Path], *, ignore_errors: bool = False) -> N
 
 
 def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mode: "int | None" = None,
-                  preserve_owner: bool = True, binary: bool = False, fsync_dir: bool = False) -> None:
+                  preserve_owner: bool = True, binary: bool = False, fsync_dir: bool = False,
+                  newline: "str | None" = None) -> None:
     """Temp file + fsync + :func:`atomic_replace`, then re-apply owner/mode.
 
     *write(f)* emits the payload into the open handle (text, or bytes when *binary*). The temp file
@@ -275,7 +276,10 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
     volume mounts; an existing target with no *mode* keeps mkstemp's bits, as before. *fsync_dir*
     also fsyncs the resolved target's parent so the rename itself is durable. The temp file is
     removed on any failure — ``BaseException`` on purpose, so KeyboardInterrupt / SystemExit still
-    clean up.
+    clean up. *newline* is the text-mode translation mode: the default (``None``) translates
+    ``\n`` to ``os.linesep`` — CRLF on Windows — so a caller that must land exact bytes on every
+    platform passes ``newline=""`` (no translation) with content already carrying the wanted
+    endings.
     """
     # A profile delete leaves a tombstone beside its removed home.  Background
     # writers may retain that home in a context variable, so a plain mkdir here
@@ -288,7 +292,8 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
     original_owner = _preserve_file_owner(path) if preserve_owner else None
     fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=prefix, suffix=".tmp")
     try:
-        with os.fdopen(fd, "wb" if binary else "w", encoding=None if binary else encoding) as f:
+        with os.fdopen(fd, "wb" if binary else "w", encoding=None if binary else encoding,
+                       newline=None if binary else newline) as f:
             if mode is not None and hasattr(os, "fchmod"):
                 os.fchmod(f.fileno(), mode)
             write(f)
@@ -312,18 +317,22 @@ def _mode_for_write(path: Path, create_mode: "int | None", preserve: bool = True
 
 def atomic_write_text(path: Union[str, Path], content: str, *, encoding: str = "utf-8", tmp_prefix: str = ".tmp_",
                       preserve_mode: bool = False, create_mode: "int | None" = None, mode: "int | None" = None,
-                      fsync_dir: bool = False) -> None:
+                      fsync_dir: bool = False, newline: "str | None" = None) -> None:
     """Write *content* to *path* via temp file + fsync + atomic rename.
 
     The target is never left partially written on crash/interrupt. Shared by every destructive
     file rewrite (memory store, skill manager, agent importer, ...). *mode* forces the final
     permission bits (secret files: ``0o600``) regardless of what exists; *create_mode* applies only
     when the target is new and *preserve_mode* carries an existing file's bits and owner across.
+    *newline* rides through to the text handle: the default (``None``) translates ``\\n`` to
+    ``os.linesep``, so on Windows any caller rewriting a file would flip its line endings (a
+    one-line patch becomes a whole-file diff). Callers that must preserve the file's own endings
+    pass ``newline=""`` and content that already carries them.
     """
     path = Path(path)
     _atomic_write(path, lambda f: f.write(content), prefix=tmp_prefix, encoding=encoding,
                   mode=mode if mode is not None else _mode_for_write(path, create_mode, preserve=preserve_mode),
-                  preserve_owner=preserve_mode, fsync_dir=fsync_dir)
+                  preserve_owner=preserve_mode, fsync_dir=fsync_dir, newline=newline)
 
 
 def atomic_write_bytes(path: Union[str, Path], content: bytes, *, tmp_prefix: str = ".tmp_",

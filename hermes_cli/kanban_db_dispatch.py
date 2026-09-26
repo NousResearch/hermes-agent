@@ -2506,6 +2506,19 @@ def _hermes_path_argv(path: str) -> list[str]:
     return [_absolute_hermes_path(path)]
 
 
+def _running_on_store_python() -> bool:
+    """True when ``sys.executable`` is PM's store interpreter for this install.
+
+    The store Python owns only the ABI; it has no application packages, so a
+    child launched as ``sys.executable -m hermes_cli.main`` cannot import
+    ``hermes_cli`` (#122620). Detected via ``hermes_cli._launchers`` because
+    that module owns the store-Python launch contract.
+    """
+    from hermes_cli._launchers import running_on_store_python
+
+    return running_on_store_python()
+
+
 def _resolve_hermes_argv() -> list[str]:
     """Resolve the ``hermes`` invocation as argv for ``Popen``: ``$HERMES_BIN``
     (path-like -> absolute; bare names keep PATH semantics, never a
@@ -2517,6 +2530,15 @@ def _resolve_hermes_argv() -> list[str]:
     lets an attacker-planted ``hermes`` shadow the running install (#111569).
     Mirrors ``gateway.run._resolve_hermes_bin``; local because ``hermes_cli``
     sits below ``gateway`` in the dependency order.
+
+    Store Python exception (#122620): the PM store interpreter carries no
+    application packages — ``hermes_cli`` resolves in this process only via
+    the launcher prelude's ``sys.path`` entry, which children do not inherit.
+    A bare module-form child therefore dies with ``ModuleNotFoundError`` before
+    any Hermes code runs. When ``sys.executable`` IS the store interpreter,
+    build the child through the sanctioned launcher prelude
+    (``hermes_cli._launchers.runtime_command``) so the child gets the repo root
+    and the bootstrap dependency lease, exactly like the install's own children.
     """
     import importlib.util
     import shutil
@@ -2529,6 +2551,11 @@ def _resolve_hermes_argv() -> list[str]:
         if resolved_env_bin:
             return _hermes_path_argv(resolved_env_bin)
         return _module_hermes_argv()
+
+    if _running_on_store_python():
+        from hermes_cli._launchers import runtime_command
+
+        return runtime_command(Path(__file__).resolve().parents[1])
 
     try:
         if importlib.util.find_spec("hermes_cli") is not None:

@@ -104,9 +104,13 @@ def _tts_stream_begin() -> Optional[queue.Queue]:
     except Exception:
         return None
     _tts_stream_stop()
+    from contextvars import copy_context
+
     text_queue: queue.Queue = queue.Queue()
     stop, done = threading.Event(), threading.Event()
-    threading.Thread(target=stream_tts_to_speaker, args=(text_queue, stop, done), daemon=True).start()
+    threading.Thread(
+        target=copy_context().run, args=(stream_tts_to_speaker, text_queue, stop, done), daemon=True
+    ).start()
     global _tts_stream_state
     with _tts_stream_lock:
         _tts_stream_state = {"stop": stop, "done": done}

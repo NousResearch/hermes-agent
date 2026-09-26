@@ -33,6 +33,30 @@ def _layer_hex(palette: Dict[str, Any], key: str, default: str) -> str:
     return layer.get("hex", default) if isinstance(layer, dict) else default
 
 
+class ActiveThemeUnavailable(LookupError):
+    """``dashboard.theme`` names a user theme that is missing or failed to parse/normalise."""
+
+
+def resolve_active_user_theme() -> Optional[Dict[str, Any]]:
+    """Normalised definition of the active *user* theme, or ``None`` when the active theme is
+    unset or built-in (the bundle owns built-in palettes, see ``_BUILTIN_DASHBOARD_THEMES``).
+
+    Raises :class:`ActiveThemeUnavailable` when ``dashboard.theme`` names a YAML theme that
+    :func:`_discover_user_themes` could not load, so each caller picks its own fallback policy.
+    Shared by the index.html shim and the server-rendered ``/login`` page.
+    """
+    from hermes_cli.config import load_config
+    active = cfg_get(load_config(), "dashboard", "theme", default="default")
+    if not active or not isinstance(active, str):
+        return None
+    if any(b["name"] == active for b in _BUILTIN_DASHBOARD_THEMES):
+        return None
+    for theme in _discover_user_themes():
+        if theme.get("name") == active:
+            return theme
+    raise ActiveThemeUnavailable(active)
+
+
 def _render_active_theme_bootstrap_css() -> str:
     """Critical-CSS ``<style>`` shim for the active *user* theme, so the first paint uses the
     target palette instead of flashing the bundle's default Hermes Teal until
@@ -43,38 +67,31 @@ def _render_active_theme_bootstrap_css() -> str:
     references the variables rather than literals so runtime theme switches stay live:
     ``applyTheme()`` writes inline styles on ``documentElement`` which outrank this block.
     """
-    from hermes_cli.config import load_config
     try:
-        active = cfg_get(load_config(), "dashboard", "theme", default="default")
-        if not active or not isinstance(active, str):
+        theme = resolve_active_user_theme()
+        if theme is None:
             return ""
-        if any(b["name"] == active for b in _BUILTIN_DASHBOARD_THEMES):
-            return ""
-        for theme in _discover_user_themes():
-            if theme.get("name") != active:
-                continue
-            palette = theme.get("palette") or {}
-            typo = theme.get("typography") or {}
-            font_sans = typo.get("fontSans") or _THEME_DEFAULT_TYPOGRAPHY["fontSans"]
-            base_size = typo.get("baseSize") or _THEME_DEFAULT_TYPOGRAPHY["baseSize"]
+        palette = theme.get("palette") or {}
+        typo = theme.get("typography") or {}
+        font_sans = typo.get("fontSans") or _THEME_DEFAULT_TYPOGRAPHY["fontSans"]
+        base_size = typo.get("baseSize") or _THEME_DEFAULT_TYPOGRAPHY["baseSize"]
 
-            def _esc(s: str) -> str:  # defensive ``</style>`` escape
-                return str(s).replace("</", "<\\/")
-            return (
-                '<style id="hermes-theme-bootstrap">'
-                ":root{"
-                f"--background-base:{_esc(_layer_hex(palette, 'background', '#0a0a0a'))};"
-                f"--midground-base:{_esc(_layer_hex(palette, 'midground', '#e5e5e5'))};"
-                f"--theme-font-sans:{_esc(font_sans)};"
-                f"--theme-base-size:{_esc(base_size)};"
-                "}"
-                "html,body{background-color:var(--background-base);"
-                "color:var(--midground-base);"
-                "font-family:var(--theme-font-sans);"
-                "font-size:var(--theme-base-size);}"
-                "</style>"
-            )
-        return ""
+        def _esc(s: str) -> str:  # defensive ``</style>`` escape
+            return str(s).replace("</", "<\\/")
+        return (
+            '<style id="hermes-theme-bootstrap">'
+            ":root{"
+            f"--background-base:{_esc(_layer_hex(palette, 'background', '#0a0a0a'))};"
+            f"--midground-base:{_esc(_layer_hex(palette, 'midground', '#e5e5e5'))};"
+            f"--theme-font-sans:{_esc(font_sans)};"
+            f"--theme-base-size:{_esc(base_size)};"
+            "}"
+            "html,body{background-color:var(--background-base);"
+            "color:var(--midground-base);"
+            "font-family:var(--theme-font-sans);"
+            "font-size:var(--theme-base-size);}"
+            "</style>"
+        )
     except Exception:
         _log.debug("theme bootstrap render failed", exc_info=True)
         return ""

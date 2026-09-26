@@ -133,6 +133,21 @@ shipped curated set; the runtime fallback uses the same value.
 Per-call array caps are internal safety bounds, not configuration. Over-cap
 calls return an error so the model can retry with a smaller batch.
 
+### Tuning the `defer` list from usage
+
+Every eager tool's schema is paid on every request, whether or not the
+conversation calls it, so the right `defer` list depends on how *your*
+sessions use tools. `hermes insights` measures it: the **Top Tools** table
+carries each tool's reach (share of tool-using sessions that invoked it), and
+the **Tool Context** section lists eager tools under 20% reach, biggest schema
+first, with the tokens they add to each request, plus deferred tools that most
+sessions call anyway (each call costs a `tool_search`/`tool_describe` round
+trip). Copy the candidates into `tools.tool_search.defer` — the list replaces
+the curated default, so start from it — and the next conversation pays less.
+`clarify` is never suggested: an A/B showed the ask-the-user affordance must
+stay ambient. The advice never changes the served tool list by itself; the
+tool list stays byte-stable within a conversation for the prompt cache.
+
 ### Why the listing exists
 
 Without it, deferred capabilities are *invisible* — live benchmarking showed

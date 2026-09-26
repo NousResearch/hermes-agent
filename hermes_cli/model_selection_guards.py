@@ -135,14 +135,51 @@ def _context_cache_guard(
 _GUARDS = (_cost_guard, _data_policy_guard, _context_cache_guard)
 
 
+def data_policy_acknowledged_interactively() -> bool:
+    """``security.allow_data_training_tiers_interactive`` (default False) — the profile's persisted
+    acknowledgement for tiers whose vendor trains on prompts. Read per call, so flipping the setting
+    applies to the next selection; the *unattended* opt-out stays a separate key.
+
+    Uses ``load_config_readonly()``: the router calls this once per selection request, and the
+    read-only accessor serves the stat-signature-keyed cache without the defensive deepcopy
+    (``load_config``'s docstring reserves that for callers that mutate the result). Only the
+    ``security`` flag is read here, never written.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        security_cfg = (load_config_readonly() or {}).get("security")
+        return isinstance(security_cfg, dict) and security_cfg.get(
+            "allow_data_training_tiers_interactive") is True
+    except Exception:
+        return False
+
+
+def _drop_acknowledged_data_policy(warnings: List[SelectionWarning]) -> List[SelectionWarning]:
+    """Drop ``data_policy`` entries when the profile has already recorded the interactive
+    acknowledgement. Only that kind: cost and context-cache warnings still confirm."""
+    if not any(w.kind == "data_policy" for w in warnings):
+        return warnings
+    if not data_policy_acknowledged_interactively():
+        return warnings
+    return [w for w in warnings if w.kind != "data_policy"]
+
+
 def selection_warnings(
     model_name: str, *, provider: Optional[str] = None, base_url: Optional[str] = None,
     api_key: Optional[str] = None, model_info: Optional[ModelInfo] = None,
     include_kinds: Optional[Iterable[str]] = None,
-    selection_context: Optional[SelectionContext] = None) -> List[SelectionWarning]:
+    selection_context: Optional[SelectionContext] = None,
+    interactive: bool = False) -> List[SelectionWarning]:
     """Warnings from every registered guard (empty in the common case). ``include_kinds`` restricts
     which kinds are returned; ``selection_context`` carries live-session facts for switch-aware guards.
-    Guard exceptions are swallowed — never break model selection."""
+    Guard exceptions are swallowed — never break model selection.
+
+    ``interactive`` marks a user-driven selection (picker, modal confirm, dashboard switch): when the
+    profile carries ``security.allow_data_training_tiers_interactive`` its ``data_policy`` warning is
+    dropped, since the acknowledgement is already on record. Unattended paths leave it false, so
+    ``security.allow_data_training_tiers_noninteractive`` remains the only way past a data-policy
+    refusal at startup."""
     wanted = set(include_kinds) if include_kinds is not None else None
     results: List[SelectionWarning] = []
     for guard in _GUARDS:
@@ -152,6 +189,8 @@ def selection_warnings(
             continue
         if warning is not None and (wanted is None or warning.kind in wanted):
             results.append(warning)
+    if interactive:
+        results = _drop_acknowledged_data_policy(results)
     return results
 
 
@@ -164,12 +203,15 @@ def combined_selection_warning(
     model_name: str, *, provider: Optional[str] = None, base_url: Optional[str] = None,
     api_key: Optional[str] = None, model_info: Optional[ModelInfo] = None,
     selection_context: Optional[SelectionContext] = None,
+    interactive: bool = False,
 ) -> Optional[SelectionWarning]:
     """Drop-in for ``expensive_model_warning`` call sites: ``None``, the single warning, or a merged
-    ``kind="multiple"`` warning stacking every message."""
+    ``kind="multiple"`` warning stacking every message. ``interactive`` is forwarded to
+    :func:`selection_warnings` — a user-driven selection honours the profile's persisted
+    data-policy acknowledgement instead of asking again."""
     warnings = selection_warnings(
         model_name, provider=provider, base_url=base_url, api_key=api_key, model_info=model_info,
-        selection_context=selection_context)
+        selection_context=selection_context, interactive=interactive)
     if not warnings:
         return None
     if len(warnings) == 1:

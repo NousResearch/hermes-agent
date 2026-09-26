@@ -50,6 +50,7 @@ import {
   publishSessionState,
   runtimeSessionOwner
 } from '@/store/session-states'
+import { $settingsRequestProfile, $settingsScopeOverride } from '@/store/settings-scope'
 import { warnIfTerminalBackendUnavailable } from '@/store/terminal-backend-warning'
 
 import { deferred } from '../../../test/deferred'
@@ -515,7 +516,7 @@ describe('default-route profile adoption', () => {
     }
   )
 
-  it('adopts the resolved backend profile rather than the old last-used preference', async () => {
+  it('a bare attach without a startup default keeps the stored preference', async () => {
     const desktop = fakeDesktop()
     desktop.getConnection.mockResolvedValue({ ...primaryConn, profile: 'research' })
     desktop.profile.get.mockResolvedValue({ profile: 'old-last-used' })
@@ -523,7 +524,47 @@ describe('default-route profile adoption', () => {
     render(<Harness />)
     await flushAsync()
     expect($connection.get()?.profile).toBe('research')
-    expect($activeGatewayProfile.get()).toBe('research')
+    // No explicit startup default: the attached backend's registered profile
+    // is the launch home, not intent — the stored working profile wins.
+    expect($activeGatewayProfile.get()).toBe('old-last-used')
+    expect($desktopBoot.get().running).toBe(false)
+  })
+
+  it('#119169: a bare attach keeps the stored working profile so aux reads target it', async () => {
+    const desktop = fakeDesktop()
+    // Reporter topology: attached backend registered under `default` (the
+    // launch home), no saved startup default, no window override. The working
+    // profile `fiona` holds the explicit aux pins; `default` is all `auto`.
+    desktop.getConnection.mockResolvedValue({ ...primaryConn, profile: 'default' })
+    desktop.profile.get.mockResolvedValue({ profile: 'fiona' })
+    $settingsScopeOverride.set(null)
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+    render(<Harness />)
+    await flushAsync()
+    expect($connection.get()?.profile).toBe('default')
+    // $settingsRequestProfile is the exact scope handed to
+    // getAuxiliaryModels: naming the launch home here renders every aux row
+    // as stale `auto` while the backend serves explicit pins for `fiona`.
+    expect($settingsRequestProfile.get()).toBe('fiona')
+    expect($desktopBoot.get().running).toBe(false)
+  })
+
+  it('#119169: an explicit startup default still outranks the stored preference', async () => {
+    const base = fakeDesktop()
+    const desktop = {
+      ...base,
+      profile: {
+        ...base.profile,
+        get: vi.fn(async () => ({ profile: 'fiona' })),
+        getDefault: vi.fn(async () => ({ connectionId: null, profile: 'coder' }))
+      }
+    }
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+    render(<Harness />)
+    await flushAsync()
+    expect(desktop.getConnection).toHaveBeenCalledWith('coder')
+    expect($connection.get()?.profile).toBe('coder')
+    expect($activeGatewayProfile.get()).toBe('coder')
     expect($desktopBoot.get().running).toBe(false)
   })
 })

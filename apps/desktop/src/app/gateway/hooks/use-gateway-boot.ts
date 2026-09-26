@@ -660,12 +660,23 @@ export function useGatewayBoot({
       connection: HermesConnection,
       shouldPublish: () => boolean = () => true
     ): Promise<boolean> {
-      // The resolved descriptor reflects the explicit startup default. The
-      // legacy profile.get preference only remembers the last workspace used.
-      const override = windowProfileOverride() ?? connection.profile
+      // Explicit launch intent wins: a pinned helper window, then the saved
+      // startup default. The attached backend's registered profile is only a
+      // fallback — on a bare attach it names the launch home (often
+      // `default`), not the user's working profile, so the stored last-use
+      // preference must outrank it. Otherwise every settings apply follows
+      // the scope onto the launch home (#118894), and the Auxiliary Models
+      // list reads the launch home's all-`auto` pins instead of the working
+      // profile's explicit ones (#119169).
+      const override = windowProfileOverride()
 
       try {
-        const profileKey = override ?? (await desktop.profile?.get?.())?.profile ?? ''
+        const [stored, startupDefault] = await Promise.all([
+          desktop.profile?.get?.(),
+          desktop.profile?.getDefault?.()
+        ])
+        const profileKey =
+          override || startupDefault?.profile || stored?.profile || connection.profile || ''
 
         if (!shouldPublish()) {
           return false
@@ -680,7 +691,7 @@ export function useGatewayBoot({
           return false
         }
 
-        $activeGatewayProfile.set(normalizeProfileKey(override))
+        $activeGatewayProfile.set(normalizeProfileKey(override || connection.profile))
       }
 
       return true

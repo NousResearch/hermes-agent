@@ -1742,6 +1742,7 @@ def _standalone_send(
 
 def _deliver_standalone(
     t: _TargetDelivery, content: str, media_files: list, target_errors: list, delivery_errors: list,
+    unverified_targets: Optional[list] = None,
 ) -> None:
     """Standalone fallback for a target the live lane did not deliver."""
     job = t.job
@@ -1760,6 +1761,19 @@ def _deliver_standalone(
         target_errors.append(err)
         delivery_errors.extend(target_errors)
         return
+    # Same positive-evidence gate as the live lane (#121725; #100908 covered
+    # only _live_send_text): a result with no success confirmation must not be
+    # logged "delivered". Bare-success shapes land in unverified_targets and
+    # persist as last_delivery_unverified via _record_delivery_verification.
+    _evidence_gap: list = []
+    if not _confirm_adapter_delivery(result, job["id"], _evidence_gap):
+        msg = f"standalone send to {t.where} returned unconfirmed result"
+        logger.error("Job '%s': %s", job["id"], msg)
+        target_errors.append(msg)
+        delivery_errors.append(msg)
+        return
+    if _evidence_gap and unverified_targets is not None:
+        unverified_targets.append(t.where)
     # Standalone senders report per-file attachment failures in ``warnings`` while returning
     # success; surface them so a vanished attachment doesn't mark the run ok.
     for _w in (result.get("warnings") if isinstance(result, dict) else None) or []:
@@ -2044,7 +2058,8 @@ def _deliver_result(
         )
         if not delivered:
             _deliver_standalone(
-                t, cleaned_delivery_content, media_files, target_errors, delivery_errors)
+                t, cleaned_delivery_content, media_files, target_errors, delivery_errors,
+                unverified_targets=unverified_targets)
 
     # Filter-time drops apply to every target; report them once. A run whose every target was
     # suppressed sent nothing, so there is no drop to report.

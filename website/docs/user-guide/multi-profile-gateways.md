@@ -184,7 +184,8 @@ convenience.) When multiplexing, the default gateway enumerates every profile,
 brings up each profile's enabled platforms under that profile's own
 credentials, and routes each inbound message to the profile it belongs to. Each
 turn resolves the routed profile's config, skills, memory, SOUL, **and provider
-keys** — credentials are never shared across profiles.
+keys** — credentials are never shared across profiles (the one opt-in exception
+is an MCP OAuth token pool the default profile exports; see below).
 
 The host automatically serves unparked secondary profiles. Use `gateway start`
 on a parked profile to bring it back online.
@@ -583,11 +584,16 @@ sees only its own tools; profiles whose `mcp_servers` entry is identical (same
 route *and* credentials, including mTLS `client_cert`/`client_key`) share one
 connection, and an owner's `/reload-mcp`
 re-registers the sharing profiles' tools without them reloading. `auth: oauth`
-servers are never shared across profiles: each profile holds its own token under
-its own `mcp-tokens/` and opens its own connection. Startup connects profiles one
-after another and, within a profile, at most `mcp.discovery_concurrency` servers at
-once (default 4, `0` = unlimited), so a fleet of profiles with many stdio servers
-no longer spawns every helper process in the same instant. Trust policy stays per
+servers are never shared across profiles by default: each profile holds its own
+token under its own `mcp-tokens/` and opens its own connection. The one opt-in
+exception is the default profile exporting a server's token pool with
+`oauth.share_with_profiles: true` — a named profile carrying an identical entry
+then presents the root's grant over its own connection
+([reference](../reference/mcp-config-reference.md#sharing-one-oauth-grant-with-named-profiles)).
+Startup connects profiles one after another and, within a profile, at most
+`mcp.discovery_concurrency` servers at once (default 4, `0` = unlimited), so a
+fleet of profiles with many stdio servers no longer spawns every helper process
+in the same instant. Trust policy stays per
 profile: a `trust: untrusted` profile sharing a `trust: full` profile's
 connection is still asked before every write-capable call, and
 `supports_parallel_tool_calls` applies only to the profile that set it. Terminal settings

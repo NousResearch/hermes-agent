@@ -21,6 +21,7 @@ from hermes_cli._secrets_common import (
     arg,
     cfg_str,
     cli_version,
+    console_safe,
     disable_secret_source,
     flag,
     print_status_panel,
@@ -133,7 +134,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
     else:
         who = _op_whoami(binary, op_cfg.get("account", ""))
         if who:
-            console.print(f"  [green]✓[/green] using existing op session ({who})")
+            console.print(f"  [green]✓[/green] using existing op session ({console_safe(who)})")
         else:
             console.print(
                 "  [yellow]No service-account token and no active op session "
@@ -193,7 +194,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     if binary and not token_set:
         who = _op_whoami(binary, account)
         if who:
-            console.print(f"\n  [green]Active op session:[/green] {who}")
+            console.print(f"\n  [green]Active op session:[/green] {console_safe(who)}")
         else:
             console.print(
                 f"\n  [yellow]No active op session and {token_env} is unset — "
@@ -213,7 +214,7 @@ def cmd_set(args: argparse.Namespace) -> int:
     valid, warnings = op_src._validate_references({args.env_var: args.reference})
     if args.env_var not in valid:
         for w in warnings:
-            console.print(f"[red]{w}[/red]")
+            console.print(f"[red]{console_safe(w)}[/red]")
         return 1
 
     cfg = load_config()
@@ -267,7 +268,7 @@ def cmd_token(args: argparse.Namespace) -> int:
         if who is None:
             console.print("[red]✗ New token was rejected by op — nothing was changed.[/red]")
             return False
-        console.print(f"[green]✓ Token accepted[/green] ({who}).")
+        console.print(f"[green]✓ Token accepted[/green] ({console_safe(who)}).")
         return True
 
     return rotate_token(
@@ -317,7 +318,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
             cache_ttl_seconds=0,  # an explicit sync always resolves fresh
         )
         if result.error:
-            console.print(f"[red]{result.error}[/red]")
+            console.print(f"[red]{console_safe(result.error)}[/red]")
             return 1
         print_table(
             console, (("Env var", {"style": "cyan"}), "Action"),
@@ -338,7 +339,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
             use_cache=False,
         )
     except RuntimeError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{console_safe(str(exc))}[/red]")
         return 1
 
     override = bool(op_cfg.get("override_existing", True))

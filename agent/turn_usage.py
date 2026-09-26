@@ -11,6 +11,7 @@ model/provider. Logger name stays ``agent.conversation_loop`` for caplog parity.
 from __future__ import annotations
 
 import logging
+import time
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Dict, List
@@ -177,6 +178,8 @@ def record_response_usage(
     agent.session_output_tokens += canonical_usage.output_tokens
     agent.session_cache_read_tokens += canonical_usage.cache_read_tokens
     agent.session_cache_write_tokens += canonical_usage.cache_write_tokens
+    if canonical_usage.cache_read_tokens > 0 or canonical_usage.cache_write_tokens > 0:
+        agent._cache_refreshed_at = time.time()  # read also refreshes (Anthropic: read renews TTL)
     agent.session_reasoning_tokens += canonical_usage.reasoning_tokens
     # Rolling history for status-bar averages (last 10).
     with suppress(Exception):

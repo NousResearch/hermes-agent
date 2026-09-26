@@ -2,18 +2,47 @@ name: Docker Build, Test, and Publish
 
 on:
   # This workflow owns its own triggers. ci.yml does not call it.
-  # A reusable-workflow call eeps the caller run in progress for that full time.
-  # GitHub refuses  ``gh run rerun`` on a run that is still in progress.
+  # A reusable-workflow call keeps the caller run in progress for that full time.
+  # GitHub refuses ``gh run rerun`` on a run that is still in progress.
   # Thus one slow advisory job blocked every rerun of the fast required jobs. A separate
   # run reruns and cancels independently.
   #
   # Trusted main pushes resolve the environment-scoped Docker Hub secrets in
   # this same workflow, never across a workflow boundary.
+  #
+  # The ``release: published`` trigger was REMOVED on purpose: a GitHub release
+  # event must never rebuild or rewrite the stable Docker channel. This staged
+  # path publishes only immutable version tags; the ordered stable publication
+  # controller moves stable/latest from the receipt-bound registry digest.
   pull_request:
   push:
     branches: [main]
-  release:
-    types: [published]
+  workflow_call:
+    inputs:
+      release-phase:
+        description: "Stable-release phase: 'test' or 'publish'. Empty keeps the standalone triggers."
+        required: false
+        type: string
+        default: ''
+      tag:
+        description: "Exact stable tag (vX.Y.Z) under release. The caller is dispatched on this tag, so github.sha is the release candidate."
+        required: false
+        type: string
+        default: ''
+      version:
+        description: "Release version written directly to the image install stamp."
+        required: false
+        type: string
+        default: ''
+      skip-tests:
+        description: "Release test phase only: build and archive the image without its integration tests (the claim skipped tests)."
+        required: false
+        type: boolean
+        default: false
+    outputs:
+      manifest-digest:
+        description: "Immutable digest of the published versioned multi-arch manifest."
+        value: ${{ jobs.release-publish-manifest.outputs.digest }}
 
 permissions:
   contents: read
@@ -21,21 +50,50 @@ permissions:
 # Concurrency: push/release runs are NEVER cancelled so every merge gets
 # its own image.  PR runs reuse a PR-scoped group with
 # cancel-in-progress: true so rapid pushes to the same PR collapse to
-# the latest commit.
+# the latest commit. Release runs include the run_id: several reusable calls
+# (test/publish) of this workflow live inside ONE parent run, and a
+# shared group would cancel the parent mid-release.
 concurrency:
-  group: docker-${{ github.event.pull_request.number || github.ref }}
+  group: docker-${{ github.event.pull_request.number || github.ref }}-${{ inputs.release-phase || 'standalone' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   IMAGE_NAME: nousresearch/hermes-agent
 
 jobs:
+  # Resolve the release phase. Release modes run only via workflow_call from
+  # the parent stable-release workflow on the tagged candidate commit.
+  mode:
+    name: Resolve release phase
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      phase: ${{ steps.resolve.outputs.phase }}
+      release: ${{ steps.resolve.outputs.release }}
+    steps:
+      - id: resolve
+        env:
+          PHASE: ${{ inputs.release-phase }}
+        run: |
+          set -euo pipefail
+          case "$PHASE" in
+            '')   echo "phase=standalone" >> "$GITHUB_OUTPUT"; echo "release=false" >> "$GITHUB_OUTPUT" ;;
+            test) echo "phase=test"        >> "$GITHUB_OUTPUT"; echo "release=true"  >> "$GITHUB_OUTPUT" ;;
+            publish)
+                  echo "phase=$PHASE"      >> "$GITHUB_OUTPUT"; echo "release=true"  >> "$GITHUB_OUTPUT" ;;
+            *)    echo "::error::Invalid release-phase input: $PHASE"; exit 1 ;;
+          esac
+
   # Classify the PR's changed files. ci.yml used to gate the docker call on
   # its own ``detect`` outputs; now that this workflow triggers itself, it
   # runs the same composite action. On push and release the classifier fails
   # open (every lane true), so post-merge validation is never weakened.
+  # Release phases skip classification entirely: the parent already ran full
+  # CI and the tag dispatch has no meaningful PR diff to classify.
   detect:
     name: Detect affected areas
+    needs: [mode]
+    if: needs.mode.outputs.release != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -65,19 +123,28 @@ jobs:
             echo "build=false" >> "$GITHUB_OUTPUT"
           fi
 
-  # Build and test the image for each architecture. This job runs PR code,
-  # so it must remain secret-free. Publishing happens in the separate,
-  # protected publish job after these tests pass.
+  # Build and test the image for each architecture. This job runs PR code, so
+  # in standalone mode it must remain secret-free. Publishing happens in the
+  # separate, protected publish paths after these tests pass.
+  #
+  # Runs ONLY in standalone mode and in the release 'test' phase: it builds
+  # the SAME Dockerfile and runs the SAME real docker-integration tests, then
+  # (test phase) saves the tested per-arch image archive + sha256 as run
+  # artifacts. No registry push, no signing secrets. The publish phase never
+  # rebuilds — it downloads these exact artifacts.
   build:
-    needs: [detect]
-    if: github.repository == 'NousResearch/hermes-agent' && needs.detect.outputs.build == 'true'
+    name: Build and test image (${{ matrix.variant }}/${{ matrix.arch }})
+    needs: [mode, detect]
+    if: >-
+      !cancelled() && needs.mode.result == 'success' &&
+      ((needs.mode.outputs.release != 'true' && github.repository == 'NousResearch/hermes-agent' && needs.detect.outputs.build == 'true') || needs.mode.outputs.phase == 'test')
     strategy:
       fail-fast: false
       matrix:
         # Two images per arch. `slim` is what :latest has always been; `desktop`
-        # adds the Bot Screen packages and a headed Chromium (+1.4 GB) for the
-        # tier that offers a screen. Both are built on a PR so a change that only
-        # breaks the gated layers cannot reach publish.
+        # adds the Bot Screen packages and distro Chromium fallback for the
+        # tier that offers a screen. PM's pinned full Chromium is in both.
+        # Both are built on a PR so gated-layer failures cannot reach publish.
         arch: [amd64, arm64]
         variant: [slim, desktop]
         include:
@@ -95,7 +162,31 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Release calls are dispatched on the stable tag: pin to the exact
+          # candidate commit, never a mutable branch ref.
+          ref: ${{ needs.mode.outputs.release == 'true' && github.sha || '' }}
+          # Dev identity is the distance from the highest reachable final
+          # release, so the stamp needs both its ancestry and release tags.
+          fetch-depth: 0
 
+      - name: Write install stamp
+        env:
+          RELEASE_VERSION: ${{ needs.mode.outputs.release == 'true' && inputs.version || '' }}
+        run: |
+          display="$RELEASE_VERSION"
+          if [ -z "$display" ]; then
+            display="$(python3 -m scripts.releases.distance)"
+          fi
+          identity=(--commit "$GITHUB_SHA")
+          if [ -n "$display" ]; then
+            base="${display%%+*}"
+            development="${display#*+}"
+            if [ "$development" = "$display" ]; then distance=0; else distance="${development%%.*}"; fi
+            identity+=(--base-version "$base" --display-version "$display" --distance "$distance")
+          fi
+          python3 scripts/write_install_stamp.py --output install-stamp.json \
+            --distribution docker --update-mechanism external --source ci "${identity[@]}"
       - name: Reject profile exports in the build context
         run: python3 scripts/ci/check_profile_archive_boundary.py
 
@@ -116,7 +207,7 @@ jobs:
 
       # Build once, load into the local daemon for testing.  Cached
       # per-arch; the push step below reuses every layer from this build.
-      - name: Build image (${{ matrix.arch }})
+      - name: Build image (${{ matrix.variant }}/${{ matrix.arch }})
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
         with:
           context: .
@@ -125,51 +216,35 @@ jobs:
           platforms: ${{ matrix.platform }}
           tags: ${{ env.IMAGE_NAME }}:test
           build-args: |
-            HERMES_GIT_SHA=${{ github.sha }}
             HERMES_BOT_DESKTOP=${{ matrix.variant == 'desktop' && '1' || '0' }}
-          # Slim owns the scope; desktop is slim plus two RUN steps, so it reads
-          # and writes nothing — a 5.5 GB mode=max scope would blow the 10 GB cap.
+          # Slim owns the scope; desktop adds the gated apt layer, so it reads
+          # and writes nothing — a mode=max scope could exceed the cache cap.
           cache-from: type=gha,scope=docker-${{ matrix.arch }}
           cache-to: ${{ (github.event_name != 'pull_request' && matrix.variant == 'slim') && format('type=gha,mode=max,scope=docker-{0}', matrix.arch) || '' }}
 
 
-      # Run the docker-integration test suite against the freshly-built
-      # image already loaded into the local daemon (`:test`).
-      #
-      # Piggybacking here avoids a second image build: the build step
-      # already loaded the image into the daemon under
-      # `${IMAGE_NAME}:test`, so we just point ``HERMES_TEST_IMAGE`` at
-      # that.  The fixture's ``HERMES_TEST_IMAGE`` branch (see
-      # tests/docker/conftest.py:62-63) short-circuits the rebuild.
-      #
-      # Why this job and not a standalone one: the image is 5GB+; passing
-      # it between jobs via ``docker save``/``upload-artifact`` is slower
-      # than the build itself.  Reusing the existing daemon state is the
-      # cheapest path to coverage on every PR that touches docker code.
-      # ---------------------------------------------------------------------
-      - name: Install uv (for docker tests)
-        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
-        with:
-          # Pinned: unpinned setup-uv fetches a 'latest' manifest from
-          # raw.githubusercontent.com every job; transient fetch failures
-          # fail the job (2026-07-28 incident). Keep in sync with tests.yml.
-          version: "0.9.28"
+      # Run the docker-integration test suite against the freshly-built image
+      # already loaded into the local daemon (`:test`). The fixture's
+      # HERMES_TEST_IMAGE branch short-circuits the rebuild. Release tests
+      # archive these exact bytes rather than rebuilding at publish time.
+      # Park the stamp while PM provisions the runner, then restore it so
+      # tests/docker can compare the image's provenance with the checkout.
+      - name: Park the image install stamp while provisioning the runner toolchain
+        run: mv install-stamp.json "$RUNNER_TEMP/install-stamp.json"
 
-      - name: Set up Python 3.11 (for docker tests)
-        uses: ./.github/actions/retry
+      - name: Set up locked Python and test dependencies
+        if: inputs.skip-tests != true
+        uses: ./.github/actions/setup-pm
         with:
-          command: uv python install 3.11
+          extras: '[]'
+          test-environment: 'true'
+          prune-python-cache: true
 
-      - name: Install Python dependencies (for docker tests)
-        # ``dev`` extra pulls in pytest, pytest-asyncio —
-        # everything tests/docker/ needs.  We deliberately avoid ``all``
-        # here because the docker tests only drive the container via
-        # subprocess and don't import hermes_agent's optional deps.
-        uses: ./.github/actions/retry
-        with:
-          command: uv sync --locked --python 3.11 --extra dev
+      - name: Restore the image install stamp for the docker tests
+        run: mv "$RUNNER_TEMP/install-stamp.json" install-stamp.json
 
       - name: Run docker integration tests
+        if: inputs.skip-tests != true
         env:
           # Skip rebuild; use the image already loaded by the build step.
           HERMES_TEST_IMAGE: ${{ env.IMAGE_NAME }}:test
@@ -180,18 +255,77 @@ jobs:
           NOUS_API_KEY: ""
         run: |
           # Each of these tests drives a container, so the docker daemon sets
-          # the limit and not the processor. This caps the workers. The
-          # default from run_tests.sh is cpu_count*2, which starts 64
-          # containers together on the 32-core amd64 runner.
-          HERMES_TEST_WORKERS=$(nproc) scripts/run_tests.sh tests/docker/ --file-timeout 600
+          # the limit and not the processor. This pins the runner's worker
+          # count to the core count.
+          HERMES_TEST_WORKERS=$(nproc) scripts/run_tests.sh tests/docker/
+
+      - name: Verify release image identity
+        if: needs.mode.outputs.phase == 'test'
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          actual="$(docker run --rm --entrypoint python "${IMAGE_NAME}:test" -c \
+            'import json; print(json.load(open("/opt/hermes/install-stamp.json"))["baseVersion"])')"
+          test "$actual" = "$RELEASE_VERSION"
+
+      # ---------------------------------------------------------------------
+      # Release 'test' phase only: hand the EXACT tested bytes to the publish
+      # phase via actions artifacts. No registry push, no credentials here.
+      # ---------------------------------------------------------------------
+      - name: Save tested image archive (release test)
+        if: needs.mode.outputs.phase == 'test'
+        env:
+          ARCH: ${{ matrix.arch }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/image-artifacts
+          docker image inspect "${IMAGE_NAME}:test" > /tmp/image-artifacts/image-inspect.json
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          image = json.loads(Path('/tmp/image-artifacts/image-inspect.json').read_text())[0]
+          if image['Architecture'] != os.environ['ARCH']:
+              raise SystemExit('Docker image architecture mismatch')
+          Path('/tmp/image-artifacts/identity.json').write_text(json.dumps({
+              'tag': os.environ['RELEASE_TAG'], 'commit': os.environ['GITHUB_SHA'],
+              'arch': os.environ['ARCH'], 'variant': os.environ['VARIANT'], 'imageId': image['Id']}), encoding='utf-8')
+          PY
+          docker save --output "/tmp/image-artifacts/image-${ARCH}.tar" "${IMAGE_NAME}:test"
+          (
+            cd /tmp/image-artifacts
+            sha256sum "image-${ARCH}.tar" > "image-${ARCH}.tar.sha256"
+          )
+
+      - name: Upload tested image archive (release test)
+        if: needs.mode.outputs.phase == 'test'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: docker-test-image-${{ matrix.variant }}-${{ matrix.arch }}-${{ inputs.tag }}
+          path: |
+            /tmp/image-artifacts/image-${{ matrix.arch }}.tar
+            /tmp/image-artifacts/image-${{ matrix.arch }}.tar.sha256
+            /tmp/image-artifacts/identity.json
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
 
   # ---------------------------------------------------------------------------
-  # Rebuild and push each architecture only after the unprivileged build/test
-  # matrix passes. This job is the sole Docker Hub credential boundary.
+  # Standalone publish: rebuild and push each architecture only after the
+  # unprivileged build/test matrix passes, on trusted main pushes.
+  # This job is the sole Docker Hub credential boundary for merges.
+  #
+  # NOTE: main pushes tag :main ONLY. :latest is a user-facing stable alias
+  # now; the ordered publication controller moves it only after the global
+  # release gate, so a main push can never advance the stable channel.
   # ---------------------------------------------------------------------------
   publish:
-    if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
-    needs: [build]
+    if: >-
+      needs.mode.outputs.release != 'true' &&
+      github.repository == 'NousResearch/hermes-agent' &&
+      github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [mode, build]
     environment: container-publish
     strategy:
       fail-fast: false
@@ -211,7 +345,21 @@ jobs:
     steps:
       - name: Checkout trusted source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
 
+      - name: Write install stamp
+        run: |
+          display="$(python3 -m scripts.releases.distance)"
+          identity=(--commit "$GITHUB_SHA")
+          if [ -n "$display" ]; then
+            base="${display%%+*}"
+            development="${display#*+}"
+            if [ "$development" = "$display" ]; then distance=0; else distance="${development%%.*}"; fi
+            identity+=(--base-version "$base" --display-version "$display" --distance "$distance")
+          fi
+          python3 scripts/write_install_stamp.py --output install-stamp.json \
+            --distribution docker --update-mechanism external --source ci "${identity[@]}"
       - name: Reject profile exports in the build context
         run: python3 scripts/ci/check_profile_archive_boundary.py
 
@@ -234,18 +382,17 @@ jobs:
 
       # Push by digest only (no tag). The merge job assembles the tagged
       # manifest list after both architecture publishers complete.
-      - name: Push ${{ matrix.arch }} by digest
+      - name: Push ${{ matrix.variant }}/${{ matrix.arch }} by digest
         id: push
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
         with:
           context: .
           file: Dockerfile
           platforms: ${{ matrix.platform }}
+          build-args: |
+            HERMES_BOT_DESKTOP=${{ matrix.variant == 'desktop' && '1' || '0' }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
-          build-args: |
-            HERMES_GIT_SHA=${{ github.sha }}
-            HERMES_BOT_DESKTOP=${{ matrix.variant == 'desktop' && '1' || '0' }}
           outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=docker-${{ matrix.arch }}
           cache-to: ${{ matrix.variant == 'slim' && format('type=gha,mode=max,scope=docker-{0}', matrix.arch) || '' }}
@@ -269,23 +416,22 @@ jobs:
   # This is a registry-side operation — no building, no layer re-push —
   # so it runs in ~30 seconds.
   #
-  # On main pushes: tags both :main and :latest.
-  # On releases: tags :<release_tag_name>.
+  # Main pushes tag :main only. :latest is reserved for the ordered stable
+  # publication controller.
   # ---------------------------------------------------------------------------
   merge:
-    # `needs` is the whole 4-leg matrix and a failed need skips the job, so a
-    # transient desktop push would take slim's :latest with it. Guard below.
-    if: ${{ !cancelled() && github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release') }}
+    # `needs` is the whole 4-leg matrix: only publish both :main variants
+    # after every arch and variant publisher succeeds.
+    if: ${{ !cancelled() && needs.mode.outputs.release != 'true' && github.repository == 'NousResearch/hermes-agent' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
-    needs: [publish]
+    needs: [mode, publish]
     timeout-minutes: 10
     environment: container-publish
     strategy:
       fail-fast: false
       matrix:
         # One manifest list per variant. `slim` keeps the unsuffixed tags it has
-        # always had, so nothing that pulls :latest today changes; `desktop`
-        # publishes the same digests under a -desktop suffix.
+        # always had; `desktop` publishes its own digests under -desktop.
         include:
           - variant: slim
             suffix: ""
@@ -320,7 +466,6 @@ jobs:
         working-directory: /tmp/digests
         env:
           IMAGE_NAME: ${{ env.IMAGE_NAME }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
           SUFFIX: ${{ matrix.suffix }}
         run: |
           set -euo pipefail
@@ -330,17 +475,8 @@ jobs:
           for digest_file in *; do
             args+=("${IMAGE_NAME}@sha256:${digest_file}")
           done
-          # One per arch in the publish matrix; a short set means a leg failed, and
-          # stitching it would publish a single-arch :latest. Keep in step with it.
-          if [ "${#args[@]}" -ne 2 ]; then
-            echo "::error::variant ${{ matrix.variant }}: want 2 digests, found ${#args[@]} (a publish leg failed)"
-            exit 1
-          fi
-          if [ "${{ github.event_name }}" = "release" ]; then
-            tags=(-t "${IMAGE_NAME}:${RELEASE_TAG}${SUFFIX}")
-          else
-            tags=(-t "${IMAGE_NAME}:main${SUFFIX}" -t "${IMAGE_NAME}:latest${SUFFIX}")
-          fi
+          if [ "${#args[@]}" -ne 2 ]; then echo "::error::Expected two ${SUFFIX} digests"; exit 1; fi
+          tags=(-t "${IMAGE_NAME}:main${SUFFIX}")
           # Retry: Docker Hub API + just-pushed digest eventual consistency
           # can transiently fail the create; the operation is idempotent.
           for i in 1 2 3; do
@@ -358,11 +494,276 @@ jobs:
       - name: Inspect image
         env:
           IMAGE_NAME: ${{ env.IMAGE_NAME }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
           SUFFIX: ${{ matrix.suffix }}
+        run: docker buildx imagetools inspect "${IMAGE_NAME}:main${SUFFIX}"
+
+  # ===========================================================================
+  # Staged stable-release path (workflow_call from stable-release.yml).
+  # The caller is dispatched on the exact stable TAG, so github.sha in every
+  # reusable call is the release candidate commit.
+  # ===========================================================================
+
+  # Release 'publish' phase: load the EXACT tested image archives uploaded by
+  # the 'test' phase of this SAME workflow run, verify their hashes, push
+  # per-arch and NEVER rebuild. No owner gate: on a fork the Docker Hub
+  # login/push fails loudly (missing credentials) instead of faking green.
+  release-publish:
+    name: Publish tested Docker image (${{ matrix.variant }}/${{ matrix.arch }})
+    if: needs.mode.outputs.phase == 'publish'
+    needs: [mode]
+    environment: container-publish
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+        variant: [slim, desktop]
+    runs-on: ubuntu-latest-32-core
+    timeout-minutes: 45
+    env:
+      ARCH: ${{ matrix.arch }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      VARIANT: ${{ matrix.variant }}
+      SUFFIX: ${{ matrix.variant == 'desktop' && '-desktop' || '' }}
+    steps:
+      - name: Checkout release code (helper scripts only, no build)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Download tested image archive from the test phase (same run)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: docker-test-image-${{ matrix.variant }}-${{ matrix.arch }}-${{ inputs.tag }}
+          path: /tmp/image-artifacts
+
+      - name: Verify tested archive hash (published bytes == tested bytes)
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            docker buildx imagetools inspect "${IMAGE_NAME}:${RELEASE_TAG}${SUFFIX}"
-          else
-            docker buildx imagetools inspect "${IMAGE_NAME}:main${SUFFIX}"
-          fi
+          set -euo pipefail
+          cd /tmp/image-artifacts
+          echo "  expected: $(cat "image-${ARCH}.tar.sha256")"
+          sha256sum --check "image-${ARCH}.tar.sha256"
+
+      - name: Set up Docker Buildx
+        id: buildx
+        continue-on-error: true
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Set up Docker Buildx (retry)
+        if: steps.buildx.outcome == 'failure'
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Load tested image
+        run: |
+          set -euo pipefail
+          docker load --input /tmp/image-artifacts/image-${ARCH}.tar
+          docker image inspect "${IMAGE_NAME}:test" > /tmp/image-artifacts/loaded.json
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          identity = json.loads(Path('/tmp/image-artifacts/identity.json').read_text())
+          loaded = json.loads(Path('/tmp/image-artifacts/loaded.json').read_text())[0]
+          expected = (os.environ['RELEASE_TAG'], os.environ['GITHUB_SHA'], os.environ['ARCH'], os.environ['VARIANT'])
+          if (identity['tag'], identity['commit'], identity['arch'], identity['variant']) != expected:
+              raise SystemExit('Tested Docker archive identity mismatch')
+          if (loaded['Id'], loaded['Architecture']) != (identity['imageId'], identity['arch']):
+              raise SystemExit('Loaded Docker image differs from tested image')
+          PY
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push tested image with per-arch release tag
+        run: |
+          set -euo pipefail
+          docker tag "${IMAGE_NAME}:test" "${IMAGE_NAME}:${RELEASE_TAG}-${ARCH}${SUFFIX}"
+          docker push "${IMAGE_NAME}:${RELEASE_TAG}-${ARCH}${SUFFIX}"
+
+      - name: Record pushed per-arch digest
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/digests
+          digest="$(docker buildx imagetools inspect "${IMAGE_NAME}:${RELEASE_TAG}-${ARCH}${SUFFIX}" \
+            --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          case "$digest" in
+            sha256:*) ;;
+            *) echo "::error::Unexpected digest format: $digest"; exit 1 ;;
+          esac
+          printf '%s' "$digest" > "/tmp/digests/${ARCH}.digest"
+          cat "/tmp/digests/${ARCH}.digest"
+
+      - name: Upload per-arch digest artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: docker-publish-digest-${{ matrix.variant }}-${{ matrix.arch }}-${{ inputs.tag }}
+          path: /tmp/digests/${{ matrix.arch }}.digest
+          if-no-files-found: error
+          retention-days: 7
+
+  # Assemble the immutable versioned multi-arch manifest and expose its digest
+  # to the parent release receipt. Registry-side only; nothing is rebuilt.
+  release-publish-manifest:
+    name: Assemble versioned manifest and digest receipt
+    if: needs.mode.outputs.phase == 'publish'
+    needs: [mode, release-publish]
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.list.outputs.digest }}
+    timeout-minutes: 15
+    environment: container-publish
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - name: Checkout release code (helper scripts only)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Download per-arch digests
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: /tmp/digests
+          pattern: docker-publish-digest-*-${{ inputs.tag }}
+
+      - name: Set up Docker Buildx
+        id: buildx
+        continue-on-error: true
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Set up Docker Buildx (retry)
+        if: steps.buildx.outcome == 'failure'
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Create both immutable versioned manifest lists
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+        run: |
+          set -euo pipefail
+          cd /tmp/digests
+          for variant in slim desktop; do
+            suffix=""
+            [ "$variant" = desktop ] && suffix=-desktop
+            digest_files=()
+            args=()
+            for arch in amd64 arm64; do
+              file="docker-publish-digest-${variant}-${arch}-${RELEASE_TAG}/${arch}.digest"
+              test -s "$file"
+              digest_files+=("$file")
+              args+=("${IMAGE_NAME}@$(cat "$file")")
+            done
+            verify_manifest() {
+              python3 - "$1" "${digest_files[@]}" <<'PY'
+          import json, pathlib, sys
+          manifest = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          expected = {pathlib.Path(path).read_text().strip() for path in sys.argv[2:]}
+          actual = {row.get("digest") for row in manifest.get("manifests", [])}
+          if actual != expected or len(manifest.get("manifests", [])) != 2:
+              raise SystemExit(f"versioned Docker manifest differs: expected {sorted(expected)}, got {sorted(actual)}")
+          PY
+            }
+            ref="${IMAGE_NAME}:${RELEASE_TAG}${suffix}"
+            if docker buildx imagetools inspect "$ref" --raw > existing.json 2>/dev/null; then
+              verify_manifest existing.json
+            else
+              for i in 1 2 3; do
+                if docker buildx imagetools create -t "$ref" "${args[@]}"; then break; fi
+                if [ "$i" = 3 ]; then echo "::error::imagetools create failed after 3 attempts"; exit 1; fi
+                sleep 20
+              done
+            fi
+            docker buildx imagetools inspect "$ref" --raw > verified.json
+            verify_manifest verified.json
+          done
+
+      - name: Record slim manifest-list digest for the release receipt
+        id: list
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+        run: |
+          set -euo pipefail
+          digest="$(docker buildx imagetools inspect "${IMAGE_NAME}:${RELEASE_TAG}" \
+            --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          case "$digest" in
+            sha256:*) ;;
+            *) echo "::error::Unexpected manifest-list digest: $digest"; exit 1 ;;
+          esac
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Emit release manifest artifact
+        id: manifest
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/manifest
+          python3 -m scripts.releases.docker manifest \
+            --tag "$RELEASE_TAG" \
+            --commit "$GITHUB_SHA" \
+            --digest-amd64 "$(sed 's/^sha256://' /tmp/digests/docker-publish-digest-slim-amd64-${RELEASE_TAG}/amd64.digest)" \
+            --digest-arm64 "$(sed 's/^sha256://' /tmp/digests/docker-publish-digest-slim-arm64-${RELEASE_TAG}/arm64.digest)" \
+            > /tmp/manifest/manifest.json
+          python3 - "$RELEASE_TAG" "${{ steps.list.outputs.digest }}" <<'EOF'
+          import json, sys
+          manifest = json.load(open("/tmp/manifest/manifest.json"))
+          manifest["list-digest"] = sys.argv[2]
+          manifest["image"] = "nousresearch/hermes-agent"
+          manifest["tags"] = [sys.argv[1]]
+          json.dump(manifest, open("/tmp/manifest/manifest.json", "w"), indent=2)
+          EOF
+          cat /tmp/manifest/manifest.json
+
+      - name: Verify manifest identity
+        run: |
+          set -euo pipefail
+          python3 -m scripts.releases.docker verify \
+            --tag "$RELEASE_TAG" --commit "$GITHUB_SHA" /tmp/manifest/manifest.json
+
+      - name: Upload release manifest artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: docker-publish-manifest-${{ inputs.tag }}
+          path: /tmp/manifest/manifest.json
+          if-no-files-found: error
+          retention-days: 7
+
+  # Strict phase gate: in every release phase, the jobs that phase requires
+  # must actually have run and succeeded. `if: always()` keeps this job in
+  # the graph even when earlier jobs were skipped, so a skipped/failed
+  # publisher turns this red instead of letting the phase go green.
+  release-phase-gate:
+    name: Docker phase requirements met
+    if: always() && inputs.release-phase != ''
+    needs: [mode, build, release-publish, release-publish-manifest]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Validate phase job results
+        env:
+          PHASE: ${{ needs.mode.outputs.phase }}
+          BUILD: ${{ needs.build.result }}
+          RELEASE_PUBLISH: ${{ needs.release-publish.result }}
+          RELEASE_MANIFEST: ${{ needs.release-publish-manifest.result }}
+          MODE: ${{ needs.mode.result }}
+        run: |
+          set -euo pipefail
+          test "$MODE" = success
+          case "$PHASE" in
+            test)
+              failures=()
+              [ "$BUILD" = success ] || failures+=("build=$BUILD")
+              [ "${#failures[@]}" -eq 0 ] || { printf '::error::%s\n' "${failures[@]}"; exit 1; }
+              ;;
+            publish)
+              failures=()
+              [ "$RELEASE_PUBLISH" = success ] || failures+=("release-publish=$RELEASE_PUBLISH")
+              [ "$RELEASE_MANIFEST" = success ] || failures+=("release-publish-manifest=$RELEASE_MANIFEST")
+              [ "${#failures[@]}" -eq 0 ] || { printf '::error::%s\n' "${failures[@]}"; exit 1; }
+              ;;
+            *) echo "::error::Unknown phase $PHASE"; exit 1 ;;
+          esac

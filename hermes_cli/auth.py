@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+from pm import install_hint
 import json
 import logging
 import os
@@ -325,6 +326,19 @@ KNOWN_PROVIDER_KEY_PREFIXES: Dict[str, tuple] = {
 }
 
 
+def _matches_key_prefix(provider_id: str, val: str) -> bool:
+    """True when *val* starts with one of *provider_id*'s declared key prefixes (False when the
+    provider declares none)."""
+    return val.startswith(KNOWN_PROVIDER_KEY_PREFIXES.get(provider_id, ()))
+
+
+def looks_like_openrouter_key(value: Any) -> bool:
+    """True when *value* carries an OpenRouter key prefix. OPENAI_API_KEY is a legacy home for an
+    OpenRouter key, so only a value shaped like one may be read as an OpenRouter credential: a real
+    OpenAI key must never be auto-routed to, or sent to, openrouter.ai."""
+    return _matches_key_prefix("openrouter", str(value or "").strip())
+
+
 def _usable_declared_secret(provider_id: str, value: Any, source: str) -> Optional[str]:
     """*value* stripped when it is a usable, prefix-valid secret; None (after warning on a provable
     prefix mismatch, so it never shadows a later credential source) otherwise. Providers without a
@@ -333,7 +347,7 @@ def _usable_declared_secret(provider_id: str, value: Any, source: str) -> Option
     if not has_usable_secret(val):
         return None
     prefixes = KNOWN_PROVIDER_KEY_PREFIXES.get(provider_id)
-    if prefixes and not any(val.startswith(p) for p in prefixes):
+    if prefixes and not _matches_key_prefix(provider_id, val):
         logger.warning(
             "Ignoring %s for provider %r: value does not match the expected key "
             "prefix (%s). Falling back to the next credential source. Fix or "
@@ -522,7 +536,7 @@ def _load_global_auth_store() -> Dict[str, Any]:
     if os.environ.get("PYTEST_CURRENT_TEST") and os.environ.get("HOME"):
         real_root = Path(os.environ["HOME"]) / ".hermes" / "auth.json"
         try:
-            if global_path.resolve(strict=False) == real_root.resolve(strict=False):
+            if os.path.normcase(os.path.abspath(global_path)) == os.path.normcase(os.path.abspath(real_root)):
                 _global_auth_store_cache = None
                 return {}
         except Exception:
@@ -1397,6 +1411,7 @@ _PROVIDER_ALIASES: Dict[str, str] = {
     "lmstudio": "lmstudio", "lm-studio": "lmstudio", "lm_studio": "lmstudio",
     "chatgpt": "openai-codex", "chatgpt-codex": "openai-codex",
     # Local server aliases — route through the generic custom provider
+    "local": "custom",
     "ollama": "custom", "ollama_cloud": "ollama-cloud",
     "vllm": "custom", "llamacpp": "custom",
     "llama.cpp": "custom", "llama-cpp": "custom"}
@@ -1440,14 +1455,19 @@ def _openrouter_auto_detected(scoped_key_env: Callable[[str], str]) -> bool:
     """True when an OpenRouter credential exists via env key or the credential pool (a key added via
     `hermes auth add openrouter` has no env var; without the pool check it is invisible to
     auto-detection and requests go out with no Authorization header)."""
-    if any(has_usable_secret(scoped_key_env(v)) for v in ("OPENAI_API_KEY", "OPENROUTER_API_KEY")):
+    if has_usable_secret(scoped_key_env("OPENROUTER_API_KEY")):
+        return True
+    # OPENAI_API_KEY counts only when it holds an OpenRouter-shaped key (legacy home); a real OpenAI
+    # key falls through to the ``openai-api`` registry row instead of being shipped to OpenRouter.
+    legacy_key = scoped_key_env("OPENAI_API_KEY")
+    if has_usable_secret(legacy_key) and looks_like_openrouter_key(legacy_key):
         return True
     try:
         # Auto-detect an OpenRouter credential added via `hermes auth add openrouter` (manual pool entry, no
         # env var). Without this, a key that only lives in the credential pool is invisible to
         # auto-detection — the user sees `hermes auth list` showing the credential while requests go out
         # with no Authorization header ("HTTP 401: Missing Authentication header"). The env-var check above
-        # only covers keys exported as OPENROUTER_API_KEY / OPENAI_API_KEY. See issue #42130.
+        # only covers OPENROUTER_API_KEY and an sk-or- key in OPENAI_API_KEY. See issue #42130.
         from agent.credential_pool import load_pool as _load_pool
         return bool(_load_pool("openrouter").has_credentials())
     except Exception as e:
@@ -1551,8 +1571,8 @@ def resolve_provider(
     """Determine which inference provider to use.
 
     "auto" priority (explicit intent beats a stale OAuth login): 1. CLI api_key/base_url ->
-    "openrouter"; 2. config.yaml ``model.provider``; 3. OPENAI_API_KEY / OPENROUTER_API_KEY ->
-    "openrouter"; 4. OpenRouter pool; 5. provider env keys; 6. auth.json ``active_provider``;
+    "openrouter"; 2. config.yaml ``model.provider``; 3. OPENROUTER_API_KEY (or an sk-or- key in
+    OPENAI_API_KEY) -> "openrouter"; 4. OpenRouter pool; 5. provider env keys; 6. auth.json ``active_provider``;
     7. Nous free tier when it is on and its identity exists (never created here);
     8. AWS Bedrock chain; 9. AuthError(no_provider_configured).
 
@@ -1946,10 +1966,15 @@ def get_codex_auth_status() -> Dict[str, Any]:
     """Status snapshot for Codex auth (pool first, then legacy provider state).
 
     Read-only by contract: status/doctor must never adopt, refresh or persist a credential (#68004)."""
-    return _pool_first_oauth_status(
+    status = _pool_first_oauth_status(
         "openai-codex", is_expiring=_codex_access_token_is_expiring, auth_mode="chatgpt",
         resolve=lambda: resolve_codex_runtime_credentials(read_only=True),
         on_pool_miss=_codex_pool_rate_limited_status)
+    if str(status.get("source") or "").startswith("pool:"):
+        # Pool rows keep the canonical URL; the chat route may send this key to model.base_url.
+        from hermes_cli.auth_codex import _codex_pool_route_base_url
+        status["base_url"] = _codex_pool_route_base_url(status.get("base_url"))
+    return status
 
 
 def get_xai_oauth_auth_status() -> Dict[str, Any]:
@@ -2023,7 +2048,7 @@ def _copilot_acp_auth_evidence() -> tuple[bool, Optional[str]]:
     try:
         cli_config = os.path.expanduser("~/.copilot/config.json")
         if os.path.isfile(cli_config):
-            with open(cli_config, "r", encoding="utf-8", errors="ignore") as fh:
+            with open(cli_config, "r", encoding="utf-8-sig", errors="ignore") as fh:
                 raw = "\n".join(
                     line for line in fh.read().splitlines() if not line.lstrip().startswith("//"))
             tokens = (json.loads(raw) if raw.strip() else {}).get("copilotTokens")
@@ -2155,9 +2180,9 @@ def _get_azure_foundry_auth_status() -> Dict[str, Any]:
                     "azure-identity is installed; live credential validation "
                     "is skipped here. Run `hermes doctor` to verify token acquisition."
                 ) if installed else (
-                    "azure-identity not installed. Install with: "
-                    "pip install azure-identity  (or rely on Hermes' "
-                    "lazy-install at first use)."))
+                    "azure-identity not installed. From the Hermes environment, run: "
+                    f"{install_hint('azure-identity')}. "
+                    "Then restart Hermes."))
         except Exception as exc:
             info["logged_in"] = False
             info["error"] = f"azure-identity check failed: {exc}"

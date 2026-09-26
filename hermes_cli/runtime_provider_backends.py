@@ -32,8 +32,8 @@ def _azure_entra_credentials(cfg_entra: Dict[str, Any]) -> Any:
         from agent.azure_identity_adapter import SCOPE_AI_AZURE_DEFAULT, EntraIdentityConfig, build_token_provider
     except Exception as exc:
         raise AuthError(
-            "Azure Foundry Entra ID auth requires the 'azure-identity' "
-            "package. Install it with: pip install azure-identity "
+            "Could not load the Azure Foundry Entra ID adapter. "
+            "Run hermes pm repair, then restart Hermes. "
             f"(import failed: {exc})"
         ) from exc
     scope = str(cfg_entra.get("scope") or "").strip() or SCOPE_AI_AZURE_DEFAULT
@@ -157,12 +157,17 @@ def _resolve_openrouter_runtime(
         )
     )
     if is_openrouter_context:
-        # OPENAI_API_KEY is a legacy home for an OpenRouter key -- unless OPENAI_BASE_URL binds it
-        # to another host, where sending it to OpenRouter leaks that host's credential.
+        # OPENAI_API_KEY is a legacy home for an OpenRouter key. When OPENAI_BASE_URL binds it, it
+        # goes only to that host. Unbound, openrouter.ai gets it only when it is OpenRouter-shaped
+        # (sk-or-), so a real OpenAI key never reaches a third party.
+        openai_key = get_secret_str("OPENAI_API_KEY")
         openai_base_host = base_url_hostname(get_secret_str("OPENAI_BASE_URL", "").strip())
-        openai_key_ok = not openai_base_host or openai_base_host == base_url_hostname(base_url)
+        if openai_base_host:
+            openai_key_ok = openai_base_host == base_url_hostname(base_url)
+        else:
+            openai_key_ok = not is_openrouter_url or rp.looks_like_openrouter_key(openai_key)
         candidates = [explicit_api_key, get_secret_str("OPENROUTER_API_KEY"),
-                      get_secret_str("OPENAI_API_KEY") if openai_key_ok else ""]
+                      openai_key if openai_key_ok else ""]
     else:
         # ``model.api_key`` and ``model.key_env`` back a trusted config base_url only; the key_env
         # rung is what a bare ``provider: custom`` block relies on (#67453).

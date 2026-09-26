@@ -140,6 +140,25 @@ function transcriptContent(displayKind: SessionMessage['display_kind'], content:
   return displayKind === 'hidden' ? null : content
 }
 
+/**
+ * Backend-authored transcript notices. The gateway persists these itself and no
+ * view "sent" them, so they render as system rows but are not authored
+ * transcript content (see `ChatMessage.systemNotice`).
+ */
+const NOTICE_DISPLAY_KINDS = [
+  'model_switch',
+  'async_delegation_complete',
+  'process_complete',
+  'auto_continue',
+  'personality_switch',
+  // Hermes closing a failed turn, not the model speaking.
+  'failed_turn'
+] as const
+
+function isMachineNotice(displayKind: SessionMessage['display_kind']): boolean {
+  return displayKind !== undefined && (NOTICE_DISPLAY_KINDS as readonly string[]).includes(displayKind)
+}
+
 // A remote backend older than this app serves display_metadata as raw JSON text,
 // and `in` throws on a primitive — which used to fail the whole session resume.
 function parseDisplayMetadata(metadata: SessionMessage['display_metadata']): null | Record<string, unknown> {
@@ -348,16 +367,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       timelineDisplayContent(message, displayContentForMessage(message.role, content))
     )
 
-    const displayRole =
-      message.display_kind === 'model_switch' ||
-      message.display_kind === 'async_delegation_complete' ||
-      message.display_kind === 'process_complete' ||
-      message.display_kind === 'auto_continue' ||
-      message.display_kind === 'personality_switch' ||
-      // Hermes closing a failed turn, not the model speaking.
-      message.display_kind === 'failed_turn'
-        ? 'system'
-        : message.role
+    const displayRole = isMachineNotice(message.display_kind) ? 'system' : message.role
 
     // Persisted user turns carry `@image:<path>` directive lines inline in
     // the text (see tui_gateway/server.py's persist-time rewrite). The
@@ -496,6 +506,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
         ? { asyncResult: asyncResultBody(displayContentForMessage(message.role, message.content || content)) }
         : {}),
       ...(message.display_kind === 'process_complete' ? { asyncResultKind: 'process' as const } : {}),
+      ...(isMachineNotice(message.display_kind) ? { systemNotice: true } : {}),
       timestamp: earliestTimestamp(message.timestamp, ...parts.map(part => part.timestamp)),
       ...(rowId !== undefined ? { rowId } : {}),
       ...(pendingAbsorbedRows > 0 ? { serverRowSpan: pendingAbsorbedRows + 1 } : {}),

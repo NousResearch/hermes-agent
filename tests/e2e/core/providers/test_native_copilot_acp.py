@@ -66,9 +66,12 @@ Q2 = "Now summarise what you found (Q2-marker)."
 FINAL_ONE = f"The file says {CANARY} (FINAL-ONE)"
 FINAL_TWO = "Summary: the canary was read (FINAL-TWO)"
 LATE_TEXT = "LATE-ANSWER-65788"
-# Compaction: the system prompt + tool bridge alone is ~18K estimated tokens; eight ~1.2K-token file reads
+# Compaction: the turn pins ``--toolsets file`` so the prompt size does not depend on which optional tools
+# the host can advertise (browser tools appear only where agent-browser and Chromium exist). With that pin
+# the system prompt + tool bridge is ~3.5K estimated tokens and each file read adds ~0.6K, so eight reads
 # cross this absolute threshold mid-turn (ACP reports no usage, so Hermes estimates).
-COMPACT_THRESHOLD = 21_000
+COMPACT_THRESHOLD = 5_500
+COMPACT_TOOLSETS = ("--toolsets", "file")
 COMPACT_FILES = 8
 COMPACT_ASK = "Read f1.txt through f8.txt one by one, then say done (COMPACT-ASK)."
 SUMMARY = "SUMMARY-ACP-7f3: files f1..fN were read; each is lorem ipsum filler."
@@ -157,7 +160,7 @@ def _compaction(root: Path) -> Scenario:
     for i in range(1, COMPACT_FILES + 1):
         (nh.project / f"f{i}.txt").write_text(f"file {i} " + "lorem ipsum dolor " * 250 + "\n", encoding="utf-8")
     sc = Scenario(nh, fake)
-    sc.runs.append(run_chat(nh, COMPACT_ASK))
+    sc.runs.append(run_chat(nh, COMPACT_ASK, args=COMPACT_TOOLSETS))
     return sc
 
 

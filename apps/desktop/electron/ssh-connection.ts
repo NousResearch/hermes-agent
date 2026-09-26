@@ -36,6 +36,8 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 
+import { platformDefaultHermesHome } from './data-paths'
+
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000
 const DEFAULT_EXEC_TIMEOUT_MS = 20_000
 const DEFAULT_FORWARD_TIMEOUT_MS = 15_000
@@ -171,12 +173,9 @@ function redactSecrets(text) {
 // across reconnects so ControlMaster reuse works, short so the full path stays
 // under sun_path's 104-byte limit.
 //
-// CRITICAL (macOS): the base dir must be SHORT. os.tmpdir() on macOS is the
-// per-user `/var/folders/xx/yyyy…/T/` (~49 bytes), and OpenSSH binds a
-// TEMPORARY listener at `<ControlPath>.<16 random chars>` while establishing
-// the master — so a path that itself fits 104 still overflows at bind time. We
-// root under a short per-user base (`~/.hermes/desktop-ssh`) so even worst case
-// (~72 bytes on macOS) stays clear. Windows has no AF_UNIX sun_path limit.
+// OpenSSH binds a temporary listener at `<ControlPath>.<16 random chars>`.
+// The home (and macOS's os.tmpdir()) can be too deep even when the socket
+// itself fits sun_path. Windows has no AF_UNIX sun_path limit.
 function controlSocketPath(user, host, port, baseDir?, identity: any = {}) {
   const dir = baseDir || defaultControlDir()
   const keyPathIdentity = path.normalize(String(identity.keyPath || ''))
@@ -196,14 +195,37 @@ function controlSocketPath(user, host, port, baseDir?, identity: any = {}) {
   return path.join(dir, `${id}.sock`)
 }
 
-function defaultControlDir() {
-  // POSIX: a SHORT, PER-USER base stays under the socket limit AND avoids a
-  // world-shared /tmp dir (no symlink-hijack surface). Created 0700 in open().
+function shortControlDir(): string {
+  // no-tmp: ok — AF_UNIX's short path budget rules out a deep HOME/TMPDIR; the parent and child are checked before use.
+  return `/tmp/hermes-ssh-${process.getuid!()}`
+}
+
+function defaultControlDir(): string {
   if (process.platform === 'win32') {
     return path.join(os.tmpdir(), 'hermes-desktop-ssh')
   }
 
-  return path.join(os.homedir(), '.hermes', 'desktop-ssh')
+  const homeDir = path.join(platformDefaultHermesHome(os.homedir()), 'desktop-ssh')
+
+  // Include the filename and OpenSSH's temporary-listener suffix in the byte budget.
+  return Buffer.byteLength(path.join(homeDir, '0123456789abcdef.sock.0123456789abcdef')) <= 104
+    ? homeDir
+    : shortControlDir()
+}
+
+function checkShortControlParent(): void {
+  // /tmp can be a symlink on macOS. Inspect its resolved directory before
+  // creating anything there; the sticky bit protects an owned child from rename.
+  const parent = path.dirname(shortControlDir())
+  const st = fs.statSync(fs.realpathSync(parent))
+
+  if (
+    !st.isDirectory() ||
+    (st.uid !== 0 && st.uid !== process.getuid!()) ||
+    ((st.mode & 0o022) !== 0 && (st.mode & 0o1000) === 0)
+  ) {
+    throw new Error(`Unsafe SSH control parent: ${parent} must be owned by root or this user and sticky if writable.`)
+  }
 }
 
 // Command construction (pure — the unit tests exercise these directly)
@@ -714,10 +736,52 @@ class SshConnection {
     return err
   }
 
+  // The classified error only reaches the caller (the renderer shows friendly
+  // copy for its kind), so record what ssh actually did — exit code, close
+  // signal, stderr — in desktop.log. Without it a connect that dies right after
+  // TCP setup leaves nothing to diagnose it by (#80836).
+  _connectFailed(raw) {
+    const err = this._fail(raw, SSH_ERROR.UNREACHABLE)
+
+    if (err?.kind !== 'superseded') {
+      const code = raw && typeof raw === 'object' && 'code' in raw ? String(raw.code) : '?'
+      const stderr = String(sshCloseStderr(raw)).trim().slice(-500) || '(empty)'
+
+      this._logLine(
+        `connect to ${target(this.user, this.host)}:${this.port} failed ` +
+          `(kind=${err.kind}, exit=${code}, signal=${sshCloseSignal(raw) || 'none'}): ${stderr}`
+      )
+    }
+
+    return err
+  }
+
   // Open the connection. Mux: start the persistent ControlMaster (idempotent —
   // a live master is a no-op). No-mux: there is no master; validate auth +
   // reachability with a one-shot `ssh true` so failures classify identically.
   async open({ signal }: any = {}) {
+    if (this._mux) {
+      const controlDir = path.dirname(this.controlPath)
+
+      if (process.platform !== 'win32' && controlDir === shortControlDir()) {
+        checkShortControlParent()
+      }
+
+      fs.mkdirSync(controlDir, { recursive: true, mode: 0o700 })
+
+      if (process.platform !== 'win32') {
+        const st = fs.lstatSync(controlDir)
+
+        if (st.isSymbolicLink() || !st.isDirectory() || st.uid !== process.getuid!()) {
+          throw new Error(`Unsafe SSH control dir: ${controlDir} is not a directory owned by this user (no symlinks).`)
+        }
+
+        if ((st.mode & 0o777) !== 0o700) {
+          fs.chmodSync(controlDir, 0o700)
+        }
+      }
+    }
+
     if (await this.isAlive({ signal })) {
       // -O check passing is not proof the master works: a ControlPersist master
       // can survive a failed teardown with wedged channels (observed on macOS
@@ -744,45 +808,17 @@ class SshConnection {
           signal
         })
       } catch (error) {
-        throw this._fail(error, SSH_ERROR.UNREACHABLE)
+        throw this._connectFailed(error)
       }
 
       if (!sshCloseOk(result)) {
-        throw this._fail(result, SSH_ERROR.UNREACHABLE)
+        throw this._connectFailed(result)
       }
 
       this._opened = true
       this._logLine('connection verified (no-mux; per-operation ssh)')
 
       return
-    }
-
-    const controlDir = path.dirname(this.controlPath)
-
-    try {
-      fs.mkdirSync(controlDir, { recursive: true, mode: 0o700 })
-    } catch {
-      void 0
-    }
-
-    if (process.platform !== 'win32') {
-      const st = fs.lstatSync(controlDir)
-
-      if (st.isSymbolicLink()) {
-        throw new Error(`Unsafe SSH control dir: ${controlDir} is a symlink.`)
-      }
-
-      if (!st.isDirectory()) {
-        throw new Error(`Unsafe SSH control dir: ${controlDir} is not a directory.`)
-      }
-
-      if (st.uid !== process.getuid!()) {
-        throw new Error(`Unsafe SSH control dir: ${controlDir} is owned by uid ${st.uid}, not ${process.getuid!()}.`)
-      }
-
-      if ((st.mode & 0o777) !== 0o700) {
-        fs.chmodSync(controlDir, 0o700)
-      }
     }
 
     const args = buildMasterArgs(this, this._connectTimeoutMs)
@@ -792,11 +828,11 @@ class SshConnection {
     try {
       result = await runSsh(args, { timeoutMs: this._connectTimeoutMs, spawnFn: this._spawnFn, signal })
     } catch (error) {
-      throw this._fail(error, SSH_ERROR.UNREACHABLE)
+      throw this._connectFailed(error)
     }
 
     if (!sshCloseOk(result)) {
-      throw this._fail(result, SSH_ERROR.UNREACHABLE)
+      throw this._connectFailed(result)
     }
 
     this._opened = true

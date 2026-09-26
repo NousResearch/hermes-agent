@@ -17,6 +17,7 @@ export const LAYOUT_KEYS = {
   panes: 'hermes.desktop.paneStates.v1',
   dismissed: 'hermes.desktop.dismissedPanes.v1',
   shares: 'hermes.desktop.paneShare.v1',
+  sharePartners: 'hermes.desktop.paneSharePartners.v1',
   hiddenTabs: 'hermes.desktop.hiddenStripTabs.v1',
   placed: 'hermes.desktop.userPlacedPanes.v1',
   flipped: 'hermes.desktop.panesFlipped',

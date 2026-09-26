@@ -385,6 +385,13 @@ class Soak:
 
     def ev_long_run(self, name):
         """A run that outlives the fire-claim TTL while the ticker keeps ticking."""
+        pending = self.model.jobs[name].pending
+        if pending is not None and pending > self.now():
+            # A known schedule gap may shift the stored slot. Keep driving all intervening
+            # ticks, then hold the actual due run rather than waiting at the wrong instant.
+            self.at(pending, "long_run", name)
+            self.events.sort()
+            return
         job_id = self.ids[name]
         hold = self.control.hold_file(name)
         hold.write_text("1", encoding="utf-8")

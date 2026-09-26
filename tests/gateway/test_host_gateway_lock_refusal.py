@@ -34,7 +34,7 @@ def _hold_host_lock_from_another_description(hr):
     return handle
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="flock-based contention setup")
+@pytest.mark.platforms("posix")  # flock-based contention setup
 def test_second_host_gateway_is_refused_with_75_naming_the_owner_and_the_migrate_command(
     host_lock_dir, capsys,
 ):
@@ -61,7 +61,7 @@ def test_second_host_gateway_is_refused_with_75_naming_the_owner_and_the_migrate
     assert "--force" in out and "--replace" in out
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="flock-based contention setup")
+@pytest.mark.platforms("posix")  # flock-based contention setup
 def test_force_still_starts_a_second_gateway_and_an_unusable_lock_dir_is_not_a_refusal(
     host_lock_dir, monkeypatch,
 ):
@@ -85,7 +85,7 @@ def test_force_still_starts_a_second_gateway_and_an_unusable_lock_dir_is_not_a_r
     _claim_host_gateway_role()  # no SystemExit
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="flock-based contention setup")
+@pytest.mark.platforms("posix")  # flock-based contention setup
 def test_an_unmigrated_standalone_fleet_starts_beside_the_owner_instead_of_spinning(
     host_lock_dir, monkeypatch, caplog,
 ):
@@ -131,7 +131,7 @@ def test_an_unmigrated_standalone_fleet_starts_beside_the_owner_instead_of_spinn
     assert MIGRATE_COMMAND in logged, "the bounded outcome must name the command that converges"
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="flock-based contention setup")
+@pytest.mark.platforms("posix")  # flock-based contention setup
 def test_a_multiplexing_owner_is_still_refused(host_lock_dir, monkeypatch):
     """The carve-out is scoped to an unmigrated fleet: losing the race to a MULTIPLEXER is still
     the second-gateway shape, and an owner we cannot interrogate is treated as one."""

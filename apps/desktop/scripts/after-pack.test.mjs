@@ -1,17 +1,18 @@
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
-import { Platform } from 'app-builder-lib'
-import { PlatformPackager } from 'app-builder-lib/out/platformPackager.js'
+import { Platform, PlatformPackager } from 'app-builder-lib'
 import { expect, it, vi } from 'vitest'
 
-import pkg from '../package.json' with { type: 'json' }
+const require = createRequire(import.meta.url)
+const desktopRoot = path.resolve(import.meta.dirname, '..')
+// The builder config is electron-builder.config.cjs (package.json carries no `build` block).
+const builderConfig = require(path.join(desktopRoot, 'electron-builder.config.cjs'))
 
 async function configuredHook(context) {
-  if (pkg.build.afterPack) {
-    const hook = await import(new URL(`../${pkg.build.afterPack}`, import.meta.url).href)
-    await hook.default(context)
-  }
+  const hook = await import(new URL(`../${builderConfig.afterPack}`, import.meta.url).href)
+  await hook.default(context)
 }
 
 function context(appOutDir, productFilename = 'Hermes Preview') {
@@ -47,13 +48,12 @@ it('restores app localizations from the filtered framework without copying local
   }
 })
 
-it('leaves other platforms alone and reports a missing framework without failing packaging', async () => {
+it('leaves Linux alone and reports a missing framework without failing packaging', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'hermes-locale-pack-'))
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
   try {
-    for (const electronPlatformName of ['linux', 'win32']) {
-      await configuredHook({ appOutDir: root, electronPlatformName })
-    }
+    // win32 is not a no-op here: the same hook sanitizes and batch-signs the PE tree.
+    await configuredHook({ appOutDir: root, electronPlatformName: 'linux' })
     expect(await readdir(root)).toEqual([])
     expect(warn).not.toHaveBeenCalled()
     await configuredHook(context(root))

@@ -33,6 +33,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/bot-mode',
         'user-guide/windows-native',
         'user-guide/windows-wsl-quickstart',
+        'user-guide/switching-to-source',
         'user-guide/configuration',
         'user-guide/managed-scope',
         'user-guide/configuring-models',
@@ -855,6 +856,17 @@ const sidebars: SidebarsConfig = {
             'developer-guide/trajectory-format',
           ],
         },
+        {
+          type: 'category',
+          label: 'Packaging & Releases',
+          items: [
+            'developer-guide/source-update-completion',
+            'developer-guide/shared-bundle-builds',
+            'developer-guide/stable-releases',
+            'developer-guide/macos-bundle-updates',
+            'developer-guide/pm-audit-status',
+          ],
+        },
       ],
     },
     {
@@ -866,6 +878,7 @@ const sidebars: SidebarsConfig = {
           label: 'Command Reference',
           items: [
             'reference/cli-commands',
+            'reference/package-management',
             'reference/slash-commands',
             'reference/profile-commands',
           ],

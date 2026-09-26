@@ -166,7 +166,7 @@ def _collect(procs):
     return out
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_concurrent_cold_starts_of_two_profiles_get_distinct_displays(tmp_path, start_in_fresh_process):
     """The allocation lock must outlive the pick: Xvnc writes /tmp/.X<n>-lock well after start() chose n, so
     a second profile starting in that window used to pick the same n (and its launcher's stale-lock cleanup
@@ -175,7 +175,7 @@ def test_concurrent_cold_starts_of_two_profiles_get_distinct_displays(tmp_path, 
     assert len({o["display"] for o in out}) == 2, out
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_concurrent_starts_of_one_profile_spawn_one_launcher(tmp_path, start_in_fresh_process):
     """Two start() calls for one profile spawn ONE launcher; the second used to spawn its own, overwrite
     launcher.pid and orphan the first (both callers then reported the last-written pid)."""
@@ -234,10 +234,10 @@ def in_process_runtime(tmp_path, monkeypatch):
         runtime.stop()
     for lock in (tmp_path / "xlocks").glob(".X*-lock"):  # anything the code under test failed to reap
         with contextlib.suppress(OSError, ValueError):
-            os.kill(int(lock.read_text()), 9)
+            os.kill(int(lock.read_text(encoding="utf-8-sig")), 9)
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.live_system_guard_bypass  # the orphan is reparented to init: signalling it is the point
 def test_orphaned_x_server_of_a_dead_launcher_is_reaped_on_next_start(in_process_runtime):
     """SIGKILL the launcher and its Xvnc survives, holding the display and rfb.sock. status() keys on the
@@ -250,8 +250,8 @@ def test_orphaned_x_server_of_a_dead_launcher_is_reaped_on_next_start(in_process
     (scratch / "launcher.sh").write_text(_ORPHANING_LAUNCHER, encoding="utf-8")
     first = runtime.start(wait_seconds=10)
     lock = scratch / "xlocks" / f".X{first.display.lstrip(':')}-lock"
-    orphan = int(lock.read_text())
-    os.kill(first.pid, signal.SIGKILL)
+    orphan = int(lock.read_text(encoding="utf-8-sig"))
+    os.kill(first.pid, signal.SIGKILL)  # windows-footgun: ok — Linux-only test requires an uncatchable launcher death
     assert _wait_until(lambda: _gone(first.pid))
     assert not _gone(orphan), "the X server outlives its launcher (that is the bug's precondition)"
     assert runtime.status().running is False
@@ -262,14 +262,13 @@ def test_orphaned_x_server_of_a_dead_launcher_is_reaped_on_next_start(in_process
     assert runtime.stop() is True
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.live_system_guard_bypass  # the orphan is reparented to init: signalling it is the point
 def test_orphaned_x_server_is_found_by_its_socket_when_the_lock_file_is_gone(tmp_path, monkeypatch):
     """Case B of #109941: the launcher was SIGKILLed AND a /tmp reaper removed ``.X<n>-lock`` (or the failed
     launch dropped ``display``). The lock was the reaper's only handle, so the live Xvnc leaked forever and
     each restart allocated a new number beside it. The socket path on its command line names it too."""
     import os
-    import shutil
     import subprocess
 
     sd = tmp_path / "bot-desktop"
@@ -278,12 +277,23 @@ def test_orphaned_x_server_is_found_by_its_socket_when_the_lock_file_is_gone(tmp
     (sd / "launcher.pid").write_text("1 0.0", encoding="utf-8")  # a dead launcher, not our process group
     monkeypatch.setattr(runtime, "_X_LOCK_DIR", tmp_path / "xlocks")  # no lock file at all
     (tmp_path / "xlocks").mkdir()
-    # argv[0] names the fake Xvnc and argv carries our socket path, exactly what launcher.sh's Xvnc shows;
-    # `tail -f` on the socket file just blocks like a server would (a multicall coreutils rejects a symlink).
-    orphan = subprocess.Popen([str(tmp_path / "Xvnc"), "-f", str(sd / "rfb.sock")], executable=shutil.which("tail"),
+    # argv[0] names the fake Xvnc and argv carries our socket path, exactly what launcher.sh's Xvnc shows.
+    # Python is the portable long-lived payload here: Nix's multicall coreutils dispatches from argv[0], so
+    # executing `tail` under the Xvnc spelling exits immediately instead of establishing the precondition.
+    orphan = subprocess.Popen([str(tmp_path / "Xvnc"), "-c", "import time; time.sleep(60)", str(sd / "rfb.sock")], executable=sys.executable,
                               start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                               stderr=subprocess.DEVNULL)
     try:
+        import psutil
+
+        def orphan_command_is_published() -> bool:
+            try:
+                command = psutil.Process(orphan.pid).cmdline()
+            except psutil.Error:
+                return False
+            return bool(command and "Xvnc" in Path(command[0]).name and str(sd / "rfb.sock") in command)
+
+        assert _wait_until(orphan_command_is_published), "establish the psutil discovery precondition"
         assert runtime._reap_orphaned_server(sd) is True
         assert _wait_until(lambda: _gone(orphan.pid)), "the lock-less orphan must be reaped, not leaked"
         assert not (sd / "rfb.sock").exists()
@@ -304,7 +314,7 @@ wait
 """
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.live_system_guard_bypass  # the launcher's group must really be signalled
 def test_readiness_timeout_terminates_the_launch_it_gave_up_on(in_process_runtime):
     """When the launcher misses the readiness deadline start() raises — and must take the launch down with
@@ -323,7 +333,7 @@ def test_readiness_timeout_terminates_the_launch_it_gave_up_on(in_process_runtim
     assert not (sd / "env").exists() and not (sd / "rfb.sock").exists()
     assert runtime.status().running is False
     for lock in (scratch / "xlocks").glob(".X*-lock"):
-        assert _gone(int(lock.read_text())), "the launch's X server must die with its launcher"
+        assert _gone(int(lock.read_text(encoding="utf-8-sig"))), "the launch's X server must die with its launcher"
 
 
 _DYING_LAUNCHER = """#!/usr/bin/env bash
@@ -332,7 +342,7 @@ exit 1
 """
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_failed_start_does_not_pin_the_profile_to_the_number_that_failed(in_process_runtime):
     """Regression for #109941: after a launcher failure the recorded ``display`` kept naming the number, and
     ``_pick_display`` reuses the recorded number first — so every retry picked the same occupied display and
@@ -345,7 +355,7 @@ def test_failed_start_does_not_pin_the_profile_to_the_number_that_failed(in_proc
     assert not (sd / "display").exists(), "a number that just failed must not be recorded for reuse"
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_allocation_lock_is_released_once_xvnc_claims_the_number(in_process_runtime):
     """The host-wide allocation lock exists for the pick→X-lock window only. Holding it for the whole Xfce
     bring-up serialized every profile's start behind one desktop launch (and a hung launcher blocked them
@@ -365,7 +375,7 @@ def test_allocation_lock_is_released_once_xvnc_claims_the_number(in_process_runt
         while time.monotonic() < deadline:
             if list((scratch / "xlocks").glob(".X*-lock")):
                 time.sleep(0.2)  # let start() notice the claim
-                with open(scratch / "alloc.lock", "a+") as fh:
+                with open(scratch / "alloc.lock", "a+", encoding="utf-8") as fh:
                     try:
                         fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                         seen["free"] = True

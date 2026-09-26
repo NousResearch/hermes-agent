@@ -172,7 +172,7 @@ function VersionStepper({
  * The target only carries the artifact id — content is read live from the
  * registry, so an open tab picks up new versions as the model iterates.
  */
-export function ArtifactPreview({ target }: { target: PreviewTarget }) {
+export function ArtifactPreview({ onClose, target }: { onClose?: () => void; target: PreviewTarget }) {
   const { t } = useI18n()
   const copy = t.artifactPreview
   const artifactId = target.url
@@ -188,7 +188,13 @@ export function ArtifactPreview({ target }: { target: PreviewTarget }) {
   const record = useMemo(() => findArtifact(registry, artifactId), [artifactId, registry])
 
   if (!record) {
-    return <PreviewEmptyState body={copy.missingBody} title={copy.missingTitle} />
+    return (
+      <PreviewEmptyState
+        body={copy.missingBody}
+        primaryAction={onClose ? { label: t.common.close, onClick: onClose } : undefined}
+        title={copy.missingTitle}
+      />
+    )
   }
 
   const renderable = record.kind === 'html' || record.kind === 'svg'

@@ -20,14 +20,12 @@ from typing import Any, Dict, List, Optional
 from gateway.config import PlatformConfig, Platform
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 
-
 class _StubStore:
     def __init__(self, transcript: List[Dict[str, Any]]) -> None:
         self._transcript = transcript
 
     def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
         return list(self._transcript)
-
 
 class _StubAdapter(BasePlatformAdapter):
     """Minimal concrete adapter (BasePlatformAdapter is abstract)."""
@@ -54,7 +52,6 @@ class _StubAdapter(BasePlatformAdapter):
     async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:  # pragma: no cover - unused
         return SendResult(success=True)
 
-
 def _tts_tool_row(path: str) -> Dict[str, Any]:
     return {
         "role": "tool",
@@ -63,7 +60,6 @@ def _tts_tool_row(path: str) -> Dict[str, Any]:
             % (path, path)
         ),
     }
-
 
 def test_current_turn_tts_media_not_treated_as_history():
     """This turn's TTS output (persisted before delivery) must NOT be deduped."""
@@ -81,7 +77,6 @@ def test_current_turn_tts_media_not_treated_as_history():
     paths: Optional[set] = adapter._history_media_paths_for_session("k")
     assert not paths or current not in paths
 
-
 def test_prior_turn_media_still_deduped():
     """A file delivered in a PRIOR turn stays in the dedup set."""
     old = "/opt/data/cache/audio/tts_old.mp3"
@@ -97,5 +92,3 @@ def test_prior_turn_media_still_deduped():
     adapter = _StubAdapter(transcript)
     paths = adapter._history_media_paths_for_session("k")
     assert paths and old in paths
-
-

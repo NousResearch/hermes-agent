@@ -30,7 +30,9 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.windows_only
+from tests.live_process_fixtures import sleeper_script_path
+
+pytestmark = pytest.mark.platforms("windows")  # live Windows named-pipe E2E
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -137,7 +139,7 @@ def test_named_pipe_identify_status_and_fleet_consumer(live_server, monkeypatch)
     import hermes_cli.update_receipt as ur
 
     monkeypatch.setattr(
-        "hermes_cli.build_info.get_code_identity",
+        "hermes_cli.version_info.get_code_identity",
         lambda refresh=False: {"sha": ident.get("code_sha") or "X", "version": "t"},
     )
     monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: home)
@@ -170,7 +172,7 @@ def test_pipe_gone_after_kill_falls_back(live_server, monkeypatch):
     import hermes_cli.update_receipt as ur
 
     monkeypatch.setattr(
-        "hermes_cli.build_info.get_code_identity",
+        "hermes_cli.version_info.get_code_identity",
         lambda refresh=False: {"sha": "NEW", "version": "t"},
     )
     monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: home)
@@ -190,7 +192,11 @@ def test_pipe_gone_after_kill_falls_back(live_server, monkeypatch):
         )
 
     standin = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(120)", "hermes", "gateway", "run"],
+        # Use the real interpreter: a Windows venv's python.exe can be a shim
+        # whose PID differs from the process running the command line. The
+        # stand-in runs a SCRIPT, not `-c`: gateway identity is no longer
+        # inferred from inline `-c` source (#107002).
+        [getattr(sys, "_base_executable"), sleeper_script_path(), "hermes", "gateway", "run"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )

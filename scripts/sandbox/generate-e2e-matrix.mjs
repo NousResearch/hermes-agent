@@ -21,9 +21,9 @@
  *
  * Prints JSON: { linux: {include:[...]}, windows: {include:[...]},
  * macos: {include:[...]} } -- every entry is {name, install_method,
- * update_method, install_ref, tag_has_desktop} (the tag annotation lets
- * a run workflow natively skip desktop-surface legs from releases that
- * predate the desktop app).
+ * update_method, install_ref, update_ref, tag_has_desktop} (the tag
+ * annotation lets a run workflow natively skip desktop-surface legs from
+ * releases that predate the desktop app).
  */
 
 import fs from 'node:fs';
@@ -45,7 +45,8 @@ import { fileURLToPath } from 'node:url';
  *   -IncludeDesktop), which also builds the desktop app -- on windows it
  *   registers Start Menu / Desktop shortcuts too, on linux/macos it
  *   builds into the checkout without registering an OS entry point;
- *   packaged-app is declared but not used by any OS spec yet.
+ *   packaged-app installs a signed bundle. Its native in-app update pair
+ *   is declared separately, not crossed with source-checkout update methods.
  * @typedef {InstallMethod | 'hermes-update' | 'open-app-update' | 'hermes-desktop-app-update'} UpdateMethod
  *   Every install method doubles as an update method (re-run it over the
  *   existing install), plus the updater CLI and the two app-update
@@ -73,8 +74,16 @@ import { fileURLToPath } from 'node:url';
  *   A picked release tag plus what its own tree ships (annotated by
  *   pick-releases in install-e2e.yml).
  *
+ * @typedef {'HEAD' | 'NEXT'} UpdateTarget
+ *   HEAD is the commit under test. NEXT is not a git ref: the drivers mint
+ *   it as a synthetic child of the install ref, so a leg starting AT HEAD
+ *   still has an update to take.
+ *
+ * @typedef {{from: string, to: UpdateTarget, desktop: boolean}} Start
+ *   One column of the plan: install `from`, update to `to`.
+ *
  * @typedef {{name: string, leg_id: string, install_method: string, update_method: string,
- *            install_ref: string, tag_has_desktop?: boolean}} MatrixEntry
+ *            install_ref: string, update_ref: UpdateTarget, tag_has_desktop?: boolean}} MatrixEntry
  */
 
 /**
@@ -89,6 +98,43 @@ import { fileURLToPath } from 'node:url';
  */
 export function legId(name) {
   return name.replace(/[^A-Za-z0-9._-]+/g, '-');
+}
+
+/** One pinned package transition; source-release sampling does not apply.
+ * @param {'windows' | 'macos'} os
+ * @param {string} oldTag
+ * @returns {{include: MatrixEntry[]}}
+ */
+export function bundledMatrix(os, oldTag) {
+  const name = `${os}: packaged-app -> open-app-update (${oldTag} -> HEAD)`;
+  return { include: [{ name, leg_id: legId(name), install_method: 'packaged-app',
+    update_method: 'open-app-update', install_ref: oldTag, update_ref: 'HEAD', tag_has_desktop: true }] };
+}
+
+/**
+ * The starting points every combination runs from: each sampled release
+ * tag updating to HEAD, then HEAD itself updating to NEXT. The HEAD start
+ * is the only leg whose installer runs against an empty machine with the
+ * CURRENT script, and the only one whose updater is the one we ship today
+ * (every tag leg exercises the OLD build's updater handing off to HEAD).
+ * @param {TagAnnotation[]} tags
+ * @returns {Start[]}
+ */
+export function startsFor(tags) {
+  return [
+    ...tags.map((t) => /** @type {Start} */ ({ from: t.ref, to: 'HEAD', desktop: t.desktop })),
+    { from: 'HEAD', to: 'NEXT', desktop: true },
+  ];
+}
+
+/**
+ * Column label for a start. Tag columns keep their bare tag (every one
+ * targets HEAD); the HEAD start spells out its synthetic target.
+ * @param {string} from @param {string} to
+ * @returns {string}
+ */
+function startLabel(from, to) {
+  return to === 'HEAD' ? from : `${from} -> ${to}`;
 }
 
 /** @type {Record<Os, OsSpec>} */
@@ -184,9 +230,9 @@ export function generateEnvironments(spec) {
 /**
  * Split the combinations into one matrix per OS.
  *
- * `tags` (the released versions we test updating FROM) is the OUTER axis:
- * for each tag, for each combination, one dispatch that installs the tag
- * and updates to HEAD. No capability filtering happens here -- every
+ * The starts (startsFor: each sampled tag -> HEAD, plus HEAD -> NEXT) are
+ * the OUTER axis: for each start, for each combination, one dispatch that
+ * installs `from` and updates to `to`. No capability filtering happens here -- every
  * declared combination is dispatched, and the OS's run workflow natively
  * skips what its driver cannot run yet. Entry names carry everything (os,
  * method pair, tag transition) because slash-joined leg names are all the
@@ -200,23 +246,65 @@ export function buildMatrices(envs, tags) {
   /** @type {Record<Os, {include: MatrixEntry[]}>} */
   const byOs = { linux: { include: [] }, windows: { include: [] }, macos: { include: [] } };
   for (const env of envs) {
-    for (const tag of tags) {
+    for (const start of startsFor(tags)) {
+      const name = `${env.os}: ${env.install} -> ${env.update} (${start.from} -> ${start.to})`;
       /** @type {MatrixEntry} */
       const entry = {
-        name: `${env.os}: ${env.install} -> ${env.update} (${tag.ref} -> HEAD)`,
-        leg_id: legId(`${env.os}: ${env.install} -> ${env.update} (${tag.ref} -> HEAD)`),
+        name,
+        leg_id: legId(name),
         install_method: env.install,
         update_method: env.update,
-        install_ref: tag.ref,
+        install_ref: start.from,
+        update_ref: start.to,
         // Every OS declares desktop-surface methods (both app-update
         // variants at minimum), so every leg carries the annotation and
         // its run workflow can natively skip pre-desktop tags.
-        tag_has_desktop: tag.desktop,
+        tag_has_desktop: start.desktop,
       };
       byOs[env.os].include.push(entry);
     }
   }
   return byOs;
+}
+
+/** Source-leg presets: the OS matrices each named route runs. */
+const ROUTE_OSES = /** @type {Record<string, Os[]>} */ ({
+  all: ['linux', 'windows', 'macos'],
+  both: ['linux'],
+  update: ['linux'],
+  installer: ['linux'],
+  'windows-desktop': ['windows'],
+  'macos-desktop': ['macos'],
+  // Bundled legs come from bundle-plan.mjs, not this matrix.
+  bundled: [],
+  'windows-bundled': [],
+  'macos-bundled': [],
+});
+
+/**
+ * Narrow the matrices to a route: a preset keeps whole OS matrices; anything else selects
+ * legs by name, so a leg name, a fragment of one, or a pasted job name ("<leg> / e2e") runs
+ * just those legs. A route that selects nothing throws rather than yielding a green empty run.
+ *
+ * @param {Record<Os, {include: MatrixEntry[]}>} matrices
+ * @param {string} route
+ * @returns {Record<Os, {include: MatrixEntry[]}>}
+ */
+export function selectRoute(matrices, route) {
+  const oses = ROUTE_OSES[route];
+  /** @type {(os: Os, entry: MatrixEntry) => boolean} */
+  const keep = oses
+    ? (os) => oses.includes(os)
+    : (_os, entry) => entry.name.includes(route) || route.startsWith(`${entry.name} /`);
+  /** @type {Record<Os, {include: MatrixEntry[]}>} */
+  const picked = { linux: { include: [] }, windows: { include: [] }, macos: { include: [] } };
+  for (const os of /** @type {Os[]} */ (Object.keys(picked))) {
+    picked[os].include = matrices[os].include.filter((entry) => keep(os, entry));
+  }
+  if (!oses && Object.values(picked).every((m) => m.include.length === 0)) {
+    throw new Error(`route ${JSON.stringify(route)} is not a preset and matches no leg name`);
+  }
+  return picked;
 }
 
 /**
@@ -244,18 +332,19 @@ export function methodNeedsDesktop(m) {
  * @returns {string}
  */
 export function renderMarkdownPlan(envs, tags) {
+  const starts = startsFor(tags);
   const lines = [
     '### Install & Update E2E plan',
     '',
-    `${envs.length} combinations x ${tags.length} starting tags = ${envs.length * tags.length} legs`,
+    `${envs.length} combinations x ${starts.length} starting points = ${envs.length * starts.length} legs`,
     '',
-    `| combination | ${tags.map((t) => t.ref).join(' | ')} |`,
-    `|---|${tags.map(() => '---').join('|')}|`,
+    `| combination | ${starts.map((s) => startLabel(s.from, s.to)).join(' | ')} |`,
+    `|---|${starts.map(() => '---').join('|')}|`,
   ];
   for (const env of envs) {
-    const cells = tags.map((tag) => {
+    const cells = starts.map((start) => {
       if (
-        !tag.desktop &&
+        !start.desktop &&
         (methodNeedsDesktop(env.install) || methodNeedsDesktop(env.update))
       ) {
         return 'pre-desktop';
@@ -273,7 +362,7 @@ export function renderMarkdownPlan(envs, tags) {
  * each cell the leg's conclusion. Input is NDJSON {name, conclusion} lines
  * -- what `gh api --paginate --jq '.jobs[] | {name, conclusion}'` emits --
  * and legs are recognized by the exact name shape buildMatrices mints
- * ("os: install -> update (tag -> HEAD) / ..."), so unrelated jobs
+ * ("os: install -> update (from -> HEAD|NEXT) / ..."), so unrelated jobs
  * (pick-releases, the report job itself) fall out naturally.
  *
  * @param {{name: string, conclusion: string | null}[]} jobs
@@ -297,7 +386,7 @@ export function renderMarkdownResults(jobs, tagAnnotations = [], artifactById = 
   const knownRules = JSON.parse(fs.readFileSync(new URL('../../tests/install/e2e-assets/known-failures.json', import.meta.url), 'utf8'));
   /** @type {Map<string, {number: number, rule: any}>} */
   const footnotes = new Map();
-  const LEG = /^(linux|windows|macos): (\S+) -> (\S+) \(([^)]+) -> HEAD\) \//;
+  const LEG = /^(linux|windows|macos): (\S+) -> (\S+) \(([^)]+) -> (HEAD|NEXT)\) \//;
   /** @type {Map<string, boolean>} */
   const desktopByTag = new Map(tagAnnotations.map((t) => [t.ref, t.desktop]));
   /**
@@ -333,11 +422,11 @@ export function renderMarkdownResults(jobs, tagAnnotations = [], artifactById = 
     const m = job.name.match(LEG);
     if (!m) continue;
     const combo = `${m[1]}: ${m[2]} -> ${m[3]}`;
-    const tag = m[4];
+    const tag = startLabel(m[4], m[5]);
     if (!tags.includes(tag)) tags.push(tag);
     if (!rows.has(combo)) rows.set(combo, new Map());
     const cell = (() => {
-    const legId2 = legId(`${m[1]}: ${m[2]} -> ${m[3]} (${m[4]} -> HEAD)`);
+    const legId2 = legId(`${m[1]}: ${m[2]} -> ${m[3]} (${m[4]} -> ${m[5]})`);
     // Logs artifacts: `install-e2e-logs-<leg_id>` (windows) or with a
     // trailing `-<sha>` (posix arms append it at upload). Match by prefix.
     const logsName = [...artifactById.keys()].find((n) => n.startsWith(`install-e2e-logs-${legId2}`));
@@ -363,7 +452,7 @@ export function renderMarkdownResults(jobs, tagAnnotations = [], artifactById = 
         return `known [^${footnotes.get(rule.id)?.number}]${reel}`;
       }
       case 'failure': return `&#x274C;${reel}`;
-      case 'skipped': return skipLabel(m[2], m[3], tag);
+      case 'skipped': return skipLabel(m[2], m[3], m[4]);
       case 'cancelled': return 'cancelled';
       default: return 'running';
     }
@@ -411,6 +500,7 @@ async function main() {
   const { values } = parseArgs({
     options: {
       tags: { type: 'string', default: '[]' },
+      route: { type: 'string', default: 'all' },
       format: { type: 'string', default: 'json' },
       artifacts: { type: 'string' },
     },
@@ -436,7 +526,7 @@ async function main() {
     process.stdout.write(renderMarkdownPlan(envs, tags));
     return;
   }
-  const matrices = buildMatrices(envs, tags);
+  const matrices = selectRoute(buildMatrices(envs, tags), values.route || 'all');
   process.stdout.write(`${JSON.stringify(matrices, null, 2)}\n`);
 }
 

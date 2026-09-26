@@ -224,6 +224,20 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
             "switched on), 'move' them to the default store (a default chat that leaked in), or "
             "'report' (default) — the rows themselves cannot tell the two cases apart")
 
+
+    sessions_repair_prompts = sessions_subparsers.add_parser(
+        "repair-prompts", help="Report or clear stored system prompts degraded to a reduced-toolset build",
+        description="Repair session rows degraded by the pre-#122822 gateway hygiene/compress bug. "
+            "Automatic repair requires positive tools[] evidence; rows without a readable pin are "
+            "reported as unverifiable and never changed by a scan. Clearing a prompt makes the next "
+            "turn rebuild and persist healthy bytes. Reports without touching anything unless --apply "
+            "is given; a session_id is an explicit destructive override and can clear even a healthy prompt.")
+    _flag(sessions_repair_prompts, "--apply", help="Clear the verified prompts (default: report only)")
+    _flag(sessions_repair_prompts, "--json",
+        help="Machine-readable output; with --apply, apply without an interactive confirmation")
+    sessions_repair_prompts.add_argument("session_id", nargs="?", default=None,
+        help="Destructive override: clear this session even when its stored prompt is healthy")
+
     sessions_recover = sessions_subparsers.add_parser(
         "recover", help="Rebuild canonical session data into a separate clean database",
         description="Offline, non-destructive recovery for a damaged state.db. The "

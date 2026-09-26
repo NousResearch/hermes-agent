@@ -589,7 +589,7 @@ def _validate_managed_local(req: _Request) -> Optional[dict[str, Any]]:
     return None
 
 
-def _profile_catalog(normalized: str) -> tuple[list[str], bool]:
+def _profile_catalog(normalized: str, base_url: Optional[str] = None) -> tuple[list[str], bool]:
     """``(catalog, authoritative)`` for a profile whose catalog is not the generic
     ``{base_url}/models`` listing — it overrides ``fetch_models`` or points ``models_url``
     elsewhere — so that listing is not authoritative for it (a relay may 200 with a different
@@ -603,6 +603,10 @@ def _profile_catalog(normalized: str) -> tuple[list[str], bool]:
 
     profile = get_provider_profile(normalized)
     if profile is None:
+        return [], False
+    # A non-default runtime base_url is a user-configured relay/proxy; its own /models listing
+    # decides validation, not the provider profile's canonical catalog endpoint.
+    if base_url and (base_url.rstrip("/") != (profile.base_url or "").rstrip("/")):
         return [], False
     generic = (profile.base_url or "").rstrip("/") + "/models"
     own_endpoint = bool(profile.models_url) and profile.models_url.rstrip("/") != generic
@@ -618,7 +622,7 @@ def _validate_live_listing(req: _Request) -> Optional[dict[str, Any]]:
     against that catalog (``provider_model_ids`` — the picker's list) before the generic listing."""
     from hermes_cli import models as _m
 
-    catalog, authoritative = _profile_catalog(req.normalized)
+    catalog, authoritative = _profile_catalog(req.normalized, req.base_url)
     if catalog:
         match = _match_in_catalog(req.lookup, catalog, suggest_query=req.requested)
         if match.exact:

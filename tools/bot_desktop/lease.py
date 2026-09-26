@@ -84,7 +84,7 @@ def _read(path: Path) -> Lease:
     or tampering: fail CLOSED (human holds) — an unreadable lease must never let the agent act on a
     screen a human may be using; the next successful write repairs it."""
     try:
-        raw = path.read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         return Lease()
     except OSError:

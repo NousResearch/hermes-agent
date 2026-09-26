@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Any, Dict
 
 from agent.display import KawaiiSpinner
-from agent.interrupt_control import interrupt_issuer
+from agent.interrupt_control import interrupt_issuer, interrupted_during_api_call_reason
 from agent.turn_context_compaction import _reanchor
 from agent.turn_truncation import boosted_output_cap
 
@@ -471,10 +471,7 @@ def apply_retry_restarts(
         return _verdict("continue")
 
     if interrupted:
-        _issuer = interrupt_issuer(agent)
-        _turn_exit_reason = (
-            f"interrupted_during_api_call({_issuer})" if _issuer else "interrupted_during_api_call"
-        )
+        _turn_exit_reason = interrupted_during_api_call_reason(agent)
         return _verdict("break")
 
     if _retry.restart_with_compressed_messages:

@@ -9,6 +9,7 @@ namespace ``hermes update`` uses, and the installer must print the ref.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -92,6 +93,22 @@ def test_install_sh_repository_stage_parks_local_commits_before_reset(tmp_path: 
 )
 def test_install_ps1_repository_stage_parks_local_commits_before_reset(tmp_path: Path) -> None:
     managed, local_sha = _diverged_managed_checkout(tmp_path)
+    env = os.environ.copy()
+    if os.name != "nt":
+        # pwsh on POSIX cannot execute the Windows-only pinned Git archive.
+        # Seed its exact PM store slot with the real host Git, then invoke the
+        # unchanged repository stage. Native Windows tests stage the actual pin.
+        lock = json.loads((REPO_ROOT / "pm" / "lock.json").read_text(encoding="utf-8"))
+        version = lock["packages"]["git"]["version"]
+        store = tmp_path / "tools"
+        cmd = store / f"git-{version}-win32-x64" / "cmd"
+        cmd.mkdir(parents=True)
+        git = shutil.which("git")
+        assert git is not None
+        (cmd / "git.exe").symlink_to(git)
+        (cmd / "git").symlink_to(git)
+        env["HERMES_RUNTIME_DIR"] = str(store)
+        env["PATH"] = str(cmd) + os.pathsep + env["PATH"]
 
     result = subprocess.run(
         [
@@ -100,8 +117,8 @@ def test_install_ps1_repository_stage_parks_local_commits_before_reset(tmp_path:
             "-InstallDir", str(managed),
             "-HermesHome", str(tmp_path / "hermes-home"),
         ],
-        cwd=tmp_path, capture_output=True, text=True,
+        cwd=tmp_path, env=env, capture_output=True, text=True,
     )
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 0, result.stdout + result.stderr
     _assert_local_commit_parked(managed, local_sha, result.stdout + result.stderr)

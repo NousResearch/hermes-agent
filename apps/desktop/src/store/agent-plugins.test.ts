@@ -1,8 +1,9 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   $agentPlugins,
   type AgentPluginRow,
+  installAgentPlugin,
   isDesktopRelevantPlugin,
   normalizeAgentPluginRow,
   saveAgentPluginSettings
@@ -10,6 +11,51 @@ import {
 
 const row = (partial: Partial<AgentPluginRow>): AgentPluginRow =>
   ({ name: partial.key ?? 'x', status: 'enabled', ...partial }) as AgentPluginRow
+
+afterEach(() => vi.useRealTimers())
+
+describe('installAgentPlugin', () => {
+  it('waits for a slow successful install instead of reporting the generic 30s timeout', async () => {
+    vi.useFakeTimers()
+
+    const request = vi.fn(
+      <T>(_method: string, _params?: Record<string, unknown>, timeoutMs = 30_000): Promise<T> =>
+        new Promise((resolve, reject) => {
+          const deadline = setTimeout(
+            () => reject(new Error(`request timed out after ${timeoutMs / 1000}s: plugins.manage`)),
+            timeoutMs
+          )
+
+          setTimeout(() => {
+            clearTimeout(deadline)
+            resolve({ ok: true, plugin_name: 'demo' } as T)
+          }, 45_000)
+        })
+    )
+
+    const install = installAgentPlugin(request as never, { identifier: 'demo', profile: 'research' })
+
+    await vi.advanceTimersByTimeAsync(45_000)
+
+    expect(await install).toMatchObject({ ok: true, pluginName: 'demo' })
+    expect(request).toHaveBeenCalledWith(
+      'plugins.manage',
+      expect.objectContaining({ action: 'install', profile: 'research' }),
+      expect.any(Number)
+    )
+  })
+
+  it('marks a client timeout as an unknown install outcome', async () => {
+    const request = vi.fn(async () => {
+      throw new Error('request timed out after 120s: plugins.manage')
+    })
+
+    expect(await installAgentPlugin(request as never, { identifier: 'demo' })).toMatchObject({
+      ok: false,
+      timedOut: true
+    })
+  })
+})
 
 describe('normalizeAgentPluginRow', () => {
   it('treats an absent servers field as an empty full snapshot', () => {

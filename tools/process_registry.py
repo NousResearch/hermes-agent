@@ -134,17 +134,32 @@ def _worker_memory_max_bytes() -> int:
                 "expected an integer representing at least %d MiB",
                 override, _MIN_WORKER_MEMORY_MAX_BYTES // (1024 * 1024))
     candidates: List[int] = []
-    with suppress(OSError, ValueError):
-        lines = Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines()
-        v2 = next((ln for ln in lines if ln.startswith("0::")), None)
-        if v2 is not None:
-            relative = v2.partition("::")[2].lstrip("/")
-            raw_limit = (Path("/sys/fs/cgroup") / relative / "memory.max").read_text(encoding="utf-8").strip()
-            if raw_limit.isdigit() and int(raw_limit) >= _MIN_WORKER_MEMORY_MAX_BYTES:
-                candidates.append(int(raw_limit))
-    with suppress(OSError, ValueError, TypeError):
-        physical_bytes = int(os.sysconf("SC_PHYS_PAGES")) * int(os.sysconf("SC_PAGE_SIZE"))
-        candidates.append(min(_WORKER_MEMORY_MAX_CAP_BYTES, max(_MIN_WORKER_MEMORY_MAX_BYTES, physical_bytes // 2)))
+    try:
+        for line in Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines():
+            if line.startswith("0::"):
+                relative = line.partition("::")[2].lstrip("/")
+                raw_limit = (
+                    Path("/sys/fs/cgroup") / relative / "memory.max"
+                ).read_text(encoding="utf-8-sig").strip()
+                if raw_limit.isdigit():
+                    cgroup_limit = int(raw_limit)
+                    if cgroup_limit >= _MIN_WORKER_MEMORY_MAX_BYTES:
+                        candidates.append(cgroup_limit)
+                break
+    except (OSError, ValueError):
+        pass
+
+    try:
+        physical_bytes = int(os.sysconf("SC_PHYS_PAGES")) * int(
+            os.sysconf("SC_PAGE_SIZE")
+        )
+        physical_bound = min(
+            _WORKER_MEMORY_MAX_CAP_BYTES,
+            max(_MIN_WORKER_MEMORY_MAX_BYTES, physical_bytes // 2),
+        )
+        candidates.append(physical_bound)
+    except (OSError, ValueError, TypeError):
+        pass
     safe_bound = min(candidates) if candidates else _DEFAULT_WORKER_MEMORY_MAX_BYTES
     return min(override_bound, safe_bound) if override_bound else safe_bound
 
@@ -528,6 +543,8 @@ class ProcessSession:
     pid_scope: str = "host"                     # "host" for local/PTY PIDs, "sandbox" for env-local PIDs
     systemd_unit: str = ""                      # transient scope unit name when spawned under systemd-run
     handoff_note: str = ""                      # why a subagent handed this process to its parent (rides the notice)
+    persist_on_release: bool = False           # opt out of agent-lifecycle cleanup (release()/turn-abandon kill
+                                                # sweeps), per terminal(background=true, persist_on_release=true) (#41225)
     # Watcher/notification routing (persisted for crash recovery)
     # systemd_unit: str = ""                      # transient scope unit name when spawned under systemd-run
     # (#70716)
@@ -559,6 +576,8 @@ class ProcessSession:
     _completion_event: threading.Event = field(default_factory=threading.Event, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
+    _reader_finish_requested: threading.Event = field(default_factory=threading.Event, repr=False)
+    _reader_selectable: bool = field(default=False, repr=False)
     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (use_pty=True)
 
     def __post_init__(self):
@@ -595,7 +614,7 @@ _CHECKPOINT_FIELDS = (
     "started_at", "task_id", "owner_task_id", "session_key",
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
     "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns",
-    "heartbeat_seconds")
+    "heartbeat_seconds", "persist_on_release")
 _CHECKPOINT_DEFAULTS = {
     f.name: ([] if f.name == "watch_patterns" else f.default)
     for f in ProcessSession.__dataclass_fields__.values()
@@ -1195,10 +1214,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
     def spawn_local(
         self, command: str, cwd: str = None, task_id: str = "", session_key: str = "",
-        env_vars: dict = None, use_pty: bool = False, owner_task_id: str = "") -> ProcessSession:
+        env_vars: dict = None, use_pty: bool = False, owner_task_id: str = "",
+        persist_on_release: bool = False) -> ProcessSession:
         """Spawn a background process locally (TERMINAL_ENV=local; other backends use
         spawn_via_env()). ``use_pty`` requests a pseudo-terminal via ptyprocess/pywinpty
-        for interactive CLIs, falling back to a plain pipe when unavailable or failing."""
+        for interactive CLIs, falling back to a plain pipe when unavailable or failing.
+        ``persist_on_release`` keeps the process out of agent-lifecycle kill sweeps (#41225)."""
         # Bash parses ``A && B &`` as ``(A && B) &`` — a subshell that holds our stdout
         # pipe open forever when B is a long-running server. The rewriter turns it into
         # ``A && { B & }``. Lazy import: terminal_tool imports this module.
@@ -1206,7 +1227,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
         from tools.terminal_tool_sudo import _rewrite_compound_background as _rewrite_bg
 
         safe_command = _rewrite_bg(command)
-        session = self._new_session(command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()))
+        session = self._new_session(command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()),
+                                    persist_on_release=persist_on_release)
         pty_scope_attempted = False
         if use_pty:
             try:
@@ -1293,12 +1315,14 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
     def spawn_via_env(
         self, env: Any, command: str, cwd: str = None, task_id: str = "", session_key: str = "",
-        timeout: int = 10, owner_task_id: str = "") -> ProcessSession:
+        timeout: int = 10, owner_task_id: str = "", persist_on_release: bool = False) -> ProcessSession:
         """Spawn a background process inside a non-local backend's sandbox.
         The command is wrapped to capture its in-sandbox PID and redirect output to a
         log file that later execute() calls poll. No live pipe or stdin, but it runs in
-        the correct sandbox context."""
-        session = self._new_session(command, task_id, owner_task_id, session_key, cwd, env_ref=env, pid_scope="sandbox")
+        the correct sandbox context. ``persist_on_release`` keeps the process out of
+        agent-lifecycle kill sweeps (#41225)."""
+        session = self._new_session(command, task_id, owner_task_id, session_key, cwd, env_ref=env, pid_scope="sandbox",
+                                    persist_on_release=persist_on_release)
         temp_dir = self._env_temp_dir(env)
         log_path, pid_path, exit_path = (f"{temp_dir}/hermes_bg_{session.id}.{ext}" for ext in ("log", "pid", "exit"))
         q = shlex.quote
@@ -1384,6 +1408,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 fd = None
             if fd is not None:
                 import select as _select
+                session._reader_selectable = True
             idle_after_exit = 0
             while True:
                 if fd is not None:
@@ -1392,6 +1417,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
                     except (ValueError, OSError):
                         break  # fd already closed
                     if not ready:
+                        if session._reader_finish_requested.is_set():
+                            break
                         # Direct child gone and pipe idle ~200ms: a few more cycles for a
                         # buffered tail, then stop rather than wait forever on an orphaned
                         # grandchild's pipe.
@@ -1406,6 +1433,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
                     break  # true EOF — all writers closed
                 if chunk:
                     _append_chunk(chunk)
+                if session._reader_finish_requested.is_set():
+                    break
                 idle_after_exit = 0
         except Exception as e:
             logger.debug("Process stdout reader ended: %s", e)
@@ -1914,6 +1943,26 @@ class ProcessRegistry(ProcessCheckpointMixin):
             return
         if rc is None:
             return  # Direct child still running — reader block is legitimate.
+        reader = session._reader_thread
+        if (
+            not _IS_WINDOWS
+            and session._reader_selectable
+            and reader is not None
+            and reader.is_alive()
+        ):
+            # The reader owns the pipe and completion payload. Asking it to
+            # finish avoids a competing TextIOWrapper read here racing the
+            # reader, publishing an empty owner-stamped result, then closing
+            # the pipe before the buffered tail is ingested. It wakes within
+            # the reader's bounded select interval (or after one final chunk).
+            session._reader_finish_requested.set()
+            with session._lock:
+                session.mark_exited(rc)
+            logger.info(
+                "Reconciled session %s: direct child exited with code %s; "
+                "reader will publish the owned completion after its final drain.",
+                session.id, rc)
+            return
         # Best-effort non-blocking drain of whatever the reader hasn't consumed.
         stdout = getattr(proc, "stdout", None)
         if stdout is not None and not _IS_WINDOWS:
@@ -2325,6 +2374,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 entry.update(watch_patterns=list(s.watch_patterns), watch_hit=s._watch_hits > 0)
             if s.notify_on_complete:
                 entry["notify_on_complete"] = True
+            if s.persist_on_release:
+                entry["persist_on_release"] = True
             if s.exited:
                 entry["exit_code"] = s.exit_code
                 entry["exited_at"] = s.exited_at
@@ -2402,6 +2453,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
         ``default``), shared across turns and sessions, not the turn's id."""
         return frozenset(s.id for s in self.running_owned_by(task_id))
 
+    # Kill sources that are agent-lifecycle cleanup (session end / compression / error
+    # recovery / turn abandon), not a deliberate stop: those must skip persist_on_release
+    # sessions. An explicit stop (process_manage kill, CLI /stop) passes its own source
+    # string and still reaches them.
+    _LIFECYCLE_KILL_SOURCES = frozenset({"kill_all", "gateway_turn_timeout", "agent_close"})
+
     def kill_started_since(self, task_id: str, baseline_ids, *, source: str) -> int:
         """Kill ``task_id`` processes created after ``baseline_ids``. Output is
         consumed so an abandoned turn can't enqueue a follow-up reviving work the
@@ -2412,12 +2469,21 @@ class ProcessRegistry(ProcessCheckpointMixin):
         self, task_id: Optional[str] = None, *, exclude_ids: frozenset = frozenset(),
         source: str = "kill_all", consume_output: bool = False) -> int:
         """Kill all running processes, optionally only those ``task_id`` spawned (its ``owner_task_id``).
-        Returns count killed."""
+        Returns count killed.
+
+        Sessions with ``persist_on_release=True`` are skipped when ``source`` is an
+        agent-lifecycle sweep (the default ``kill_all`` release path, a gateway turn
+        timeout, or ``agent_close``): an explicitly persisted background job must survive
+        session end / compression / error recovery (#41225). An explicit operator stop
+        (``process.kill`` via process_manage, CLI /stop) passes its own source and still
+        reaches them, so the user can always stop a persisted process on purpose."""
+        lifecycle = source in self._LIFECYCLE_KILL_SOURCES
         with self._lock:
             targets = [
                 s for s in self._running.values()
                 if (task_id is None or s.owner_task_id == task_id)
                 and s.id not in exclude_ids and not s.exited
+                and not (lifecycle and s.persist_on_release)
             ]
         return sum(
             self.kill_process(s.id, source=source, consume_output=consume_output).get("status")
@@ -2448,6 +2514,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         tracked = self._running.keys() | self._finished.keys()
         self._completion_consumed &= tracked
         self._poll_observed &= tracked
+
 
 
 

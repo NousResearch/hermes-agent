@@ -228,7 +228,7 @@ def read_preset_decisions(preset_path: Path | None = None) -> dict[str, PresetEn
     out: dict[str, PresetEntry] = {}
     try:
         parser = configparser.ConfigParser(interpolation=None)
-        text = preset_path.read_text(encoding="utf-8")
+        text = preset_path.read_text(encoding="utf-8-sig")
         parser.read_string(text)
         recorded = {}
         for line in text.splitlines():

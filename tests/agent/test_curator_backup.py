@@ -129,7 +129,7 @@ def test_rollback_is_itself_undoable(backup_env):
     )
     # And the transient staging dir must be gone (it's implementation detail)
     backups_dir = skills / ".curator_backups"
-    staging_dirs = [p for p in backups_dir.iterdir() if p.name.startswith(".rollback-staging-")]
+    staging_dirs = [p for p in backups_dir.iterdir() if p.name.startswith(".rollback-")]
     assert staging_dirs == [], (
         f"staging dir should be cleaned up on success, got: {staging_dirs}"
     )
@@ -152,7 +152,7 @@ def test_rollback_aborts_when_safety_snapshot_fails(backup_env, monkeypatch):
     assert not ok
     assert restored is None
     assert skill_file.read_bytes() == current_bytes
-    assert not list((skills / ".curator_backups").glob(".rollback-staging-*"))
+    assert not list((skills / ".curator_backups").glob(".rollback-*"))
 
 
 def test_rollback_no_snapshots_returns_error(backup_env):
@@ -592,7 +592,7 @@ def test_rollback_preserves_nested_git_inside_skill(backup_env):
     assert "v1" in (skills / "alpha" / "SKILL.md").read_text(encoding="utf-8")
     # Live .git state (post-snapshot) is what survives — it was never archived.
     assert (nested_git / "HEAD").read_text(encoding="utf-8") == "ref: refs/heads/feature\n"
-    staging = list((skills / ".curator_backups").glob(".rollback-staging-*"))
+    staging = list((skills / ".curator_backups").glob(".rollback-*"))
     assert staging == [], f"staging dir left behind: {staging}"
 
 

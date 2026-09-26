@@ -275,7 +275,7 @@ def _load_catalog(doc: dict) -> "tuple[CatalogEntry, ...]":
 def _packaged_catalog() -> "tuple[CatalogEntry, ...]":
     from importlib.resources import files
 
-    raw = files("hermes_cli.local_runtime").joinpath("catalog.json").read_text(encoding="utf-8")
+    raw = files("hermes_cli.local_runtime").joinpath("catalog.json").read_text(encoding="utf-8-sig")
     return _load_catalog(json.loads(raw))
 
 

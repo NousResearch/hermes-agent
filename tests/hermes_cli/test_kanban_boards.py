@@ -100,12 +100,27 @@ class TestPathResolution:
         assert p == fresh_home / "kanban" / "boards" / "atm10-server" / "kanban.db"
 
 
-    def test_env_var_db_override_still_wins(self, fresh_home, tmp_path, monkeypatch):
-        """``HERMES_KANBAN_DB`` pins the file regardless of board= arg."""
+    def test_env_var_db_override_wins_when_board_not_passed(self, fresh_home, tmp_path, monkeypatch):
+        """``HERMES_KANBAN_DB`` pins the file when no explicit ``board=`` is given
+        (back-compat for dispatcher-spawned workers with no board override)."""
         forced = tmp_path / "custom.db"
         monkeypatch.setenv("HERMES_KANBAN_DB", str(forced))
         assert kb.kanban_db_path() == forced
-        assert kb.kanban_db_path(board="ignored") == forced
+        assert kb.kanban_db_path(board=None) == forced
+
+    def test_explicit_board_trumps_env_var_db_override(self, fresh_home, tmp_path, monkeypatch):
+        """Documented priority (module docstring, predates this test): explicit
+        ``board=`` arg > ``HERMES_KANBAN_BOARD`` > ``HERMES_KANBAN_DB`` > current >
+        default. An explicit ``board=`` must resolve to that board's own path even
+        when ``HERMES_KANBAN_DB`` pins a different file — this is the exact shape
+        every MCP-only / dispatcher-spawned kanban worker runs with, and is what
+        makes cross-board ``kanban_create(board=...)`` / ``kanban_show(board=...)``
+        work instead of silently landing on the worker's own pinned board (t_3f1c63a5)."""
+        forced = tmp_path / "custom.db"
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(forced))
+        p = kb.kanban_db_path(board="atm10-server")
+        assert p == fresh_home / "kanban" / "boards" / "atm10-server" / "kanban.db"
+        assert p != forced
 
 
 # ---------------------------------------------------------------------------

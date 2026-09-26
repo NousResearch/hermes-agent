@@ -240,3 +240,30 @@ test('an npm layout without a readable manifest falls back to the child version 
   // The unresolvable manifest kept the pre-fix behavior: probe first, then ci.
   expect(readFileSync(spawned, 'utf8')).toBe('--version\nci\n')
 }, 30000)
+
+
+test('manifest version preserves receipts created by the child-probe path', async () => {
+  const { prepareNodeDependencies } = await import('../scripts/build/node-deps.mjs')
+  const source = fixture()
+  const { fake, npmRoot, spawned } = fakeNpmTree(source, { manifest: null })
+  mkdirSync(join(source, 'node_modules'))
+  writeFileSync(join(source, 'node_modules/.package-lock.json'), '{"packages": {}}')
+  const options = { source, workspaces: ['web'], reuse: true,
+    env: { ...process.env, npm_config_cache: join(source, '.npm-cache'),
+      npm_execpath: join(fake, 'real/node_modules/npm/bin/npm-cli.js') } }
+
+  // First create the receipt through the legacy/fallback lane: the version is
+  // learned from the child probe, then ci completes and records that key.
+  prepareNodeDependencies(options)
+  expect(readFileSync(spawned, 'utf8')).toBe('--version\nci\n')
+
+  // The same npm version read from package.json must reproduce the exact key.
+  // install:false makes any key drift observable instead of silently reinstalling.
+  json(join(npmRoot, 'package.json'), { name: 'npm', version: '10.8.2' })
+  prepareNodeDependencies({ ...options, install: false })
+  expect(readFileSync(spawned, 'utf8')).toBe('--version\nci\n')
+
+  // Negative control: a genuinely different npm version must invalidate the receipt.
+  json(join(npmRoot, 'package.json'), { name: 'npm', version: '10.8.3' })
+  expect(() => prepareNodeDependencies({ ...options, install: false })).toThrow(/disabled/)
+}, 30000)

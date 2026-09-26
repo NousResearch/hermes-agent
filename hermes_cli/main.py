@@ -3,7 +3,7 @@
 
 Usage:
     hermes                     # Interactive chat (default)
-    hermes chat / gateway / setup / status / cron / doctor / update / ...
+    hermes chat / gateway / setup / status / cron / doctor / health / update / ...
     hermes --version           # Show version and update status
     hermes <cmd> --help        # Per-command help
 """
@@ -24,8 +24,12 @@ except ModuleNotFoundError as exc:
 # ``_early_recovery`` is stdlib-only and imported unguarded on purpose: same package
 # dir, so if IT can't import nothing in hermes_cli can.
 from hermes_cli import _early_recovery as _early_recovery_mod
+import sys
 
-if _early_recovery_mod.restore_interrupted_pull():
+if (
+    _early_recovery_mod.early_cli_subcommand(sys.argv[1:]) != "health"
+    and _early_recovery_mod.restore_interrupted_pull()
+):
     _early_recovery_mod.relaunch_after_restore()
 
 # Windows: neutralize CPython's ``platform._syscmd_ver`` before anything else
@@ -308,6 +312,8 @@ def _wants_tui_early(argv: "list[str] | None" = None) -> bool:
 def _suppress_mouse_residue_early() -> None:
     if os.environ.get("HERMES_TUI_NO_EARLY_DISABLE") == "1":
         return
+    if _early_recovery_mod.early_cli_subcommand(sys.argv[1:]) == "health":
+        return
     if not _wants_tui_early():
         return
     try:
@@ -358,6 +364,7 @@ from hermes_cli.subcommands.pause import build_pause_parser
 from hermes_cli.subcommands.webhook import build_webhook_parser
 from hermes_cli.subcommands.hooks import build_hooks_parser
 from hermes_cli.subcommands.doctor import build_doctor_parser
+from hermes_cli.subcommands.health import build_health_parser
 from hermes_cli.subcommands.verify import build_verify_parser
 from hermes_cli.subcommands.security import build_security_parser
 from hermes_cli.subcommands.approvals import build_approvals_parser
@@ -629,20 +636,32 @@ def _apply_profile_override() -> None:
 
 
 _apply_profile_override()
+_EARLY_CLI_COMMAND = _early_recovery_mod.early_cli_subcommand(sys.argv[1:])
 # ``-p``/active_profile re-homed the process after hermes_bootstrap ran: re-point the temp vars
 # at THIS home's scratch dir (a user-set TMPDIR is still left alone).
-try:
-    from hermes_constants import export_scratch_tmp_env as _export_scratch_tmp_env
+if _EARLY_CLI_COMMAND != "health":
+    try:
+        from hermes_constants import export_scratch_tmp_env as _export_scratch_tmp_env
 
-    _export_scratch_tmp_env()
-except Exception:
-    pass  # an unwritable home leaves the system temp dir in place; never block startup
+        _export_scratch_tmp_env()
+    except Exception:
+        pass  # an unwritable home leaves the system temp dir in place; never block startup
 
 # PM runs after profile resolution but before application dependency imports.
 if sys.argv[1:2] == ["pm"]:
     from pm.cli import main as _pm_main
 
     raise SystemExit(_pm_main(sys.argv[2:]))
+
+# Config import discovers provider plugins and can initialize profile files.
+# Health must finish before that graph, not merely skip explicit startup repairs.
+if _EARLY_CLI_COMMAND == "health":
+    from hermes_cli._parser import build_top_level_parser
+    from hermes_cli.health import run_health
+
+    _health_parser, _health_subparsers, _ = build_top_level_parser()
+    build_health_parser(_health_subparsers, cmd_health=run_health)
+    raise SystemExit(run_health(_health_parser.parse_args(sys.argv[1:])))
 
 # Windows launcher self-heal — the ``hermes`` command is a COPY of the venv
 # console script staged into the managed bin dir (outside the checkout, since
@@ -659,7 +678,7 @@ if sys.argv[1:2] == ["pm"]:
 # resolving in every new terminal (venv\Scripts itself must stay off PATH — it shadows the user's
 # ``python``, #83797). Costs a few stat calls when healthy; gates fail toward inaction so source checkouts
 # are untouched.
-if sys.platform == "win32":
+if sys.platform == "win32" and _EARLY_CLI_COMMAND != "health":
     try:
         from hermes_cli import _install_repair as _install_repair_mod
 
@@ -675,7 +694,8 @@ from hermes_cli.env_loader import load_hermes_dotenv
 # ``update`` must not resolve external secret sources (Windows self-lock via cryptography, slow
 # helpers inside the import probe) — ``_early_recovery._should_skip_external_secret_sources``
 # owns that argv check for every dotenv load in the process. See #73381.
-load_hermes_dotenv(project_env=PROJECT_ROOT / ".env")
+if _EARLY_CLI_COMMAND != "health":
+    load_hermes_dotenv(project_env=PROJECT_ROOT / ".env")
 
 # Bridge security.redact_secrets → HERMES_REDACT_SECRETS BEFORE hermes_logging
 # imports agent.redact, which snapshots the flag exactly once at import. A
@@ -710,14 +730,15 @@ except Exception:
 try:
     from hermes_logging import setup_logging as _setup_logging
 
-    _setup_logging(
-        mode=(
-            "gui"
-            if next((arg for arg in sys.argv[1:] if not arg.startswith("-")), "")
-            in {"dashboard", "serve", "gui", "desktop"}
-            else "cli"
+    if _EARLY_CLI_COMMAND != "health":
+        _setup_logging(
+            mode=(
+                "gui"
+                if next((arg for arg in sys.argv[1:] if not arg.startswith("-")), "")
+                in {"dashboard", "serve", "gui", "desktop"}
+                else "cli"
+            )
         )
-    )
 except Exception:
     pass  # best-effort — don't crash the CLI if logging setup fails
 
@@ -2844,7 +2865,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "acp", "approvals", "auth", "backup", "bundles", "checkpoints", "claw", "codex-runtime", "completion",
         "computer-use",
         "config", "console", "cron", "curator", "dashboard", "serve", "debug", "doctor",
-        "dump", "egress", "fallback", "gateway", "hooks", "import", "import-agent", "insights",
+        "dump", "egress", "fallback", "gateway", "health", "hooks", "import", "import-agent", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
         "model", "monitoring", "pairing", "pause", "peer", "pets", "plugins", "portal", "profile",
@@ -3457,6 +3478,8 @@ def _build_cli_parser():
 
     build_hooks_parser(subparsers, cmd_hooks=cmd_hooks)
     build_doctor_parser(subparsers, cmd_doctor=cmd_doctor)
+    from hermes_cli.health import run_health
+    build_health_parser(subparsers, cmd_health=run_health)
     build_verify_parser(subparsers, cmd_verify=cmd_verify)
     build_security_parser(subparsers, cmd_security=cmd_security)
     build_approvals_parser(subparsers, cmd_approvals=cmd_approvals)
@@ -3577,44 +3600,46 @@ def main():
 
     install_truststore()
 
-    # Sweep stale ``hermes.exe.old.*`` quarantine files from previous Windows
-    # updates. No-op elsewhere.
-    try:
-        _cleanup_quarantined_exes()
-    except Exception:
-        pass
-
-    # Checkout changed since last launch → sweep stale __pycache__ once so no
-    # process resolves fresh source against old bytecode. Never raises.
-    _sweep_stale_bytecode_if_checkout_changed()
-
-    # Dependency recovery already ran before imports. Report any fleet restart
-    # still owed by a previous update without restarting services here.
-    if "update" not in sys.argv[1:]:
+    # Health is offline/read-only: never repair installs or mutate startup state.
+    if _EARLY_CLI_COMMAND != "health":
+        # Sweep stale ``hermes.exe.old.*`` quarantine files from previous Windows
+        # updates. No-op elsewhere.
         try:
-            from hermes_cli.update_cmd_fleet import _warn_pending_fleet_restart_on_startup
-
-            _warn_pending_fleet_restart_on_startup()
+            _cleanup_quarantined_exes()
         except Exception:
             pass
 
-    if _first_positional_argv() != "update":
-        from hermes_cli.boot_bootstrap import maybe_run_boot_bootstrap
-        from pm.paths import install_root
-        maybe_run_boot_bootstrap(install_root())
+        # Checkout changed since last launch → sweep stale __pycache__ once so no
+        # process resolves fresh source against old bytecode. Never raises.
+        _sweep_stale_bytecode_if_checkout_changed()
 
-    # Every dispatch, including fast chat/serve, gets one passive PM verdict.
-    try:
-        from hermes_cli.venv_sync import check_runtime
-        from pm.paths import install_root
+        # Dependency recovery already ran before imports. Report any fleet restart
+        # still owed by a previous update without restarting services here.
+        if "update" not in sys.argv[1:]:
+            try:
+                from hermes_cli.update_cmd_fleet import _warn_pending_fleet_restart_on_startup
 
-        problem = check_runtime(install_root())
-        if problem:
-            print(f"⚠ {problem}", file=sys.stderr)
-    except Exception:
-        import logging
+                _warn_pending_fleet_restart_on_startup()
+            except Exception:
+                pass
 
-        logging.getLogger(__name__).debug("pm startup check failed", exc_info=True)
+        if _first_positional_argv() != "update":
+            from hermes_cli.boot_bootstrap import maybe_run_boot_bootstrap
+            from pm.paths import install_root
+            maybe_run_boot_bootstrap(install_root())
+
+        # Every dispatch, including fast chat/serve, gets one passive PM verdict.
+        try:
+            from hermes_cli.venv_sync import check_runtime
+            from pm.paths import install_root
+
+            problem = check_runtime(install_root())
+            if problem:
+                print(f"⚠ {problem}", file=sys.stderr)
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).debug("pm startup check failed", exc_info=True)
 
     if _try_termux_fast_tui_launch():
         return

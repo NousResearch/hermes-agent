@@ -115,6 +115,22 @@ def test_pm_commands_and_healthy_startup_do_not_repair(tmp_path, monkeypatch):
     assert marker.exists()
 
 
+def test_health_command_never_claims_or_mutates_recovery_state(tmp_path, monkeypatch):
+    root = _project(tmp_path)
+    marker = root / ".update-incomplete"
+    marker.write_bytes(b"interrupted\npid=0\n")
+    original = marker.read_bytes()
+
+    monkeypatch.setattr(er, "_probe_broken_packages", lambda: [])
+    monkeypatch.setattr(
+        er, "_claim_recovery_lock",
+        lambda _root: pytest.fail("health must not claim the dependency-recovery lock"),
+    )
+
+    assert er.recover_if_needed(root, argv=["--provider", "auto", "health", "--json"]) is False
+    assert marker.read_bytes() == original
+
+
 
 def test_pid_liveness_recognizes_current_process():
     assert er._pid_is_running(os.getpid()) is True

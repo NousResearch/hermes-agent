@@ -275,8 +275,8 @@ def _transport_choice(attempt: dict, *, pattern_key: str, description: str):
 
 
 def _consent(choice, unresolved: str) -> str:
-    """Map an approval choice to an elicitation verdict; *unresolved* is the no-answer outcome."""
-    if choice in ("once", "session", "always"):
+    """Accept only one-shot consent; *unresolved* is the no-answer outcome."""
+    if choice == "once":
         return "accept"
     return unresolved if choice in ("timeout", "cancelled") else "decline"
 
@@ -316,7 +316,9 @@ def request_elicitation_consent(message: str, description: str, *,
             decision = _gw._await_gateway_decision(
                 session_key, notify_cb, {"command": message, "description": description,
                                          "pattern_key": "mcp_elicitation",
-                                         "pattern_keys": ["mcp_elicitation"]}, surface=surface)
+                                         "pattern_keys": ["mcp_elicitation"],
+                                         "allow_session": False,
+                                         "allow_permanent": False}, surface=surface)
         except Exception as exc:
             logger.error("Elicitation gateway dispatch failed: %s", exc, exc_info=True)
             return "decline"
@@ -326,10 +328,10 @@ def request_elicitation_consent(message: str, description: str, *,
             return "cancel"  # nobody answered (timeout / prompt withdrawn) — not a user refusal
         return _consent(decision.get("choice"), "decline")
 
-    # allow_permanent=False: elicitation is a per-call confirmation — no pattern to remember.
+    # Elicitation is a per-call confirmation — neither persistent scope is meaningful.
     try:
         choice = prompt_dangerous_approval(message, description, timeout_seconds=timeout_seconds,
-                                           allow_permanent=False, title=title)
+                                           allow_permanent=False, allow_session=False, title=title)
     except Exception as exc:
         logger.error("Elicitation CLI prompt failed: %s", exc, exc_info=True)
         return "decline"

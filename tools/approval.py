@@ -151,14 +151,17 @@ def resolve_gateway_approval(session_key: str, choice: str,
             return 0
         if request_id:
             targets = [entry for entry in queue if entry.data.get("request_id") == request_id]
-            if not targets:
-                return 0
-            queue[:] = [entry for entry in queue if entry not in targets]
         elif resolve_all:
             targets = list(queue)
-            queue.clear()
         else:
-            targets = [queue.pop(0)]
+            targets = queue[:1]
+        # One-shot consent must not be consumed by /approve session|always or
+        # a stale client's broader choice, nor acknowledged as persistent.
+        if choice in ("session", "always"):
+            targets = [entry for entry in targets
+                       if not (entry.data.get("allow_session") is False
+                               and entry.data.get("allow_permanent") is False)]
+        queue[:] = [entry for entry in queue if entry not in targets]
         if not queue:
             _gateway_queues.pop(session_key, None)
         # Popping the entry and committing its outcome are ONE critical section: the waiter's

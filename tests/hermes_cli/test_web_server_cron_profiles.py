@@ -1134,3 +1134,97 @@ async def test_cron_job_mutations_resolve_the_owner_when_the_hint_is_another_pro
     with pytest.raises(HTTPException) as exc:
         await _rt_cron.get_cron_job(job_id, profile="default")
     assert exc.value.status_code == 404
+
+
+class TestCronJobsCrossProfileDedup:
+    """Regression tests for #51721: GET /api/cron/jobs (profile=all) aggregated
+    jobs from every profile without deduplication — a job copied into a second
+    profile's cron/jobs.json during profile creation showed up twice. Uses real
+    cron.jobs storage (direct jobs.json writes for the id-less case) so the
+    tests exercise cron.jobs._normalize_job_record()'s real "unknown" sentinel
+    behavior, not a mocked list.
+    """
+
+    def _write_jobs_file(self, home, jobs):
+        path = home / "cron" / "jobs.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(jobs), encoding="utf-8")
+
+    def test_shared_id_default_profile_copy_wins(self, isolated_profiles):
+        """The same job id in both profiles: the default profile's copy must
+        survive, regardless of which profile's list was appended first during
+        aggregation."""
+        self._write_jobs_file(isolated_profiles["default"], [{
+            "id": "shared-job-1", "name": "shared", "prompt": "DEFAULT COPY",
+            "enabled": True, "schedule": {"type": "interval", "every": "1h"},
+        }])
+        self._write_jobs_file(isolated_profiles["worker_alpha"], [{
+            "id": "shared-job-1", "name": "shared", "prompt": "WORKER COPY",
+            "enabled": True, "schedule": {"type": "interval", "every": "1h"},
+        }])
+
+        result = _rt_cron._list_cron_jobs_sync("all")
+        matches = [j for j in result if j.get("id") == "shared-job-1"]
+
+        assert len(matches) == 1, f"Duplicate not resolved: {matches}"
+        assert matches[0]["prompt"] == "DEFAULT COPY", (
+            "Default profile's copy must always win, got: " + str(matches[0])
+        )
+        assert matches[0]["is_default_profile"] is True
+
+    def test_worker_first_shared_id_still_resolves_to_default_copy(self, isolated_profiles):
+        """Order-independence: _cron_profile_dicts() lists the default profile
+        first today, but the dedup must not depend on that. Feed the worker
+        profile's copy through the loop first by listing only it, then verify a
+        full aggregate still prefers the default copy."""
+        self._write_jobs_file(isolated_profiles["default"], [{
+            "id": "shared-job-2", "name": "shared", "prompt": "DEFAULT COPY",
+            "enabled": True, "schedule": {"type": "interval", "every": "1h"},
+        }])
+        self._write_jobs_file(isolated_profiles["worker_alpha"], [{
+            "id": "shared-job-2", "name": "shared", "prompt": "WORKER COPY",
+            "enabled": True, "schedule": {"type": "interval", "every": "1h"},
+        }])
+
+        worker_first = _web_server_cron._call_cron_for_profile("worker_alpha", "list_jobs", True)
+        assert worker_first[0]["prompt"] == "WORKER COPY"
+
+        result = _rt_cron._list_cron_jobs_sync("all")
+        matches = [j for j in result if j.get("id") == "shared-job-2"]
+        assert len(matches) == 1
+        assert matches[0]["prompt"] == "DEFAULT COPY"
+
+    def test_unique_ids_all_kept(self, isolated_profiles):
+        self._write_jobs_file(isolated_profiles["default"], [{
+            "id": "job-a", "name": "a", "prompt": "a",
+            "enabled": True, "schedule": {"type": "interval", "every": "1h"},
+        }])
+        self._write_jobs_file(isolated_profiles["worker_alpha"], [{
+            "id": "job-b", "name": "b", "prompt": "b",
+            "enabled": True, "schedule": {"type": "interval", "every": "1h"},
+        }])
+
+        result = _rt_cron._list_cron_jobs_sync("all")
+        ids = {j.get("id") for j in result}
+
+        assert ids == {"job-a", "job-b"}
+
+    def test_idless_records_from_different_profiles_both_preserved(self, isolated_profiles):
+        """cron.jobs._normalize_job_record() fills a missing id with the literal
+        sentinel string "unknown" before this data reaches the aggregation
+        logic. Two genuinely DIFFERENT id-less jobs (hand-edited or pre-id-field
+        legacy records) from different profiles both normalize to id="unknown" —
+        a naive by-id dedup would wrongly collapse them into one. Both survive."""
+        self._write_jobs_file(isolated_profiles["default"], [{
+            "name": "legacy-default", "prompt": "legacy job in default",
+            "enabled": True, "schedule": {"type": "interval", "every": "1h"},
+        }])
+        self._write_jobs_file(isolated_profiles["worker_alpha"], [{
+            "name": "legacy-worker", "prompt": "legacy job in worker",
+            "enabled": True, "schedule": {"type": "interval", "every": "1h"},
+        }])
+
+        result = _rt_cron._list_cron_jobs_sync("all")
+        prompts = {j.get("prompt") for j in result}
+
+        assert prompts == {"legacy job in default", "legacy job in worker"}

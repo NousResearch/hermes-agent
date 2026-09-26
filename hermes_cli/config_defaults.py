@@ -35,6 +35,10 @@ DEFAULT_CONFIG = {
         # WAL sizing pragmas (ints). None = SQLite defaults (autocheckpoint 1000 pages, no limit).
         "wal_autocheckpoint": None,
         "journal_size_limit": None,
+        # Busy timeout (seconds) for the async-delegation ledger's state.db connection: how long it
+        # waits on a lock before raising "database is locked". Positive number; absent or invalid
+        # values fall back to 10 (the historical ledger budget; longer waits can block gateway delivery).
+        "busy_timeout_seconds": 10,
     },
     # Soft fd limit for long-running server processes; clamped to OS hard limit. 0/false/null = off.
     "runtime": {"nofile_soft_limit": 4096},

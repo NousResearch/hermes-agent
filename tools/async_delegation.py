@@ -99,7 +99,7 @@ def _db_path():
 
 
 def _connect() -> sqlite3.Connection:
-    from hermes_cli.sqlite_util import open_db
+    from hermes_cli.sqlite_util import open_db, resolve_busy_timeout_ms
     # Same state.db as hermes_state.SessionDB -- reuse its owner-only (0600)
     # hardening so this writer doesn't create/leave the file (and its WAL
     # sidecars) at the process umask. See hermes_state._secure_state_db_files.
@@ -109,7 +109,8 @@ def _connect() -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     _secure_state_db_files(path, create_main=True)
     # wal=False: SessionDB owns state.db's journal mode (_initialize_schema applies the barriers).
-    conn = open_db(path, db_label="state.db (async_delegation)", busy_timeout_ms=10_000,
+    conn = open_db(path, db_label="state.db (async_delegation)",
+                   busy_timeout_ms=resolve_busy_timeout_ms(),
                    wal=False, row_factory=None, initialize=_initialize_schema)
     _secure_state_db_files(path)
     return conn
@@ -993,21 +994,24 @@ def _stale_monitor_loop() -> None:
     grace window is force-finalized with a terminal ``stalled`` event."""
     while not _monitor_stop.wait(_STALE_CHECK_INTERVAL):
         now = time.time()
-        with _records_lock:
-            stalled, expired, any_monitorable = _sweep_stale_locked(now)
-        for delegation_id, quiet_for, in_tool in stalled:
-            logger.warning("Async delegation %s made no progress for %.0fs "
-                           "(in_tool=%s) — interrupting; grace window %.0fs",
-                           delegation_id, quiet_for, in_tool, _STALL_GRACE_SECONDS)
+        try:
             with _records_lock:
-                fn = (_records.get(delegation_id) or {}).get("interrupt_fn")
-            _call_interrupt(fn, "Async delegation %s stall interrupt failed: %s", delegation_id)
-        for delegation_id in expired:
-            with _records_lock:
-                ctx = (_records.get(delegation_id) or {}).get("_context") or contextvars.copy_context()
-            ctx.run(_finalize, delegation_id, lambda rec, d=delegation_id: _stalled_result(d, rec), "stalled")
-        if not any_monitorable:
-            return
+                stalled, expired, any_monitorable = _sweep_stale_locked(now)
+            for delegation_id, quiet_for, in_tool in stalled:
+                logger.warning("Async delegation %s made no progress for %.0fs "
+                               "(in_tool=%s) — interrupting; grace window %.0fs",
+                               delegation_id, quiet_for, in_tool, _STALL_GRACE_SECONDS)
+                with _records_lock:
+                    fn = (_records.get(delegation_id) or {}).get("interrupt_fn")
+                _call_interrupt(fn, "Async delegation %s stall interrupt failed: %s", delegation_id)
+            for delegation_id in expired:
+                with _records_lock:
+                    ctx = (_records.get(delegation_id) or {}).get("_context") or contextvars.copy_context()
+                ctx.run(_finalize, delegation_id, lambda rec, d=delegation_id: _stalled_result(d, rec), "stalled")
+            if not any_monitorable:
+                return
+        except Exception:  # noqa: BLE001 — one failed iteration must not kill the sole monitor
+            logger.exception("Stale-delegation monitor iteration failed; continuing to monitor")
 
 
 def _stalled_error_text(event_record: Dict[str, Any]) -> str:

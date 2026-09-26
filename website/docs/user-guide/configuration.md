@@ -120,6 +120,12 @@ database:
   # Optional WAL sizing pragmas (integers). Unset = SQLite defaults.
   # wal_autocheckpoint: 1000     # pages between automatic checkpoints
   # journal_size_limit: 67108864 # cap the WAL/journal size in bytes
+
+  # Async-delegation ledger only (state.db): wait for a concurrent SQLite writer.
+  # Unset, invalid, or above SQLite's supported millisecond range = 10 seconds.
+  # Raising this may stall gateway completion delivery during lock contention;
+  # it does not resolve long-held locks or WAL/checkpoint pressure.
+  # busy_timeout_seconds: 10
 ```
 
 Hermes also warns (once per process per database) when an existing

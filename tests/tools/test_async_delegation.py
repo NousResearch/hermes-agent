@@ -15,6 +15,7 @@ import time
 
 import pytest
 
+from hermes_cli.config_defaults import DEFAULT_CONFIG
 from tools import async_delegation as ad
 from tools.process_registry import process_registry
 from tools.process_registry_notifications import format_process_notification
@@ -302,6 +303,92 @@ def test_stalled_runner_is_interrupted_then_finalized(monkeypatch):
     # If the ignored runner eventually returns, it must not enqueue a second
     # completion for a delegation the monitor already finalized.
     assert _drain_one(timeout=0.5) is None
+
+
+def test_stale_monitor_survives_a_sweep_exception(monkeypatch):
+    """One exception escaping a sweep must not kill the monitor thread.
+
+    Regression: any transient error raised inside ``_sweep_stale_locked``
+    propagated out of ``_stale_monitor_loop`` and silently terminated the
+    daemon thread, leaving every in-flight delegation unobserved forever. The
+    loop must survive the failing iteration and keep observing: the frozen
+    child below can only ever be finalized through sweeps AFTER the raising one.
+    """
+    _fast_stale_monitor(monkeypatch)
+    real_sweep = ad._sweep_stale_locked
+    calls = {"n": 0}
+    first_sweep_raised = threading.Event()
+
+    def flaky_sweep(now):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            first_sweep_raised.set()
+            raise RuntimeError("simulated sweep failure")
+        return real_sweep(now)
+
+    monkeypatch.setattr(ad, "_sweep_stale_locked", flaky_sweep)
+
+    gate = threading.Event()
+
+    def runner():
+        gate.wait(timeout=10)
+        return {"status": "completed", "summary": "too late"}
+
+    res = ad.dispatch_async_delegation(
+        goal="resilient monitor", context=None, toolsets=None, role="leaf",
+        model="m", session_key="", runner=runner, max_async_children=1,
+        # Frozen token: the child never advances, so only a live monitor can
+        # ever observe and force-finalize it.
+        progress_fn=lambda: ((0, None), False),
+    )
+    assert res["status"] == "dispatched"
+
+    try:
+        assert first_sweep_raised.wait(timeout=5.0), "monitor never ran its first sweep"
+        evt = _drain_for(res["delegation_id"], timeout=5.0)
+        assert evt is not None, (
+            "monitor stopped after a single sweep exception: the in-flight "
+            "delegation was never observed again nor force-finalized"
+        )
+        assert evt["status"] == "stalled"
+        assert calls["n"] >= 2  # reached only through sweeps after the raising one
+        deadline = time.monotonic() + 2.0
+        while ad.active_count() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert ad.active_count() == 0
+    finally:
+        gate.set()
+
+
+def test_stale_monitor_survives_an_interrupt_step_exception(monkeypatch):
+    """A failure after sampling must not kill the sole stall monitor."""
+    _fast_stale_monitor(monkeypatch)
+    gate = threading.Event()
+    failed = threading.Event()
+
+    def bad_interrupt(*args, **kwargs):
+        failed.set()
+        raise RuntimeError("simulated interrupt step failure")
+
+    monkeypatch.setattr(ad, "_call_interrupt", bad_interrupt)
+
+    def runner():
+        gate.wait(timeout=10)
+        return {"status": "completed", "summary": "too late"}
+
+    res = ad.dispatch_async_delegation(
+        goal="interrupt step resilience", context=None, toolsets=None, role="leaf",
+        model="m", session_key="", runner=runner, max_async_children=1,
+        progress_fn=lambda: ((0, None), False),
+    )
+    assert res["status"] == "dispatched"
+    try:
+        assert failed.wait(timeout=5.0)
+        evt = _drain_for(res["delegation_id"], timeout=5.0)
+        assert evt is not None, "monitor died after the interrupt step failed"
+        assert evt["status"] == "stalled"
+    finally:
+        gate.set()
 
 
 def test_progressing_runner_is_never_stalled(monkeypatch):
@@ -1220,3 +1307,32 @@ def test_prune_never_evicts_live_records():
 
     assert {"live-stalling", "live-finalizing", "live-running"} <= survivors
     assert "done-0" not in survivors and len(survivors - {"live-stalling", "live-finalizing", "live-running"}) == ad._MAX_RETAINED_COMPLETED
+
+
+_DEFAULT_BUSY_MS = DEFAULT_CONFIG["database"]["busy_timeout_seconds"] * 1000
+
+
+@pytest.mark.parametrize("config, expected_ms", [
+    ({"database": {"busy_timeout_seconds": 7}}, 7000),
+    ({"database": {"busy_timeout_seconds": 2_147_484}}, _DEFAULT_BUSY_MS),
+    ({"database": {"busy_timeout_seconds": 10**400}}, _DEFAULT_BUSY_MS),
+    ({}, _DEFAULT_BUSY_MS),
+])
+def test_connect_honors_configured_busy_timeout(monkeypatch, tmp_path, config, expected_ms):
+    """``database.busy_timeout_seconds`` must drive the ledger connection's real PRAGMA.
+
+    The ledger is a guest writer in state.db next to SessionDB and the transcript/FTS
+    writers, so its wait-on-lock budget is configurable instead of hardcoded.
+    """
+    import yaml
+
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    (home / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    conn = ad._connect()
+    try:
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == expected_ms
+    finally:
+        conn.close()

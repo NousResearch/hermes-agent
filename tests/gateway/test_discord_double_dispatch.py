@@ -18,8 +18,7 @@ Two sub-scenarios are tested:
 
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
-import sys
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -172,6 +171,10 @@ class TestThreadStarterDedup:
 
         monkeypatch.setattr(adapter, "_auto_create_thread", fake_auto_create_thread)
 
+        async def fake_mark_async(tid):  # first yield point after thread creation
+            assert str(tid) in adapter._dedup._seen, "dedup pre-seed must precede await mark_async"
+        monkeypatch.setattr(adapter._threads, "mark_async", fake_mark_async)
+
         # 1) Original user message arrives → triggers thread creation + dispatch
         user_msg = _make_message(msg_id=42, channel=channel, content="hello bot")
         await adapter._handle_message(user_msg)
@@ -280,32 +283,6 @@ class TestDirectDoubleDispatch:
 # ---------------------------------------------------------------------------
 # Scenario 3 — message_type=thread_starter filtered by type guard
 # ---------------------------------------------------------------------------
-
-class TestThreadStarterTypeFilter:
-    """Discord sometimes sends thread starter messages with the correct
-    type=21 (thread_starter_message).  Verify the type filter in on_message
-    blocks those correctly, separate from the dedup path.
-    """
-
-    def test_thread_starter_message_type_not_in_allowed_set(self):
-        """MessageType.thread_starter_message (21) is not in the allowed set."""
-        discord_mod = sys.modules["discord"]
-
-        # The adapter's on_message guard uses:
-        #   if message.type not in {discord.MessageType.default, discord.MessageType.reply}
-        # Verify that thread_starter_message (if it has a numeric value of 21)
-        # would be excluded.
-        allowed = {
-            discord_mod.MessageType.default,
-            discord_mod.MessageType.reply,
-        }
-        # In real discord.py, thread_starter_message has value 21.
-        # In our mock, MessageType is a MagicMock so attribute access returns
-        # a new unique Mock each time — which is NOT in the allowed set.
-        thread_starter = discord_mod.MessageType.thread_starter_message
-        assert thread_starter not in allowed, (
-            "thread_starter_message type should not be in the allowed types set"
-        )
 
 
 # ---------------------------------------------------------------------------

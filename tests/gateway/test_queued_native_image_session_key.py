@@ -7,7 +7,8 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 
 
@@ -56,7 +57,9 @@ class CaptureQueuedNativeImageAgent:
         self.tools = []
         self.tool_progress_callback = kwargs.get("tool_progress_callback")
 
-    def run_conversation(self, message, conversation_history=None, task_id=None):
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
+        # The real AIAgent.run_conversation accepts the persist_* kwargs the gateway adds for a
+        # message with a raw inbound id (queued follow-ups now carry theirs); tolerate them.
         type(self).calls.append(message)
         return {
             "final_response": f"done-{len(type(self).calls)}",

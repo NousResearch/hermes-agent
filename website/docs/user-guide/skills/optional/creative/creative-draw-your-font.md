@@ -1,14 +1,14 @@
 ---
-title: "Draw Your Font — Turn a photo of handwriting into an installable font (TTF/WOFF)"
+title: "Draw Your Font — Turn a handwriting photo into an installable TTF font"
 sidebar_label: "Draw Your Font"
-description: "Turn a photo of handwriting into an installable font (TTF/WOFF)"
+description: "Turn a handwriting photo into an installable TTF font"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Draw Your Font
 
-Turn a photo of handwriting into an installable font (TTF/WOFF).
+Turn a handwriting photo into an installable TTF font.
 
 ## Skill metadata
 
@@ -21,7 +21,7 @@ Turn a photo of handwriting into an installable font (TTF/WOFF).
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `font`, `handwriting`, `typography`, `ttf`, `woff`, `vision`, `creative` |
-| Related skills | [`pixel-art`](/docs/user-guide/skills/optional/creative/creative-pixel-art) |
+| Related skills | [`pixel-art`](../../optional/creative/creative-pixel-art.md) |
 
 ## Reference: full SKILL.md
 

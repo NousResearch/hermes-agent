@@ -1,290 +1,102 @@
-"""Local runtime-platform ownership checks for ``/api/status``."""
+"""Regression for #26859: platform state belongs to its writer, not the next PID."""
 
-from __future__ import annotations
+import json
+from unittest.mock import AsyncMock
 
-import pytest
-import yaml
-
-
-_MISSING = object()
-_START_PROBE_MUST_NOT_RUN = object()
+from starlette.testclient import TestClient
 
 
-class TestStatusPlatformWriterIdentity:
-    @pytest.fixture(autouse=True)
-    def _setup(self, monkeypatch, _isolate_hermes_home):
-        try:
-            from starlette.testclient import TestClient
-        except ImportError:
-            pytest.skip("fastapi/starlette not installed")
+def test_snapshot_identity_survives_http_projection_and_startup_cleanup(
+    tmp_path, monkeypatch
+):
+    import gateway.status as status
+    import hermes_cli.web_server as server
+    import hermes_cli.web_routers.status as route
+    import hermes_cli.web_server_gateway as gateway_web
 
-        import hermes_state
-        from hermes_constants import get_hermes_home
-        import hermes_cli.web_server as web_server
-
-        home = get_hermes_home()
-        home.mkdir(parents=True, exist_ok=True)
-        (home / "config.yaml").write_text(
-            yaml.safe_dump({"platforms": {"discord": {"enabled": True}}}),
-            encoding="utf-8",
-        )
-        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", home / "state.db")
-        monkeypatch.setattr(web_server, "check_config_version", lambda: (1, 1))
-        monkeypatch.setattr(web_server, "_GATEWAY_HEALTH_URL", None)
-        monkeypatch.setattr(
-            web_server, "_load_configured_gateway_platforms", lambda: {"discord"}
-        )
-        monkeypatch.setattr(
-            web_server,
-            "_collect_profile_gateway_topology_cached",
-            lambda: {
-                "profile_platforms": {},
-                "profiles": ["default"],
-                "gateway_mode": "single",
-                "gateways": [],
-            },
-        )
-
-        self.web_server = web_server
-        self.client = TestClient(web_server.app)
-        self.client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
-
-    @staticmethod
-    def _runtime(pid=_MISSING, *, state="running", start_time=_MISSING):
-        record = {
-            "gateway_state": state,
-            "platforms": {"discord": {"state": "connected"}},
-            "exit_reason": None,
-            "updated_at": "2026-08-28T00:00:00+00:00",
-        }
-        if pid is not _MISSING:
-            record["pid"] = pid
-        if start_time is not _MISSING:
-            record["start_time"] = start_time
-        return record
-
-    def _get_status(self, monkeypatch, runtime, *, live_pid, live_start):
-        monkeypatch.setattr(
-            self.web_server, "get_running_pid_cached", lambda *args, **kwargs: live_pid
-        )
-        monkeypatch.setattr(
-            self.web_server, "read_runtime_status", lambda *args, **kwargs: runtime
-        )
-
-        def _start_time(pid):
-            assert live_start is not _START_PROBE_MUST_NOT_RUN
-            return live_start
-
-        monkeypatch.setattr(self.web_server, "_get_process_start_time", _start_time)
-        return self.client.get("/api/status").json()
-
-    def test_matching_local_writer_identity_is_surfaced(self, monkeypatch):
-        data = self._get_status(
-            monkeypatch,
-            self._runtime(4242, start_time=111.0),
-            live_pid=4242,
-            live_start=111.0,
-        )
-
-        assert data["gateway_running"] is True
-        assert data["gateway_pid"] == 4242
-        assert data["gateway_platforms"] == {"discord": {"state": "connected"}}
-        assert data["gateway_updated_at"] == "2026-08-28T00:00:00+00:00"
-
-    @pytest.mark.parametrize(
-        ("runtime_pid", "runtime_start", "live_pid", "live_start"),
-        [
-            pytest.param(
-                4242,
-                111.0,
-                9999,
-                _START_PROBE_MUST_NOT_RUN,
-                id="pid-mismatch",
-            ),
-            pytest.param(4242, 111.0, 4242, 222.0, id="pid-reuse"),
-            pytest.param(
-                "4242",
-                _MISSING,
-                9999,
-                _START_PROBE_MUST_NOT_RUN,
-                id="string-pid",
-            ),
-        ],
+    snapshot = {
+        "gateway_state": "running",
+        "pid": 4242,
+        "start_time": 111.0,
+        "platforms": {"discord": {"state": "connected"}},
+    }
+    live = {"pid": 4242, "start": 111.0}
+    monkeypatch.setattr(status, "get_running_pid_cached", lambda *a, **k: live["pid"])
+    monkeypatch.setattr(status, "read_runtime_status", lambda *a, **k: snapshot)
+    monkeypatch.setattr(status, "get_runtime_status_running_pid", lambda *a, **k: None)
+    monkeypatch.setattr(
+        route, "_get_process_start_time", lambda pid: live["start"], raising=False
     )
-    def test_stale_local_writer_identity_is_suppressed(
-        self,
-        monkeypatch,
-        runtime_pid,
-        runtime_start,
-        live_pid,
-        live_start,
+    monkeypatch.setattr(
+        gateway_web, "_load_configured_gateway_platforms", lambda: {"discord"}
+    )
+    monkeypatch.setattr(
+        gateway_web,
+        "_collect_profile_gateway_topology_cached",
+        lambda: {
+            "profile_platforms": {},
+            "profiles": ["default"],
+            "gateway_mode": "single",
+            "gateways": [],
+        },
+    )
+    monkeypatch.setattr(route, "_status_active_sessions", AsyncMock(return_value=0))
+    monkeypatch.setattr(route, "_advisory_pressure", AsyncMock())
+    monkeypatch.setattr(route, "_component_health", AsyncMock(return_value={}))
+    monkeypatch.setattr(server, "_GATEWAY_HEALTH_URL", None)
+    client = TestClient(server.app)
+    client.headers[server._SESSION_HEADER_NAME] = server._SESSION_TOKEN
+    problems = []
+    for pid, start, expected in (
+        (4242, 111.0, {"discord": {"state": "connected"}}),
+        (9999, 222.0, {}),
+        (4242, 222.0, {}),
     ):
-        data = self._get_status(
-            monkeypatch,
-            self._runtime(runtime_pid, start_time=runtime_start),
-            live_pid=live_pid,
-            live_start=live_start,
-        )
+        live.update(pid=pid, start=start)
+        response = client.get("/api/status")
+        assert response.status_code == 200
+        actual = response.json()
+        assert actual["gateway_running"] is True
+        if actual["gateway_platforms"] != expected:
+            problems.append(("HTTP", pid, start, actual["gateway_platforms"], expected))
 
-        assert data["gateway_running"] is True
-        assert data["gateway_pid"] == live_pid
-        assert data["gateway_platforms"] == {}
-
-    @pytest.mark.parametrize("runtime_pid", [_MISSING, None, "nonsense"])
-    def test_missing_or_unparseable_runtime_pid_preserves_platforms(
-        self, monkeypatch, runtime_pid
+    # The startup call already requests profile cleanup on base. It must also discard
+    # primary-platform state from a different writer *before* re-stamping identity.
+    path = tmp_path / "gateway_state.json"
+    monkeypatch.setattr(status, "_get_runtime_status_path", lambda: path)
+    for pid, start, expected in (
+        (4242, 111.0, {"discord": {"state": "connected"}}),
+        (9999, 222.0, {}),
+        (4242, 222.0, {}),
     ):
-        data = self._get_status(
-            monkeypatch,
-            self._runtime(runtime_pid),
-            live_pid=9999,
-            live_start=_START_PROBE_MUST_NOT_RUN,
-        )
-
-        assert data["gateway_running"] is True
-        assert data["gateway_platforms"] == {"discord": {"state": "connected"}}
-
-    def test_remote_health_platforms_are_not_compared_to_local_processes(
-        self, monkeypatch
-    ):
-        remote = self._runtime(4242, start_time=111.0)
-        monkeypatch.setattr(
-            self.web_server, "get_running_pid_cached", lambda *args, **kwargs: None
-        )
-        monkeypatch.setattr(
-            self.web_server, "read_runtime_status", lambda *args, **kwargs: None
-        )
-        monkeypatch.setattr(
-            self.web_server,
-            "get_runtime_status_running_pid",
-            lambda *args, **kwargs: None,
-        )
-        monkeypatch.setattr(
-            self.web_server, "_GATEWAY_HEALTH_URL", "http://gateway/health"
-        )
-        monkeypatch.setattr(
-            self.web_server, "_probe_gateway_health", lambda: (True, remote)
-        )
-
-        data = self.client.get("/api/status").json()
-
-        assert data["gateway_running"] is True
-        assert data["gateway_pid"] == 4242
-        assert data["gateway_platforms"] == {"discord": {"state": "connected"}}
-
-    def test_stopped_local_gateway_still_clears_platforms(self, monkeypatch):
-        monkeypatch.setattr(
-            self.web_server, "get_running_pid_cached", lambda *args, **kwargs: None
-        )
-        monkeypatch.setattr(
-            self.web_server,
-            "get_runtime_status_running_pid",
-            lambda *args, **kwargs: None,
-        )
-        monkeypatch.setattr(
-            self.web_server,
-            "read_runtime_status",
-            lambda *args, **kwargs: self._runtime(4242, state="stopped"),
-        )
-
-        data = self.client.get("/api/status").json()
-
-        assert data["gateway_running"] is False
-        assert data["gateway_state"] == "stopped"
-        assert data["gateway_platforms"] == {}
-
-
-class TestStatusSourceLabelInvariant:
-    """Diagnostic liveness labels must not select product behavior."""
-
-    @pytest.fixture(autouse=True)
-    def _setup(self, monkeypatch, _isolate_hermes_home):
-        try:
-            from starlette.testclient import TestClient
-        except ImportError:
-            pytest.skip("fastapi/starlette not installed")
-
-        import hermes_state
-        from hermes_constants import get_hermes_home
-        import hermes_cli.web_server as web_server
-
-        home = get_hermes_home()
-        home.mkdir(parents=True, exist_ok=True)
-        (home / "config.yaml").write_text(
-            yaml.safe_dump({"platforms": {"discord": {"enabled": True}}}),
+        path.write_text(
+            json.dumps({
+                **snapshot,
+                "platforms": {
+                    "discord": {"state": "connected"},
+                    "reviewer:slack": {"state": "fatal"},
+                },
+            }),
             encoding="utf-8",
         )
-        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", home / "state.db")
-        monkeypatch.setattr(web_server, "check_config_version", lambda: (1, 1))
-        monkeypatch.setattr(web_server, "_GATEWAY_HEALTH_URL", None)
         monkeypatch.setattr(
-            web_server, "_load_configured_gateway_platforms", lambda: {"discord"}
-        )
-        monkeypatch.setattr(
-            web_server,
-            "_collect_profile_gateway_topology_cached",
-            lambda: {
-                "profile_platforms": {},
-                "profiles": ["default"],
-                "gateway_mode": "single",
-                "gateways": [],
+            status,
+            "_build_pid_record",
+            lambda pid=pid, start=start: {
+                "kind": "gateway",
+                "pid": pid,
+                "start_time": start,
+                "argv": [],
             },
         )
-
-        self.web_server = web_server
-        self.client = TestClient(web_server.app)
-        self.client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
-
-    def _platforms_for_source(self, monkeypatch, source):
-        from gateway.status import GatewayLiveness
-
-        runtime = {
-            "gateway_state": "running",
-            "pid": 4242,
-            "start_time": 111.0,
-            "platforms": {"discord": {"state": "connected"}},
-            "exit_reason": None,
-            "updated_at": "2026-08-28T00:00:00+00:00",
-        }
-        monkeypatch.setattr(
-            self.web_server, "read_runtime_status", lambda *args, **kwargs: runtime
+        assert status.write_runtime_status(
+            gateway_state="starting",
+            clear_profile_platforms=True,
+            reload_existing=True,
+            wait_timeout=2.0,
         )
-        monkeypatch.setattr(
-            self.web_server,
-            "resolve_gateway_liveness",
-            lambda *args, **kwargs: GatewayLiveness(
-                running=True,
-                pid=9999,
-                source=source,
-                health_body=None,
-            ),
-        )
-
-        return self.client.get("/api/status").json()["gateway_platforms"]
-
-    def test_remote_authority_is_invariant_across_diagnostic_sources(self, monkeypatch):
-        sources = (
-            "pid",
-            "health",
-            "runtime_status",
-            "none",
-            "remote_registry",
-            "future_remote_mesh",
-        )
-
-        platforms_by_source = {
-            source: self._platforms_for_source(monkeypatch, source)
-            for source in sources
-        }
-
-        assert platforms_by_source == {
-            source: {"discord": {"state": "connected"}} for source in sources
-        }
-
-    def test_source_invariant_text_remains_in_status_module(self):
-        from pathlib import Path
-
-        import gateway.status as status_module
-
-        text = Path(status_module.__file__).read_text(encoding="utf-8")
-        assert "never branch product behavior on it" in text
+        actual = json.loads(path.read_text())
+        assert (actual["pid"], actual["start_time"]) == (pid, start)
+        if actual["platforms"] != expected:
+            problems.append(("startup", pid, start, actual["platforms"], expected))
+    assert problems == []

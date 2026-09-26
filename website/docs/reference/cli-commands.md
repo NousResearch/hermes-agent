@@ -972,11 +972,23 @@ Subscriptions persist to `~/.hermes/webhook_subscriptions.json` and are hot-relo
 
 ```bash
 hermes doctor [--fix]
+hermes doctor --ack <ADVISORY_ID>
+hermes doctor --upstream
+hermes doctor --upstream --json
+hermes doctor --upstream --compact
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--fix` | Attempt automatic repairs where possible. |
+| `--ack ADVISORY_ID` | Acknowledge a doctor advisory so future runs can suppress it where supported. |
+| `--upstream` | Run the upstream health diagnostic in READONLY mode. It does not fetch, run mutating Git operations, or modify the worktree. Without an output flag, it prints human-readable text. |
+| `--json` | With `--upstream`, print pure JSON output. Outside upstream diagnostics, this flag has no effect. |
+| `--compact` | With `--upstream`, print a stable one-line summary. Outside upstream diagnostics, this flag has no effect. |
+
+`--upstream` is incompatible with `--fix` and with `--ack`. `--json` and
+`--compact` only affect `--upstream` output; when both are supplied, JSON output
+takes precedence.
 
 Exit status: `0` when the report lists no unresolved problems, `1` when at least one remains (including problems `--fix` could not repair), so a health gate or CI step can trust `hermes doctor` as a check.
 

@@ -445,14 +445,20 @@ def _is_container(path: Path, rel: Tuple[str, ...]) -> bool:
     """A shipped directory that is a container of roots, not a root itself.
 
     Under ``skills/`` the boundary is the hub installer's (``_check_install_target``): a skill
-    root holds ``SKILL.md``, anything else is a category. A category carries files of its own
-    (``skills_sync`` puts a ``DESCRIPTION.md`` in every one), so "holds no files" would make the
-    bundled layout a root and replace it whole. Elsewhere a directory holding no files is the
-    container."""
+    root holds ``SKILL.md``, and everything below it (``scripts/``, ``references/``) is that
+    skill's content, so only a directory with no skill root among its ancestors is a category.
+    A category carries files of its own (``skills_sync`` puts a ``DESCRIPTION.md`` in every
+    one), so "holds no files" would make the bundled layout a root and replace it whole.
+    Elsewhere a directory holding no files is the container."""
     if not path.is_dir():
         return False
     if rel and rel[0] == "skills":
-        return not (path / "SKILL.md").is_file()
+        current = path
+        for _ in rel[1:]:
+            if (current / "SKILL.md").is_file():
+                return False
+            current = current.parent
+        return True
     return not any(p.is_file() for p in path.iterdir())
 
 

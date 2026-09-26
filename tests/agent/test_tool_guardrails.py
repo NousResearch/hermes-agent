@@ -232,6 +232,60 @@ def test_identical_call_streak_never_halts_when_hard_stop_disabled_or_for_poller
     assert hard.halt_decision is None
 
 
+def _volatile_execute_code_result(execution_count, output="...\n", duration=0.0):
+    # Issue #124072 shape: identical no-op cells whose results differ only in
+    # per-call bookkeeping (kernel.execution_count, duration_seconds).
+    return json.dumps({
+        "status": "success", "output": output, "exit_code": 0, "tool_calls_made": 0,
+        "duration_seconds": duration,
+        "kernel": {"mode": "session", "reused": True,
+                   "execution_count": execution_count, "state_reset": False},
+        "stdout_truncated": False, "stdout_bytes_captured": 4,
+        "stdout_bytes_total": 4, "stdout_bytes_omitted": 0,
+    })
+
+
+def test_identical_execute_code_streak_ignores_volatile_execution_metadata():
+    # #124072: 186 no-op print("...") cells were invisible to the replay
+    # detectors because execution_count/duration_seconds change per call.
+    # The streak must count them: notice from the 3rd, halt at block_after.
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, no_progress_block_after=5)
+    )
+    args = {"code": 'print("...")'}
+    notices = [
+        controller.observe_call(
+            "execute_code", args,
+            _volatile_execute_code_result(i, duration=0.001 * i),
+            tool_call_id=f"c{i}",
+        ).notice
+        for i in range(1, 7)
+    ]
+    assert notices[0] is None and notices[1] is None
+    assert all(n is not None for n in notices[2:]), notices
+    halt = controller.halt_decision
+    assert halt is not None and halt.should_halt
+    assert halt.code == "identical_call_streak_halt"
+    assert halt.tool_name == "execute_code" and halt.count == 5
+
+
+def test_identical_streak_still_resets_when_real_output_changes():
+    # Guard against over-matching: volatile stripping must not collapse
+    # genuinely different outputs into one streak.
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, no_progress_block_after=5)
+    )
+    args = {"code": 'print("...")'}
+    for i in range(1, 7):
+        obs = controller.observe_call(
+            "execute_code", args,
+            _volatile_execute_code_result(i, output=f"line {i}\n"),
+            tool_call_id=f"c{i}",
+        )
+        assert obs.notice is None, f"notice fired at {i} on changing output"
+    assert controller.halt_decision is None
+
+
 
 
 

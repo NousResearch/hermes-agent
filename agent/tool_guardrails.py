@@ -600,9 +600,33 @@ def _coerce_args(args: Mapping[str, Any] | None) -> Mapping[str, Any]:
     return args if isinstance(args, Mapping) else {}
 
 
+# Per-call execution bookkeeping that is not semantic output: an execute_code
+# result carries a monotonic kernel.execution_count and a wall-clock
+# duration_seconds, so byte-identical replays never hashed equal and the
+# streak/cycle detectors stayed blind (#124072). Stripped recursively before
+# hashing; real output changes still reset the streak.
+# ponytail: fixed key set — a new tool adding a timestamp/counter needs its key
+# added here; graduate to a per-tool "semantic payload" declaration if that recurs.
+_VOLATILE_RESULT_KEYS = frozenset({"duration_seconds", "execution_count"})
+
+
+def _without_volatile_keys(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _without_volatile_keys(item)
+            for key, item in value.items()
+            if key not in _VOLATILE_RESULT_KEYS
+        }
+    if isinstance(value, list):
+        return [_without_volatile_keys(item) for item in value]
+    return value
+
+
 def _result_hash(result: str | None) -> str:
     parsed = safe_json_loads(result or "")
-    return _sha256(_canonical_json(parsed) if parsed is not None else (result or ""))
+    if parsed is None:
+        return _sha256(result or "")
+    return _sha256(_canonical_json(_without_volatile_keys(parsed)))
 
 
 _BOOL_WORDS = {w: True for w in ("1", "true", "yes", "on", "enabled")} | {w: False for w in ("0", "false", "no", "off", "disabled")}

@@ -30,6 +30,37 @@ def _dict_args(raw: Any) -> dict:
     return args if isinstance(args, dict) else {"arguments": args}
 
 
+def _codex_execution_status(item: dict) -> str:
+    """Map Codex's item-specific terminal fields onto Hermes' execution vocabulary.
+
+    ``status`` alone is not authoritative: command exit codes, dynamic-tool success
+    flags, MCP errors, and file-change states disagree about what ``completed`` means.
+    Keep the provider's explicit cancellation separate from a timeout — an interruption
+    has no provider deadline signal.
+    """
+    item_type = str(item.get("type") or "")
+    status = str(item.get("status") or "").lower()
+
+    if status in {"cancelled", "canceled", "aborted", "interrupted"}:
+        return "cancelled"
+    if status in {"declined", "rejected", "blocked"}:
+        return "blocked"
+    if status in {"timeout", "timed_out"}:
+        return "timeout"
+    if status in {"failed", "error"} or item.get("error") is not None:
+        return "error"
+
+    successful = {
+        "commandExecution": status in {"completed", "success", "succeeded"}
+        and item.get("exitCode") in (None, 0),
+        "fileChange": status in {"completed", "success", "succeeded", "applied"},
+        "mcpToolCall": status in {"completed", "success", "succeeded"},
+        "dynamicToolCall": status in {"completed", "success", "succeeded"}
+        and item.get("success") is not False,
+    }.get(item_type, status in {"completed", "success", "succeeded", "applied"})
+    return "success" if successful else "error"
+
+
 @dataclass
 class ProjectionResult:
     """Output of projecting one Codex item; empty ``messages`` = ignored (e.g. a streaming delta)."""
@@ -98,7 +129,12 @@ class CodexEventProjector:
             None,
             tool_calls=[{"id": call_id, "type": "function", "function": {"name": name, "arguments": _format_tool_args(args)}}],
         )
-        tool_msg = {"role": "tool", "tool_call_id": call_id, "content": content}
+        tool_msg = {
+            "role": "tool", "tool_call_id": call_id, "content": content,
+            # Codex reports a terminal outcome per item, so the status axis is known
+            # here; the effect of a provider-side command is never claimed either way.
+            "execution_status": _codex_execution_status(item),
+        }
         return ProjectionResult(messages=[assistant_msg, tool_msg], is_tool_iteration=True)
 
     @staticmethod

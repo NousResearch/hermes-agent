@@ -191,6 +191,27 @@ class TestAgentMessageProjection:
         assert "reasoning" not in second
 
 
+@pytest.mark.parametrize(
+    ("item", "expected"),
+    [
+        ({"type": "commandExecution", "status": "completed", "exitCode": 1}, "error"),
+        ({"type": "dynamicToolCall", "status": "completed", "success": False}, "error"),
+        ({"type": "commandExecution", "status": "declined"}, "blocked"),
+        ({"type": "fileChange", "status": "declined"}, "blocked"),
+        ({"type": "commandExecution", "status": "interrupted"}, "cancelled"),
+        ({"type": "fileChange", "status": "applied"}, "success"),
+        ({"type": "mcpToolCall", "status": "completed", "error": {"code": -1}}, "error"),
+        ({"type": "commandExecution", "status": "completed", "exitCode": 0}, "success"),
+    ],
+)
+def test_execution_status_uses_item_type_authoritative_fields(item, expected):
+    """Codex status is not a universal success flag: fields and item type carry the truth."""
+    result = CodexEventProjector().project({
+        "method": "item/completed", "params": {"item": {"id": "probe", **item}},
+    })
+    assert result.messages[1]["execution_status"] == expected
+
+
 class TestFileChangeProjection:
     def test_file_change_summary_no_inlined_content(self) -> None:
         item = {

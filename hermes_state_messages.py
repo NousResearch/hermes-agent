@@ -24,11 +24,11 @@ logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module
 
 # One INSERT shape for every message writer (append, batch, replace, compact, import).
 _INSERT_MESSAGE_SQL = """INSERT INTO messages (session_id, role, content, tool_call_id,
-                   tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
+                   tool_calls, tool_name, effect_disposition, execution_status, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed, _compressed_summary, active, api_content, display_kind,
                    display_metadata, display_identity)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
 # Every column this module knows how to read: the ones it writes plus the three SQLite/compaction
 # owns. `_row_to_message_dict` drops raw bytes ONLY outside this set — a schema column keeps its
 # key (and its typed decoder) even when a row holds a BLOB, so no reader ever loses msg["content"].
@@ -276,7 +276,8 @@ class SessionMessagesMixin:
         }
         return (session_id, role, encoded_content, msg.get("tool_call_id"),
             encoded_tool_calls, encoded_tool_name,
-            msg.get("effect_disposition"), message_timestamp, msg.get("token_count"), msg.get("finish_reason"),
+            msg.get("effect_disposition"), msg.get("execution_status"),
+            message_timestamp, msg.get("token_count"), msg.get("finish_reason"),
             _scrub_surrogates(_reasoning("reasoning")), _scrub_surrogates(_reasoning("reasoning_content")),
             *(self._reasoning_json_text(_reasoning(k))
               for k in ("reasoning_details", "codex_reasoning_items", "codex_message_items")),
@@ -303,7 +304,8 @@ class SessionMessagesMixin:
         tool_call_id: str = None, token_count: int = None, finish_reason: str = None, reasoning: str = None,
         reasoning_content: str = None, reasoning_details: Any = None, codex_reasoning_items: Any = None,
         codex_message_items: Any = None, platform_message_id: str = None, observed: bool = False,
-        effect_disposition: Optional[str] = None, _compressed_summary: bool = False, timestamp: Any = None,
+        effect_disposition: Optional[str] = None, execution_status: Optional[str] = None,
+        _compressed_summary: bool = False, timestamp: Any = None,
         api_content: Optional[str] = None, display_kind: Optional[str] = None,
         display_metadata: Optional[Dict[str, Any]] = None, compression_lock_holder: Optional[str] = None,
         turn_lease_holder: Optional[str] = None, turn_lease_ttl_seconds: float = 300.0) -> int:
@@ -1339,7 +1341,8 @@ class SessionMessagesMixin:
             if include_summary_markers and row["_compressed_summary"]:
                 msg["_compressed_summary"] = True
             msg.update(
-                (col, row[col]) for col in ("timestamp", "tool_call_id", "tool_name", "effect_disposition") if row[col])
+                (col, row[col]) for col in ("timestamp", "tool_call_id", "tool_name",
+                                            "effect_disposition", "execution_status") if row[col])
             if row["tool_calls"]:
                 msg["tool_calls"] = _json_or(
                     row["tool_calls"], [], "Failed to deserialize tool_calls in conversation replay, falling back to []")

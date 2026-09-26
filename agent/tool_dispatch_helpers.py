@@ -437,10 +437,18 @@ def make_tool_result_message(
     tool_call_id: str,
     *,
     effect_disposition: str | None = None,
+    execution_status: str | None = None,
 ) -> dict:
     """Build a tool-result message: OpenAI ``name`` (wire format) plus internal ``tool_name``
     (session DB). High-risk tool content (web_extract, web_search, browser_*, mcp_*) is
     wrapped in untrusted-data delimiters — the defense against indirect prompt injection.
+
+    ``effect_disposition`` answers "is an effect possible?" (``none`` = known inert,
+    ``unknown`` = an effect may have happened and cannot be observed) — the #61783
+    contract that ``replay_cleanup`` relies on. ``execution_status`` answers the
+    orthogonal "how did the call end?" (``success``/``error``/``blocked``/``timeout``/
+    ``cancelled``). The two are separate columns: a call can end successfully while its
+    effect is still unknown.
     """
     # Replay-recovery callers bypass the executor's canonical-id helper, so normalize here too.
     tool_call_id = _normalize_tool_call_id(tool_call_id)
@@ -463,6 +471,8 @@ def make_tool_result_message(
             message["_tool_output_risk"] = risk_metadata
     if effect_disposition is not None:
         message["effect_disposition"] = effect_disposition
+    if execution_status is not None:
+        message["execution_status"] = execution_status
     return message
 
 

@@ -421,6 +421,7 @@ CREATE TABLE IF NOT EXISTS messages (
     tool_calls TEXT,
     tool_name TEXT,
     effect_disposition TEXT,
+    execution_status TEXT,
     timestamp REAL NOT NULL,
     token_count INTEGER,
     finish_reason TEXT,

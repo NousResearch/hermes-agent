@@ -896,6 +896,8 @@ def _build_provider_picker_rows(config: dict, active: str, provider_labels: dict
         _visible_slugs = [p.slug for p in CANONICAL_PROVIDERS if not _names_for.get(p.slug, {p.slug.lower()}) & _cli_excluded]
     else:
         _visible_slugs = [p.slug for p in CANONICAL_PROVIDERS]
+    from hermes_cli.inventory import configured_model_order, order_provider_slugs
+    _visible_slugs = order_provider_slugs(_visible_slugs, configured_model_order(config))
 
     # The active provider's group when grouped, otherwise the active slug itself.
     active_group = provider_group_for_slug(active) if active else ""

@@ -654,6 +654,7 @@ export interface ModelOptionsResult {
   providers: ModelOptionProvider[]
   model?: string
   provider?: string
+  preferred_models?: ModelPreferredEntry[]
 }
 /** One ``hermes_cli/inventory.py::build_models_payload`` provider row (the union of every field the builder sets; ``pricing_pending`` / ``free_tier_pending`` mark the cached-only path). */
 export interface ModelOptionProvider {
@@ -695,6 +696,11 @@ export interface ModelPricing {
   discount_percent?: number | null
   was_input?: string | null
   was_output?: string | null
+}
+/** One configured primary/fallback ``(provider, model)`` entry, in chain order. */
+export interface ModelPreferredEntry {
+  provider: string
+  model: string
 }
 export interface ImageGenerateParams {
   prompt?: string | null

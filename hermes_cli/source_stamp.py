@@ -9,7 +9,36 @@ import os
 from pathlib import Path
 import tempfile
 
-from hermes_cli.version_info import _git_version_info, _reset_version_info_cache
+from hermes_cli.version_info import (
+    _derived_version,
+    _git_version_info,
+    _parse_nonnegative,
+    _reset_version_info_cache,
+    _run_git,
+)
+
+
+def _prior_release_identity(root: Path) -> tuple[str, int | None] | None:
+    """The release identity of the stamp this publish replaces, if resolvable.
+
+    Consulted only when the live read cannot name a release: a checkout that
+    already had one must not lose it to a single failed git read.
+    """
+    try:
+        data = json.loads((Path(root) / "install-stamp.json").read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    base = data.get("baseVersion")
+    if not isinstance(base, str) or not base or base == "unknown":
+        return None
+    distance = data.get("distance")
+    if isinstance(distance, str):
+        distance = _parse_nonnegative(distance)
+    if isinstance(distance, bool) or not isinstance(distance, int) or distance < 0:
+        distance = None
+    return base, distance
 
 
 def write_source_stamp(root: Path) -> dict | None:
@@ -18,6 +47,11 @@ def write_source_stamp(root: Path) -> dict | None:
     A root git cannot identify -- the ZIP update fallback runs precisely because
     git is unusable -- publishes no identity: the old stamp is removed rather
     than left naming the commit that was just replaced. Returns None then.
+
+    A root git identifies but whose *release* it cannot name keeps the release
+    recorded by the stamp it replaces: every reader prefers the stamp, so one
+    failed git read must not permanently downgrade a checkout that already had
+    a version.
     """
     root = Path(root).resolve()
     info = _git_version_info(root, include_untracked=True)
@@ -26,6 +60,25 @@ def write_source_stamp(root: Path) -> dict | None:
             (root / "install-stamp.json").unlink()
         _reset_version_info_cache()
         return None
+    base_version = info.base_version
+    distance = info.distance
+    display_version = info.derived_version
+    if base_version == "unknown":
+        # ``unknown`` reports a read that failed, not a checkout without a
+        # release: the resolver's git calls are best-effort (3s timeout,
+        # failures swallowed). Keep the last resolvable release and refresh
+        # only what this read did answer.
+        prior = _prior_release_identity(root)
+        if prior is not None:
+            base_version, distance = prior
+            recomputed = _parse_nonnegative(
+                _run_git(root, "rev-list", "--count", f"v{base_version}..HEAD")
+            )
+            if recomputed is not None:
+                distance = recomputed
+            display_version = _derived_version(
+                base_version, distance, info.dirty, info.commit[:7]
+            )
     stamp = {
         "schemaVersion": 2,
         "commit": info.commit,
@@ -36,9 +89,9 @@ def write_source_stamp(root: Path) -> dict | None:
         "source": "git",
         "distribution": None,
         "updateMechanism": "self",
-        "baseVersion": info.base_version,
-        "displayVersion": info.derived_version,
-        "distance": info.distance,
+        "baseVersion": base_version,
+        "displayVersion": display_version,
+        "distance": distance,
         "payload": "bootstrap",
         "tag": None,
     }

@@ -203,6 +203,44 @@ def test_picker_direct_chatgpt_positive_control(monkeypatch, picker_http):
     assert _authorized_hosts(picker_http) == {"chatgpt.com"}
 
 
+@pytest.mark.parametrize("suffix", ["", "/"])
+def test_full_picker_discovers_codex_models_with_pinned_canonical_url(monkeypatch, suffix):
+    """A saved canonical URL must not bypass account discovery via the relay-only API-key path."""
+    import httpx
+
+    from hermes_cli.inventory import build_model_options_payload, load_picker_context
+
+    home = _home(monkeypatch)
+    _write_config(home, base_url=CHATGPT + suffix)
+    _write_singleton(home, JWT)
+    tokens_before = json.loads((home / "auth.json").read_bytes())["providers"]["openai-codex"]["tokens"]
+    config_before = (home / "config.yaml").read_bytes()
+    discovered = "gpt-6-astra"
+    seen = []
+
+    def catalog_get(url, headers=None, **kwargs):
+        seen.append((url, headers))
+        return SimpleNamespace(status_code=200, json=lambda: {
+            "models": [{"slug": discovered, "visibility": "list", "priority": 0}],
+        })
+
+    monkeypatch.setattr(httpx, "get", catalog_get)
+    # Unrelated metadata sources stay offline; config, auth, discovery, cache and picker are real.
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.models.get_curated_nous_model_ids", lambda: [])
+    monkeypatch.setattr("hermes_cli.models.fetch_ollama_cloud_models", lambda **kw: [])
+    monkeypatch.setattr("hermes_cli.models_pricing.get_pricing_for_provider", lambda *a, **kw: {})
+
+    payload = build_model_options_payload(load_picker_context(), refresh=True)
+    row = next(p for p in payload["providers"] if p["slug"] == "openai-codex")
+    assert discovered in row["models"]
+    assert seen
+    assert all(urlparse(url).hostname == "chatgpt.com" for url, _ in seen)
+    assert all(headers["Authorization"] == f"Bearer {JWT}" for _, headers in seen)
+    assert json.loads((home / "auth.json").read_bytes())["providers"]["openai-codex"]["tokens"] == tokens_before
+    assert (home / "config.yaml").read_bytes() == config_before
+
+
 def test_picker_refuses_opaque_key_aimed_at_chatgpt(picker_http):
     """Defense in depth: a non-JWT key composed with chatgpt.com is never sent there."""
     from hermes_cli.codex_models import get_codex_model_ids

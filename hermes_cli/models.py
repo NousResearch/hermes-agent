@@ -1605,8 +1605,8 @@ def _chat_catalog_rows(models):
 def _configured_relay_base_url(provider: str) -> str:
     """``model.base_url`` when it points the *configured* provider at a relay/proxy, else "".
 
-    Discovery must probe the same endpoint inference uses (#121387): with ``model.base_url``
-    set for the configured provider, the vendor's canonical host is NOT the catalog to list.
+    Discovery must probe the same endpoint inference uses (#121387): when ``model.base_url``
+    differs from the registered endpoint, the vendor's canonical host is NOT the catalog to list.
     Mirrors the ``$OPENAI_BASE_URL`` -> ``model.base_url`` -> canonical precedence of
     ``_openai_discovery_base_url`` for every built-in provider, not just OpenAI.
     """
@@ -1622,7 +1622,15 @@ def _configured_relay_base_url(provider: str) -> str:
             return ""
     except Exception:
         return ""
-    return str(model_cfg.get("base_url") or "").strip().rstrip("/")
+    base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+    from hermes_cli.auth import PROVIDER_REGISTRY
+
+    registered = PROVIDER_REGISTRY.get(normalize_provider(provider))
+    # Setup persists canonical URLs too. They still need the provider's native discovery
+    # (notably Codex OAuth); the generic relay probe only supports API-key providers.
+    if registered and base_url == registered.inference_base_url.rstrip("/"):
+        return ""
+    return base_url
 
 
 def _relay_model_catalog(normalized: str, relay: str) -> Optional[list[str]]:

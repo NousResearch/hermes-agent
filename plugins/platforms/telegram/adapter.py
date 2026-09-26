@@ -155,7 +155,7 @@ from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
 from utils import env_float, env_int
 
-_TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+_TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".heic", ".heif", ".avif"}
 # Max seconds a send/edit may sleep inline on a flood-control RetryAfter; longer penalties fail
 # closed with ``flood_control:{wait}`` so the caller's retry machinery owns the wait.
 # Longer server penalties fail closed with a ``flood_control:{wait}`` SendResult so the caller's retry
@@ -178,8 +178,10 @@ def _flood_cap_result(wait: float) -> "SendResult":
     return SendResult(success=False, error=f"flood_control:{wait}", retry_after=float(wait))
 
 
-_TELEGRAM_IMAGE_MIME_TO_EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/jpg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
-_TELEGRAM_IMAGE_EXT_TO_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}
+_TELEGRAM_IMAGE_MIME_TO_EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/jpg": ".jpg", "image/webp": ".webp", "image/gif": ".gif",
+                               "image/heic": ".heic", "image/heif": ".heif", "image/avif": ".avif"}
+_TELEGRAM_IMAGE_EXT_TO_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif",
+                               ".heic": "image/heic", ".heif": "image/heif", ".avif": "image/avif"}
 
 
 def _coerce_duration_seconds(value: Any) -> Optional[int]:

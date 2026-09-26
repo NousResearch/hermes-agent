@@ -4501,7 +4501,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     "config.yaml: platforms.api_server.port",
                     self.name, self._host, self._port, exc)
                 return False
-            from gateway.platforms.shared_ingress import listener_base_url
+            from gateway.platforms.shared_ingress import bound_site_endpoints, listener_base_url
+            self._bound_listener_endpoints = bound_site_endpoints(self._site, self._host, self._port)
             self._mark_connected(listener_base=listener_base_url(self._host, self._port))
             # Publish a metrics-bearing snapshot at bind and keep it fresh: the
             # heartbeat loop updates last_heartbeat/metrics_today (#52323).

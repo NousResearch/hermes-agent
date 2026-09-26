@@ -49,6 +49,7 @@ session.title           session.usage           session.status
 clarify.lock            config.set / config.get commands.catalog
 client.capabilities     gateway.capabilities    ping
 command.resolve         command.dispatch        cli.exec
+plugin.command.dispatch
 reload.mcp              reload.env              process.stop
 delegation.status       subagent.interrupt      subagent.steer
 spawn_tree.save / list / load
@@ -57,6 +58,15 @@ terminal.resize         clipboard.paste         image.attach
 
 `session.active_list`, `session.activate`, and `session.close` are the process-local live-session controls used by the TUI session switcher. Use `session.list` / `/resume` for saved transcript discovery; use the active-session methods only for sessions that are currently open in the TUI gateway process.
 
+### Sessionless plugin command dispatch
+
+`plugin.command.dispatch` is a deliberately narrow RPC for a host that needs
+to invoke one already-registered plugin command without creating an Agent
+session. Its params must be exactly `{ "name": "lowercase-command", "arg":
+"string input" }`. It looks up only the named plugin command; it does not
+resolve quick commands, bundles, skills, shell commands, prompts, or any other
+gateway command surface. Unknown commands return the fixed `4011` error and
+registry or handler failures return a fixed redacted `5000` error.
 Within one authenticated gateway, resuming or activating a live session attaches another event subscriber rather than replacing the previous connection. Streaming and terminal events go to all attached clients; disconnecting one client does not end a session another client is viewing. Existing submit exclusivity and configured busy-input policy remain in force. Attached clients can steer the session's subagents; browser-controller results still require the connection that registered that controller. This does not enable independent gateway processes to write the same session, nor does it imply durable prompt admission across an owner restart.
 
 ### Model overrides on `session.create`

@@ -5581,8 +5581,14 @@ def _finalize_vision_client(
 def _vision_main_provider_client(
     main_provider: str, main_model: str, runtime: Dict[str, Any], resolved_model: Optional[str],
     resolved_api_mode: Optional[str],
-) -> Tuple[Optional[Any], Optional[str]]:
-    """Auto-detect step 1: try the main provider; (None, None) falls through to the aggregator chain."""
+) -> Tuple[Optional[Any], Optional[str], bool]:
+    """Auto-detect step 1: try the main provider. Returns ``(client, model, main_vision_capable)``;
+    a ``None`` client falls through to the aggregator chain. ``main_vision_capable`` distinguishes
+    the two no-client outcomes for the discovery boundary (#123998): ``True`` means the main *could*
+    serve the image but was unavailable (expired OAuth, unreachable endpoint), so widening to an
+    unselected provider must be refused; ``False`` means the main is text-only / vision-blind
+    (kimi-coding #17076, text-only setups #50426) and was never going to serve it, so the aggregator
+    fall-through is expected and must not be gated."""
     # A provider vision default (static override or catalog discovery) is a *known* multimodal
     # model; the pinned chat model usually isn't, so only fall back to it when no default exists.
     provider_vision_default = _resolve_provider_vision_default(main_provider)
@@ -5592,19 +5598,19 @@ def _vision_main_provider_client(
         # passing the chat model would override that and 404. Only auxiliary.vision.model may.
         sync_client, default_model = _resolve_strict_vision_backend(main_provider, resolved_model or provider_vision_default)
         if sync_client is None:
-            return None, None
+            return None, None, True
         logger.info("Vision auto-detect: using main provider %s (%s)", main_provider, default_model or resolved_model or main_model)
-        return sync_client, default_model
+        return sync_client, default_model, True
     if main_provider in _PROVIDERS_WITHOUT_VISION:  # endpoint rejects image input entirely
         logger.debug("Vision auto-detect: skipping main provider %s (no vision support) — falling through to aggregator chain", main_provider)
-        return None, None
+        return None, None, False
     if not _main_model_supports_vision(main_provider, vision_model):
         # Known text-only model. Log only the provider name (CodeQL clear-text-logging FPs).
         logger.debug(
             "Vision auto-detect: skipping main provider %s (reports no vision capability) — falling through to aggregator chain",
             main_provider,
         )
-        return None, None
+        return None, None, False
     # Custom endpoints carry no built-in base_url/api_key: recover the live main endpoint from
     # set_runtime_main() or, with no live runtime recorded, the configured custom endpoint.
     rpc_base_url = rpc_api_key = None
@@ -5621,9 +5627,9 @@ def _vision_main_provider_client(
         main_provider, vision_model, api_mode=rpc_api_mode, explicit_base_url=rpc_base_url,
         explicit_api_key=rpc_api_key, main_runtime=runtime, is_vision=True)
     if rpc_client is None:
-        return None, None
+        return None, None, True
     logger.info("Vision auto-detect: using main provider %s (%s)", main_provider, rpc_model or vision_model)
-    return rpc_client, rpc_model or vision_model
+    return rpc_client, rpc_model or vision_model, True
 
 
 def _vision_auto_route(
@@ -5633,6 +5639,9 @@ def _vision_auto_route(
     """Auto-detect order: 1. main provider + model, 2. OpenRouter, 3. Nous Portal, 4. DeepInfra, 5. stop."""
     main_provider = str(runtime.get("provider") or _read_main_provider())
     main_model = str(runtime.get("model") or _read_main_model())
+    # The identity the user actually pointed this session at, captured before any MoA unwrap —
+    # this is what gates the built-in discovery chain below (see _discovery_chain_allowed).
+    selected_main = main_provider
     if main_provider.strip().lower() == "moa":
         # MoA main_model is a preset NAME, not a wire model — unwrap to the preset's aggregator
         # slot. The moa:// facade endpoint belongs to the virtual provider, not the real one.
@@ -5640,10 +5649,19 @@ def _vision_auto_route(
         if _agg_provider and _agg_model:
             main_provider, main_model = _agg_provider, _agg_model
             runtime = dict(runtime, base_url="", api_key="", api_mode="")
+    main_vision_capable = True
     if main_provider and main_provider not in {"auto", "", "moa"}:
-        client, default_model = _vision_main_provider_client(main_provider, main_model, runtime, resolved_model, resolved_api_mode)
+        client, default_model, main_vision_capable = _vision_main_provider_client(main_provider, main_model, runtime, resolved_model, resolved_api_mode)
         if client is not None:
             return _finalize_vision_client(main_provider, client, default_model, resolved_model, async_mode)
+    # Parity with the text auxiliary route (_discovery_chain_allowed): once the user has selected a
+    # main provider, an *unavailable but vision-capable* main must not silently widen to guessing
+    # another logged-in provider — that ships the user's image to an account they never pointed this
+    # vision request at (#123998). A text-only / vision-blind main (kimi-coding #17076, text-only
+    # setups #50426) was never going to serve the image, so it still falls through to the aggregator
+    # chain as before; and with no main selected (fresh install / "auto") the discovery chain runs.
+    if main_vision_capable and not _discovery_chain_allowed(selected_main, task="vision"):
+        return None, None, None
     # Aggregators use their dedicated vision model, not the user's main model.
     for candidate in _VISION_AUTO_PROVIDER_ORDER:
         if candidate == main_provider:

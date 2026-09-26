@@ -380,6 +380,31 @@ def _replay_ordered_blocks(m: Dict[str, Any], ordered_blocks: List[Any]) -> Opti
     return replayed
 
 
+def _interleaved_signature_layout_dead(message: Dict[str, Any]) -> bool:
+    """True when this turn's ``reasoning_details`` came from a block order the parallel-fields
+    reconstruction cannot reproduce, so every signature on it is stale (#123923).
+
+    The verbatim ``anthropic_content_blocks`` channel is in-memory only (schema migration 09
+    dropped the column), so a turn restored from state.db replays through the parallel-fields
+    fallback — which always hoists ALL thinking blocks ahead of the tool_use blocks they may
+    have been signed after. Anthropic signs each block against the content preceding it, so an
+    interleaved turn (>=2 signed thinking blocks + tool_calls — a single-thinking-block turn
+    hoists onto an identical prefix and stays valid) replays with a dead second signature and
+    400s "thinking blocks cannot be modified" on every resume of a heartbeat-spawned session.
+    """
+    if not (isinstance(message.get("tool_calls"), list) and message["tool_calls"]):
+        return False
+    raw_details = message.get("reasoning_details")
+    if not isinstance(raw_details, list):
+        return False
+    signed_thinking = [
+        d for d in raw_details
+        if isinstance(d, dict) and str(d.get("type", "") or "").strip().lower() in _THINKING_TYPES
+        and (d.get("signature") or d.get("data"))
+    ]
+    return len(signed_thinking) >= 2
+
+
 def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
     """Assistant message -> Anthropic content blocks (thinking, text, tool_use, Kimi/DeepSeek
     reasoning_content injection)."""
@@ -395,6 +420,12 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
         replayed = _replay_ordered_blocks(m, ordered_blocks)
         if replayed:
             return {"role": "assistant", "content": replayed}
+    # Interleaved turn restored from state.db: the parallel-fields reconstruction hoists thinking
+    # above the tool_use blocks the signatures were computed against, so every signature on it is
+    # dead. Flag the CONVERTED message (never the caller's history dict) so
+    # _manage_thinking_signatures demotes the blocks to text on the latest turn and strips them on
+    # earlier turns, instead of replaying a guaranteed-400 layout (#123923).
+    layout_dead = _interleaved_signature_layout_dead(m)
     blocks = _extract_preserved_thinking_blocks(m)
     # Blank text blocks are dropped; a cache marker riding on one is relocated onto the last
     # surviving cacheable block (prompt_caching sets cache_control on content[-1], which may be
@@ -425,7 +456,10 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
     effective = blocks or [_text_block(_EMPTY_TEXT_PLACEHOLDER)]
     _apply_assistant_cache_control_to_last_cacheable_block(effective, relocated_cc)
     _apply_assistant_cache_control_to_last_cacheable_block(effective, m.get("cache_control"))
-    return {"role": "assistant", "content": effective}
+    converted = {"role": "assistant", "content": effective}
+    if layout_dead:
+        converted["_thinking_signature_invalidated"] = True
+    return converted
 
 
 def _tool_result_content(m: Dict[str, Any]) -> Any:

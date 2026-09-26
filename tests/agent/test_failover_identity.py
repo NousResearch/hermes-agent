@@ -8,7 +8,10 @@ fallback model is answering — e.g. a local gemma fallback claiming to be
 gpt-5.4-mini after a Codex usage-limit 429.
 """
 
+from copy import deepcopy
 from types import SimpleNamespace
+
+import pytest
 
 from agent.chat_completion_helpers import rewrite_prompt_model_identity
 from agent.conversation_loop import (
@@ -195,6 +198,60 @@ class TestRedecoratePromptCacheOnPolicyChange:
 
     _STATIC = "You are a helpful assistant.\n\nStable brief.\n"
 
+    @pytest.mark.parametrize("tool_argument", ["none", "empty", "list"])
+    @pytest.mark.parametrize(
+        "use_caching,native,provider",
+        [
+            pytest.param(False, False, "openai", id="cache-off"),
+            pytest.param(True, True, "anthropic", id="native"),
+        ],
+    )
+    def test_optional_tools_return_a_complete_provider_plan(
+        self, tool_argument, use_caching, native, provider
+    ):
+        prompt = self._STATIC + "volatile"
+        messages = apply_anthropic_cache_control(
+            [{"role": "system", "content": prompt}, {"role": "user", "content": "hello"}],
+            native_anthropic=True,
+            static_system_prefix=self._STATIC,
+        )
+        registered_tools = [
+            {
+                "type": "function",
+                "function": {"name": "registered", "parameters": {"type": "object"}},
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+        override_tools = [
+            {
+                "type": "function",
+                "function": {"name": "override", "parameters": {"type": "object"}},
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+        agent = _cache_agent(
+            use_caching=use_caching,
+            native=native,
+            prompt=prompt,
+            static=self._STATIC,
+            provider=provider,
+            tools=registered_tools,
+            direct_tool_cache=native,
+        )
+        tools_for_api = {"none": None, "empty": [], "list": override_tools}[tool_argument]
+        expected_tools = registered_tools if tools_for_api is None else tools_for_api
+        before = deepcopy((messages, registered_tools, override_tools))
+
+        decorated, prepared, planned_tools = _redecorate_prompt_cache_for_provider(
+            agent, messages, tools_for_api=tools_for_api
+        )
+
+        assert prepared is None
+        assert [t["function"] for t in planned_tools] == [t["function"] for t in expected_tools]
+        assert (_count_cache_markers(decorated) > 0) == use_caching
+        assert any("cache_control" in t for t in planned_tools) == (native and bool(expected_tools))
+        assert (messages, registered_tools, override_tools) == before
+
     def test_cache_off_to_cache_on_adds_breakpoints(self):
         prompt = self._STATIC + "Model: gpt-5.4-mini\nProvider: openai"
         # Primary never decorated (cache-off).
@@ -213,7 +270,7 @@ class TestRedecoratePromptCacheOnPolicyChange:
             static=self._STATIC,
             provider="anthropic",
         )
-        decorated, _ = _redecorate_prompt_cache_for_provider(agent, undecorated)
+        decorated, _, _ = _redecorate_prompt_cache_for_provider(agent, undecorated)
         assert _count_cache_markers(decorated) >= 2
         assert isinstance(decorated[0]["content"], list)
         assert decorated[0]["content"][0]["text"] == self._STATIC
@@ -287,10 +344,11 @@ class TestRedecoratePromptCacheOnPolicyChange:
         agent = _cache_agent(use_caching=True, native=True, prompt=prompt, provider="moa")
         agent.client = SimpleNamespace(chat=SimpleNamespace(completions=_Completions()))
         prepared = {"guidance": guidance, "messages": decorated}
-        out, new_prepared = _redecorate_prompt_cache_for_provider(
+        out, new_prepared, planned_tools = _redecorate_prompt_cache_for_provider(
             agent, decorated, moa_prepared=prepared
         )
         assert new_prepared is not None
+        assert planned_tools == []
         # Guidance must be present, but the cache marker on the last user
         # turn's content parts must terminate *before* the guidance text.
         last = out[-1]

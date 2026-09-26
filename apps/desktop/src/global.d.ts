@@ -373,6 +373,7 @@ declare global {
         onChanged: (callback: (status: { enabled: boolean; available: boolean }) => void) => () => void
       }
       setDisableF12?: (blocked: boolean) => void
+      setHideWindowControls?: (hidden: boolean) => void
       setF12ShortcutActive?: (active: boolean) => void
       onF12Shortcut?: (
         callback: (input: {

@@ -18,6 +18,7 @@ import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
+import { $hideWindowControls, setHideWindowControls } from '@/store/hide-window-controls'
 import {
   $interfaceMode,
   $modeShadowed,
@@ -440,6 +441,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const spentTips = useStore($spentTipCount)
   const vibeHeartsEnabled = useStore($vibeHeartsEnabled)
   const backdrop = useStore($backdrop)
+  const hideWindowControls = useStore($hideWindowControls)
   const introSplash = useStore($introSplash)
   const installs = useStore($marketplaceInstalls)
   const profiles = useStore($profiles)
@@ -901,6 +903,16 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
               id={settingElementId(ids.backdrop)}
               label={a.backdropTitle}
               onChange={setBackdrop}
+            />
+          )}
+
+          {show('window-layout') && (
+            <ToggleRow
+              checked={hideWindowControls}
+              description={a.hideWindowControlsDesc}
+              id={settingElementId(ids.hideWindowControls)}
+              label={a.hideWindowControlsTitle}
+              onChange={setHideWindowControls}
             />
           )}
 

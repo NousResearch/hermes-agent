@@ -10,7 +10,6 @@ import math
 import os
 import shlex
 import threading
-import uuid
 from pathlib import Path, PurePosixPath
 
 from tools.environments.base import BaseEnvironment

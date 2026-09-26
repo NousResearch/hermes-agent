@@ -14,7 +14,6 @@ import os
 import shlex
 import threading
 import time
-import uuid
 from datetime import timedelta
 from functools import cache
 from pathlib import Path

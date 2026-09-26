@@ -11,6 +11,23 @@ search, a larger waveform, available song metadata, volume, and a broadcaster
 website link. Next changes stations; live broadcasts do not support skipping
 songs. Pause releases the stream; playing again returns to live.
 
+Playback survives the ordinary ways a live stream stops. A broadcast that drops,
+or an element paused from outside the widget (media keys, an audio-device
+change, a suspended audio graph that goes quiet without an event), is resumed
+or reconnected on a short backoff instead of parking the widget in a paused or
+unavailable state; only a sustained failure ends in the ordinary error state. A
+pause made from the widget is the user's own and is never overridden, and a
+station that has never produced audio still reports as unavailable.
+
+A starved live stream is reconnected in about six seconds, not left to sit
+silent: a fresh connection rejoins at the live edge, so the listener hears a
+fraction of a second instead of the whole stall. The same watchdog catches the
+failure that looks healthy — an element still reporting progress while its
+samples are digital silence — and rebuilds the audio graph after long enough
+that no broadcast could be that quiet. Both paths log one line with the numbers
+(`[radio] rebuffered after 2.3s`, `stream stopped while playing; reconnecting`
+with a `why`) so a hitch can be attributed after the fact.
+
 Presets include Nightride FM, Radio Paradise, and EVE Radio (GamingNow).
 Search combines local stations with [Radio Browser](https://api.radio-browser.info/)
 results, accepts HTTPS non-HLS streams, and deduplicates by ID and URL.

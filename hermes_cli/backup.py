@@ -1053,9 +1053,13 @@ _CRON_JOBS_REL = "cron/jobs.json"
 # Config paths the update flow must never change (#64160): model routing and the MoA section are
 # consumed machine-wide, so an update/repair cycle that rewrites them silently redirects paid
 # inference. Dotted paths into raw config.yaml; a single-element tuple protects a whole section.
+# tts.provider/tts.providers joined the list after repeated reports of voice silently
+# reverting to the schema default (piper) across `hermes update` / Desktop repair cycles —
+# same failure class as #64160, just for the voice pipeline instead of model routing.
 _PROTECTED_CONFIG_PATHS: Tuple[Tuple[str, ...], ...] = (
     ("model", "provider"), ("model", "default"), ("model", "base_url"), ("model", "api_key"),
-    ("moa",))
+    ("moa",),
+    ("tts", "provider"), ("tts", "providers"))
 
 
 def _prune_oldest(newest_first: List[Path], keep: int, remove, what: str) -> int:

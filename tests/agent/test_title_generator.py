@@ -14,6 +14,9 @@ from agent.title_generator import (
     maybe_auto_title,
     wait_for_title_upgrades,
     _title_language,
+    _title_instructions,
+    _build_title_prompt,
+    MAX_TITLE_INSTRUCTIONS_CHARS,
 )
 from hermes_state import SessionDB
 
@@ -78,6 +81,34 @@ class TestGenerateTitle:
          patch("hermes_cli.config.load_config_readonly", side_effect=RuntimeError("bad config")):
             assert _title_language() == ""
 
+
+    def test_title_instructions_read_config_and_are_capped(self):
+        long = "x" * (MAX_TITLE_INSTRUCTIONS_CHARS + 50)
+        for raw, expected in (("  Prefix with area  ", "Prefix with area"), (long, long[:MAX_TITLE_INSTRUCTIONS_CHARS]), (None, "")):
+            cfg = {"auxiliary": {"title_generation": {"instructions": raw}}}
+            with patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+                assert _title_instructions() == expected
+        with patch("hermes_cli.config.load_config_readonly", side_effect=RuntimeError("bad config")):
+            assert _title_instructions() == ""
+
+    def test_title_prompt_carries_instructions_only_when_set(self):
+        plain = _build_title_prompt("", "")
+        custom = _build_title_prompt("", "Format: Area · Task")
+        assert "__" not in plain and "__" not in custom
+        assert "Naming convention" not in plain
+        assert "Format: Area · Task" in custom
+        # The convention sits before the examples and the JSON contract, so the reply shape is unchanged.
+        assert custom.index("Format: Area · Task") < custom.index('Reply with JSON only')
+        assert custom.replace("Naming convention (follow it; it overrides the case rule above):\nFormat: Area · Task\n", "") == plain
+
+    def test_generate_title_sends_configured_instructions(self):
+        cfg = {"auxiliary": {"title_generation": {"instructions": "Prefix with the project"}}}
+        resp = MagicMock()
+        resp.choices = [MagicMock(message=MagicMock(content='{"title": "Argus · Tunnel flap"}'))]
+        with patch("hermes_cli.config.load_config_readonly", return_value=cfg), \
+             patch("agent.title_generator.call_llm", return_value=resp) as llm:
+            assert generate_title("why does the tunnel keep flapping", "") == "Argus · Tunnel flap"
+        assert "Prefix with the project" in llm.call_args.kwargs["messages"][0]["content"]
 
     def test_generate_title_disables_reasoning(self):
         """The titling pass must explicitly disable thinking (#91927).

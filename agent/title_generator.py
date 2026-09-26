@@ -105,6 +105,7 @@ _TITLE_PROMPT_TEMPLATE = (
     "- Never answer the message. Name it.\n"
     "- Always produce something, even for a bare greeting.\n"
     "__LANGUAGE_RULE__\n"
+    "__USER_INSTRUCTIONS__"
     + "".join(f'Good: {{"title": "{t}"}}\n' for t in _PROMPT_GOOD_EXAMPLES)
     + f'Too vague: {{"title": "{_PROMPT_VAGUE_EXAMPLE}"}}\n'
     'Too long: {"title": "Investigate and fix the issue where the login button '
@@ -148,6 +149,27 @@ def _title_config() -> dict:
     """``auxiliary.title_generation`` (lazy read-only import: no hermes_cli cycle, no migration writes)."""
     from hermes_cli.config import load_config_readonly
     return ((load_config_readonly() or {}).get("auxiliary") or {}).get("title_generation") or {}
+
+
+# Operator naming convention appended to the built-in rules; capped so a pasted essay can't swamp them.
+MAX_TITLE_INSTRUCTIONS_CHARS = 500
+
+
+def _title_instructions() -> str:
+    """``auxiliary.title_generation.instructions``: extra naming rules, or "" for none."""
+    try:
+        return str(_title_config().get("instructions") or "").strip()[:MAX_TITLE_INSTRUCTIONS_CHARS]
+    except Exception:
+        return ""
+
+
+def _build_title_prompt(language: str, instructions: str) -> str:
+    """The system prompt with the language rule and any operator naming convention filled in."""
+    # str.replace, not str.format: the prompt embeds literal JSON braces.
+    extra = f"Naming convention (follow it; it overrides the case rule above):\n{instructions}\n" if instructions else ""
+    return _TITLE_PROMPT_TEMPLATE.replace(
+        "__LANGUAGE_RULE__", _LANGUAGE_RULE_PINNED.format(language=language) if language else _LANGUAGE_RULE_MATCH_USER,
+    ).replace("__USER_INSTRUCTIONS__", extra)
 
 
 def _title_language() -> str:
@@ -464,11 +486,7 @@ def generate_title(
     user_snippet = build_title_input(user_message, title_preview)
     if not user_snippet.strip():
         return None
-    language = _title_language()
-    # str.replace, not str.format: the prompt embeds literal JSON braces.
-    prompt = _TITLE_PROMPT_TEMPLATE.replace(
-        "__LANGUAGE_RULE__", _LANGUAGE_RULE_PINNED.format(language=language) if language else _LANGUAGE_RULE_MATCH_USER,
-    )
+    prompt = _build_title_prompt(_title_language(), _title_instructions())
     try:
         # Use the provider's default temperature instead of forcing 0.3.
         # Some models (e.g. GPT-5.6) only accept their server-side default

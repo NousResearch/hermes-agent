@@ -82,6 +82,72 @@ guard, not OS isolation against arbitrary direct database writes. GitHub Enterpr
 is not covered. Related publication/lifecycle work: #91230, #84254, #52311; local
 verification and publication alone are not remote acceptance.
 
+### Task-bound release approval
+
+Hermes can consume the exact authenticated reply `freigegeben` without exposing
+SHA, workflow, environment, or actor parameters to the approver. Enable the
+handler and configure one fixed argv adapter in `config.yaml`:
+
+```yaml
+kanban:
+  release_approval:
+    enabled: true
+    promotion_argv:
+      - sudo
+      - -n
+      - --
+      - /usr/local/libexec/cuto-release-boundary
+      - --config
+      - /etc/cuto-release-orchestrator/runtime.json
+```
+
+The release publisher first calls
+`hermes_cli.kanban_release_approval.present_release(...)` with the task,
+immutable release, source commit, manifest, bundle, artifact, and manual-test
+digests, authenticated actor/route, and the ID of the message that visibly
+presented the release. Approval must reply
+to that exact message. A replacement presentation supersedes the old gate.
+Publishers call `update_release_state(...)` whenever workflow state, active Dev
+release, or manifest changes, so approval-time checks use current state rather
+than only the presentation snapshot.
+
+Hermes rechecks `Auf Dev zur Prüfung`, active Dev release, task, actor, route,
+message, and manifest under a SQLite write transaction. It persists a stable
+operation key before invoking the adapter and retries the same operation through
+`resume`; the adapter must treat that key idempotently. The fixed privileged
+boundary must atomically bind operation key, task, release, and manifest digest
+to the selected immutable runtime artifact before its first execution. Resume
+must verify and reuse that exact source/content-digest identity even when a newer
+runtime has since been selected; missing, mismatched, or ambiguous bindings fail
+closed. The adapter receives literal argv only:
+
+```
+promote|resume --task-id ... --release-id ... --manifest-sha256 ... --operation-key ...
+```
+
+Hermes sends contract `cuto-hermes-release/v1`, the claims-bound actor subject,
+the manual-test digest, and a dispatcher-owned approval ID as bounded JSON on
+stdin, never as shell text or caller-selected argv. The adapter returns an exact
+`cuto-hermes-release/v1` receipt: task, release, operation key,
+manifest/manual-test/bundle/artifact digests, source commit, canonical workflow
+run, exact Dev/Test/Production read-back, verified predecessor/rollback state,
+and `database_restore_attempted: false`. Unknown fields, omitted fields, digest
+or source substitutions, and values that differ from the immutable gate fail
+closed. All three targets and their active release IDs must be successful before
+Hermes records approval.
+
+The external boundary owns the ordered deployment policy: a failed Test smoke
+must leave Production `not_started`; a failed Production smoke must compensate
+to the gate-bound verified predecessor and report that actual active release.
+Hermes rejects a failed Production result while the candidate remains active,
+and rejects any receipt claiming a database restore. Neither Hermes nor this
+approval contract performs an automatic database restore.
+Stale, replayed, ambiguous, non-control, and concurrent approvals fail closed.
+SQLite claim/finalize transactions plus the idempotent adapter form a persisted
+saga, not a distributed ACID transaction. User-visible success is
+`Freigabe verarbeitet`; every other outcome starts with `Fehler:` and omits
+adapter stderr, secrets, and raw PII.
+
 ## Kanban vs. `delegate_task`
 
 They look similar; they are not the same primitive.

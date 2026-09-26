@@ -779,6 +779,16 @@ class GatewayBusySessionMixin:
         except Exception as e:
             logger.debug("Failed to send busy-ack: %s", e)
 
+    async def _route_release_approval_while_busy(self, event: MessageEvent) -> bool:
+        """Consume an enabled release gate after busy-path authorization."""
+        handled, reply = await self._hm_release_approval_intercept(event, event.source)
+        if not handled:
+            return False
+        adapter = self._delivery_adapter_for(event.source)
+        if adapter and reply:
+            await self._send_busy_reply(event, adapter, reply, plain_anchor=True)
+        return True
+
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # Gateway wakes have no external user identity. Admit them before auth/drain/approval
         # handling, without merging their text into an already queued human message.
@@ -809,6 +819,8 @@ class GatewayBusySessionMixin:
         effective_mode = self._effective_busy_input_mode(event.source)
         if self._draining:  # gateway restarting/stopping
             await self._send_busy_drain_notice(event, session_key, effective_mode)
+            return True
+        if await self._route_release_approval_while_busy(event):
             return True
         if await self._route_plaintext_approval_while_busy(event, session_key):
             return True

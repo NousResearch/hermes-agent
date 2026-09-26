@@ -19,6 +19,7 @@ from hermes_cli.web_server_gateway import _display_system_platform
 from starlette.concurrency import run_in_threadpool
 from fastapi import HTTPException, Request
 from gateway.status import (
+    _pid_from_record, _start_times_conflict,
     derive_gateway_busy, derive_gateway_drainable, normalize_updated_at, parse_active_agents,
     profile_platforms_from_multiplexer, resolve_gateway_liveness, retained_gateway_state,
     runtime_status_heartbeat_age_s, runtime_status_is_stale)
@@ -56,6 +57,7 @@ get_running_pid_cached = late("get_running_pid_cached", "gateway.status")
 get_runtime_status_running_pid = late("get_runtime_status_running_pid", "gateway.status")
 load_config = late("load_config", "hermes_cli.config")
 read_runtime_status = late("read_runtime_status", "gateway.status")
+_get_process_start_time = late("_get_process_start_time", "gateway.status")
 _open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.web_server_sessions")
 
 
@@ -333,8 +335,19 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
             # housekeeping thread wedged while the file still says 'running' (#113372). Same arm
             # as ``hermes gateway status`` so the sidebar strip and the CLI agree.
             gateway_heartbeat_stale_s = runtime_status_heartbeat_age_s(runtime)
+        platform_snapshot = runtime.get("platforms") or {}
+        if runtime is local_runtime and liveness.pid_is_local and liveness.pid is not None:
+            # A successor can own gateway.pid before its first status stamp. Never
+            # borrow its predecessor's platform badges, or compare a remote PID locally.
+            writer_pid = _pid_from_record(runtime)
+            process_changed = writer_pid is not None and writer_pid != liveness.pid
+            if not process_changed and writer_pid is not None and runtime.get("start_time") is not None:
+                live_start = await run_in_threadpool(_get_process_start_time, liveness.pid)
+                process_changed = _start_times_conflict(runtime.get("start_time"), live_start)
+            if process_changed:
+                platform_snapshot = {}
         gateway_platforms = _project_gateway_platforms(
-            runtime.get("platforms") or {}, configured, gateway_running, gateway_state)
+            platform_snapshot, configured, gateway_running, gateway_state)
         gateway_exit_reason = None if gateway_state == "stopped" else runtime.get("exit_reason")
         # Contract: gateway_updated_at is RFC3339 string | null, never a number. ``runtime``
         # may be the local gateway_state.json (legacy gateways wrote epoch floats; hand

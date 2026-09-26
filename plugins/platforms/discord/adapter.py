@@ -1180,6 +1180,18 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     def _config_int(self, key: str, default: int, *, env_key: Optional[str] = None) -> int:
         return self._liveness_knob(key, default, int, env_key=env_key)
 
+    def _refresh_transport_status(self, state: str) -> None:
+        """Publish transport churn without stopping the watchdog or erasing a fatal.
+
+        discord.py reconnects without re-entering connect(). Lifecycle marking here
+        would stop the live watchdog or clear its fatal while teardown is in flight.
+        """
+        if self.has_fatal_error or getattr(self, "_disconnecting", False):
+            return
+        self._write_runtime_status_safe(
+            state, platform_state=state, error_code=None, error_message=None
+        )
+
     def _handle_bot_task_done(self, task: asyncio.Task) -> None:
         """Surface post-startup discord.py task exits as a retryable fatal so GatewayRunner
         re-queues us (otherwise the websocket is dead while the gateway process lives)."""
@@ -1296,6 +1308,15 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 )
                 if adapter_self._missed_message_backfill_enabled():
                     adapter_self._ensure_missed_message_backfill_task()
+                adapter_self._refresh_transport_status("connected")
+
+            @self._client.event
+            async def on_resumed():
+                adapter_self._refresh_transport_status("connected")
+
+            @self._client.event
+            async def on_disconnect():
+                adapter_self._refresh_transport_status("disconnected")
 
             @self._client.event
             async def on_socket_event_type(event_type: str):

@@ -1208,6 +1208,15 @@ def _prepare_runtime_status_update(
         previous_payload = _runtime_status_state
         payload = copy.deepcopy(previous_payload)
         current_record = _build_pid_record()
+        if clear_profile_platforms:
+            # Startup must compare identities before stamping the successor. Same-process
+            # profile cleanup preserves its primary adapters; a predecessor owns none.
+            previous_pid = _pid_from_record(previous_payload)
+            if previous_pid is not None and (
+                previous_pid != current_record["pid"]
+                or _start_times_conflict(previous_payload.get("start_time"), current_record["start_time"])
+            ):
+                payload["platforms"] = {}
         payload.setdefault("platforms", {})
         if not isinstance(payload["platforms"], dict):
             payload["platforms"] = {}
@@ -1368,6 +1377,8 @@ class GatewayLiveness:
     # profile writes no runtime record of its own, so its platform states live there under
     # ``<profile>:<platform>`` keys.
     runtime: Optional[dict[str, Any]] = None
+    # Explicit authority, rather than a product branch on the diagnostic source label.
+    pid_is_local: bool = False
 
 
 def profile_name_for_home(profile_home: Path) -> Optional[str]:
@@ -1503,7 +1514,7 @@ def resolve_gateway_liveness(
     # /api/status's cache signature is keyed on the call shape.
     pid = guarded(_pid_probe, profile_dir / "gateway.pid") if scoped else guarded(_pid_probe)
     if pid is not None:
-        return GatewayLiveness(running=True, pid=pid, source="pid")
+        return GatewayLiveness(running=True, pid=pid, source="pid", pid_is_local=True)
     health_body: Optional[dict[str, Any]] = None
     if health_probe is not None:
         alive, health_body = guarded(health_probe, fallback=(False, None))
@@ -1523,7 +1534,8 @@ def resolve_gateway_liveness(
     runtime_pid = guarded(_runtime_pid_probe, {} if (scoped and runtime is None) else runtime, **probe_kwargs)
     if runtime_pid is not None:
         return GatewayLiveness(
-            running=True, pid=runtime_pid, source="runtime_status", health_body=health_body
+            running=True, pid=runtime_pid, source="runtime_status", health_body=health_body,
+            pid_is_local=True
         )
     # (4) A named profile served by the live default multiplexer: no identity files of its own, but
     # the multiplexer IS its gateway (mirrors `hermes -p X status` / `gateway list`). Unscoped, the
@@ -1535,7 +1547,8 @@ def resolve_gateway_liveness(
     if served is not None:
         mux_pid, mux_runtime = served
         return GatewayLiveness(
-            running=True, pid=mux_pid, source="multiplexer", health_body=health_body, runtime=mux_runtime
+            running=True, pid=mux_pid, source="multiplexer", health_body=health_body, runtime=mux_runtime,
+            pid_is_local=True
         )
     return GatewayLiveness(
         running=False, pid=None, source="none", health_body=health_body, probe_error=probe_error

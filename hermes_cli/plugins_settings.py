@@ -181,7 +181,9 @@ def _begin_choices_from(plugin_id: str, key: str, ref: str, current: Mapping[str
         if worker.is_alive():
             logger.warning("plugin settings: %s choices_from %s did not return in time; using fallback", plugin_id, ref)
             return None
-        return outcome[0]
+        # A worker that died before its ``finally`` could record a result (it cannot normally) still
+        # means "use the fallback", never an IndexError out of the listing RPC.
+        return outcome[0] if outcome else None
 
     return _wait
 

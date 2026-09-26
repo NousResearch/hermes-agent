@@ -1003,7 +1003,7 @@ def _repair_prompts_pin_names(row) -> list[str] | None:
     return names
 
 
-def _repair_prompts_missing_skills_markers(row) -> bool:
+def _repair_prompts_lacks_skill_safety(row) -> bool:
     # Only the Skill Safety guidance is a reliable marker: <available_skills> is legitimately
     # absent when no skills are installed, but the guidance is emitted whenever skill_manage is.
     from agent.prompt_builder import SKILL_SAFETY_HEADING
@@ -1048,7 +1048,7 @@ def _cmd_repair_prompts(db, args):
                     continue
                 seen.add(summary["id"])
                 row = db.get_session(summary["id"])
-                if not row or not _repair_prompts_missing_skills_markers(row):
+                if not row or not _repair_prompts_lacks_skill_safety(row):
                     continue
                 pin = _repair_prompts_pin_names(row)
                 entry = {"id": row["id"], "prompt_chars": len(row["system_prompt"])}

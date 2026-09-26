@@ -4539,6 +4539,8 @@ class BasePlatformAdapter(ABC):
             # Force-flush an unfired debounce timer so this task hands off to a fresh drain task.
             # Clear the Event BEFORE the stop-typing await so concurrent inbound sees a live guard.
             await self._flush_text_debounce_now(session_key)
+            if self._pending_messages.get(session_key) is event:
+                await self._back_off_requeued_event(event, session_key)
             if session_key in self._pending_messages:
                 pending_event = self._pending_messages.pop(session_key)
                 logger.debug("[%s] Processing queued follow-up message", self.name)
@@ -4572,6 +4574,31 @@ class BasePlatformAdapter(ABC):
             # Flush any timer that missed the in-band drain, then reconcile ownership.
             await self._flush_text_debounce_now(session_key)
             self._finish_session_task(session_key, interrupt_event)
+
+    # A handler that put the very event it was given back into the pending slot (the runner's
+    # busy-demotion: it still has a live agent for this session — e.g. one owned by a task of an
+    # adapter that a reconnect replaced — so the event "cannot run yet") must not be re-dispatched
+    # in a tight loop. Unthrottled, that loop spins hundreds of times a second for as long as the
+    # agent stays busy, logging "PRIORITY interrupt demoted" on every turn and starting and
+    # cancelling a typing refresh each time (one aborted HTTPS request per turn, each on a fresh
+    # connection). The FIRST re-queue stays immediate — restart auto-resume relies on exactly one
+    # self-bounce past its own pre-claim — and every consecutive one backs off exponentially; the
+    # event still runs as soon as the agent is free.
+    _REQUEUE_BACKOFF_INITIAL_SECONDS = 0.25
+    _REQUEUE_BACKOFF_MAX_SECONDS = 5.0
+
+    async def _back_off_requeued_event(self, event: MessageEvent, session_key: str) -> None:
+        """Delay the re-dispatch of an event its handler re-queued unchanged (see above)."""
+        attempts = event._requeue_backoff_attempts
+        event._requeue_backoff_attempts = attempts + 1
+        if attempts == 0:
+            return
+        delay = min(self._REQUEUE_BACKOFF_MAX_SECONDS,
+                    self._REQUEUE_BACKOFF_INITIAL_SECONDS * (2 ** min(attempts - 1, 16)))
+        log = logger.info if attempts == 1 else logger.debug
+        log("[%s] Handler re-queued its own event for %s again (session busy elsewhere); "
+            "backing off %.2fs", self.name, session_key, delay)
+        await asyncio.sleep(delay)
 
     def _spawn_drain_task(self, pending_event: MessageEvent, session_key: str) -> None:
         """Hand the session to a fresh task for a queued follow-up — never recurse (chained

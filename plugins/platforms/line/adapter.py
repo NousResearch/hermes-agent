@@ -39,7 +39,7 @@ from gateway.platforms._shared import (
     get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
 )
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter, SendResult,
+    gateway_trust_env, BasePlatformAdapter, SendResult, _IMAGE_EXTS,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
     cache_video_from_bytes_async,
 )
@@ -414,6 +414,10 @@ class LineAdapter(BasePlatformAdapter):
         self._media_temp_paths: Set[str] = set()
         self._media_ttl = MEDIA_TOKEN_TTL_SECONDS
         self._pending_buttons: Dict[str, str] = {}  # one outstanding button per chat: chat_id → request_id
+        # Images staged to ride the final text's reply call (chat_id → paths) and the
+        # paths that actually landed in that combined send (chat_id → set).
+        self._fold_images: Dict[str, List[str]] = {}
+        self._fold_delivered: Dict[str, Set[str]] = {}
 
     def _fail(self, code: str, detail: str, *, retryable: bool = False) -> bool:  # fatal connect error → False
         self._set_fatal_error(code, detail, retryable=retryable)
@@ -636,6 +640,54 @@ class LineAdapter(BasePlatformAdapter):
             logger.warning("LINE: failed to cache %s payload: %s", msg_type, exc)
             return None, ""
 
+    def _foldable_image_paths(self, extracted: "_ExtractedResponse") -> List[str]:
+        """Local image files this turn could ride the text's reply: MEDIA-tag and bare
+        local images, mirroring the base delivery split (remote image URLs, voice, video
+        and documents stay on their own sends). Empty when the turn has anything else
+        to deliver."""
+        if extracted.force_document_attachments or extracted.images:
+            return []
+        if any(is_voice for _p, is_voice in extracted.media_files):
+            return []
+        others = [p for p, v in extracted.media_files if v or Path(p).suffix.lower() not in _IMAGE_EXTS]
+        others += [p for p in extracted.local_files if Path(p).suffix.lower() not in _IMAGE_EXTS]
+        if others:
+            return []
+        paths = [p for p, v in extracted.media_files if not v]
+        paths += list(extracted.local_files)
+        return paths if paths else []
+
+    def _image_message(self, path: str) -> Optional[Dict[str, Any]]:
+        """A LINE image object for a local file, or None when it cannot be served over
+        HTTPS (the standalone text+image preflight in ``send``)."""
+        try:
+            url = self._serve_file(Path(path))
+        except Exception:
+            return None
+        if not url.lower().startswith("https://"):
+            return None
+        return {"type": "image", "originalContentUrl": url, "previewImageUrl": url}
+
+    async def _extract_response_content(self, response: str, event: MessageEvent, session_key: str,
+                                        *, is_ephemeral_response: bool) -> "_ExtractedResponse":
+        extracted = await super()._extract_response_content(
+            response, event, session_key, is_ephemeral_response=is_ephemeral_response)
+        chat_id = event.source.chat_id
+        # Stage images to ride the final text's single reply call. Only a plain
+        # text + images turn qualifies; everything else keeps the stock split path.
+        staged: List[str] = []
+        if (not is_ephemeral_response and extracted.text_content
+                and chat_id not in self._pending_buttons):
+            paths = self._foldable_image_paths(extracted)
+            texts = _text_messages(extracted.text_content)
+            if paths and len(texts) + len(paths) <= LINE_MAX_MESSAGES_PER_CALL:
+                staged = [p for p in paths if Path(p).is_file()]
+        # A fresh turn replaces any stale staging left by a previous one.
+        self._fold_images.pop(chat_id, None)
+        if staged:
+            self._fold_images[chat_id] = staged
+        return extracted
+
     async def send(
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None
     ) -> SendResult:
@@ -656,6 +708,27 @@ class LineAdapter(BasePlatformAdapter):
             # absorbing this send would silently swallow the answer behind a dead
             # button. Clear the mapping and deliver on the wire. See #106446.
             self._pending_buttons.pop(chat_id, None)
+        # Staged images from this turn's extraction ride the text in ONE Messaging API
+        # call: LINE's reply token is single-use, so a split text-then-image delivery
+        # spends it on the text and pushes every image as metered per-recipient traffic.
+        staged = None if _is_interim_send(content, metadata) else self._fold_images.get(chat_id)
+        if staged:
+            self._fold_images.pop(chat_id, None)
+            messages: List[Dict[str, Any]] = _text_messages(content)
+            image_messages = [m for m in (self._image_message(p) for p in staged) if m]
+            if len(image_messages) == len(staged):  # any unservable file → stock split path
+                combined = messages + image_messages
+                result = await self._send_messages(chat_id, combined, text=True)
+                if result.success:
+                    self._fold_delivered[chat_id] = set(staged)
+                    return result
+                # The combined send failed: fall through so the retry ladder re-sends
+                # the text alone and the images go out via the stock attachment path.
+                logger.warning("LINE: combined text+image reply failed (%s); falling back to separate sends",
+                               result.error)
+            else:
+                logger.info("LINE: %d staged image(s) not servable over HTTPS; using separate sends",
+                            len(staged) - len(image_messages))
         # System busy-acks (interrupting / queued / steered) and progress heartbeats
         # bypass the postback cache and route directly to LINE so they reach the user
         # as visible bubbles. Source: PR #18153, #106446.
@@ -663,6 +736,16 @@ class LineAdapter(BasePlatformAdapter):
 
     async def _send_text_chunks(self, chat_id: str, content: str, *, force_push: bool) -> SendResult:
         return await self._send_messages(chat_id, _text_messages(content), force_push=force_push, text=True)
+
+    async def _deliver_attachments(self, event: MessageEvent, extracted: "_ExtractedResponse",
+                                   metadata: Dict[str, Any], *, anything_sent: bool,
+                                   record_delivery: Callable) -> None:
+        delivered = self._fold_delivered.pop(event.source.chat_id, None)
+        if delivered:
+            extracted.media_files = [(p, v) for p, v in extracted.media_files if p not in delivered]
+            extracted.local_files = [p for p in extracted.local_files if p not in delivered]
+        await super()._deliver_attachments(
+            event, extracted, metadata, anything_sent=anything_sent, record_delivery=record_delivery)
 
     def _consume_reply_token(self, chat_id: str) -> Tuple[str, bool]:
         """Consume a stashed reply token if present and unexpired → ``(token, used_reply)``."""

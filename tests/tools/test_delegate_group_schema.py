@@ -14,10 +14,15 @@ def test_group_schema_tracks_delivery_policy_without_mutating_previous_definitio
 
     original = json.dumps(DELEGATE_TASK_SCHEMA)
     snapshots = []
-    for config in ({}, {"independent_completions": True}, {"independent_completions": False}):
+    for config in (
+        {},
+        {"independent_completions": True},
+        {"independent_completions": False},
+        {"independent_completions": True, "wait_for_all": True},
+    ):
         monkeypatch.setattr(delegate_tool_config, "_cfg", lambda: config)
         definition = registry.get_definitions({"delegate_task"})[0]
-        enabled = config.get("independent_completions", False)
+        enabled = config.get("independent_completions", False) and not config.get("wait_for_all", False)
         task = definition["function"]["parameters"]["properties"]["tasks"]["items"]
         assert ("group" in task["properties"]) == enabled
         assert ("group" in definition["function"]["description"]) == enabled

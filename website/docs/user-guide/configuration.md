@@ -2931,11 +2931,15 @@ delegation:
   #     provider:
   #       sort: throughput
   max_concurrent_children: 3                # Parallel children per batch (floor 1, no ceiling). Also via DELEGATION_MAX_CONCURRENT_CHILDREN env var.
+  wait_for_all: false                       # Join model-facing top-level calls before the parent advances; children remain parallel.
+  independent_completions: false            # In async mode, deliver tasks/groups separately as they finish.
   worktree_isolation: false                 # Give each child its own git worktree branched from HEAD (local backend + git repos only; inspired by Muse Code). See Subagent Delegation → Worktree Isolation.
   max_spawn_depth: 1                        # Delegation tree depth cap (1-3, clamped). 1 = flat (default): parent spawns leaves that cannot delegate. 2 = orchestrator children can spawn leaf grandchildren. 3 = three levels.
   orchestrator_enabled: true                # Global kill switch. When false, role="orchestrator" is ignored and every child is forced to leaf regardless of max_spawn_depth.
   oneshot_max_children: 2                   # Total subagents a one-shot run (hermes chat -q / --oneshot) may spawn; 0 = unlimited. Interactive and gateway sessions are never capped by this.
 ```
+
+**Model-facing execution policy:** Top-level model calls are asynchronous by default. `wait_for_all: true` selects the existing synchronous fan-in path: children still start in parallel, but the parent cannot run another tool or provider request until every child has returned a terminal outcome. It overrides `independent_completions`. Nested orchestrators and finite sessions already join independently of this setting. See [Subagent Delegation → Wait for all](features/delegation.md#wait-for-all-opt-in).
 
 **Subagent provider:model override:** By default, subagents inherit the parent agent's provider and model. Set `delegation.provider` and `delegation.model` to route subagents to a different provider:model pair — e.g., use a cheap/fast model for narrowly-scoped subtasks while your primary agent runs an expensive reasoning model.
 

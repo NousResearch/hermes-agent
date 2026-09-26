@@ -960,3 +960,37 @@ def test_managed_gateway_restart_preserves_active_worker_and_single_side_effect(
             parent.wait(timeout=5)
         if worker_pid is not None and _pid_exists(worker_pid):
             os.kill(worker_pid, signal.SIGKILL)
+
+
+def test_post_handoff_waiter_failure_records_bookkeeping_without_alert(
+    execution_ledger, monkeypatch
+):
+    """Once the worker is spawned it may own the row and send its own notice: a
+    waiter failure must only record bookkeeping, never a false dispatch incident."""
+    import cron.incidents as incidents
+    import cron.scheduler as scheduler
+
+    def _body_boom(_process, *, execution_id):
+        raise RuntimeError("cron external worker exited before durable recovery")
+
+    monkeypatch.setattr(scheduler, "_wait_for_external_cron_worker_body", _body_boom)
+    monkeypatch.setattr(
+        scheduler, "_launch_external_cron_worker",
+        lambda job: scheduler._wait_for_external_cron_worker(
+            object(), execution_id=job["execution_id"]))
+    marks = []
+    monkeypatch.setattr(scheduler, "mark_job_run", lambda *a, **k: marks.append((a, k)) or True)
+    delivered = []
+    monkeypatch.setattr(
+        scheduler, "_deliver_result",
+        lambda job, content, **_kw: delivered.append(content) or None)
+
+    record = execution_ledger.create_execution("job-post", source="builtin")
+    job = {"id": "job-post", "execution_id": record["id"], "deliver": "telegram:123"}
+    assert scheduler.run_one_job(job, adapters=None) is True
+
+    assert incidents.list_incidents() == []
+    assert delivered == []
+    assert len(marks) == 1 and marks[0][0][1] is False
+    assert marks[0][0][2].startswith("Restart-safe cron worker failed after handoff: ")
+    assert execution_ledger.get_execution(record["id"])["status"] == "failed"

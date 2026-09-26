@@ -36,6 +36,50 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False):
     return value
 
 
+# Private repositories on the free GitHub plan cannot read branch rulesets or classic
+# protection: the REST endpoint answers HTTP 403 "Upgrade to GitHub Pro or make this
+# repository public". Check runs at the exact head stay readable, so the required set can
+# come from the operator's declaration instead of from GitHub.
+_PLAN_GATE_MARKERS = ("upgrade to github pro", "make this repository public")
+
+
+def _ruleset_required(repo: str, branch: str) -> tuple[set, bool]:
+    """Required (context, app_id) pairs from active rulesets; ``plan_gated`` when the plan hides them."""
+    try:
+        pages = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100", paginate=True)
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").lower()
+        if "403" in stderr and any(marker in stderr for marker in _PLAN_GATE_MARKERS):
+            return set(), True
+        raise
+    required = set()
+    for page in pages:
+        for rule in page:
+            if rule["type"] == "required_status_checks":
+                required.update((r["context"], r.get("integration_id"))
+                                for r in rule["parameters"]["required_status_checks"])
+    return required, False
+
+
+def declared_required_checks(repo: str) -> set:
+    """Operator-declared required checks for ``repo`` from ``kanban.pr_required_checks``.
+
+    Consulted only when GitHub exposes no required set. Entries are ``"context"`` strings
+    (any app) or ``{"context": ..., "app_id": ...}`` mappings pinned to one GitHub App.
+    """
+    from hermes_cli.kanban_ops import _kanban_config
+    declared = (_kanban_config().get("pr_required_checks") or {})
+    entries = declared.get(repo) if isinstance(declared, dict) else None
+    required = set()
+    for entry in entries or []:
+        if isinstance(entry, str) and entry.strip():
+            required.add((entry.strip(), None))
+        elif isinstance(entry, dict) and isinstance(entry.get("context"), str) and entry["context"].strip():
+            app_id = entry.get("app_id")
+            required.add((entry["context"].strip(), int(app_id) if app_id is not None else None))
+    return required
+
+
 def collect_acceptance(contract: str, published_pr: str | None) -> dict:
     receipt = {"ok": False, "classification": "missing", "head_sha": None,
                "pr_url": published_pr, "checks": [],
@@ -61,15 +105,23 @@ def collect_acceptance(contract: str, published_pr: str | None) -> dict:
             raise ValueError("PR is closed or current head is unavailable")
         protection = (pr.get("baseRef") or {}).get("branchProtectionRule") or {}
         required = {(r["context"], (r.get("app") or {}).get("databaseId")) for r in protection.get("requiredStatusChecks", [])}
-        rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100", paginate=True)
-        for page in rules:
-            for rule in page:
-                if rule["type"] == "required_status_checks":
-                    required.update((r["context"], r.get("integration_id"))
-                                    for r in rule["parameters"]["required_status_checks"])
+        ruleset_required, plan_gated = _ruleset_required(repo, branch)
+        required |= ruleset_required
+        receipt["required_source"] = "github"
+        if not required:
+            declared = declared_required_checks(repo)
+            if declared:
+                required = declared
+                receipt["required_source"] = "declared"
         receipt["required"] = [{"context": c, "app_id": a} for c, a in sorted(required, key=str)]
         if not required:
-            receipt["detail"] = "No repository-required checks are configured; explicitly use a local-only contract for non-CI tasks."
+            receipt["classification"] = "plan_gated" if plan_gated else "missing"
+            receipt["detail"] = (
+                "Branch protection is not readable on this GitHub plan (private repository without "
+                "GitHub Pro/Team) and kanban.pr_required_checks declares nothing for this repository; "
+                "declare the required check names there, or use a local-only contract for non-CI tasks."
+                if plan_gated else
+                "No repository-required checks are configured; explicitly use a local-only contract for non-CI tasks.")
             return receipt
         pages = _api(f"repos/{repo}/commits/{sha}/check-runs?per_page=100&filter=latest", paginate=True)
         runs = [run for page in pages for run in page["check_runs"]]

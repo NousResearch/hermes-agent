@@ -188,6 +188,61 @@ async def test_conflict_retry_progress_does_not_reset_retry_ladder(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_conflict_async_progress_does_not_reset_counter(monkeypatch):
+    """Production path: start_polling returns before getUpdates progress (#82303).
+
+    _start_polling_once only starts the updater; real progress is recorded later by
+    the instrumented request observer. The recovery marker must survive the handler
+    return so the first async progress does not zero _polling_conflict_count — or
+    every subsequent 409 logs (1/5) forever and never escalates.
+    """
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter.set_fatal_error_handler(AsyncMock())
+    adapter._drain_polling_connections = AsyncMock()
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+
+    calls = {"n": 0}
+
+    async def fake_start_polling(**_kwargs):
+        # Intentionally NO _record_polling_progress here (production path).
+        calls["n"] += 1
+
+    updater = SimpleNamespace(
+        start_polling=AsyncMock(side_effect=fake_start_polling),
+        stop=AsyncMock(),
+        running=True,
+    )
+    adapter._app = SimpleNamespace(updater=updater)
+
+    conflict = type("Conflict", (Exception,), {})
+    await adapter._handle_polling_conflict(
+        conflict("Conflict: terminated by other getUpdates request")
+    )
+
+    assert calls["n"] == 1
+    assert adapter._polling_conflict_count == 1
+    expected_generation = adapter._polling_generation
+    assert adapter._polling_conflict_recovery_generation == expected_generation, (
+        "Recovery marker must remain set after successful start until async progress"
+    )
+
+    # First post-retry getUpdates progress (async, after handler return).
+    assert adapter._record_polling_progress(expected_generation) is True
+    assert adapter._polling_conflict_count == 1, (
+        "First async progress must not reset the conflict ladder (#82303)"
+    )
+    assert adapter._polling_conflict_recovery_generation is None
+
+    # A second conflict must advance the ladder (2/5), not restart at (1/5).
+    await adapter._handle_polling_conflict(
+        conflict("Conflict: terminated by other getUpdates request")
+    )
+    assert calls["n"] == 2
+    assert adapter._polling_conflict_count == 2
+    assert adapter._polling_conflict_recovery_generation == adapter._polling_generation
+
+
+@pytest.mark.asyncio
 async def test_polling_conflict_becomes_fatal_after_retries(monkeypatch):
     """After exhausting retries, the conflict should become fatal."""
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))

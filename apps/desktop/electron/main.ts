@@ -12305,14 +12305,34 @@ const backendShutdown = createBackendShutdownCoordinator(async (): Promise<void>
   }
 })
 
-const quitTeardown = createQuitTeardownCoordinator(() => app.quit())
-
 const quitFinalization = createQuitFinalization({
   isWindows: IS_WINDOWS,
   hardExit: code => {
-    rememberLog(`[quit] forcing Windows process exit after Electron quit finalization stalled`)
+    rememberLog('[quit] forcing process exit; Electron did not finish quitting')
     app.exit(code)
   }
+})
+
+// A deferred quit preventDefault's the first before-quit (the renderer stays
+// up) and aborts the backend. The follow-up app.quit() is what should close
+// the window. If that quit never emits `quit` — hung beforeunload, or a close
+// handler that cancels it — every IPC fails with "Hermes Desktop is quitting"
+// and the overlay says the app couldn't start. The sealed-teardown timer is
+// the exit that follow-up quit failed to deliver.
+function armSealedQuitExit(delayMs?: number): void {
+  if (
+    !managedUpdateQuitWaitDone &&
+    (managedUpdateQuitWait || managedConnectionUpdates.size > 0 || managedConnectionRecoveries.size > 0)
+  ) {
+    return
+  }
+
+  quitFinalization.armAfterSealedTeardown(delayMs)
+}
+
+const quitTeardown = createQuitTeardownCoordinator(() => {
+  app.quit()
+  armSealedQuitExit()
 })
 
 async function teardownSshForQuit(): Promise<void> {
@@ -18761,7 +18781,8 @@ function heldQuitForActiveWork(event: Electron.Event): boolean {
   const prompt = quitPromptFor(
     mergeActiveWork(activeWorkByWebContents.values()),
     isQuittingForHandoff,
-    quitStopsBackendWork()
+    quitStopsBackendWork(),
+    backendShutdown.hasStarted()
   )
 
   // A tray quit with live work still needs the ordinary visible confirmation.
@@ -18867,8 +18888,16 @@ app.on('before-quit', event => {
     teardownTasks.push({ run: teardownSshForQuit, waitForCompletion: true })
   }
 
-  if (quitTeardown.begin(teardownTasks)) {
+  const deferQuit = quitTeardown.begin(teardownTasks)
+
+  if (deferQuit) {
     event.preventDefault()
+    // Teardown is bounded (~7s) but the follow-up app.quit() can still fail
+    // to land. Start the deadline here so a hung teardown cannot leave the
+    // sealed process up. A later arm is a no-op while this timer is live.
+    armSealedQuitExit(20_000)
+  } else if (backendShutdown.hasStarted()) {
+    armSealedQuitExit()
   }
 
   // Clean quit mid-boot should not trip next-launch --no-sandbox (#38216).

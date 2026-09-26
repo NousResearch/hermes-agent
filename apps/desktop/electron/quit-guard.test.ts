@@ -34,6 +34,10 @@ test('quitPromptFor stays out of the way during an update handoff', () => {
   assert.equal(quitPromptFor({ count: 2, titles: ['Fix login'] }, true), null)
 })
 
+test('quitPromptFor does not offer Keep Running after quit teardown has sealed the backend', () => {
+  assert.equal(quitPromptFor({ count: 2, titles: ['Fix login'] }, false, true, true), null)
+})
+
 test('quitPromptFor names the running chats', () => {
   const prompt = quitPromptFor({ count: 2, titles: ['Fix login', 'Ship docs'] }, false)
 

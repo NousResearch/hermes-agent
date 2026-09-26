@@ -93,13 +93,19 @@ export function backendOwnedByApp({ ownedBackendCount, primaryRouteKind }: Backe
  *
  * `backendOwned` (see backendOwnedByApp) picks the copy: an owned backend dies
  * with the app, a remote/cloud one keeps working after it closes.
+ *
+ * `teardownCommitted` is set once quit teardown has aborted the backend.
+ * Keep Running cannot restore that process, so the prompt must not cancel a
+ * quit that has already sealed it — the window would stay up with every IPC
+ * rejected as "Hermes Desktop is quitting."
  */
 export function quitPromptFor(
   work: ActiveWork,
   quittingForHandoff: boolean,
-  backendOwned: boolean = true
+  backendOwned: boolean = true,
+  teardownCommitted: boolean = false
 ): null | QuitPrompt {
-  if (quittingForHandoff || work.count < 1) {
+  if (quittingForHandoff || teardownCommitted || work.count < 1) {
     return null
   }
 

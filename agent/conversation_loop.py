@@ -1079,7 +1079,7 @@ def _compression_deferred_result(agent, messages: List[Dict], api_call_count: in
         )
         _final = (
             "Context compression is already running for this session. Please retry in a moment — "
-            "your next message will be processed once the concurrent compression finishes."
+            "your next message will be processed once it finishes, or use /compress or /new."
         )
     try:
         agent._flush_status_buffer()

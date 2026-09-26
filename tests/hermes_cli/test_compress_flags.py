@@ -33,6 +33,12 @@ def test_compact_resolves_to_compress():
     assert "compact" in cmd.aliases
 
 
+def test_ctx_resolves_to_context():
+    cmd = resolve_command("ctx")
+    assert cmd is not None
+    assert cmd.name == "context"
+
+
 # ── extract_compress_flags ────────────────────────────────────────────
 
 

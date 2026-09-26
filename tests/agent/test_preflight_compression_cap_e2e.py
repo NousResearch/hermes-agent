@@ -27,7 +27,7 @@ from hermes_state import SessionDB
 from run_agent import AIAgent
 
 
-def _config(max_attempts) -> dict:
+def _config(max_attempts, *, prefill_cost_caps=None) -> dict:
     return {
         "compression": {
             "enabled": True,
@@ -36,6 +36,7 @@ def _config(max_attempts) -> dict:
             "protect_first_n": 3,
             "protect_last_n": 20,
             "max_attempts": max_attempts,
+            "prefill_cost_caps": prefill_cost_caps or {},
         },
         "prompt_caching": {"cache_ttl": "5m"},
         "sessions": {},
@@ -54,15 +55,15 @@ def _stop_response():
     return SimpleNamespace(choices=[choice], model="test/model", usage=None)
 
 
-def _make_agent(monkeypatch, tmp_path: Path, *, max_attempts) -> AIAgent:
+def _make_agent(monkeypatch, tmp_path: Path, *, max_attempts, prefill_cost_caps=None) -> AIAgent:
     from hermes_cli import config as config_mod
 
     monkeypatch.setattr(
-        config_mod, "load_config", lambda: _config(max_attempts)
+        config_mod, "load_config", lambda: _config(max_attempts, prefill_cost_caps=prefill_cost_caps)
     )
 
     monkeypatch.setattr(
-        config_mod, "load_config_readonly", lambda: _config(max_attempts)
+        config_mod, "load_config_readonly", lambda: _config(max_attempts, prefill_cost_caps=prefill_cost_caps)
 
     )
     db = SessionDB(db_path=tmp_path / "state.db")
@@ -148,5 +149,19 @@ def test_preflight_runs_fourth_compaction_pass_at_cap_six(monkeypatch, tmp_path)
         f"got {len(compress_calls)} passes"
     )
     assert len(compress_calls) == 6
+
+
+def test_configured_prefill_cap_reaches_shared_agent_compressor(monkeypatch, tmp_path):
+    caps = {
+        "test/model": {
+            "warn_tokens": 48_000,
+            "compress_tokens": 64_000,
+            "fail_closed_tokens": 64_000,
+        }
+    }
+    agent = _make_agent(monkeypatch, tmp_path, max_attempts=3, prefill_cost_caps=caps)
+    assert agent.context_compressor.prefill_cost_cap is not None
+    assert agent.context_compressor.prefill_cost_cap.warn_tokens == 48_000
+    assert agent.context_compressor.threshold_tokens == 64_000
 
 

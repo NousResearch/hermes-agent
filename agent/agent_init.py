@@ -1558,6 +1558,7 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
             str(k): float(v) for k, v in _cfg_dict(cfg, "model_thresholds").items()
             if isinstance(v, (int, float)) and not isinstance(v, bool)
         },
+        prefill_cost_caps=_cfg_dict(cfg, "prefill_cost_caps"),
         threshold_tokens=threshold_tokens,
         checkpoint_required=checkpoint_required,
         # In-place compaction: no session-id rotation. default=True MUST match DEFAULT_CONFIG
@@ -1984,6 +1985,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             abort_on_summary_failure=cs.abort_on_summary_failure,
             max_tokens=_compressor_max_tokens(agent), model_thresholds=cs.model_thresholds,
             threshold_tokens_cap=cs.threshold_tokens,
+            prefill_cost_caps=cs.prefill_cost_caps,
             proactive_prune_tokens=cs.proactive_prune_tokens,
             proactive_prune_min_result_chars=cs.proactive_prune_min_chars,
             proactive_prune_min_reclaim_tokens=cs.proactive_prune_min_reclaim,

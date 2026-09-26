@@ -18,6 +18,8 @@ from contextvars import ContextVar
 
 from utils import env_var_enabled
 
+from tools.shell_heredoc import heredoc_spans as _heredoc_spans
+
 # Log-record parity with the origin module.
 logger = logging.getLogger("tools.terminal_tool")
 
@@ -272,12 +274,40 @@ def _scan_shell(command: str, background: bool = False) -> Iterator[tuple[str, i
     Background mode (compound-background semantics) additionally emits ``escape`` for a bare ``\\x``, ops ``&>``, ``{ `` and a closing
     ``}``, and tracks ``(...)``/``{ ... }`` depth: inside a group nothing is an operator, so
     every non-structural char (whitespace included) surfaces as a single ``skip`` event.
+
+    Heredoc bodies are OPAQUE (``heredoc`` events, one per body line, newlines kept as ``ws``):
+    the body is stdin for whatever consumes it, never a command this shell runs — a ``sudo``
+    written into a script bound for another host is data, and a ``&`` inside a body backgrounds
+    nothing. Only the body is masked; the command line that opens it (and anything after the
+    terminator) stays scanned. Unresolvable ``<<`` shapes mask nothing at all (see
+    :func:`tools.shell_heredoc.heredoc_spans`).
     """
     i, n = 0, len(command)
     at_start = True
     parens = braces = 0
     two_char_ops = ("&&", "||", "&>") if background else ("&&", "||", ";;")
+    spans = _heredoc_spans(command) or []
+    span_index = 0
     while i < n:
+        while span_index < len(spans) and spans[span_index][1] <= i:
+            span_index += 1
+        if span_index < len(spans) and i == spans[span_index][0]:
+            body_end = spans[span_index][1]
+            span_index += 1
+            cursor = i
+            while cursor < body_end:
+                newline = command.find("\n", cursor, body_end)
+                line_end = body_end if newline == -1 else newline
+                if line_end > cursor:
+                    yield "heredoc", cursor, line_end, False
+                if newline == -1:
+                    cursor = body_end
+                else:
+                    yield "ws", newline, newline + 1, False
+                    at_start = True
+                    cursor = newline + 1
+            i = body_end
+            continue
         ch = command[i]
         grouped = parens or braces
         was_start = at_start

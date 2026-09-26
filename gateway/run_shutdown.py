@@ -925,8 +925,7 @@ class GatewayShutdownMixin:
             job_name = job.get("name") or job_id
             msg = (
                 f"⚠️ Scheduled job '{job_name}' was cut short because Hermes is {action}; "
-                "no result this run. It will run again on schedule, or run it now with "
-                f"`hermes cron run {job_name}` once Hermes is back."
+                "no result this run. It will run again at its next scheduled time."
             )
             for target in targets or ():
                 try:

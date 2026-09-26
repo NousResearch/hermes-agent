@@ -422,6 +422,7 @@ from gateway.platforms.base_exec_approval import (
     EA_HEADER_TEXT, EA_REASON_LABEL_TEXT, approval_timeout_seconds, format_approval_deadline_line)
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.warning_notifications import diagnostic_wake_muted
+from plugins.source_context import invalidate_source_fragments, rebase_event_fragments
 from gateway.session import SessionSource, build_session_key
 from gateway.session_transcript import TranscriptReadError
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
@@ -1612,6 +1613,7 @@ def coerce_plaintext_gateway_command(event: "MessageEvent") -> None:
             return
         if any(pattern.match(text) for pattern in _PLAINTEXT_GATEWAY_RESTART_PATTERNS):
             event.text = "/restart"
+            invalidate_source_fragments(event)
 
 
 @dataclass
@@ -1764,7 +1766,10 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
                 existing.media_types.extend(event.media_types)
                 existing.media_text_inlined.extend(incoming_inline_flags)
             if event.text:
-                existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
+                _merged_caption = BasePlatformAdapter._merge_caption(existing.text, event.text)
+                _pre_merge_text = existing.text
+                existing.text = _merged_caption
+                rebase_event_fragments(existing, event, existing.text, old_text=_pre_merge_text)
             existing.absorb_reply_expected(event)
             if existing_is_photo or incoming_is_photo:
                 existing.message_type = MessageType.PHOTO
@@ -1779,7 +1784,9 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
         both_text = existing_type == MessageType.TEXT and event.message_type == MessageType.TEXT
         if merge_text and both_text:
             if event.text:
+                _pre_merge_text = existing.text
                 existing.text = _append_text(existing.text, event.text)
+                rebase_event_fragments(existing, event, existing.text, old_text=_pre_merge_text)
             existing.absorb_reply_expected(event)
             return
     pending_messages[session_key] = event
@@ -2513,7 +2520,9 @@ class BasePlatformAdapter(ABC):
             existing = self._pending_text_batches[key] = event
         else:
             if event.text:
+                _pre_merge_text = existing.text
                 existing.text = _append_text(existing.text, event.text)
+                rebase_event_fragments(existing, event, existing.text, old_text=_pre_merge_text)
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
@@ -3786,7 +3795,10 @@ class BasePlatformAdapter(ABC):
             store[session_key] = state
         else:
             if event.text:
+                _pre_merge_text = state.event.text
                 state.event.text = _append_text(state.event.text, event.text)
+                rebase_event_fragments(state.event, event, state.event.text,
+                                       old_text=_pre_merge_text)
             state.event.absorb_reply_expected(event)
             latest_message_id = getattr(event, "message_id", None)
             latest_anchor = latest_message_id or getattr(event, "reply_to_message_id", None)

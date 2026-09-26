@@ -35,6 +35,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType
+from plugins.source_context import note_single_source
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 from gateway.platforms._shared import extra_or_secret as _extra_or_env, get_scoped_secret as _wx_secret
@@ -901,6 +902,8 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         event = MessageEvent(
             text=text, message_type=_message_type_from_media(media_types, text), source=source, raw_message=message,
             message_id=message_id or None, media_urls=media_paths, media_types=media_types, timestamp=datetime.now())
+        note_single_source(event, namespace="weixin", message_id=message_id or None,
+                           reference=context_token or None)
         logger.info("[%s] inbound from=%s type=%s media=%d", self.name, _safe_id(sender_id), source.chat_type, len(media_paths))
         if event.message_type == MessageType.TEXT:
             self._enqueue_text_event(event)

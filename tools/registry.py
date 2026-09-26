@@ -893,20 +893,32 @@ class ToolRegistry:
     def dispatch(
         self, name: str, args: dict, *, scope: Optional[str] = None, **kwargs) -> str | dict:
         """Execute a tool handler by name: async handlers bridged via ``_run_async()``,
-        results normalized, every exception returned as ``{"error": ...}``."""
+        results normalized, every exception returned as ``{"error": ...}``.
+
+        The handler runs inside the narrow tool-call scope for
+        execution-scoped source context (``plugins.source_context``): the
+        getter resolves only here, never from ambient session state.
+        """
         entry = self.get_entry(name, scope=scope)
         if not entry:
             return tool_error(f"Unknown tool: {name}")
         try:
-            # Plugin contract (plugins/AGENTS.md): optional context kwargs (task_id, session_id, user_task,
-            # parent_agent, ...) are signature-inspected like hook payloads, so a narrow ``handle(args)``
-            # plugin handler is not broken by every field the dispatcher injects (#68318).
+            # Plugin contract (plugins/AGENTS.md): optional context kwargs (task_id, session_id,
+            # user_task, parent_agent, ...) are signature-inspected like hook payloads, so a
+            # narrow ``handle(args)`` plugin handler is not broken by every field the dispatcher
+            # injects (#68318).
             kwargs = _kwargs_accepted_by(entry.handler, kwargs)
-            if entry.is_async:
-                from model_tools import _run_async
-                result = _run_async(entry.handler(args, **kwargs))
-            else:
-                result = entry.handler(args, **kwargs)
+            # Narrow tool-call scope for execution-scoped source context
+            # (``plugins.source_context``): the getter resolves only here, never
+            # from ambient session state.
+            from plugins.source_context import scoped_tool_call
+
+            with scoped_tool_call():
+                if entry.is_async:
+                    from model_tools import _run_async
+                    result = _run_async(entry.handler(args, **kwargs))
+                else:
+                    result = entry.handler(args, **kwargs)
             return self._normalize_handler_result(name, result)
         except Exception as e:
             # exc_info already renders the exception, so keep the message copy bounded.

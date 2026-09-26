@@ -600,7 +600,14 @@ class GatewayTurnMixin:
                     _loaded_names.append(_sname)
             if _combined_parts:
                 _combined_parts.append(event.text)  # user's original text after the payloads
+                _pre_skill_text = event.text or ""
                 event.text = "\n\n".join(_combined_parts)
+                # Injected skill payloads shift (not erase) user provenance.
+                try:
+                    from plugins.source_context import shift_event_fragments
+                    shift_event_fragments(event, len(event.text) - len(_pre_skill_text))
+                except Exception:
+                    logger.debug("tool source context shift failed", exc_info=True)
                 logger.info("[Gateway] Auto-loaded skill(s) %s for session %s", _loaded_names, session_key)
         except Exception as e:
             logger.warning("[Gateway] Failed to auto-load skill(s) %s: %s", _skill_names, e)
@@ -2098,65 +2105,84 @@ class GatewayTurnMixin:
         if _is_new_session and _auto:
             self._hmwa_auto_load_skills(event, _auto, _quick_key, session_key)
 
-        await self._hmwa_acquire_turn_lease(_quick_key, run_generation, session_entry, _session_env_tokens)
-
-        # A turn becomes durable recovery work only after it owns the per-session lease; marking
-        # earlier would falsely recover a message that never began processing.
-        await self._mark_durable_active_turn(event, session_entry.session_key)
-
-        # An unreadable store is not an empty conversation: stop before the agent invents continuity
-        # from []. Restore task-local context here (before the broad cleanup finally).
+        # The final source binding happens below, after every presentation-affecting
+        # preparation step, so failed preparation cannot leak authority.
         try:
-            history = await self.async_session_store.load_transcript(session_entry.session_id)
-            history = await self._hmwa_run_session_hygiene(
-                event, source, session_entry, session_key, history, _quick_key, run_generation,
+            await self._hmwa_acquire_turn_lease(_quick_key, run_generation, session_entry, _session_env_tokens)
+            # A turn becomes durable recovery work only after it owns the per-session lease; marking
+            # earlier would falsely recover a message that never began processing.
+            await self._mark_durable_active_turn(event, session_entry.session_key)
+
+            # An unreadable store is not an empty conversation: stop before the agent invents continuity
+            # from []. Restore task-local context here (before the broad cleanup finally).
+            try:
+                history = await self.async_session_store.load_transcript(session_entry.session_id)
+                history = await self._hmwa_run_session_hygiene(
+                    event, source, session_entry, session_key, history, _quick_key, run_generation,
+                )
+            except TranscriptReadError:
+                self._clear_session_env(_session_env_tokens)
+                return (
+                    "⚠️ This session's history is temporarily unavailable, so this message was not "
+                    "processed. Ask the operator to inspect state.db, then resend after it is healthy. "
+                    "Use /reset only if you intentionally want to start a new conversation."
+                ), _session_env_tokens
+
+            await self._hmwa_first_contact_notes(source, history, turn_sidecar_notes)
+
+            # Voice channel state rides the user message ONLY when changed (in the system prompt it
+            # forced a rebuild + prompt-cache re-key per message).
+            _vc_note = self._voice_channel_sidecar_note(event, source, session_key)
+            if _vc_note:
+                turn_sidecar_notes.append(_vc_note)
+
+            # Auto-analyze user images so the model gets a description plus the local path.
+            message_text = await self._prepare_profile_scoped_inbound_message_text(
+                event=event, source=source, history=history, session_key=session_key,
             )
-        except TranscriptReadError:
-            self._clear_session_env(_session_env_tokens)
-            return (
-                "⚠️ This session's history is temporarily unavailable, so this message was not "
-                "processed. Ask the operator to inspect state.db, then resend after it is healthy. "
-                "Use /reset only if you intentionally want to start a new conversation."
+            if message_text is None:
+                self._clear_session_env(_session_env_tokens)
+                return None, _session_env_tokens
+
+            # Final provenance-affecting projection: bind only after auto-skill
+            # prefixing and inbound normalization have both settled.
+            try:
+                from plugins.source_context import bind_execution_for_event
+                _source_ctx_token, _ = bind_execution_for_event(
+                    event=event, session_key=session_key,
+                    run_generation=int(run_generation or 0))
+                _session_env_tokens.append(("hermes_tool_source_context", _source_ctx_token))
+            except Exception:
+                logger.debug("tool source context bind failed", exc_info=True)
+
+            message_text, persist_user_message, persist_user_timestamp = (
+                self._hmwa_apply_message_timestamp(event, message_text)
+            )
+
+            # Stage the notes (one-shot; consumed in run_sync) AFTER the early-out so an aborted turn
+            # cannot leak them into the next turn.
+            if turn_sidecar_notes and session_key:
+                self._set_pending_turn_sidecar_notes(session_key, turn_sidecar_notes)
+
+            # Bind this run generation to the adapter so deferred post-delivery callbacks are released
+            # by the run that registered them.
+            self._bind_adapter_run_generation(self._delivery_adapter_for(source), session_key, run_generation)
+            # Delivery IDs are only unique in their transport namespace. Keyless turns
+            # need their own identity, even when another process writes to this session.
+            import uuid
+            namespace = [source.platform.value, source.profile, source.scope_id,
+                         source.chat_id, source.thread_id, str(event.message_id)]
+            owner = (str(uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(namespace)))
+                     if event.message_id else str(uuid.uuid4()))
+            return self._PreparedTurn(
+                history, context_prompt, message_text, persist_user_message, persist_user_timestamp,
+                persist_user_display_kind, session_entry.session_id, owner,
             ), _session_env_tokens
-
-        await self._hmwa_first_contact_notes(source, history, turn_sidecar_notes)
-
-        # Voice channel state rides the user message ONLY when changed (in the system prompt it
-        # forced a rebuild + prompt-cache re-key per message).
-        _vc_note = self._voice_channel_sidecar_note(event, source, session_key)
-        if _vc_note:
-            turn_sidecar_notes.append(_vc_note)
-
-        # Auto-analyze user images so the model gets a description plus the local path.
-        message_text = await self._prepare_profile_scoped_inbound_message_text(
-            event=event, source=source, history=history, session_key=session_key,
-        )
-        if message_text is None:
-            return None, _session_env_tokens
-
-        message_text, persist_user_message, persist_user_timestamp = (
-            self._hmwa_apply_message_timestamp(event, message_text)
-        )
-
-        # Stage the notes (one-shot; consumed in run_sync) AFTER the early-out so an aborted turn
-        # cannot leak them into the next turn.
-        if turn_sidecar_notes and session_key:
-            self._set_pending_turn_sidecar_notes(session_key, turn_sidecar_notes)
-
-        # Bind this run generation to the adapter so deferred post-delivery callbacks are released
-        # by the run that registered them.
-        self._bind_adapter_run_generation(self._delivery_adapter_for(source), session_key, run_generation)
-        # Delivery IDs are only unique in their transport namespace. Keyless turns
-        # need their own identity, even when another process writes to this session.
-        import uuid
-        namespace = [source.platform.value, source.profile, source.scope_id,
-                     source.chat_id, source.thread_id, str(event.message_id)]
-        owner = (str(uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(namespace)))
-                 if event.message_id else str(uuid.uuid4()))
-        return self._PreparedTurn(
-            history, context_prompt, message_text, persist_user_message, persist_user_timestamp,
-            persist_user_display_kind, session_entry.session_id, owner,
-        ), _session_env_tokens
+        except BaseException:
+            # The caller has not entered its cleanup try/finally yet. Revoke only
+            # this preparation's source lease on exception or cancellation.
+            self._clear_session_env(_session_env_tokens)
+            raise
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
@@ -3906,6 +3932,31 @@ class GatewayTurnMixin:
         from gateway.run_turn_followup_ack import _followup_cancel_outcome, _run_followup_processing_hook
         _hook_adapter = self._intake_adapter_for(next_source) if pending_event is not None else None
         await _run_followup_processing_hook(_hook_adapter, pending_event, "on_processing_start")
+        # Execution-scoped original-message context for native plugins
+        # (#103941): each actual follow-up enters its own event-grounded scope.
+        # Revoke m1 before binding m2; text-only follow-ups bind an explicit
+        # empty record. Every exit clears the new lease.
+        _followup_source_token = None
+        try:
+            from plugins.source_context import (
+                _SESSION_BIND, _release_lease, bind_execution, bind_execution_for_event, clear_execution,
+            )
+            predecessor = _SESSION_BIND.get()
+            if predecessor is not None:
+                _release_lease(predecessor.execution_id)
+            if pending_event is None:
+                _followup_source_token, _ = bind_execution(
+                    text=pending or "", fragments=(), session_key=next_session_key or "",
+                    run_generation=int(run_generation or 0),
+                )
+            else:
+                _followup_source_token, _ = bind_execution_for_event(
+                    event=pending_event, session_key=next_session_key or "",
+                    run_generation=int(run_generation or 0),
+                )
+        except Exception:
+            logger.debug("queued tool source context bind failed", exc_info=True)
+
         # The re-baseline sits inside the try: a /stop landing on its DB await must still close the marker
         # (the helper's own ``except Exception`` does not catch cancellation).
         try:
@@ -3924,13 +3975,23 @@ class GatewayTurnMixin:
                     **reply_expected_metadata(next_reply_expected), **diagnostic_metadata(pending_event)} or None,
             )
         except asyncio.CancelledError:
+            if _followup_source_token is not None:
+                from plugins.source_context import clear_execution
+                clear_execution(_followup_source_token)
             await _run_followup_processing_hook(
                 _hook_adapter, pending_event, "on_processing_complete", _followup_cancel_outcome(_hook_adapter))
             raise
         except BaseException:
+            if _followup_source_token is not None:
+                from plugins.source_context import clear_execution
+                clear_execution(_followup_source_token)
             await _run_followup_processing_hook(
                 _hook_adapter, pending_event, "on_processing_complete", ProcessingOutcome.FAILURE)
             raise
+        else:
+            if _followup_source_token is not None:
+                from plugins.source_context import clear_execution
+                clear_execution(_followup_source_token)
         await _run_followup_processing_hook(
             _hook_adapter, pending_event, "on_processing_complete", ProcessingOutcome.SUCCESS)
         merged = _preserve_queued_followup_history_offset(result, followup_result)

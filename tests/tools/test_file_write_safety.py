@@ -262,6 +262,39 @@ class TestCheckSensitivePathMacOSBypass:
         assert _check_sensitive_path("/tmp/safe_file.txt") is None
 
 
+class TestProtectedInstructionApproval:
+    """Protected instruction file writes require a human approval channel (#120000)."""
+
+    def test_no_callback_fails_closed(self, monkeypatch):
+        """Without any approval callback, the gate fails closed (no human)."""
+        import tools.file_tools_write_guards as fg
+        import tools.terminal_tool as tt
+        import tools.approval_context as ac
+        monkeypatch.setattr(fg, "_protected_instruction_config", lambda: (True, []))
+        monkeypatch.setattr(ac, "get_current_session_key", lambda: "")
+        monkeypatch.setattr(tt, "_get_approval_callback", lambda: None)
+        result = fg._request_protected_instruction_approval(["AGENTS.md"])
+        assert result is not None
+        assert "no interactive user" in result or "no human" in result
+
+    def test_non_interactive_callback_fails_closed(self, monkeypatch):
+        """Non-interactive auto-callbacks (subagent auto-approve) fail closed."""
+        import tools.file_tools_write_guards as fg
+        import tools.terminal_tool as tt
+        import tools.approval_context as ac
+        monkeypatch.setattr(fg, "_protected_instruction_config", lambda: (True, []))
+        monkeypatch.setattr(ac, "get_current_session_key", lambda: "")
+
+        def fake_auto_approve(command, description, **kwargs):
+            return "once"
+        fake_auto_approve._non_interactive = True
+
+        monkeypatch.setattr(tt, "_get_approval_callback", lambda: fake_auto_approve)
+        result = fg._request_protected_instruction_approval(["AGENTS.md"])
+        assert result is not None
+        assert "no interactive user" in result or "no human" in result
+
+
 class TestAtomicWrite:
     """write_file / patch land via a temp-file + atomic rename.
 
@@ -594,8 +627,8 @@ class TestProtectedInstructionFiles:
 
     AGENTS.md / CLAUDE.md / SOUL.md / .cursorrules / project-local .hermes
     config steer future agent behavior, so a prompt-injected agent writing
-    them is a persistence vector. The gate must ask the human every time —
-    even under yolo/auto-approve — and fail closed when no human channel
+    them is a persistence vector. The gate must ask the human every time,
+    even under yolo/auto-approve, and fail closed when no human channel
     exists. Ported from: RooCodeInc/Roo-Code RooProtectedController
     (Apache-2.0); symlink lesson from #41351.
     """

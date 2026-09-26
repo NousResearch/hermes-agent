@@ -130,6 +130,19 @@ def test_malformed_and_empty_input_never_raises():
     assert cleaned == "hi"
 
 
+def test_literal_newlines_inside_arguments_still_parse():
+    """Models write multi-line code with raw newlines inside the arguments string. Strict JSON
+    rejected those, and the call vanished with its text consumed, so the turn ended as prose."""
+    calls, cleaned = extract_tool_calls_from_text(
+        'Plan.\n<tool_call>{"id": "c1", "type": "function", "function": '
+        '{"name": "execute_code", "arguments": "{\\"code\\": \\"a = 1\nprint(a)\\"}"}}</tool_call>\nSummary.'
+    )
+    assert [c.function.name for c in calls] == ["execute_code"]
+    # Dispatch parses arguments strictly, so they must come out re-encoded.
+    assert json.loads(calls[0].function.arguments) == {"code": "a = 1\nprint(a)"}
+    assert cleaned == "Plan.\nSummary."
+
+
 # ── streaming shape ──────────────────────────────────────────────────────────
 
 

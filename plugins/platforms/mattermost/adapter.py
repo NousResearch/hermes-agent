@@ -155,9 +155,11 @@ class MattermostAdapter(BasePlatformAdapter):
 
         props = _build_approval_props(
             prompt, cfg["url"] + _approval_callback_path(cfg["secret"]))
+        # Short post message + full wording inside the attachment: clients render both, so
+        # the message must not duplicate the attachment text.
         payload: Dict[str, Any] = {
             "channel_id": prompt.chat_id,
-            "message": prompt.text,
+            "message": "⚠️ Approval needed",
             "props": {**props, **_MATTERMOST_DISABLE_MENTIONS_PROPS},
         }
         if self._reply_mode == "thread":
@@ -172,7 +174,8 @@ class MattermostAdapter(BasePlatformAdapter):
 
         card: Dict[str, Any] = {
             "post_id": post_id, "chat_id": prompt.chat_id, "session_key": prompt.session_key,
-            "message": prompt.text, "resolved": False,
+            "message": prompt.text,  # full wording — the ntfy escalation message body
+            "resolved": False,
             "escalate_task": None, "expire_task": None,
         }
         self._approval_cards[post_id] = card
@@ -281,14 +284,17 @@ class MattermostAdapter(BasePlatformAdapter):
             return
         team = await self._team_name_for_channel(card["chat_id"])
         permalink = f"{self._base_url}/{team}/pl/{card['post_id']}" if team else self._base_url
-        headers = {"Content-Type": "application/json"}
         token = _get_scoped_secret("NTFY_TOKEN", "")
+        headers = {"Content-Type": "text/plain"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
-        body = _build_ntfy_escalation(card.get("message", ""), permalink)
-        body["topic"] = topic
+        message, extra_headers = _build_ntfy_escalation(card.get("message", ""), permalink)
+        headers.update(extra_headers)
+        # Header-style publish (POST {server}/{topic}): this ntfy server rejects JSON-body
+        # publishing with 40024 (live-verified 2026-09-26) but accepts the Actions header.
         try:
-            async with self._session.post(server, json=body, headers=headers,
+            async with self._session.post(f"{server}/{topic}", data=message.encode("utf-8"),
+                                          headers=headers,
                                           timeout=aiohttp.ClientTimeout(total=15)) as resp:
                 if resp.status >= 400:
                     logger.error("Mattermost: approval escalation ntfy publish → %s", resp.status)
@@ -309,7 +315,7 @@ class MattermostAdapter(BasePlatformAdapter):
         from gateway.platforms.base_exec_approval import format_approval_timed_out_notice
         notice = format_approval_timed_out_notice(int(timeout_s))
         payload = _with_mentions_disabled({
-            "message": f"{card.get('message', '')}\n\n{notice}", "props": {}})
+            "message": f"⚠️ Approval needed\n\n{notice}", "props": {}})
         await self._api("PUT", f"posts/{card['post_id']}/patch", payload)
         self._approval_cards.pop(card["post_id"], None)
 

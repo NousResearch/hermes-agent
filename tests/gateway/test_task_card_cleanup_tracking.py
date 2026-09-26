@@ -45,6 +45,7 @@ def _state(adapter: _CardAdapter):
     return SimpleNamespace(
         tasks=[{"text": "step"}], native_failed=False, publication_suppressed=False,
         visible_tasks=lambda: [{"text": "step"}], fallback_text=lambda: "step", adapter=adapter,
+        title=lambda: "Working",
     )
 
 

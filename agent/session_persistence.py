@@ -5,6 +5,7 @@ import hashlib
 
 import logging
 import re
+import sqlite3
 from contextlib import nullcontext
 
 from typing import Any, Dict, List, Optional, Tuple
@@ -296,7 +297,8 @@ def _db_flush_adopt_compression_tip(agent) -> bool:
     return True
 
 
-def _db_flush_failed(agent, e: Exception, batch_rows: List[Dict[str, Any]], adoption_budget: int) -> bool:
+def _db_flush_failed(agent, e: Exception, batch_rows: List[Dict[str, Any]], adoption_budget: int,
+                     messages: Optional[List[Dict]] = None) -> bool:
     """Classify a failed flush; True when the caller should retry once on an adopted compression tip."""
     agent._db_flush_scan_prefix = None  # full re-scan next flush: an exception mid-loop leaves mixed dispositions
     # The only place the SQLite error is visible before it becomes a bare False — classify it so the turn-end
@@ -304,6 +306,32 @@ def _db_flush_failed(agent, e: Exception, batch_rows: List[Dict[str, Any]], adop
     from hermes_state import StateDbCorruptError, StateDbReplacedError, classify_persistence_error, divert_session_transcript_jsonl
     from hermes_state_errors import CompressionSessionClosedError
     agent._last_persistence_error_cause = classify_persistence_error(e)
+    if getattr(e, "sqlite_errorcode", None) == getattr(sqlite3, "SQLITE_CONSTRAINT_FOREIGNKEY", 787) \
+            or "foreign key constraint" in str(e).lower():
+        # The session row was removed under this live agent (`hermes sessions delete`, the Desktop/web
+        # delete, bulk prune, a profile-repair move, an in-place store rebuild — none visible to the
+        # cached agent, so the cached `_session_db_created` flag is stale and every later append hits
+        # the FK). The deletion already erased the session's message rows with it, so the durable
+        # transcript is empty: drop the stale flag, reset the flush markers, and replay the FULL
+        # in-memory transcript onto the recreated row — not just the current tail (#123583).
+        if adoption_budget <= 0:
+            return False
+        for msg in messages or ():
+            if isinstance(msg, dict):
+                msg.pop(_DB_PERSISTED_MARKER, None)
+        agent._flushed_db_message_ids = set()
+        agent._last_flushed_db_idx = 0
+        agent._session_db_created = False
+        agent._ensure_db_session()
+        if not agent._session_db_created:
+            # Row creation failed too (transient store trouble): don't append into a guaranteed
+            # rollback — keep the batch unmarked so the next flush retries the whole thing.
+            logger.warning("Session DB row for %s is missing and could not be recreated; will retry next flush",
+                           getattr(agent, "session_id", None))
+            return False
+        logger.warning("Session DB row for %s was removed under the live agent; recreated it and replaying the transcript",
+                       getattr(agent, "session_id", None))
+        return True
     if isinstance(e, (StateDbReplacedError, StateDbCorruptError)):
         # A replaced/quarantined handle will not take this batch again — keep it on disk.
         try:
@@ -415,7 +443,7 @@ class SessionPersistenceMixin:
             self._db_flush_scan_prefix = messages[:]
             return True
         except Exception as e:
-            if _db_flush_failed(self, e, batch_rows, _adoption_budget):
+            if _db_flush_failed(self, e, batch_rows, _adoption_budget, messages):
                 return self._flush_messages_to_session_db_unlocked(messages, conversation_history, _adoption_budget=0)
             return False
 

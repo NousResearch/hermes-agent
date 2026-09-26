@@ -98,7 +98,7 @@ def is_disk_full_error(exc: BaseException | str | None) -> bool:
 # Every classify_persistence_error bucket; consumers enumerate this tuple.
 PERSISTENCE_ERROR_CAUSES = (
     "locked", "compression", "compression_closed", "turn_lease", "corrupt", "fts_index",
-    "replaced", "deleted_wal", "disk", "unknown",
+    "replaced", "deleted_wal", "disk", "session_row_missing", "unknown",
 )
 
 
@@ -260,6 +260,8 @@ _PERSISTENCE_CAUSE_BY_PHRASE = (
     (("was replaced underneath",), "replaced"),
     (_DB_CORRUPTION_MARKERS, "corrupt"),
     (("locked", "busy"), "locked"),
+    # A flush rejected by the session-row FK: the row was removed under a live agent (#123583).
+    (("foreign key constraint failed",), "session_row_missing"),
 )
 
 

@@ -186,7 +186,7 @@ def _managed_node_dirs_with_ancestors() -> list:
     return directories
 
 
-def _node_fallback(command: str, *, windows: Optional[bool] = None) -> str:
+def _launcher_fallback(command: str, *, windows: Optional[bool] = None) -> str:
     """Well-known Node install locations for bare ``npx``/``npm``/``node``, plus the nearest ancestor home's
     managed tree (sub-profiles inherit the root install's Node runtime); *command* unchanged when none exists.
 

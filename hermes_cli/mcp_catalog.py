@@ -489,6 +489,17 @@ def _expand_install_dir(value: str, install_dir: Optional[Path]) -> str:
     return value.replace(_INSTALL_DIR_VAR, str(install_dir))
 
 
+def _interactive_prompt_possible() -> bool:
+    """Whether an interactive prompt can be driven right now.
+
+    The console belongs to the main thread: on a worker thread (e.g. a serve dashboard
+    request routed through ``asyncio.to_thread``) a prompt would block forever on stdin
+    nobody is watching. A non-TTY stdin has the same problem."""
+    import sys as _sys
+    import threading as _threading
+    return _sys.stdin.isatty() and _threading.current_thread() is _threading.main_thread()
+
+
 def _prompt_env_vars(
     specs: list[EnvVarSpec], preloaded: Optional[dict[str, str]] = None, *, interactive: bool = True,
 ) -> dict[str, str]:
@@ -511,7 +522,9 @@ def _prompt_env_vars(
             _say(f"  ✓ {spec.name} already set in .env")
             collected[spec.name] = existing
             continue
-        if not interactive:
+        if not (interactive and _interactive_prompt_possible()):
+            # Nobody can answer a prompt here (request handler, worker thread, non-TTY): take the
+            # declared default, else fail fast on a required value instead of blocking on stdin.
             if spec.default:
                 collected[spec.name] = spec.default
             elif spec.required:
@@ -694,9 +707,7 @@ def _apply_tool_selection(
     # Non-interactive callers (the dashboard's serve worker), non-TTY shells and worker threads
     # skip the checklist: the console belongs to the main thread, so a checklist opened anywhere
     # else blocks forever on stdin nobody is watching. Same priority as the interactive pre-check.
-    import sys as _sys
-    import threading as _threading
-    if not interactive or not _sys.stdin.isatty() or _threading.current_thread() is not _threading.main_thread():
+    if not (interactive and _interactive_prompt_possible()):
         preferred = prior_selection if prior_selection is not None else (entry.tools.default_enabled or None)
         _write_tools_filter(
             name, "include", None if preferred is None else [n for n in preferred if n in tool_names]

@@ -188,6 +188,49 @@ class TestProfileUserTreesNeverCleaned:
         assert not sweepable.exists(), "unprotected empty dirs are still swept"
 
 
+class TestNamedProfileHome:
+    """Regression for #123632: a per-profile home (``<root>/profiles/<name>``) is user-owned.
+    Its own top-level user trees must not be name-tracked, and momentarily-empty ones must not
+    be rmdir'd by the empty-dir sweep — only known scratch areas stay disposable."""
+
+    @pytest.fixture()
+    def profile_home(self, _isolate_env, monkeypatch):
+        home = _isolate_env / "profiles" / "link"
+        home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        return home
+
+    def test_user_tree_test_file_not_tracked(self, profile_home):
+        dg = _load_lib()
+        scripts = profile_home / "scripts"
+        scripts.mkdir()
+        scratch = scripts / "test_x.py"
+        scratch.write_text("x")
+        assert dg.guess_category(scratch) is None
+
+    def test_root_level_scratch_still_tracked(self, profile_home):
+        dg = _load_lib()
+        scratch = profile_home / "test_scratch.py"
+        scratch.write_text("x")
+        assert dg.guess_category(scratch) == "test"
+
+    def test_cache_scratch_still_tracked(self, profile_home):
+        dg = _load_lib()
+        terminal = profile_home / "cache" / "terminal"
+        terminal.mkdir(parents=True)
+        f = terminal / "test_x.txt"
+        f.write_text("x")
+        assert dg.guess_category(f) == "temp"
+
+    def test_empty_user_dirs_survive_sweep(self, profile_home):
+        dg = _load_lib()
+        for name in ("hooks", "image_cache", "pairing", "scripts"):
+            (profile_home / name).mkdir()
+        dg._sweep_empty_dirs(profile_home)
+        for name in ("hooks", "image_cache", "pairing", "scripts"):
+            assert (profile_home / name).is_dir(), f"{name}/ must survive the sweep"
+
+
 class TestProtectedDirsNeverRmtreed:
     """A tracked DIRECTORY under a protected top level (``cache/`` holds terminal snapshots)
     must never be rmtree'd by the tracked-item path, only by-file aging; ``kanban/`` is never

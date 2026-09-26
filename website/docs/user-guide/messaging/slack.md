@@ -680,7 +680,7 @@ When the bot answers a human message with only a [silence token](index.md#intent
 :::
 
 :::info
-Slack supports both patterns: `@mention` required to start a conversation by default, but you can opt specific channels out via `SLACK_FREE_RESPONSE_CHANNELS` (comma-separated channel IDs) or `slack.free_response_channels` in `config.yaml`. Once the bot has an active session in a thread, subsequent thread replies do not require a mention. In **1:1 DMs** the bot always responds without needing a mention.
+Slack supports both patterns: `@mention` required to start a conversation by default, but you can opt specific channels out via `SLACK_FREE_RESPONSE_CHANNELS` (comma-separated channel IDs) or `slack.free_response_channels` in `config.yaml`. Once the bot has an active session in a thread, subsequent thread replies do not require a mention. In **1:1 DMs** the bot always responds without needing a mention. These gating keys can be set in the top-level `slack:` block or under `platforms.slack.extra`; when the same key is set in both, `platforms.slack.extra` wins and the gateway logs a warning.
 :::
 
 :::caution Group DMs (MPIMs) are shared surfaces, not 1:1 DMs

@@ -5,7 +5,7 @@ import {
   ThreadPrimitive,
   useExternalStoreRuntime
 } from '@assistant-ui/react'
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useEffect, useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -530,6 +530,101 @@ describe('assistant-ui streaming renderer', () => {
     )
 
     expect(finalRoot?.querySelector('[data-slot="aui_msg-actions"]')).toBeTruthy()
+  })
+
+  it('tucks the turn stats behind a popover on the action bar row', () => {
+    const settled = {
+      ...assistantMessage('All done.', false),
+      metadata: {
+        unstable_state: null,
+        unstable_annotations: [],
+        unstable_data: [],
+        steps: [],
+        custom: { durationS: 12 }
+      }
+    } as ThreadMessage
+
+    // `baseElement`, not `container`: the popover renders into a portal on the body.
+    const { baseElement, container } = render(<TranscriptHarness messages={[userMessage(), settled]} />)
+
+    // Nothing visible by default — the stats ride a popover off the action
+    // bar, so settling a turn adds no chrome to the transcript.
+    expect(baseElement.querySelector('[data-slot="aui_turn-stats"]')).toBeNull()
+
+    const toggle = screen.getByRole('button', { name: 'Turn stats' })
+    const actions = container.querySelector('[data-slot="aui_msg-actions"]')
+
+    // Same row as the (always-mounted) action bar: the footer's height is
+    // already reserved while the turn streams, so the toggle lands without
+    // shifting layout.
+    expect(actions?.contains(toggle)).toBe(true)
+
+    fireEvent.click(toggle)
+    expect(baseElement.querySelector('[data-slot="aui_turn-stats"]')?.textContent).toContain('12s')
+  })
+
+  it('renders every row the payload carries, and drops a zero cost', () => {
+    // Shape and figures taken from a real deepseek turn: 14 calls against a warm prefix cache.
+    const withStats = (turnStats: Record<string, number>) =>
+      ({
+        ...assistantMessage('All done.', false),
+        metadata: {
+          unstable_state: null,
+          unstable_annotations: [],
+          unstable_data: [],
+          steps: [],
+          custom: { turnStats }
+        }
+      }) as ThreadMessage
+
+    // One row per figure: `label hint value`, read off the card's grid cells in pairs.
+    const card = (message: ThreadMessage) => {
+      const { baseElement } = render(<TranscriptHarness messages={[userMessage(), message]} />)
+      fireEvent.click(screen.getAllByRole('button', { name: 'Turn stats' })[0])
+
+      const grid = baseElement.querySelector('[data-slot="aui_turn-stats"]')
+      const cells = Array.from(grid?.children ?? []).filter(el => el.tagName === 'SPAN')
+      const rows: Record<string, string> = {}
+
+      for (let i = 0; i < cells.length; i += 2) {
+        rows[cells[i].textContent ?? ''] = cells[i + 1]?.textContent ?? ''
+      }
+
+      return rows
+    }
+
+    const full = card(
+      withStats({
+        cacheRead: 609_920,
+        calls: 14,
+        costUsd: 0.01662936,
+        durationS: 89,
+        input: 53_132,
+        output: 11_383,
+        reasoning: 7_491
+      })
+    )
+
+    expect(full).toEqual({
+      Input: '53.1k',
+      Cached: '92% hit609.9k',
+      Output: '11.4k',
+      Reasoning: '7.5k',
+      Time: '1:29',
+      Calls: '14',
+      // The cost delta is an estimate, and the card says so — readers must not
+      // take the figure as billing truth.
+      Cost: 'est.$0.0166'
+    })
+
+    // The hit meter tracks the same ratio the hint prints.
+    const meter = screen.getByText('Cached').parentElement?.querySelector<HTMLElement>('[aria-hidden] > div')
+    expect(meter?.style.width).toBe('92%')
+
+    cleanup()
+
+    // Free route: the cost delta is zero, so the row is absent rather than `$0.0000`.
+    expect(card(withStats({ costUsd: 0, durationS: 3, input: 10 }))).toEqual({ Input: '10', Time: '3s' })
   })
 
   it('renders assistant provider errors inline', () => {

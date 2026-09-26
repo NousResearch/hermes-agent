@@ -607,6 +607,7 @@ export type TimelineDisplayMetadata =
   | { display_text: string }
   | { reactions: MessageReaction[] }
   | { tool_result_metadata: ToolResultMetadata }
+  | { turn_stats?: unknown }
 
 /** One emoji reaction on a message. One per author, iOS-Tapback style. */
 export interface MessageReaction {
@@ -796,6 +797,14 @@ export interface UsageStats {
   avg_tps?: number
   /** Session prompt-cache hit rate, 0–100. Omitted (not 0) when the provider reports no cache reads. */
   cache_hit_pct?: number
+  /** Prompt-cache tokens read this session (hits). */
+  cache_read?: number
+  /** Prompt-cache tokens written this session (misses / fills). */
+  cache_write?: number
+  /** Prompt-cache TTL in seconds. Only 300 or 3600 when known; omit to hide the countdown. */
+  cache_ttl_s?: number
+  /** Unix seconds when the prompt cache was last written/refreshed. */
+  cache_refreshed_at?: number
   calls: number
   context_max?: number
   context_percent?: number
@@ -805,7 +814,20 @@ export interface UsageStats {
   cost_usd?: number
   input: number
   output: number
+  reasoning?: number
   total: number
+}
+
+/** Per-turn token / cache / call stats from `message.complete.turn_stats`. camelCase. */
+export interface TurnStats {
+  durationS?: number
+  input?: number
+  output?: number
+  reasoning?: number
+  cacheRead?: number
+  cacheWrite?: number
+  calls?: number
+  costUsd?: number
 }
 
 /** One graph node in the star map (learned skill or memory chunk). */

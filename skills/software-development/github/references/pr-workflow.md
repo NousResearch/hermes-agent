@@ -178,6 +178,56 @@ for cr in data.get('check_runs', []):
     print(f\"  {cr['name']}: {cr['status']} / {cr['conclusion'] or 'pending'}\")"
 ```
 
+### When No Checks Are Reported
+
+`gh pr checks` (with or without `--watch`) exits `1` and prints
+`no checks reported on the '<branch>' branch` when nothing is attached to the
+head commit. That is **not** green, but neither is it automatically a failure:
+give the branch a few minutes, and remember that a draft PR can be skipped on
+purpose by apps and workflows. Then check these surfaces separately:
+
+```bash
+SHA=$(git rev-parse HEAD)
+BRANCH=$(git branch --show-current)
+
+# 1. Check suites on this commit, with the app that owns each one
+gh api repos/{owner}/{repo}/commits/$SHA/check-suites \
+  --jq '.check_suites[] | {id,status,conclusion,app:.app.slug,created_at,updated_at,latest_check_runs_count}'
+
+# 2. Check runs under one suite — empty when the suite was never populated
+gh api repos/{owner}/{repo}/check-suites/<SUITE_ID>/check-runs \
+  --jq '{total_count, check_runs:[.check_runs[] | {id,name,status,conclusion}]}'
+
+# 3. Actions workflow runs for THIS commit — separate from app-owned check suites
+gh run list --commit "$SHA" --limit 5
+
+# 4. Which status contexts the branch actually requires (empty = none)
+gh api repos/{owner}/{repo}/rules/branches/$BRANCH \
+  --jq '[.[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context]'
+```
+
+Read `app.slug` on the suite: its owner is frequently a GitHub App other than
+this repository's own workflows. A suite still at `status: queued` with
+`latest_check_runs_count: 0` and `updated_at` unchanged from `created_at`, more
+than ten minutes after it was created, was created but never populated — the app
+named in `app.slug` never made its check runs, and the suite does not move on its
+own.
+
+Then recover in this order, and only if step 4 listed the context — a context
+that is not required does not block the merge, so there is nothing to
+re-trigger:
+
+1. If step 3 returned a workflow run for this commit, rerun it
+   (`gh run rerun <RUN_ID>`). This only helps when the stuck suite belongs to the
+   Actions app; rerunning a workflow does not populate a third-party app's
+   suite.
+2. Otherwise create a fresh suite: push to the branch, or close and reopen the
+   PR, then confirm with a fresh `gh pr checks` that checks attached to the new
+   head.
+3. If the fresh suite is stuck the same way, stop — do not push again. Report the
+   suite id, the `app.slug` and the timestamps to that app's provider, and say on
+   the PR that the required context is stuck.
+
 ### Poll Until Complete (git + curl)
 
 ```bash

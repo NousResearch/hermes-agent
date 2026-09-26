@@ -959,6 +959,68 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
             cp.slug, cp.label, cp.slug == b.current_provider, model_ids, "canonical", uncapped_ok=False)
 
 
+# Bounded-parallel endpoint probing for the refresh path (explicit ``model.options`` refresh,
+# CLI /model list with --refresh). Serial fan-out over many user-configured providers can block
+# the picker for minutes (31 providers × up to 5 s per live /models probe ≈ 155 s worst case,
+# issue #123793). When ``b.refresh`` is set, probes run on a bounded thread pool with a total
+# wall-clock deadline: groups that miss the deadline degrade to the cached/curated model list
+# rather than stalling the whole picker — the same treatment #114994 gave the read path.
+
+_PROBE_POOL_MAX_WORKERS = 8
+
+
+def _probe_deadline_seconds() -> float:
+    """Total wall-clock budget for a parallel endpoint-probe wave, in seconds.
+
+    An explicit refresh is a user-initiated action, so it may block longer than the desktop
+    IPC 15 s timeout (the picker degrades per-group instead of failing the whole response);
+    a generous 60 s default still bounds the worst case with many slow/degraded endpoints."""
+    import os as _os
+    try:
+        return max(1.0, float(_os.environ.get("HERMES_PROVIDER_PROBE_DEADLINE_SECONDS", "60")))
+    except (TypeError, ValueError):
+        return 60.0
+
+
+def _run_endpoint_probes_parallel(
+    probe_fns: list, *, deadline: float) -> list:
+    """Run each probe fn in a bounded pool; return results aligned to ``probe_fns``.
+
+    Each fn must return ``(discovered, native_catalog_empty, probe_live)`` — the exact
+    shape of ``_PickerBuild.discover_endpoint``. A fn that raises, or that is still
+    running when ``deadline`` (total wall-clock budget) expires, degrades to
+    ``(None, False, False)`` so the caller falls back to the cached/curated list for
+    that endpoint. Serial fallback when there is nothing to parallelize."""
+    n = len(probe_fns)
+    if n == 0:
+        return []
+    if n == 1:
+        try:
+            return [probe_fns[0]()]
+        except Exception:
+            return [(None, False, False)]
+
+    import concurrent.futures
+    results: list = [None] * n
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=min(_PROBE_POOL_MAX_WORKERS, n), thread_name_prefix="model-probe",
+    ) as pool:
+        fut_to_idx = {pool.submit(fn): i for i, fn in enumerate(probe_fns)}
+        try:
+            for fut in concurrent.futures.as_completed(fut_to_idx, timeout=max(deadline, 0.1)):
+                idx = fut_to_idx[fut]
+                try:
+                    results[idx] = fut.result()
+                except Exception:
+                    results[idx] = (None, False, False)
+        except concurrent.futures.TimeoutError:
+            pass  # remaining slots degrade to (None, False, False) below
+    for i in range(n):
+        if results[i] is None:
+            results[i] = (None, False, False)
+    return results
+
+
 def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
     """Section 3: ``providers:`` dict entries, grouped by (api_url, credential, api_mode,
     extra_headers) so keyed providers on one endpoint with the same wire protocol collapse into
@@ -991,7 +1053,33 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
         grp["raw_names"].append(display_name)
         grp["aliases"].update(custom_provider_aliases(display_name, str(ep_name)))
 
-    for grp in ep_groups.values():
+    # Refresh path: probe every endpoint in a bounded pool with a wall-clock deadline so a
+    # slow/degraded endpoint degrades to its cached list instead of serially blocking the
+    # whole picker wave (#123793). Read path (refresh=False) stays serial: with
+    # non_blocking_catalogs on, probes are cache-only and fast enough that a thread
+    # pool would add overhead, not save time.
+    def _probe_one(grp: dict) -> tuple:
+        api_url = grp["api_url"]
+        ep_name = grp["slug"]
+        ep_aliases = {str(alias).lower() for alias in grp["aliases"]}
+        ep_url_norm = _norm_url(api_url)
+        is_current = b.endpoint_is_current(ep_name, ep_aliases, ep_url_norm)
+        return b.discover_endpoint(
+            grp["api_key"], api_url,
+            ep_name if str(ep_name).strip().lower() in {"ollama", "custom:ollama"} else "custom",
+            grp["has_explicit_models"], headers=grp["headers"] or None, api_mode=grp["api_mode"],
+            discovery_allowed=grp["discovery_allowed"], is_current=is_current)
+
+    groups = list(ep_groups.values())
+    probe_results: list[tuple]
+    if b.refresh and len(groups) > 1:
+        deadline = _probe_deadline_seconds()
+        probe_results = _run_endpoint_probes_parallel(
+            [lambda g=grp: _probe_one(g) for grp in groups], deadline=deadline)
+    else:
+        probe_results = [_probe_one(grp) for grp in groups]
+
+    for idx, grp in enumerate(groups):
         ep_name, display_name, api_url = grp["slug"], grp["name"], grp["api_url"]
         models_list = list(grp["models"])
         # Official OpenAI rows often have base_url but no models: dict — avoid a misleading zero count.
@@ -1001,11 +1089,7 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
         ep_url_norm = _norm_url(api_url)
         ep_aliases = {str(alias).lower() for alias in grp["aliases"]}
         is_current = b.endpoint_is_current(ep_name, ep_aliases, ep_url_norm)
-        discovered, native_catalog_empty, _ = b.discover_endpoint(
-            grp["api_key"], api_url,
-            ep_name if str(ep_name).strip().lower() in {"ollama", "custom:ollama"} else "custom",
-            grp["has_explicit_models"], headers=grp["headers"] or None, api_mode=grp["api_mode"],
-            discovery_allowed=grp["discovery_allowed"], is_current=is_current)
+        discovered, native_catalog_empty, _ = probe_results[idx]
         if discovered is not None:
             models_list = discovered
 
@@ -1085,18 +1169,58 @@ def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
     current_url_group_count = sum(
         1 for grp in groups.values()
         if b.current_base_url_norm and _norm_url(grp["api_url"]) == b.current_base_url_norm)
+
+    # Refresh path: pre-fetch endpoint probes in a bounded parallel wave before the serial
+    # dedup loop below, which must stay serial (row ordering / section3 dedup depends on it)
+    # but no longer blocks on the network. A probe that misses the wall-clock deadline
+    # degrades to the cached/curated list for that endpoint (#123793).
+    #
+    # Probes are submitted against the *final* slug (a group that will be suffixed gets its
+    # suffixed slug here), so the pre-registered final slug can never be "claimed" by a
+    # subsequent group during the serial loop — the suffix numbering stays exactly as it was
+    # when everything ran serially.
+    final_slugs: list[str] = []
+    _registered: set = set()
     for grp in groups.values():
-        api_url, api_key, slug = grp["api_url"], grp.get("api_key", ""), grp["slug"]
-        # Slug claimed by a built-in/overlay/providers: row -> skip (don't shadow).
-        if slug.lower() in b.seen_slugs and slug.lower() not in section4_slugs:
-            continue
-        # Two custom endpoints with the same cleaned name: suffix a counter so both stay visible.
-        if slug.lower() in section4_slugs:
+        slug = grp["slug"]
+        if slug.lower() in _registered:
             base_slug, n = slug, 2
-            while f"{base_slug}-{n}".lower() in b.seen_slugs:
+            while f"{base_slug}-{n}".lower() in _registered:
                 n += 1
             slug = f"{base_slug}-{n}"
             grp["slug"] = slug
+        _registered.add(slug.lower())
+        final_slugs.append(slug)
+
+    def _section4_probe(idx: int, grp: dict) -> tuple:
+        api_url, api_key, slug = grp["api_url"], grp.get("api_key", ""), final_slugs[idx]
+        grp_url_norm = _norm_url(api_url)
+        is_current = b.endpoint_is_current(
+            slug, {str(alias).lower() for alias in grp["aliases"]}, grp_url_norm,
+            url_match_ok=current_url_group_count == 1)
+        return b.discover_endpoint(
+            api_key, api_url,
+            "ollama" if "ollama" in {str(slug).strip().lower(), str(grp.get("name") or "").strip().lower()} else "custom",
+            bool(grp.get("has_explicit_models")), headers=grp.get("extra_headers") or None,
+            api_mode=grp.get("api_mode"), discovery_allowed=bool(api_url) and grp.get("discover_models", True),
+            is_current=is_current)
+
+    section4_groups = list(groups.values())
+    section4_probe_results: list[tuple]
+    if b.refresh and len(section4_groups) > 1:
+        deadline = _probe_deadline_seconds()
+        section4_probe_results = _run_endpoint_probes_parallel(
+            [lambda i=idx, g=grp: _section4_probe(i, g) for idx, grp in enumerate(section4_groups)],
+            deadline=deadline)
+    else:
+        section4_probe_results = [_section4_probe(idx, grp) for idx, grp in enumerate(section4_groups)]
+
+    for idx, grp in enumerate(section4_groups):
+        api_url, api_key = grp["api_url"], grp.get("api_key", "")
+        slug = final_slugs[idx]
+        # Slug claimed by a built-in/overlay/providers: row -> skip (don't shadow).
+        if slug.lower() in b.seen_slugs and slug.lower() not in section4_slugs:
+            continue
         grp_url_norm = _norm_url(api_url)
         pair_key = (str(grp["name"]).strip().lower(), grp_url_norm)
         if pair_key[0] and pair_key[1] and pair_key in b.section3_pairs:
@@ -1108,12 +1232,7 @@ def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
         is_current = b.endpoint_is_current(
             slug, {str(alias).lower() for alias in grp["aliases"]}, grp_url_norm,
             url_match_ok=current_url_group_count == 1)
-        discovered, native_catalog_empty, probe_live = b.discover_endpoint(
-            api_key, api_url,
-            "ollama" if "ollama" in {str(slug).strip().lower(), str(grp.get("name") or "").strip().lower()} else "custom",
-            bool(grp.get("has_explicit_models")), headers=grp.get("extra_headers") or None,
-            api_mode=grp.get("api_mode"), discovery_allowed=bool(api_url) and grp.get("discover_models", True),
-            is_current=is_current)
+        discovered, native_catalog_empty, probe_live = section4_probe_results[idx]
         if discovered is not None:
             grp["models"] = discovered
             if probe_live:  # a successful live probe persists the catalog for no-probe surfaces

@@ -40,7 +40,7 @@ from tools.tts_command_provider import (
 from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
 from tools.tts_tool_delivery import (
     _resolve_max_text_length, _build_audio_delivery_files, _convert_to_opus, _remove_quietly,
-    _repair_ogg_container, _resolve_audio_delivery_profile, _split_text_for_tts)
+    _repair_ogg_container, _resolve_audio_delivery_profile, _section, _split_text_for_tts)
 from tools.tts_tool_providers import (
     _generate_edge_tts, _generate_elevenlabs, _generate_gemini_tts, _generate_minimax_tts,
     _generate_mistral_tts, _generate_xai_tts, _resolve_minimax_tts_runtime)
@@ -268,10 +268,22 @@ def _finalize_voice_delivery(
 # --- Main tool function ---
 def _apply_call_overrides(tts_config: Dict[str, Any], speed: Optional[float], provider: Optional[str]):
     """Apply per-call ``speed`` (clamped, on a shallow copy so the cached config isn't mutated) and
-    resolve the provider name."""
-    if speed is not None:
-        tts_config = {**tts_config, "speed": max(0.25, min(4.0, float(speed)))}
-    return tts_config, provider.lower().strip() if provider else _get_provider(tts_config)
+    resolve the provider name.
+
+    Providers read their own ``speed`` before ``tts.speed`` (and DEFAULT_CONFIG seeds
+    ``tts.xai.speed``), so the per-call value is also written into the provider's section and
+    its ``tts.providers.<name>`` entry; otherwise any configured provider speed silently wins
+    over the speed the caller asked for."""
+    provider = provider.lower().strip() if provider else _get_provider(tts_config)
+    if speed is None:
+        return tts_config, provider
+    speed = max(0.25, min(4.0, float(speed)))
+    tts_config = {**tts_config, "speed": speed,
+                  provider: {**_section(tts_config, provider), "speed": speed}}
+    named = _section(tts_config, "providers")
+    if isinstance(named.get(provider), dict):
+        tts_config["providers"] = {**named, provider: {**named[provider], "speed": speed}}
+    return tts_config, provider
 
 
 def _session_platform() -> tuple:

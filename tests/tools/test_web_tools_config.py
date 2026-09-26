@@ -551,6 +551,7 @@ class TestWebSearchSchema:
         with patch("tools.web_tools._get_search_backend", return_value="parallel"), \
              patch("agent.web_search_registry.get_provider", return_value=fake_provider), \
              patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("tools.web_tools._get_fallback_search_chain", return_value=[]), \
              patch.object(tools.web_tools._debug, "log_call"), \
              patch.object(tools.web_tools._debug, "save"):
             result = json.loads(tools.web_tools.web_search_tool("docs", limit=500))

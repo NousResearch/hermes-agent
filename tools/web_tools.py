@@ -134,6 +134,90 @@ def _get_backend() -> str:
     return _keyless_backend() or "firecrawl"  # default (backward compat)
 
 
+def _get_fallback_search_backend() -> str:
+    """Return the configured fallback backend, or empty string if disabled.
+
+    The fallback is a SECOND-TIER backend consulted ONLY when the primary
+    returns zero organic results. The default is ``"mmx"`` when the mmx
+    plugin is available (same auth as the model, no extra key), otherwise
+    the fallback is disabled. Override with ``web.fallback_search_backend``
+    in config.yaml; set to ``""`` to disable.
+
+    Examples::
+
+        web:
+          backend: "searxng"              # primary
+          fallback_search_backend: "mmx"  # used when searxng returns 0 results
+
+    Designed for the SearXNG-silent-middle-of-investigation case
+    (verified 2026-08-08: vacuum-cleaners report) where the primary
+    backend is up but the upstream instances are returning empty pages.
+    """
+    cfg = _load_web_config()
+    explicit = (cfg.get("fallback_search_backend") or "").lower().strip()
+    if explicit in ("none", "false", "off"):
+        return ""
+    if explicit:
+        # User picked a specific backend — honor it as long as it's available.
+        # If the user explicitly asked for a backend that's not available,
+        # surface that as a no-op rather than silently swapping in mmx.
+        if _is_backend_available(explicit):
+            return explicit
+        return ""
+    # Default: try mmx, the only backend that reuses the existing model auth.
+    if _is_backend_available("mmx"):
+        return "mmx"
+    return ""
+
+
+def _get_fallback_search_chain() -> list:
+    """Return ordered list of fallback search backends to try.
+
+    Builds the chain from two config keys:
+      1. ``web.fallback_search_backend`` (single key, default ``"mmx"``)
+      2. ``web.additional_fallback_search_backends`` (list, default ``[]``)
+
+    Both are consulted in order; each is filtered by availability via
+    :func:`_is_backend_available`. The first one that returns organic
+    results wins.
+
+    Designed for the "SearXNG went silent + mmx also empty" case: if primary
+    returns 0 AND mmx returns 0, try the configured chain next, ending with
+    brave-free if ``BRAVE_SEARCH_API_KEY`` is set.
+
+    Example::
+
+        web:
+          backend: "searxng"
+          fallback_search_backend: "mmx"
+          additional_fallback_search_backends:
+            - "duckduckgo_curl_cffi"
+            - "brave-free"
+
+    Returns an empty list when the user explicitly disabled fallbacks.
+    """
+    cfg = _load_web_config()
+    chain: list = []
+    primary = (cfg.get("fallback_search_backend") or "mmx").lower().strip()
+    if primary and primary not in ("none", "false", "off"):
+        if _is_backend_available(primary):
+            chain.append(primary)
+    extras = cfg.get("additional_fallback_search_backends") or []
+    if isinstance(extras, list):
+        for name in extras:
+            n = (str(name) or "").lower().strip()
+            if n and n not in chain and n not in ("none", "false", "off") and _is_backend_available(n):
+                chain.append(n)
+    # If the chain is still empty (user cleared fallback_search_backend and
+    # didn't add extras), fall back to whatever's available from a sensible
+    # built-in default. Don't override an explicit empty user choice.
+    if not chain:
+        for candidate in ("mmx", "duckduckgo_curl_cffi", "brave-free"):
+            if _is_backend_available(candidate):
+                chain.append(candidate)
+    return chain
+
+
 def _keyless_backend() -> Optional[str]:
     """Keyless free-tier backend name, or None. Strictly the last autodetect rung so it never
     pre-empts a keyed backend. Discovery must run first: reachable from contexts that haven't
@@ -320,6 +404,44 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         else:
             logger.info("Web search via %s: '%s' (limit: %d)", provider.name, query, limit)
             response_data = _memoized_search(provider, query, limit)
+
+            # Empty-result fallback chain. Tries each configured fallback in
+            # order until one returns results. Distinct from upstream's rescue
+            # system (which handles transport errors and exceptions); the empty-
+            # results case — primary returned success=True but 0 organic hits —
+            # falls here. The "SearXNG silent, mmx also empty" path benefits
+            # from chaining through duckduckgo_curl_cffi / brave-free.
+            organic = (response_data.get("data") or {}).get("web") or []
+            if not organic and response_data.get("success") and response_data.get("data", {}).get("fallback_from") is None:
+                chain = _get_fallback_search_chain()
+                for fallback_name in chain:
+                    if not fallback_name or fallback_name == provider.name:
+                        continue
+                    fallback_provider = _wsp_get_provider(fallback_name)
+                    if fallback_provider is None or not fallback_provider.supports_search():
+                        continue
+                    logger.info(
+                        "Web search primary %s returned 0 results, trying fallback %s",
+                        provider.name, fallback_name,
+                    )
+                    try:
+                        fallback_response = fallback_provider.search(query, limit)
+                    except Exception as exc:  # noqa: BLE001 — fallback failed; try next
+                        logger.info(
+                            "Web search fallback %s raised: %s", fallback_name, exc,
+                        )
+                        continue
+                    fallback_organic = (fallback_response.get("data") or {}).get("web") or []
+                    if fallback_organic and fallback_response.get("success"):
+                        data_block = fallback_response.setdefault("data", {})
+                        data_block["fallback_from"] = provider.name
+                        data_block["primary_results"] = 0
+                        response_data = fallback_response
+                        logger.info(
+                            "Web search fallback %s returned %d results",
+                            fallback_name, len(fallback_organic),
+                        )
+                        break
 
         debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)

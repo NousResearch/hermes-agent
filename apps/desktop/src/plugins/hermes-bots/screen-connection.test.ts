@@ -4,7 +4,7 @@
  * screen pane. The event must also have arrived on the bot's own connection.
  */
 
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi, beforeEach } from 'vitest'
 
 import type * as routing from './routing'
 import type { RosterRow } from './types'
@@ -79,10 +79,41 @@ describe('isEventForBotScreen', () => {
 })
 
 describe('displayRequest', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    routeMock.mockReturnValue(null)
+  })
+
   it('rejects instead of throwing synchronously for a row whose connection was removed', async () => {
     routeMock.mockReturnValue(null)
 
     await expect(displayRequest(orphan, 'display.status')).rejects.toThrow(/no connection owner/)
     expect(host.requestProfile).not.toHaveBeenCalled()
+  })
+
+  it('scopes display.status to the bot backend profile instead of the launch display', async () => {
+    routeMock.mockReturnValue({ connectionId: 'conn-b', profile: 'home-ops' })
+    vi.mocked(host.requestProfile).mockResolvedValue({})
+
+    await displayRequest({ name: 'home-ops' } as RosterRow, 'display.status')
+
+    expect(host.requestProfile).toHaveBeenCalledWith(
+      expect.objectContaining({ connectionId: 'conn-b', profile: 'home-ops' }),
+      'display.status',
+      { profile: 'home-ops' }
+    )
+  })
+
+  it('keeps caller params alongside the injected profile', async () => {
+    routeMock.mockReturnValue({ connectionId: 'conn-b', profile: 'home-ops' })
+    vi.mocked(host.requestProfile).mockResolvedValue({})
+
+    await displayRequest({ name: 'home-ops' } as RosterRow, 'display.observe', { viewer_id: 'v1' })
+
+    expect(host.requestProfile).toHaveBeenCalledWith(
+      expect.objectContaining({ connectionId: 'conn-b', profile: 'home-ops' }),
+      'display.observe',
+      { viewer_id: 'v1', profile: 'home-ops' }
+    )
   })
 })

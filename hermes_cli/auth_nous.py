@@ -1480,6 +1480,7 @@ def _pick_nous_model_after_login(
         get_curated_nous_model_ids,
         check_nous_free_tier,
         partition_nous_models_by_tier,
+        union_with_nous_on_sale_models,
         union_with_portal_free_recommendations,
         union_with_portal_paid_recommendations,
     )
@@ -1509,6 +1510,9 @@ def _pick_nous_model_after_login(
             union_with_portal_free_recommendations if free_tier
             else union_with_portal_paid_recommendations)
         model_ids, pricing = union(model_ids, pricing, _portal)
+        if not free_tier:
+            # Paid users also see every model on sale right now (same rule as `hermes model`).
+            model_ids = union_with_nous_on_sale_models(model_ids, pricing)
         _before_policy = model_ids
         model_ids = restrict_to_nous_policy(model_ids, _policy_allowed, rescue_empty=True)
         _policy_narrowed = model_ids != _before_policy

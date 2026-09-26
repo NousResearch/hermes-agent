@@ -1672,11 +1672,12 @@ def run_conversation(
     addresses, after every history rewrite including post-turn micro-compaction.
     """
     from agent.turn_context import export_current_turn_boundary
+    from agent.turn_observer_lifecycle import observe_turn_completion
     from tools.vision_tools_history_budget import native_turn_images
 
     # Images attached natively to this user turn stay visible to vision_analyze for the turn, so
     # it does not embed the same pixels a second time into the same request (#76411).
-    with native_turn_images(user_message):
+    with native_turn_images(user_message), observe_turn_completion(agent) as observation:
         result = _run_conversation_turn(
             agent,
             user_message,
@@ -1692,6 +1693,7 @@ def run_conversation(
             moa_config=moa_config,
             turn_author=turn_author,
         )
+        observation.result = result
     result = export_current_turn_boundary(agent, result, user_message)
     _close_durable_failed_turn(agent, result)
     return result

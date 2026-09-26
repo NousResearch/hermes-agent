@@ -60,6 +60,7 @@ afterEach(() => {
   $gateway.set(null)
   messageRunning = true
   vi.clearAllMocks()
+  vi.useRealTimers()
 })
 
 function clarifyTree(ui: ReactNode) {
@@ -154,7 +155,6 @@ describe('ClarifyTool live card stays mounted across settle', () => {
     const { rerender, respond } = renderLiveClarify()
 
     fireEvent.click(screen.getByRole('button', { name: /staging/ }))
-    fireEvent.click(screen.getByRole('button', { name: /Continue/ }))
 
     await waitFor(() => {
       expect(respond).toHaveBeenCalled()
@@ -192,6 +192,77 @@ describe('ClarifyTool live card stays mounted across settle', () => {
 })
 
 describe('ClarifyTool choice selection', () => {
+  it.each(['Enter', 'Continue'])('retries the visibly picked choice via %s after reconnect', async gesture => {
+    const { request, respond } = renderLiveClarify()
+    act(() => $gateway.set(null))
+
+    fireEvent.click(screen.getByRole('button', { name: /production/ }))
+
+    expect(respond).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: /production/ }).getAttribute('aria-pressed')).toBe('true')
+    expect(document.querySelector('form')?.getAttribute('aria-busy')).not.toBe('true')
+    act(() => $gateway.set({ request } as never))
+
+    if (gesture === 'Enter') {
+      fireEvent.keyDown(window, { key: 'Enter' })
+    } else {
+      fireEvent.click(screen.getByRole('button', { name: /Continue/ }))
+    }
+
+    await waitFor(() => expect(respond).toHaveBeenCalledExactlyOnceWith({ answer: 'production' }))
+  })
+
+  it.each(['production', 'staging'])(
+    'keeps the first single-card pick when %s is clicked in the same tick',
+    async next => {
+      vi.useFakeTimers()
+      const { respond } = renderLiveClarify()
+      const production = screen.getByRole('button', { name: /production/ })
+      const second = screen.getByRole('button', { name: new RegExp(next) })
+
+      act(() => {
+        fireEvent.click(production)
+        fireEvent.click(second)
+      })
+
+      expect(respond).toHaveBeenCalledExactlyOnceWith({ answer: 'production' })
+      expect(production.getAttribute('aria-pressed')).toBe('true')
+      expect(screen.getByRole('button', { name: /staging/ }).getAttribute('aria-pressed')).toBe('false')
+      await act(async () => vi.advanceTimersByTimeAsync(150))
+    }
+  )
+
+  it.each(['click', '2', 'b', 'Enter'])('paints the single-choice response before settling via %s', async input => {
+    vi.useFakeTimers()
+    const { rerender, respond } = renderLiveClarify()
+    const production = screen.getByRole('button', { name: /production/ })
+
+    if (input === 'click') {
+      fireEvent.click(production)
+    } else {
+      fireEvent.keyDown(window, { key: 'ArrowDown' })
+      fireEvent.keyDown(window, { key: input })
+    }
+
+    expect(respond).toHaveBeenCalledExactlyOnceWith({ answer: 'production' })
+    expect(production.getAttribute('aria-pressed')).toBe('true')
+    expect(production.closest('form')?.getAttribute('aria-busy')).toBe('true')
+    expect(screen.getByRole('button', { name: /staging/ }).hasAttribute('disabled')).toBe(true)
+    expect(document.querySelector('[data-slot="clarify-inline"] .animate-spin')).toBeTruthy()
+    act(() => clearClarifyRequest('request-1', 'session-1'))
+    rerender(clarifyTree(<ClarifyTool {...liveClarifyProps()} result={{ user_response: 'production' }} />))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(149)
+    })
+    expect(screen.getByRole('button', { name: /production/ }).getAttribute('aria-pressed')).toBe('true')
+    expect(document.querySelector('[data-clarify-settled]')).toBeNull()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1)
+    })
+    expect(document.querySelector('form')).toBeNull()
+    expect(document.querySelector('[data-clarify-answer]')?.textContent).toBe('production')
+  })
+
   it('selects independently, deselects and submits multi-select choices as a JSON array', async () => {
     const { respond } = renderLiveClarify({ multiSelect: true })
     const staging = screen.getByRole('button', { name: /staging/ })
@@ -199,6 +270,7 @@ describe('ClarifyTool choice selection', () => {
 
     fireEvent.click(staging)
     fireEvent.click(production)
+    expect(staging.closest('form')?.getAttribute('aria-busy')).not.toBe('true')
     expect(staging.getAttribute('aria-pressed')).toBe('true')
     expect(production.getAttribute('aria-pressed')).toBe('true')
 
@@ -209,6 +281,7 @@ describe('ClarifyTool choice selection', () => {
     fireEvent.click(staging)
     expect(staging.getAttribute('aria-pressed')).toBe('false')
     fireEvent.click(staging)
+    expect(respond).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByRole('button', { name: /Continue/ }))
 
@@ -259,22 +332,18 @@ describe('ClarifyTool choice selection', () => {
     })
   })
 
-  it('keeps single-select replacement and plain-string submission', async () => {
+  it.each(['', 'a custom draft'])('sends a single choice exactly once on click with draft %j', async draft => {
     const { respond } = renderLiveClarify()
-    const staging = screen.getByRole('button', { name: /staging/ })
-    const production = screen.getByRole('button', { name: /production/ })
+    const choice = 'production'
 
-    fireEvent.click(staging)
-    fireEvent.click(production)
+    if (draft) {
+      fireEvent.change(screen.getByPlaceholderText(/Other/), { target: { value: draft } })
+      expect(respond).not.toHaveBeenCalled()
+    }
 
-    expect(staging.getAttribute('aria-pressed')).toBe('false')
-    expect(production.getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(screen.getByRole('button', { name: new RegExp(choice) }))
 
-    fireEvent.click(screen.getByRole('button', { name: /Continue/ }))
-
-    await waitFor(() => {
-      expect(respond).toHaveBeenCalledWith({ answer: 'production' })
-    })
+    await waitFor(() => expect(respond).toHaveBeenCalledExactlyOnceWith({ answer: choice }))
     expect(hasOpenServerRequest('request-1')).toBe(false)
   })
 })
@@ -434,23 +503,23 @@ describe('ClarifyTool keyboard navigation', () => {
     expect(other.closest('label')?.getAttribute('data-highlighted')).toBe('true')
   })
 
-  it('selects by number and confirms the answer with Enter', async () => {
+  it.each(['2', 'b', 'B', 'Enter'])('sends the selected choice immediately with %s', async key => {
     const { respond } = renderLiveClarify()
 
-    fireEvent.keyDown(window, { key: '2' })
-    fireEvent.keyDown(window, { key: 'Enter' })
+    fireEvent.keyDown(window, { key: 'ArrowDown' })
+    fireEvent.keyDown(window, { key })
 
     await waitFor(() => {
-      expect(respond).toHaveBeenCalledWith({ answer: 'production' })
+      expect(respond).toHaveBeenCalledExactlyOnceWith({ answer: 'production' })
     })
   })
 
-  it('stages a highlighted multi-select choice with Enter and submits it with Continue', async () => {
+  it.each(['Enter', '2', 'b'])('stages a multi-select choice with %s and submits it with Continue', async key => {
     const { respond } = renderLiveClarify({ multiSelect: true })
     const production = screen.getByRole('button', { name: /production/ })
 
     fireEvent.keyDown(window, { key: 'ArrowDown' })
-    fireEvent.keyDown(window, { key: 'Enter' })
+    fireEvent.keyDown(window, { key })
 
     expect(production.getAttribute('aria-pressed')).toBe('true')
     expect(respond).not.toHaveBeenCalled()
@@ -487,23 +556,25 @@ describe('ClarifyTool keyboard navigation', () => {
     expect(respond).not.toHaveBeenCalled()
   })
 
-  it('confirms a clicked choice with Enter while the choice button keeps focus', async () => {
+  it.each(['field Enter', 'row Enter', 'Continue'])('confirms a typed draft with %s', async action => {
     const { respond } = renderLiveClarify()
-    const production = screen.getByRole('button', { name: /production/ })
+    const other = screen.getByPlaceholderText(/Other/)
+    const draft = 'canary'
 
-    // Click selects the choice; in a real browser the option button keeps
-    // focus afterwards. jsdom's fireEvent.click does not move focus, so
-    // focus it explicitly to reproduce the reported bug.
-    fireEvent.click(production)
-    production.focus()
-    expect(production.getAttribute('aria-pressed')).toBe('true')
-    expect(document.activeElement).toBe(production)
+    fireEvent.change(other, { target: { value: draft } })
+    expect(respond).not.toHaveBeenCalled()
 
-    fireEvent.keyDown(window, { key: 'Enter' })
+    if (action === 'Continue') {
+      fireEvent.click(screen.getByRole('button', { name: /Continue/ }))
+    } else if (action === 'field Enter') {
+      other.focus()
+      fireEvent.keyDown(other, { key: 'Enter' })
+    } else {
+      screen.getByRole('button', { name: /production/ }).focus()
+      fireEvent.keyDown(window, { key: 'Enter' })
+    }
 
-    await waitFor(() => {
-      expect(respond).toHaveBeenCalledWith({ answer: 'production' })
-    })
+    await waitFor(() => expect(respond).toHaveBeenCalledExactlyOnceWith({ answer: draft }))
   })
 
   it('confirms the highlighted choice with Enter when a choice button is focused but not clicked', async () => {
@@ -736,6 +807,198 @@ describe('ClarifyTool submit shortcut', () => {
 })
 
 describe('ClarifyTool batch card', () => {
+  it('keeps a failed immediate pick available for an explicit confirm retry', async () => {
+    vi.useFakeTimers()
+    const request = vi.fn().mockRejectedValueOnce(new Error('Connection lost')).mockResolvedValue({ ok: true })
+    liveServerRequest('request-batch')
+    $activeSessionId.set('session-1')
+    $gateway.set({ request } as never)
+    const question = { choices: ['red', 'blue'], multiSelect: false, qid: 'q0', question: 'Color?' }
+    setClarifyRequest({
+      choices: null,
+      multiSelect: false,
+      question: '',
+      questions: [question],
+      requestId: 'request-batch',
+      sessionId: 'session-1'
+    })
+    renderClarify(<ClarifyTool {...liveBatchProps()} args={{ questions: [question] }} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /blue/ }))
+    await act(async () => vi.advanceTimersByTimeAsync(150))
+
+    expect(screen.getByRole('button', { name: /blue/ }).getAttribute('aria-pressed')).toBe('true')
+    expect(document.querySelector('form')?.getAttribute('aria-busy')).not.toBe('true')
+    const confirm = screen.getByRole('button', { name: /Confirm and continue/ })
+    expect(confirm.hasAttribute('disabled')).toBe(false)
+    fireEvent.click(confirm)
+    expect(confirm.querySelector('.animate-spin')).toBeTruthy()
+    await act(async () => vi.advanceTimersByTimeAsync(0))
+
+    expect(request).toHaveBeenCalledTimes(2)
+
+    for (const call of request.mock.calls) {
+      expect(call).toEqual(['clarify.lock', { answer: 'blue', question_id: 'q0', request_id: 'request-batch' }])
+    }
+
+    expect(hasOpenServerRequest('request-batch')).toBe(false)
+  })
+
+  it.each(['red', 'blue'])('locks only the first batch pick when %s is clicked in the same tick', async next => {
+    vi.useFakeTimers()
+    const request = vi.fn().mockResolvedValue({ ok: true, remaining: [] })
+    liveServerRequest('request-batch')
+    $activeSessionId.set('session-1')
+    $gateway.set({ request } as never)
+    const question = { choices: ['red', 'blue'], multiSelect: false, qid: 'q0', question: 'Color?' }
+    setClarifyRequest({
+      choices: null,
+      multiSelect: false,
+      question: '',
+      questions: [question],
+      requestId: 'request-batch',
+      sessionId: 'session-1'
+    })
+    renderClarify(<ClarifyTool {...liveBatchProps()} args={{ questions: [question] }} />)
+    const red = screen.getByRole('button', { name: /red/ })
+    const second = screen.getByRole('button', { name: new RegExp(next) })
+
+    act(() => {
+      fireEvent.click(red)
+      fireEvent.click(second)
+    })
+
+    expect(request).toHaveBeenCalledExactlyOnceWith('clarify.lock', {
+      answer: 'red',
+      question_id: 'q0',
+      request_id: 'request-batch'
+    })
+    expect(red.getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByRole('button', { name: /blue/ }).getAttribute('aria-pressed')).toBe('false')
+    await act(async () => vi.advanceTimersByTimeAsync(150))
+    fireEvent.submit(document.querySelector('form') as HTMLFormElement)
+    expect(request).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['fast', 'slow', 'late-result'])(
+    'keeps the picked choice busy until both the %s RPC and feedback floor finish',
+    async speed => {
+      vi.useFakeTimers()
+      let resolveLock!: (value: unknown) => void
+
+      const request = vi.fn(
+        () =>
+          new Promise(resolve => {
+            resolveLock = resolve
+          })
+      )
+
+      liveServerRequest('request-batch')
+      $activeSessionId.set('session-1')
+      $gateway.set({ request } as never)
+      const question = { choices: ['red', 'blue'], multiSelect: false, qid: 'q0', question: 'Color?' }
+      setClarifyRequest({
+        choices: null,
+        multiSelect: false,
+        question: '',
+        questions: [question],
+        requestId: 'request-batch',
+        sessionId: 'session-1'
+      })
+      const props = { ...liveBatchProps(), args: { questions: [question] } }
+      const { rerender } = renderClarify(<ClarifyTool {...props} />)
+
+      fireEvent.click(screen.getByRole('button', { name: /blue/ }))
+      const selected = screen.getByRole('button', { name: /blue/ })
+      expect(selected.getAttribute('aria-pressed')).toBe('true')
+      expect(selected.closest('form')?.getAttribute('aria-busy')).toBe('true')
+      expect(screen.getByRole('button', { name: /red/ }).hasAttribute('disabled')).toBe(true)
+      expect(document.querySelector('[data-slot="clarify-inline"] .animate-spin')).toBeTruthy()
+      const confirm = screen.getByRole('button', { name: /Confirm and continue/ })
+      expect(confirm.hasAttribute('disabled')).toBe(true)
+      expect(confirm.querySelector('.animate-spin')).toBeNull()
+      expect(request).toHaveBeenCalledTimes(1)
+
+      // The server can publish tool.complete before the lock RPC response.
+      act(() => clearClarifyRequest('request-batch', 'session-1'))
+
+      const settled = clarifyTree(
+        <ClarifyTool {...props} result={{ responses: [{ question: 'Color?', user_response: 'blue' }] }} />
+      )
+
+      if (speed !== 'late-result') {
+        rerender(settled)
+      }
+
+      if (speed !== 'slow') {
+        await act(async () => resolveLock({ ok: true }))
+      }
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(149)
+      })
+      expect(screen.getByRole('button', { name: /blue/ }).getAttribute('aria-pressed')).toBe('true')
+      expect(document.querySelector('[data-clarify-settled]')).toBeNull()
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1)
+      })
+
+      if (speed === 'slow') {
+        expect(document.querySelector('form')?.getAttribute('aria-busy')).toBe('true')
+        expect(document.querySelector('[data-clarify-settled]')).toBeNull()
+        await act(async () => resolveLock({ ok: true }))
+      }
+
+      if (speed === 'late-result') {
+        expect(screen.getByRole('button', { name: /blue/ }).getAttribute('aria-pressed')).toBe('true')
+        expect(document.querySelector('[data-clarify-settled]')).toBeNull()
+        rerender(settled)
+      }
+
+      expect(document.querySelector('form')).toBeNull()
+      expect(document.querySelector('[data-clarify-settled]')?.textContent).toContain('blue')
+    }
+  )
+
+  it.each([false, true])(
+    'answers a one-question batch on pick only when multiSelect is false (%s)',
+    async multiSelect => {
+      const request = vi.fn().mockResolvedValue({ ok: true, remaining: [] })
+      liveServerRequest('request-batch')
+      $activeSessionId.set('session-1')
+      $gateway.set({ request } as never)
+      const question = { choices: ['red', 'blue'], multiSelect, qid: 'q0', question: 'Color?' }
+      setClarifyRequest({
+        choices: null,
+        multiSelect: false,
+        question: '',
+        questions: [question],
+        requestId: 'request-batch',
+        sessionId: 'session-1'
+      })
+      const props = liveBatchProps()
+      const args = { questions: [{ ...question, multi_select: multiSelect }] }
+      renderClarify(<ClarifyTool {...props} args={args} argsText={JSON.stringify(args)} />)
+
+      fireEvent.click(screen.getByRole('button', { name: /red/ }))
+
+      if (multiSelect) {
+        expect(request).not.toHaveBeenCalled()
+        expect(document.querySelector('form')?.getAttribute('aria-busy')).not.toBe('true')
+        fireEvent.click(screen.getByRole('button', { name: /Confirm and continue/ }))
+      }
+
+      await waitFor(() =>
+        expect(request).toHaveBeenCalledExactlyOnceWith('clarify.lock', {
+          answer: multiSelect ? JSON.stringify(['red']) : 'red',
+          question_id: question.qid,
+          request_id: 'request-batch'
+        })
+      )
+      await waitFor(() => expect(hasOpenServerRequest('request-batch')).toBe(false))
+    }
+  )
+
   // #112855: the batch card spun forever while the gateway clarify request
   // raced (or never came). The question text is already in the tool args.
   it('paints batch questions from tool args while the gateway request is still racing', () => {
@@ -819,10 +1082,13 @@ describe('ClarifyTool batch card', () => {
   })
 
   it('confirm sends every per-question clarify.lock in order and completes the batch', async () => {
-    const { request } = renderLiveBatch()
+    const { request, respond } = renderLiveBatch()
 
     fireEvent.click(screen.getByRole('button', { name: /red/ }))
+    expect(request).not.toHaveBeenCalled()
+    expect(respond).not.toHaveBeenCalled()
     fireEvent.change(screen.getByPlaceholderText('Type your answer…'), { target: { value: 'packet' } })
+    expect(request).not.toHaveBeenCalled()
     fireEvent.submit(document.querySelector('form') as HTMLFormElement)
 
     await waitFor(() => {
@@ -1016,7 +1282,6 @@ describe('ClarifyTool owner routing', () => {
     renderClarify(<ClarifyTool {...liveClarifyProps()} />)
 
     fireEvent.click(screen.getByRole('button', { name: /staging/ }))
-    fireEvent.click(screen.getByRole('button', { name: /Continue/ }))
 
     await waitFor(() => {
       expect(respond).toHaveBeenCalledWith({ answer: 'staging' })

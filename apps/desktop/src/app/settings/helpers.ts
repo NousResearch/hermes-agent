@@ -1,3 +1,4 @@
+import { foldPersonalityName } from '@/lib/personalities'
 import { asText, normalize } from '@/lib/text'
 import type { ConfigFieldSchema, HermesConfigRecord, ToolsetInfo } from '@/types/hermes'
 
@@ -243,10 +244,24 @@ export function setNested(obj: HermesConfigRecord, path: string, value: unknown)
 }
 
 function personalityOptions(config: HermesConfigRecord): string[] {
-  const custom = getNested(config, 'agent.personalities')
-
-  const customNames =
-    custom && typeof custom === 'object' && !Array.isArray(custom) ? Object.keys(custom as Record<string, unknown>) : []
+  // The Python runtime (`hermes_cli.personality.available_personalities`) honours both
+  // the root-level `personalities` block and `agent.personalities` (agent wins on a name
+  // clash). Read both so a root-registered persona the CLI/gateway resolve also appears in
+  // the dropdown (#123297).
+  // Fold each key the way the runtime does (`available_personalities`:
+  // `str(name).strip().lower()`, dropping the neutral spellings) so a case-variant,
+  // whitespace-padded, or neutral-named block never surfaces a row the runtime can't
+  // resolve, and a root/agent case clash dedupes to one canonical name (#123297).
+  const customNames: string[] = []
+  for (const key of ['personalities', 'agent.personalities']) {
+    const block = getNested(config, key)
+    if (isPlainObject(block)) {
+      for (const name of Object.keys(block)) {
+        const folded = foldPersonalityName(name)
+        if (folded) customNames.push(folded)
+      }
+    }
+  }
 
   return [...new Set(['', ...BUILTIN_PERSONALITIES, ...customNames])]
 }

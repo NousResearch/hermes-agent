@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { HermesConfigRecord } from '@/types/hermes'
 
+import { BUILTIN_PERSONALITIES } from './constants'
 import { defineFieldCopy, fieldCopyForSchemaKey, schemaKeyToFieldCopyKey } from './field-copy'
 import {
   clearsEnabledToolsets,
@@ -263,6 +264,69 @@ describe('settings helpers', () => {
       expect(opts).not.toContain('local_command')
       expect(opts).not.toContain('deepinfra')
       expect(opts).toContain('myasr')
+    })
+  })
+
+  describe('enumOptionsFor — display.personality dropdown', () => {
+    it('lists a root-level `personalities` block alongside the built-ins (#123297)', () => {
+      // The Python spec (`hermes_cli.personality.available_personalities`) overlays
+      // the built-ins with the root `personalities` block then `agent.personalities`;
+      // the dropdown must surface a root-registered persona the CLI/gateway resolve.
+      const config: HermesConfigRecord = { personalities: { root_persona: { prompt: 'hi' } } }
+      const opts = enumOptionsFor('display.personality', '', config)
+
+      // Derive the expected built-ins from the source of truth, per the repo's
+      // change-detector rule — adding a built-in must not silently break this.
+      for (const builtin of BUILTIN_PERSONALITIES) {
+        expect(opts).toContain(builtin)
+      }
+      expect(opts).toContain('') // the "unset" sentinel
+      expect(opts).toContain('root_persona')
+    })
+
+    it('merges root and agent personalities, deduping a clashing name', () => {
+      const config: HermesConfigRecord = {
+        personalities: { root_persona: {}, shared: {} },
+        agent: { personalities: { agent_persona: {}, shared: {} } }
+      }
+      const opts = enumOptionsFor('display.personality', '', config)!
+      expect(opts).toContain('root_persona')
+      expect(opts).toContain('agent_persona')
+      // a name in both blocks is offered exactly once
+      expect(opts.filter(o => o === 'shared')).toHaveLength(1)
+    })
+
+    it('ignores a non-object or array `personalities` block', () => {
+      for (const bad of [[], 'nope', 42, null]) {
+        const opts = enumOptionsFor('display.personality', '', { personalities: bad } as HermesConfigRecord)!
+        // still the built-ins + empty sentinel, no crash on a malformed block
+        expect(opts).toContain('')
+        for (const builtin of BUILTIN_PERSONALITIES) {
+          expect(opts).toContain(builtin)
+        }
+      }
+    })
+
+    it('folds custom keys like the runtime so only resolvable rows are offered', () => {
+      // The runtime folds each key (`str(name).strip().lower()`) and drops the neutral
+      // spellings; without matching that, the dropdown offers a case-variant duplicate,
+      // a whitespace-padded name, or a neutral name the runtime canonicalises away —
+      // rows the user can pick but that never load the definition shown (#123297).
+      const config: HermesConfigRecord = {
+        personalities: { Catgirl: {}, '  Spaced  ': {}, none: {}, Default: {}, NEUTRAL: {} }
+      } as HermesConfigRecord
+      const opts = enumOptionsFor('display.personality', '', config)!
+
+      // `Catgirl` folds to the built-in `catgirl` (offered once, not twice).
+      expect(opts.filter(o => o === 'catgirl')).toHaveLength(1)
+      expect(opts).not.toContain('Catgirl')
+      // whitespace folded to the canonical key.
+      expect(opts).toContain('spaced')
+      expect(opts).not.toContain('  Spaced  ')
+      // neutral spellings never surface as selectable rows (only the '' sentinel remains).
+      for (const neutral of ['none', 'Default', 'NEUTRAL', 'default', 'neutral']) {
+        expect(opts).not.toContain(neutral)
+      }
     })
   })
 

@@ -12,6 +12,7 @@ import {
   createToolMergeCache,
   messageCreatedAt,
   optimisticAttachmentRef,
+  personalityNamesFromConfig,
   toRuntimeMessage
 } from './chat-runtime'
 
@@ -248,5 +249,42 @@ describe('coalesceToolOnlyAssistants toolCallId uniqueness', () => {
       .map(part => (part as { toolCallId: string }).toolCallId)
 
     expect(ids).toEqual(['call-a', 'call-b'])
+  })
+})
+
+describe('personalityNamesFromConfig', () => {
+  it('reads root-level personalities the runtime honours (#123297)', () => {
+    expect(personalityNamesFromConfig({ personalities: { root_persona: '...' } })).toEqual(['root_persona'])
+  })
+
+  it('merges root and agent blocks, deduping name clashes', () => {
+    const names = personalityNamesFromConfig({
+      personalities: { root_persona: 'r', shared: 'root' },
+      agent: { personalities: { agent_persona: 'a', shared: 'agent' } }
+    })
+
+    // Direct array equality pins membership, dedupe, AND order in one assertion:
+    // `available_personalities()` inserts the root block before `agent.personalities`,
+    // and a clashing name keeps its first-insert (root) position, so the GUI listing
+    // must match that exact order.
+    expect(names).toEqual(['root_persona', 'shared', 'agent_persona'])
+  })
+
+  it('ignores non-object or array blocks', () => {
+    expect(personalityNamesFromConfig({ personalities: ['nope'], agent: { personalities: 'nope' } })).toEqual([])
+    expect(personalityNamesFromConfig(null)).toEqual([])
+  })
+
+  it('folds keys like the runtime: case/whitespace fold and dedupe, neutral names dropped', () => {
+    // The runtime (`available_personalities`) folds each key `str(name).strip().lower()`
+    // and skips the neutral spellings, so the dropdown must not offer a row the runtime
+    // never resolves. `Catgirl` and `catgirl` are one personality; `  Spaced  ` resolves
+    // to `spaced`; `none`/`default`/`neutral` resolve to nothing.
+    const names = personalityNamesFromConfig({
+      personalities: { Catgirl: 'r', '  Spaced  ': 'r', none: 'r', Default: 'r', NEUTRAL: 'r' },
+      agent: { personalities: { catgirl: 'a' } }
+    })
+
+    expect(names).toEqual(['catgirl', 'spaced'])
   })
 })

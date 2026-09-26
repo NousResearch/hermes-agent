@@ -418,18 +418,32 @@ def _resolve_in_profile(home: Path, provider: str, model: str):
     scoping here cannot leak into the caller's home or another thread.
     """
     from hermes_cli.config import read_user_config_raw
-    from hermes_cli.model_switch import model_selection_config_updates
+    from hermes_cli.model_switch import model_selection_config_updates, switch_model
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     cfg_path = Path(home) / "config.yaml"
+    # Read this profile's OWN config for the "current" side of the switch, under the
+    # override so the config reader is scoped to it too. switch_model has no
+    # ``provider=`` kwarg: the target is ``explicit_provider``, and current_provider /
+    # current_model / base_url / api_key are required so it can re-resolve credentials
+    # for this profile's own route rather than inheriting the caller's.
     token = set_hermes_home_override(Path(home))
     try:
-        from hermes_cli.model_switch import switch_model
-
-        result = switch_model(model, provider=provider)
+        raw = read_user_config_raw(cfg_path) if cfg_path.is_file() else {}
+        model_cfg = raw.get("model") or {}
+        result = switch_model(
+            raw_input=model,
+            current_provider=model_cfg.get("provider", "") or "",
+            current_model=model_cfg.get("default", "") or "",
+            current_base_url=model_cfg.get("base_url", "") or "",
+            current_api_key=str(model_cfg.get("api_key") or ""),
+            is_global=True,
+            explicit_provider=provider,
+            user_providers=raw.get("providers"),
+            custom_providers=raw.get("custom_providers"),
+        )
         if not getattr(result, "success", False):
             return None
-        raw = read_user_config_raw(cfg_path) if cfg_path.is_file() else {}
         return result, model_selection_config_updates(result, raw.get("model"))
     except Exception as exc:
         logger.debug("model-fleet: %s did not resolve in %s (%s)", model, home, exc)
@@ -533,6 +547,10 @@ def _apply_crons(provider: str, model: str, settings: Dict[str, Any], stamp: str
                     backups.append(_backup_or_abort(jobs_file, stamp))
                 if touched and not dry_run:
                     save_jobs(jobs)
+        except BackupFailed:
+            # A backup-policy abort is not an unreadable store. Re-raise so the caller
+            # surfaces "Switch aborted" instead of silently skipping the profile.
+            raise
         except Exception as exc:
             skipped.append(f"cron/{label}: unreadable ({exc})")
             continue
@@ -540,7 +558,6 @@ def _apply_crons(provider: str, model: str, settings: Dict[str, Any], stamp: str
             changed.append(f"cron/{label}: {already} agent job(s) already on {provider}/{model}")
             continue
         verb = "would repoint" if dry_run else "repointed"
-        changed.append(f"cron/{label}: {verb} {touched} agent job(s) → {provider}/{model}")
         changed.append(f"cron/{label}: {verb} {touched} agent job(s) → {provider}/{model}")
     return changed, skipped, backups
 

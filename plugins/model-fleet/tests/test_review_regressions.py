@@ -242,6 +242,111 @@ def test_backup_failure_aborts_instead_of_writing(tmp_path, monkeypatch):
         "config was rewritten despite the aborted backup"
 
 
+# --- Regression: duplicated summary line (a literal copy/paste slip) -------------
+
+
+def test_cron_summary_is_not_duplicated(tmp_path, monkeypatch):
+    """Each cron store must produce exactly one summary line, not two."""
+    mod = _load()
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(mod, "_install_root", lambda: home)
+    (home / "cron").mkdir(parents=True)
+    (home / "cron" / "jobs.json").write_text(json.dumps({"jobs": [
+        {"id": "j1", "provider": "old", "model": "old", "enabled": True,
+         "schedule": {"kind": "every", "every": 3600}},
+    ]}), encoding="utf-8")
+
+    settings = {"include_profiles": False, "include_cron": True, "backup": True}
+    for dry in (True, False):
+        changed, skipped, _ = mod._apply_crons("new", "new-model", settings, "STAMP", dry_run=dry)
+        assert len(changed) == 1, f"dry_run={dry}: expected 1 summary line, got {changed}"
+        assert not skipped, skipped
+
+
+# --- Finding: the real switch_model signature must actually be called -------------
+# The stubbed tests above are why a wrong-kwarg TypeError shipped green: nothing ever
+# invoked the real switch_model. This test calls the real one and inspects the call.
+
+
+def test_resolve_in_profile_calls_switch_model_with_a_valid_signature(tmp_path, monkeypatch):
+    """Must not raise TypeError; args must match switch_model's real signature."""
+    import inspect
+    mod = _load()
+    from hermes_cli.model_switch import ModelSwitchResult, switch_model
+
+    home = tmp_path / "p"
+    home.mkdir(parents=True)
+    (home / "config.yaml").write_text(
+        "model:\n  provider: nous\n  default: old-model\n  base_url: https://a.invalid\n",
+        encoding="utf-8")
+
+    seen = {}
+
+    def fake_switch(raw_input, current_provider, current_model, current_base_url="",
+                    current_api_key="", is_global=False, explicit_provider="",
+                    user_providers=None, custom_providers=None):
+        seen.update(raw_input=raw_input, current_provider=current_provider,
+                    current_model=current_model, current_base_url=current_base_url,
+                    explicit_provider=explicit_provider, is_global=is_global)
+        return ModelSwitchResult(success=True, new_model=raw_input,
+                                 target_provider=explicit_provider,
+                                 base_url="https://b.invalid", api_mode="chat")
+
+    # Bind the fake to the REAL signature so a bad kwarg raises TypeError here.
+    import hermes_cli.model_switch as ms
+    assert list(inspect.signature(fake_switch).parameters) == \
+        list(inspect.signature(switch_model).parameters), "test fake drifted from core"
+    monkeypatch.setattr(ms, "switch_model", fake_switch)
+
+    out = mod._resolve_in_profile(home, "anthropic", "claude-two")
+    assert out is not None, "_resolve_in_profile returned None — the fix is inert"
+    result, updates = out
+    assert seen["raw_input"] == "claude-two"
+    # The target goes in as explicit_provider (there is no `provider=` kwarg).
+    assert seen["explicit_provider"] == "anthropic"
+    # The "current" side must be THIS profile's own config, not the caller's.
+    assert seen["current_provider"] == "nous"
+    assert seen["current_model"] == "old-model"
+    assert seen["current_base_url"] == "https://a.invalid"
+    assert result is not None and updates is not None
+
+
+def test_resolve_in_profile_returns_none_on_failed_switch(tmp_path, monkeypatch):
+    mod = _load()
+    home = tmp_path / "p"
+    home.mkdir(parents=True)
+    (home / "config.yaml").write_text("model: {}\n", encoding="utf-8")
+    import hermes_cli.model_switch as ms
+    from hermes_cli.model_switch import ModelSwitchResult
+
+    def failing(*a, **k):
+        return ModelSwitchResult(success=False, new_model="", target_provider="",
+                                 error="unknown provider")
+    monkeypatch.setattr(ms, "switch_model", failing)
+    assert mod._resolve_in_profile(home, "nope", "nope-model") is None
+
+
+def test_resolve_in_profile_resets_the_home_override(tmp_path, monkeypatch):
+    """The override must be cleared on BOTH the success and failure paths."""
+    mod = _load()
+    import hermes_constants as hc
+    home = tmp_path / "p"
+    home.mkdir(parents=True)
+    (home / "config.yaml").write_text("model: {}\n", encoding="utf-8")
+    before = hc.get_hermes_home()
+    mod._resolve_in_profile(home, "anthropic", "claude-two")  # may succeed or fail
+    assert hc.get_hermes_home() == before, "scoped home leaked back to the caller"
+
+    import hermes_cli.model_switch as ms
+    from hermes_cli.model_switch import ModelSwitchResult
+    monkeypatch.setattr(ms, "switch_model",
+                        lambda *a, **k: ModelSwitchResult(success=False, new_model="",
+                                                          target_provider=""))
+    mod._resolve_in_profile(home, "anthropic", "claude-two")
+    assert hc.get_hermes_home() == before, "override leaked on the failure path"
+
+
 # --- Finding: per-profile resolution reuses another profile's route --------------
 
 

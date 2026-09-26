@@ -364,6 +364,7 @@ async def search_sessions(
                         "id": row.get("id") or sid,
                         "source": row.get("source"),
                         "model": row.get("model"),
+                        "cwd": row.get("cwd"),
                         "title": row.get("title"),
                         "started_at": row.get("started_at"),
                         "ended_at": row.get("ended_at"),
@@ -387,7 +388,7 @@ async def search_sessions(
                 # fall back to session_started instead of inventing one.
                 return {
                     "snippet": snippet, "role": role, "source": row.get("source"),
-                    "model": row.get("model"), "session_started": session_started,
+                    "model": row.get("model"), "cwd": row.get("cwd"), "session_started": session_started,
                     "last_active": row.get("last_active")}
 
             # Direct ID matches first (pasted ids never appear in message text).
@@ -409,7 +410,7 @@ async def search_sessions(
             matches = db.search_messages(
                 query=prefix_query, source_filter=include_sources,
                 exclude_sources=exclude_list or None, limit=max(safe_limit * 5, 50),
-                fields=("session_id", "role", "snippet", "source", "model", "session_started"))
+                fields=("session_id", "role", "snippet", "source", "model", "cwd", "session_started"))
             for m in matches:
                 if len(seen) >= safe_limit:
                     break

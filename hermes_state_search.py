@@ -43,7 +43,7 @@ _LIKE_TOKEN_RE = re.compile(r'"[^"]+"|\S+')
 _QUOTED_PHRASE_RE = re.compile(r'"[^"]*"')
 
 # Column list shared by every search route (snippet + metadata, never content).
-_SEARCH_SELECT_TAIL = "m.timestamp, m.tool_name, s.source, s.model, s.started_at AS session_started"
+_SEARCH_SELECT_TAIL = "m.timestamp, m.tool_name, s.source, s.model, s.cwd, s.started_at AS session_started"
 _LIKE_SNIPPET_SQL = "substr(m.content, max(1, instr(m.content, ?) - 40), 120) AS snippet"
 _LIKE_ANY_COLUMN_SQL = (
     "(m.content LIKE ? ESCAPE '\\' OR m.tool_name LIKE ? ESCAPE '\\' OR m.tool_calls LIKE ? ESCAPE '\\')"
@@ -169,7 +169,7 @@ class SessionSearchMixin:
     """See module docstring — mixin for SessionDB (Search cluster)."""
 
     _SEARCH_MESSAGE_RESULT_FIELDS = (
-        "id", "session_id", "role", "snippet", "timestamp", "tool_name", "source", "model", "session_started", "context"
+        "id", "session_id", "role", "snippet", "timestamp", "tool_name", "source", "model", "cwd", "session_started", "context"
     )
 
     @classmethod

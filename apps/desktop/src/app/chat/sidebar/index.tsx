@@ -26,7 +26,7 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { comboTokens } from '@/lib/keybinds/combo'
-import { sessionMatchesSearch } from '@/lib/session-search'
+import { sessionFromSearchResult, sessionMatchesSearch } from '@/lib/session-search'
 import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
@@ -289,29 +289,6 @@ export function stripFtsMarkers(snippet: string): string {
   return snippet.replaceAll('>>>', '').replaceAll('<<<', '')
 }
 
-function searchResultToSession(result: SessionSearchResult): SessionInfo {
-  const ts = result.session_started ?? Date.now() / 1000
-
-  return {
-    archived: false,
-    cwd: null,
-    ended_at: null,
-    id: result.session_id,
-    _lineage_root_id: result.lineage_root ?? null,
-    input_tokens: 0,
-    is_active: false,
-    last_active: result.last_active ?? ts,
-    message_count: 0,
-    model: result.model ?? null,
-    output_tokens: 0,
-    preview: stripFtsMarkers(result.snippet ?? '').trim() || null,
-    source: result.source ?? null,
-    started_at: ts,
-    title: null,
-    tool_call_count: 0
-  }
-}
-
 export function mergeSearchResults(
   sortedSessions: readonly SessionInfo[],
   query: string,
@@ -347,7 +324,7 @@ export function mergeSearchResults(
     }
 
     const loaded = sessionByAnyId.get(match.session_id)
-    out.set(match.session_id, loaded ?? searchResultToSession(match))
+    out.set(match.session_id, loaded ?? sessionFromSearchResult({ ...match, snippet: stripFtsMarkers(match.snippet ?? '') }))
   }
 
   // Client-only matches that the server didn't return (e.g. cwd/git-branch

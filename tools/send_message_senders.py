@@ -167,8 +167,8 @@ async def _telegram_send_media(bot, chat_id, f, ext, is_voice, force_document, *
 
 async def _telegram_send_text_chunk(bot, chat_id, chunk, parse_mode, has_html, text_kwargs):
     """One text chunk with adapter-matching fallbacks: thread-not-found -> retry without
-    ``message_thread_id`` (dropped from ``text_kwargs`` for later chunks too); parse failure
-    -> plain text."""
+    ``message_thread_id`` (dropped from ``text_kwargs`` for later chunks too); HTML parse
+    failure -> MarkdownV2 retry -> plain text."""
     async def send(text, mode):
         return await _send_telegram_message_with_retry(bot, chat_id=chat_id, text=text, parse_mode=mode, **text_kwargs)
     try:
@@ -182,6 +182,20 @@ async def _telegram_send_text_chunk(bot, chat_id, chunk, parse_mode, has_html, t
             return await send(chunk, parse_mode)
         err_text = str(md_error).lower()
         if "parse" in err_text or "markdown" in err_text or "html" in err_text:
+            if has_html:
+                # One unsupported tag must not drop ALL formatting: retry the chunk as
+                # MarkdownV2 before the plain-text floor (#124413).
+                mdv2 = _telegram_mdv2(chunk)
+                if mdv2 is not None:
+                    from telegram.constants import ParseMode
+                    try:
+                        return await send(mdv2, ParseMode.MARKDOWN_V2)
+                    except Exception as mdv2_error:
+                        mdv2_err = str(mdv2_error).lower()
+                        if not ("parse" in mdv2_err or "markdown" in mdv2_err or "html" in mdv2_err):
+                            raise  # not a parse failure: surface it instead of risking a duplicate plain send
+                        logger.warning("MarkdownV2 fallback failed in _send_telegram, falling back to plain text: %s",
+                                       _sanitize_error_text(mdv2_error))
             logger.warning("Parse mode %s failed in _send_telegram, falling back to plain text: %s",
                            parse_mode, _sanitize_error_text(md_error))
             return await send(chunk if has_html else _strip_mdv2_safe(chunk), None)
@@ -254,6 +268,25 @@ def _telegram_format(message):
         return TelegramAdapter.__new__(TelegramAdapter).format_message(message), ParseMode.MARKDOWN_V2, False
     except Exception:
         return message, ParseMode.MARKDOWN_V2, False  # formatting unavailable: send as-is
+
+
+_TELEGRAM_SUMMARY_TAG_RE = re.compile(r'<summary>(.*?)</summary>', re.IGNORECASE | re.DOTALL)
+_TELEGRAM_COLLAPSE_TAG_RE = re.compile(r'</?details\b[^>]*>', re.IGNORECASE)
+
+
+def _telegram_mdv2(text):
+    """MarkdownV2 retry text for an HTML-rejected chunk, or ``None`` when the adapter's
+    converter is unavailable. ``<summary>`` becomes a bold title and ``<details>`` wrappers
+    are dropped (the Bot API's HTML mode rejects these tags, which the rich chat lane
+    renders natively); under MarkdownV2 they are ordinary literal text, so every other
+    construct (bold, lists, tables) survives (#124413)."""
+    try:
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+        cleaned = _TELEGRAM_SUMMARY_TAG_RE.sub(lambda m: f'**{m.group(1).strip()}**', text)
+        cleaned = _TELEGRAM_COLLAPSE_TAG_RE.sub('', cleaned)
+        return TelegramAdapter.__new__(TelegramAdapter).format_message(cleaned)
+    except Exception:
+        return None
 
 
 async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):

@@ -776,6 +776,104 @@ class TestSendTelegramHtmlDetection:
         sleep_mock.assert_awaited_once()
 
 
+class TestSendTelegramGradedFallback:
+    """An HTML parse rejection must retry MarkdownV2 before the plain-text floor (#124413).
+
+    A single tag the Bot API's HTML mode rejects (e.g. ``<details>`` — rendered natively
+    by the rich chat lane) used to drop ALL formatting: ``_telegram_format`` flags the
+    chunk as HTML, the send is rejected, and the fallback went straight to plain text
+    while the cron job still reported ``ok``.
+    """
+
+    def _make_bot(self):
+        bot = MagicMock()
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        bot.send_photo = AsyncMock()
+        bot.send_video = AsyncMock()
+        bot.send_voice = AsyncMock()
+        bot.send_audio = AsyncMock()
+        bot.send_document = AsyncMock()
+        return bot
+
+    def test_unsupported_tag_retries_markdown_v2(self, monkeypatch):
+        """HTML rejection -> the retry is MarkdownV2 with the summary mapped to bold and
+        the details wrappers dropped, so bold/lists survive instead of plain text."""
+        bot = self._make_bot()
+        bot.send_message = AsyncMock(side_effect=[
+            Exception("Can't parse entities: unsupported start tag \"details\" at byte offset 3844"),
+            SimpleNamespace(message_id=7),
+        ])
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(
+            _send_telegram("tok", "123", "**bold** <details><summary>Quiz</summary>a - b</details>")
+        )
+
+        assert result["success"] is True
+        assert bot.send_message.await_count == 2
+        first = bot.send_message.await_args_list[0].kwargs
+        second = bot.send_message.await_args_list[1].kwargs
+        assert first["parse_mode"] == "HTML"
+        assert second["parse_mode"] == "MarkdownV2"
+        assert "*bold*" in second["text"]  # bold converted, not stripped
+        assert "*Quiz*" in second["text"]  # <summary> became a bold title
+        assert "<details>" not in second["text"] and "<summary>" not in second["text"]
+
+    def test_mdv2_retry_failure_falls_back_to_plain(self, monkeypatch):
+        """Both formatted modes rejected -> plain text with the raw source, as before."""
+        bot = self._make_bot()
+        bot.send_message = AsyncMock(side_effect=[
+            Exception("Can't parse entities: unsupported start tag \"details\" at byte offset 10"),
+            Exception("Can't parse entities: character '-' is reserved"),
+            SimpleNamespace(message_id=9),
+        ])
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(
+            _send_telegram("tok", "123", "<details><summary>Q</summary>a - b</details>")
+        )
+
+        assert result["success"] is True
+        assert bot.send_message.await_count == 3
+        third = bot.send_message.await_args_list[2].kwargs
+        assert third["parse_mode"] is None
+        assert third["text"] == "<details><summary>Q</summary>a - b</details>"
+
+    def test_mdv2_retry_non_parse_error_is_surfaced(self, monkeypatch):
+        """A non-parse failure on the MarkdownV2 retry must not fall to plain text
+        (the send may have partially delivered; a plain resend would duplicate it)."""
+        bot = self._make_bot()
+        bot.send_message = AsyncMock(side_effect=[
+            Exception("Can't parse entities: unsupported start tag \"details\" at byte offset 10"),
+            Exception("Connection reset by peer"),
+        ])
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(
+            _send_telegram("tok", "123", "<details><summary>Q</summary>x</details>")
+        )
+
+        assert result.get("success") is not True
+        assert bot.send_message.await_count == 2  # no plain-text resend
+
+    def test_converter_unavailable_keeps_plain_floor(self, monkeypatch):
+        """format_message unavailable (adapter import fails) -> plain text, as before."""
+        bot = self._make_bot()
+        bot.send_message = AsyncMock(side_effect=[
+            Exception("Can't parse entities: unsupported start tag \"details\" at byte offset 10"),
+            SimpleNamespace(message_id=5),
+        ])
+        _install_telegram_mock(monkeypatch, bot)
+        monkeypatch.setattr("tools.send_message_senders._telegram_mdv2", lambda _text: None)
+
+        result = asyncio.run(_send_telegram("tok", "123", "<details><summary>Q</summary>x</details>"))
+
+        assert result["success"] is True
+        second = bot.send_message.await_args_list[1].kwargs
+        assert second["parse_mode"] is None
+        assert second["text"] == "<details><summary>Q</summary>x</details>"
+
+
 class TestSendTelegramThreadIdMapping:
     """General-topic mapping in _send_telegram (issue #22267).
 

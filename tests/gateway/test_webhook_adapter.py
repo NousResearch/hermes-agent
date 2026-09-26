@@ -369,6 +369,37 @@ class TestEventFilter:
             )
             assert resp.status == 202
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("events, accepted, ignored", [
+        ("pull_request_review", "pull_request_review", ["pull_request", "review"]),
+        ("push, pull_request", "pull_request", ["pull", "push, pull_request"]),
+    ])
+    async def test_scalar_events_value_matches_whole_event_names(self, events, accepted, ignored):
+        """A hand-edited scalar ``events:`` filters by whole names, like the list form."""
+        adapter = _make_adapter(routes={"gh": {"secret": _INSECURE_NO_AUTH, "events": events}})
+        adapter.handle_message = AsyncMock()
+        async with TestClient(TestServer(_create_app(adapter))) as cli:
+            for event in ignored:
+                resp = await cli.post("/webhooks/gh", json={}, headers={"X-GitHub-Event": event})
+                assert (await resp.json())["status"] == "ignored", event
+            resp = await cli.post("/webhooks/gh", json={}, headers={"X-GitHub-Event": accepted})
+            assert resp.status == 202
+
+    @pytest.mark.asyncio
+    async def test_scalar_skills_value_loads_that_skill(self):
+        """``skills: github-code-review`` loads that skill, not one skill per character."""
+        adapter = _make_adapter(routes={"gh": {"secret": _INSECURE_NO_AUTH, "prompt": "review",
+                                                "skills": "github-code-review"}})
+        adapter.handle_message = AsyncMock()
+        with patch("agent.skill_commands.get_skill_commands", return_value={"/github-code-review": {}}), \
+                patch("agent.skill_commands.build_skill_invocation_message",
+                      side_effect=lambda key, user_instruction: f"[{key}] {user_instruction}"):
+            async with TestClient(TestServer(_create_app(adapter))) as cli:
+                resp = await cli.post("/webhooks/gh", json={}, headers={"X-GitHub-Event": "pull_request"})
+                assert resp.status == 202
+                await asyncio.sleep(0)
+        assert adapter.handle_message.await_args.args[0].text == "[/github-code-review] review"
+
 
 # ===================================================================
 # Payload filters

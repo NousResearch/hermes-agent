@@ -78,12 +78,12 @@ curl http://localhost:8644/health
 
 | 属性 | 是否必填 | 描述 |
 |----------|----------|-------------|
-| `events` | 否 | 要接受的事件类型列表（例如 `["pull_request"]`）。若为空，则接受所有事件。事件类型从 `X-GitHub-Event`、`X-GitLab-Event` 或 payload 中的 `event_type` 读取。 |
+| `events` | 否 | 要接受的事件类型列表（例如 `["pull_request"]`）；也可写单个名称或逗号分隔的字符串（`push, pull_request`），只按完整名称匹配。若为空，则接受所有事件。事件类型从 `X-GitHub-Event`、`X-GitLab-Event` 或 payload 中的 `event_type` 读取。 |
 | `secret` | **是** | 用于签名验证的 HMAC secret。若路由未设置，则回退到全局 `secret`。仅用于测试时可设为 `"INSECURE_NO_AUTH"`（跳过验证）。 |
 | `prompt` | 否 | 使用点号表示法访问 payload 字段的模板字符串（例如 `{pull_request.title}`）。若省略，则将完整 JSON payload 转储到 prompt 中。 |
 | `filters` | 否 | 声明式 payload 过滤器，在认证/请求体/事件过滤之后、agent 或直接投递之前求值。不匹配时返回 `{"status":"ignored","reason":"filter"}`（HTTP 200）。 |
 | `script` | 否 | 位于 `~/.hermes/scripts/` 下的过滤/转换脚本。webhook payload 以 JSON 形式通过 stdin 传入。stdout 为 JSON 对象时会在模板渲染前替换 payload；文本 stdout 以 `script_output` 形式暴露；空 stdout、`[SILENT]` 或非零退出码会忽略该 webhook。 |
-| `skills` | 否 | agent 运行时加载的 skill 名称列表。 |
+| `skills` | 否 | agent 运行时加载的 skill 名称列表；也可写单个名称或逗号分隔的字符串。 |
 | `deliver` | 否 | 响应发送目标：`github_comment`、`telegram`、`discord`、`slack`、`signal`、`sms`、`whatsapp`、`matrix`、`mattermost`、`homeassistant`、`email`、`dingtalk`、`feishu`、`wecom`、`weixin`、`bluebubbles`、`qqbot`，或 `log`（默认）。 |
 | `deliver_extra` | 否 | 额外的投递配置——键取决于 `deliver` 类型（例如 `repo`、`pr_number`、`chat_id`）。值支持与 `prompt` 相同的 `{dot.notation}` 模板语法。 |
 | `deliver_only` | 否 | 若为 `true`，完全跳过 agent——渲染后的 `prompt` 模板直接作为消息体投递。零 LLM token 消耗，亚秒级投递。参见[直接投递模式](#direct-delivery-mode)了解使用场景。要求 `deliver` 为真实目标（非 `log`）。 |

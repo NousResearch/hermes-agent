@@ -238,7 +238,8 @@ def test_materializer_cli_refuses_missing_store_without_publishing(tmp_path, mon
 
 
 @pytest.mark.platforms("posix")
-def test_boot_migrates_legacy_conveniences_to_selected_runtime(tmp_path, monkeypatch):
+@pytest.mark.parametrize("legacy_hermes", ["venv-python", "venv-console-script"])
+def test_boot_migrates_legacy_conveniences_to_selected_runtime(tmp_path, monkeypatch, legacy_hermes):
     repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
     monkeypatch.setattr(Path, "home", lambda: home)
     monkeypatch.setenv("HERMES_INSTALL_ROOT", str(repo))
@@ -246,7 +247,11 @@ def test_boot_migrates_legacy_conveniences_to_selected_runtime(tmp_path, monkeyp
     out = home / ".local" / "bin"
     out.mkdir(parents=True)
     # Old venv and sibling-ACP wrappers, with an unrelated command sharing bin.
-    (out / "hermes").write_text(f'#!/bin/sh\nexec "{repo}/venv/bin/python" "{repo}/hermes" "$@"\n', encoding="utf-8")
+    old_wrapper = (f'#!/bin/sh\nexec "{repo}/venv/bin/python" "{repo}/hermes" "$@"\n'
+                   if legacy_hermes == "venv-python" else
+                   f'#!/usr/bin/env bash\nunset PYTHONPATH\nunset PYTHONHOME\n'
+                   f'exec "{repo}/venv/bin/hermes" "$@"\n')
+    (out / "hermes").write_text(old_wrapper, encoding="utf-8")
     (out / "hermes-acp").write_text(
         '#!/usr/bin/env bash\n# Hermes Agent — ACP launcher (written by `hermes update`).\n'
         f'exec "{out}/hermes" acp "$@"\n', encoding="utf-8")
@@ -268,6 +273,24 @@ def test_boot_migrates_legacy_conveniences_to_selected_runtime(tmp_path, monkeyp
     before = {p: p.stat().st_mtime_ns for p in out.iterdir()}
     assert _launchers.expose_cli()["written"] == []
     assert before == {p: p.stat().st_mtime_ns for p in out.iterdir()}
+
+
+def test_legacy_venv_console_wrapper_is_replaced_only_for_its_install(tmp_path):
+    repo = tmp_path / "checkout"
+    out = tmp_path / "bin"
+    out.mkdir()
+    wrapper = out / "hermes"
+    wrapper.write_text(
+        f'#!/usr/bin/env bash\nunset PYTHONPATH\nunset PYTHONHOME\n'
+        f'exec {shlex.quote(str(repo / "venv/bin/hermes"))} "$@"\n', encoding="utf-8")
+
+    assert _launchers._publish_conveniences(repo, out, ("hermes",)) == {wrapper: True}
+    assert str(repo / ".hermes/bin/hermes") in wrapper.read_text(encoding="utf-8")
+
+    foreign = f'#!/bin/sh\nexec {shlex.quote(str(tmp_path / "other/venv/bin/hermes"))} "$@"\n'
+    wrapper.write_text(foreign, encoding="utf-8")
+    assert _launchers._publish_conveniences(repo, out, ("hermes",)) == {}
+    assert wrapper.read_text(encoding="utf-8") == foreign
 
 
 def _command_survives_generation_collection(tmp_path, monkeypatch, surface):

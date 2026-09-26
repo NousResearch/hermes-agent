@@ -716,3 +716,21 @@ class TestBackslashDoublingDrift:
         result, count, strategy, err = self.replace(content, old, new)
         assert count == 0
         assert err is not None and "apostrophe" in err
+
+
+def test_match_start_inside_emdash_expansion_issue_122452():
+    from tools.fuzzy_match import fuzzy_find_and_replace
+
+    result = fuzzy_find_and_replace("well\u2014no", "-no", "-YES")
+    assert result[3] is None, result
+    assert result[0] == "well-YES", result
+    assert result[1] == 1, result
+
+
+def test_match_start_inside_ellipsis_expansion_issue_122452():
+    from tools.fuzzy_match import fuzzy_find_and_replace
+
+    result = fuzzy_find_and_replace("Wait\u2026really", "..really", "..now")
+    assert result[3] is None, result
+    assert result[0] == "Wait..now", result
+    assert result[1] == 1, result

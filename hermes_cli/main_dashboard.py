@@ -503,16 +503,21 @@ def _report_dashboard_status() -> int:
     ``--status`` let an operator kill what they couldn't see.
 
     Ledger-registered serves (profiled launches the argv scan can't match) surface via the spawn-ledger
-    augmentation in _scan_dashboard_processes. See #81564.
+    augmentation in _scan_dashboard_processes, and the ledger's recorded bind replaces the argv port so
+    ``--port 0`` backends are probed on the port the OS actually gave them. See #81564.
     """
-    from hermes_cli.dashboard_procs import _scan_dashboard_processes
+    from hermes_cli.dashboard_procs import _ledger_serve_binds, _scan_dashboard_processes
     from gateway.status import _pid_exists
+    binds = _ledger_serve_binds()
     live: list[tuple[int, str, str]] = []
     for pid, command in _scan_dashboard_processes():
         runtime = _parse_dashboard_runtime(command)
         if runtime is None:
             continue
         mode, host, port = runtime
+        if pid in binds:
+            ledger_host, port = binds[pid]
+            host = ledger_host or host
         if port <= 0 or not _pid_exists(pid) or not _dashboard_listening(host, port):
             continue
         live.append((pid, command, mode))

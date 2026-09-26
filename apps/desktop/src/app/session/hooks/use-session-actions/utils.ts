@@ -196,6 +196,10 @@ function preserveStructuralParts(message: ChatMessage, previous: ChatMessage): C
 //   attachmentRefs — composer-side metadata; already reconciled in reconcileResumeMessages
 //   serverRowSpan — backend rows the folded message covers; the older-page offset
 //                   accounting reads it, the transcript never paints it
+//   systemNotice  — hydration's provenance flag for a backend-authored notice
+//                   (a model switch, a process completion); the stale-transcript
+//                   compare reads it, while the visible system row is painted
+//                   from role + parts, and role is already COMPARED
 //
 // If your new field affects what the user sees in the transcript, add it to
 // COMPARED. If it's metadata that shouldn't trigger a re-render, add it to
@@ -229,7 +233,7 @@ const COMPARED_FIELDS = [
   'durationS'
 ] as const
 
-const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'serverRowSpan'] as const
+const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'serverRowSpan', 'systemNotice'] as const
 
 // Compile-time check: every ChatMessagePart discriminant must be handled by
 // chatPartsEquivalent. If @assistant-ui adds a new part type, this fails tsc.

@@ -235,7 +235,23 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
   }
 
   if (prefixIsEarlier) {
-    return [...previous.slice(0, anchor), ...refreshedTail]
+    // A page-local tool fold can sit in front of the anchor on BOTH sides: the
+    // window's copy was hydrated from the same page, and the refreshed page
+    // re-emits that row with the same id. Keeping both copies makes the graft
+    // non-idempotent — the refreshed window comes back one row longer than the
+    // local window on every read, so `messagesIfTranscriptBehind` reports
+    // "behind" forever: the send is refused before `prompt.submit` runs and a
+    // duplicate accumulates per retry. Drop only the prefix copies the page
+    // already carries. Every durable prefix row keeps travelling in front of
+    // the refreshed tail, and so does an unstored row the page has no copy of
+    // (it can only have come from an older page).
+    const refreshedIds = new Set(refreshedTail.map(message => message.id))
+
+    const prefix = previous
+      .slice(0, anchor)
+      .filter(message => message.rowId !== undefined || !refreshedIds.has(message.id))
+
+    return prefix.length ? [...prefix, ...refreshedTail] : refreshedTail
   }
 
   const refreshedIds = new Set(refreshedTail.map(message => message.id))

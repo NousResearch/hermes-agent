@@ -692,7 +692,7 @@ def cmd_mcp_add(args):
         _success(
             f"Saved '{name}' to {display_hermes_home()}/config.yaml ({tool_count}/{len(tools)} tools enabled)"
         )
-        _info("Start a new session to use these tools.")
+        _info("Start a new session to use these tools, or run /reload-mcp to load them into open sessions.")
 
 
 def cmd_mcp_remove(args):
@@ -1064,7 +1064,7 @@ def cmd_mcp_configure(args):
     config.setdefault("mcp_servers", {})[name] = server_entry
     save_config(config)
     _success(f"Updated config: {len(chosen)}/{total} tools enabled")
-    _info("Start a new session for changes to take effect.")
+    _info("Run /reload-mcp for changes to take effect.")
 
 
 _MCP_USAGE = (

@@ -1177,6 +1177,9 @@ export const frOverrides = {
         "Laissez Hermes vous guider dans l'application en assombrissant l'écran et en mettant chaque étape en évidence.",
       composerPopoutTitle: 'Détacher la zone de saisie',
       composerPopoutDesc: "Autoriser la zone de saisie à s'ouvrir dans une fenêtre flottante distincte.",
+      fileBrowserTitle: 'Navigateur de fichiers',
+      fileBrowserDesc:
+        "Affiche le navigateur de fichiers à côté du chat lorsqu'un espace de travail est ouvert. Le bouton de la barre de titre modifie aussi ce réglage.",
       vibeHeartsTitle: "Cœurs d'ambiance",
       vibeHeartsDesc:
         "Des cœurs flottants apparaissent lorsque vous dites merci, « je t'aime », « good bot » ou envoyez un cœur. Cette option est indépendante des réactions aux messages ci-dessus.",
@@ -2797,6 +2800,10 @@ export const frOverrides = {
       emptyHint: 'Parcourez le catalogue ci-dessous pour installer un plugin vérifié en un clic.',
       loadFailed: "Impossible de charger les plugins de l'agent",
       toggleFailed: name => `Impossible de modifier l'état de ${name}`,
+      toolsetOn: (name: string, profile: string) => `Outils agent de ${name} activés pour ${profile}`,
+      toolsetOff: (name: string, profile: string) => `Outils agent de ${name} désactivés pour ${profile}`,
+      toolsetToggleFailed: (name: string) =>
+        `Impossible de modifier les outils agent de ${name} ; le panneau Desktop reste inchangé`,
       legacyBackend: 'Ce backend est trop ancien pour gérer les plugins depuis cet écran ; mettez Hermes à jour.',
       portableBadge: 'portable',
       serverStates: {
@@ -3782,6 +3789,8 @@ export const frOverrides = {
     nameLabel: 'Nom',
     namePlaceholder: 'Point du matin',
     promptLabel: 'Invite',
+    scriptLabel: "Script",
+    scriptBadge: "script",
     promptPlaceholder: 'Résumez mes fils Slack non lus et envoyez-moi les 5 principaux par email...',
     frequencyLabel: 'Fréquence',
     deliverLabel: 'Livrer vers',

@@ -329,6 +329,8 @@ class CLIStatusBarMixin:
             except Exception:
                 pass
             context_length = max(0, getattr(compressor, "context_length", 0) or 0)
+            if context_length:
+                context_tokens = min(context_tokens, context_length)
             snapshot["context_tokens"] = context_tokens
             snapshot["context_length"] = context_length or None
             from agent.context_pin import is_context_pinned

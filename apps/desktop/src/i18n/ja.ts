@@ -737,6 +737,9 @@ export const ja = defineLocale({
         '各ステップを強調しながら、Hermes がアプリを案内します。利用開始から30日後に自動でオフになりますが、再びオンにできます。',
       composerPopoutTitle: 'フローティング入力欄',
       composerPopoutDesc: '入力欄をドックからドラッグして外せるようにします。オフにすると画面下部に固定されます。',
+      fileBrowserTitle: 'ファイルブラウザ',
+      fileBrowserDesc:
+        'ワークスペースを開いているとき、チャットの横にファイルブラウザを表示します。タイトルバーのボタンでも切り替わります。',
       vibeHeartsTitle: 'バイブハート',
       vibeHeartsDesc:
         'ありがとう・愛してる・good bot・ハート絵文字のときに浮かぶハート。上のメッセージリアクションとは別です。',
@@ -2332,6 +2335,8 @@ export const ja = defineLocale({
     nameLabel: '名前',
     namePlaceholder: '例: 日次サマリー',
     promptLabel: 'プロンプト',
+    scriptLabel: 'スクリプト',
+    scriptBadge: 'スクリプト',
     promptPlaceholder: '実行ごとにエージェントが行う内容は？',
     frequencyLabel: '頻度',
     deliverLabel: '配信先',

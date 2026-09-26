@@ -6,7 +6,7 @@ import { toChatMessages } from '@/lib/chat-messages'
 import { toRuntimeMessage } from '@/lib/chat-runtime'
 import type { SessionMessage } from '@/types/hermes'
 
-import { stubThreadEnvironment, ThreadRuntime } from '../test-utils'
+import { createdAt, stubThreadEnvironment, ThreadRuntime } from '../test-utils'
 
 import { Thread } from '.'
 
@@ -89,6 +89,75 @@ it('keeps background continuations in one response with one action bar and the o
     expect(reloaded.container.querySelectorAll('[data-slot="aui_msg-actions"]')).toHaveLength(1)
     reloaded.unmount()
   }
+})
+
+// A REST transcript re-hydration rebuilds the tail through `toChatMessages`,
+// whose ids are synthesized POSITIONALLY (`${timestamp}-${index}-${role}`), so a
+// row can come back with a different id at the same index inside an
+// already-mounted turn. The turn itself is keyed on the user message id, so it
+// does not remount — which is exactly when an index-keyed child inherits the
+// previous message's mounted state (assistant-ui's `PartByIndexProvider` keeps a
+// per-index `lastPartRef`, and `MessageByIndex` memoizes on `index` alone).
+// This asserts the row remounts. The stronger claim — that the previous
+// message's PARTS were visible — is NOT proven here: `MessagePrimitiveParts`
+// derives its ranges from the current message's parts, so stale text did not
+// reproduce in any probe against main.
+it('remounts a response row when the message at its index is replaced', async () => {
+  const prompt = {
+    id: 'user-prompt',
+    role: 'user' as const,
+    content: [{ type: 'text' as const, text: 'Check both.' }],
+    attachments: [],
+    createdAt,
+    metadata: { custom: {} }
+  } as ThreadMessage
+
+  const firstAssistant = {
+    id: 'assistant-first',
+    role: 'assistant' as const,
+    content: [{ type: 'text' as const, text: 'Checking.' }],
+    status: { type: 'complete' as const, reason: 'stop' as const },
+    createdAt,
+    metadata: { unstable_state: null, unstable_annotations: [], unstable_data: [], steps: [], custom: {} }
+  } as ThreadMessage
+
+  const original = {
+    id: 'assistant-old',
+    role: 'assistant' as const,
+    content: [
+      { type: 'text' as const, text: 'Old answer' },
+      { type: 'text' as const, text: 'second part' }
+    ],
+    status: { type: 'complete' as const, reason: 'stop' as const },
+    createdAt,
+    metadata: { unstable_state: null, unstable_annotations: [], unstable_data: [], steps: [], custom: {} }
+  } as ThreadMessage
+
+  const replacement = {
+    ...original,
+    id: 'assistant-new',
+    content: [{ type: 'text' as const, text: 'New answer' }]
+  } as ThreadMessage
+
+  const { container, rerender } = render(
+    <ThreadRuntime messages={[prompt, firstAssistant, original]}>
+      <Thread />
+    </ThreadRuntime>
+  )
+
+  const originalNode = container.querySelector('[data-message-id="assistant-old"]')
+
+  rerender(
+    <ThreadRuntime messages={[prompt, firstAssistant, replacement]}>
+      <Thread />
+    </ThreadRuntime>
+  )
+
+  await waitFor(() => expect(container.textContent).toContain('New answer'))
+  expect(container.textContent).not.toContain('Old answer')
+  expect(container.textContent).not.toContain('second part')
+  expect(container.querySelector('[data-message-id="assistant-new"]')).not.toBe(originalNode)
+  expect(container.querySelector('[data-message-id="assistant-old"]')).toBeNull()
 })
 
 it('ends the response at a real user prompt or unrelated system event', () => {

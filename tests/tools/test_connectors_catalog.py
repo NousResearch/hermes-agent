@@ -185,6 +185,27 @@ def test_an_approved_row_installs_into_default_and_lists_the_live_tools(tmp_path
     assert call["home"].resolve() == Path(get_profile_dir("default")).resolve() != setup_home.resolve()
 
 
+def test_plugin_and_skill_with_the_same_id_install_as_separate_rows():
+    class SharedInstaller(FakeInstaller):
+        def skill_meta(self, identifier):
+            return {"name": "Shared Skill", "description": "A skill.", "source": "official",
+                    "identifier": identifier} if identifier == "shared" else None
+
+        def install_skill(self, identifier, *, force):
+            self.installs.append({"skill": identifier})
+            return {"name": "Shared Skill", "already_installed": False}
+
+    installer = SharedInstaller([_entry("shared")])
+    with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.5):
+        out = _install([{"kind": "plugin", "id": "shared"}, {"kind": "skill", "id": "shared"}],
+                       installer, _card(_approve()))
+    assert {row["kind"]: row["state"] for row in out["targets"]} == {
+        "plugin": "connected", "skill": "connected"}
+    assert len({row["name"] for row in out["targets"]}) == 2
+    assert {call.get("skill") or call.get("name") for call in installer.installs} == {"shared"}
+    assert len(installer.installs) == 2
+
+
 def test_advanced_values_pick_the_profile_force_and_pin(tmp_path):
     from hermes_cli.profiles import create_profile
 

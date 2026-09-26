@@ -32,7 +32,8 @@ argv = sys.argv[1:]
 stdin = sys.stdin.read() if not sys.stdin.isatty() else ""
 pw_env = argv[argv.index("--passwordenv") + 1] if "--passwordenv" in argv else None
 log.write(json.dumps({"argv": argv, "stdin": stdin, "BW_SESSION": os.environ.get("BW_SESSION"),
-                      "pw": os.environ.get(pw_env) if pw_env else None}) + "\n")
+                      "pw": os.environ.get(pw_env) if pw_env else None,
+                      "appdata": os.environ.get("BITWARDENCLI_APPDATA_DIR")}) + "\n")
 if argv[:2] == ["unlock", "--raw"]:
     if pw_env is None:
         sys.stderr.write("Master password is required. Try again in interactive mode or provide a password file or environment variable.\n"); sys.exit(1)
@@ -231,3 +232,27 @@ def test_onepassword_backend_env_forwards_config_directory(monkeypatch):
     backend = OnePasswordLoginBackend({"enabled": True})
 
     assert backend._env(None)["OP_CONFIG_DIR"] == "/tmp/op-config"
+
+
+def test_managed_bitwarden_session_lists_headless_via_config(fake_bw, tmp_path, monkeypatch):
+    """The real backend resolver must pass managed credentials to browser_vault_list."""
+    exe, log = fake_bw
+    session = tmp_path / "managed-session"
+    session.write_text("SESSION-TOKEN-123\n", encoding="utf-8")
+    session.chmod(0o600)
+    appdata = tmp_path / "bw-appdata"
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        f"vault:\n  bitwarden:\n    binary_path: {exe}\n    session_file: {session}\n"
+        f"    appdata_dir: {appdata}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+    from tools.browser_vault_tool import browser_vault_list
+
+    result = json.loads(browser_vault_list())
+    assert result["items"][0]["handle"] == "bw:abc"
+    assert not result.get("locked")
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert all(call["BW_SESSION"] == "SESSION-TOKEN-123" for call in calls)
+    assert all(call["appdata"] == str(appdata) for call in calls)
+    assert os.environ.get("BW_SESSION") is None

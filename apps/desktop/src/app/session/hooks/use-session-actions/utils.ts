@@ -2130,10 +2130,13 @@ function publishRuntimeToComposer(state: SessionRuntimeStatePatch): void {
     setCurrentPersonality(state.personality)
   }
 
-  if (state.reasoningEffort !== undefined) {
-    setCurrentReasoningEffort(state.reasoningEffort)
-  }
-
+  // `reasoningEffort` is a per-session override, not a global default: mirroring
+  // it into $currentReasoningEffort persists it as the composer draft, which
+  // `session.create` above ships as the new chat's override — so resuming a
+  // pinned session (or its session.info broadcast) silently pins every later new
+  // chat and clobbers the profile default. The session's own slice carries the
+  // value for the composer and the session pill, so only the display-only wire
+  // level is mirrored here.
   if (state.reasoningEffortWire !== undefined) {
     setCurrentReasoningEffortWire(state.reasoningEffortWire)
   }

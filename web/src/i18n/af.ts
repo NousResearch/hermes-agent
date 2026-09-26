@@ -182,6 +182,7 @@ export const af: Translations = {
   analytics: {
     period: "Tydperk:",
     totalTokens: "Totale Tokens",
+    inclCacheRead: "inkl. kas lees",
     totalSessions: "Totale Sessies",
     apiCalls: "API-oproepe",
     dailyTokenUsage: "Daaglikse Tokengebruik",
@@ -193,6 +194,7 @@ export const af: Translations = {
     edits: "Agent Bestuur",
     lastUsed: "Laas Gebruik",
     input: "Inset",
+    cacheRead: "Kas Lees",
     output: "Uitset",
     total: "Totaal",
     noUsageData: "Geen gebruiksdata vir hierdie tydperk nie",

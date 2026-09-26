@@ -15,6 +15,8 @@ export interface RepoScanOptions {
   maxDepth?: number
   enabled?: boolean
   excludePaths?: string[]
+  /** Override roots to scan (takes precedence over the `roots` arg). */
+  scanRoots?: string[]
   // Platform override for the darwin-only TCC media-dir skip (tests force
   // 'darwin' on Linux CI; production omits it).
   platform?: NodeJS.Platform
@@ -119,7 +121,15 @@ export async function scanGitRepos(roots: string[], options: RepoScanOptions = {
   const maxDepthValue = Number(options.maxDepth)
   const maxDepth = Number.isFinite(maxDepthValue) && maxDepthValue >= 0 ? maxDepthValue : DEFAULT_MAX_DEPTH
   const pathOptions: RepoScanPathOptions = options.platform ? { platform: options.platform } : {}
-  const requestedRoots = Array.isArray(roots) && roots.length > 0 ? roots : [os.homedir()]
+  const scanRootsOption = Array.isArray(options.scanRoots)
+    ? options.scanRoots
+        .filter(Boolean)
+        .map(root => normalizeRepoScanPath(root, pathOptions))
+        .filter((entry): entry is NormalizedScanPath => entry !== null)
+    : []
+  const requestedRoots = scanRootsOption.length > 0
+    ? scanRootsOption.map(entry => entry.value)
+    : (Array.isArray(roots) && roots.length > 0 ? roots : [os.homedir()])
 
   const searchRoots = [
     ...new Map(

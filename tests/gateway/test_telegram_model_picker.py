@@ -47,7 +47,6 @@ class TestTelegramModelPicker:
     @pytest.mark.asyncio
     async def test_back_button_escapes_dynamic_provider_label(self):
         adapter = _make_adapter()
-        adapter._is_callback_user_authorized = MagicMock(return_value=True)
         adapter._model_picker_state["12345"] = {
             "providers": [{"slug": "provider_one", "name": "Provider One", "total_models": 1, "is_current": True}],
             "current_model": "model_1",

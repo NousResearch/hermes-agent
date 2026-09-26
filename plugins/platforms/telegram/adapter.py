@@ -4380,9 +4380,6 @@ class TelegramAdapter(BasePlatformAdapter):
         if not state:
             await query.answer(text="Picker expired — run the command again.")
             return
-        # Same auth gate as approval buttons: strangers in a shared group must not flip session state.
-        if not await self._callback_authorized(query, self._callback_ctx(query), _UNAUTHORIZED):
-            return
         try:
             choice = state["choices"][int(data[3:])]
         except (ValueError, IndexError):
@@ -4544,9 +4541,6 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _handle_model_picker_callback(self, query, data: str, chat_id: str) -> None:
         """Handle model picker callbacks (mp:/mpg:/mpv:/mm:/mc:/mb/mx/mg:)."""
-        # A group member who is not allowlisted must not switch the owner's model from their picker.
-        if not await self._callback_authorized(query, self._callback_ctx(query), _UNAUTHORIZED):
-            return
         state = self._model_picker_state.get(chat_id)
         if not state:
             await query.answer(text="Picker expired — use /model again.")
@@ -4720,7 +4714,8 @@ class TelegramAdapter(BasePlatformAdapter):
             (("cp:",), self._handle_choice_picker_callback)):
             if data.startswith(prefixes):
                 chat_id = str(query.message.chat_id) if query.message else None
-                if chat_id:
+                # One auth gate for every chat-id picker: strangers in a shared group must not drive the owner's picker.
+                if chat_id and await self._callback_authorized(query, cb, _UNAUTHORIZED):
                     await handler(query, data, chat_id)
                 return
         for prefix, handler in (

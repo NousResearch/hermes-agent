@@ -519,6 +519,10 @@ def transcribe_audio(
     file_path: str, model: Optional[str] = None, source: Optional[str] = None) -> Dict[str, Any]:
     """Validate, preprocess supported inputs, and dispatch transcription. ``source`` is a caller-surface
     label (``"gateway"``, ``"voice_mode"``) forwarded to the ``pre_transcription`` hook only."""
+    from tools.transcription_remote import _is_remote_audio_url, _transcribe_remote_audio_url
+
+    if _is_remote_audio_url(file_path):
+        return _transcribe_remote_audio_url(file_path, model, source)
     # Secret-store refusal runs before ANY validation so the error names the real reason.
     blocked = _read_block_error(file_path)
     if blocked:

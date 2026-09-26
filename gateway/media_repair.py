@@ -6,12 +6,16 @@ directive, so delivery-path validation rejects it and drops the attachment.
 Deliberately narrow: only rewrites paths in a response that *already* carries a
 ``MEDIA:`` directive whose ``computer_use_<uuid>`` basename exactly matches a
 canonical path returned this turn.  Never auto-attaches; validation still runs.
+
+Also home of the final-reply ``MEDIA:`` helpers shared with the gateway turn runner
+(``tool_name_by_call_id``, ``untagged_media_tags``).
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from typing import Any, Dict, Iterator, List
 
@@ -43,6 +47,19 @@ def tool_name_by_call_id(messages: List[Dict[str, Any]]) -> Dict[str, str]:
             if call_id and name:
                 mapping[str(call_id)] = name
     return mapping
+
+
+def untagged_media_tags(media_tags: List[str], response: str) -> List[str]:
+    """``MEDIA:<path>`` tags whose file ``response`` does not already tag, compared as resolved
+    paths so a ``~/`` or symlinked spelling of the same file is not attached twice."""
+    if not media_tags or "MEDIA:" not in response:
+        return media_tags
+    from gateway.platforms.base import BasePlatformAdapter  # lazy, as below
+
+    def key(path: str) -> str:
+        return os.path.realpath(os.path.expanduser(path))
+    tagged = {key(path) for path, _is_voice in BasePlatformAdapter.extract_media(response)[0]}
+    return [tag for tag in media_tags if key(tag.removeprefix("MEDIA:")) not in tagged]
 
 
 def _computer_use_capture_basename(path: Any) -> str:

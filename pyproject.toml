@@ -849,6 +849,7 @@ tools = ["bot_desktop/launcher.sh", "bot_desktop/wallpaper.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_default_fixture_loop_scope = "function"
 markers = [
   "integration: marks tests requiring external services (API keys, Modal, etc.)",
   "live: secrets-gated canaries against REAL LLM provider APIs (spends money; select with -m live)",

@@ -560,6 +560,9 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "icon": "",
         "color": "",
         "default_workdir": None,
+        # Skills force-loaded on every dispatched worker for this board (replaces
+        # kanban.default_skills for the board; null = fall back to the global list).
+        "default_skills": None,
         # Project scope: new tasks inherit it (deterministic worktree + branch).
         "project_id": None,
         "created_at": None,
@@ -580,14 +583,25 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
     return meta
 
 
+UNSET_DEFAULT_SKILLS: Any = object()
+"""Sentinel for ``write_board_metadata(default_skills=...)``: remove the key so
+the global ``kanban.default_skills`` applies again. Distinct from ``None``,
+which means "leave unchanged"."""
+
+
 def write_board_metadata(
     board: Optional[str], *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, archived: Optional[bool] = None,
     default_workdir: Optional[str] = None, project_id: Optional[str] = None,
+    default_skills: Any = None,
 ) -> dict:
     """Create/update ``board.json``; unmentioned fields are preserved, ``created_at``
     set on first write. ``project_id``/``default_workdir``: ``None`` = unchanged,
-    "" = clear (``project_id`` is not validated here)."""
+    "" = clear (``project_id`` is not validated here). ``default_skills``:
+    ``None`` = unchanged, a list = set (empty list opts the board out of the
+    global defaults; entries are stripped and empties dropped, not validated
+    here — resolution happens at dispatch time, fail-open),
+    ``UNSET_DEFAULT_SKILLS`` = remove the override."""
     _assert_not_delegated_child_mutation()
     slug = _slug_or_default(board)
     meta = read_board_metadata(slug)
@@ -603,6 +617,14 @@ def write_board_metadata(
     for key, value in (("default_workdir", default_workdir), ("project_id", project_id)):
         if value is not None:
             meta[key] = str(value) if value else None
+    # The skills sentinel has three states, so it is passed the same way (None =
+    # unchanged); unlike the path keys, an explicit [] persists as an opt-out.
+    if default_skills is UNSET_DEFAULT_SKILLS:
+        meta.pop("default_skills", None)
+    elif default_skills is not None:
+        meta["default_skills"] = [
+            str(s).strip() for s in (default_skills or []) if str(s).strip()
+        ]
     if not meta.get("created_at"):
         meta["created_at"] = int(time.time())
     path = board_metadata_path(slug)

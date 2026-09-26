@@ -122,6 +122,14 @@ _BOARD_SPECS = [
         _SLUG,
         _arg("path", nargs="?", help="Absolute path to use as default workdir. Omit to clear."),
     ], help="Set the default workspace path for tasks on a board"),
+    _cmd("set-default-skills", [
+        _SLUG,
+        _arg("skills", nargs="*", help="Skill names force-loaded on every dispatched worker for "
+             "this board. No arguments = opt the board out; --clear removes the override so the "
+             "global kanban.default_skills applies again."),
+        _arg("--clear", action="store_true", help="Remove the board override (fall back to "
+             "kanban.default_skills)."),
+    ], help="Set per-board default worker skills (empty = opt out)"),
     _cmd("export", [
         _arg("slug", nargs="?", help="Board to export (default: the current board)"),
         _arg("-o", "--output", help="Archive path (default: ./<slug>.tar.gz)"),

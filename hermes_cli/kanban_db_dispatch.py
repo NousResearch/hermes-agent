@@ -1768,6 +1768,81 @@ def review_dispatch_enabled() -> bool:
         return True
 
 
+def _normalize_default_skill_names(raw: Any) -> Optional[list[str]]:
+    """Config value -> de-duplicated skill-name list; ``None`` when unset.
+
+    ``None`` (YAML null) and a missing key stay ``None`` so the caller can tell
+    "unset" (fall back to the global list) from "explicitly empty" (opt-out).
+    A bare scalar is a single-item list, not its characters; commas are refused
+    (a comma-joined string must not land in one argv slot, mirroring task
+    skills normalization).
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return None
+    cleaned: list[str] = []
+    for item in raw:
+        name = str(item).strip()
+        if not name:
+            continue
+        if "," in name:
+            raise ValueError(
+                f"skill name cannot contain comma: {name!r} "
+                f"(pass a list of separate names instead of a comma-joined string)"
+            )
+        if name not in cleaned:
+            cleaned.append(name)
+    return cleaned
+
+
+def board_default_worker_skills(board: Optional[str] = None) -> Optional[list[str]]:
+    """Board-level default skills from ``board.json``; ``None`` = unset.
+
+    The dispatcher may tick a board whose slug does not exist in any config
+    (``--board <slug>``), so the override lives in the board's own metadata
+    file, not under ``kanban.boards.<slug>`` in config.yaml. A present list
+    (including empty) replaces the global ``kanban.default_skills`` for this
+    board; ``None`` falls back to the global list.
+    """
+    try:
+        from hermes_cli.kanban_db import read_board_metadata
+        raw = (read_board_metadata(board) or {}).get("default_skills")
+        return _normalize_default_skill_names(raw)
+    except ValueError:
+        raise
+    except Exception:
+        return None
+
+
+def effective_default_worker_skills(board: Optional[str] = None) -> list[str]:
+    """Resolved default skills for a board: ``board.json`` override, else global.
+
+    An unresolvable entry is skipped with a warning rather than failing the
+    dispatch tick: a board-wide default must not take down an otherwise
+    runnable card. The global fallback returns ``[]`` on any config trouble —
+    same fail-open posture as the rest of the kanban config reads.
+    """
+    try:
+        override = board_default_worker_skills(board)
+    except ValueError as exc:
+        _kb._log.warning("kanban dispatch: ignoring invalid board default_skills: %s", exc)
+        override = None
+    if override is not None:
+        return override
+    try:
+        from hermes_cli.config import load_config
+        raw = (load_config() or {}).get("kanban", {}).get("default_skills")
+        return _normalize_default_skill_names(raw) or []
+    except ValueError as exc:
+        _kb._log.warning("kanban dispatch: ignoring invalid kanban.default_skills: %s", exc)
+        return []
+    except Exception:
+        return []
+
+
 # Memory-aware dispatch guard: an uncapped board once OOM'd a 1 GiB host. Two
 # safeguards — a memory-DERIVED default cap when none is configured
 # (``resolve_max_in_progress``) and a live memory-PRESSURE guard inside the
@@ -2073,6 +2148,12 @@ def _dispatch_lane_task(
         # Force-load sdlc-review; the kanban lifecycle is already in every
         # worker's system prompt via KANBAN_GUIDANCE.
         claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
+    # Board-default workflow skills ride every spawn in BOTH lanes
+    # (kanban.default_skills / board.json default_skills): appended after the
+    # lane-specific set and de-duplicated against skills already on the card.
+    for extra in effective_default_worker_skills(board):
+        if extra not in (claimed.skills or []):
+            claimed.skills = [*(claimed.skills or []), extra]
     try:
         pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
         if pid:

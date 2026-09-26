@@ -816,7 +816,10 @@ _TIMEOUT_COOLDOWN_LADDER = (60, 300, 900)
 # session wipe, just deferred. After this many consecutive overload aborts in one session the overload
 # stops counting as terminal and compress() commits the deterministic fallback instead — the same
 # bounded degrade the repeated-stall ladder takes (#112420). abort_on_summary_failure=true still
-# hard-aborts every attempt. A successful summary resets the count.
+# hard-aborts every attempt. The streak is durable per session (the gateway binds a fresh compressor on
+# every turn / cache eviction, so a memory-only budget restarted at zero); a successful summary, a
+# completed boundary (incl. the degraded fallback, else recovery stays degraded) or a runtime switch
+# resets it.
 _CONSECUTIVE_OVERLOAD_ABORT_ESCALATION = 3
 
 
@@ -2458,10 +2461,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         elif self._fallback_compression_streak:
             self._fallback_compression_streak = 0
         self._persist_fallback_compression_streak()
-        # A completed boundary — healthy summary OR committed degraded fallback — settles the
-        # sustained-overload budget (#123167). Leaving it armed after the degraded fallback
-        # committed would keep the session in degraded mode even after the provider recovers,
-        # with no success path left to reset it (the next summary failure can be any class).
+        # Any completed boundary (incl. the degraded fallback) settles the overload budget (#123167).
         self._reset_consecutive_overload_aborts(settle=True)
 
     def get_active_compression_failure_cooldown(self, *, refresh: bool = False) -> Optional[Dict[str, Any]]:
@@ -4173,12 +4173,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             self._last_summary_empty_content_failure = True
         elif kind.overloaded:
             self._increment_consecutive_overload_aborts()
-            # Sustained-overload escalation (#123167): keep aborting only while a retry could still
-            # succeed soon (#115906); once every recent attempt has aborted, stop treating the
-            # overload as terminal so compress() commits the deterministic fallback instead of
-            # growing the transcript into a compression_exhausted auto-reset (total session wipe).
-            # The streak is durable: the gateway binds a fresh compressor to this session on every
-            # turn / cache eviction, and a memory-only budget restarted at zero each time (review P1).
+            # Sustained overload stops being terminal after N strikes (#123167; see the constant).
             self._last_summary_overload_failure = (
                 self._consecutive_overload_aborts < _CONSECUTIVE_OVERLOAD_ABORT_ESCALATION
             )

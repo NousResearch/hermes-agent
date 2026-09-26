@@ -437,10 +437,7 @@ class SessionCompressionMixin:
         self._write_session_column("compression_recovery_deadline", session_id, normalized or None)
 
     def get_compression_overload_streak(self, session_id: str) -> int:
-        """Persisted sustained-overload abort streak (#123167). Durable for the same reason the
-        recovery deadline is (#100185): the gateway rebuilds the compressor on every turn /
-        cache eviction, so a memory-only budget restarts at zero on each rebuild and a sustained
-        summary-provider outage walks every fresh instance back into ``compression_exhausted``."""
+        """Return the persisted sustained-overload abort streak (#123167)."""
         return self._read_session_number("compression_overload_streak", session_id, int, 0)
 
     def set_compression_overload_streak(self, session_id: str, streak: int) -> None:

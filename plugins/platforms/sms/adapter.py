@@ -18,7 +18,7 @@ import hmac
 import logging
 import re
 import urllib.parse
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
@@ -159,11 +159,16 @@ class SmsAdapter(BasePlatformAdapter):
     async def send(
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        last_result = SendResult(success=True)
+        return await self._send_chunks(
+            chat_id, self.truncate_message(self.format_message(content), self.MAX_MESSAGE_LENGTH), [])
+
+    async def _send_chunks(self, chat_id: str, chunks: List[str], delivered: List[str]) -> SendResult:
+        """Send ``chunks`` after the ``delivered`` message SIDs; a failure after one landed is a partial
+        result (see :meth:`_split_send_failed`), so the visible head is never sent again."""
         url, headers = _messages_endpoint(self._account_sid, self._auth_token)
         session = self._http_session or _new_session(trust_env=gateway_trust_env())
         try:
-            for chunk in self.truncate_message(self.format_message(content), self.MAX_MESSAGE_LENGTH):
+            for i, chunk in enumerate(chunks):
                 form_data = _twilio_form(self._from_number, chat_id, chunk)
                 try:
                     async with session.post(url, data=form_data, headers=headers) as resp:
@@ -173,15 +178,28 @@ class SmsAdapter(BasePlatformAdapter):
                             logger.error(
                                 "[sms] send failed to %s: %s %s", redact_phone(chat_id), resp.status, error_msg,
                             )
-                            return SendResult(success=False, error=f"Twilio {resp.status}: {error_msg}")
-                        last_result = SendResult(success=True, message_id=body.get("sid", ""))
+                            return self._split_send_failed(
+                                SendResult(success=False, error=f"Twilio {resp.status}: {error_msg}"),
+                                chunks[i:], delivered, unsent=self._send_never_landed(status=resp.status))
+                        delivered.append(body.get("sid", ""))
                 except Exception as e:
                     logger.error("[sms] send error to %s: %s", redact_phone(chat_id), e)
-                    return SendResult(success=False, error=str(e))
+                    return self._split_send_failed(
+                        SendResult(success=False, error=str(e)), chunks[i:], delivered,
+                        unsent=self._send_never_landed(e))
         finally:
             if not self._http_session and session:  # close only a fallback session we created
                 await session.close()
-        return last_result
+        return SendResult(success=True, message_id=delivered[-1] if delivered else None)
+
+    async def _resume_partial_send(
+        self, chat_id: str, result: SendResult, *, reply_to: Optional[str], metadata: Optional[Dict[str, Any]],
+    ) -> Optional[SendResult]:
+        raw = result.raw_response if isinstance(result.raw_response, dict) else {}
+        undelivered = list(raw.get("undelivered_chunks") or ())
+        if not undelivered:
+            return None
+        return await self._send_chunks(chat_id, undelivered, list(raw.get("delivered_message_ids") or ()))
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": chat_id, "type": "dm"}

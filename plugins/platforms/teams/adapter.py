@@ -21,7 +21,7 @@ import re
 import sys
 from collections import deque
 from contextlib import contextmanager, suppress
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Dict, Iterator, List, Optional
 from urllib.parse import urlparse
 
 try:
@@ -707,8 +707,13 @@ class TeamsAdapter(BasePlatformAdapter):
     ) -> SendResult:
         if not self._app:
             return SendResult(success=False, error="Teams app not initialized")
-        last_message_id = None
-        for chunk in self.truncate_message(self.format_message(content)):
+        return await self._send_chunks(chat_id, self.truncate_message(self.format_message(content)), [], reply_to)
+
+    async def _send_chunks(
+        self, chat_id: str, chunks: List[str], delivered: List[Optional[str]], reply_to: Optional[str]) -> SendResult:
+        """Send ``chunks`` after the ``delivered`` activity ids; a failure after one landed is a partial
+        result (see :meth:`_split_send_failed`), so the visible head is never sent again."""
+        for i, chunk in enumerate(chunks):
             try:
                 if reply_to and reply_to.isdigit() and reply_to != "0":
                     try:
@@ -719,11 +724,22 @@ class TeamsAdapter(BasePlatformAdapter):
                         result = await self._app.send(chat_id, chunk)
                 else:
                     result = await self._app.send(chat_id, chunk)
-                last_message_id = getattr(result, "id", None)
-                self._remember_sent(result)
             except Exception as e:
-                return SendResult(success=False, error=str(e), retryable=True)
-        return SendResult(success=True, message_id=last_message_id)
+                return self._split_send_failed(
+                    SendResult(success=False, error=str(e), retryable=True), chunks[i:], delivered,
+                    unsent=self._send_never_landed(e))
+            delivered.append(getattr(result, "id", None))
+            self._remember_sent(result)
+        return SendResult(success=True, message_id=delivered[-1] if delivered else None)
+
+    async def _resume_partial_send(
+        self, chat_id: str, result: SendResult, *, reply_to: Optional[str], metadata: Optional[Dict[str, Any]],
+    ) -> Optional[SendResult]:
+        raw = result.raw_response if isinstance(result.raw_response, dict) else {}
+        undelivered = list(raw.get("undelivered_chunks") or ())
+        if not undelivered or not self._app:
+            return None
+        return await self._send_chunks(chat_id, undelivered, list(raw.get("delivered_message_ids") or ()), reply_to)
 
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         if self._app:

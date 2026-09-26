@@ -2289,10 +2289,7 @@ class SlackAdapter(BasePlatformAdapter):
             retry_after=self._retry_after_from_exc(e) if _retryable else None)
         if not delivered:
             return result
-        # A 429 or a failed connect never created the post; a 5xx or a dropped response may have.
-        unsent = (getattr(getattr(e, "response", None), "status_code", None) == 429
-                  or isinstance(e, ConnectionRefusedError)
-                  or isinstance(e, getattr(globals().get("aiohttp"), "ClientConnectorError", ())))
+        unsent = self._send_never_landed(e)
         result = self._with_partial_send(result, undelivered, delivered, tail_certain=unsent)
         # Only an in-process resume completes the reply once (a ledger redelivery re-sends the whole text).
         result.retryable = result.retryable or unsent

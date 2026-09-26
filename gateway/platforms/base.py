@@ -3723,6 +3723,40 @@ class BasePlatformAdapter(ABC):
         result.raw_response = raw
         return result
 
+    @staticmethod
+    def _send_never_landed(exc: Optional[BaseException] = None, status: Optional[int] = None) -> bool:
+        """True only when a failed send certainly created nothing: HTTP 429 (refused before processing) or a
+        failed connect (the request never left), also when an SDK wraps it. A 5xx, a timeout or a dropped
+        response may have posted it."""
+        connect_errors = (ConnectionRefusedError,) + tuple(
+            cls for cls in (getattr(sys.modules.get("aiohttp"), "ClientConnectorError", None),
+                            getattr(sys.modules.get("httpx"), "ConnectError", None)) if isinstance(cls, type))
+        for _ in range(4):  # the exception and the SDK wrappers above it
+            if exc is None:
+                break
+            if isinstance(exc, connect_errors):
+                return True
+            status = status or next((s for s in (
+                getattr(getattr(exc, "response", None), "status_code", None),  # httpx, slack_sdk
+                getattr(exc, "http_status", None),  # mautrix
+                getattr(getattr(exc, "resp", None), "status", None),  # googleapiclient
+            ) if isinstance(s, int)), None)
+            exc = exc.__cause__
+        return status == 429
+
+    @classmethod
+    def _split_send_failed(
+        cls, result: SendResult, undelivered: List[str], delivered: List[Any], *, unsent: bool) -> SendResult:
+        """``result`` for a split send whose chunk after ``delivered`` failed (``unsent``: it certainly never
+        landed, see :meth:`_send_never_landed`). Once a chunk landed, the tail is kept for
+        :meth:`_resume_partial_send` only when ``unsent``, and only then is it retryable: a whole-payload
+        redelivery would repeat the visible head."""
+        if not delivered:
+            return result
+        result = cls._with_partial_send(result, undelivered, delivered, tail_certain=unsent)
+        result.retryable = unsent
+        return result
+
     async def _resume_partial_send(
         self, chat_id: str, result: "SendResult", *, reply_to: Optional[str], metadata: Any) -> "Optional[SendResult]":
         """Deliver only the remainder of a partially delivered split payload. ``None`` (the default) means

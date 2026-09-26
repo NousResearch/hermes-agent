@@ -127,6 +127,7 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     # falls back to the generic 256K default instead of its true 1M window.
     "meta-ai": "meta", "meta": "meta", "groq": "groq", "mistral": "mistral",
     "togetherai": "togetherai", "perplexity": "perplexity", "cohere": "cohere",
+    "upstage": "upstage",
     "ollama-cloud": "ollama-cloud",
 }
 # Reverse mapping: models.dev id → Hermes ids (built lazily; many-to-one).

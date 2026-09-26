@@ -1,6 +1,7 @@
 """Tests for Bug #12905 fixes in agent/anthropic_adapter.py — macOS Keychain support."""
 
 import json
+import logging
 import platform
 import subprocess
 import threading
@@ -62,14 +63,17 @@ class TestReadClaudeCodeCredentialsPriority:
     """Bug 4: Keychain must be checked before the JSON file."""
 
     def test_keychain_takes_priority_over_json_file(self, tmp_path, monkeypatch):
-        """When both Keychain and JSON file have credentials, Keychain wins."""
-        # Set up JSON file with "older" token
+        """When both Keychain and JSON file hold the SAME credential family
+        (identical refresh token — e.g. Claude Code wrote both at login),
+        Keychain wins. Different refresh tokens mean the families have
+        diverged; see ``TestReadClaudeCodeCredentialsDivergedFamilies``."""
+        # Set up JSON file with "older" token of the same family
         json_cred_file = tmp_path / ".claude" / ".credentials.json"
         json_cred_file.parent.mkdir(parents=True)
         json_cred_file.write_text(json.dumps({
             "claudeAiOauth": {
                 "accessToken": "json-token",
-                "refreshToken": "json-refresh",
+                "refreshToken": "keychain-refresh",
                 "expiresAt": 9999999999999,
             }
         }))
@@ -202,6 +206,158 @@ class TestReadClaudeCodeCredentialsDesync:
 
         assert creds is not None
         assert creds["accessToken"] == "newer-expired-file"
+
+
+@pytest.mark.macos_only
+class TestReadClaudeCodeCredentialsDivergedFamilies:
+    """Hermes must never spend Claude Code's refresh token once the families diverge.
+
+    Anthropic OAuth refresh tokens are single-use. On macOS Claude Code keeps
+    its pair in the Keychain and only ever reads/writes the Keychain; Hermes
+    commits a rotation ONLY to ``~/.claude/.credentials.json``. The old rule
+    ("prefer the later ``expiresAt``") therefore crossed families: whenever
+    the Keychain pair was fresher (the user had just run ``/login``), Hermes
+    refreshed with the Keychain's refresh token, wrote the rotated pair to the
+    file, and left Claude Code holding a consumed refresh token — forcing
+    another ``/login`` at its next expiry. Observed 2026-08-18..09-01: 36
+    Claude Code logins in 14 days, each preceded by a Hermes refresh.
+
+    Rule: if the file and the Keychain hold DIFFERENT refresh tokens, the file
+    is Hermes's own lineage and wins regardless of expiry (an expired file pair
+    is refreshed with the file's own refresh token). Identical refresh tokens
+    (single family) keep the pre-existing selection rules.
+    """
+
+    _FRESH = 9_999_999_999_999
+    _FRESHER = 9_999_999_999_999 + 60_000
+    _EXPIRED = 1
+
+    def _file(self, tmp_path, monkeypatch, *, expires_at, refresh_token="hermes-file-refresh", access_token="file-token"):
+        json_cred_file = tmp_path / ".claude" / ".credentials.json"
+        json_cred_file.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"accessToken": access_token, "expiresAt": expires_at}
+        if refresh_token is not None:
+            payload["refreshToken"] = refresh_token
+        json_cred_file.write_text(json.dumps({"claudeAiOauth": payload}))
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+
+    def _keychain(self, *, expires_at, refresh_token="claude-code-keychain-refresh", access_token="keychain-token"):
+        return MagicMock(
+            returncode=0,
+            stdout=json.dumps({"claudeAiOauth": {
+                "accessToken": access_token, "refreshToken": refresh_token, "expiresAt": expires_at,
+            }}),
+            stderr="",
+        )
+
+    def test_both_valid_keychain_fresher_returns_file(self, tmp_path, monkeypatch):
+        """The bug: a fresher Keychain pair (user just ran /login) must NOT
+        displace Hermes's own file family."""
+        self._file(tmp_path, monkeypatch, expires_at=self._FRESH)
+        with patch("agent.anthropic_adapter.subprocess.run") as mock_run:
+            mock_run.return_value = self._keychain(expires_at=self._FRESHER)
+            creds = read_claude_code_credentials()
+        assert creds is not None
+        assert creds["source"] == "claude_code_credentials_file"
+        assert creds["refreshToken"] == "hermes-file-refresh"
+
+    def test_file_expired_keychain_valid_still_returns_file(self, tmp_path, monkeypatch):
+        """Even when the file pair is expired and the Keychain pair is valid,
+        return the file: the refresh path then rotates Hermes's OWN refresh
+        token instead of consuming Claude Code's."""
+        self._file(tmp_path, monkeypatch, expires_at=self._EXPIRED)
+        with patch("agent.anthropic_adapter.subprocess.run") as mock_run:
+            mock_run.return_value = self._keychain(expires_at=self._FRESH)
+            creds = read_claude_code_credentials()
+        assert creds is not None
+        assert creds["source"] == "claude_code_credentials_file"
+        assert creds["refreshToken"] == "hermes-file-refresh"
+
+    def test_both_expired_keychain_later_returns_file(self, tmp_path, monkeypatch):
+        self._file(tmp_path, monkeypatch, expires_at=self._EXPIRED)
+        with patch("agent.anthropic_adapter.subprocess.run") as mock_run:
+            mock_run.return_value = self._keychain(expires_at=self._EXPIRED + 5)
+            creds = read_claude_code_credentials()
+        assert creds is not None
+        assert creds["source"] == "claude_code_credentials_file"
+
+    def test_file_without_refresh_token_falls_back_to_keychain(self, tmp_path, monkeypatch):
+        """A file pair with no refresh token has no lineage of its own — the
+        Keychain remains the seed source."""
+        self._file(tmp_path, monkeypatch, expires_at=self._FRESH, refresh_token=None)
+        with patch("agent.anthropic_adapter.subprocess.run") as mock_run:
+            mock_run.return_value = self._keychain(expires_at=self._FRESHER)
+            creds = read_claude_code_credentials()
+        assert creds is not None
+        assert creds["source"] == "macos_keychain"
+
+    def test_same_family_keeps_expiry_rules(self, tmp_path, monkeypatch):
+        """Identical refresh tokens = one family: the existing 'prefer the
+        non-expired / later expiry' reconciliation still applies."""
+        self._file(tmp_path, monkeypatch, expires_at=self._EXPIRED, refresh_token="shared-refresh")
+        with patch("agent.anthropic_adapter.subprocess.run") as mock_run:
+            mock_run.return_value = self._keychain(expires_at=self._FRESH, refresh_token="shared-refresh")
+            creds = read_claude_code_credentials()
+        assert creds is not None
+        assert creds["source"] == "macos_keychain"
+
+    def test_dead_file_lineage_borrows_valid_keychain_access_token(self, tmp_path, monkeypatch, caplog):
+        """If Hermes's file lineage cannot be refreshed, a still-valid Keychain
+        ACCESS token is used as a rescue — but its refresh token is never
+        spent (no OAuth POST), and the rescue is announced ONCE per Keychain
+        pair (repeat resolves log at DEBUG, like upstream's dead-grant gate)."""
+        from agent import anthropic_credentials as ac
+        self._file(tmp_path, monkeypatch, expires_at=self._EXPIRED)
+        monkeypatch.setattr(ac, "_RESCUE_WARNED_KEYCHAIN_FINGERPRINTS", set())
+        monkeypatch.setattr(ac, "_refresh_oauth_token", lambda creds: None)
+        posted = []
+        monkeypatch.setattr(ac, "refresh_anthropic_oauth_pure", lambda *a, **k: posted.append(a) or None)
+        with patch("agent.anthropic_adapter.subprocess.run") as mock_run, \
+                caplog.at_level(logging.DEBUG, logger=ac.logger.name):
+            mock_run.return_value = self._keychain(expires_at=self._FRESH, access_token="kc-live-access")
+            tokens = [ac._resolve_claude_code_token_from_credentials() for _ in range(2)]
+        assert tokens == ["kc-live-access", "kc-live-access"]
+        assert posted == []
+        rescue = [r for r in caplog.records if "could not be refreshed" in r.getMessage()]
+        assert [r.levelno for r in rescue] == [logging.WARNING, logging.DEBUG]
+
+    def test_rescue_with_real_refresher_posts_dead_token_once(self, tmp_path, monkeypatch, caplog):
+        """Drive the REAL ``_refresh_oauth_token`` (lock, re-read, dead-token
+        fingerprint gate): the file's dead refresh token is POSTed exactly once,
+        the Keychain refresh token is never sent, the file is never rewritten,
+        and three resolves yield the Keychain access token with one WARNING
+        from the rescue."""
+        from agent import anthropic_credentials as ac
+        self._file(tmp_path, monkeypatch, expires_at=self._EXPIRED, refresh_token="file-rt-dead")
+        monkeypatch.setattr(ac, "_DEAD_REFRESH_TOKEN_FINGERPRINTS", set())
+        monkeypatch.setattr(ac, "_RESCUE_WARNED_KEYCHAIN_FINGERPRINTS", set())
+        posted = []
+
+        def dead_grant(refresh_token, *, use_json=False):
+            posted.append(refresh_token)
+            raise ac.AnthropicOAuthError(400, "invalid_grant", "refresh token revoked", what="refresh")
+
+        monkeypatch.setattr(ac, "refresh_anthropic_oauth_pure", dead_grant)
+        with patch("agent.anthropic_adapter.subprocess.run") as mock_run, \
+                caplog.at_level(logging.WARNING, logger=ac.logger.name):
+            mock_run.return_value = self._keychain(expires_at=self._FRESH, access_token="kc-live-access")
+            tokens = [ac._resolve_claude_code_token_from_credentials() for _ in range(3)]
+        assert tokens == ["kc-live-access"] * 3
+        assert posted == ["file-rt-dead"]
+        rescue_warnings = [r for r in caplog.records if r.levelno == logging.WARNING and "could not be refreshed" in r.getMessage()]
+        assert len(rescue_warnings) == 1
+        on_disk = json.loads((tmp_path / ".claude" / ".credentials.json").read_text())["claudeAiOauth"]
+        assert on_disk["refreshToken"] == "file-rt-dead"
+        assert on_disk["accessToken"] == "file-token"
+
+    def test_dead_file_lineage_and_expired_keychain_returns_none(self, tmp_path, monkeypatch):
+        from agent import anthropic_credentials as ac
+        self._file(tmp_path, monkeypatch, expires_at=self._EXPIRED)
+        monkeypatch.setattr(ac, "_refresh_oauth_token", lambda creds: None)
+        with patch("agent.anthropic_adapter.subprocess.run") as mock_run:
+            mock_run.return_value = self._keychain(expires_at=self._EXPIRED)
+            token = ac._resolve_claude_code_token_from_credentials()
+        assert token is None
 
 
 class TestRefreshOAuthTokenAdoptsFreshCredential:

@@ -55,7 +55,8 @@ def _load_security_config() -> dict:
 # early, which is harmless, and matches the mcp_tool.py error counters rather than the locked _warn_once
 # pattern. _breaker_lock guards ONLY the half-open claim (TTL check + timestamp re-arm, nanoseconds); it is
 # never held across the subprocess probe, so it cannot reintroduce the #41400 hang. Claiming re-arms
-# _circuit_open_at first, so concurrent callers see a fresh TTL and stay fail-open: one probe per TTL window.
+# _circuit_open_at first, so concurrent callers see a fresh TTL and take the configured verdict rather
+# than spawning: one probe per TTL window.
 _CRASH_LIMIT = 3
 _CIRCUIT_RETRY_S = 300  # half-open probe interval (seconds)
 _crash_count: int = 0
@@ -291,14 +292,23 @@ def check_command_security(command: str) -> dict:
     cfg = _load_security_config()
     if not cfg["tirith_enabled"]:
         return _verdict("allow")
-    # Circuit breaker: if tirith has crashed _CRASH_LIMIT times in a row, stop trying and fail open (issue
-    # #41400). After _CIRCUIT_RETRY_S the breaker half-opens: exactly one caller claims the probe slot —
-    # claiming re-arms _circuit_open_at under _breaker_lock, so concurrent callers see a fresh TTL and stay
-    # fail-open — and falls through to a real scan below.
+    # Read the failure policy up front: the circuit-breaker short-circuit below is an
+    # operational-failure path like any other and must honour security.tirith_fail_open,
+    # otherwise a tripped breaker silently downgrades an operator's explicit fail-closed
+    # setting to fail-open for the rest of the process (#74922).
+    timeout, fail_open = cfg["tirith_timeout"], cfg["tirith_fail_open"]
+    # Circuit breaker: if tirith has crashed _CRASH_LIMIT times in a row, stop trying and fail per
+    # policy (issue #41400; default fail-open). After _CIRCUIT_RETRY_S the breaker half-opens: exactly
+    # one caller claims the probe slot — claiming re-arms _circuit_open_at under _breaker_lock, so
+    # concurrent callers see a fresh TTL and take the configured verdict — and falls through to a real
+    # scan below.
     if _circuit_open:
         with _breaker_lock:
             if _circuit_open and time.monotonic() - _circuit_open_at < _CIRCUIT_RETRY_S:
-                return _verdict("allow", "tirith disabled (circuit breaker)")
+                # Still open: no spawn (that is the #41400 anti-hang guarantee), but the
+                # verdict follows the configured policy — block under fail-closed.
+                return _fail(fail_open, "tirith disabled (circuit breaker)",
+                             "tirith disabled (circuit breaker, fail-closed)")
             if _circuit_open:  # TTL expired: claim the single-flight probe slot for this window
                 _circuit_open_at = time.monotonic()
                 logger.info("tirith circuit breaker half-open: probing after %ds", _CIRCUIT_RETRY_S)
@@ -306,7 +316,6 @@ def check_command_security(command: str) -> dict:
     if cfg["tirith_path"] == "tirith" and not is_platform_supported():
         return _verdict("allow")
     tirith_path = _resolve_tirith_path(cfg["tirith_path"])
-    timeout, fail_open = cfg["tirith_timeout"], cfg["tirith_fail_open"]
     if tirith_path is None:
         _warn_once("tirith_path_none", "tirith path resolved to None; scanning disabled")
         return _fail(fail_open, "tirith path unavailable", "tirith path unavailable (fail-closed)")

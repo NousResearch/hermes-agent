@@ -602,6 +602,16 @@ function Write-Banner {
     Write-Host ""
 }
 
+# Compare repository URLs the way git treats them for our purposes: an
+# optional .git suffix and trailing slashes do not name a different source,
+# so dedup decisions use this form while the clone still gets the URL as
+# written.
+function Normalize-RepoUrl([string]$Url) {
+    $u = "$Url".Trim().TrimEnd('/')
+    if ($u.EndsWith('.git')) { $u = $u.Substring(0, $u.Length - 4).TrimEnd('/') }
+    return $u
+}
+
 # Windows PowerShell 5.1 turns a native command's stderr into an ErrorRecord
 # whenever that stream is redirected inside PowerShell (`2>$null`, `2>&1`),
 # and under $ErrorActionPreference = "Stop" the record terminates the script
@@ -759,7 +769,17 @@ function Stage-Repository {
             Invoke-Native { git -C $InstallDir remote set-url origin $RepoUrl }
             if ($LASTEXITCODE) { Fail "cannot point origin at $RepoUrl" }
         }
-        Invoke-Logged "Fetching origin/$Branch" { git -C $InstallDir fetch origin $Branch }
+        $originUrl = "$((Invoke-Native { git -C $InstallDir remote get-url origin }))"
+        if ($LASTEXITCODE -or -not $originUrl) { Fail "cannot read origin for $InstallDir" }
+        # A mirror rescue (or a hand-edited remote) silently sticks: origin is
+        # what every rerun fetches from. Name it on every run -- the fetch
+        # label lands in install.log -- and keep warning while it is not the
+        # URL this install is managed by.
+        if ($originUrl -ne $RepoUrl) {
+            Write-Warn "origin is $originUrl, not $RepoUrl; this update (and every rerun) fetches from there"
+            Write-Warn "to return, set HERMES_REPO_URL=$RepoUrl and rerun once"
+        }
+        Invoke-Logged "Fetching $originUrl ($Branch)" { git -C $InstallDir fetch origin $Branch }
         if ($LASTEXITCODE) { Fail "git fetch failed" }
         $stamp = (Get-Date -Format 'yyyyMMdd-HHmmss')
         # Park local work BEFORE switching branches: checkout refuses a dirty
@@ -840,10 +860,21 @@ function Stage-Repository {
             # that succeeds via a mirror leaves origin at the URL that worked, so
             # reruns keep fetching from a source this network can actually reach.
             $repoUrls = @($RepoUrl)
+            $seenUrls = @((Normalize-RepoUrl $RepoUrl))
             if ($env:HERMES_REPO_MIRROR_URL) {
                 foreach ($mirror in ($env:HERMES_REPO_MIRROR_URL -split ';')) {
                     $mirror = "$mirror".Trim()
-                    if ($mirror -and $repoUrls -notcontains $mirror) { $repoUrls += $mirror }
+                    if (-not $mirror) { continue }
+                    # A mirror entry reaches `git clone` like any other URL;
+                    # keeping the lane https-only means an `ext::` (or other
+                    # helper-protocol) value cannot turn the variable into
+                    # arbitrary command execution.
+                    if ($mirror -notmatch '^https://') { Fail "HERMES_REPO_MIRROR_URL entries must start with https:// (got: $mirror)" }
+                    $normalized = Normalize-RepoUrl $mirror
+                    if ($seenUrls -notcontains $normalized) {
+                        $repoUrls += $mirror
+                        $seenUrls += $normalized
+                    }
                 }
             }
             $cloned = $false
@@ -867,7 +898,7 @@ function Stage-Repository {
                     # The checkout step is where throttled downloads die: clone the
                     # graph alone, then retry materializing the tree separately.
                     Write-Warn "direct clone failed; trying deferred checkout"
-                    Invoke-Logged "Cloning history" { git clone @progress --filter=tree:0 --no-checkout --branch $Branch $candidateUrl $tree }
+                    Invoke-Logged "Cloning history from $candidateUrl" { git clone @progress --filter=tree:0 --no-checkout --branch $Branch $candidateUrl $tree }
                     if (-not $LASTEXITCODE) {
                         foreach ($attempt in 1..2) {
                             Invoke-Logged "Checking out files (attempt $attempt of 2)" { git -C $tree reset --hard HEAD }
@@ -876,11 +907,32 @@ function Stage-Repository {
                         }
                     }
                 }
+                if (-not $cloned) {
+                    # A deferred clone that died between clone and reset leaves
+                    # a populated $tree: the next candidate's first direct
+                    # clone would refuse the non-empty directory (exit 128,
+                    # before any network I/O) and burn an attempt reporting
+                    # "attempt 1 of 3" as the failure.
+                    Remove-Item -LiteralPath $tree -Recurse -Force -ErrorAction SilentlyContinue
+                }
                 if ($cloned) { break }
             }
             if (-not $cloned) { Fail "git clone failed; no checkout published" }
             Move-Item -LiteralPath $tree -Destination $InstallDir
-            Write-Ok "Hermes Agent cloned"
+            # Name the source that actually answered. The clone labels are in
+            # install.log; the success line must not hide a mirror rescue
+            # behind a bare "cloned".
+            $originUrl = "$((Invoke-Native { git -C $InstallDir remote get-url origin }))"
+            if ($LASTEXITCODE -or -not $originUrl) { Fail "cannot read the cloned repository's origin URL" }
+            Write-Ok "Hermes Agent cloned from $originUrl"
+            if ($originUrl -ne $RepoUrl) {
+                # A mirror rescue re-points origin at the mirror: every later
+                # update fetches from it. Say so now, with the way back --
+                # unsetting HERMES_REPO_MIRROR_URL alone does not restore the
+                # official URL.
+                Write-Warn "origin is $originUrl, not $RepoUrl; every future update fetches from there"
+                Write-Warn "to return, set HERMES_REPO_URL=$RepoUrl and rerun once"
+            }
         } finally {
             Remove-Item -LiteralPath $staged -Recurse -Force -ErrorAction SilentlyContinue
         }

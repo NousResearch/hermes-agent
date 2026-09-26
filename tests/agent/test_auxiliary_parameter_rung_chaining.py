@@ -81,6 +81,15 @@ def test_reasoning_effort_none_unsupported_reversed_wording():
     assert not _is_reasoning_field_rejection(_Bad400("reasoning models: tool_choice 'required' is unsupported"))
 
 
+def test_venice_reasoning_value_constraint_wording_is_a_field_rejection():
+    """Venice validates its nested reasoning object as max_tokens-shaped; its value error must strip
+    that object, including close schema wording variants, while a plain output-cap error remains separate."""
+    assert _is_reasoning_field_rejection(_Bad400("reasoning.max_tokens must be positive"))
+    assert _is_reasoning_field_rejection(_Bad400("reasoning.max_tokens must be greater than 0"))
+    assert _is_reasoning_field_rejection(_Bad400("reasoning.max_tokens must be at least 1"))
+    assert not _is_reasoning_field_rejection(_Bad400("max_tokens must be positive"))
+
+
 def test_structured_param_rejection_strips_reasoning_effort_on_retry():
     """commandcode.ai rejects ``reasoning_effort`` as an enum violation with no "unsupported" marker
     (#115277) and a custom Responses relay sends a message-less structured 400 whose only signal is

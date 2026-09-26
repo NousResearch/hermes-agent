@@ -427,6 +427,11 @@ def _ensure_windows_gateway_venv_imports() -> None:
         return
 
     project_root = Path(__file__).resolve().parent.parent
+    # A PM install activated its committed generation at boot (hermes_bootstrap); the in-tree
+    # venv is pre-PM history whose compiled extensions may target another interpreter ABI.
+    from pm.environments import running_from_selected_environment
+    if running_from_selected_environment(project_root):
+        return
     candidates: list[Path] = []
     if os.environ.get("VIRTUAL_ENV"):
         candidates.append(Path(os.environ["VIRTUAL_ENV"]))

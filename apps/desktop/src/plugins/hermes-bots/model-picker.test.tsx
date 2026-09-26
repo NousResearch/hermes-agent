@@ -39,17 +39,44 @@ const { hostMock } = vi.hoisted(() => ({
 vi.mock('@hermes/plugin-sdk', async () => {
   const { useQuery } = await import('@tanstack/react-query')
   const { useI18n } = await vi.importActual<typeof HermesSdk>('@hermes/plugin-sdk')
+  const { modelSearchText } = await import('@hermes/shared')
 
   return {
     Button: (props: React.ComponentProps<'button'>) => <button {...props} />,
     GlyphSpinner: () => <span data-testid="spinner" />,
     host: hostMock,
     Input: (props: React.ComponentProps<'input'>) => <input {...props} />,
+    // SearchableSelect stub: renders the trigger + options inline so picker
+    // selection assertions can click rows without the Popover/cmdk machinery.
+    SearchableSelect: ({
+      className,
+      onChange,
+      options,
+      value
+    }: {
+      className?: string
+      onChange: (value: string) => void
+      options?: Array<{ label?: string; value: string } | string>
+      value: string
+    }) => (
+      <div className={className} data-selected={value} data-testid="searchable-select">
+        {(options ?? []).map(option => {
+          const normalized = typeof option === 'string' ? { label: option, value: option } : option
+
+          return (
+            <button key={normalized.value} onClick={() => onChange(normalized.value)} type="button">
+              {normalized.label ?? normalized.value}
+            </button>
+          )
+        })}
+      </div>
+    ),
     Select: ({ children }: { children: ReactNode }) => <div>{children}</div>,
     SelectContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
     SelectItem: ({ children }: { children: ReactNode }) => <div>{children}</div>,
     SelectTrigger: ({ children }: { children: ReactNode }) => <div>{children}</div>,
     SelectValue: () => null,
+    modelSearchText,
     useI18n,
     usePluginI18n: () => translateBots,
     useQuery

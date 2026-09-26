@@ -19,9 +19,6 @@ import { paneChrome } from './track-model'
 export interface StripPane {
   /** A tool panel (terminal / logs) that collapses rather than closes. */
   collapsePane: boolean
-  /** Standing chrome (sessions / Bots) whose only handle is the strip:
-   *  show/hide replaces Close, and the Show/Hide rows live on the strip. */
-  hideOnly?: boolean
   /** Contribution placement — `'main'` marks a docked tile (session, page,
    *  preview) as opposed to standing side chrome. */
   placement?: string
@@ -41,10 +38,13 @@ export interface StripZone {
 
 /**
  * A pane is STRANDED without a strip when the strip is the only thing carrying
- * its handle: a lone closeable tile needs its ✕, a lone tool panel needs a chip
- * to grab, hide-only chrome (sessions / Bots) needs the chip that show/hide
- * lives on. The uncloseable workspace is not strandable — it cannot be closed
- * or lost, so a lone chat is free to be chromeless.
+ * its handle: a lone main tile needs its ✕ and +, a lone tool panel needs a
+ * chip to grab. The workspace cannot leave the tree, but Close still empties
+ * it to a draft and + still opens a tab — chromeless is a dead zone for those
+ * handles. Hide-only chrome (sessions / Bots) is different: the panes stay,
+ * Show/Hide is a separate verb, and a hidden strip comes back via ⌘⌥T.
+ * Treating side chrome as stranded at any count made Hide tabs a silent no-op
+ * on the sessions sidebar.
  *
  * This outranks an explicit `never` on purpose. "Hide the strip" is a request
  * about chrome, never a request to make a surface unreachable, and a zone that
@@ -59,19 +59,13 @@ export interface StripZone {
  * both the menu row and ⌘⌥T became silent no-ops.
  */
 function stranded(shown: readonly StripPane[]): boolean {
-  // Hide-only chrome is stranded at ANY count: it has no close verb at all, and
-  // both the chips and the Show/Hide rows that replace one live on the strip.
-  if (shown.some(pane => pane.hideOnly)) {
-    return true
-  }
-
   if (shown.length !== 1) {
     return false
   }
 
   const [only] = shown
 
-  return only.collapsePane || (!only.uncloseable && only.placement === 'main')
+  return only.collapsePane || only.placement === 'main'
 }
 
 export function resolveTabStripVisible(zone: StripZone): boolean {
@@ -94,8 +88,9 @@ export function resolveTabStripVisible(zone: StripZone): boolean {
     return zone.mode === 'always'
   }
 
-  // Auto: a lone pane is not a "tab", so it goes without a strip; two or more
-  // need one to switch between them.
+  // Auto: two or more panes need a strip to switch between them. A lone main
+  // tile never reaches here (it is stranded above), so what is left alone is
+  // standing side chrome, which goes without.
   return zone.shown.length > 1
 }
 
@@ -123,7 +118,6 @@ export function tabStripVisibleForZone(zone: {
 
       return {
         collapsePane: zone.isCollapsePane(id),
-        hideOnly: chrome.hideOnly,
         placement: chrome.placement,
         uncloseable: chrome.uncloseable
       }

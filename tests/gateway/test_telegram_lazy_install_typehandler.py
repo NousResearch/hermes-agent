@@ -105,10 +105,10 @@ def test_lazy_install_rebinds_every_placeholder(monkeypatch, fake_telegram_sdk):
     """Every symbol the fallback stubbed must be rebound by the lazy install."""
     import plugins.platforms.telegram.adapter as adapter
 
-    from tools import lazy_deps
+    import pm
 
     # The package is already in sys.modules; installing it would be a no-op.
-    monkeypatch.setattr(lazy_deps, "ensure", lambda key, prompt=False: None)
+    monkeypatch.setattr(pm, "ensure_import", lambda extra: None)
 
     # Reconstruct the imported-before-installed state the fallback leaves behind.
     monkeypatch.setattr(adapter, "TELEGRAM_AVAILABLE", False)

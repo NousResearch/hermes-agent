@@ -1,9 +1,10 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { useTourMarker } from '@/app/chat/tour-marker'
 import { ModelMenuCloseContext } from '@/app/shell/model-menu-panel'
+import { isElementInHiddenPane } from '@/components/pane-shell/pane-visibility'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
@@ -11,11 +12,13 @@ import { releaseTypingFocus } from '@/components/ui/keyboard-first'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { ChevronDown } from '@/lib/icons'
-import { formatModelStatusLabel } from '@/lib/model-status-label'
+import { formatModelPillLabel, providerDisplayName } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
-import { $currentModelSource, $defaultReasoningEffort, setModelPickerOpen } from '@/store/session'
+import { $currentModelSource, setModelPickerOpen } from '@/store/session'
 
+import { useComposerModelPillLabel } from './contrib'
 import { onComposerModelMenuRequest } from './focus'
+import { RICH_INPUT_SLOT } from './rich-editor'
 import { useComposerScope } from './scope'
 import type { ChatBarState } from './types'
 
@@ -57,9 +60,9 @@ export function ModelPill({
   const fastMode = useStore(view.$fast)
   const reasoningEffort = useStore(view.$reasoningEffort)
   const modelSource = useStore($currentModelSource)
-  const defaultEffort = useStore($defaultReasoningEffort)
   const runtimeId = useStore(view.$runtimeId)
   const [open, setOpen] = useState(false)
+  const restoreSelection = useRef<(() => void) | null>(null)
   const scope = useComposerScope()
   const hasLiveMenu = Boolean(model.modelMenuContent)
 
@@ -75,6 +78,34 @@ export function ModelPill({
         }
 
         if (hasLiveMenu) {
+          const editor = document.activeElement
+          const selection = window.getSelection()
+
+          if (
+            editor instanceof HTMLElement &&
+            editor.dataset.slot === RICH_INPUT_SLOT &&
+            selection?.anchorNode &&
+            selection.focusNode &&
+            editor.contains(selection.anchorNode) &&
+            editor.contains(selection.focusNode)
+          ) {
+            const { anchorNode, anchorOffset, focusNode, focusOffset } = selection
+
+            restoreSelection.current = () => {
+              if (
+                !editor.isConnected ||
+                isElementInHiddenPane(editor) ||
+                !editor.contains(anchorNode) ||
+                !editor.contains(focusNode)
+              ) {
+                return
+              }
+
+              editor.focus({ preventScroll: true })
+              window.getSelection()?.setBaseAndExtent(anchorNode, anchorOffset, focusNode, focusOffset)
+            }
+          }
+
           setOpen(prev => !prev)
         } else {
           setModelPickerOpen(true)
@@ -95,14 +126,18 @@ export function ModelPill({
   // The model resolves a beat after the gateway/session comes up. Rather than
   // flash a literal "No model", show a quiet loader (inherits the pill text
   // color at half opacity) until a model lands.
+  //
+  // A `composer.modelPill` provider may override the LABEL (compact reasoning
+  // label, custom naming) — the pill keeps its chrome, pin dot, and menu; only
+  // the text changes, and a provider that declines leaves the core label.
+  const pillLabel = useComposerModelPillLabel({ compact, model: currentModel, reasoningEffort: reasoningEffort || '' })
+
   const label = compact ? (
     <ChevronDown className="size-3.5 shrink-0 opacity-70" />
   ) : (
     <>
       {currentModel.trim() ? (
-        <span className="truncate">
-          {formatModelStatusLabel(currentModel, { defaultEffort, fastMode, reasoningEffort })}
-        </span>
+        <span className="truncate">{pillLabel ?? formatModelPillLabel(currentModel, { fastMode })}</span>
       ) : (
         <GlyphSpinner className="opacity-50" spinner="braille" />
       )}
@@ -128,7 +163,7 @@ export function ModelPill({
     : PILL
 
   const baseTitle = currentProvider
-    ? copy.modelTitle(currentProvider, currentModel || copy.modelNone)
+    ? copy.modelTitle(providerDisplayName(currentProvider), currentModel || copy.modelNone)
     : copy.switchModel
 
   const title = pinnedOverride ? `${baseTitle} — ${copy.modelPinned}` : baseTitle
@@ -178,7 +213,22 @@ export function ModelPill({
           </Button>
         </DropdownMenuTrigger>
       </Tip>
-      <DropdownMenuContent align="end" className="w-64 p-0" side="top" sideOffset={8}>
+      <DropdownMenuContent
+        align="end"
+        className="w-64 p-0"
+        onCloseAutoFocus={event => {
+          if (restoreSelection.current) {
+            event.preventDefault()
+            restoreSelection.current()
+            restoreSelection.current = null
+          }
+        }}
+        onInteractOutside={() => {
+          restoreSelection.current = null
+        }}
+        side="top"
+        sideOffset={8}
+      >
         <ModelMenuCloseContext.Provider value={() => setMenuOpen(false)}>
           {model.modelMenuContent}
         </ModelMenuCloseContext.Provider>

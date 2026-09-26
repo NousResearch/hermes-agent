@@ -12,6 +12,7 @@ import queue
 import sys
 import threading
 import time as _time
+import webbrowser
 
 from hermes_cli.callbacks import prompt_for_secret
 from typing import Optional
@@ -81,6 +82,8 @@ class CLIModalMixin:
     """Modal overlays for the interactive CLI: clarify, approval, sudo/secret capture, command
     palette, slash-confirm, external editor."""
 
+    _connection_state = None
+
     def _open_external_editor(self, buffer=None) -> bool:
         """Open the active input buffer in an external editor."""
         from cli import _DIM, _RST, _cprint
@@ -92,7 +95,8 @@ class CLIModalMixin:
             _cprint(f"{_DIM}Wait for the current command to finish before opening the editor.{_RST}")
             return False
         if (self._sudo_state or self._secret_state or self._approval_state
-                or getattr(self, "_slash_confirm_state", None) or self._clarify_state):
+                or getattr(self, "_slash_confirm_state", None) or self._clarify_state
+                or self._connection_state):
             _cprint(f"{_DIM}Finish the active prompt before opening the editor.{_RST}")
             return False
         target_buffer = buffer or getattr(app, "current_buffer", None)
@@ -423,7 +427,8 @@ class CLIModalMixin:
         if getattr(self, "_command_palette_state", None):
             return
         if (self._model_picker_state or self._clarify_state or self._approval_state
-                or self._slash_confirm_state or self._sudo_state or self._secret_state):
+                or self._slash_confirm_state or self._sudo_state or self._secret_state
+                or self._connection_state):
             return
         self._capture_modal_input_snapshot()
         self._command_palette_state = {
@@ -547,22 +552,32 @@ class CLIModalMixin:
         or ``display.bell_on_complete`` (end of turn); works over SSH. The same flag also emits the
         OSC 9 / Warp OSC 777 desktop notification; ``context`` is the short notification body."""
         flag = "bell_on_prompt" if prompt else "bell_on_complete"
-        if not getattr(self, flag, False):
+        if not getattr(self, flag, False) or getattr(self, "_terminal_io_broken", False):
             return
+        from hermes_cli.cli_terminal_mixin import _run_on_app_loop, _write_terminal_sequence
+        from hermes_cli.terminal_notify import notification_sequence, write_tty
+        body = context or ("input needed" if prompt else "turn complete")
         try:
-            sys.stdout.write("\a")
-            sys.stdout.flush()
+            seq = "\a" + notification_sequence(
+                body, prompt=prompt, session_id=getattr(self, "session_id", "") or "", detail=detail)
         except Exception:
-            pass
-        try:
-            from hermes_cli.terminal_notify import notify as _terminal_notify
-            _terminal_notify(
-                context or ("input needed" if prompt else "turn complete"),
-                prompt=prompt,
-                session_id=getattr(self, "session_id", "") or "",
-                detail=detail)
-        except Exception:
-            pass
+            return
+        app = getattr(self, "_app", None)
+        if app is None or not getattr(app, "_is_running", False):
+            write_tty(seq)
+            return
+
+        # Agent thread. The loop thread may be mid-write of a 12 KB kitty pet frame that the tty
+        # drains ~1 KB at a time; a second writer on the same tty (/dev/tty, sys.stdout) splices
+        # in, the foreign ESC aborts the APC, and the terminal paints the rest of the payload as
+        # base64 at the input cursor. Serialize behind the renderer instead.
+        def _emit() -> None:
+            try:
+                _write_terminal_sequence(app, seq)
+            except (OSError, ValueError):
+                pass  # dead tty: same fail-quiet as _pet_flush_kitty_frame
+
+        _run_on_app_loop(app, _emit)
 
     def _clarify_teardown(self) -> None:
         self._clarify_state = None
@@ -612,6 +627,325 @@ class CLIModalMixin:
         self._clarify_teardown()
         _cprint(f"\n{_DIM}(clarify timed out after {timeout}s — agent will decide){_RST}")
         return _CLARIFY_TIMEOUT_REPLY
+
+    # --- Connection setup --------------------------------------------------
+    def _connection_operation(self, payload):
+        from tools.connectors import live
+
+        session_key = getattr(self, "session_id", "") or ""
+        op_id = str(payload.get("op_id") or "")
+        return live.get(session_key, op_id) or live.current(session_key)
+
+    def _connection_install_hook(self) -> bool:
+        from tools.connectors.operation import ConnectionOperation
+
+        if ConnectionOperation.on_change is not None:
+            return False
+        ConnectionOperation.on_change = self._connection_on_change
+        return True
+
+    def _connection_restore_hook(self) -> None:
+        from tools.connectors.operation import ConnectionOperation
+
+        if ConnectionOperation.on_change == self._connection_on_change:
+            ConnectionOperation.on_change = None
+
+    def _connection_close(self) -> None:
+        self._connection_state = None
+        self._connection_restore_hook()
+        self._restore_modal_input_snapshot()
+        self._paint_now()
+
+    @staticmethod
+    def _connection_fields(target) -> list[dict]:
+        return [dict(field) for field in target.get("required_env") or () if isinstance(field, dict)]
+
+    @staticmethod
+    def _connection_opening_phase(target) -> str:
+        """The phase a target opens in. A pending install or enable waits for the user's Connect
+        even with no fields to fill; a pending authorize is the backend still minting the link."""
+        target_state = target.get("state")
+        if target_state == "initiated" and target.get("connect_url"):
+            return "url"
+        if target_state == "failed":
+            return "failed"
+        if target_state == "pending" and target.get("action") != "authorize":
+            return "form"
+        return "waiting"
+
+    def _connection_show_target(self, payload, index: int) -> None:
+        targets = payload.get("targets") or []
+        if not targets:
+            self._connection_close()
+            return
+        index = max(0, min(index, len(targets) - 1))
+        target = targets[index]
+        fields = self._connection_fields(target)
+        previous = self._connection_state or {}
+        drafts = previous.setdefault("drafts", {})
+        target_draft = drafts.setdefault(target.get("name", ""), {})
+        for field in fields:
+            if "type" not in field:
+                field["type"] = "secret" if field.get("secret") else "plain"
+            if field.get("type") != "secret" and field.get("name") not in target_draft:
+                target_draft[field.get("name")] = str(field.get("default") or "")
+        self._connection_state = {
+            **previous,
+            "payload": payload,
+            "target_index": index,
+            "target": target,
+            "fields": fields,
+            "field_index": 0,
+            "selected": 0,
+            "phase": self._connection_opening_phase(target),
+            "drafts": drafts,
+        }
+        self._connection_sync_input_buffer()
+        self._paint_now()
+
+    def _connection_active_field_is_secret(self) -> bool:
+        state = self._connection_state
+        if not state or state.get("phase") not in {"form", "failed"}:
+            return False
+        fields = state.get("fields") or []
+        index = state.get("field_index", 0)
+        return 0 <= index < len(fields) and fields[index].get("type") == "secret"
+
+    def _connection_prefill_text(self) -> str:
+        state = self._connection_state
+        if not state or self._connection_active_field_is_secret():
+            return ""
+        fields = state.get("fields") or []
+        index = state.get("field_index", 0)
+        if not (0 <= index < len(fields)):
+            return ""
+        field = fields[index]
+        target_name = state.get("target", {}).get("name", "")
+        return str(state.get("drafts", {}).get(target_name, {}).get(field.get("name"), ""))
+
+    def _connection_sync_input_buffer(self) -> None:
+        app = getattr(self, "_app", None)
+        if app is None:
+            return
+
+        def _apply() -> None:
+            try:
+                buf = app.current_buffer
+                buf.text = self._connection_prefill_text()
+                buf.cursor_position = len(buf.text)
+            except Exception:
+                pass
+
+        loop = getattr(app, "loop", None)
+        if loop is not None and threading.current_thread() is not threading.main_thread():
+            try:
+                loop.call_soon_threadsafe(_apply)
+                return
+            except Exception:
+                pass
+        _apply()
+
+    def _connection_callback(self, payload):
+        if not isinstance(payload, dict):
+            return None
+        self._capture_modal_input_snapshot()
+        installed = self._connection_install_hook()
+        self._connection_show_target(payload, 0)
+        state = self._connection_state
+        if state is None:
+            return None
+        state["owns_hook"] = installed
+        state["tool_thread_id"] = threading.current_thread().ident
+        if state["phase"] != "waiting":
+            self._ring_bell(prompt=True, context="connection setup")
+        return None
+
+    def _connection_answer(self, *, approve: bool) -> None:
+        state = self._connection_state
+        if not state:
+            return
+        target = state["target"]
+        operation = self._connection_operation(state["payload"])
+        if operation is None:
+            self._connection_close()
+            return
+        name = str(target.get("name") or "")
+        answer = {"name": name, "status": "approved" if approve else "skipped"}
+        if approve:
+            answer["env"] = dict(state.get("drafts", {}).get(name, {}))
+        from tools.connectors.mcp import apply_answer
+
+        # The backend applies the answer on this thread, and its change hook sets the next phase
+        # (the URL step, the form again for a missing field) before apply_answer returns. Set the
+        # waiting phase first so it cannot overwrite that.
+        state["phase"] = "waiting"
+        apply_answer(operation, json.dumps({"targets": [answer]}))
+        self._paint_now()
+
+    def _connection_retry(self) -> None:
+        state = self._connection_state
+        if not state:
+            return
+        operation = self._connection_operation(state["payload"])
+        if operation is None:
+            self._connection_close()
+            return
+        target = state["target"]
+        if target.get("kind") == "connector" and target.get("state") in {"failed", "expired"}:
+            from tools.connectors.run import reissue
+
+            state["phase"] = "waiting"
+            if reissue(operation, [str(target.get("name") or "")]) is not None:
+                target["detail"] = "This connection cannot be started again. Cancel and ask the agent again."
+                state["phase"] = "failed"
+            self._paint_now()
+            return
+        if target.get("state") in {"pending", "failed", "expired"}:
+            # Connect on a failed row is the same attempt with the values now in the draft.
+            self._connection_answer(approve=True)
+            return
+        from tools.connectors.mcp import retry
+
+        state["phase"] = "waiting"
+        retry(operation, [str(target.get("name") or "")])
+        self._paint_now()
+
+    def _connection_continue(self) -> None:
+        state = self._connection_state
+        if not state:
+            return
+        operation = self._connection_operation(state["payload"])
+        if operation is not None:
+            from tools.connectors.mcp import apply_answer
+
+            apply_answer(operation, json.dumps({"settled_by": "continue"}))
+        self._connection_close()
+
+    def _connection_open_url(self) -> None:
+        state = self._connection_state
+        if state and state.get("phase") == "url" and state["target"].get("connect_url"):
+            webbrowser.open(state["target"]["connect_url"])
+
+    def _connection_cancel(self) -> None:
+        self._connection_answer(approve=False)
+
+    def _connection_interrupt(self) -> None:
+        state = self._connection_state
+        if state:
+            from tools.interrupt import set_interrupt
+
+            operation = self._connection_operation(state["payload"])
+            set_interrupt(True, thread_id=state.get("tool_thread_id"))
+            if operation is not None:
+                operation.wake.set()
+        self._connection_close()
+
+    def _connection_on_change(self, operation, _change, snapshot) -> None:
+        state = self._connection_state
+        if not state or operation.op_id != state["payload"].get("op_id"):
+            return
+        if snapshot.get("settled_at") is not None:
+            self._connection_close()
+            return
+        active_name = state["target"].get("name")
+        target = next((item for item in snapshot.get("targets") or () if item.get("name") == active_name), None)
+        if target is None:
+            return
+        state["payload"] = snapshot
+        state["target"] = target
+        target_state = target.get("state")
+        if target_state == "initiated" and target.get("connect_url"):
+            state["phase"] = "url"
+        elif target_state == "failed":
+            state["phase"] = "failed"
+        elif target_state == "pending" and self._connection_fields(target):
+            # The backend refused the answer because a required field is still empty: reopen the
+            # form on the first one it named, over the draft the panel kept.
+            missing = {field.get("name") for field in self._connection_fields(target)}
+            names = [field.get("name") for field in state.get("fields") or []]
+            state["field_index"] = next((i for i, name in enumerate(names) if name in missing), 0)
+            state["phase"] = "form"
+            self._connection_sync_input_buffer()
+        elif target_state == "connected" and target.get("discovery_error"):
+            state["phase"] = "authorized"
+        elif target_state in {"connected", "skipped"}:
+            unresolved = [
+                item for item in snapshot.get("targets") or ()
+                if item.get("state") not in {"connected", "skipped"}
+            ]
+            if unresolved:
+                self._connection_show_target(snapshot, (snapshot.get("targets") or []).index(unresolved[0]))
+                return
+            state["phase"] = "connected"
+        else:
+            state["phase"] = "waiting"
+        self._paint_now()
+
+    def _connection_set_field(self, value: str) -> None:
+        """Save the active input row in the private draft and advance to the next row/action."""
+        state = self._connection_state
+        if not state or state.get("phase") not in {"form", "failed"}:
+            return
+        fields = state.get("fields") or []
+        index = state.get("field_index", 0)
+        if not (0 <= index < len(fields)):
+            return
+        field = fields[index]
+        state["drafts"][state["target"].get("name", "")][field.get("name")] = value
+        state["field_index"] = min(index + 1, len(fields))
+        self._connection_sync_input_buffer()
+        self._paint_now()
+
+    def _connection_submit(self) -> None:
+        """Enter action for prompt_toolkit bindings: URL open, selected action, or field advance."""
+        state = self._connection_state
+        if not state:
+            return
+        phase = state.get("phase")
+        if phase == "url":
+            self._connection_open_url()
+        elif phase == "authorized":
+            self._connection_continue()
+        elif phase in {"form", "failed"} and state.get("field_index", 0) >= len(state.get("fields") or []):
+            (self._connection_retry if state.get("selected", 0) == 0 else self._connection_cancel)()
+
+    def _connection_field_lines(self, state, target) -> list[str]:
+        draft = state.get("drafts", {}).get(target.get("name", ""), {})
+        lines = []
+        for field in state.get("fields") or ():
+            marker = "*" if field.get("required") else ""
+            value = "Set" if field.get("type") == "secret" and draft.get(field.get("name")) else draft.get(field.get("name"), "")
+            lines.append(f"{field.get('prompt') or field.get('name')}{marker}: {value}")
+        return lines
+
+    def _connection_render_lines(self) -> list[str]:
+        """Panel copy without exposing secret drafts; the prompt_toolkit renderer consumes these rows."""
+        state = self._connection_state
+        if not state:
+            return []
+        target = state["target"]
+        phase = state.get("phase")
+        lines = [f"Set up {target.get('name', '')}"]
+        if target.get("instructions"):
+            lines.append(str(target["instructions"]))
+        if phase == "form":
+            lines.extend(self._connection_field_lines(state, target))
+            lines.append("Connect    Cancel")
+        elif phase == "url":
+            lines.extend([str(target.get("connect_url") or ""), str(target.get("detail") or ""), "Press Enter to open in browser"])
+        elif phase == "failed":
+            lines.append(str(target.get("detail") or "Connection failed"))
+            lines.extend(self._connection_field_lines(state, target))
+            lines.append("Connect    Cancel")
+        elif phase == "authorized":
+            # A connected row cannot be re-run inside this operation; the agent retries discovery
+            # with its next manage_connections call, which needs no new consent.
+            lines.extend(["Authorized. Tools unavailable.", "Continue"])
+        elif phase == "connected":
+            lines.append("Connected")
+        else:
+            lines.append(str(target.get("detail") or "Waiting…"))
+        return [line for line in lines if line]
 
     # --- Batch clarify (multi-question, issue #18450) -----------------------
     def _clarify_batch_set_active(self, state, index) -> None:
@@ -815,20 +1149,6 @@ class CLIModalMixin:
             choices.append("view")
         return choices
 
-    def _computer_use_approval_callback(self, action: str, args: dict, summary: str) -> str:
-        """Adapt the generic approval UI (once/session/always/deny) to the computer_use verdicts
-        (approve_once/approve_session/always_approve/deny)."""
-        verdict = self._approval_callback(
-            command=f"computer_use: {summary}",
-            description=f"Allow computer_use to perform `{action}`?")
-        return {
-            "once": "approve_once",
-            "session": "approve_session",
-            "always": "always_approve",
-            "deny": "deny",
-            "timeout": "timeout",
-        }.get(verdict, "deny")
-
     def _handle_approval_selection(self) -> None:
         """Process the currently selected dangerous-command approval choice."""
         state = self._approval_state
@@ -851,6 +1171,78 @@ class CLIModalMixin:
         state["response_queue"].put(chosen)
         self._approval_state = None
         self._invalidate()
+
+    def _vault_unlock_callback(self, backend_name: str, display_name: str) -> str:
+        """Masked master-password prompt for an external password manager (agent thread).
+        Reuses the sudo panel state so rendering, Enter/ESC handling and interrupt cleanup are shared."""
+        from cli import _DIM, _RST, _cprint
+
+        response_queue = queue.Queue()
+        self._capture_modal_input_snapshot()
+        self._sudo_state = {"response_queue": response_queue, "vault_backend": display_name}
+        self._sudo_deadline = _time.monotonic() + 120
+        self._ring_bell(prompt=True, context=f"unlock {display_name}")
+        self._paint_now()
+
+        result = self._poll_modal_queue(response_queue, "_sudo_deadline", refresh=0)
+        self._sudo_state = None
+        self._sudo_deadline = 0
+        self._restore_modal_input_snapshot()
+        self._paint_now()
+        if result is _TIMED_OUT or not result:
+            _cprint(f"\n{_DIM}  ⏭ {display_name} stays locked{_RST}")
+            return ""
+        _cprint(f"\n{_DIM}  ✓ Unlocking {display_name} for this session{_RST}")
+        return result
+
+    def _vault_save_login_callback(self, origin: str, site: str):
+        """Two-step "save this login" prompt (identifier shown, password masked) on the sudo panel; the
+        answer goes to the vault store, never to the model. None = declined."""
+        from cli import _DIM, _RST, _cprint
+
+        answer: dict = {}
+        for step in ("identifier", "password"):
+            response_queue = queue.Queue()
+            self._capture_modal_input_snapshot()
+            self._sudo_state = {"response_queue": response_queue, "vault_save": {"site": site, "origin": origin,
+                                                                                  "step": step}}
+            self._sudo_deadline = _time.monotonic() + 180
+            if step == "identifier":
+                self._ring_bell(prompt=True, context=f"save login for {site}")
+            self._paint_now()
+            result = self._poll_modal_queue(response_queue, "_sudo_deadline", refresh=0)
+            self._sudo_state = None
+            self._sudo_deadline = 0
+            self._restore_modal_input_snapshot()
+            self._paint_now()
+            if result is _TIMED_OUT or not result:
+                _cprint(f"\n{_DIM}  ⏭ Not saving a login for {site}{_RST}")
+                return None
+            answer[step] = result
+        _cprint(f"\n{_DIM}  ✓ Login for {site} saved to your vault{_RST}")
+        return answer
+
+    def _vault_code_callback(self, site: str, hint: str) -> str:
+        """One-time-code prompt (shown as typed; a 6-digit code is not a secret worth masking and users
+        need to see typos) on the sudo panel. "" = declined/timed out."""
+        from cli import _DIM, _RST, _cprint
+
+        response_queue = queue.Queue()
+        self._capture_modal_input_snapshot()
+        self._sudo_state = {"response_queue": response_queue, "vault_code": {"site": site, "hint": hint}}
+        self._sudo_deadline = _time.monotonic() + 180
+        self._ring_bell(prompt=True, context=f"verification code for {site}")
+        self._paint_now()
+        result = self._poll_modal_queue(response_queue, "_sudo_deadline", refresh=0)
+        self._sudo_state = None
+        self._sudo_deadline = 0
+        self._restore_modal_input_snapshot()
+        self._paint_now()
+        if result is _TIMED_OUT or not result:
+            _cprint(f"\n{_DIM}  ⏭ No code entered for {site}{_RST}")
+            return ""
+        _cprint(f"\n{_DIM}  ✓ Code entered into {site}{_RST}")
+        return result
 
     def _secret_capture_callback(self, var_name: str, prompt: str, metadata=None) -> dict:
         self._capture_modal_input_snapshot()
@@ -898,6 +1290,8 @@ class CLIModalMixin:
         if self._approval_state:
             _put(self._approval_state, "deny")
             self._approval_state = None
+        if self._connection_state:
+            self._connection_interrupt()
         if self._clarify_state:
             _put(self._clarify_state, "The user cancelled. Use your best judgement to proceed.")
             self._clarify_state = None

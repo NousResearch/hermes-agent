@@ -24,7 +24,7 @@ def _is_profile_api_key_provider(provider_id: str) -> bool:
 _GENERIC_API_KEY_PROVIDERS = frozenset({
     "openai-api", "gemini", "deepseek", "xai", "zai", "kimi-coding-cn",
     "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go",
-    "opencode-free", "alibaba", "huggingface", "xiaomi", "arcee", "gmi",
+    "alibaba", "huggingface", "xiaomi", "arcee", "gmi",
     "nvidia", "ollama-cloud", "tencent-tokenhub", "tencent-tokenplan", "lmstudio"})
 
 
@@ -94,13 +94,23 @@ def _format_aux_current(task_cfg: dict) -> str:
     base_url = str(task_cfg.get("base_url") or "").strip()
     provider = str(task_cfg.get("provider") or "auto").strip() or "auto"
     model = str(task_cfg.get("model") or "").strip()
+    effort = _aux_effort_word(task_cfg)
+    suffix = (f" · {model}" if model else "") + (f" · {effort}" if effort else "")
     if base_url:
-        return f"custom ({_short_url(base_url)})" + (f" · {model}" if model else "")
+        return f"custom ({_short_url(base_url)})" + suffix
     if provider == "auto":
-        return "auto" + (f" · {model}" if model else "")
+        return "auto" + suffix
     if model:
-        return f"{provider} · {model}"
-    return provider
+        return f"{provider}{suffix}"
+    return provider + suffix
+
+
+def _aux_effort_word(task_cfg: dict) -> str:
+    """The stored ``reasoning_effort`` as a display word ("" = provider default; YAML False = "none")."""
+    raw = task_cfg.get("reasoning_effort") if isinstance(task_cfg, dict) else None
+    if raw is False:
+        return "none"
+    return str(raw or "").strip().lower()
 
 
 def _delegation_cfg_as_task(cfg: dict) -> dict:
@@ -109,7 +119,9 @@ def _delegation_cfg_as_task(cfg: dict) -> dict:
     d = cfg.get("delegation")
     if not isinstance(d, dict):
         d = {}
-    return {k: str(d.get(k) or "").strip() for k in ("provider", "model", "base_url", "api_key")}
+    out = {k: str(d.get(k) or "").strip() for k in ("provider", "model", "base_url", "api_key")}
+    out["reasoning_effort"] = d.get("reasoning_effort", "")
+    return out
 
 
 def _aux_task_cfg(cfg: dict, task: str) -> dict:
@@ -128,9 +140,10 @@ def _aux_task_display_name(task: str) -> str:
 
 
 def _save_aux_choice(task: str, *, provider: str, model: str = "", base_url: str = "",
-                     api_key: str = "") -> None:
+                     api_key: str = "", reasoning_effort: Optional[str] = None) -> None:
     """Persist an aux task's four routing fields (timeout etc. untouched; main model config never
-    modified). ``delegation`` writes the top-level section, with "auto" stored as an empty provider."""
+    modified). ``delegation`` writes the top-level section, with "auto" stored as an empty provider.
+    ``reasoning_effort``: a level word or "" (provider default) to write; None leaves the key alone."""
     from hermes_cli.config import load_config, save_config
     cfg = load_config()
     if task == _DELEGATION_TASK_KEY:
@@ -142,7 +155,32 @@ def _save_aux_choice(task: str, *, provider: str, model: str = "", base_url: str
     entry["model"] = model or ""
     entry["base_url"] = base_url or ""
     entry["api_key"] = api_key or ""
+    if reasoning_effort is not None and _aux_task_takes_reasoning(task):
+        entry["reasoning_effort"] = reasoning_effort
     save_config(cfg)
+
+
+def _aux_task_takes_reasoning(task: str) -> bool:
+    """Whether the task's config block honours ``reasoning_effort``. MoA slots and
+    ``memory_query_rewrite`` omit the key by design (``config_defaults._aux``); ``review``
+    routes through delegation which reads ``delegation.reasoning_effort``, not its own block."""
+    if task == _DELEGATION_TASK_KEY:
+        return True
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    block = (DEFAULT_CONFIG.get("auxiliary") or {}).get(task)
+    if isinstance(block, dict):
+        return "reasoning_effort" in block
+    return True  # plugin-registered task: the runtime folds the key in via _get_task_extra_body
+
+
+def _prompt_aux_reasoning_effort(task: str, current: str) -> Optional[str]:
+    """Effort step for an aux task: a level, "none", "" (provider default / inherit parent), or None to
+    keep current. The empty-value row is "Inherit parent" for delegation (a child inherits the parent's
+    effort; wording from #105431 by @fangliquanflq) and "Provider default" for aux tasks."""
+    from hermes_constants import VALID_REASONING_EFFORTS
+    label = "Inherit parent" if task == _DELEGATION_TASK_KEY else "Provider default"
+    return _prompt_reasoning_effort_selection(
+        list(VALID_REASONING_EFFORTS), current_effort=current, default_label=label)
 
 
 def _reset_aux_to_auto() -> int:
@@ -156,8 +194,8 @@ def _reset_aux_to_auto() -> int:
         if entry.get("provider") not in {None, "", auto}:
             entry["provider"] = auto
             changed = True
-        for field in ("model", "base_url", "api_key"):
-            if entry.get(field):
+        for field in ("model", "base_url", "api_key", "reasoning_effort"):
+            if entry.get(field) or entry.get(field) is False:
                 entry[field] = ""
                 changed = True
         return changed
@@ -244,17 +282,18 @@ def _aux_select_for_task(task: str) -> None:
     if slug == "__back__":
         return
     if slug == "__auto__":
-        _save_aux_choice(task, provider="auto", model="", base_url="", api_key="")
+        _save_aux_choice(task, provider="auto", model="", base_url="", api_key="", reasoning_effort="")
         print(f"{display_name}: reset to auto.")
     elif slug == "__custom__":
         _aux_flow_custom_endpoint(task, task_cfg)
     else:
-        _aux_flow_provider_model(task, slug, models, current_model)
+        _aux_flow_provider_model(task, slug, models, current_model, current_effort=_aux_effort_word(task_cfg))
 
 
 def _aux_flow_provider_model(task: str, provider_slug: str, curated_models: list,
-                             current_model: str = "") -> None:
-    """Prompt for a model under an already-authenticated provider, save to aux."""
+                             current_model: str = "", current_effort: str = "") -> None:
+    """Prompt for a model under an already-authenticated provider (then its reasoning effort),
+    save to aux."""
     from hermes_cli.auth import _prompt_model_selection
     from hermes_cli.models_pricing import get_pricing_for_provider
     display_name = _aux_task_display_name(task)
@@ -278,11 +317,14 @@ def _aux_flow_provider_model(task: str, provider_slug: str, curated_models: list
             print("No change.")
             return
 
-    _save_aux_choice(task, provider=provider_slug, model=selected or "", base_url="", api_key="")
+    effort = _prompt_aux_reasoning_effort(task, current_effort) if _aux_task_takes_reasoning(task) else None
+    _save_aux_choice(task, provider=provider_slug, model=selected or "", base_url="", api_key="",
+                     reasoning_effort=effort)
+    effort_note = f" · reasoning {effort}" if effort else ""
     if selected:
-        print(f"{display_name}: {provider_slug} · {selected}")
+        print(f"{display_name}: {provider_slug} · {selected}{effort_note}")
     else:
-        print(f"{display_name}: {provider_slug} (provider default model)")
+        print(f"{display_name}: {provider_slug} (provider default model){effort_note}")
 
 
 def _aux_flow_custom_endpoint(task: str, task_cfg: dict) -> None:
@@ -308,9 +350,12 @@ def _aux_flow_custom_endpoint(task: str, task_cfg: dict) -> None:
     api_key = _ask("API key (optional, blank = use OPENAI_API_KEY): ", secret=True, cancel_msg="")
     if api_key is None:
         return
+    effort = (_prompt_aux_reasoning_effort(task, _aux_effort_word(task_cfg))
+              if _aux_task_takes_reasoning(task) else None)
 
-    _save_aux_choice(task, provider="custom", model=model, base_url=url, api_key=api_key)
-    print(f"{display_name}: custom ({_short_url(url)})" + (f" · {model}" if model else ""))
+    _save_aux_choice(task, provider="custom", model=model, base_url=url, api_key=api_key, reasoning_effort=effort)
+    print(f"{display_name}: custom ({_short_url(url)})" + (f" · {model}" if model else "")
+          + (f" · reasoning {effort}" if effort else ""))
 
 
 _CANCELLED = object()
@@ -523,8 +568,9 @@ def _remove_custom_provider(config):
     print(f'✅ Removed "{removed_name}" from custom providers.')
 
 
-def _prompt_reasoning_effort_selection(efforts, current_effort=""):
-    """Prompt for a reasoning effort. Returns effort, 'none', or None to keep current."""
+def _prompt_reasoning_effort_selection(efforts, current_effort="", *, default_label=""):
+    """Prompt for a reasoning effort. Returns a level, 'none', "" (only with *default_label*: the
+    "use the provider default" row), or None to keep current."""
     deduped = list(dict.fromkeys(str(effort).strip().lower() for effort in efforts if str(effort).strip()))
     canonical_order = ("minimal", "low", "medium", "high", "xhigh", "max", "ultra")
     ordered = [effort for effort in canonical_order if effort in deduped]
@@ -537,33 +583,91 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
 
     disable_label = "Disable reasoning"
     skip_label = "Skip (keep current)"
+    # (return value, label) for the rows after the ladder; "" = provider default (aux tasks only).
+    tail: list[tuple[Optional[str], str]] = [("none", disable_label)]
+    if default_label:
+        tail.append(("", default_label + ("  ← currently in use" if current_effort == "" else "")))
+    tail.append((None, skip_label))
+    tail_values = [v for v, _ in tail]
     if current_effort == "none":
-        default_idx = len(ordered)
+        default_idx = len(ordered) + tail_values.index("none")
     elif current_effort in ordered:
         default_idx = ordered.index(current_effort)
+    elif default_label and current_effort == "":
+        default_idx = len(ordered) + tail_values.index("")
     elif "medium" in ordered:
         default_idx = ordered.index("medium")
     else:
         default_idx = 0
 
     n = len(ordered)
-    idx = _radiolist("Select reasoning effort:", [_label(effort) for effort in ordered] + [disable_label, skip_label],
-                     default_idx)
+    rows = [_label(effort) for effort in ordered] + [label for _, label in tail]
+    idx = _radiolist("Select reasoning effort:", rows, default_idx)
     if idx is not None:
         if idx < 0:
             return None
         print()
     else:
         print("Select reasoning effort:")
-        for i, effort in enumerate(ordered, 1):
-            print(f"  {i}. {_label(effort)}")
-        _say(f"  {n + 1}. {disable_label}", f"  {n + 2}. {skip_label}", "")
-        idx = _ask_index(f"Choice [1-{n + 2}] (default: keep current): ", n + 2, echo_cancel=False)
+        for i, row in enumerate(rows, 1):
+            print(f"  {i}. {row}")
+        print()
+        idx = _ask_index(f"Choice [1-{len(rows)}] (default: keep current): ", len(rows), echo_cancel=False)
         if idx is None or idx is _CANCELLED:
             return None
     if idx < n:
         return ordered[idx]
-    return "none" if idx == n else None
+    return tail_values[idx - n]
+
+
+def _offer_reasoning_after_pick(model_before: str) -> None:
+    """Post-flow effort step for ``select_provider_and_model``: when a flow saved a different
+    ``model.default`` (every flow persists through ``_save_model_choice``), offer the effort for
+    the new model + provider. A flow that made no change (cancel, "No change.") never prompts."""
+    from hermes_cli.config import load_config
+    model_cfg = load_config().get("model")
+    if not isinstance(model_cfg, dict):
+        return
+    model = str(model_cfg.get("default") or "").strip()
+    if not model or model == model_before:
+        return  # same model re-picked or nothing saved: the "Reasoning effort" row covers that
+    _prompt_main_reasoning_effort(model, str(model_cfg.get("provider") or ""))
+
+
+def _prompt_main_reasoning_effort(model: str, provider: str) -> None:
+    """The effort step every ``hermes model`` flow shares: after a main-model pick, offer the
+    model's supported levels (Copilot publishes a per-model set; everything else gets the full
+    ladder) and persist ``agent.reasoning_effort``. Skipped when the catalog says the route has
+    no reasoning control; "Skip" leaves the current value alone."""
+    from hermes_cli.config import load_config, save_config
+    from hermes_cli.setup import _current_reasoning_effort, _set_reasoning_effort
+    efforts = _main_model_reasoning_efforts(model, provider)
+    if efforts is None:
+        return
+    selected = _prompt_reasoning_effort_selection(efforts, current_effort=_current_reasoning_effort(load_config()))
+    if selected is None:
+        return
+    cfg = load_config()
+    _set_reasoning_effort(cfg, selected)
+    save_config(cfg)
+    print("Reasoning disabled for this model." if selected == "none" else f"Reasoning effort set to: {selected}")
+
+
+def _main_model_reasoning_efforts(model: str, provider: str) -> Optional[list[str]]:
+    """Levels to offer for *model* on *provider*: None when the route has no reasoning control."""
+    from hermes_constants import VALID_REASONING_EFFORTS
+    slug = (provider or "").strip().lower()
+    if slug == "copilot":
+        from hermes_cli.models import github_model_reasoning_efforts
+        return github_model_reasoning_efforts(model) or None
+    try:
+        from agent.models_dev import get_model_capabilities
+        meta = get_model_capabilities(slug, model)
+    except Exception:
+        meta = None
+    if meta is not None and meta.supports_reasoning is False:
+        return None
+    return list(VALID_REASONING_EFFORTS)
 
 
 def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "", existing_source: str = "") -> tuple:
@@ -816,7 +920,16 @@ def _build_provider_picker_rows(config: dict, active: str, provider_labels: dict
             _add(f"group:{gid}", label, row["members"], bool(active_group) and gid == active_group)
         else:
             slug = row["slug"]
-            _add(slug, canonical_descs.get(slug, provider_labels.get(slug, slug)), [], bool(active) and slug == active)
+            label = canonical_descs.get(slug, provider_labels.get(slug, slug))
+            if slug == "nous":
+                # Same free-tier rule as the gateway/TUI pickers: relabel for a guest, hide
+                # when nous.guest is off, untouched for a real account.
+                from hermes_cli.model_switch_providers import _free_tier_nous_row
+                tier_row = _free_tier_nous_row({"name": label, "models": []})
+                if tier_row is None:
+                    continue
+                label = tier_row["name"]
+            _add(slug, label, [], bool(active) and slug == active)
 
     for key, provider_info in custom_provider_map.items():
         saved_model = provider_info.get("model", "")
@@ -827,6 +940,7 @@ def _build_provider_picker_rows(config: dict, active: str, provider_labels: dict
     ordered.append(("custom", "Custom endpoint (enter URL manually)", []))
     if isinstance(config.get("custom_providers"), list) and config.get("custom_providers"):
         ordered.append(("remove-custom", "Remove a saved custom provider", []))
+    ordered.append(("reasoning", "Reasoning effort for the current model...", []))
     ordered.append(("aux-config", "Configure auxiliary models...", []))
     ordered.append(("cancel", "Leave unchanged", []))
     return ordered, default_idx

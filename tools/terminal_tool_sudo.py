@@ -13,7 +13,8 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from contextvars import ContextVar
 
 from utils import env_var_enabled
 
@@ -25,6 +26,14 @@ logger = logging.getLogger("tools.terminal_tool")
 # cached password in a long-lived process.
 _sudo_password_cache: dict[str, str] = {}
 _sudo_password_cache_lock = threading.Lock()
+
+# Only populated while invoking a UI callback; preserve the zero-argument callback API.
+_sudo_prompt_command: ContextVar[str] = ContextVar("sudo_prompt_command", default="")
+
+
+def get_sudo_prompt_command() -> str:
+    """Original command for the current sudo password prompt, or '' outside its callback."""
+    return _sudo_prompt_command.get()
 
 
 def _get_sudo_password_cache_scope() -> str:
@@ -173,19 +182,22 @@ def _read_hidden_password(result: dict) -> None:
         result["done"] = True
 
 
-def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
+def _prompt_for_sudo_password(timeout_seconds: int = 45, *, command: str = "") -> str:
     """Prompt for a sudo password; "" on skip (empty Enter), timeout, or error. Prefers the
     CLI-registered callback (prompt_toolkit-integrated); otherwise reads /dev/tty (msvcrt on
     Windows) with echo disabled. Human wait time is excluded from tool deadlines (``human_wait_window``)."""
     from tools.terminal_tool import _get_sudo_password_callback
     _sudo_cb = _get_sudo_password_callback()
     if _sudo_cb is not None:
+        token = _sudo_prompt_command.set(command)
         try:
             from tools.approval_human_wait import human_wait_window
             with human_wait_window():
                 return _sudo_cb() or ""
         except Exception:
             return ""
+        finally:
+            _sudo_prompt_command.reset(token)
 
     result = {"password": None, "done": False}
     try:
@@ -362,23 +374,6 @@ def _count_real_sudo_invocations(command: str) -> int:
     return _rewrite_real_sudo_invocations(command)[1]
 
 
-def _sudo_nopasswd_works() -> bool:
-    """True when local sudo currently works without prompting. Local backend only — Docker/SSH/
-    Modal must not inherit host sudo state. Re-probes every call (no cache) so an expired sudo
-    timestamp can't make a later command silently block waiting for a password."""
-    from tools.terminal_tool import _tenv
-    if (_tenv("TERMINAL_ENV", "local").strip().lower() or "local") != "local":
-        return False
-    try:
-        probe = subprocess.run(
-            ["sudo", "-n", "true"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL, timeout=3, check=False,
-        )
-        return probe.returncode == 0
-    except Exception:
-        return False
-
-
 def _rewrite_compound_background(command: str) -> str:
     """Wrap `A && B &` (or `A || B &`) to `A && { B & }` at depth 0. Bash binds `&&` tighter
     than `&`, so `A && B &` backgrounds a subshell that runs B in the foreground and waits for
@@ -434,7 +429,10 @@ def _rewrite_compound_background(command: str) -> str:
     return result
 
 
-def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None]:
+def _transform_sudo_command(
+    command: str | None,
+    sudo_nopasswd_check: Callable[[], bool] | None = None,
+) -> tuple[str | None, str | None]:
     """Rewrite command-position ``sudo`` executables to ``sudo -S -p ''`` when a password is available (shared by every
     execution environment). Returns ``(command, sudo_stdin)``: ``sudo_stdin`` is one password
     line per sudo invocation that the caller must PREPEND to the process stdin (sudo -S consumes
@@ -443,7 +441,9 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
     password in the command string themselves. With no password available the command is
     returned unchanged and ``sudo_stdin`` is None, so it fails gracefully with "sudo: a password
     is required". Password sources, in order: configured SUDO_PASSWORD, the session cache, then
-    an interactive prompt (45s timeout, cached on success) when a UI is reachable."""
+    an interactive prompt (45s timeout, cached on success) when a UI is reachable.
+    ``sudo_nopasswd_check`` (supplied by ``BaseEnvironment``) runs ``sudo -n true`` inside the
+    selected backend; a True result skips the prompt and the ``-S`` rewrite entirely."""
     from tools.terminal_tool import _get_sudo_password_callback
     if command is None:
         return None, None
@@ -461,18 +461,20 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
     has_configured_password = _configured_password is not None
     sudo_password = _configured_password if has_configured_password else _get_cached_sudo_password()
 
-    # sudoers NOPASSWD hosts must not be forced through the prompt or the -S pipe (local only).
-    if not has_configured_password and not sudo_password and _sudo_nopasswd_works():
-        return command, None
-
     # delegate_task children inherit HERMES_INTERACTIVE=1 (and possibly a stale thread-local
     # callback on a recycled worker) but have no user on the other side — always headless;
-    # configured password, session cache and the NOPASSWD probe still apply.
+    # configured password and session cache still apply.
     should_prompt_for_sudo = (
         env_var_enabled("HERMES_INTERACTIVE") or _get_sudo_password_callback() is not None
     ) and not _in_delegated_child_context()
     if not has_configured_password and not sudo_password and should_prompt_for_sudo:
-        sudo_password = _prompt_for_sudo_password(timeout_seconds=45)
+        # sudoers NOPASSWD must not be forced through the prompt or the -S pipe. The probe is
+        # a round trip on the selected backend (an ssh exec for SSH), so it only runs when a
+        # prompt would otherwise fire: headless callers end up at ``(command, None)`` either
+        # way. Re-probed every call so an expired sudo timestamp cannot silently block.
+        if sudo_nopasswd_check is not None and sudo_nopasswd_check():
+            return command, None
+        sudo_password = _prompt_for_sudo_password(timeout_seconds=45, command=command)
         if sudo_password:
             _set_cached_sudo_password(sudo_password)
 

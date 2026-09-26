@@ -13,37 +13,19 @@ logger = logging.getLogger("hermes_cli.update_cmd")
 
 
 def _reload_config_modules() -> None:
-    """Force-reload config modules after git pull: the updater is the PRE-pull process, so the
-    cached modules hold OLD code and ``check_config_version()`` would report "up to date" despite a
-    pulled migration. ``_subprocess_compat`` / ``dashboard_procs`` reload too so the later dashboard
-    cleanup sees symbols the update added."""
-    import importlib
-    importlib.invalidate_caches()
-    for mod_name in (
-        "hermes_cli.config_defaults", "hermes_cli.config", "hermes_cli.config_migrations",
-        "hermes_cli._subprocess_compat", "hermes_cli.dashboard_procs"):
-        mod = sys.modules.get(mod_name)
-        if mod is not None:
-            try:
-                importlib.reload(mod)
-            except Exception as exc:
-                logger.debug("Could not reload %s for fresh post-update code: %s", mod_name, exc)
+    """Historical updater hook; migration now belongs to fresh completion Python."""
+    from hermes_cli._old_updater import stop_for_relaunch
+    stop_for_relaunch(incomplete=True)
 
 
 def _run_config_check_fresh() -> tuple:
-    """``(current_ver, latest_ver)`` from freshly-reloaded modules (see ``_reload_config_modules``)."""
-    from hermes_cli.update_cmd import _reload_config_modules
-    _reload_config_modules()
-    from hermes_cli.config import check_config_version
-    return check_config_version(raise_on_parse_error=True)
+    from hermes_cli._old_updater import stop_for_relaunch
+    stop_for_relaunch(incomplete=True)
 
 
 def _run_migrate_config_fresh(*, interactive: bool = False, quiet: bool = False) -> dict:
-    """Run config migration with freshly-reloaded modules; returns the results dict."""
-    from hermes_cli.update_cmd import _reload_config_modules
-    _reload_config_modules()
-    from hermes_cli.config import migrate_config
-    return migrate_config(interactive=interactive, quiet=quiet)
+    from hermes_cli._old_updater import stop_for_relaunch
+    stop_for_relaunch(incomplete=True)
 
 
 def _migrate_sibling_profile_configs() -> list[tuple[str, int, int]]:
@@ -56,7 +38,7 @@ def _migrate_sibling_profile_configs() -> list[tuple[str, int, int]]:
     profile, but ``hermes update`` historically migrated only the active profile's config — siblings drifted
     versions until their gateway hit a config the new code couldn't read.
     """
-    from hermes_cli.update_cmd import _run_config_check_fresh, _run_migrate_config_fresh
+    from hermes_cli.config import check_config_version, migrate_config
     migrated: list[tuple[str, int, int]] = []
     with _best_effort('Sibling profile enumeration failed: %s'):
         from hermes_constants import (
@@ -78,11 +60,11 @@ def _migrate_sibling_profile_configs() -> list[tuple[str, int, int]]:
                 continue  # profile never configured — nothing to migrate
             token = set_hermes_home_override(entry)
             try:
-                current_ver, latest_ver = _run_config_check_fresh()
+                current_ver, latest_ver = check_config_version(raise_on_parse_error=True)
                 if current_ver >= latest_ver:
                     continue
-                _run_migrate_config_fresh(interactive=False, quiet=True)
-                after_ver, _ = _run_config_check_fresh()
+                migrate_config(interactive=False, quiet=True)
+                after_ver, _ = check_config_version(raise_on_parse_error=True)
                 if after_ver > current_ver:
                     migrated.append((entry.name, current_ver, after_ver))
             except Exception as exc:
@@ -162,26 +144,24 @@ def _ask_configure_new_options(*, assume_yes: bool, gateway_mode: bool) -> str:
 def _check_and_apply_config_migration(
     *, assume_yes: bool = False, gateway_mode: bool = False, pre_update_snapshot_id: str | None = None
 ) -> None:
-    """Check/apply config migrations with freshly-reloaded modules. Runs on EVERY completion path
+    """Check/apply config migrations. Runs on EVERY completion path
     (post-pull, venv-repair, Node-deps repair on ``commit_count == 0``) so an interrupted update
     that already pulled code doesn't strand an old config version.
 
     See #91360.
     """
-    from hermes_cli.update_cmd import (
-        _migrate_sibling_profile_configs, _reload_config_modules, _run_config_check_fresh,
-        _run_migrate_config_fresh)
+    from hermes_cli.update_cmd import _migrate_sibling_profile_configs
+    from hermes_cli.config import check_config_version, migrate_config
     print()
     print("→ Checking configuration for new options...")
-    # Reload BEFORE any config reads so all checks use the updated code.
-    _reload_config_modules()
     from hermes_cli.config import get_missing_env_vars, get_missing_config_fields
     # A config-check failure must not break an otherwise-successful update.
     try:
+        from hermes_cli.config import get_missing_env_vars, get_missing_config_fields
         # Log, point at the manual command, and return. See #91360.
         missing_env = get_missing_env_vars(required_only=True)
         missing_config = get_missing_config_fields()
-        current_ver, latest_ver = _run_config_check_fresh()
+        current_ver, latest_ver = check_config_version(raise_on_parse_error=True)
     except Exception as exc:
         logger.debug("Config check during update failed: %s", exc)
         print("  ⚠️  Could not check config version.")
@@ -198,7 +178,7 @@ def _check_and_apply_config_migration(
         print()
         print(f"  ℹ Updating config format (v{current_ver} → v{latest_ver})…")
         try:
-            _mig_results = _run_migrate_config_fresh(interactive=False, quiet=True)
+            _mig_results = migrate_config(interactive=False, quiet=True)
             print("  ✓ Config format updated (no new settings to configure)")
             # quiet=True also mutes steps that RESET/REMOVE a setting; re-surface them so an
             # unattended update never silently changes config (config_added holds only mutations here).
@@ -228,7 +208,7 @@ def _check_and_apply_config_migration(
             # Gateway/--yes/non-interactive can't prompt for API keys; still run the
             # non-interactive pass so defaults and version bumps land before the gateway restarts.
             unattended = gateway_mode or assume_yes or response == "auto"
-            results = _run_migrate_config_fresh(interactive=not unattended, quiet=False)
+            results = migrate_config(interactive=not unattended, quiet=False)
             if results["env_added"] or results["config_added"]:
                 print()
                 print("✓ Configuration updated!")

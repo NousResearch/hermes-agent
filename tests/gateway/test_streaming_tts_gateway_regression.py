@@ -97,10 +97,9 @@ def _setup_monkeypatches(monkeypatch, tmp_path):
     (tmp_path / "config.yaml").write_text("agent:\n  model: test-model\n", encoding="utf-8")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_env_path", tmp_path / ".env")
-    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
     monkeypatch.setattr(
         gateway_run,
-        "_load_gateway_runtime_config",
+        "_load_gateway_config",
         lambda: {"agent": {"model": "test-model"}},
     )
     monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "test-model")
@@ -134,7 +133,7 @@ def test_run_agent_voice_turn_no_name_error(monkeypatch, tmp_path):
     # finalisation path still runs with streaming_tts_consumer_holder[0]=None.
     monkeypatch.setattr(
         gateway_run.GatewayRunner,
-        "_adapter_for_source",
+        "_delivery_adapter_for",
         lambda self, source: None,
     )
 

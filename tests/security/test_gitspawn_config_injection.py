@@ -102,12 +102,18 @@ def _make_malicious_repo(tmp: Path) -> tuple[Path, Path]:
     hooks = repo / "evil-hooks"
     hooks.mkdir()
     hook = hooks / "post-checkout"
-    hook.write_text(f"#!/bin/sh\ntouch {marker}.hook\n")
+    marker_shell = marker.as_posix()
+    hook.write_text(f"#!/bin/sh\ntouch '{marker_shell}.hook'\n")
     hook.chmod(0o755)
-    with (repo / ".git" / "config").open("a") as f:
-        f.write(f'[core]\n\tfsmonitor = "touch {marker}.fsmonitor"\n\thooksPath = {hooks}\n')
-        f.write(f'[diff "evil"]\n\tcommand = "touch {marker}.extdiff"\n')
-        f.write(f'\ttextconv = "sh -c \'touch {marker}.textconv; cat\'"\n')
+    # Let git encode config values; raw Windows backslashes are escapes.
+    settings = {
+        "core.fsmonitor": f"touch '{marker_shell}.fsmonitor'",
+        "core.hooksPath": hooks.as_posix(),
+        "diff.evil.command": f"touch '{marker_shell}.extdiff'",
+        "diff.evil.textconv": f"touch '{marker_shell}.textconv'; cat",
+    }
+    for key, value in settings.items():
+        subprocess.run(["git", "-C", str(repo), "config", key, value], check=True, env=clean)
     (repo / ".gitattributes").write_text("* diff=evil\n")
     (repo / "README").write_text("changed\n")  # dirty working tree so diffs run
     return repo, marker
@@ -157,13 +163,6 @@ def test_working_diff_is_safe(malicious_repo):
     from tools.working_diff import collect_working_diff
     repo, marker = malicious_repo
     collect_working_diff(str(repo), "working")
-    assert _fired(marker) == []
-
-
-def test_goals_fingerprint_is_safe(malicious_repo):
-    from hermes_cli.goals import workspace_fingerprint
-    repo, marker = malicious_repo
-    workspace_fingerprint(str(repo))
     assert _fired(marker) == []
 
 

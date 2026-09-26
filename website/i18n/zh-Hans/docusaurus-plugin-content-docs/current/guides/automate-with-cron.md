@@ -6,17 +6,17 @@ description: "使用 Hermes cron 的真实自动化模式——监控、报告�
 
 # 用 Cron 自动化一切
 
-[每日简报机器人教程](/guides/daily-briefing-bot)涵盖了基础内容。本指南更进一步——五种真实的自动化模式，可直接改造用于你自己的工作流。
+[每日简报机器人教程](./daily-briefing-bot.md)涵盖了基础内容。本指南更进一步——五种真实的自动化模式，可直接改造用于你自己的工作流。
 
-完整功能参考请见 [定时任务（Cron）](/user-guide/features/cron)。
+完整功能参考请见 [定时任务（Cron）](../user-guide/features/cron.md)。
 
 :::info 核心概念
 Cron 任务在全新的 agent 会话中运行，不保留当前对话的任何记忆。Prompt（提示词）必须**完全自包含**——把 agent 需要知道的一切都写进去。
 :::
 
 :::tip 不需要 LLM？你有两种零 token 方案。
-- **循环看门狗**：脚本本身已能生成精确消息（内存告警、磁盘告警、心跳）时，使用 [纯脚本 cron 任务](/guides/cron-script-only)。相同的调度器，无需 LLM。你可以在对话中让 Hermes 帮你设置——`cronjob` 工具知道何时选择 `no_agent=True` 并为你编写脚本。
-- **已在运行的脚本发起的一次性通知**（CI 步骤、post-commit hook、部署脚本、外部调度的监控）：使用 [`hermes send`](/guides/pipe-script-output) 将 stdout 或文件直接推送到 Telegram / Discord / Slack 等，无需设置 cron 条目。
+- **循环看门狗**：脚本本身已能生成精确消息（内存告警、磁盘告警、心跳）时，使用 [纯脚本 cron 任务](./cron-script-only.md)。相同的调度器，无需 LLM。你可以在对话中让 Hermes 帮你设置——`cronjob` 工具知道何时选择 `no_agent=True` 并为你编写脚本。
+- **已在运行的脚本发起的一次性通知**（CI 步骤、post-commit hook、部署脚本、外部调度的监控）：使用 [`hermes send`](./pipe-script-output.md) 将 stdout 或文件直接推送到 Telegram / Discord / Slack 等，无需设置 cron 条目。
 :::
 
 ---
@@ -263,4 +263,4 @@ Skill 按顺序加载——先加载 `arxiv`（教 agent 如何搜索论文）�
 
 ---
 
-*完整的 cron 参考——所有参数、边界情况和内部机制——请见 [定时任务（Cron）](/user-guide/features/cron)。*
+*完整的 cron 参考——所有参数、边界情况和内部机制——请见 [定时任务（Cron）](../user-guide/features/cron.md)。*

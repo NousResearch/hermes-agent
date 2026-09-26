@@ -7,11 +7,12 @@ iteration; nothing else in the turn loop counts them, so a flag that keeps re-ar
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
 
-from agent.turn_iteration_prep import apply_retry_restarts, begin_iteration
+from agent.turn_iteration_prep import _previous_tool_round, apply_retry_restarts, begin_iteration
 from agent.turn_retry_state import TurnRetryState
 
 RESTART_FLAGS = ["restart_with_redirected_messages", "restart_with_rebuilt_messages"]
@@ -90,3 +91,34 @@ def test_interrupt_exit_reason_names_the_system_issuer(tool_interrupt_reason, ex
     """A watchdog abort must not be recorded as a user stop: the exit reason carries the issuer."""
     verdict = _interrupted_agent(tool_interrupt_reason)
     assert (verdict.action, verdict.interrupted, verdict._turn_exit_reason) == ("break", True, expected)
+
+
+def test_previous_tool_round_keeps_the_pairing_id_and_its_result():
+    """Step payloads join on the same id ``tool.completed`` carries, not the raw composite id."""
+    messages = [{
+        "role": "assistant",
+        "tool_calls": [
+            {
+                "id": "call-A|fc-1",
+                "call_id": "call-A",
+                "type": "function",
+                "function": {"name": "terminal", "arguments": "{\"command\": \"echo A\"}"},
+            },
+            {
+                "id": "call-B",
+                "type": "function",
+                "function": {"name": "terminal", "arguments": "{\"command\": \"echo B\"}"},
+            },
+        ],
+    }, {
+        "role": "tool", "tool_call_id": "call-A", "content": "OUTPUT_A",
+    }, {
+        "role": "tool", "tool_call_id": "call-B", "content": "",
+    }]
+
+    rows = _previous_tool_round(messages)
+    assert [(row["id"], row["name"], row["result"]) for row in rows] == [
+        ("call-A", "terminal", "OUTPUT_A"),
+        ("call-B", "terminal", ""),
+    ]
+    assert json.loads(rows[1]["arguments"]) == {"command": "echo B"}

@@ -952,10 +952,8 @@ def _perform_uninstall(
     #     The userData dir is user configuration (connections.json, OAuth partitions, renderer
     #     state), so keep-data preserves it — only the full wipe removes it.
     log_info("Removing desktop Chat GUI artifacts...")
-    desktop_userdata = None
     try:
-        from hermes_cli.gui_uninstall import desktop_userdata_dir, uninstall_gui
-        desktop_userdata = desktop_userdata_dir()
+        from hermes_cli.gui_uninstall import uninstall_gui
         if not uninstall_gui(hermes_home, remove_userdata=full_uninstall):
             log_info("No desktop GUI artifacts found")
     except Exception as e:
@@ -1020,7 +1018,8 @@ def _perform_uninstall(
     if not full_uninstall:
         print(color("Your configuration and data have been preserved:", Colors.CYAN))
         print(f"  {hermes_home}/")
-        if desktop_userdata is not None and desktop_userdata.exists():
+        from hermes_cli.gui_uninstall import desktop_userdata_dir
+        if (desktop_userdata := desktop_userdata_dir()).exists():
             print(f"  {desktop_userdata}  (desktop app data)")
         print()
         print("To reinstall later with your existing settings:")

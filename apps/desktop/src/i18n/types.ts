@@ -4309,6 +4309,8 @@ export interface Translations {
       expandMessage: string
       scrollToBottom: string
       stop: string
+      jumpToPrompt: string
+      scrollToTop: string
       restorePrevious: string
       restoreCheckpoint: string
       restoreFromHere: string

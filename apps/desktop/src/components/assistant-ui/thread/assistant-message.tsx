@@ -49,7 +49,9 @@ import {
 } from '@/lib/error-surface'
 import { errorCardText } from '@/lib/error-surface-copy'
 import { triggerHaptic } from '@/lib/haptics'
+import { jumpScroll, ownViewport, scrollToPrompt } from '@/components/assistant-ui/thread/timeline'
 import {
+  ArrowUp,
   AudioLines,
   GitForkIcon,
   KeyRound,
@@ -991,6 +993,25 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
             <GitForkIcon className="size-3.5" />
           </TooltipIconButton>
         )}
+        <TooltipIconButton
+          onClick={event => {
+            triggerHaptic('selection')
+            const turn = event.currentTarget.closest('[data-slot="aui_turn-pair"]')
+            const userNode = turn?.querySelector<HTMLElement>('[data-slot="aui_user-message-root"]')
+            const promptId = userNode?.getAttribute('data-message-id')
+            if (promptId) {
+              scrollToPrompt(event.currentTarget, promptId)
+            } else {
+              const viewport = ownViewport(event.currentTarget)
+              if (viewport) {
+                jumpScroll(viewport, 0)
+              }
+            }
+          }}
+          tooltip={copy.scrollToTop}
+        >
+          <ArrowUp className="size-3.5" />
+        </TooltipIconButton>
         <CopyButton appearance="icon" buttonSize="icon" label={copy.copy} text={getMessageText} />
         <ReadAloudButton getText={getMessageText} messageId={messageId} />
         <ActionBarPrimitive.Reload asChild>

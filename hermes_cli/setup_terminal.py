@@ -286,6 +286,8 @@ def setup_terminal_backend(config: dict):
     _setup.print_header("Terminal Backend")
     _setup._info("Choose where Hermes runs shell commands and code.",
                  "This affects tool execution, file access, and isolation.",
+                 "Only the terminal/code tools move: the agent itself (model calls, sessions, memory,",
+                 "messaging platforms) keeps running on this machine. To host Hermes elsewhere, see the Docker guide.",
                  f"   Guide: {_setup._DOCS_BASE}/user-guide/configuration#terminal-backend-configuration", None)
     current_backend = _setup.cfg_get(config, "terminal", "backend", default="local")
     backends = list(_BUILTIN_TERMINAL_BACKENDS)

@@ -15,7 +15,7 @@ from typing import Any, NamedTuple, Optional
 
 from hermes_cli.providers import (
     LLAMACPP_ALIASES, ProviderDef, custom_provider_aliases, determine_api_mode, get_label,
-    host_mandated_api_mode, is_aggregator, normalize_provider, resolve_provider_full)
+    host_mandated_api_mode, is_aggregator, is_routing_aggregator, normalize_provider, resolve_provider_full)
 from hermes_cli.model_normalize import normalize_model_for_provider
 from agent.models_dev import (
     ModelCapabilities, ModelInfo, get_model_capabilities, get_model_info, list_provider_models)
@@ -1405,6 +1405,22 @@ def _route_from_model_input(st: _Switch) -> Optional[ModelSwitchResult]:
     if not config_routed and not is_custom:  # e
         detected = detect_provider_for_model(st.new_model, current_provider)
         if detected:
+            from hermes_cli.models import _AGGREGATOR_PROVIDERS
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+
+            detected_provider, detected_model = detected
+            if (
+                detected_provider != current_provider
+                and (current_provider in _AGGREGATOR_PROVIDERS or is_routing_aggregator(current_provider))
+                and not (detected_provider in _AGGREGATOR_PROVIDERS or is_aggregator(detected_provider))
+            ):
+                try:
+                    resolve_runtime_provider(requested=detected_provider, target_model=detected_model)
+                except Exception:
+                    logger.debug(
+                        "Detected provider %s for model %s has no usable credentials; keeping current provider %s",
+                        detected_provider, detected_model, current_provider, exc_info=True)
+                    return None
             st.target_provider, st.new_model = detected
     return None
 

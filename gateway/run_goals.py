@@ -485,9 +485,18 @@ class GatewayGoalsMixin:
             for sid, state in active_loops:
                 await self._loop_wakeup_fire_one(sid, state, now, warned_no_route, profile_name)
 
+        offload = getattr(self, "_run_in_executor_with_context", None)
         while self._running:
             try:
-                for profile_name, profile_home in _handoff_watch_scopes(self):
+                # Resolve watch scopes OFF the loop: _handoff_watch_scopes -> profiles_to_serve()
+                # walks the filesystem (realpath chains + profile-dir scans) every pass; on a
+                # thrashing host that stalls the loop past the liveness watchdog's 10s probe and
+                # the gateway self-exits 75 (mini 27/9 wedges: [hermes] caught in posixpath.realpath).
+                # Stand-in runners without the executor hop keep the historical on-loop resolve
+                # (same defensive idiom as run_idle_gates.off_loop_gate).
+                scopes = (await offload(_handoff_watch_scopes, self) if callable(offload)
+                          else _handoff_watch_scopes(self))
+                for profile_name, profile_home in scopes:
                     # Idle gate (run_idle_gates): skip the scope entry when the profile's store holds
                     # no active loop. The root scan (None) is unscoped and stays cheap.
                     if profile_home is not None and not await self._run_in_executor_with_context(

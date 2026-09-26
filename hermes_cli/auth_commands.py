@@ -232,6 +232,12 @@ class _OAuthAddSpec:
 
 
 def _codex_login(args) -> dict:
+    private_callbacks = {
+        key: getattr(args, key) for key in ("on_verification", "cancel_event")
+        if getattr(args, key, None) is not None
+    }
+    if private_callbacks:
+        return auth_mod._codex_device_code_login(**private_callbacks)
     from hermes_cli.auth_codex_browser import codex_oauth_login
     return codex_oauth_login(args)
 

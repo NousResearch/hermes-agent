@@ -324,10 +324,11 @@ function call<T>(path: string, opts?: PluginRestOptions): Promise<T> {
   return rest ? rest<T>(path, opts) : Promise.reject(new Error('kanban api not ready'))
 }
 
-/** Append the selected board (and other params) to a path. */
-function withBoard(path: string, params: Record<string, string> = {}): string {
+/** Append the board (and other params) to a path. `slug` defaults to the
+ * selection at call time; reads keyed by a slug at render time pass it
+ * explicitly so a later selection change cannot mislabel the response. */
+function withBoard(path: string, params: Record<string, string> = {}, slug = $boardSlug.get()): string {
   const search = new URLSearchParams(params)
-  const slug = $boardSlug.get()
 
   if (slug) {
     search.set('board', slug)
@@ -354,18 +355,19 @@ export const orchestrationKey = (scope: string) => ['kanban', 'orchestration', s
 
 // ── reads ─────────────────────────────────────────────────────────────────────
 
-export const fetchBoard = (archived: boolean) =>
-  call<KanbanBoard>(withBoard('/board', archived ? { include_archived: 'true' } : {}))
+export const fetchBoard = (archived: boolean, slug?: string) =>
+  call<KanbanBoard>(withBoard('/board', archived ? { include_archived: 'true' } : {}, slug))
 
-export const fetchTask = async (id: string) => {
+export const fetchTask = async (id: string, slug?: string) => {
   const downloadAttachment = captureGatewayFileDownload()
-  const detail = await call<KanbanTaskDetail>(withBoard(`/tasks/${id}`))
+  const detail = await call<KanbanTaskDetail>(withBoard(`/tasks/${id}`, {}, slug))
 
   return { ...detail, downloadAttachment }
 }
 
 /** Worker stdout/stderr tail (last 16 KiB — plenty for the drawer). */
-export const fetchLog = (id: string) => call<WorkerLog>(withBoard(`/tasks/${id}/log`, { tail: '16384' }))
+export const fetchLog = (id: string, slug?: string) =>
+  call<WorkerLog>(withBoard(`/tasks/${id}/log`, { tail: '16384' }, slug))
 
 export const fetchBoards = () => call<BoardsResponse>('/boards')
 

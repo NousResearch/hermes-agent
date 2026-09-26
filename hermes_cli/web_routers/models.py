@@ -204,6 +204,8 @@ def get_recommended_default_model(provider: str = "", profile: Optional[str] = N
                 models = [str(m) for m in (row.get("models") or [])]
                 return {"provider": slug, "model": pick_silent_default_model(models, provider=slug), "free_tier": None}
         return {"provider": slug, "model": "", "free_tier": None}
+    except HTTPException:
+        raise  # an unknown ?profile= is the scope's 404, not an empty recommendation
     except Exception:
         _log.exception("GET /api/model/recommended-default failed")
         return {"provider": slug, "model": "", "free_tier": None}

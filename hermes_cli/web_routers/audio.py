@@ -156,6 +156,8 @@ async def get_client_voice_config(profile: Optional[str] = None):
     from tools.voice_client_config import resolve_client_voice_config
     try:
         result = await _run_config_scoped(profile, resolve_client_voice_config)
+    except HTTPException:
+        raise  # an unknown ?profile= is the scope's 404, not a reason to fall back to relay
     except Exception:
         _log.exception("Client voice-config resolution failed")
         fallback = {"mode": "relay", "reason": "resolution error"}

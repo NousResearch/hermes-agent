@@ -1,0 +1,5 @@
+name: arcee-provider
+kind: model-provider
+version: 1.0.0
+description: Arcee AI
+author: Nous Research

@@ -1,0 +1,27 @@
+name: hermes-town
+repo: https://github.com/sxuff/hermes-town
+sha: 83aae757264b8cbae541830ba91834eed067c31a
+subdir: integrations/hermes-town-plugin
+description: Local pixel-art town where every Hermes session is a resident and every tool call walks to a building. Passive lifecycle bridge to a loopback-only server; prompts, arguments, and output never leave the process.
+maintainer: sxuff
+tier: community
+category: tools
+requires_hermes: ">=0.21"
+docs_url: https://github.com/sxuff/hermes-town#readme
+version: "0.2.0"
+image: https://raw.githubusercontent.com/sxuff/hermes-town/83aae757264b8cbae541830ba91834eed067c31a/artifacts/catalog-banner.png
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - post_llm_call
+    - pre_tool_call
+    - post_tool_call
+    - on_session_start
+    - on_session_end
+    - on_session_finalize
+    - on_session_reset
+    - subagent_start
+    - subagent_stop
+  provides_middleware: []
+  requires_env: []

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="250" viewBox="0 0 960 250" role="img" aria-labelledby="title desc">
+  <title id="title">Hermes session recap panel</title>
+  <desc id="desc">Stylized panel showing the previous conversation summary displayed when resuming a session.</desc>
+  <rect width="960" height="250" rx="18" fill="#07070d"/>
+  <rect x="24" y="24" width="912" height="202" rx="16" fill="#0a0a12" stroke="#3a3217"/>
+  <text x="480" y="56" text-anchor="middle" fill="#ffd700" font-family="Inter, sans-serif" font-size="20" font-weight="600">Previous Conversation</text>
+  <line x1="48" y1="72" x2="912" y2="72" stroke="#2b2410"/>
+
+  <text x="64" y="106" fill="#ffdd66" font-family="JetBrains Mono, monospace" font-size="15">● You: What is Python?</text>
+  <text x="64" y="136" fill="#7ce38b" font-family="JetBrains Mono, monospace" font-size="15">◆ Hermes: Python is a high-level programming language.</text>
+  <text x="64" y="166" fill="#ffdd66" font-family="JetBrains Mono, monospace" font-size="15">● You: How do I install it?</text>
+  <text x="64" y="196" fill="#7ce38b" font-family="JetBrains Mono, monospace" font-size="15">◆ Hermes: [3 tool calls: web_search, web_extract, terminal]</text>
+</svg>

@@ -1,0 +1,44 @@
+# Dependabot configuration for hermes-agent.
+#
+# Deliberately scoped to github-actions only.
+#
+# We do NOT enable Dependabot for pip / npm / any source-dependency ecosystem
+# because we pin source dependencies exactly (uv.lock, package-lock.json) as
+# part of our supply-chain posture. Automatic version-bump PRs against those
+# pins would undermine the strategy — pins are moved deliberately, after
+# review, not on a schedule.
+#
+# github-actions is the exception: action pins (we use full commit SHAs per
+# supply-chain policy) must be updated when upstream actions publish
+# patches — usually themselves security fixes. Dependabot opens a PR with
+# the new SHA and release notes; we review and merge like any other PR.
+#
+# Security-update PRs for source dependencies (opened ONLY when a CVE is
+# published affecting a currently-pinned version) are enabled separately
+# via the repo's Dependabot security updates setting
+# (Settings → Code security → Dependabot → Dependabot security updates).
+# Those are CVE-only, not schedule-driven, and do not conflict with our
+# pinning strategy — they fire when a pinned version becomes known-bad,
+# which is exactly when we want to move the pin.
+
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "chore(actions)"
+      include: "scope"
+    groups:
+      # Batch routine action bumps into one PR per week to reduce noise.
+      # Security updates still open individually and bypass grouping.
+      actions-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"

@@ -1,0 +1,171 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { $activeGatewayProfile } from './profile'
+import { $sessions } from './session'
+import {
+  isPeerInstanceWindow,
+  isProfilePinnedWindow,
+  openBrowserInNewWindow,
+  openNewWindow,
+  openSessionInNewWindow
+} from './windows'
+
+const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
+const initialHermesDesktop = desktopWindow.hermesDesktop
+
+const notifyError = vi.fn()
+
+vi.mock('./notifications', () => ({
+  notifyError: (...args: unknown[]) => notifyError(...args)
+}))
+
+function installBridge(
+  openSessionWindow?: Window['hermesDesktop']['openSessionWindow'],
+  openWindow?: Window['hermesDesktop']['openWindow'],
+  openBrowserWindow?: Window['hermesDesktop']['openBrowserWindow']
+) {
+  desktopWindow.hermesDesktop = {
+    ...(openSessionWindow ? { openSessionWindow } : {}),
+    ...(openWindow ? { openWindow } : {}),
+    ...(openBrowserWindow ? { openBrowserWindow } : {})
+  } as unknown as Window['hermesDesktop']
+}
+
+beforeEach(() => {
+  notifyError.mockClear()
+})
+
+afterEach(() => {
+  if (initialHermesDesktop) {
+    desktopWindow.hermesDesktop = initialHermesDesktop
+  } else {
+    delete desktopWindow.hermesDesktop
+  }
+})
+
+describe('isPeerInstanceWindow', () => {
+  it('recognizes only the full peer marker', () => {
+    expect(isPeerInstanceWindow('?peer=1')).toBe(true)
+    expect(isPeerInstanceWindow('?peer=0')).toBe(false)
+    expect(isPeerInstanceWindow('?win=secondary')).toBe(false)
+    expect(isPeerInstanceWindow('')).toBe(false)
+  })
+})
+
+describe('isProfilePinnedWindow', () => {
+  it('is set only by an explicit profile-window launch, not by an inherited peer route', () => {
+    expect(isProfilePinnedWindow('?peer=1&profile=work&connectionId=&profileWindow=1')).toBe(true)
+    expect(isProfilePinnedWindow('?peer=1&profile=work&connectionId=remote')).toBe(false)
+    expect(isProfilePinnedWindow('?profileWindow=0')).toBe(false)
+    expect(isProfilePinnedWindow('')).toBe(false)
+  })
+})
+
+describe('openSessionInNewWindow', () => {
+  it('no-ops without a session id', async () => {
+    const open = vi.fn().mockResolvedValue({ ok: true })
+    installBridge(open)
+
+    await openSessionInNewWindow('')
+
+    expect(open).not.toHaveBeenCalled()
+    expect(notifyError).not.toHaveBeenCalled()
+  })
+
+  it('no-ops gracefully when the bridge is absent (web fallback)', async () => {
+    delete desktopWindow.hermesDesktop
+
+    await openSessionInNewWindow('s1')
+
+    expect(notifyError).not.toHaveBeenCalled()
+  })
+
+  it('carries the owning profile: stamped row wins, an unstamped child inherits the viewed profile (#82768)', async () => {
+    const open = vi.fn().mockResolvedValue({ ok: true })
+    installBridge(open)
+    $activeGatewayProfile.set('work')
+    $sessions.set([{ id: 's1', profile: 'research' } as never])
+
+    await openSessionInNewWindow('s1')
+    await openSessionInNewWindow('child-not-listed-yet', { watch: true })
+
+    expect(open).toHaveBeenCalledWith('s1', { profile: 'research' })
+    expect(open).toHaveBeenCalledWith('child-not-listed-yet', { profile: 'work', watch: true })
+    expect(notifyError).not.toHaveBeenCalled()
+  })
+
+  it('notifies on an ok:false result', async () => {
+    installBridge(vi.fn().mockResolvedValue({ ok: false, error: 'invalid-session-id' }))
+
+    await openSessionInNewWindow('s1')
+
+    expect(notifyError).toHaveBeenCalledTimes(1)
+  })
+
+  it('notifies when the bridge throws', async () => {
+    installBridge(vi.fn().mockRejectedValue(new Error('boom')))
+
+    await openSessionInNewWindow('s1')
+
+    expect(notifyError).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('openNewWindow', () => {
+  it('no-ops gracefully when the bridge is absent (web fallback)', async () => {
+    delete desktopWindow.hermesDesktop
+
+    await openNewWindow()
+
+    expect(notifyError).not.toHaveBeenCalled()
+  })
+
+  it('notifies on an ok:false result', async () => {
+    installBridge(undefined, vi.fn().mockResolvedValue({ ok: false, error: 'nope' }))
+
+    await openNewWindow()
+
+    expect(notifyError).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('openBrowserInNewWindow', () => {
+  it('returns false without a tab id', async () => {
+    const open = vi.fn().mockResolvedValue({ ok: true })
+    installBridge(undefined, undefined, open)
+
+    expect(await openBrowserInNewWindow('')).toBe(false)
+    expect(open).not.toHaveBeenCalled()
+    expect(notifyError).not.toHaveBeenCalled()
+  })
+
+  it('returns false when the bridge is absent', async () => {
+    delete desktopWindow.hermesDesktop
+
+    expect(await openBrowserInNewWindow('tab-1')).toBe(false)
+    expect(notifyError).not.toHaveBeenCalled()
+  })
+
+  it('invokes the bridge with the tab id', async () => {
+    const open = vi.fn().mockResolvedValue({ ok: true })
+    installBridge(undefined, undefined, open)
+
+    expect(await openBrowserInNewWindow('tab-1')).toBe(true)
+    expect(open).toHaveBeenCalledWith('tab-1')
+    expect(notifyError).not.toHaveBeenCalled()
+  })
+
+  it('returns false and notifies on an ok:false result', async () => {
+    installBridge(undefined, undefined, vi.fn().mockResolvedValue({ ok: false, error: 'invalid-tab-id' }))
+
+    expect(await openBrowserInNewWindow('tab-1')).toBe(false)
+    expect(notifyError).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns false and notifies when the bridge throws', async () => {
+    installBridge(undefined, undefined, vi.fn().mockRejectedValue(new Error('boom')))
+
+    expect(await openBrowserInNewWindow('tab-1')).toBe(false)
+    expect(notifyError).toHaveBeenCalledTimes(1)
+  })
+})

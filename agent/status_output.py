@@ -4,6 +4,7 @@ Safe printing, quiet-mode gating, deduped context-overflow warnings, and the buf
 chatter that is shown only when every retry/fallback is exhausted.
 Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
 """
+import contextlib
 import logging
 import sys
 
@@ -179,7 +180,66 @@ class StatusOutputMixin:
 
     def _buffer_diagnostic_status(self, message: str) -> None:
         from gateway.warning_notifications import DiagnosticText
-        self._buffer_status(DiagnosticText(message))
+        text = str(message)
+        self._buffer_status(DiagnosticText(text) if not isinstance(message, DiagnosticText) else message)
+        # Tee (not redirect): a delegation child's mid-flight diagnostics also
+        # reach the parent progress callback. Buffer behaviour is unchanged —
+        # the parent still only sees the formal TASK_DIAGNOSTIC event here; the
+        # retry buffer still holds until recovery/terminal failure for CLI.
+        self._tee_diagnostic_to_delegate_progress(text)
+
+    def _is_delegation_child_agent(self) -> bool:
+        """True for delegate_task children. Prefer agent attrs over ContextVar:
+        the non-stream stale watchdog fires on a Timer thread that does not
+        inherit ``delegated_child_context``."""
+        if getattr(self, "_subagent_id", None):
+            return True
+        depth = getattr(self, "_delegate_depth", 0)
+        try:
+            if int(depth or 0) > 0:
+                return True
+        except (TypeError, ValueError):
+            pass
+        if getattr(self, "platform", "") == "subagent":
+            return True
+        try:
+            from agent.delegation_context import is_delegated_child_context
+            return bool(is_delegated_child_context())
+        except Exception:
+            return False
+
+    def _tee_diagnostic_to_delegate_progress(self, text: str) -> None:
+        """Emit TASK_DIAGNOSTIC through the live child progress callback (call-time resolve)."""
+        if not text or not self._is_delegation_child_agent():
+            return
+        # Resolve at call time so a live-log wrapper installed after agent
+        # construction (wrap_progress_callback) still observes the event.
+        cb = getattr(self, "tool_progress_callback", None)
+        if not cb:
+            return
+        try:
+            from tools.delegate_tool_progress import DelegateEvent
+            from utils import env_int
+            attempt = 0
+            with contextlib.suppress(Exception):
+                attempt = int(getattr(self, "_consecutive_stale_streams", 0) or 0)
+            api_call = getattr(self, "api_call_count", None)
+            if api_call is None:
+                with contextlib.suppress(Exception):
+                    summary = getattr(self, "get_activity_summary", None)
+                    if callable(summary):
+                        api_call = (summary() or {}).get("api_call_count")
+            payload = {
+                "text": text,
+                "attempt": attempt,
+                "giveup": env_int("HERMES_STREAM_STALE_GIVEUP", 5),
+            }
+            if api_call is not None:
+                payload["api_call"] = api_call
+            # Wire string (.value), not str(enum) — live-log observers key on it.
+            cb(DelegateEvent.TASK_DIAGNOSTIC.value, preview=text, **payload)
+        except Exception:
+            logger.debug("delegate diagnostic tee failed", exc_info=True)
 
     def _buffer_vprint(self, message: str) -> None:
         self._buffer_retry_message("vprint", message)

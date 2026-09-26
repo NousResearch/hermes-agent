@@ -308,8 +308,9 @@ class _Heartbeat:
             child_iter = child_summary.get("api_call_count", 0)
             child_max = child_summary.get("max_iterations", 0)
             child_activity_ts = child_summary.get("last_activity_ts")
-            # A slow model wait refreshes last_activity_ts (direct_api_call
-            # heartbeat), so it never looks stale at the idle threshold.
+            # A healthy slow model wait refreshes last_activity_ts (direct_api_call
+            # heartbeat), so it never looks stale at the idle threshold. A retry
+            # after a stale-kill does not refresh the clock — that is silence.
             activity_advanced = child_activity_ts is not None and (
                 last_seen["ts"] is None or child_activity_ts > last_seen["ts"]
             )

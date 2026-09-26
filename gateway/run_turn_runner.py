@@ -129,6 +129,10 @@ class TurnRunner:
         if event_type == "subagent.complete":
             self._progress_subagent_notice(preview, kwargs)
             return
+        # Child diagnostic (stale-kill mid-flight): warning-status rail, same as failure notices.
+        if event_type == "delegate.task_diagnostic":
+            self._progress_task_diagnostic(preview, kwargs)
+            return
         self._progress_live_status(event_type, tool_name, args)
         # "log" mode: append tool.started lines to the log queue, silent in chat. Handled before
         # the progress_queue guard because log mode runs without a chat progress queue.
@@ -193,6 +197,30 @@ class TurnRunner:
                     platform=ctx.source.platform, user_config=ctx.user_config)
         except Exception:
             logger.debug("subagent failure notice failed", exc_info=True)
+
+    def _progress_task_diagnostic(self, preview, kwargs: dict) -> None:
+        """Mid-flight child diagnostic (stale-kill): warning-status notice, no new surface."""
+        ctx = self._ctx
+        from gateway.warning_notifications import DiagnosticText, render_notification
+        text = str(kwargs.get("text") or preview or "")
+        if not text or not ctx._run_still_current():
+            return
+        attempt, giveup = kwargs.get("attempt"), kwargs.get("giveup")
+        if attempt is not None and giveup is not None:
+            text = f"{text} (attempt {attempt}/{giveup})"
+        elif attempt is not None:
+            text = f"{text} (attempt {attempt})"
+        line = f"⚠️ {text}"
+        try:
+            render_notification(
+                lambda: self._schedule(
+                    self._runner._deliver_platform_notice(ctx.source, DiagnosticText(line)),
+                    "subagent diagnostic notice scheduling error",
+                ),
+                platform=ctx.source.platform, user_config=ctx.user_config,
+            )
+        except Exception:
+            logger.debug("subagent diagnostic notice failed", exc_info=True)
 
     def _progress_live_status(self, event_type: str, tool_name, args) -> None:
         """Live status line (Slack assistant status): stash the tool phrase on the adapter; the

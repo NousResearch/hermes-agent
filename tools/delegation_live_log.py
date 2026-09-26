@@ -184,7 +184,13 @@ class LiveTranscriptWriter:
         "reasoning.available": lambda s, n, p, a, kw: s.thinking(str(p or "")),
         "subagent.text": lambda s, n, p, a, kw: s.add_stream_delta(str(p or "")),
         "subagent.start": lambda s, n, p, a, kw: s.event("start", _one_line(p, _KICKOFF_MAX)),
-        "subagent.complete": _on_complete}
+        "subagent.complete": _on_complete,
+        # Wire string of DelegateEvent.TASK_DIAGNOSTIC — keyed by .value, not str(enum).
+        "delegate.task_diagnostic": lambda s, n, p, a, kw: s.event(
+            "diagnostic",
+            _one_line(kw.get("text") or p or n or "", _RESULT_MAX),
+        ),
+    }
 
     def observe(self, event_type: Any, tool_name: Any = None, preview: Any = None,
                 args: Any = None, **kwargs: Any) -> None:

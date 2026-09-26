@@ -330,6 +330,15 @@ def _load_fallback_model():
     return get_fallback_chain(_load_cfg())
 
 
+def _load_prefill_messages() -> list:
+    """Configured prefill messages, resolved like the CLI (env > ``prefill_messages_file`` > legacy
+    ``agent.*``). Desktop/TUI agents never run the CLI bootstrap, so without this the setting was
+    ignored there (#60456). Relative paths resolve against the active profile home, per call."""
+    from hermes_cli.cli_config_load import _load_prefill_messages as _load, _resolve_prefill_messages_file
+    from hermes_constants import get_hermes_home
+    return _load(_resolve_prefill_messages_file(_load_cfg()), get_hermes_home())
+
+
 def _sync_agent_fallback_with_config(sid: str, session: dict) -> None:
     """Adopt ``fallback_providers`` edits into the cached agent at turn start.
 

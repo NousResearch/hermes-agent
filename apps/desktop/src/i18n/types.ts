@@ -2840,6 +2840,8 @@ export interface Translations {
     nameLabel: string
     namePlaceholder: string
     promptLabel: string
+    scriptLabel: string
+    scriptBadge: string
     promptPlaceholder: string
     frequencyLabel: string
     deliverLabel: string

@@ -79,6 +79,7 @@ import { canImportHermesCli, PROBE_TIMEOUT_MS, shouldTrustHermesOverride, verify
 import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { recycleOwnedBackend } from './backend-recycle'
 import { isPidAliveWindows, waitForBackendRelease } from './backend-release-gate'
+import { createInstalledRuntimeGate } from './backend-resolution'
 import { createBackendServeSupportResolver } from './backend-serve-support'
 import {
   isHostKeyChangedBootFailure,
@@ -4752,6 +4753,8 @@ function writeDefaultProjectDir(dir) {
   }
 }
 
+const installedRuntimeGate = createInstalledRuntimeGate(process.env, rememberLog)
+
 async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHermesBackend> {
   const payload = bundledPayload(process.resourcesPath)
 
@@ -4869,9 +4872,10 @@ async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHerm
   //    builds could leave a healthy install behind without the marker. If the
   //    active runtime is usable, launch it directly; only fall through to
   //    bootstrap when the runtime itself is unusable.
-  const activeBackend: SourceBackend | null = await resolveSourceInstallationBackend(ACTIVE_HERMES_ROOT, backendArgs, {
-    hermesHome: HERMES_HOME
-  })
+  //    HERMES_DESKTOP_IGNORE_EXISTING=1 skips this rung (see backend-resolution).
+  const activeBackend: SourceBackend | null = await installedRuntimeGate.resolve(ACTIVE_HERMES_ROOT, () =>
+    resolveSourceInstallationBackend(ACTIVE_HERMES_ROOT, backendArgs, { hermesHome: HERMES_HOME })
+  )
 
   const activeRuntime: ActiveRuntimeState = activeRuntimeState(activeBackend)
 
@@ -5064,7 +5068,10 @@ async function ensureRuntime(
     rememberLog('[bootstrap] bootstrap complete; marker written. Re-resolving backend.')
 
     // Resolve the newly published launcher after the installer completes.
-    return ensureRuntime(await resolveHermesBackend(backend.args), assertStillOwned)
+    return ensureRuntime(
+      await installedRuntimeGate.afterInstall(() => resolveHermesBackend(backend.args)),
+      assertStillOwned
+    )
   }
 
   throw new Error(`Unexpected bootstrap backend: ${backend.kind}`)

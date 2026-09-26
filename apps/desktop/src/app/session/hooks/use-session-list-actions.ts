@@ -339,11 +339,21 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         if (owns()) {
           const recents = result.recents
           const recentsErrors = recents.errors ?? result.errors
+          const scopedRetry =
+            recents.retry === true ||
+            (sessionProfile !== 'all' && recents.profiles_failed?.[sessionProfile]?.retry === true) ||
+            result.profiles_failed?.[sessionProfile]?.retry === true
 
           setCorruptSessionStores(result.storage)
           // A damaged store already has its own notice; Retry can't repair it.
           const retryableErrors = recentsErrors?.filter(e => !result.storage?.[e.profile])
-          setSessionsLoadError(Boolean(showLoading && retryableErrors?.length && recents.sessions.length === 0))
+          setSessionsLoadError(
+            Boolean(
+              showLoading &&
+                (scopedRetry || retryableErrors?.length) &&
+                (recents.sessions?.length ?? 0) === 0
+            )
+          )
 
           // Drop rows the user just deleted/archived: a refresh can race an
           // in-flight mutation and the backend page still carries the doomed row.

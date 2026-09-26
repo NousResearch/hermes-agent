@@ -3,6 +3,8 @@
 from concurrent.futures import ThreadPoolExecutor
 import json
 import threading
+from datetime import datetime
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -1228,3 +1230,334 @@ class TestCronJobsCrossProfileDedup:
         prompts = {j.get("prompt") for j in result}
 
         assert prompts == {"legacy job in default", "legacy job in worker"}
+
+
+class TestCronRunHistoryFallback:
+    """Script-only (no_agent) jobs deliberately skip SessionDB, so their run
+    history was permanently empty ("No runs" despite hundreds of completed
+    fires — #42433). When no session rows exist, the runs endpoint falls back
+    to the job's per-fire output docs under cron/output/<job_id>/."""
+
+    @staticmethod
+    def _script_only_job(job_id):
+        return {"id": job_id, "no_agent": True, "script": "sync.sh", "prompt": ""}
+
+    @pytest.fixture()
+    def no_session_rows(self, monkeypatch):
+        class _EmptyDB:
+            def list_cron_job_runs(self, job_id, limit=20, offset=0):
+                return []
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(
+            _rt_cron, "_open_session_db_for_profile", lambda profile, *, read_only: _EmptyDB()
+        )
+
+    def _write_output_doc(self, monkeypatch, home, job_id, filename, text):
+        output_dir = Path(home) / "cron" / "output" / job_id
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / filename).write_text(text, encoding="utf-8")
+
+    def test_falls_back_to_output_docs_when_no_session_runs_exist(
+        self, isolated_profiles, monkeypatch, no_session_rows
+    ):
+        job_id = "job-script-only"
+        home = isolated_profiles["default"]
+        self._write_output_doc(monkeypatch, home, job_id, "2026-07-08_09-00-00.md", "older output\n")
+        self._write_output_doc(monkeypatch, home, job_id, "2026-07-08_09-05-00.md", "latest output\n")
+
+        monkeypatch.setattr(_rt_cron, "_job_owner_profile", lambda _job_id, _profile: "default")
+        monkeypatch.setattr(
+            _rt_cron, "_call_cron_for_profile",
+            lambda _profile, cmd, *_args, **_kwargs: {
+                **self._script_only_job(job_id), "last_status": "ok",
+            } if cmd == "get_job" else None,
+        )
+
+        result = _rt_cron._list_cron_job_runs_sync(job_id, limit=2)
+
+        runs = result["runs"]
+        assert result["limit"] == 2
+        assert [run["id"] for run in runs] == [
+            f"cron_output:{job_id}:2026-07-08_09-05-00",
+            f"cron_output:{job_id}:2026-07-08_09-00-00",
+        ]
+        assert runs[0]["source"] == "cron_output"
+        # Status is attached per execution from the ledger, never from
+        # last_run_at/last_status proximity (#42433 review): with no ledger
+        # rows the doc's own output is the honest title.
+        assert runs[0]["title"] == "latest output"
+        assert runs[1]["title"] == "older output"
+        assert all(run["is_active"] is False for run in runs)
+
+    def test_output_doc_timestamps_honor_configured_timezone(
+        self, isolated_profiles, monkeypatch, no_session_rows
+    ):
+        """The filename stem is written by save_job_output via hermes_time.now()
+        — the configured zone. Reading it back must use that zone, not the
+        server's (review of #61403: a fixed-offset snapshot was off by hours
+        when HERMES_TIMEZONE differs from the server zone)."""
+        from zoneinfo import ZoneInfo
+        from hermes_time import _tz_cache
+
+        job_id = "job-tz"
+        home = isolated_profiles["default"]
+        # Wall time 2026-07-10_00-14-10 in Asia/Taipei (+08:00) = 2026-07-09 16:14:10 UTC.
+        self._write_output_doc(monkeypatch, home, job_id, "2026-07-10_00-14-10.md", "tz output\n")
+
+        monkeypatch.setenv("HERMES_TIMEZONE", "Asia/Taipei")
+        _tz_cache.clear()
+
+        monkeypatch.setattr(_rt_cron, "_job_owner_profile", lambda _job_id, _profile: "default")
+        monkeypatch.setattr(
+            _rt_cron, "_call_cron_for_profile",
+            lambda _profile, cmd, *_args, **_kwargs: {
+                **self._script_only_job(job_id), "last_status": "ok",
+            } if cmd == "get_job" else None,
+        )
+
+        try:
+            result = _rt_cron._list_cron_job_runs_sync(job_id, limit=5)
+        finally:
+            monkeypatch.delenv("HERMES_TIMEZONE", raising=False)
+            _tz_cache.clear()
+
+        started = result["runs"][0]["started_at"]
+        naive = datetime.strptime("2026-07-10_00-14-10", "%Y-%m-%d_%H-%M-%S")
+        expected = naive.replace(tzinfo=ZoneInfo("Asia/Taipei")).timestamp()
+        assert abs(started - expected) < 1, (
+            f"Filename wall time misread: got epoch {started}, expected {expected}"
+        )
+
+    def test_keeps_session_runs_when_db_history_exists(
+        self, isolated_profiles, monkeypatch
+    ):
+        """An agent fire writes BOTH a session and an output doc; the session row
+        is the richer representation, so the doc for the same execution is
+        dropped and the session survives the merge."""
+        from zoneinfo import ZoneInfo
+
+        job_id = "job-with-sessions"
+        home = isolated_profiles["default"]
+        # Doc written at the END of the session's run (2026 wall time): the
+        # session span covers it, so it is the same execution.
+        doc_epoch = datetime.strptime(
+            "2026-07-08_09-05-00", "%Y-%m-%d_%H-%M-%S").replace(tzinfo=ZoneInfo("UTC")).timestamp()
+        self._write_output_doc(monkeypatch, home, job_id, "2026-07-08_09-05-00.md", "fallback output\n")
+
+        class _FakeDB:
+            def list_cron_job_runs(self, canonical, limit=20, offset=0):
+                return [{
+                    "id": f"cron_{canonical}_1", "source": "cron",
+                    "started_at": doc_epoch - 120.0, "last_active": doc_epoch - 10.0,
+                    "ended_at": doc_epoch - 5.0, "archived": False,
+                }]
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(
+            _rt_cron, "_open_session_db_for_profile", lambda profile, *, read_only: _FakeDB()
+        )
+        monkeypatch.setattr(_rt_cron, "_job_owner_profile", lambda _job_id, _profile: "default")
+        monkeypatch.setattr(
+            _rt_cron, "_call_cron_for_profile",
+            lambda _profile, cmd, *_args, **_kwargs: {"id": job_id} if cmd == "get_job" else None,
+        )
+        monkeypatch.setattr(_rt_cron.time, "time", lambda: 200.0)
+
+        result = _rt_cron._list_cron_job_runs_sync(job_id, limit=5)
+
+        assert [run["id"] for run in result["runs"]] == [f"cron_{job_id}_1"]
+        assert result["runs"][0]["source"] == "cron"
+        assert result["runs"][0]["is_active"] is False
+
+    def test_surfaces_latest_run_when_only_job_metadata_exists(
+        self, isolated_profiles, monkeypatch, no_session_rows
+    ):
+        """No output docs survived pruning, but the job HAS completed runs:
+        one metadata row from last_run_at/last_status beats a bare 'No runs'."""
+        job_id = "job-last-run-only"
+        monkeypatch.setattr(_rt_cron, "_job_owner_profile", lambda _job_id, _profile: "default")
+        monkeypatch.setattr(
+            _rt_cron, "_call_cron_for_profile",
+            lambda _profile, cmd, *_args, **_kwargs: {
+                **self._script_only_job(job_id),
+                "last_status": "ok",
+                "last_run_at": "2026-07-08T09:05:00+00:00",
+            } if cmd == "get_job" else None,
+        )
+
+        result = _rt_cron._list_cron_job_runs_sync(job_id, limit=5)
+
+        runs = result["runs"]
+        assert len(runs) == 1
+        assert runs[0]["source"] == "cron_output"
+        assert runs[0]["id"] == f"cron_output:{job_id}:latest"
+        assert runs[0]["title"].startswith("OK")
+        assert runs[0]["started_at"] == datetime.fromisoformat("2026-07-08T09:05:00+00:00").timestamp()
+
+    def test_agent_job_with_no_history_stays_empty(
+        self, isolated_profiles, monkeypatch, no_session_rows
+    ):
+        """The fallback must not invent history for an agent job that simply
+        hasn't run yet: no sessions, no output docs, no last_run_at → []."""
+        job_id = "agent-job-never-run"
+        monkeypatch.setattr(_rt_cron, "_job_owner_profile", lambda _job_id, _profile: "default")
+        monkeypatch.setattr(
+            _rt_cron, "_call_cron_for_profile",
+            lambda _profile, cmd, *_args, **_kwargs: {"id": job_id} if cmd == "get_job" else None,
+        )
+
+        result = _rt_cron._list_cron_job_runs_sync(job_id, limit=5)
+
+        assert result["runs"] == []
+
+    def test_converted_job_merges_agent_sessions_with_script_fires(
+        self, isolated_profiles, monkeypatch, no_session_rows
+    ):
+        """Review of #42433: updating an existing job to no_agent=True keeps the
+        job id, so a surviving historical agent session must not hide later
+        script-only executions. Reconcile per execution: the newer script run
+        appears first, the older agent session stays exactly once."""
+        from zoneinfo import ZoneInfo
+
+        job_id = "j1"
+        home = isolated_profiles["default"]
+        # Old agent session (survives in SessionDB) and a NEWER script-only fire.
+        agent_started = datetime.strptime(
+            "2026-09-24_08-00-00", "%Y-%m-%d_%H-%M-%S").replace(tzinfo=ZoneInfo("UTC")).timestamp()
+        self._write_output_doc(monkeypatch, home, job_id, "2026-09-25_00-14-10.md", "script run output\n")
+
+        class _FakeDB:
+            def list_cron_job_runs(self, canonical, limit=20, offset=0):
+                return [{
+                    "id": f"cron_{canonical}_old", "source": "cron",
+                    "started_at": agent_started, "last_active": agent_started + 60.0,
+                    "ended_at": agent_started + 60.0, "archived": False,
+                }]
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(
+            _rt_cron, "_open_session_db_for_profile", lambda profile, *, read_only: _FakeDB()
+        )
+        monkeypatch.setattr(_rt_cron, "_job_owner_profile", lambda _job_id, _profile: "default")
+        monkeypatch.setattr(
+            _rt_cron, "_call_cron_for_profile",
+            lambda _profile, cmd, *_args, **_kwargs: {
+                **self._script_only_job(job_id),
+            } if cmd == "get_job" else None,
+        )
+
+        result = _rt_cron._list_cron_job_runs_sync(job_id, limit=10)
+
+        runs = result["runs"]
+        assert [run["id"] for run in runs] == [
+            f"cron_output:{job_id}:2026-09-25_00-14-10",
+            f"cron_{job_id}_old",
+        ]
+        # The older agent session appears exactly once — not shadowed, not doubled.
+        assert sum(1 for run in runs if run["id"] == f"cron_{job_id}_old") == 1
+
+    def test_output_doc_timestamps_decode_in_the_owners_profile_timezone(
+        self, isolated_profiles, monkeypatch, no_session_rows
+    ):
+        """Review of #42433: the filename stem is written with the OWNER
+        profile's configured zone. A cross-profile request must decode it in
+        that zone — not the dashboard's — with no global HERMES_TIMEZONE set
+        (both profiles configure config.yaml timezones, so a shared env var
+        cannot mask the mix-up)."""
+        from zoneinfo import ZoneInfo
+        from hermes_time import _tz_cache
+
+        job_id = "job-owner-tz"
+        worker_home = isolated_profiles["worker_alpha"]
+        # worker_alpha runs in Asia/Taipei; the dashboard profile stays UTC.
+        (worker_home / "config.yaml").write_text(
+            "model: test-model\ntimezone: Asia/Taipei\n", encoding="utf-8")
+        # Wall time 2026-09-25_00-14-10 in Asia/Taipei (+08:00) = 2026-09-24 16:14:10 UTC.
+        self._write_output_doc(monkeypatch, worker_home, job_id, "2026-09-25_00-14-10.md", "tz output\n")
+        _tz_cache.clear()
+
+        monkeypatch.setattr(_rt_cron, "_job_owner_profile", lambda _job_id, _profile: "worker_alpha")
+        monkeypatch.setattr(
+            _rt_cron, "_call_cron_for_profile",
+            lambda _profile, cmd, *_args, **_kwargs: {
+                **self._script_only_job(job_id), "last_status": "ok",
+            } if cmd == "get_job" else None,
+        )
+
+        try:
+            result = _rt_cron._list_cron_job_runs_sync(job_id, profile="default", limit=5)
+        finally:
+            _tz_cache.clear()
+
+        naive = datetime.strptime("2026-09-25_00-14-10", "%Y-%m-%d_%H-%M-%S")
+        expected = naive.replace(tzinfo=ZoneInfo("Asia/Taipei")).timestamp()
+        started = result["runs"][0]["started_at"]
+        assert abs(started - expected) < 1, (
+            f"Decoded with the dashboard's zone instead of the owner's: got epoch {started}, expected {expected}"
+        )
+
+    def test_latest_attempt_without_a_doc_gets_its_own_row(
+        self, isolated_profiles, monkeypatch, no_session_rows
+    ):
+        """Review of #42433: two runs, only the newest run's output doc missing.
+        The surviving older doc must keep its own status — not inherit the
+        latest attempt's — and the failed latest attempt must appear as its own
+        row carrying its timestamp and error (a 120s filename window cannot
+        establish that the newest file belongs to last_run_at)."""
+        from cron import executions as cron_executions
+        from zoneinfo import ZoneInfo
+
+        job_id = "job-missing-newest-doc"
+        home = isolated_profiles["default"]
+        ledger_path = home / "cron" / "executions.db"
+        monkeypatch.setattr(cron_executions, "EXECUTIONS_FILE", ledger_path)
+
+        def _at(name):
+            return datetime.strptime(name, "%Y-%m-%d_%H-%M-%S").replace(tzinfo=ZoneInfo("UTC"))
+
+        # Attempt 1 (10:00): succeeded; its doc survives.
+        monkeypatch.setattr(cron_executions, "_hermes_now", lambda: _at("2026-09-25_10-00-00"))
+        first = cron_executions.create_execution(job_id, source="direct")
+        monkeypatch.setattr(cron_executions, "_hermes_now", lambda: _at("2026-09-25_10-00-30"))
+        cron_executions.finish_execution(first["id"], success=True)
+        # Attempt 2 (10:01): failed; its doc is gone.
+        monkeypatch.setattr(cron_executions, "_hermes_now", lambda: _at("2026-09-25_10-01-00"))
+        second = cron_executions.create_execution(job_id, source="direct")
+        monkeypatch.setattr(cron_executions, "_hermes_now", lambda: _at("2026-09-25_10-01-20"))
+        cron_executions.finish_execution(second["id"], success=False, error="new run failed")
+        self._write_output_doc(monkeypatch, home, job_id, "2026-09-25_10-00-00.md", "successful older run\n")
+
+        monkeypatch.setattr(_rt_cron, "_job_owner_profile", lambda _job_id, _profile: "default")
+        monkeypatch.setattr(
+            _rt_cron, "_call_cron_for_profile",
+            lambda _profile, cmd, *_args, **_kwargs: {
+                **self._script_only_job(job_id),
+                "last_run_at": "2026-09-25T10:01:00+00:00",
+                "last_status": "error",
+                "last_error": "new run failed",
+            } if cmd == "get_job" else None,
+        )
+
+        result = _rt_cron._list_cron_job_runs_sync(job_id, limit=10)
+
+        runs = result["runs"]
+        assert len(runs) == 2
+        newest, older = runs[0], runs[1]
+        # The failed latest attempt is present as its own row, with its own
+        # timestamp and error — not silently dropped behind the older doc.
+        assert newest["id"].startswith(f"cron_output:{job_id}:exec:")
+        assert newest["started_at"] == _at("2026-09-25_10-01-20").timestamp()
+        assert newest["preview"] == "new run failed"
+        assert newest["title"].startswith("FAILED")
+        # The surviving older doc keeps its own output and its own completed
+        # status — not relabeled with the newer attempt's error.
+        assert older["id"] == f"cron_output:{job_id}:2026-09-25_10-00-00"
+        assert older["title"].startswith("COMPLETED · successful older run")
+        assert older["started_at"] == _at("2026-09-25_10-00-00").timestamp()

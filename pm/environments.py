@@ -14,8 +14,45 @@ from pathlib import Path
 from hermes_constants import get_default_hermes_root, project_venv_dir
 
 
+def _worktree_main_checkout(root: Path) -> Path | None:
+    """Main checkout root for a linked git worktree at *root*, else ``None``.
+
+    A linked worktree's ``.git`` is a *file* (not a directory) reading
+    ``gitdir: <main>/.git/worktrees/<name>``; the main checkout has no
+    install of its own registered under the worktree's path, so hashing the
+    worktree's own path here previously minted a brand-new, never-installed
+    ``installs/<hash>/`` -- the worktree could never resolve a committed
+    dependency environment even though the main checkout's install was fine.
+    Stdlib-only (this module boots before third-party imports): no
+    subprocess, just the same ``.git`` file git itself writes.
+    """
+    git_file = root / ".git"
+    try:
+        if not git_file.is_file():
+            return None
+        text = git_file.read_text(encoding="utf-8-sig").strip()
+    except OSError:
+        return None
+    if not text.startswith("gitdir:"):
+        return None
+    gitdir = Path(text.partition(":")[2].strip())
+    if not gitdir.is_absolute():
+        gitdir = (root / gitdir)
+    gitdir = gitdir.resolve()
+    marker = f"{os.sep}worktrees{os.sep}"
+    raw = str(gitdir)
+    idx = raw.find(marker)
+    if idx == -1:
+        return None
+    common_git_dir = Path(raw[:idx])
+    if common_git_dir.name != ".git":
+        return None
+    return common_git_dir.parent
+
+
 def install_key(project_root: Path) -> str:
-    canonical = str(Path(project_root).resolve())
+    root = Path(project_root).resolve()
+    canonical = str(_worktree_main_checkout(root) or root)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 

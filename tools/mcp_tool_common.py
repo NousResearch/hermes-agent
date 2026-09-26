@@ -68,9 +68,16 @@ def _jittered(seconds: float) -> float:
 
 
 # Credential patterns to strip from error messages: GitHub PAT, OpenAI-style key, Bearer token,
-# and ``token= / key= / API_KEY= / password= / secret=`` assignments.
+# Zhipu's unprefixed id.secret key, and ``token= / key= / API_KEY= / password= / secret=``
+# assignments. This is an intentionally independent, MCP-scoped sanitizer (not a reuse of
+# agent.redact's generic masking, per #97460) — but its shapes still need to track the provider
+# key formats agent/redact.py already knows, or a shape added there (like this one) can echo
+# through an MCP error message unredacted. Zhipu's boundary/length constraints mirror
+# agent.redact._ZHIPU_API_KEY_RE exactly: 32 lowercase hex chars + ".", so a content-hash
+# filename (``<sha>.bundle``, ``<md5>.sqlite3``) never matches.
 _CREDENTIAL_PATTERN = re.compile(
     r"(?:ghp_[A-Za-z0-9_]{1,255}|sk-[A-Za-z0-9_-](?:\.?[A-Za-z0-9_-]){0,254}|Bearer\s+\S+"
+    r"|(?<![A-Za-z0-9_.-])[0-9a-f]{32}\.[A-Za-z0-9]{16,}(?![A-Za-z0-9_.-])"
     r"|(?:token|key|API_KEY|password|secret)=[^\s&,;\"']{1,255})", re.IGNORECASE)
 
 

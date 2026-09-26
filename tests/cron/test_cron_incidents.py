@@ -8,6 +8,8 @@ from datetime import timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import cron.incidents as incidents
@@ -164,6 +166,109 @@ def test_failure_type_classification(monkeypatch, tmp_path):
     ]
     for error, expected in cases:
         assert inc._classify_failure_type(error) == expected, (error, expected)
+
+
+# ── cron.incident_max_error_chars (#115036) ────────────────────────────────
+#
+# Per-run output files rotate out under ``cron.output_retention`` long before a
+# low-frequency failure is investigated, leaving the incident row as the only
+# durable record. The bound is a knob so a script-heavy user can keep a full
+# traceback while a fleet operator bounds table growth.
+
+
+def _config(monkeypatch, cron_cfg):
+    """Point ``_cron_config_number`` at *cron_cfg*. It imports ``load_config``
+    inside the call, so the source module is what must be patched."""
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"cron": cron_cfg})
+
+
+def test_stored_error_bound_is_configurable(monkeypatch, tmp_path):
+    inc = _point_db(monkeypatch, tmp_path)
+    _config(monkeypatch, {"incident_max_error_chars": 1500})
+
+    inc_id, _ = inc.upsert_incident("job-1", "x" * 4000)
+
+    assert len(inc.get_incident(inc_id)["error"]) == 1500
+
+
+def test_stored_error_bound_can_be_lowered(monkeypatch, tmp_path):
+    inc = _point_db(monkeypatch, tmp_path)
+    _config(monkeypatch, {"incident_max_error_chars": 80})
+
+    inc_id, _ = inc.upsert_incident("job-1", "x" * 4000)
+
+    assert len(inc.get_incident(inc_id)["error"]) == 80
+
+
+def test_unset_key_keeps_the_500_default(monkeypatch, tmp_path):
+    inc = _point_db(monkeypatch, tmp_path)
+    _config(monkeypatch, {})
+
+    inc_id, _ = inc.upsert_incident("job-1", "x" * 4000)
+
+    assert len(inc.get_incident(inc_id)["error"]) == inc.MAX_ERROR_CHARS == 500
+
+
+@pytest.mark.parametrize("bad", [0, -1, "nope", None])
+def test_unusable_value_falls_back_rather_than_blanking_the_record(
+    monkeypatch, tmp_path, bad
+):
+    """A 0/negative bound would store an empty error, destroying the very
+    record this table exists to keep; garbage must not break the failure path."""
+    inc = _point_db(monkeypatch, tmp_path)
+    _config(monkeypatch, {"incident_max_error_chars": bad})
+
+    inc_id, _ = inc.upsert_incident("job-1", "x" * 4000)
+
+    assert len(inc.get_incident(inc_id)["error"]) == inc.MAX_ERROR_CHARS
+
+
+def test_unreadable_config_never_breaks_recording(monkeypatch, tmp_path):
+    """The scheduler records failures on the failure path — a config blowup
+    there must not swallow the incident."""
+    inc = _point_db(monkeypatch, tmp_path)
+
+    def _raise():
+        raise RuntimeError("config on fire")
+
+    monkeypatch.setattr("hermes_cli.config.load_config", _raise)
+
+    inc_id, _ = inc.upsert_incident("job-1", "x" * 4000)
+
+    assert len(inc.get_incident(inc_id)["error"]) == inc.MAX_ERROR_CHARS
+
+
+def test_raising_the_bound_keeps_incident_ids_stable(monkeypatch, tmp_path):
+    """The dedup signature has its own 200-char bound, so retuning the stored
+    length must not re-key an incident (acks would silently stop applying)."""
+    inc = _point_db(monkeypatch, tmp_path)
+    error = "boom " + "x" * 4000
+
+    _config(monkeypatch, {})
+    default_id, _ = inc.upsert_incident("job-1", error)
+
+    _config(monkeypatch, {"incident_max_error_chars": 4000})
+    raised_id, is_new = inc.upsert_incident("job-1", error)
+
+    assert raised_id == default_id
+    assert not is_new, "a re-tuned bound must refresh the incident, not mint a new one"
+    assert len(inc.get_incident(raised_id)["error"]) > 500, "the raised bound applied"
+
+
+def test_secrets_are_redacted_before_the_raised_bound(monkeypatch, tmp_path):
+    """Redaction runs before truncation, so a raised bound can never widen the
+    window a secret is persisted through."""
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", True, raising=False)
+    inc = _point_db(monkeypatch, tmp_path)
+    _config(monkeypatch, {"incident_max_error_chars": 8000})
+    secret = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij"
+
+    # Past the old 500-char cut, so it only lands in the row once the bound is raised.
+    inc_id, _ = inc.upsert_incident("job-1", f"{'x' * 1200} failed: {secret} boom")
+
+    row = inc.get_incident(inc_id)
+    assert secret not in row["error"]
+    assert "boom" in row["error"], "the raised bound did reach that far into the text"
 
 
 # ── Lifecycle / ack ────────────────────────────────────────────────────────

@@ -433,9 +433,22 @@ def should_bypass_active_session(command_name: str | None) -> bool:
     #5057 / PRs #6252, #10370, #4665. ACTIVE_SESSION_BYPASS_COMMANDS remains the subset with
     explicit Level-2 handlers; the rest fall through to the catch-all.
 
-    See #10370, #4665, #5057, #6252.
+    See #10370, #4665, #5057, #6252. A plugin command bypasses only when it registered
+    ``busy_policy="dispatch"``; any other plugin command stays on the text path.
     """
-    return resolve_command(command_name) is not None if command_name else False
+    if not command_name:
+        return False
+    return resolve_command(command_name) is not None or _plugin_busy_policy(command_name) == "dispatch"
+
+
+def _plugin_busy_policy(command_name: str) -> str | None:
+    """A plugin slash command's registered ``busy_policy`` (Telegram's ``_`` form normalizes to
+    ``-``). Lazy so importing this module never forces plugin discovery."""
+    try:
+        from hermes_cli.plugins import get_plugin_command_busy_policy
+        return get_plugin_command_busy_policy(command_name.replace("_", "-"))
+    except Exception:
+        return None
 
 
 def _resolve_config_gates() -> set[str]:

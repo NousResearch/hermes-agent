@@ -208,7 +208,22 @@ VALID_HOOKS: Set[str] = {
 SHELL_UNSUPPORTED_HOOKS: Set[str] = {"transform_api_error_classification"}
 
 _env_enabled = env_var_enabled  # imported by plugins/memory
+# ``register_command(busy_policy=...)``: None = mid-turn text path (unchanged); "dispatch" = run while busy.
+_PLUGIN_COMMAND_BUSY_POLICIES = frozenset({None, "dispatch"})
 _UNSET = object()
+
+
+@dataclass(frozen=True)
+class PluginCommandGatewayContext:
+    """Gateway state handed to a plugin slash-command handler that declares a ``gateway_context``
+    keyword (``handler(raw_args, *, gateway_context)``); CLI dispatch never passes it.
+    ``session_store`` is the runner's awaitable ``AsyncSessionStore`` facade (the handler runs on
+    the event loop or its pool — never block it on the raw store); ``is_authorized(source)`` is the
+    gateway's own authorization check for a ``SessionSource``."""
+
+    adapter: Any
+    session_store: Any
+    is_authorized: Callable[[Any], bool]
 
 
 @dataclass
@@ -676,11 +691,15 @@ class PluginContext:
     @_serialized_replacement
     def register_command(
         self, name: str, handler: Callable, description: str = "", args_hint: str = "",
-        argument_mode: str | None = None,
+        argument_mode: str | None = None, busy_policy: str | None = None,
     ) -> Optional[PluginRegistration]:
         """Register an in-session slash command (``/name``); handler ``fn(raw_args: str) -> str | None``
         (sync or async). ``args_hint`` (e.g. ``"<file>"``) lets adapters like Discord surface an argument
-        field; without it the command registers parameterless there but still accepts trailing text."""
+        field; without it the command registers parameterless there but still accepts trailing text.
+        ``busy_policy="dispatch"`` (``CommandDef``'s vocabulary) runs the handler on the gateway while
+        the session's agent is busy; the default ``None`` leaves a mid-turn ``/name`` on the text path
+        (queued or interrupting per ``busy_input_mode``). A handler declaring a ``gateway_context``
+        keyword receives a :class:`PluginCommandGatewayContext` on gateway dispatch."""
         clean = name.lower().strip().lstrip("/").replace(" ", "-")
         if not clean:
             logger.warning("Plugin '%s' tried to register a command with an empty name.", self.manifest.name)
@@ -692,11 +711,16 @@ class PluginContext:
                                "with a built-in command. Skipping.", self.manifest.name, clean)
                 return
         hint = (args_hint or "").strip()
+        if busy_policy not in _PLUGIN_COMMAND_BUSY_POLICIES:
+            logger.warning("Plugin '%s' command '/%s': unsupported busy_policy %r ignored "
+                           "(supported: 'dispatch').", self.manifest.name, clean, busy_policy)
+            busy_policy = None
         entry = {
             "handler": handler, "description": description or "Plugin command",
             "plugin": self.manifest.name, "plugin_key": self.plugin_id, "args_hint": hint,
             "argument_mode": argument_mode if argument_mode in {"options", "text", "mixed"}
             else ("text" if hint else None),
+            "busy_policy": busy_policy,
         }
         return self._register_entry("command", clean, self._manager._plugin_commands, entry,
                                     "Plugin %s registered command: /%s", clean)
@@ -2158,6 +2182,22 @@ def get_plugin_command_handler(name: str) -> Optional[Callable]:
     """Return the handler for a plugin-registered slash command, or ``None``."""
     entry = _ensure_plugins_discovered()._plugin_commands.get(name)
     return entry["handler"] if entry else None
+
+
+def get_plugin_command_busy_policy(name: str) -> Optional[str]:
+    """The ``busy_policy`` a plugin slash command registered with (``None`` when unset or unknown)."""
+    entry = _ensure_plugins_discovered()._plugin_commands.get(name)
+    return entry.get("busy_policy") if entry else None
+
+
+def plugin_command_accepts_gateway_context(handler: Callable) -> bool:
+    """Whether ``handler`` declares a ``gateway_context`` keyword (a named parameter, not ``**kwargs``)."""
+    try:
+        param = inspect.signature(handler).parameters.get("gateway_context")
+    except (TypeError, ValueError):
+        return False
+    return param is not None and param.kind in (
+        inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
 
 
 _PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0

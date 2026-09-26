@@ -1313,13 +1313,14 @@ def register(ctx):
 
 After registration, users can type `/mystatus` in any session. The command appears in autocomplete, `/help` output, and the Telegram bot menu.
 
-**Signature:** `ctx.register_command(name: str, handler: Callable, description: str = "", args_hint: str = "")`
+**Signature:** `ctx.register_command(name: str, handler: Callable, description: str = "", args_hint: str = "", argument_mode: str | None = None, busy_policy: str | None = None)`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `name` | `str` | Command name without the leading slash (e.g. `"lcm"`, `"mystatus"`) |
 | `handler` | `Callable[[str], str \| None]` | Called with the raw argument string. May also be `async`. |
 | `description` | `str` | Shown in `/help`, autocomplete, and Telegram bot menu |
+| `busy_policy` | `str \| None` | Gateway behaviour while the session's agent is running. `"dispatch"` runs the handler mid-turn (the same vocabulary as built-in commands); the default `None` treats a mid-turn `/name` as text (queued or interrupting per `busy_input_mode`). |
 
 **Key differences from `register_cli_command()`:**
 
@@ -1341,6 +1342,19 @@ async def _handle_check(raw_args: str) -> str:
 
 def register(ctx):
     ctx.register_command("check", handler=_handle_check, description="Run async check")
+```
+
+**Gateway context and mid-turn commands:** a handler that declares a `gateway_context` keyword receives a `PluginCommandGatewayContext` when the gateway dispatches it — `adapter` (the platform adapter answering this chat), `session_store` (the awaitable session-store facade; never block the loop on the raw store) and `is_authorized(source)` (the gateway's own authorization check). CLI dispatch never passes it. Combined with `busy_policy="dispatch"`, a status command can answer while a turn is running:
+
+```python
+async def _handle_queue_status(raw_args: str, *, gateway_context) -> str:
+    adapter = gateway_context.adapter
+    pending = len(getattr(adapter, "_pending_messages", {}) or {})
+    return f"{pending} message(s) waiting"
+
+def register(ctx):
+    ctx.register_command("queue-status", _handle_queue_status,
+                         description="Show queued messages", busy_policy="dispatch")
 ```
 
 ### Dispatch tools from slash commands

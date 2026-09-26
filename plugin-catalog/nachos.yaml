@@ -1,0 +1,16 @@
+name: nachos
+repo: https://github.com/Nacho-Labs-LLC/hermes-plugin-nachos
+sha: 7bd87e701145eeb0afe38ac5770638444e9b7da6
+version: "0.5.2"
+description: "Durable memory and context compression for Hermes Agent with local SQLite or flat-file storage."
+maintainer: Nacho Labs LLC
+tier: community
+category: memory
+requires_hermes: ">=0.21"
+docs_url: https://github.com/Nacho-Labs-LLC/hermes-plugin-nachos#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

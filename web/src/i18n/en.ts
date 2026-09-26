@@ -667,6 +667,15 @@ export const en: Translations = {
   },
 
   env: {
+    envCatTools: "Tools",
+    envCatSettings: "Settings",
+    trustLevelTrusted: "trusted",
+    trustLevelBuiltin: "builtin",
+    trustLevelCommunity: "community",
+    trustLevelUnknown: "unknown",
+    verdictSafe: "Safe",
+    verdictCaution: "Caution",
+    verdictDangerous: "Dangerous",
     jumpToSection: "Jump to section",
     changesNote: "Changes are saved to disk immediately. Active sessions pick up new keys automatically.",
     confirmClearMessage:

@@ -631,6 +631,15 @@ export const fa = defineLocale({
   },
 
   env: {
+    envCatTools: "ابزارها",
+    envCatSettings: "تنظیمات",
+    trustLevelTrusted: "مورد اعتماد",
+    trustLevelBuiltin: "داخلی",
+    trustLevelCommunity: "جامعه",
+    trustLevelUnknown: "نامشخص",
+    verdictSafe: "ایمن",
+    verdictCaution: "احتیاط",
+    verdictDangerous: "خطرناک",
     jumpToSection: "پرش به بخش",
     changesNote:
       "تغییرات بلافاصله روی دیسک ذخیره می‌شوند. نشست‌های فعال به‌طور خودکار کلیدهای جدید را می‌گیرند.",

@@ -29,6 +29,7 @@ import {
   botSelectionKey,
   commitBotMetaV2,
   isDefaultBot,
+  noteBotMetaServerRevision,
   persistBotMetaSnapshot,
   ROSTER_KEY,
   saveBotMeta
@@ -247,6 +248,12 @@ export function mergeServerMeta(roster: RosterRow[], fetchedAt = 0) {
       if (fetchedAt && fetchedAt < (botMetaWriteAt.get(key) || 0)) {
         continue
       }
+
+      // The row proves a CAS-capable gateway: remember the namespace
+      // revision so the next saveBotMeta guards with it (#120853).
+      // Fence-skipped snapshots stay out — their revision predates the
+      // local write and would only buy a spurious conflict + retry.
+      noteBotMetaServerRevision(key, bot.ui_meta_revisions?.['hermes-bots'])
 
       const mine = next[key] || {}
 

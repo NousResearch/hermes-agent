@@ -296,6 +296,23 @@ export function noteBotMetaWrite(key: string) {
   botMetaWriteAt.set(key, now)
 }
 
+/** Last-seen server revision of the `hermes-bots` ui_meta namespace, per
+ *  meta key. Recorded by the roster overlay (mergeServerMeta) and by
+ *  configure replies, so saves can send `ui_meta_expected_revisions` and a
+ *  stale client gets a rejection instead of silently reverting a newer
+ *  server title (#120853). Absent = unknown (older gateway, or never read)
+ *  and the save goes out unguarded exactly as before. */
+export const botMetaServerRevisions = new Map<string, number>()
+
+/** Remember the server revision a roster row (or configure reply) reported. */
+export function noteBotMetaServerRevision(key: string | undefined, revision: unknown) {
+  if (!key || typeof revision !== 'number' || !Number.isFinite(revision)) {
+    return
+  }
+
+  botMetaServerRevisions.set(key, Math.max(0, Math.floor(revision)))
+}
+
 /** Three-way outcome of the server half of a save — see the block comment on
  *  `serverOutcome` below for what separates 'unsupported' from 'failed'. */
 type BotMetaServerOutcome = 'failed' | 'persisted' | 'unsupported'
@@ -306,9 +323,15 @@ interface BotMetaSaveResult {
 }
 
 /** `profiles.configure` reply. Older gateways answer without `applied` at all,
- *  which is what makes the field optional rather than the contract. */
+ *  which is what makes the field optional rather than the contract.
+ *  `ui_meta_conflicts` is present only when the gateway rejected a
+ *  revision-guarded write — the signal for the refresh-and-retry path. */
 interface ProfilesConfigureResult {
-  applied?: { ui_meta?: boolean }
+  applied?: {
+    ui_meta?: boolean
+    ui_meta_conflicts?: Record<string, unknown>
+    ui_meta_revisions?: Record<string, number>
+  }
 }
 
 export async function saveBotMeta(owner: RosterRow | string, patch: StoredBotMeta): Promise<BotMetaSaveResult> {
@@ -348,26 +371,39 @@ export async function saveBotMeta(owner: RosterRow | string, patch: StoredBotMet
   // rides every profiles.list); the avatar IMAGE goes to the profile asset
   // store instead (profiles.set_asset), which is server-side and uncapped by
   // the list call — so pfps follow the profile across machines too.
+  // The whole `hermes-bots` object goes out, merged from the local cache —
+  // so a known server revision rides along as `ui_meta_expected_revisions`
+  // and a stale write is rejected instead of reverting a newer title
+  // (#120853). Unknown revision (older gateway) sends no guard, as before.
+  const sendConfigure = (body: Record<string, unknown>) =>
+    route
+      ? requestForBot(bot, 'profiles.configure', body)
+      : host.request('profiles.configure', body)
+
+  function configureBody(meta: StoredBotMeta, expectedRevision: number | undefined) {
+    const { image, pet, ...rest } = meta || {}
+    const body: Record<string, unknown> = {
+      name,
+      ui_meta: {
+        'hermes-bots': rest
+      }
+    }
+
+    if (expectedRevision !== undefined) {
+      body.ui_meta_expected_revisions = { 'hermes-bots': expectedRevision }
+    }
+
+    return body
+  }
+
   let serverRequest: null | Promise<ProfilesConfigureResult> = null
+  let sentExpectedRevision: number | undefined
 
   try {
-    const { image, pet, ...rest } = next[key] || {}
-
-    const request = route
-      ? requestForBot(bot, 'profiles.configure', {
-          name,
-          ui_meta: {
-            'hermes-bots': rest
-          }
-        })
-      : host.request('profiles.configure', {
-          name,
-          ui_meta: {
-            'hermes-bots': rest
-          }
-        })
-
-    serverRequest = Promise.resolve(request) as Promise<ProfilesConfigureResult>
+    sentExpectedRevision = botMetaServerRevisions.get(key)
+    serverRequest = Promise.resolve(
+      sendConfigure(configureBody(next[key] || {}, sentExpectedRevision))
+    ) as Promise<ProfilesConfigureResult>
   } catch {
     /* older/unavailable gateway — the local fallback remains saved */
   }
@@ -418,20 +454,40 @@ export async function saveBotMeta(owner: RosterRow | string, patch: StoredBotMet
   //                   no `applied` contract at all. Silent local fallback;
   //                   an error toast here would fire on EVERY save forever.
   //   'failed'      — gateway speaks the contract and explicitly reported
-  //                   the ui_meta write did NOT apply.
+  //                   the ui_meta write did NOT apply. A revision CONFLICT
+  //                   (stale guard) refreshes once and resends only the
+  //                   intended patch over fresh server state, so an
+  //                   unrelated appearance save keeps a newer title (#120853).
+  // ponytail: exactly one retry; two writers racing repeatedly still need a
+  // manual re-save, re-read profiles.list per save when that matters.
   let serverOutcome: BotMetaServerOutcome = 'unsupported'
 
   if (serverRequest) {
+    let result: ProfilesConfigureResult | undefined
+
     try {
-      const result = await serverRequest
+      result = await serverRequest
 
       if (result?.applied?.ui_meta === true) {
         serverOutcome = 'persisted'
+        noteBotMetaServerRevision(key, result?.applied?.ui_meta_revisions?.['hermes-bots'])
       } else if (result && typeof result === 'object' && result.applied && typeof result.applied === 'object') {
         serverOutcome = 'failed'
       }
     } catch {
       /* older/unavailable gateway — the local fallback remains saved */
+    }
+
+    if (
+      serverOutcome === 'failed' &&
+      sentExpectedRevision !== undefined &&
+      result?.applied?.ui_meta_conflicts &&
+      typeof result.applied.ui_meta_conflicts === 'object'
+    ) {
+      noteBotMetaServerRevision(key, result?.applied?.ui_meta_revisions?.['hermes-bots'])
+      serverOutcome = await refreshAndResendBotMeta(bot, key, name, route, patch, body =>
+        Promise.resolve(sendConfigure(body)) as Promise<ProfilesConfigureResult>
+      )
     }
 
     // Re-stamp now that the server write settled: a roster snapshot fetched
@@ -445,6 +501,92 @@ export async function saveBotMeta(owner: RosterRow | string, patch: StoredBotMet
   return {
     serverPersisted: serverOutcome === 'persisted',
     serverOutcome
+  }
+}
+
+/** Refresh-and-retry after a revision conflict: re-read the bot's server
+ *  metadata, overlay it through the shared merge (server wins, local-only
+ *  fields survive), reapply ONLY the intended patch, and resend once with
+ *  the fresh guard — so a stale section move keeps a newer server title
+ *  instead of reverting it (#120853). */
+async function refreshAndResendBotMeta(
+  bot: RosterRow,
+  key: string,
+  name: string,
+  route: BotOwner['route'],
+  patch: StoredBotMeta,
+  send: (body: Record<string, unknown>) => Promise<ProfilesConfigureResult>
+): Promise<BotMetaServerOutcome> {
+  try {
+    const snapshot = route
+      ? await requestForBot<{ profiles?: RosterRow[] }>(bot, 'profiles.list', { include_sessions: false })
+      : await host.request<{ profiles?: RosterRow[] }>('profiles.list', { include_sessions: false })
+    const rows = Array.isArray(snapshot?.profiles) ? snapshot.profiles : []
+    const fresh = rows.find(row => String(row?.name || '').trim() === name)
+
+    if (!fresh) {
+      return 'failed'
+    }
+
+    // Shared overlay, not a local re-merge: the fence, the local-only
+    // fields, and the group-scalar rule must match the roster path.
+    // Dynamic import — profile-ops already imports this module.
+    const { mergeServerMeta } = await import('./profile-ops')
+    mergeServerMeta([fresh], Date.now())
+
+    const refreshed = {
+      ...$botMeta.get()[key],
+      ...patch
+    }
+
+    $botMeta.set({
+      ...$botMeta.get(),
+      [key]: refreshed
+    })
+    noteBotMetaWrite(key)
+
+    try {
+      const persisted =
+        route || botMetaV2Active
+          ? commitBotMetaV2(getPluginCtx()?.storage, $botMeta.get())
+          : Promise.resolve(getPluginCtx()?.storage?.set?.(BOT_META_V1_KEY, $botMeta.get()))
+
+      await persisted.catch(() => undefined)
+    } catch {
+      /* storage unavailable — the resend below still carries the merge */
+    }
+
+    const { image, pet, ...rest } = refreshed || {}
+    const body: Record<string, unknown> = {
+      name,
+      ui_meta: {
+        'hermes-bots': rest
+      }
+    }
+    const freshRevision = botMetaServerRevisions.get(key)
+
+    if (freshRevision !== undefined) {
+      body.ui_meta_expected_revisions = { 'hermes-bots': freshRevision }
+    }
+
+    try {
+      const retry = await send(body)
+
+      if (retry?.applied?.ui_meta === true) {
+        noteBotMetaServerRevision(key, retry?.applied?.ui_meta_revisions?.['hermes-bots'])
+        noteBotMetaWrite(key)
+
+        return 'persisted'
+      }
+
+      return 'failed'
+    } catch {
+      /* the guard already proved a live CAS gateway — this is transient */
+      return 'failed'
+    }
+  } catch {
+    /* refresh failed — keep the optimistic local look, report remote failure */
+    return 'failed'
   }
 }
 

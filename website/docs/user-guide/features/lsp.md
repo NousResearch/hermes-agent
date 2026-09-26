@@ -238,6 +238,36 @@ lsp:
   # clamped to 30 so a sweep can never reap a client mid-operation.
   idle_timeout: 600
 
+  # V8 heap cap (MB) for spawned Node-based language servers
+  # (tsserver, pyright, vue, …). At spawn Hermes sets
+  # `--max-old-space-size=<max_heap_mb>` in the child's NODE_OPTIONS,
+  # REPLACING any inherited value, so the gateway's own heap flag never
+  # leaks into server children and a server on a large workspace hits a
+  # known ceiling instead of Node's default (~4 GiB) while sharing the
+  # host. Raise it for big monorepos where tsserver needs more room;
+  # set 0 to leave the inherited environment untouched (servers then
+  # inherit the parent's NODE_OPTIONS, or Node's default when unset).
+  # Non-Node servers (gopls, rust-analyzer, clangd, …) ignore it.
+  # Verify a running server: `hermes lsp status` reports `max_heap_mb`;
+  # inside the process, `v8.getHeapStatistics().heap_size_limit`.
+  max_heap_mb: 2048
+
+  # cgroup v2 isolation for spawned servers (Linux). Each server lands in
+  # its own cgroup (`<cgroup root>/hermes-lsp`) with an independent
+  # `memory.max` (`cgroup_memory_mb`), so a large-workspace server can
+  # grow to that ceiling without pushing the gateway's cgroup into the
+  # kernel OOM killer. Needs a writable cgroup v2 mount (root, or a
+  # delegated systemd user scope). When unavailable — non-Linux, cgroup
+  # v1, or a read-only container mount such as Docker's default
+  # `/sys/fs/cgroup` — attach fails gracefully: servers share the
+  # gateway's cgroup (the pre-isolation behaviour) and one warning is
+  # logged. Set `cgroup_isolate: false` to skip the attempt entirely;
+  # `cgroup_memory_mb: 0` keeps the split but sets no memory cap.
+  # Verify: `hermes lsp status` shows `isolated=true` per client; or
+  # compare `cat /proc/<gateway-pid>/cgroup` with `cat /proc/<server-pid>/cgroup`.
+  cgroup_isolate: true
+  cgroup_memory_mb: 4096
+
   # Per-server overrides (all optional).
   servers:
     pyright:

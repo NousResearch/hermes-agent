@@ -131,14 +131,27 @@ def _remux_aac_to_m4a(aac_data: bytes) -> Optional[Tuple[bytes, str]]:
         return None
 
 
+def _utf16_to_codepoint_index(text: str, utf16_offset: int) -> int:
+    """Map a UTF-16 code-unit offset (how signal-cli reports mention ranges) to a Python code-point index;
+    the two diverge after every non-BMP character, such as an emoji."""
+    units = 0
+    for idx, ch in enumerate(text):
+        if units >= utf16_offset:
+            return idx
+        units += 2 if ord(ch) > 0xFFFF else 1
+    return len(text)
+
+
 def _render_mentions(text: str, mentions: list) -> str:
-    """Replace \\uFFFC mention placeholders with readable @identifiers (from the end so indices hold)."""
+    """Replace \\uFFFC mention placeholders with readable @identifiers (from the end so indices hold).
+    ``start``/``length`` are UTF-16 code units, so they are mapped to code-point indices before slicing."""
     if not mentions or "\uFFFC" not in text:
         return text
     for mention in sorted(mentions, key=lambda m: m.get("start", 0), reverse=True):
         start, length = mention.get("start", 0), mention.get("length", 1)
         identifier = mention.get("number") or mention.get("uuid") or "user"
-        text = text[:start] + f"@{identifier}" + text[start + length:]
+        text = (text[:_utf16_to_codepoint_index(text, start)] + f"@{identifier}"
+                + text[_utf16_to_codepoint_index(text, start + length):])
     return text
 
 

@@ -19,6 +19,7 @@ import { observeActiveTerminalResize } from './active-resize'
 import { makeTerminalReader, registerTerminalReader } from './buffer'
 import { mirrorSelection, terminalClipboardIntent } from './clipboard'
 import { terminalLinkHandler, terminalWebLinksAddon } from './links'
+import { PTY_TERMINAL_LINE_OPTIONS } from './pty-output'
 import {
   isMacPlatform,
   resolveSurfaceColor,
@@ -517,7 +518,7 @@ export function useTerminalSession({
       // reads soft on every platform; VS Code keeps it off and our surface
       // (--ui-bg-chrome) is opaque anyway, so withSurface paints it solid.
       allowTransparency: false,
-      convertEol: true,
+      ...PTY_TERMINAL_LINE_OPTIONS,
       cursorBlink: true,
       fontFamily: latestFontFamilyRef.current,
       fontSize: 11,

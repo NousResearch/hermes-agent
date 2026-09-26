@@ -138,6 +138,7 @@ GET  /v1/runs/{id}/events        SSE stream of lifecycle events
 POST /v1/runs/{id}/approval      Resolve a pending approval
 POST /v1/runs/{id}/steer         Inject mid-run guidance at the next tool boundary
 POST /v1/runs/{id}/stop          Interrupt the run
+POST /v1/runs/{id}/continue      Continue an eligible, explicitly checkpointed file run
 GET  /v1/capabilities            Machine-readable feature flags
 POST /v1/browser-control/register Register a browser controller
 GET  /v1/browser-control/ws       Browser-controller WebSocket
@@ -182,6 +183,57 @@ Use `/v1/models` for OpenAI-client compatibility. Use `/api/model/options` or
 `/v1/runs/{id}/steer` is only accepted while the run status is `running`. Queued, approval-paused, stopping, cancelled, failed, and completed runs return `409 run_not_accepting_steer`, even if the server still retains internal agent references during cooperative shutdown.
 
 A `200` (and the `run.steered` event) means the text was **queued**, not that the agent consumed it. If a steer lands after the agent's final response — with no later tool boundary to deliver it at — the undelivered text is returned as `pending_steer` on the terminal event (`run.completed`, `run.failed`, or `run.cancelled`) and run status, so the client can replay it as the next user turn instead of losing it.
+
+#### Bounded file-step continuation
+
+`POST /v1/runs` may opt in with `"recovery_policy": "verified_file_steps"`.
+This requires an `Idempotency-Key`, durable run storage, and string `input`.
+Caller-supplied history, explicit/shared session IDs, response chains and hosted
+room dispatch are not eligible. In this mode the server owns a fresh session;
+`X-Hermes-Session-Key` remains an affinity input, not a shared transcript selector.
+
+After a **cooperative** interruption, Hermes can expose
+`recovery.disposition: "safe_to_continue"` and a `recovery.checkpoint_id` in run
+status. The original executor must have returned, and its durable transcript
+must contain only sequential, completely paired steps: known no-effect tools
+or native `write_file` calls with `verified: true`, bound absolute local paths
+and unambiguous effective bytes. Files are checked again against those bytes.
+Each check binds the digest, file identity, size and timestamps to the same
+opened object; links and reparse points are refused. Replacing a file with
+identical bytes does not preserve its checkpoint identity.
+The writer's BOM/CRLF preservation is accounted for; a receipt whose byte count
+fits different effective contents is refused rather than guessed.
+
+The same authenticated principal can POST to `/v1/runs/{source_id}/continue`
+with a new `Idempotency-Key`, the returned `checkpoint_id`, a continuation
+`input`, and the same execution options including `recovery_policy`.
+This creates a **new** run and private session, not a relabelled original run.
+`continued_from_run_id` links them; the previous call/results are durably copied
+before inference. The checkpoint is claimed atomically with successor admission.
+The same key replays the same admission; a different key cannot claim the same
+checkpoint again. Normal authentication, profile scope, drain and concurrency
+limits apply. Changed execution options, resolved model/tool configuration,
+transcripts or files prevent further execution.
+File evidence is rechecked after admission and again after the durable history
+copy, immediately before inference. Drift after admission fails the successor
+without invoking the model or tools; it does not release the source claim.
+
+This is **not** arbitrary crash recovery or an exactly-once transaction system.
+Process death during a tool, transport-task cancellation, missing receipts,
+parallel batches, compacted/rewound histories, `patch`, terminal commands,
+delegated/background work, remote file backends and unknown effects remain
+blocked. A terminal status alone never grants recovery. Filesystem verification
+is point-in-time, not an exclusive lock against unrelated writers. Configure
+the workload to avoid competing writers and independently verify its final
+business outcome. The API does not instruct the model to replay completed calls.
+
+An ineligible source returns `409 run_not_recoverable`; inspect the error and,
+when no checkpoint could be sealed, its persisted `recovery.reason` under the
+original principal. Reconcile unresolved effects before planning new work.
+There is no force-resume flag. If setup fails
+after an atomic claim (including a crash before dispatch), the claim remains;
+automatic re-admission is intentionally forbidden. Existing runs without this
+opt-in retain their previous behavior and do not gain recovery retroactively.
 
 #### Terminal run status
 

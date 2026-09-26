@@ -131,7 +131,8 @@ class RunIdempotencyStore:
                 raise
 
     def reserve(self, scope: str, key: str, fingerprint: str, run_id: str, status: Dict[str, Any], *,
-                owner_pid: int = 0, owner_started: int = 0, retention_until: float = 0):
+                owner_pid: int = 0, owner_started: int = 0, retention_until: float = 0,
+                source_run_id: str | None = None, checkpoint_id: str | None = None):
         """Atomically reserve a key; return ``(outcome, stored_record)``."""
         now = time.time()
         retention_until = max(0.0, float(retention_until or 0))
@@ -144,6 +145,23 @@ class RunIdempotencyStore:
                     self._conn.execute(_EXTEND_RETENTION_BY_KEY, (retention_until, scope, key, fingerprint))
                 self._conn.commit()
                 return _outcome(row, fingerprint)
+            if source_run_id is not None:
+                source = self._conn.execute(
+                    "SELECT status_json FROM run_idempotency WHERE scope=? AND run_id=?",
+                    (scope, source_run_id)).fetchone()
+                source_status = json.loads(source[0]) if source else {}
+                proof = source_status.get("recovery", {})
+                if (not self.durable or source_status.get("status") not in {"cancelled", "interrupted"}
+                        or proof.get("disposition") != "safe_to_continue"
+                        or not checkpoint_id or proof.get("checkpoint_id") != checkpoint_id):
+                    self._conn.commit()
+                    return "unrecoverable", None
+                # Claim and successor admission are ONE transaction, even across
+                # different client keys or independent gateway connections.
+                source_status["recovery"] = {**proof, "disposition": "continued", "successor_run_id": run_id}
+                self._conn.execute(
+                    "UPDATE run_idempotency SET status_json=?, updated_at=? WHERE scope=? AND run_id=?",
+                    (_encode_status(source_status), now, scope, source_run_id))
             self._conn.execute(
                 "INSERT INTO run_idempotency("
                 "scope,idempotency_key,fingerprint,run_id,status_json,"

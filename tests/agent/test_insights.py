@@ -8,6 +8,8 @@ from agent.insights import (
     InsightsEngine,
     _estimate_cost,
     _bar_chart,
+    _safe_float,
+    _safe_int,
 )
 from agent.usage_pricing import (
     format_duration_compact as _format_duration,
@@ -187,6 +189,30 @@ class TestBarChart:
         bars = _bar_chart([0, 0, 0], max_width=10)
         assert all(b == "" for b in bars)
 
+
+@pytest.mark.parametrize(
+    ("value", "expected_float", "expected_int"),
+    [
+        (None, 0.0, 0),
+        ("not-a-number", 0.0, 0),
+        (10**400, 0.0, 0),
+        (float("nan"), 0.0, 0),
+        (float("inf"), 0.0, 0),
+        (float("-inf"), 0.0, 0),
+        ("nan", 0.0, 0),
+        ("inf", 0.0, 0),
+        ("-inf", 0.0, 0),
+        (7, 7.0, 7),
+        ("8", 8.0, 8),
+        (-3.75, -3.75, -3),
+    ],
+)
+def test_safe_numeric_coercion(value, expected_float, expected_int):
+    assert _safe_float(value) == expected_float
+    assert _safe_int(value) == expected_int
+
+
+
 # =========================================================================
 # InsightsEngine — empty DB
 # =========================================================================
@@ -217,6 +243,51 @@ class TestInsightsPopulated:
         assert overview["total_input_tokens"] == expected_input
         assert overview["total_output_tokens"] == expected_output
         assert overview["total_tokens"] == expected_input + expected_output
+
+
+    def test_non_finite_reconciliation_values_degrade_to_zero(self, db):
+        db.create_session(session_id="bad-usage", source="cli", model="model-a")
+        db._conn.execute(
+            """UPDATE sessions
+               SET input_tokens = ?, output_tokens = ?, cache_read_tokens = ?,
+                   cache_write_tokens = ?, api_call_count = ?,
+                   estimated_cost_usd = ?, actual_cost_usd = ?,
+                   cost_status = ?, cost_source = ?
+               WHERE id = ?""",
+            (100, "nan", "inf", 25, "-inf", "inf", 1.25,
+             "estimated", "provider", "bad-usage"),
+        )
+        db._conn.execute(
+            """INSERT INTO session_model_usage
+               (session_id, model, billing_provider, billing_base_url,
+                api_call_count, input_tokens, output_tokens,
+                cache_read_tokens, cache_write_tokens, reasoning_tokens,
+                estimated_cost_usd, actual_cost_usd, cost_status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ("bad-usage", "model-a", "custom", "", "-inf", 100,
+             "nan", "inf", 25, "not-a-number", "inf", 1.25,
+             "estimated"),
+        )
+        db._conn.commit()
+
+        report = InsightsEngine(db).generate(days=30)
+        model = report["models"][0]
+
+        assert model["input_tokens"] == 100
+        assert model["output_tokens"] == 0
+        assert model["cache_read_tokens"] == 0
+        assert model["cache_write_tokens"] == 25
+        assert model["reasoning_tokens"] == 0
+        assert model["api_calls"] == 0
+        assert model["total_tokens"] == 125
+        assert model["cost"] == 0.0
+        assert model["actual_cost"] == 1.25
+        assert report["overview"]["total_tokens"] == 125
+        assert report["overview"]["estimated_cost"] == 0.0
+        assert report["overview"]["actual_cost"] == 1.25
+
+
+
 
     def test_model_breakdown_splits_mid_session_switch(self, db):
         """A session that switches models mid-flight is split across both

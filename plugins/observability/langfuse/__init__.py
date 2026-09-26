@@ -32,7 +32,6 @@ except Exception:  # pragma: no cover - fail-open when optional dep is missing
 @dataclass
 class TraceState:
     trace_id: str
-    root_ctx: Any
     root_span: Any
     generations: Dict[str, Any] = field(default_factory=dict)
     tools: Dict[str, Any] = field(default_factory=dict)
@@ -577,27 +576,30 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
     # session_id must be in trace_context for Langfuse session grouping.
     trace_ctx: Dict[str, Any] = {"trace_id": trace_id, **({"session_id": session_id} if session_id else {})}
 
+    # Detached start_observation(), not start_as_current_observation(): the "current" variant pushes an OTEL
+    # contextvars token that must be popped in the same context it was pushed in, but the root span is ended by
+    # a later hook on another worker thread, so every turn logged "Failed to detach context" (#95057). A span
+    # created inside propagate_attributes still carries its session / trace name / tags.
     def open_root():
-        ctx = client.start_as_current_observation(trace_context=trace_ctx, name="Hermes turn", as_type="chain",
-                                                  input=trace_input, metadata=metadata, end_on_exit=False)
-        return ctx, ctx.__enter__()
+        return client.start_observation(trace_context=trace_ctx, name="Hermes turn", as_type="chain",
+                                        input=trace_input, metadata=metadata)
 
-    root_ctx = root_span = None
+    root_span = None
     if propagate_attributes is not None:
         try:
             with propagate_attributes(session_id=session_id or task_key, trace_name="Hermes turn",
                                       tags=["hermes", "langfuse"]):
-                root_ctx, root_span = open_root()
+                root_span = open_root()
         except Exception:
-            root_ctx = None
-    if root_ctx is None:
-        root_ctx, root_span = open_root()
+            root_span = None
+    if root_span is None:
+        root_span = open_root()
 
     with _failsafe("update_trace(input)"):  # SDK v3 uses update_trace()
         root_span.update_trace(input=trace_input)
 
     _debug(f"started trace {trace_id} for {task_key}")
-    return TraceState(trace_id=trace_id, root_ctx=root_ctx, root_span=root_span)
+    return TraceState(trace_id=trace_id, root_span=root_span)
 
 
 def _start_child_observation(state: TraceState, *, name: str, as_type: str, input_value: Any,
@@ -628,14 +630,9 @@ def _end_children(state: TraceState, *, include_subagents: bool = False) -> None
 
 
 def _end_root(state: TraceState, label: str) -> None:
-    """End the root span then unwind its context; never raises."""
+    """End the root span; never raises."""
     with _failsafe(label):
         state.root_span.end()
-        # Unwind the root context manager now, while opentelemetry.trace.Span is
-        # still a real type; GC-driven close at interpreter teardown raises
-        # TypeError inside use_span's isinstance check.
-        if state.root_ctx is not None:
-            state.root_ctx.__exit__(None, None, None)
 
 
 def _finalize_all_traces() -> None:

@@ -121,6 +121,10 @@ async def _drive_full_turn(ws, streamer):
     assert ready["type"] == "ready"
     assert ready["input"] == {"sample_rate": 16000, "format": "pcm16", "block_ms": 30}
     assert ready["output"] == {"sample_rate": 24000, "format": "pcm16"}
+    # Correlation fields: session id + the two clock-skew timestamps.
+    assert ready["session_id"]
+    assert isinstance(ready["server_recv_unix_ms"], int)
+    assert ready["server_send_unix_ms"] >= ready["server_recv_unix_ms"]
 
     for frame in _speech_then_silence_pcm():
         await ws.send_bytes(frame)

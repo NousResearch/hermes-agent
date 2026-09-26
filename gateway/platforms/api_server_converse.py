@@ -42,15 +42,20 @@ Protocol:
              auth optional), then binary PCM16 mono frames at ``input_rate``
              (30 ms blocks preferred),
            ``{"stop": true}`` to end, ``{"commit": true}`` to force endpoint
-  server → ``{"type": "ready", "input": {...}, "output": {...}}``,
-           ``{"type": "transcript", "text": ...}``,
+  server → ``{"type": "ready", "input": {...}, "output": {...}, "session_id": ...,
+             "server_recv_unix_ms": ..., "server_send_unix_ms": ...}`` (session_id joins this
+             socket across client/server traces; the two timestamps + the client's
+             start.t0_unix_ms close an NTP-style clock-skew exchange),
+           ``{"type": "transcript", "text": ..., "turn_id": ..., "traceparent"?: ...}``,
            ``{"type": "thinking"}`` while the agent turn runs (show "thinking", not "listening"),
-           ``{"type": "speaking"}`` then binary PCM frames,
-           ``{"type": "interrupted"}`` on barge-in,
-           ``{"type": "turn_done", "expects_more": ?}`` after each reply (session mode sets
-             expects_more=false when the agent signed off → sleep, true on a trailing question
-             → keep listening; absent otherwise),
-           ``{"type": "error", "error": ...}`` on failure.
+           ``{"type": "speaking", "turn_id": ..., "traceparent"?: ...}`` then binary PCM frames,
+           ``{"type": "interrupted", "turn_id": ...}`` on barge-in,
+           ``{"type": "turn_done", "turn_id": ..., "expects_more": ?}`` after each reply (session
+             mode sets expects_more=false when the agent signed off → sleep, true on a trailing
+             question → keep listening; absent otherwise),
+           ``{"type": "error", "error": ..., "turn_id": ...}`` on failure.
+           turn_id ties a turn's frames together (present even with tracing off); traceparent (W3C)
+           roots the client's turn span under the server's voice.turn span when OTLP tracing is on.
 """
 
 import asyncio
@@ -58,6 +63,7 @@ import contextlib
 import hmac
 import json
 import logging
+import time
 import uuid
 from typing import Dict, List, Optional
 
@@ -239,6 +245,7 @@ async def _handle_converse_ws(self, request: "web.Request") -> "web.WebSocketRes
     frame = await _await_start_frame(ws, expected_key, subprotocol_authed=subprotocol_authed)
     if frame is None:
         return ws
+    server_recv_unix_ms = int(time.time() * 1000)  # when the start frame arrived (clock-skew ref)
     from tools.voice_converse_loop import parse_start_config
     input_rate, output_rate, quiet_interval, name, start_profile = parse_start_config(frame)
     # Profile: the start frame wins; else fall back to the request's own scope.
@@ -256,10 +263,16 @@ async def _handle_converse_ws(self, request: "web.Request") -> "web.WebSocketRes
             await ws.close()
         return ws
 
+    # Correlation fields: session_id joins this socket across client/server traces; the two
+    # timestamps close an NTP-style skew exchange with the client's start.t0_unix_ms (recv = when
+    # the start frame arrived, send = now).
     await ws.send_json({
         "type": "ready",
         "input": {"sample_rate": input_rate, "format": "pcm16", "block_ms": 30},
         "output": {"sample_rate": output_rate, "format": "pcm16"},
+        "session_id": session.session_id,
+        "server_recv_unix_ms": server_recv_unix_ms,
+        "server_send_unix_ms": int(time.time() * 1000),
     })
 
     session.start()

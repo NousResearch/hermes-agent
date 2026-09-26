@@ -32,10 +32,50 @@ import logging
 import queue
 import threading
 import time
+import uuid
 from typing import (
     Any, Awaitable, Callable, Dict, Iterator, List, Optional, Tuple)
 
 _log = logging.getLogger("hermes_cli.web_server")
+
+# Hard cap on a single agent turn (LLM think + stream). A turn that produces nothing — an LLM
+# call hung with no request timeout — otherwise never ends: no reply, no turn_done, so the client
+# is stuck "thinking" forever (observed: 181 s, error=False). The driver abandons the turn at this
+# deadline, sends an error + turn_done, and returns to listening, so the socket never wedges. This
+# is a backstop; the root-cause cap is a provider request_timeout_seconds on the LLM itself.
+_TURN_TIMEOUT_DEFAULT = 120.0
+
+
+def _resolve_turn_timeout() -> float:
+    """Per-connection agent-turn deadline (seconds) from ``voice.turn_timeout_seconds``; falls back
+    to :data:`_TURN_TIMEOUT_DEFAULT`. ``<= 0`` disables the deadline (not recommended)."""
+    try:
+        from hermes_cli.config import load_config
+
+        raw = (load_config().get("voice") or {}).get("turn_timeout_seconds")
+        return _TURN_TIMEOUT_DEFAULT if raw is None else float(raw)
+    except Exception:  # noqa: BLE001
+        return _TURN_TIMEOUT_DEFAULT
+
+
+def _drain_pending(session: "ConverseSession") -> List["_Utterance"]:
+    """Remove and return the queued utterances on the session's transcripts queue, leaving the
+    shutdown sentinel (None) in place and discarding QuietTicks. Used to flush utterances that
+    queued behind a signed-off turn so their replies never arrive after the client has slept."""
+    dropped: List["_Utterance"] = []
+    q = session.transcripts
+    while True:
+        try:
+            it = q.get_nowait()
+        except queue.Empty:
+            break
+        if it is None:
+            q.put(None)  # preserve the shutdown sentinel
+            break
+        if isinstance(it, _Utterance):
+            dropped.append(it)
+        # QuietTicks and anything else are discarded — the conversation is over.
+    return dropped
 
 # One-shot fallback synthesis always decodes to this rate (matches the built-in
 # streamers' 24 kHz so the wire format — and the `ready` frame's output.sample_rate —
@@ -224,6 +264,8 @@ class ConverseSession:
 
         self._np = np
         self._vm = _vm
+        # Stable per-connection id, echoed in `ready` and joinable across client/server traces.
+        self.session_id = uuid.uuid4().hex
         self._stt_model = stt_model
         # Per-connection capture rate. A single-clock device (ESP32) sets this so the
         # capture WAV is written at the rate the client actually sends; Whisper resamples
@@ -774,7 +816,10 @@ async def drive_converse_turns(
     from tools.tts_text_normalize import _strip_markdown_for_tts
     from tools.voice_mode_transcript import (
         is_voice_end_phrase, is_voice_stop_phrase, strip_voice_end_phrase)
-    from tools.voice_tracing import emit_turn_trace
+    from tools.voice_tracing import emit_turn_trace, start_turn
+
+    turn_timeout = _resolve_turn_timeout()
+    session_id = getattr(session, "session_id", None)
 
     while not session.stopped:
         # Block for the next event on the session queue: a transcript (str), an QuietTick
@@ -797,14 +842,21 @@ async def drive_converse_turns(
             transcript, recorder = item, None
         if not transcript:
             continue
-        await send_json({"type": "transcript", "text": transcript})
+        # Open the live voice.turn span now (rooted at the capture start), so its traceparent +
+        # a fresh turn_id ride the outgoing frames and the client's turn span nests underneath.
+        # turn_id is emitted even when tracing is off (log/side correlation without a backend).
+        turn_id = uuid.uuid4().hex
+        tt = start_turn(recorder=recorder, turn_id=turn_id, **{"session.id": session_id})
+        meta = {"turn_id": turn_id}
+        if tt.traceparent:
+            meta["traceparent"] = tt.traceparent
+        await send_json({"type": "transcript", "text": transcript, **meta})
         # Session mode: a spoken stop phrase ("goodbye"/"stop"/…) ends the exchange —
         # tell the client and skip the agent turn (the client decides to re-arm/sleep).
         if quiet_interval > 0 and is_voice_stop_phrase(transcript):
-            await send_json({"type": "stop_word", "text": transcript})
-            if recorder is not None:
-                recorder.set(outcome="stop_word")
-                emit_turn_trace(recorder)
+            await send_json({"type": "stop_word", "text": transcript, **meta})
+            tt.set(outcome="stop_word")
+            tt.end()
             continue
 
         # The agent turn (STT is already done → the model, which can be 5-50s to first token)
@@ -920,18 +972,42 @@ async def drive_converse_turns(
 
         # Consumer: stream PCM out; flip `playing` on only when real audio starts
         # (kept off during generation so a mid-thought interjection stays VAD-sensitive).
+        # A turn deadline backstops a hung LLM call (no tokens, no error, no end): once it trips
+        # the turn is abandoned, the task cancelled, and an error + turn_done still go out, so the
+        # client is never left "thinking" forever.
         speaking = False
         pcm_chunks = 0
+        timed_out = False
+        turn_deadline = loop.time() + turn_timeout if turn_timeout > 0 else None
         while True:
-            chunk = await pcm_q.get()
+            try:
+                if turn_deadline is None:
+                    chunk = await pcm_q.get()
+                else:
+                    remaining = turn_deadline - loop.time()
+                    if remaining <= 0:
+                        timed_out = True
+                        break
+                    chunk = await asyncio.wait_for(pcm_q.get(), timeout=remaining)
+            except asyncio.TimeoutError:
+                timed_out = True
+                break
             if chunk is None:
                 break
             if not speaking:
                 session.set_playing(True, tts_stop=tts_stop)
-                await send_json({"type": "speaking"})
+                await send_json({"type": "speaking", "turn_id": turn_id, **(
+                    {"traceparent": tt.traceparent} if tt.traceparent else {})})
                 speaking = True
             pcm_chunks += 1
             await send_bytes(chunk)
+        if timed_out:
+            # Stop the producer and the (likely hung) agent task; record it as a turn error so the
+            # error frame + turn_done below fire and the loop returns to listening.
+            tts_stop.set()
+            turn_task.cancel()
+            turn_result.setdefault("err", f"voice turn timed out after {turn_timeout:.0f}s")
+            _log.warning("converse: turn abandoned after %.0fs (no completion)", turn_timeout)
         if speaking:
             session.set_playing(False)
         _ns["pcm_done"] = time.time_ns()
@@ -950,8 +1026,9 @@ async def drive_converse_turns(
             sum(len(p) for p in reply_parts))
 
         # The turn task set the None sentinel that ended synthesis, so it is
-        # effectively done; await it to surface errors and settle turn_result.
-        with contextlib.suppress(Exception):
+        # effectively done; await it to surface errors and settle turn_result. (On a timeout it was
+        # cancelled above — suppress the CancelledError too, which is not an Exception subclass.)
+        with contextlib.suppress(Exception, asyncio.CancelledError):
             await turn_task
 
         # Persist the turn so history carries across the connection. Prefer the reply
@@ -968,12 +1045,12 @@ async def drive_converse_turns(
         # Barge-in stops PLAYBACK only (see the v1 limitation above): report it and
         # skip the error frame (a barged turn's error is noise), else surface any
         # turn error. Always end the turn with `turn_done`.
-        barged = bool(session.take_interrupted() or tts_stop.is_set())
+        barged = bool(session.take_interrupted() or tts_stop.is_set()) and not timed_out
         turn_err = bool(turn_result.get("err"))
         if barged:
-            await send_json({"type": "interrupted"})
+            await send_json({"type": "interrupted", "turn_id": turn_id})
         elif turn_err:
-            await send_json({"type": "error", "error": turn_result["err"]})
+            await send_json({"type": "error", "error": turn_result["err"], "turn_id": turn_id})
         # turn_done carries the agent's follow-up expectation in session mode, so a wake-word
         # client knows what to do without waiting on the VAD (which a noisy room never
         # endpoints): expects_more=false when the model signed off ("… Over and out." → the
@@ -981,7 +1058,7 @@ async def drive_converse_turns(
         # follow-up is coming → keep the mic hot, don't sleep on the next quiet), and the field
         # is ABSENT otherwise (no signal → the client's quiet timer governs). Absent must read as
         # "keep listening", so a client ignoring the field never sleeps unexpectedly.
-        turn_done: Dict[str, Any] = {"type": "turn_done"}
+        turn_done: Dict[str, Any] = {"type": "turn_done", "turn_id": turn_id}
         if quiet_interval > 0:
             if is_voice_end_phrase(reply):
                 turn_done["expects_more"] = False
@@ -991,27 +1068,36 @@ async def drive_converse_turns(
         # Reply done: resume the quiet clock from zero (a full quiet_interval window follows).
         session.end_turn()
 
-        # Finish the trace for this turn: append the agent (LLM) and TTS phases with their real
-        # start/end times to the capture/STT phases recorded during capture, then emit the whole
-        # turn as one voice.turn span tree. Content-free — counts/timings/flags only. No-op when
-        # OTLP tracing is off (recorder is inert and emit short-circuits).
-        if recorder is not None:
-            ttft_ms = (round((_ns["first_delta"] - _ns["turn_start"]) / 1e6)
-                       if "first_delta" in _ns else None)
-            recorder.add_phase(
-                "voice.agent", _ns.get("turn_start"), _ns.get("agent_end"),
-                **{"llm.ttft_ms": ttft_ms, "reply.chars": len(reply),
-                   "llm.deltas": len(reply_parts), "error": turn_err})
-            recorder.add_phase(
-                "voice.tts", _ns.get("first_sentence"), _ns.get("pcm_done"),
-                **{"tts.pcm_chunks": pcm_chunks,
-                   "tts.first_pcm_ms": (round((_ns["first_pcm"] - _ns["first_sentence"]) / 1e6)
-                                        if "first_pcm" in _ns and "first_sentence" in _ns
-                                        else None)})
-            recorder.set(outcome=("interrupted" if barged else "error" if turn_err else "ok"),
-                         interrupted=barged,
-                         expects_more=turn_done.get("expects_more"))
-            emit_turn_trace(recorder)
+        # Finish the trace: append the agent (LLM) + TTS phases with their real start/end times to
+        # the capture/STT phases in the bound recorder, then close the live voice.turn span. A
+        # timed-out turn is flagged (llm.timed_out) and shows as a voice.agent with no deltas.
+        ttft_ms = (round((_ns["first_delta"] - _ns["turn_start"]) / 1e6)
+                   if "first_delta" in _ns else None)
+        tt.add_phase(
+            "voice.agent", _ns.get("turn_start"), _ns.get("agent_end"),
+            **{"llm.ttft_ms": ttft_ms, "reply.chars": len(reply),
+               "llm.deltas": len(reply_parts), "error": turn_err, "llm.timed_out": timed_out})
+        tt.add_phase(
+            "voice.tts", _ns.get("first_sentence"), _ns.get("pcm_done"),
+            **{"tts.pcm_chunks": pcm_chunks,
+               "tts.first_pcm_ms": (round((_ns["first_pcm"] - _ns["first_sentence"]) / 1e6)
+                                    if "first_pcm" in _ns and "first_sentence" in _ns
+                                    else None)})
+        tt.set(outcome=("timeout" if timed_out else "interrupted" if barged
+                        else "error" if turn_err else "ok"),
+               interrupted=barged, expects_more=turn_done.get("expects_more"))
+        tt.end()
+
+        # Flush-on-sign-off: when the agent signed off (expects_more=False) the conversation is
+        # over and the client sleeps, so DROP any utterances that queued behind this turn (captured
+        # during the think/speak window) — otherwise their replies arrive after the client has gone
+        # to sleep. Each dropped utterance is still traced (outcome=discarded_after_signoff) so the
+        # drop is visible. A follow-up during a turn that did NOT sign off still runs.
+        if turn_done.get("expects_more") is False:
+            for dropped in _drain_pending(session):
+                if dropped.recorder is not None:
+                    dropped.recorder.set(outcome="discarded_after_signoff")
+                    emit_turn_trace(dropped.recorder)
 
 
 # ── converse synthesizer: one uniform "text -> int16 PCM" seam for both paths ──

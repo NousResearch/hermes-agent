@@ -13,9 +13,9 @@ const badgeVariants = cva(
       variant: {
         default: 'bg-primary/10 text-primary',
         muted: 'bg-muted text-muted-foreground',
-        success: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-300',
-        warn: 'bg-amber-500/10 text-amber-600 dark:text-amber-300',
-        destructive: 'bg-destructive/10 text-destructive',
+        success: 'bg-(--ui-status-success-soft) text-(--ui-status-success)',
+        warn: 'bg-(--ui-status-warning-soft) text-(--ui-status-warning)',
+        destructive: 'bg-(--ui-status-danger-soft) text-(--ui-status-danger)',
         outline: 'border border-(--ui-stroke-secondary) text-muted-foreground',
         // Solid fill — icon-corner counts (titlebar unread, etc.).
         solid: 'bg-primary text-primary-foreground'

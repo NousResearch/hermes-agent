@@ -153,6 +153,8 @@ renderer and Electron's first window paint.
 | `--ui-stroke-tertiary` | the default in-panel divider / list hairline — and every bordered surface in the transcript |
 | `--stroke-nous` | the overlay hairline (pairs with `shadow-nous`) |
 | `--ui-text-primary / -secondary / -tertiary` | text hierarchy |
+| `--ui-status-success / -warning / -danger` | semantic status foregrounds; use instead of framework palette names |
+| `--ui-status-*-soft` | matching low-emphasis status backgrounds for badges/pills |
 | `--ui-bg-quaternary` | soft control fill (secondary button) |
 | `--ui-widget-surface-background` | fill for inline chat widgets (`WIDGET_SHELL_CLASS`) |
 | `--chrome-action-hover` | hover fill for quiet controls |

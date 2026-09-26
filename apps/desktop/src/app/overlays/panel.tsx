@@ -352,10 +352,10 @@ export function PanelBlock({ children, className }: { children: ReactNode; class
 export type PanelPillTone = 'bad' | 'good' | 'muted' | 'warn'
 
 const PILL_TONE: Record<PanelPillTone, string> = {
-  bad: 'bg-destructive/10 text-destructive',
-  good: 'bg-primary/10 text-primary',
+  bad: 'bg-(--ui-status-danger-soft) text-(--ui-status-danger)',
+  good: 'bg-(--ui-status-success-soft) text-(--ui-status-success)',
   muted: 'bg-foreground/10 text-muted-foreground',
-  warn: 'bg-amber-500/10 text-amber-600 dark:text-amber-300'
+  warn: 'bg-(--ui-status-warning-soft) text-(--ui-status-warning)'
 }
 
 export function PanelPill({ children, tone = 'muted' }: { children: ReactNode; tone?: PanelPillTone }) {

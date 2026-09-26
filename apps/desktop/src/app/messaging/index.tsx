@@ -52,10 +52,10 @@ interface MessagingViewProps extends React.ComponentProps<'section'> {
 type EditMap = Record<string, Record<string, string>>
 
 const PILL_TONE: Record<StatusTone, string> = {
-  good: 'bg-primary/10 text-primary',
+  good: 'bg-(--ui-status-success-soft) text-(--ui-status-success)',
   muted: 'bg-muted text-muted-foreground',
-  warn: 'bg-amber-500/10 text-amber-600 dark:text-amber-300',
-  bad: 'bg-destructive/10 text-destructive'
+  warn: 'bg-(--ui-status-warning-soft) text-(--ui-status-warning)',
+  bad: 'bg-(--ui-status-danger-soft) text-(--ui-status-danger)'
 }
 
 const stateLabel = (state: null | string | undefined, m: Translations['messaging']) =>

@@ -215,6 +215,14 @@
     --ui-cyan: #4c7f8c;
     --ui-blue: #0053fd;
     --ui-purple: #9e94d5;
+    /* Semantic status tones. Components use these instead of framework palette
+       names so themes and accessibility tuning have one place to adjust them. */
+    --ui-status-success: var(--ui-success, var(--ui-green));
+    --ui-status-warning: var(--ui-yellow);
+    --ui-status-danger: var(--dt-destructive);
+    --ui-status-success-soft: color-mix(in srgb, var(--ui-status-success) 10%, transparent);
+    --ui-status-warning-soft: color-mix(in srgb, var(--ui-status-warning) 10%, transparent);
+    --ui-status-danger-soft: color-mix(in srgb, var(--ui-status-danger) 10%, transparent);
     --context-usage-system: color-mix(in srgb, var(--ui-base) 55%, transparent);
     --context-usage-tools: var(--ui-purple);
     --context-usage-rules: var(--ui-green);

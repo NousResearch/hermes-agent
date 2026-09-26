@@ -21,7 +21,6 @@ import {
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertCircle } from '@/lib/icons'
-import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
 import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
@@ -275,15 +274,7 @@ export function MaintenancePanel() {
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <span className="text-[length:var(--conversation-text-font-size)] font-medium">{mm.curator}</span>
-                <Badge
-                  className={cn(
-                    !curator.enabled
-                      ? 'bg-(--ui-bg-quinary) text-(--ui-text-tertiary)'
-                      : curator.paused
-                        ? 'bg-amber-500/15 text-amber-400'
-                        : 'bg-emerald-500/15 text-emerald-400'
-                  )}
-                >
+                <Badge variant={!curator.enabled ? 'muted' : curator.paused ? 'warn' : 'success'}>
                   {!curator.enabled ? mm.curatorDisabled : curator.paused ? mm.curatorPaused : mm.curatorActive}
                 </Badge>
               </div>

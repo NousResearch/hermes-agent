@@ -290,6 +290,9 @@ def clear_session(session_key: str) -> None:
         _session_approved.pop(session_key, None)
         _session_yolo.discard(session_key)
         _pending.pop(session_key, None)
+        # The denial-breaker tally is per-session approval state too: a recycled key must not
+        # inherit the previous run's consecutive-denial count.
+        _denial_tally.pop(session_key, None)
         for entry in _gateway_queues.pop(session_key, []):
             # Cancel blocked waits now so the old run unwinds instead of idling until timeout;
             # the prompt was withdrawn, nobody denied it.

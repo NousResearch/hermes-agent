@@ -1379,12 +1379,19 @@ class TurnRunner:
         from gateway.run_turn_runner_clarify_delivery import (
             UNDELIVERED_NO_SURFACE, _clarify_send_then_wait, text_fallback_coro)
         from tools import clarify_gateway as clarify_mod
+        from tools.clarify_tool import TIMEOUT_RESPONSE
         import uuid
         ctx = self._ctx
         if not ctx._status_adapter:
             # Nothing can render the question: say so, or the batch's blank answers read as
             # user inactivity (#112684).
             return UNDELIVERED_NO_SURFACE, False
+        # No path back to a pending clarify_id on this transport (e.g. webhook: every delivery is
+        # an independent one-shot session): skip the unresumable wait rather than registering one
+        # that can only ever time out. Same sentinel a real timeout returns, so the agent proceeds
+        # exactly as it already does when nobody answers in time (#105097).
+        if not getattr(ctx._status_adapter, "supports_interactive_clarify", True):
+            return TIMEOUT_RESPONSE, False
         session_key = ctx.session_key or ""
         clarify_id = uuid.uuid4().hex[:10]
         choices = list(choices) if choices else None

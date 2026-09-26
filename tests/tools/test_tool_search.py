@@ -886,3 +886,19 @@ class TestDeferredCallSchemaProbe:
         }, calls)
 
         assert validate_deferred_call_args(name, {"payload": {"anything": True}}) is None
+
+
+def test_tool_call_schema_states_single_local_entry_rule():
+    """resolve_underlying_call rejects multi-entry local batches, so the per-property
+    description of ``calls`` must state that rule. Models weight the property text when
+    emitting arguments; 'One local invocation, or one or more connector invocations'
+    reads as permitting several local entries."""
+    from tools.tool_search import bridge_tool_schemas, TOOL_CALL_NAME
+
+    schemas = bridge_tool_schemas(0)
+    schema = next(s for s in schemas
+                  if s.get("function", {}).get("name") == TOOL_CALL_NAME)
+    desc = schema["function"]["parameters"]["properties"]["calls"]["description"]
+    assert "ONE entry" in desc
+    assert "connectors__" in desc
+    assert "Never mix" in desc

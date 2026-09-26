@@ -292,6 +292,11 @@ _NO_GIT_REVISION_FILES = frozenset({
 _NO_GIT_REVISION_DIRS = frozenset({"desktop", "skills", "sidecar", "node_modules"})
 
 
+def _skip_preserve(name: str) -> bool:
+    """Installer/cache names that are never user state (checked per path component)."""
+    return name in _PRESERVE_SKIP or name.endswith(".pyc")
+
+
 def _revision_owned_without_git(rel: Path) -> bool:
     """True for plugin code/control surfaces an update must never resurrect from the old tree."""
     from tools.plugin_guard import CODE_FILE_EXTENSIONS
@@ -302,13 +307,13 @@ def _revision_owned_without_git(rel: Path) -> bool:
     )
 
 
-def _local_changes(target: Path) -> Optional[tuple[list[str], list[str]]]:
-    """``(untracked_or_ignored, modified_tracked)`` in a git checkout, or ``None`` when git
-    cannot classify the installed tree (notably subdirectory installs, which carry no ``.git``)."""
+def _local_changes(target: Path) -> tuple[Optional[list[str]], list[str]]:
+    """``(untracked_or_ignored, modified_tracked)`` in a git checkout. The first item is ``None``
+    when git cannot classify the installed tree (notably subdirectory installs, which carry no ``.git``)."""
     from hermes_cli.plugins_cmd import PluginOperationError, _resolve_git_executable, _run_plugin_git
     git_exe = _resolve_git_executable()
     if not (target / ".git").exists():
-        return None
+        return None, []
     if not git_exe:
         raise PluginOperationError(
             f"Could not inspect local changes for '{target.name}': git executable is unavailable."
@@ -325,7 +330,7 @@ def _local_changes(target: Path) -> Optional[tuple[list[str], list[str]]]:
         if len(item) < 4:
             continue
         code, rel = item[:2], item[3:]
-        if any(part in _PRESERVE_SKIP or part.endswith(".pyc") for part in Path(rel).parts):
+        if any(_skip_preserve(part) for part in Path(rel).parts):
             continue
         (local if code in ("??", "!!") else modified).append(rel)
     return local, modified
@@ -357,10 +362,9 @@ def _carry_user_files(old: Path, new: Path, local: Optional[list[str]]) -> None:
     def _walk_error(exc: OSError) -> None:
         raise PluginOperationError(f"Could not preserve user files from '{old}': {exc}") from exc
 
-    def _dir_clash(rel: Path) -> PluginOperationError:
+    def _conflict(rel: Path, reason: str = "its destination conflicts with the updated plugin") -> PluginOperationError:
         return PluginOperationError(
-            f"Cannot preserve user file '{rel}': the updated plugin now has a directory "
-            "at that path. The installed plugin was left unchanged."
+            f"Cannot preserve user file '{rel}': {reason}. The installed plugin was left unchanged."
         )
 
     for dirpath, dirnames, filenames in os.walk(old, onerror=_walk_error):
@@ -368,14 +372,24 @@ def _carry_user_files(old: Path, new: Path, local: Optional[list[str]]) -> None:
         dirnames[:] = [
             name
             for name in dirnames
-            if name not in _PRESERVE_SKIP
+            if not _skip_preserve(name)
+            # Without git, top-level revision-owned dirs are never carried: do not even walk them.
+            and not (local is None and here == old and name in _NO_GIT_REVISION_DIRS)
             and not (here / name).is_symlink()
             and not is_junction(here / name)
         ]
         for name in filenames:
+            # Skipped directories are pruned above, so only the file name itself needs checking.
+            if _skip_preserve(name):
+                continue
             src = here / name
             rel = src.relative_to(old)
-            if any(part in _PRESERVE_SKIP or part.endswith(".pyc") for part in rel.parts):
+            if local is None:
+                # A no-git subdir install cannot distinguish removed upstream code from user files.
+                # Never resurrect known executable/control surfaces.
+                if _revision_owned_without_git(rel):
+                    continue
+            elif keep.isdisjoint((rel, *rel.parents)):
                 continue
             try:
                 src_mode = src.lstat().st_mode
@@ -388,33 +402,16 @@ def _carry_user_files(old: Path, new: Path, local: Optional[list[str]]) -> None:
                 continue
 
             dst = new / rel
-            if local is None:
-                # A no-git subdir install cannot distinguish removed upstream code from user files.
-                # Never resurrect known executable/control surfaces.
-                if _revision_owned_without_git(rel):
-                    continue
-                if os.path.lexists(dst):
+            if os.path.lexists(dst):
+                if is_junction(dst):
+                    raise _conflict(rel)
+                # A file -> directory clash cannot be skipped: that would delete a user-state file,
+                # so keep the live install intact and make the user resolve it.
+                if dst.is_dir() and not dst.is_symlink():
+                    raise _conflict(rel, "the updated plugin now has a directory at that path")
+                if local is None:
                     # A same-shape path belongs to the new revision when git cannot prove otherwise.
-                    # A file -> directory clash is different: silently skipping it would delete a
-                    # user-state file, so keep the live install intact and make the user resolve it.
-                    if is_junction(dst):
-                        raise PluginOperationError(
-                            f"Cannot preserve user file '{rel}': its destination conflicts with the "
-                            "updated plugin. The installed plugin was left unchanged."
-                        )
-                    if dst.is_dir() and not dst.is_symlink():
-                        raise _dir_clash(rel)
                     continue
-            elif keep.isdisjoint((rel, *rel.parents)):
-                continue
-
-            if os.path.lexists(dst) and is_junction(dst):
-                raise PluginOperationError(
-                    f"Cannot preserve user file '{rel}': its destination conflicts with the "
-                    "updated plugin. The installed plugin was left unchanged."
-                )
-            if dst.is_dir() and not dst.is_symlink():
-                raise _dir_clash(rel)
 
             parent = new
             source_parent = old
@@ -423,28 +420,19 @@ def _carry_user_files(old: Path, new: Path, local: Optional[list[str]]) -> None:
                 source_parent /= part
                 if os.path.lexists(parent):
                     if is_junction(parent) or parent.is_symlink() or not parent.is_dir():
-                        raise PluginOperationError(
-                            f"Cannot preserve user file '{rel}': its destination conflicts with the "
-                            "updated plugin. The installed plugin was left unchanged."
-                        )
+                        raise _conflict(rel)
                     continue
                 try:
                     source_info = source_parent.lstat()
                     if is_junction(source_parent) or not stat.S_ISDIR(source_info.st_mode):
-                        raise PluginOperationError(
-                            f"Cannot preserve user file '{rel}': its source path changed during the update. "
-                            "The installed plugin was left unchanged."
-                        )
+                        raise _conflict(rel, "its source path changed during the update")
                     mode = stat.S_IMODE(source_info.st_mode)
                     parent.mkdir(mode=mode)
                     parent.chmod(mode)
                 except PluginOperationError:
                     raise
                 except OSError as exc:
-                    raise PluginOperationError(
-                        f"Cannot preserve user file '{rel}': its destination could not be prepared. "
-                        "The installed plugin was left unchanged."
-                    ) from exc
+                    raise _conflict(rel, "its destination could not be prepared") from exc
             if dst.is_symlink() or dst.is_file():
                 dst.unlink()
             shutil.copy2(src, dst, follow_symlinks=False)
@@ -543,8 +531,7 @@ def repin_catalog_plugin(
     if at_catalog_pin(sidecar, entry.sha):
         return RepinResult(entry.sha, False, target.name, [])
 
-    changes = _local_changes(target)
-    local, modified = changes if changes is not None else (None, [])
+    local, modified = _local_changes(target)
     old_sha8 = str(sidecar.get("sha") or "old")[:8]
     installed_surface = plugin_surface(_read_manifest(target), target)
 

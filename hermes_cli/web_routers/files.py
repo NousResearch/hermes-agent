@@ -614,6 +614,27 @@ _FS_LIST_ERRNO = (
 )
 
 
+def _fs_entry_is_directory(entry: os.DirEntry) -> bool:
+    """Whether a directory entry is a directory, **following symlinks**.
+
+    ``os.DirEntry.is_dir()`` defaults to ``follow_symlinks=False``, so every
+    symlink — including one pointing at a directory — was reported as a file.
+    Remote clients (Desktop over SSH / URL+token) build their Files tree from
+    this listing, so ``~/projects -> /srv/Projects`` rendered as an unopenable
+    leaf and the symlink target was unreachable from the pane. The local
+    Electron path (``apps/desktop/electron/fs-read-dir.ts``) already stats
+    symlinks; this keeps the two backends agreeing.
+
+    A dangling symlink or an unreadable target must not break the whole
+    listing, so a failed stat degrades to "not a directory" — the entry stays
+    visible and selecting it surfaces the read error instead.
+    """
+    try:
+        return entry.is_dir(follow_symlinks=True)
+    except OSError:
+        return False
+
+
 @router.get("/api/fs/list")
 async def fs_list(path: str):
     target = _fs_path(path)
@@ -626,7 +647,7 @@ async def fs_list(path: str):
                 entries.append({
                     "name": entry.name,
                     "path": str(target / entry.name),
-                    "isDirectory": entry.is_dir(follow_symlinks=False),
+                    "isDirectory": _fs_entry_is_directory(entry),
                 })
         entries.sort(key=lambda item: (not item["isDirectory"], item["name"].lower(), item["name"]))
         return {"entries": entries}

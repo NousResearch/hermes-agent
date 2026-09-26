@@ -104,6 +104,57 @@ def test_fs_list_hides_sensitive_entries(client, tmp_path):
     assert [entry["name"] for entry in response.json()["entries"]] == ["notes.txt"]
 
 
+def test_fs_list_marks_a_symlinked_directory_as_a_directory(client, tmp_path):
+    """A symlink to a directory must be browsable, not an unopenable leaf.
+
+    ``os.DirEntry.is_dir()`` defaults to ``follow_symlinks=False``, which
+    reported every symlink as a file. Remote clients (Desktop over SSH /
+    URL+token) build their Files tree from this listing, so a project reachable
+    only through a symlink (``~/projects -> /srv/Projects``) could not be
+    expanded at all.
+    """
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "real_dir").mkdir()
+    (root / "real.txt").write_text("real")
+
+    try:
+        (root / "linked_dir").symlink_to(root / "real_dir", target_is_directory=True)
+        (root / "linked_file").symlink_to(root / "real.txt")
+        (root / "dangling").symlink_to(root / "missing.txt")
+    except (NotImplementedError, OSError):
+        pytest.skip("symlinks are not supported on this filesystem")
+
+    response = client.get("/api/fs/list", params={"path": str(root)})
+
+    assert response.status_code == 200
+    entries = {entry["name"]: entry for entry in response.json()["entries"]}
+    assert set(entries) == {"dangling", "linked_dir", "linked_file", "real.txt", "real_dir"}
+    assert entries["linked_dir"]["isDirectory"] is True
+    # A symlinked file stays a file, and a dangling symlink is neither promoted
+    # to a directory nor allowed to swallow the rest of the listing.
+    assert entries["linked_file"]["isDirectory"] is False
+    assert entries["dangling"]["isDirectory"] is False
+
+
+def test_fs_list_expands_a_symlinked_directory(client, tmp_path):
+    """The follow-up read the tree issues when the folder is opened works too."""
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "real_dir").mkdir()
+    (root / "real_dir" / "inner.txt").write_text("inner")
+
+    try:
+        (root / "linked_dir").symlink_to(root / "real_dir", target_is_directory=True)
+    except (NotImplementedError, OSError):
+        pytest.skip("symlinks are not supported on this filesystem")
+
+    response = client.get("/api/fs/list", params={"path": str(root / "linked_dir")})
+
+    assert response.status_code == 200
+    assert [(entry["name"], entry["isDirectory"]) for entry in response.json()["entries"]] == [("inner.txt", False)]
+
+
 def test_fs_endpoints_require_auth(tmp_path):
     client = TestClient(web_server.app)
     target = tmp_path / "secret.txt"

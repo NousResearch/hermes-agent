@@ -45,7 +45,7 @@ class StubEngine(ContextEngine):
 
 
 class StubProvider(MemoryProvider):
-    name = "stub"
+    name = "stub-memory"
 
     def __init__(self):
         self.calls = []
@@ -132,6 +132,15 @@ def test_named_tools_leave_the_request_and_join_the_catalog(deferred):
     assert "stub_status" in _names(agent.tools)
     assert all(name in _listing(agent) for name in DEFERRED)
     assert _names(agent._deferred_post_build_tools) == set(DEFERRED)
+
+
+def test_deferred_tools_are_grouped_under_their_plugin(deferred):
+    agent, _, _ = deferred
+    listing = _listing(agent)
+    assert "stub tools (1):" in listing and "stub-memory tools (1):" in listing
+    assert "\nother" not in listing
+    (search,) = _run(agent, _call("tool_search", {"queries": ["stub memory search"]}))
+    assert json.loads(search)["tools"]["stub_memory_search"]["source_name"] == "stub-memory"
 
 
 def test_unnamed_tools_stay_loaded(build_agent, monkeypatch):

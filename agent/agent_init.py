@@ -2142,10 +2142,11 @@ def _inject_context_engine_tools(agent):
 
 
 def _defer_post_build_tools(agent):
-    from tools.tool_search import defer_post_build_tools
+    from tools.tool_search import defer_post_build_tools, post_build_tool_sources
     tools, deferred = defer_post_build_tools(
         agent.tools or [], enabled_toolsets=agent.enabled_toolsets,
-        disabled_toolsets=agent.disabled_toolsets)
+        disabled_toolsets=agent.disabled_toolsets,
+        sources=post_build_tool_sources(agent, agent._context_engine_tool_names))
     if deferred:
         agent.tools = tools
         agent.valid_tool_names = {tool["function"]["name"] for tool in tools}

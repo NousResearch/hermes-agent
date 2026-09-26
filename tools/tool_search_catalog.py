@@ -21,6 +21,8 @@ TOOL_CALL_NAME = "tool_call"
 BRIDGE_TOOL_NAMES = frozenset({TOOL_SEARCH_NAME, TOOL_DESCRIBE_NAME, TOOL_CALL_NAME})
 # Chars-per-token rule of thumb; 4.0 slightly underestimates (fewer false activations).
 CHARS_PER_TOKEN = 4.0
+# Owning plugin name on a deferred memory-provider / context-engine tool-def (never sent).
+SOURCE_NAME_KEY = "_hermes_source_name"
 
 
 @dataclass
@@ -91,11 +93,13 @@ def _entry_search_text(td: Dict[str, Any], source_label: str = "") -> str:
     return f"{name_words} {extra} {fn.get('description', '') or ''} {param_names}"
 
 
-def _classify_source(name: str) -> Tuple[str, str]:
-    """Return (source_kind, source_name) for a registered tool name."""
+def _classify_source(name: str, td: Optional[Dict[str, Any]] = None) -> Tuple[str, str]:
+    """Return (source_kind, source_name) for a registered tool name, or for a deferred
+    memory-provider / context-engine tool whose def carries its plugin's name."""
     toolset = _registry_toolset(name)
     if toolset is None:
-        return ("other", "")
+        owner = (td or {}).get(SOURCE_NAME_KEY)
+        return ("plugin", owner) if isinstance(owner, str) and owner else ("other", "")
     return ("mcp" if toolset.startswith("mcp-") else "plugin", toolset)
 
 
@@ -107,7 +111,7 @@ def build_catalog(tool_defs: List[Dict[str, Any]]) -> List[CatalogEntry]:
         name = fn.get("name", "")
         if not name:
             continue
-        source, source_name = _classify_source(name)
+        source, source_name = _classify_source(name, td)
         # Index the human-facing label ("linear", not "mcp-linear").
         source_label = _listing_group_label(source_name) if source_name else ""
         catalog.append(CatalogEntry(
@@ -271,8 +275,8 @@ def build_catalog_listing_with_form(
         fn = _fn(td)
         name = fn.get("name", "")
         if name:
-            # _classify_source gives ("other", "") when unregistered; the label of "" is "other".
-            label = _listing_group_label(_classify_source(name)[1])
+            # An unregistered tool without an owning plugin gets ("other", ""), labelled "other".
+            label = _listing_group_label(_classify_source(name, td)[1])
             groups.setdefault(label, []).append((name, _short_desc(fn.get("description", ""))))
     unavailable = hidden_declared_sources()
     if not groups and not unavailable:

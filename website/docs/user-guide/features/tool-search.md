@@ -28,6 +28,7 @@ tool eager.
 Tools added by memory providers and context engines (for example `honcho_*` or
 `lcm_*`) load directly unless they are named in `tools.tool_search.defer`.
 When named, they are deferred like other tools and still run through their provider.
+The catalog lists them under the name of the plugin that provides them.
 :::
 
 ## How it works

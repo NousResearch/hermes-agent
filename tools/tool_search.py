@@ -19,7 +19,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from hermes_cli.config_defaults import DEFAULT_CONFIG
 from tools.registry import tool_error
 from tools.tool_search_catalog import (
-    BRIDGE_TOOL_NAMES, CHARS_PER_TOKEN, TOOL_CALL_NAME, TOOL_DESCRIBE_NAME, TOOL_SEARCH_NAME,
+    BRIDGE_TOOL_NAMES, CHARS_PER_TOKEN, SOURCE_NAME_KEY, TOOL_CALL_NAME, TOOL_DESCRIBE_NAME, TOOL_SEARCH_NAME,
     CatalogEntry, _fn, _listing_group_label, _registry_entry, _registry_toolset,
     build_catalog, build_catalog_listing_with_form, search_catalog)
 from tools.tool_search_validation import (
@@ -540,10 +540,20 @@ def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
                      if n and is_deferrable_tool_name(n, defer_tools))
 
 
+def post_build_tool_sources(agent: Any, engine_names: Iterable[str]) -> Dict[str, str]:
+    """Owning plugin name per memory-provider / context-engine tool, for catalog grouping."""
+    owner_names = getattr(getattr(agent, "_memory_manager", None), "get_tool_owner_names", None)
+    sources = owner_names() if callable(owner_names) else {}
+    engine = getattr(getattr(agent, "context_compressor", None), "name", "")
+    return {**sources, **{name: engine for name in engine_names if isinstance(engine, str) and engine}}
+
+
 def defer_post_build_tools(tool_defs: List[Dict[str, Any]], *,
                            enabled_toolsets: Optional[List[str]] = None,
-                           disabled_toolsets: Optional[List[str]] = None) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    """Fold non-registry tools named in ``defer`` into the Tool Search bridge (#110341)."""
+                           disabled_toolsets: Optional[List[str]] = None,
+                           sources: Optional[Dict[str, str]] = None) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Fold non-registry tools named in ``defer`` into the Tool Search bridge (#110341).
+    ``sources`` names each tool's plugin so the catalog groups it there, not under ``other``."""
     config = load_config()
     if config.enabled == "off":
         return tool_defs, []
@@ -554,6 +564,9 @@ def defer_post_build_tools(tool_defs: List[Dict[str, Any]], *,
     if not deferred:
         return tool_defs, []
     kept = [td for td in tool_defs if td not in deferred and _fn(td).get("name", "") not in BRIDGE_TOOL_NAMES]
+    owners = sources or {}
+    deferred = [{**td, SOURCE_NAME_KEY: owners[name]} if (name := _fn(td).get("name", "")) in owners else td
+                for td in deferred]
     import model_tools
     raw = model_tools.get_tool_definitions(
         enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,

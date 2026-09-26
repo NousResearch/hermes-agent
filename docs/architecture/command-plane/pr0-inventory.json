@@ -1,0 +1,284 @@
+{
+  "schema_version": 1,
+  "source_pin": "c30ac90a92097058ddd6f9db3fa2e3182a7bfdcc",
+  "source_observed_at": "2026-08-28T11:01:05Z",
+  "issue": 96692,
+  "scope": "PR 0 inventory and executable characterization; no production behavior change",
+  "merged_predecessor": {
+    "pr": 96791,
+    "author": "OutThisLife",
+    "merge_commit": "595ee9228957523e46e19997775db6a9d44e7777",
+    "ownership": [
+      "CommandDef.argument_mode and CommandDef.desktop",
+      "commands.catalog projection for built-in and plugin command metadata",
+      "Desktop consumption of backend command kind and argument metadata",
+      "bounded Desktop-local actions, pickers, and dedicated RPC bindings"
+    ]
+  },
+  "authorities": [
+    {
+      "id": "core.registry",
+      "path": "hermes_cli/commands.py",
+      "role": "core semantic definition and platform projection helpers",
+      "state": "canonical-for-core-metadata",
+      "owns": [
+        "canonical typed name",
+        "aliases",
+        "description",
+        "category",
+        "legacy argument hints and subcommands",
+        "CLI/gateway availability flags",
+        "busy policy",
+        "shared execution key",
+        "Desktop argument and availability metadata"
+      ]
+    },
+    {
+      "id": "plugins.registry",
+      "path": "hermes_cli/plugins.py",
+      "role": "dynamic plugin command contribution and executable handler lookup",
+      "state": "parallel-dynamic-contributor",
+      "owns": [
+        "plugin command metadata",
+        "plugin handler registration",
+        "plugin result conversion"
+      ]
+    },
+    {
+      "id": "skills.registry",
+      "path": "agent/skill_commands.py",
+      "role": "profile/project-scoped skill command discovery and invocation preparation",
+      "state": "parallel-dynamic-contributor",
+      "owns": [
+        "skill command discovery",
+        "skill command metadata",
+        "skill invocation preparation"
+      ]
+    },
+    {
+      "id": "tui.catalog",
+      "path": "tui_gateway/methods_tools.py",
+      "role": "runtime catalog assembly plus command.dispatch and slash.exec routing",
+      "state": "split-authority",
+      "owns": [
+        "commands.catalog assembly",
+        "quick command contribution",
+        "plugin and skill projection",
+        "TUI extras",
+        "command.dispatch",
+        "slash.exec routing"
+      ]
+    },
+    {
+      "id": "ink.registry",
+      "path": "ui-tui/src/app/slash/registry.ts",
+      "role": "Ink client-local command registry and name/alias lookup",
+      "state": "split-authority",
+      "owns": [
+        "client-local handlers",
+        "local names and aliases",
+        "local binding lookup"
+      ]
+    },
+    {
+      "id": "desktop.local",
+      "path": "apps/desktop/src/lib/desktop-slash-commands.ts",
+      "role": "Desktop-local actions, pickers, dedicated RPCs, and unavailable rendering",
+      "state": "composed-after-96791",
+      "owns": [
+        "genuinely client-local actions",
+        "Desktop picker bindings",
+        "dedicated RPC bindings",
+        "Desktop unavailable messages"
+      ]
+    },
+    {
+      "id": "gateway.dispatch",
+      "path": "gateway/slash_commands.py",
+      "role": "normal gateway command execution",
+      "state": "split-authority",
+      "owns": [
+        "gateway command handlers",
+        "gateway result text",
+        "gateway confirmation paths"
+      ]
+    },
+    {
+      "id": "gateway.busy-policy",
+      "path": "gateway/run.py",
+      "role": "busy, interrupt, cancellation, and mid-run command routing",
+      "state": "split-authority",
+      "owns": [
+        "busy admission",
+        "interrupt-then-dispatch",
+        "mid-run handlers",
+        "session routing"
+      ]
+    },
+    {
+      "id": "discord.native",
+      "path": "plugins/platforms/discord/adapter.py",
+      "role": "native Discord command projection and reconciliation",
+      "state": "split-authority",
+      "owns": [
+        "Discord application-command registration",
+        "Discord option projection",
+        "interaction normalization"
+      ]
+    },
+    {
+      "id": "discord.relay",
+      "path": "gateway/relay/command_manifest.py",
+      "role": "relay Discord application-command projection",
+      "state": "handwritten-mirror",
+      "owns": [
+        "relay command names",
+        "relay descriptions",
+        "relay option payloads"
+      ]
+    },
+    {
+      "id": "web.client",
+      "path": "web/src/lib/slashExec.ts",
+      "role": "Dashboard slash execution projection",
+      "state": "split-authority",
+      "owns": [
+        "web slash execution routing",
+        "web result handling"
+      ]
+    },
+    {
+      "id": "classic.cli",
+      "path": "hermes_cli/cli_commands_mixin.py",
+      "role": "classic CLI command handlers and presentation",
+      "state": "split-authority",
+      "owns": [
+        "classic CLI execution handlers",
+        "interactive CLI rendering"
+      ]
+    }
+  ],
+  "runtime_contributors": [
+    "core",
+    "quick_commands",
+    "plugins",
+    "skills",
+    "skill_bundles",
+    "tui_local",
+    "desktop_local"
+  ],
+  "current_commanddef_fields": [
+    "name",
+    "description",
+    "category",
+    "aliases",
+    "args_hint",
+    "subcommands",
+    "cli_only",
+    "gateway_only",
+    "gateway_config_gate",
+    "busy_policy",
+    "busy_handler",
+    "execute",
+    "argument_mode",
+    "desktop"
+  ],
+  "missing_command_plane_fields": [
+    "command_id",
+    "description_key",
+    "execution_owner",
+    "handler_id",
+    "availability",
+    "visibility",
+    "live_session_requirement",
+    "authorization_policy",
+    "confirmation_policy",
+    "mutation_scope",
+    "idempotency_policy",
+    "retry_policy",
+    "result_capabilities"
+  ],
+  "missing_shared_catalog_fields": [
+    "schema_version",
+    "catalog_revision"
+  ],
+  "target_typed_outcomes_not_in_a_shared_command_result_abi": [
+    "ok",
+    "error",
+    "unknown_command",
+    "unavailable",
+    "confirmation_required",
+    "deferred",
+    "catalog_stale",
+    "indeterminate",
+    "send_to_agent",
+    "client_action"
+  ],
+  "characterized_invariants": [
+    "Core canonical names and aliases are case-insensitively collision-free.",
+    "Every core alias resolves to the exact same CommandDef object as its canonical name.",
+    "Desktop command metadata is a projection of the resolved CommandDef.",
+    "The current CommandDef schema is explicit and changes must update the characterization object.",
+    "Every recorded authority path exists at the source pin topology."
+  ],
+  "next_pr_contract": [
+    "Compose with #96791 rather than recreating its Desktop metadata ownership.",
+    "Add stable command identity without creating a second core command table.",
+    "Assemble dynamic contributors through one fail-closed collision boundary.",
+    "Bind invocations to the exact catalog generation used for resolution.",
+    "Keep client-local bindings local while shared semantics have one execution owner.",
+    "Introduce typed results before deleting compatibility execution paths."
+  ],
+  "semantic_interlocks": [
+    {
+      "pr": 96990,
+      "scope": "TUI skill exact-match catalog entries",
+      "collision": "none"
+    },
+    {
+      "pr": 96955,
+      "scope": "gateway /restart force semantics",
+      "collision": "none"
+    },
+    {
+      "pr": 96462,
+      "scope": "remove /handoff across surfaces",
+      "collision": "none"
+    },
+    {
+      "pr": 50054,
+      "scope": "authorized plugin overrides of built-in commands",
+      "collision": "none"
+    },
+    {
+      "pr": 95388,
+      "scope": "profile-scoped skill command discovery",
+      "collision": "none"
+    },
+    {
+      "pr": 96361,
+      "scope": "Matrix/Element X command presentation",
+      "collision": "none"
+    },
+    {
+      "pr": 66163,
+      "scope": "Slack command namespace projection",
+      "collision": "none"
+    },
+    {
+      "pr": 96243,
+      "scope": "new /retitle command and handlers",
+      "collision": "none"
+    },
+    {
+      "pr": 86508,
+      "scope": "TUI quick-alias native dispatch",
+      "collision": "none"
+    }
+  ],
+  "planned_files": [
+    "docs/architecture/command-plane/pr0-inventory.json",
+    "docs/architecture/command-plane/pr0-characterization.md",
+    "tests/conformance/test_command_plane_characterization.py"
+  ]
+}

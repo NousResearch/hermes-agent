@@ -196,6 +196,65 @@ class TestTelegramBedrockPickerNavigation:
         assert callback.await_args[0][1] == "us.anthropic.claude-opus-5"
 
     @pytest.mark.asyncio
+    async def test_a_drawn_button_never_switches_to_a_different_model(self, rendered_keyboards):
+        """A button keeps the model it displayed, across a navigation step.
+
+        Telegram leaves every inline keyboard tappable, while the picker rewrites
+        its scoped model sub-list on each vendor drill-down and Back. A payload
+        that numbered the *scoped* list therefore resolved against whichever list
+        was current when the tap arrived: the Amazon page's ``nova-lite-v1:0``
+        button switched the session to ``global.anthropic.claude-opus-5`` once the
+        user had stepped back to the vendor list (#94990 review). Either the exact
+        advertised ID or an explicit refusal is acceptable — another model is not.
+        """
+        adapter, state = self._picker(self.MODELS)
+        callback = state["on_model_selected"]
+        await self._render(adapter, "mp:bedrock")
+        amazon, _ = await self._render(adapter, "mvd:amazon")
+        nova = next(b for b in amazon if b.text == "nova-lite-v1:0")
+
+        await self._render(adapter, "mb")  # back to the vendors: the scoped list is replaced
+        query = await self._tap(adapter, nova.callback_data)
+
+        switched = [call[0][1] for call in callback.await_args_list]
+        assert switched in ([], ["amazon.nova-lite-v1:0"]), (
+            f"{nova.text!r} switched to {switched}")
+        if not switched:  # refusing is fine, but it has to be said out loud
+            assert (query.answer.await_args and query.answer.await_args.kwargs.get("text")), \
+                "a refused tap must tell the user, not answer silently"
+
+    @pytest.mark.asyncio
+    async def test_a_button_from_a_superseded_picker_is_refused(self, rendered_keyboards):
+        """``/model`` twice leaves two tappable messages but one picker state.
+
+        The older message's buttons number a catalog that is no longer loaded, so
+        resolving them against the new provider's list hands the switch a model
+        from a listing the user never opened. Such a tap must be refused.
+        """
+        adapter, state = self._picker(self.MODELS)
+        stale_callback = state["on_model_selected"]
+        await self._render(adapter, "mp:bedrock")
+        amazon, _ = await self._render(adapter, "mvd:amazon")
+        stale_tap = next(b for b in amazon if b.text == "nova-lite-v1:0").callback_data
+
+        fresh_callback = AsyncMock(return_value="switched")
+        adapter._model_picker_state["12345"] = {
+            "providers": [{"slug": "openai", "name": "OpenAI", "models": ["o3", "gpt-4o-mini"],
+                           "total_models": 2}],
+            "current_model": "o3", "current_provider": "openai", "session_key": "s",
+            "on_model_selected": fresh_callback, "msg_id": 77,
+        }
+        await self._render(adapter, "mp:openai")
+
+        query = await self._tap(adapter, stale_tap)
+
+        assert fresh_callback.await_count == 0, (
+            f"a stale tap switched into the new catalog: {fresh_callback.await_args_list}")
+        assert stale_callback.await_count == 0
+        assert (query.answer.await_args and query.answer.await_args.kwargs.get("text")), \
+            "a refused tap must tell the user, not answer silently"
+
+    @pytest.mark.asyncio
     async def test_back_and_cancel_keep_the_picker_navigable(self, rendered_keyboards):
         adapter, _ = self._picker(self.MODELS)
         await self._render(adapter, "mp:bedrock")
@@ -213,10 +272,12 @@ class TestTelegramBedrockPickerNavigation:
     async def test_a_plain_provider_list_keeps_the_original_two_step_flow(self, rendered_keyboards):
         """The drill-down is inserted only where it helps; a non-Bedrock catalog
         must still land straight on selectable, verbatim-labelled buttons."""
-        adapter, _ = self._picker(["gpt-4o-mini", "o3"])
+        adapter, state = self._picker(["gpt-4o-mini", "o3"])
         buttons, _text = await self._render(adapter, "mp:bedrock")
-        picks = [(b.text, b.callback_data) for b in buttons if str(b.callback_data).startswith("mm:")]
-        assert picks == [("gpt-4o-mini", "mm:0"), ("o3", "mm:1")]
+        picks = [b for b in buttons if str(b.callback_data).startswith("mm:")]
+        assert [b.text for b in picks] == ["gpt-4o-mini", "o3"]
+        await self._tap(adapter, picks[1].callback_data)
+        assert state["on_model_selected"].await_args[0][1] == "o3"
 
     @pytest.mark.asyncio
     async def test_provider_count_and_truncation_hint_survive_rendering(self, rendered_keyboards):

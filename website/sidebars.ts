@@ -116,6 +116,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/loops',
             'user-guide/features/code-execution',
             'user-guide/features/hooks',
+            'user-guide/features/outbound-webhooks',
             'user-guide/features/batch-processing',
           ],
         },

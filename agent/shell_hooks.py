@@ -384,7 +384,8 @@ def _fail_closed_block(spec: ShellHookSpec, reason: str) -> Dict[str, Any]:
 def _evaluate_result(spec: ShellHookSpec, r: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """``_spawn`` result → hook contribution (live callback and ``run_once``). Spawn error/timeout fail
     open unless fail_closed; exit 2 on a blocking event blocks (message: stdout JSON, then stderr, then
-    default); other non-zero exits warn then parse stdout; unparseable stdout on a fail_closed hook blocks."""
+    default); other non-zero exits warn then parse stdout, and on a fail_closed hook a non-zero exit that
+    produced no recognised directive blocks; unparseable stdout on a fail_closed hook blocks."""
     blocking_event = spec.event in _BLOCKING_EVENTS
     fail_closed = spec.fail_closed and blocking_event
     if r["error"]:
@@ -409,9 +410,27 @@ def _evaluate_result(spec: ShellHookSpec, r: Dict[str, Any]) -> Optional[Dict[st
                        r["returncode"], spec.event, spec.command, stderr[:_STDERR_MESSAGE_LIMIT])
     stdout = (r["stdout"] or "").strip()
     parsed = _parse_response(spec.event, stdout)
-    if parsed is None and fail_closed and stdout and not _is_json_object(stdout):
-        # A fail-closed gate must not silently allow on garbage stdout (e.g. a stack trace).
-        return _fail_closed_block(spec, "unparseable stdout (expected a JSON object)")
+    if parsed is None and fail_closed and (
+        r["returncode"] != 0 or (stdout and not _is_json_object(stdout))
+    ):
+        # A fail-closed gate must not silently allow when the hook failed to
+        # produce a directive. Two independent shapes must block:
+        #
+        #   * non-zero exit with no directive — stdout may be empty (an uncaught
+        #     exception writes its traceback to stderr) or hold something the
+        #     parser did not recognise, including a JSON object, so this must
+        #     not consult _is_json_object;
+        #   * unparseable stdout even on a clean exit, which fail_closed has
+        #     always blocked.
+        #
+        # A clean exit (0) with empty stdout or a JSON object stays a no-op, and
+        # a real directive on any exit is still honoured above.
+        return _fail_closed_block(
+            spec,
+            f"hook exited {r['returncode']} with no directive"
+            if r["returncode"] != 0
+            else "unparseable stdout (expected a JSON object)",
+        )
     return parsed
 
 

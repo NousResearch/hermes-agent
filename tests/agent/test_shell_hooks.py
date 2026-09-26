@@ -573,6 +573,71 @@ class TestEvaluateResult:
         )
         assert r is None
 
+    def test_nonzero_exit_with_empty_stdout_fail_closed_blocks(self):
+        """fail_closed must block when the hook crashed without a directive.
+
+        An uncaught Python exception exits non-zero and writes its traceback to
+        stderr, leaving stdout empty. The ``stdout and`` guard short-circuited
+        on exactly this shape and let the call through as PERMIT.
+        """
+        r = shell_hooks._evaluate_result(
+            self._spec(fail_closed=True),
+            _spawn_result(returncode=1, stdout="", stderr="Traceback: boom"),
+        )
+        assert r["action"] == "block"
+        assert "hook exited 1 with no directive" in r["message"]
+
+    @pytest.mark.parametrize(
+        "stdout",
+        ['{"foo": "bar"}', "{}", '{"unknown_key": 1}', "   \n", "[1, 2]"],
+        ids=["unrecognised-object", "empty-object", "unknown-key", "whitespace", "json-array"],
+    )
+    def test_nonzero_exit_without_directive_fail_closed_blocks(self, stdout):
+        """A failing gate is forced closed whatever it left on stdout.
+
+        The former ``not _is_json_object(stdout)`` escape hatch permitted a
+        gate that crashed while happening to print a JSON object. Keying on
+        ``parsed is None`` closes that shape too; a JSON array was already
+        caught because it is not an object.
+        """
+        r = shell_hooks._evaluate_result(
+            self._spec(fail_closed=True),
+            _spawn_result(returncode=1, stdout=stdout),
+        )
+        assert r["action"] == "block"
+        assert "hook exited 1 with no directive" in r["message"]
+
+    def test_nonzero_exit_with_approved_directive_is_not_fail_closed(self):
+        """A real directive on a non-zero exit is honoured, not overridden."""
+        r = shell_hooks._evaluate_result(
+            self._spec(fail_closed=True),
+            _spawn_result(
+                returncode=1, stdout='{"action": "approve", "rule_key": "r1"}',
+            ),
+        )
+        assert r["action"] == "approve"
+
+    def test_zero_exit_with_unrecognised_json_still_passes_fail_closed(self):
+        """Only a failing gate is forced closed; a clean exit is unaffected.
+
+        Together with ``test_empty_stdout_passes_fail_closed`` this pins both
+        halves of the clean-exit escape: empty stdout and a JSON object the
+        parser does not recognise.
+        """
+        r = shell_hooks._evaluate_result(
+            self._spec(fail_closed=True),
+            _spawn_result(returncode=0, stdout='{"foo": "bar"}'),
+        )
+        assert r is None
+
+    def test_nonzero_exit_with_empty_stdout_blocks_only_on_blocking_event(self):
+        """Non-blocking events keep failing open even with fail_closed set."""
+        r = shell_hooks._evaluate_result(
+            self._spec(event="on_session_start", fail_closed=True),
+            _spawn_result(returncode=1, stdout=""),
+        )
+        assert r is None
+
     def test_fail_closed_on_non_blocking_event_still_fails_open(self):
         """Defense in depth: even if a spec sneaks past parsing with
         fail_closed on a non-blocking event, runtime fails open."""

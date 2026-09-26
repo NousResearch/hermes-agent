@@ -22,6 +22,7 @@ import time
 from typing import Any, Iterable, Optional
 
 from hermes_cli import kanban_db as kb
+from hermes_cli.kanban_db_dispatch import REVIEW_TAG_SKILL_SWARM, apply_review_tag
 
 BLACKBOARD_PREFIX = "[swarm:blackboard] "
 
@@ -235,7 +236,9 @@ def _create_swarm_uncommitted(
         assignee=verifier_assignee,
         parents=worker_ids,
         priority=priority,
-        skills=["requesting-code-review"],
+        # Tag through the dispatcher's own helper: the swarm verifier's
+        # isolation must not depend on this file repeating the tag literal.
+        skills=apply_review_tag(tag=REVIEW_TAG_SKILL_SWARM),
         **common,
     )
     synthesizer = kb.create_task(

@@ -652,6 +652,22 @@ hermes kanban create "audit auth flow" \
 
 The dispatcher emits one `--skills <name>` flag per skill listed, so the worker spawns with all of them loaded on top of the auto-injected kanban guidance. The skill names must match skills that are actually installed on the assignee's profile (run `hermes skills list` to see what's available); there's no runtime install.
 
+**Review/verifier tasks auto-isolate.** If a task's `--skill` list includes `kanban-independent-verification`, `requesting-code-review` or `sdlc-review`, the dispatcher additionally spawns that worker with `--ignore-rules`. Those skills mark a task as judging someone else's work, and a verifier dispatched on the same profile as the worker it's checking would otherwise inherit that profile's `MEMORY.md`/`USER.md` and profile-preloaded skills — which can already contain the worker's own self-report or framing from earlier in the same profile's history, undermining the independence a verifier exists to provide. `--ignore-rules` only skips that ambient injection; the task's own forced `--skills` (including the review skill itself) still load normally, and kanban lifecycle tools stay available. This is isolation, not evidence verification — it does not by itself force the verifier to check anything real; see the `kanban-independent-verification` skill for that discipline.
+
+Because `sdlc-review` is in that set, the **native review lane is isolated too**: a card moved to the `review` column (via `kanban_request_review` or the dashboard) is force-loaded with `sdlc-review` at spawn, and therefore also gets `--ignore-rules`. The reviewer of a handoff never loads the implementer's profile memory, with nothing for the operator to remember.
+
+Rather than remembering the skill name, ask for the role directly with **`--review`** (alias `--independent`), which applies the tag for you:
+
+```bash
+hermes kanban create "Independent review: auth flow handoff" \
+    --assignee reviewer \
+    --review
+```
+
+`--review` unions with `--skill`, so a reviewer keeps its domain skills: `--skill humanizer --review` loads both. The swarm verifier node (`hermes kanban swarm`) is tagged through the same helper, so its isolation can't drift from what the dispatcher checks.
+
+Forget the tag on a card that reads like a review — "Independent review: …", "Audit …", "Cold-review …" — and `hermes kanban diagnostics` raises a `review_intent_untagged` warning against it: that worker will silently inherit the profile context it is supposed to judge. Cards already sitting in the `review` column are never flagged, since the lane isolates them structurally. The check is a title heuristic, so false positives are possible; ignore them, or turn it off entirely with `kanban.diagnostics.review_intent_pattern: ""` in `config.yaml`. A task's skills are fixed at creation, so the fix is to re-create the card with `--review`.
+
 ### Per-task model override
 
 Pin a task's worker to a specific model (and optionally provider), independent of the assignee profile's default:

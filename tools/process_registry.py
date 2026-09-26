@@ -1528,12 +1528,9 @@ class ProcessRegistry(ProcessCheckpointMixin):
                             session.output_buffer = ""
                     prev_output_bytes = new_size
                 if delta:
-                    with session._lock:
-                        session.output_buffer += delta
-                        if len(session.output_buffer) > session.max_output_chars:
-                            session.output_buffer = session.output_buffer[-session.max_output_chars:]
-                    self._check_watch_patterns(session, delta)
-                    self._emit_output(session, delta)
+                    # Same ingest as the local readers: heartbeats diff total_output_chars, which only
+                    # append_output advances, so a hand-rolled append here beat with empty output.
+                    self._ingest_output(session, delta)
 
                 check = env.execute(
                     f"kill -0 \"$(cat {q(pid_path)} 2>/dev/null)\" 2>/dev/null; echo $?", timeout=5)

@@ -63,6 +63,27 @@ def test_heartbeat_carries_only_new_output_and_stops_at_exit(tmp_path, monkeypat
                            timeout=2.5)
 
 
+@pytest.mark.platforms("posix")
+def test_sandbox_backend_heartbeat_carries_the_output_its_poller_read(tmp_path, monkeypatch):
+    """Docker/SSH/Modal jobs are read by the env log poller, not a pipe reader. A heartbeat must still
+    carry the output that poller ingested, not report a printing job as silent."""
+    from tools.environments.local import LocalEnvironment
+
+    monkeypatch.setattr(pr, "HEARTBEAT_MIN_SECONDS", 1)
+    monkeypatch.setattr(pr, "HEARTBEAT_TICK_SECONDS", 0.1)
+    registry = ProcessRegistry()
+    session = registry.spawn_via_env(LocalEnvironment(cwd=str(tmp_path), timeout=30),
+                                     "echo sandbox-line; sleep 8", cwd=str(tmp_path))
+    session.notify_on_complete = True
+    registry.arm_heartbeat(session, 1)
+    try:
+        assert _wait_until(lambda: "sandbox-line" in session.output_buffer, timeout=15), session.output_buffer
+        assert _wait_until(lambda: any("sandbox-line" in e.get("output", "") for e in list(registry.completion_queue.queue)
+                                       if e.get("type") == "heartbeat"), timeout=5), _drain(registry.completion_queue)
+    finally:
+        registry.kill_process(session.id)
+
+
 def test_terminal_dispatch_heartbeat_implies_notify_and_refuses_foreground(monkeypatch):
     from tools import terminal_tool as tt
 

@@ -65,24 +65,24 @@ export default function PairingPage() {
     setApproving(key);
     try {
       await api.approvePairing(user.platform, user.request_id);
-      showToast(`Approved: "${getUserLabel(user)}"`, "success");
+      showToast(t.pairing.approvedToast.replace("{name}", getUserLabel(user)), "success");
       loadPairing();
     } catch (e) {
-      showToast(`Could not approve the pairing request: ${errorMessage(e)}`, "error");
+      showToast(t.pairing.approveFailed.replace("{error}", errorMessage(e)), "error");
     } finally {
       setApproving(null);
     }
   };
 
   const handleClearPending = async () => {
-    if (!window.confirm("Clear all pending pairing requests?")) return;
+    if (!window.confirm(t.pairing.clearPendingConfirm)) return;
     setClearing(true);
     try {
       const res = await api.clearPendingPairing();
-      showToast(`Cleared ${res.cleared} pending request(s)`, "success");
+      showToast(t.pairing.clearedToast.replace("{count}", String(res.cleared)), "success");
       loadPairing();
     } catch (e) {
-      showToast(`Could not clear pending requests: ${errorMessage(e)}`, "error");
+      showToast(t.pairing.clearFailed.replace("{error}", errorMessage(e)), "error");
     } finally {
       setClearing(false);
     }
@@ -96,16 +96,19 @@ export default function PairingPage() {
         try {
           await api.revokePairing(platform, user_id);
           showToast(
-            `Revoked: "${user ? getUserLabel(user) : user_id}"`,
+            t.pairing.revokedToast.replace(
+              "{name}",
+              user ? getUserLabel(user) : user_id,
+            ),
             "success",
           );
           loadPairing();
         } catch (e) {
-          showToast(`Could not revoke access: ${errorMessage(e)}`, "error");
+          showToast(t.pairing.revokeFailed.replace("{error}", errorMessage(e)), "error");
           throw e;
         }
       },
-      [approved, loadPairing, showToast],
+      [approved, loadPairing, showToast, t.pairing.revokedToast, t.pairing.revokeFailed],
     ),
   });
 
@@ -119,7 +122,7 @@ export default function PairingPage() {
         disabled={clearing}
         prefix={clearing ? <Spinner /> : <Trash2 className="h-4 w-4" />}
       >
-        Clear pending
+        {t.pairing.clearPending}
       </Button>,
     );
     return () => {
@@ -168,13 +171,13 @@ export default function PairingPage() {
           className="flex items-center gap-2 text-muted-foreground"
         >
           <Users className="h-4 w-4" />
-          Pending requests ({pending.length})
+          {t.pairing.pendingHeading.replace("{count}", String(pending.length))}
         </H2>
 
         {pending.length === 0 && (
           <Card>
             <CardContent className="py-8 text-center text-sm text-muted-foreground">
-              No pending pairing requests
+              {t.pairing.noPendingRequests}
             </CardContent>
           </Card>
         )}
@@ -194,7 +197,9 @@ export default function PairingPage() {
                   <div className="flex items-center gap-4 text-xs text-muted-foreground">
                     <span className="truncate">{user.user_id}</span>
                     {typeof user.age_minutes === "number" && (
-                      <span>{user.age_minutes}m ago</span>
+                      <span>
+                        {t.pairing.minutesAgo.replace("{count}", String(user.age_minutes))}
+                      </span>
                     )}
                   </div>
                 </div>
@@ -229,13 +234,13 @@ export default function PairingPage() {
           className="flex items-center gap-2 text-muted-foreground"
         >
           <ShieldCheck className="h-4 w-4" />
-          Approved users ({approved.length})
+          {t.pairing.approvedHeading.replace("{count}", String(approved.length))}
         </H2>
 
         {approved.length === 0 && (
           <Card>
             <CardContent className="py-8 text-center text-sm text-muted-foreground">
-              No approved users
+              {t.pairing.noApprovedUsers}
             </CardContent>
           </Card>
         )}

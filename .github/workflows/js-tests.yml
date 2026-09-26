@@ -123,12 +123,15 @@ jobs:
     # `skipIf(process.platform === 'win32')` in the specs, so the suite runs
     # everywhere and each OS asserts exactly the behavior that is real on it.
     # Linux coverage already lives in the `check` job above (as
-    # check:test:desktop:platforms); this matrix leg adds Windows, and macOS
-    # can be appended to matrix.os when a runner budget exists for it.
+    # check:test:desktop:platforms); the matrix adds Windows and macOS. The
+    # macOS leg is intentionally included: the suite's POSIX-only gates are
+    # written against `win32` only, so darwin runs the same POSIX-semantics
+    # specs Linux does — see the darwin-triage notes in .freebuff/run.md for
+    # which specs are expected to differ on APFS/BSD userland.
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest]
+        os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:

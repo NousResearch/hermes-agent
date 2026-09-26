@@ -329,7 +329,7 @@ function CronAdvancedFields({
               available={availableToolsets}
               selected={form.enabled_toolsets}
               onChange={(v) => update("enabled_toolsets", v)}
-              emptyLabel="No toolsets available."
+              emptyLabel={t.cron.noToolsetsAvailable}
             />
           </div>
         </div>
@@ -429,7 +429,7 @@ function CronJobFormFields({
           available={availableSkills}
           selected={form.skills}
           onChange={(skills) => update("skills", skills)}
-          emptyLabel="No skills installed for this profile."
+          emptyLabel={t.cron.noSkillsForProfile}
         />
         <p className="text-xs text-muted-foreground">
           Selected skills are loaded before the prompt runs — the cron
@@ -452,7 +452,7 @@ function getJobName(job: CronJob): string {
   return asText(job.name).trim();
 }
 
-function getJobTitle(job: CronJob): string {
+function getJobTitle(job: CronJob, defaultLabel: string): string {
   const name = getJobName(job);
   if (name) return name;
 
@@ -462,7 +462,7 @@ function getJobTitle(job: CronJob): string {
   const script = asText(job.script);
   if (script) return truncateText(script, 60);
 
-  return job.id || "Cron job";
+  return job.id || defaultLabel;
 }
 
 function getJobScheduleDisplay(
@@ -769,7 +769,7 @@ export default function CronPage() {
         payload,
         getJobProfile(editJob),
       );
-      showToast("Saved changes ✓", "success");
+      showToast(t.cron.savedChanges + " ✓", "success");
       setEditJob(null);
       loadJobs(selectedProfile);
     } catch (e) {
@@ -786,13 +786,13 @@ export default function CronPage() {
       if (isPaused) {
         await api.resumeCronJob(job.id, profile);
         showToast(
-          `${t.cron.resume}: "${truncateText(getJobTitle(job), 30)}"`,
+          `${t.cron.resume}: "${truncateText(getJobTitle(job, t.cron.defaultJobLabel), 30)}"`,
           "success",
         );
       } else {
         await api.pauseCronJob(job.id, profile);
         showToast(
-          `${t.cron.pause}: "${truncateText(getJobTitle(job), 30)}"`,
+          `${t.cron.pause}: "${truncateText(getJobTitle(job, t.cron.defaultJobLabel), 30)}"`,
           "success",
         );
       }
@@ -804,7 +804,7 @@ export default function CronPage() {
 
   const handleTrigger = async (job: CronJob) => {
     const jobKey = getJobKey(job);
-    const label = `${t.cron.triggerNow}: "${truncateText(getJobTitle(job), 30)}"`;
+    const label = `${t.cron.triggerNow}: "${truncateText(getJobTitle(job, t.cron.defaultJobLabel), 30)}"`;
     const viewProfile = selectedProfile;
     const controller = triggerControllerRef.current;
 
@@ -846,7 +846,7 @@ export default function CronPage() {
         try {
           await api.deleteCronJob(id, profile);
           showToast(
-            `${t.common.delete}: "${job ? truncateText(getJobTitle(job), 30) : id}"`,
+            `${t.common.delete}: "${job ? truncateText(getJobTitle(job, t.cron.defaultJobLabel), 30) : id}"`,
             "success",
           );
           loadJobs(selectedProfile);
@@ -855,7 +855,15 @@ export default function CronPage() {
           throw e;
         }
       },
-      [jobs, loadJobs, selectedProfile, showToast, t.common.delete, t.status.error],
+      [
+        jobs,
+        loadJobs,
+        selectedProfile,
+        showToast,
+        t.common.delete,
+        t.status.error,
+        t.cron.defaultJobLabel,
+      ],
     ),
   });
 
@@ -916,8 +924,8 @@ export default function CronPage() {
         value={view}
         onChange={(v) => setView(v as "jobs" | "blueprints")}
         options={[
-          { value: "jobs", label: "Jobs" },
-          { value: "blueprints", label: "Blueprints" },
+          { value: "jobs", label: t.cron.jobsTab },
+          { value: "blueprints", label: t.cron.blueprintsTab },
         ]}
       />
 
@@ -936,7 +944,7 @@ export default function CronPage() {
         title={t.cron.confirmDeleteTitle}
         description={
           pendingJob
-            ? `"${truncateText(getJobTitle(pendingJob), 40)}" — ${
+            ? `"${truncateText(getJobTitle(pendingJob, t.cron.defaultJobLabel), 40)}" — ${
                 t.cron.confirmDeleteMessage
               }`
             : t.cron.confirmDeleteMessage
@@ -1133,7 +1141,7 @@ export default function CronPage() {
         {jobs.map((job) => {
           const state = getJobState(job);
           const promptText = getJobPrompt(job);
-          const title = getJobTitle(job);
+          const title = getJobTitle(job, t.cron.defaultJobLabel);
           const hasName = Boolean(getJobName(job));
           const deliver = asText(job.deliver);
           const profile = getJobProfile(job);

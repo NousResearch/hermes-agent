@@ -634,9 +634,9 @@ export default function EnvPage() {
     if (vars) {
       const categories = ["tool", "messaging", "setting"];
       const CATEGORY_LABELS: Record<string, string> = {
-        tool: "Tools",
+        tool: t.env.envCatTools,
         messaging: t.common.gateway ?? "Gateway",
-        setting: "Settings",
+        setting: t.env.envCatSettings,
       };
       for (const cat of categories) {
         const hasEntries = Object.values(vars).some(

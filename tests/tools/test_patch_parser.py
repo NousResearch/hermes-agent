@@ -299,6 +299,48 @@ class TestAdditionOnlyHunks:
         assert file_ops.written.endswith("def new_func():\n    return True\n")
         assert "existing = True" in file_ops.written
 
+    def test_open_ended_codex_hint_anchors_the_addition(self):
+        """``@@ class A:`` (no closing ``@@``) used to drop the hint, appending at EOF."""
+        patch = (
+            "*** Begin Patch\n"
+            "*** Update File: m.py\n"
+            "@@ class A:\n"
+            "+    z = 3\n"
+            "*** End Patch\n"
+        )
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        assert ops[0].hunks[0].context_hint == "class A:"
+
+        class FakeFileOps:
+            written = None
+            def read_file_raw(self, path):
+                return SimpleNamespace(content="class A:\n    x = 1\n\nclass B:\n    y = 2\n", error=None)
+            def write_file(self, path, content, pre_content=None):
+                self.written = content
+                return SimpleNamespace(error=None)
+
+        file_ops = FakeFileOps()
+        result = apply_v4a_operations(ops, file_ops)
+        assert result.success is True, result.error
+        assert file_ops.written == "class A:\n    z = 3\n    x = 1\n\nclass B:\n    y = 2\n"
+
+    def test_bare_and_closed_hint_forms_unchanged(self):
+        patch = (
+            "*** Begin Patch\n"
+            "*** Update File: m.py\n"
+            "@@\n"
+            "-a\n"
+            "+b\n"
+            "@@ def f @@\n"
+            "-c\n"
+            "+d\n"
+            "*** End Patch\n"
+        )
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        assert [h.context_hint for h in ops[0].hunks] == [None, "def f"]
+
 
 class TestReadFileRaw:
     """Bug 1 regression tests — files > 2000 lines and lines > 2000 chars."""

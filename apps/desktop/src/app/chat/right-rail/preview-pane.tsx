@@ -267,6 +267,11 @@ export function PreviewPane({
   const [currentUrl, setCurrentUrl] = useState(target.url)
   const liveUrlRef = useRef(currentUrl)
   liveUrlRef.current = currentUrl
+  // The guest-creation effect below deliberately omits target.url from its
+  // deps (it reuses the guest across navigations — see #120265), so it reads
+  // the live address through this mirror instead of a stale closure.
+  const targetUrlRef = useRef(target.url)
+  targetUrlRef.current = target.url
   const [devtoolsOpen, setDevtoolsOpen] = useState(false)
   const [history, setHistory] = useState({ back: false, forward: false })
   const [loading, setLoading] = useState(true)
@@ -1028,6 +1033,11 @@ export function PreviewPane({
     }
   }, [appendConsoleEntry, copy, reloadPreview, target.kind, target.url])
 
+  // The guest is created ONCE per preview kind and reused across URL changes
+  // within the session (#120265): an external target.url change steers the
+  // live guest with loadURL() in the sync effect below, instead of destroying
+  // the webview and rebuilding it (which dropped JS state, cookies, form
+  // data, scroll, refs, and detached the console/annotate channels).
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     const host = hostRef.current
@@ -1036,9 +1046,10 @@ export function PreviewPane({
       return
     }
 
+    const initialUrl = targetUrlRef.current
     host.replaceChildren()
     webviewRef.current = null
-    setCurrentUrl(target.url)
+    setCurrentUrl(initialUrl)
     setDevtoolsOpen(false)
     setHistory({ back: false, forward: false })
     setLoadError(null)
@@ -1054,7 +1065,7 @@ export function PreviewPane({
     const webview = document.createElement('webview') as PreviewWebview
     webview.className = 'flex h-full w-full flex-1 bg-transparent'
     webview.setAttribute('partition', 'persist:hermes-preview')
-    webview.setAttribute('src', target.url)
+    webview.setAttribute('src', initialUrl)
     webview.setAttribute('webpreferences', 'contextIsolation=yes,nodeIntegration=no,sandbox=yes')
 
     // The guest preload (main.ts installs it on this partition) forwards a
@@ -1096,7 +1107,7 @@ export function PreviewPane({
       if ((detail.level ?? 0) >= 3 && isModuleMimeError(message)) {
         setLoadError({
           description: copy.moduleMimeDescription,
-          url: guestPage(webview, target.url).url
+          url: guestPage(webview, liveUrlRef.current).url
         })
         setLoading(false)
       }
@@ -1119,7 +1130,7 @@ export function PreviewPane({
         return
       }
 
-      noteBrowserPage(tabId, guestPage(webview, target.url))
+      noteBrowserPage(tabId, guestPage(webview, liveUrlRef.current))
     }
 
     const onNavigate = (event: Event) => {
@@ -1159,7 +1170,7 @@ export function PreviewPane({
       setLoadError({
         code: errorCode,
         description: detail.errorDescription || copy.unreachableDescription,
-        url: detail.validatedURL || guestPage(webview, target.url).url
+        url: detail.validatedURL || guestPage(webview, liveUrlRef.current).url
       })
       setLoading(false)
     }
@@ -1287,7 +1298,54 @@ export function PreviewPane({
       webview.remove()
       setAnnotate(session => (session.mode ? { ...endAnnotateMode(session), stack: emptyAnnotateStack() } : session))
     }
-  }, [appendConsoleEntry, consoleState, copy, isRemoteHtml, isWebPreview, tabId, target.kind, target.url])
+  }, [appendConsoleEntry, consoleState, copy, isRemoteHtml, isWebPreview, tabId, target.kind])
+
+  // Steers the LIVE guest when the session opens a new URL (#120265): loadURL
+  // keeps the webview instance (JS state, cookies, form data, scroll, refs,
+  // console/annotate channels) where the effect above used to destroy and
+  // rebuild it. Per-page state (annotate pins, console log, history) resets
+  // around the load so nothing bleeds across pages. Skipped when the guest
+  // already shows the address (an in-page navigation got there first).
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+  useEffect(() => {
+    if (!isWebPreview || isRemoteHtml) {
+      return
+    }
+
+    const webview = webviewRef.current
+
+    if (!webview?.loadURL) {
+      return
+    }
+
+    const nextUrl = targetUrlRef.current
+
+    if (liveUrlRef.current === nextUrl) {
+      return
+    }
+
+    annotateLoopRef.current += 1
+    const guest = annotateGuest()
+
+    if (guest) {
+      void teardownAnnotateOverlay(guest).catch(() => undefined)
+    }
+
+    setDraftNote('')
+    setAnnotate(emptyAnnotateSession())
+    setLoadError(null)
+    consoleState.reset()
+    setHistory({ back: false, forward: false })
+    setLoading(true)
+    setCurrentUrl(nextUrl)
+    void webview.loadURL?.(nextUrl)?.catch((error: unknown) => {
+      setLoadError({
+        description: error instanceof Error ? error.message : copy.unreachableDescription,
+        url: nextUrl
+      })
+      setLoading(false)
+    })
+  }, [annotateGuest, consoleState, copy.unreachableDescription, isRemoteHtml, isWebPreview, target.url])
 
   return (
     <aside

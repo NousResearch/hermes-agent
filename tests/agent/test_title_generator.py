@@ -452,6 +452,45 @@ class TestMaybeAutoTitle:
                 patch("hermes_cli.config.load_config_readonly", return_value=keyed):
             assert tg.title_upgrade_must_wait_for_turn(main_runtime) is deferred
 
+    def test_title_endpoint_default_port_and_v1_canonicalization(self):
+        """ollama bare host / default :80 must match main …/v1 on the same socket."""
+        from agent import title_generator as tg
+
+        cases = [
+            (
+                {"provider": "custom", "base_url": "http://127.0.0.1:11434/v1"},
+                {"provider": "ollama", "base_url": "http://127.0.0.1:11434"},
+                True,
+            ),
+            (
+                {"provider": "custom", "base_url": "http://127.0.0.1/v1"},
+                {"provider": "ollama", "base_url": "http://127.0.0.1:80"},
+                True,
+            ),
+            (
+                {"provider": "custom", "base_url": "http://127.0.0.1:8080/v1"},
+                {"provider": "ollama", "base_url": "http://127.0.0.1:80"},
+                False,
+            ),
+        ]
+        for main_runtime, title_cfg, deferred in cases:
+            with patch.object(tg, "_title_config", return_value=title_cfg), \
+                    patch("hermes_cli.config.load_config_readonly", return_value={}):
+                assert tg.title_upgrade_must_wait_for_turn(main_runtime) is deferred, (main_runtime, title_cfg)
+
+    def test_hosted_main_provider_does_not_defer_via_requested_provider(self):
+        from agent import title_generator as tg
+
+        with patch.object(tg, "_title_config", return_value={}), \
+                patch("hermes_cli.config.load_config_readonly", return_value={}):
+            assert tg.title_upgrade_must_wait_for_turn(
+                {
+                    "provider": "openai",
+                    "requested_provider": "custom:beans",
+                    "base_url": "http://127.0.0.1:8080/v1",
+                }
+            ) is False
+
     def test_kanban_worker_is_named_after_its_card_without_the_llm_thread(self, tmp_path, monkeypatch):
         """A worker's session takes the board card's title synchronously; no auxiliary model call (#111166)."""
         from hermes_cli import kanban_db, kanban_db_connect

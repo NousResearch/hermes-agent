@@ -350,6 +350,37 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.rate_limit
         assert result.retryable is True
 
+    @pytest.mark.parametrize(
+        ("headers", "body_extra"),
+        [
+            ({"retry-after": "1627902"}, {}),
+            ({}, {"retry_after": 1627902}),
+        ],
+    )
+    def test_429_usage_limit_with_days_long_reset_is_billing(self, headers, body_extra):
+        # OpenCode Go's monthly wall, real response: 429 + "Go usage limit exceeded" +
+        # ``retry-after: 1627902`` (18.8 days — the monthly reset). A window that long can never
+        # be waited out inside api_max_retries, so naming it must not promote a hard wall back to
+        # retryable (it cost 3 x 600s on the same dead key before failing over). Same defect from
+        # the body's ``retry_after`` field.
+        # Contract pair: the 3600s header case above stays a retryable rate limit.
+        e = MockAPIError(
+            "Error code: 429 - Go usage limit exceeded",
+            status_code=429,
+            body={
+                "error": {"type": "GoUsageLimitError", "message": "Go usage limit exceeded"},
+                "metadata": {"workspace": "wrk_xxxxxxxxxxxxxxxxxxxxxxxx", "limitName": "monthly"},
+                **body_extra,
+            },
+            headers=headers,
+        )
+
+        result = classify_api_error(e, provider="opencode-go", model="deepseek-v4.1-flash")
+
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_fallback is True
+
     def test_429_generic_quota_wall_is_billing(self):
         # Broadened from the narrow "usage limit" core to the full
         # _USAGE_LIMIT_PATTERNS: a bare "quota" / "limit exceeded" 429 with no

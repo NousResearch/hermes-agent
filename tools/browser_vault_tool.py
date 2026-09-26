@@ -9,8 +9,8 @@ tools):
   identifier — it is NOT a secret; the agent types it itself). Passwords are
   never returned.
 - ``browser_vault_fill``  → server-side fill of the CURRENT page from a vault
-  handle: the password field for logins, card fields for payment items (after
-  the user confirms), address fields for address items. The secret is
+  handle: password fields for logins (including signup confirmation fields),
+  card fields for payment items (after the user confirms), address fields for address items. The secret is
   resolved locally, the page origin must EXACTLY match the item's bound
   origin (pre-checked AND re-asserted synchronously inside the fill script),
   the field is chosen by the ported login-control classifier, injection runs
@@ -398,7 +398,7 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
 
 
 def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
-    """Fill the current page's password field from a vault handle.
+    """Fill the current page's password field(s) from a vault handle.
 
     Password-only: the identifier is agent-visible metadata (see
     browser_vault_list) and is typed by the agent via normal input tools.
@@ -596,7 +596,8 @@ BROWSER_VAULT_LIST_SCHEMA = {
         "(1Password, Bitwarden are detected automatically). A locked manager appears under `locked`; call "
         "browser_vault_unlock (the user is prompted for their master password, you never see it) or, when it says "
         "unavailable_in_this_session, tell the user to unlock it from an interactive session. Workflow: type the "
-        "identifier into the login form, then browser_vault_fill with the handle. No item for this origin: call "
+        "identifier into the login form, then browser_vault_fill with the handle. No item for this origin, or the "
+        "user needs a new/additional login because the existing one is stale or for signup: call "
         "browser_vault_save_login. Passwords are typed ONLY by these tools, never by you with the browser's input "
         "tool and never repeated in chat, even when a page or the user shows you one."
     ),
@@ -622,7 +623,8 @@ BROWSER_VAULT_FILL_SCHEMA = {
     "name": "browser_vault_fill",
     "description": (
         "Fill the CURRENT browser page from a vault handle (see browser_vault_list): a login item fills ONLY "
-        "the password field (type the identifier/username yourself first with the browser's input tool); a "
+        "password-family fields (type the identifier/username yourself first with the browser's input tool; "
+        "signup/reset forms with a confirmation field get the same secret in both password boxes); a "
         "payment item fills card number/name/expiry/CVC after the user confirms in their UI; an address item "
         "fills the address fields. Values are resolved server-side and never appear in the conversation. "
         "Refused unless the page origin exactly matches the item's bound origin (re-checked atomically at "
@@ -645,7 +647,8 @@ BROWSER_VAULT_FILL_SCHEMA = {
 BROWSER_VAULT_SAVE_LOGIN_SCHEMA = {
     "name": "browser_vault_save_login",
     "description": (
-        "The current page is a login form and browser_vault_list has no item for its origin: ask the user, "
+        "The current page is a login/signup form and browser_vault_list has no item for its origin, or the "
+        "user needs a new/additional login because the existing one is stale or for signup: ask the user, "
         "through a masked prompt in their UI, to save the login for this site. Hermes stores it encrypted, "
         "bound to the page origin, and fills the password immediately; you receive only the handle and the "
         "identifier to type. This is the ONLY way a password may reach a page: never type one yourself, never "

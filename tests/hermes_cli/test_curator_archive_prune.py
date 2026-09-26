@@ -83,9 +83,21 @@ def test_purge_prefers_recorded_archived_at_over_a_stale_dir_mtime(tmp_path, mon
     archived = tmp_path / "skills" / ".archive" / "legacy"
     long_ago = time.time() - 100 * 86400
     os.utime(archived, (long_ago, long_ago))
+    # A legacy archive flattened under its folder name: the record is keyed by the
+    # SKILL.md frontmatter name, so that is where its archived_at must be read from.
+    flattened = tmp_path / "skills" / ".archive" / "accelerate"
+    flattened.mkdir()
+    (flattened / "SKILL.md").write_text(
+        "---\nname: huggingface-accelerate\ndescription: x\n---\n# body\n", encoding="utf-8")
+    os.utime(flattened, (long_ago, long_ago))
+    usage = skill_usage.load_usage()
+    usage["huggingface-accelerate"] = {
+        "state": skill_usage.STATE_ARCHIVED, "archived_at": usage["legacy"]["archived_at"]}
+    assert skill_usage.save_usage(usage)
 
     assert curator_cli._cmd_purge(_ns(days=30, dry_run=False, yes=True)) == 0
     assert (archived / "SKILL.md").is_file()
+    assert (flattened / "SKILL.md").is_file()
 
 
 # ─── prune ──────────────────────────────────────────────────────────────────

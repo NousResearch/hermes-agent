@@ -2371,11 +2371,10 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
     def _persist_consecutive_overload_aborts(self) -> None:
         self._durable_write("set_compression_overload_streak", "compression overload streak", self._consecutive_overload_aborts)
 
-    def _clear_terminal_summary_failures(self, *, keep_auth: bool = False) -> None:
-        """Clear every terminal summary-failure flag; ``keep_auth`` spares the auth/quota flag."""
+    def _clear_terminal_summary_failures(self) -> None:
+        """Clear every terminal summary-failure flag."""
         for flag, _class, _msg in _TERMINAL_SUMMARY_FAILURES:
-            if not (keep_auth and flag == "_last_summary_auth_failure"):
-                setattr(self, flag, False)
+            setattr(self, flag, False)
 
     def _reset_consecutive_overload_aborts(self) -> None:
         """Zero the sustained-overload budget and ALWAYS write the row: the in-memory count is not
@@ -4126,9 +4125,10 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
             return None
         kind = _classify_summary_failure(e)
+        access_error = _is_summary_access_or_quota_error(e)
         # Auth/permission/quota failures are not retryable: flag so compress() preserves the
         # session. A distinct summary_model still gets the one-shot main-model fallback.
-        if _is_summary_access_or_quota_error(e):
+        if access_error:
             # Field name kept for caller compatibility; now covers the whole access/quota class.
             self._last_summary_auth_failure = True
         if kind.json_decode and not kind.model_not_found and not kind.timeout:
@@ -4175,7 +4175,9 @@ Write only the summary body. Do not include any preamble or prefix."""
             self._last_summary_truncated_failure = True
         elif kind.empty_content:
             self._last_summary_empty_content_failure = True
-        elif kind.overloaded:
+        elif kind.overloaded and not access_error:
+            # A 403/402 that also says "overloaded" is an auth/quota abort (#29559), not an
+            # overload strike: counting it would let the next real 503 skip its grace (#115906).
             self._increment_consecutive_overload_aborts()
             # Sustained overload stops being terminal after N strikes (#123167; see the constant).
             self._last_summary_overload_failure = (
@@ -4185,9 +4187,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             if self._last_summary_overload_degraded:
                 # The latest failure class decides: a stale network/empty/truncated/auth flag from
                 # an earlier failure (only a success clears those) must not keep aborting forever.
-                # An auth/quota flag set by THIS error stays: a 403/402 that also says "overloaded"
-                # must keep aborting, never commit the lossy fallback (#29559).
-                self._clear_terminal_summary_failures(keep_auth=_is_summary_access_or_quota_error(e))
+                self._clear_terminal_summary_failures()
         logger.warning(
             "Failed to generate context summary: %s. Further summary attempts paused for %d seconds.", e,
             _transient_cooldown,

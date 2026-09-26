@@ -1083,6 +1083,8 @@ class TestSustainedOverloadEscalation:
             assert third == msgs
             assert c._last_compress_aborted is True
             assert c._last_compression_telemetry["failure_class"] == "summary_auth_failure"
+            # ...and never bumps the overload budget, so the next real 503 keeps its grace (#115906).
+            assert c._consecutive_overload_aborts == 0
             return
         # Third: sustained overload escalates — bounded fallback beats a deferred total wipe.
         assert third != msgs

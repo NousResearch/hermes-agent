@@ -65,6 +65,9 @@ class _LifecycleBuilder:
     def token(self, _token):
         return self
 
+    def application_class(self, _application_class, _kwargs=None):
+        return self
+
     def request(self, _request):
         return self
 
@@ -326,7 +329,7 @@ async def test_fallback_disabled_excludes_configured_ips_from_proxy_targets(monk
 
     proxy_targets = []
 
-    def resolve_proxy(_env_name, *, target_hosts):
+    def resolve_proxy(_env_name, *, target_hosts, configured=None):
         proxy_targets.append(list(target_hosts))
         return "http://127.0.0.1:8080"
 
@@ -411,6 +414,9 @@ async def test_general_request_success_cannot_record_polling_progress(monkeypatc
             self.polling_request = None
 
         def token(self, _token):
+            return self
+
+        def application_class(self, _application_class, _kwargs=None):
             return self
 
         def request(self, request):

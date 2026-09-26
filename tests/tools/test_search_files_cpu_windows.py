@@ -7,12 +7,11 @@ import types
 import pytest
 
 from tools.environments.local import LocalEnvironment
-from tools.file_operations import (
+from tools.file_operations import SearchResult, ShellFileOperations
+from tools.file_operations_search import (
     _ACTIVE_FILENAME_SEARCH_ROOTS,
     _FILENAME_SEARCH_ADMISSION,
     _normalized_filename_search_root,
-    SearchResult,
-    ShellFileOperations,
 )
 from tools.interrupt import set_interrupt
 
@@ -215,7 +214,7 @@ def test_interrupt_published_after_final_sample_prevents_filename_dispatch(monke
         return interrupted
 
     monkeypatch.setattr(
-        "tools.file_operations.tool_interrupt.is_interrupted",
+        "tools.file_operations_search.tool_interrupt.is_interrupted",
         pause_after_clear_sample,
     )
 
@@ -289,7 +288,7 @@ def test_remote_roots_are_normalized_lexically_against_backend_cwd(monkeypatch):
     assert absolute == relative
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_windows_local_root_spellings_share_one_normalized_key():
     env = LocalEnvironment.__new__(LocalEnvironment)
     env.cwd = "C:/Repo"

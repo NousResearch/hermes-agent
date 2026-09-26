@@ -17,17 +17,21 @@ primary clobbers fallback-owned state:
 Both are now guarded by a monotonic per-compressor attempt generation
 (``_claim_compressor_attempt``): restores and callback set/clear are keyed
 to the claiming generation and no-op when a newer attempt owns the
-compressor. These tests drive both interleavings deterministically —
-no timing, no threads.
+compressor. These tests drive both interleavings deterministically; the
+end-to-end checks use event handshakes rather than wall-clock timing.
 """
 
 from types import SimpleNamespace
 
+import pytest
+
 from agent.conversation_compression import (
+    _COMPRESSOR_ATTEMPT_GENERATION,
     _claim_compressor_attempt,
     _clear_compression_cancelled_check_if_owner,
     _compressor_attempt_is_current,
     _install_compression_cancelled_check,
+    _raise_if_stale_attempt,
     _restore_compressor_attempt_state,
     _snapshot_compressor_attempt_state,
 )
@@ -43,6 +47,26 @@ def _compressor(**overrides):
     }
     base.update(overrides)
     return SimpleNamespace(**base)
+
+
+class TestCallerAttemptOwnership:
+    """The caller generation only fences a compressor that has been claimed."""
+
+    def test_newer_entry_generation_without_marker_remains_stale(self):
+        """Control for the unclaimed-compressor carve-out: a CLAIMED compressor whose newer claim
+        never published a working marker still cancels the older caller."""
+        from agent.auxiliary_client import AuxiliaryExplicitCancellation
+
+        compressor = _compressor()
+        caller_gen = _claim_compressor_attempt(compressor)
+        _claim_compressor_attempt(compressor)
+
+        token = _COMPRESSOR_ATTEMPT_GENERATION.set(caller_gen)
+        try:
+            with pytest.raises(AuxiliaryExplicitCancellation):
+                _raise_if_stale_attempt(compressor)
+        finally:
+            _COMPRESSOR_ATTEMPT_GENERATION.reset(token)
 
 
 class TestLatePrimaryRestoreAfterFallbackCommit:
@@ -242,3 +266,292 @@ class TestMidRestoreClaimRace:
 
         # The write-time re-check must have refused the stale restore.
         assert compressor._previous_summary == "FALLBACK STATE"
+
+
+class TestStaleAttemptEndToEnd:
+    """E2E: two real attempts through ``_run_summary_dispatch`` on a shared
+    real ``ContextCompressor``. The detached primary's late completion must
+    not write summary state the fallback already owns. Exercises the real
+    plumbing: claim, ContextVar bind inside dispatch, working marker, real
+    ``compress()``, and the stale unwind propagating as a cancellation."""
+
+    def _compressor(self):
+        from agent.context_compressor import ContextCompressor
+
+        compressor = ContextCompressor(
+            model="test/model", quiet_mode=True,
+            protect_first_n=2, protect_last_n=2,
+            abort_on_summary_failure=False,
+        )
+        # Context-length resolution is lazy. Set the property directly so the worker cannot
+        # disappear into unrelated provider discovery before reaching the synchronization point.
+        compressor.context_length = 100000
+        return compressor
+
+    def _messages(self, n=12):
+        return [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"}
+            for i in range(n)
+        ]
+
+    def _llm_response(self, content):
+        from unittest.mock import MagicMock
+
+        resp = MagicMock()
+        resp.choices = [MagicMock()]
+        resp.choices[0].message.content = content
+        return resp
+
+    def test_outer_attempt_can_use_never_claimed_inner_compressor(self):
+        from unittest.mock import patch
+
+        from agent.conversation_compression import _run_summary_dispatch
+
+        inner = self._compressor()
+
+        class DelegatingEngine:
+            def compress(self, messages, **kwargs):
+                return inner.compress(messages, **kwargs)
+
+        engine = DelegatingEngine()
+        agent = SimpleNamespace(context_compressor=engine, session_id="s1")
+        messages = self._messages()
+        generation = _claim_compressor_attempt(engine)
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            return_value=self._llm_response("## Goal\ndelegated summary"),
+        ):
+            compressed = _run_summary_dispatch(
+                agent, messages, engine.compress,
+                {"current_tokens": 999999, "force": True},
+                commit_fence=None, attempt_generation=generation, hard_cancel_event=None,
+            )
+
+        assert compressed != messages
+        assert inner._previous_summary and "delegated summary" in inner._previous_summary
+
+    def test_detached_primary_late_success_cannot_write_after_fallback(self):
+        import threading
+        from unittest.mock import patch
+
+        from agent.auxiliary_client import AuxiliaryExplicitCancellation
+        from agent.conversation_compression import (
+            _claim_compressor_attempt,
+            _run_summary_dispatch,
+        )
+
+        cc = self._compressor()
+        agent = SimpleNamespace(context_compressor=cc, session_id="s1")
+        messages = self._messages()
+        kwargs = {"current_tokens": 999999, "force": True}
+
+        a_in_llm = threading.Event()
+        b_done = threading.Event()
+        a_done = threading.Event()
+        outcomes_a = []
+        thread_a = [None]
+
+        def fake_call_llm(**kw):
+            if threading.current_thread() is thread_a[0]:
+                a_in_llm.set()
+                b_done.wait()
+                return self._llm_response("## Goal\nstale-era summary")
+            return self._llm_response("## Goal\nfallback summary")
+
+        def attempt_a():
+            try:
+                _run_summary_dispatch(
+                    agent, messages, cc.compress, kwargs,
+                    commit_fence=None, attempt_generation=1, hard_cancel_event=None,
+                )
+            except AuxiliaryExplicitCancellation:
+                outcomes_a.append("cancelled")
+            except BaseException as e:
+                outcomes_a.append(f"{type(e).__name__}: {e}")
+            finally:
+                a_done.set()
+
+        gen1 = _claim_compressor_attempt(cc)
+        assert gen1 == 1
+        with patch("agent.context_compressor.call_llm", side_effect=fake_call_llm):
+            t = threading.Thread(target=attempt_a, daemon=True)
+            thread_a[0] = t
+            t.start()
+            a_in_llm.wait()
+
+            # Host detaches the stalled primary and runs the fallback inline.
+            try:
+                gen2 = _claim_compressor_attempt(cc)
+                assert gen2 == 2
+                _run_summary_dispatch(
+                    agent, messages, cc.compress, kwargs,
+                    commit_fence=None, attempt_generation=2, hard_cancel_event=None,
+                )
+                assert cc._previous_summary and "fallback summary" in cc._previous_summary
+            finally:
+                # The detached primary's provider call returns only after fallback completion.
+                b_done.set()
+                a_done.wait()
+                t.join()
+
+        # The stale attempt unwound as a cancellation and wrote nothing.
+        assert outcomes_a == ["cancelled"]
+        assert "stale-era" not in (cc._previous_summary or "")
+        assert "fallback summary" in cc._previous_summary
+
+    def test_detached_primary_late_cancel_cannot_revert_fallback(self):
+        """E2E rollback arm: the primary's unwind-time cancellation must not
+        restore its pre-attempt snapshot over the fallback's summary."""
+        import threading
+        from unittest.mock import patch
+
+        from agent.auxiliary_client import AuxiliaryExplicitCancellation
+        from agent.conversation_compression import (
+            _claim_compressor_attempt,
+            _run_summary_dispatch,
+        )
+
+        cc = self._compressor()
+        cc._previous_summary = "pre-attempt summary"
+        agent = SimpleNamespace(context_compressor=cc, session_id="s1")
+        messages = self._messages()
+        kwargs = {"current_tokens": 999999, "force": True}
+
+        a_in_llm = threading.Event()
+        b_done = threading.Event()
+        a_done = threading.Event()
+        outcomes_a = []
+        thread_a = [None]
+
+        def fake_call_llm(**kw):
+            if threading.current_thread() is thread_a[0]:
+                a_in_llm.set()
+                b_done.wait()
+                raise AuxiliaryExplicitCancellation()
+            return self._llm_response("## Goal\nfallback summary")
+
+        def attempt_a():
+            try:
+                _run_summary_dispatch(
+                    agent, messages, cc.compress, kwargs,
+                    commit_fence=None, attempt_generation=1, hard_cancel_event=None,
+                )
+            except AuxiliaryExplicitCancellation:
+                outcomes_a.append("cancelled")
+            except BaseException as e:
+                outcomes_a.append(f"{type(e).__name__}: {e}")
+            finally:
+                a_done.set()
+
+        gen1 = _claim_compressor_attempt(cc)
+        with patch("agent.context_compressor.call_llm", side_effect=fake_call_llm):
+            t = threading.Thread(target=attempt_a, daemon=True)
+            thread_a[0] = t
+            t.start()
+            a_in_llm.wait()
+
+            try:
+                gen2 = _claim_compressor_attempt(cc)
+                assert gen2 == 2
+                _run_summary_dispatch(
+                    agent, messages, cc.compress, kwargs,
+                    commit_fence=None, attempt_generation=2, hard_cancel_event=None,
+                )
+                assert cc._previous_summary and "fallback summary" in cc._previous_summary
+            finally:
+                b_done.set()
+                a_done.wait()
+                t.join()
+
+        assert outcomes_a == ["cancelled"]
+        # The stale cancel did not roll _previous_summary back to the primary's snapshot.
+        assert "fallback summary" in cc._previous_summary
+
+
+class TestDurableRollbackAtomicity:
+    """Gap: the durable cooldown DB write ran BETWEEN the two ownership
+    checks, so a fallback claiming mid-restore had its cooldown row
+    overwritten by the primary's stale snapshot row. The write now sits
+    under the compressor's own serial lock, which ``_claim_compressor_attempt``
+    takes too: durable row + in-memory restore are an atomic pair against
+    claims on THAT compressor, while other compressors' claims never wait."""
+
+    def test_durable_write_and_restore_are_atomic_against_claims(self):
+        import threading
+        import time
+
+        compressor = _compressor()
+        gen = _claim_compressor_attempt(compressor)  # generation 1
+        snapshot = {
+            "_summary_failure_cooldown_until": time.monotonic() + 100.0,
+            "_previous_summary": "primary-era",
+            "_cooldown_persist_failed": False,
+        }
+        written, claims, threads = [], [], []
+
+        class _DB:
+            def record_compression_failure_cooldown(self, sid, until, err):
+                written.append(sid)
+                # Race a fallback claim INTO the durable write. Post-fix the
+                # claim blocks on the same lock until the restore finishes;
+                # pre-fix it lands between the two checks and orphans the write.
+                t = threading.Thread(
+                    target=lambda: claims.append(_claim_compressor_attempt(compressor)),
+                    daemon=True,
+                )
+                threads.append(t)
+                t.start()
+                t.join(timeout=2.0)
+
+        compressor._session_db = _DB()
+        compressor._session_id = "s1"
+        compressor._previous_summary = "current"
+
+        _restore_compressor_attempt_state(
+            compressor, snapshot, durable_cooldown_authoritative=None,
+            attempt_generation=gen,
+        )
+        for t in threads:
+            t.join(5)
+
+        # Atomicity: the durable row and the in-memory restore are one unit.
+        # Pre-fix the claim slipped between checks: the row was written but
+        # the attribute restore was skipped — the split brain this guards.
+        assert written == ["s1"]
+        assert compressor._previous_summary == "primary-era"
+        assert claims == [2]
+
+    def test_durable_write_does_not_stall_other_compressors(self):
+        import threading
+        import time
+
+        compressor, other = _compressor(), _compressor()
+        gen = _claim_compressor_attempt(compressor)
+        snapshot = {
+            "_summary_failure_cooldown_until": time.monotonic() + 100.0,
+            "_previous_summary": "primary-era",
+            "_cooldown_persist_failed": False,
+        }
+        other_claims_during_write = []
+
+        class _DB:
+            def record_compression_failure_cooldown(self, sid, until, err):
+                # A busy state.db write on THIS compressor must not block a claim on an
+                # unrelated compressor (gateway: N sessions share the module lock).
+                t = threading.Thread(
+                    target=lambda: other_claims_during_write.append(_claim_compressor_attempt(other)),
+                    daemon=True,
+                )
+                t.start()
+                t.join(timeout=2.0)
+
+        compressor._session_db = _DB()
+        compressor._session_id = "s1"
+
+        _restore_compressor_attempt_state(
+            compressor, snapshot, durable_cooldown_authoritative=None, attempt_generation=gen,
+        )
+
+        assert other_claims_during_write == [1]
+        assert compressor._previous_summary == "primary-era"

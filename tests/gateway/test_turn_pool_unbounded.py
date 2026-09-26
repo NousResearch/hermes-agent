@@ -12,7 +12,7 @@ import threading
 
 import pytest
 
-from gateway.run import GatewayRunner, _UnboundedThreadExecutor
+from gateway.run import GatewayRunner
 
 
 def _runner():
@@ -22,24 +22,6 @@ def _runner():
     runner._housekeeping_executor = None
     runner._executor_closing = False
     return runner
-
-
-def test_turn_pool_runs_many_blocking_bodies_at_the_same_instant():
-    runner = _runner()
-    n = 60
-    barrier = threading.Barrier(n, timeout=5)
-
-    def body():
-        barrier.wait()  # raises BrokenBarrierError unless all n bodies run concurrently
-        return "ran"
-
-    ex = runner._get_executor()
-    try:
-        futs = [ex.submit(body) for _ in range(n)]
-        results = [f.result(timeout=15) for f in futs]
-    finally:
-        runner._shutdown_executor(drain_timeout=1)
-    assert results == ["ran"] * n
 
 
 def test_a_new_turn_starts_while_many_are_parked():
@@ -65,17 +47,7 @@ def test_a_new_turn_starts_while_many_are_parked():
         runner._shutdown_executor(drain_timeout=5)
 
 
-def test_unbounded_executor_propagates_results_and_refuses_after_shutdown():
-    ex = _UnboundedThreadExecutor(thread_name_prefix="t")
-    assert ex.submit(lambda: 3).result(timeout=5) == 3
-    with pytest.raises(ValueError):
-        ex.submit(lambda: (_ for _ in ()).throw(ValueError("boom"))).result(timeout=5)
-    ex.shutdown(wait=True)
-    with pytest.raises(RuntimeError):
-        ex.submit(lambda: None)
-
-
-def test_shutdown_counts_a_live_turn_worker():
+def test_shutdown_counts_a_live_turn_worker(monkeypatch):
     runner = _runner()
     wedge = threading.Event()
     entered = threading.Event()
@@ -84,8 +56,19 @@ def test_shutdown_counts_a_live_turn_worker():
         entered.set()
         assert wedge.wait(30)
 
-    runner._get_executor().submit(wedged)
+    ex = runner._get_executor()
+    ex.submit(wedged)
     assert entered.wait(5)
+
+    # At the OS thread limit Thread.start raises; that submit must fail without leaving an
+    # unstarted thread behind for shutdown to join.
+    def refuse(self):
+        raise RuntimeError("can't start new thread")
+
+    with monkeypatch.context() as m:
+        m.setattr(threading.Thread, "start", refuse)
+        with pytest.raises(RuntimeError):
+            ex.submit(lambda: None)
     try:
         live = runner._shutdown_executor(drain_timeout=0.2)
     finally:

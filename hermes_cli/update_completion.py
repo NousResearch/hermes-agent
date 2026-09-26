@@ -14,6 +14,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from typing import Any, BinaryIO, cast
 
 
 def _write_json(path: Path, data: dict) -> None:
@@ -50,14 +51,16 @@ def run_completion(request: dict) -> dict:
         command = [sys.executable, "-I", "-S", "-u", "-X", f"pycache_prefix={request['bytecode_cache']}",
                    str(root / "hermes_cli/update_completion.py"),
                    str(request_path), str(result_path)]
+        launch: dict[str, Any] = ({"start_new_session": True} if os.name == "posix" else
+                                  {"creationflags": subprocess.CREATE_NO_WINDOW})
         proc = subprocess.Popen(
-            command, cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            **({"start_new_session": True} if os.name == "posix" else
-               {"creationflags": subprocess.CREATE_NO_WINDOW}))
+            command, cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **launch)
+        # stdout=PIPE above: the stream exists; cast because IO[bytes] declares no read1.
+        stream: BinaryIO = cast(BinaryIO, proc.stdout)
         decoder = codecs.getincrementaldecoder("utf-8")("replace")
         try:
             while True:
-                chunk = proc.stdout.read1(8192)
+                chunk = stream.read1(8192)
                 sys.stdout.write(decoder.decode(chunk, final=not chunk))
                 sys.stdout.flush()
                 if not chunk:
@@ -89,7 +92,7 @@ def run_completion(request: dict) -> dict:
                 raise exc from cleanup_error
             raise
         finally:
-            proc.stdout.close()
+            stream.close()
         code = _exit_status(code)
         try:
             result = json.loads(result_path.read_text(encoding="utf-8-sig"))
@@ -119,7 +122,7 @@ def _resume_receipt(data: dict) -> None:
     receipt = object.__new__(update_receipt.UpdateReceipt)
     receipt.data = data
     receipt.correlation_id = data["update_id"]
-    receipt.current_token = update_receipt._current.set(receipt)
+    receipt.current_token = update_receipt._current.set(receipt)  # type: ignore[attr-defined]
 
 
 def _read_terminal_receipt(request: dict) -> dict | None:
@@ -140,7 +143,7 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
 
     root = Path(request["source"])
     update_id = request["receipt"]["update_id"]
-    from hermes_cli.venv_sync import arm_completion, refuse_foreign_owned_venv
+    from hermes_cli.venv_sync import arm_completion, refuse_foreign_owned_venv, update_sync_extras
 
     refuse_foreign_owned_venv(root)
     arm_completion(root)
@@ -150,7 +153,12 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
             # pins; tools (incl. bumped uv/python) land before the sync uses them.
             ensure_tools_for_sync()
             # An update never fails because of a plugin: misfits are disabled and reported.
-            pm.sync_venv(explicit=True, project_root=root, evict_incompatible_plugins=True)
+            # Configured platforms' extras join too, so their SDK survives the rebuild (#122535).
+            extras = update_sync_extras(root)
+            if extras is None:
+                pm.sync_venv(explicit=True, project_root=root, evict_incompatible_plugins=True)
+            else:
+                pm.sync_venv(extras, explicit=True, project_root=root, evict_incompatible_plugins=True)
         finally:
             request["pm_receipt"] = receipt.last_for_update(update_id)
             _write_json(request_path, request)

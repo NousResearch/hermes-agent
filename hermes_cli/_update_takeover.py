@@ -21,7 +21,7 @@ def prepare(request: dict) -> tuple[Path, dict[str, str]]:
     from pm.client import ensure_tools_for_sync, sync_venv, venv_is_current
     from pm.environments import activation_environment, install_state_dir, runtime_facts_path
     from hermes_cli._launchers import resolve_store_python
-    from hermes_cli.venv_sync import publish_launchers
+    from hermes_cli.venv_sync import publish_launchers, update_sync_extras
 
     correlation = request["update_id"]
     with receipt.worker_context(correlation):
@@ -35,6 +35,10 @@ def prepare(request: dict) -> tuple[Path, dict[str, str]]:
         # Repair preserves the old stamp. Changed source inputs instead need
         # an ordinary sync, which builds and validates a fresh generation too.
         repair = repair_marker.is_file() and venv_is_current(project_root=root)
+        if not repair:
+            # Repair restores the recorded graph and cannot add features; an
+            # ordinary sync carries the configured platforms' extras too (#122535).
+            extras = update_sync_extras(root, extras)
         # An update never fails because of a plugin: misfits are disabled and reported.
         sync_venv(None if repair else extras, explicit=True, project_root=root, repair=repair,
                   evict_incompatible_plugins=not repair)
@@ -91,7 +95,10 @@ def main() -> int:
     request["update_id"] = update_receipt.current_correlation_id()
     try:
         python, env = prepare(request)
-        request["receipt"] = update_receipt._current.get().data
+        receipt_state = update_receipt._current.get()
+        if receipt_state is None:
+            raise RuntimeError("update receipt context is missing; the handoff cannot record it")
+        request["receipt"] = receipt_state.data
         context.write_text(json.dumps(request), encoding="utf-8")
         # This file is new too. Direct execution bypasses normal launch-time
         # update liveness checks while the waiting parent still holds its lock.

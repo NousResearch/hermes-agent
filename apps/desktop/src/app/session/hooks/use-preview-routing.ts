@@ -1,9 +1,14 @@
 import type { GatewayEvent } from '@hermes/shared'
 import { useCallback } from 'react'
 
+import { translateNow } from '@/i18n'
+import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { gatewayEventCompletedFileDiff } from '@/lib/gateway-events'
-import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
+import { isLoopbackPreviewUrl, normalizeOrLocalPreviewTarget, openPreviewTargetInBrowser } from '@/lib/local-preview'
+import { previewOwnerIsAmbient } from '@/lib/preview-owner'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
+import { $alwaysExternalLinks } from '@/store/external-links'
+import { notifyError } from '@/store/notifications'
 import {
   $previewTabs,
   beginPreviewServerRestart,
@@ -88,8 +93,8 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
         const target = typeof url === 'string' ? url.trim() : ''
 
         if (target && (!event.session_id || sessionIsOnScreen(event.session_id))) {
-          void normalizeOrLocalPreviewTarget(target, $currentCwd.get() || currentCwd || undefined).then(
-            async resolved => {
+          void normalizeOrLocalPreviewTarget(target, $currentCwd.get() || currentCwd || undefined)
+            .then(async resolved => {
               if (!resolved) {
                 return
               }
@@ -101,9 +106,22 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
               const url = resolved.kind === 'url' ? await reachablePreviewUrl(resolved.url) : resolved.url
               const reached = url === resolved.url ? resolved : { ...resolved, label: resolved.label || target, url }
 
-              openPreview(renderedHtmlTarget(trimmedLabel ? { ...reached, label: trimmedLabel } : reached))
-            }
-          )
+              const preview = renderedHtmlTarget(trimmedLabel ? { ...reached, label: trimmedLabel } : reached)
+
+              const reachable = !(isDesktopFsRemoteMode() && isLoopbackPreviewUrl(resolved.url) && url === resolved.url)
+
+              if (
+                $alwaysExternalLinks.get() &&
+                previewOwnerIsAmbient(event.session_id) &&
+                reachable &&
+                (preview.kind === 'url' || preview.previewKind === 'html' || !isDesktopFsRemoteMode())
+              ) {
+                await openPreviewTargetInBrowser(preview, { sanitizeRemoteHtml: true })
+              } else {
+                openPreview(preview)
+              }
+            })
+            .catch(error => notifyError(error, translateNow('preview.unavailable')))
         }
 
         return

@@ -7,8 +7,10 @@
  *
  * Renderer-owned: it only decides where THIS machine's link clicks land. The
  * `storage` listener keeps every open window in step when one window flips it.
- * Explicit "Open in in-app browser" menu actions and agent-driven previews are
- * not link clicks and stay unaffected.
+ * Explicit "Open in in-app browser" menu actions stay in-app. Transcript
+ * preview attachments and agent-driven previews honor the preference when a
+ * local browser can reach the target; remote non-HTML files need the gateway-
+ * backed in-app pane instead.
  */
 
 import { atom } from 'nanostores'

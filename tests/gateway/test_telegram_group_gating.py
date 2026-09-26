@@ -4,8 +4,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 from gateway.config import Platform, PlatformConfig, load_gateway_config
-from gateway.platforms.event import MessageType
-from gateway.session import SessionSource
+from gateway.platforms.event import MessageEvent, MessageType
+from gateway.session import SessionSource, build_session_key
 
 import os
 
@@ -171,6 +171,63 @@ def _bot_command_entity(text, command):
     """
     offset = text.index(command)
     return SimpleNamespace(type="bot_command", offset=offset, length=len(command))
+
+
+def _message_event_from_group_message(message):
+    return MessageEvent(
+        text=message.text,
+        message_type=MessageType.TEXT,
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id=str(message.chat.id),
+            chat_type="group",
+            user_id=str(message.from_user.id),
+            user_name=message.from_user.full_name,
+        ),
+        raw_message=message,
+        message_id=str(message.message_id),
+        reply_to_message_id=(
+            str(message.reply_to_message.message_id)
+            if message.reply_to_message is not None
+            else None
+        ),
+    )
+
+
+async def _dispatch_event_during_active_session(adapter, event):
+    """Simulate handle_message while a same-session owner task is still running."""
+    adapter._busy_session_handler = None
+    adapter._busy_text_mode = "interrupt"
+    adapter._session_tasks = {}
+    adapter._background_tasks = set()
+    adapter._expected_cancelled_tasks = set()
+    adapter._topic_recovery_fn = None
+    adapter._owner_profile = None
+    adapter._text_debounce = {}
+    if not hasattr(adapter, "_busy_text_debounce_seconds"):
+        adapter._busy_text_debounce_seconds = 0.35
+
+    session_key = build_session_key(
+        event.source,
+        group_sessions_per_user=True,
+        thread_sessions_per_user=False,
+    )
+
+    async def _active_run():
+        await asyncio.sleep(10)
+
+    task = asyncio.create_task(_active_run())
+    adapter._session_tasks[session_key] = task
+    adapter._active_sessions[session_key] = asyncio.Event()
+    try:
+        await adapter.handle_message(event)
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    return session_key
 
 
 def test_unmentioned_group_messages_can_be_observed_without_dispatching():
@@ -1012,3 +1069,117 @@ def test_sibling_bot_explicit_mention_still_dispatches_and_is_not_observed():
     human = _group_message("hermes, hello")
     assert adapter._should_process_message(human) is True
     assert adapter._should_observe_unmentioned_group_message(human) is False
+
+
+def test_unmentioned_bot_reply_dropped_during_active_session():
+    """Active-session queueing must still honor require_mention (issue #54370).
+
+    A group message from another bot that replies to the user (not us) and does
+    not @mention us fails ``_should_process_message``. It must not enter
+    ``_pending_messages`` just because a same-session owner task is busy.
+
+    Why this is not closed twin #54709: that sweeper close argued cold *ingress*
+    already calls ``_should_process_message`` before building a ``MessageEvent``.
+    This test targets the *session* sink: ``handle_message`` while a session is
+    active. Production still reaches that sink without re-running
+    ``_gate_or_observe`` via text-batch flush, held-inbound redispatch, and
+    media/location ``handle_message`` calls. Current ``main`` has no
+    ``_should_dispatch_message_event`` hook (verified 2026-09-18).
+    """
+
+    async def _run():
+        adapter = _make_adapter(require_mention=True, bot_username="dev_bot")
+
+        message = _group_message(
+            "default bot reply",
+            chat_id=-100,
+            from_user_id=8810308684,
+            from_user_name="Default Bot",
+        )
+        message.from_user.is_bot = True
+        message.reply_to_message = SimpleNamespace(
+            message_id=41,
+            from_user=SimpleNamespace(id=123, is_bot=False),
+            text="user message",
+            caption=None,
+        )
+        assert adapter._should_process_message(message) is False
+
+        event = _message_event_from_group_message(message)
+        session_key = await _dispatch_event_during_active_session(adapter, event)
+
+        adapter._message_handler.assert_not_awaited()
+        assert session_key not in adapter._pending_messages
+
+    asyncio.run(_run())
+
+
+def test_addressed_group_messages_still_queue_during_active_session():
+    """Reply-to-bot and explicit @mention must still queue while a session is active."""
+
+    async def _run():
+        reply_adapter = _make_adapter(require_mention=True, bot_username="dev_bot")
+        reply_message = _group_message("replying to dev", reply_to_bot=True)
+        assert reply_adapter._should_process_message(reply_message) is True
+        reply_key = await _dispatch_event_during_active_session(
+            reply_adapter,
+            _message_event_from_group_message(reply_message),
+        )
+        assert reply_key in reply_adapter._pending_messages
+
+        mention_adapter = _make_adapter(require_mention=True, bot_username="dev_bot")
+        text = "@dev_bot please continue"
+        mention_message = _group_message(text, entities=[_mention_entity(text, "@dev_bot")])
+        assert mention_adapter._should_process_message(mention_message) is True
+        mention_key = await _dispatch_event_during_active_session(
+            mention_adapter,
+            _message_event_from_group_message(mention_message),
+        )
+        assert mention_key in mention_adapter._pending_messages
+
+    asyncio.run(_run())
+
+def test_unmentioned_human_dropped_during_active_session():
+    """Human chatter without @mention / reply must not queue while busy."""
+
+    async def _run():
+        adapter = _make_adapter(require_mention=True, bot_username="dev_bot")
+        message = _group_message("side chatter from a human")
+        assert adapter._should_process_message(message) is False
+        event = _message_event_from_group_message(message)
+        session_key = await _dispatch_event_during_active_session(adapter, event)
+        adapter._message_handler.assert_not_awaited()
+        assert session_key not in adapter._pending_messages
+
+    asyncio.run(_run())
+
+
+def test_internal_event_still_dispatches_during_active_session():
+    """Synthetic internal events bypass the Telegram mention re-gate."""
+
+    async def _run():
+        adapter = _make_adapter(require_mention=True, bot_username="dev_bot")
+        message = _group_message("internal wake")
+        event = _message_event_from_group_message(message)
+        event.internal = True
+        # Even without mention semantics, internal must queue.
+        session_key = await _dispatch_event_during_active_session(adapter, event)
+        assert session_key in adapter._pending_messages
+
+    asyncio.run(_run())
+
+
+def test_group_event_without_raw_message_fail_closed_during_active_session():
+    """Group events missing raw_message must not skip require_mention."""
+
+    async def _run():
+        adapter = _make_adapter(require_mention=True, bot_username="dev_bot")
+        message = _group_message("synthetic")
+        event = _message_event_from_group_message(message)
+        event.raw_message = None
+        session_key = await _dispatch_event_during_active_session(adapter, event)
+        adapter._message_handler.assert_not_awaited()
+        assert session_key not in adapter._pending_messages
+
+    asyncio.run(_run())
+

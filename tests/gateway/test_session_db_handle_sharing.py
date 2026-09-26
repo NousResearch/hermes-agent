@@ -156,3 +156,48 @@ def test_unavailable_store_handle_does_not_resurrect_a_second_open(store):
     assert runner._session_db_handles == {}, (
         "a duplicate handle was cached on the store's failure path"
     )
+
+
+def test_a_handle_the_registry_tore_down_is_reopened_through_the_registry(store, home):
+    """Profile unserve and delete force-close the profile's generation (``close_all_under``).
+
+    The store's cache kept serving that dead object. Its self-heal then reopened a writer the
+    registry does not know about, so the agent's ``acquire`` got a second writer on the same file,
+    and after a delete + recreate every call raised ``StateDbReplacedError`` until restart.
+    """
+    import hermes_state_registry as registry
+
+    profile = home / "profiles" / "work"
+    profile.mkdir(parents=True)
+    (profile / "config.yaml").write_text("{}\n", encoding="utf-8")
+    path = profile / "state.db"
+    first = store._open_session_db_for_active_scope(db_path=path)
+    first.create_session("before-unserve", source="telegram")
+    assert registry.close_all_under(profile) == 1
+
+    second = store._open_session_db_for_active_scope(db_path=path)
+
+    assert second is not first
+    second.create_session("after-unserve", source="telegram")
+    assert first._conn is None, "the torn-down handle was revived outside the registry"
+    acquired = registry.acquire(path)
+    try:
+        assert acquired is second, "one file, one writer: the agent must share the store's handle"
+    finally:
+        registry.release(acquired)
+
+
+def test_the_runner_wrapper_follows_the_reopened_store_handle(store, home):
+    """The runner caches an async wrapper around the store's handle; a torn-down inner handle must
+    not keep being served through it."""
+    import hermes_state_registry as registry
+
+    runner = _runner_with(store)
+    first = runner._open_session_db_for_active_scope()
+    assert first is not None and first._db is store._db
+    registry.close_all_under(home)
+
+    second = runner._open_session_db_for_active_scope()
+
+    assert second is not first
+    assert second._db is store._db and second._db is not first._db

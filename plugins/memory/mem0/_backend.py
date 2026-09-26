@@ -155,9 +155,21 @@ class OSSBackend(Mem0Backend):
             self._memory = Memory.from_config(config)
 
     @staticmethod
+    def _stale_collection_names(provider: str, collection_name: str) -> tuple[str, ...]:
+        """Every collection mem0 derives from ``collection_name``, including the entities one.
+
+        mem0 builds a second collection for entity-boosted search alongside the
+        configured one (``_entity_collection_name`` in ``mem0/memory/main.py``).
+        The separator mirrors that helper so the two stay in lockstep.
+        """
+        separator = "-" if provider == "s3_vectors" else "_"
+        return (collection_name, f"{collection_name}{separator}entities")
+
+    @staticmethod
     def _recreate_collection_if_dims_changed(provider: str, vs_config: dict, expected_dims: int) -> None:
-        """Delete stale vector collection when embedding dimensions change."""
+        """Delete stale vector collections when embedding dimensions change."""
         collection_name = vs_config.get("collection_name", "mem0")
+        names = OSSBackend._stale_collection_names(provider, collection_name)
         with suppress(Exception):
             if provider == "qdrant":
                 from qdrant_client import QdrantClient
@@ -169,15 +181,18 @@ class OSSBackend(Mem0Backend):
                 else:
                     return
                 with closing(client):
-                    if not client.collection_exists(collection_name):
-                        return
-                    vectors = client.get_collection(collection_name).config.params.vectors
-                    # Named-vector collections expose a dict; unnamed expose an object with .size.
-                    if isinstance(vectors, dict):
-                        vectors = next(iter(vectors.values()), None)
-                    current_dims = getattr(vectors, "size", None)
-                    if current_dims is not None and current_dims != expected_dims:
-                        client.delete_collection(collection_name)
+                    for name in names:
+                        # Per-collection guard: one collection failing must not skip the rest.
+                        with suppress(Exception):
+                            if not client.collection_exists(name):
+                                continue
+                            vectors = client.get_collection(name).config.params.vectors
+                            # Named-vector collections expose a dict; unnamed expose an object with .size.
+                            if isinstance(vectors, dict):
+                                vectors = next(iter(vectors.values()), None)
+                            current_dims = getattr(vectors, "size", None)
+                            if current_dims is not None and current_dims != expected_dims:
+                                client.delete_collection(name)
             elif provider == "pgvector":
                 import psycopg2
                 from psycopg2 import sql as pgsql
@@ -185,10 +200,13 @@ class OSSBackend(Mem0Backend):
                 with closing(psycopg2.connect(**conn_params)) as conn:
                     conn.autocommit = True
                     with closing(conn.cursor()) as cur:
-                        cur.execute("SELECT atttypmod FROM pg_attribute WHERE attrelid = %s::regclass AND attname = 'vector'", (collection_name,))
-                        row = cur.fetchone()
-                        if row and row[0] > 0 and row[0] != expected_dims:
-                            cur.execute(pgsql.SQL("DROP TABLE IF EXISTS {}").format(pgsql.Identifier(collection_name)))
+                        for name in names:
+                            # Per-collection guard: an absent table raises on ::regclass.
+                            with suppress(Exception):
+                                cur.execute("SELECT atttypmod FROM pg_attribute WHERE attrelid = %s::regclass AND attname = 'vector'", (name,))
+                                row = cur.fetchone()
+                                if row and row[0] > 0 and row[0] != expected_dims:
+                                    cur.execute(pgsql.SQL("DROP TABLE IF EXISTS {}").format(pgsql.Identifier(name)))
 
     def search(self, query: str, *, filters: dict, top_k: int = 10, rerank: bool = False) -> list[dict]:
         return _unwrap_results(self._memory.search(query, filters=filters, top_k=top_k))

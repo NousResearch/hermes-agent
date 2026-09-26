@@ -5,7 +5,6 @@ import hashlib
 
 import logging
 import re
-import sqlite3
 from contextlib import nullcontext
 
 from typing import Any, Dict, List, Optional, Tuple
@@ -306,8 +305,7 @@ def _db_flush_failed(agent, e: Exception, batch_rows: List[Dict[str, Any]], adop
     from hermes_state import StateDbCorruptError, StateDbReplacedError, classify_persistence_error, divert_session_transcript_jsonl
     from hermes_state_errors import CompressionSessionClosedError
     agent._last_persistence_error_cause = classify_persistence_error(e)
-    if getattr(e, "sqlite_errorcode", None) == getattr(sqlite3, "SQLITE_CONSTRAINT_FOREIGNKEY", 787) \
-            or "foreign key constraint" in str(e).lower():
+    if agent._last_persistence_error_cause == "session_row_missing":
         # The session row was removed under this live agent (`hermes sessions delete`, the Desktop/web
         # delete, bulk prune, a profile-repair move, an in-place store rebuild — none visible to the
         # cached agent, so the cached `_session_db_created` flag is stale and every later append hits

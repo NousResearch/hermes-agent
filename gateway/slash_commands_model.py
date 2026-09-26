@@ -413,9 +413,15 @@ class GatewayModelCommandsMixin:
         return bool(result.success)
 
     async def _model_listing_reply(
-        self, event: MessageEvent, ctx: _ModelSwitchContext, profile_home
+        self, event: MessageEvent, ctx: _ModelSwitchContext, profile_home, *, refresh: bool = False
     ) -> Optional[str]:
-        """``/model`` with no args: interactive picker where supported, else the text list."""
+        """``/model`` with no args: interactive picker where supported, else the text list.
+
+        ``refresh`` (the user typed ``--refresh``) is an explicit request for live data: the saved
+        custom endpoints get the probe a plain open withholds, like the TUI refresh path. Without
+        it the flag only dropped the disk cache, which collapsed every unprobed custom row to its
+        declared ``models:`` subset.
+        """
         from hermes_cli.model_switch import list_authenticated_providers
         from hermes_cli.providers import get_label
 
@@ -426,7 +432,8 @@ class GatewayModelCommandsMixin:
             # Chat `/model` is a read path: catalogs come from the disk cache and stale ones warm
             # in the background, and only the selected custom endpoint is probed live, so one
             # degraded provider can't stall the reply (#74003). Mirrors the GUI read path.
-            non_blocking_catalogs=True, probe_custom_providers=False, probe_current_custom_provider=True,
+            non_blocking_catalogs=True, probe_custom_providers=refresh,
+            probe_current_custom_provider=True,
         )
         adapter = self._delivery_adapter_for(ctx.source)
         if adapter is not None and getattr(type(adapter), "send_model_picker", None) is not None:
@@ -548,7 +555,8 @@ class GatewayModelCommandsMixin:
         ctx.read_config()
         ctx.apply_override(self._session_model_overrides.get(session_key, {}))
         if not request.target and not request.explicit_provider:
-            return await self._model_listing_reply(event, ctx, profile_home)
+            return await self._model_listing_reply(
+                event, ctx, profile_home, refresh=request.force_refresh)
         result, error = await self._perform_model_switch(ctx, request.target, request.explicit_provider, source)
         if error is not None:
             return error

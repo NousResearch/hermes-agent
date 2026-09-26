@@ -1,5 +1,6 @@
 """Regression tests for iterative context-summary continuity."""
 
+import json
 from unittest.mock import MagicMock, patch
 
 from agent.context_compressor import (
@@ -459,3 +460,39 @@ def test_empty_post_handoff_window_noops_without_summary_call():
     assert compressor._last_compress_aborted is False
     telemetry = compressor._last_compression_telemetry or {}
     assert telemetry.get("failure_class") == "empty_post_handoff_window"
+
+
+def test_back_to_back_compaction_never_drops_a_tool_round_unsummarized():
+    """A compaction that merged its summary into the tail's opening tool-call row must not cost
+    that tool round on the next compaction (overflow retry, preflight pass, manual /compress):
+    every tool result is either kept or handed to the summarizer, never silently discarded."""
+    compressor = ContextCompressor(model="test/model", config_context_length=64000, quiet_mode=True)
+    messages = []
+    for turn in range(6):
+        call_id = f"call_{turn}"
+        messages += [
+            {"role": "user", "content": f"turn {turn}: read file {turn}"},
+            {"role": "assistant", "content": "", "tool_calls": [{
+                "id": call_id, "type": "function",
+                "function": {"name": "read_file", "arguments": json.dumps({"path": f"/f{turn}.txt"})}}]},
+            {"role": "tool", "tool_call_id": call_id, "content": f"FILE-{turn}-BODY " + "lorem ipsum " * 1800},
+        ]
+        if turn < 5:
+            messages.append({"role": "assistant", "content": f"answer for turn {turn}"})
+    summarized_turns = []
+
+    def _summarize(turns, **kwargs):
+        summarized_turns.append(list(turns))
+        return "summary body"
+
+    with patch.object(compressor, "_generate_summary", side_effect=_summarize):
+        first = compressor.compress(messages, current_tokens=60000, force=True)
+        second = compressor.compress(first, current_tokens=60000, force=True)
+
+    kept = {m.get("tool_call_id") for m in second if m.get("role") == "tool"}
+    summarized = {m.get("tool_call_id") for m in summarized_turns[-1] if m.get("role") == "tool"}
+    for call_id in (m.get("tool_call_id") for m in first if m.get("role") == "tool"):
+        assert call_id in kept or call_id in summarized, call_id
+    # The summarizer sees each folded result together with the call that produced it.
+    summarized_calls = {tc["id"] for m in summarized_turns[-1] for tc in m.get("tool_calls") or ()}
+    assert summarized <= summarized_calls

@@ -468,7 +468,17 @@ class MicroCompactionMixin:
         # it has MICRO_COMPACT_MARKER_KEY (provably absorbed); a batch marker holds MORE history.
         stale = [i for i, m in enumerate(result) if _is_micro_marker(m)][:-1] if supersede else []
         if stale:
-            result = self._merge_adjacent_user_turns([m for i, m in enumerate(result) if i not in stale])
+            kept = []
+            for i, m in enumerate(result):
+                # Only the summary part is in the rolling summary: a batch carrier merged into a
+                # live row (prior text, a tool call with its results after it) keeps that row.
+                live = cc.ContextCompressor._strip_context_summary_handoff_message(m) if i in stale else m
+                if live is not m and live is not None:
+                    live.pop(cc._DB_PERSISTED_MARKER, None)
+                    live.pop("_row_id", None)
+                if live is not None:
+                    kept.append(live)
+            result = self._merge_adjacent_user_turns(kept)
 
         # Deliberately no _strip_persistence_markers: micro archives in place under the same session
         # id, so stamps stay accurate and a failed archive keeps the append-only flush idempotent.

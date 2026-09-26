@@ -877,6 +877,115 @@ class PluginContext:
         ``pattern=`` or you swallow the core button flows."""
         self.register_platform_handler("telegram", factory)
 
+    # -- background service registration ------------------------------------
+
+    @_serialized_replacement
+    def register_background_service(
+        self,
+        name: str,
+        label: str,
+        service_factory: Callable,
+        check_fn: Callable,
+        validate_config: Callable | None = None,
+        required_env: list | None = None,
+        install_hint: str = "",
+        **entry_kwargs: Any,
+    ) -> Optional[PluginRegistration]:
+        """Register a long-running gateway background service.
+
+        Background services differ from platform adapters: they observe an
+        external event source (notification queue, file watcher, webhook
+        endpoint) and emit gateway-internal events rather than handling
+        user-to-agent messages directly. Examples: Nextcloud notification
+        poller, WebDAV file sync watcher, RSS feed monitor.
+
+        The ``service_factory`` callable receives ``(config_dict, gateway_runner)``
+        and returns an instance exposing ``async start()`` and ``async stop()``
+        methods. The authoritative lifecycle contract (start reports success
+        by completing — ``return None`` counts as started, only ``return
+        False`` or a raised exception counts as failed; start is
+        transactional and both calls are bounded) lives in
+        ``gateway/run_services.py``; see the bundled service plugins under
+        ``plugins/services/`` for reference implementations.
+
+        Registrations follow the same profile-scoped ownership protocol as
+        :meth:`register_platform`: the entry is registered under this
+        manager's scope key, the displaced predecessor is snapshotted, and
+        the returned handle lets plugin unload/reload CAS-restore it. Two
+        profile scopes registering the same service name never overwrite
+        each other.
+
+        After registration, the service is wired up by the gateway during
+        startup whenever ``services.<name>.enabled`` is True in config.yaml.
+
+        Args:
+            name: stable service key (snake_case). Used in
+                ``services.<name>`` in config.yaml.
+            label: human-readable name shown in logs and the dashboard.
+            service_factory: callable ``(cfg_dict, gateway_runner) -> service``.
+            check_fn: returns True when dependencies are importable. Called
+                before instantiation; on False the gateway logs the install
+                hint and skips creation.
+            validate_config: optional callable ``(cfg_dict) -> bool`` invoked
+                after ``enabled`` is verified by the caller. Use this for
+                deeper checks like "required keys present in extra".
+            required_env: list of env-var names the service needs. Stored on
+                the registry entry for diagnostics; not yet surfaced in any
+                config UI.
+            install_hint: shown when ``check_fn`` returns False
+                (e.g. ``pip install httpx``).
+            **entry_kwargs: forwarded to ``BackgroundServiceEntry`` for any
+                future fields (e.g. dashboard metadata).
+
+        Returns:
+            The ownership :class:`PluginRegistration` handle, or ``None``
+            when the registration did not land exactly (a concurrent writer
+            displaced it).
+
+        Example::
+
+            ctx.register_background_service(
+                name="nextcloud_notifications",
+                label="Nextcloud Notifications",
+                service_factory=lambda cfg, gw: NextcloudNotificationService(cfg, gw),
+                check_fn=lambda: True,
+            )
+        """
+        from gateway.service_registry import (
+            service_registry,
+            BackgroundServiceEntry,
+        )
+
+        entry_kwargs.setdefault("plugin_name", self.manifest.name)
+        entry = BackgroundServiceEntry(
+            name=name,
+            label=label,
+            service_factory=service_factory,
+            check_fn=check_fn,
+            validate_config=validate_config,
+            required_env=required_env or [],
+            install_hint=install_hint,
+            source="plugin",
+            **entry_kwargs,
+        )
+        scope = self._manager.scope_key
+        previous = service_registry.snapshot_registration(name, scope=scope)
+        service_registry.register(entry, scope=scope)
+        current = service_registry.snapshot_registration(name, scope=scope)
+        if current[0] is not entry or current[1] is not None:
+            return None
+        self._manager._plugin_service_names.add(name)
+        handle = self._manager._track_scoped_registration(
+            self.manifest, "background_service", name, service_registry, current, previous,
+            finalize=lambda: self._manager._remove_service_name_if_unowned(name),
+        )
+        logger.debug(
+            "Plugin %s registered background service: %s",
+            self.manifest.name,
+            name,
+        )
+        return handle
+
     @_serialized_replacement
     def register_auxiliary_task(
         self, key: str, *, display_name: str, description: str,
@@ -1207,6 +1316,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._middleware: Dict[str, List[Callable]] = {}
         self._plugin_tool_names: Set[str] = set()
         self._plugin_platform_names: Set[str] = set()
+        self._plugin_service_names: Set[str] = set()
         self._cli_commands: Dict[str, dict] = {}
         self._plugin_commands: Dict[str, dict] = {}
         self._system_prompt_sections: Dict[str, PluginSystemPromptSection] = {}

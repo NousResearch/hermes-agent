@@ -3759,6 +3759,13 @@ class GatewayRunner(
         self._scale_to_zero_no_suspend_logged: bool = False
         self._scale_to_zero_direct_platform_logged: bool = False
 
+        # Registered background services (see plugins/services/ and
+        # gateway/service_registry.py). Lifecycle (bounded, transactional
+        # start/stop) is owned by gateway/run_services.py — wired up at
+        # startup after platforms are connected; stopped before adapters in
+        # shutdown so they don't try to deliver during teardown.
+        self.services: Dict[str, Any] = {}
+
     def _open_session_db_for_active_scope(self, raise_on_error: bool = False) -> Any:
         """AsyncSessionDB for the active profile scope, resolved per access (not in ``__init__``) since
         ``SessionDB()`` reads the context-local HERMES_HOME; one handle cached per path. Construction

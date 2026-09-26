@@ -2742,6 +2742,33 @@ class TestReactions:
         # Message ID should be cleaned up
         assert "1234567890.000001" not in adapter._reacting_message_ids
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("outcome_name, final_key", [("SUCCESS", "reaction_ok"),
+                                                         ("FAILURE", "reaction_fail")])
+    async def test_configured_reaction_emoji_drive_lifecycle(self, adapter, outcome_name, final_key):
+        """extra.reaction_* replace the lifecycle emoji; the ack added on start is the one removed."""
+        from gateway.platforms.base import SessionSource
+        from gateway.platforms.event import MessageType, ProcessingOutcome
+        from gateway.config import Platform
+
+        adapter.config.extra.update(
+            {"reaction_ack": ":hourglass:", "reaction_ok": "tada", "reaction_fail": "boom"})
+        adapter._app.client.reactions_add = AsyncMock()
+        adapter._app.client.reactions_remove = AsyncMock()
+        adapter._reacting_message_ids.add(adapter._workspace_message_marker("", "111.222"))
+        msg_event = MessageEvent(
+            text="hello", message_type=MessageType.TEXT, message_id="111.222",
+            source=SessionSource(platform=Platform.SLACK, chat_id="C123", chat_type="dm",
+                                 user_id="U_USER"))
+
+        await adapter.on_processing_start(msg_event)
+        await adapter.on_processing_complete(msg_event, ProcessingOutcome[outcome_name])
+
+        added = [c.kwargs["name"] for c in adapter._app.client.reactions_add.call_args_list]
+        removed = [c.kwargs["name"] for c in adapter._app.client.reactions_remove.call_args_list]
+        assert added == ["hourglass", adapter.config.extra[final_key]]
+        assert removed == [added[0]]
+
 
 # ---------------------------------------------------------------------------
 # TestThreadReplyHandling

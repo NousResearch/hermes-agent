@@ -143,6 +143,19 @@ class TestMaintainPackHealth:
 
         _maintain_pack_health(str(tmp_path / "not-a-repo"))  # must not raise
 
+    def test_partial_clone_never_rewrites_promisor_packs(self, repo, monkeypatch):
+        from hermes_cli import worktree_ops
+
+        _git(repo, "config", "remote.origin.promisor", "true")
+        monkeypatch.setattr(worktree_ops, "_PACK_SPRAWL_THRESHOLD", 0)
+        runs: list[str] = []
+        monkeypatch.setattr(worktree_ops, "_run_bounded_repack", lambda root: runs.append(root))
+
+        worktree_ops._maintain_pack_health(str(repo))
+
+        assert runs == [], "promisor packs must never enter Hermes' generic geometric repack"
+        assert not (repo / ".git" / "hermes-repack.lock").exists()
+
 
 class TestRepackStampede:
     """Regression for the Sep 2026 shared-clone incident: every ``hermes -w`` launch started its

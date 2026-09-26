@@ -193,6 +193,14 @@ def _maintain_pack_health(repo_root: str) -> None:
         packs = len(list(pack_dir.glob("*.pack")))
         if packs < _PACK_SPRAWL_THRESHOLD:
             return
+        # Rewriting a promisor object store is not a safe generic maintenance
+        # operation. In affected Git builds it can lose .promisor provenance;
+        # even current Git rejects this geometric repack on partial clones.
+        promisor = _git(["config", "--bool", "--get", "remote.origin.promisor"],
+                        repo_root, timeout=5)
+        if promisor.returncode == 0 and promisor.stdout.strip().lower() == "true":
+            logger.debug("partial clone uses promisor packs; skipping pack rewrite")
+            return
         if not _claim_repack_slot(pack_dir.parent.parent):
             return
         from hermes_cli.gitlock import clear_stale_tmp_packs

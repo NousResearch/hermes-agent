@@ -508,7 +508,7 @@ stage_repository() {
             label="Cloning $REPO_URL ($BRANCH) into $INSTALL_DIR"
             [ "$attempt" = 1 ] || label="$label (attempt $attempt of 3)"
             if run_logged "$label" git clone ${progress[@]+"${progress[@]}"} \
-                --filter=tree:0 --branch "$BRANCH" "$REPO_URL" "$staged/tree"; then
+                -c gc.auto=0 -c maintenance.auto=false --filter=tree:0 --branch "$BRANCH" "$REPO_URL" "$staged/tree"; then
                 cloned=true
                 break
             fi
@@ -520,7 +520,7 @@ stage_repository() {
             # graph alone, then retry materializing the tree separately.
             log_warn "direct clone failed; trying deferred checkout"
             if run_logged "Cloning history" git clone ${progress[@]+"${progress[@]}"} \
-                --filter=tree:0 --no-checkout --branch "$BRANCH" "$REPO_URL" "$staged/tree"; then
+                -c gc.auto=0 -c maintenance.auto=false --filter=tree:0 --no-checkout --branch "$BRANCH" "$REPO_URL" "$staged/tree"; then
                 for attempt in 1 2; do
                     if run_logged "Checking out files (attempt $attempt of 2)" \
                         git -C "$staged/tree" reset --hard HEAD; then

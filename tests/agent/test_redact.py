@@ -3,6 +3,7 @@
 import ast
 import logging
 import time
+from pathlib import Path
 
 import pytest
 
@@ -1613,3 +1614,37 @@ class TestRedactForEgress:
         from agent import redact as R
         monkeypatch.setattr(R, "redact_sensitive_text", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
         assert R.redact_for_egress("sk-live-0123456789abcdef") == R.REDACTION_UNAVAILABLE
+
+
+class TestExactAppliedSecretValues:
+    """Exact-value pass (#77162): shape-based rules cannot see an opaque value applied from an
+    external secret source under a non-credential name, so the applied bytes themselves are matched."""
+
+    @pytest.fixture()
+    def _source_value(self):
+        from hermes_cli import env_loader
+        from hermes_constants import get_hermes_home
+
+        home = str(Path(get_hermes_home()).resolve())
+        env_loader._SECRET_SOURCE_VALUES_BY_HOME[home] = {"DATABASE_URL": "pg-prod-9f2c1a77be4d3051"}
+        yield "pg-prod-9f2c1a77be4d3051"
+        env_loader._SECRET_SOURCE_VALUES_BY_HOME.pop(home, None)
+
+    def test_arbitrary_secret_source_value_masked(self, _source_value):
+        out = redact_sensitive_text(f"connecting to {_source_value} now", force=True)
+        assert _source_value not in out
+        assert "***" in out
+
+    def test_credential_suffixed_env_value_masked(self, monkeypatch):
+        monkeypatch.setenv("MY_SERVICE_TOKEN", "mw-opaque-token-4471bde2")
+        out = redact_sensitive_text("upstream rejected mw-opaque-token-4471bde2", force=True)
+        assert "mw-opaque-token-4471bde2" not in out
+
+    def test_opt_out_passes_value_through_when_not_forced(self, _source_value, monkeypatch):
+        monkeypatch.setattr("agent.redact._redact_enabled", lambda: False)
+        out = redact_sensitive_text(f"connecting to {_source_value} now")
+        assert _source_value in out
+
+    def test_short_value_is_never_masked(self, monkeypatch):
+        monkeypatch.setenv("MODE_KEY", "prod9")
+        assert redact_sensitive_text("running in prod9 mode", force=True) == "running in prod9 mode"

@@ -860,11 +860,12 @@ class BatchRunner:
 def _split_csv(value: Any) -> Optional[List[str]]:
     """Comma-separated CLI value to a list of stripped items; ``None`` when empty.
 
-    fire literal-evaluates flags: an unquoted ``a,b`` already arrives as a tuple."""
+    fire literal-evaluates flags: an unquoted ``a,b`` already arrives as a tuple, while
+    ``a, ,b`` stays a string, so blank items are dropped rather than sent as provider ""."""
     if not value:
         return None
     items = value if isinstance(value, (list, tuple)) else str(value).split(",")
-    return [str(p).strip() for p in items]
+    return [s for s in (str(p).strip() for p in items) if s] or None
 
 
 def main(

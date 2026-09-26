@@ -25,10 +25,10 @@ def test_cli_values_reach_the_runner_as_documented(monkeypatch):
     fire.Fire(batch_runner.main, command=[
         "--dataset_file=d.jsonl", "--batch_size=1", "--run_name=20260926",
         "--providers_allowed=anthropic,openai", "--providers_ignored=together, deepinfra",
-        "--providers_order=anthropic",
+        "--providers_order=anthropic, ,openai",
     ])
 
     assert captured["providers_allowed"] == ["anthropic", "openai"]
     assert captured["providers_ignored"] == ["together", "deepinfra"]
-    assert captured["providers_order"] == ["anthropic"]
+    assert captured["providers_order"] == ["anthropic", "openai"]
     assert captured["run_name"] == "20260926"

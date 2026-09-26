@@ -14,6 +14,7 @@ import {
   type DesktopPickerId,
   desktopSlashUnavailableMessage,
   isDesktopSlashCommand,
+  isSkillsWriteApprovalCommand,
   resolveDesktopCommand
 } from '@/lib/desktop-slash-commands'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
@@ -265,7 +266,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
         const { render: renderSlashOutput, sessionId, storedSessionId } = resolved
 
-        if (!isDesktopSlashCommand(name)) {
+        if (!isDesktopSlashCommand(name) && !isSkillsWriteApprovalCommand(`/${name}`, arg)) {
           renderSlashOutput(desktopSlashUnavailableMessage(name) || `/${name} is not available in the desktop app.`)
 
           return
@@ -1296,6 +1297,13 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
         switch (surface?.kind) {
           case 'unavailable': {
+            // `/skills` hub browsing is sidebar-owned, but the write-approval
+            // review subcommands have no sidebar surface — run them on the
+            // backend like `/memory` so staged writes are never stranded.
+            if (isSkillsWriteApprovalCommand(`/${name}`, arg)) {
+              return runExec(ctx)
+            }
+
             const resolved = await withSlashOutput(ctx)
             resolved?.render(desktopSlashUnavailableMessage(name) || `/${name} is not available in the desktop app.`)
 

@@ -567,6 +567,39 @@ export function isDesktopSlashCommand(command: string): boolean {
   return isDesktopSlashExtensionCommand(command)
 }
 
+/**
+ * First words of `/skills` the desktop sidebar has no surface for: the
+ * write-approval review subcommands (pending/approve/reject/diff/approval).
+ * `/skills` itself is sidebar-owned (`desktop="settings"` on the Python
+ * registry), so without this carve-out the review invocations dead-end on
+ * "managed from the desktop sidebar" and staged writes are stranded (#123315).
+ * Mirrors the CLI's review-words interception
+ * (`hermes_cli/cli_commands_mixin.py::_handle_skills_command`) so both stay in
+ * sync — `/memory` needs no carve-out because it already resolves to `exec`.
+ */
+const SKILLS_WRITE_APPROVAL_SUBCOMMANDS: ReadonlySet<string> = new Set([
+  'pending',
+  'approve',
+  'apply',
+  'reject',
+  'deny',
+  'drop',
+  'diff',
+  'approval',
+  'mode'
+])
+
+/** True when the invocation is a `/skills` write-approval review, which runs
+ * on the backend via `exec` instead of the sidebar dead-end. Bare `/skills`
+ * (hub browsing) stays sidebar-owned. */
+export function isSkillsWriteApprovalCommand(command: string, arg = ''): boolean {
+  if (canonicalDesktopSlashCommand(command) !== '/skills') {
+    return false
+  }
+
+  return SKILLS_WRITE_APPROVAL_SUBCOMMANDS.has(arg.trim().split(/\s+/, 1)[0]?.toLowerCase() ?? '')
+}
+
 /** Gates discovery in the popover/completions. */
 export function isDesktopSlashSuggestion(command: string): boolean {
   return isDesktopSlashSuggestionWithOptions(command, {})

@@ -14,6 +14,7 @@ import {
   isDesktopSlashSuggestionWithOptions,
   isModelPickerCommand,
   isPickerCommand,
+  isSkillsWriteApprovalCommand,
   rankSkillCommands,
   rememberDesktopCommandsCatalog,
   resolveDesktopCommand,
@@ -403,5 +404,26 @@ describe('registry-derived block-list (contract with hermes_cli/commands.py)', (
         expect(isDesktopSlashCommand(name)).toBe(false)
       }
     }
+  })
+
+  it('routes /skills write-approval review to the backend, hub browsing stays sidebar-owned (#123315)', () => {
+    // Control: /skills itself is sidebar-owned (registry desktop="settings").
+    expect(resolveDesktopCommand('/skills')?.surface).toEqual({
+      kind: 'unavailable',
+      reason: 'settings'
+    })
+    expect(isSkillsWriteApprovalCommand('/skills', '')).toBe(false)
+
+    for (const sub of ['pending', 'approve abc123', 'APPROVE abc123', 'reject all', 'diff abc123', 'approval on']) {
+      expect(isSkillsWriteApprovalCommand('/skills', sub), `/skills ${sub}`).toBe(true)
+    }
+
+    for (const sub of ['search foo', 'browse', 'inspect foo', 'install foo', 'list', '']) {
+      expect(isSkillsWriteApprovalCommand('/skills', sub), `/skills ${sub}`).toBe(false)
+    }
+
+    // Other commands never match, even with an approval-shaped arg.
+    expect(isSkillsWriteApprovalCommand('/memory', 'approve abc123')).toBe(false)
+    expect(isSkillsWriteApprovalCommand('/skillsx', 'pending')).toBe(false)
   })
 })

@@ -590,6 +590,42 @@ def _stage_first_contact_onboarding_note(session: dict, agent, history_empty: bo
         logger.debug("first-contact onboarding note failed", exc_info=True)
 
 
+def _history_after_admission(session: dict, st: _TurnRun, canonical_id: str) -> list:
+    """Refresh the model projection while AIAgent owns the durable turn lease.
+
+    The early Desktop snapshot is only provisional. Compare addressed active rows
+    to preserve live-only payloads; exclude this turn's staged row before repair.
+    A read failure is fatal here, never permission to run on stale memory.
+    """
+    from agent.history_reconciliation import reconcile_model_history
+
+    db = st.agent._session_db
+    pending = getattr(st.agent, "_pending_cli_user_message", None)
+    own = _message_row_id(pending) if isinstance(pending, dict) else None
+    with session["history_lock"]:
+        if own is not None:
+            rows = db.get_messages(canonical_id)
+            if not any(row.get("id") == own for row in rows):
+                # Compaction can clone the staged input with a new address. Reuse
+                # the store's exact timestamp/content clone identity, never text alone.
+                from agent.session_persistence import _durable_content
+                key = db._exact_replayed_user_clone_key(
+                    pending.get("timestamp"), _durable_content(pending.get("content")))
+                clones = [row for row in rows if row.get("role") == "user" and key is not None
+                          and db._exact_replayed_user_clone_key(row.get("timestamp"), row.get("content")) == key]
+                if len(clones) != 1:
+                    raise RuntimeError("staged input changed during admission; reload the session")
+                own = clones[0]["id"]
+                pending["_row_id"] = own
+        durable = db.get_messages_as_conversation(
+            canonical_id, repair_alternation=True, include_row_ids=True,
+            exclude_row_ids={own} if own is not None else None)
+        context = reconcile_model_history(durable, session.get("history") or [])
+        st.history = context
+        st.history_version = int(session.get("history_version", 0))
+        return context
+
+
 def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images: list[str]):
     """Bind scopes, sync the agent, snapshot history, build the run message; returns
     ``(prompt, run_message, cols, streamer)`` or None when @-expansion was refused.
@@ -721,6 +757,8 @@ def _invoke_agent(
         run_params = {}
     if "task_id" in run_params:
         run_kwargs["task_id"] = session["session_key"]
+    if "conversation_history_loader" in run_params:
+        run_kwargs["conversation_history_loader"] = lambda key: _history_after_admission(session, st, key)
     if display_kind and "persist_user_display_kind" in run_params:
         run_kwargs["persist_user_display_kind"] = display_kind
     if display_metadata and "persist_user_display_metadata" in run_params:

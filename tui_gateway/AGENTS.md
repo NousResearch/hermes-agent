@@ -49,6 +49,15 @@ New question for the user = `_ask("<method>", sid, params, timeout)` in the emit
 and a `server_request(...)` in `contracts/server_requests.py`.
 New event = `event("<type>", Payload)` in `contracts/events.py`; the emitter is checked against it.
 
+## Model-history admission
+
+Desktop's early history snapshot is provisional. `_history_after_admission` runs
+under the native turn lease, reads only the active canonical context and reconciles
+row-addressed model payloads without flattening unchanged images. Exclude the exact
+already-staged input before alternation repair; after compaction, retarget it only
+by the store's exact timestamp/content clone identity. Unknown or ambiguous identity
+fails closed. Update the local history/version baseline together under `history_lock`.
+
 ## Profile scope in RPC methods
 
 One `serve` process may host sessions from several profile homes (Desktop pooled backends launch

@@ -56,6 +56,14 @@ truth: `chat.*Stream` speaks STANDARD markdown, not mrkdwn; `stopStream.markdown
 `startStream`/`stopStream` are Tier 2 (~20/min). Check `draft_stream_is_message is True` —
 MagicMock adapters in older tests auto-create truthy attributes.
 
+## API run history ownership
+
+Session-backed `/v1/runs` histories are loaded through the native under-lease
+history callback, not trusted from the request-queue snapshot. Explicit request
+histories and response-store chains remain caller-owned even after contention.
+The admission reader must propagate storage failures rather than return an empty
+best-effort display transcript.
+
 ## Background process notifications
 
 `terminal(background=true, notify_on_complete=true)` starts a gateway watcher that detects

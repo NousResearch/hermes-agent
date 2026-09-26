@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +19,17 @@ from hermes_cli._launchers import expose_cli
 from pm.paths import install_root
 
 logger = logging.getLogger(__name__)
+
+# How many ``.env.bak-*`` siblings a migration leaves in the home root. The
+# copies carry the whole secrets file in plaintext, so they are bounded like
+# config_backups' per-reason keep rather than accumulating one per migration
+# (#124381).
+ENV_BACKUP_KEEP = 3
+
+# The stamp form ``_backup_path`` writes: ``.env.bak-20250101T120000Z`` plus the
+# optional ``.<index>`` suffix it adds when that stamp already exists this
+# second. Hand-named siblings are not this shape and are never pruned.
+_ENV_BAK_STAMP_RE = re.compile(r"\.env\.bak-\d{8}T\d{6}Z(\.\d+)?")
 
 
 
@@ -58,6 +70,38 @@ def _restore_backups(backups: dict) -> list:
     return restored
 
 
+def _prune_stale_env_backups(env_path: Path, keep: int = ENV_BACKUP_KEEP) -> None:
+    """Bound the plaintext ``.env.bak-*`` copies a migration leaves behind.
+
+    ``.env`` holds secrets, and ``step_migrate_config`` copies it verbatim on
+    every schema migration (same stamp as the ``config.yaml`` backup, so a
+    migration advances both or neither). Unlike ``config.yaml`` copies —
+    which :mod:`hermes_cli.config_backups` bounds per reason — these siblings
+    skip that mechanism and accumulated without limit, one plaintext copy of
+    the whole secrets file per migration, in the home root (where
+    ``backups/`` exclusion does not reach).
+
+    Only the migration's own stamp form (``.env.bak-<YYYYMMDDTHHMMSSZ>``) is
+    bounded: a hand-named sibling (``.env.bak-before-migration``) is the
+    user's and never enters the count or the deletion. Called only once the
+    copy is no longer needed for rollback (the migration either verified its
+    advance or restored from it), so the rollback window is untouched. Never
+    raises: a failed unlink must not turn a successful migration into a
+    failed boot.
+    """
+    try:
+        stale = sorted(
+            (p for p in env_path.parent.glob(f"{env_path.name}.bak-*")
+             if p.is_file() and _ENV_BAK_STAMP_RE.fullmatch(p.name)),
+            key=lambda p: p.name,
+            reverse=True,  # newest first; the stamp sorts lexicographically
+        )
+        for expired in stale[keep:]:
+            expired.unlink(missing_ok=True)
+    except OSError as exc:
+        logger.debug("could not prune stale %s backups: %s", env_path.name, exc)
+
+
 def step_migrate_config() -> dict:
     """Migrate config.yaml to the current schema, non-interactively.
 
@@ -90,15 +134,18 @@ def step_migrate_config() -> dict:
         migrate_config(interactive=False, quiet=True)
     except Exception:
         _restore_backups(backups)
+        _prune_stale_env_backups(get_env_path())
         raise
     post_ver, _ = check_config_version()
     if post_ver < latest_ver:
         restored = _restore_backups(backups)
+        _prune_stale_env_backups(get_env_path())
         raise RuntimeError(
             f"migration did not advance config version to {latest_ver} "
             f"(still {post_ver}); restored: "
             + (", ".join(str(p) for p in restored) if restored else "none")
         )
+    _prune_stale_env_backups(get_env_path())
     return {"ok": True, "migrated": f"{current_ver}->{latest_ver}"}
 
 

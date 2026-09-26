@@ -94,6 +94,10 @@ def _is_sensitive_path(path: Path) -> bool:
     insensitive) is a credential directory. Read-side guard (list/read/
     download); the write endpoints are a separate threat class.
 
+    The managed-files surfaces (``/api/files*``) use this directly. The
+    workspace browser (``/api/fs*``) goes through :func:`_fs_sensitive_blocked`,
+    which additionally lets project ``.env*`` files through (see #121755).
+
     Read-side only: this guards list/read/download (the #57505 exfil surface). The write endpoints
     (upload/mkdir/delete) are a separate threat class handled by the write-path checks; extending this guard
     to them is out of scope for this fix.
@@ -101,6 +105,45 @@ def _is_sensitive_path(path: Path) -> bool:
     if _is_sensitive_filename(path.name):
         return True
     return any(part.lower() in _SENSITIVE_MANAGED_DIR_NAMES for part in path.parts)
+
+
+def _is_env_basename(name: str) -> bool:
+    """True for project environment files: ``.env`` / ``.env.<suffix>`` / ``.envrc``.
+
+    Same spelling as :func:`_is_sensitive_filename`'s env branch, split out so
+    the ``/api/fs`` guard can exempt exactly this basename class and nothing else."""
+    lowered = name.lower()
+    return lowered == ".env" or lowered.startswith(".env.") or lowered == ".envrc"
+
+
+def _fs_sensitive_blocked(target: Path) -> bool:
+    """Read-side sensitive guard for the ``/api/fs`` workspace browser.
+
+    Project ``.env*`` files are normal project content: the Desktop remote tree
+    lists directories through ``/api/fs/list`` and opens files through
+    ``/api/fs/read-text``, so filtering them server-side makes them silently
+    vanish with no client control able to bring them back (#121755). They are
+    let through here UNLESS they sit under ``HERMES_HOME`` (the gateway's own
+    ``.env`` is credential material, #57505) or inside a credential directory
+    (``mcp-tokens/``, ``pairing/``). Every other sensitive entry (``auth.json``,
+    ``config.yaml``, ...) stays blocked everywhere, and the managed-files
+    surfaces (``/api/files*``) keep the unscoped :func:`_is_sensitive_path`.
+    """
+    if not _is_sensitive_path(target):
+        return False
+    if _is_env_basename(target.name) and not any(
+        part.lower() in _SENSITIVE_MANAGED_DIR_NAMES for part in target.parts
+    ):
+        try:
+            home = Path(get_hermes_home()).resolve(strict=False)
+        except (OSError, RuntimeError):
+            return True
+        # ponytail: resolved-prefix match only; a symlinked project .env pointing
+        # into HERMES_HOME still opens. Acceptable: the caller is authenticated and
+        # can already read any non-denied path through this same browser.
+        if home not in target.parents:
+            return False
+    return True
 
 
 _FS_TEXT_SOURCE_MAX_BYTES = 64 * 1024 * 1024
@@ -169,7 +212,7 @@ def _fs_regular_file(path: Path) -> tuple[Path, os.stat_result]:
         raise HTTPException(status_code=400, detail="Path points to a directory")
     if not stat.S_ISREG(st.st_mode):
         raise HTTPException(status_code=400, detail="Only regular files can be read")
-    if _is_sensitive_path(target):
+    if _fs_sensitive_blocked(target):
         raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
     return target, st
 
@@ -621,7 +664,7 @@ async def fs_list(path: str):
         entries = []
         with os.scandir(target) as scan:
             for entry in scan:
-                if entry.name in _FS_READDIR_HIDDEN or _is_sensitive_path(Path(entry.path)):
+                if entry.name in _FS_READDIR_HIDDEN or _fs_sensitive_blocked(Path(entry.path)):
                     continue
                 entries.append({
                     "name": entry.name,

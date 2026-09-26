@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from hermes_cli.web_server import MoaConfigPayload, MoaModelSlot, MoaPresetPayload, set_moa_models
+from hermes_cli.web_models import MoaConfigPayload, MoaModelSlot, MoaPresetPayload
+from hermes_cli.web_routers.models import set_moa_models
 
 
 def _base_payload(**overrides) -> MoaConfigPayload:
@@ -60,15 +61,15 @@ class TestSetMoaModelsPreservesUndeclaredKeys:
         def fake_load_config():
             return dict(existing_cfg)  # shallow copy
 
-        def fake_save_config(cfg):
+        def fake_save_config(cfg, **_kwargs):
             saved_cfg.update(cfg)
 
         payload = _base_payload()
 
         with (
-            patch("hermes_cli.web_server.load_config", side_effect=fake_load_config),
-            patch("hermes_cli.web_server.save_config", side_effect=fake_save_config),
-            patch("hermes_cli.web_server._profile_scope"),
+            patch("hermes_cli.config.load_config", side_effect=fake_load_config),
+            patch("hermes_cli.config.save_config", side_effect=fake_save_config),
+            patch("hermes_cli.web_server_profiles._profile_scope"),
         ):
             set_moa_models(payload)
 
@@ -81,3 +82,36 @@ class TestSetMoaModelsPreservesUndeclaredKeys:
         )
 
 
+
+
+def test_moa_save_writes_only_the_moa_section(tmp_path, monkeypatch):
+    """#89184: a MoA autosave must not re-persist the rest of the effective-config snapshot.
+
+    ``load_config()`` is a default-expanded snapshot; saving it whole after a chain was written
+    out-of-band (or was simply stale) rewrote ``fallback_providers`` too. Real config pipeline,
+    temp HERMES_HOME.
+    """
+    import hermes_yaml as yaml
+    from hermes_cli.config import get_config_path, load_config, read_raw_config
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    get_config_path().write_text(yaml.safe_dump({"model": {"default": "m1", "provider": "custom"}}), encoding="utf-8")
+    stale = load_config()                       # snapshot BEFORE the chain exists
+    stale["fallback_providers"] = []            # what the default-expanded snapshot carries
+    chain = [{"provider": "custom", "model": "glm-5.08", "base_url": "http://gw:8080/v1"}]
+    raw = read_raw_config()
+    raw["fallback_providers"] = chain
+    get_config_path().write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=stale),
+        patch("hermes_cli.web_server_profiles._profile_scope"),
+    ):
+        set_moa_models(_base_payload())
+
+    on_disk = read_raw_config()
+    assert on_disk["fallback_providers"] == chain, "MoA save clobbered fallback_providers"
+    # The MoA edit itself landed (a non-default value, so default stripping leaves it on disk).
+    assert on_disk["moa"]["presets"]["default"]["reference_models"][0]["model"] == "gpt-5.5"

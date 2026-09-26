@@ -733,16 +733,30 @@ def _feature_state(feat) -> str:
 
 
 def _get_portal_status_sync():
+    from hermes_cli.dashboard_profile_scope import dashboard_profile_secret_scope
+
+    with dashboard_profile_secret_scope():
+        return _get_portal_status_sync_scoped()
+
+
+def _get_portal_status_sync_scoped():
+    """Body of the portal-status probe, executed inside the dashboard's own profile secret
+    scope (see ``_get_portal_status_sync``). Split out so the scope boundary is a single,
+    reviewable wrapper rather than threaded through each inner call."""
     cfg = load_config() or {}
     auth: Dict[str, Any] = {}
+    auth_lookup_failed = False
     try:
         from hermes_cli.auth import get_nous_auth_status_local
         # Refresh-free snapshot so polling never performs an OAuth refresh.
         auth = get_nous_auth_status_local() or {}
     except Exception:
+        _log.exception("portal auth status lookup failed")
         auth = {}
+        auth_lookup_failed = True
 
     features = []
+    features_lookup_failed = False
     try:
         from hermes_cli.nous_subscription import get_nous_subscription_features
         feats = get_nous_subscription_features(cfg)
@@ -750,7 +764,13 @@ def _get_portal_status_sync():
             features = [{"label": getattr(feat, "label", ""), "state": _feature_state(feat)}
                         for feat in feats.items()]
     except Exception:
-        _log.exception("portal features failed")
+        # Now runs inside a bound profile scope, so this except is back to its original job —
+        # genuine provider/network failures — not a silent catch of a scope-boundary bug.
+        # `features_available` distinguishes "genuinely no features configured" (empty list,
+        # available=True) from "the lookup itself failed" (available=False) without changing
+        # the existing `features` list shape dashboard clients already read.
+        _log.exception("portal features lookup failed")
+        features_lookup_failed = True
 
     model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
     return {
@@ -761,7 +781,12 @@ def _get_portal_status_sync():
         # credential"; surfaces that render an account must branch on free_tier first.
         "free_tier": bool(auth.get("free_tier")), "account_tier": auth.get("account_tier"),
         "subscription_url": "https://portal.nousresearch.com/manage-subscription",
-        "features": features}
+        "features": features,
+        # New, additive fields: a legitimate empty `features` list (available=True) must stay
+        # distinguishable from a failed lookup (available=False) — old dashboard clients that
+        # only read `features` see no change in shape or behavior.
+        "features_available": not features_lookup_failed,
+        "auth_available": not auth_lookup_failed}
 
 
 # Diagnostics: text-output actions spawned in the background, tailed via /api/actions/<name>.

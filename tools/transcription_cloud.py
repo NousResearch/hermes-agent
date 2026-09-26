@@ -443,3 +443,405 @@ def _extract_transcript_text(transcription: Any) -> str:
     text = (value if isinstance(value, str) else str(transcription)).strip()
     match = _ASR_TEXT_RE.match(text)
     return match.group("text").strip() if match else text
+
+
+# Gemini 3.5 Transcribe supported BCP-47 locale codes & common alias mappings.
+# Reference: https://ai.google.dev/gemini-api/docs/transcribe#supported-languages
+_GEMINI_TRANSCRIBE_BCP47_MAP: Dict[str, str] = {
+    # Chinese variants (Simplified / Cantonese)
+    "zh": "cmn-Hans-CN",
+    "zh-cn": "cmn-Hans-CN",
+    "zh_cn": "cmn-Hans-CN",
+    "zh-hans": "cmn-Hans-CN",
+    "zh_hans": "cmn-Hans-CN",
+    "cmn": "cmn-Hans-CN",
+    "mandarin": "cmn-Hans-CN",
+    "chinese": "cmn-Hans-CN",
+    "zh-hk": "yue-Hant-HK",
+    "zh_hk": "yue-Hant-HK",
+    "yue": "yue-Hant-HK",
+    "cantonese": "yue-Hant-HK",
+    # English variants
+    "en": "en-US",
+    "en-us": "en-US",
+    "en_us": "en-US",
+    "en-gb": "en-GB",
+    "en_gb": "en-GB",
+    "en-in": "en-IN",
+    "en_in": "en-IN",
+    # Japanese / Korean
+    "ja": "ja-JP",
+    "ja-jp": "ja-JP",
+    "japanese": "ja-JP",
+    "ko": "ko-KR",
+    "ko-kr": "ko-KR",
+    "korean": "ko-KR",
+    # European / other languages
+    "fr": "fr-FR",
+    "fr-fr": "fr-FR",
+    "french": "fr-FR",
+    "de": "de-DE",
+    "de-de": "de-DE",
+    "german": "de-DE",
+    "es": "es-US",
+    "es-es": "es-419",
+    "es-419": "es-419",
+    "es-us": "es-US",
+    "spanish": "es-US",
+    "ru": "ru-RU",
+    "ru-ru": "ru-RU",
+    "russian": "ru-RU",
+    "it": "it-IT",
+    "it-it": "it-IT",
+    "italian": "it-IT",
+    "pt": "pt-BR",
+    "pt-br": "pt-BR",
+    "pt-pt": "pt-PT",
+    "portuguese": "pt-BR",
+    "nl": "nl-NL",
+    "dutch": "nl-NL",
+    "pl": "pl-PL",
+    "polish": "pl-PL",
+    "tr": "tr-TR",
+    "turkish": "tr-TR",
+    "ar": "ar-EG",
+    "arabic": "ar-EG",
+    "hi": "hi-IN",
+    "hindi": "hi-IN",
+    "vi": "vi-VN",
+    "vietnamese": "vi-VN",
+    "th": "th-TH",
+    "thai": "th-TH",
+    "id": "id-ID",
+    "indonesian": "id-ID",
+    "uk": "uk-UA",
+    "ukrainian": "uk-UA",
+    "sv": "sv-SE",
+    "swedish": "sv-SE",
+    "cs": "cs-CZ",
+    "czech": "cs-CZ",
+    "el": "el-GR",
+    "greek": "el-GR",
+    "da": "da-DK",
+    "danish": "da-DK",
+    "fi": "fi-FI",
+    "finnish": "fi-FI",
+    "no": "nb-NO",
+    "nb": "nb-NO",
+    "norwegian": "nb-NO",
+    "he": "he-IL",
+    "hebrew": "he-IL",
+    "ro": "ro-RO",
+    "romanian": "ro-RO",
+    "hu": "hu-HU",
+    "hungarian": "hu-HU",
+    "bn": "bn-BD",
+    "bengali": "bn-BD",
+    "ms": "ms-MY",
+    "malay": "ms-MY",
+}
+
+_OFFICIAL_GEMINI_BCP47_CODES: Dict[str, str] = {
+    "af-za": "af-ZA",
+    "am-et": "am-ET",
+    "ar-eg": "ar-EG",
+    "hy-am": "hy-AM",
+    "as-in": "as-IN",
+    "az-az": "az-AZ",
+    "be-by": "be-BY",
+    "bn-bd": "bn-BD",
+    "bn-in": "bn-IN",
+    "bs-ba": "bs-BA",
+    "bg-bg": "bg-BG",
+    "rup-bg": "rup-BG",
+    "my-mm": "my-MM",
+    "yue-hant-hk": "yue-Hant-HK",
+    "ca-es": "ca-ES",
+    "ceb": "ceb",
+    "km-kh": "km-KH",
+    "hr-hr": "hr-HR",
+    "cs-cz": "cs-CZ",
+    "da-dk": "da-DK",
+    "nl-nl": "nl-NL",
+    "en-gb": "en-GB",
+    "en-in": "en-IN",
+    "en-us": "en-US",
+    "et-ee": "et-EE",
+    "fa-ir": "fa-IR",
+    "fil-ph": "fil-PH",
+    "fi-fi": "fi-FI",
+    "fr-fr": "fr-FR",
+    "gl-es": "gl-ES",
+    "ka-ge": "ka-GE",
+    "de-de": "de-DE",
+    "el-gr": "el-GR",
+    "gu-in": "gu-IN",
+    "ha-ng": "ha-NG",
+    "he-il": "he-IL",
+    "hi-in": "hi-IN",
+    "hu-hu": "hu-HU",
+    "is-is": "is-IS",
+    "id-id": "id-ID",
+    "it-it": "it-IT",
+    "ja-jp": "ja-JP",
+    "jv-id": "jv-ID",
+    "kea-cv": "kea-CV",
+    "kn-in": "kn-IN",
+    "kk-kz": "kk-KZ",
+    "ko-kr": "ko-KR",
+    "ky-kg": "ky-KG",
+    "lv-lv": "lv-LV",
+    "ln-cd": "ln-CD",
+    "lt-lt": "lt-LT",
+    "mk-mk": "mk-MK",
+    "ms-my": "ms-MY",
+    "ml-in": "ml-IN",
+    "mt-mt": "mt-MT",
+    "cmn-hans-cn": "cmn-Hans-CN",
+    "mr-in": "mr-IN",
+    "mn-mn": "mn-MN",
+    "ne-np": "ne-NP",
+    "nb-no": "nb-NO",
+    "or-in": "or-IN",
+    "pl-pl": "pl-PL",
+    "pt-br": "pt-BR",
+    "pt-pt": "pt-PT",
+    "pa-in": "pa-IN",
+    "pa-guru-in": "pa-Guru-IN",
+    "ro-ro": "ro-RO",
+    "ru-ru": "ru-RU",
+    "sr-rs": "sr-RS",
+    "sd-arab-in": "sd-Arab-IN",
+    "sk-sk": "sk-SK",
+    "sl-si": "sl-SI",
+    "es-419": "es-419",
+    "es-us": "es-US",
+    "sw-ke": "sw-KE",
+    "sv-se": "sv-SE",
+    "tg-tj": "tg-TJ",
+    "te-in": "te-IN",
+    "th-th": "th-TH",
+    "tr-tr": "tr-TR",
+    "uk-ua": "uk-UA",
+    "uz-uz": "uz-UZ",
+    "vi-vn": "vi-VN",
+}
+
+
+# Traditional Chinese script aliases: Google only lists Mandarin Simplified (cmn-Hans-CN)
+# and Cantonese Traditional (yue-Hant-HK). Do not force traditional aliases into the
+# Simplified locale; omit language_codes so Gemini auto-detects language and script.
+_GEMINI_TRADITIONAL_CHINESE_ALIASES = {
+    "zh-tw",
+    "zh_tw",
+    "zh-hant",
+    "zh_hant",
+    "traditional-chinese",
+}
+
+
+def _normalize_gemini_bcp47(lang: Optional[str]) -> Optional[str]:
+    """Normalize language hints into Gemini-supported BCP-47 locale tags.
+
+    Official reference: https://ai.google.dev/gemini-api/docs/transcribe#supported-languages
+    Omitted / empty / auto returns None to let Gemini auto-detect language.
+    Traditional Chinese aliases (zh-TW, zh-Hant) are also omitted to avoid forcing
+    Simplified Mandarin (cmn-Hans-CN), allowing Gemini's auto-detection to preserve Traditional script.
+    """
+    if not lang:
+        return None
+    raw = str(lang).strip()
+    if not raw or raw.lower() in ("auto", "none", "detect", "default"):
+        return None
+    key = raw.lower().replace("_", "-")
+    if key in _GEMINI_TRADITIONAL_CHINESE_ALIASES:
+        return None
+    if key in _GEMINI_TRANSCRIBE_BCP47_MAP:
+        return _GEMINI_TRANSCRIBE_BCP47_MAP[key]
+    if key in _OFFICIAL_GEMINI_BCP47_CODES:
+        return _OFFICIAL_GEMINI_BCP47_CODES[key]
+    return raw
+
+
+def _transcribe_gemini(
+    file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None
+) -> Dict[str, Any]:
+    """Transcribe using Google Gemini STT API.
+
+    Supports:
+    - Gemini dedicated Speech/Transcribe models via Interactions API (e.g. gemini-3.5-transcribe),
+      with custom vocabulary and smart formatting mode.
+    - Multimodal audio models via generateContent API (e.g. gemini-2.5-flash, gemini-2.0-flash).
+    """
+    import base64
+    import mimetypes
+    import requests
+    from hermes_cli.config import get_env_value
+    from tools.transcription_common import (
+        DEFAULT_GEMINI_STT_MODEL, DEFAULT_STT_TIMEOUT, GEMINI_STT_BASE_URL, _config_number,
+    )
+    from tools.transcription_tools import _load_stt_config, _resolve_provider_key, _resolve_stt_language
+
+    api_key = _resolve_provider_key("GEMINI_API_KEY", "gemini") or _resolve_provider_key("GOOGLE_API_KEY", "gemini")
+    if not api_key:
+        return _error_result("GEMINI_API_KEY not set. Get one at https://aistudio.google.com/app/apikey")
+
+    stt_config = _load_stt_config()
+    gemini_config = _get_stt_section(stt_config, "gemini")
+    base_url = str(
+        gemini_config.get("base_url") or get_env_value("GEMINI_BASE_URL") or GEMINI_STT_BASE_URL
+    ).strip().rstrip("/")
+    timeout = _config_number(gemini_config, "timeout", DEFAULT_STT_TIMEOUT)
+    language = language or _resolve_stt_language("gemini", stt_config) or ""
+    proxy_url = str(
+        gemini_config.get("proxy") or gemini_config.get("proxy_url") or get_env_value("GEMINI_PROXY_URL") or ""
+    ).strip()
+    proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+
+    try:
+        audio_bytes = Path(file_path).read_bytes()
+    except Exception as exc:
+        return _error_result(f"Failed to read audio file {file_path}: {exc}")
+
+    if not audio_bytes:
+        return _error_result("Audio file is empty", no_speech=True)
+
+    mime_type, _ = mimetypes.guess_type(file_path)
+    if mime_type == "audio/x-wav":
+        mime_type = "audio/wav"
+    if not mime_type or not mime_type.startswith("audio/"):
+        ext = Path(file_path).suffix.lower()
+        mime_map = {
+            ".wav": "audio/wav",
+            ".mp3": "audio/mp3",
+            ".ogg": "audio/ogg",
+            ".m4a": "audio/m4a",
+            ".aac": "audio/aac",
+            ".flac": "audio/flac",
+            ".opus": "audio/opus",
+            ".amr": "audio/amr",
+            ".silk": "audio/silk",
+        }
+        mime_type = mime_map.get(ext, "audio/wav")
+
+    audio_b64 = base64.b64encode(audio_bytes).decode("ascii")
+    model = model_name or DEFAULT_GEMINI_STT_MODEL
+
+    # Interactions API path for Gemini 3.5 Transcribe
+    if "transcribe" in model.lower():
+        url = f"{base_url}/interactions"
+        headers = {
+            "x-goog-api-key": api_key,
+            "Content-Type": "application/json",
+        }
+        custom_vocab = gemini_config.get("custom_vocabulary") or []
+        if isinstance(custom_vocab, str):
+            custom_vocab = [w.strip() for w in re.split(r"[,;]+", custom_vocab) if w.strip()]
+        elif isinstance(custom_vocab, list):
+            custom_vocab = [str(w).strip() for w in custom_vocab if str(w).strip()]
+        if prompt and isinstance(prompt, str):
+            hints = [w.strip() for w in re.split(r"[,;]+", prompt) if w.strip()]
+            custom_vocab = list(dict.fromkeys(custom_vocab + hints))
+
+        mode = str(gemini_config.get("mode", "smart")).strip()
+        transcription_cfg: Dict[str, Any] = {"mode": mode}
+        if custom_vocab:
+            transcription_cfg["custom_vocabulary"] = custom_vocab[:1000]
+        norm_lang = _normalize_gemini_bcp47(language)
+        if norm_lang:
+            transcription_cfg["language_codes"] = [norm_lang]
+
+        payload = {
+            "model": model,
+            "input": [
+                {
+                    "type": "audio",
+                    "data": audio_b64,
+                    "mime_type": mime_type,
+                }
+            ],
+            "generation_config": {
+                "transcription_config": transcription_cfg,
+            },
+        }
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=timeout, proxies=proxies)
+            if resp.status_code != 200:
+                try:
+                    err_detail = resp.json().get("error", {}).get("message") or resp.text[:300]
+                except Exception:
+                    err_detail = resp.text[:300]
+                return _error_result(f"Gemini STT API error (HTTP {resp.status_code}): {err_detail}")
+            body = resp.json()
+            transcript = (
+                body.get("output_text") or body.get("text") or
+                body.get("interaction", {}).get("output_text") or ""
+            ).strip()
+            if not transcript:
+                for step in body.get("steps", []):
+                    for item in step.get("content", []):
+                        if isinstance(item, dict) and item.get("text"):
+                            transcript = item["text"].strip()
+                            break
+                    if transcript:
+                        break
+            if not transcript:
+                return _error_result("Gemini STT returned empty transcript", no_speech=True)
+            logger.info("Transcribed %s via Gemini Transcribe (%s, %d chars)",
+                        Path(file_path).name, model, len(transcript))
+            return _ok_result(transcript, "gemini")
+        except Exception as exc:
+            return _cloud_failure(exc, file_path, "Gemini transcription")
+
+    # Multimodal generateContent path for general Gemini models (gemini-2.5-flash etc.)
+    url = f"{base_url}/models/{model}:generateContent"
+    headers = {"Content-Type": "application/json"}
+    system_text = (
+        f"Transcribe the following audio in {language} with accurate punctuation. "
+        if language else
+        "Transcribe the following audio accurately with punctuation. "
+    )
+    if prompt:
+        system_text += f" Context hints and terminology: {prompt}."
+    system_text += " Return only the transcribed text without conversational commentary or preamble."
+
+    payload = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [
+                    {"text": system_text},
+                    {
+                        "inline_data": {
+                            "mime_type": mime_type,
+                            "data": audio_b64,
+                        }
+                    },
+                ],
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.0,
+        },
+    }
+    try:
+        resp = requests.post(url, headers=headers, json=payload, params={"key": api_key}, timeout=timeout, proxies=proxies)
+        if resp.status_code != 200:
+            try:
+                err_detail = resp.json().get("error", {}).get("message") or resp.text[:300]
+            except Exception:
+                err_detail = resp.text[:300]
+            return _error_result(f"Gemini STT API error (HTTP {resp.status_code}): {err_detail}")
+        body = resp.json()
+        candidates = body.get("candidates", [])
+        parts = candidates[0].get("content", {}).get("parts", []) if candidates else []
+        transcript = "".join(
+            p.get("audioTranscription", {}).get("text", "") or p.get("text", "") for p in parts
+        ).strip()
+        if not transcript:
+            return _error_result("Gemini STT returned empty transcript", no_speech=True)
+        logger.info("Transcribed %s via Gemini multimodal (%s, %d chars)",
+                    Path(file_path).name, model, len(transcript))
+        return _ok_result(transcript, "gemini")
+    except Exception as exc:
+        return _cloud_failure(exc, file_path, "Gemini transcription")

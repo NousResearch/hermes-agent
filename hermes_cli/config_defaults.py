@@ -1092,6 +1092,8 @@ DEFAULT_CONFIG = {
             # Optional local text file with performance direction; may include a `{transcript}`
             # placeholder, else the live transcript is appended.
             "persona_prompt_file": "",
+            # Gemini 3.8: concise speech_metadata.style, overriding persona_prompt_file.
+            "style": "",
         },
         "xai": {
             "voice_id": "eve",  # or a custom voice ID (docs.x.ai custom voices)
@@ -1186,6 +1188,13 @@ DEFAULT_CONFIG = {
         "deepinfra": {
             "model": "",  # empty = first stt-tagged model from the live catalog
             # optional "base_url" key overrides DEEPINFRA_BASE_URL for STT only
+        },
+        "gemini": {
+            "model": "gemini-3.5-transcribe",  # gemini-3.5-transcribe, gemini-2.5-flash
+            "mode": "smart",  # smart, verbatim
+            "custom_vocabulary": [],  # custom terminology hints
+            "language": "",  # auto-detect; accepts "en", "zh", or BCP-47 tags like "en-US", "cmn-Hans-CN"
+            "timeout": 60,
         },
     },
 

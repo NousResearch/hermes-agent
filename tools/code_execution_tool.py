@@ -32,6 +32,7 @@ from hermes_time import get_timezone_name
 from tools.code_execution_env import _resolve_child_cwd, _resolve_child_python
 from tools.code_execution_rpc import _rpc_poll_loop
 from tools.tool_output_truncate import head_tail_split, truncation_notice
+from tools.terminal_hints import PAYLOAD_QUOTING_HINT, PAYLOAD_QUOTING_PATTERNS
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +172,9 @@ _FAILURE_HINT_RULES = (
     (r"TypeError: string indices must be integers|AttributeError: 'str' object has no attribute 'get'",
      lambda m, _: "Tool functions in the sandbox return DICTS (already parsed) — "
                   "do not json.loads() them or index them like strings. Example: read_file(path)['content']."),
+    # Payload-quoting collision in generated code — same rule the terminal egress
+    # fires, built from tools.terminal_hints' shared public patterns.
+    ("(?:" + "|".join(PAYLOAD_QUOTING_PATTERNS) + ")", lambda m, _: PAYLOAD_QUOTING_HINT),
 )
 
 

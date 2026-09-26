@@ -81,6 +81,166 @@ class TestPermissionDenied:
         assert "Permission denied" in hint
 
 
+class TestPayloadQuoting:
+    """Generated code embedding a natural-language payload whose punctuation
+    collides with the source's own quoting (issue #47630)."""
+
+    # The issue's acceptance criterion: a realistic gh-issue-body payload with
+    # an em dash, smart quotes and an apostrophe must get the file-handoff hint.
+    def test_github_body_payload_names_file_handoff(self):
+        out = (
+            '  File "post_issue.py", line 1\n'
+            '    body = \'Reporting — the “new” field isn\'t saving\'\n'
+            "                                                                      ^\n"
+            "SyntaxError: unterminated string literal (detected at line 1)\n"
+        )
+        hint = annotate_failure("python3 post_issue.py", 1, out)
+        assert hint is not None
+        # Names the file handoff concretely, not a retry of the same source.
+        assert "write_file" in hint
+        assert "--body-file" in hint
+        assert "gh api -F body=@<file>" in hint
+        assert "open(path).read()" in hint
+        # Product invariant: Hermes must never normalize or rewrite the user's
+        # payload, so the hint must not read as permission to edit it. Pinned as
+        # the clause that carries the rule, not the whole sentence, so the
+        # wording stays free to tighten.
+        assert "Leave the payload" in hint
+        # Scoping: only a stray character in the generated CODE may be swapped
+        # for ASCII; payload characters must never be edited.
+        assert "stray in the generated code" in hint
+
+    def test_smart_quote_used_as_delimiter(self):
+        out = ('  File "<string>", line 1\n'
+               "    x = “hello”\n"
+               "        ^ \n"
+               "SyntaxError: invalid character '“' (U+201C)")
+        hint = annotate_failure("python3 -c 'x = “hello”'", 1, out)
+        assert hint is not None
+        assert "--body-file" in hint
+
+    def test_non_quote_typographic_character_fires_hint(self):
+        # This test exists to block a future "narrow it to quote characters"
+        # change: these are typographic punctuation marks that cannot stand in
+        # code position — a smart quote or guillemet used as a delimiter, or a
+        # middot / em dash / prime / acute standing where an operator or
+        # literal belongs — and Python emits the same
+        # `invalid character '<ch>' (U+XXXX)` message for every one of them
+        # (guillemets, low-9 quotes, fullwidth quote, prime, acute, middot),
+        # so the pattern must stay broad. Captured on Python 3.14:
+        # a middot in code position (source `x = · 5`) yields exactly this.
+        out = ("  File \"<string>\", line 1\n"
+               "    x = · 5\n"
+               "        ^\n"
+               "SyntaxError: invalid character '·' (U+00B7)")
+        hint = annotate_failure("python3 -c 'x = · 5'", 1, out)
+        assert hint is not None
+        assert "--body-file" in hint
+
+    def test_non_printable_character_not_flagged(self):
+        # Boundary of the class: invisible characters produce a DIFFERENT
+        # captured message — `SyntaxError: invalid non-printable character
+        # U+00A0` (NBSP) / `... U+200B` (ZWSP) — a different cause with a
+        # different remedy, so the payload-quoting hint must not fire.
+        assert annotate_failure("python3 -c 'x = \u00a0 5'", 1,
+            "SyntaxError: invalid non-printable character U+00A0") is None
+        assert annotate_failure("python3 -c 'x = \u200b5'", 1,
+            "SyntaxError: invalid non-printable character U+200B") is None
+
+    def test_shell_unmatched_quote(self):
+        out = ("sh: -c: line 0: unexpected EOF while looking for matching `''\n"
+               "sh: -c: line 1: syntax error: unexpected end of file")
+        hint = annotate_failure("sh -c \"gh issue comment 1 --body 'It isn't broken'\"", 2, out)
+        assert hint is not None
+        assert "write_file" in hint
+
+    def test_triple_quoted_unterminated_literal(self):
+        # Multi-line gh body inside a """...""" literal: 'triple-quoted' is
+        # interposed, so the plain-literal pattern alone misses this.
+        out = ('  File "post_issue.py", line 1\n'
+               '    body = """unterminated\n'
+               "             ^\n"
+               "SyntaxError: unterminated triple-quoted string literal (detected at line 1)\n")
+        hint = annotate_failure("python3 post_issue.py", 1, out)
+        assert hint is not None
+        assert "write_file" in hint
+        assert "--body-file" in hint
+
+    def test_pre_310_unterminated_literal_wording(self):
+        # Python 3.9 and earlier word the same two failures differently — both
+        # messages captured verbatim on 3.9.6 (`body = 'Reporting` and an
+        # unterminated """...""" literal). They are specific to an unterminated
+        # literal, so they carry the same remedy; the nested-apostrophe payload
+        # on 3.9.6 is the generic `SyntaxError: invalid syntax` that
+        # test_unrelated_syntax_errors_not_flagged pins as deliberately unhinted.
+        hint = annotate_failure("python3 post_issue.py", 1,
+            '  File "post_issue.py", line 1\n'
+            "    body = 'Reporting\n"
+            "                     ^\n"
+            "SyntaxError: EOL while scanning string literal\n")
+        assert hint is not None
+        assert "--body-file" in hint
+        hint = annotate_failure("python3 post_issue.py", 1,
+            '  File "post_issue.py", line 3\n'
+            '    body = """Reporting — the new field isn\'t saving\n'
+            "                                                      ^\n"
+            "SyntaxError: EOF while scanning triple-quoted string literal\n")
+        assert hint is not None
+        assert "write_file" in hint
+
+    def test_zsh_unmatched_quote(self):
+        # zsh words the same failure differently from bash/sh.
+        out = "zsh:1: unmatched '"
+        hint = annotate_failure(
+            'zsh -c "gh issue comment 1 --body \'It isn\'t broken\'"', 1, out)
+        assert hint is not None
+        assert "write_file" in hint
+
+    def test_bare_unmatched_word_not_flagged(self):
+        # The zsh pattern must be anchored to the `zsh:` error prefix — an
+        # unrelated tool printing 'unmatched' must not fire the hint.
+        assert annotate_failure("grep foo bar.txt", 1,
+                                "grep: unmatched something") is None
+        assert annotate_failure("sed -e 's/[a-'", 1,
+                                "sed: unmatched brace") is None
+
+    def test_zsh_pattern_left_boundary(self):
+        # Boundary on the `zsh:` prefix itself: the message may follow a
+        # prefix on the same line (`docker: zsh:1: ...`), but a longer token
+        # merely ENDING in 'zsh' is a different program and must not fire.
+        assert annotate_failure("docker run --rm zsh -c 'x'", 1,
+                                "docker: zsh:1: unmatched '") is not None
+        assert annotate_failure("myzsh run.zsh", 1,
+                                "myzsh:1: unmatched '") is None
+        assert annotate_failure("./note_zsh.sh", 1,
+                                "note_zsh:1: unmatched '") is None
+
+    def test_unrelated_syntax_errors_not_flagged(self):
+        # Scope guard for the deliberately broad `invalid character` rule:
+        # real Python compile errors of unrelated cause share the
+        # `SyntaxError:` prefix but are not payload-quoting collisions. If
+        # the pattern were ever broadened to a bare `SyntaxError`, these fail.
+        # `invalid syntax` is also what Python 3.9.6 reports for a payload
+        # apostrophe that leaves a stray token behind (`body = 'It isn't
+        # broken'`), so this boundary is the one genuine gap the 3.9-and-
+        # earlier wording leaves open.
+        assert annotate_failure("python3 x.py", 1,
+            '  File "x.py", line 1\n    if x\n       ^\n'
+            "SyntaxError: expected ':'") is None
+        assert annotate_failure("python3 x.py", 1,
+            '  File "x.py", line 1\n    def\n       ^^^\n'
+            "SyntaxError: invalid syntax") is None
+
+    def test_unrelated_python_failure_not_flagged(self):
+        out = ('Traceback (most recent call last):\n  File "x.py", line 2, in <module>\n'
+               "KeyError: 'body'")
+        assert annotate_failure("python3 x.py", 1, out) is None
+
+    def test_unrelated_shell_failure_not_flagged(self):
+        assert annotate_failure("ls /no/such/dir", 1,
+                                "ls: /no/such/dir: No such file or directory") is None
+
+
 class TestBoundedScan:
     def test_pattern_beyond_scan_window_ignored(self):
         out = "x" * 5000 + "\npython: command not found"

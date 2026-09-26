@@ -106,6 +106,11 @@ def test_nous_adapter_concurrent_refresh_serialized(tmp_path, monkeypatch):
     assert all(r.startswith("key-") for r in results)
 
 
+def test_nous_adapter_forwards_responses_api_path():
+    """#104505: the upstream serves /v1/responses, so the allowlist must include it."""
+    assert "/responses" in NousPortalAdapter().allowed_paths
+
+
 # ---------------------------------------------------------------------------
 # XAIGrokAdapter
 # ---------------------------------------------------------------------------
@@ -361,6 +366,59 @@ def test_server_strips_client_auth_header():
         finally:
             await proxy_runner.cleanup()
             await upstream_runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_proxy_forwards_responses_api_path_end_to_end(tmp_path, monkeypatch):
+    """#104505: a real NousPortalAdapter lets POST /v1/responses reach the upstream."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_auth_store(tmp_path, {"access_token": "a", "refresh_token": "r"})
+
+    async def run():
+        captured: Dict[str, Any] = {"requests": []}
+
+        async def echo(request):
+            body = await request.read()
+            captured["requests"].append({
+                "path": request.path,
+                "body": body.decode("utf-8") if body else "",
+            })
+            return web.json_response({"object": "response", "status": "completed"})
+
+        upstream = web.Application()
+        upstream.router.add_route("*", "/v1/responses", echo)
+        upstream_runner, upstream_base = await _start_runner(upstream)
+        # Trusted env override so the credential's base_url points at the fake upstream
+        # without tripping the production host allowlist.
+        monkeypatch.setenv("NOUS_INFERENCE_BASE_URL", f"{upstream_base}/v1")
+
+        def fake_refresh(**kwargs):
+            return {
+                "api_key": f"key-{upstream_base.rsplit(':', 1)[-1]}",
+                "expires_at": "2099-01-01T00:00:00Z",
+                "base_url": "https://inference-api.nousresearch.com/v1",
+            }
+
+        with patch(
+            "hermes_cli.proxy.adapters.nous_portal.resolve_nous_runtime_credentials",
+            side_effect=fake_refresh,
+        ):
+            proxy_runner, proxy_base = await _start_runner(create_app(NousPortalAdapter()))
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        f"{proxy_base}/v1/responses",
+                        json={"model": "deepseek/deepseek-v4-flash-0731", "input": "Reply with exactly: PROXY_OK"},
+                    ) as resp:
+                        body = await resp.read()
+                assert resp.status == 200
+                assert json.loads(body) == {"object": "response", "status": "completed"}
+                assert captured["requests"][0]["path"] == "/v1/responses"
+                assert "PROXY_OK" in captured["requests"][0]["body"]
+            finally:
+                await proxy_runner.cleanup()
+                await upstream_runner.cleanup()
 
     asyncio.run(run())
 

@@ -47,4 +47,28 @@ describe('ConfirmDialog secondary action', () => {
     await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1))
     expect(onSecondary).not.toHaveBeenCalled()
   })
+
+  it('renders optional checkbox and forwards checked state on confirm', async () => {
+    const onConfirm = vi.fn()
+    const onClose = vi.fn()
+
+    render(
+      <ConfirmDialog
+        checkbox={{ label: 'Silence warning' }}
+        onClose={onClose}
+        onConfirm={onConfirm}
+        open
+        title="Confirm action"
+      />
+    )
+
+    const checkbox = await screen.findByRole('checkbox', { name: 'Silence warning' })
+    expect(checkbox.getAttribute('data-state')).toBe('unchecked')
+
+    fireEvent.click(checkbox)
+    expect(checkbox.getAttribute('data-state')).toBe('checked')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }))
+    await waitFor(() => expect(onConfirm).toHaveBeenCalledWith({ checkboxChecked: true }))
+  })
 })

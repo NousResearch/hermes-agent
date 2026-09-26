@@ -18,9 +18,16 @@
  *   git rev-list --count <stampCommit>..<headSha> -- <RUNTIME_PATHS>
  *
  * Both calls take one resolved sha, never the symbolic HEAD. The probe reads
- * HEAD once with `git rev-parse`, keys its cache on that sha, and hands the
- * same sha to both calls: should HEAD move mid-probe, the answer still
- * describes the commit its key names instead of a newer one.
+ * HEAD once with `git rev-parse --is-shallow-repository HEAD`, keys its cache
+ * on that sha, and hands the same sha to both calls: should HEAD move
+ * mid-probe, the answer still describes the commit its key names instead of a
+ * newer one. That one spawn prints the shallow flag on its first line and the
+ * sha on its second (measured against git 2.54), so shallowness costs no extra
+ * git call. In a shallow clone, exit 1 from merge-base can mean "the history
+ * that would prove ancestry is not fetched yet" rather than "unrelated": a
+ * fetch or a deepen changes that answer without moving HEAD, so a shallow
+ * exit-1 is returned but never cached. Only a 40- or 64-character lowercase
+ * hex sha is trusted in the cache key or in a git argument.
  *
  * Ancestry has to come first, because `A..HEAD` only means "how far HEAD is
  * ahead of A" when A is an ancestor of HEAD. When it is not, the range
@@ -112,6 +119,11 @@ export function isFallbackCommit(commit: string): boolean {
   return /^0{7,40}$/.test(commit)
 }
 
+/** A resolved object id: 40 or 64 lowercase hex, never an error message. */
+function isResolvedSha(value: string): boolean {
+  return /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(value)
+}
+
 export async function detectBundleSkew(
   stamp: BundleSkewStamp | null,
   runGit: RunGit,
@@ -132,9 +144,14 @@ export async function detectBundleSkew(
  *
  * A trustworthy answer is one git actually produced:
  *   - merge-base exited 0 (an ancestor) and rev-list exited 0 with a finite
- *     count — the number describes skew; or
- *   - merge-base exited exactly 1 — "not an ancestor", which is the real,
- *     settled answer to the #92233 shape and is worth reusing.
+ *     count — the number describes skew, and it stays true when the clone is
+ *     deepened; or
+ *   - merge-base exited exactly 1 — "not an ancestor", the real, settled answer
+ *     to the #92233 shape, worth reusing in a full clone. In a SHALLOW clone it
+ *     is not settled: the history that would prove ancestry may simply not be
+ *     fetched yet, and a fetch or a deepen changes the answer without moving
+ *     HEAD. `shallow` carries the flag the probe already read, so the shallow
+ *     case is answered but never remembered.
  * Everything else is unknowable and must not be remembered: merge-base exit
  * >1, a non-zero rev-list, an unparsable count, and any throw.
  */
@@ -142,7 +159,8 @@ async function answerBundleSkew(
   stamp: BundleSkewStamp | null,
   runGit: RunGit,
   repoRoot: string,
-  head: string
+  head: string,
+  shallow: boolean | null = null
 ): Promise<BundleSkewAnswer> {
   if (!stamp?.commit || stamp.source === 'fallback' || isFallbackCommit(stamp.commit)) {
     return { cacheable: false, result: NOT_STALE }
@@ -164,9 +182,13 @@ async function answerBundleSkew(
       cwd: repoRoot
     })
 
-    // Exit 1 answers "not an ancestor" — a real answer, not a failure.
+    // Exit 1 answers "not an ancestor". In a full clone that is a real answer;
+    // in a shallow clone the missing history can produce the same exit, so the
+    // shallow case is answered without being cached.
     if (ancestry.code === 1) {
-      return { cacheable: true, result: NOT_STALE }
+      const isShallow = shallow ?? (await resolveShallow(runGit, repoRoot))
+
+      return { cacheable: !isShallow, result: NOT_STALE }
     }
 
     if (ancestry.code !== 0) {
@@ -197,6 +219,18 @@ async function answerBundleSkew(
   }
 }
 
+/**
+ * Whether the repo is shallow, for the standalone `detectBundleSkew` path that
+ * has no resolved flag in hand. A git that cannot answer counts as "not
+ * shallow": both answers are not-stale, so this only decides whether the
+ * not-an-ancestor answer may be reused.
+ */
+async function resolveShallow(runGit: RunGit, repoRoot: string): Promise<boolean> {
+  const probe = await runGit(['rev-parse', '--is-shallow-repository'], { cwd: repoRoot })
+
+  return probe.code === 0 && probe.stdout.trim() === 'true'
+}
+
 /** Bound on ONE probe; on expiry it resolves not-stale and aborts git. */
 export const BUNDLE_SKEW_TIMEOUT_MS = 10_000
 
@@ -210,6 +244,12 @@ export interface BundleSkewProbeOptions {
 
 export type BundleSkewProbe = () => Promise<BundleSkewResult>
 
+/** One in-flight run, tagged with the root it belongs to. */
+interface InFlightRun {
+  promise: Promise<BundleSkewResult>
+  root: string
+}
+
 /**
  * Wrap detectBundleSkew in the two things an IPC caller needs and it does not
  * have: single-flight and a HEAD-keyed cache.
@@ -217,11 +257,13 @@ export type BundleSkewProbe = () => Promise<BundleSkewResult>
  * Every caller (window focus, the update poller, checkUpdates, About) used to
  * spawn its own merge-base/rev-list pair, so eight copies could run at once
  * and one treeless-clone lazy fetch held a core for minutes. Concurrent
- * callers now share one run, and a result is reused for as long as HEAD is
- * unchanged — proven with a cheap `git rev-parse HEAD`, the only spawn on a
- * hit. A moved HEAD reruns the probe; a HEAD git cannot resolve is the same
- * "unknowable" the fail-quiet paths answer, and caches nothing so the next
- * call can read it.
+ * callers for the same root now share one run, and a result is reused for as
+ * long as HEAD is unchanged — proven with a cheap `git rev-parse
+ * --is-shallow-repository HEAD`, the only spawn on a hit. A moved HEAD reruns
+ * the probe; a HEAD git cannot resolve, or resolves to something that is not a
+ * sha, is the same "unknowable" the fail-quiet paths answer, and caches nothing
+ * so the next call can read it. A root change starts a new run instead of
+ * joining one that belongs to the old tree.
  */
 export function createBundleSkewProbe({
   stamp,
@@ -231,20 +273,16 @@ export function createBundleSkewProbe({
 }: BundleSkewProbeOptions): BundleSkewProbe {
   let cachedKey: string | null = null
   let cachedResult: BundleSkewResult = NOT_STALE
-  let inFlight: Promise<BundleSkewResult> | null = null
+  let inFlight: InFlightRun | null = null
   // Bumped per run. A run that the timeout gave up on keeps working in the
   // background, and must not write its late answer over a newer run's.
   let generation = 0
 
-  const run = async (): Promise<BundleSkewResult> => {
+  const run = async (cwd: string): Promise<BundleSkewResult> => {
     if (!stamp?.commit || stamp.source === 'fallback' || isFallbackCommit(stamp.commit)) {
       return NOT_STALE
     }
 
-    // The resolved root is part of the cache key: the source tree can be
-    // retargeted at runtime, so the same HEAD under a different root is a
-    // different tree and a different answer.
-    const cwd = typeof repoRoot === 'function' ? repoRoot() : repoRoot
     const controller = new AbortController()
     const signaled: RunGit = (args, options) => runGit(args, { ...options, signal: controller.signal })
     const myGeneration = ++generation
@@ -266,23 +304,35 @@ export function createBundleSkewProbe({
     })
 
     const work = (async (): Promise<BundleSkewResult> => {
-      const head = await signaled(['rev-parse', 'HEAD'], { cwd })
+      // One spawn answers both questions: the shallow flag on the first line,
+      // the sha on the second (git 2.54).
+      const head = await signaled(['rev-parse', '--is-shallow-repository', 'HEAD'], { cwd })
 
-      if (head.code !== 0 || !head.stdout.trim()) {
+      if (head.code !== 0) {
+        return NOT_STALE
+      }
+
+      const [shallowFlag, resolved] = head.stdout.trim().split('\n')
+      const headSha = resolved ?? ''
+
+      // A sha git did not actually resolve — an error message, an abbreviated or
+      // uppercase id, a missing line — cannot key the cache or fill a git
+      // argument. Fail quiet and cache nothing, so the next call reads HEAD
+      // again instead of pinning a guess.
+      if ((shallowFlag !== 'true' && shallowFlag !== 'false') || !isResolvedSha(headSha)) {
         return NOT_STALE
       }
 
       // One sha, resolved once. It is both the cache key and the commit the
       // expensive calls below run against, so a HEAD that moves during the
       // probe cannot make a cached answer describe a commit other than its key.
-      const headSha = head.stdout.trim()
       const key = `${cwd}:${stamp.commit}:${headSha}`
 
       if (key === cachedKey) {
         return cachedResult
       }
 
-      const answer = await answerBundleSkew(stamp, signaled, cwd, headSha)
+      const answer = await answerBundleSkew(stamp, signaled, cwd, headSha, shallowFlag === 'true')
 
       // Cache only an answer git actually produced, and only from a run that
       // is still current: a run the timeout aborted answers fail-quiet (not
@@ -315,12 +365,26 @@ export function createBundleSkewProbe({
   }
 
   return () => {
-    if (!inFlight) {
-      inFlight = run().finally(() => {
-        inFlight = null
-      })
+    // Resolve the root first: the source tree can be retargeted at runtime, so
+    // a run already in flight for another root must not be joined — that would
+    // hand this caller the old tree's answer. The generation counter keeps the
+    // abandoned run from writing the cache.
+    const cwd = typeof repoRoot === 'function' ? repoRoot() : repoRoot
+
+    if (inFlight?.root === cwd) {
+      return inFlight.promise
     }
 
-    return inFlight
+    const entry: InFlightRun = { promise: run(cwd), root: cwd }
+
+    entry.promise = entry.promise.finally(() => {
+      if (inFlight === entry) {
+        inFlight = null
+      }
+    })
+
+    inFlight = entry
+
+    return entry.promise
   }
 }

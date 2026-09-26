@@ -184,6 +184,7 @@ function gitScripted(options: {
   mergeBaseCode?: number | (() => number)
   revListCode?: number | (() => number)
   revParseCode?: number | (() => number)
+  shallow?: boolean | (() => boolean)
 }): { calls: string[][]; git: RunGit } {
   const calls: string[][] = []
 
@@ -198,8 +199,11 @@ function gitScripted(options: {
       }
 
       const head = typeof options.head === 'function' ? options.head() : (options.head ?? 'a'.repeat(40))
+      const shallow = typeof options.shallow === 'function' ? options.shallow() : (options.shallow ?? false)
 
-      return { code, stderr: '', stdout: `${head}\n` }
+      // `git rev-parse --is-shallow-repository HEAD` prints the flag, then the
+      // sha, on two lines. Measured against git 2.54, not assumed.
+      return { code, stderr: '', stdout: `${shallow ? 'true' : 'false'}\n${head}\n` }
     }
 
     if (args[0] === 'merge-base') {
@@ -321,7 +325,7 @@ describe('createBundleSkewProbe', () => {
       calls.push(args)
 
       if (args[0] === 'rev-parse') {
-        return { code: 0, stderr: '', stdout: `${'a'.repeat(40)}\n` }
+        return { code: 0, stderr: '', stdout: `false\n${'a'.repeat(40)}\n` }
       }
 
       if (args[0] === 'merge-base') {
@@ -372,6 +376,34 @@ describe('createBundleSkewProbe', () => {
     expect(spawnsOf(calls, 'rev-list')).toBe(0)
   })
 
+  // In a SHALLOW clone exit 1 can mean "the history that would prove ancestry
+  // is not here yet", not "unrelated". Deepening or fetching changes that
+  // answer without moving HEAD, so the cached exit-1 would hide real skew
+  // until HEAD moved. A shallow answer is returned, never remembered.
+  it('does not cache a not-an-ancestor answer from a shallow clone', async () => {
+    const { calls, git } = gitScripted({ count: '3\n', mergeBaseCode: 1, shallow: true })
+    const probe = createBundleSkewProbe({ stamp: STAMP, runGit: git, repoRoot: REPO })
+
+    expect(await probe()).toEqual(NOT_STALE)
+    expect(await probe()).toEqual(NOT_STALE)
+
+    expect(spawnsOf(calls, 'merge-base')).toBe(2)
+    expect(spawnsOf(calls, 'rev-list')).toBe(0)
+  })
+
+  it('still caches a proven ancestry answer from a shallow clone', async () => {
+    const { calls, git } = gitScripted({ count: '2\n', shallow: true })
+    const probe = createBundleSkewProbe({ stamp: STAMP, runGit: git, repoRoot: REPO })
+
+    expect(await probe()).toEqual({ desktopCommitsBehind: 2, outOfSync: true })
+    expect(await probe()).toEqual({ desktopCommitsBehind: 2, outOfSync: true })
+
+    // A proven ancestor stays an ancestor when the clone is deepened, so the
+    // count is reusable even in a shallow clone.
+    expect(spawnsOf(calls, 'merge-base')).toBe(1)
+    expect(spawnsOf(calls, 'rev-list')).toBe(1)
+  })
+
   it('does not cache a transient git failure and asks git again on the next call', async () => {
     let mergeBaseCode = 128
     const { calls, git } = gitScripted({ count: '2\n', mergeBaseCode: () => mergeBaseCode })
@@ -404,6 +436,55 @@ describe('createBundleSkewProbe', () => {
     expect(spawnsOf(calls, 'rev-list')).toBe(2)
   })
 
+  // The root is resolved per call, so a probe already in flight for the old
+  // root must not serve a caller whose root has just changed: joining it would
+  // hand back another tree's answer.
+  it('starts a second run when the root changes mid-flight and answers each caller for its own root', async () => {
+    const pending: { resolve?: (value: { code: number; stderr: string; stdout: string }) => void } = {}
+    const calls: Array<{ args: string[]; cwd: string }> = []
+    let root = '/repo-a'
+
+    const git: RunGit = async (args, options) => {
+      calls.push({ args, cwd: options.cwd })
+
+      if (args[0] === 'rev-parse') {
+        return { code: 0, stderr: '', stdout: `false\n${'a'.repeat(40)}\n` }
+      }
+
+      if (args[0] === 'merge-base') {
+        return { code: 0, stderr: '', stdout: '' }
+      }
+
+      if (args[0] === 'rev-list') {
+        if (options.cwd === '/repo-a') {
+          return new Promise(resolve => {
+            pending.resolve = resolve
+          })
+        }
+
+        return { code: 0, stderr: '', stdout: '4\n' }
+      }
+
+      return { code: 1, stderr: '', stdout: '' }
+    }
+
+    const probe = createBundleSkewProbe({ stamp: STAMP, runGit: git, repoRoot: () => root })
+
+    const first = probe()
+    await tick()
+
+    root = '/repo-b'
+
+    expect(await probe()).toEqual({ desktopCommitsBehind: 4, outOfSync: true })
+    expect(calls.filter(call => call.args[0] === 'rev-list').map(call => call.cwd)).toEqual(['/repo-a', '/repo-b'])
+
+    // The abandoned run still answers its own caller with its own root's count.
+    pending.resolve?.({ code: 0, stderr: '', stdout: '9\n' })
+    await tick()
+
+    expect(await first).toEqual({ desktopCommitsBehind: 9, outOfSync: true })
+  })
+
   it('does not let a late old run overwrite a newer answer', async () => {
     const pending: { resolve?: (value: { code: number; stderr: string; stdout: string }) => void } = {}
     const calls: string[][] = []
@@ -413,7 +494,7 @@ describe('createBundleSkewProbe', () => {
       calls.push(args)
 
       if (args[0] === 'rev-parse') {
-        return { code: 0, stderr: '', stdout: `${'a'.repeat(40)}\n` }
+        return { code: 0, stderr: '', stdout: `false\n${'a'.repeat(40)}\n` }
       }
 
       if (args[0] === 'merge-base') {
@@ -501,6 +582,31 @@ describe('createBundleSkewProbe', () => {
     expect(await probe()).toEqual({ desktopCommitsBehind: 2, outOfSync: true })
     expect(spawnsOf(calls, 'rev-list')).toBe(1)
   })
+
+  // A rev-parse line that is not 40 or 64 lowercase hex cannot be trusted in
+  // the cache key or in the git arguments; the probe fails quiet instead.
+  it('reports not-stale and spawns no merge-base when rev-parse returns a HEAD that is not a sha', async () => {
+    const { calls, git } = gitScripted({ head: 'A'.repeat(40) })
+    const probe = createBundleSkewProbe({ stamp: STAMP, runGit: git, repoRoot: REPO })
+
+    expect(await probe()).toEqual(NOT_STALE)
+    expect(await probe()).toEqual(NOT_STALE)
+
+    expect(spawnsOf(calls, 'merge-base')).toBe(0)
+    expect(spawnsOf(calls, 'rev-list')).toBe(0)
+    // Not cached, so the next call reads HEAD again.
+    expect(spawnsOf(calls, 'rev-parse')).toBe(2)
+  })
+
+  it('accepts a 64-character lowercase HEAD sha', async () => {
+    const head = 'b'.repeat(64)
+    const { calls, git } = gitScripted({ count: '1\n', head })
+    const probe = createBundleSkewProbe({ stamp: STAMP, runGit: git, repoRoot: REPO })
+
+    expect(await probe()).toEqual({ desktopCommitsBehind: 1, outOfSync: true })
+
+    expect(calls.find(args => args[0] === 'merge-base')).toEqual(['merge-base', '--is-ancestor', STAMP.commit, head])
+  })
 })
 
 // Real-git integration: proves the pathspec discriminates docs/e2e-only
@@ -566,6 +672,31 @@ function realGitRun(root: string): RunGit {
   }
 }
 
+/** Wrap a real RunGit so a test can count the expensive spawns. */
+function countingGit(inner: RunGit): { calls: string[][]; git: RunGit } {
+  const calls: string[][] = []
+
+  const git: RunGit = async (args, options) => {
+    calls.push(args)
+
+    return inner(args, options)
+  }
+
+  return { calls, git }
+}
+
+/** A depth-1 clone of `sourceRoot`, every branch fetched. */
+function makeShallowClone(sourceRoot: string): string {
+  const cloneRoot = mkdtempSync(join(tmpdir(), 'bundle-skew-shallow-'))
+  scratchRepos.push(cloneRoot)
+
+  execFileSync('git', ['clone', '-q', '--depth', '1', '--no-single-branch', `file://${sourceRoot}`, cloneRoot], {
+    stdio: ['ignore', 'pipe', 'pipe']
+  })
+
+  return cloneRoot
+}
+
 describe('detectBundleSkew against a real git repo', () => {
   it('is quiet when only docs and e2e specs changed under apps/desktop', async () => {
     const { base, repoRoot } = makeScratchRepo()
@@ -616,5 +747,53 @@ describe('detectBundleSkew against a real git repo', () => {
     const result = await detectBundleSkew({ commit: base, source: 'local' }, runGit, repoRoot)
 
     expect(result).toEqual({ desktopCommitsBehind: null, outOfSync: false })
+  })
+
+  // Finding: in a SHALLOW clone, exit 1 can mean the history that would prove
+  // ancestry is not fetched yet. Real git, a real depth-1 clone: the probe
+  // must answer not-stale but must not remember it, so the next same-HEAD call
+  // asks again (a fetch or a deepen can change the answer without moving HEAD).
+  it('answers not-stale in a real shallow clone and does not cache a not-an-ancestor answer', async () => {
+    const { base, repoRoot: origin } = makeScratchRepo()
+    const originGit = scratchGit(origin)
+
+    originGit('checkout', '-q', '--orphan', 'rewritten')
+    writeFiles(origin, ['apps/desktop/src/app/shell.tsx'])
+    originGit('add', '.')
+    originGit('commit', '-q', '-m', 'synthetic root after a ZIP-fallback update')
+
+    const clone = makeShallowClone(origin)
+
+    execFileSync('git', ['checkout', '-q', 'rewritten'], { cwd: clone, stdio: ['ignore', 'pipe', 'pipe'] })
+
+    const { calls, git } = countingGit(realGitRun(clone))
+
+    // Preconditions on real git, not on a fake: the clone is shallow and the
+    // stamp commit (main's tip) is present but NOT an ancestor of HEAD.
+    const shallow = await git(['rev-parse', '--is-shallow-repository'], { cwd: clone })
+
+    expect(shallow.stdout.trim()).toBe('true')
+
+    const ancestry = await git(['merge-base', '--is-ancestor', base, 'HEAD'], { cwd: clone })
+
+    expect(ancestry.code).toBe(1)
+
+    const headSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: clone }).toString().trim()
+
+    const before = calls.filter(args => args[0] === 'merge-base').length
+    const probe = createBundleSkewProbe({ stamp: { commit: base, source: 'local' }, runGit: git, repoRoot: clone })
+
+    expect(await probe()).toEqual({ desktopCommitsBehind: null, outOfSync: false })
+    expect(await probe()).toEqual({ desktopCommitsBehind: null, outOfSync: false })
+
+    const mergeBases = calls.filter(args => args[0] === 'merge-base')
+
+    // The probe asked about the sha it read from the two-line rev-parse, and
+    // asked TWICE: the shallow answer was returned but never remembered.
+    expect(mergeBases.length - before).toBe(2)
+    expect(mergeBases.slice(before)).toEqual([
+      ['merge-base', '--is-ancestor', base, headSha],
+      ['merge-base', '--is-ancestor', base, headSha]
+    ])
   })
 })

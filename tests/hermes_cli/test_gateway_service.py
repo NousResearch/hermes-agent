@@ -5,6 +5,7 @@ import os
 import plistlib
 import re
 import shlex
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -1794,7 +1795,14 @@ class TestProfileArg:
             launchd_program_arguments(command, stdout_log, stderr_log), start_new_session=True
         )
 
-        assert wrapper.wait(timeout=10) == 23
+        try:
+            returncode = wrapper.wait(timeout=10)
+        finally:
+            if wrapper.poll() is None:
+                os.killpg(wrapper.pid, signal.SIGKILL)
+                wrapper.wait()
+
+        assert returncode == 23
         assert int(stdout_log.read_text()) == wrapper.pid
         assert stderr_log.read_text() == ""
 

@@ -26,11 +26,20 @@ logger = logging.getLogger("cron.scheduler")
 
 
 # Validates user-supplied delivery platform names, preventing env-var enumeration via crafted names.
+# ``desktop-session`` is a pseudo-platform: the runner writes the output into a local Desktop chat
+# session (cron/desktop_delivery.py) with no gateway adapter behind it. It is a valid target, but
+# it never appears in the gateway's connected-platform set — see ``_ADAPTERLESS_DELIVERY_PLATFORMS``.
+DESKTOP_SESSION_PLATFORM = "desktop-session"
+
+# Valid delivery targets that ride NO gateway adapter (written to local state by the runner).
+# Preflight must not demand gateway credentials for these.
+_ADAPTERLESS_DELIVERY_PLATFORMS = frozenset({DESKTOP_SESSION_PLATFORM})
+
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "telegram", "discord", "slack", "whatsapp", "signal",
     "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
     "wecom", "wecom_callback", "weixin", "sms", "email", "webhook", "bluebubbles",
-    "qqbot", "yuanbao"})
+    "qqbot", "yuanbao"}) | _ADAPTERLESS_DELIVERY_PLATFORMS
 
 # Gateway platforms whose adapter declares ``supports_async_delivery = False`` (request/response
 # only, ``send()`` is a stub) — a cron report can never reach them, so they are never a

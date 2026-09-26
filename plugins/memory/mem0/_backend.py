@@ -45,8 +45,17 @@ class PlatformBackend(Mem0Backend):
     """Wraps mem0.MemoryClient for Mem0 Platform (cloud API)."""
 
     def __init__(self, api_key: str):
+        import httpx
         from mem0 import MemoryClient
-        self._client = MemoryClient(api_key=api_key)
+        # The SDK's default httpx.Client has no pool limits and no keepalive expiry, so idle
+        # keepalive sockets the server half-closes pile up as CLOSE_WAIT fds in a long-lived
+        # gateway. Hand it a bounded client (the SDK sets base_url + auth headers on it).
+        http = httpx.Client(timeout=300, limits=httpx.Limits(max_connections=10, max_keepalive_connections=5, keepalive_expiry=30.0))
+        try:
+            self._client = MemoryClient(api_key=api_key, client=http)
+        except BaseException:
+            http.close()
+            raise
 
     def search(self, query: str, *, filters: dict, top_k: int = 10, rerank: bool = False) -> list[dict]:
         return _unwrap_results(self._client.search(query, filters=filters, top_k=top_k, rerank=rerank))
@@ -59,6 +68,10 @@ class PlatformBackend(Mem0Backend):
 
     def _delete(self, memory_id: str) -> None:
         self._client.delete(memory_id=memory_id)
+
+    def close(self) -> None:
+        with suppress(Exception):
+            self._client.client.close()
 
 
 class SelfHostedBackend(Mem0Backend):

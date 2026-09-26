@@ -482,7 +482,11 @@ def _check_npm_audit(should_fix: bool, f: Finding) -> None:
         except Exception:
             whatsapp_bridge_dir = PROJECT_ROOT / "scripts" / "whatsapp-bridge"
         for npm_dir, label, audit_extra in (
-            (PROJECT_ROOT, "Browser tools (agent-browser)", ["--workspaces=false"]),
+            # NOT agent-browser: it is now a pm-managed precompiled binary
+            # (see AgentBrowser in pm/packages.py) with no node_modules/lockfile
+            # of its own to audit. This row is the root package.json itself
+            # (js-yaml, semver, eslint tooling). See #122223.
+            (PROJECT_ROOT, "Root npm package", ["--workspaces=false"]),
             (PROJECT_ROOT, "web workspace", ["--workspace", "web"]),
             (PROJECT_ROOT, "ui-tui workspace", ["--workspace", "ui-tui"]),
             (whatsapp_bridge_dir, "WhatsApp bridge", []),

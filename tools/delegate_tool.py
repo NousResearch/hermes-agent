@@ -200,9 +200,15 @@ def _build_child_agent(
     # as auxiliary.review.
     delegation_cfg = _load_config()
     child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(parent_agent, toolsets, effective_role)
+    # A child's own skip_context_files is always True (its prompt embeds the workspace files instead), so the
+    # session's opt-out (--ignore-rules, a platform's skip_context_files, cron without a workdir) is carried down
+    # the tree explicitly rather than read off a subagent parent.
+    context_files_opted_out = getattr(parent_agent, "_context_files_opted_out", None)
+    if not isinstance(context_files_opted_out, bool):
+        context_files_opted_out = getattr(parent_agent, "skip_context_files", False) is True
     child_prompt = _build_child_system_prompt(
         goal, context, workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
-        max_spawn_depth=max_spawn, child_depth=child_depth,
+        max_spawn_depth=max_spawn, child_depth=child_depth, load_context_files=not context_files_opted_out,
     )
     parent_api_key = getattr(parent_agent, "api_key", None)
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
@@ -264,6 +270,7 @@ def _build_child_agent(
     child._progress_identity_ref = child_session_ref
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
+    child._context_files_opted_out = context_files_opted_out
     _apply_child_compression_cap(child, delegation_cfg)
     # Ownership chain for action=list/steer/stop; weakref so a finished parent
     # can be collected while a detached child record lingers in the registry.

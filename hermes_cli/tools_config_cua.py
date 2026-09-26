@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -162,6 +163,24 @@ def _ps_single_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def _parse_schtasks_task_xml(raw: bytes):
+    """Parse a schtasks /XML export, whose declaration can misreport the bytes.
+
+    Some Windows builds declare encoding="UTF-16" while writing the console
+    codepage (or UTF-8) without a BOM, so fromstring() rejects bytes whose
+    declaration disagrees with them. Normalize the declaration to match the
+    actual bytes before parsing.
+    """
+    from xml.etree import ElementTree
+
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        text = raw.decode("utf-16")
+    else:
+        text = raw.decode("utf-8", errors="replace").lstrip("\ufeff")
+    text = re.sub(r'encoding="[^"]*"', 'encoding="UTF-8"', text, count=1)
+    return ElementTree.fromstring(text.encode("utf-8"))
+
+
 def _cua_driver_autostart_registered_windows(binary: Optional[str] = None) -> bool:
     """A task targeting a previous PM version is not a ready registration."""
     if sys.platform != "win32":
@@ -177,13 +196,26 @@ def _cua_driver_autostart_registered_windows(binary: Optional[str] = None) -> bo
             capture_output=True, timeout=10, creationflags=_post_setup_no_window_flags())
         if result.returncode:
             return False
-        # Parse bytes: schtasks' XML declaration carries the output encoding.
-        task = ElementTree.fromstring(result.stdout)
-        commands = task.findall(".//{*}Exec/{*}Command")
-        return any(os.path.normcase((node.text or "").strip().strip('"')) == os.path.normcase(binary)
-                   for node in commands)
+        return _task_actions_target_binary(_parse_schtasks_task_xml(result.stdout), binary)
     except (OSError, subprocess.SubprocessError, ElementTree.ParseError):
         return False
+
+
+def _task_actions_target_binary(task, binary: str) -> bool:
+    """True when a task action invokes `binary` directly or via a shell wrapper.
+
+    The registered action may be a powershell launcher wrapping the driver,
+    so the binary is matched in the command or its arguments, not only as an
+    exact Command equality.
+    """
+    target = os.path.normcase(binary)
+    for action in task.findall(".//{*}Exec"):
+        parts = " ".join((node.text or "").strip().strip('"')
+                         for node in action
+                         if node.tag.endswith("Command") or node.tag.endswith("Arguments"))
+        if target in os.path.normcase(parts):
+            return True
+    return False
 
 
 def _repair_cua_driver_autostart_windows(driver_cmd: str, *, verbose: bool) -> bool:

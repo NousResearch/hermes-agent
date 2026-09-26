@@ -22,6 +22,7 @@ CHAT_PLATFORMS = [
     "telegram",
     "slack",
     "feishu",
+    "wecom",
 ]
 
 NOISY_STATUS_MESSAGES = [
@@ -57,6 +58,58 @@ NOISY_STATUS_MESSAGES = [
         "⚠ Skipping concurrent compression — another path is already "
         "compressing this session. Will retry after it finishes."
     ),
+]
+
+# Provider stall-watchdog kill notices. Every one is recorded by
+# ``_buffer_status`` and replayed through ``_flush_status_buffer`` ->
+# ``_emit_status`` -> ``status_callback`` when a turn exhausts its attempts, so
+# they DO reach a chat surface. Which shape fires depends only on WHEN the
+# provider goes silent, so all four must be filtered identically — otherwise
+# chat noise depends on provider timing.
+PROVIDER_WATCHDOG_KILL_NOTICES = [
+    # agent/chat_completion_helpers.py:787 — non-streaming stale kill.
+    "⚠️ No response from provider for 150s (non-streaming, model: gpt-5.5). Aborting call.",
+    # agent/chat_completion_helpers.py:5211 — streaming stale kill.
+    (
+        "⚠️ No response from provider for 300s (model: gpt-5.5, "
+        "context: ~98,781 tokens). Reconnecting..."
+    ),
+    # agent/chat_completion_helpers.py:1670/1676 — codex TTFB kill.
+    "⚠️ No first byte from provider in 120s (codex stream, model: gpt-5.5). Reconnecting.",
+    (
+        "⚠️ No first byte from provider in 120s (codex stream, model: gpt-5.5). "
+        "Reconnecting. Provider accepted the connection but sent no events."
+    ),
+    # agent/chat_completion_helpers.py:1725 — codex post-TTFB idle kill.
+    (
+        "⚠️ Codex stream sent no events for 90s after first byte "
+        "(model: gpt-5.5). Reconnecting."
+    ),
+    # agent/chat_completion_helpers.py:3615 — bedrock stream stale kill.
+    (
+        "⚠️ No events from Bedrock for 300s "
+        "(model: anthropic.claude-sonnet-4-5-20250929-v1:0). Aborting..."
+    ),
+]
+
+# Notices that travel the SAME buffered-status path as
+# PROVIDER_WATCHDOG_KILL_NOTICES but MUST reach the user: the terminal
+# give-up message, the durable provider/model switch, and the work heartbeat.
+# A watchdog-filter alternative that widens into any of these silently turns a
+# failed turn into a turn that just stops replying.
+BUFFERED_STATUS_MUST_SURVIVE = [
+    # agent/chat_completion_helpers.py:5026 — terminal, user-actionable.
+    (
+        "❌ Connection to provider failed after 4 attempts. The provider may be "
+        "experiencing issues — try again in a moment."
+    ),
+    # agent/chat_completion_helpers.py:2856 — durable state change.
+    (
+        "⚠️ Model fallback: gpt-5.5 via openai unavailable (stream timeout); "
+        "using claude-opus-4-6 via anthropic."
+    ),
+    # gateway/run.py:29992 — work heartbeat.
+    "⏳ Working — 3 min",
 ]
 
 # Messages that must NEVER be swallowed by the compression-noise filter:
@@ -120,14 +173,19 @@ def test_telegram_status_suppresses_auxiliary_and_retry_noise():
         assert _prepare_gateway_status_message(Platform.TELEGRAM, "warn", message) is None
 
 
-def test_programmatic_surfaces_keep_raw_status():
+@pytest.mark.parametrize(
+    "message",
+    ["⏳ Retrying in 4.2s (attempt 1/3)..."] + PROVIDER_WATCHDOG_KILL_NOTICES,
+    ids=lambda m: m.strip()[:48],
+)
+def test_programmatic_surfaces_keep_raw_status(message):
     """Programmatic surfaces (local/api/webhook) must keep raw diagnostics.
 
     Negative case for the invariant: the chat-noise filter must not touch
-    CLI/TUI diagnostics, API JSON, or webhook payloads.
+    CLI/TUI diagnostics, API JSON, or webhook payloads. Parametrized over the
+    watchdog notices too, so widening the chat filter can never quietly strip
+    a timeout diagnostic from an API/webhook consumer.
     """
-    message = "⏳ Retrying in 4.2s (attempt 1/3)..."
-
     for platform in ("local", "api_server", "webhook", "msgraph_webhook"):
         assert (
             _prepare_gateway_status_message(platform, "lifecycle", message) == message
@@ -145,6 +203,36 @@ def test_telegram_status_keeps_legitimate_heartbeat_messages(message):
 def test_all_chat_gateways_suppress_noise(platform, message):
     """Operational lifecycle/retry noise must be suppressed on every chat surface."""
     assert _prepare_gateway_status_message(platform, "warn", message) is None
+
+
+@pytest.mark.parametrize("platform", CHAT_PLATFORMS)
+@pytest.mark.parametrize(
+    "message", PROVIDER_WATCHDOG_KILL_NOTICES, ids=lambda m: m.strip()[:48]
+)
+def test_chat_gateways_suppress_provider_watchdog_kill_notices(platform, message):
+    """Provider stall-watchdog kill notices stay in logs, not chat bubbles.
+
+    ``_buffer_status`` records these in the retry buffer; ``_flush_status_buffer``
+    replays them through ``_emit_status`` -> ``status_callback`` on terminal
+    failure, so they DO reach a chat surface. The retry loop reconnects on its
+    own and the user already gets a "⏳ Working" heartbeat, so the raw
+    timeout/context diagnostics are operator noise here.
+    """
+    assert _prepare_gateway_status_message(platform, "lifecycle", message) is None
+
+
+@pytest.mark.parametrize("platform", CHAT_PLATFORMS)
+@pytest.mark.parametrize(
+    "message", BUFFERED_STATUS_MUST_SURVIVE, ids=lambda m: m.strip()[:48]
+)
+def test_watchdog_filter_keeps_terminal_and_durable_notices(platform, message):
+    """The watchdog filter must not widen into the notices sharing its path.
+
+    The terminal give-up line, the fallback switch, and the heartbeat all reach
+    chat through the same ``status_callback``. Swallowing any of them turns a
+    failed turn into a silently unanswered one.
+    """
+    assert _prepare_gateway_status_message(platform, "lifecycle", message) == message
 
 
 @pytest.mark.parametrize("platform", CHAT_PLATFORMS)

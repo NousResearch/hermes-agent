@@ -266,15 +266,16 @@ def test_shared_server_tools_are_callable_and_removed_on_non_owner_reload(
         inputSchema={"type": "object", "properties": {}},
         annotations=None,
     )
+    shared_cfg = {"url": "https://default.example/mcp"}  # connectable: the adopter resolves its identity
     server = SimpleNamespace(
         name="shared",
         session=object(),
         _tools=[tool],
         tool_timeout=30,
         _registered_tool_names=[],
-        _config={},
+        _config=dict(shared_cfg),
         initialize_result=None,
-        _resolved_identity=_mcp_registration._adopter_identity_digest("shared", {}),
+        _resolved_identity=_mcp_registration._adopter_identity_digest("shared", shared_cfg),
     )
     owner_tool_name = "mcp__shared__echo"
     registry.register(
@@ -304,7 +305,7 @@ def test_shared_server_tools_are_callable_and_removed_on_non_owner_reload(
     try:
         monkeypatch.setattr(mcp_tool, "_ensure_mcp_sdk", lambda: True)
         monkeypatch.setattr(_mcp_config, "_filter_suspicious_mcp_servers", lambda servers: servers)
-        assert _mcp_discovery.register_mcp_servers({"shared": {}})
+        assert _mcp_discovery.register_mcp_servers({"shared": dict(shared_cfg)})
         tool_names = registry.get_tool_names_for_toolset("mcp-shared")
         assert tool_names
         assert callable(registry.get_entry(tool_names[0]).handler)

@@ -4451,7 +4451,9 @@ function readBootstrapMarker() {
 // ever having written the bootstrap marker -- so we must be able to recognise
 // "already installed" off the filesystem alone, not just the marker.
 async function isSourceRuntimeUsable(root: string): Promise<boolean> {
-  return (await resolveSourceInstallationBackend(root, [], { hermesHome: HERMES_HOME })) !== null
+  return (
+    (await resolveSourceInstallationBackend(root, [], { hermesHome: HERMES_HOME, log: rememberLog })) !== null
+  )
 }
 
 function isActiveRuntimeUsable(): Promise<boolean> {
@@ -4869,7 +4871,8 @@ async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHerm
   //    active runtime is usable, launch it directly; only fall through to
   //    bootstrap when the runtime itself is unusable.
   const activeBackend: SourceBackend | null = await resolveSourceInstallationBackend(ACTIVE_HERMES_ROOT, backendArgs, {
-    hermesHome: HERMES_HOME
+    hermesHome: HERMES_HOME,
+    log: rememberLog
   })
 
   const activeRuntime: ActiveRuntimeState = activeRuntimeState(activeBackend)

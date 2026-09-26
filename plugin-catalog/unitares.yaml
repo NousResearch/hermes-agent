@@ -1,6 +1,6 @@
 name: unitares
 repo: https://github.com/cirwel/unitares-host-adapter
-sha: d2cc2ddbf07cf2a3e3b2d75a28e45a4414345f1c
+sha: 22fff39ad4e844ab774c403ec0dd21617887b482
 description: >-
   Records each Hermes session on a UNITARES server you run: one identity per session and one check-in
   per completed turn, so the agent's working record carries across sessions. Fail-open; never blocks
@@ -14,7 +14,7 @@ tier: community
 category: automation
 requires_hermes: ">=0.21.0"
 docs_url: https://github.com/cirwel/unitares-host-adapter#hermes-agent
-version: "0.2.5"
+version: "0.3.0"
 readme: true
 platforms: []
 capabilities:

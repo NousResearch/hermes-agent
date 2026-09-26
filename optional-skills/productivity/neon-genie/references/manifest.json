@@ -1,0 +1,50 @@
+{
+  "skill": "neon-genie",
+  "version": "3.25.0",
+  "profiles": [
+    "core",
+    "privacy",
+    "product_architecture",
+    "opportunity_mining",
+    "fragmentation",
+    "zero_option",
+    "agentic_services",
+    "commercial",
+    "evidence_intelligence",
+    "memetic",
+    "audit_delivery",
+    "wayfinder_handoff",
+    "capital_sprint"
+  ],
+  "default_profiles": [
+    "core",
+    "privacy"
+  ],
+  "claim_labels": [
+    "OBSERVED",
+    "INFERRED",
+    "SPECULATIVE",
+    "NOT_COMPUTABLE"
+  ],
+  "modes": [
+    "OPEN",
+    "ALIGN",
+    "ASCEND",
+    "CLEAR",
+    "SEAL"
+  ],
+  "authority": "advisory_only",
+  "research": {
+    "mode": "local_only",
+    "default": false,
+    "offline_opt_out": true,
+    "source_priority": [
+      "operator_supplied",
+      "workspace_context",
+      "live_host_tools",
+      "model_prior_as_speculative_only"
+    ],
+    "auto_load_evidence_intelligence": "when_improves_result"
+  },
+  "license": "MIT"
+}

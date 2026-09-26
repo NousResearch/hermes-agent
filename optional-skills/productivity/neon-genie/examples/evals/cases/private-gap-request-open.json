@@ -1,0 +1,15 @@
+{
+  "input": {
+    "gap": "internal_unit_economics",
+    "sensitivity": "private",
+    "data_request_emitted": true,
+    "blocks_promotion": true,
+    "data_request_status": "open",
+    "claim_label_emitted": "NOT_COMPUTABLE"
+  },
+  "expected": {
+    "status": "PASS",
+    "gate": "Q",
+    "promotion_capped": true
+  }
+}

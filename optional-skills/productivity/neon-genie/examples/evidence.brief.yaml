@@ -1,0 +1,30 @@
+request_id: "example-evidence-001"
+requested_outcome: "Close decision-critical external facts with labeled evidence or honest gaps"
+target_user: "operator deciding competitive/market feasibility"
+current_state: "need current external facts; some private CRM context"
+desired_state: "evidence packet with query plan, claim ledger, tooling gaps, DataRequests"
+constraints:
+  - "advisory_only"
+  - "no fabricated OBSERVED claims"
+  - "do not probe private systems"
+canonical_sources: []
+preferred_profiles:
+  - evidence_intelligence
+  - commercial
+requested_outputs:
+  - EvidenceIntelligencePacket
+  - NeonGenieRunReceipt
+research:
+  enabled: true
+  offline: false
+  max_fetches: null
+  focus:
+    - "public competitor positioning"
+    - "public pricing pages if product category known"
+authority:
+  research: true
+  drafting: true
+  execution: false
+  spending: false
+  publishing: false
+human_review_required: true

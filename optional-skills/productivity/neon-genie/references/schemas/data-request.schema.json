@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Data Request",
+  "type": "object",
+  "required": [
+    "field",
+    "why_decision_critical",
+    "sensitivity",
+    "suggested_source",
+    "blocks_promotion",
+    "status"
+  ],
+  "properties": {
+    "field": { "type": "string", "minLength": 1 },
+    "why_decision_critical": { "type": "string", "minLength": 1 },
+    "sensitivity": {
+      "type": "string",
+      "enum": ["public", "operator", "private"]
+    },
+    "suggested_source": { "type": "string" },
+    "blocks_promotion": { "type": "boolean" },
+    "status": {
+      "type": "string",
+      "enum": ["open", "satisfied", "waived"]
+    },
+    "request_id": { "type": "string" },
+    "attempted_queries": { "type": "array" },
+    "satisfied_by": { "type": "string" }
+  },
+  "additionalProperties": true
+}

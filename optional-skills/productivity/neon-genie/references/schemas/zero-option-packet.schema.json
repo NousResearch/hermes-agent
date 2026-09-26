@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Zero Option Packet",
+  "type": "object",
+  "required": [
+    "constraints",
+    "capabilities",
+    "opportunities",
+    "shadow_flags",
+    "system_state",
+    "completion_proof"
+  ],
+  "properties": {
+    "constraints": {},
+    "capabilities": {},
+    "opportunities": {},
+    "shadow_flags": {},
+    "system_state": {},
+    "completion_proof": {
+      "description": "Observable proof of first cash/signal or honest NOT_COMPUTABLE reason"
+    },
+    "proof_path": {
+      "description": "Micro-loop steps: narrative → action → result → reinforcement"
+    },
+    "status": {},
+    "reason": {}
+  },
+  "additionalProperties": true
+}

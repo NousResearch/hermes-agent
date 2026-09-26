@@ -543,10 +543,22 @@ export function getLatestSessionMessages(
  * session is minted or resumed anywhere), so probing across backends is safe
  * where live routing would be a guess. Returns null when no reachable
  * backend holds the transcript.
+ *
+ * `profile` is the OWNING profile of the tile, when the caller knows it. The
+ * ambient probe must carry it: an id-only read resolves against the ACTIVE
+ * gateway's home, so a redapple/mobil/dedektif tile probed while `default` is
+ * active 404s on a session that is alive in its own profile's state.db. The
+ * caller then reads that 404 as "session gone" and drops the tab
+ * (goneSessionVerdict → 'draft'), which is how a restore silently loses every
+ * tab that does not belong to the foreground profile. Passing the owner keeps
+ * the probe on the backend that actually holds the row.
  */
-export async function fetchStoredTranscriptAcrossBackends(id: string): Promise<SessionMessagesResponse | null> {
+export async function fetchStoredTranscriptAcrossBackends(
+  id: string,
+  profile?: string | null
+): Promise<SessionMessagesResponse | null> {
   try {
-    return await getLatestSessionMessages(id)
+    return await getLatestSessionMessages(id, profile ?? undefined)
   } catch {
     // Not on the ambient store — probe the registered backends below.
   }

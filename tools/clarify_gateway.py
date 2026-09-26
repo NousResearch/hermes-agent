@@ -11,9 +11,16 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _label_of(choice: Any) -> str:
+    """Label text of a choice (structured dicts resolve to their label)."""
+    if isinstance(choice, dict):
+        return str(choice.get("label") or "").strip()
+    return str(choice).strip() if choice is not None else ""
 
 
 @dataclass
@@ -22,7 +29,7 @@ class _ClarifyEntry:
     clarify_id: str
     session_key: str
     question: str
-    choices: Optional[List[str]]
+    choices: Optional[List[Any]]  # label strings or {label, description} dicts
     multi_select: bool = False
     event: threading.Event = field(default_factory=threading.Event)
     response: Optional[str] = None
@@ -43,11 +50,14 @@ TEXT_REJECTED_SELECTION = "rejected_selection"
 TEXT_NO_PENDING = "no_pending"
 
 
-def register(clarify_id: str, session_key: str, question: str, choices: Optional[List[str]],
+def register(clarify_id: str, session_key: str, question: str, choices: Optional[List[Any]],
              multi_select: bool = False) -> _ClarifyEntry:
     """Register a pending clarify request; caller then blocks on ``wait_for_response``.
-    Open-ended (no choices) entries start in text mode: the next message IS the response."""
-    entry = _ClarifyEntry(clarify_id, session_key, question, list(choices) if choices else None,
+    Open-ended (no choices) entries start in text mode: the next message IS the response.
+    Structured {label, description} choices are stored as-is (one-level copy);
+    all matching resolves to labels."""
+    stored = [dict(c) if isinstance(c, dict) else c for c in choices] if choices else None
+    entry = _ClarifyEntry(clarify_id, session_key, question, stored,
                           bool(multi_select) and bool(choices), awaiting_text=not bool(choices))
     with _lock:
         _entries[clarify_id] = entry
@@ -110,14 +120,15 @@ def get_pending_for_session(session_key: str, *, include_choice_prompts: bool = 
         return None
 
 
-def _match_label(text: str, choices: List[str]) -> Optional[str]:
-    """Stripped choice text matching ``text`` case-insensitively, ignoring the '(Recommended)'
-    suffix the first choice carries by the time it reaches adapters; None if no match."""
+def _match_label(text: str, choices: List[Any]) -> Optional[str]:
+    """Label matching ``text`` case-insensitively, ignoring the '(Recommended)'
+    suffix the first choice carries by the time it reaches adapters; None if no match.
+    Structured choices match on their label; the returned value is the label string."""
     from tools.clarify_tool import strip_recommended
     wanted = strip_recommended(text).casefold()
     for choice in choices:
-        if strip_recommended(str(choice)).casefold() == wanted:
-            return str(choice).strip()
+        if strip_recommended(_label_of(choice)).casefold() == wanted:
+            return _label_of(choice)
     return None
 
 
@@ -137,7 +148,7 @@ def _is_int(text: str) -> bool:
         return False
 
 
-def _selection_attempt_tokens(text: str, choices: Optional[List[str]] = None) -> Optional[List[str]]:
+def _selection_attempt_tokens(text: str, choices: Optional[List[Any]] = None) -> Optional[List[str]]:
     """Tokens when ``text`` looks like a typed selection (bare int, comma list,
     all-numeric space list); None for free prose so the gateway can release the
     clarify. Comma-list labels may span up to the longest choice's word count."""
@@ -150,7 +161,7 @@ def _selection_attempt_tokens(text: str, choices: Optional[List[str]] = None) ->
         return [stripped] if digits.isdigit() or _is_int(stripped) else None
     if "," not in stripped or not tokens:
         return tokens or None
-    max_words = max(1, max((len(str(c).split()) for c in choices or []), default=1))
+    max_words = max(1, max((len(_label_of(c).split()) for c in choices or []), default=1))
     return tokens if all(t.isdigit() or len(t.split()) <= max_words for t in tokens) else None
 
 
@@ -176,7 +187,7 @@ def _coerce_text_response_detailed(entry: _ClarifyEntry, response: str) -> tuple
         # Out-of-range / non-canonical integer is a failed selection, not prose.
         selection_shaped = _is_int(text)
         idx = int(text) - 1 if selection_shaped else -1
-        coerced = entry.choices[idx] if 0 <= idx < len(entry.choices) else _match_label(text, entry.choices)
+        coerced = _label_of(entry.choices[idx]) if 0 <= idx < len(entry.choices) else _match_label(text, entry.choices)
     if coerced is not None:
         return coerced, None
     if entry.awaiting_text:
@@ -194,7 +205,7 @@ def _coerce_multi_select_text(entry: _ClarifyEntry, text: str) -> Optional[str]:
     for token in [text] if tokens is None else tokens:
         if token.isdigit():
             idx = int(token) - 1
-            label = str(choices[idx]).strip() if 0 <= idx < len(choices) else None
+            label = _label_of(choices[idx]) if 0 <= idx < len(choices) else None
         else:
             label = _match_label(token, choices)
         if label is None:

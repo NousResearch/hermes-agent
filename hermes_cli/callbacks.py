@@ -170,6 +170,7 @@ def clarify_callback(cli, question, choices, multi_select=False):
     """
     from cli import CLI_CONFIG
     from tools.clarify_gateway import resolve_clarify_timeout
+    from tools.clarify_tool import choice_label
 
     # Canonical clarify timeout, shared with the gateway/TUI path. `<= 0`
     # means unlimited (never auto-skip mid-think) → a null deadline.
@@ -177,10 +178,12 @@ def clarify_callback(cli, question, choices, multi_select=False):
     response_queue = queue.Queue()
     is_open_ended = not choices
     effective_multi = multi_select and not is_open_ended
+    # Phase 1: classic CLI shows labels only (descriptions land in Phase 2).
+    labels = [choice_label(c) for c in choices] if not is_open_ended else []
 
     cli._clarify_state = {
         "question": question,
-        "choices": choices if not is_open_ended else [],
+        "choices": labels if not is_open_ended else [],
         "selected": 0,
         "multi_select": effective_multi,
         "selected_indices": set() if effective_multi else None,

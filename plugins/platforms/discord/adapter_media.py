@@ -7,6 +7,8 @@ import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
+import discord
+
 from gateway.platforms.base import SendResult
 
 logger = logging.getLogger("plugins.platforms.discord.adapter")

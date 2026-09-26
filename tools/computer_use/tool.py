@@ -673,8 +673,67 @@ def _capture_digest(cap: CaptureResult) -> str:
     return hashlib.sha256((str(cap.image_mime_type or "") + ":").encode("utf-8")
                           + (cap.png_b64 or "").encode("ascii", "ignore")).hexdigest()
 
+# Shadow-only semantic-state experiment (#112734). It never changes model input,
+# authorizes actions, or replaces capture data; failures are measurement-only.
+_SHADOW_STATE_MAX_SESSIONS = 64
+_shadow_state_prev: Dict[str, "GuiStateV0"] = {}
+_shadow_state_metrics: Dict[str, Dict[str, Any]] = {}
+
+
+def reset_shadow_state_for_tests() -> None:  # pragma: no cover - test seam
+    _shadow_state_prev.clear()
+    _shadow_state_metrics.clear()
+
+
+def _shadow_state_observe(cap: CaptureResult, session_id: Optional[str]) -> None:
+    if not cap.elements:
+        return
+    try:
+        import time as _time
+
+        from tools.computer_use.semantic_state import build_state
+        from tools.computer_use.state_diff import delta_bytes, diff_states, full_observation_bytes
+
+        sid = _scoped_sid(session_id or "")
+        if sid not in _shadow_state_prev and len(_shadow_state_prev) >= _SHADOW_STATE_MAX_SESSIONS:
+            oldest = next(iter(_shadow_state_prev))
+            _shadow_state_prev.pop(oldest, None)
+            _shadow_state_metrics.pop(oldest, None)
+        prev = _shadow_state_prev.get(sid)
+        revision = prev.revision + 1 if prev else 1
+        started = _time.perf_counter()
+        state = build_state(
+            cap.elements,
+            revision=revision,
+            target=f"{cap.app or ''}/{cap.window_title or ''}",
+            width=cap.width,
+            height=cap.height,
+            captured_at=_time.time(),
+        )
+        delta = diff_states(prev, state) if prev else None
+        _shadow_state_prev[sid] = state
+        _shadow_state_metrics[sid] = {
+            "revision": revision,
+            "elements": len(state.elements),
+            "reconciliation_ms": (_time.perf_counter() - started) * 1000.0,
+            "changed_element_ratio": delta.changed_element_ratio if delta else 0.0,
+            "delta_bytes": delta_bytes(delta) if delta else 0,
+            "full_observation_bytes": full_observation_bytes(state),
+            "identity_retention": delta.identity_retention if delta else 1.0,
+            "ambiguous": len(delta.ambiguous) if delta else 0,
+            "mean_confidence": delta.mean_confidence if delta else 1.0,
+        }
+    except Exception:
+        logger.debug("shadow semantic-state observation failed", exc_info=True)
+
+
+def get_shadow_state_metrics(session_id: Optional[str] = None) -> Dict[str, Any]:
+    return dict(_shadow_state_metrics.get(_scoped_sid(session_id or ""), {}))
+
+
 def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEMENTS,
                       session_id: Optional[str] = None) -> Any:
+    _shadow_state_observe(cap, session_id)
     v = _capture_view(cap, max_elements)
     lines = _capture_summary_lines(v)
     summary, extra = "\n".join(lines), None  # multimodal/aux paths use this; text paths append notes and rebuild

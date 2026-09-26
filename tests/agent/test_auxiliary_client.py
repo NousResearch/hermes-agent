@@ -2083,6 +2083,52 @@ def test_resolve_api_key_provider_skips_unconfigured_copilot(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+class TestAuxiliaryOverloadFallback:
+    """Provider overload is a capacity failure for auxiliary routing."""
+
+    @staticmethod
+    def _overload():
+        return RuntimeError("Our servers are currently overloaded. Please try again later.")
+
+    @staticmethod
+    def _route_patches(client):
+        return (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("openai-codex", "gpt-5.6-terra", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", return_value=(client, "gpt-5.6-terra")),
+        )
+
+    def test_sync_overload_uses_configured_fallback(self):
+        primary = MagicMock()
+        primary.base_url = "https://chatgpt.com/backend-api/codex/"
+        primary.chat.completions.create.side_effect = self._overload()
+        p1, p2 = self._route_patches(primary)
+        with (
+            p1, p2,
+            patch("agent.auxiliary_client._try_configured_fallback_chain", return_value=(MagicMock(), "gemini-3.7-flash", "fallback_chain[0](google)")) as configured,
+            patch("agent.auxiliary_client._call_fallback_candidate_sync", return_value={"fallback": True}) as invoke,
+        ):
+            result = call_llm(task="compression", messages=[{"role": "user", "content": "compress"}])
+        assert result == {"fallback": True}
+        assert configured.call_args.kwargs["reason"] == "provider overloaded"
+        invoke.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_async_overload_uses_configured_fallback(self):
+        primary = MagicMock()
+        primary.base_url = "https://chatgpt.com/backend-api/codex/"
+        primary.chat.completions.create = AsyncMock(side_effect=self._overload())
+        p1, p2 = self._route_patches(primary)
+        with (
+            p1, p2,
+            patch("agent.auxiliary_client._try_configured_fallback_chain", return_value=(MagicMock(), "gemini-3.7-flash", "fallback_chain[0](google)")) as configured,
+            patch("agent.auxiliary_client._call_fallback_candidate_async", AsyncMock(return_value={"fallback": True})) as invoke,
+        ):
+            result = await async_call_llm(task="compression", messages=[{"role": "user", "content": "compress"}])
+        assert result == {"fallback": True}
+        assert configured.call_args.kwargs["reason"] == "provider overloaded"
+        invoke.assert_awaited_once()
+
+
 class TestTransientTransportRetry:
     """call_llm retries ONCE on the same provider for a transient transport
     blip before escalating to the fallback chain.

@@ -53,6 +53,20 @@ def _prepare_slash_worker_runtime() -> None:
     wait_for_mcp_discovery()
 
 
+def _kill_foreground_commands_before_exit() -> None:
+    """os._exit skips atexit, so the terminal tool's exit cleanup never runs: a foreground command
+    (own session/process group) started by this worker would outlive it. Same backstop as the CLI
+    exit watchdog; bounded by the hard-kill budget and never raises. Not imported here: if the
+    module was never loaded no command can be live, and an import in a dying process could block."""
+    base = sys.modules.get("tools.environments.base")
+    if base is None:
+        return
+    try:
+        base.kill_live_foreground_processes(now=True)
+    except Exception as exc:
+        logger.debug("slash worker orphan kill failed: %s: %s", type(exc).__name__, exc)
+
+
 def _start_parent_death_watchdog(original_ppid) -> None:
     def _loop():
         while not _is_orphaned(original_ppid):
@@ -60,6 +74,7 @@ def _start_parent_death_watchdog(original_ppid) -> None:
         deadline = time.monotonic() + _ORPHAN_GRACE_S
         while _in_flight.is_set() and time.monotonic() < deadline:
             time.sleep(0.05)  # let an in-flight command finish/flush
+        _kill_foreground_commands_before_exit()
         os._exit(0)
     threading.Thread(target=_loop, daemon=True).start()
 

@@ -678,9 +678,12 @@ class PluginContext:
         self, name: str, handler: Callable, description: str = "", args_hint: str = "",
         argument_mode: str | None = None,
     ) -> Optional[PluginRegistration]:
-        """Register an in-session slash command (``/name``); handler ``fn(raw_args: str) -> str | None``
-        (sync or async). ``args_hint`` (e.g. ``"<file>"``) lets adapters like Discord surface an argument
-        field; without it the command registers parameterless there but still accepts trailing text."""
+        """Register an in-session slash command (``/name``).
+
+        Handlers may accept keyword context such as ``session_id`` (the
+        persisted physical id, or ``None`` before creation), durable
+        ``session_key``, and ``platform``; one-argument handlers remain valid.
+        """
         clean = name.lower().strip().lstrip("/").replace(" ", "-")
         if not clean:
             logger.warning("Plugin '%s' tried to register a command with an empty name.", self.manifest.name)
@@ -2158,6 +2161,36 @@ def get_plugin_command_handler(name: str) -> Optional[Callable]:
     """Return the handler for a plugin-registered slash command, or ``None``."""
     entry = _ensure_plugins_discovered()._plugin_commands.get(name)
     return entry["handler"] if entry else None
+
+
+def invoke_plugin_command(handler: Callable, raw_args: str, **context: Any) -> Any:
+    """Invoke a slash-command handler with only the context it declares."""
+    try:
+        signature = inspect.signature(handler)
+    except (TypeError, ValueError):
+        return handler(raw_args)
+    parameter_list = list(signature.parameters.values())
+    try:
+        bound = signature.bind_partial(raw_args)
+    except TypeError:
+        return handler(raw_args)
+    accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameter_list)
+    accepted_names = {
+        p.name for p in parameter_list
+        if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    }
+    unbound_context = {name: value for name, value in context.items() if name not in bound.arguments}
+    if accepts_kwargs:
+        accepted_context = unbound_context
+    else:
+        accepted_context = {
+            name: value for name, value in unbound_context.items() if name in accepted_names
+        }
+    try:
+        signature.bind_partial(raw_args, **accepted_context)
+    except TypeError:
+        return handler(raw_args)
+    return handler(raw_args, **accepted_context)
 
 
 _PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0

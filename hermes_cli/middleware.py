@@ -20,9 +20,28 @@ TOOL_REQUEST_MIDDLEWARE = "tool_request"
 TOOL_EXECUTION_MIDDLEWARE = "tool_execution"
 LLM_REQUEST_MIDDLEWARE = "llm_request"
 LLM_EXECUTION_MIDDLEWARE = "llm_execution"
+# Turn-route middleware runs once before Hermes constructs a provider client or
+# agent; it is separate from request middleware for an already selected route.
+TURN_ROUTE_MIDDLEWARE = "turn_route"
+PUBLIC_TURN_RUNTIME_KEYS = ("provider", "requested_provider", "api_mode")
+
+
+def public_turn_route(model: str, runtime: Dict[str, Any]) -> Dict[str, Any]:
+    """Build the redacted route DTO exposed to turn-route middleware."""
+    return {
+        "model": model,
+        "provider": runtime.get("provider"),
+        "requested_provider": runtime.get("requested_provider"),
+        "runtime": {
+            key: runtime.get(key)
+            for key in PUBLIC_TURN_RUNTIME_KEYS
+            if runtime.get(key) not in (None, "")
+        },
+    }
 
 VALID_MIDDLEWARE: set[str] = {
     TOOL_REQUEST_MIDDLEWARE, TOOL_EXECUTION_MIDDLEWARE, LLM_REQUEST_MIDDLEWARE, LLM_EXECUTION_MIDDLEWARE,
+    TURN_ROUTE_MIDDLEWARE,
 }
 
 
@@ -96,6 +115,40 @@ def apply_llm_request_middleware(request: Dict[str, Any], **context: Any) -> Req
     return _apply_request_chain(
         LLM_REQUEST_MIDDLEWARE, "request", [], original_request,
         request=_safe_copy(original_request), original_request=original_request, **context,
+    )
+
+
+def apply_turn_route_middleware(route: Dict[str, Any], **context: Any) -> RequestMiddlewareResult:
+    """Apply pre-agent turn routing middleware to a public, credential-free route."""
+    from hermes_cli.plugins import has_middleware
+
+    if not has_middleware(TURN_ROUTE_MIDDLEWARE):
+        return RequestMiddlewareResult(payload=route, original_payload=route)
+    original_route = _safe_copy(route)
+    current_route = _safe_copy(original_route)
+    trace: List[Dict[str, Any]] = []
+    from hermes_cli.plugins import invoke_middleware
+
+    for result in invoke_middleware(
+        TURN_ROUTE_MIDDLEWARE,
+        route=current_route,
+        original_route=original_route,
+        **middleware_payload(**context),
+    ):
+        if not isinstance(result, dict) or not isinstance(result.get("route"), dict):
+            continue
+        current_route = _safe_copy(result["route"])
+        entry = {
+            key: value
+            for key in ("source", "reason", "name")
+            if isinstance(value := result.get(key), str) and value
+        }
+        trace.append(entry or {"source": "plugin"})
+    return RequestMiddlewareResult(
+        payload=current_route,
+        original_payload=original_route,
+        changed=current_route != original_route,
+        trace=trace,
     )
 
 

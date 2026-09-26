@@ -1,5 +1,6 @@
 """Tests for gateway /fast support and Priority Processing routing."""
 
+import asyncio
 import sys
 import threading
 import types
@@ -129,6 +130,99 @@ def test_turn_route_injects_priority_processing_without_changing_runtime():
     assert route["request_overrides"] == {}
 
 
+def test_turn_route_reports_history_derived_first_turn(monkeypatch):
+    runner = _make_runner()
+    seen = []
+
+    def fake_apply(route, **context):
+        seen.append(context["is_first_turn"])
+        return SimpleNamespace(changed=False, payload=route, trace=[])
+
+    monkeypatch.setattr("hermes_cli.middleware.apply_turn_route_middleware", fake_apply)
+    runtime_kwargs = {
+        "api_key": "***", "base_url": "https://api.openai.com/v1", "provider": "openai",
+        "api_mode": "chat_completions", "command": None, "args": [], "credential_pool": None,
+    }
+
+    gateway_run.GatewayRunner._resolve_turn_agent_config(
+        runner, "first", "gpt-5.4", runtime_kwargs, source=_make_source(), conversation_history=[], internal=False
+    )
+    gateway_run.GatewayRunner._resolve_turn_agent_config(
+        runner, "later", "gpt-5.4", runtime_kwargs, source=_make_source(),
+        conversation_history=[{"role": "user", "content": "first"}], internal=False,
+    )
+
+    assert seen == [True, False]
+
+
+def test_turn_route_resolves_requested_provider_alias(monkeypatch):
+    runner = _make_runner()
+
+    def fake_apply(route, **_context):
+        return SimpleNamespace(
+            changed=True,
+            payload={**route, "model": "target", "provider": "custom",
+                     "requested_provider": "custom:beta",
+                     "runtime": {**route["runtime"], "requested_provider": "custom:beta", "api_mode": "invalid"}},
+            trace=[],
+        )
+
+    monkeypatch.setattr("hermes_cli.middleware.apply_turn_route_middleware", fake_apply)
+    resolver = MagicMock(return_value={
+        "provider": "custom", "requested_provider": "custom:beta",
+        "api_key": "beta-key", "base_url": "https://beta.example/v1", "api_mode": "responses",
+    })
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs_for_provider", resolver)
+    route = runner._resolve_turn_agent_config(
+        "route", "primary", {
+            "provider": "custom", "requested_provider": "custom:alpha",
+            "api_key": "alpha-key", "base_url": "https://alpha.example/v1",
+            "api_mode": "chat_completions",
+        }, session_id="session-1", session_key="chat-1", source=_make_source(),
+        internal=False,
+    )
+
+    resolver.assert_called_once_with("custom:beta", target_model="target")
+    assert route["runtime"]["provider"] == "custom"
+    assert route["runtime"]["requested_provider"] == "custom:beta"
+    assert route["runtime"]["api_key"] == "beta-key"
+    assert route["runtime"]["api_mode"] == "responses"
+
+
+def test_turn_route_resolves_same_provider_model_change(monkeypatch):
+    """A model-only selection must still resolve the selected model's api_mode/base_url."""
+    runner = _make_runner()
+
+    def fake_apply(route, **_context):
+        return SimpleNamespace(
+            changed=True,
+            payload={**route, "model": "claude-sonnet-4-5", "provider": "opencode-zen",
+                     "requested_provider": "opencode-zen"},
+            trace=[],
+        )
+
+    monkeypatch.setattr("hermes_cli.middleware.apply_turn_route_middleware", fake_apply)
+    resolver = MagicMock(return_value={
+        "provider": "opencode-zen", "requested_provider": "opencode-zen",
+        "api_key": "zen-key", "base_url": "https://opencode.ai/zen",
+        "api_mode": "anthropic_messages", "request_overrides": {},
+    })
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs_for_provider", resolver)
+    route = runner._resolve_turn_agent_config(
+        "route", "gpt-5.4", {
+            "provider": "opencode-zen", "requested_provider": "opencode-zen",
+            "api_key": "zen-key", "base_url": "https://opencode.ai/zen/v1",
+            "api_mode": "codex_responses",
+        }, session_id="session-1", session_key="chat-1", source=_make_source(),
+        internal=False,
+    )
+
+    resolver.assert_called_once_with("opencode-zen", target_model="claude-sonnet-4-5")
+    assert route["runtime"]["provider"] == "opencode-zen"
+    assert route["runtime"]["api_mode"] == "anthropic_messages"
+    assert route["runtime"]["base_url"] == "https://opencode.ai/zen"
+
+
 @pytest.mark.asyncio
 async def test_handle_fast_command_global_flag_persists_config(monkeypatch, tmp_path):
     runner = _make_runner()
@@ -174,3 +268,45 @@ async def test_session_fast_override_beats_config_default(monkeypatch, tmp_path)
     assert runner._resolve_session_service_tier(session_key="other-session") == "priority"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["sync", "async", "sync_returns_coroutine"])
+async def test_plugin_command_retains_session_context(monkeypatch, kind):
+    """Async handlers and sync handlers returning coroutines must run while session ContextVars are bound."""
+    from gateway.session_context import get_session_env
+
+    runner = _make_runner()
+    runner._draining = False
+    runner._hm_quick_commands = lambda: {}
+    runner._session_key_for_source = lambda source: "durable-chat"
+    runner.session_store = SimpleNamespace(peek_session_id=lambda key: "physical-chat")
+    runner.config.get_connected_platforms = lambda: []
+    runner._run_in_executor_with_context = asyncio.to_thread
+
+    seen = []
+
+    def capture(args, **context):
+        seen.append((
+            get_session_env("HERMES_SESSION_CHAT_ID"),
+            get_session_env("HERMES_SESSION_KEY"),
+        ))
+        return "ok"
+
+    async def async_capture(args, **context):
+        await asyncio.sleep(0)
+        return capture(args, **context)
+
+    handler = {
+        "sync": capture,
+        "async": async_capture,
+        "sync_returns_coroutine": lambda args, **kw: async_capture(args, **kw),
+    }[kind]
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_command_handler", lambda name: handler)
+
+    source = _make_source()
+    source.chat_id = "intended-chat"
+    event = MessageEvent(text="/probe hi", source=source)
+    handled, result, _command = await runner._hm_dispatch_quick_and_plugin_commands(event, source, "probe")
+
+    assert handled is True
+    assert result == "ok"
+    assert seen == [("intended-chat", "durable-chat")]

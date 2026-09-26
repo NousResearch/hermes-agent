@@ -124,6 +124,7 @@ class TestFastModeRouting(unittest.TestCase):
             acp_args=[],
             _credential_pool=None,
             service_tier="priority",
+            reasoning_config=None,
         )
 
         route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")
@@ -151,12 +152,68 @@ class TestFastModeRouting(unittest.TestCase):
             acp_args=[],
             _credential_pool=None,
             service_tier="priority",
+            reasoning_config=None,
         )
 
         route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")
 
         assert route["runtime"]["provider"] == "openrouter"
         assert route.get("request_overrides") is None
+
+    def test_turn_route_first_turn_uses_history_not_agent_construction_state(self):
+        cli_mod = _import_cli()
+        stub = SimpleNamespace(
+            model="primary", api_key="primary-key", base_url="https://api.example/v1",
+            provider="custom", requested_provider="custom", api_mode="chat_completions",
+            acp_command=None, acp_args=[], _credential_pool=None, service_tier=None,
+            reasoning_config=None,
+            session_id="session-1", agent=object(), conversation_history=[],
+        )
+        seen = []
+
+        def fake_apply(route, **context):
+            seen.append(context["is_first_turn"])
+            return SimpleNamespace(changed=False, payload=route, trace=[])
+
+        with patch("hermes_cli.middleware.apply_turn_route_middleware", fake_apply):
+            cli_mod.HermesCLI._resolve_turn_agent_config(stub, "first")
+            # A route change can rebuild the agent without starting a new turn.
+            stub.agent = None
+            stub.conversation_history = [{"role": "user", "content": "first"}]
+            cli_mod.HermesCLI._resolve_turn_agent_config(stub, "later")
+
+        assert seen == [True, False]
+
+    def test_turn_route_resolves_requested_provider_alias(self):
+        cli_mod = _import_cli()
+        stub = SimpleNamespace(
+            model="primary", api_key="alpha-key", base_url="https://alpha.example/v1",
+            provider="custom", requested_provider="custom:alpha", api_mode="chat_completions",
+            acp_command=None, acp_args=[], _credential_pool=None, service_tier=None,
+            agent=None, session_id="session-1",
+        )
+
+        def fake_apply(route, **_context):
+            return SimpleNamespace(
+                changed=True,
+                payload={**route, "model": "target", "provider": "custom",
+                         "requested_provider": "custom:beta",
+                         "runtime": {**route["runtime"], "requested_provider": "custom:beta", "api_mode": "invalid"}},
+                trace=[],
+            )
+
+        with patch("hermes_cli.middleware.apply_turn_route_middleware", fake_apply), patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value={"provider": "custom", "requested_provider": "custom:beta",
+                          "api_key": "beta-key", "base_url": "https://beta.example/v1",
+                          "api_mode": "responses"},
+        ) as resolve:
+            route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "route")
+
+        resolve.assert_called_once_with(requested="custom:beta", target_model="target")
+        assert route["runtime"]["api_key"] == "beta-key"
+        assert route["runtime"]["provider"] == "custom"
+        assert route["runtime"]["api_mode"] == "responses"
 
 class TestAnthropicFastMode(unittest.TestCase):
     """Verify Anthropic Fast Mode model support and override resolution."""
@@ -228,6 +285,7 @@ class TestAnthropicFastMode(unittest.TestCase):
             acp_args=[],
             _credential_pool=None,
             service_tier="priority",
+            reasoning_config=None,
         )
 
         route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")

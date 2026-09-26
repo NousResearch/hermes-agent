@@ -4,11 +4,16 @@ imported lazily inside each method (import cycle)."""
 
 from __future__ import annotations
 
+import hmac
+import secrets
 import sys
 
 from rich.markup import escape as _escape
 
 from utils import base_url_host_matches
+
+
+_ROUTE_CREDENTIAL_SALT = secrets.token_bytes(32)
 
 
 def _single_query_clarify_callback(question: str, choices=None, multi_select=False) -> str:
@@ -45,10 +50,15 @@ def _current_runtime(cli) -> dict:
 
 
 def _route_signature(model, runtime: dict) -> tuple:
-    """Hashable identity of (model, routing) used to detect when the agent must be rebuilt."""
+    """Host-private client reuse identity; never include it in middleware DTOs or traces."""
+    api_key = runtime.get("api_key")
+    # Bearer-token callbacks refresh per request and may be recreated by the
+    # resolver each turn. Do not invoke them or key reuse on callable identity.
+    credential = ("per-request",) if callable(api_key) else (
+        "static", hmac.digest(_ROUTE_CREDENTIAL_SALT, (api_key or "").encode("utf-8"), "sha256"))
     return (
         model, runtime.get("provider"), runtime.get("requested_provider"), runtime.get("base_url"),
-        runtime.get("api_mode"), runtime.get("command"), tuple(runtime.get("args") or ()))
+        runtime.get("api_mode"), runtime.get("command"), tuple(runtime.get("args") or ()), credential)
 
 
 def _cooldown_cause(entry) -> str:
@@ -521,6 +531,60 @@ class CLIAgentSetupMixin:
         from hermes_cli.models import resolve_fast_mode_overrides
         runtime = _current_runtime(self)
         route = {"model": self.model, "runtime": runtime, "signature": _route_signature(self.model, runtime)}
+        if not getattr(self, "_skip_turn_routing", False):
+            try:
+                from hermes_cli.middleware import apply_turn_route_middleware, public_turn_route
+                result = apply_turn_route_middleware(
+                    public_turn_route(route["model"], runtime),
+                    user_message=user_message,
+                    session_id=getattr(self, "session_id", None),
+                    session_key=getattr(self, "session_id", None),
+                    source="cli",
+                    is_user_turn=True,
+                    is_first_turn=not bool(getattr(self, "conversation_history", None)),
+                    internal=False,
+                    tool_continuation=False,
+                )
+                if result.changed and isinstance(result.payload, dict):
+                    selected_model = result.payload.get("model")
+                    selected_runtime = result.payload.get("runtime")
+                    selected_runtime = selected_runtime if isinstance(selected_runtime, dict) else {}
+                    current_requested = runtime.get("requested_provider") or runtime.get("provider")
+                    current_canonical = runtime.get("provider")
+                    top_requested = result.payload.get("requested_provider")
+                    nested_requested = selected_runtime.get("requested_provider")
+                    requested = nested_requested if nested_requested and nested_requested != current_requested else (top_requested or nested_requested)
+                    canonical = result.payload.get("provider") or selected_runtime.get("provider")
+                    selected_provider = requested if requested and requested != current_requested else (canonical if canonical and canonical != current_canonical else (requested or canonical or current_requested))
+                    if isinstance(selected_model, str) and selected_model.strip() and isinstance(selected_provider, str) and selected_provider.strip():
+                        selected_model = selected_model.strip()
+                        selected_provider = selected_provider.strip()
+                        if selected_provider != current_requested or selected_model != self.model:
+                            from hermes_cli.runtime_provider import resolve_runtime_provider
+                            resolved = resolve_runtime_provider(requested=selected_provider, target_model=selected_model)
+                            runtime = {
+                                "api_key": resolved.get("api_key"), "base_url": resolved.get("base_url"),
+                                "provider": resolved.get("provider", selected_provider),
+                                "requested_provider": selected_provider,
+                                "api_mode": resolved.get("api_mode", self.api_mode),
+                                "command": resolved.get("command"), "args": list(resolved.get("args") or []),
+                                "credential_pool": resolved.get("credential_pool"),
+                            }
+                        runtime["requested_provider"] = selected_provider
+                        route["model"] = selected_model
+                        route["runtime"] = runtime
+                        route["middleware_trace"] = result.trace
+            except Exception as exc:
+                from cli import logger
+                logger.warning("Turn-route middleware failed open: %s", exc)
+        # Reasoning policy is model-owned. Keep an explicit CLI --reasoning choice,
+        # otherwise resolve the per-model/global policy for the route selected for this turn.
+        if route["model"] == self.model or getattr(self, "_explicit_reasoning_config", None) is not None:
+            runtime["reasoning_config"] = self.reasoning_config
+        else:
+            from cli import CLI_CONFIG
+            from hermes_constants import resolve_reasoning_config
+            runtime["reasoning_config"] = resolve_reasoning_config(CLI_CONFIG, route["model"])
         overrides = None
         if getattr(self, "service_tier", None) == "priority":
             try:
@@ -529,6 +593,7 @@ class CLIAgentSetupMixin:
             except Exception:
                 pass
         route["request_overrides"] = overrides
+        route["signature"] = _route_signature(route["model"], route["runtime"])
         return route
 
     def _follow_compression_chain(self, session_meta, announce):
@@ -670,7 +735,7 @@ class CLIAgentSetupMixin:
                 tool_progress_mode=getattr(self, "tool_progress_mode", "all"),
                 ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
                 prefill_messages=self.prefill_messages or None,
-                reasoning_config=self.reasoning_config, service_tier=self.service_tier,
+                reasoning_config=runtime.get("reasoning_config", self.reasoning_config), service_tier=self.service_tier,
                 request_overrides=request_overrides, providers_allowed=self._providers_only,
                 providers_ignored=self._providers_ignore, providers_order=self._providers_order,
                 provider_sort=self._provider_sort,

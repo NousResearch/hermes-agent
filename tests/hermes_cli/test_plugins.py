@@ -20,12 +20,14 @@ from hermes_cli.plugins import (
     get_pre_tool_call_block_message,
     get_pre_verify_continue_message,
     has_middleware,
+    invoke_plugin_command,
     resolve_plugin_command_result,
     _portable_skill_namespace,
 )
 from hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV
 from hermes_cli.middleware import (
     apply_llm_request_middleware,
+    apply_turn_route_middleware,
     apply_tool_request_middleware,
     run_llm_execution_middleware,
     run_tool_execution_middleware,
@@ -42,6 +44,46 @@ def test_portable_skill_namespace_is_ascii_safe():
 
     assert namespace.isascii()
     assert is_valid_namespace(namespace)
+
+
+@pytest.mark.parametrize("parameter_name", ["session_id", "session_key", "platform"])
+def test_legacy_plugin_command_parameter_names_keep_raw_args(parameter_name):
+    calls = []
+    handlers = {
+        "session_id": lambda session_id: calls.append(session_id),
+        "session_key": lambda session_key: calls.append(session_key),
+        "platform": lambda platform: calls.append(platform),
+    }
+
+    invoke_plugin_command(
+        handlers[parameter_name], "literal-user-args",
+        session_id="physical-session", session_key="durable-session", platform="telegram",
+    )
+
+    assert calls == ["literal-user-args"]
+
+
+def test_plugin_command_context_reaches_opt_in_parameters():
+    calls = []
+
+    def keyword_context(raw_args, *, session_key=None):
+        calls.append((raw_args, session_key))
+
+    def all_context(raw_args, **context):
+        calls.append((raw_args, context))
+
+    invoke_plugin_command(keyword_context, "literal-user-args", session_key="durable-session")
+    invoke_plugin_command(
+        all_context, "literal-user-args",
+        session_id="physical-session", session_key="durable-session", platform="telegram",
+    )
+
+    assert calls == [
+        ("literal-user-args", "durable-session"),
+        ("literal-user-args", {
+            "session_id": "physical-session", "session_key": "durable-session", "platform": "telegram",
+        }),
+    ]
 
 
 def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",
@@ -1324,6 +1366,59 @@ class TestForceReloadSymmetry:
         with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
             assert mgr.invoke_middleware("tool_call") == ["survived"]
         assert "middleware requested process exit" in caplog.text
+
+    @pytest.mark.parametrize("followed_by_noop", [False, True])
+    def test_failed_turn_route_middleware_mutation_is_discarded(self, monkeypatch, followed_by_noop):
+        """A failed route callback cannot change the effective route or poison later callbacks."""
+        route = {"model": "configured-model", "provider": "configured-provider", "runtime": {}}
+        seen_by_noop = []
+
+        def mutates_then_raises(route, **_kwargs):
+            route["model"] = "wrong-model"
+            raise RuntimeError("route callback failed")
+
+        def noop(route, **_kwargs):
+            seen_by_noop.append(route.copy())
+
+        manager = PluginManager()
+        manager._middleware["turn_route"] = [mutates_then_raises]
+        if followed_by_noop:
+            manager._middleware["turn_route"].append(noop)
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        result = apply_turn_route_middleware(route)
+
+        assert result.payload == route
+        assert result.changed is False
+        assert result.trace == []
+        assert route["model"] == "configured-model"
+        assert seen_by_noop == ([route] if followed_by_noop else [])
+
+    def test_successful_turn_route_middleware_callbacks_chain(self, monkeypatch):
+        """Each successful route decision is the next callback's input."""
+        route = {"model": "configured-model", "provider": "configured-provider", "runtime": {}}
+        seen_by_second = []
+
+        def select_intermediate(route, **_kwargs):
+            route["model"] = "intermediate-model"
+            return {"route": route}
+
+        def refine_route(route, **_kwargs):
+            seen_by_second.append(route.copy())
+            route["model"] = "final-model"
+            return {"route": route}
+
+        manager = PluginManager()
+        manager._middleware["turn_route"] = [select_intermediate, refine_route]
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        result = apply_turn_route_middleware(route)
+
+        assert seen_by_second == [{**route, "model": "intermediate-model"}]
+        assert result.payload["model"] == "final-model"
+        assert result.changed is True
+        assert result.trace == [{"source": "plugin"}, {"source": "plugin"}]
+        assert route["model"] == "configured-model"
 
     def test_hung_callback_suppresses_repeat_fires(self, monkeypatch):
         """A still-running timed-out callback must not spawn another worker."""

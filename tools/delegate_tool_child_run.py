@@ -795,7 +795,9 @@ class _ChildRun:
         mid-tool (#116001). A provider serving multi-minute completions is progress — the child's activity clock
         ticks during the wait and the request is bounded by the per-call stale watchdog — so the budget restarts on
         every sign of progress, exactly the signals the heartbeat's stale verdict reads. Genuinely frozen children
-        keep two authorities: this budget (when configured) and the heartbeat's stale threshold.
+        keep two authorities that must not overlap: this budget governs IDLE windows (a window that expires while a
+        tool is running is suspended, and the heartbeat's in-tool stale threshold — 1200s of frozen activity — is
+        the sole killer mid-tool), and the heartbeat's idle stale threshold covers children with no cap configured.
         """
         if child_timeout is None:
             settled.wait()
@@ -808,10 +810,16 @@ class _ChildRun:
             now = time.monotonic()
             remaining = deadline - now
             if remaining <= 0:
-                return  # no progress for the whole budget
-            wait = min(_LIVENESS_POLL_SECONDS, remaining)
-            if not warned:
-                wait = min(wait, max(warn_at - now, 0.0))
+                if fingerprint[1] is None:
+                    return  # no progress for the whole window, idle between turns
+                # Expired mid-tool: suspend the window and keep polling. The heartbeat's in-tool stale
+                # verdict (or the tool finishing) ends the wait; a configured cap must not kill a child
+                # the runtime still sees working inside a tool (#116001, spec §5 option b).
+                wait = _LIVENESS_POLL_SECONDS
+            else:
+                wait = min(_LIVENESS_POLL_SECONDS, remaining)
+                if not warned:
+                    wait = min(wait, max(warn_at - now, 0.0))
             settled.wait(timeout=wait)
             if settled.is_set():
                 return  # the worker finished, or the heartbeat declared the child stale

@@ -468,7 +468,8 @@ def _target_regular_file_state(filepath: str, task_id: str = "default") -> str:
         _size, status = file_ops._probe_regular_file(file_ops._expand_path(resolved or filepath))
     except Exception:
         return "unavailable"
-    if status == "ok":
+    if status in ("ok", "bad_size"):
+        # bad_size: ``[ -f ]`` succeeded, only ``wc`` was unparseable.
         return "exists"
     if status in ("missing", "not_regular"):
         # not_regular: no REGULAR file at the path (dir/FIFO/dangling link) —

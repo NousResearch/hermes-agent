@@ -31,7 +31,7 @@ if os.name == "posix":
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
-from gateway.config import coerce_systemd_watchdog_seconds, load_gateway_config  # noqa: F401 — resolved lazily by siblings through the facade
+from gateway.config import coerce_systemd_memory_limit, coerce_systemd_watchdog_seconds, load_gateway_config  # noqa: F401 — resolved lazily by siblings through the facade
 from gateway.status import terminate_pid
 from gateway.restart import (  # noqa: F401 — resolved lazily by siblings through the facade
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
@@ -3085,6 +3085,42 @@ def _systemd_watchdog_seconds(hermes_home: str | Path | None = None) -> int:
             reset_home_override(override_token)
 
 
+def _systemd_memory_directives(hermes_home: str | Path | None = None) -> str:
+    """Optional memory-accounting/limit lines for a service home ("" when unset).
+
+    Opt-in only: unset knobs keep the generated unit byte-identical so existing installs are
+    never re-stamped by surprise. When either limit is set, MemoryAccounting=yes is emitted
+    alongside it so the ceiling is enforced on hosts whose default accounting is off.
+    # ponytail: no MemTotal-derived defaults (every host stays unbounded until the operator
+    # opts in); derive percentage defaults from MemTotal if unbounded-by-default becomes the risk.
+    """
+    override_token = reset_home_override = None
+    if hermes_home is not None:
+        from hermes_constants import (reset_hermes_home_override, set_hermes_home_override)
+        override_token = set_hermes_home_override(hermes_home)
+        reset_home_override = reset_hermes_home_override
+    try:
+        config = load_gateway_config()
+        high = coerce_systemd_memory_limit(getattr(config, "systemd_memory_high", None))
+        max_ = coerce_systemd_memory_limit(
+            getattr(config, "systemd_memory_max", None), "gateway.systemd_memory_max"
+        )
+    except Exception:
+        logger.debug("Could not resolve effective systemd memory configuration", exc_info=True)
+        return ""
+    finally:
+        if override_token is not None and reset_home_override is not None:
+            reset_home_override(override_token)
+    if high is None and max_ is None:
+        return ""
+    lines = ["MemoryAccounting=yes"]
+    if high is not None:
+        lines.append(f"MemoryHigh={high}")
+    if max_ is not None:
+        lines.append(f"MemoryMax={max_}")
+    return "".join(f"{line}\n" for line in lines)
+
+
 def _pm_managed_node_dirs(home: Path) -> list[str]:
     """Node dirs pm's installed-state records under *home*'s store, resolved
     via ``Facts.env_for`` (``{{store}}`` templates against the store beside
@@ -3240,6 +3276,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         wanted_by = "default.target"
 
     watchdog_seconds = _systemd_watchdog_seconds(hermes_home)
+    systemd_memory_directives = _systemd_memory_directives(hermes_home)
     systemd_type, systemd_watchdog_directives = "simple", ""
     if watchdog_seconds > 0:
         systemd_type, systemd_watchdog_directives = "notify", f"NotifyAccess=main\nWatchdogSec={watchdog_seconds}s\n"
@@ -3274,7 +3311,7 @@ SuccessExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
-ExecReload=/bin/kill -USR1 $MAINPID
+{systemd_memory_directives}ExecReload=/bin/kill -USR1 $MAINPID
 ExecStop=-{_systemd_command(stop_mark)}
 ExecStopPost=-{_systemd_command(cleanup)}
 TimeoutStopSec={restart_timeout}

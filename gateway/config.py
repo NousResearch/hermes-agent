@@ -130,6 +130,51 @@ def coerce_systemd_watchdog_seconds(
     return parsed
 
 
+_SYSTEMD_MEMORY_LIMIT_RE = None  # compiled lazily: absolute bytes or percent per systemd.resource-control(5)
+
+
+def coerce_systemd_memory_limit(value: Any, key: str = "gateway.systemd_memory_high") -> Optional[str]:
+    """Canonical systemd memory limit ("3G", "512M", "25%", bare bytes), or None when unset/invalid.
+    Shared by config load and service generation so a typo can never bake a bad directive into the unit."""
+    global _SYSTEMD_MEMORY_LIMIT_RE
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        logger.warning("Ignoring invalid %s=%r (expected a systemd memory limit like 3G or 25%%)", key, value)
+        return None
+    if isinstance(value, int):
+        return str(value) if value > 0 else None
+    if not isinstance(value, str):
+        logger.warning("Ignoring invalid %s=%r (expected a systemd memory limit like 3G or 25%%)", key, value)
+        return None
+    text = value.strip()
+    if not text or text.lower() == "infinity":
+        return None
+    if _SYSTEMD_MEMORY_LIMIT_RE is None:
+        import re
+        _SYSTEMD_MEMORY_LIMIT_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*([KMGTkmgt]|%)?$")
+    match = _SYSTEMD_MEMORY_LIMIT_RE.match(text)
+    if match is None:
+        logger.warning("Ignoring invalid %s=%r (expected a systemd memory limit like 3G or 25%%)", key, value)
+        return None
+    amount, suffix = match.groups()
+    try:
+        number = float(amount)
+    except ValueError:
+        logger.warning("Ignoring invalid %s=%r (expected a systemd memory limit like 3G or 25%%)", key, value)
+        return None
+    if not number > 0:
+        return None
+    if suffix == "%":
+        if number > 100:
+            logger.warning("Ignoring invalid %s=%r (percentage memory limits cap at 100%%)", key, value)
+            return None
+        return f"{amount}%"
+    if suffix is not None:
+        return f"{amount}{suffix.upper()}"
+    return amount
+
+
 def _coerce_dict(value: Any) -> Dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
@@ -621,6 +666,12 @@ class GatewayConfig:
     # route); HERMES_ROOM_LINK_URL overrides.
     room_link_url: Optional[str] = None
     systemd_watchdog_seconds: int = 0  # opt-in; zero keeps Type=simple and disables sd_notify
+    # Opt-in systemd cgroup ceiling for the gateway service itself (#123176). Unset keeps the
+    # generated unit byte-identical (unbounded cgroup, as today); a typo normalizes to unset with
+    # a warning so a bad value can never bake a broken directive into the unit. MemoryHigh
+    # throttles/reclaims, MemoryMax is the hard backstop confining the kill to our own cgroup.
+    systemd_memory_high: Optional[str] = None
+    systemd_memory_max: Optional[str] = None
     # In-process loop liveness watchdog: after consecutive missed probes it dumps all-thread stacks
     # and hard-exits with the service-restart code. The knobs tolerate transient self-recovering
     # stalls (adapter reconnect doing sync socket I/O) so a short block does not cause restart churn.
@@ -647,13 +698,18 @@ class GatewayConfig:
         "write_sessions_json", "always_log_local", "filter_silence_narration", "stt_enabled",
         "stt_echo_transcripts", "group_sessions_per_user", "thread_sessions_per_user",
         "max_concurrent_sessions", "multiplex_profiles",
-        "room_link_url", "systemd_watchdog_seconds", "loop_watchdog",
+        "room_link_url", "systemd_watchdog_seconds", "systemd_memory_high", "systemd_memory_max",
+        "loop_watchdog",
         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
         "loop_watchdog_max_strikes", "unauthorized_dm_behavior", "unauthorized_dm_decline_message",
     )
 
     def __post_init__(self) -> None:
         self.systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(self.systemd_watchdog_seconds)
+        self.systemd_memory_high = coerce_systemd_memory_limit(self.systemd_memory_high)
+        self.systemd_memory_max = coerce_systemd_memory_limit(
+            self.systemd_memory_max, "gateway.systemd_memory_max"
+        )
 
     def get_connected_platforms(self) -> List[Platform]:
         """Enabled + configured platforms, sorted by value so the rendered "Connected
@@ -761,6 +817,12 @@ class GatewayConfig:
         systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(
             pick("systemd_watchdog_seconds"), key_label("systemd_watchdog_seconds")
         )
+        systemd_memory_high = coerce_systemd_memory_limit(
+            pick("systemd_memory_high"), key_label("systemd_memory_high")
+        )
+        systemd_memory_max = coerce_systemd_memory_limit(
+            pick("systemd_memory_max"), key_label("systemd_memory_max")
+        )
         # env > config.yaml > unset: a recognized GATEWAY_MULTIPLEX_PROFILES wins (hosted deployments
         # stamp it on the container); blank/unrecognized falls through to the top-level VALUE when not
         # None, else ``gateway.multiplex_profiles``. Nothing set stays ``None`` so the boot-time guard
@@ -793,6 +855,8 @@ class GatewayConfig:
             multiplex_profiles=None if multiplex_profiles is None else _coerce_bool(multiplex_profiles, True),
             room_link_url=room_link_url if isinstance(room_link_url, str) else None,
             systemd_watchdog_seconds=systemd_watchdog_seconds,
+            systemd_memory_high=systemd_memory_high,
+            systemd_memory_max=systemd_memory_max,
             loop_watchdog=_coerce_bool(pick("loop_watchdog"), True),
             loop_watchdog_probe_interval_s=bounded_float("loop_watchdog_probe_interval_s", DEFAULT_LOOP_WATCHDOG_INTERVAL_S, 1.0, 3600.0),
             loop_watchdog_probe_timeout_s=bounded_float("loop_watchdog_probe_timeout_s", DEFAULT_LOOP_WATCHDOG_TIMEOUT_S, 1.0, 600.0),

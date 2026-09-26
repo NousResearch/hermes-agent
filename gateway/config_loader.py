@@ -93,6 +93,8 @@ _TOPLEVEL_BRIDGE: tuple = (
     ("profile_routes", "profile_routes", "none", lambda v: isinstance(v, list), None),
     *_presence("max_concurrent_sessions"),
     ("systemd_watchdog_seconds", "systemd_watchdog_seconds", "nested", None, None),
+    ("systemd_memory_high", "systemd_memory_high", "nested", None, None),
+    ("systemd_memory_max", "systemd_memory_max", "nested", None, None),
     ("streaming", "streaming", "dict", None, None),
     *_presence(
         "reset_triggers", "always_log_local", "write_sessions_json", "loop_watchdog",

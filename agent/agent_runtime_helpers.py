@@ -162,6 +162,40 @@ def _trajectory_tool_responses(msg: Dict[str, Any], messages: List[Dict[str, Any
     return tool_responses, j
 
 
+def mirror_skill_write_to_memory_providers(
+    agent: Any,
+    function_name: str,
+    tool_result: Any,
+    tool_args: Dict[str, Any],
+    *,
+    task_id: str = "",
+    tool_call_id: Optional[str] = None,
+) -> None:
+    """Mirror a committed built-in skill_manage write to external providers.
+
+    Shared by both executor paths (the sequential inline dispatcher in
+    agent/tool_executor.py and the concurrent ``invoke_tool`` below) so skill
+    writes are observed consistently regardless of which executor ran the
+    tool. No-op for every other tool. All gating (committed-only, mutating
+    actions, action→payload mapping) lives behind the manager interface
+    (``MemoryManager.notify_skill_tool_write``).
+    """
+    if function_name != "skill_manage":
+        return
+    memory_manager = getattr(agent, "_memory_manager", None)
+    if not memory_manager:
+        return
+    memory_manager.notify_skill_tool_write(
+        tool_result,
+        tool_args,
+        build_metadata=lambda: agent._build_memory_write_metadata(
+            task_id=task_id,
+            tool_call_id=tool_call_id,
+            tool_name="skill_manage",
+        ),
+    )
+
+
 def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_query: str, completed: bool) -> List[Dict[str, Any]]:
     """Convert internal message history to trajectory format for saving."""
     # Trajectories are text-only: swap image-bearing tool messages for their text_summary so ~1MB
@@ -2465,7 +2499,16 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             if skip_tool_execution_middleware:
                 dispatch_kwargs["skip_tool_execution_middleware"] = True
             import model_tools
-            return model_tools.handle_function_call(function_name, next_args, effective_task_id, **dispatch_kwargs)
+            result = model_tools.handle_function_call(function_name, next_args, effective_task_id, **dispatch_kwargs)
+            # Mirror successful built-in skill_manage writes to external
+            # providers — parity with the sequential executor path and with
+            # the memory-tool branch above.
+            mirror_skill_write_to_memory_providers(
+                agent, function_name, result, next_args,
+                task_id=effective_task_id,
+                tool_call_id=tool_call_id,
+            )
+            return result
     if skip_tool_execution_middleware:
         return _execute(function_args)
     from hermes_cli.middleware import run_tool_execution_middleware

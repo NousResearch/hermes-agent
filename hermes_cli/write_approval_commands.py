@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import List, Optional
 
 from tools import write_approval as wa
+
+logger = logging.getLogger(__name__)
 
 
 def _fmt_state(subsystem: str) -> str:
@@ -33,13 +36,16 @@ def _fmt_pending_list(subsystem: str) -> str:
 
 
 def handle_pending_subcommand(
-    subsystem: str, args: List[str], *, memory_store=None, set_mode_fn=None) -> Optional[str]:
+    subsystem: str, args: List[str], *, memory_store=None, memory_manager=None,
+    set_mode_fn=None) -> Optional[str]:
     """Dispatch a /memory or /skills write-approval subcommand.
 
     ``memory_store`` applies approved memory writes (CLI passes its live store; gateway a freshly
-    loaded one); ``set_mode_fn`` persists the write_approval boolean. Returns text for the user,
-    or None when the args are not a write-approval subcommand so the caller falls through to its
-    other handling (e.g. /skills search).
+    loaded one); ``memory_manager``, when given, mirrors approved skill writes to external memory
+    providers (the staged write bypassed the agent-loop bridge, so the approval replay is the only
+    point where the committed write can be observed); ``set_mode_fn`` persists the write_approval
+    boolean. Returns text for the user, or None when the args are not a write-approval subcommand
+    so the caller falls through to its other handling (e.g. /skills search).
     """
     if not args:
         return f"{_fmt_state(subsystem)}\n\n" + _fmt_pending_list(subsystem)
@@ -47,7 +53,7 @@ def handle_pending_subcommand(
     if sub == "pending":
         return _fmt_pending_list(subsystem)
     if sub in {"approve", "apply"}:
-        return _approve(subsystem, rest, memory_store)
+        return _approve(subsystem, rest, memory_store, memory_manager)
     if sub in {"reject", "deny", "drop"}:
         return _reject(subsystem, rest)
     if sub == "diff" and subsystem == wa.SKILLS:
@@ -61,7 +67,7 @@ def _usage(subsystem: str) -> str:
     return f"Usage: /{subsystem} approve|reject <id>  (or 'all')"
 
 
-def _approve(subsystem: str, rest: List[str], memory_store) -> str:
+def _approve(subsystem: str, rest: List[str], memory_store, memory_manager=None) -> str:
     if not rest:
         return _usage(subsystem)
     target = rest[0]
@@ -78,7 +84,7 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
 
     applied, failed, overwritten, removed = 0, [], [], []
     for rec in targets:
-        ok, msg, result = _apply_one(subsystem, rec, memory_store)
+        ok, msg, result = _apply_one(subsystem, rec, memory_store, memory_manager)
         if ok:
             wa.discard_pending(subsystem, rec["id"])
             applied += 1
@@ -119,7 +125,7 @@ def _matched_entries(payload) -> List[str]:
             for op in destructive_ops(payload)]
 
 
-def _apply_one(subsystem: str, rec, memory_store):
+def _apply_one(subsystem: str, rec, memory_store, memory_manager=None):
     """``(ok, error, result)`` — *result* is the applier's full payload (empty on exceptions)."""
     payload = rec.get("payload", {})
     try:
@@ -130,10 +136,40 @@ def _apply_one(subsystem: str, rec, memory_store):
             result = apply_memory_pending(payload, memory_store)
         else:
             from tools.skill_manager_tool import apply_skill_pending
-            result = json.loads(apply_skill_pending(payload))
+            raw_result = apply_skill_pending(payload)
+            result = json.loads(raw_result)
+            ok = bool(result.get("success"))
+            if ok and memory_manager is not None:
+                # The staged write was (correctly) skipped by the agent-loop
+                # bridge; the approval replay is where it actually commits, so
+                # mirror it to external providers here. Best-effort: a provider
+                # failure must never fail the approval itself.
+                _notify_skill_replay(memory_manager, raw_result, payload, rec)
         return bool(result.get("success")), result.get("error", ""), result
     except Exception as e:
         return False, str(e), {}
+
+
+def _notify_skill_replay(memory_manager, raw_result: str, payload, rec) -> None:
+    """Mirror an approved skill write to external memory providers.
+
+    The payload is the staged ``skill_manage`` kwargs recorded by the write
+    gate, so ``notify_skill_tool_write`` sees the exact argument shape a live
+    tool call would produce. Provenance marks the write as an approval replay
+    while preserving the origin that staged it.
+    """
+    try:
+        memory_manager.notify_skill_tool_write(
+            raw_result,
+            payload,
+            build_metadata=lambda: {
+                "write_origin": rec.get("origin") or "foreground",
+                "execution_context": "approval_replay",
+                "tool_name": "skill_manage",
+            },
+        )
+    except Exception:
+        logger.debug("skill approval-replay provider notify failed", exc_info=True)
 
 
 def _reject(subsystem: str, rest: List[str]) -> str:

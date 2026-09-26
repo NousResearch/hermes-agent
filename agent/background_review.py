@@ -739,15 +739,21 @@ def summarize_background_review_actions(
 def build_memory_write_metadata(
     agent: Any, *, write_origin: Optional[str] = None, execution_context: Optional[str] = None,
     task_id: Optional[str] = None, tool_call_id: Optional[str] = None,
+    tool_name: str = "memory",
 ) -> Dict[str, Any]:
-    """Build provenance metadata for external memory-provider mirrors."""
+    """Build provenance metadata for external memory-provider mirrors.
+
+    ``tool_name`` identifies the built-in tool that produced the write —
+    ``memory`` for MEMORY.md/USER.md writes, ``skill_manage`` for skill
+    writes mirrored via ``on_skill_write``.
+    """
     metadata: Dict[str, Any] = {
         "write_origin": write_origin or getattr(agent, "_memory_write_origin", "assistant_tool"),
         "execution_context": execution_context or getattr(agent, "_memory_write_context", "foreground"),
         "session_id": agent.session_id or "",
         "parent_session_id": agent._parent_session_id or "",
         "platform": agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
-        "tool_name": "memory",
+        "tool_name": tool_name,
         "task_id": task_id or None,
         "tool_call_id": tool_call_id or None,
     }

@@ -184,7 +184,8 @@ def set_install_channel(
 
     Refuses when the update source belongs to the OS or package owner,
     including Microsoft Store, rather than this configuration.
-    Raises ``ValueError`` for an invalid channel or an OS-owned install.
+    Non-main source channels must resolve before any write; main stays offline.
+    Raises ``ValueError`` for an invalid/unavailable channel or an OS-owned install.
     """
     from hermes_cli.update_contract import COMMIT_BUILD_UPDATE_MESSAGE, is_commit_build
 
@@ -199,6 +200,21 @@ def set_install_channel(
         raise ValueError(
             f"channels don't apply here; updates are owned by {distribution}"
         )
+
+    # main is the offline escape hatch from an unavailable subscription.
+    # Other names must resolve to usable source before we persist them.
+    if channel != CHANNEL_MAIN:
+        import subprocess
+        from hermes_cli.source_releases import resolve_source_target
+
+        try:
+            resolve_source_target(channel, ["git"] if (root / ".git").exists() else None, root)
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            raise ValueError(
+                f"Could not resolve the {channel} source channel: {exc}. "
+                "Configuration unchanged. Retry when the channel is available, "
+                "or use `hermes update --set-channel main` to follow main."
+            ) from exc
 
     sha16 = install_id(root)
     _write_channel_record(sha16, str(root), channel)

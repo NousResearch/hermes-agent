@@ -67,6 +67,144 @@ def test_dynamic_channel_parser_and_per_install_round_trip(tmp_path, monkeypatch
             parser.parse_args(["update", "--channel", invalid])
 
 
+@pytest.fixture
+def channel_transport(monkeypatch):
+    """Serve wire bytes, leaving channel/schema/digest/source validation real."""
+    from io import BytesIO
+    from types import SimpleNamespace
+    from urllib.error import HTTPError
+    from hermes_cli import release_channels, source_releases
+
+    objects, requests = {}, []
+
+    class Response(BytesIO):
+        def geturl(self):
+            return self.url
+
+    def open_request(request, **kwargs):
+        requests.append(request.full_url)
+        key = request.full_url.removeprefix(source_releases._PUBLIC_BASE + "/")
+        body = objects.get(key)
+        if body is None:
+            raise HTTPError(request.full_url, 404, "Not Found", {}, None)
+        if isinstance(body, Exception):
+            raise body
+        response = Response(body)
+        response.url = request.full_url
+        return response
+
+    monkeypatch.setattr(release_channels, "build_opener", lambda *_: SimpleNamespace(open=open_request))
+    return objects, requests
+
+
+@pytest.mark.real_release_channels
+@pytest.mark.parametrize("channel", ["stable", "canary", "new-preview-493"])
+@pytest.mark.parametrize("fault", [None, "missing", "offline", "malformed", "empty", "digest", "commit"])
+def test_set_channel_validates_source_before_persisting(tmp_path, monkeypatch, capsys, channel_transport, channel, fault):
+    """Regression #124309: a name alone is not a usable source subscription."""
+    from types import SimpleNamespace
+    from hermes_cli import source_releases
+    from hermes_cli.config import require_readable_config_before_write
+    from hermes_cli.release_channels import canonical_json
+    from hermes_cli.update_channel import handle_metadata_args
+
+    home, root, other = tmp_path / "home", tmp_path / "source", tmp_path / "other"
+    home.mkdir()
+    root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    initial = {"model": {"provider": "fixture"}, "update": {"installs": {
+        install_id(root): {"path": str(root), "channel": "main", "note": "keep"},
+        install_id(other): {"path": str(other), "channel": "canary"},
+    }}}
+    config = home / "config.yaml"
+    config.write_text("# keep this comment\n" + json.dumps(initial), encoding="utf-8")
+    before = config.read_bytes()
+    objects, requests = channel_transport
+    identity = {"token": "a" * 16, "displayName": "Fixture", "appNamePascal": "Fixture",
+                "artifactNamePascal": "Fixture", "appId": "ai.fixture.preview",
+                "msixAppIdWithOrg": "Fixture.Preview", "cliName": "fixture",
+                "windowsExecutableName": "Fixture"}
+    prefix = "releases/channel-builds/" + "b" * 32 + "/"
+    version = "1.2.3+canary.20260911T125822Z" if channel == "canary" else "1.2.3"
+    preview = channel not in ("stable", "canary")
+    request = {"schema": 1, "channel": channel, "buildId": "b" * 32, "sequence": 1,
+               "repository": source_releases.OFFICIAL_REPOSITORY, "commit": "c" * 40,
+               "sourceVersion": "1.2.3", "version": "0.0.1" if preview else version,
+               "windowsVersion": "0.0.1.0" if preview else "1.2.3.0",
+               "releaseTag": "v" + version, "identity": identity, "bundleEnv": {},
+               "publicBase": source_releases._PUBLIC_BASE}
+    if fault == "commit":
+        request["commit"] = "not-a-commit"
+    manifest = {"schema": 1, "request": request, "packages": [{
+        "platform": "darwin", "arch": "arm64", "variant": "bundled",
+        "artifact": {"key": prefix + "fixture.zip", "size": 1, "sha256": "d" * 64},
+        "identity": identity["appId"], "version": request["version"], "teamId": "ABCDEFGHIJ",
+        "feed": {"key": prefix + "stable.yml", "channel": "stable"}}]}
+    body = canonical_json(manifest)
+    record = {"schema": 1, "name": channel, "repository": request["repository"],
+              "policy": "preview" if preview else channel + "-release", "state": "active",
+              "revision": 1, "nextSequence": 2, "identity": identity,
+              "head": {"buildId": request["buildId"], "sequence": 1,
+                       "manifestKey": prefix + "build.json", "sha256": hashlib.sha256(body).hexdigest()}}
+    if fault == "empty":
+        record["head"] = None
+    key = f"releases/channels/{channel}.json"
+    objects[key] = canonical_json(record)
+    objects[prefix + "build.json"] = body + (b" " if fault == "digest" else b"")
+    if fault == "missing":
+        del objects[key]
+    elif fault == "offline":
+        objects[key] = OSError("fixture offline")
+    elif fault == "malformed":
+        objects[key] = b"{broken"
+
+    args = SimpleNamespace(set_channel=channel)
+    if fault:
+        with pytest.raises(SystemExit) as exc:
+            handle_metadata_args(args, root)
+        assert exc.value.code == 2
+        assert config.read_bytes() == before
+        output = capsys.readouterr().out
+        assert channel in output and "unchanged" in output.lower()
+        assert "hermes update --set-channel main" in output
+        assert "Update channel for" not in output
+    else:
+        assert handle_metadata_args(args, root) is True
+        initial["update"]["installs"][install_id(root)]["channel"] = channel
+        assert require_readable_config_before_write(config) == initial
+        assert config.read_text(encoding="utf-8").startswith("# keep this comment\n")
+        assert f"Update channel for {install_id(root)}: {channel}" in capsys.readouterr().out
+    assert requests
+
+
+@pytest.mark.real_release_channels
+@pytest.mark.parametrize("mechanism", ["self", "external", "electron-updater", "app-installer", "microsoft-store"])
+def test_set_main_remains_offline_and_respects_update_owner(tmp_path, monkeypatch, channel_transport, mechanism):
+    from hermes_cli.config import require_readable_config_before_write
+
+    home, root, other = tmp_path / "home", tmp_path / "source", tmp_path / "other"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    _stamp(root, mechanism)
+    config = home / "config.yaml"
+    initial = {"update": {"installs": {
+        install_id(root): {"path": str(root), "channel": "stable"},
+        install_id(other): {"path": str(other), "channel": "canary"},
+    }}}
+    config.write_text("# offline recovery\n" + json.dumps(initial), encoding="utf-8")
+    before = config.read_bytes()
+    if mechanism == "self":
+        assert set_install_channel("main", root) == install_id(root)
+        initial["update"]["installs"][install_id(root)]["channel"] = "main"
+        assert require_readable_config_before_write(config) == initial
+    else:
+        for channel in ("main", "stable", "canary"):
+            with pytest.raises(ValueError, match="owned by"):
+                set_install_channel(channel, root)
+            assert config.read_bytes() == before
+    assert channel_transport[1] == []
+
+
 class TestInstallId:
     def test_path_derived_and_stable(self, tmp_path):
         """The id hashes the canonical PATH — same path, same id, no matter
@@ -249,6 +387,8 @@ class TestSetChannelCLI:
         monkeypatch.setattr(socket.socket, "connect", _denied("socket.connect"))
         # Real root, real filesystem — but a temp one, never the checkout.
         monkeypatch.setenv("HERMES_INSTALL_ROOT", str(tmp_path))
+        # The test deliberately runs this temp install on the test interpreter.
+        monkeypatch.setenv("PYTHONPATH", str(tmp_path))
 
     def _home(self, tmp_path, monkeypatch):
         home = tmp_path / ".hermes"

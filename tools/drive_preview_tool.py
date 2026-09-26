@@ -25,6 +25,7 @@ def drive_preview_tool(
     action: str = "", ref: Optional[str] = None, selector: Optional[str] = None, text: Optional[str] = None,
     key: Optional[str] = None, submit: Optional[bool] = None, amount: Optional[int] = None,
     to: Optional[str] = None, limit: Optional[int] = None, full: Optional[bool] = None,
+    allow_shortcut: Optional[bool] = None,
     callback: Optional[Callable] = None) -> str:
     """Dispatch one interaction to the desktop renderer and return its outcome."""
     if callback is None:
@@ -43,7 +44,7 @@ def drive_preview_tool(
     try:
         fields = (
             ("action", verb), ("ref", ref), ("selector", selector), ("text", text), ("key", key),
-            ("submit", submit), ("full", full), ("to", to),
+            ("submit", submit), ("full", full), ("to", to), ("allow_shortcut", allow_shortcut),
             ("amount", None if amount is None else int(amount)), ("max", None if limit is None else int(limit)),
         )
     except (TypeError, ValueError):
@@ -80,7 +81,8 @@ ACT_PREVIEW_SCHEMA = {
         "also presses Enter), scroll, press, strobe (visual flourish only — "
         "one call runs a multi-second burst; never loop it), back/forward/"
         "reload. Moves draw live and fade; annotate_preview leaves a lasting "
-        "mark. Page text only: desktop_preview action=read. Separate automated "
+        "mark. A printable press on body/html is refused unless allow_shortcut "
+        "is true. Page text only: desktop_preview action=read. Separate automated "
         "browser: browser_* tools."
     ),
     "parameters": {
@@ -107,6 +109,10 @@ ACT_PREVIEW_SCHEMA = {
             "key": {
                 "type": "string",
                 "description": "press: key name ('Enter', 'Escape', 'ArrowDown').",
+            },
+            "allow_shortcut": {
+                "type": "boolean",
+                "description": "press: allow a printable key on body/html. Off by default.",
             },
             "amount": {
                 "type": "integer",
@@ -137,7 +143,8 @@ registry.register(
     schema=ACT_PREVIEW_SCHEMA,
     handler=lambda args, **kw: drive_preview_tool(
         action=args.get("action", ""), limit=args.get("max"), callback=kw.get("callback"),
-        **{k: args.get(k) for k in ("ref", "selector", "text", "key", "submit", "amount", "to", "full")},
+        **{k: args.get(k) for k in (
+            "ref", "selector", "text", "key", "submit", "amount", "to", "full", "allow_shortcut")},
     ),
     emoji="🖱️")
 

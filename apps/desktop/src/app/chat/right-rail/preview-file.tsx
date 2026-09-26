@@ -29,12 +29,13 @@ import {
   readDesktopFileText,
   writeDesktopFileText
 } from '@/lib/desktop-fs'
-import { ExternalLink } from '@/lib/external-link'
+import { ExternalLink, openExternalLink } from '@/lib/external-link'
 import { Check, Pencil, X } from '@/lib/icons'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { isComposerChord } from '@/lib/keybinds/chords'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { shikiLanguageForFilename } from '@/lib/markdown-code'
+import { mediaExternalUrl, resolveMediaPlaybackSrc } from '@/lib/media'
 import { normalizeFilePreviewMath } from '@/lib/markdown-preprocess'
 import {
   decodeHashFragment,
@@ -728,6 +729,76 @@ export function SourceView({ filePath, language, text }: { filePath?: string; la
 
 export type PreviewViewMode = 'diff' | 'rendered' | 'source'
 
+/**
+ * Plays an audio file in the preview rail.
+ *
+ * The source goes through `resolveMediaPlaybackSrc`, NOT a data URL: it yields
+ * the `hermes-media://stream/…` protocol, which serves the file with Range
+ * support so the scrubber can seek and playback does not load the whole file
+ * into memory. Against a remote gateway the same helper proxies the bytes
+ * through the connection's own auth.
+ */
+function AudioPreviewPlayer({ filePath, label }: { filePath: string; label: string }) {
+  const { t } = useI18n()
+  const [src, setSrc] = useState('')
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    let active = true
+
+    setFailed(false)
+    setSrc('')
+
+    void resolveMediaPlaybackSrc(filePath)
+      .then(value => {
+        if (active) {
+          setSrc(value)
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setFailed(true)
+        }
+      })
+
+    return () => {
+      active = false
+    }
+  }, [filePath])
+
+  // The bridge can be absent (older Electron main, or a non-desktop host);
+  // resolveMediaPlaybackSrc then returns a plain file:// path, which the app
+  // origin cannot load. Fail visibly with a way out rather than an inert player.
+  if (failed || !src) {
+    return (
+      <div className="grid max-w-sm justify-items-center gap-3 text-center">
+        <div className="truncate text-sm font-medium text-foreground">{label}</div>
+        <div className="text-xs leading-relaxed text-muted-foreground">{t.preview.audioUnavailable}</div>
+        <button
+          className="rounded-full border border-border bg-background px-3.5 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent"
+          onClick={() => openExternalLink(mediaExternalUrl(filePath))}
+          type="button"
+        >
+          {t.preview.openInExternal}
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="w-full max-w-md rounded-xl border border-(--ui-stroke-tertiary) bg-muted/35 p-3">
+      <div className="mb-2 truncate text-xs font-medium text-muted-foreground">{label}</div>
+      <audio
+        className="block w-full"
+        controls
+        onError={() => setFailed(true)}
+        preload="metadata"
+        src={src}
+      />
+    </div>
+  )
+}
+
 export function LocalFilePreview({
   onClose,
   onSelectRendered,
@@ -771,6 +842,7 @@ export function LocalFilePreview({
   const connection = useStore($connection)
   const fsCacheKey = desktopFsCacheKey(connection)
   const filePath = filePathForTarget(target)
+  const isAudio = target.previewKind === 'audio'
   const isImage = target.previewKind === 'image'
   const isPdf = target.previewKind === 'pdf'
 
@@ -791,13 +863,21 @@ export function LocalFilePreview({
   // when the file is forcibly previewed past the binary refusal screen.
   const isText = target.previewKind === 'text' || target.previewKind === 'binary' || target.previewKind === 'html'
 
-  const blockedByTarget = !isImage && !isPdf && !forcePreview && (target.binary || target.large)
+  const blockedByTarget = !isAudio && !isImage && !isPdf && !forcePreview && (target.binary || target.large)
 
   useEffect(() => {
     let active = true
 
     async function load() {
       if (blockedByTarget) {
+        setState({ loading: false })
+
+        return
+      }
+
+      // Audio is played, never read. Sniffing it as text is what produced the
+      // refusal screen; the player streams the bytes itself.
+      if (isAudio) {
         setState({ loading: false })
 
         return
@@ -874,6 +954,7 @@ export function LocalFilePreview({
     filePath,
     forcePreview,
     fsCacheKey,
+    isAudio,
     isImage,
     isPdf,
     isText,
@@ -1111,6 +1192,7 @@ export function LocalFilePreview({
   }
 
   if (
+    !isAudio &&
     !isImage &&
     !isPdf &&
     !forcePreview &&
@@ -1126,6 +1208,14 @@ export function LocalFilePreview({
         title={binary ? t.preview.binaryTitle : t.preview.largeTitle}
         tone="warning"
       />
+    )
+  }
+
+  if (isAudio) {
+    return (
+      <div className="flex h-full w-full items-center justify-center overflow-auto bg-transparent p-4">
+        <AudioPreviewPlayer filePath={filePath} label={target.label} />
+      </div>
     )
   }
 

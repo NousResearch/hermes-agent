@@ -4771,6 +4771,7 @@ export const en: Translations = {
     unknownSize: 'unknown size',
     binaryTitle: 'This looks like a binary file',
     binaryBody: label => `Previewing ${label} may show unreadable text.`,
+    audioUnavailable: "Couldn't load this audio file for playback.",
     largeTitle: 'This file is large',
     largeBody: (label, size) => `${label} is ${size}. Hermes will only show the first 512 KB.`,
     previewAnyway: 'Preview anyway',

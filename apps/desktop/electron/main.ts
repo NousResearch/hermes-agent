@@ -397,6 +397,7 @@ import {
   onPreviewWatchOwnerDestroyed,
   sendPreviewFileChangedToOwner
 } from './preview-file-watch'
+import { previewKindForFile } from './preview-kind'
 import { PreviewReachRegistry } from './preview-reach'
 import {
   createPrimaryRemoteConnection,
@@ -1354,8 +1355,6 @@ const MEDIA_MIME_TYPES = {
   '.webp': 'image/webp'
 }
 
-const PREVIEW_HTML_EXTENSIONS = new Set(['.html', '.htm'])
-const PREVIEW_PDF_EXTENSIONS = new Set(['.pdf'])
 const PREVIEW_WATCH_DEBOUNCE_MS = 120
 const LOCAL_PREVIEW_HOSTS = new Set(['0.0.0.0', '127.0.0.1', '::1', '[::1]', 'localhost'])
 const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
@@ -5995,10 +5994,7 @@ async function previewFileTarget(rawTarget, baseDir) {
 
   const mimeType = mimeTypeForPath(resolved)
   const metadata = previewFileMetadata(resolved, mimeType)
-  const isHtml = PREVIEW_HTML_EXTENSIONS.has(ext)
-  const isImage = mimeType.startsWith('image/')
-  const isPdf = PREVIEW_PDF_EXTENSIONS.has(ext) || mimeType === 'application/pdf'
-  const previewKind = isHtml ? 'html' : isImage ? 'image' : isPdf ? 'pdf' : metadata.binary ? 'binary' : 'text'
+  const previewKind = previewKindForFile({ binary: metadata.binary, extension: ext, mimeType })
 
   return {
     binary: metadata.binary,

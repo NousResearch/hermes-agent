@@ -44,3 +44,12 @@ class TestGuidanceReachesTheSystemPrompt:
         assert SKILLS_GUIDANCE in (system_prompt._tool_guidance_block(agent) or "")
         agent.valid_tool_names = {"terminal"}
         assert SKILLS_GUIDANCE not in (system_prompt._tool_guidance_block(agent) or "")
+
+
+def test_skill_index_guidance_reloads_only_current_relevant_skills():
+    from agent.prompt_builder import _render_skills_index
+
+    prompt = _render_skills_index({"devops": [("needed", "useful")]}, {}, None, None)
+    assert "reload only skills needed for the current task" in prompt
+    assert "Do not reload every skill from a historical compaction marker" in prompt
+    assert "needed: useful" in prompt

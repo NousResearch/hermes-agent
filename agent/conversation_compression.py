@@ -2367,35 +2367,34 @@ def _replace_message_content(message: dict, content: Any) -> None:
     drop_stale_api_content(message)
 
 
-# Compaction re-injects the todo list verbatim but prunes skills to markers, so
-# couple them: tell the model to reload pruned skills BEFORE acting on tasks.
-# Lives after TODO_INJECTION_HEADER so it strips with the snapshot next time.
-_PRUNED_SKILL_RELOAD_NOTICE_HEADER = "[Skills pruned during compression — reload before acting on these tasks]"
+# Compaction re-injects the todo list verbatim but prunes skills to markers.
+# Preserve the safety warning without making every historical skill a mandatory
+# reload: long-running tasks often change scope between compactions. The exact
+# skill names and recovery calls remain in the summary's prune markers.
+# This notice lives after TODO_INJECTION_HEADER and strips with it next time.
+_PRUNED_SKILL_RELOAD_NOTICE_HEADER = "[Skills pruned during compression — reload selectively]"
 
 
 def _pruned_skill_reload_notice(compressed: list) -> str:
-    """Reload notice for skills whose bodies were pruned, or ``""``.
-    Scans ``[SKILL_PRUNED: ...]`` markers in the post-compression transcript; first-seen order, deduplicated,
-    capped at ``_MAX_PRUNED_SKILL_MARKERS``."""
-    from agent.context_compressor import _MAX_PRUNED_SKILL_MARKERS, _extract_pruned_skill_names
-    names: list = []
-    for message in compressed:
-        if not isinstance(message, dict):
-            continue
-        for name in _extract_pruned_skill_names(_message_text(message)):
-            if name not in names:
-                names.append(name)
-    del names[_MAX_PRUNED_SKILL_MARKERS:]
-    if not names:
+    """Bounded, task-scoped reload warning when any skill body was pruned.
+
+    Never enumerate all markers here: listing calls next to a preserved todo
+    snapshot turned historical skills into an apparent blanket requirement.
+    The summary still retains each marker for selective recovery.
+    """
+    from agent.context_compressor import _extract_pruned_skill_names
+    if not any(
+        _extract_pruned_skill_names(_message_text(message))
+        for message in compressed if isinstance(message, dict)
+    ):
         return ""
-    calls = "; ".join(f"skill_view(name='{name}')" for name in names)
     return (
         f"{_PRUNED_SKILL_RELOAD_NOTICE_HEADER}\n"
-        "The task list above crossed the compression boundary verbatim, but "
-        "the skill instructions that governed it were pruned. Before "
-        f"executing any preserved task that depends on these skills, reload "
-        f"them first: {calls}. After reloading, re-check that each pending "
-        "task is still justified — findings recorded before the boundary may have invalidated it."
+        "The task list survived, but some skill instructions did not. Re-check "
+        "which tasks are still justified. Reload only the skills required for "
+        "the current task before relying on their instructions; do not reload "
+        "the whole historical marker list. After one reload, older markers "
+        "for that skill remain historical artifacts."
     )
 
 

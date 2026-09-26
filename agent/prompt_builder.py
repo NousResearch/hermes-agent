@@ -1393,10 +1393,12 @@ def _render_skills_index(
         )
     return (
         "## Skills\n"
-        "Before replying, scan the skills below. If a skill matches or is even partially relevant to your "
-        "task, you MUST load it with skill_view(name) and follow its instructions. Err on the side of "
-        "loading — it is always better to have context you don't need than to miss critical steps, pitfalls, "
-        "or established workflows. Skills contain specialized knowledge — API endpoints, tool-specific "
+        "Before replying, scan the skills below. For skills relevant to the current request and active "
+        "work, load them with skill_view(name) and follow their instructions. Include governing skills "
+        "even if you already know the subject, but do not load unrelated skills just because they "
+        "were used earlier in a long session. After context compression, reload only skills needed for the current task "
+        "whose instructions were pruned. Do not reload every skill from a historical compaction marker. "
+        "Skills contain specialized knowledge — API endpoints, tool-specific "
         "commands, and proven workflows that outperform general-purpose approaches. Load the skill "
         f"even if you think you could handle the task with basic tools like {_basic_tools}. "
         "Skills also encode the user's preferred approach, conventions, and quality standards for tasks like "

@@ -3,6 +3,7 @@
 from agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,
     _SUMMARY_END_MARKER,
+    _skill_pruned_marker,
     salvage_grown_transcript,
 )
 from agent.model_metadata import estimate_messages_tokens_rough
@@ -65,13 +66,16 @@ def test_salvage_drops_todo_only_as_last_resort():
 
 
 def test_salvage_last_resort_preserves_pruned_skill_reload_notice():
-    """7a16840add couples the reload notice into the snapshot — it survives."""
-    from agent.conversation_compression import _PRUNED_SKILL_RELOAD_NOTICE_HEADER
-
-    notice = (
-        f"{_PRUNED_SKILL_RELOAD_NOTICE_HEADER}\n"
-        "Reload with skill_view(name='example-skill') before acting."
+    """When a todo must be dropped, the selective safety notice survives."""
+    from agent.conversation_compression import (
+        _PRUNED_SKILL_RELOAD_NOTICE_HEADER, _pruned_skill_reload_notice,
     )
+
+    notice = _pruned_skill_reload_notice(
+        [{"role": "user", "content": _skill_pruned_marker("example-skill")}]
+    )
+    assert notice.startswith(_PRUNED_SKILL_RELOAD_NOTICE_HEADER)
+    assert "example-skill" not in notice
     original = [
         {"role": "user", "content": "please do the thing " + ("o" * 3000)},
         {"role": "assistant", "content": "ok"},
@@ -128,6 +132,38 @@ def test_salvage_caps_oversized_summary():
 
     assert out is not None
     assert len(out[0]["content"]) < 12_000
+    assert out[0]["content"].endswith(_SUMMARY_END_MARKER)
+
+
+def test_salvage_keeps_skill_recovery_marker_after_summary_cap_with_todo():
+    """A task can survive salvage only if its pruned skill stays recoverable."""
+    from agent.conversation_compression import _pruned_skill_reload_notice
+
+    original = [
+        {"role": "user", "content": "do the task " + "O" * 12_000},
+        {"role": "assistant", "content": "ok"},
+    ]
+    summary = (
+        "[CONTEXT COMPACTION] " + "S" * 12_000
+        + "\n\n## Pruned Skills\n"
+        + _skill_pruned_marker("category/required-policy")
+        + "\n\n" + _SUMMARY_END_MARKER
+    )
+    todo_notice = _pruned_skill_reload_notice([{"role": "user", "content": summary}])
+    candidate = [
+        {"role": "user", "content": summary, COMPRESSED_SUMMARY_METADATA_KEY: True},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "Current todos: required task\n" + todo_notice,
+         "_todo_snapshot_synthetic": True},
+    ]
+    assert estimate_messages_tokens_rough(candidate) > estimate_messages_tokens_rough(original)
+    assert "required-policy" not in todo_notice
+
+    out = salvage_grown_transcript(original, candidate)
+    assert out is not None
+    assert estimate_messages_tokens_rough(out) < estimate_messages_tokens_rough(original)
+    assert "Current todos: required task" in out[-1]["content"]
+    assert _skill_pruned_marker("category/required-policy") in out[0]["content"]
     assert out[0]["content"].endswith(_SUMMARY_END_MARKER)
 
 

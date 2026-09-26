@@ -51,7 +51,9 @@ def _is_interactive_cli() -> bool:
 
 
 def _fire_approval_hook(hook_name: str, **kwargs) -> None:
-    """Invoke a plugin lifecycle hook (pre_approval_request / post_approval_response).
+    """Invoke a plugin observability hook: pre_approval_request, post_approval_response, or
+    allowlist_match (the one event a command auto-approved via command_allowlist ever fires,
+    since it never reaches the other two).
 
     Lazy-imports the plugin manager (approval.py is imported long before plugins
     are discovered). Never raises: approval flow is safety-critical, plugin

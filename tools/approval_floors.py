@@ -200,5 +200,13 @@ def _command_matches_permanent_allowlist(command: str) -> bool:
         pattern = pattern.strip() if isinstance(pattern, str) else ""
         if pattern and (command == pattern or (any(ch in pattern for ch in "*?[")
                                                and fnmatch.fnmatchcase(command, pattern))):
+            # An allowlist-matched command never reaches pre_approval_request/
+            # post_approval_response -- fire the one hook a plugin can observe it
+            # through. Never lets an observer influence the match itself (already
+            # decided above); _fire_approval_hook never raises.
+            _ctx._fire_approval_hook(
+                "allowlist_match", command=command, pattern=pattern,
+                session_key=_ctx.get_current_session_key(), surface="allowlist",
+            )
             return True
     return False

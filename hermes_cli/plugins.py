@@ -144,7 +144,10 @@ VALID_HOOKS: Set[str] = {
     # (use pre_tool_call). Kwargs: command, description, pattern_key, pattern_keys, session_key,
     # surface: "cli"|"gateway"|"smart"; post_approval_response adds choice ("once"|"session"|
     # "always"|"deny"|"timeout"|"smart_approve"|"smart_deny") and decided_by.
-    "pre_approval_request", "post_approval_response",
+    # allowlist_match: a command auto-approved via command_allowlist/profile_command_allowlist
+    # never reaches pre_approval_request/post_approval_response at all -- this is the only
+    # observable event for that path. Kwargs: command, pattern, session_key, surface: "allowlist".
+    "pre_approval_request", "post_approval_response", "allowlist_match",
     # on_room_member_activity: a hosted Group Chat member's live runtime events (tool.started/completed,
     # request.opened, message.delta, reasoning.delta, turn.error, ...) stamped with room_id, thread_id,
     # member_id, turn_id, task_id, execution_generation. Observer, queued per consumer off the token

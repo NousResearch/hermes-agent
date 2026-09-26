@@ -513,10 +513,17 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
         if raw:
             return raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
     with contextlib.suppress(Exception):
+        # Re-quote the parts instead of a bare join: an argument containing spaces (the store
+        # launcher's ``-c`` bootstrap is ONE huge spacey argument) must survive re-tokenization by
+        # the quote-aware argv matchers — a bare join splits it and every token-equality check
+        # downstream reads fragments.
         import psutil  # type: ignore
         cmdline_parts = psutil.Process(pid).cmdline()
         if cmdline_parts:
-            return " ".join(cmdline_parts)
+            return (
+                subprocess.list2cmdline(cmdline_parts) if _IS_WINDOWS
+                else shlex.join(cmdline_parts)
+            )
     if not _IS_WINDOWS:
         with contextlib.suppress(OSError, subprocess.TimeoutExpired):
             result = subprocess.run(
@@ -532,7 +539,9 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
 def inline_source_flag_index(tokens: list[str]) -> int | None:
     """Index of the ``-c`` token when *tokens* is an interpreter running INLINE SOURCE, else None.
 
-    Everything after ``-c`` is data the inline program receives, not this process's own identity.
+    Everything after ``-c`` is data the inline program receives, not this process's own identity —
+    unless the source runs the Hermes entry point in-process (``_inline_source_program_tokens``),
+    where the trailing tokens ARE this process's argv.
     The detached gateway restart watcher (``gateway._spawn_gateway_restart_watcher``) is spawned as
     ``python -c <watcher source> <old_pid> <python> -m hermes_cli.main gateway run``: its trailing
     argv is the command the watcher will LATER spawn, so every argv matcher used to read it as a
@@ -588,6 +597,37 @@ def command_line_runs_inline_source(tokens: list[str]) -> bool:
     return inline_source_flag_index(tokens) is not None
 
 
+# Inline sources that hand control to a Hermes entry point IN THIS PROCESS: the store launcher
+# bootstrap (``hermes_cli._launchers.runtime_command`` emits
+# ``runpy.run_module('hermes_cli.main', run_name='__main__', alter_sys=True)`` as the ``-c``
+# source) and the published launcher script (``_launchers._launcher_script`` emits
+# ``from hermes_cli.main import main`` and then calls it). For these, the tokens after the source
+# ARE this process's own argv — the mirror image of #107002, where an arbitrary wrapper's trailing
+# argv is data for a child it spawns later.
+_INLINE_SOURCE_ENTRYPOINT_RE = re.compile(
+    r"runpy\s*\.\s*run_module\s*\(\s*(['\"])hermes_cli\.main\1"
+    r"|from\s+hermes_cli\.main\s+import\s+main\b"
+)
+
+
+def _inline_source_program_tokens(cased_tokens: list[str]) -> list[str] | None:
+    """This process's own argv when the inline source runs the Hermes entry point in-process, else None.
+
+    The store launcher bootstraps the CLI by executing ``hermes_cli.main`` INSIDE the interpreter
+    that carries the ``-c`` source, so the tokens after the source are the module's argv, exactly
+    like a plain ``python -m hermes_cli.main …`` invocation. Only a source that provably hands
+    control to the entry point qualifies; an arbitrary ``-c`` wrapper keeps its argv as data
+    (#107002).
+    """
+    flag_index = inline_source_flag_index(cased_tokens)
+    if flag_index is None or flag_index + 1 >= len(cased_tokens):
+        return None
+    source = cased_tokens[flag_index + 1]
+    if not _INLINE_SOURCE_ENTRYPOINT_RE.search(source):
+        return None
+    return cased_tokens[flag_index + 2:] or None
+
+
 def _gateway_command_subcommand(command: str | None) -> str | None:
     """Hermes gateway lifecycle subcommand from a command line, or None. No loose substring matches
     (``"gateway" in cmdline`` also matched ``gateway status`` / ``python -m tui_gateway``): needs a
@@ -607,10 +647,18 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
         return None
     basenames = [t.rsplit("/", 1)[-1] for t in tokens]
     # ``python -c <src> … -m hermes_cli.main gateway run``: the trailing argv belongs to the program
-    # the inline source will spawn later, not to this process (#107002). Case-preserving tokens:
-    # the operand-taking ``-X``/``-W``/``-Q`` must not be conflated with ``-q``/``-b``.
+    # the inline source will spawn later, not to this process (#107002) — unless the source itself
+    # runs the Hermes entry point in this process (the store launcher bootstrap), where the trailing
+    # tokens are the module's own argv. Case-preserving tokens: the operand-taking ``-X``/``-W``/
+    # ``-Q`` must not be conflated with ``-q``/``-b``.
+    entrypoint_in_source = False
     if command_line_runs_inline_source(cased_tokens):
-        return None
+        program_tokens = _inline_source_program_tokens(cased_tokens)
+        if program_tokens is None:
+            return None
+        cased_tokens, entrypoint_in_source = program_tokens, True
+        tokens = [t.lower() for t in cased_tokens]
+        basenames = [t.rsplit("/", 1)[-1] for t in tokens]
     # The launchd job's osascript wrapper (gateway_launchd.launchd_program_arguments) carries the gateway argv
     # inside one JXA script string; the gateway itself is its child and is matched on its own command line.
     if basenames[0] == "osascript":
@@ -627,7 +675,7 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     if any(b in ("hermes-gateway", "hermes-gateway.exe") for b in basenames):
         return "run"
     joined = " ".join(tokens)
-    if "hermes_cli.main" not in joined and "hermes_cli/main.py" not in joined and not any(
+    if not entrypoint_in_source and "hermes_cli.main" not in joined and "hermes_cli/main.py" not in joined and not any(
         b in ("hermes", "hermes.exe") for b in basenames
     ):
         return None
@@ -651,8 +699,10 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
 def gateway_spawn_intent_subcommand(command: str | None) -> str | None:
     """Gateway lifecycle subcommand a command line would EVENTUALLY launch, or None.
 
-    The identity matcher (``_gateway_command_subcommand``) deliberately refuses ``python -c <src>
-    …``: the trailing argv is the inline program's data, not that process's own identity (#107002).
+    The identity matcher (``_gateway_command_subcommand``) deliberately refuses an arbitrary
+    ``python -c <src> …`` wrapper: the trailing argv is the inline program's data, not that
+    process's own identity (#107002) — except when the source itself runs the Hermes entry point
+    in-process (the store launcher bootstrap), which IS matched on the trailing argv.
     Callers that inspect a command line as SPAWN INTENT — "if I launch this, does a gateway runtime
     eventually appear?" — need the opposite answer, because
     ``gateway._spawn_gateway_restart_watcher`` hides a real ``… -m hermes_cli.main gateway run``

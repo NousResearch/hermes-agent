@@ -165,3 +165,76 @@ def test_accepts_atomic_desktop_gateway():
     assert matches_runtime(ATOMIC_DESKTOP) is True
 
 
+# The STORE LAUNCHER bootstrap is the complement of the watcher above: the ``-c`` source RUNS
+# ``hermes_cli.main`` in this very process (``hermes_cli._launchers.runtime_command`` — the Windows
+# updater's relaunch form, the dashboard's spawn form), so the trailing argv IS this process's own
+# argv. Refusing it left the post-update liveness poll blind to a healthy gateway: the update
+# receipt ended "partial" with "Windows gateway relaunch after update was not verified alive" while
+# the relaunched gateway was up and serving, and every scan-based reader (``gateway status``/``stop``,
+# pid-file validation, the strict updater discovery) went blind the same way.
+_PM_BOOTSTRAP = (
+    "import os, sys, runpy; os.environ.pop('PYTHONHOME', None); "
+    "os.environ.pop('PYTHONPATH', None); os.environ.pop('VIRTUAL_ENV', None); "
+    "sys.path.insert(0, 'C:/Users/me/hermes/hermes-agent'); "
+    "os.environ['HERMES_HOME'] = os.environ.get('HERMES_HOME') or "
+    "str(__import__('hermes_constants').get_default_hermes_root()); "
+    "import hermes_bootstrap; "
+    "runpy.run_module('hermes_cli.main', run_name='__main__', alter_sys=True)"
+)
+
+LAUNCHER_INLINE_ACCEPT = [
+    f'python -I -c "{_PM_BOOTSTRAP}" gateway run --replace',
+    f'"C:\\Users\\me\\hermes\\tools\\python-3.14-win32-x64\\python.exe" -I -c "{_PM_BOOTSTRAP}" gateway run',
+    f'python -I -c "{_PM_BOOTSTRAP}" --profile work gateway run',
+    # operand-taking interpreter options must not end the walk before ``-c``
+    f'python -X utf8 -I -c "{_PM_BOOTSTRAP}" gateway run --replace',
+    # published launcher script (.hermes/bin/hermes wrapper passes the source verbatim)
+    'python -I -c "from hermes_cli.main import main; import sys; sys.exit(main())" gateway run',
+]
+
+
+@pytest.mark.parametrize("cmd", LAUNCHER_INLINE_ACCEPT)
+def test_accepts_launcher_bootstrap_running_the_entrypoint_in_process(cmd):
+    assert matches(cmd) is True
+    assert matches_runtime(cmd) is True
+    assert spawn_intent(cmd) == "run"
+
+
+def test_launcher_bootstrap_without_a_gateway_argv_is_not_identity():
+    cmd = f'python -I -c "{_PM_BOOTSTRAP}"'
+    assert matches(cmd) is False
+    assert matches_runtime(cmd) is False
+    assert spawn_intent(cmd) is None
+
+
+def test_launcher_bootstrap_read_only_subcommand_stays_not_identity():
+    cmd = f'python -I -c "{_PM_BOOTSTRAP}" gateway status'
+    assert matches(cmd) is False
+    assert matches_runtime(cmd) is False
+    assert spawn_intent(cmd) == "status"
+
+
+# #107002 stays intact: an ARBITRARY wrapper whose trailing argv merely CONTAINS a launcher
+# bootstrap (the detached restart watcher embeds exactly this once it respawns a store-bootstrapped
+# gateway) is data, not identity.
+_WATCHER_SOURCE = (
+    "import subprocess, sys, time\\n"
+    "from gateway.status import _pid_exists\\n"
+    "pid = int(sys.argv[1]); cmd = sys.argv[2:]\\n"
+    "while _pid_exists(pid): time.sleep(0.2)\\n"
+    "subprocess.Popen(cmd)"
+)
+NESTED_LAUNCHER_WRAPPER = [
+    f'python -c "{_WATCHER_SOURCE}" 14980 python.exe -I -c "{_PM_BOOTSTRAP}" gateway run --replace',
+    f'python -c "{_WATCHER_SOURCE}" 14980 python.exe -m hermes_cli.main gateway run',
+]
+
+
+@pytest.mark.parametrize("cmd", NESTED_LAUNCHER_WRAPPER)
+def test_rejects_arbitrary_wrapper_nesting_a_launcher_bootstrap(cmd):
+    assert matches(cmd) is False
+    assert matches_runtime(cmd) is False
+    # ...while spawn INTENT still sees the gateway the wrapper will eventually launch.
+    assert spawn_intent(cmd) == "run"
+
+

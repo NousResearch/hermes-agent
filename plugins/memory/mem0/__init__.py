@@ -179,7 +179,9 @@ class Mem0MemoryProvider(MemoryProvider):
             from . import _backend
             if self._mode == "oss":
                 return _backend.OSSBackend(self._config.get("oss", {}))
-            return _backend.SelfHostedBackend(self._api_key, self._host) if self._host else _backend.PlatformBackend(self._api_key)
+            if self._host:
+                return _backend.SelfHostedBackend(self._api_key, self._host, ca_bundle=str(self._config.get("ca_bundle") or ""))
+            return _backend.PlatformBackend(self._api_key)
         except Exception as e:
             logger.error("Mem0 backend failed to initialize (%s mode): %s", self._mode, e)
             self._init_error = str(e)

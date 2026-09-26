@@ -649,6 +649,28 @@ class TestSelfHostedBackend:
         assert b._client.headers["x-api-key"] == "adminkey"
         assert "authorization" not in b._client.headers  # NOT the cloud 'Token' scheme
 
+    def test_init_ca_bundle_is_passed_to_the_transport(self, monkeypatch, tmp_path):
+        """A self-hosted server behind a private CA needs its bundle on the transport;
+        without ``ca_bundle`` the default (system-store) verification is untouched."""
+        import shutil
+
+        import certifi  # httpx dependency; any real PEM bundle will do (httpx loads it eagerly)
+
+        bundle = tmp_path / "private-ca.pem"
+        shutil.copyfile(certifi.where(), bundle)
+        seen = []
+        real = httpx.HTTPTransport
+
+        def spy(**kwargs):
+            seen.append(kwargs)
+            return real(**kwargs)
+
+        monkeypatch.setattr(httpx, "HTTPTransport", spy)
+        SelfHostedBackend("adminkey", "https://sh:8888", ca_bundle=str(bundle))
+        SelfHostedBackend("adminkey", "https://sh:8888")
+        assert seen[0]["verify"] == str(bundle)
+        assert "verify" not in seen[1]
+
 
     # --- search ----------------------------------------------------------
 

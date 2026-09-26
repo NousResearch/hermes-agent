@@ -66,11 +66,15 @@ class SelfHostedBackend(Mem0Backend):
     mem0.MemoryClient is hardwired to the cloud API (``Authorization: Token``, ``GET /v1/ping/`` in ``__init__``),
     so this speaks the server's real contract: ``X-API-Key`` auth and the ``/memories`` / ``/search`` routes."""
 
-    def __init__(self, api_key: str, host: str, transport=None):
+    def __init__(self, api_key: str, host: str, transport=None, ca_bundle: str = ""):
         import httpx
         headers = {"Content-Type": "application/json", **({"X-API-Key": api_key} if api_key else {})}  # key omitted only for AUTH_DISABLED servers
         # Connect-level retries keep one dropped SYN from counting toward the breaker. ``transport`` is injectable for tests.
-        self._client = httpx.Client(base_url=host.rstrip("/"), headers=headers, timeout=30.0, transport=transport or httpx.HTTPTransport(retries=2))
+        # ``ca_bundle``: path to a PEM bundle for a server behind a private CA (httpx verifies against the
+        # system store only, so such a host fails TLS with no way to opt in). Empty = default verification.
+        if transport is None:
+            transport = httpx.HTTPTransport(retries=2, **({"verify": ca_bundle} if ca_bundle else {}))
+        self._client = httpx.Client(base_url=host.rstrip("/"), headers=headers, timeout=30.0, transport=transport)
 
     def _json(self, method: str, path: str, **kwargs) -> Any:
         resp = self._client.request(method, path, **kwargs)

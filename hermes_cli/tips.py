@@ -266,7 +266,7 @@ TIPS = [
     "When a provider returns HTTP 402 (payment required), the auxiliary client auto-falls back to the next one.",
     "agent.tool_use_enforcement steers models that describe actions instead of calling tools — auto for GPT/Codex.",
     "agent.restart_after_turn_timeout lets in-flight turns finish before /restart enters stop(); restart_drain_timeout is only the force-interrupt budget once stop() begins.",
-    "agent.api_max_retries (default 3) controls how many times the agent retries a failed API call before surfacing the error — lower it for fast fallback.",
+    "agent.api_max_retries (default 3, minimum 1) sets attempts per API retry cycle, including the first call; SDK and stream retries are separate.",
     "The gateway caches AIAgent instances per session — destroying this cache breaks Anthropic prompt caching.",
     "Any website can expose skills via /.well-known/skills/index.json — the skills hub discovers them automatically.",
     "The skills audit log at ~/.hermes/skills/.hub/audit.log tracks every install and removal operation.",
@@ -407,7 +407,7 @@ TIPS = [
     'HERMES_BUNDLED_SKILLS points at a custom bundled-skill tree — used by Homebrew and Nix packaging.',
     'HERMES_DUMP_REQUEST_STDOUT=1 dumps every API request payload to stdout instead of log files.',
     'HERMES_OAUTH_TRACE=1 logs redacted OAuth token exchange and refresh attempts for debugging provider auth.',
-    'HERMES_STREAM_RETRIES (default 3) controls mid-stream reconnect attempts on transient network errors.',
+    'HERMES_STREAM_RETRIES (default 2) controls retries for transient streaming errors.',
     # --- Gateway Behavior Env Vars ---
     'HERMES_GATEWAY_BUSY_ACK_ENABLED=false silences the ⚡/⏳/⏩ ack messages when a user messages a busy agent.',
     'HERMES_AGENT_NOTIFY_INTERVAL (default 180s) sets how often the gateway pings with progress on long turns.',

@@ -107,9 +107,9 @@ DEFAULT_CONFIG = {
         # many slow/unreachable MCP servers.
         # See #63078.
         "build_wait_timeout": 600,
-        # Hermes-level retry attempts for API errors (connection drops, timeouts, 5xx) wrapping the
-        # whole call; the OpenAI SDK also retries transient errors (max_retries=2). Set 1 for fast
-        # failover to fallback providers; raise to tolerate longer provider hiccups.
+        # Base attempts per Hermes-level API retry cycle, including the first call (minimum 1).
+        # SDK/stream retries are separate; primary transport recovery can restart the cycle,
+        # and provider-specific error handling can adjust the budget or fall back early.
         "api_max_retries": 3,
         # Once api_max_retries AND the fallback chain are spent on a transient outage (5xx,
         # overloaded/529, connect/read timeouts) with nothing delivered yet, wait and retry this many

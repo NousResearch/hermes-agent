@@ -16,7 +16,7 @@ import queue
 import threading
 from typing import Any, Dict, Optional
 
-from gateway.platforms.base import AudioFormat, StreamingTTSHandle
+from gateway.platforms.base import AudioFormat, StreamingTTSHandle, _strip_media_tag_directives
 
 logger = logging.getLogger("gateway.streaming_tts_consumer")
 
@@ -28,8 +28,48 @@ class _HandleDeclined(Exception):
     """The adapter declined ``begin_streaming_tts`` when the first PCM chunk arrived."""
 
 
+# Delivery directives are a contract with the platform adapter, never speech.
+# A partially arrived directive must not be forwarded to the chunker, so any
+# trailing text that could still grow into one is held back until the next
+# delta or the final flush.
+_DIRECTIVE_MARKERS = ("MEDIA:", "[[audio_as_voice]]", "[[as_document]]")
+
+
+def _directive_holdback_index(buf: str) -> int:
+    """Index from which ``buf`` must be withheld because a directive may be forming.
+
+    Returns ``len(buf)`` when nothing needs holding back.
+    """
+    if not buf:
+        return 0
+    candidates = [len(buf)]
+
+    # An opened MEDIA: whose path has not been terminated by a newline yet:
+    # the rest of the path is still arriving.
+    idx = buf.rfind("MEDIA:")
+    if idx != -1 and "\n" not in buf[idx:]:
+        candidates.append(idx)
+
+    # An opened [[ tag that has not closed yet.
+    idx = buf.rfind("[[")
+    if idx != -1 and "]]" not in buf[idx:]:
+        candidates.append(idx)
+
+    # A trailing fragment that is a proper prefix of a marker ("MED", "[[audio").
+    for marker in _DIRECTIVE_MARKERS:
+        for n in range(min(len(marker) - 1, len(buf)), 0, -1):
+            if buf.endswith(marker[:n]):
+                candidates.append(len(buf) - n)
+                break
+
+    return min(candidates)
+
+
 class StreamingTTSConsumer:
     """Consumes LLM text deltas and produces streaming PCM audio for an adapter."""
+
+    # Keep the holdback available to lightweight consumers built via __new__.
+    _directive_buf: str = ""
 
     def __init__(self, adapter: Any, chat_id: str, tts_config: Dict[str, Any],
                  loop: asyncio.AbstractEventLoop, *, metadata: Optional[Dict[str, Any]] = None,
@@ -48,6 +88,7 @@ class StreamingTTSConsumer:
         self._task: Optional[asyncio.Task] = None  # drain task, created once by start()
         self._completed = self._partial = self._aborted = False
         self._finished = self._dropped = self._suppress_whole_file = False
+        self._directive_buf = ""
         self._lock, self._strip_markdown = threading.Lock(), None  # stripper lazily imported
 
     def _streamer_format(self) -> AudioFormat:
@@ -73,11 +114,37 @@ class StreamingTTSConsumer:
             if log_errors:
                 logger.debug("streaming TTS on_delta error", exc_info=True)
 
+    def _consume_directives(self, text: str, *, final: bool = False) -> str:
+        """Strip delivery directives from the delta stream before chunking.
+
+        Must run BEFORE the SentenceChunker: a directive path such as
+        ``song.mp3`` contains sentence boundaries, so chunking first would
+        cut the directive into fragments that no longer match and would then
+        be synthesised aloud.
+        """
+        buf = _strip_media_tag_directives(self._directive_buf + text)
+        if final:
+            self._directive_buf = ""
+            return buf
+        hold = _directive_holdback_index(buf)
+        self._directive_buf = buf[hold:]
+        return buf[:hold]
+
+    def _flush_with_held_tail(self):
+        """Release the held-back tail, then flush the chunker. Shared by the segment boundary
+        and end of text: once a segment is complete its trailing fragment can no longer grow
+        into a directive, and holding it would leak it into the NEXT segment's speech."""
+        tail = self._consume_directives("", final=True)
+        if tail:
+            yield from self._chunker.feed(tail)
+        yield from self._chunker.flush()
+
     def on_delta(self, text: Optional[str]) -> None:
         """Receive text, or flush a ``None`` segment boundary without ending audio. Non-blocking."""
         if self._aborted or not self.active or self._finished:
             return
-        clauses = self._chunker.flush() if text is None else self._chunker.feed(text)
+        clauses = (self._flush_with_held_tail() if text is None
+                   else self._chunker.feed(self._consume_directives(text)))
         self._enqueue_clauses(clauses, "streaming TTS queue full, dropping clause",
                               log_errors=True)
 
@@ -89,7 +156,8 @@ class StreamingTTSConsumer:
         self._finished = True
         if self._aborted or not self.active:
             return
-        self._enqueue_clauses(self._chunker.flush(), "streaming TTS queue full while flushing tail",
+        self._enqueue_clauses(self._flush_with_held_tail(),
+                              "streaming TTS queue full while flushing tail",
                               log_errors=False)
         # The load-bearing _DONE sentinel must never be lost: evict clauses until it fits.
         while not self._put_sentinel(_DONE, mark_dropped=True):

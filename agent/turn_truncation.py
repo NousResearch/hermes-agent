@@ -124,6 +124,16 @@ _CEILING_NO_TEXT = (
     "continuation attempt — its reasoning consumed the entire budget each time.\n\nTo fix this:\n"
     "→ Lower reasoning effort: `/reasoning low` or `/reasoning none`\n→ Or raise max_tokens for this model"
 )
+# #122837: the stitched partial alone reads like a finished answer cut mid-sentence, and no
+# downstream surface (gateway, CLI, TUI) inspects ``partial`` for non-empty responses — the
+# notice must live in the delivered text itself, like _WINDOW_FILLED below.
+_OUTPUT_EXHAUSTED = (
+    "⚠️ **Response truncated — output-token limit reached.** The model kept hitting its "
+    "output-token limit, so the text above stops mid-sentence.\n\nTo fix this:\n"
+    "→ Ask for a shorter or more focused reply\n"
+    "→ Raise max_tokens for this model\n"
+    "→ Lower reasoning effort: `/reasoning low` or `/reasoning none`"
+)
 # Below this many free tokens the prompt itself filled the window: a continuation nudge +
 # fragment costs ~100 tokens per attempt, so retrying only shrinks the room (#106120).
 _MIN_CONTINUATION_HEADROOM = 512
@@ -359,8 +369,13 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
             f"{partial_response}\n\n{notice}" if partial_response else notice,
             f"Prompt used {filled[0]} of {filled[1]} context tokens; no room to answer",
         )
+    if partial_response:
+        return st.end_turn(
+            f"{partial_response}\n\n{_OUTPUT_EXHAUSTED}",
+            "Response remained truncated after 4 continuation attempts",
+        )
     return st.end_turn(
-        partial_response or _CEILING_NO_TEXT,
+        _CEILING_NO_TEXT,
         "Response remained truncated after 4 continuation attempts",
     )
 

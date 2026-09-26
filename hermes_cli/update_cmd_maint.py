@@ -371,12 +371,73 @@ def _post_update_sqlite_runtime_status():
     return info is not None and not info.wal_reset_vulnerable, info
 
 
+def _dependency_environment_status() -> str:
+    """``"ok"``, ``"broken"`` or ``"unknown"``: import-level probe of the committed
+    dependency environment (startup imports such as ``ruamel.yaml``).
+
+    PM's input stamps (``venv_is_current``) only prove the recorded inputs were
+    not rewritten, and pm.recovery's startup-import validation runs only on
+    ``repair`` syncs. An interrupted update can therefore leave the committed
+    environment missing what the new code imports while the update still
+    reaches this completion report, which otherwise probes only the SQLite
+    runtime (#122697). The probe runs the selected interpreter under this
+    install's activation environment -- exactly how an activated child process
+    sees the dependency set.
+    """
+    from pm.package import InstallError
+
+    try:
+        from hermes_cli.main import PROJECT_ROOT
+        from pm.environments import activation_environment, project_python
+        from pm.recovery import validate_environment
+
+        root = Path(PROJECT_ROOT)
+        validate_environment(project_python(root), env=activation_environment(root), cwd=root)
+        return "ok"
+    except InstallError:
+        return "broken"
+    except Exception as exc:
+        logger.debug("startup dependency probe unavailable: %s", exc)
+        return "unknown"
+
+
+def _repair_dependency_environment() -> str:
+    """Rebuild the recorded dependency graph once, then re-probe it.
+
+    ``pm.recovery.repair_dependencies`` restores this installation's recorded
+    set (its sync validates the startup imports before committing), so a
+    successful return means importability was verified again, not assumed.
+    """
+    try:
+        from hermes_cli.main import PROJECT_ROOT
+        from pm.recovery import repair_dependencies
+
+        repair_dependencies(Path(PROJECT_ROOT))
+    except Exception as exc:
+        logger.debug("startup dependency repair failed: %s", exc)
+        return "broken"
+    return _dependency_environment_status()
+
+
 def _print_verified_update_completion(message: str) -> bool:
     """Print a success completion only after probing the next Hermes runtime."""
     from hermes_cli.update_cmd import _post_update_sqlite_runtime_status
     if not message.startswith("✓"):
         _print_update_completion(message)
         return False
+    # An interrupted update must never be marked complete on an environment
+    # that cannot import its startup dependencies: repair once, re-probe, and
+    # withhold success while the environment stays incomplete (#122697).
+    dependency_status = _dependency_environment_status()
+    if dependency_status == "broken":
+        print()
+        print("  -> startup dependencies incomplete (interrupted update); repairing...")
+        dependency_status = _repair_dependency_environment()
+        if dependency_status == "broken":
+            print("  !! startup dependencies could not be repaired; update completion withheld.")
+            print("     Run `hermes pm repair`, then `hermes update` again.")
+            return False
+        print("  -> dependency environment repaired")
     sqlite_runtime_ok, sqlite_info = _post_update_sqlite_runtime_status()
     if sqlite_info is None:
         # Grace path: an unprobeable interpreter (dev checkout, no probe subprocess) must not

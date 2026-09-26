@@ -1,0 +1,254 @@
+{
+  "version.label": {
+    "message": "Next",
+    "description": "The label for version current"
+  },
+  "sidebar.docs.category.Getting Started": {
+    "message": "はじめに",
+    "description": "The label for category 'Getting Started' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Using Hermes": {
+    "message": "Hermes の使い方",
+    "description": "The label for category 'Using Hermes' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Secrets": {
+    "message": "シークレット",
+    "description": "The label for category 'Secrets' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Egress proxy": {
+    "message": "Egress プロキシ",
+    "description": "The label for category 'Egress proxy' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Features": {
+    "message": "機能",
+    "description": "The label for category 'Features' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Core": {
+    "message": "コア",
+    "description": "The label for category 'Core' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Automation": {
+    "message": "自動化",
+    "description": "The label for category 'Automation' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Media & Web": {
+    "message": "メディアとWeb",
+    "description": "The label for category 'Media & Web' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Management": {
+    "message": "管理",
+    "description": "The label for category 'Management' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Skills": {
+    "message": "スキル",
+    "description": "The label for category 'Skills' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Bundled": {
+    "message": "同梱",
+    "description": "The label for category 'Bundled' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-apple": {
+    "message": "Apple",
+    "description": "The label for category 'apple' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-autonomous-ai-agents": {
+    "message": "自律型AIエージェント",
+    "description": "The label for category 'autonomous-ai-agents' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-creative": {
+    "message": "クリエイティブ",
+    "description": "The label for category 'creative' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-email": {
+    "message": "メール",
+    "description": "The label for category 'email' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-github": {
+    "message": "GitHub",
+    "description": "The label for category 'github' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-media": {
+    "message": "メディア",
+    "description": "The label for category 'media' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-mlops": {
+    "message": "MLOps",
+    "description": "The label for category 'mlops' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-note-taking": {
+    "message": "ノート作成",
+    "description": "The label for category 'note-taking' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-productivity": {
+    "message": "生産性",
+    "description": "The label for category 'productivity' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-research": {
+    "message": "リサーチ",
+    "description": "The label for category 'research' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-smart-home": {
+    "message": "スマートホーム",
+    "description": "The label for category 'smart-home' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-social-media": {
+    "message": "ソーシャルメディア",
+    "description": "The label for category 'social-media' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-software-development": {
+    "message": "ソフトウェア開発",
+    "description": "The label for category 'software-development' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Optional": {
+    "message": "オプション",
+    "description": "The label for category 'Optional' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-autonomous-ai-agents": {
+    "message": "自律型AIエージェント",
+    "description": "The label for category 'autonomous-ai-agents' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-blockchain": {
+    "message": "ブロックチェーン",
+    "description": "The label for category 'blockchain' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-communication": {
+    "message": "コミュニケーション",
+    "description": "The label for category 'communication' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-creative": {
+    "message": "クリエイティブ",
+    "description": "The label for category 'creative' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-data-science": {
+    "message": "データサイエンス",
+    "description": "The label for category 'data-science' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-devops": {
+    "message": "DevOps",
+    "description": "The label for category 'devops' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-dogfood": {
+    "message": "ドッグフーディング",
+    "description": "The label for category 'dogfood' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-email": {
+    "message": "メール",
+    "description": "The label for category 'email' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-finance": {
+    "message": "ファイナンス",
+    "description": "The label for category 'finance' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-gaming": {
+    "message": "ゲーム",
+    "description": "The label for category 'gaming' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-health": {
+    "message": "ヘルスケア",
+    "description": "The label for category 'health' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-mcp": {
+    "message": "MCP",
+    "description": "The label for category 'mcp' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-migration": {
+    "message": "移行",
+    "description": "The label for category 'migration' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-mlops": {
+    "message": "MLOps",
+    "description": "The label for category 'mlops' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-payments": {
+    "message": "決済",
+    "description": "The label for category 'payments' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-productivity": {
+    "message": "生産性",
+    "description": "The label for category 'productivity' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-research": {
+    "message": "リサーチ",
+    "description": "The label for category 'research' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-security": {
+    "message": "セキュリティ",
+    "description": "The label for category 'security' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-software-development": {
+    "message": "ソフトウェア開発",
+    "description": "The label for category 'software-development' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-web-development": {
+    "message": "Web開発",
+    "description": "The label for category 'web-development' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-yuanbao": {
+    "message": "元宝",
+    "description": "The label for category 'yuanbao' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Messaging Platforms": {
+    "message": "メッセージングプラットフォーム",
+    "description": "The label for category 'Messaging Platforms' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Popular": {
+    "message": "人気",
+    "description": "The label for category 'Popular' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Microsoft 365": {
+    "message": "Microsoft 365",
+    "description": "The label for category 'Microsoft 365' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Chinese platforms": {
+    "message": "中国のプラットフォーム",
+    "description": "The label for category 'Chinese platforms' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Other": {
+    "message": "その他",
+    "description": "The label for category 'Other' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Integrations": {
+    "message": "統合",
+    "description": "The label for category 'Integrations' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Guides & Tutorials": {
+    "message": "ガイドとチュートリアル",
+    "description": "The label for category 'Guides & Tutorials' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Developer Guide": {
+    "message": "開発者ガイド",
+    "description": "The label for category 'Developer Guide' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Architecture": {
+    "message": "アーキテクチャ",
+    "description": "The label for category 'Architecture' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Extending": {
+    "message": "拡張",
+    "description": "The label for category 'Extending' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Plugins": {
+    "message": "プラグイン",
+    "description": "The label for category 'Plugins' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Internals": {
+    "message": "内部構造",
+    "description": "The label for category 'Internals' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Reference": {
+    "message": "リファレンス",
+    "description": "The label for category 'Reference' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Command Reference": {
+    "message": "コマンドリファレンス",
+    "description": "The label for category 'Command Reference' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Configuration Reference": {
+    "message": "設定リファレンス",
+    "description": "The label for category 'Configuration Reference' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Tools & Skills Reference": {
+    "message": "ツール & スキルリファレンス",
+    "description": "The label for category 'Tools & Skills Reference' in sidebar 'docs'"
+  }
+}

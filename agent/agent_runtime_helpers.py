@@ -3186,16 +3186,44 @@ _PROMOTED_REASONING_PLAN_TAIL_RE = re.compile(
 )
 
 
+# Bare imperative next-step tail for PROMOTED REASONING only (#121070): deepseek-flash ends
+# reasoning-only stops on plan fragments ("next: read PortHackCubeSequence", "send") with no
+# first-person marker, so the plan-tail detector above misses them and the turn reports
+# "complete" with zero tool calls. Tail-only and verb-anchored: a sequencing marker
+# ("next:"/"then"/"now:") plus a tool-ish imperative, or a bare short imperative with no sentence
+# terminal. Stated answers ("The answer is 42.") and terminated imperatives ("Run the tests.")
+# do not match. A false positive costs at most two bounded stall nudges, then promotion.
+# ponytail: fixed verb list; extend only with verbatim stall tails from new reports.
+_PROMOTED_REASONING_IMPERATIVE_VERBS = (
+    r"read|send|run|check|load|fetch|open|write|edit|create|list|search|test|build"
+    r"|start|try|fix|update|delete|call|query|inspect|view|retry|continue|proceed"
+    r"|resume|execute|launch|verify|review|stop|restart"
+)
+_PROMOTED_REASONING_IMPERATIVE_TAIL_RE = re.compile(
+    r"(?:^|[.!?:\u3002\uff01\uff1f\u2014\u2013\n]\s*|\u2026\s*)"
+    r"(?:next\s*[:,]?\s*(?:to\s+)?|then\s+|now\s*:\s*)"
+    rf"(?:{_PROMOTED_REASONING_IMPERATIVE_VERBS})\b[^.!?\n\u3002\uff01\uff1f]{{0,160}}\s*$"
+    r"|(?:^|[.!?:\u3002\uff01\uff1f\u2014\u2013\n]\s*|\u2026\s*)"
+    rf"(?:please\s+)?(?:{_PROMOTED_REASONING_IMPERATIVE_VERBS})\b[^.!?\n\u3002\uff01\uff1f]{{0,80}}\s*$",
+    re.IGNORECASE,
+)
+
+
 def promoted_reasoning_announces_action(text: str) -> bool:
-    """Whether promoted reasoning ENDS on a first-person plan to act (stall, not an answer).
+    """Whether promoted reasoning ENDS on a plan to act (stall, not an answer).
 
     No overall length cap: the reasoning block of a stalled model is often 300-1600 chars of
-    planning monologue; only the tail decides.
+    planning monologue; only the tail decides, plus the bare imperative next-step
+    fragment ("next: read PortHackCubeSequence", "send", #121070).
     """
     t = (text or "").strip()
     if not t:
         return False
-    return bool(_PROMOTED_REASONING_PLAN_TAIL_RE.search(t[-240:]))
+    tail = t[-240:]
+    return bool(
+        _PROMOTED_REASONING_PLAN_TAIL_RE.search(tail)
+        or _PROMOTED_REASONING_IMPERATIVE_TAIL_RE.search(tail)
+    )
 
 
 _INTENT_ACK_ON = {"true", "always", "yes", "on"}

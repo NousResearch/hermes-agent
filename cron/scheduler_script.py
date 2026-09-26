@@ -144,14 +144,21 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
         # ``<root>/venv``, which is built for whichever interpreter created it. Overlaying
         # that on the managed store Python loads a cp311 ``pydantic_core`` on 3.14 and
         # every script dies with ``No module named 'pydantic_core._pydantic_core'`` — the
-        # cron sibling of the gateway crash in #122183/#123650. With no generation
-        # committed this install provisioned no tree, so overlay none: the child keeps
-        # the interpreter it was handed instead of borrowing a foreign ABI.
+        # cron sibling of the gateway crash in #122183/#123650.
+        #
+        # With no generation committed this install has no tree of its own to offer
+        # (a corrupt facts.json still raises, as on main). Falling through to the uv
+        # overlay below is the answer: the handed venv keeps its own interpreter and its own site-packages.
+        # Returning the bare store Python here would be WORSE than main — a store Python
+        # with nothing committed is refused by ``_require_own_dependencies`` with
+        # "hermes pm repair", and a cron script has no hermes_bootstrap to refuse it
+        # cleanly, so it runs and dies on its first third-party import. It also hands
+        # ``_windows_cron_bootstrap_argv`` an overlay with no site-packages entry, which
+        # logs a WARNING on every spawn (#123668 review).
         environment = committed_venv(repo)
-        pythonpath = [str(repo)]
         if environment is not None:
-            pythonpath.append(str(dependency_site(environment)))
-        return str(managed_python), {"PYTHONPATH": os.pathsep.join(pythonpath)}
+            return str(managed_python), {"PYTHONPATH": os.pathsep.join(
+                [str(repo), str(dependency_site(environment))])}
 
     cfg = _read_windows_pyvenv_cfg(venv_dir)
     home = cfg.get("home", "")

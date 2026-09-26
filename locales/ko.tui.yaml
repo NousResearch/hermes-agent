@@ -414,6 +414,7 @@ hints.paste: "텍스트 붙여넣기; /paste는 클립보드 이미지를 첨부
 hints.pasteExpand: "붙여넣은 텍스트 칩 펼치기 / 접기 (입력창에 없으면 보낸 붙여넣기)"
 hints.redraw: "화면 다시 그리기"
 hints.rewindPicker: "입력창이 비어 있고 대기 중일 때: Esc 두 번으로 이전 프롬프트를 골라 편집 (/rewind)"
+hints.sendQueued: "다음 대기열 메시지를 지금 보내기"
 hints.sessionSwitcher: "실시간 세션 전환창 열기 (편집 중이던 대기열 메시지는 삭제됨)"
 hints.shell: "셸 명령 실행 (예: !ls, !git status)"
 hints.undoRedo: "입력 편집 되돌리기 / 다시 실행"

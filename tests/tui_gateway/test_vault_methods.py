@@ -165,6 +165,47 @@ def test_remove_requires_id(home):
     assert err["code"] == 5095
 
 
+def test_set_password_replaces_in_place_and_keeps_otp_and_origin(home):
+    """In-place replacement (#123915): same handle, same origin, TOTP seed untouched, envelopes password-free."""
+    item_id = _result(srv._methods["vault.add"](1, {
+        "kind": "login",
+        "label": "Canva",
+        "origin": "https://canva.com",
+        "secret": {
+            "identifier_type": "email",
+            "identifier": "user@example.com",
+            "password": "old-pw-123",
+            "otp_secret": "JBSWY3DPEHPK3PXP",
+        },
+    }))["id"]
+    out = _result(srv._methods["vault.set_password"](2, {"id": item_id, "password": "new-pw-456"}))
+    assert out["id"] == item_id
+    assert "new-pw-456" not in json.dumps(out)
+    listed = _result(srv._methods["vault.list"](3, {}))
+    assert len(listed["items"]) == 1
+    item = listed["items"][0]
+    assert item["id"] == item_id
+    assert item["origin"] == "https://canva.com"
+    assert item["identifier"] == "user@example.com"
+    assert item.get("has_otp") is True
+    assert "new-pw-456" not in json.dumps(listed)
+
+
+def test_set_password_errors_are_clean_and_leave_the_entry_untouched(home):
+    item_id = _result(srv._methods["vault.add"](1, dict(_LOGIN_PARAMS)))["id"]
+    err = _error(srv._methods["vault.set_password"](2, {"id": item_id, "password": "  "}))
+    assert err["code"] == 5095
+    err = _error(srv._methods["vault.set_password"](3, {"id": "vault_nope", "password": "new-pw"}))
+    assert err["code"] == 5095
+    err = _error(srv._methods["vault.set_password"](4, {"id": item_id}))
+    assert err["code"] == 5095
+    listed = _result(srv._methods["vault.list"](5, {}))
+    assert len(listed["items"]) == 1
+    assert "s3cret-pw-9000" not in json.dumps(_error(srv._methods["vault.set_password"](6, {"id": item_id, "password": ""})))
+    # the stored password still fills: nothing was half-written
+    assert listed["items"][0]["id"] == item_id
+
+
 def test_launch_profile_vault_rpcs_stay_scoped_once_the_process_multiplexes(home, monkeypatch):
     """Once a second profile has been served, ``get_secret`` fails closed for unscoped reads. The
     launch profile's vault.* calls (Desktop sends no ``profile`` for it) must still bind the launch

@@ -186,6 +186,9 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
   const [form, setForm] = useState<VaultForm>(EMPTY_FORM)
   const [formError, setFormError] = useState<null | string>(null)
   const [pendingDelete, setPendingDelete] = useState<null | VaultItem>(null)
+  const [pendingReplace, setPendingReplace] = useState<null | VaultItem>(null)
+  const [replacePassword, setReplacePassword] = useState('')
+  const [replaceError, setReplaceError] = useState<null | string>(null)
   const [unlockTarget, setUnlockTarget] = useState<null | VaultSource>(null)
   const [masterPassword, setMasterPassword] = useState('')
   const [unlockError, setUnlockError] = useState<null | string>(null)
@@ -193,6 +196,7 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
   // in refs the mutationFn consumes and wipes.
   const pendingMasterPassword = useRef('')
   const pendingSecret = useRef<null | Record<string, string>>(null)
+  const pendingReplacePassword = useRef('')
 
   const { data: sourcesData } = useQuery({
     enabled: gatewayState === 'open',
@@ -374,6 +378,51 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
     [invalidate, requestGateway]
   )
 
+  // The new password lives only in this dialog's state; it is cleared the moment the request
+  // returns (success or failure) and never touches a store or the transcript.
+  const closeReplace = useCallback(() => {
+    setPendingReplace(null)
+    setReplacePassword('')
+    setReplaceError(null)
+  }, [])
+
+  const replaceMutation = useMutation({
+    mutationFn: ({ id }: { id: string }) => {
+      const password = pendingReplacePassword.current
+      pendingReplacePassword.current = ''
+
+      return requestGateway<{ id: string }>('vault.set_password', { id, password })
+    },
+    onSuccess: () => {
+      triggerHaptic('success')
+      notify({ kind: 'info', message: v.replaced })
+      closeReplace()
+      void invalidate()
+    },
+    onError: err => {
+      setReplacePassword('')
+      setReplaceError(err instanceof Error ? err.message : String(err))
+    }
+  })
+
+  const submitReplace = useCallback(() => {
+    setReplaceError(null)
+
+    if (!pendingReplace) {
+      return
+    }
+
+    if (!replacePassword) {
+      setReplaceError(v.passwordRequired)
+
+      return
+    }
+
+    pendingReplacePassword.current = replacePassword
+    setReplacePassword('')
+    replaceMutation.mutate({ id: pendingReplace.id })
+  }, [pendingReplace, replaceMutation, replacePassword, v.passwordRequired])
+
   const kindLabel = useCallback((kind: string) => v.kinds[kind as VaultKind] ?? kind, [v.kinds])
 
   const sourceLabel = useCallback(
@@ -415,16 +464,34 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
                 item.backend && item.backend !== 'local' ? (
                   <Pill tone="muted">{sourceLabel(item.backend)}</Pill>
                 ) : (
-                  <Button
-                    aria-label={v.deleteAction}
-                    className="text-(--ui-text-tertiary) hover:text-destructive"
-                    onClick={() => setPendingDelete(item)}
-                    size="icon-sm"
-                    type="button"
-                    variant="ghost"
-                  >
-                    <Trash2 className="size-3.5" />
-                  </Button>
+                  <span className="flex items-center gap-1">
+                    {item.kind === 'login' && (
+                      <Button
+                        aria-label={v.replaceAction}
+                        className="text-(--ui-text-tertiary)"
+                        onClick={() => {
+                          setPendingReplace(item)
+                          setReplacePassword('')
+                          setReplaceError(null)
+                        }}
+                        size="icon-sm"
+                        type="button"
+                        variant="ghost"
+                      >
+                        <KeyRound className="size-3.5" />
+                      </Button>
+                    )}
+                    <Button
+                      aria-label={v.deleteAction}
+                      className="text-(--ui-text-tertiary) hover:text-destructive"
+                      onClick={() => setPendingDelete(item)}
+                      size="icon-sm"
+                      type="button"
+                      variant="ghost"
+                    >
+                      <Trash2 className="size-3.5" />
+                    </Button>
+                  </span>
                 )
               }
               description={
@@ -806,6 +873,48 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
               </Button>
               <Button disabled={addMutation.isPending} size="sm" type="submit">
                 {addMutation.isPending ? v.adding : v.addConfirm}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Replace-password dialog: the new secret is typed hidden and sent straight to
+      vault.set_password — the old secret is never shown, and the entry keeps its handle,
+      origin, identifier and authenticator key. */}
+      <Dialog onOpenChange={open => !open && closeReplace()} open={pendingReplace !== null}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle icon={KeyRound}>{v.replaceTitle}</DialogTitle>
+            <DialogDescription>
+              {pendingReplace ? v.replaceDescription(pendingReplace.label) : undefined}
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            className="grid gap-3"
+            onSubmit={e => {
+              e.preventDefault()
+              submitReplace()
+            }}
+          >
+            <Field htmlFor="vault-new-password" label={v.newPasswordField}>
+              <Input
+                autoComplete="new-password"
+                autoFocus
+                disabled={replaceMutation.isPending}
+                id="vault-new-password"
+                onChange={e => setReplacePassword(e.target.value)}
+                type="password"
+                value={replacePassword}
+              />
+            </Field>
+            {replaceError && <p className="text-xs text-destructive">{replaceError}</p>}
+            <DialogFooter>
+              <Button onClick={closeReplace} type="button" variant="ghost">
+                {t.common.cancel}
+              </Button>
+              <Button disabled={replaceMutation.isPending || !replacePassword} type="submit">
+                {replaceMutation.isPending ? v.replacing : v.replaceConfirm}
               </Button>
             </DialogFooter>
           </form>

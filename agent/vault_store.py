@@ -390,6 +390,33 @@ class VaultStore:
             self._write_all(remaining)
             return True
 
+    def replace_login_password(self, item_id: str, new_password: str) -> VaultItemMeta:
+        """Replace a login item's password in place (#123915).
+
+        Only the secret changes: the handle, label, origin binding, identifier metadata and the
+        authenticator (TOTP) seed are kept untouched, so a routine rotation no longer forces
+        re-enrolling 2FA or rebinding fills. Atomic: validation happens before the single
+        read-modify-write under ``_locked``, so a failure leaves the entry unchanged.
+        """
+        # ponytail: login-only on purpose; payment/address secrets have no single password field —
+        # add per-kind replacement here if a second kind ever needs it.
+        password = str(new_password or "")
+        if not password.strip():
+            raise VaultError("new password is required")
+        with self._locked():
+            items = self._read_all()
+            for rec in items:
+                if rec.get("id") != item_id:
+                    continue
+                if rec.get("kind") != "login":
+                    raise VaultError("only login items have a replaceable password")
+                secret = dict(rec.get("secret") or {})
+                secret["password"] = password
+                rec["secret"] = secret
+                self._write_all(items)
+                return self._meta(rec)
+        raise VaultError(f"no vault item with id {item_id!r}")
+
     def get_meta(self, item_id: str) -> Optional[VaultItemMeta]:
         with self._locked():
             for rec in self._read_all():

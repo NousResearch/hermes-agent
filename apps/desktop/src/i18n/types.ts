@@ -877,6 +877,14 @@ export interface Translations {
       deleteTitle: string
       deleteDescription: (label: string) => string
       deleteConfirm: string
+      replaceAction: string
+      replaceTitle: string
+      replaceDescription: (label: string) => string
+      newPasswordField: string
+      passwordRequired: string
+      replaceConfirm: string
+      replacing: string
+      replaced: string
       sources: {
         title: string
         blurb: string

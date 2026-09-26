@@ -1022,6 +1022,14 @@ export const en: Translations = {
       deleteTitle: 'Delete this item?',
       deleteDescription: label => `"${label}" will be removed. This cannot be undone.`,
       deleteConfirm: 'Delete',
+      replaceAction: 'Replace password',
+      replaceTitle: 'Replace password',
+      replaceDescription: label => `"${label}" keeps its saved origin and authenticator key; only the password changes.`,
+      newPasswordField: 'New password',
+      passwordRequired: 'Enter the new password.',
+      replaceConfirm: 'Replace',
+      replacing: 'Replacing…',
+      replaced: 'Password replaced.',
       sources: {
         title: 'Password managers',
         blurb:

@@ -980,6 +980,14 @@ export const deOverrides = {
       deleteTitle: 'Diesen Eintrag löschen?',
       deleteDescription: label => `„${label}" wird entfernt. Das kann nicht rückgängig gemacht werden.`,
       deleteConfirm: 'Löschen',
+      replaceAction: 'Passwort ersetzen',
+      replaceTitle: 'Passwort ersetzen',
+      replaceDescription: label => `„${label}" behält gespeicherte Herkunft und Authentifikator-Schlüssel; nur das Passwort ändert sich.`,
+      newPasswordField: 'Neues Passwort',
+      passwordRequired: 'Geben Sie das neue Passwort ein.',
+      replaceConfirm: 'Ersetzen',
+      replacing: 'Wird ersetzt…',
+      replaced: 'Passwort ersetzt.',
       sources: {
         title: 'Passwortmanager',
         blurb:

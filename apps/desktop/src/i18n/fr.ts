@@ -981,6 +981,14 @@ export const frOverrides = {
       deleteTitle: 'Supprimer cet élément ?',
       deleteDescription: label => `« ${label} » sera supprimé définitivement.`,
       deleteConfirm: 'Supprimer',
+      replaceAction: 'Remplacer le mot de passe',
+      replaceTitle: 'Remplacer le mot de passe',
+      replaceDescription: label => `« ${label} » conserve son origine enregistrée et sa clé d'authentificateur ; seul le mot de passe change.`,
+      newPasswordField: 'Nouveau mot de passe',
+      passwordRequired: 'Saisissez le nouveau mot de passe.',
+      replaceConfirm: 'Remplacer',
+      replacing: 'Remplacement…',
+      replaced: 'Mot de passe remplacé.',
       sources: {
         title: 'Gestionnaires de mots de passe',
         blurb:

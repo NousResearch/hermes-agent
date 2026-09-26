@@ -980,6 +980,14 @@ export const esOverrides = {
       deleteTitle: '¿Eliminar este elemento?',
       deleteDescription: label => `Se quitará “${label}”. Esto no se puede deshacer.`,
       deleteConfirm: 'Eliminar',
+      replaceAction: 'Reemplazar la contraseña',
+      replaceTitle: 'Reemplazar la contraseña',
+      replaceDescription: label => `«${label}» conserva su origen guardado y su clave de autenticador; solo cambia la contraseña.`,
+      newPasswordField: 'Nueva contraseña',
+      passwordRequired: 'Introduce la nueva contraseña.',
+      replaceConfirm: 'Reemplazar',
+      replacing: 'Reemplazando…',
+      replaced: 'Contraseña reemplazada.',
       sources: {
         title: 'Gestores de contraseñas',
         blurb:

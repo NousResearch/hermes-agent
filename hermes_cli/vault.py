@@ -7,6 +7,8 @@ Subcommands:
 - ``hermes vault list``  metadata — labels, kinds, identifiers, origins,
   handles. Passwords are never shown.
 - ``hermes vault rm``    remove an item by handle/id.
+- ``hermes vault set-password`` replace a login item's password in place
+  (handle, origin and authenticator key are kept; the new secret is read hidden).
 
 The vault backs the password-blind browser autofill tools
 (``browser_vault_list`` / ``browser_vault_fill``): the agent sees handles
@@ -182,6 +184,28 @@ def _cmd_rm(args) -> None:
         c.print(f"[red]No vault item with handle {args.handle!r}[/]")
 
 
+def _cmd_set_password(args) -> None:
+    """Replace a login item's password in place (#123915). The new secret is read via getpass
+    (never echoed, never argv); the handle, origin, identifier and authenticator key are kept."""
+    import getpass
+
+    from agent.vault_store import VaultError, get_vault_store
+
+    c = _console()
+    password = getpass.getpass("New password (hidden): ")
+    if not password.strip():
+        c.print("[red]Error:[/] new password is required")
+        return
+    try:
+        meta = get_vault_store().replace_login_password(args.handle, password)
+    except VaultError as exc:
+        c.print(f"[red]Error:[/] {exc}")
+        return
+    finally:
+        del password
+    c.print(f"[green]Password replaced.[/] handle=[bold]{meta.id}[/] origin={meta.origin or '-'}")
+
+
 def register_cli(subparser) -> None:
     """Build the ``hermes vault`` argparse tree (called from main.py)."""
     subs = subparser.add_subparsers(dest="vault_action")
@@ -202,6 +226,20 @@ def register_cli(subparser) -> None:
     p_rm = subs.add_parser("rm", help="Remove a vault item by handle")
     p_rm.add_argument("handle", help="Item handle (see `hermes vault list`)")
     p_rm.set_defaults(_vault_handler=_cmd_rm)
+
+    p_pw = subs.add_parser(
+        "set-password",
+        help="Replace a login item's password in place (handle, origin and authenticator key are kept)",
+    )
+    p_pw.add_argument("handle", help="Item handle (see `hermes vault list`)")
+    p_pw.set_defaults(_vault_handler=_cmd_set_password)
+
+    p_pw = subs.add_parser(
+        "set-password",
+        help="Replace a login item's password in place (handle, origin and authenticator key are kept)",
+    )
+    p_pw.add_argument("handle", help="Item handle (see `hermes vault list`)")
+    p_pw.set_defaults(_vault_handler=_cmd_set_password)
 
     p_src = subs.add_parser("sources", help="Show detected password managers (1Password, Bitwarden); they are on automatically")
     group = p_src.add_mutually_exclusive_group()

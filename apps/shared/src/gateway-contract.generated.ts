@@ -2017,6 +2017,15 @@ export interface VaultRemoveParams {
 export interface VaultRemoveResult {
   removed: boolean
 }
+/** ``password`` is the new secret: it goes straight into the encrypted store, is never logged, and never comes back in the result. */
+export interface VaultSetPasswordParams {
+  profile?: string | null
+  id?: string | null
+  password?: string | null
+}
+export interface VaultSetPasswordResult {
+  id: string
+}
 export interface SessionForeignListParams {
   profile?: string | null
   source?: ForeignSource | null
@@ -5120,6 +5129,8 @@ export interface RpcMethods {
   'vault.lock': { params: VaultLockParams; result: VaultLockResult }
   /** Remove a local vault item by id. */
   'vault.remove': { params: VaultRemoveParams; result: VaultRemoveResult }
+  /** Replace a login item's password in place (handle, origin, identifier and authenticator key kept). */
+  'vault.set_password': { params: VaultSetPasswordParams; result: VaultSetPasswordResult }
   /** Enable or disable an external password manager (disabling also locks it). */
   'vault.source.set': { params: VaultSourceSetParams; result: VaultSourceSetResult }
   /** Status of every login source (local vault + detected password managers). */
@@ -5373,6 +5384,7 @@ export const RPC_METHODS = [
   'vault.list',
   'vault.lock',
   'vault.remove',
+  'vault.set_password',
   'vault.source.set',
   'vault.sources',
   'vault.unlock',

@@ -522,6 +522,22 @@ method("vault.remove", params=VaultRemoveParams, result=VaultRemoveResult,
        doc="Remove a local vault item by id.")
 
 
+class VaultSetPasswordParams(ProfileParams):
+    """``password`` is the new secret: it goes straight into the encrypted store, is never
+    logged, and never comes back in the result."""
+
+    id: str | None = None
+    password: str | None = None
+
+
+class VaultSetPasswordResult(Result):
+    id: str
+
+
+method("vault.set_password", params=VaultSetPasswordParams, result=VaultSetPasswordResult,
+       doc="Replace a login item's password in place (handle, origin, identifier and authenticator key kept).")
+
+
 # ── foreign histories (methods_session_foreign) ───────────────────────────────────────────────
 
 

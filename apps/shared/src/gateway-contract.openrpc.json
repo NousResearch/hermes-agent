@@ -4039,6 +4039,24 @@
       }
     },
     {
+      "name": "vault.set_password",
+      "summary": "Replace a login item's password in place (handle, origin, identifier and authenticator key kept).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/VaultSetPasswordParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/VaultSetPasswordResult"
+        }
+      }
+    },
+    {
       "name": "vault.source.set",
       "summary": "Enable or disable an external password manager (disabling also locks it).",
       "params": [
@@ -35887,6 +35905,64 @@
           "site"
         ],
         "title": "VaultSaveLoginRequestParams",
+        "type": "object"
+      },
+      "VaultSetPasswordParams": {
+        "additionalProperties": false,
+        "description": "``password`` is the new secret: it goes straight into the encrypted store, is never\nlogged, and never comes back in the result.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Id"
+          },
+          "password": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Password"
+          }
+        },
+        "title": "VaultSetPasswordParams",
+        "type": "object"
+      },
+      "VaultSetPasswordResult": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "VaultSetPasswordResult",
         "type": "object"
       },
       "VaultSource": {

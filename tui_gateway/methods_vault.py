@@ -180,6 +180,41 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5095, str(e))
 
 
+@method("vault.set_password")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Replace a login item's password in place (#123915). The handle, origin binding,
+    identifier metadata and authenticator seed are kept; only the secret changes.
+
+    Params: ``id``, ``password`` (the new secret; never logged, never echoed back).
+    Result: ``{id}`` — metadata only. Exception text is scrubbed of the new secret
+    before it can reach a response or a log line.
+    """
+    from agent.vault_store import (
+        VaultError,
+        get_vault_store,
+        scrub_secret_from_text,
+    )
+
+    item_id = str(params.get("id") or "")
+    password = params.get("password")
+    if not item_id:
+        return _err(rid, 5095, "id is required")
+    if not isinstance(password, str) or not password.strip():
+        return _err(rid, 5095, "password is required")
+    secret = {"password": password}
+    try:
+        meta = get_vault_store().replace_login_password(item_id, password)
+        return _ok(rid, {"id": meta.id})
+    except VaultError as e:
+        return _err(rid, 5095, scrub_secret_from_text(str(e), secret))
+    except Exception as e:
+        return _err(rid, 5095, scrub_secret_from_text(str(e), secret))
+    finally:
+        del password
+        secret.clear()
+
+
 def register(server) -> None:
     """Bind this module's handlers onto ``server``'s globals and registry."""
     _registry.install(server)

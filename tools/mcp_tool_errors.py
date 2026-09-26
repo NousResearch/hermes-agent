@@ -493,6 +493,14 @@ _SESSION_EXPIRED_MARKERS: tuple = (
     "unknown session", "session terminated", "closedresourceerror", "closed resource",
     "transport is closed", "connection closed", "broken pipe", "end of file")
 
+# Stale-session wordings that interpolate an opaque session id between the stable words, so no contiguous
+# _SESSION_EXPIRED_MARKERS entry can match them. Observed provider behaviors, not spec'd strings:
+#   BrowserOS neo:     "BrowserOS neo session <uuid> is no longer live"
+#   other MCP servers: "mcp session <uuid> is not registered"
+# Requiring the id BETWEEN the stable words keeps unrelated errors that merely mention a session
+# elsewhere from being misread as transport expiry.
+_STALE_SESSION_WITH_ID_RE = re.compile(r"session \S+ (?:is no longer live|is not registered)")
+
 
 def _is_session_expired_error(exc: BaseException) -> bool:
     """True if ``exc`` looks like a transport session expiry (Streamable-HTTP servers GC session state on idle TTL /
@@ -508,5 +516,7 @@ def _is_session_expired_error(exc: BaseException) -> bool:
             return False
         # Messages vary across SDK versions/servers: a narrow allow-list of stable substrings avoids false positives.
         msg = str(current).lower()
-        found = found or isinstance(current, transport_error_types) or any(m in msg for m in _SESSION_EXPIRED_MARKERS)
+        found = (found or isinstance(current, transport_error_types)
+                 or any(m in msg for m in _SESSION_EXPIRED_MARKERS)
+                 or bool(_STALE_SESSION_WITH_ID_RE.search(msg)))
     return found

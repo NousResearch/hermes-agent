@@ -2055,6 +2055,10 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             # An explicit schedule/lifecycle rewrite supersedes any occurrence the dispatcher
             # left unclaimed — pause/resume/edit must not resurrect a slot from before the edit.
             updated.pop("pending_slot", None)
+            # A rewrite also supersedes a retained occurrence, unless this call is the resume that
+            # set it (resume passes the key explicitly).
+            if "retained_occurrence" not in updates:
+                updated.pop("retained_occurrence", None)
         _fill_missing_next_run(updated)
         _reject_terminal_activation(job, updated, job_id)
         jobs[i] = updated
@@ -2085,6 +2089,10 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
     catch-up / ``cron.catch_up_missed`` policy in the due scan decides what happens to it — one
     fire or a logged skip, never a silent re-anchor past it (#113603). One-shots and future
     instants recompute from now as before.
+
+    A retained occurrence is stamped on the record (``retained_occurrence``) so the CLI can tell
+    this by-design state from a wedged scheduler; the stamp is dropped wherever the occurrence is
+    consumed or superseded.
     """
     job = resolve_job_ref(job_id)
     if not job:
@@ -2097,12 +2105,14 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
         and _instant_at_or_before(stored_dt, _hermes_now())
     ):
         next_run_at = stored_next
+        retained_occurrence = stored_next
         logger.info(
             "Job '%s' resumed with occurrence %s that elapsed while paused kept due; the next "
             "tick fires it (late/catch-up) or logs the skip.",
             job.get("name", job["id"]), stored_next)
     else:
         next_run_at = compute_next_run(job["schedule"])
+        retained_occurrence = None
     if next_run_at is None and job["schedule"].get("kind") == "once":
         run_at = job["schedule"].get("run_at", "unknown")
         raise ValueError(
@@ -2114,6 +2124,7 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
         "paused_at": None,
         "paused_reason": None,
         "next_run_at": next_run_at,
+        "retained_occurrence": retained_occurrence,
     })
 
 
@@ -2348,6 +2359,7 @@ def _advance_after_run(job: Dict[str, Any], now: str) -> None:
             _complete_job_record(job)
             return
 
+    job.pop("retained_occurrence", None)
     job["next_run_at"] = compute_next_run(job["schedule"], now)
     if job["next_run_at"] is not None:
         if job.get("state") != "paused":
@@ -2620,6 +2632,7 @@ def advance_next_runs(job_ids) -> int:
             new_next = compute_next_run(job["schedule"], now)
             if new_next and new_next != job.get("next_run_at"):
                 job["next_run_at"] = new_next
+                job.pop("retained_occurrence", None)
                 advanced += 1
         if advanced:
             save_jobs(jobs)
@@ -2698,6 +2711,7 @@ def claim_job_for_fire(
                 nxt = compute_next_run(job["schedule"], now.isoformat())
                 if nxt:
                     job["next_run_at"] = nxt
+                    job.pop("retained_occurrence", None)
                     save_jobs(jobs)
             return False
         if force:
@@ -2711,6 +2725,7 @@ def claim_job_for_fire(
             nxt = compute_next_run(job["schedule"], now.isoformat())
             if nxt:
                 job["next_run_at"] = nxt
+                job.pop("retained_occurrence", None)
         save_jobs(jobs)
         return dict(copy.deepcopy(job), _scheduled_instant=instant) if return_job else True
 

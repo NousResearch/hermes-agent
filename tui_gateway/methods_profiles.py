@@ -104,7 +104,11 @@ def _clean_revisions(raw: dict) -> dict:
 
 def _latest_message_preview(db, session_id):
     """≤80-char excerpt of the NEWEST active user/assistant message, or "" (roster semantics).
-    Same query shape as ``SessionDB.latest_message_row_id``; keep them in step."""
+    Same query shape as ``SessionDB.latest_message_row_id``; keep them in step.
+
+    Multimodal content is stored JSON-encoded behind a NUL sentinel, so the raw column is
+    decoded and flattened the way search builds its own previews — otherwise the roster shows
+    the ``json:`` serialization instead of the message text."""
     try:
         with db._lock:
             row = db._conn.execute(
@@ -115,7 +119,9 @@ def _latest_message_preview(db, session_id):
                 (session_id,)).fetchone()
     except Exception:
         return ""
-    text = " ".join(str(row[0] or "").split()).strip() if row else ""
+    decoded = db._decode_content(row[0]) if row else ""
+    flat = _lazy("hermes_state_search", "_flatten_text")(decoded)
+    text = " ".join(flat.split()).strip()
     return text[:80] + "..." if len(text) > 80 else text
 
 

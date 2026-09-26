@@ -547,3 +547,64 @@ def test_profiles_list_does_not_wait_out_write_lock(home):
     canonical = row["canonical_session"]
     assert canonical is not None, "WAL readers must still resolve Bot Chat under a live writer"
     assert "hello from bot" in canonical["preview"]
+
+
+# ---------------------------------------------------------------------------
+# preview decoding (multimodal content)
+# ---------------------------------------------------------------------------
+
+
+def test_preview_shows_text_of_multimodal_message_not_its_encoding(home):
+    """Structured content is stored behind the ``\\x00json:`` sentinel. The roster preview must
+    decode it, or the sidebar shows the raw serialization (the NUL is invisible, so the user
+    sees a bare ``json:[{...}]``)."""
+    db = _db(home)
+    _add_session(db, "forever1", title="Bot Chat", ts=1000, text=[
+        {"type": "text", "text": "look at this screenshot"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}},
+    ])
+    db.close()
+
+    preview = _row(_profiles({}), "default")["canonical_session"]["preview"]
+
+    assert preview == "look at this screenshot"
+    assert "json:" not in preview
+    assert "image_url" not in preview
+
+
+def test_preview_of_text_free_multimodal_message_uses_the_placeholder(home):
+    """An image-only message has no text to excerpt; search's placeholder is the shared answer."""
+    db = _db(home)
+    _add_session(db, "forever1", title="Bot Chat", ts=1000, text=[
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}},
+    ])
+    db.close()
+
+    preview = _row(_profiles({}), "default")["canonical_session"]["preview"]
+
+    assert preview == "[multimodal content]"
+    assert "json:" not in preview
+
+
+def test_preview_of_plain_string_message_is_unchanged(home):
+    """Decoding must not disturb the ordinary path: plain text still collapses whitespace."""
+    db = _db(home)
+    _add_session(db, "forever1", title="Bot Chat", ts=1000, text="  plain\ttext   message  ")
+    db.close()
+
+    preview = _row(_profiles({}), "default")["canonical_session"]["preview"]
+
+    assert preview == "plain text message"
+
+
+def test_preview_truncates_decoded_multimodal_text(home):
+    """The <=80-char roster contract applies to the decoded text, not the encoded column."""
+    db = _db(home)
+    _add_session(db, "forever1", title="Bot Chat", ts=1000, text=[
+        {"type": "text", "text": "z" * 200},
+    ])
+    db.close()
+
+    preview = _row(_profiles({}), "default")["canonical_session"]["preview"]
+
+    assert preview == "z" * 80 + "..."

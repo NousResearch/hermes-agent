@@ -102,6 +102,7 @@ class TestDetectDefaultDarwin:
             ("com.brave.Browser.origin", "brave-origin"),
             ("com.microsoft.edgemac", "edge"),
             ("org.chromium.Chromium", "chromium"),
+            ("net.imput.helium", None),
             ("com.brave.Browser.origin.beta", bc.UNSUPPORTED_CHANNEL),
             ("com.brave.Browser.origin.nightly", bc.UNSUPPORTED_CHANNEL),
         ],
@@ -132,6 +133,8 @@ class TestDetectDefaultLinux:
             ("brave-origin-nightly.desktop", bc.UNSUPPORTED_CHANNEL),
             ("microsoft-edge.desktop", "edge"),
             ("com.microsoft.Edge.desktop", "edge"),
+            ("helium.desktop", "helium"),
+            ("net.imput.helium.desktop", "helium"),
             ("firefox.desktop", None),
             ("org.mozilla.firefox.desktop", None),
             ("", None),
@@ -160,6 +163,10 @@ class TestLinuxProfileDir:
     def test_native_path_when_nothing_exists(self, tmp_path, monkeypatch):
         self._env(monkeypatch, tmp_path)
         assert bc.real_profile_data_dir("chromium", "Linux") == posixpath.join(tmp_path.as_posix(), ".config", "chromium")
+
+    def test_helium_native_path(self, tmp_path, monkeypatch):
+        self._env(monkeypatch, tmp_path)
+        assert bc.real_profile_data_dir("helium", "Linux") == str(tmp_path / ".config" / "net.imput.helium")
 
     def test_snap_chromium_profile_is_found(self, tmp_path, monkeypatch):
         self._env(monkeypatch, tmp_path)

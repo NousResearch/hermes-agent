@@ -19,6 +19,8 @@ from agent.message_sanitization import (
     needs_reasoning_echo,
     reapply_reasoning_echo,
     reasoning_echo_family,
+    sanitize_outbound_kwargs,
+    _strip_harmony_tokens,
     uniquify_tool_call_ids,
 )
 
@@ -43,6 +45,60 @@ class TestDeterministicCallId:
     def test_surrogates_do_not_crash(self):
         out = deterministic_call_id("t", "bad \ud800 arg", 0)
         assert out.startswith("call_")
+
+# ---------------------------------------------------------------------------
+# _strip_harmony_tokens — outbound chokepoint
+# ---------------------------------------------------------------------------
+
+class TestStripHarmonyTokens:
+    """Harmony channel-control tokens must never leave the client.
+
+    A token emitted into ``content`` is persisted with the conversation and replayed on
+    every later turn, so one leak poisons a conversation permanently. It is also what makes
+    a vLLM server's harmony/jinja2 chat-template render fail with a 400 the client reads as
+    a bad request. The strip is unconditional for the same reason surrogate repair is.
+    """
+
+    def _kwargs(self, **kw):
+        return {"messages": [{"role": "assistant", "content": "", **kw}], "tools": None}
+
+    def test_clean_content_is_byte_identical(self):
+        """Inert on ordinary text: a sanitizer that rewrites clean payloads would invalidate
+        every cached prefix it touches."""
+        text = "Reading src/main.rs and comparing with the profile notes."
+        assert _strip_harmony_tokens(text) is text
+
+    def test_every_known_token_is_removed(self):
+        for token in ("<|start|>", "<|end|>", "<|message|>", "<|channel|>", "<|constrain|>",
+                      "<|return|>", "<|call|>", "<|tool|>", "<|refusal|>"):
+            assert _strip_harmony_tokens(f"a{token}b") == "ab", token
+
+    def test_unlisted_placeholder_survives(self):
+        """An explicit token list, not a generic ``<|\\w+|>``: text that merely looks like a
+        placeholder is content and must not be eaten."""
+        assert _strip_harmony_tokens("<|user|> and <|im_start|>") == "<|user|> and <|im_start|>"
+
+    def test_chokepoint_strips_content_and_nested_fields(self):
+        agent = SimpleNamespace(_force_ascii_payload=False, tools=None)
+        kwargs = self._kwargs(
+            content="done<|end|><|start|>assistant",
+            tool_calls=[{"function": {"name": "read", "arguments": '{"p":"a<|channel|>b"}'}}],
+            reasoning_details=[{"text": "thinking<|return|>"}],
+        )
+        sanitize_outbound_kwargs(agent, kwargs)
+        msg = kwargs["messages"][0]
+        assert msg["content"] == "doneassistant"
+        assert msg["tool_calls"][0]["function"]["arguments"] == '{"p":"ab"}'
+        # Deep, like the surrogate repair: a leaked token is stored, so nested fields count.
+        assert msg["reasoning_details"][0]["text"] == "thinking"
+
+    def test_chokepoint_leaves_clean_kwargs_untouched(self):
+        agent = SimpleNamespace(_force_ascii_payload=False, tools=None)
+        kwargs = self._kwargs(content="plain answer", reasoning="plain thought")
+        before = repr(kwargs)
+        sanitize_outbound_kwargs(agent, kwargs)
+        assert repr(kwargs) == before
+
 
 # ---------------------------------------------------------------------------
 # coalesce_tool_call_id

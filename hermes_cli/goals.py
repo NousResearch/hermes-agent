@@ -1542,10 +1542,25 @@ class GoalManager:
             contract_block = s.contract.render_block()
             if s.subgoals:
                 contract_block = f"{contract_block}\n{_render_extra_criteria(s.subgoals)}"
-            return CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE.format(goal=s.goal, contract_block=contract_block)
-        if s.subgoals:
-            return CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE.format(goal=s.goal, subgoals_block=s.render_subgoals_block())
-        return CONTINUATION_PROMPT_TEMPLATE.format(goal=s.goal)
+            prompt = CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE.format(goal=s.goal, contract_block=contract_block)
+        elif s.subgoals:
+            prompt = CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE.format(goal=s.goal, subgoals_block=s.render_subgoals_block())
+        else:
+            prompt = CONTINUATION_PROMPT_TEMPLATE.format(goal=s.goal)
+        # Judge feedback loop-closure: the judge is stateless per turn (goal + criteria + last
+        # response only), so an objection must ride the NEXT continuation prompt or the agent
+        # never learns why "complete" was rejected and repeats the same terse stop reply forever
+        # (observed: identical-reply loop, 20260922_213245_d6d272).
+        if s.last_verdict == "continue" and s.last_reason:
+            prompt += (
+                "\n\n[Judge feedback on your previous turn — verdict was CONTINUE, not done]\n"
+                f"{s.last_reason}\n"
+                "Address this directly. If you claim the goal is complete, your reply MUST quote the "
+                "concrete per-criterion evidence inline (command output, file path + excerpt, log line) — "
+                "the judge sees only this response, not your earlier turns, so 'evidence unchanged' or "
+                "pointing at prior work will be rejected again."
+            )
+        return prompt
 
     def render_contract(self) -> str:
         """Public helper for the /goal show + /goal draft slash commands."""

@@ -26,13 +26,18 @@ def test_receipted_provider_failure_excludes_route_only_in_own_profile(tmp_path,
                required_capabilities=[], input_tokens=1000, reserve_tokens=2000, reasoning="high",
                target_profile="worker-a",
                provenance=dict(frozen_sha="", verified_by="host", complete=True, contributors=[]))
+    clock = [int(time.time())]
+    monkeypatch.setattr(time, "time", lambda: clock[0])
     now = int(time.time())
     first = resolve_route(tmp_path, "test", req, now=now)
     response = httpx.Response(429, headers={"retry-after": "600"},
                               request=httpx.Request("POST", routes[0]["endpoint"]))
     with pytest.raises(RateLimitError):
         with observe_request(tmp_path, first["receipt_id"]):
+            # Observation can be stamped later than the initial selection under load.
+            clock[0] += 2
             raise RateLimitError("private prompt must not be persisted", response=response, body=None)
+    now = int(time.time())
     second = resolve_route(tmp_path, "test", dict(req, attempt_id="2"), now=now + 1)
     assert second["model"] == "alternate"
     other = resolve_route(tmp_path, "test", dict(req, target_profile="worker-b", attempt_id="3"), now=now + 1)

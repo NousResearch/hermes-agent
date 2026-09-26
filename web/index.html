@@ -7,6 +7,16 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
     />
+    <!-- Installable to a phone/laptop home screen. The manifest and icon URLs
+         are absolute because index.html is served at every SPA route; the
+         backend rewrites them when mounted behind a reverse-proxy prefix. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <meta name="theme-color" content="#041c1c" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Hermes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>Hermes Agent - Dashboard</title>
   </head>
   <body>

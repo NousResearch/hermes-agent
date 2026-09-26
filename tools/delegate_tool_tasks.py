@@ -18,6 +18,16 @@ _TEMPLATE_MARKER_RE = re.compile(
 )
 _MIN_BATCH_GOAL_LEN = 10
 
+# Fields a task entry may carry: the five schema-declared ones plus `role` (legacy, ignored but
+# accepted for old transcripts) and the trusted-config-only `acp_command`/`acp_args` (stripped from
+# model-supplied tasks upstream at dispatch). Anything else is rejected loudly below — an undeclared
+# field that is silently ignored reads as a working feature that does nothing (e.g. a per-task
+# `model`/`provider` pin, which delegate_task deliberately does not support: the pin is global via
+# delegation.provider / delegation.model in config.yaml, or per-task via the kanban board).
+_ALLOWED_TASK_FIELDS = frozenset(
+    {"goal", "context", "output_schema", "images", "group", "role", "acp_command", "acp_args"}
+)
+
 def _recover_tasks_from_json_string(tasks: Any) -> tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
     """``(parsed_list, None)`` for a JSON-array string, ``(None, error)`` for a bad string, ``(None, None)`` otherwise."""
     if not isinstance(tasks, str):
@@ -100,6 +110,20 @@ def _normalize_task_list(
             return None, f"Task {i} must be an object, got {type(task).__name__}."
         if not task.get("goal", "").strip():
             return None, f"Task {i} is missing a 'goal'."
+        unknown = sorted(set(task) - _ALLOWED_TASK_FIELDS)
+        if unknown:
+            names = ", ".join(repr(k) for k in unknown)
+            hint = ""
+            if {"model", "provider"} & set(unknown):
+                hint = (
+                    " delegate_task has no per-task model/provider override: children inherit the parent "
+                    "model unless pinned globally via delegation.provider / delegation.model in config.yaml "
+                    "(the kanban board supports a per-task model override)."
+                )
+            return None, (
+                f"Task {i} has unknown field(s) {names} — not declared in the delegate_task schema and "
+                f"silently ignored.{hint} Remove the field(s) or use the documented path."
+            )
     # The single-goal form is exempt from the batch gate (short goals are valid there).
     batch_error = _validate_batch_tasks(task_list) if isinstance(tasks, list) else None
     return (None, batch_error) if batch_error else (task_list, None)

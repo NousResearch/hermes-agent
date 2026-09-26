@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sqlite3
 import subprocess
 import threading
@@ -137,7 +138,7 @@ def _state_db(profile: str, sql: str, params: tuple, log_msg: str, *, commit: bo
     try:
         with contextlib.closing(sqlite3.connect(db, timeout=5)) as con:
             cur = con.execute(sql, params)
-            row = None if commit else cur.fetchone()
+            row = cur.fetchone()
             if commit:
                 con.commit()
         return str(row[0]) if row else ""
@@ -563,7 +564,7 @@ class A2AAdapter(BasePlatformAdapter):
             return self._end_task(rec, protocol.STATE_FAILED, str(exc))
         framed = security.wrap_inbound(peer, text)
         security.audit("inbound", peer, task_id, text, home=storage_home)
-        protocol.persist_message(context_id, "user", text, task_id, home=storage_home)
+        protocol.persist_message(context_id, "user", text, task_id, home=storage_home, peer=peer)
         protocol.metrics.inbound_total += 1
         self._register_inline_push(task_id, params, agent=agent)
         if not agent.get("local", True):
@@ -612,7 +613,6 @@ class A2AAdapter(BasePlatformAdapter):
             from tools.environments.local import served_profile_child_env
             env = served_profile_child_env(target_home=_profile_home(profile), inherit_credentials=True)
             env["HERMES_A2A_PEER"] = peer
-            start = time.time()
             try:
                 proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
                                       timeout=timeout, env=env, check=False, stdin=subprocess.DEVNULL)
@@ -623,19 +623,26 @@ class A2AAdapter(BasePlatformAdapter):
             if proc.returncode != 0:
                 msg = (proc.stderr or proc.stdout or f"profile exited {proc.returncode}").strip()
                 return security.redact_outbound(msg[-2000:]), protocol.STATE_FAILED
-            if not session_id and (session_id := _state_db(
-                    profile, "SELECT id FROM sessions WHERE source = 'a2a' AND started_at >= ? ORDER BY started_at DESC LIMIT 1",
-                    (start - 2.0,), "A2A: could not find latest forwarded session")):
+            if not session_id:
+                # -Q reports the actual child session on stderr. A latest-row query can
+                # claim another peer's concurrent first contact, even with per-key locks.
+                matches = re.findall(r"(?m)^session_id: ([a-zA-Z0-9_-]+)$", proc.stderr or "")
+                if len(matches) != 1:
+                    return "[profile did not report its session]", protocol.STATE_FAILED
+                session_id = matches[0]
+                updated = _state_db(profile,
+                    "UPDATE sessions SET title = ? WHERE id = ? AND source = 'a2a' RETURNING id",
+                    (session_title, session_id), "A2A: could not title forwarded session", commit=True)
+                if updated != session_id:
+                    return "[profile session could not be verified]", protocol.STATE_FAILED
                 self._profile_sessions[key] = session_id
-                _state_db(profile, "UPDATE sessions SET title = ? WHERE id = ?", (session_title, session_id),
-                          "A2A: could not title forwarded session", commit=True)
             return security.redact_outbound((proc.stdout or "").strip()), protocol.STATE_COMPLETED
 
     def _record_outcome(self, task_id: str, context_id: str, peer: str, state: str, reply: str,
                         started: Optional[float] = None, *, home: Optional[Path] = None) -> None:
         """Persist + audit + count a finished task, mark it terminal, and fire its push callback."""
         storage_home = home if home is not None else self._profile_home
-        protocol.persist_message(context_id, "agent", reply, task_id, home=storage_home)
+        protocol.persist_message(context_id, "agent", reply, task_id, home=storage_home, peer=peer)
         security.audit("outbound", peer, task_id, reply, home=storage_home)
         m = protocol.metrics
         if state in (protocol.STATE_COMPLETED, protocol.STATE_INPUT_REQUIRED):

@@ -36,7 +36,9 @@ The agent gets five tools:
 - `a2a_discover(url)` — what can this agent do?
 - `a2a_call(agent, message, context_id?)` — send it a task, get the reply.
 - `a2a_list()` — configured peers, saved conversations, metrics.
-- `a2a_history(context_id)` — recall a saved A2A conversation.
+- `a2a_history(context_id, peer)` — recall a saved A2A conversation. Pass the
+  authenticated sender name for inbound traffic or configured recipient name for
+  outbound traffic; legacy unbound transcripts remain readable without `peer`.
 - `a2a_orchestrate(capability, message, mode?)` — fan-out a task to every
   peer advertising a capability (`all` / `first` / `best`).
 
@@ -79,6 +81,12 @@ via `tasks/get`.
   alias. Older forwarded sessions titled using only a sanitized context are not
   resumed automatically after this security change. Their existing records remain
   in the target profile's session store for operator review.
+  New transcripts use a collision-resistant filename keyed by authenticated
+  peer and exact context ID. `a2a_list` shows both values for readback. A
+  concurrent forwarded first contact correlates the target's CLI-reported
+  session ID rather than selecting the newest database row; missing/invalid
+  correlation fails the request. Existing legacy unbound transcripts are not
+  migrated or included in peer-bound reads.
 
 ## Env vars
 

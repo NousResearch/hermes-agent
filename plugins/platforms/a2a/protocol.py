@@ -430,26 +430,36 @@ class TaskStore:
         return task
 
 
-def _conv_path(context_id: str, home: Optional[Path] = None) -> Path:
-    safe = "".join(c for c in (context_id or "default") if c.isalnum() or c in "-_") or "default"
-    return (home or get_hermes_home()) / "a2a_conversations" / f"{safe}.jsonl"
+def _conv_path(context_id: str, home: Optional[Path] = None, *, peer: str = "") -> Path:
+    # A peer-bound transcript never aliases another authenticated sender or a
+    # punctuation/truncation variant of the exact context. Legacy unbound logs
+    # remain readable only through the unbound lookup, never a peer-bound read.
+    if peer:
+        import hashlib
+        key = json.dumps([peer, context_id], ensure_ascii=True, separators=(",", ":"))
+        name = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    else:
+        name = "".join(c for c in (context_id or "default") if c.isalnum() or c in "-_") or "default"
+    return (home or get_hermes_home()) / "a2a_conversations" / f"{name}.jsonl"
 
 
-def persist_message(context_id: str, role: str, text: str, task_id: str = "", *, home: Optional[Path] = None) -> None:
+def persist_message(context_id: str, role: str, text: str, task_id: str = "", *, home: Optional[Path] = None,
+                    peer: str = "") -> None:
     """Append one message to the context's on-disk conversation log. Never raises."""
     try:
-        path = _conv_path(context_id, home)
+        path = _conv_path(context_id, home, peer=peer)
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps({"ts": time.time(), "role": role, "text": text, "task_id": task_id}, ensure_ascii=False) + "\n")
+            fh.write(json.dumps({"ts": time.time(), "role": role, "text": text, "task_id": task_id,
+                                 "peer": peer, "context_id": context_id}, ensure_ascii=False) + "\n")
     except Exception:
         pass
 
 
-def load_conversation(context_id: str, limit: int = 50) -> list[dict]:
+def load_conversation(context_id: str, limit: int = 50, *, peer: str = "") -> list[dict]:
     """Last *limit* messages for a context (empty list if none / unreadable)."""
     try:
-        lines = _conv_path(context_id).read_text(encoding="utf-8-sig").splitlines()
+        lines = _conv_path(context_id, peer=peer).read_text(encoding="utf-8-sig").splitlines()
     except Exception:
         return []
     out: list[dict] = []
@@ -465,8 +475,16 @@ def load_conversation(context_id: str, limit: int = 50) -> list[dict]:
 
 
 def list_conversations() -> list[str]:
-    """Context-ids that have persisted conversations."""
-    return sorted(p.stem for p in (get_hermes_home() / "a2a_conversations").glob("*.jsonl"))
+    """Discover peer/context pairs from persisted records (not opaque hash names)."""
+    entries = []
+    for path in (get_hermes_home() / "a2a_conversations").glob("*.jsonl"):
+        try:
+            with path.open(encoding="utf-8-sig") as fh:
+                first = json.loads(fh.readline())
+            entries.append(f"{first['peer']} / {first['context_id']}" if first.get("peer") else first.get("context_id", path.stem))
+        except (OSError, ValueError, KeyError):
+            continue
+    return sorted(entries)
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

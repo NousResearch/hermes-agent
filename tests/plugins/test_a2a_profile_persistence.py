@@ -43,10 +43,10 @@ def test_multiplex_adapters_persist_under_own_homes(tmp_path, monkeypatch):
         thread.join()
     for home, own, foreign in ((a, ("to-a", "back-to-a"), "to-b"), (b, ("to-b",), "to-a")):
         for context in own:
-            rows = [json.loads(line) for line in (home / "a2a_conversations" / f"{context}.jsonl").read_text().splitlines()]
+            rows = [json.loads(line) for line in protocol._conv_path(context, home, peer="authenticated-peer").read_text().splitlines()]
             assert [row["role"] for row in rows] == ["user", "agent"]
             assert [row["text"] for row in rows] == [context, "ACK"]
-        assert not (home / "a2a_conversations" / f"{foreign}.jsonl").exists()
+        assert not protocol._conv_path(foreign, home, peer="authenticated-peer").exists()
         audit = [json.loads(line) for line in (home / "a2a_audit.jsonl").read_text().splitlines()]
         assert len(audit) == 2 * len(own)
     assert not (launch / "a2a_conversations").exists()
@@ -122,11 +122,11 @@ def test_local_completion_and_forwarded_roundtrip_isolated_in_threads(tmp_path, 
             token = set_hermes_home_override(home)
             try:
                 for context, reply in own:
-                    history = a2a_history({"context_id": context})
+                    history = a2a_history({"context_id": context, "peer": "trusted-peer"})
                     assert f"[user] {context}" in history
                     assert f"[agent] {reply}" in history
                 for context in foreign:
-                    assert "No persisted conversation" in a2a_history({"context_id": context})
+                    assert "No persisted conversation" in a2a_history({"context_id": context, "peer": "trusted-peer"})
             finally:
                 reset_hermes_home_override(token)
             audit = [json.loads(line) for line in (home / "a2a_audit.jsonl").read_text().splitlines()]
@@ -221,8 +221,8 @@ def test_real_forwarded_profiles_survive_fresh_process_readback(tmp_path, monkey
         for home, context, foreign, reply in ((a, "to-a", "to-b", "ACK a"),
                                                (b, "to-b", "to-a", "ACK b")):
             code = ("import json; from plugins.platforms.a2a.tools import a2a_history; "
-                    f"print(json.dumps([a2a_history({{'context_id': {context!r}}}), "
-                    f"a2a_history({{'context_id': {foreign!r}}})]))")
+                    f"print(json.dumps([a2a_history({{'context_id': {context!r}, 'peer': 'trusted-peer'}}), "
+                    f"a2a_history({{'context_id': {foreign!r}, 'peer': 'trusted-peer'}})]))")
             readback = run_python(code, root, extra_env={"HERMES_HOME": str(home)})
             assert readback.returncode == 0, readback.stderr
             own, other = json.loads(readback.stdout.strip().splitlines()[-1])
@@ -307,9 +307,85 @@ def test_forwarded_session_identity_survives_restart_without_peer_or_context_ali
         # Fresh process reads the receiver's durable transcript; launch profile stays clean.
         for context in contexts:
             code = ("from plugins.platforms.a2a.tools import a2a_history; "
-                    f"print(a2a_history({{'context_id': {context!r}}}))")
+                    f"print(a2a_history({{'context_id': {context!r}, 'peer': 'peer-one'}}))")
             readback = run_python(code, root, extra_env={"HERMES_HOME": str(target)})
             assert readback.returncode == 0, readback.stderr
             assert "[user]" in readback.stdout and "[agent]" in readback.stdout
+        # A fresh process must not retrieve another peer's transcript with
+        # either an identical context or the old sanitizer's colliding name.
+        code = ("import json; from plugins.platforms.a2a.tools import a2a_history; "
+                "print(json.dumps([a2a_history({'context_id':'shared/id','peer':'peer-one'}), "
+                "a2a_history({'context_id':'shared/id','peer':'peer-two'}), "
+                "a2a_history({'context_id':'shared id','peer':'peer-one'}), "
+                "a2a_history({'context_id':'shared/id'})]))")
+        readback = run_python(code, root, extra_env={"HERMES_HOME": str(target)})
+        assert readback.returncode == 0, readback.stderr
+        first, second, third, unbound = json.loads(readback.stdout.strip().splitlines()[-1])
+        assert "turn 0" in first and "turn 5" in first and "turn 1" not in first
+        assert "turn 1" in second and "turn 0" not in second
+        assert "turn 2" in third and "turn 0" not in third
+        assert "No persisted conversation" in unbound
+        paths = {protocol._conv_path(context, target, peer=peer) for peer, context in turns}
+        assert len(paths) == len(sessions)
         assert not (launch / "state.db").exists()
         assert not (launch / "a2a_conversations").exists()
+
+
+def test_concurrent_first_contacts_correlate_real_child_sessions(tmp_path, monkeypatch):
+    """Distinct workers can finish in either order; neither may title the other's row."""
+    root = tmp_path / "operator"
+    launch = root / ".hermes"
+    target = launch / "profiles" / "receiver"
+    root.mkdir()
+    launcher = tmp_path / "bin"
+    launcher.mkdir()
+    hermes = launcher / "hermes"
+    hermes.write_text(f"#! /bin/sh\nexec '{sys.executable}' -m hermes_cli.main \"$@\"\n")
+    hermes.chmod(0o700)
+    with FakeLLMServer([Text("ACK one"), Text("ACK two")], api_key="fixture-key") as model:
+        write_home(target, model.base_url, api_key="fixture-key")
+        monkeypatch.setattr(os, "environ", hermetic_env(root, {"PATH": str(launcher) + os.pathsep + os.environ["PATH"]}))
+        monkeypatch.setenv("HERMES_PROFILE", "sender")
+        token = set_hermes_home_override(launch)
+        try:
+            listener = A2AAdapter(SimpleNamespace(extra={"agents": {"receiver": {"profile": "receiver"}}}))
+        finally:
+            reset_hermes_home_override(token)
+            monkeypatch.delenv("HERMES_PROFILE")
+        barrier = threading.Barrier(2)
+        errors = []
+        def send(peer, context):
+            try:
+                barrier.wait(timeout=10)
+                params = {"message": protocol.text_message(protocol.ROLE_USER, peer, context_id=context)}
+                result = listener._rpc_message_send(1, params, peer, agent=listener._agents["receiver"])
+                assert result["result"]["status"]["state"] == protocol.STATE_COMPLETED, result
+            except BaseException as exc:
+                errors.append(exc)
+        threads = [threading.Thread(target=send, args=(peer, context)) for peer, context in
+                   (("peer-one", "shared/id"), ("peer-two", "shared id"))]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=90)
+            assert not thread.is_alive()
+        assert not errors, errors
+        with sqlite3.connect(target / "state.db") as db:
+            sessions = db.execute("SELECT id, title FROM sessions WHERE source = 'a2a'").fetchall()
+            assert len(sessions) == 2 and len({row[0] for row in sessions}) == 2
+            for peer, context in (("peer-one", "shared/id"), ("peer-two", "shared id")):
+                identity = ("receiver", "receiver", peer, context)
+                title = "a2a-" + hashlib.sha256(json.dumps(identity, ensure_ascii=True,
+                            separators=(",", ":")).encode()).hexdigest()
+                sid = next(sid for sid, stored_title in sessions if stored_title == title)
+                content = [row[0] for row in db.execute("SELECT content FROM messages WHERE session_id = ? AND role = 'user'", (sid,))]
+                assert len(content) == 1 and peer in content[0]
+        for peer, context in (("peer-one", "shared/id"), ("peer-two", "shared id")):
+            other = "peer-two" if peer == "peer-one" else "peer-one"
+            code = ("from plugins.platforms.a2a.tools import a2a_history; "
+                    f"print(a2a_history({{'context_id': {context!r}, 'peer': {peer!r}}})); "
+                    f"print(a2a_history({{'context_id': {context!r}, 'peer': {other!r}}}))")
+            readback = run_python(code, root, extra_env={"HERMES_HOME": str(target)})
+            assert readback.returncode == 0, readback.stderr
+            assert f"[user] {peer}" in readback.stdout
+            assert "No persisted conversation" in readback.stdout

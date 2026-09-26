@@ -37,7 +37,14 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     # See #77173.
     # Windows spells the CLI with a launcher suffix (`hermes.exe`, npm-style `hermes.cmd`/`.ps1`);
     # same command, so the suffix is optional here.
-    r"(?:(?<![/\w.\-])hermes(?:\.(?:exe|cmd|bat|com|ps1))?\s+gateway\s+(?:restart|stop|uninstall)\b)"
+    # A supervised gateway is commonly launched as `python -m hermes_cli.main gateway run` (or
+    # `python3 -m hermes_cli gateway run`, the package form) rather than through the `hermes`
+    # console-script entry point, so `python -m hermes_cli[.main] gateway stop/restart/uninstall`
+    # is the SAME command as the `hermes gateway ...` spelling above — omitting it left both this
+    # hard block and the bypassable approval layer (tools/approval_detection.detect_dangerous_command)
+    # blind to it.
+    r"(?:(?:(?<![/\w.\-])hermes(?:\.(?:exe|cmd|bat|com|ps1))?|\bpython\S*\s+(?:-\S+\s+)*-m\s+hermes_cli(?:\.main)?)"
+    r"\s+gateway\s+(?:restart|stop|uninstall)\b)"
     # Branch B: launchctl ops anchored on a hermes-gateway label so unrelated hermes services stay
     # unblocked. `submit`/`bootstrap` register a NEW keepalive job wrapping an arbitrary helper (a
     # laundered restart); neutral-label submissions are caught by
@@ -55,8 +62,17 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     # (tools/approval.py, skipped on force=True) as the only cover, while this hard block — documented as
     # "force=True cannot help here" — let them through (#80260).
     r"|(?:launchctl\s+(?:kickstart|unload|load|stop|restart|submit|bootstrap|bootout|remove|disable)\b[^\n]*\bhermes[.\-]?gateway)"
-    # Branch C: systemctl ops on a hermes-gateway unit.
-    r"|(?:systemctl\s+(?:-\S+\s+)*(?:restart|stop|start)\b[^\n]*\bhermes[.\-]?gateway)"
+    # Branch C: systemctl ops on a hermes-gateway unit. `try-restart`/`reload-or-restart`/
+    # `try-reload-or-restart` are conditional-restart spellings systemd treats as the plain verb
+    # they contain when the unit is active (which a running gateway's unit always is) — same
+    # foot-gun as `restart`, different name. `disable --now`/`mask --now` stop the unit
+    # immediately (the `--now` is what makes it act, not merely disable future starts); without
+    # `--now`, `disable`/`mask` alone only change the boot-time state and stay uncovered. Same
+    # asymmetry #80260 closed for launchctl `bootout`/`remove`/`disable`, this platform's turn.
+    r"|(?:systemctl\s+(?:-\S+\s+)*(?:restart|stop|start|try-restart|reload-or-restart|try-reload-or-restart)\b"
+    r"[^\n]*\bhermes[.\-]?gateway)"
+    r"|(?:systemctl\s+(?:-\S+\s+)*(?:disable|mask)\b[^\n]*--now\b[^\n]*\bhermes[.\-]?gateway)"
+    r"|(?:systemctl\s+(?:-\S+\s+)*(?:disable|mask)\b[^\n]*\bhermes[.\-]?gateway[^\n]*--now\b)"
     # Branch D: pkill/kill of the gateway process, both token orders. Leading \b keeps "skill" from
     # matching as "kill".
     # `taskkill` / `Stop-Process` are the Windows spellings of the same operation; `\bp?kill\b`

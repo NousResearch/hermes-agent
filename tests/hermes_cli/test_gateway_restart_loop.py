@@ -248,6 +248,45 @@ class TestGatewayLifecyclePattern:
     def test_boundary_fix_still_blocks_real_commands(self, text):
         assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
 
+    @pytest.mark.parametrize("text", [
+        # A supervised gateway commonly runs as `python -m hermes_cli.main gateway run` rather
+        # than through the `hermes` console script -- the SAME command as Branch A's
+        # `hermes gateway stop/restart/uninstall` spelling, previously unguarded.
+        "python -m hermes_cli.main gateway stop",
+        "python3 -m hermes_cli gateway restart",
+        "python -m hermes_cli.main gateway uninstall",
+        "python3.12 -m hermes_cli.main gateway stop",
+        "python -B -m hermes_cli.main gateway stop",
+        # systemctl's conditional-restart spellings act as the plain verb they contain when the
+        # unit is active -- a running gateway's unit always is.
+        "systemctl --user try-restart hermes-gateway",
+        "systemctl --user reload-or-restart hermes-gateway",
+        "systemctl --user try-reload-or-restart hermes-gateway",
+        # `disable --now`/`mask --now` stop the unit immediately, in either token order.
+        "systemctl --user disable --now hermes-gateway",
+        "systemctl --user mask --now hermes-gateway",
+        "systemctl --user disable hermes-gateway --now",
+    ])
+    def test_module_spelling_and_systemctl_stop_verbs_are_blocked(self, text):
+        assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
+
+    @pytest.mark.parametrize("text", [
+        # `start` stays benign in the module spelling too, same as `hermes gateway start`.
+        "python -m hermes_cli.main gateway start",
+        "python -m hermes_cli.main gateway run",
+        "python -m hermes_cli.main gateway status",
+        "systemctl --user status hermes-gateway",
+        # `disable`/`mask` alone (no `--now`) only change the boot-time state -- they do not stop
+        # a currently running gateway, so they stay outside this hard block.
+        "systemctl --user disable hermes-gateway",
+        "systemctl --user mask hermes-gateway",
+        # An unrelated module invocation must not match on the `gateway stop` tail alone.
+        "python -m unrelated_module gateway stop",
+        "python -m hermes_cli.other gateway stop",
+    ])
+    def test_module_spelling_and_systemctl_negative_controls_stay_allowed(self, text):
+        assert not _contains_gateway_lifecycle_command(text), f"Should NOT match: {text!r}"
+
     def test_quoted_multiline_payload_tokenizes_as_one_logical_line(self):
         # #92372: a newline inside a quoted string is data, not a command
         # separator. A quoted data-file path on its own physical line inside

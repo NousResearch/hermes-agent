@@ -78,6 +78,32 @@ export async function clearUnreadOnOpen(storedId: string): Promise<void> {
   }
 }
 
+/** Advance the shared read watermark for a completion already visible in the
+ * focused pane. Unlike clearUnreadOnOpen, this must not trust the cached
+ * `unread` projection: the completion can make the backend unread between list
+ * refreshes while the loaded row still says false. The loaded row remains the
+ * authority for profile routing, and a failed acknowledgement is best-effort. */
+export async function acknowledgeSessionRead(storedId: string): Promise<void> {
+  const row = rowFor(storedId)
+
+  if (!row) {
+    return
+  }
+
+  const guard = new Map($unreadWriteGuard.get())
+  guard.set(storedId, { at: Date.now(), value: false })
+  $unreadWriteGuard.set(guard)
+  setSessions(rows => rows.map(r => (r.id === storedId ? { ...r, unread: false } : r)))
+
+  try {
+    await setSessionUnreadRemote(storedId, false, row.profile)
+  } catch {
+    const nextGuard = new Map($unreadWriteGuard.get())
+    nextGuard.delete(storedId)
+    $unreadWriteGuard.set(nextGuard)
+  }
+}
+
 /** Release guard entries once a list page confirms the value we wrote. Call
  *  once at boot, next to watchSessionPins(). */
 export function watchUnreadWriteGuard(): void {

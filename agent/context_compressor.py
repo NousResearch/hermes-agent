@@ -249,8 +249,18 @@ def _is_summary_access_or_quota_error(exc: Exception) -> bool:
 
 
 def _exc_status_code(exc: Exception) -> Any:
-    """HTTP status carried on the exception itself or on its ``response``."""
-    return getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
+    """HTTP status carried on the exception itself, on its ``response``, or anywhere in its
+    cause chain — the same dig ``error_classifier._extract_status_code`` does, so both readers
+    of one exception agree on a wrapped error (#123362)."""
+    seen: BaseException | None = exc
+    visited: set[int] = set()
+    while seen is not None and id(seen) not in visited:
+        visited.add(id(seen))
+        code = getattr(seen, "status_code", None) or getattr(getattr(seen, "response", None), "status_code", None)
+        if code:
+            return code
+        seen = seen.__cause__ or seen.__context__
+    return None
 
 
 HISTORICAL_TASK_HEADING = "## Historical Task Snapshot"
@@ -3846,6 +3856,11 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             failed_model or self.summary_model or getattr(self, "_last_aux_resolved_model", "") or ""
         ).strip()
         self._summary_model_fallen_back = True
+        if self.summary_model:
+            # Remember the configured route for the re-arm (#123362): a success on the main
+            # model restores it, so a recovered aux route is probed again instead of being
+            # abandoned for the compressor's lifetime.
+            self._configured_summary_model = self.summary_model
         logger.warning(
             "Summary model '%s' %s (%s). Falling back to main model '%s' for compression.",
             failed or "(auto)", reason, e, self.model,
@@ -4010,6 +4025,12 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             self._previous_summary = summary
             self._clear_compression_failure_cooldown()
             self._summary_model_fallen_back = False
+            # Re-arm the aux route (#123362): the fallback cleared the configured summary
+            # model; restoring it makes the next compression probe the route again — a
+            # failure re-runs the one-shot fallback, so the recovery is bounded by the
+            # same machinery instead of being permanent for the compressor's lifetime.
+            if getattr(self, "_configured_summary_model", "") and not self.summary_model:
+                self.summary_model = self._configured_summary_model
             self._last_summary_error = None
             self._clear_terminal_summary_failures()
             # The provider answered a summary again: the sustained-overload budget restarts (#123167).

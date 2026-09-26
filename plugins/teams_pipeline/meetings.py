@@ -183,9 +183,13 @@ async def _download_artifact(
     client: MicrosoftGraphClient, meeting_ref: TeamsMeetingRef, artifact: MeetingArtifact, destination: Path, *,
     kind: str, **download_kwargs: Any) -> dict[str, Any]:
     path = artifact.download_url or f"{_meeting_path(meeting_ref)}/{kind}s/{quote(artifact.artifact_id, safe='')}/content"
-    return await _graph(
-        client.download_to_file(path, destination, **download_kwargs),
-        missing_message=f"{kind.capitalize()} {artifact.artifact_id} not found for meeting {meeting_ref.meeting_id}")
+    missing_message = f"{kind.capitalize()} {artifact.artifact_id} not found for meeting {meeting_ref.meeting_id}"
+    try:
+        return await client.download_to_file(path, destination, **download_kwargs)
+    except MicrosoftGraphAPIError as exc:
+        if exc.status_code == 404:
+            raise TeamsMeetingArtifactNotFoundError(missing_message) from exc
+        raise _wrap_graph_error(exc, missing_message=missing_message) from exc
 
 
 def select_preferred_transcript(candidates: list[MeetingArtifact]) -> MeetingArtifact | None:

@@ -63,7 +63,7 @@ def js_block_comment_lines(lines: list[str]) -> set[int]:
             else:
                 code.add(number)
                 char = line[i]
-                if char in '`/\\' or line.startswith('<!--', i):
+                if char in '`/\\' or line.startswith(('<!--', '-->'), i):
                     return completed - code
                 i += 1
                 if char in "\"'":

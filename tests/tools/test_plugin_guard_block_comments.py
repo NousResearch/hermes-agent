@@ -44,6 +44,8 @@ def test_whole_line_block_prose_stays_visible_and_installable(tmp_path, source, 
     '/* /etc/shadow',
     'const marker = "broken\n/* /etc/shadow */',
     '/* benign */' + ' ' * 150 + 'readFileSync("/etc/shadow");',
+    '--> /*\nreadFileSync("/etc/shadow");\n/* */',
+    '<!-- /*\nreadFileSync("/etc/shadow");\n/* */',
     '/* benign */\u2028readFileSync("/etc/shadow");',
 ])
 def test_block_markers_never_launder_executable_or_uncertain_lines(tmp_path, source):

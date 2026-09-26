@@ -95,6 +95,10 @@ class MessageEvent:
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
+    # Optional post-queue dispatch receipt for callers that need more than adapter queue admission.
+    # The carrier owns the Future; gateway processing settles it when session routing completes.
+    _gateway_dispatch_waiter: Optional[Any] = field(default=None, init=False, repr=False, compare=False)
+    _gateway_dispatch_tracked: bool = field(default=False, init=False, repr=False, compare=False)
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
 

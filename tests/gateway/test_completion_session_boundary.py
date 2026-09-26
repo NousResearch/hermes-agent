@@ -53,6 +53,12 @@ class _SessionDB:
 def _runner(adapter, *, session_db=...):
     def admit(event):
         event._gateway_accepted = True
+        # This lightweight test adapter dispatches inline; production BasePlatformAdapter
+        # adapters provide the same receipt from their processing task.
+        waiter = getattr(event, "_gateway_dispatch_waiter", None)
+        if waiter is not None:
+            event._gateway_dispatch_tracked = True
+            waiter.set_result(None)
     adapter.handle_message.side_effect = admit
     runner = object.__new__(GatewayRunner)
     runner._running = True

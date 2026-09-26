@@ -404,7 +404,15 @@ class GatewayTurnMixin:
     async def _hmwa_resolve_session(self, event, source):
         """Resolve ``source`` to its session entry (topic recovery, internal-route guards, Telegram
         topic-binding heal). Returns ``(source, session_entry, session_key)`` or ``None`` to drop
-        the event."""
+        the event. A pinned carrier waits on the dispatch receipt settled by the drop/success paths
+        below, so a non-durable internal event cannot be acknowledged and then silently lost.
+        """
+        from gateway.wake import _settle_internal_event_dispatch
+
+        def _drop(reason: str):
+            _settle_internal_event_dispatch(event, reason)
+            return None
+
         # Topic-mode DMs: rewrite a stale/foreign thread_id to the user's last-active topic so a
         # cross-topic Reply doesn't fragment the conversation.
         event_metadata = getattr(event, "metadata", None) or {}
@@ -427,7 +435,7 @@ class GatewayTurnMixin:
                     "Dropping internally routed event after route recovery: expected session=%s derived=%s",
                     expected_session_key, derived_session_key,
                 )
-                return
+                return _drop("internally routed session changed after route recovery")
 
         strict_session = bool(event_metadata.get("gateway_session_strict"))
         pinned_session_id = str(event_metadata.get("gateway_session_id") or "").strip()
@@ -438,7 +446,7 @@ class GatewayTurnMixin:
                     "Dropping internally routed event: expected session id=%s is no longer current for key=%s",
                     pinned_session_id or "missing", expected_session_key or "missing",
                 )
-                return
+                return _drop("pinned session is no longer current")
         else:
             # Internal wakes observe reset policy without counting as user activity, or periodic
             # notifications keep the routing key alive across every daily/idle boundary.
@@ -449,14 +457,15 @@ class GatewayTurnMixin:
         if not strict_session and pinned_session_id:
             resolved_entry = await self._resolve_async_delegation_session(session_entry, pinned_session_id)
             if resolved_entry is None:
-                return
+                return _drop("pinned session could not be resolved")
             session_entry = resolved_entry
         self._cache_session_source(session_key, source)
         if await asyncio.to_thread(self._is_telegram_topic_lane, source):
             session_entry = await self._hmwa_heal_telegram_topic_binding(source, session_entry, session_key)
         from gateway.run_heartbeat_acceptance import resolve_heartbeat_owner
         if not await resolve_heartbeat_owner(self, event, session_entry):
-            return
+            return _drop("session owner changed before dispatch")
+        _settle_internal_event_dispatch(event)
         return source, session_entry, session_key
 
     async def _hmwa_heal_telegram_topic_binding(self, source, session_entry, session_key):

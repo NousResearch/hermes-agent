@@ -3850,6 +3850,13 @@ class BasePlatformAdapter(ABC):
         done = getattr(self._session_tasks.get(session_key), "done", None)
         return bool(done and done())
 
+    def _discard_pending_event(self, session_key: str, reason: str) -> None:
+        """Drop a queued event and close any carrier waiting for its dispatch receipt."""
+        event = self._pending_messages.pop(session_key, None)
+        if event is not None:
+            from gateway.wake import _settle_internal_event_dispatch
+            _settle_internal_event_dispatch(event, reason)
+
     def _heal_stale_session_lock(self, session_key: str) -> bool:
         """Clear a stale session lock; True if healed. On-entry safety net: without it a split-brain
         (guard held, nothing processing) traps the chat in "Interrupting..." until restart."""
@@ -3858,7 +3865,7 @@ class BasePlatformAdapter(ABC):
         logger.warning("[%s] Healing stale session lock for %s (owner task is done/absent)",
                        self.name, session_key)
         self._active_sessions.pop(session_key, None)
-        self._pending_messages.pop(session_key, None)
+        self._discard_pending_event(session_key, "pending event discarded after stale session lock")
         self._session_tasks.pop(session_key, None)
         self._discard_text_debounce(session_key)
         return True
@@ -3875,7 +3882,24 @@ class BasePlatformAdapter(ABC):
             self._session_tasks.pop(session_key, None)
             self._release_session_guard(session_key, guard=guard)
             return False
+        self._track_internal_event_dispatch(event, task)
         return True
+
+    def _track_internal_event_dispatch(self, event: MessageEvent, task: Any) -> None:
+        """Close a dispatch receipt if a processing task ends before its coroutine starts.
+
+        A coroutine cancelled before its first step never reaches its own ``finally`` block. The
+        carrier is still waiting for a post-admission dispatch outcome, so close that receipt from
+        the task callback instead of leaving it pending forever.
+        """
+        if getattr(event, "_gateway_dispatch_waiter", None) is None or not hasattr(task, "add_done_callback"):
+            return
+
+        def _settle_on_done(_task: Any) -> None:
+            from gateway.wake import _settle_internal_event_dispatch
+            _settle_internal_event_dispatch(event, "internal event task ended before session dispatch")
+
+        task.add_done_callback(_settle_on_done)
 
     def _track_session_task(self, session_key: str, task: Any) -> bool:
         """Record ``task`` as the session owner and track it for shutdown; False when
@@ -3913,7 +3937,7 @@ class BasePlatformAdapter(ABC):
                 logger.debug("[%s] Session cancellation raised while unwinding %s", self.name,
                              session_key, exc_info=True)
         if discard_pending:
-            self._pending_messages.pop(session_key, None)
+            self._discard_pending_event(session_key, "pending event discarded during session cancellation")
             self._discard_text_debounce(session_key)
         if release_guard:
             self._release_session_guard(session_key)
@@ -3989,9 +4013,13 @@ class BasePlatformAdapter(ABC):
             self._heal_stale_session_lock(session_key)
         if session_key in self._active_sessions:
             await self._handle_message_while_active(event, session_key)
+            if event._gateway_accepted is True and getattr(event, "_gateway_dispatch_waiter", None) is not None:
+                event._gateway_dispatch_tracked = True
             return
         # Guard installed synchronously BEFORE the task spawns so a second message can't race in.
         event._gateway_accepted = self._start_session_processing(event, session_key)
+        if event._gateway_accepted and getattr(event, "_gateway_dispatch_waiter", None) is not None:
+            event._gateway_dispatch_tracked = True
 
     async def _handle_message_while_active(self, event: MessageEvent, session_key: str) -> None:
         """Route a message that arrived while ``session_key`` is busy: bypass
@@ -4564,6 +4592,10 @@ class BasePlatformAdapter(ABC):
             if isinstance(e, (SystemExit, KeyboardInterrupt)):
                 raise
         finally:
+            # A carrier waiting on a pinned internal event must never be left pending when this
+            # task ends before session dispatch (cancellation, shutdown, or a handler failure).
+            from gateway.wake import _settle_internal_event_dispatch
+            _settle_internal_event_dispatch(event, "internal event ended before session dispatch")
             await self._release_turn_marker(event)
             event._turn_marker_handoff = False  # a later run of this object clears its own marker
             # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it
@@ -4582,9 +4614,9 @@ class BasePlatformAdapter(ABC):
         follow-ups grew the C stack to SIGSEGV). Clearing (not deleting) the Event keeps the guard
         live for concurrent inbound; ownership moves so stale-lock detection works."""
         self._clear_session_guard(session_key)
-        self._track_session_task(
-            session_key,
-            asyncio.create_task(self._process_message_background(pending_event, session_key)))
+        task = asyncio.create_task(self._process_message_background(pending_event, session_key))
+        self._track_session_task(session_key, task)
+        self._track_internal_event_dispatch(pending_event, task)
 
     def _clear_session_guard(self, session_key: str) -> None:
         """Clear (not delete) the session's interrupt Event so the guard stays live for inbound."""
@@ -4636,6 +4668,9 @@ class BasePlatformAdapter(ABC):
             flush_pending_to_file(self._pending_messages, reason="adapter_shutdown")
         for state in self._text_debounce_store().values():
             state.cancel_timer()
+        from gateway.wake import _settle_internal_event_dispatch
+        for event in self._pending_messages.values():
+            _settle_internal_event_dispatch(event, "pending event discarded during adapter shutdown")
         for bucket in (self._background_tasks, self._expected_cancelled_tasks, self._session_tasks,
                        self._pending_messages, self._active_sessions, self._text_debounce_store()):
             bucket.clear()

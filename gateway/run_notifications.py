@@ -1358,7 +1358,13 @@ class GatewayNotificationsMixin:
             _prime = getattr(adapter, "prime_routing_cache", None)
             if callable(_prime):
                 _prime(synth_event)
-            await admit_internal_event(adapter, synth_event)
+            # Delegation completions are durably recorded, so their unresolved session remains
+            # fail-closed. Other pinned internal events need the carrier to observe dispatch
+            # refusal and run their retry/fallback path.
+            if evt.get("type") == "async_delegation":
+                await admit_internal_event(adapter, synth_event, wait_for_dispatch=False)
+            else:
+                await admit_internal_event(adapter, synth_event)
             return True
         except WakeNotAccepted:
             # Durable callers refund the claim; ordinary watch callers just requeue.

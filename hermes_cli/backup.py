@@ -1390,28 +1390,15 @@ def _create_quick_snapshot_locked(
     # Auto-prune. Defaults preserve historical manual /snapshot behavior; callers
     # with known high-churn safety snapshots (for example pre-update) can pass a
     # smaller keep value so large state.db copies do not accumulate indefinitely.
-    # #68805 review: skip pruning when a present DB failed to capture OR was
-    # skipped for size — either way the snapshot is incomplete and the older
-    # snapshot may contain the only recoverable database.
-    incomplete = failed_dbs or oversized_skipped
-    if not incomplete:
-        _prune_quick_snapshots(root, keep=_QUICK_DEFAULT_KEEP if keep is None else keep)
-    else:
-        if oversized_skipped:
-            print(
-                "  ⚠ Skipping snapshot prune: DB file(s) skipped for size: "
-                + ", ".join(oversized_skipped)
-            )
-            logger.warning(
-                "Quick snapshot skipped oversized DB file(s): %s",
-                ", ".join(oversized_skipped),
-            )
-        logger.warning(
-            "Skipping snapshot prune because %d DB(s) failed to capture "
-            "and/or %d were oversized — preserving older snapshots as "
-            "recovery source",
-            len(failed_dbs), len(oversized_skipped),
-        )
+    # #68805: omissions require older recovery copies, but cannot suppress
+    # pruning indefinitely when captures fail repeatedly.
+    if oversized_skipped:
+        print("  ⚠ Preserving recovery copies: DB file(s) skipped for size: "
+              + ", ".join(oversized_skipped))
+    _prune_quick_snapshots(
+        root, keep=_QUICK_DEFAULT_KEEP if keep is None else keep,
+        namespace="pre-update" if label == "pre-update" else "manual",
+    )
 
     logger.info(
         "quick snapshot phase=copy status=complete id=%s files=%d bytes=%d",
@@ -1899,29 +1886,69 @@ def restore_cron_jobs_all_profiles(
     return restored
 
 
-def _prune_quick_snapshots(root: Path, keep: int = _QUICK_DEFAULT_KEEP) -> int:
-    """Remove oldest quick snapshots beyond the keep limit. Returns count deleted."""
+def _prune_quick_snapshots(
+    root: Path, keep: int = _QUICK_DEFAULT_KEEP, *, namespace: Optional[str] = None,
+) -> int:
+    """Bound recent generations without counting unusable copies as recovery."""
     if not root.exists():
         return 0
 
-    dirs = sorted(
-        (
-            d
-            for d in root.iterdir()
-            if d.is_dir() and not d.name.startswith(".") and not d.name.endswith(".partial")
-        ),
-        key=lambda d: d.name,
-        reverse=True,
-    )
-
-    deleted = 0
-    for d in dirs[keep:]:
+    def usable(directory: Path, rel: str, size: Any) -> bool:
+        relative = Path(rel)
+        if relative.is_absolute() or ".." in relative.parts or type(size) is not int or size < 0:
+            return False
+        path = directory / relative
         try:
-            shutil.rmtree(d)
-            deleted += 1
-        except OSError as exc:
-            logger.warning("Failed to prune snapshot %s: %s", d.name, exc)
+            if path.is_symlink() or not path.is_file() or path.stat().st_size != size:
+                return False
+        except OSError:
+            return False
+        return not rel.endswith(".db") or verify_sqlite_integrity(path)["valid"]
 
+    candidates = []
+    for directory in root.iterdir():
+        if not directory.is_dir() or directory.name.startswith(".") or directory.name.endswith(".partial"):
+            continue
+        try:
+            with (directory / "manifest.json").open(encoding="utf-8") as stream:
+                meta = json.load(stream)
+        except (OSError, ValueError):
+            continue  # Unknown ownership: never delete an unrecognized directory.
+        if not isinstance(meta, dict) or not isinstance(meta.get("files"), dict):
+            continue
+        family = "pre-update" if meta.get("label") == "pre-update" else "manual"
+        if namespace is None or family == namespace:
+            candidates.append((directory, meta))
+    candidates.sort(key=lambda item: item[0].stat().st_mtime_ns, reverse=True)
+    retained = {directory for directory, _ in candidates[:max(keep, 0)]}
+    omissions: set[str] = set()
+    found_complete = False
+    for directory, meta in candidates:
+        files = meta["files"]
+        failed = meta.get("failed_dbs") or []
+        oversized = meta.get("oversized_skipped") or []
+        if not isinstance(failed, list) or not isinstance(oversized, list):
+            continue
+        omissions.update(rel for rel in failed + oversized if isinstance(rel, str) and rel.endswith(".db"))
+        valid = {rel for rel, size in files.items() if isinstance(rel, str) and usable(directory, rel, size)}
+        if not found_complete and not failed and not oversized and len(valid) == len(files):
+            retained.add(directory)
+            found_complete = True
+        # Even an unlisted or damaged claimed DB must not displace an older good copy.
+        omissions.update(rel for rel in files if isinstance(rel, str) and rel.endswith(".db") and rel not in valid)
+    for rel in omissions:
+        for directory, meta in candidates:
+            if rel in meta["files"] and usable(directory, rel, meta["files"][rel]):
+                retained.add(directory)
+                break
+    deleted = 0
+    for directory, _ in candidates:
+        if directory not in retained:
+            try:
+                shutil.rmtree(directory)
+                deleted += 1
+            except OSError as exc:
+                logger.warning("Failed to prune snapshot %s: %s", directory.name, exc)
     return deleted
 
 

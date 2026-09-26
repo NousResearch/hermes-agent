@@ -1393,6 +1393,8 @@ def _apply_agent_section(agent, _agent_cfg):
 
     # "auto" (codex_responses only), true (all api_modes), false, or model substrings.
     agent._intent_ack_continuation = _agent_section.get("intent_ack_continuation", "auto")
+    # Extra regexes widening the stall-guard continue-intent detector beyond English + pt-BR.
+    agent._trailing_continue_intent_patterns = _agent_section.get("trailing_continue_intent_patterns") or None
 
     # Responses `text.verbosity`: "" / unknown value = not sent (never flips the provider default).
     _verbosity = str(_agent_section.get("text_verbosity") or "").strip().lower()

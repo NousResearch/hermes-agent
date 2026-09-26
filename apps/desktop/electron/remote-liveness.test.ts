@@ -115,6 +115,24 @@ describe('RemoteLivenessTracker', () => {
     expect(() => new RemoteLivenessTracker(1.5)).toThrow(/positive integer/i)
     expect(() => new RemoteLivenessTracker(1, 0)).toThrow(/window must be positive/i)
   })
+
+  it('still reaches the failure limit when the probe timeout exceeds the failure window', () => {
+    setRemoteLivenessTimeoutMs(REMOTE_LIVENESS_TIMEOUT_BOUNDS.max)
+
+    try {
+      const now = { t: 0 }
+      const tracker = new RemoteLivenessTracker(REMOTE_LIVENESS_FAILURE_LIMIT, undefined, () => now.t)
+
+      for (let i = 0; i < REMOTE_LIVENESS_FAILURE_LIMIT; i += 1) {
+        now.t += getRemoteLivenessTimeoutMs()
+        expect(tracker.recordFailure('https://gateway.example.com').shouldReset).toBe(
+          i === REMOTE_LIVENESS_FAILURE_LIMIT - 1
+        )
+      }
+    } finally {
+      setRemoteLivenessTimeoutMs(10_000)
+    }
+  })
 })
 
 describe('RemoteRevalidationCoordinator', () => {

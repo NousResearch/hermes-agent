@@ -39,6 +39,16 @@ export const REMOTE_LIVENESS_FAILURE_LIMIT = 3
 // One minute keeps a continuous outage together without carrying old failures.
 export const REMOTE_LIVENESS_FAILURE_WINDOW_MS = 60_000
 
+// The 48s spacing (and so the 60s window) assumed the fixed 10s probe timeout.
+// Now that the probe timeout is a live Settings value (up to 120s, #121941),
+// the fixed window alone can no longer span a full failure-to-failure
+// interval, which would silently reset the streak before it ever reaches
+// REMOTE_LIVENESS_FAILURE_LIMIT. Track the live timeout so the window still
+// covers one interval at every setting, not just the default.
+export function getRemoteLivenessFailureWindowMs(): number {
+  return Math.max(REMOTE_LIVENESS_FAILURE_WINDOW_MS, getRemoteLivenessTimeoutMs() * 3 + 20_000)
+}
+
 export interface RemoteLivenessFailure {
   failures: number
   shouldReset: boolean
@@ -167,25 +177,23 @@ export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection ex
  */
 export class RemoteLivenessTracker {
   readonly #failureLimit: number
-  readonly #failureWindowMs: number
+  // undefined means "track the live setting" (getRemoteLivenessFailureWindowMs());
+  // an explicit override pins the window regardless of later Settings changes.
+  readonly #failureWindowMsOverride: number | undefined
   readonly #failuresByBaseUrl = new Map<string, { failures: number; lastFailureAt: number }>()
   readonly #now: () => number
 
-  constructor(
-    failureLimit = REMOTE_LIVENESS_FAILURE_LIMIT,
-    failureWindowMs = REMOTE_LIVENESS_FAILURE_WINDOW_MS,
-    now: () => number = Date.now
-  ) {
+  constructor(failureLimit = REMOTE_LIVENESS_FAILURE_LIMIT, failureWindowMs?: number, now: () => number = Date.now) {
     if (!Number.isInteger(failureLimit) || failureLimit < 1) {
       throw new Error('Remote liveness failure limit must be a positive integer.')
     }
 
-    if (!Number.isFinite(failureWindowMs) || failureWindowMs < 1) {
+    if (failureWindowMs !== undefined && (!Number.isFinite(failureWindowMs) || failureWindowMs < 1)) {
       throw new Error('Remote liveness failure window must be positive.')
     }
 
     this.#failureLimit = failureLimit
-    this.#failureWindowMs = failureWindowMs
+    this.#failureWindowMsOverride = failureWindowMs
     this.#now = now
   }
 
@@ -195,8 +203,9 @@ export class RemoteLivenessTracker {
 
   recordFailure(baseUrl: string): RemoteLivenessFailure {
     const now = this.#now()
+    const failureWindowMs = this.#failureWindowMsOverride ?? getRemoteLivenessFailureWindowMs()
     const previous = this.#failuresByBaseUrl.get(baseUrl)
-    const withinFailureWindow = previous && now - previous.lastFailureAt <= this.#failureWindowMs
+    const withinFailureWindow = previous && now - previous.lastFailureAt <= failureWindowMs
     const failures = (withinFailureWindow ? previous.failures : 0) + 1
     const shouldReset = failures >= this.#failureLimit
 

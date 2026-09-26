@@ -1087,6 +1087,52 @@ class TestExtractTranscriptText:
 
         assert result == "The user literally said <asr_text> while reading markup."
 
+    def test_unwraps_json_envelope_from_text_mode_body(self):
+        """A proxy that ignores response_format=text must not poison the transcript.
+
+        Verbatim shape observed from LiteLLM's whisper-1 route: the body is a
+        serialized verbose_json object even though "text" was requested. If it is
+        not unwrapped, the agent receives the JSON blob as the user's message and
+        echoes it instead of performing the spoken task.
+        """
+        import json as _json
+
+        from tools.transcription_cloud import _extract_transcript_text
+
+        envelope = _json.dumps({
+            "text": "go to bing in the browser and send me a screenshot",
+            "usage": None,
+            "language": "en",
+            "task": "transcribe",
+            "duration": 8.3208125,
+            "words": None,
+            "segments": [{"id": 1, "avg_logprob": -0.334}],
+        })
+
+        assert _extract_transcript_text(envelope) == (
+            "go to bing in the browser and send me a screenshot"
+        )
+
+    def test_unwrapped_envelope_still_strips_asr_marker(self):
+        import json as _json
+
+        from tools.transcription_cloud import _extract_transcript_text
+
+        envelope = _json.dumps({"text": "language zh\n<asr_text>你好，世界"})
+
+        assert _extract_transcript_text(envelope) == "你好，世界"
+
+    def test_keeps_json_like_speech_literal(self):
+        """Speech that merely looks JSON-ish must survive untouched."""
+        from tools.transcription_cloud import _extract_transcript_text
+
+        assert _extract_transcript_text("{not json at all}") == "{not json at all}"
+        assert _extract_transcript_text('{"usage": null}') == '{"usage": null}'
+        assert _extract_transcript_text('["a", "b"]') == '["a", "b"]'
+        assert _extract_transcript_text(
+            'He said {"text": "hi"} out loud.'
+        ) == 'He said {"text": "hi"} out loud.'
+
 
 # Shell safety — shlex.split on auto-detected templates
 # ============================================================================

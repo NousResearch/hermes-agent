@@ -9,6 +9,7 @@ are read lazily from ``tools.transcription_tools``.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import tempfile
@@ -435,11 +436,40 @@ def _resolve_openai_audio_client_config() -> tuple[str, str]:
     return managed
 
 
+def _unwrap_json_envelope(text: str) -> str:
+    """Unwrap an OpenAI-shaped transcription JSON envelope that arrived as a raw string.
+
+    ``response_format="text"`` is advisory: OpenAI-compatible proxies (LiteLLM in
+    particular) ignore it and answer with the ``json``/``verbose_json`` object
+    anyway, serialized as the response body. Without this, the WHOLE envelope
+    (``{"text": "...", "usage": null, "language": "en", "segments": [...]}``)
+    becomes the transcript and is handed to the model as the user's message, so
+    the agent echoes JSON instead of doing what the user said.
+
+    Only a top-level JSON *object* carrying a string ``text`` key is unwrapped —
+    a transcript that merely mentions JSON, or a bare JSON string/array, is
+    returned untouched.
+    """
+    stripped = text.strip()
+    if not (stripped.startswith("{") and stripped.endswith("}")):
+        return text
+    try:
+        payload = json.loads(stripped)
+    except (ValueError, TypeError):
+        return text
+    if not isinstance(payload, dict):
+        return text
+    inner = payload.get("text")
+    return inner if isinstance(inner, str) else text
+
+
 def _extract_transcript_text(transcription: Any) -> str:
     """Normalize text / object / dict transcription responses to a plain string."""
     value = transcription if isinstance(transcription, str) else getattr(transcription, "text", None)
     if not isinstance(value, str) and isinstance(transcription, dict):
         value = transcription.get("text")
     text = (value if isinstance(value, str) else str(transcription)).strip()
+    # A text-mode body is NOT trustworthy as final text; unwrap an envelope first.
+    text = _unwrap_json_envelope(text).strip()
     match = _ASR_TEXT_RE.match(text)
     return match.group("text").strip() if match else text

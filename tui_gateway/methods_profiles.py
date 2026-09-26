@@ -12,6 +12,7 @@ _registry = HandlerRegistry()
 method = _registry.method
 
 # ext -> mime; iteration order is the on-disk lookup order for assets.
+_ASSET_NAMES = frozenset({"avatar"})
 _ASSET_EXTS = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp"}
 # ext -> [(start, end, magic bytes)]; format is sniffed, the declared mime is never trusted.
 _ASSET_MAGIC = {"png": [(0, 8, b"\x89PNG\r\n\x1a\n")], "jpg": [(0, 3, b"\xff\xd8\xff")],
@@ -398,7 +399,7 @@ def _(rid, params: dict) -> dict:
     asset = str(params.get("asset") or "avatar").strip().lower()
     if not str(params.get("name") or "").strip():
         return _err(rid, 4063, "name required")
-    if asset != "avatar":
+    if asset not in _ASSET_NAMES:
         return _err(rid, 4066, f"unknown asset '{asset}' (supported: avatar)")
     import base64
     import re
@@ -433,6 +434,9 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """Profile asset as a data URL; absent is ``found: false``, not an error."""
     asset = str(params.get("asset") or "avatar").strip().lower()
+    # The name becomes a path segment under ``assets/``: only names set_asset can write resolve.
+    if asset not in _ASSET_NAMES:
+        return _err(rid, 4066, f"unknown asset '{asset}' (supported: avatar)")
     import base64
     _name, profile_dir, err = _resolve_profile(rid, params)
     if err is not None:

@@ -24,6 +24,10 @@ import tailwindcss from '@tailwindcss/vite'
 // The runner loads this as ESM without the default bundler's CJS globals.
 const __dirname: string = path.dirname(fileURLToPath(import.meta.url))
 
+// Vite 8 uses native ESM config loader; __dirname is not available.
+// import.meta.dirname returns the same directory as the CJS __dirname.
+const __dirname = import.meta.dirname!
+
 // `hgui` symlinks a worktree's node_modules to the main checkout. Vite realpaths
 // those before enforcing server.fs.allow, so codicon/font assets resolve outside
 // the worktree root and 404. Whitelist the real node_modules locations.
@@ -150,7 +154,7 @@ export default defineConfig(({ command }) => ({
     chunkSizeWarningLimit: 25000,
     rolldownOptions: {
       output: {
-        advancedChunks: {
+        codeSplitting: {
           groups: [
             // Shared foundations FIRST (first match wins): an unmatched
             // module shared by the entry and a heavy chunk gets merged INTO

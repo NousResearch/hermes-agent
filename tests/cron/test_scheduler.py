@@ -687,7 +687,7 @@ class TestRunJobSessionPersistence:
             "id": "empty-job",
             "name": "empty-test",
             "prompt": "do something",
-            "schedule": "every 1h",
+            "schedule": {"kind": "interval", "minutes": 60},
             "enabled": True,
             "next_run_at": "2020-01-01T00:00:00",
             "deliver": "local",
@@ -1441,18 +1441,21 @@ class TestSilentDelivery:
         save_mock.assert_called_once_with("monitor-job", "# full output")
         deliver_mock.assert_not_called()
 
-    def test_whitespace_only_response_is_marked_failed_not_delivered(self):
-        """Whitespace-only final responses should behave like empty responses."""
+    @pytest.mark.parametrize("response", ["", "   \n\t  "])
+    def test_empty_response_is_marked_failed_and_delivers_failure(self, response):
+        """Empty agent output must enter the failure lane before delivery."""
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
              patch("cron.scheduler.claim_job_for_fire", return_value=True), \
-             patch("cron.scheduler.run_job", return_value=(True, "# output", "   \n\t  ", None)), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", response, None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
-             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler._deliver_result", return_value=None) as deliver_mock, \
              patch("cron.scheduler.mark_job_run") as mark_mock:
             from cron.scheduler import tick
             tick(verbose=False)
 
-        deliver_mock.assert_not_called()
+        deliver_mock.assert_called_once()
+        assert deliver_mock.call_args.kwargs["for_failure"] is True
+        assert "empty response" in deliver_mock.call_args.args[1]
         mark_mock.assert_called_once()
         assert mark_mock.call_args[0][:2] == ("monitor-job", False)
 

@@ -299,6 +299,10 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     text = (error or "unknown error").strip()
     lower = text.lower()
 
+    # This scheduler diagnostic lists possible causes, not a confirmed timeout.
+    if lower.startswith("agent completed but produced empty response"):
+        return generic_failure_notice(job_name, job_id, text.rstrip("."))
+
     # Script runner contract ("Script timed out after {n}s: {path}") — also for agent jobs with a
     # context script. Must precede provider classification so it never claims a model failure.
     # See #78503, #82460.
@@ -2966,12 +2970,19 @@ def _save_compose_deliver(
             "(tool subprocess was killed mid-flight)."
         )
 
+    # Classify empty output BEFORE composing delivery so it uses the failure lane,
+    # records an incident, and does not incorrectly resolve an existing incident.
+    # Intentional silence (including empty no_agent stdout) is represented by [SILENT].
+    if d.success and not final_response.strip():
+        d.success = False
+        d.error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
+
     (
         deliver_content, d.blocked_config, _silent_alert, d.incident_acked, d.failure_incident_id,
     ) = _compose_run_delivery(
         job, success=d.success, error=d.error, final_response=final_response,
         output_file=output_file, agent_declared=d.agent_declared)
-    # Whitespace-only == empty: skip delivery; the guard below marks it a soft failure.
+    # Empty notices may be intentionally suppressed by the incident ledger.
     d.should_deliver = bool(deliver_content.strip()) and not _silent_alert
     if d.should_deliver and not d.success and job.get("_model_unreachable"):
         # The model was never reached and a bounded automatic re-run will be scheduled
@@ -3266,10 +3277,6 @@ def _run_one_job_body(
             _record_fire_ownership_lost(job["id"], fire_owner, execution_id)
             return True
 
-        # Empty final_response is a soft failure so last_status is not "ok".
-        if d.success and not final_response.strip():
-            d.success = False
-            d.error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
         if _fire_claim_ownership_lost():
             # #105861: the claim check is one sample; a miss AFTER a completed delivery must not

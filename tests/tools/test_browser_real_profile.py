@@ -807,6 +807,125 @@ class TestReviewRound3:
         assert matched[0].info["name"] == "chrome.exe"
         assert f"--user-data-dir={ud}" in " ".join(matched[0].info["cmdline"])
 
+    def test_processes_holding_profile_matches_normally_launched_default_browser(
+            self, tmp_path, monkeypatch):
+        """#124213: a browser launched normally (dock/Start menu) runs its DEFAULT profile
+        with NO --user-data-dir flag, so cmdline binding never sees its main process — only
+        helpers (crashpad) name the dir. The main process must bind when ``src`` IS the
+        default dir of the exact install it runs from."""
+        import platform as _plat
+        import sys as _sys
+        import hermes_cli.browser_connect as bc
+
+        monkeypatch.setattr(_plat, "system", lambda: "Darwin")
+        monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path) if p == "~" else p)
+        src = bc.real_profile_data_dir("brave", "Darwin")
+        assert src is not None
+        mac_exe = "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
+
+        class FakeProc:
+            def __init__(self, name, cmdline):
+                self.info = {"name": name, "cmdline": cmdline}
+
+        main = FakeProc("Brave Browser", [mac_exe])  # normally launched: no flags
+        procs = [
+            main,
+            # Same binary NAME from another install must never match (wrong-principal).
+            FakeProc("Chromium", ["/Applications/Chromium.app/Contents/MacOS/Chromium"]),
+            # Explicit different dir never matches, even from the stock install.
+            FakeProc("Brave Browser", [mac_exe, "--user-data-dir=/Other"]),
+            # Helper without a dir naming is not the owner (covered as main's child).
+            FakeProc("Brave Browser Helper", [mac_exe, "--type=renderer"]),
+        ]
+
+        class FakePsutil:
+            NoSuchProcess = type("E", (Exception,), {})
+            AccessDenied = type("E2", (Exception,), {})
+
+            def process_iter(self, attrs=None):
+                return iter(procs)
+
+        monkeypatch.setitem(_sys.modules, "psutil", FakePsutil())
+        matched = list(bc._processes_holding_profile(src))
+        assert matched == [main]
+
+    def test_default_profile_owner_identity_binding_per_platform(self, tmp_path, monkeypatch):
+        """The default-owner guard keys on install PATH, never the bare binary name:
+        Chromium's chrome.exe must not match Chrome's dir (Windows), and a Brave PATH
+        binary must not match Chrome's dir (Linux)."""
+        import platform as _plat
+        import hermes_cli.browser_connect as bc
+
+        monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path) if p == "~" else p)
+        # Windows: same basename (chrome.exe), distinct installs.
+        monkeypatch.setattr(_plat, "system", lambda: "Windows")
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+        chrome_src = bc.real_profile_data_dir("chrome", "Windows")
+        assert chrome_src is not None
+        stock = str(tmp_path / "local" / "Google" / "Chrome" / "Application" / "chrome.exe")
+        other_install = str(tmp_path / "local" / "Chromium" / "Application" / "chrome.exe")
+        assert bc._is_default_profile_owner(chrome_src, stock) is True
+        assert bc._is_default_profile_owner(chrome_src, other_install) is False
+        # Linux: PATH binary names bind; cross-browser names do not.
+        monkeypatch.setattr(_plat, "system", lambda: "Linux")
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+        brave_src = bc.real_profile_data_dir("brave", "Linux")
+        assert brave_src is not None
+        assert bc._is_default_profile_owner(brave_src, "/usr/bin/brave-browser") is True
+        assert bc._is_default_profile_owner(brave_src, "brave-browser") is True
+        assert bc._is_default_profile_owner(brave_src, "/usr/bin/brave-origin") is False
+        assert bc._is_default_profile_owner(brave_src, "/usr/bin/google-chrome") is False
+
+    def test_close_profile_terminates_normally_launched_browser(
+            self, tmp_path, monkeypatch):
+        """#124213 end-to-end: close-profile must terminate the normally-launched main
+        process, not report success while it survives (identical PIDs before/after)."""
+        import platform as _plat
+        import sys as _sys
+        import hermes_cli.browser_connect as bc
+
+        monkeypatch.setattr(_plat, "system", lambda: "Darwin")
+        monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path) if p == "~" else p)
+        src = bc.real_profile_data_dir("brave", "Darwin")
+        assert src is not None
+        os.makedirs(src, exist_ok=True)  # no Cookies DB -> POSIX lock probe reads False
+        mac_exe = "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
+
+        class FakeProc:
+            def __init__(self, name, cmdline):
+                self.info = {"name": name, "cmdline": cmdline}
+                self.terminated = False
+
+            def children(self, recursive=False):
+                return []
+
+            def terminate(self):
+                self.terminated = True
+
+            def kill(self):
+                self.terminated = True
+
+        main = FakeProc("Brave Browser", [mac_exe])
+        crashpad = FakeProc(
+            "brave_crashpad_handler",
+            ["brave_crashpad_handler", f"--database={src}/Crashpad", "--annotation=a"])
+        procs = [main, crashpad]
+
+        class FakePsutil:
+            NoSuchProcess = type("E", (Exception,), {})
+            AccessDenied = type("E2", (Exception,), {})
+
+            def process_iter(self, attrs=None):
+                return iter(procs)
+
+            def wait_procs(self, procs, timeout=None):
+                return ([], [])  # everything exited
+
+        monkeypatch.setitem(_sys.modules, "psutil", FakePsutil())
+        closed, msg = bc.close_browser_holding_profile(src, timeout=1.0)
+        assert closed is True
+        assert main.terminated is True  # the browser itself was terminated, not just helpers
+
     def test_consent_off_triggers_cleanup(self, tmp_path, monkeypatch):
         called = {"n": 0}
         with patch.object(bt_cloud, "_use_real_profile", return_value=False), \

@@ -90,12 +90,16 @@ def _tree_size_mb(path: Path, timeout: int = 30) -> Optional[int]:
 def _dirty_split(path: str) -> tuple[bool, List[str]]:
     """(has_tracked_modifications, untracked_paths) — tracked = real work, untracked = archivable."""
     try:
-        result = _git(["status", "--porcelain"], cwd=path, timeout=10)
+        # -z: plain porcelain C-quotes names with spaces or non-ASCII, and the quoted form names no
+        # file on disk. --untracked-files=all: status.showUntrackedFiles=no must not hide work.
+        result = _git(["status", "--porcelain", "-z", "--untracked-files=all"], cwd=path, timeout=10)
         if result.returncode != 0:
             return True, []  # fail safe: treat as real work
-        lines = [line for line in result.stdout.splitlines() if line.strip()]
-        untracked = [line[3:].strip() for line in lines if line.startswith("??")]
-        return len(untracked) != len(lines), untracked
+        # A rename's source is its own NUL field; as a non-"??" record it only reinforces the
+        # tracked verdict the rename already carries.
+        records = [record for record in result.stdout.split("\0") if record]
+        untracked = [record[3:] for record in records if record.startswith("?? ")]
+        return len(untracked) != len(records), untracked
     except Exception:
         return True, []
 
@@ -106,15 +110,15 @@ def _archive_untracked(tree: Path, untracked: List[str]) -> Optional[Path]:
     from hermes_constants import get_hermes_home
     dest = get_hermes_home() / "archive" / "worktree-prune" / f"{tree.name}-{stamp}"
     try:
+        # No path may be skipped: the caller force-removes the tree once this returns a dest, so a
+        # listed path that cannot be copied (copy2 raises when it is missing) must fail the archive.
         for rel in untracked:
             src = tree / rel
-            if not src.exists() or src.is_symlink():
-                continue
             (dest / rel).parent.mkdir(parents=True, exist_ok=True)
-            if src.is_dir():
-                shutil.copytree(src, dest / rel, dirs_exist_ok=True)
+            if src.is_dir() and not src.is_symlink():
+                shutil.copytree(src, dest / rel, symlinks=True, dirs_exist_ok=True)
             else:
-                shutil.copy2(src, dest / rel)
+                shutil.copy2(src, dest / rel, follow_symlinks=False)
         return dest if dest.exists() else None
     except Exception as exc:
         logger.warning("Could not archive untracked files from %s: %s", tree, exc)

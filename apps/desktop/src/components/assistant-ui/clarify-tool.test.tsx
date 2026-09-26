@@ -1238,3 +1238,91 @@ describe('ClarifyTool visible-card scoping', () => {
     expect(zoneB).not.toHaveBeenCalled()
   })
 })
+
+// --- Single-shape skew (#123126) ---
+// The canonical tool shape is `questions[]` even for one question, but a
+// backend without the batch wire loops one single-shape gateway request per
+// question. The parked request is live and answerable, yet the batch card has
+// no qids to answer with - without the skew guard the card sits a
+// permanently-disabled "0 of 1 answered" preview until the request times out.
+
+describe('ClarifyTool single-shape skew', () => {
+  function skewedChoiceProps(): ToolCallMessagePartProps {
+    const args = { questions: [{ choices: ['staging', 'production'], question: 'Which deployment target?' }] }
+
+    return {
+      addResult: vi.fn(),
+      args,
+      argsText: JSON.stringify(args),
+      isError: false,
+      respondToApproval: vi.fn(),
+      result: undefined,
+      resume: vi.fn(),
+      status: { type: 'running' },
+      toolCallId: 'clarify-skewed-choice',
+      toolName: 'clarify',
+      type: 'tool-call'
+    }
+  }
+
+  function skewedOpenEndedProps(): ToolCallMessagePartProps {
+    const args = { questions: [{ question: 'Anything else?' }] }
+
+    return {
+      addResult: vi.fn(),
+      args,
+      argsText: JSON.stringify(args),
+      isError: false,
+      respondToApproval: vi.fn(),
+      result: undefined,
+      resume: vi.fn(),
+      status: { type: 'running' },
+      toolCallId: 'clarify-skewed-open',
+      toolName: 'clarify',
+      type: 'tool-call'
+    }
+  }
+
+  function parkSingleShape(requestId: string, question: string, choices: string[] | null) {
+    const respond = liveServerRequest(requestId)
+
+    $activeSessionId.set('session-1')
+    $gateway.set({ request: vi.fn().mockResolvedValue({ ok: true }) } as never)
+    setClarifyRequest({ choices, multiSelect: false, question, requestId, sessionId: 'session-1' })
+
+    return respond
+  }
+
+  it('keeps a one-question choice card answerable on its parked single request', async () => {
+    const respond = parkSingleShape('request-skew', 'Which deployment target?', ['staging', 'production'])
+    renderClarify(<ClarifyTool {...skewedChoiceProps()} />)
+
+    // The dead state this guards: a disabled batch preview counting down to a timeout skip.
+    expect(document.querySelector('[data-clarify-batch-preview]')).toBeNull()
+    const staging = screen.getByRole('button', { name: /staging/ })
+    expect((staging as HTMLButtonElement).disabled).toBe(false)
+
+    fireEvent.click(staging)
+    fireEvent.click(screen.getByRole('button', { name: /Continue/ }))
+
+    await waitFor(() => {
+      expect(respond).toHaveBeenCalledWith({ answer: 'staging' })
+    })
+  })
+
+  it('keeps a one-question open-ended card typable on its parked single request', async () => {
+    const respond = parkSingleShape('request-skew-open', 'Anything else?', null)
+    renderClarify(<ClarifyTool {...skewedOpenEndedProps()} />)
+
+    expect(document.querySelector('[data-clarify-batch-preview]')).toBeNull()
+    const field = screen.getByPlaceholderText(/Type your answer/)
+    expect((field as HTMLTextAreaElement).disabled).toBe(false)
+
+    fireEvent.change(field, { target: { value: 'my answer' } })
+    fireEvent.click(screen.getByRole('button', { name: /Continue/ }))
+
+    await waitFor(() => {
+      expect(respond).toHaveBeenCalledWith({ answer: 'my answer' })
+    })
+  })
+})

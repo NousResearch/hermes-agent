@@ -161,6 +161,10 @@ class TestSlackPeerAgentSmoke:
         )
 
         await smoke_adapter._handle_slack_message(event)
+        # A peer bot's creation envelope is now HELD for the bounded window (the sender may still
+        # complete its own body — a streamed post arrives as an opener plus a same-ts completion),
+        # so wait for the delivery before asserting the routing decision.
+        await smoke_adapter._flush_transient_holds()
 
         smoke_adapter.handle_message.assert_awaited_once()
         msg_event = smoke_adapter.handle_message.await_args.args[0]

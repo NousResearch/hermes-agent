@@ -980,16 +980,66 @@ def _is_transient_transport_error(e: BaseException) -> bool:
 def _is_more_complete_revision(previous: str, revision: str) -> bool:
     """True when ``revision`` completes the body ``previous`` for ONE logical message.
 
-    A streamed opener / draft preview is followed by the same-ts ``message_changed`` completion:
-    the revision is a strict extension of what was already delivered (an empty ``previous`` is
-    completed by any non-empty revision). Equal text adds nothing — replays and plain edits must
-    not produce a second delivery — and shorter or unrelated text is not a completion.
+    A streamed opener / draft preview is followed by a same-ts completion: the revision is a strict
+    extension of the earlier body (an empty ``previous`` is completed by any non-empty revision).
+    Equal text adds nothing — replays and plain edits must not produce a second delivery — and
+    shorter or unrelated text is not a completion.
+
+    A COMPARISON only: it tells a completion apart from a replay. It never rewrites a body the agent
+    was already handed.
     """
     if revision == previous:
         return False
     if not previous:
         return bool(revision)
     return revision.startswith(previous)
+
+
+# Slack marks a streamed message's own envelopes with ``streaming_state`` (BotMessageEvent:
+# "in_progress" → "completed"/"errored"), so a partially streamed body is never mistaken for the
+# final one.
+_TRANSIENT_STREAMING_STATES = frozenset({"in_progress", "inprogress", "started", "streaming"})
+_TRANSIENT_FINAL_STATES = frozenset({"completed", "complete", "errored", "error"})
+# Creation envelopes that a sender may still revise. Other subtypes are a person speaking
+# (file_share) or a lifecycle notice; they are dispatched as they arrive.
+_TRANSIENT_CREATION_SUBTYPES = (None, "", "bot_message")
+
+
+def _slack_transient_hold_seconds() -> float:
+    """Bounded debounce (seconds) for a creation envelope that may still be revised
+    (override: ``SLACK_TRANSIENT_HOLD_SECONDS``).
+
+    A preview/draft sender posts a body and then completes it with a same-ts ``message_changed``.
+    Holding the creation envelope for this window is what keeps a truncated body from being
+    dispatched as the turn; the window bounds the delay when the sender never finalises.
+    """
+    raw = _get_scoped_secret("SLACK_TRANSIENT_HOLD_SECONDS", "")
+    if raw:
+        try:
+            value = float(raw)
+            if value >= 0:
+                return value
+        except ValueError:
+            logger.warning("[Slack] Invalid SLACK_TRANSIENT_HOLD_SECONDS=%r; using default", raw)
+    return 1.5
+
+
+def _slack_stream_hold_max_seconds() -> float:
+    """Upper bound (seconds) for holding an envelope Slack itself marks as streaming
+    (override: ``SLACK_STREAM_HOLD_MAX_SECONDS``).
+
+    The stream's own final envelope releases it immediately; this only caps a sender that opens a
+    stream and never stops it, so nothing is ever held indefinitely.
+    """
+    raw = _get_scoped_secret("SLACK_STREAM_HOLD_MAX_SECONDS", "")
+    if raw:
+        try:
+            value = float(raw)
+            if value >= 0:
+                return value
+        except ValueError:
+            logger.warning("[Slack] Invalid SLACK_STREAM_HOLD_MAX_SECONDS=%r; using default", raw)
+    return 30.0
 
 
 def _extra_or_env_flag_getter(key: str, env_var: str, *, strip: bool = False) -> Callable[..., bool]:
@@ -1081,13 +1131,24 @@ class SlackAdapter(BasePlatformAdapter):
         self._dedup = MessageDeduplicator(ttl_seconds=_slack_dedup_ttl_seconds())
         # ts of messages already routed to the agent, so later edits don't re-trigger a reply.
         self._processed_message_ts: Dict[str, float] = {}
-        # ts → (body, MessageEvent) delivered to the agent, so a MORE COMPLETE revision of the same
-        # logical message (stream opener/draft preview → same-ts message_changed completion)
-        # REPLACES the delivered body instead of being dropped as an already-routed duplicate.
-        self._delivered_message_bodies: Dict[str, Tuple[str, Any]] = {}
-        # Revisions that landed while their message was still enriching (ts claimed, body not yet
-        # delivered): the in-flight handler picks the newer body up instead of its stale one.
+        # ts → body handed to the agent, so a later envelope for the same ts can be told apart from a
+        # replay ("adds nothing over what was delivered") — without ever rewriting what was handed.
+        self._delivered_message_bodies: Dict[str, str] = {}
+        # ts → fuller body that landed while its turn was still enriching: the in-flight handler
+        # hands that body over instead of the stale one it started with.
         self._pending_message_revisions: Dict[str, str] = {}
+        # ts → a transient creation/preview envelope that has NOT been dispatched: it is held until
+        # the sender's final body arrives, or the bounded window expires. One entry per logical
+        # message, so the agent gets ONE turn carrying the most complete body.
+        self._held_transient_events: Dict[str, Dict[str, Any]] = {}
+        # ts of a message whose turn is enriching right now (claimed, body not handed over yet), so
+        # a completion that overtakes that turn is routed into it instead of being dropped.
+        self._in_flight_message_ts: set = set()
+        # (workspace, ts) → time, for "this logical message was already turned over": a creation
+        # envelope arriving after its own completion must not become a second turn. Workspace-scoped
+        # because Slack ts values are unique only within one workspace (two teams legitimately share
+        # a ts: TestSlackWorkspaceCollisionIsolation).
+        self._processed_message_identity: Dict[Any, float] = {}
         # approval / clarify message_ts (or (team_id, ts)) → resolved; blocks double-clicks.
         # Bounded: never-clicked prompts would otherwise leak forever.
         self._approval_resolved: Dict[Any, bool] = {}
@@ -3494,50 +3555,204 @@ class SlackAdapter(BasePlatformAdapter):
             "context_channel_id": context_channel_id or cached.get("context_channel_id", ""),
             "team_id": team_id, "user_id": user_id}
 
-    def _remember_processed_message_ts(self, ts: str) -> None:
+    def _remember_processed_message_ts(self, ts: str, team_id: str = "") -> None:
         """Claim a message ts for the ``message_changed`` guard: on entry (suppresses mid-flight
-        unfurls) and after construction (refreshes LRU recency). Bounded."""
+        unfurls) and after construction (refreshes LRU recency). Bounded.
+
+        Also records the workspace-scoped identity, so a creation envelope arriving after its own
+        completion (a stream opener delivered late) reads as the same logical message instead of a
+        fresh turn — while the same ts in a DIFFERENT workspace still routes.
+        """
         if not ts:
             return
-        self._processed_message_ts[ts] = time.time()
-        if len(self._processed_message_ts) > self._PROCESSED_MESSAGE_TS_MAX:
-            newest = sorted(self._processed_message_ts.items(), key=lambda item: item[1])
+        claims = self._lazy_attr("_processed_message_ts", dict)
+        claims[ts] = time.time()
+        if len(claims) > self._PROCESSED_MESSAGE_TS_MAX:
+            newest = sorted(claims.items(), key=lambda item: item[1])
             self._processed_message_ts = dict(newest[-self._PROCESSED_MESSAGE_TS_MAX :])
+        identity = self._workspace_message_marker(team_id, ts)
+        identities = self._lazy_attr("_processed_message_identity", dict)
+        identities[identity] = time.time()
+        self._evict_oldest_by_ts(identities, self._PROCESSED_MESSAGE_TS_MAX)
+
+    def _message_already_routed(self, team_id: str, ts: str) -> bool:
+        """True when a turn for this workspace-local message ts has already been handed over."""
+        if not ts:
+            return False
+        identities = self._lazy_attr("_processed_message_identity", dict)
+        return self._workspace_message_marker(team_id, ts) in identities
 
     def _remember_delivered_message_body(self, ts: str, msg_event: Any) -> None:
-        """Record the body handed to the agent for ``ts`` so a later revision can REPLACE it.
-
-        Bounded like ``_processed_message_ts``; evicting oldest-ts-first keeps the map at the size
-        of the claim set it mirrors.
-        """
+        """Record the body handed to the agent for ``ts``; later envelopes are compared to it."""
         if not ts:
             return
-        self._delivered_message_bodies[ts] = (msg_event.text or "", msg_event)
-        self._evict_oldest_by_ts(self._delivered_message_bodies, self._PROCESSED_MESSAGE_TS_MAX)
+        delivered = self._lazy_attr("_delivered_message_bodies", dict)
+        delivered[ts] = msg_event.text or ""
+        self._evict_oldest_by_ts(delivered, self._PROCESSED_MESSAGE_TS_MAX)
 
     def _delivered_message_body(self, ts: str) -> str:
-        """Body already delivered for ``ts``; ``""`` while the message is still in flight."""
-        entry = self._delivered_message_bodies.get(ts)
-        return entry[0] if entry else ""
+        """Body handed to the agent for ``ts``; ``""`` while the message is still in flight."""
+        return self._lazy_attr("_delivered_message_bodies", dict).get(ts, "")
 
-    def _replace_delivered_message_body(self, ts: str, text: str) -> None:
-        """A more complete revision of ``ts`` REPLACES the body already delivered for it.
+    def _is_message_in_flight(self, ts: str) -> bool:
+        """True while the turn for ``ts`` is enriching but has not been handed over yet."""
+        return bool(ts) and ts in self._lazy_attr("_in_flight_message_ts", set)
 
-        One logical message keeps one delivered body: the earlier (opener/preview) body is updated
-        in place rather than the revision becoming a second delivery. If the original is still
-        in flight (ts claimed, nothing delivered yet) the revision is stashed for that handler.
+    @staticmethod
+    def _streaming_state(event: dict) -> str:
+        """Slack's own streaming marker on an envelope (``""`` when the sender does not stream)."""
+        raw = event.get("streaming_state")
+        return str(raw).strip().lower() if raw else ""
+
+    @staticmethod
+    def _envelope_has_body(event: dict) -> bool:
+        """True when the envelope carries any content at all (text, blocks, unfurls, files)."""
+        if (event.get("text") or "").strip():
+            return True
+        return bool(event.get("blocks") or event.get("attachments") or event.get("files"))
+
+    def _folded_message_body(self, message: dict, team_id: str = "") -> str:
+        """The body a message-shaped envelope carries, Block Kit and unfurls folded in.
+
+        Folding is what keeps a blocks-only envelope (empty flat ``text``) from being read as an
+        empty body — the same content loss as the truncation, on a different carrier.
         """
-        entry = self._delivered_message_bodies.get(ts)
-        if entry is None:
-            self._pending_message_revisions[ts] = text
-            self._evict_oldest_by_ts(self._pending_message_revisions, self._PROCESSED_MESSAGE_TS_MAX)
-            return
-        _stale_body, msg_event = entry
-        msg_event.text = text
-        self._delivered_message_bodies[ts] = (text, msg_event)
+        text = message.get("text") or ""
+        blocks = message.get("blocks")
+        if blocks:
+            text = self._append_block_text(
+                text, blocks, self._team_bot_user_ids.get(team_id, self._bot_user_id) or "")
+        return self._append_link_unfurls(text, message.get("attachments") or [])
+
+    def _looks_like_human_edit(self, message: dict) -> bool:
+        """True for a person's own edit: an ``edited`` marker from a non-bot author.
+
+        A stream/API sender rewrites its own message too, but it declares a bot sender; so an
+        ``edited`` marker from a human author is never treated as a stream continuation (scope-out:
+        an append-edit keeps its previous semantics — it does not rewrite an answered message).
+        """
+        if not isinstance(message.get("edited"), dict):
+            return False
+        return not self._event_declares_bot_sender(message)
+
+    def _is_transient_creation_envelope(self, event: dict) -> bool:
+        """True when ``event`` is a creation/preview envelope that may still be completed.
+
+        Slack's ``streaming_state`` is authoritative when present. Without it, a creation envelope
+        that carries no body yet, or any creation envelope from a bot sender (an API poster can
+        revise its own message — the production preview sender does), is held for the bounded
+        debounce rather than dispatched as the turn.
+        """
+        if event.get("_hermes_force_process") or event.get("_hermes_transient_released"):
+            return False
+        ts = str(event.get("ts") or "")
+        if not ts or ts in self._lazy_attr("_processed_message_ts", dict):
+            return False
+        if isinstance(event.get("edited"), dict):
+            return False  # an edit is a deliberate act of its own, never an opener
+        state = self._streaming_state(event)
+        if state in _TRANSIENT_STREAMING_STATES:
+            return True
+        if state in _TRANSIENT_FINAL_STATES:
+            return False
+        if event.get("_slack_changed_event_ts"):
+            return False  # a plain unfurl/edit of an existing message: pre-existing semantics
+        if event.get("subtype") not in _TRANSIENT_CREATION_SUBTYPES:
+            return False
+        if not self._envelope_has_body(event):
+            return True  # body-less opener, whatever the sender
+        return self._event_declares_bot_sender(event)
+
+    def _hold_transient_envelope(
+        self, ts: str, event: dict, payload: Optional[dict], *, body: str = "",
+        streaming: bool = False) -> None:
+        """Hold a transient envelope so it is dispatched ONCE, from the sender's finalised body.
+
+        A superseding revision refreshes the held envelope and its window (never stacking a second
+        delivery); the deadline never slides past the entry's absolute cap, so a sender that opens a
+        stream and never stops it is still delivered.
+        """
+        now = time.time()
+        window = (
+            _slack_stream_hold_max_seconds() if streaming else _slack_transient_hold_seconds())
+        held = self._lazy_attr("_held_transient_events", dict)
+        entry = held.get(ts)
+        cap_deadline = entry["cap_deadline"] if entry else now + window
+        if entry is not None:
+            body = body or entry.get("body", "")
+            previous_task = entry.get("task")
+            if previous_task is not None and not previous_task.done():
+                previous_task.cancel()
+        deadline = max(now, min(now + window, cap_deadline))
+        task = asyncio.ensure_future(self._release_transient_hold_after(ts, deadline - now))
+        held[ts] = {
+            "event": event, "payload": payload, "body": body or "", "streaming": streaming,
+            "deadline": deadline, "cap_deadline": cap_deadline, "task": task}
         logger.debug(
-            "[Slack] Replaced delivered body for ts=%s (%d → %d chars)",
-            ts, len(_stale_body), len(text))
+            "[Slack] Holding transient envelope ts=%s (streaming=%s, %d chars, releasing by %.1fs): "
+            "the sender may still complete this body", ts, streaming, len(body or ""),
+            deadline - now)
+        self._evict_oldest_by_ts(held, self._PROCESSED_MESSAGE_TS_MAX)
+
+    async def _release_transient_hold_after(self, ts: str, seconds: float) -> None:
+        """Bounded fallback: deliver the held envelope when its window expires."""
+        try:
+            await asyncio.sleep(max(0.0, seconds))
+        except asyncio.CancelledError:
+            return
+        await self._release_transient_hold(ts, reason="window expired")
+
+    def _cancel_transient_hold(self, ts: str) -> bool:
+        """Drop a held envelope without delivering it (its final body arrived elsewhere)."""
+        entry = self._lazy_attr("_held_transient_events", dict).pop(ts, None)
+        if entry is None:
+            return False
+        task = entry.get("task")
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+        return True
+
+    async def _release_transient_hold(
+        self, ts: str, *, reason: str = "", body: Optional[str] = None) -> bool:
+        """Dispatch a held envelope exactly once, carrying the most complete body known for it."""
+        entry = self._lazy_attr("_held_transient_events", dict).pop(ts, None)
+        if entry is None:
+            return False
+        task = entry.get("task")
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+        released = dict(entry["event"])
+        released["_hermes_transient_released"] = True
+        chosen = body if body else (entry.get("body") or "")
+        if chosen:
+            # Consumed by whichever dispatch of this ts runs next (the normal path hands it over as
+            # the turn's text), so a release never loses the fuller body.
+            pending = self._lazy_attr("_pending_message_revisions", dict)
+            pending[ts] = chosen
+            self._evict_oldest_by_ts(pending, self._PROCESSED_MESSAGE_TS_MAX)
+        # This envelope was never delivered under its own dedup id, but a finalising envelope that
+        # arrived in between (same message ts) legitimately claimed it. Clear it so the release is
+        # not dropped as a replay of a turn that never happened.
+        self._dedup.discard(self._workspace_event_id(
+            self._event_team_id(released, entry.get("payload")),
+            released.get("_slack_changed_event_ts") or ts))
+        logger.debug(
+            "[Slack] Releasing held envelope ts=%s (%s, %d chars)",
+            ts, reason or "finalised", len(chosen))
+        try:
+            await self._handle_slack_message(released, entry.get("payload"))
+        except Exception:
+            # A held envelope must never vanish silently; the wrapper released the claim it took.
+            logger.exception("[Slack] Release of held envelope ts=%s failed", ts)
+        return True
+
+    async def _flush_transient_holds(self, *, reason: str = "flush") -> None:
+        """Release every held transient envelope now (shutdown, tests, smoke checks).
+
+        Nothing stays held: this is the same delivery the bounded window performs, taken early.
+        """
+        for ts in list(self._lazy_attr("_held_transient_events", dict)):
+            await self._release_transient_hold(ts, reason=reason)
 
     @staticmethod
     def _event_team_id(event: dict, body: Optional[dict] = None) -> str:
@@ -4157,28 +4372,47 @@ class SlackAdapter(BasePlatformAdapter):
                 chat_type="dm" if is_dm else "group")
         return True
 
-    def _normalize_changed_message(self, event: dict) -> Optional[dict]:
+    def _normalize_changed_message(
+        self, event: dict, team_id: str = "") -> Optional[dict]:
         """Turn a ``message_changed`` envelope into a plain message event.
 
-        None if malformed, or when it adds nothing over the body already delivered for its inner
-        ``message.ts`` (a replayed unfurl or a plain edit of a message already routed). A MORE
-        COMPLETE revision of that same logical message — the completion of a streamed opener or a
-        draft preview, which arrives as ``message_changed`` after the transient creation event
-        claimed the ts — passes through marked ``_slack_message_revision`` so the delivered body is
-        replaced instead of the only copy of the text being discarded. The edit's own ts rides
-        along as ``_slack_changed_event_ts`` for dedup."""
+        None when it adds nothing: a replayed unfurl, a person's own edit, or a later revision of a
+        message whose turn is already over — one logical message is one turn, and a revision never
+        rewrites a body the agent was already handed. Two exceptions keep content from being lost:
+
+        * the completion of a HELD transient envelope (stream opener / draft preview) passes
+          through: the handler turns it into the single, full-body turn for that message;
+        * a completion that overtakes a turn still enriching (its held envelope released by the
+          window before the body was resolved) is routed INTO that turn as its body.
+
+        The edit's own ts rides along as ``_slack_changed_event_ts`` for dedup.
+        """
         updated_message = event.get("message")
         if not isinstance(updated_message, dict):
             return None
         original_message_ts = str(updated_message.get("ts") or "")
-        revision_of = ""
-        if original_message_ts and original_message_ts in self._processed_message_ts:
-            if not _is_more_complete_revision(
-                self._delivered_message_body(original_message_ts),
-                str(updated_message.get("text") or ""),
-            ):
+        held = bool(original_message_ts) and original_message_ts in self._lazy_attr(
+            "_held_transient_events", dict)
+        if (
+            original_message_ts
+            and not held
+            and original_message_ts in self._lazy_attr("_processed_message_ts", dict)
+        ):
+            if self._looks_like_human_edit(updated_message):
+                # A person's own edit of an answered message: never a stream revision, and never a
+                # second answer (previous semantics, asserted by the ordering suite).
                 return None
-            revision_of = original_message_ts
+            body = self._folded_message_body(updated_message, team_id)
+            if not _is_more_complete_revision(
+                    self._delivered_message_body(original_message_ts), body):
+                return None
+            if self._is_message_in_flight(original_message_ts):
+                # It overtook this message's own enrichment: that turn hands over the fuller body
+                # (still exactly one delivery) instead of the only copy being dropped.
+                pending = self._lazy_attr("_pending_message_revisions", dict)
+                pending[original_message_ts] = body
+                self._evict_oldest_by_ts(pending, self._PROCESSED_MESSAGE_TS_MAX)
+            return None
         edited = updated_message.get("edited")
         edited_ts = str(edited.get("ts") or "") if isinstance(edited, dict) else ""
         outer_event_ts = str(event.get("ts") or "")
@@ -4192,8 +4426,6 @@ class SlackAdapter(BasePlatformAdapter):
                 normalized_event[key] = event.get(key)
         if changed_event_ts:
             normalized_event["_slack_changed_event_ts"] = changed_event_ts
-        if revision_of:
-            normalized_event["_slack_message_revision"] = revision_of
         return normalized_event
 
     @staticmethod
@@ -4387,6 +4619,7 @@ class SlackAdapter(BasePlatformAdapter):
             _claims = getattr(self, "_processed_message_ts", None)
             if _ts and not _was_claimed and _claims is not None and _ts in _claims:
                 _claims.pop(_ts, None)
+                getattr(self, "_in_flight_message_ts", set()).discard(_ts)
                 logger.warning(
                     "[%s] handler failed after claiming ts=%s; claim released "
                     "so a retry or edit can re-drive the turn", self.name, _ts)
@@ -4436,24 +4669,17 @@ class SlackAdapter(BasePlatformAdapter):
                 event.get("user", "") or "", event.get("bot_id", "") or "",
                 (_bot_profile.get("name") if isinstance(_bot_profile, dict) else "") or "",
                 event.get("channel", ""), event.get("ts", ""), event.get("thread_ts", ""))
+        dedup_team_id = self._event_team_id(event, payload)
         if event.get("subtype") == "message_changed":
-            event = self._normalize_changed_message(event)
+            event = self._normalize_changed_message(event, team_id=dedup_team_id)
             if event is None:
                 return None
         # Socket Mode redelivers after reconnects. Scope by workspace: ts is only unique per team.
         # Dedup: Slack Socket Mode can redeliver events after reconnects (#4777) Scope the dedup id by
         # workspace: Slack event ts values are only unique within one workspace, so two teams' events with
         # the same ts must not suppress each other.
-        # A revision of a message we already delivered is NOT a replay: its event ts deliberately
-        # collides with the envelope it supersedes (the opener claimed that id). ``_normalize_changed_message``
-        # already compared the bodies, so a genuine replay of the completion still adds nothing.
         event_ts = event.get("_slack_changed_event_ts") or event.get("ts", "")
-        dedup_team_id = self._event_team_id(event, payload)
-        if (
-            not event.get("_slack_message_revision")
-            and event_ts
-            and self._dedup.is_duplicate(self._workspace_event_id(dedup_team_id, event_ts))
-        ):
+        if event_ts and self._dedup.is_duplicate(self._workspace_event_id(dedup_team_id, event_ts)):
             return None
         channel_id = event.get("channel", "")
         if self._is_ignored_channel(channel_id):
@@ -4534,20 +4760,41 @@ class SlackAdapter(BasePlatformAdapter):
         if accepted is None:
             return
         event, dedup_team_id, channel_id = accepted
-        # A later revision of a message whose ts we already claimed (stream opener finalised, draft
-        # preview completed) REPLACES the body delivered for that logical message. No second turn:
-        # the session ends up with the most complete revision, never the stale prefix.
-        if event.get("_slack_message_revision"):
-            revision_text = event.get("text", "")
-            revision_blocks = event.get("blocks")
-            if revision_blocks:
-                revision_text = self._append_block_text(
-                    revision_text, revision_blocks,
-                    self._team_bot_user_ids.get(dedup_team_id, self._bot_user_id) or "")
-            revision_text = self._append_link_unfurls(
-                revision_text, event.get("attachments") or [])
-            self._replace_delivered_message_body(
-                event["_slack_message_revision"], revision_text)
+        ts = str(event.get("ts") or "")
+        if ts and ts in self._lazy_attr("_held_transient_events", dict):
+            # The finalised body of a HELD transient envelope: exactly one turn for this message.
+            body = self._folded_message_body(event, dedup_team_id)
+            if self._streaming_state(event) in _TRANSIENT_STREAMING_STATES:
+                # Still streaming: keep holding (the newest body wins) and start no turn yet.
+                self._hold_transient_envelope(ts, event, payload, body=body, streaming=True)
+                return
+            await self._release_transient_hold(ts, reason="finalised", body=body or None)
+            return
+        if (
+            ts
+            and not event.get("_slack_changed_event_ts")
+            and not event.get("_hermes_force_process")
+            and self._message_already_routed(dedup_team_id, ts)
+        ):
+            # A creation envelope for a message already turned over: the peer's opener arriving
+            # after its own completion, or a reconnect replay. Never a second turn.
+            logger.debug(
+                "[Slack] Dropping creation envelope for already-routed ts=%s in channel %s",
+                ts, channel_id)
+            return
+        if self._is_transient_creation_envelope(event):
+            # A transient envelope is NOT the turn (a streamed opener carries '' or a prefix).
+            # Hold it until the sender finalises the body, or the bounded window expires.
+            self._hold_transient_envelope(
+                ts, event, payload,
+                body=self._folded_message_body(event, dedup_team_id),
+                streaming=self._streaming_state(event) in _TRANSIENT_STREAMING_STATES)
+            # The held envelope was not dispatched, so it must not consume the dedup id its own
+            # completion legitimately carries (same message ts): release the claim the prefilter
+            # just made, or the completion is dropped as a replay of a message never delivered.
+            self._dedup.discard(
+                self._workspace_event_id(
+                    dedup_team_id, event.get("_slack_changed_event_ts") or ts))
             return
         original_text = event.get("text", "")
         # Slack rejects slash commands inside threads, so a leading ``!`` is rewritten to ``/``
@@ -4622,7 +4869,8 @@ class SlackAdapter(BasePlatformAdapter):
         # original block a later "@bot" edit from summoning the bot.
         _claim_ts = str(event.get("ts") or "")
         if _claim_ts:
-            self._remember_processed_message_ts(_claim_ts)
+            self._remember_processed_message_ts(_claim_ts, dedup_team_id)
+            self._lazy_attr("_in_flight_message_ts", set).add(_claim_ts)
         if is_mentioned:
             text, original_text, command_probe_text, is_command_text = self._apply_bot_mention(
                 text, original_text, command_probe_text, is_command_text, bot_uid, thread_ts,
@@ -4634,11 +4882,14 @@ class SlackAdapter(BasePlatformAdapter):
             channel_id=channel_id, event_thread_ts=event_thread_ts, ts=ts, user_id=user_id,
             team_id=team_id, is_thread_reply=is_thread_reply, is_mentioned=is_mentioned,
             is_dm=is_dm)
-        # The completion may have landed while THIS message was still enriching (the ts is claimed
-        # before the slow awaits): deliver the fuller body instead of the stale opener/preview one.
-        _pending_revision = self._pending_message_revisions.pop(ts, None)
-        if _pending_revision is not None:
-            text = original_text = _pending_revision
+        # Last point before media is inlined: a fuller body that landed while this turn was still
+        # enriching (its held opener was released by the window before the completion arrived) is
+        # handed over HERE, as the turn's text — once, instead of the stale shorter one.
+        pending_body = self._lazy_attr("_pending_message_revisions", dict).pop(ts, None)
+        if pending_body is not None:
+            text = original_text = pending_body
+            if bot_uid:
+                text = original_text = text.replace(f"<@{bot_uid}>", "").strip()
         # Thread-root media is delivered ahead of the trigger message's own files.
         media_urls, media_types, media_text_inlined, text = await self._collect_inbound_media(
             event, channel_id, team_id, text, thread_root_media_urls, thread_root_media_types)
@@ -4659,8 +4910,9 @@ class SlackAdapter(BasePlatformAdapter):
                 f"[Slack app context: user is viewing channel {context_channel_id}]\n\n"
                 f"{msg_event.text}")
         if ts:
-            self._remember_processed_message_ts(ts)
+            self._remember_processed_message_ts(ts, dedup_team_id)
             self._remember_delivered_message_body(ts, msg_event)
+            self._lazy_attr("_in_flight_message_ts", set).discard(ts)
         await self.handle_message(msg_event)
 
     async def _build_message_event(

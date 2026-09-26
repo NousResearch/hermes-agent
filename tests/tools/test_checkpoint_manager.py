@@ -1158,6 +1158,47 @@ class TestClearFunctions:
         # Store preserved
         assert (base / "store" / "HEAD").exists()
 
+    def test_clear_all_removes_readonly_git_objects(
+        self, tmp_path, monkeypatch, work_dir,
+    ):
+        base = tmp_path / "checkpoints"
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", base)
+        m = CheckpointManager(enabled=True)
+        m.ensure_checkpoint(str(work_dir), "initial")
+        assert base.exists()
+
+        import stat
+        for root, _dirs, files in os.walk(base):
+            for file in files:
+                p = os.path.join(root, file)
+                os.chmod(p, stat.S_IREAD)
+
+        result = clear_all()
+        assert result["deleted"] is True
+        assert result["bytes_freed"] > 0
+        assert not base.exists()
+
+    def test_clear_legacy_removes_readonly_archive(
+        self, tmp_path, monkeypatch, work_dir,
+    ):
+        base = tmp_path / "checkpoints"
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", base)
+        m = CheckpointManager(enabled=True)
+        m.ensure_checkpoint(str(work_dir), "initial")
+
+        legacy = base / "legacy-20200101-000000"
+        legacy.mkdir()
+        junk = legacy / "junk"
+        junk.write_bytes(b"x" * 1000)
+        import stat
+        junk.chmod(stat.S_IREAD)
+
+        result = clear_legacy()
+        assert result["deleted"] == 1
+        assert result["bytes_freed"] >= 1000
+        assert not legacy.exists()
+        assert (base / "store" / "HEAD").exists()
+
 
 # =========================================================================
 # Orphan pruning must not act on an unreachable volume

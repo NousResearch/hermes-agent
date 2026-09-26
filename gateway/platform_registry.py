@@ -107,6 +107,13 @@ class PlatformEntry:
     # ``async (pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False)
     # -> {"success": True, "message_id": ...} | {"error": str}``.
     standalone_sender_fn: Optional[Callable[..., Awaitable[dict]]] = None
+    # Media for this platform routes through ``standalone_sender_fn`` (same contract
+    # as the ``_PLUGIN_STANDALONE_MEDIA`` entries in tools/send_message_tool.py).
+    # Declared by the plugin via ``ctx.register_platform(..., standalone_media=True)``
+    # so a new platform never needs a core edit naming it; False = core decides.
+    # ponytail: one bool, not the full 5-tuple (captionable/force_document stay at
+    # safe defaults); widen only when a plugin proves it needs caption routing.
+    standalone_media: bool = False
 
 
 class PlatformRegistry:

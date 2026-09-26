@@ -626,12 +626,34 @@ _PLUGIN_STANDALONE_MEDIA = {"discord": ("Discord", False, True, [], False), "fei
                             "slack": ("Slack", True, True, [], False), "whatsapp": ("WhatsApp", True, True, None, True)}
 
 
+def _standalone_media_route(platform_name):
+    """``(label, discover, captionable, empty_media, pass_force)`` routing for *platform_name*:
+    the hardcoded table first (in-tree backward compat), else a plugin entry declaring
+    ``standalone_media=True``. Registry-declared entries use the safe defaults: discover the
+    plugin, no caption fast-path (the documented sender contract has no ``caption`` kwarg),
+    no media on non-final chunks, no ``force_document`` forwarding. None = core decides."""
+    route = _PLUGIN_STANDALONE_MEDIA.get(platform_name)
+    if route is not None:
+        return route
+    try:
+        from gateway.platform_registry import platform_registry
+        entry = platform_registry.get(platform_name)
+    except Exception:
+        return None
+    if entry is None or not getattr(entry, "standalone_media", False) or entry.standalone_sender_fn is None:
+        return None
+    return (entry.label, True, False, [], False)
+
+
 async def _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files, *, thread_id,
                                   max_len, force_document, mentions=None):
     """Chunked send through a plugin's standalone_sender_fn; one captionable file + short text
     rides as the media caption. WhatsApp re-pings recipients on every message that carries
     ``mentions``, so only the first payload of a logical send gets them."""
-    label, discover, captionable, empty_media, pass_force = _PLUGIN_STANDALONE_MEDIA[platform_name]
+    route = _standalone_media_route(platform_name)
+    if route is None:  # unreachable via _send_to_platform's guard; keeps the old KeyError contract
+        raise KeyError(platform_name)
+    label, discover, captionable, empty_media, pass_force = route
     sender, err = _plugin_standalone_sender(platform_name, label=label, discover=discover)
     if err:
         return err
@@ -703,7 +725,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     max_len = _platform_max_length(platform)
     chunks = BasePlatformAdapter.truncate_message(message, max_len) if max_len else [message]
     if (platform_name == "discord" or (platform_name == "whatsapp" and mentions)
-            or (media_files and platform_name in _PLUGIN_STANDALONE_MEDIA)):
+            or (media_files and _standalone_media_route(platform_name) is not None)):
         return await _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files,
                                              thread_id=thread_id, max_len=max_len, force_document=force_document,
                                              mentions=mentions)

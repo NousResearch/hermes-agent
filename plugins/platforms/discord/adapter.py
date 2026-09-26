@@ -5920,6 +5920,60 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 return _Snowflake(int(_ref_mid))
         return None
 
+    def _reply_context_from_reference(self, reference: Any) -> Dict[str, Any]:
+        """Full reply-target context from a Discord ``MessageReference`` (#119230).
+
+        Returns ``message_id/text/author_id/author_name/is_own/channel_id/
+        attachment_names``. ``channel_id`` comes from the reference itself (present
+        even when the referenced message is not in cache); author/text/attachments
+        need ``reference.resolved``. Never fetches: resolution is best-effort.
+        """
+        context: Dict[str, Any] = {
+            "message_id": None, "text": None, "author_id": None,
+            "author_name": None, "is_own": False, "channel_id": None,
+            "attachment_names": [],
+        }
+        if reference is None:
+            return context
+        with suppress(ValueError, TypeError):
+            if getattr(reference, "message_id", None) is not None:
+                context["message_id"] = str(reference.message_id)
+        ref_channel_id = getattr(reference, "channel_id", None)
+        if ref_channel_id is not None:
+            with suppress(ValueError, TypeError):
+                context["channel_id"] = str(ref_channel_id)
+        resolved = getattr(reference, "resolved", None)
+        if resolved is None:
+            return context
+        content = getattr(resolved, "content", None)
+        if content:
+            context["text"] = content
+        author = getattr(resolved, "author", None)
+        if author is not None:
+            if getattr(author, "id", None) is not None:
+                with suppress(ValueError, TypeError):
+                    context["author_id"] = str(author.id)
+            context["author_name"] = (
+                getattr(author, "display_name", None)
+                or getattr(author, "name", None)
+                or None
+            )
+            bot_id = getattr(getattr(self._client, "user", None), "id", None)
+            if bot_id is not None and getattr(author, "id", None) is not None:
+                with suppress(TypeError):
+                    context["is_own"] = bool(
+                        getattr(author, "bot", False) or str(author.id) == str(bot_id)
+                    )
+        resolved_channel = getattr(getattr(resolved, "channel", None), "id", None)
+        if context["channel_id"] is None and resolved_channel is not None:
+            with suppress(ValueError, TypeError):
+                context["channel_id"] = str(resolved_channel)
+        for att in getattr(resolved, "attachments", None) or []:
+            filename = getattr(att, "filename", None)
+            if filename:
+                context["attachment_names"].append(filename)
+        return context
+
     async def _handle_message(
         self, message: DiscordMessage, role_authorized: bool = False, *, recovered: bool = False,
     ) -> bool:
@@ -6121,17 +6175,17 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         _chan_id = str(getattr(_chan, "id", ""))
         _skills = self._resolve_channel_skills(_chan_id, _parent_id or None)
         _channel_prompt = self._resolve_channel_prompt(_chan_id, _parent_id or None)
-        reply_to_id = None
-        reply_to_text = None
-        if message.reference:
-            reply_to_id = str(message.reference.message_id)
-            if message.reference.resolved:
-                reply_to_text = getattr(message.reference.resolved, "content", None) or None
+        _reply = self._reply_context_from_reference(getattr(message, "reference", None))
         event = MessageEvent(
             text=event_text, message_type=msg_type, source=source, raw_message=message,
             message_id=str(message.id), media_urls=media_urls, media_types=media_types,
             media_text_inlined=media_text_inlined,
-            reply_to_message_id=reply_to_id, reply_to_text=reply_to_text,
+            reply_to_message_id=_reply["message_id"], reply_to_text=_reply["text"],
+            reply_to_author_id=_reply["author_id"],
+            reply_to_author_name=_reply["author_name"],
+            reply_to_is_own_message=_reply["is_own"],
+            reply_to_channel_id=_reply["channel_id"],
+            reply_to_attachment_names=_reply["attachment_names"],
             timestamp=message.created_at, auto_skill=_skills, channel_prompt=_channel_prompt,
             channel_context=_channel_context,
         )

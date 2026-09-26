@@ -227,15 +227,34 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
 
     reply_to = raw.get("reply_to") or {}
     prompt_response = raw.get("prompt_response")
+    # Extended reply_to contract (#119230): author may be a legacy plain name or a
+    # structured {id, name}; channel_id/origin_channel_id, message_id, and attachment
+    # metadata ride along when the connector resolved the referenced message.
+    _raw_author = reply_to.get("author")
+    if isinstance(_raw_author, dict):
+        _reply_author_name = _raw_author.get("name")
+        _reply_author_id = _raw_author.get("id")
+    else:
+        _reply_author_name = _raw_author
+        _reply_author_id = reply_to.get("author_id")
+    _reply_attachments = reply_to.get("attachments") or []
+    _reply_attachment_names = [
+        a.get("filename") for a in _reply_attachments
+        if isinstance(a, dict) and a.get("filename")
+    ]
+    _reply_channel = reply_to.get("channel_id") or reply_to.get("origin_channel_id")
     return MessageEvent(
         text=text,
         message_type=msg_type,
         source=source,
         message_id=raw.get("message_id"),
-        reply_to_message_id=raw.get("reply_to_message_id"),
+        reply_to_message_id=raw.get("reply_to_message_id") or reply_to.get("message_id"),
         reply_to_text=reply_to.get("text"),
-        reply_to_author_name=reply_to.get("author"),
+        reply_to_author_id=(str(_reply_author_id) if _reply_author_id is not None else None),
+        reply_to_author_name=_reply_author_name,
         reply_to_is_own_message=bool(reply_to.get("is_own", False)),
+        reply_to_channel_id=(str(_reply_channel) if _reply_channel is not None else None),
+        reply_to_attachment_names=_reply_attachment_names,
         media_urls=raw.get("media_urls") or [],
         # Parallel to media_urls; run.py's per-attachment classifiers consult
         # media_types[i] FIRST (routes a relayed image/document/voice like native).

@@ -70,6 +70,13 @@ class MessageEvent:
     reply_to_author_id: Optional[str] = None
     reply_to_author_name: Optional[str] = None
     reply_to_is_own_message: bool = False  # True when the user replied to this bot/assistant's message
+    # Channel holding the referenced message (differs from the reply's own channel for
+    # cross-channel replies/forwards); None when the platform did not resolve it.
+    reply_to_channel_id: Optional[str] = None
+    # Filenames of the referenced message's attachments. The re-hosted bytes are already
+    # in ``media_urls``; these names let the agent tell reply-target media apart from the
+    # current message's own attachments.
+    reply_to_attachment_names: List[str] = field(default_factory=list)
     # Structured interactive-prompt reply (relay only): {prompt_id, option_id, label?,
     # prompt_message_id?}; routed to the approval/slash-confirm/clarify resolvers BEFORE dispatch.
     prompt_response: Optional[Dict[str, Any]] = None

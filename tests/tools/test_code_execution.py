@@ -868,6 +868,31 @@ class TestRpcTokenAuthorization(unittest.TestCase):
         self.assertIn("Unauthorized", resp[0].get("error", ""))
 
 
+class TestRpcClientTimeout(unittest.TestCase):
+    def test_timed_out_tool_call_is_not_sent_again(self):
+        """A client-side timeout means the server holds the request and may still be running
+        it: the stub raises instead of resending it, which ran the tool a second time. The
+        client's 300s timeout is shortened; the kernel, RPC server and dispatch are real."""
+        import tools.code_execution_tool as cet
+        calls = []
+
+        def slow_tool(name, args, task_id=None, **_kwargs):
+            calls.append(name)
+            time.sleep(3)
+            return json.dumps({"output": "done", "exit_code": 0})
+
+        header = cet._UDS_TRANSPORT_HEADER.replace("_sock.settimeout(300)", "_sock.settimeout(2)")
+        self.assertNotEqual(header, cet._UDS_TRANSPORT_HEADER)
+        code = ("from hermes_tools import terminal\n"
+                "try:\n    terminal('true')\nexcept OSError as exc:\n    print('raised', type(exc).__name__)\n")
+        with patch.object(cet, "_UDS_TRANSPORT_HEADER", header), \
+             patch.object(cet, "_load_config", return_value={"mode": "strict", "timeout": 30}), \
+             patch("model_tools.handle_function_call", side_effect=slow_tool):
+            result = json.loads(execute_code(code, task_id="rpc-timeout", enabled_tools=["terminal"]))
+        self.assertIn("raised", result["output"], result)
+        self.assertEqual(calls, ["terminal"])
+
+
 
 
 if __name__ == "__main__":

@@ -55,3 +55,10 @@ it("formats count labels through locale copy without adding English suffixes to 
   expect(countLabel(en.config.fields, 1)).toBe("1 field");
   expect(countLabel(en.config.fields, 2)).toBe("2 fields");
 });
+
+it("keeps valid profile names and nested-plugin install syntax in Russian hints", () => {
+  expect(ru.profiles.namePlaceholder).toContain("coder");
+  expect(ru.profiles.nameRule).toContain("латинские");
+  expect(ru.pluginsPage.installHint).toContain("owner/repo/path/to/plugin");
+  expect(ru.pluginsPage.installHint).toContain("<url>#path/to/plugin");
+});

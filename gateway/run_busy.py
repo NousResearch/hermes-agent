@@ -531,6 +531,11 @@ class GatewayBusySessionMixin:
                 _match = self._PLAINTEXT_APPROVAL_WORDS.get(_raw_text)
                 if _match is not None:
                     _verb, _normalized_args = _match
+                    # The bare word is a third dispatch path to /approve and /deny: hold it to the same
+                    # admin gate as the slash forms, or a non-admin's "always" writes the profile-wide
+                    # allowlist. A denied sender's word stays ordinary conversation.
+                    if self._check_slash_access(event.source, _verb):
+                        return False
                     _approval_handler = (
                         self._handle_approve_command if _verb == "approve" else self._handle_deny_command
                     )

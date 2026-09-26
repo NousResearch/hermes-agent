@@ -175,7 +175,11 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "copilot-acp": ["copilot-acp"],
     "copilot": _OPENAI_CHAT_MODELS + [
         "claude-sonnet-4.6", "claude-sonnet-5", "claude-sonnet-4", "claude-sonnet-4.5", "claude-haiku-4.5",
+        "claude-opus-5", "claude-opus-4.8", "claude-opus-5.5",
         "gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-2.5-pro",
+        "gemini-3.8-flash",
+        "gpt-5.3-codex", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-sol", "gpt-6-luna",
+        "grok-4.6", "grok-4.7", "kimi-k3",
     ],
     "gemini": [
         "gemini-3.8-flash", "gemini-3.7-flash",

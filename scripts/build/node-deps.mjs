@@ -33,6 +33,20 @@ export function npmCommand({ env = process.env } = {}) {
   return [process.execPath, cli]
 }
 
+// npm's own manifest states its version — no child spawn. A node-under-node spawn
+// hits Windows Job-Object EBUSY (#123933), and the probe runs before the reuse
+// short-circuit: a read-only version read must not abort an otherwise complete run.
+// npm_execpath may point through a symlink; the manifest sits beside the resolved
+// CLI, never beside the link. Layouts without a readable manifest return undefined
+// so the caller falls back to the child probe, matching the pre-manifest behavior.
+function npmManifestVersion(cli) {
+  try {
+    return JSON.parse(readFileSync(join(dirname(realpathSync(cli)), '..', 'package.json'), 'utf8')).version
+  } catch {
+    return undefined
+  }
+}
+
 function completedInstallMatches({ source, receipt, hiddenLock, key, nativeKey }) {
   if (!existsSync(receipt) || !existsSync(hiddenLock)) return false
   const installed = readFileSync(hiddenLock)
@@ -64,7 +78,8 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
     return path
   }))].sort()
   const [node, npm] = npmCommand({ env })
-  const npmVersion = execFileSync(node, [npm, '--version'], { cwd: source, env, encoding: 'utf8' }).trim()
+  const npmVersion = npmManifestVersion(npm) ?? execFileSync(
+    node, [npm, '--version'], { cwd: source, env, encoding: 'utf8' }).trim()
   const { satisfies } = createRequire(npm)('semver')
   for (const [name, version] of [['node', process.versions.node], ['npm', npmVersion]]) {
     const range = manifest.engines?.[name]

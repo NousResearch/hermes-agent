@@ -1,9 +1,10 @@
-"""Regression for #118349: a restart must not let ``message_changed`` replay an old message.
+"""Regression for #118349: ``message_changed`` must not replay an already-answered message.
 
-``_processed_message_ts`` lives in memory, so a new adapter cannot know which messages the
-previous process already answered. Slack keeps emitting ``message_changed`` for those messages
-on its own (thread reply metadata, native agent streams, unfurls, file state). Before the fix
-each one became a new user turn with the original text, and the bot answered it again.
+``_processed_message_ts`` lives in memory and is bounded, so after a restart (or once a claim is
+evicted) it cannot tell which messages were already answered. Slack keeps emitting
+``message_changed`` for those messages on its own (thread reply metadata, agent sessions,
+unfurls, file state). Before the fix each one became a new user turn with the original text,
+and the bot answered it again.
 """
 
 import asyncio
@@ -86,8 +87,25 @@ def _run(adapter, event):
     asyncio.run(adapter._handle_slack_message(event, {"team_id": "T0TEAM0001"}))
 
 
-@pytest.mark.parametrize("shape", ["no_previous_message", "same_text", "edited_before_restart"])
-def test_change_slack_made_to_a_message_from_before_the_restart_is_not_a_new_turn(shape):
+def _answered_then_evicted(adapter, delivered):
+    """A message answered by this adapter whose claim was later evicted from the bounded map."""
+    adapter._PROCESSED_MESSAGE_TS_MAX = 2
+    message_ts = _slack_ts(time.time())
+    original = {
+        "type": "message", "user": USER, "text": TEXT, "ts": message_ts,
+        "channel": "C0CHAN0001", "channel_type": "channel", "team": "T0TEAM0001",
+        "client_msg_id": "cmid-1"}
+    _run(adapter, original)
+    assert len(delivered) == 1
+    for offset in (1, 2):
+        adapter._remember_processed_message_ts(_slack_ts(time.time() + offset))
+    assert message_ts not in adapter._processed_message_ts
+    return _changed_event(message_ts, previous_text=TEXT)
+
+
+@pytest.mark.parametrize(
+    "shape", ["no_previous_message", "same_text", "edited_before_restart", "claim_evicted"])
+def test_change_slack_made_to_an_already_answered_message_is_not_a_new_turn(shape):
     delivered = []
     adapter = _adapter(delivered)
     posted = time.time() - 600  # answered by the previous process, before this adapter started
@@ -97,11 +115,13 @@ def test_change_slack_made_to_a_message_from_before_the_restart_is_not_a_new_tur
         "same_text": lambda: _changed_event(message_ts, previous_text=TEXT),
         "edited_before_restart": lambda: _changed_event(
             message_ts, edited_ts=_slack_ts(posted + 30), previous_text=TEXT),
+        "claim_evicted": lambda: _answered_then_evicted(adapter, delivered),
     }[shape]()
+    already_delivered = len(delivered)
 
     _run(adapter, event)
 
-    assert delivered == []
+    assert len(delivered) == already_delivered
 
 
 def test_edit_made_after_the_restart_still_reaches_the_agent():

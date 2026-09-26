@@ -2686,22 +2686,29 @@ class SlackAdapter(BasePlatformAdapter):
 
         Bounded: stopStream (appending ``delta``), one retry ONLY when nothing is appended
         (``markdown_text`` APPENDS: a first attempt that landed server-side but raised here would
-        repeat the tail), then one idempotent in-place ``chat.update`` carrying the full text —
-        always when ``replace`` (the content changed) or the seal failed, otherwise only to apply
-        a rich Block Kit layout (non-fatal: the streamed markdown stands)."""
+        repeat the tail), then one idempotent in-place ``chat.update`` carrying this message's own
+        text — always when the final rewrites it or the seal failed, otherwise only to apply a
+        rich Block Kit layout (non-fatal: the streamed markdown stands)."""
         chat_id, ts = key[1], stream["ts"]
+        base = stream.get("base", 0)
+        # A ``replace`` rewrite is not prefix-aligned, so it can only be applied whole — which on a
+        # REOPENED stream, whose message holds only the text past the server-sealed one, would put
+        # the already-visible prefix on the wire a second time. The streamed text stands there: the
+        # answer is complete across the two messages and a restyle is cosmetic, so this message is
+        # committed with exactly what it already shows.
+        rewrite = replace and not base
         self._active_streams.pop(key, None)
         sealed = await self._seal_stream(key, stream, delta=delta)
         if not sealed and not (delta and delta.strip()):
             sealed = await self._seal_stream(key, stream)
-        if sealed and not replace and not self._maybe_blocks(text):
+        if sealed and not rewrite and not self._maybe_blocks(text):
             committed = True
         else:
             # A reopened stream's message starts at ``base``; the sealed one before it already
-            # shows the prefix. (A ``replace`` rewrite is not prefix-aligned, so use it whole.)
-            shown = text if replace else text[stream.get("base", 0):]
+            # shows the prefix.
+            shown = text if rewrite else (stream.get("sent", "") if replace else text)[base:]
             edited = await self.edit_message(chat_id, ts, shown, finalize=True, metadata=metadata)
-            committed = edited.success or (sealed and not replace)
+            committed = edited.success or (sealed and not rewrite)
             if not sealed:
                 logger.warning(
                     "[Slack] chat.stopStream failed for %s/%s; %s", chat_id, ts,

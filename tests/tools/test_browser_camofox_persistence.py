@@ -27,6 +27,8 @@ def _mock_response(status=200, json_data=None):
     resp.status_code = status
     resp.json.return_value = json_data or {}
     resp.raise_for_status = MagicMock()
+    resp.__enter__.return_value = resp
+    resp.__exit__.return_value = False
     return resp
 
 

@@ -1050,6 +1050,46 @@ class TestStalePortalBaseUrlMigration:
 # =============================================================================
 
 
+class TestNousDeviceAuthTimeoutMessage:
+    def test_timeout_message_mentions_captcha_login_and_retry(self):
+        from hermes_cli.auth import _nous_device_auth_timeout_message
+
+        msg = _nous_device_auth_timeout_message("https://portal.nousresearch.com")
+        assert "CAPTCHA" in msg
+        assert "hermes portal" in msg
+        assert "https://portal.nousresearch.com/login" in msg
+        # Must NOT point at the nonexistent /device page (live Portal 404s it).
+        assert "/device" not in msg
+
+    def test_timeout_message_falls_back_to_default_portal(self):
+        from hermes_cli.auth import (
+            DEFAULT_NOUS_PORTAL_URL,
+            _nous_device_auth_timeout_message,
+        )
+
+        msg = _nous_device_auth_timeout_message("")
+        assert f"{DEFAULT_NOUS_PORTAL_URL.rstrip('/')}/login" in msg
+
+    def test_timeout_message_surfaces_elapsed_state(self):
+        """#98682: the timeout must say how long the flow waited, not just that it gave up."""
+        from hermes_cli.auth import _nous_device_auth_timeout_message
+
+        msg = _nous_device_auth_timeout_message("https://portal.nousresearch.com", expires_in=600)
+        assert "expired after 600s" in msg
+        # The actionable guidance must survive alongside the elapsed state.
+        assert "CAPTCHA" in msg
+        assert "hermes portal" in msg
+        assert "https://portal.nousresearch.com/login" in msg
+
+    def test_timeout_message_omits_elapsed_when_unknown(self):
+        """No expires_in (e.g. a caller without the device-code response) -> no fabricated number."""
+        from hermes_cli.auth import _nous_device_auth_timeout_message
+
+        msg = _nous_device_auth_timeout_message("https://portal.nousresearch.com")
+        assert "expired after" not in msg
+        assert "CAPTCHA" in msg
+
+
 def test_poll_for_token_timeout_raises_actionable_message():
     """The poll deadline must raise the CAPTCHA-aware guidance at the SOURCE,
     so both the CLI login and the dashboard poller (web_server_oauth._nous_poller,
@@ -1069,7 +1109,7 @@ def test_poll_for_token_timeout_raises_actionable_message():
 
     from typing import cast
 
-    with pytest.raises(TimeoutError):
+    with pytest.raises(TimeoutError) as excinfo:
         auth_mod._poll_for_token(
             client=cast(httpx.Client, _PendingClient()),
             portal_base_url="https://portal.nousresearch.com",
@@ -1078,3 +1118,58 @@ def test_poll_for_token_timeout_raises_actionable_message():
             expires_in=1,
             poll_interval=1,
         )
+
+    msg = str(excinfo.value)
+    assert "CAPTCHA" in msg
+    assert "hermes portal" in msg
+    assert "https://portal.nousresearch.com/login" in msg
+    # #98682: the elapsed state rides the same message (expires_in=1 above).
+    assert "expired after 1s" in msg
+
+
+def test_nous_device_code_login_timeout_raises_actionable_message(monkeypatch):
+    """Poll timeout must surface the CAPTCHA-aware guidance through the CLI
+    login flow (propagates unchanged from _poll_for_token)."""
+    import pytest
+
+    import hermes_cli.auth as auth_mod
+
+    monkeypatch.setattr(
+        auth_mod,
+        "_request_device_code",
+        lambda **kwargs: {
+            "device_code": "device",
+            "user_code": "SMCL-97YT",
+            "verification_uri": "https://portal.nousresearch.com/manage-subscription",
+            "verification_uri_complete": (
+                "https://portal.nousresearch.com/manage-subscription"
+                "?user_code=SMCL-97YT"
+            ),
+            "expires_in": 600,
+            "interval": 1,
+        },
+    )
+
+    def _timeout(**kwargs):
+        raise TimeoutError(
+            auth_mod._nous_device_auth_timeout_message(
+                kwargs.get("portal_base_url", "")
+            )
+        )
+
+    monkeypatch.setattr(auth_mod, "_poll_for_token", _timeout)
+    monkeypatch.setattr(auth_mod.webbrowser, "open", lambda url: True)
+    monkeypatch.setattr("builtins.print", lambda *a, **k: None)
+
+    with pytest.raises(TimeoutError) as excinfo:
+        auth_mod._nous_device_code_login(
+            portal_base_url="https://portal.nousresearch.com",
+            inference_base_url="https://inference.example.com/v1",
+            open_browser=False,
+            timeout_seconds=1,
+        )
+
+    msg = str(excinfo.value)
+    assert "CAPTCHA" in msg
+    assert "hermes portal" in msg
+    assert "https://portal.nousresearch.com/login" in msg

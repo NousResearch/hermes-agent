@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from hermes_cli.provider_seam import GuardedDict
 from utils import base_url_host_matches, base_url_hostname
 
 logger = logging.getLogger(__name__)
@@ -25,7 +26,7 @@ class HermesOverlay:
     base_url_env_var: str = ""            # env var for user-custom base URL
 
 
-HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
+HERMES_OVERLAYS: Dict[str, HermesOverlay] = GuardedDict(__name__, "HERMES_OVERLAYS", {
     "moa": HermesOverlay(auth_type="virtual", base_url_override="moa://local"),
     "openrouter": HermesOverlay(is_aggregator=True, base_url_env_var="OPENROUTER_BASE_URL"),
     "nous": HermesOverlay(auth_type="oauth_device_code", base_url_override="https://inference-api.nousresearch.com/v1"),
@@ -89,7 +90,7 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     # would treat a Vertex MoA slot as an unknown custom endpoint, losing the identity
     # _refresh_provider_credentials() needs to re-mint an expired token on 401.
     "vertex": HermesOverlay(auth_type="vertex"),
-}
+})
 
 
 # -- Resolved provider -------------------------------------------------------

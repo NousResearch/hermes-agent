@@ -8,6 +8,7 @@ Origin module; cohesive clusters live in siblings and are re-imported here so
 
 from __future__ import annotations
 
+import collections.abc
 import contextvars
 import copy
 import gzip
@@ -27,6 +28,8 @@ from typing import Any, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from typing import TypeGuard
 
+from hermes_cli import provider_seam
+from hermes_cli.provider_seam import GuardedSet
 from hermes_cli.urllib_security import open_credentialed_url
 from hermes_cli.version_info import get_version_info
 from hermes_cli.models_catalog_static import (
@@ -695,7 +698,10 @@ def ai_gateway_model_ids(*, force_refresh: bool = False) -> list[str]:
 # ---------------------------------------------------------------------------
 
 # All provider IDs and aliases valid on the left of the ``provider:model`` syntax.
-_KNOWN_PROVIDER_NAMES: set[str] = set(_PROVIDER_LABELS) | set(_PROVIDER_ALIASES) | {"openrouter", "custom"}
+# A seam set (not a snapshot taken at import): ``models_catalog_static.sync_plugin_provider_catalog``
+# publishes providers registered later into it together with the canonical list and labels.
+_KNOWN_PROVIDER_NAMES: collections.abc.Set[str] = GuardedSet(
+    __name__, "_KNOWN_PROVIDER_NAMES", set(_PROVIDER_LABELS) | set(_PROVIDER_ALIASES) | {"openrouter", "custom"})
 
 
 _CONFIG_ERRORS = (ImportError, OSError, RuntimeError, TypeError, ValueError, AttributeError)
@@ -763,6 +769,7 @@ def parse_model_input(
     if colon > 0:
         provider_part = stripped[:colon].strip().lower()
         model_part = stripped[colon + 1:].strip()
+        provider_seam.refresh("typed", provider_part or None)
         if provider_part and model_part and provider_part in _KNOWN_PROVIDER_NAMES:
             if provider_part == "custom":
                 configured = _configured_custom_provider_ids() if custom_ids is None else custom_ids

@@ -16,6 +16,7 @@ from typing import Any, NamedTuple, Optional
 from hermes_cli.providers import (
     LLAMACPP_ALIASES, ProviderDef, custom_provider_aliases, determine_api_mode, get_label,
     host_mandated_api_mode, is_aggregator, normalize_provider, resolve_provider_full)
+from hermes_cli import provider_seam
 from hermes_cli.model_normalize import normalize_model_for_provider
 from agent.models_dev import (
     ModelCapabilities, ModelInfo, get_model_capabilities, get_model_info, list_provider_models)
@@ -369,6 +370,8 @@ def resolve_startup_model_route(
     raw = _clean(raw_model)
     if not raw:
         return None
+    _typed = re.split(r"[:/]", raw, maxsplit=1)
+    provider_seam.refresh("typed", explicit_provider or (_typed[0] if len(_typed) > 1 else None))
 
     _ensure_direct_aliases()
     direct = DIRECT_ALIASES.get(raw.lower())
@@ -1751,6 +1754,9 @@ def switch_model(
     step returns a failure :class:`ModelSwitchResult` to stop the chain, or ``None`` to continue.
     ``user_providers`` / ``custom_providers`` are the config.yaml ``providers:`` dict and
     ``custom_providers:`` list."""
+    # A refresh callback may publish a provider configured after startup; the requested name only.
+    _typed = re.split(r"[:/]", raw_input.strip(), maxsplit=1)
+    provider_seam.refresh("typed", explicit_provider or (_typed[0] if len(_typed) > 1 else None))
     st = _Switch(
         raw_input=raw_input, current_provider=current_provider, current_model=current_model,
         current_base_url=current_base_url, current_api_key=current_api_key, is_global=is_global,

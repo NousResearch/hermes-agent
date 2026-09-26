@@ -14,6 +14,7 @@ import threading as _threading
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
 from agent.command_token_source import build_command_token_provider, materialize_probe_api_key
+from hermes_cli import provider_seam
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug, get_label
 from utils import base_url_host_matches
 
@@ -1194,6 +1195,8 @@ def list_authenticated_providers(
     from hermes_cli.config import coerce_provider_id, stringify_provider_map
 
     non_blocking_catalogs = bool(non_blocking_catalogs)
+    # Give refresh callbacks a chance to publish providers configured since startup.
+    provider_seam.refresh("picker")
 
     # Explicit refresh: drop every cached list so the calls below re-fetch live. A stale cache
     # can fall back to the curated static list when its live fetch fails, silently dropping

@@ -31,6 +31,7 @@ from urllib.parse import urlparse
 
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
+from hermes_cli.provider_seam import GuardedDict
 from utils import atomic_json_write, env_float, file_signature, is_truthy_value  # noqa: F401  (env_float: agent.credential_pool reads auth_mod.env_float)
 from hermes_cli.auth_zai_kimi import (  # noqa: F401  re-exported
     KIMI_CODE_BASE_URL, ZAI_ENDPOINTS, _normalize_lmstudio_runtime_base_url, _resolve_kimi_base_url,
@@ -246,9 +247,9 @@ _REGISTRY_ROWS: Tuple[Any, ...] = (
     # region (agent/vertex_adapter.py build_vertex_base_url), not a fixed host.
     ("vertex", "Google Vertex AI", "", (), "", "vertex"),
     ("azure-foundry", "Azure Foundry", "", ("AZURE_FOUNDRY_API_KEY",), "AZURE_FOUNDRY_BASE_URL"))
-PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
+PROVIDER_REGISTRY: Dict[str, ProviderConfig] = GuardedDict(__name__, "PROVIDER_REGISTRY", {
     p.id: p for p in (r if isinstance(r, ProviderConfig) else _api_key_provider(*r) for r in _REGISTRY_ROWS)
-}
+})
 # The rows above, before any plugin touches the dict (a user plugin may override these; #48450).
 BUILTIN_PROVIDER_IDS = frozenset(PROVIDER_REGISTRY)
 

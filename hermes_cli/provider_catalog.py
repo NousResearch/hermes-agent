@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from hermes_cli import provider_seam
+
 # Auth types that authenticate via an account / sign-in flow rather than a pasted API key; these
 # route to the desktop "Accounts" tab, everything else (api_key, and aws_sdk configured via
 # AWS_REGION/AWS_PROFILE) to "API keys". Mirrors the auth_type strings in PROVIDER_REGISTRY and
@@ -68,6 +70,7 @@ def provider_catalog() -> list[ProviderDescriptor]:
     auto-extended by provider plugins). Auth/env from ``PROVIDER_REGISTRY``; display metadata from
     ``ProviderProfile`` with canonical/env fallbacks so profile-less providers still resolve."""
     from hermes_cli.models import CANONICAL_PROVIDERS
+    provider_seam.refresh("picker")
     PROVIDER_REGISTRY = _safe_import("hermes_cli.auth", "PROVIDER_REGISTRY", {})
     OPTIONAL_ENV_VARS = _safe_import("hermes_cli.config", "OPTIONAL_ENV_VARS", {})
     # Overlays carry auth_type for providers with no registry/profile entry — notably the ``moa``
@@ -78,12 +81,15 @@ def provider_catalog() -> list[ProviderDescriptor]:
         profiles = {p.name: p for p in list_providers()}
     except Exception:
         profiles = {}
+    # One committed generation for every provider surface read below; a container whose module
+    # failed to import keeps the fallback read above.
+    g = provider_seam.snapshot()
     out: list[ProviderDescriptor] = []
-    for order, entry in enumerate(CANONICAL_PROVIDERS):
+    for order, entry in enumerate(g.get("CANONICAL_PROVIDERS", CANONICAL_PROVIDERS)):
         slug = entry.slug
-        cfg = PROVIDER_REGISTRY.get(slug)
+        cfg = g.get("PROVIDER_REGISTRY", PROVIDER_REGISTRY).get(slug)
         prof = profiles.get(slug)
-        overlay = HERMES_OVERLAYS.get(slug)
+        overlay = g.get("HERMES_OVERLAYS", HERMES_OVERLAYS).get(slug)
         # auth_type: registry is authoritative; then profile, then overlay (moa → "virtual"), then api_key.
         auth_type = ((cfg.auth_type if cfg else "") or (prof.auth_type if prof else "")
                      or (overlay.auth_type if overlay else "") or "api_key")

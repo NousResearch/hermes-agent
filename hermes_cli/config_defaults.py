@@ -526,8 +526,12 @@ DEFAULT_CONFIG = {
         "discovery_concurrency": 4,
         # Surface each connected server's MCP ``initialize`` instructions (how its tools are meant
         # to be used) as a section of the system prompt. Server-authored text: screened by the
-        # context threat scanner. false keeps the tools only.
+        # context threat scanner and capped by max_description_chars. false keeps the tools only.
         "server_instructions": True,
+        # Per-string cap on server-authored prose sent to the model on every request: MCP tool
+        # descriptions and server instructions. Over the cap the text is cut with a visible
+        # marker. 0 = unlimited.
+        "max_description_chars": 2048,
     },
     # Tool-output truncation. max_bytes: terminal_tool output cap in chars (head+tail kept; 50_000 ≈
     # 12-15K tokens). max_lines: max `limit` one read_file call may request before clamping.

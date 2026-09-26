@@ -258,7 +258,7 @@ export default function SkillsPage() {
   }, []);
   const handleEditorSaved = useCallback(
     (skillName: string) => {
-      showToast(`${skillName} saved ✓`, "success");
+      showToast(t.skills.savedToast.replace("{name}", skillName), "success");
       // Reload the list so a newly created skill (or an edited description)
       // shows up immediately.
       api
@@ -266,7 +266,7 @@ export default function SkillsPage() {
         .then(setSkills)
         .catch(() => {});
     },
-    [selectedProfile, showToast],
+    [selectedProfile, showToast, t.skills.savedToast],
   );
 
   /* ---- Derived data ---- */
@@ -717,7 +717,7 @@ export default function SkillsPage() {
                 Local file or directory
               </label>
               <Input
-                placeholder="~/projects/some-sdk  (read with read_file / search_files)"
+                placeholder={t.skills.hubDirPlaceholder}
                 value={learnDir}
                 onChange={(e) => setLearnDir(e.target.value)}
               />
@@ -956,7 +956,7 @@ function HubBrowser({
       setTimedOut(r.timed_out || []);
       setInstalled((prev) => ({ ...prev, ...(r.installed || {}) }));
     } catch (e) {
-      showToast(`Hub search failed: ${errorMessage(e)}`, "error");
+      showToast(t.skills.hubSearchFailed.replace("{error}", errorMessage(e)), "error");
       setResults([]);
       setSourceCounts({});
       setTimedOut([]);
@@ -964,7 +964,7 @@ function HubBrowser({
       setSearchMs(Math.round(performance.now() - t0));
       setSearching(false);
     }
-  }, [query, showToast, profile]);
+  }, [query, showToast, profile, t.skills.hubSearchFailed]);
 
   /* ---- Poll a spawned action's log until it exits ---- */
   useEffect(() => {
@@ -1001,29 +1001,29 @@ function HubBrowser({
     async (identifier: string) => {
       try {
         const res = await api.installSkillFromHub(identifier, profile);
-        showToast(`Installing ${identifier}…`, "success");
+        showToast(t.skills.installing.replace("{identifier}", identifier), "success");
         setActionLog([]);
         setActionRunning(true);
         setAction(res.name);
         setDetail(null);
       } catch (e) {
-        showToast(`Install failed: ${errorMessage(e)}`, "error");
+        showToast(t.skills.installFailed.replace("{error}", errorMessage(e)), "error");
       }
     },
-    [showToast, profile],
+    [showToast, profile, t.skills.installing, t.skills.installFailed],
   );
 
   const updateAll = useCallback(async () => {
     try {
       const res = await api.updateSkillsFromHub(profile);
-      showToast("Updating installed skills…", "success");
+      showToast(t.skills.updatingInstalled, "success");
       setActionLog([]);
       setActionRunning(true);
       setAction(res.name);
     } catch (e) {
-      showToast(`Update failed: ${errorMessage(e)}`, "error");
+      showToast(t.skills.hubUpdateFailed.replace("{error}", errorMessage(e)), "error");
     }
-  }, [showToast, profile]);
+  }, [showToast, profile, t.skills.updatingInstalled, t.skills.hubUpdateFailed]);
 
   const isInstalled = useCallback(
     (identifier: string) => Boolean(installed[identifier]),
@@ -1042,7 +1042,7 @@ function HubBrowser({
               <Search className="absolute start-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
               <Input
                 className="h-8 ps-8 text-sm"
-                placeholder="Search the skill hub (GitHub, official, community)…"
+                placeholder={t.skills.hubSearchPlaceholder}
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={(e) => {
@@ -1203,9 +1203,10 @@ function ConnectedHubs({
   sources: SkillHubSource[];
   loading: boolean;
 }) {
+  const { t } = useI18n();
   if (loading) {
     return (
-      <p className="text-xs text-muted-foreground">Connecting to skill hubs…</p>
+      <p className="text-xs text-muted-foreground">{t.skills.connectingHubs}</p>
     );
   }
   if (sources.length === 0) {
@@ -1383,6 +1384,7 @@ function SkillDetailDialog({
   onInstall: () => void;
   showToast: (msg: string, kind: "success" | "error") => void;
 }) {
+  const { t } = useI18n();
   const [tab, setTab] = useState<"readme" | "scan">("readme");
   const [preview, setPreview] = useState<SkillHubPreview | null>(null);
   // `null` preview = the fetch still owns the region (spinner); a settled
@@ -1403,12 +1405,12 @@ function SkillDetailDialog({
       .catch((e) => {
         if (cancelled) return;
         setPreviewFailed(true);
-        showToast(`Preview failed: ${errorMessage(e)}`, "error");
+        showToast(t.skills.previewFailed.replace("{error}", errorMessage(e)), "error");
       });
     return () => {
       cancelled = true;
     };
-  }, [result.identifier, showToast]);
+  }, [result.identifier, showToast, t.skills.previewFailed]);
 
   const runScan = useCallback(async () => {
     setScanning(true);
@@ -1417,11 +1419,11 @@ function SkillDetailDialog({
       const s = await api.scanSkillFromHub(result.identifier);
       setScan(s);
     } catch (e) {
-      showToast(`Scan failed: ${errorMessage(e)}`, "error");
+      showToast(t.skills.scanFailed.replace("{error}", errorMessage(e)), "error");
     } finally {
       setScanning(false);
     }
-  }, [result.identifier, showToast]);
+  }, [result.identifier, showToast, t.skills.scanFailed]);
 
   return (
     <Dialog open onOpenChange={(o: boolean) => !o && onClose()}>

@@ -322,7 +322,17 @@ export default function SystemPage() {
         await api.restartGateway();
         setActiveAction("gateway-restart");
       }
-      showToast(`Gateway ${verb} started`, "success");
+      showToast(
+        t.system.gatewayActionStarted.replace(
+          "{verb}",
+          verb === "start"
+            ? t.system.gatewayVerbStart
+            : verb === "stop"
+              ? t.system.gatewayVerbStop
+              : t.system.gatewayVerbRestart,
+        ),
+        "success",
+      );
       setTimeout(loadAll, 3000);
       return true;
     } catch (e) {
@@ -364,10 +374,10 @@ export default function SystemPage() {
     try {
       await api.migrateGatewayToMultiplex();
       setActiveAction("gateway-migrate");
-      showToast("Migrating to a single multiplexed gateway", "success");
+      showToast(t.system.migratingToMultiplex, "success");
       setTimeout(loadAll, 5000);
     } catch (e) {
-      showToast(`Gateway migration failed: ${errorMessage(e)}`, "error");
+      showToast(t.system.migrationFailed.replace("{error}", errorMessage(e)), "error");
     }
   };
 
@@ -376,10 +386,13 @@ export default function SystemPage() {
     if (!curator) return;
     try {
       await api.setCuratorPaused(!curator.paused);
-      showToast(curator.paused ? "Curator resumed" : "Curator paused", "success");
+      showToast(
+        curator.paused ? t.system.curatorResumed : t.system.curatorPaused,
+        "success",
+      );
       loadAll();
     } catch (e) {
-      showToast(`Curator toggle failed: ${errorMessage(e)}`, "error");
+      showToast(t.system.curatorToggleFailed.replace("{error}", errorMessage(e)), "error");
     }
   };
 
@@ -394,21 +407,33 @@ export default function SystemPage() {
           const res = await api.resetMemory(
             target as "all" | "memory" | "user",
           );
-          showToast(`Reset: ${res.deleted.join(", ") || "nothing"}`, "success");
+          showToast(
+            t.system.memoryResetDone.replace(
+              "{targets}",
+              res.deleted.join(", ") || t.system.memoryResetNothing,
+            ),
+            "success",
+          );
           loadAll();
         } catch (e) {
-          showToast(`Reset failed: ${errorMessage(e)}`, "error");
+          showToast(t.system.memoryResetFailed.replace("{error}", errorMessage(e)), "error");
           throw e;
         }
       },
-      [loadAll, showToast],
+      [
+        loadAll,
+        showToast,
+        t.system.memoryResetDone,
+        t.system.memoryResetNothing,
+        t.system.memoryResetFailed,
+      ],
     ),
   });
 
   // ── Credential pool ────────────────────────────────────────────────
   const addCredential = async () => {
     if (!credProvider.trim() || !credKey.trim()) {
-      showToast("Provider and API key required", "error");
+      showToast(t.system.credentialRequired, "error");
       return;
     }
     setAddingCred(true);
@@ -418,12 +443,12 @@ export default function SystemPage() {
         credKey.trim(),
         credLabel.trim() || undefined,
       );
-      showToast("Credential added", "success");
+      showToast(t.system.credentialAdded, "success");
       setCredKey("");
       setCredLabel("");
       loadAll();
     } catch (e) {
-      showToast(`Failed to add credential: ${errorMessage(e)}`, "error");
+      showToast(t.system.credentialAddFailed.replace("{error}", errorMessage(e)), "error");
     } finally {
       setAddingCred(false);
     }
@@ -435,14 +460,14 @@ export default function SystemPage() {
         const [provider, idxStr] = key.split("|");
         try {
           await api.removeCredentialPoolEntry(provider, Number(idxStr));
-          showToast("Credential removed", "success");
+          showToast(t.system.credentialRemoved, "success");
           loadAll();
         } catch (e) {
-          showToast(`Failed to remove: ${errorMessage(e)}`, "error");
+          showToast(t.system.credentialRemoveFailed.replace("{error}", errorMessage(e)), "error");
           throw e;
         }
       },
-      [loadAll, showToast],
+      [loadAll, showToast, t.system.credentialRemoved, t.system.credentialRemoveFailed],
     ),
   });
 
@@ -451,9 +476,9 @@ export default function SystemPage() {
     try {
       const res = await fn();
       setActiveAction(res.name);
-      showToast(`${label} started`, "success");
+      showToast(t.system.opStarted.replace("{label}", label), "success");
     } catch (e) {
-      showToast(`${label} failed: ${errorMessage(e)}`, "error");
+      showToast(t.system.opFailed.replace("{label}", label).replace("{error}", errorMessage(e)), "error");
     }
   };
 
@@ -463,9 +488,9 @@ export default function SystemPage() {
       setActiveAction(res.name);
       setPendingBackupArchive(res.archive ?? null);
       setDownloadableBackupArchive(null);
-      showToast("Backup started", "success");
+      showToast(t.system.backupStarted, "success");
     } catch (e) {
-      showToast(`Backup failed: ${errorMessage(e)}`, "error");
+      showToast(t.system.backupFailed.replace("{error}", errorMessage(e)), "error");
     }
   };
 
@@ -474,13 +499,13 @@ export default function SystemPage() {
       if (action === "backup" && pendingBackupArchive) {
         if (exitCode === 0) {
           setDownloadableBackupArchive(pendingBackupArchive);
-          showToast("Backup ready to download", "success");
+          showToast(t.system.backupReady, "success");
         } else {
           setPendingBackupArchive(null);
         }
       }
     },
-    [pendingBackupArchive, showToast],
+    [pendingBackupArchive, showToast, t.system.backupReady],
   );
 
   const downloadBackup = async () => {
@@ -502,7 +527,7 @@ export default function SystemPage() {
       link.remove();
       URL.revokeObjectURL(url);
     } catch (e) {
-      showToast(`Download failed: ${errorMessage(e)}`, "error");
+      showToast(t.system.backupDownloadFailed.replace("{error}", errorMessage(e)), "error");
     } finally {
       setDownloadingBackup(false);
     }
@@ -521,10 +546,10 @@ export default function SystemPage() {
           ? await api.runImportUpload(target.file, true)
           : await api.runImport(target.path, true);
       setActiveAction(res.name);
-      showToast("Import started", "success");
+      showToast(t.system.importStarted, "success");
       if (target.kind === "upload") clearImportFile();
     } catch (e) {
-      showToast(`Import failed: ${errorMessage(e)}`, "error");
+      showToast(t.system.importFailed.replace("{error}", errorMessage(e)), "error");
     } finally {
       setImportingBackup(false);
     }
@@ -550,10 +575,10 @@ export default function SystemPage() {
           1500,
         );
       } else {
-        showToast("Couldn't copy to clipboard", "error");
+        showToast(t.system.copyFailed, "error");
       }
     },
-    [showToast],
+    [showToast, t.system.copyFailed],
   );
 
   const runDebugShare = useCallback(async () => {
@@ -564,17 +589,20 @@ export default function SystemPage() {
       setShareResult(res);
       const n = Object.keys(res.urls).length;
       showToast(
-        `Uploaded ${n} paste${n === 1 ? "" : "s"}${
-          res.redacted ? " (redacted)" : ""
-        }`,
+        t.system.debugShareUploaded
+          .replace("{count}", String(n))
+          .replace(
+            "{redacted}",
+            res.redacted ? t.system.debugShareRedacted : "",
+          ),
         "success",
       );
     } catch (e) {
-      showToast(`Debug share failed: ${errorMessage(e)}`, "error");
+      showToast(t.system.debugShareFailed.replace("{error}", errorMessage(e)), "error");
     } finally {
       setSharing(false);
     }
-  }, [shareRedact, showToast]);
+  }, [shareRedact, showToast, t.system.debugShareUploaded, t.system.debugShareRedacted, t.system.debugShareFailed]);
 
 
   // ── Update check / apply ───────────────────────────────────────────
@@ -589,23 +617,23 @@ export default function SystemPage() {
           if (info.update_available) {
             showToast(
               info.behind && info.behind > 0
-                ? `Update available — ${info.behind} commit${info.behind === 1 ? "" : "s"} behind`
-                : "Update available",
+                ? t.system.updateAvailableBehind.replace("{count}", String(info.behind))
+                : t.system.updateAvailable,
               "success",
             );
           } else if (info.behind === 0) {
-            showToast("You're on the latest version", "success");
+            showToast(t.system.onLatestVersion, "success");
           } else if (info.message) {
             showToast(info.message, "error");
           }
         }
       } catch (e) {
-        showToast(`Update check failed: ${errorMessage(e)}`, "error");
+        showToast(t.system.updateCheckFailed.replace("{error}", errorMessage(e)), "error");
       } finally {
         setCheckingUpdate(false);
       }
     },
-    [showToast, status?.can_update_hermes],
+    [showToast, status?.can_update_hermes, t.system.updateAvailableBehind, t.system.updateAvailable, t.system.onLatestVersion, t.system.updateCheckFailed],
   );
 
   // Auto-check (cached) runs inside loadAll on mount; this is the
@@ -613,26 +641,19 @@ export default function SystemPage() {
   const applyUpdate = async () => {
     setUpdateConfirmOpen(false);
     if (status?.can_update_hermes === false) {
-      showToast(
-        "Hermes updates are managed outside this dashboard.",
-        "success",
-      );
+      showToast(t.system.updateManagedExternally, "success");
       return;
     }
     try {
       const resp = await api.updateHermes();
       if (!resp.ok) {
-        showToast(
-          resp.message ??
-            "Updates don't apply from this dashboard.",
-          "success",
-        );
+        showToast(resp.message ?? t.system.updateNotApplicable, "success");
         return;
       }
       setActiveAction(resp.name ?? "hermes-update");
-      showToast("Update started", "success");
+      showToast(t.system.updateStarted, "success");
     } catch (e) {
-      showToast(`Update failed: ${errorMessage(e)}`, "error");
+      showToast(t.system.updateFailed.replace("{error}", errorMessage(e)), "error");
     }
   };
 
@@ -641,18 +662,18 @@ export default function SystemPage() {
       try {
         const res = await api.pruneCheckpoints();
         setActiveAction(res.name);
-        showToast("Checkpoint prune started", "success");
+        showToast(t.system.pruneStarted, "success");
       } catch (e) {
-        showToast(`Prune failed: ${errorMessage(e)}`, "error");
+        showToast(t.system.pruneFailed.replace("{error}", errorMessage(e)), "error");
         throw e;
       }
-    }, [showToast]),
+    }, [showToast, t.system.pruneStarted, t.system.pruneFailed]),
   });
 
   // ── Hooks ──────────────────────────────────────────────────────────
   const createHook = async () => {
     if (!hookCommand.trim()) {
-      showToast("Command is required", "error");
+      showToast(t.system.hookCommandRequired, "error");
       return;
     }
     setCreatingHook(true);
@@ -664,14 +685,14 @@ export default function SystemPage() {
         timeout: hookTimeout.trim() ? Number(hookTimeout) : undefined,
         approve: hookApprove,
       });
-      showToast("Hook created", "success");
+      showToast(t.system.hookCreated, "success");
       setHookCommand("");
       setHookMatcher("");
       setHookTimeout("");
       setHookModalOpen(false);
       loadAll();
     } catch (e) {
-      showToast(`Failed to create hook: ${errorMessage(e)}`, "error");
+      showToast(t.system.hookCreateFailed.replace("{error}", errorMessage(e)), "error");
     } finally {
       setCreatingHook(false);
     }
@@ -685,14 +706,14 @@ export default function SystemPage() {
         const command = key.slice(sep + 1);
         try {
           await api.deleteHook(event, command);
-          showToast("Hook removed", "success");
+          showToast(t.system.hookRemoved, "success");
           loadAll();
         } catch (e) {
-          showToast(`Failed to remove hook: ${errorMessage(e)}`, "error");
+          showToast(t.system.hookRemoveFailed.replace("{error}", errorMessage(e)), "error");
           throw e;
         }
       },
-      [loadAll, showToast],
+      [loadAll, showToast, t.system.hookRemoved, t.system.hookRemoveFailed],
     ),
   });
 
@@ -809,7 +830,7 @@ export default function SystemPage() {
             </Button>
             <header className="p-5 pb-3 border-b border-border">
               <h2 className="font-mondwest text-display text-base tracking-wider">
-                New shell hook
+                {t.system.newShellHook}
               </h2>
             </header>
             <div className="p-5 grid gap-4">
@@ -828,7 +849,7 @@ export default function SystemPage() {
                 </Select>
               </div>
               <div className="grid gap-2">
-                <Label htmlFor="hook-command">Command (absolute path)</Label>
+                <Label htmlFor="hook-command">{t.system.hookCommandLabel}</Label>
                 <Input
                   id="hook-command"
                   autoFocus
@@ -839,16 +860,16 @@ export default function SystemPage() {
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="grid gap-2">
-                  <Label htmlFor="hook-matcher">Matcher (optional)</Label>
+                  <Label htmlFor="hook-matcher">{t.system.hookMatcherLabel}</Label>
                   <Input
                     id="hook-matcher"
-                    placeholder="e.g. terminal"
+                    placeholder={t.system.hookMatcherPlaceholder}
                     value={hookMatcher}
                     onChange={(e) => setHookMatcher(e.target.value)}
                   />
                 </div>
                 <div className="grid gap-2">
-                  <Label htmlFor="hook-timeout">Timeout (s)</Label>
+                  <Label htmlFor="hook-timeout">{t.system.hookTimeoutLabel}</Label>
                   <Input
                     id="hook-timeout"
                     placeholder="10"
@@ -868,13 +889,11 @@ export default function SystemPage() {
                   className="cursor-pointer text-sm font-normal normal-case tracking-normal text-muted-foreground"
                   htmlFor="hook-approve"
                 >
-                  Approve now (grant consent so it fires; otherwise it stays
-                  configured but inactive)
+                  {t.system.hookApproveLabel}
                 </Label>
               </div>
               <p className="text-xs text-warning">
-                Shell hooks run arbitrary commands on this host. Only add scripts
-                you trust. Takes effect on the next gateway/session restart.
+                {t.system.hookWarning}
               </p>
               <div className="flex justify-end">
                 <Button
@@ -986,8 +1005,7 @@ export default function SystemPage() {
             </div>
             {stats && !stats.psutil && (
               <p className="mt-3 text-xs text-muted-foreground">
-                Install the <span className="font-mono">psutil</span> extra for
-                CPU / memory / disk metrics.
+                {t.system.psutilHint}
               </p>
             )}
             {canUpdateHermes && (
@@ -1005,7 +1023,7 @@ export default function SystemPage() {
                   }
                   onClick={() => void checkForUpdate(true)}
                 >
-                  Check for updates
+                  {t.system.checkForUpdates}
                 </Button>
                 {updateInfo?.update_available && updateInfo.can_apply && (
                   <Button
@@ -1013,14 +1031,14 @@ export default function SystemPage() {
                     prefix={<Download className="h-3.5 w-3.5" />}
                     onClick={() => setUpdateConfirmOpen(true)}
                   >
-                    Update now
+                    {t.system.updateNow}
                   </Button>
                 )}
                 {updateInfo &&
                   !updateInfo.can_apply &&
                   updateInfo.update_available && (
                     <span className="text-xs text-muted-foreground">
-                      Update with{" "}
+                      {t.system.updateWith}{" "}
                       <span className="font-mono">{updateInfo.update_command}</span>
                     </span>
                   )}
@@ -1044,11 +1062,11 @@ export default function SystemPage() {
           <CardContent className="flex flex-col gap-3 py-4">
             <div className="flex items-center gap-3">
               <Badge tone={portal?.logged_in ? "success" : "secondary"}>
-                {portal?.logged_in ? "logged in" : "not logged in"}
+                {portal?.logged_in ? t.system.portalLoggedIn : t.system.portalNotLoggedIn}
               </Badge>
               {portal?.provider && (
                 <span className="text-sm text-muted-foreground">
-                  inference provider: {portal.provider}
+                  {t.system.portalInferenceProvider}{portal.provider}
                 </span>
               )}
               <a
@@ -1057,13 +1075,13 @@ export default function SystemPage() {
                 rel="noreferrer"
                 className="ml-auto text-xs text-primary underline"
               >
-                Manage subscription
+                {t.system.manageSubscription}
               </a>
             </div>
             {portal?.features && portal.features.length > 0 && (
               <div className="flex flex-col gap-1 border-t border-border pt-3">
                 <span className="text-xs uppercase tracking-wider text-muted-foreground">
-                  Tool Gateway routing
+                  {t.system.toolGatewayRouting}
                 </span>
                 {portal.features.map((f) => (
                   <div key={f.label} className="flex items-center justify-between text-sm">
@@ -1106,7 +1124,7 @@ export default function SystemPage() {
                 size="sm"
                 ghost
                 prefix={<Play className="h-3.5 w-3.5" />}
-                onClick={() => runOp(api.runCurator, "Curator review")}
+                onClick={() => runOp(api.runCurator, t.system.opCuratorReview)}
               >
                 Run now
               </Button>
@@ -1317,22 +1335,22 @@ export default function SystemPage() {
             <Button size="sm" ghost prefix={<Terminal className="h-3.5 w-3.5" />} onClick={() => setConsoleOpen(true)}>
               Open console
             </Button>
-            <Button size="sm" ghost prefix={<Stethoscope className="h-3.5 w-3.5" />} onClick={() => runOp(api.runDoctor, "Doctor")}>
+            <Button size="sm" ghost prefix={<Stethoscope className="h-3.5 w-3.5" />} onClick={() => runOp(api.runDoctor, t.system.opDoctor)}>
               Run doctor
             </Button>
-            <Button size="sm" ghost prefix={<ShieldCheck className="h-3.5 w-3.5" />} onClick={() => runOp(api.runSecurityAudit, "Security audit")}>
+            <Button size="sm" ghost prefix={<ShieldCheck className="h-3.5 w-3.5" />} onClick={() => runOp(api.runSecurityAudit, t.system.opSecurityAudit)}>
               Security audit
             </Button>
-            <Button size="sm" ghost prefix={<RotateCw className="h-3.5 w-3.5" />} onClick={() => runOp(api.updateSkillsFromHub, "Skills update")}>
+            <Button size="sm" ghost prefix={<RotateCw className="h-3.5 w-3.5" />} onClick={() => runOp(api.updateSkillsFromHub, t.system.opSkillsUpdate)}>
               Update skills
             </Button>
-            <Button size="sm" ghost prefix={<Activity className="h-3.5 w-3.5" />} onClick={() => runOp(api.runPromptSize, "Prompt size")}>
+            <Button size="sm" ghost prefix={<Activity className="h-3.5 w-3.5" />} onClick={() => runOp(api.runPromptSize, t.system.opPromptSize)}>
               Prompt size
             </Button>
-            <Button size="sm" ghost prefix={<Database className="h-3.5 w-3.5" />} onClick={() => runOp(api.runDump, "Support dump")}>
+            <Button size="sm" ghost prefix={<Database className="h-3.5 w-3.5" />} onClick={() => runOp(api.runDump, t.system.opSupportDump)}>
               Support dump
             </Button>
-            <Button size="sm" ghost prefix={<RotateCw className="h-3.5 w-3.5" />} onClick={() => runOp(api.runConfigMigrate, "Config migrate")}>
+            <Button size="sm" ghost prefix={<RotateCw className="h-3.5 w-3.5" />} onClick={() => runOp(api.runConfigMigrate, t.system.opConfigMigrate)}>
               Migrate config
             </Button>
           </CardContent>

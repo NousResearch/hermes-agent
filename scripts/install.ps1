@@ -24,6 +24,9 @@ param(
     [switch]$NonInteractive,
     [switch]$Json,
     [switch]$IncludeDesktop,
+    # Checkout and desktop build only. No venv, config, setup, or gateway,
+    # and the hermes command is not added to PATH. Implies -IncludeDesktop.
+    [switch]$DesktopOnly,
     # Same opt-out as install.sh --skip-browser: PM records it, so later
     # installs and `hermes update` keep the browser tools off until
     # `hermes pm install agent-browser` opts back in.
@@ -706,6 +709,7 @@ function Emit-Frame([bool]$ok, [string]$name, [bool]$skipped, [string]$reason = 
     $frame | ConvertTo-Json -Compress | Write-Output
 }
 
+if ($DesktopOnly) { $IncludeDesktop = $true }
 $ProductTitle = if ($IncludeDesktop) { "Install command and app + desktop" } else { "Install command and app" }
 $Stages = @(
     @{ name = "prerequisites"; title = "System prerequisites"; category = "runtime"; needs_user_input = $false },
@@ -721,6 +725,15 @@ $Stages = @(
     @{ name = "gateway"; title = "Configure gateway service"; category = "configuration"; needs_user_input = $true }
 )
 $Stages += @{ name = "complete"; title = "Finish install"; category = "runtime"; needs_user_input = $false }
+if ($DesktopOnly) {
+    # The published Mac app is the Tauri shell, so Connect still builds Desktop.
+    $Stages = @(
+        @{ name = "prerequisites"; title = "System prerequisites"; category = "runtime"; needs_user_input = $false },
+        @{ name = "repository"; title = "Download Hermes Agent"; category = "runtime"; needs_user_input = $false },
+        @{ name = "desktop"; title = "Build desktop app"; category = "runtime"; needs_user_input = $false },
+        @{ name = "complete"; title = "Finish install"; category = "runtime"; needs_user_input = $false }
+    )
+}
 function Stage-Prerequisites {
     if (-not (Ensure-Git)) {
         Fail "no pinned Git artifact for this Windows architecture"
@@ -1066,7 +1079,8 @@ function Stage-Desktop {
     # desktop product selected. Voice and wake extras are not synced here: pm
     # lazy-installs them at first use (policy: Teknium, July 2026, #70509).
     Invoke-SourceCompletion $true
-    Publish-UserCommand
+    # Connect-only must not register the hermes command on the user PATH.
+    if (-not $DesktopOnly) { Publish-UserCommand }
     Confirm-DesktopArtifact
 }
 

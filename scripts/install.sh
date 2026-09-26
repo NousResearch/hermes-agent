@@ -30,6 +30,7 @@ WANT_MANIFEST=false
 JSON=false
 NON_INTERACTIVE=false
 INCLUDE_DESKTOP=false
+DESKTOP_ONLY=false
 VERBOSE=false
 SKIP_BROWSER=false
 
@@ -55,12 +56,18 @@ while [ $# -gt 0 ]; do
         --skip-setup) NON_INTERACTIVE=true; shift ;;
         --skip-browser|--no-playwright|-SkipBrowser) SKIP_BROWSER=true; shift ;;
         --include-desktop|-IncludeDesktop) INCLUDE_DESKTOP=true; shift ;;
+        --desktop-only|-DesktopOnly)
+            # Checkout and desktop build only. No venv, config, setup, or gateway,
+            # and the hermes command is not added to PATH.
+            DESKTOP_ONLY=true
+            INCLUDE_DESKTOP=true
+            shift ;;
         --verbose|-Verbose) VERBOSE=true; shift ;;
         -h|--help)
             echo "Usage: install.sh [--branch NAME] [--commit SHA] [--dir PATH]"
             echo "                  [--hermes-home PATH]"
             echo "                  [--manifest] [--stage NAME] [--json]"
-            echo "                  [--non-interactive] [--include-desktop] [--verbose]"
+            echo "                  [--non-interactive] [--include-desktop] [--desktop-only] [--verbose]"
             echo "                  [--skip-browser]"
             echo
             echo "  --skip-browser  Do not install the browser tools (agent-browser + Chromium)."
@@ -370,6 +377,12 @@ stage_result() {
 # is never listed: --include-desktop selects the desktop product inside
 # `products` instead of adding a second build stage.
 stage_names() {
+    # Connect to existing Hermes: the published Mac app is the Tauri shell, so
+    # the client is still checked out and built. The agent stages stay off.
+    if [ "$DESKTOP_ONLY" = true ]; then
+        printf '%s\n' prerequisites repository desktop complete
+        return
+    fi
     printf '%s\n' prerequisites repository venv python-deps config products setup gateway complete
 }
 
@@ -668,7 +681,11 @@ stage_products() {
     (cd "$INSTALL_DIR" && run_logged "Building the hermes command and apps" \
         "$boot_py" -I -B -X utf8 hermes_cli/source_completion.py "${args[@]}") \
         || fail "app products or command publication failed"
-    wire_shell_path
+    # Connect-only must not put `hermes` on PATH. Shell rc registration is
+    # the installer's, not source_completion's.
+    if [ "$DESKTOP_ONLY" != true ]; then
+        wire_shell_path
+    fi
     log_success "app products and hermes command ready"
 }
 
@@ -754,6 +771,16 @@ run_stage() (
     STAGE_REASON=""
     STAGE_SKIPPED=false
     trap 'stage_result "$?"' EXIT
+    if [ "$DESKTOP_ONLY" = true ]; then
+        case "$1" in
+            prerequisites|repository|desktop|complete) ;;
+            *)
+                STAGE_REASON="stage '$1' is not part of a desktop-only install"
+                printf '%s\n' "$STAGE_REASON" >&2
+                exit 2
+                ;;
+        esac
+    fi
     if [ "$NON_INTERACTIVE" = true ] && { [ "$STAGE" = setup ] || [ "$STAGE" = gateway ]; }; then
         STAGE_SKIPPED=true
         STAGE_REASON="needs user input"

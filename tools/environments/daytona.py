@@ -159,18 +159,12 @@ class DaytonaEnvironment(BaseEnvironment):
         def exec_fn() -> tuple[str, int]:
             command = cmd_string
             if stdin_data is not None:
-                temp_dir = self.get_temp_dir().rstrip("/") or "/"
-                remote_stdin = f"{temp_dir}/.hermes-stdin-{uuid.uuid4().hex}"
+                remote_stdin = self._staged_stdin_path()
                 sandbox.fs.upload_file(stdin_data.encode("utf-8", "surrogateescape"), remote_stdin)
                 with lock:
                     state["staged"] = remote_stdin
                 sandbox.fs.set_file_permissions(remote_stdin, mode="600")
-                quoted_stdin = shlex.quote(remote_stdin)
-                command = (
-                    f"exec 0< {quoted_stdin} || exit $?\n"
-                    f"rm -f -- {quoted_stdin} || exit $?\n"
-                    f"{cmd_string}"
-                )
+                command = self._redirect_stdin_from_file(cmd_string, remote_stdin)
             shell_cmd = f"bash {'-l ' if login else ''}-c {shlex.quote(command)}"
             with lock:
                 if state["cancelled"]:

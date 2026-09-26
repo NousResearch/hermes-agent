@@ -362,8 +362,7 @@ class VercelSandboxEnvironment(BaseEnvironment):
         def exec_fn() -> tuple[str, int]:
             command = cmd_string
             if stdin_data is not None:
-                temp_dir = self.get_temp_dir().rstrip("/") or "/"
-                remote_stdin = f"{temp_dir}/.hermes-stdin-{uuid.uuid4().hex}"
+                remote_stdin = self._staged_stdin_path()
                 _retry_vercel_call(
                     "stdin upload",
                     lambda: sandbox.write_files([{
@@ -373,12 +372,7 @@ class VercelSandboxEnvironment(BaseEnvironment):
                     }]),
                     attempts=_WRITE_RETRY_ATTEMPTS,
                 )
-                quoted_stdin = shlex.quote(remote_stdin)
-                command = (
-                    f"exec 0< {quoted_stdin} || exit $?\n"
-                    f"rm -f -- {quoted_stdin} || exit $?\n"
-                    f"{cmd_string}"
-                )
+                command = self._redirect_stdin_from_file(cmd_string, remote_stdin)
                 with lock:
                     state["staged"] = remote_stdin
             with lock:

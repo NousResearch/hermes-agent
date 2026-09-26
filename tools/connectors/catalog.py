@@ -230,16 +230,16 @@ class _Runner:
     def _install(self, target: Target, env: Dict[str, str]) -> Dict[str, Any]:
         profile = (env.get("target_profile") or DEFAULT_PROFILE).strip()
         force = _flag(env.get("force"), False)
-        with target_scope(profile):
-            _save_credentials({k: v for k, v in env.items() if k not in _OPTION_KEYS and v})
+        credentials = {k: v for k, v in env.items() if k not in _OPTION_KEYS and v}
+        with target_scope(profile), _saved_credentials(credentials):
             if target.kind == "skill":
                 identifier = str(self.facts[target.name].get("identifier") or target.name)
                 return {"profile": profile, **self.installer.install_skill(identifier, force=force)}
             enable = _flag(env.get("enable"), True)
             result = self.installer.install_plugin(target.name, force=force, enable=enable, ref=env.get("ref") or None)
-        if not result.get("ok"):
-            raise RuntimeError(result.get("error") or "the install failed")
-        return {"profile": profile, "enabled": enable, **result}
+            if not result.get("ok"):
+                raise RuntimeError(result.get("error") or "the install failed")
+            return {"profile": profile, "enabled": enable, **result}
 
     # -- the watcher --------------------------------------------------------------------------------
 
@@ -325,6 +325,47 @@ def _save_credentials(env: Dict[str, str]) -> None:
     for key, value in env.items():
         validate_env_var_name_for_write(key)
         save_env_value(key, value)
+
+
+@contextlib.contextmanager
+def _saved_credentials(credentials: Dict[str, str]):
+    """Persist what the card collected for the install, and take it back out when the install fails.
+
+    The values have to be on disk before the install runs: enabling a plugin activates it in this
+    process, and its MCP servers read their keys from the profile's ``.env``. But an install fails
+    for ordinary reasons — a blocked scan, a kill-listed identifier, a clone that never lands — and
+    a secret for a plugin that was never installed must not be left behind: nothing here would ever
+    remove it, and the card reports only the install error. The MCP card next door writes its
+    secrets only after its own install succeeds (``tools/connectors/mcp.py::install``); this path
+    cannot defer the write, so it undoes it, restoring whatever each key held before.
+    """
+    from hermes_cli.config import invalidate_env_cache, load_env
+
+    try:
+        invalidate_env_cache()  # the memo can predate another process's write
+        existing = load_env() or {}
+    except Exception:  # an unreadable .env must not block the install the user asked for
+        existing = {}
+    previous = {key: existing.get(key) for key in credentials}
+    try:
+        # Inside the try: a rejected variable name raises partway, and the keys written before it
+        # have to come back out too.
+        _save_credentials(credentials)
+        yield
+    except BaseException:
+        _restore_credentials(previous)
+        raise
+
+
+def _restore_credentials(previous: Dict[str, Optional[str]]) -> None:
+    """Put each key back the way the failed install found it: removed when it was absent."""
+    from hermes_cli.config import remove_env_value, save_env_value
+
+    for key, value in previous.items():
+        try:
+            save_env_value(key, value) if value is not None else remove_env_value(key)
+        except Exception as exc:  # report it; the install error is what the card shows
+            logger.warning("could not roll back %s after a failed install: %s", key, exc)
 
 
 # op_id -> the runner driving it, so the card's answer (RPC thread) finds the work.

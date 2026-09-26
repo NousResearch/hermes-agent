@@ -8,6 +8,7 @@ Contracts:
   what went live; the card never witnesses the outcome
 """
 
+import contextlib
 import json
 import threading
 from pathlib import Path
@@ -227,3 +228,112 @@ def test_a_failed_install_stays_failed_until_the_user_tries_again():
         thread.join(5)
     assert result["out"]["targets"][0]["state"] == TargetState.connected.value
     assert len(installer.installs) == 2
+
+
+# ── Credentials the card collected ──────────────────────────────────────────
+#
+# They have to be on disk before the install: enabling a plugin activates it in this process and its
+# MCP servers read their keys from the profile's `.env`. So a failed install has to take them back
+# out — nothing else ever will, and the row shows only the install error. Driven through
+# ``_Runner._install`` directly: the ordering is the contract, and the card machinery is covered above.
+
+@pytest.fixture
+def home(tmp_path, monkeypatch):
+    """A temp HERMES_HOME whose `.env` the install writes into, with the profile hop stubbed out."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.connectors import catalog as catalog_mod
+
+    monkeypatch.setattr(catalog_mod, "target_scope", lambda profile: contextlib.nullcontext())
+    token = set_hermes_home_override(str(tmp_path))
+    try:
+        yield tmp_path
+    finally:
+        reset_hermes_home_override(token)
+
+
+def _env_values():
+    from hermes_cli.config import invalidate_env_cache, load_env
+
+    invalidate_env_cache()
+    return load_env() or {}
+
+
+def _run_install(installer, env):
+    from tools.connectors.catalog import _Runner
+    from tools.connectors.operation import Target
+
+    runner = _Runner(installer)
+    return runner._install(Target(name="blender", kind="plugin", action="install"), env)
+
+
+def test_a_failed_install_does_not_leave_its_credential_behind(home):
+    installer = FakeInstaller([_entry("blender")], install_error="clone failed: network down")
+
+    with pytest.raises(RuntimeError, match="network down"):
+        _run_install(installer, {"BLENDER_API_KEY": "sk-typed-by-the-user"})
+
+    assert "BLENDER_API_KEY" not in _env_values()
+
+
+def test_a_failed_install_restores_the_value_the_key_had_before(home):
+    from hermes_cli.config import save_env_value
+
+    save_env_value("BLENDER_API_KEY", "sk-the-one-that-works")
+    installer = FakeInstaller([_entry("blender")], install_error="the security scan blocked this plugin")
+
+    with pytest.raises(RuntimeError):
+        _run_install(installer, {"BLENDER_API_KEY": "sk-typed-by-the-user"})
+
+    assert _env_values().get("BLENDER_API_KEY") == "sk-the-one-that-works"
+
+
+def test_a_successful_install_keeps_the_credential(home):
+    installer = FakeInstaller([_entry("blender")])
+
+    result = _run_install(installer, {"BLENDER_API_KEY": "sk-typed-by-the-user"})
+
+    assert result["ok"] and _env_values().get("BLENDER_API_KEY") == "sk-typed-by-the-user"
+
+
+def test_the_credential_is_on_disk_while_the_install_runs(home):
+    """Activation happens inside install_plugin and reads the key from `.env`, so it must be there."""
+    seen = {}
+
+    class WatchingInstaller(FakeInstaller):
+        def install_plugin(self, name, *, force, enable, ref):
+            seen["during"] = _env_values().get("BLENDER_API_KEY")
+            return super().install_plugin(name, force=force, enable=enable, ref=ref)
+
+    _run_install(WatchingInstaller([_entry("blender")]), {"BLENDER_API_KEY": "sk-typed-by-the-user"})
+
+    assert seen["during"] == "sk-typed-by-the-user"
+
+
+def test_a_failed_skill_install_also_rolls_back(home):
+    class ExplodingSkills(FakeInstaller):
+        def install_skill(self, identifier, *, force):
+            raise RuntimeError("the hub refused the bundle")
+
+    installer = ExplodingSkills([_entry("blender")])
+    installer.facts = {}
+    from tools.connectors.catalog import _Runner
+    from tools.connectors.operation import Target
+
+    runner = _Runner(installer)
+    runner.facts = {"blender": {"identifier": "blender"}}
+    with pytest.raises(RuntimeError, match="refused the bundle"):
+        runner._install(Target(name="blender", kind="skill", action="install"),
+                        {"BLENDER_API_KEY": "sk-typed-by-the-user"})
+
+    assert "BLENDER_API_KEY" not in _env_values()
+
+
+def test_a_rejected_variable_name_takes_the_keys_written_before_it_back_out(home):
+    """The write itself can fail partway: `_save_credentials` validates each name as it goes."""
+    installer = FakeInstaller([_entry("blender")])
+
+    with pytest.raises(ValueError):
+        _run_install(installer, {"BLENDER_API_KEY": "sk-typed-by-the-user", "not-a-valid-name": "x"})
+
+    assert "BLENDER_API_KEY" not in _env_values()
+    assert not installer.installs  # and the install never ran

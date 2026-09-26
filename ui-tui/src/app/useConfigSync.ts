@@ -304,6 +304,10 @@ export const applyDisplay = (
     mouseTracking: normalizeMouseTracking(d),
     pasteCollapseLines: _pasteCollapseLinesFromConfig(cfg),
     pasteCollapseChars: _pasteCollapseCharsFromConfig(cfg),
+    // The scrollbar column is drawn as real cells, so terminal text selections
+    // pick it up; only an explicit YAML `false` hides it (same shape as
+    // inlineDiffs / streaming).
+    scrollbar: d.scrollbar !== false,
     sections: resolveSections(d.sections),
     showReasoning: !!d.show_reasoning,
     statusBar: normalizeStatusBar(d.tui_statusbar),

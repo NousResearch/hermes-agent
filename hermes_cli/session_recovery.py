@@ -7,12 +7,17 @@ migration bookkeeping are rebuilt, not copied; the result is never installed ove
 
 from __future__ import annotations
 
+import errno
+import hashlib
 import json
 import os
+import platform
+import re
 import shutil
 import sqlite3
+import stat
 import tempfile
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
@@ -20,6 +25,7 @@ from hermes_cli.timefmt import EPOCH_MAX, EPOCH_MIN
 from hermes_state import SessionDB
 from hermes_state_common import FTS_STORAGE_VERSION, SCHEMA_VERSION
 from hermes_state_repair import _db_opens_cleanly
+from utils import fsync_directory
 
 
 ProgressCallback = Callable[[dict[str, Any]], None]
@@ -52,6 +58,9 @@ _GENERATED_META_KEYS = frozenset({
     "fts_tool_full_content_high_water",  # retired marker; never copied into a recovered store
 })
 _SIDECAR_SUFFIXES = ("", "-wal", "-shm", "-journal")
+_STAGE_PREFIX = ".hermes-session-recovery-stage-"
+# What os.link raises where the filesystem has no hard links: exFAT/FAT on macOS ENOTSUP, vfat on Linux EPERM.
+_NO_HARD_LINK_ERRNOS = frozenset({errno.ENOTSUP, errno.EOPNOTSUPP, errno.EPERM})
 _MINIMUM_SPACE_HEADROOM = 256 * 1024 * 1024
 _MAX_SALVAGE_RANGE_QUERIES = 10_000
 _MIN_SQLITE_ROWID = -(2**63)
@@ -95,8 +104,16 @@ def _validate_paths(
             )
         for suffix in _SIDECAR_SUFFIXES:
             candidate = _sidecar_path(output, suffix)
-            if os.path.lexists(candidate):
-                raise SessionRecoverySafetyError(f"Refusing to overwrite existing recovery output: {candidate}")
+            if not os.path.lexists(candidate):
+                continue
+            existing = os.lstat(candidate)
+            if not suffix and stat.S_ISREG(existing.st_mode) and existing.st_size == 0:
+                raise SessionRecoverySafetyError(
+                    f"Refusing to overwrite existing recovery output: {candidate} is an empty file, which is the "
+                    "placeholder a recovery interrupted while publishing leaves on a filesystem without hard links "
+                    "(exFAT, FAT). If nothing else created it, delete it and re-run."
+                )
+            raise SessionRecoverySafetyError(f"Refusing to overwrite existing recovery output: {candidate}")
     work_root = (
         work_dir.expanduser().resolve(strict=True)
         if work_dir is not None
@@ -1051,12 +1068,12 @@ def _lost_and_found_plausibility_errors(
 
 
 def _recover_via_lost_and_found(
-    *, source: Path, snapshot_source: Path, snapshot_dir: Path, output: Path, inspection: dict[str, Any],
-    disk_space: dict[str, Any], missing_required: list[str],
+    *, source: Path, snapshot_source: Path, snapshot_dir: Path, candidate: Path, output: Path,
+    inspection: dict[str, Any], disk_space: dict[str, Any], missing_required: list[str],
 ) -> dict[str, Any]:
     """Best-effort page-level salvage when table schemas are unreadable: the sqlite3 CLI's ``.recover``
     (shell-only, not in Python's ``sqlite3``) rebuilds rows into a scratch lost_and_found database which
-    is then heuristically mapped into a fresh current-schema database."""
+    is then heuristically mapped into a fresh current-schema database at ``candidate``."""
     from hermes_cli.session_lost_and_found import (
         SQLITE3_CLI_GUIDANCE, LostAndFoundError, find_sqlite3_cli, find_sqlite3_cli_refusal, map_lost_and_found_rows,
         rebuild_fts_indexes, run_cli_lost_and_found_recover, stub_missing_parent_sessions,
@@ -1086,7 +1103,7 @@ def _recover_via_lost_and_found(
             f"and page-level .recover salvage failed: {exc}"
         ) from exc
     lf_conn = sqlite3.connect(str(lf_path), isolation_level=None)
-    destination_conn = _fresh_destination(output)
+    destination_conn = _fresh_destination(candidate)
     try:
         mapping = map_lost_and_found_rows(lf_conn, destination_conn)
         stubbing = stub_missing_parent_sessions(destination_conn)
@@ -1109,7 +1126,7 @@ def _recover_via_lost_and_found(
         "messages_removed": 0, "total_removed_or_relinked": 0,
     }
     verification = _verify_recovered_database(
-        output, expected_counts={"sessions": None, "messages": None}, copy_report=copy_report, allow_partial=True,
+        candidate, expected_counts={"sessions": None, "messages": None}, copy_report=copy_report, allow_partial=True,
         orphan_cleanup=orphan_cleanup,
     )
     verification["warnings"].append(
@@ -1126,7 +1143,7 @@ def _recover_via_lost_and_found(
     # Structural checks cannot see a positional mis-mapping: every row still inserts, so integrity/FK/FTS
     # stay green. A systematic timestamp violation is the semantic tell — never report such a salvage as verified.
     # See #101409.
-    plausibility_conn = sqlite3.connect(str(output), isolation_level=None)
+    plausibility_conn = sqlite3.connect(str(candidate), isolation_level=None)
     try:
         plausibility_errors = _lost_and_found_plausibility_errors(plausibility_conn)
     finally:
@@ -1185,16 +1202,184 @@ def _recovery_report(
     }
 
 
+def _recover_via_row_copy(
+    *, source: Path, snapshot_source: Path, candidate: Path, output: Path, inspection: dict[str, Any],
+    disk_space: dict[str, Any], chunk_size: int, progress_cb: Optional[ProgressCallback], allow_partial: bool,
+) -> dict[str, Any]:
+    """Copy every readable canonical row from the snapshot into a fresh current-schema database at ``candidate``."""
+    source_conn = _connect(snapshot_source)
+    source_conn.execute("PRAGMA writable_schema=ON")
+    destination_conn: Optional[sqlite3.Connection] = None
+    try:
+        destination_conn = _fresh_destination(
+            candidate, topic_tables=any(inspection["tables"][table].get("available") for table in _TOPIC_TABLES),
+        )
+        copy_report: dict[str, dict[str, Any]] = {}
+        for table in (*_CANONICAL_TABLES, "state_meta", *_TOPIC_TABLES, *_AUXILIARY_TABLES):
+            if table not in _CANONICAL_TABLES and not inspection["tables"][table].get("available"):
+                copy_report[table] = {"status": "missing", "copied_rows": 0}
+                continue
+            if table in _AUXILIARY_TABLES:  # lazy gateway table: create it or the copy reports "missing"
+                _AUXILIARY_TABLE_SCHEMAS[table](destination_conn)
+            copy_report[table] = _copy_table(
+                source_conn, destination_conn, table, salvage=allow_partial, chunk_size=chunk_size,
+                progress_cb=progress_cb, source_rows=inspection["tables"][table].get("rows"),
+            )
+        orphan_cleanup = _cleanup_partial_orphans(destination_conn) if allow_partial else None
+        derived_metadata = _finalize_derived_metadata(destination_conn)
+    finally:
+        source_conn.close()
+        if destination_conn is not None:
+            destination_conn.close()
+    expected_counts = {
+        table: inspection["tables"][table].get("rows")
+        for table in (*_CANONICAL_TABLES, *_AUXILIARY_TABLES)
+        if table in _CANONICAL_TABLES or inspection["tables"].get(table, {}).get("available")
+    }
+    verification = _verify_recovered_database(
+        candidate, expected_counts=expected_counts, copy_report=copy_report, allow_partial=allow_partial,
+        orphan_cleanup=orphan_cleanup,
+    )
+    return _recovery_report(
+        source, output, inspection, disk_space, verification, on_source_change="complete",
+        allow_partial=allow_partial, copy=copy_report, orphan_cleanup=orphan_cleanup,
+        derived_metadata=derived_metadata,
+    )
+
+
+def _host_tag() -> str:
+    return hashlib.sha256(platform.node().encode("utf-8", "replace")).hexdigest()[:8]
+
+
+def _owner_prefix(prefix: str) -> str:
+    """``prefix`` + this process's owner tag (host, pid, start time in ms): a later run removes the directory
+    only once that exact process is provably gone."""
+    from hermes_cli.process_identity import _process_create_time
+    return f"{prefix}{_host_tag()}-{os.getpid()}-{int((_process_create_time() or 0) * 1000)}-"
+
+
+def _remove_dead_owner_dirs(directory: Path, prefix: str) -> None:
+    """Remove what a run killed before its own cleanup (SIGKILL, power loss) left in ``directory``: only real
+    directories named ``_owner_prefix(prefix)`` + a mkdtemp suffix whose owner process is provably gone. A live
+    or unprovable owner, another host's run, a symlink or any other name is never touched."""
+    from hermes_cli.process_identity import _pid_alive_matches
+    pattern = re.compile(re.escape(prefix) + r"([0-9a-f]{8})-(\d+)-(\d+)-[a-z0-9_]{8}")
+    try:
+        entries = list(os.scandir(directory))
+    except OSError:  # housekeeping only: a directory we cannot list must not block the recovery itself
+        return
+    for entry in entries:
+        match = pattern.fullmatch(entry.name)
+        if match is None or match[1] != _host_tag() or not entry.is_dir(follow_symlinks=False):
+            continue
+        if _pid_alive_matches(int(match[2]), int(match[3]) / 1000 or None) is False:
+            shutil.rmtree(entry.path, ignore_errors=True)
+
+
+@contextmanager
+def _staged_output(output: Path) -> Iterator[Path]:
+    """A candidate path in a private directory beside ``output``: the same filesystem, so publishing it is a
+    link or rename, never a copy. The directory and whatever is still in it are removed on exit."""
+    try:
+        stage = Path(tempfile.mkdtemp(prefix=_owner_prefix(_STAGE_PREFIX), dir=output.parent))
+    except OSError as exc:
+        raise SessionRecoveryError(
+            f"Could not create a private staging directory beside {output}: {exc.strerror or exc}. "
+            "Choose an --output directory you can write to."
+        ) from exc
+    try:
+        yield stage / output.name
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+
+
+def _refuse_journal_beside(output: Path, refusal: str) -> None:
+    # A journal at the name would be replayed into the published file the first time it opens.
+    for suffix in _SIDECAR_SUFFIXES[1:]:
+        if os.path.lexists(sidecar := _sidecar_path(output, suffix)):
+            raise SessionRecoverySafetyError(refusal.format(sidecar))
+
+
+def _unlink_if_same_file(path: Path, expected: os.stat_result) -> None:
+    with suppress(OSError):  # cleanup on an error path: the original error is the one to report
+        if os.path.samestat(os.lstat(path), expected):
+            os.unlink(path)
+
+
+def _publish_over_own_placeholder(candidate: Path, output: Path, refusal: str) -> None:
+    """Publication where the filesystem has no hard links (exFAT, FAT, some network mounts): an exclusive create
+    takes the name, then the candidate replaces that placeholder while it is still ours. A kill between the two
+    leaves only the empty placeholder, which ``_validate_paths`` names as such on the next run."""
+    try:
+        descriptor = os.open(output, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        raise SessionRecoverySafetyError(refusal.format(output)) from None
+    try:
+        placeholder = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    try:
+        if not os.path.samestat(os.lstat(output), placeholder):
+            raise SessionRecoverySafetyError(refusal.format(output))
+        os.replace(candidate, output)
+    except BaseException:
+        _unlink_if_same_file(output, placeholder)
+        raise
+
+
+def _publish_recovered_database(candidate: Path, output: Path) -> None:
+    """Give the finished candidate the output name, whole or not at all, and never over another file.
+
+    ``_validate_paths`` checks the name before the copy starts; publication takes it atomically: ``os.link``
+    (``os.rename`` on Windows, which also refuses an existing name), or an exclusive placeholder that the
+    candidate replaces where hard links are unsupported."""
+    # Only the main file is published: rows still in a WAL or journal would be dropped with the stage.
+    if stray := [p for p in (_sidecar_path(candidate, s) for s in _SIDECAR_SUFFIXES if s) if os.path.lexists(p)]:
+        raise SessionRecoveryError(f"Recovered database still has an open journal and was not published: {stray[0]}")
+    refusal = "Refusing to overwrite recovery output that appeared during recovery: {}"
+    try:
+        descriptor = os.open(candidate, os.O_RDWR)
+        try:
+            os.fsync(descriptor)
+            published = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+        _refuse_journal_beside(output, refusal)
+        try:
+            (os.rename if os.name == "nt" else os.link)(candidate, output)
+        except FileExistsError:
+            raise SessionRecoverySafetyError(refusal.format(output)) from None
+        except OSError as exc:
+            if exc.errno not in _NO_HARD_LINK_ERRNOS:
+                raise
+            _publish_over_own_placeholder(candidate, output, refusal)
+        try:  # a journal that appeared while the name was being taken: withdraw rather than ship beside it
+            _refuse_journal_beside(output, refusal)
+        except SessionRecoverySafetyError:
+            _unlink_if_same_file(output, published)
+            raise
+        fsync_directory(output.parent)
+    except OSError as exc:
+        raise SessionRecoveryError(
+            f"Could not publish the recovered database as {output}: {exc.strerror or exc}. The staged copy was "
+            "discarded and nothing was left at that name; re-run with --output on a writable local disk."
+        ) from exc
+
+
 def recover_session_database(
     source_path: Path, output_path: Path, *, work_dir: Optional[Path] = None, chunk_size: int = 1_000,
     progress_cb: Optional[ProgressCallback] = None, allow_partial: bool = False,
 ) -> dict[str, Any]:
     """Recover canonical rows into a separate current-schema database. The source and its sidecars are
-    copied before SQLite opens anything; ``output_path`` must not exist and is never swapped into place."""
+    copied before SQLite opens anything; ``output_path`` must not exist and is never swapped into place.
+    The database is built in a private stage and gets the output name only once finished, so an interrupted
+    or failed run never leaves a partial database at ``output_path``."""
     if chunk_size <= 0:
         raise SessionRecoverySafetyError("chunk_size must be greater than zero")
     source, output, work_root = _validate_paths(source_path, output_path=output_path, work_dir=work_dir)
     assert output is not None
+    # A killed run's stage copy can be as large as the source; drop it before the space check.
+    _remove_dead_owner_dirs(output.parent, _STAGE_PREFIX)
     disk_space = _disk_space_preflight(source, work_root, output.parent)
     temp_dir, snapshot_source, inspection = _snapshot_and_inspect(source, work_root)
     try:
@@ -1206,49 +1391,21 @@ def recover_session_database(
                 "into a new database (the source is never modified)."
             )
         missing_required = [t for t in ("sessions", "messages") if not inspection["tables"][t].get("available")]
-        if allow_partial and missing_required:  # no readable schema -> page-level lost_and_found salvage
-            return _recover_via_lost_and_found(
-                source=source, snapshot_source=snapshot_source, snapshot_dir=Path(temp_dir.name), output=output,
-                inspection=inspection, disk_space=disk_space, missing_required=missing_required,
-            )
-        source_conn = _connect(snapshot_source)
-        source_conn.execute("PRAGMA writable_schema=ON")
-        destination_conn: Optional[sqlite3.Connection] = None
-        try:
-            destination_conn = _fresh_destination(
-                output, topic_tables=any(inspection["tables"][table].get("available") for table in _TOPIC_TABLES),
-            )
-            copy_report: dict[str, dict[str, Any]] = {}
-            for table in (*_CANONICAL_TABLES, "state_meta", *_TOPIC_TABLES, *_AUXILIARY_TABLES):
-                if table not in _CANONICAL_TABLES and not inspection["tables"][table].get("available"):
-                    copy_report[table] = {"status": "missing", "copied_rows": 0}
-                    continue
-                if table in _AUXILIARY_TABLES:  # lazy gateway table: create it or the copy reports "missing"
-                    _AUXILIARY_TABLE_SCHEMAS[table](destination_conn)
-                copy_report[table] = _copy_table(
-                    source_conn, destination_conn, table, salvage=allow_partial, chunk_size=chunk_size,
-                    progress_cb=progress_cb, source_rows=inspection["tables"][table].get("rows"),
+        with _staged_output(output) as candidate:
+            if allow_partial and missing_required:  # no readable schema -> page-level lost_and_found salvage
+                report = _recover_via_lost_and_found(
+                    source=source, snapshot_source=snapshot_source, snapshot_dir=Path(temp_dir.name),
+                    candidate=candidate, output=output, inspection=inspection, disk_space=disk_space,
+                    missing_required=missing_required,
                 )
-            orphan_cleanup = _cleanup_partial_orphans(destination_conn) if allow_partial else None
-            derived_metadata = _finalize_derived_metadata(destination_conn)
-        finally:
-            source_conn.close()
-            if destination_conn is not None:
-                destination_conn.close()
-        expected_counts = {
-            table: inspection["tables"][table].get("rows")
-            for table in (*_CANONICAL_TABLES, *_AUXILIARY_TABLES)
-            if table in _CANONICAL_TABLES or inspection["tables"].get(table, {}).get("available")
-        }
-        verification = _verify_recovered_database(
-            output, expected_counts=expected_counts, copy_report=copy_report, allow_partial=allow_partial,
-            orphan_cleanup=orphan_cleanup,
-        )
-        return _recovery_report(
-            source, output, inspection, disk_space, verification, on_source_change="complete",
-            allow_partial=allow_partial, copy=copy_report, orphan_cleanup=orphan_cleanup,
-            derived_metadata=derived_metadata,
-        )
+            else:
+                report = _recover_via_row_copy(
+                    source=source, snapshot_source=snapshot_source, candidate=candidate, output=output,
+                    inspection=inspection, disk_space=disk_space, chunk_size=chunk_size, progress_cb=progress_cb,
+                    allow_partial=allow_partial,
+                )
+            _publish_recovered_database(candidate, output)
+        return report
     finally:
         temp_dir.cleanup()
 

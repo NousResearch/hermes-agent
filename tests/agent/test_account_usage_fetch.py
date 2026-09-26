@@ -1,5 +1,6 @@
 import concurrent.futures
 import contextvars
+import json
 import threading
 import time
 from datetime import datetime, timezone
@@ -32,9 +33,16 @@ class _UsageProfile(ProviderProfile):
 
 
 class _Response:
-    def __init__(self, payload, status_code=200):
+    def __init__(self, payload, status_code=200, content=None):
         self._payload = payload
         self.status_code = status_code
+        # ``content`` mirrors ``httpx.Response.content``: bytes that have already been
+        # buffered off the wire.  When ``content`` is provided we use it directly (used by
+        # the body-cap tests in #54949 to assert the cap is enforced); otherwise we
+        # synthesize it from the JSON-encoded payload.
+        if content is None:
+            content = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else b""
+        self.content = content
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -45,8 +53,12 @@ class _Response:
 
 
 class _Client:
-    def __init__(self, payload):
+    def __init__(self, payload, content_override=None):
         self._payload = payload
+        # When provided, ``content_override`` is forwarded as the response body bytes
+        # instead of the JSON-encoded payload.  Used by the body-cap test in #54949 to
+        # exercise the over-cap branch without constructing a real ``httpx.Response``.
+        self._content_override = content_override
 
     def __enter__(self):
         return self
@@ -55,7 +67,9 @@ class _Client:
         return False
 
     def get(self, url, headers=None):
-        return _Response(self._payload)
+        if self._content_override is None:
+            return _Response(self._payload)
+        return _Response(self._payload, content=self._content_override)
 
 
 class _RoutingClient:
@@ -339,3 +353,56 @@ def test_fetch_portal_account_returns_value_and_keeps_caller_context(monkeypatch
     finally:
         marker.reset(token)
     assert seen == {"force_fresh": True, "marker": "profile-scope"}
+
+
+def test_usage_response_body_cap_rejects_oversized_payload_and_fails_open(monkeypatch):
+    """#54949: a hostile / proxy-interposed usage endpoint must not be allowed to buffer an
+    unbounded response body before ``response.json()`` raises.  ``_get_json`` enforces a
+    ``_USAGE_RESPONSE_MAX_BYTES`` cap; an over-cap body raises ``httpx.RequestError``, which
+    the existing fail-open callers swallow and return ``None`` from ``fetch_account_usage``.
+    """
+    from agent import account_usage
+
+    # Build a body that's larger than the cap by one byte.  The cap is private so we mirror
+    # the literal value (256 KiB) here; if it changes deliberately, this test must be updated.
+    cap = account_usage._USAGE_RESPONSE_MAX_BYTES
+    oversized_content = b"x" * (cap + 1)
+
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_codex_runtime_credentials",
+        lambda refresh_if_expiring=True: {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "access-token",
+        },
+    )
+    monkeypatch.setattr(
+        "agent.account_usage._read_codex_tokens",
+        lambda: {"tokens": {"account_id": "acct_123"}},
+    )
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client(
+            payload={"unused": True},
+            # Over-cap body forces ``_get_json`` to raise ``httpx.RequestError`` before
+            # ``response.json()`` would consume the unbounded bytes.
+            content_override=oversized_content,
+        ),
+    )
+
+    # ``fetch_account_usage`` fails open: the snapshot is ``None`` for the over-cap codex
+    # response; the openrouter branch also returns ``None`` because no key is configured.
+    assert account_usage.fetch_account_usage("openai-codex") is None
+
+    # Sanity: small (under-cap) payloads are unaffected.
+    small_content = b"{}"  # 2 bytes; trivially under cap
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client(payload={"ok": True}, content_override=small_content),
+    )
+    # The codex fetcher will parse the empty payload as ``{}``; the snapshot will be built
+    # with no windows (no rate_limit info present), but it must NOT be ``None`` -- the cap
+    # did not trigger.
+    snapshot = account_usage.fetch_account_usage("openai-codex")
+    assert snapshot is not None
+    assert snapshot.provider == "openai-codex"

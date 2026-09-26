@@ -21,6 +21,13 @@ logger = logging.getLogger(__name__)
 
 _DEPLETED_LINE = "Status: access depleted — top up to restore"
 
+# Defensive body-size cap for usage/account endpoints. These endpoints are expected to return
+# small JSON payloads (a few KB at most), but a hostile, broken, or proxy-interposed response
+# could stream an unbounded body before ``response.json()`` raises. Cap reads so the helper
+# never buffers more than this from a single response. Normal small payloads are unaffected.
+# #54949: mirrors openclaw/openclaw#97702 and openclaw/openclaw#97659.
+_USAGE_RESPONSE_MAX_BYTES = 256 * 1024
+
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -383,6 +390,14 @@ def _get_json(url: str, headers: dict[str, str], *, timeout: float) -> dict:
     with httpx.Client(timeout=timeout) as client:
         response = client.get(url, headers=headers)
         response.raise_for_status()
+    # Defensive body cap: read at most ``_USAGE_RESPONSE_MAX_BYTES`` from the response stream so a
+    # hostile / proxy-interposed endpoint cannot force Hermes to buffer an unbounded body before
+    # ``response.json()`` raises. Normal small usage payloads (a few KB) are unaffected.
+    body = response.content
+    if len(body) > _USAGE_RESPONSE_MAX_BYTES:
+        raise httpx.RequestError(
+            f"Usage response body exceeds cap ({len(body)} > {_USAGE_RESPONSE_MAX_BYTES} bytes)"
+        )
     return response.json() or {}
 
 
@@ -621,6 +636,12 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
         def _data(path: str) -> dict:
             resp = client.get(f"{normalized}/{path}", headers=headers)
             resp.raise_for_status()
+            # Same body cap as ``_get_json``: see #54949.
+            body = resp.content
+            if len(body) > _USAGE_RESPONSE_MAX_BYTES:
+                raise httpx.RequestError(
+                    f"Usage response body exceeds cap ({len(body)} > {_USAGE_RESPONSE_MAX_BYTES} bytes)"
+                )
             return (resp.json() or {}).get("data") or {}
         credits = _data("credits")
         try:

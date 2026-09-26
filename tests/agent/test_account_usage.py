@@ -7,9 +7,16 @@ from agent import account_usage
 
 
 class _FakeResponse:
-    def __init__(self, payload, status_code=200):
+    def __init__(self, payload, status_code=200, content=None):
         self._payload = payload
         self.status_code = status_code
+        # Mirror ``httpx.Response.content``: bytes buffered off the wire. Used by the body-cap
+        # code in ``agent/account_usage.py::_get_json`` (see #54949). When not supplied,
+        # synthesize from the JSON-encoded payload (normal < cap).
+        if content is None:
+            import json as _json
+            content = _json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else b""
+        self.content = content
 
     def raise_for_status(self):
         if self.status_code >= 400:

@@ -30,7 +30,7 @@ _EXPORTS = {
         "export_requirements", "build_requirements_environment", "prune_cache", "stage_tools",
         "prepare_tools",
     ),
-    "pm.operations": ("environment_python", "python_tool"),
+    "pm.operations": ("environment_python", "python_tool", "uv_binary"),
     "pm.extras": ("available", "ensure_import", "install_hint"),
     "pm.lock": ("Facts", "Lockfile"),
     "pm.package": ("InstallError", "Package", "Runner", "compose_env"),

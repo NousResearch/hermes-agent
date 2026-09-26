@@ -171,6 +171,25 @@ def python_tool(name: str, executable: str, *, root: Path | None = None) -> Path
     return _tool(python, executable) if python is not None else None
 
 
+def uv_binary() -> Path | None:
+    """PM's installed ``uv`` executable, read-only; None when there is none.
+
+    The MCP stdio resolver needs this because PM deliberately keeps uv off PATH
+    (``Uv.on_path`` is False), so a bare ``uvx`` in a server config resolves
+    nowhere unless the user happens to run uv themselves. Any problem reading
+    the installed state reads as "no managed uv" — the caller keeps its bare
+    command and fails honestly, rather than an exception turning a lookup into
+    a spawn error.
+    """
+    from pm._uv import _toolchain
+
+    try:
+        tools = _toolchain(realize=False)
+    except Exception:
+        return None
+    return tools[0] if tools else None
+
+
 def _requirements(requirements: Sequence[str]) -> list[str]:
     from packaging.requirements import InvalidRequirement, Requirement
 

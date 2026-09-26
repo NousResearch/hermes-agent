@@ -1388,6 +1388,41 @@ class TestDoctorStaleMaxIterationsDrift:
         assert "shadows" not in out
 
 
+class TestDoctorConfigVersionDrift:
+    """``hermes doctor --fix`` must not claim success when ``migrate_config()`` refuses to
+    migrate a below-floor config (#123557). It stays on the old version and the file is
+    left untouched; doctor has to report that, not count it as fixed."""
+
+    def _run(self, tmp_path, monkeypatch, config_version):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(f"_config_version: {config_version}\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        finding = doctor_config.Finding()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_config._drift_config_version(finding, True, cfg)
+        return buf.getvalue(), finding, cfg
+
+    def test_below_floor_config_is_not_reported_as_migrated(self, tmp_path, monkeypatch):
+        out, finding, cfg = self._run(tmp_path, monkeypatch, 5)
+
+        assert cfg.read_text(encoding="utf-8") == "_config_version: 5\n"
+        assert "Config migrated to latest version" not in out
+        assert "Config was not migrated (still v5)" in out
+        assert finding.fixed == 0
+        assert any("can no longer be auto-migrated" in issue for issue in finding.issues)
+
+    def test_at_floor_config_migrates_and_is_reported_fixed(self, tmp_path, monkeypatch):
+        from hermes_cli.config_migrations import SUPPORT_FLOOR_VERSION
+        out, finding, cfg = self._run(tmp_path, monkeypatch, SUPPORT_FLOOR_VERSION)
+
+        assert "Config migrated to latest version" in out
+        assert "Config was not migrated" not in out
+        assert finding.fixed == 1
+        assert finding.issues == []
+        assert cfg.read_text(encoding="utf-8") != f"_config_version: {SUPPORT_FLOOR_VERSION}\n"
+
+
 class TestDoctorLegacyCustomProvidersResidue:
     """A legacy ``custom_providers`` list entry without a ``providers:`` twin lives on in the retired list
     store; doctor must name it and point at the move. Twins (URL modulo trailing slash /

@@ -326,8 +326,14 @@ def _drift_config_version(f: Finding, should_fix: bool, config_path) -> None:
         return
     try:
         migrate_config(interactive=False, quiet=False)
-        check_ok("Config migrated to latest version")
-        f.fixed += 1
+        new_ver, _ = check_config_version()
+        if new_ver < latest_ver:
+            from hermes_cli.config_migrations import support_floor_message
+            check_warn(f"Config was not migrated (still v{new_ver})")
+            f.issues.append(support_floor_message())
+        else:
+            check_ok("Config migrated to latest version")
+            f.fixed += 1
     except Exception as mig_err:
         check_warn(f"Auto-migration failed: {mig_err}")
         f.issues.append("Run 'hermes setup' to migrate config")

@@ -116,6 +116,7 @@ class TestCommandTtsEnv:
                 return ""
 
         class Proc:
+            pid = os.getpid()
             returncode = 0
             stdout = _Stream()
             stderr = _Stream()
@@ -468,6 +469,7 @@ class TestCommandTtsEnvPassthrough:
                 return ""
 
         class Proc:
+            pid = os.getpid()
             returncode = 0
             stdout = _Stream()
             stderr = _Stream()

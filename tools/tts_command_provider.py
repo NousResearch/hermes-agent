@@ -19,6 +19,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from contextlib import suppress
 from functools import partial
 from pathlib import Path
 from typing import Any, Dict, FrozenSet, Optional
@@ -79,45 +80,22 @@ def render_command_template(command_template: str, placeholders: Dict[str, str])
     return rendered
 
 
-def _signal_process_tree(psutil: Any, proc: subprocess.Popen, method: str) -> None:
-    """Apply ``terminate``/``kill`` to *proc* and all descendants (best effort)."""
-    try:
-        parent = psutil.Process(proc.pid)
-        for child in parent.children(recursive=True):
-            try:
-                getattr(child, method)()
-            except psutil.NoSuchProcess:
-                pass
-        getattr(parent, method)()
-    except psutil.NoSuchProcess:
-        return
-    except Exception:
-        getattr(proc, method)()
-
-
 def terminate_command_process_tree(proc: subprocess.Popen) -> None:
     """Best-effort termination of a shell process and all of its children."""
+    if os.name != "nt":
+        from tools.environments.local import _kill_process_group_posix
+        # Pipe-owning workers can survive their launcher. Retire the owned group
+        # even after its leader exits, and escalate based on the group's lifetime.
+        with suppress(ProcessLookupError):
+            _kill_process_group_posix(proc)
+        return
     if proc.poll() is not None:
         return
-    if os.name == "nt":
-        try:
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL, timeout=5, stdin=subprocess.DEVNULL)
-        except Exception:
-            proc.kill()
-        return
     try:
-        import psutil  # type: ignore
-    except ImportError:
-        psutil = None
-    # Without psutil only the shell itself is signalled (children may survive).
-    signal = ((lambda m: getattr(proc, m)()) if psutil is None
-              else (lambda m: _signal_process_tree(psutil, proc, m)))
-    signal("terminate")
-    try:
-        proc.wait(timeout=2)
-    except subprocess.TimeoutExpired:
-        signal("kill")
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=5, stdin=subprocess.DEVNULL)
+    except Exception:
+        proc.kill()
 
 
 def command_env_passthrough(config: Dict[str, Any]) -> list:
@@ -153,6 +131,10 @@ def run_command_provider(
     proc = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, encoding="utf-8", errors="replace", env=delegated_child_subprocess_env(scrubbed),
                             stdin=subprocess.DEVNULL, **group)
+    if os.name != "nt":
+        # Capture the actual group before poll()/wait() can reap the launcher.
+        with suppress(ProcessLookupError):
+            setattr(proc, "_hermes_pgid", os.getpgid(proc.pid))
     output_queue: "queue.Queue[tuple[str, Optional[str]]]" = queue.Queue()
     chunks: Dict[str, list[str]] = {"stdout": [], "stderr": []}
     open_streams = {"stdout", "stderr"}

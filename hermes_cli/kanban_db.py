@@ -271,6 +271,76 @@ def _fire_dispatch_tick_hook(
         _log.debug("kanban dispatch tick hook failed: %s", exc)
 
 
+def _pre_kanban_dispatch_hold(
+    task_id: str, *, board: Optional[str], assignee: Optional[str], lane: str,
+    task: Optional["Task"],
+) -> Optional[str]:
+    """``pre_kanban_dispatch`` hold reason, or ``None`` to let this spawn proceed.
+
+    The plugin-side mirror of :func:`check_respawn_guard`, called from the same pre-spawn
+    chokepoint (``kanban_db_dispatch._dispatch_lane_task``, both lanes) under the same contract:
+    the board's dispatch lock is held, no write transaction is open, callbacks must stay fast.
+    Callers gate it on ``has_hook`` (see ``_kanban_observer_consumed``), so the payload is never
+    assembled when nothing subscribes.
+
+    First ``{"action": "hold", "reason": str}`` wins. A reason is required; anything else — a
+    non-dict return, an unknown action, a missing reason, or a callback that raises — falls
+    through, so a misbehaving plugin can never wedge the dispatcher.
+    """
+    try:
+        from hermes_cli.lifecycle import invoke_hook
+
+        results = invoke_hook(
+            "pre_kanban_dispatch", task_id=task_id, board=board, assignee=assignee,
+            lane=lane, task=task,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        _log.debug("pre_kanban_dispatch hook failed: %s", exc)
+        return None
+    for result in results:
+        if not isinstance(result, dict) or result.get("action") != "hold":
+            continue
+        reason = result.get("reason")
+        if isinstance(reason, str) and reason.strip():
+            return reason.strip()
+        _log.debug("pre_kanban_dispatch: ignoring reasonless hold directive for %s", task_id)
+    return None
+
+
+def _pre_kanban_task_create_suppress(
+    *, title: str, body: Optional[str], board: Optional[str], assignee: Optional[str],
+    session_id: Optional[str], idempotency_key: Optional[str],
+) -> Optional[str]:
+    """``pre_kanban_task_create`` verdict, or ``None`` to create the card normally.
+
+    Pure directive parsing (no ``conn``): returns the raw ``existing_task_id`` from the first
+    ``{"action": "suppress", "reason": str, "existing_task_id": str | None}`` (a reason is
+    required; ``""`` when the directive names no card), and ``None`` on no subscriber, unknown
+    action, missing reason, or a callback that raises. :func:`create_task` validates any returned
+    id against the board before handing it to a caller.
+    """
+    try:
+        from hermes_cli.lifecycle import invoke_hook
+
+        results = invoke_hook(
+            "pre_kanban_task_create", title=title, body=body, board=board, assignee=assignee,
+            session_id=session_id, idempotency_key=idempotency_key,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        _log.debug("pre_kanban_task_create hook failed: %s", exc)
+        return None
+    for result in results:
+        if not isinstance(result, dict) or result.get("action") != "suppress":
+            continue
+        reason = result.get("reason")
+        if not (isinstance(reason, str) and reason.strip()):
+            _log.debug("pre_kanban_task_create: ignoring reasonless suppress directive")
+            continue
+        existing = result.get("existing_task_id")
+        return existing.strip() if isinstance(existing, str) and existing.strip() else ""
+    return None
+
+
 # Claim window before the next tick reclaims a running task; long workers
 # ``heartbeat_claim`` or raise it via HERMES_KANBAN_CLAIM_TTL_SECONDS.
 DEFAULT_CLAIM_TTL_SECONDS = 15 * 60
@@ -1319,6 +1389,22 @@ def create_task(
     )
     parents = tuple(p for p in parents if p)
     skills_list = _normalize_task_skills(skills)
+
+    # Pre-create plugin gate (pre_kanban_task_create): fired before the write txn opens, so a
+    # plugin never holds the SQLite write lock, and every caller — CLI, dashboard, tools —
+    # routes through it. Short-circuited on has_hook: no subscriber, no behavior change.
+    if _kanban_observer_consumed("pre_kanban_task_create"):
+        suppress_id = _pre_kanban_task_create_suppress(
+            title=title, body=body, board=board, assignee=assignee,
+            session_id=session_id, idempotency_key=idempotency_key,
+        )
+        if suppress_id is not None:
+            # Return the named card only when it is real; otherwise "" — no card was created.
+            if suppress_id and conn.execute(
+                "SELECT 1 FROM tasks WHERE id = ?", (suppress_id,),
+            ).fetchone():
+                return suppress_id
+            return ""
 
     # Idempotency check BEFORE the write txn (no lock held); a concurrent-create
     # race may insert twice, the next lookup stabilises on the newest.

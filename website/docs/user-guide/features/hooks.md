@@ -489,6 +489,8 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `on_kanban_worker_stale_claim` | Observer | After a TTL-expired claim is reclaimed; live-PID extensions don't fire. Return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `worker_pid`, `heartbeat_stale`, `retry_status` | Identifiers and claim metadata only. |
 | `on_kanban_task_updated` | Observer | After a committed task-field write outside the claim/complete/block lifecycle (assign, overrides, dashboard editors). Return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `changed_fields` | `changed_fields` carries field names only, never values; the named title/body values in the board DB may contain user/project content. |
 | `on_kanban_dispatch_tick` | Observer | Once per dispatcher tick, strictly after the dispatch lock is released; idle and contended ticks fire too. Return ignored. | `board`, `profile_name`, `dry_run`, `outcome`, `result` | `result` is the tick's `DispatchResult` and carries task ids, assignees, and workspace paths. |
+| `pre_kanban_dispatch` | Directive/control | At the one pre-spawn chokepoint in the dispatcher (both lanes), after `check_respawn_guard` and before the claim: the board dispatch lock is held, no write transaction is open, so callbacks must stay fast. First `{"action": "hold", "reason": str}` refuses this candidate exactly as the built-in guard does — a `respawn_guarded` event, the card stays where it was. Any other return proceeds. | `task_id`, `board`, `assignee`, `lane` (`"ready"` \| `"review"`), `task` (read-only `Task` snapshot) | Task row contents (title/body, session ids, workspace paths) may contain project or user content. |
+| `pre_kanban_task_create` | Directive/control | In `create_task`, before the write transaction opens, so every caller — CLI, dashboard, tools — routes through it. First `{"action": "suppress", "reason": str, "existing_task_id": str \| None}` skips the insert; `create_task` returns that card's id when it is live, `""` when it is not. Any other return creates the card. | `title`, `body`, `board`, `assignee`, `session_id`, `idempotency_key` | Title/body are raw card content and may contain user or project data. |
 
 ---
 
@@ -1670,6 +1672,40 @@ Five additional observers (RFC #58548) extend the kanban family. All are observe
 - **`on_kanban_worker_stale_claim`** — when a TTL-expired claim is reclaimed; live-PID extensions don't fire. Adds `worker_pid`, `heartbeat_stale`, `retry_status`.
 - **`on_kanban_task_updated`** — after a committed task-field write outside the claim/complete/block lifecycle (`assign_task`, model/reasoning overrides, dashboard editors). Adds `changed_fields` — field names only, never values.
 - **`on_kanban_dispatch_tick`** — once per dispatcher tick, strictly after the dispatch lock is released, including idle and lock-contended ticks. Payload: `board`, `profile_name`, `dry_run`, `outcome`, `result`.
+
+### Kanban pre-decision hooks
+
+These are the kanban analogues of `pre_tool_call`: they fire **before** a card is created or a worker is spawned, and their return value is **honoured**. Every hook above is an observer whose return is discarded; these two can refuse the action. Like the other kanban fire sites they short-circuit on `has_hook()`, so an installation with no subscriber dispatches and creates exactly as before.
+
+#### `pre_kanban_dispatch`
+
+Fires in the dispatcher, once per candidate card, at the single pre-spawn chokepoint both lanes share (`_dispatch_lane_task`) — after the built-in `check_respawn_guard` and before the claim. It runs **under the board's dispatch lock** and outside any write transaction: keep the callback fast (it is not timeout-bounded — see the rationale in `hermes_cli/plugins_dispatch.py`). A `task` snapshot is passed so a guard can inspect the row it is about to rule on.
+
+```python
+def no_duplicate_dispatch(task_id, board, assignee, lane, task, **kwargs):
+    if lane == "ready" and task.title.startswith("[dup]") and _already_running(task):
+        return {"action": "hold", "reason": "duplicate-live-claim"}
+    return None
+
+def register(ctx):
+    ctx.register_hook("pre_kanban_dispatch", no_duplicate_dispatch)
+```
+
+A hold is recorded **exactly as the built-in guard records one** — a `respawn_guarded` event carrying your `reason`, and the card stays where it was (`ready` stays `ready`; a held review candidate stays in `review`). No new state, no new board column. Anything other than `{"action": "hold", "reason": ...}` with a non-empty reason — including a raised exception — lets the spawn proceed, so a broken guard can never wedge the scheduler.
+
+#### `pre_kanban_task_create`
+
+Fires inside `create_task` before its write transaction opens, so **every** caller routes through it: the `kanban_create` tool, the CLI, the dashboard, and any in-process caller. A `pre_tool_call` plugin can already block the agent's tool call, but nothing reaches the other callers — this is that gap.
+
+```python
+def suppress_equivalent_card(title, body, board, assignee, session_id, idempotency_key, **kwargs):
+    existing = _find_equivalent(title, board)
+    if existing:
+        return {"action": "suppress", "reason": "equivalent card open", "existing_task_id": existing}
+    return None
+```
+
+`create_task` returns the named card's id when that id is a live card. When the directive names no card (or names one that does not exist), it returns `""` — an empty id means **no card was created**, so callers must not assume a new task landed.
 
 ---
 

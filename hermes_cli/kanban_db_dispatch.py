@@ -2038,6 +2038,22 @@ def _dispatch_lane_task(
                 _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
         return False
 
+    # pre_kanban_dispatch — the plugin-side mirror of check_respawn_guard, at the same pre-spawn
+    # chokepoint both lanes share (dispatch lock held, no write txn open, callbacks must stay fast).
+    # Same observable outcome as the built-in guard: a ``respawn_guarded`` event and the card stays
+    # where it was (``ready`` stays ``ready``, a held review candidate stays in ``review``). Gated on
+    # has_hook like every other kanban fire site, so no subscriber costs one dict probe.
+    if _kb._kanban_observer_consumed("pre_kanban_dispatch"):
+        plugin_hold = _kb._pre_kanban_dispatch_hold(
+            task_id, board=board, assignee=assignee, lane=lane, task=_kb.get_task(conn, task_id),
+        )
+        if plugin_hold is not None:
+            result.respawn_guarded.append((task_id, plugin_hold))
+            if not dry_run:
+                with _kb.write_txn(conn):
+                    _kb._append_event(conn, task_id, "respawn_guarded", {"reason": plugin_hold})
+            return False
+
     def _count_spawn(name: str) -> None:
         # Later rows in this tick respect the per-profile cap; subsequent
         # ticks re-query from the DB.

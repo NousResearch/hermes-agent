@@ -175,6 +175,23 @@ VALID_HOOKS: Set[str] = {
     #   (privacy: task ids, assignees, workspace paths).
     "on_kanban_worker_spawned", "on_kanban_worker_exited", "on_kanban_worker_stale_claim",
     "on_kanban_task_updated", "on_kanban_dispatch_tick",
+    # Kanban PRE-decision hooks — the only kanban hooks whose return value is honoured (the
+    # observers above fire after the commit with their return ignored). Both short-circuit on
+    # has_hook(), so an installation with no subscriber behaves exactly as before.
+    # pre_kanban_dispatch (hermes_cli.kanban_db_dispatch._dispatch_lane_task): the ONE pre-spawn
+    # chokepoint, both lanes, right before claim+spawn and after check_respawn_guard — inside the
+    # board's dispatch lock, outside any write transaction, so callbacks must stay fast.
+    # Kwargs: task_id, board, assignee, lane ("ready"|"review"), task (read-only Task snapshot).
+    # Return {"action": "hold", "reason": str} (reason required) to refuse this candidate exactly as
+    # the built-in guard does — a respawn_guarded event, the card stays where it was. Any other
+    # return, a raised exception, or no subscriber lets the spawn proceed.
+    # pre_kanban_task_create (hermes_cli.kanban_db.create_task): before the write transaction opens,
+    # so every caller (CLI, dashboard, tools) routes through it.
+    # Kwargs: title, body, board, assignee, session_id, idempotency_key.
+    # Return {"action": "suppress", "reason": str (required), "existing_task_id": str | None} to skip
+    # the insert; create_task returns the named card's id when it is live, "" when it is not (an
+    # empty id means no card was created). Any other return creates the card as before.
+    "pre_kanban_dispatch", "pre_kanban_task_create",
     # gateway_platform_event: normalized envelopes only, never raw SDK objects or adapter handles.
     # Kwargs: platform, event_type, payload (event_type-local; see hooks.md). New event types land
     # only together with real fire-sites.
@@ -205,7 +222,11 @@ VALID_HOOKS: Set[str] = {
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as
 # the shell-hook allow-list, so these are refused loudly instead of having output silently ignored.
-SHELL_UNSUPPORTED_HOOKS: Set[str] = {"transform_api_error_classification"}
+# pre_kanban_* are directive-bearing too: _parse_response parses only the pre_tool_call / pre_verify
+# dialects, so a shell hook could not express "hold"/"suppress" and would look like a no-op.
+SHELL_UNSUPPORTED_HOOKS: Set[str] = {
+    "transform_api_error_classification", "pre_kanban_dispatch", "pre_kanban_task_create",
+}
 
 _env_enabled = env_var_enabled  # imported by plugins/memory
 _UNSET = object()

@@ -280,6 +280,14 @@ class TestParseHooksBlock:
         })
         assert specs == []
 
+    @pytest.mark.parametrize("event", ["pre_kanban_dispatch", "pre_kanban_task_create"])
+    def test_kanban_pre_decision_hooks_are_refused_for_shell_hooks(self, event, caplog):
+        # Their directives ("hold" / "suppress") have no shell-hook response dialect either,
+        # so a shell registration must be refused loudly rather than look like a no-op.
+        specs = shell_hooks._parse_hooks_block({event: [{"command": "/tmp/hook.sh"}]})
+        assert specs == []
+        assert any("Python-plugin-only" in r.message for r in caplog.records)
+
     def test_timeout_clamped_to_max(self):
         specs = shell_hooks._parse_hooks_block({
             "post_tool_call": [
